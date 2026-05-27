@@ -1,0 +1,379 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Kinetic Futurism Design System */
+/* Color Palette: Charcoal Black, Electric Cyan, Deep Indigo */
+/* Typography: Space Grotesk (Display), Inter (Body) */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  /* Kinetic Futurism Colors */
+  --color-charcoal: #0A0E27;
+  --color-charcoal-light: #1A1F4D;
+  --color-cyan: #00D9FF;
+  --color-cyan-dark: #0099CC;
+  --color-indigo: #1A1F4D;
+  --color-white: #F5F7FA;
+  --color-gray-dark: #2D3142;
+  --color-gray-medium: #4A5568;
+  --color-amber: #FFB800;
+  
+  /* Semantic Colors */
+  --primary: #00D9FF;
+  --primary-foreground: #0A0E27;
+  --sidebar-primary: #00D9FF;
+  --sidebar-primary-foreground: #0A0E27;
+  --chart-1: #00D9FF;
+  --chart-2: #0099CC;
+  --chart-3: #1A1F4D;
+  --chart-4: #FFB800;
+  --chart-5: #FF6B6B;
+  --radius: 0.65rem;
+  --background: #0A0E27;
+  --foreground: #F5F7FA;
+  --card: #1A1F4D;
+  --card-foreground: #F5F7FA;
+  --popover: #1A1F4D;
+  --popover-foreground: #F5F7FA;
+  --secondary: #2D3142;
+  --secondary-foreground: #F5F7FA;
+  --muted: #4A5568;
+  --muted-foreground: #A0AEC0;
+  --accent: #00D9FF;
+  --accent-foreground: #0A0E27;
+  --destructive: #FF6B6B;
+  --destructive-foreground: #F5F7FA;
+  --border: #2D3142;
+  --input: #1A1F4D;
+  --ring: #00D9FF;
+  --sidebar: #0A0E27;
+  --sidebar-foreground: #F5F7FA;
+  --sidebar-accent: #00D9FF;
+  --sidebar-accent-foreground: #0A0E27;
+  --sidebar-border: #2D3142;
+  --sidebar-ring: #00D9FF;
+}
+
+.dark {
+  /* Kinetic Futurism - Dark Mode (Default) */
+  --primary: #00D9FF;
+  --primary-foreground: #0A0E27;
+  --sidebar-primary: #00D9FF;
+  --sidebar-primary-foreground: #0A0E27;
+  --background: #0A0E27;
+  --foreground: #F5F7FA;
+  --card: #1A1F4D;
+  --card-foreground: #F5F7FA;
+  --popover: #1A1F4D;
+  --popover-foreground: #F5F7FA;
+  --secondary: #2D3142;
+  --secondary-foreground: #F5F7FA;
+  --muted: #4A5568;
+  --muted-foreground: #A0AEC0;
+  --accent: #00D9FF;
+  --accent-foreground: #0A0E27;
+  --destructive: #FF6B6B;
+  --destructive-foreground: #F5F7FA;
+  --border: #2D3142;
+  --input: #1A1F4D;
+  --ring: #00D9FF;
+  --chart-1: #00D9FF;
+  --chart-2: #0099CC;
+  --chart-3: #1A1F4D;
+  --chart-4: #FFB800;
+  --chart-5: #FF6B6B;
+  --sidebar: #0A0E27;
+  --sidebar-foreground: #F5F7FA;
+  --sidebar-accent: #00D9FF;
+  --sidebar-accent-foreground: #0A0E27;
+  --sidebar-border: #2D3142;
+  --sidebar-ring: #00D9FF;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', sans-serif;
+    @apply font-bold tracking-tight;
+  }
+  h1 {
+    @apply text-4xl md:text-6xl lg:text-7xl font-bold leading-tight md:leading-tight;
+    letter-spacing: -0.02em;
+  }
+  h2 {
+    @apply text-3xl md:text-5xl font-bold leading-tight;
+    letter-spacing: -0.01em;
+  }
+  h3 {
+    @apply text-2xl md:text-3xl font-semibold leading-snug;
+    letter-spacing: -0.005em;
+  }
+  h4 {
+    @apply text-xl md:text-2xl font-semibold leading-snug;
+  }
+  h5 {
+    @apply text-lg md:text-xl font-semibold;
+  }
+  h6 {
+    @apply text-base md:text-lg font-semibold;
+  }
+  p {
+    @apply leading-relaxed text-base md:text-lg;
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [type="button"]:not(:disabled),
+  [type="submit"]:not(:disabled),
+  [type="reset"]:not(:disabled),
+  a[href],
+  select:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled) {
+    @apply cursor-pointer;
+  }
+}
+
+@layer utilities {
+  .font-sans {
+    font-family: 'Inter', sans-serif !important;
+  }
+  .font-display {
+    font-family: 'Space Grotesk', sans-serif !important;
+    letter-spacing: -0.02em;
+  }
+  .text-gradient {
+    @apply bg-gradient-to-r from-cyan-200 via-cyan-400 to-blue-300 bg-clip-text text-transparent;
+  }
+  .glow-cyan {
+    @apply shadow-[0_0_20px_rgba(0,217,255,0.3)];
+  }
+  .glow-cyan-lg {
+    @apply shadow-[0_0_40px_rgba(0,217,255,0.4)];
+  }
+  .glass {
+    @apply bg-white/5 backdrop-blur-md border border-white/10;
+  }
+  .glass-dark {
+    @apply bg-black/20 backdrop-blur-md border border-white/5;
+  }
+  .glass-card {
+    @apply bg-white/[0.055] backdrop-blur-xl border border-white/10 shadow-[0_18px_60px_rgba(0,0,0,0.28)];
+  }
+  .hover-lift {
+    @apply transition-all duration-300 ease-out;
+  }
+  .hover-lift:hover {
+    transform: translateY(-6px);
+    border-color: rgba(0, 217, 255, 0.32);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.34), 0 0 34px rgba(0, 217, 255, 0.10);
+  }
+  .hero-mesh {
+    background:
+      radial-gradient(circle at 18% 18%, rgba(0, 217, 255, 0.16), transparent 28%),
+      radial-gradient(circle at 84% 12%, rgba(80, 90, 255, 0.14), transparent 30%),
+      linear-gradient(180deg, rgba(10, 14, 39, 0), #0A0E27 84%);
+  }
+  .section-grid::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.28;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
+    background-size: 52px 52px;
+    mask-image: radial-gradient(circle at center, black, transparent 72%);
+  }
+  .dashboard-shell::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(105deg, transparent 0%, rgba(255,255,255,0.12) 42%, transparent 54%);
+    transform: translateX(-120%);
+    animation: sheen 6s ease-in-out infinite;
+  }
+  .floating-orb {
+    position: absolute;
+    z-index: -1;
+    border-radius: 9999px;
+    filter: blur(34px);
+    opacity: 0.48;
+    animation: floatOrb 12s ease-in-out infinite;
+  }
+  .floating-orb-one {
+    width: 18rem;
+    height: 18rem;
+    left: -6rem;
+    top: 15rem;
+    background: rgba(0, 217, 255, 0.18);
+  }
+  .floating-orb-two {
+    width: 22rem;
+    height: 22rem;
+    right: -8rem;
+    top: 6rem;
+    background: rgba(88, 80, 255, 0.20);
+    animation-delay: -4s;
+  }
+}
+
+@layer components {
+  /**
+   * Custom container utility that centers content and adds responsive padding.
+   *
+   * This overrides Tailwind's default container behavior to:
+   * - Auto-center content (mx-auto)
+   * - Add responsive horizontal padding
+   * - Set max-width for large screens
+   *
+   * Usage: <div className="container">...</div>
+   *
+   * For custom widths, use max-w-* utilities directly:
+   * <div className="max-w-6xl mx-auto px-4">...</div>
+   */
+  .container {
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1rem; /* 16px - mobile padding */
+    padding-right: 1rem;
+  }
+
+  .flex {
+    min-height: 0;
+    min-width: 0;
+  }
+
+  @media (min-width: 640px) {
+    .container {
+      padding-left: 1.5rem; /* 24px - tablet padding */
+      padding-right: 1.5rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .container {
+      padding-left: 2rem; /* 32px - desktop padding */
+      padding-right: 2rem;
+      max-width: 1280px; /* Standard content width */
+    }
+  }
+  
+  /* Kinetic Futurism Animation Utilities */
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-out;
+  }
+  
+  .animate-slide-up {
+    animation: slideUp 0.6s ease-out;
+  }
+  
+  .animate-glow {
+    animation: glow 2s ease-in-out infinite;
+  }
+  
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  
+  @keyframes glow {
+    0%, 100% {
+      box-shadow: 0 0 20px rgba(0, 217, 255, 0.3);
+    }
+    50% {
+      box-shadow: 0 0 40px rgba(0, 217, 255, 0.6);
+    }
+  }
+
+  @keyframes floatOrb {
+    0%, 100% {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+      transform: translate3d(18px, -20px, 0) scale(1.06);
+    }
+  }
+
+  @keyframes sheen {
+    0%, 38% {
+      transform: translateX(-120%);
+    }
+    58%, 100% {
+      transform: translateX(120%);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .floating-orb,
+    .dashboard-shell::after,
+    .animate-glow {
+      animation: none !important;
+    }
+    .hover-lift:hover {
+      transform: none;
+    }
+  }
+}
