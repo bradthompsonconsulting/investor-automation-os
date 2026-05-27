@@ -1,0 +1,7 @@
+/seller-lead        https://www.investorautomationos.com/seller-lead        301!
+/thank-you          https://www.investorautomationos.com/thank-you          301!
+/privacy-policy     https://www.investorautomationos.com/privacy-policy     301!
+/terms-of-service   https://www.investorautomationos.com/terms-of-service   301!
+/cash-offer         https://www.investorautomationos.com/cash-offer         301!
+/calendar           https://www.investorautomationos.com/calendar           301!
+/buyer              https://www.investorautomationos.com/buyer              301!
