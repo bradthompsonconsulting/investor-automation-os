@@ -243,9 +243,9 @@ export default function Home() {
                   <ArrowRight size={18} />
                 </Button>
               </Link>
-              <Link href="/demo" className="w-full">
+              <Link href="/experience-the-system" className="w-full">
                 <Button variant="outline" className="border-accent/50 text-accent hover:bg-accent/10 hover:text-accent font-semibold px-8 py-6 text-lg h-auto rounded-xl bg-background/40 backdrop-blur-xl transition-all duration-200 ease-out hover:border-accent/80 hover:shadow-[0_0_24px_rgba(0,217,255,0.2)] active:scale-95 w-full">
-                  Watch Demo
+                  Experience The System
                   <ChevronRight size={18} />
                 </Button>
               </Link>

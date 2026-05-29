@@ -31,8 +31,8 @@ export default function Footer() {
             <Link href="/how-it-works" className="text-sm text-muted-foreground hover:text-accent transition-colors">
               How It Works
             </Link>
-            <Link href="/demo" className="text-sm text-muted-foreground hover:text-accent transition-colors">
-              Demo
+            <Link href="/experience-the-system" className="text-sm text-muted-foreground hover:text-accent transition-colors">
+              Experience The System
             </Link>
           </div>
 

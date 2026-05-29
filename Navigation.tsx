@@ -10,7 +10,7 @@ export default function Navigation() {
     { label: "Services", href: "/services" },
     { label: "For Investors", href: "/for-investors" },
     { label: "How It Works", href: "/how-it-works" },
-    { label: "Demo", href: "/demo" },
+    { label: "Experience The System", href: "/experience-the-system" },
     { label: "About", href: "/about" },
     { label: "Contact", href: "/contact" },
   ];

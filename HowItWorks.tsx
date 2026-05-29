@@ -3,6 +3,7 @@ import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import Navigation from "@/components/Navigation";
 import Footer from "@/components/Footer";
+import AcquisitionEngineVisual from "@/components/AcquisitionEngineVisual";
 import { ArrowRight, CheckCircle } from "lucide-react";
 
 const fadeInUp = {
@@ -151,8 +152,15 @@ export default function HowItWorks() {
         </div>
       </section>
 
-      {/* Workflow Diagram */}
+      {/* Acquisition Engine Visual */}
       <section className="py-20 md:py-32 bg-background">
+        <div className="container">
+          <AcquisitionEngineVisual />
+        </div>
+      </section>
+
+      {/* Workflow Diagram */}
+      <section className="py-20 md:py-32 bg-secondary">
         <div className="container">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -186,7 +194,7 @@ export default function HowItWorks() {
       </section>
 
       {/* Timeline */}
-      <section className="py-20 md:py-32 bg-secondary">
+      <section className="py-20 md:py-32 bg-background">
         <div className="container">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -234,7 +242,7 @@ export default function HowItWorks() {
       </section>
 
       {/* Key Outcomes */}
-      <section className="py-20 md:py-32 bg-background">
+      <section className="py-20 md:py-32 bg-secondary">
         <div className="container">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -302,7 +310,7 @@ export default function HowItWorks() {
       </section>
 
       {/* CTA Section */}
-      <section className="py-20 md:py-32 bg-secondary">
+      <section className="py-20 md:py-32 bg-background">
         <div className="container">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
