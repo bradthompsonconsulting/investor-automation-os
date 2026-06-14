@@ -8,6 +8,7 @@ export default function Navigation() {
 
   const navItems = [
     { label: "Services", href: "/services" },
+    { label: "Pricing", href: "https://go.investorautomationos.com/pricing", external: true },
     { label: "For Investors", href: "/for-investors" },
     { label: "How It Works", href: "/how-it-works" },
     { label: "Demo", href: "/demo" },
@@ -32,9 +33,19 @@ export default function Navigation() {
         {/* Desktop Navigation */}
         <div className="hidden md:flex items-center gap-1 rounded-full bg-white/[0.035] border border-white/10 px-1.5 py-1.5">
           {navItems.map((item) => (
-            <Link key={item.href} href={item.href} className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-accent hover:bg-white/[0.08] rounded-full transition-all duration-200 ease-out hover:shadow-[0_0_16px_rgba(0,217,255,0.1)]">
-              {item.label}
-            </Link>
+            item.external ? (
+              <a 
+                key={item.href} 
+                href={item.href} 
+                className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-accent hover:bg-white/[0.08] rounded-full transition-all duration-200 ease-out hover:shadow-[0_0_16px_rgba(0,217,255,0.1)]"
+              >
+                {item.label}
+              </a>
+            ) : (
+              <Link key={item.href} href={item.href} className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-accent hover:bg-white/[0.08] rounded-full transition-all duration-200 ease-out hover:shadow-[0_0_16px_rgba(0,217,255,0.1)]">
+                {item.label}
+              </Link>
+            )
           ))}
         </div>
 
@@ -61,14 +72,25 @@ export default function Navigation() {
         <div className="md:hidden bg-background/95 backdrop-blur-xl border-b border-white/10 animate-fade-in">
           <div className="container py-4 flex flex-col gap-2">
             {navItems.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="px-4 py-3 text-sm font-medium text-foreground hover:text-accent hover:bg-white/[0.08] rounded-xl transition-all duration-200 ease-out hover:shadow-[0_0_16px_rgba(0,217,255,0.1)] block"
-                onClick={() => setMobileMenuOpen(false)}
-              >
-                {item.label}
-              </Link>
+              item.external ? (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  className="px-4 py-3 text-sm font-medium text-foreground hover:text-accent hover:bg-white/[0.08] rounded-xl transition-all duration-200 ease-out hover:shadow-[0_0_16px_rgba(0,217,255,0.1)] block"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  {item.label}
+                </a>
+              ) : (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className="px-4 py-3 text-sm font-medium text-foreground hover:text-accent hover:bg-white/[0.08] rounded-xl transition-all duration-200 ease-out hover:shadow-[0_0_16px_rgba(0,217,255,0.1)] block"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  {item.label}
+                </Link>
+              )
             ))}
             <Link href="/contact" className="w-full" onClick={() => setMobileMenuOpen(false)}>
               <Button className="w-full bg-accent hover:bg-cyan-500 text-background font-semibold mt-2 rounded-xl transition-all duration-200 ease-out hover:shadow-[0_0_24px_rgba(0,217,255,0.3)] active:scale-95">
