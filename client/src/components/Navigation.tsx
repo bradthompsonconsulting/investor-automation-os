@@ -8,10 +8,10 @@ export default function Navigation() {
 
   const navItems = [
     { label: "Services", href: "/services" },
-    { label: "Pricing", href: "https://go.investorautomationos.com/pricing", external: true },
     { label: "For Investors", href: "/for-investors" },
     { label: "How It Works", href: "/how-it-works" },
     { label: "Demo", href: "/demo" },
+    { label: "Pricing", href: "https://investorautomationos.com/pricing", external: true },
     { label: "About", href: "/about" },
     { label: "Contact", href: "/contact" },
   ];
