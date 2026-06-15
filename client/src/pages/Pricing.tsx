@@ -16,7 +16,7 @@ export default function Pricing() {
       <Navigation />
       <main className="pt-16 md:pt-20">
         <iframe
-          src="https://go.investorautomationos.com/pricing"
+          src="https://go.investorautomationos.com/pricing?noheader=true"
           title="Pricing"
           className="w-full border-0 block h-[calc(100vh-4rem)] md:h-[calc(100vh-5rem)]"
         />
