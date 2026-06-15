@@ -284,12 +284,11 @@ export default function Contact() {
             <p className="text-lg text-muted-foreground mb-8">
               Book a strategy call at your convenience. We'll discuss your business, challenges, and how we can help.
             </p>
-            <Button
-              onClick={() => toast.info("Booking link will be connected soon. Please use the contact form above.")}
-              className="bg-accent hover:bg-cyan-500 text-background font-semibold px-8 py-6 text-lg h-auto"
-            >
-              Book a Strategy Call
-            </Button>
+            <a href="/investor-calendar">
+              <Button className="bg-accent hover:bg-cyan-500 text-background font-semibold px-8 py-6 text-lg h-auto">
+                Book a Strategy Call
+              </Button>
+            </a>
           </motion.div>
         </div>
       </section>

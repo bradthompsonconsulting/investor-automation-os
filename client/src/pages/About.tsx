@@ -275,12 +275,10 @@ export default function About() {
               Ready to transform your real estate business with automation?
             </p>
             <Link href="/contact">
-              <a>
-                <Button className="bg-accent hover:bg-cyan-500 text-background font-semibold px-8 py-6 text-lg h-auto flex items-center gap-2 mx-auto">
-                  Get in Touch
-                  <ArrowRight size={18} />
-                </Button>
-              </a>
+              <Button className="bg-accent hover:bg-cyan-500 text-background font-semibold px-8 py-6 text-lg h-auto flex items-center gap-2 mx-auto">
+                Get in Touch
+                <ArrowRight size={18} />
+              </Button>
             </Link>
           </motion.div>
         </div>

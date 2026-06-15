@@ -11,7 +11,7 @@ export default function Navigation() {
     { label: "For Investors", href: "/for-investors" },
     { label: "How It Works", href: "/how-it-works" },
     { label: "Demo", href: "/demo" },
-    { label: "Pricing", href: "https://investorautomationos.com/pricing", external: true },
+    { label: "Pricing", href: "/pricing" },
     { label: "About", href: "/about" },
     { label: "Contact", href: "/contact" },
   ];
