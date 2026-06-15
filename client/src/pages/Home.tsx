@@ -237,9 +237,9 @@ export default function Home() {
             </motion.p>
 
             <motion.div variants={fadeInUp} className="flex flex-col sm:flex-row gap-4 justify-center mb-10">
-              <Link href="/contact" className="w-full">
+              <Link href="/pricing" className="w-full">
                 <Button className="bg-accent hover:bg-cyan-500 text-background font-semibold px-8 py-6 text-lg h-auto rounded-xl shadow-[0_0_34px_rgba(0,217,255,0.30)] transition-all duration-200 ease-out hover:shadow-[0_0_48px_rgba(0,217,255,0.45)] hover:scale-105 active:scale-95 w-full">
-                  Book Your Free Strategy Call
+                  Get Started Now
                   <ArrowRight size={18} />
                 </Button>
               </Link>
@@ -636,9 +636,9 @@ export default function Home() {
                 Book a strategy call to map your current lead flow, identify automation gaps, and design the next version of your investor operations stack.
               </p>
               <div className="flex flex-col sm:flex-row justify-center gap-4">
-                <Link href="/contact">
+                <Link href="/pricing">
                   <Button className="bg-accent hover:bg-cyan-500 text-background font-semibold px-8 py-6 text-lg h-auto rounded-xl shadow-[0_0_34px_rgba(0,217,255,0.30)] w-full">
-                    Schedule Your Strategy Call
+                    Get Started Now
                     <ArrowRight size={18} />
                   </Button>
                 </Link>

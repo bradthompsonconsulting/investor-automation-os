@@ -51,9 +51,9 @@ export default function Navigation() {
 
         {/* CTA Button */}
         <div className="hidden md:block">
-          <Link href="/contact">
+          <Link href="/pricing">
             <Button className="bg-accent hover:bg-cyan-500 text-background font-semibold rounded-xl shadow-[0_0_24px_rgba(0,217,255,0.20)] transition-all duration-200 ease-out hover:shadow-[0_0_32px_rgba(0,217,255,0.35)] hover:scale-105 active:scale-95">
-              Book a Call
+              Get Started Now
             </Button>
           </Link>
         </div>
@@ -92,9 +92,9 @@ export default function Navigation() {
                 </Link>
               )
             ))}
-            <Link href="/contact" className="w-full" onClick={() => setMobileMenuOpen(false)}>
+            <Link href="/pricing" className="w-full" onClick={() => setMobileMenuOpen(false)}>
               <Button className="w-full bg-accent hover:bg-cyan-500 text-background font-semibold mt-2 rounded-xl transition-all duration-200 ease-out hover:shadow-[0_0_24px_rgba(0,217,255,0.3)] active:scale-95">
-                Book a Call
+                Get Started Now
               </Button>
             </Link>
           </div>

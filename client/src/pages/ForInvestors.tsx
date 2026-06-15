@@ -312,9 +312,9 @@ export default function ForInvestors() {
             <p className="text-lg text-muted-foreground mb-8">
               Let's discuss how automation can transform your real estate business.
             </p>
-            <Link href="/contact">
+            <Link href="/pricing">
               <Button className="bg-accent hover:bg-cyan-500 text-background font-semibold px-8 py-6 text-lg h-auto flex items-center gap-2 mx-auto">
-                Schedule Your Strategy Call
+                Get Started Now
                 <ArrowRight size={18} />
               </Button>
             </Link>
