@@ -17,4 +17,6 @@
 /blueprint-thank-you https://go.investorautomationos.com/thank-you-page-944747 301!
 /thank-you-page-944747 https://go.investorautomationos.com/thank-you-page-944747 301!
 
+/api/mao-webhook /.netlify/functions/mao-webhook 200
+
 /* /index.html 200
