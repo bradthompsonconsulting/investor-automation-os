@@ -59,24 +59,43 @@ async function fetchOpportunity(id: string): Promise<any> {
   return body.opportunity;
 }
 
-async function writeResults(
-  opportunityId: string,
-  mao: number,
-  viability: string,
-): Promise<void> {
+async function writeMAO(opportunityId: string, mao: number): Promise<void> {
   const res = await fetch(`${GHL_BASE}/opportunities/${opportunityId}`, {
     method: "PUT",
     headers: ghlHeaders(),
     body: JSON.stringify({
-      customFields: [
-        { id: FIELD_ID.MAO,            field_value: mao },
-        { id: FIELD_ID.VIABILITY_FLAG, field_value: viability },
-      ],
+      customFields: [{ id: FIELD_ID.MAO, field_value: mao }],
     }),
   });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`PUT /opportunities/${opportunityId} → ${res.status}: ${text}`);
+  }
+}
+
+async function fetchContact(contactId: string): Promise<any> {
+  const res = await fetch(`${GHL_BASE}/contacts/${contactId}`, {
+    headers: ghlHeaders(),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`GET /contacts/${contactId} → ${res.status}: ${text}`);
+  }
+  const body = await res.json();
+  return body.contact;
+}
+
+async function writeViabilityFlag(contactId: string, viability: string): Promise<void> {
+  const res = await fetch(`${GHL_BASE}/contacts/${contactId}`, {
+    method: "PUT",
+    headers: ghlHeaders(),
+    body: JSON.stringify({
+      customFields: [{ id: FIELD_ID.VIABILITY_FLAG, value: viability }],
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`PUT /contacts/${contactId} → ${res.status}: ${text}`);
   }
 }
 
@@ -104,6 +123,12 @@ export const handler = async (event: any) => {
     return { statusCode: 200, body: "no-op: no opportunity ID" };
   }
 
+  // contactId may be in the payload; if not we'll get it from the fetched opportunity
+  const payloadContactId =
+    payload.contactId ??
+    payload.contact_id ??
+    payload.data?.contactId;
+
   // Primary loop-breaker: if GHL tells us which field changed and it isn't
   // one of the four input fields (e.g. it's the MAO field we just wrote),
   // bail immediately before making any API calls.
@@ -122,7 +147,6 @@ export const handler = async (event: any) => {
     const repair        = extractNum(fields, FIELD_ID.REPAIR);
     const assignmentFee = extractNum(fields, FIELD_ID.ASSIGNMENT_FEE);
     const currentMAO    = extractNum(fields, FIELD_ID.MAO);
-    const currentFlag   = extractText(fields, FIELD_ID.VIABILITY_FLAG);
     let wholesaleFee    = extractNum(fields, FIELD_ID.WHOLESALE_FEE);
     let closingCosts    = extractNum(fields, FIELD_ID.CLOSING_COSTS);
 
@@ -142,18 +166,9 @@ export const handler = async (event: any) => {
     // Negative results are valid (non-viable deal) — write as-is
     const mao = (arv * wholesaleFee) / 100 - repair - assignmentFee;
 
-    // Viability: deal is viable only when MAO exceeds what we need to cover
-    // closing costs and our assignment fee minimum
+    // Viability: deal is viable only when MAO exceeds closing costs + assignment fee
     const threshold = closingCosts + assignmentFee;
     const viability = mao > threshold ? "Viable" : "Not Viable";
-
-    // Secondary loop-breaker: skip write only if BOTH outputs are unchanged
-    const maoUnchanged  = currentMAO !== null && Math.abs(currentMAO - mao) < 0.01;
-    const flagUnchanged = currentFlag === viability;
-    if (maoUnchanged && flagUnchanged) {
-      console.log(`[mao-webhook] No change for ${opportunityId}, skipping write`);
-      return { statusCode: 200, body: "no-op: no change" };
-    }
 
     console.log(
       `[mao-webhook] ${opportunityId}: ` +
@@ -161,7 +176,30 @@ export const handler = async (event: any) => {
       `threshold=${threshold} → ${viability}`
     );
 
-    await writeResults(opportunityId, mao, viability);
+    // --- Write MAO to Opportunity (loop-prevention: skip if unchanged) ---
+    const maoUnchanged = currentMAO !== null && Math.abs(currentMAO - mao) < 0.01;
+    if (!maoUnchanged) {
+      await writeMAO(opportunityId, mao);
+    }
+
+    // --- Write viability flag to Contact ---
+    const contactId = payloadContactId ?? opp?.contactId ?? opp?.contact_id;
+    if (!contactId) {
+      console.log(`[mao-webhook] No contactId for opportunity ${opportunityId}, skipping viability write`);
+      return { statusCode: 200, body: `MAO=${mao} (no contactId for viability flag)` };
+    }
+
+    // Loop-prevention: fetch contact and compare current flag value
+    const contact = await fetchContact(contactId);
+    const contactFields: any[] = contact?.customFields ?? [];
+    const currentFlag = extractText(contactFields, FIELD_ID.VIABILITY_FLAG);
+
+    if (currentFlag === viability) {
+      console.log(`[mao-webhook] Viability flag already "${viability}" for contact ${contactId}, skipping`);
+    } else {
+      await writeViabilityFlag(contactId, viability);
+    }
+
     return { statusCode: 200, body: `MAO=${mao} viability=${viability}` };
 
   } catch (err) {
