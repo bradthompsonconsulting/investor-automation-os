@@ -1,12 +1,13 @@
 const GHL_BASE = "https://services.leadconnectorhq.com";
 
 const FIELD_ID = {
-  ARV:            "cBkygqcHRseZUGCYYeba",
-  REPAIR:         "hId4Yog6u5GP1Iwz1aNx",
-  WHOLESALE_FEE:  "RS2trZUHrZwaGxadLvHB",
-  ASSIGNMENT_FEE: "xwbPw1JVkgJevJTPNmxa",
-  MAO:            "Atu5XCjpFElY8H64VG4h",
-  CLOSING_COSTS:  "N8Aa9t1SZhU7XnPPzxWk",
+  ARV:              "cBkygqcHRseZUGCYYeba",
+  REPAIR:           "hId4Yog6u5GP1Iwz1aNx",
+  WHOLESALE_FEE:    "RS2trZUHrZwaGxadLvHB",
+  ASSIGNMENT_FEE:   "xwbPw1JVkgJevJTPNmxa",
+  MAO:              "Atu5XCjpFElY8H64VG4h",
+  CLOSING_COSTS:    "N8Aa9t1SZhU7XnPPzxWk",
+  VIABILITY_FLAG:   "LlDhcMDzxs4a5W4fsXBE",
 } as const;
 
 // Fields whose changes should trigger a recalculation.
@@ -19,6 +20,7 @@ const INPUT_FIELD_IDS = new Set([
 ]);
 
 const DEFAULT_WHOLESALE_FEE = 70;
+const DEFAULT_CLOSING_COSTS = 2500;
 
 function ghlHeaders() {
   return {
@@ -37,6 +39,14 @@ function extractNum(customFields: any[], id: string): number | null {
   return !isNaN(n) && n !== 0 ? n : null;
 }
 
+function extractText(customFields: any[], id: string): string | null {
+  const f = customFields?.find((cf: any) => cf.id === id);
+  if (!f) return null;
+  const raw = f.fieldValue ?? f.value ?? f.fieldValueString ?? "";
+  const s = String(raw).trim();
+  return s.length > 0 ? s : null;
+}
+
 async function fetchOpportunity(id: string): Promise<any> {
   const res = await fetch(`${GHL_BASE}/opportunities/${id}`, {
     headers: ghlHeaders(),
@@ -49,12 +59,19 @@ async function fetchOpportunity(id: string): Promise<any> {
   return body.opportunity;
 }
 
-async function writeMAO(opportunityId: string, mao: number): Promise<void> {
+async function writeResults(
+  opportunityId: string,
+  mao: number,
+  viability: string,
+): Promise<void> {
   const res = await fetch(`${GHL_BASE}/opportunities/${opportunityId}`, {
     method: "PUT",
     headers: ghlHeaders(),
     body: JSON.stringify({
-      customFields: [{ id: FIELD_ID.MAO, field_value: mao }],
+      customFields: [
+        { id: FIELD_ID.MAO,            field_value: mao },
+        { id: FIELD_ID.VIABILITY_FLAG, field_value: viability },
+      ],
     }),
   });
   if (!res.ok) {
@@ -101,17 +118,16 @@ export const handler = async (event: any) => {
     const opp = await fetchOpportunity(opportunityId);
     const fields: any[] = opp?.customFields ?? [];
 
-    const arv          = extractNum(fields, FIELD_ID.ARV);
-    const repair       = extractNum(fields, FIELD_ID.REPAIR);
+    const arv           = extractNum(fields, FIELD_ID.ARV);
+    const repair        = extractNum(fields, FIELD_ID.REPAIR);
     const assignmentFee = extractNum(fields, FIELD_ID.ASSIGNMENT_FEE);
-    const currentMAO   = extractNum(fields, FIELD_ID.MAO);
-    let wholesaleFee   = extractNum(fields, FIELD_ID.WHOLESALE_FEE);
+    const currentMAO    = extractNum(fields, FIELD_ID.MAO);
+    const currentFlag   = extractText(fields, FIELD_ID.VIABILITY_FLAG);
+    let wholesaleFee    = extractNum(fields, FIELD_ID.WHOLESALE_FEE);
+    let closingCosts    = extractNum(fields, FIELD_ID.CLOSING_COSTS);
 
-    // Only default wholesale fee when the field is genuinely empty — never
-    // overwrite an intentionally set value
-    if (wholesaleFee === null) {
-      wholesaleFee = DEFAULT_WHOLESALE_FEE;
-    }
+    if (wholesaleFee === null) wholesaleFee = DEFAULT_WHOLESALE_FEE;
+    if (closingCosts === null) closingCosts = DEFAULT_CLOSING_COSTS;
 
     // All three required inputs must be present and non-zero to calculate
     if (arv === null || repair === null || assignmentFee === null) {
@@ -126,20 +142,27 @@ export const handler = async (event: any) => {
     // Negative results are valid (non-viable deal) — write as-is
     const mao = (arv * wholesaleFee) / 100 - repair - assignmentFee;
 
-    // Secondary loop-breaker: skip the write if the value hasn't changed.
-    // Handles GHL payloads that don't report which field changed.
-    if (currentMAO !== null && Math.abs(currentMAO - mao) < 0.01) {
-      console.log(`[mao-webhook] MAO already ${mao} for ${opportunityId}, skipping write`);
-      return { statusCode: 200, body: "no-op: MAO unchanged" };
+    // Viability: deal is viable only when MAO exceeds what we need to cover
+    // closing costs and our assignment fee minimum
+    const threshold = closingCosts + assignmentFee;
+    const viability = mao > threshold ? "Viable" : "Not Viable";
+
+    // Secondary loop-breaker: skip write only if BOTH outputs are unchanged
+    const maoUnchanged  = currentMAO !== null && Math.abs(currentMAO - mao) < 0.01;
+    const flagUnchanged = currentFlag === viability;
+    if (maoUnchanged && flagUnchanged) {
+      console.log(`[mao-webhook] No change for ${opportunityId}, skipping write`);
+      return { statusCode: 200, body: "no-op: no change" };
     }
 
     console.log(
       `[mao-webhook] ${opportunityId}: ` +
-      `(${arv} × ${wholesaleFee}%) − ${repair} − ${assignmentFee} = ${mao}`
+      `(${arv} × ${wholesaleFee}%) − ${repair} − ${assignmentFee} = ${mao} | ` +
+      `threshold=${threshold} → ${viability}`
     );
 
-    await writeMAO(opportunityId, mao);
-    return { statusCode: 200, body: `MAO written: ${mao}` };
+    await writeResults(opportunityId, mao, viability);
+    return { statusCode: 200, body: `MAO=${mao} viability=${viability}` };
 
   } catch (err) {
     console.error("[mao-webhook] Error:", err);
