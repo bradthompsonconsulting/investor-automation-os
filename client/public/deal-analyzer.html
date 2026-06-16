@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Deal Analyzer — Investor Automation OS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --navy:       #0A1628;
+    --navy-mid:   #112040;
+    --navy-card:  #162845;
+    --navy-border:#1E3A5F;
+    --blue:       #1E6FFF;
+    --blue-light: #4B8FFF;
+    --gold:       #F4B942;
+    --gold-dark:  #D9A030;
+    --green:      #22C55E;
+    --red:        #EF4444;
+    --text:       #E8EDF5;
+    --text-muted: #7A90B0;
+    --text-dim:   #4A6080;
+  }
+
+  body {
+    background: var(--navy);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    min-height: 100vh;
+    padding: 2rem 1rem 4rem;
+  }
+
+  .header {
+    max-width: 680px;
+    margin: 0 auto 2.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+  .logo-mark {
+    width: 44px; height: 44px;
+    background: linear-gradient(135deg, var(--blue), var(--blue-light));
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700; font-size: 1rem;
+    color: #fff; flex-shrink: 0;
+    box-shadow: 0 0 20px rgba(30,111,255,0.4);
+  }
+  .header-text h1 {
+    font-size: 1.1rem; font-weight: 700;
+    color: var(--text); letter-spacing: 0.01em;
+  }
+  .header-text p {
+    font-size: 0.78rem; color: var(--text-muted);
+    margin-top: 1px;
+  }
+
+  .result-card {
+    max-width: 680px; margin: 0 auto 1.5rem;
+    background: var(--navy-mid);
+    border: 1px solid var(--navy-border);
+    border-radius: 16px;
+    padding: 1.75rem 2rem;
+    position: relative; overflow: hidden;
+  }
+  .result-card::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: linear-gradient(90deg, var(--blue), var(--blue-light));
+    transition: background 0.4s;
+  }
+  .result-card.viable::before   { background: linear-gradient(90deg, var(--green), #4ADE80); }
+  .result-card.not-viable::before { background: linear-gradient(90deg, var(--red), #F87171); }
+
+  .result-label {
+    font-size: 0.7rem; font-weight: 600;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-muted); margin-bottom: 0.4rem;
+  }
+  .result-number {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: clamp(2.2rem, 6vw, 3.2rem);
+    font-weight: 700; color: var(--text);
+    letter-spacing: -0.02em;
+    transition: color 0.3s;
+    line-height: 1;
+  }
+  .result-number.viable   { color: var(--green); }
+  .result-number.not-viable { color: var(--red); }
+  .result-number.pending  { color: var(--text-dim); }
+
+  .result-meta {
+    display: flex; align-items: center; gap: 0.75rem;
+    margin-top: 0.75rem; flex-wrap: wrap;
+  }
+  .viability-badge {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    padding: 0.25rem 0.65rem;
+    border-radius: 999px; font-size: 0.72rem; font-weight: 600;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    background: rgba(122,144,176,0.15); color: var(--text-muted);
+    border: 1px solid rgba(122,144,176,0.2);
+    transition: all 0.3s;
+  }
+  .viability-badge.viable {
+    background: rgba(34,197,94,0.12); color: var(--green);
+    border-color: rgba(34,197,94,0.3);
+  }
+  .viability-badge.not-viable {
+    background: rgba(239,68,68,0.12); color: var(--red);
+    border-color: rgba(239,68,68,0.3);
+  }
+  .viability-badge .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor;
+  }
+  .result-breakdown {
+    font-size: 0.72rem; color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .form-card {
+    max-width: 680px; margin: 0 auto 1.5rem;
+    background: var(--navy-card);
+    border: 1px solid var(--navy-border);
+    border-radius: 16px;
+    overflow: hidden;
+  }
+
+  .section-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--navy-border);
+    cursor: pointer;
+    user-select: none;
+  }
+  .section-header:hover { background: rgba(255,255,255,0.02); }
+  .section-title {
+    display: flex; align-items: center; gap: 0.6rem;
+    font-size: 0.8rem; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .section-title .icon {
+    width: 22px; height: 22px; border-radius: 6px;
+    background: rgba(30,111,255,0.15);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.75rem;
+  }
+  .chevron {
+    color: var(--text-dim); font-size: 0.75rem;
+    transition: transform 0.25s;
+  }
+  .chevron.open { transform: rotate(180deg); }
+
+  .section-body { padding: 1.25rem 1.5rem 1.5rem; }
+  .section-body.collapsed { display: none; }
+
+  .field-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  .field-grid.single { grid-template-columns: 1fr; }
+
+  @media (max-width: 520px) {
+    .field-grid { grid-template-columns: 1fr; }
+  }
+
+  .field { display: flex; flex-direction: column; gap: 0.35rem; }
+  .field.full { grid-column: 1 / -1; }
+
+  label {
+    font-size: 0.72rem; font-weight: 600;
+    color: var(--text-muted); letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  label .req { color: var(--gold); margin-left: 2px; }
+
+  .input-wrap { position: relative; display: flex; align-items: center; }
+  .input-prefix, .input-suffix {
+    position: absolute;
+    font-size: 0.85rem; font-weight: 500;
+    color: var(--text-dim); pointer-events: none;
+  }
+  .input-prefix { left: 0.75rem; }
+  .input-suffix { right: 0.75rem; }
+
+  input[type="text"], input[type="number"], select, textarea {
+    width: 100%;
+    background: var(--navy-mid);
+    border: 1px solid var(--navy-border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 0.9rem;
+    padding: 0.6rem 0.85rem;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    -moz-appearance: textfield;
+  }
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
+
+  input.has-prefix { padding-left: 1.75rem; }
+  input.has-suffix { padding-right: 2.5rem; }
+
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px rgba(30,111,255,0.15);
+  }
+  input::placeholder { color: var(--text-dim); }
+
+  select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%234A6080' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.85rem center;
+    padding-right: 2.2rem;
+  }
+  textarea { resize: vertical; min-height: 70px; }
+  .field-hint { font-size: 0.68rem; color: var(--text-dim); margin-top: 0.15rem; }
+
+  .repair-items { display: flex; flex-direction: column; gap: 0.75rem; }
+  .repair-item {
+    display: grid;
+    grid-template-columns: 1fr auto 110px auto;
+    gap: 0.6rem; align-items: end;
+  }
+  @media (max-width: 520px) {
+    .repair-item { grid-template-columns: 1fr 1fr; }
+  }
+
+  .repair-total-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.6rem 0.75rem;
+    background: rgba(30,111,255,0.07);
+    border: 1px solid rgba(30,111,255,0.15);
+    border-radius: 8px; margin-top: 0.5rem;
+  }
+  .repair-total-label {
+    font-size: 0.72rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+  .repair-total-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.95rem; font-weight: 700;
+    color: var(--blue-light);
+  }
+
+  .add-item-btn {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    margin-top: 0.6rem;
+    background: none; border: 1px dashed var(--navy-border);
+    color: var(--text-dim); border-radius: 7px;
+    padding: 0.45rem 0.85rem; font-size: 0.78rem; font-weight: 500;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .add-item-btn:hover {
+    border-color: var(--blue); color: var(--blue-light);
+    background: rgba(30,111,255,0.05);
+  }
+
+  .remove-btn {
+    background: none; border: 1px solid rgba(239,68,68,0.2);
+    color: rgba(239,68,68,0.5); border-radius: 7px;
+    width: 34px; height: 34px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; font-size: 1rem;
+    transition: all 0.2s; flex-shrink: 0;
+  }
+  .remove-btn:hover {
+    border-color: var(--red); color: var(--red);
+    background: rgba(239,68,68,0.08);
+  }
+
+  .submit-area {
+    max-width: 680px; margin: 0 auto;
+    display: flex; flex-direction: column; gap: 0.75rem;
+  }
+
+  .btn-submit {
+    width: 100%;
+    background: linear-gradient(135deg, var(--gold), var(--gold-dark));
+    color: var(--navy);
+    border: none; border-radius: 10px;
+    padding: 0.9rem 1.5rem;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.95rem; font-weight: 700;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+    box-shadow: 0 4px 16px rgba(244,185,66,0.25);
+  }
+  .btn-submit:hover   { opacity: 0.92; }
+  .btn-submit:active  { transform: scale(0.99); }
+  .btn-submit:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+  .btn-reset {
+    width: 100%;
+    background: none;
+    border: 1px solid var(--navy-border);
+    color: var(--text-muted);
+    border-radius: 10px;
+    padding: 0.7rem 1.5rem;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.85rem; font-weight: 500;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .btn-reset:hover { border-color: var(--text-dim); color: var(--text); }
+
+  .toast {
+    position: fixed; bottom: 1.5rem; left: 50%;
+    transform: translateX(-50%) translateY(120px);
+    background: var(--navy-mid);
+    border: 1px solid var(--navy-border);
+    border-radius: 10px;
+    padding: 0.75rem 1.25rem;
+    font-size: 0.85rem; font-weight: 500;
+    display: flex; align-items: center; gap: 0.5rem;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+    z-index: 100; white-space: nowrap; max-width: 90vw;
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); }
+  .toast.success { border-color: rgba(34,197,94,0.4); color: var(--green); }
+  .toast.error   { border-color: rgba(239,68,68,0.4); color: var(--red); }
+  .toast.info    { border-color: rgba(30,111,255,0.4); color: var(--blue-light); }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid rgba(10,22,40,0.3);
+    border-top-color: var(--navy);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes pulse-num {
+    0%   { opacity: 1; }
+    40%  { opacity: 0.4; }
+    100% { opacity: 1; }
+  }
+  .pulse { animation: pulse-num 0.25s ease; }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="logo-mark">IAO</div>
+  <div class="header-text">
+    <h1>Deal Analyzer</h1>
+    <p>Investor Automation OS · Brad Thompson Consulting</p>
+  </div>
+</header>
+
+<div class="result-card" id="resultCard">
+  <div class="result-label">Max Allowable Offer</div>
+  <div class="result-number pending" id="maoDisplay">$—</div>
+  <div class="result-meta">
+    <span class="viability-badge" id="viabilityBadge">
+      <span class="dot"></span>
+      <span id="viabilityText">Enter deal numbers below</span>
+    </span>
+    <span class="result-breakdown" id="resultBreakdown"></span>
+  </div>
+</div>
+
+<div class="form-card">
+  <div class="section-header" onclick="toggleSection('propBody', this)">
+    <div class="section-title">
+      <div class="icon">🏠</div>
+      Property Info
+    </div>
+    <span class="chevron open">▾</span>
+  </div>
+  <div class="section-body" id="propBody">
+    <div class="field-grid">
+      <div class="field full">
+        <label>Property Address <span class="req">*</span></label>
+        <input type="text" id="propAddress" placeholder="123 Main St, McKinney TX 75069">
+      </div>
+      <div class="field">
+        <label>Seller Name</label>
+        <input type="text" id="sellerName" placeholder="John Smith">
+      </div>
+      <div class="field">
+        <label>Seller Phone</label>
+        <input type="text" id="sellerPhone" placeholder="+1 (555) 000-0000">
+      </div>
+      <div class="field">
+        <label>Seller Email</label>
+        <input type="text" id="sellerEmail" placeholder="seller@email.com">
+      </div>
+      <div class="field">
+        <label>Lead Source</label>
+        <select id="leadSource">
+          <option value="">Select source…</option>
+          <option>Direct Mail</option>
+          <option>Cold Call</option>
+          <option>Driving for Dollars</option>
+          <option>Referral</option>
+          <option>Website / Online</option>
+          <option>MLS / Realtor</option>
+          <option>Other</option>
+        </select>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="form-card">
+  <div class="section-header" onclick="toggleSection('coreBody', this)">
+    <div class="section-title">
+      <div class="icon" style="background:rgba(244,185,66,0.15)">📊</div>
+      Core Deal Numbers
+    </div>
+    <span class="chevron open">▾</span>
+  </div>
+  <div class="section-body" id="coreBody">
+    <div class="field-grid">
+      <div class="field">
+        <label>ARV — After Repair Value <span class="req">*</span></label>
+        <div class="input-wrap">
+          <span class="input-prefix">$</span>
+          <input type="number" id="arv" class="has-prefix" placeholder="0" oninput="recalculate()">
+        </div>
+        <div class="field-hint">Estimated market value after full rehab</div>
+      </div>
+      <div class="field">
+        <label>Asking Price</label>
+        <div class="input-wrap">
+          <span class="input-prefix">$</span>
+          <input type="number" id="askingPrice" class="has-prefix" placeholder="0">
+        </div>
+      </div>
+      <div class="field">
+        <label>Assignment Fee Target <span class="req">*</span></label>
+        <div class="input-wrap">
+          <span class="input-prefix">$</span>
+          <input type="number" id="assignmentFee" class="has-prefix" placeholder="5000" value="5000" oninput="recalculate()">
+        </div>
+        <div class="field-hint">Your wholesale profit target</div>
+      </div>
+      <div class="field">
+        <label>Wholesale Fee %</label>
+        <div class="input-wrap">
+          <input type="number" id="wholesaleFee" class="has-suffix" placeholder="70" value="70" oninput="recalculate()">
+          <span class="input-suffix">%</span>
+        </div>
+        <div class="field-hint">Buyer's max as % of ARV (default 70)</div>
+      </div>
+      <div class="field">
+        <label>Closing Costs</label>
+        <div class="input-wrap">
+          <span class="input-prefix">$</span>
+          <input type="number" id="closingCosts" class="has-prefix" placeholder="2500" value="2500" oninput="recalculate()">
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="form-card">
+  <div class="section-header" onclick="toggleSection('repairBody', this)">
+    <div class="section-title">
+      <div class="icon" style="background:rgba(34,197,94,0.1)">🔧</div>
+      Repair Estimate
+    </div>
+    <span class="chevron open">▾</span>
+  </div>
+  <div class="section-body" id="repairBody">
+    <div class="repair-items" id="repairItems"></div>
+    <button class="add-item-btn" onclick="addRepairItem()">+ Add repair item</button>
+    <div class="repair-total-row" id="repairTotalRow" style="display:none">
+      <span class="repair-total-label">Total Repairs</span>
+      <span class="repair-total-value" id="repairTotalDisplay">$0</span>
+    </div>
+  </div>
+</div>
+
+<div class="form-card">
+  <div class="section-header" onclick="toggleSection('holdBody', this)">
+    <div class="section-title">
+      <div class="icon" style="background:rgba(168,85,247,0.12)">📅</div>
+      Holding &amp; Finance Costs
+    </div>
+    <span class="chevron">▾</span>
+  </div>
+  <div class="section-body collapsed" id="holdBody">
+    <div class="field-grid">
+      <div class="field">
+        <label>Estimated Hold Period</label>
+        <div class="input-wrap">
+          <input type="number" id="holdMonths" class="has-suffix" placeholder="6">
+          <span class="input-suffix">mo</span>
+        </div>
+      </div>
+      <div class="field">
+        <label>Monthly Carrying Cost</label>
+        <div class="input-wrap">
+          <span class="input-prefix">$</span>
+          <input type="number" id="carryingCost" class="has-prefix" placeholder="0">
+        </div>
+        <div class="field-hint">Taxes + insurance + utilities / mo</div>
+      </div>
+      <div class="field">
+        <label>Hard Money Loan Amount</label>
+        <div class="input-wrap">
+          <span class="input-prefix">$</span>
+          <input type="number" id="loanAmount" class="has-prefix" placeholder="0">
+        </div>
+      </div>
+      <div class="field">
+        <label>Interest Rate</label>
+        <div class="input-wrap">
+          <input type="number" id="interestRate" class="has-suffix" placeholder="12">
+          <span class="input-suffix">%</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="form-card">
+  <div class="section-header" onclick="toggleSection('notesBody', this)">
+    <div class="section-title">
+      <div class="icon" style="background:rgba(244,185,66,0.08)">📝</div>
+      Notes
+    </div>
+    <span class="chevron">▾</span>
+  </div>
+  <div class="section-body collapsed" id="notesBody">
+    <div class="field-grid single">
+      <div class="field">
+        <label>Deal Notes</label>
+        <textarea id="dealNotes" placeholder="Condition details, motivated seller notes, access info, comps, etc."></textarea>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="submit-area">
+  <button class="btn-submit" id="submitBtn" onclick="submitDeal()">
+    Submit Deal to GHL → Run Automation
+  </button>
+  <button class="btn-reset" onclick="resetForm()">Clear Form</button>
+</div>
+
+<div class="toast" id="toast">
+  <span id="toastIcon">✓</span>
+  <span id="toastMsg">Done</span>
+</div>
+
+<script>
+const REPAIR_CATEGORIES = [
+  'Foundation / Structure','Roof','HVAC','Electrical','Plumbing',
+  'Windows / Doors','Flooring','Kitchen','Bathrooms','Interior Paint',
+  'Exterior Paint / Siding','Landscaping / Demo','Other'
+];
+
+let repairIdCounter = 0;
+
+function addRepairItem(category = '', amount = '') {
+  const id = ++repairIdCounter;
+  const container = document.getElementById('repairItems');
+  const row = document.createElement('div');
+  row.className = 'repair-item';
+  row.id = `repair-${id}`;
+  const opts = REPAIR_CATEGORIES.map(c =>
+    `<option value="${c}" ${c === category ? 'selected' : ''}>${c}</option>`
+  ).join('');
+  row.innerHTML = `
+    <div class="field">
+      ${id === 1 ? '<label>Category</label>' : ''}
+      <select onchange="repairChanged()">${opts}</select>
+    </div>
+    <div class="field">
+      ${id === 1 ? '<label>Description</label>' : ''}
+      <input type="text" placeholder="Optional note" style="min-width:0">
+    </div>
+    <div class="field">
+      ${id === 1 ? '<label>Amount</label>' : ''}
+      <div class="input-wrap">
+        <span class="input-prefix">$</span>
+        <input type="number" class="has-prefix repair-amount" placeholder="0"
+               oninput="repairChanged()" value="${amount}">
+      </div>
+    </div>
+    <button class="remove-btn" onclick="removeRepairItem(${id})" title="Remove">×</button>
+  `;
+  container.appendChild(row);
+  repairChanged();
+}
+
+function removeRepairItem(id) {
+  document.getElementById(`repair-${id}`)?.remove();
+  repairChanged();
+}
+
+function repairChanged() {
+  const amounts = [...document.querySelectorAll('.repair-amount')]
+    .map(i => parseFloat(i.value) || 0);
+  const total = amounts.reduce((a,b) => a + b, 0);
+  const row = document.getElementById('repairTotalRow');
+  row.style.display = amounts.length ? 'flex' : 'none';
+  document.getElementById('repairTotalDisplay').textContent = fmt(total);
+  recalculate();
+}
+
+function getRepairTotal() {
+  return [...document.querySelectorAll('.repair-amount')]
+    .reduce((s, i) => s + (parseFloat(i.value) || 0), 0);
+}
+
+function recalculate() {
+  const arv          = parseFloat(document.getElementById('arv').value) || 0;
+  const assignFee    = parseFloat(document.getElementById('assignmentFee').value) || 0;
+  const wholesalePct = parseFloat(document.getElementById('wholesaleFee').value) ?? 70;
+  const closingCosts = parseFloat(document.getElementById('closingCosts').value) || 0;
+  const repair       = getRepairTotal();
+  const display      = document.getElementById('maoDisplay');
+  const badge        = document.getElementById('viabilityBadge');
+  const badgeText    = document.getElementById('viabilityText');
+  const breakdown    = document.getElementById('resultBreakdown');
+  const card         = document.getElementById('resultCard');
+
+  if (!arv) {
+    display.className = 'result-number pending';
+    display.textContent = '$—';
+    badge.className = 'viability-badge';
+    badgeText.textContent = 'Enter deal numbers below';
+    breakdown.textContent = '';
+    card.className = 'result-card';
+    return;
+  }
+
+  const mao       = (arv * wholesalePct / 100) - repair - assignFee;
+  const threshold = closingCosts + assignFee;
+  const viable    = mao > threshold;
+
+  display.classList.remove('pulse');
+  void display.offsetWidth;
+  display.classList.add('pulse');
+
+  display.textContent = fmt(mao);
+  display.className   = `result-number ${viable ? 'viable' : 'not-viable'}`;
+  badge.className     = `viability-badge ${viable ? 'viable' : 'not-viable'}`;
+  badgeText.textContent = viable ? 'Viable Deal' : 'Not Viable';
+  card.className      = `result-card ${viable ? 'viable' : 'not-viable'}`;
+
+  const repairLabel = repair > 0 ? ` − ${fmt(repair)} repairs` : '';
+  breakdown.textContent =
+    `(${fmt(arv)} × ${wholesalePct}%)${repairLabel} − ${fmt(assignFee)} fee`;
+}
+
+function fmt(n) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency', currency: 'USD', maximumFractionDigits: 0
+  }).format(n);
+}
+
+function toggleSection(bodyId, header) {
+  const body    = document.getElementById(bodyId);
+  const chevron = header.querySelector('.chevron');
+  const collapsed = body.classList.toggle('collapsed');
+  chevron.classList.toggle('open', !collapsed);
+}
+
+async function submitDeal() {
+  const arv       = parseFloat(document.getElementById('arv').value) || 0;
+  const assignFee = parseFloat(document.getElementById('assignmentFee').value) || 0;
+  const address   = document.getElementById('propAddress').value.trim();
+
+  if (!address) { showToast('Enter a property address first.', 'error'); return; }
+  if (!arv)     { showToast('ARV is required.', 'error'); return; }
+  if (!assignFee) { showToast('Assignment fee is required.', 'error'); return; }
+
+  const wholesalePct = parseFloat(document.getElementById('wholesaleFee').value) || 70;
+  const closingCosts = parseFloat(document.getElementById('closingCosts').value) || 2500;
+  const repair       = getRepairTotal();
+  const mao          = (arv * wholesalePct / 100) - repair - assignFee;
+
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Sending to GHL…';
+
+  const payload = {
+    arv, repair_estimate: repair, assignment_fee: assignFee,
+    wholesale_fee_pct: wholesalePct, closing_costs: closingCosts, mao,
+    property_address: address,
+    seller_name:  document.getElementById('sellerName').value.trim(),
+    seller_phone: document.getElementById('sellerPhone').value.trim(),
+    seller_email: document.getElementById('sellerEmail').value.trim(),
+    lead_source:  document.getElementById('leadSource').value,
+    asking_price: parseFloat(document.getElementById('askingPrice').value) || 0,
+    hold_months:    parseFloat(document.getElementById('holdMonths').value) || 0,
+    carrying_cost:  parseFloat(document.getElementById('carryingCost').value) || 0,
+    loan_amount:    parseFloat(document.getElementById('loanAmount').value) || 0,
+    interest_rate:  parseFloat(document.getElementById('interestRate').value) || 0,
+    notes: document.getElementById('dealNotes').value.trim(),
+    repair_line_items: getRepairLineItems(),
+  };
+
+  try {
+    const res = await fetch('https://investorautomationos.com/api/deal-submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      showToast('Deal submitted — GHL automation running ✓', 'success');
+      btn.innerHTML = '✓ Deal Submitted';
+      btn.style.background = 'linear-gradient(135deg, #22C55E, #16A34A)';
+    } else {
+      const txt = await res.text();
+      throw new Error(txt || res.status);
+    }
+  } catch (err) {
+    showToast(`Submit failed: ${err.message}`, 'error');
+    btn.disabled = false;
+    btn.innerHTML = 'Submit Deal to GHL → Run Automation';
+  }
+}
+
+function getRepairLineItems() {
+  return [...document.querySelectorAll('#repairItems .repair-item')].map(row => ({
+    category:    row.querySelector('select')?.value || '',
+    description: row.querySelectorAll('input[type="text"]')[0]?.value || '',
+    amount:      parseFloat(row.querySelector('.repair-amount')?.value) || 0,
+  }));
+}
+
+function resetForm() {
+  if (!confirm('Clear all fields?')) return;
+  document.querySelectorAll('input, select, textarea').forEach(el => {
+    if (el.type === 'number') {
+      const defaults = { assignmentFee: 5000, wholesaleFee: 70, closingCosts: 2500 };
+      el.value = defaults[el.id] ?? '';
+    } else { el.value = ''; }
+  });
+  document.getElementById('repairItems').innerHTML = '';
+  document.getElementById('repairTotalRow').style.display = 'none';
+  repairIdCounter = 0;
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = false;
+  btn.innerHTML = 'Submit Deal to GHL → Run Automation';
+  btn.style.background = '';
+  recalculate();
+  showToast('Form cleared.', 'info');
+}
+
+let toastTimer;
+function showToast(msg, type = 'info') {
+  const t = document.getElementById('toast');
+  const icons = { success: '✓', error: '✕', info: 'ℹ' };
+  document.getElementById('toastIcon').textContent = icons[type] || 'ℹ';
+  document.getElementById('toastMsg').textContent = msg;
+  t.className = `toast ${type} show`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 4000);
+}
+
+addRepairItem('Other', '');
+recalculate();
+</script>
+</body>
+</html>
