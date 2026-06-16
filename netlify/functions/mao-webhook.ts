@@ -7,7 +7,7 @@ const FIELD_ID = {
   ASSIGNMENT_FEE:   "xwbPw1JVkgJevJTPNmxa",
   MAO:              "Atu5XCjpFElY8H64VG4h",
   CLOSING_COSTS:    "N8Aa9t1SZhU7XnPPzxWk",
-  VIABILITY_FLAG:   "LlDhcMDzxs4a5W4fsXBE",
+  VIABILITY_FLAG:   "o87cyzuCyScbY72VrOmq",
 } as const;
 
 // Fields whose changes should trigger a recalculation.
