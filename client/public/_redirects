@@ -20,5 +20,6 @@
 /deal-analyzer /deal-analyzer.html 200
 /api/mao-webhook /.netlify/functions/mao-webhook 200
 /api/deal-submit /.netlify/functions/deal-submit 200
+/api/phone-lookup /.netlify/functions/phone-lookup 200
 
 /* /index.html 200
