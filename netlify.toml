@@ -1,3 +1,15 @@
 [build]
   publish = "dist/public"
   functions = "netlify/functions"
+
+[[redirects]]
+  from = "https://veterancashoffer.com/*"
+  to = "https://go.investorautomationos.com/seller-lead"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "https://www.veterancashoffer.com/*"
+  to = "https://go.investorautomationos.com/seller-lead"
+  status = 301
+  force = true
