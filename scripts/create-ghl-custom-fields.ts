@@ -94,7 +94,7 @@ const FIELDS: FieldDef[] = [
   { key: "kitchen_condition",          name: "Kitchen Condition",            dataType: "NUMERICAL" },
 
   // ── Distress / MLS ───────────────────────────────────────────────────────
-  { key: "foreclosure_factor",         name: "Foreclosure Factor",           dataType: "NUMERICAL" },
+  { key: "foreclosure_factor",         name: "Foreclosure Factor",           dataType: "TEXT"      },
   { key: "mls_status",                 name: "MLS Status",                   dataType: "TEXT"      },
   { key: "mls_date",                   name: "MLS Date",                     dataType: "DATE"      },
   { key: "mls_amount",                 name: "MLS Amount",                   dataType: "NUMERICAL" },

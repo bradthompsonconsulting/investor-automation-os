@@ -123,7 +123,7 @@ const CUSTOM_FIELD_MAP: CustomFieldSpec[] = [
   { propstreamCol: "Kitchen Condition",                     ghlKey: "kitchen_condition",          dataType: "NUMERICAL" },
 
   // Distress / MLS
-  { propstreamCol: "Foreclosure Factor",                    ghlKey: "foreclosure_factor",         dataType: "NUMERICAL" },
+  { propstreamCol: "Foreclosure Factor",                    ghlKey: "foreclosure_factor",         dataType: "TEXT"      },
   { propstreamCol: "MLS Status",                            ghlKey: "mls_status",                 dataType: "TEXT"      },
   { propstreamCol: "MLS Date",                              ghlKey: "mls_date",                   dataType: "DATE"      },
   { propstreamCol: "MLS Amount",                            ghlKey: "mls_amount",                 dataType: "NUMERICAL" },
