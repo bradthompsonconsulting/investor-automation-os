@@ -21,5 +21,6 @@
 /api/mao-webhook /.netlify/functions/mao-webhook 200
 /api/deal-submit /.netlify/functions/deal-submit 200
 /api/phone-lookup /.netlify/functions/phone-lookup 200
+/api/motivation-score /.netlify/functions/motivation-score 200
 
 /* /index.html 200
