@@ -263,18 +263,38 @@ async function findContact(query: string): Promise<string | null> {
   return body.contacts?.[0]?.id ?? null;
 }
 
-async function createContact(payload: Record<string, any>): Promise<string> {
+/**
+ * Creates a contact. If GHL blocks it as a duplicate, falls back to updating
+ * the existing contact using the conflicting ID returned in the error body.
+ * Returns [contactId, "created" | "updated"].
+ */
+async function createContact(
+  payload: Record<string, any>
+): Promise<[string, "created" | "updated"]> {
   const res = await fetch(`${GHL_BASE}/contacts/`, {
     method: "POST",
     headers: ghlHeaders(),
     body: JSON.stringify({ ...payload, locationId: LOCATION_ID }),
   });
+
   if (!res.ok) {
     const text = await res.text();
+    // GHL duplicate guard: parse conflicting contact ID and update instead
+    try {
+      const err = JSON.parse(text);
+      const existingId: string | undefined = err?.meta?.contactId;
+      if (res.status === 400 && existingId) {
+        await updateContact(existingId, payload);
+        return [existingId, "updated"];
+      }
+    } catch {
+      // not JSON — fall through to throw
+    }
     throw new Error(`POST /contacts/ → ${res.status}: ${text}`);
   }
+
   const body: any = await res.json();
-  return body.contact?.id ?? body.id;
+  return [body.contact?.id ?? body.id, "created"];
 }
 
 async function updateContact(contactId: string, payload: Record<string, any>): Promise<void> {
@@ -406,9 +426,9 @@ async function main() {
         console.log(`[${num}/${total}] UPDATED   ${label} | id=${contactId}`);
         updated++;
       } else {
-        contactId = await createContact(contactPayload);
-        console.log(`[${num}/${total}] CREATED   ${label} | id=${contactId}`);
-        created++;
+        const [newId, action] = await createContact(contactPayload);
+        console.log(`[${num}/${total}] ${action === "created" ? "CREATED" : "UPDATED"}   ${label} | id=${newId}`);
+        if (action === "created") created++; else updated++;
       }
     } catch (err) {
       console.error(`[${num}/${total}] FAILED    ${label} | ${err}`);
