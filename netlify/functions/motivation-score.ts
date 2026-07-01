@@ -1,17 +1,17 @@
 /**
- * Motivation Score — Netlify function.
- *
- * Triggered by GHL workflow webhook after contact import.
- * Reads contact custom fields, computes a 0-100 motivation score,
- * and writes the result to the motivation_score custom field.
- *
+ * Motivation Score v2 — Netlify function.
+ * Three-score system: motivation_score, deal_score, combined_score.
  * POST body: { contactId: string }
  */
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
 
-// MLS modifier constants (within spec ranges: Active −30–35, Expired +10–15)
+// Output field IDs (deal_score and combined_score created 2026-07-01)
+const DEAL_SCORE_FIELD_ID     = "cfkm0kb9CLvjZgyrcIFz";
+const COMBINED_SCORE_FIELD_ID = "9SVnuzznYsZOQQazpxld";
+
+// MLS modifier constants (within spec ranges: Active −30–35, Expired/Failed +10–15)
 const MLS_ACTIVE_MODIFIER  = -32;
 const MLS_EXPIRED_MODIFIER = +12;
 
@@ -29,10 +29,7 @@ async function fetchFieldIdMap(): Promise<Record<string, string>> {
   const res = await fetch(`${GHL_BASE}/locations/${LOCATION_ID}/customFields`, {
     headers: ghlHeaders(),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`GET /customFields → ${res.status}: ${text}`);
-  }
+  if (!res.ok) throw new Error(`GET /customFields → ${res.status}: ${await res.text()}`);
   const body: any = await res.json();
   const fields: any[] = body.customFields ?? body.fields ?? [];
   const map: Record<string, string> = {};
@@ -47,26 +44,30 @@ async function fetchContact(contactId: string): Promise<any> {
   const res = await fetch(`${GHL_BASE}/contacts/${contactId}`, {
     headers: ghlHeaders(),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`GET /contacts/${contactId} → ${res.status}: ${text}`);
-  }
+  if (!res.ok) throw new Error(`GET /contacts/${contactId} → ${res.status}: ${await res.text()}`);
   const body: any = await res.json();
   return body.contact;
 }
 
-async function writeScore(contactId: string, score: number, fieldId: string): Promise<void> {
+async function writeScores(
+  contactId: string,
+  motivationFieldId: string,
+  motivationScore: number,
+  dealScore: number,
+  combinedScore: number,
+): Promise<void> {
   const res = await fetch(`${GHL_BASE}/contacts/${contactId}`, {
     method: "PUT",
     headers: ghlHeaders(),
     body: JSON.stringify({
-      customFields: [{ id: fieldId, field_value: score }],
+      customFields: [
+        { id: motivationFieldId,   field_value: motivationScore },
+        { id: DEAL_SCORE_FIELD_ID, field_value: dealScore },
+        { id: COMBINED_SCORE_FIELD_ID, field_value: combinedScore },
+      ],
     }),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`PUT /contacts/${contactId} → ${res.status}: ${text}`);
-  }
+  if (!res.ok) throw new Error(`PUT /contacts/${contactId} → ${res.status}: ${await res.text()}`);
 }
 
 // ── Field readers ─────────────────────────────────────────────────────────────
@@ -83,124 +84,146 @@ function num(customFields: any[], id: string): number | null {
   return isNaN(n) ? null : n;
 }
 
-// ── Scoring logic ─────────────────────────────────────────────────────────────
+// ── Scoring ───────────────────────────────────────────────────────────────────
 
 interface ScoreResult {
-  score: number;
-  breakdown: Record<string, number>;
+  motivationScore: number;
+  dealScore: number;
+  combinedScore: number;
   suppressed: boolean;
   suppressReason?: string;
+  breakdown: {
+    motivation: Record<string, number>;
+    deal: Record<string, number>;
+  };
 }
 
-function computeScore(cf: any[], ids: Record<string, string>): ScoreResult {
-  // ── STEP 1: Suppression gate ─────────────────────────────────────────────
-  // phone_1_dnc: any non-empty value other than "No" means suppressed.
-  // PropStream exports "Public DNC" (not "Yes"), so we check for presence.
+function computeScores(contact: any, cf: any[], ids: Record<string, string>): ScoreResult {
+  // ── STEP 1: Channel-aware suppression gate ───────────────────────────────
+  const email     = String(contact?.email ?? "").trim();
+  const phoneType = str(cf, ids.phone_type).toLowerCase();
   const phoneDnc  = str(cf, ids.phone_1_dnc);
   const litigator = str(cf, ids.litigator);
 
-  if (phoneDnc && phoneDnc.toLowerCase() !== "no") {
-    return { score: 0, breakdown: {}, suppressed: true, suppressReason: `phone_1_dnc="${phoneDnc}"` };
-  }
-  if (litigator) {
-    return { score: 0, breakdown: {}, suppressed: true, suppressReason: `litigator="${litigator}"` };
+  const phoneDncClear  = !phoneDnc || phoneDnc.toLowerCase() === "no";
+  const litigatorClear = !litigator;
+  const hasViableChannel =
+    email !== "" ||
+    (phoneType === "mobile" && phoneDncClear && litigatorClear);
+
+  if (!hasViableChannel) {
+    return {
+      motivationScore: 0, dealScore: 0, combinedScore: 0,
+      suppressed: true, suppressReason: "no viable contact channel",
+      breakdown: { motivation: {}, deal: {} },
+    };
   }
 
-  // ── STEP 2: Base score ───────────────────────────────────────────────────
-  const breakdown: Record<string, number> = {};
+  // ── STEP 2: Motivation Score (raw pool = 54, rescaled to 0-100) ──────────
+  const mBreakdown: Record<string, number> = {};
 
-  // est_ltv — 25 pts
-  const ltv = num(cf, ids.est_ltv);
-  let ltvPts = 0;
-  if (ltv !== null) {
-    if      (ltv <= 20) ltvPts = 25;
-    else if (ltv <= 40) ltvPts = 19;
-    else if (ltv <= 60) ltvPts = 13;
-    else if (ltv <= 80) ltvPts =  6;
-    // 81%+ → 0
-  }
-  breakdown.est_ltv = ltvPts;
-
-  // est_equity — 15 pts
-  const equity = num(cf, ids.est_equity);
-  let equityPts = 0;
-  if (equity !== null) {
-    if      (equity >= 150000) equityPts = 15;
-    else if (equity >= 100000) equityPts = 11;
-    else if (equity >=  50000) equityPts =  7;
-    else if (equity >=  20000) equityPts =  3;
-    // <$20k → 0
-  }
-  breakdown.est_equity = equityPts;
-
-  // owner_occupied — 25 pts (absentee owner = motivated)
+  // owner_occupied — 25 pts (absentee = motivated)
   const ownerOccupied = str(cf, ids.owner_occupied).toLowerCase();
-  const ownerPts = ownerOccupied === "no" ? 25 : 0;
-  breakdown.owner_occupied = ownerPts;
+  mBreakdown.owner_occupied = ownerOccupied === "no" ? 25 : 0;
 
-  // foreclosure_factor — 20 pts (TEXT label from PropStream)
+  // foreclosure_factor — 20 pts (7-tier TEXT label)
   const foreclosure = str(cf, ids.foreclosure_factor).toLowerCase();
   const foreclosureScale: Record<string, number> = {
-    "very low":   0,
-    "low":        3,
-    "medium low": 7,
-    "medium":    10,
+    "very low":    0,
+    "low":         3,
+    "medium low":  7,
+    "medium":     10,
     "medium high": 13,
-    "high":      17,
-    "very high": 20,
+    "high":       17,
+    "very high":  20,
   };
-  breakdown.foreclosure_factor = foreclosureScale[foreclosure] ?? 0;
+  mBreakdown.foreclosure_factor = foreclosureScale[foreclosure] ?? 0;
 
-  // total_condition — 7 pts (worse condition = higher score)
+  // total_condition — 7 pts (worse condition = higher motivation score)
   const conditionRaw = str(cf, ids.total_condition);
   const condition    = conditionRaw.toLowerCase();
-  const conditionScale: Record<string, number> = {
-    "poor":      7,
-    "fair":      6,
-    "average":   4,
-    "good":      2,
-    "very good": 1,
-    "excellent": 0,
+  const mConditionScale: Record<string, number> = {
+    "poor":      7, "fair":      6, "average":   4,
+    "good":      2, "very good": 1, "excellent": 0,
   };
-  let conditionPts = 0;
-  if (condition) {
-    if (condition in conditionScale) {
-      conditionPts = conditionScale[condition];
-    } else {
-      // Unmapped non-empty label → default Average (4 pts) and log for triage
-      console.warn(`[motivation-score] Unmapped total_condition value: "${conditionRaw}" — defaulting to Average (4 pts)`);
-      conditionPts = 4;
-    }
-  }
-  breakdown.total_condition = conditionPts;
+  const dConditionScale: Record<string, number> = {
+    "poor":      6, "fair":     12, "average":  18,
+    "good":     14, "very good": 8, "excellent": 3,
+  };
 
-  // effective_year_built — 4 pts
-  const yearBuilt = num(cf, ids.effective_year_built);
-  let yearPts = 0;
-  if (yearBuilt !== null) {
-    if      (yearBuilt >= 2000) yearPts = 4;
-    else if (yearBuilt >= 1975) yearPts = 3;
-    else if (yearBuilt >= 1950) yearPts = 2;
-    else                        yearPts = 1; // pre-1949
+  if (!condition) {
+    mBreakdown.total_condition = 0;
+  } else if (condition in mConditionScale) {
+    mBreakdown.total_condition = mConditionScale[condition];
+  } else {
+    console.warn(`[motivation-score] Unmapped total_condition: "${conditionRaw}" — defaulting to Average`);
+    mBreakdown.total_condition = 4;
   }
-  breakdown.effective_year_built = yearPts;
-
-  // lien_amount — 2 pts (ratio of lien to est_value)
-  const lienAmt = num(cf, ids.lien_amount);
-  const estVal  = num(cf, ids.est_value);
-  let lienPts = 0;
-  if (lienAmt && lienAmt > 0 && estVal && estVal > 0) {
-    lienPts = (lienAmt / estVal) >= 0.26 ? 2 : 1;
-  }
-  breakdown.lien_amount = lienPts;
 
   // phone_type — 2 pts
-  const phoneType = str(cf, ids.phone_type).toLowerCase();
-  breakdown.phone_type = phoneType === "mobile" ? 2 : 0;
+  mBreakdown.phone_type = phoneType === "mobile" ? 2 : 0;
 
-  const baseScore = Object.values(breakdown).reduce((a, b) => a + b, 0);
+  const mRaw = Object.values(mBreakdown).reduce((a, b) => a + b, 0);
+  const motivationScore = Math.round((mRaw / 54) * 100);
 
-  // ── STEP 3: MLS modifier (outside the 99-pt pool) ────────────────────────
+  // ── STEP 3: Deal Score (raw pool = 100, MLS modifier outside pool) ───────
+  const dBreakdown: Record<string, number> = {};
+
+  // est_equity — 35 pts
+  const equity = num(cf, ids.est_equity);
+  if      (equity !== null && equity >= 150000) dBreakdown.est_equity = 35;
+  else if (equity !== null && equity >= 100000) dBreakdown.est_equity = 26;
+  else if (equity !== null && equity >=  50000) dBreakdown.est_equity = 16;
+  else if (equity !== null && equity >=  20000) dBreakdown.est_equity =  7;
+  else                                          dBreakdown.est_equity =  0;
+
+  // est_ltv — 20 pts
+  const ltv = num(cf, ids.est_ltv);
+  if      (ltv !== null && ltv <=  20) dBreakdown.est_ltv = 20;
+  else if (ltv !== null && ltv <=  40) dBreakdown.est_ltv = 15;
+  else if (ltv !== null && ltv <=  60) dBreakdown.est_ltv = 10;
+  else if (ltv !== null && ltv <=  80) dBreakdown.est_ltv =  5;
+  else                                 dBreakdown.est_ltv =  0;
+
+  // total_condition — 18 pts, bell curve (peaks at Average)
+  if (!condition) {
+    dBreakdown.total_condition = 0;
+  } else if (condition in dConditionScale) {
+    dBreakdown.total_condition = dConditionScale[condition];
+  } else {
+    dBreakdown.total_condition = 18; // unmapped → default Average
+  }
+
+  // effective_year_built — 12 pts
+  const yearBuilt = num(cf, ids.effective_year_built);
+  if      (yearBuilt !== null && yearBuilt >= 2000) dBreakdown.effective_year_built = 12;
+  else if (yearBuilt !== null && yearBuilt >= 1975) dBreakdown.effective_year_built = 10;
+  else if (yearBuilt !== null && yearBuilt >= 1950) dBreakdown.effective_year_built =  3;
+  else if (yearBuilt !== null)                      dBreakdown.effective_year_built =  1;
+  else                                              dBreakdown.effective_year_built =  0;
+
+  // lien_amount — 8 pts (lien-to-value ratio; no lien = best)
+  const lienAmt = num(cf, ids.lien_amount);
+  const estVal  = num(cf, ids.est_value);
+  if (!lienAmt || lienAmt <= 0) {
+    dBreakdown.lien_amount = 8;
+  } else if (estVal && estVal > 0) {
+    const ratio = lienAmt / estVal;
+    if      (ratio <= 0.15) dBreakdown.lien_amount = 5;
+    else if (ratio <= 0.30) dBreakdown.lien_amount = 2;
+    else                    dBreakdown.lien_amount = 0;
+  } else {
+    dBreakdown.lien_amount = 0;
+  }
+
+  // est_remaining_loan_balance — 7 pts
+  const remainingLoan = num(cf, ids.est_remaining_loan_balance);
+  if      (remainingLoan === null || remainingLoan <  50000) dBreakdown.est_remaining_loan_balance = 7;
+  else if (remainingLoan < 150000)                           dBreakdown.est_remaining_loan_balance = 5;
+  else if (remainingLoan < 300000)                           dBreakdown.est_remaining_loan_balance = 2;
+  else                                                       dBreakdown.est_remaining_loan_balance = 0;
+
+  // MLS modifier (applied after raw sum, before floor/cap)
   const mlsStatus = str(cf, ids.mls_status).toLowerCase();
   let mlsMod = 0;
   if (mlsStatus === "active") {
@@ -208,12 +231,26 @@ function computeScore(cf: any[], ids: Record<string, string>): ScoreResult {
   } else if (["cancelled", "expired", "withdrawn", "fail", "removed"].includes(mlsStatus)) {
     mlsMod = MLS_EXPIRED_MODIFIER;
   }
-  breakdown.mls_modifier = mlsMod;
+  dBreakdown.mls_modifier = mlsMod;
 
-  // ── STEP 4: Floor / ceiling ───────────────────────────────────────────────
-  const score = Math.min(100, Math.max(0, baseScore + mlsMod));
+  const dBase = Object.entries(dBreakdown)
+    .filter(([k]) => k !== "mls_modifier")
+    .reduce((a, [, v]) => a + v, 0);
+  const dealScore = Math.min(100, Math.max(0, dBase + mlsMod));
 
-  return { score, breakdown, suppressed: false };
+  // ── STEP 4: Combined Score ───────────────────────────────────────────────
+  const combinedScore =
+    motivationScore === 0 || dealScore === 0
+      ? 0
+      : Math.round(Math.pow(motivationScore, 0.4) * Math.pow(dealScore, 0.6));
+
+  return {
+    motivationScore,
+    dealScore,
+    combinedScore,
+    suppressed: false,
+    breakdown: { motivation: mBreakdown, deal: dBreakdown },
+  };
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -229,64 +266,65 @@ export const handler = async (event: any) => {
     return { statusCode: 400, body: "Invalid JSON" };
   }
 
-  // GHL webhooks surface contactId under several key names
   const contactId: string =
     data.contactId ?? data.contact_id ?? data.id ?? data.data?.contactId ?? "";
 
-  if (!contactId) {
-    return { statusCode: 400, body: "Missing contactId" };
-  }
+  if (!contactId) return { statusCode: 400, body: "Missing contactId" };
 
   try {
-    // 1. Resolve custom field IDs
     const fieldIdMap = await fetchFieldIdMap();
 
-    // Fields needed for scoring + writing the result
     const ids = {
-      phone_1_dnc:          fieldIdMap.phone_1_dnc          ?? "",
-      litigator:            fieldIdMap.litigator             ?? "",
-      est_ltv:              fieldIdMap.est_ltv               ?? "",
-      est_equity:           fieldIdMap.est_equity            ?? "",
-      owner_occupied:       fieldIdMap.owner_occupied        ?? "",
-      foreclosure_factor:   fieldIdMap.foreclosure_factor    ?? "",
-      total_condition:      fieldIdMap.total_condition       ?? "",
-      effective_year_built: fieldIdMap.effective_year_built  ?? "",
-      lien_amount:          fieldIdMap.lien_amount           ?? "",
-      est_value:            fieldIdMap.est_value             ?? "",
-      phone_type:           fieldIdMap.phone_type            ?? "",
-      mls_status:           fieldIdMap.mls_status            ?? "",
-      motivation_score:     fieldIdMap.motivation_score      ?? "",
+      phone_type:                 fieldIdMap.phone_type                  ?? "",
+      phone_1_dnc:                fieldIdMap.phone_1_dnc                 ?? "",
+      litigator:                  fieldIdMap.litigator                   ?? "",
+      owner_occupied:             fieldIdMap.owner_occupied              ?? "",
+      foreclosure_factor:         fieldIdMap.foreclosure_factor          ?? "",
+      total_condition:            fieldIdMap.total_condition             ?? "",
+      est_equity:                 fieldIdMap.est_equity                  ?? "",
+      est_ltv:                    fieldIdMap.est_ltv                     ?? "",
+      effective_year_built:       fieldIdMap.effective_year_built        ?? "",
+      lien_amount:                fieldIdMap.lien_amount                 ?? "",
+      est_value:                  fieldIdMap.est_value                   ?? "",
+      est_remaining_loan_balance: fieldIdMap.est_remaining_loan_balance  ?? "",
+      mls_status:                 fieldIdMap.mls_status                  ?? "",
+      motivation_score:           fieldIdMap.motivation_score            ?? "",
     };
 
     if (!ids.motivation_score) {
-      throw new Error("motivation_score custom field not found in GHL — was it created?");
+      throw new Error("motivation_score custom field not found in GHL");
     }
 
-    // 2. Fetch contact
     const contact = await fetchContact(contactId);
     const cf: any[] = contact?.customFields ?? [];
 
-    // 3. Compute score
-    const result = computeScore(cf, ids);
+    const result = computeScores(contact, cf, ids);
 
     console.log(
       `[motivation-score] contact=${contactId}` +
       (result.suppressed
-        ? ` SUPPRESSED (${result.suppressReason}) → score=0`
-        : ` score=${result.score} breakdown=${JSON.stringify(result.breakdown)}`)
+        ? ` SUPPRESSED (${result.suppressReason}) → all scores=0`
+        : ` motivation=${result.motivationScore} deal=${result.dealScore} combined=${result.combinedScore}`)
     );
 
-    // 4. Write result
-    await writeScore(contactId, result.score, ids.motivation_score);
+    await writeScores(
+      contactId,
+      ids.motivation_score,
+      result.motivationScore,
+      result.dealScore,
+      result.combinedScore,
+    );
 
     return {
       statusCode: 200,
       body: JSON.stringify({
         contactId,
-        score: result.score,
-        suppressed: result.suppressed,
-        suppressReason: result.suppressReason,
-        breakdown: result.breakdown,
+        motivationScore: result.motivationScore,
+        dealScore:       result.dealScore,
+        combinedScore:   result.combinedScore,
+        suppressed:      result.suppressed,
+        suppressReason:  result.suppressReason,
+        breakdown:       result.breakdown,
       }),
     };
 
