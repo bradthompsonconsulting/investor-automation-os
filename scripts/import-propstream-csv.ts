@@ -110,7 +110,7 @@ const CUSTOM_FIELD_MAP: CustomFieldSpec[] = [
   { propstreamCol: "Last Sale Recording Date",              ghlKey: "last_sale_date",             dataType: "DATE"      },
   { propstreamCol: "Last Sale Amount",                      ghlKey: "last_sale_amount",           dataType: "NUMERICAL" },
   { propstreamCol: "Total Open Loans",                      ghlKey: "total_open_loans",           dataType: "NUMERICAL" },
-  { propstreamCol: "Est. Remaining Balance of Open Loans",  ghlKey: "est_remaining_loan_balance", dataType: "NUMERICAL" },
+  { propstreamCol: "Est. Remaining balance of Open Loans",  ghlKey: "est_remaining_loan_balance", dataType: "NUMERICAL" },
   { propstreamCol: "Est. Value",                            ghlKey: "est_value",                  dataType: "NUMERICAL" },
   { propstreamCol: "Est. Loan-to-Value",                    ghlKey: "est_ltv",                    dataType: "NUMERICAL" },
   { propstreamCol: "Est. Equity",                           ghlKey: "est_equity",                 dataType: "NUMERICAL" },
@@ -212,7 +212,9 @@ function toDate(raw: string): string | null {
   }
   // Already ISO
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  return s; // pass through unknown formats
+  // Unrecognized format — skip rather than send garbage to GHL DATE field
+  console.warn(`    [warn] Unrecognized date, skipping: "${s}"`);
+  return null;
 }
 
 function col(row: Record<string, string>, header: string): string {
