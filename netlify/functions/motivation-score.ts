@@ -205,7 +205,7 @@ function computeScore(cf: any[], ids: Record<string, string>): ScoreResult {
   let mlsMod = 0;
   if (mlsStatus === "active") {
     mlsMod = MLS_ACTIVE_MODIFIER;
-  } else if (["cancelled", "expired", "withdrawn"].includes(mlsStatus)) {
+  } else if (["cancelled", "expired", "withdrawn", "fail", "removed"].includes(mlsStatus)) {
     mlsMod = MLS_EXPIRED_MODIFIER;
   }
   breakdown.mls_modifier = mlsMod;
