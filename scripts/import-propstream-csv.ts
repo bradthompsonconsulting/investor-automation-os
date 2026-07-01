@@ -116,11 +116,11 @@ const CUSTOM_FIELD_MAP: CustomFieldSpec[] = [
   { propstreamCol: "Est. Equity",                           ghlKey: "est_equity",                 dataType: "NUMERICAL" },
 
   // Condition
-  { propstreamCol: "Total Condition",                       ghlKey: "total_condition",            dataType: "NUMERICAL" },
-  { propstreamCol: "Interior Condition",                    ghlKey: "interior_condition",         dataType: "NUMERICAL" },
-  { propstreamCol: "Exterior Condition",                    ghlKey: "exterior_condition",         dataType: "NUMERICAL" },
-  { propstreamCol: "Bathroom Condition",                    ghlKey: "bathroom_condition",         dataType: "NUMERICAL" },
-  { propstreamCol: "Kitchen Condition",                     ghlKey: "kitchen_condition",          dataType: "NUMERICAL" },
+  { propstreamCol: "Total Condition",                       ghlKey: "total_condition",            dataType: "TEXT"      },
+  { propstreamCol: "Interior Condition",                    ghlKey: "interior_condition",         dataType: "TEXT"      },
+  { propstreamCol: "Exterior Condition",                    ghlKey: "exterior_condition",         dataType: "TEXT"      },
+  { propstreamCol: "Bathroom Condition",                    ghlKey: "bathroom_condition",         dataType: "TEXT"      },
+  { propstreamCol: "Kitchen Condition",                     ghlKey: "kitchen_condition",          dataType: "TEXT"      },
 
   // Distress / MLS
   { propstreamCol: "Foreclosure Factor",                    ghlKey: "foreclosure_factor",         dataType: "TEXT"      },

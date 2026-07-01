@@ -87,11 +87,11 @@ const FIELDS: FieldDef[] = [
   { key: "est_equity",                 name: "Est. Equity",                  dataType: "NUMERICAL" },
 
   // ── Condition ────────────────────────────────────────────────────────────
-  { key: "total_condition",            name: "Total Condition",              dataType: "NUMERICAL" },
-  { key: "interior_condition",         name: "Interior Condition",           dataType: "NUMERICAL" },
-  { key: "exterior_condition",         name: "Exterior Condition",           dataType: "NUMERICAL" },
-  { key: "bathroom_condition",         name: "Bathroom Condition",           dataType: "NUMERICAL" },
-  { key: "kitchen_condition",          name: "Kitchen Condition",            dataType: "NUMERICAL" },
+  { key: "total_condition",            name: "Total Condition",              dataType: "TEXT"      },
+  { key: "interior_condition",         name: "Interior Condition",           dataType: "TEXT"      },
+  { key: "exterior_condition",         name: "Exterior Condition",           dataType: "TEXT"      },
+  { key: "bathroom_condition",         name: "Bathroom Condition",           dataType: "TEXT"      },
+  { key: "kitchen_condition",          name: "Kitchen Condition",            dataType: "TEXT"      },
 
   // ── Distress / MLS ───────────────────────────────────────────────────────
   { key: "foreclosure_factor",         name: "Foreclosure Factor",           dataType: "TEXT"      },
