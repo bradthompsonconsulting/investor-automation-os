@@ -111,35 +111,7 @@ function computeScores(contact: any, cf: any[], ids: Record<string, string>): Sc
     email !== "" ||
     (phoneType === "mobile" && phoneDncClear && litigatorClear);
 
-  if (!hasViableChannel) {
-    return {
-      motivationScore: 0, dealScore: 0, combinedScore: 0,
-      suppressed: true, suppressReason: "no viable contact channel",
-      breakdown: { motivation: {}, deal: {} },
-    };
-  }
-
-  // ── STEP 2: Motivation Score (raw pool = 54, rescaled to 0-100) ──────────
-  const mBreakdown: Record<string, number> = {};
-
-  // owner_occupied — 25 pts (absentee = motivated)
-  const ownerOccupied = str(cf, ids.owner_occupied).toLowerCase();
-  mBreakdown.owner_occupied = ownerOccupied === "no" ? 25 : 0;
-
-  // foreclosure_factor — 20 pts (7-tier TEXT label)
-  const foreclosure = str(cf, ids.foreclosure_factor).toLowerCase();
-  const foreclosureScale: Record<string, number> = {
-    "very low":    0,
-    "low":         3,
-    "medium low":  7,
-    "medium":     10,
-    "medium high": 13,
-    "high":       17,
-    "very high":  20,
-  };
-  mBreakdown.foreclosure_factor = foreclosureScale[foreclosure] ?? 0;
-
-  // total_condition — 7 pts (worse condition = higher motivation score)
+  // Condition data is shared by both motivation and deal score sections
   const conditionRaw = str(cf, ids.total_condition);
   const condition    = conditionRaw.toLowerCase();
   const mConditionScale: Record<string, number> = {
@@ -151,20 +123,38 @@ function computeScores(contact: any, cf: any[], ids: Record<string, string>): Sc
     "good":     14, "very good": 8, "excellent": 3,
   };
 
-  if (!condition) {
-    mBreakdown.total_condition = 0;
-  } else if (condition in mConditionScale) {
-    mBreakdown.total_condition = mConditionScale[condition];
-  } else {
-    console.warn(`[motivation-score] Unmapped total_condition: "${conditionRaw}" — defaulting to Average`);
-    mBreakdown.total_condition = 4;
+  // ── STEP 2: Motivation Score (raw pool = 54, rescaled to 0-100) ──────────
+  // Zero when no viable channel; deal score still computes unconditionally.
+  const mBreakdown: Record<string, number> = {};
+  if (hasViableChannel) {
+    // owner_occupied — 25 pts (absentee = motivated)
+    const ownerOccupied = str(cf, ids.owner_occupied).toLowerCase();
+    mBreakdown.owner_occupied = ownerOccupied === "no" ? 25 : 0;
+
+    // foreclosure_factor — 20 pts (7-tier TEXT label)
+    const foreclosure = str(cf, ids.foreclosure_factor).toLowerCase();
+    const foreclosureScale: Record<string, number> = {
+      "very low":    0, "low":         3, "medium low":  7, "medium":     10,
+      "medium high": 13, "high":       17, "very high":  20,
+    };
+    mBreakdown.foreclosure_factor = foreclosureScale[foreclosure] ?? 0;
+
+    // total_condition — 7 pts (worse = higher motivation)
+    if (!condition) {
+      mBreakdown.total_condition = 0;
+    } else if (condition in mConditionScale) {
+      mBreakdown.total_condition = mConditionScale[condition];
+    } else {
+      console.warn(`[motivation-score] Unmapped total_condition: "${conditionRaw}" — defaulting to Average`);
+      mBreakdown.total_condition = 4;
+    }
+
+    // phone_type — 2 pts
+    mBreakdown.phone_type = phoneType === "mobile" ? 2 : 0;
   }
 
-  // phone_type — 2 pts
-  mBreakdown.phone_type = phoneType === "mobile" ? 2 : 0;
-
   const mRaw = Object.values(mBreakdown).reduce((a, b) => a + b, 0);
-  const motivationScore = Math.round((mRaw / 54) * 100);
+  const motivationScore = hasViableChannel ? Math.round((mRaw / 54) * 100) : 0;
 
   // ── STEP 3: Deal Score (raw pool = 100, MLS modifier outside pool) ───────
   const dBreakdown: Record<string, number> = {};
@@ -248,7 +238,8 @@ function computeScores(contact: any, cf: any[], ids: Record<string, string>): Sc
     motivationScore,
     dealScore,
     combinedScore,
-    suppressed: false,
+    suppressed: !hasViableChannel,
+    suppressReason: !hasViableChannel ? "no viable contact channel" : undefined,
     breakdown: { motivation: mBreakdown, deal: dBreakdown },
   };
 }
@@ -303,7 +294,7 @@ export const handler = async (event: any) => {
     console.log(
       `[motivation-score] contact=${contactId}` +
       (result.suppressed
-        ? ` SUPPRESSED (${result.suppressReason}) → all scores=0`
+        ? ` SUPPRESSED (${result.suppressReason}) → motivation=0 deal=${result.dealScore} combined=0`
         : ` motivation=${result.motivationScore} deal=${result.dealScore} combined=${result.combinedScore}`)
     );
 
