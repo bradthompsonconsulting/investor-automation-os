@@ -17,15 +17,16 @@ const PROXY       = "/.netlify/functions/ghl-proxy";
 // ── Shared types ──────────────────────────────────────────────────────────────
 
 export interface ContactRow {
-  id:              string;
-  firstName:       string;
-  lastName:        string;
-  phone:           string;
-  email:           string;
-  dateAdded:       string | null;
-  motivationScore: number | null;
-  dealScore:       number | null;
-  combinedScore:   number | null;
+  id:                string;
+  firstName:         string;
+  lastName:          string;
+  phone:             string;
+  email:             string;
+  dateAdded:         string | null;
+  motivationScore:   number | null;
+  dealScore:         number | null;
+  combinedScore:     number | null;
+  completenessScore: number | null;
 }
 
 // ── Transport (swap this block for OAuth in Phase B) ─────────────────────────

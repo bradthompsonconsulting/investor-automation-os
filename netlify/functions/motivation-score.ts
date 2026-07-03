@@ -1,17 +1,18 @@
 /**
- * Motivation Score v2 — Netlify function.
- * Three-score system: motivation_score, deal_score, combined_score.
+ * Motivation Score v3 — Netlify function.
+ * Writes: motivation_score, deal_score, combined_score, data_completeness_score.
  * POST body: { contactId: string }
  */
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
 
-// Output field IDs (deal_score and combined_score created 2026-07-01)
-const DEAL_SCORE_FIELD_ID     = "cfkm0kb9CLvjZgyrcIFz";
-const COMBINED_SCORE_FIELD_ID = "9SVnuzznYsZOQQazpxld";
+// Output field IDs (hardcoded)
+const DEAL_SCORE_FIELD_ID          = "cfkm0kb9CLvjZgyrcIFz";
+const COMBINED_SCORE_FIELD_ID      = "9SVnuzznYsZOQQazpxld";
+const DATA_COMPLETENESS_FIELD_ID   = "r9sD1rlTIqhOx9Mhvftt";
 
-// MLS modifier constants (within spec ranges: Active −30–35, Expired/Failed +10–15)
+// MLS modifier constants (Active −30–35, Expired/Failed +10–15)
 const MLS_ACTIVE_MODIFIER  = -32;
 const MLS_EXPIRED_MODIFIER = +12;
 
@@ -50,20 +51,22 @@ async function fetchContact(contactId: string): Promise<any> {
 }
 
 async function writeScores(
-  contactId: string,
-  motivationFieldId: string,
-  motivationScore: number,
-  dealScore: number,
-  combinedScore: number,
+  contactId:          string,
+  motivationFieldId:  string,
+  motivationScore:    number,
+  dealScore:          number,
+  combinedScore:      number,
+  completenessScore:  number,
 ): Promise<void> {
   const res = await fetch(`${GHL_BASE}/contacts/${contactId}`, {
     method: "PUT",
     headers: ghlHeaders(),
     body: JSON.stringify({
       customFields: [
-        { id: motivationFieldId,   field_value: motivationScore },
-        { id: DEAL_SCORE_FIELD_ID, field_value: dealScore },
-        { id: COMBINED_SCORE_FIELD_ID, field_value: combinedScore },
+        { id: motivationFieldId,          field_value: motivationScore  },
+        { id: DEAL_SCORE_FIELD_ID,        field_value: dealScore        },
+        { id: COMBINED_SCORE_FIELD_ID,    field_value: combinedScore    },
+        { id: DATA_COMPLETENESS_FIELD_ID, field_value: completenessScore },
       ],
     }),
   });
@@ -87,20 +90,24 @@ function num(customFields: any[], id: string): number | null {
 // ── Scoring ───────────────────────────────────────────────────────────────────
 
 interface ScoreResult {
-  motivationScore: number;
-  dealScore: number;
-  combinedScore: number;
-  suppressed: boolean;
-  suppressReason?: string;
+  motivationScore:    number;
+  dealScore:          number;
+  combinedScore:      number;
+  completenessScore:  number;
+  suppressed:         boolean;
+  suppressReason?:    string;
   breakdown: {
-    motivation: Record<string, number>;
-    deal: Record<string, number>;
+    motivation:   Record<string, number>;
+    deal:         Record<string, number>;
+    completeness: { score: number; present: number; total: number; fields: Record<string, boolean> };
   };
 }
 
 function computeScores(contact: any, cf: any[], ids: Record<string, string>): ScoreResult {
+
   // ── STEP 1: Channel-aware suppression gate ───────────────────────────────
   const email     = String(contact?.email ?? "").trim();
+  const phone     = String(contact?.phone ?? "").trim();
   const phoneType = str(cf, ids.phone_type).toLowerCase();
   const phoneDnc  = str(cf, ids.phone_1_dnc);
   const litigator = str(cf, ids.litigator);
@@ -111,7 +118,7 @@ function computeScores(contact: any, cf: any[], ids: Record<string, string>): Sc
     email !== "" ||
     (phoneType === "mobile" && phoneDncClear && litigatorClear);
 
-  // Condition data is shared by both motivation and deal score sections
+  // ── Shared: condition data (used by motivation + deal) ───────────────────
   const conditionRaw = str(cf, ids.total_condition);
   const condition    = conditionRaw.toLowerCase();
   const mConditionScale: Record<string, number> = {
@@ -123,8 +130,15 @@ function computeScores(contact: any, cf: any[], ids: Record<string, string>): Sc
     "good":     14, "very good": 8, "excellent": 3,
   };
 
+  // ── Shared: lien pre-computation (used by deal + completeness) ───────────
+  // Blank/null → UNKNOWN (0 pts deal, absent for completeness).
+  // Explicit "0" or any known value → KNOWN (8 pts if no lien, buckets if lien).
+  const lienRaw     = str(cf, ids.lien_amount);
+  const lienPresent = lienRaw !== "";
+  const lienAmt     = lienRaw !== "" ? (parseFloat(lienRaw) || 0) : null;
+
   // ── STEP 2: Motivation Score (raw pool = 54, rescaled to 0-100) ──────────
-  // Zero when no viable channel; deal score still computes unconditionally.
+  // Zeroed when no viable channel; deal + completeness still compute below.
   const mBreakdown: Record<string, number> = {};
   if (hasViableChannel) {
     // owner_occupied — 25 pts (absentee = motivated)
@@ -153,7 +167,7 @@ function computeScores(contact: any, cf: any[], ids: Record<string, string>): Sc
     mBreakdown.phone_type = phoneType === "mobile" ? 2 : 0;
   }
 
-  const mRaw = Object.values(mBreakdown).reduce((a, b) => a + b, 0);
+  const mRaw         = Object.values(mBreakdown).reduce((a, b) => a + b, 0);
   const motivationScore = hasViableChannel ? Math.round((mRaw / 54) * 100) : 0;
 
   // ── STEP 3: Deal Score (raw pool = 100, MLS modifier outside pool) ───────
@@ -192,18 +206,19 @@ function computeScores(contact: any, cf: any[], ids: Record<string, string>): Sc
   else if (yearBuilt !== null)                      dBreakdown.effective_year_built =  1;
   else                                              dBreakdown.effective_year_built =  0;
 
-  // lien_amount — 8 pts (lien-to-value ratio; no lien = best)
-  const lienAmt = num(cf, ids.lien_amount);
-  const estVal  = num(cf, ids.est_value);
-  if (!lienAmt || lienAmt <= 0) {
-    dBreakdown.lien_amount = 8;
-  } else if (estVal && estVal > 0) {
+  // lien_amount — 8 pts (lien-to-value ratio; UNKNOWN blank → 0, not 8)
+  const estVal = num(cf, ids.est_value);
+  if (!lienPresent) {
+    dBreakdown.lien_amount = 0; // unknown — no credit
+  } else if (lienAmt !== null && lienAmt <= 0) {
+    dBreakdown.lien_amount = 8; // known: no lien
+  } else if (lienAmt !== null && estVal && estVal > 0) {
     const ratio = lienAmt / estVal;
     if      (ratio <= 0.15) dBreakdown.lien_amount = 5;
     else if (ratio <= 0.30) dBreakdown.lien_amount = 2;
     else                    dBreakdown.lien_amount = 0;
   } else {
-    dBreakdown.lien_amount = 0;
+    dBreakdown.lien_amount = 0; // can't compute ratio
   }
 
   // est_remaining_loan_balance — 7 pts
@@ -223,9 +238,7 @@ function computeScores(contact: any, cf: any[], ids: Record<string, string>): Sc
   }
   dBreakdown.mls_modifier = mlsMod;
 
-  const dBase = Object.entries(dBreakdown)
-    .filter(([k]) => k !== "mls_modifier")
-    .reduce((a, [, v]) => a + v, 0);
+  const dBase   = Object.entries(dBreakdown).filter(([k]) => k !== "mls_modifier").reduce((a, [, v]) => a + v, 0);
   const dealScore = Math.min(100, Math.max(0, dBase + mlsMod));
 
   // ── STEP 4: Combined Score ───────────────────────────────────────────────
@@ -234,13 +247,39 @@ function computeScores(contact: any, cf: any[], ids: Record<string, string>): Sc
       ? 0
       : Math.round(Math.pow(motivationScore, 0.4) * Math.pow(dealScore, 0.6));
 
+  // ── STEP 5: Data Completeness Score ─────────────────────────────────────
+  // Computes regardless of suppression — describes data coverage, not contactability.
+  // total_condition counted once (deduped from motivation + deal).
+  // lien_amount follows Step 1 rules (blank = absent, any known value = present).
+  const completenessFields: Record<string, boolean> = {
+    owner_occupied:             str(cf, ids.owner_occupied) !== "",
+    foreclosure_factor:         str(cf, ids.foreclosure_factor) !== "",
+    total_condition:            condition !== "",
+    phone_type:                 phoneType !== "",
+    est_equity:                 str(cf, ids.est_equity) !== "",
+    est_ltv:                    str(cf, ids.est_ltv) !== "",
+    effective_year_built:       str(cf, ids.effective_year_built) !== "",
+    lien_amount:                lienPresent,
+    est_remaining_loan_balance: str(cf, ids.est_remaining_loan_balance) !== "",
+    email:                      email !== "",
+    phone:                      phone !== "",
+  };
+  const total   = Object.keys(completenessFields).length; // 11
+  const present = Object.values(completenessFields).filter(Boolean).length;
+  const completenessScore = Math.round((present / total) * 100);
+
   return {
     motivationScore,
     dealScore,
     combinedScore,
-    suppressed: !hasViableChannel,
+    completenessScore,
+    suppressed:    !hasViableChannel,
     suppressReason: !hasViableChannel ? "no viable contact channel" : undefined,
-    breakdown: { motivation: mBreakdown, deal: dBreakdown },
+    breakdown: {
+      motivation:   mBreakdown,
+      deal:         dBreakdown,
+      completeness: { score: completenessScore, present, total, fields: completenessFields },
+    },
   };
 }
 
@@ -294,8 +333,8 @@ export const handler = async (event: any) => {
     console.log(
       `[motivation-score] contact=${contactId}` +
       (result.suppressed
-        ? ` SUPPRESSED (${result.suppressReason}) → motivation=0 deal=${result.dealScore} combined=0`
-        : ` motivation=${result.motivationScore} deal=${result.dealScore} combined=${result.combinedScore}`)
+        ? ` SUPPRESSED (${result.suppressReason}) → motivation=0 deal=${result.dealScore} combined=0 completeness=${result.completenessScore}`
+        : ` motivation=${result.motivationScore} deal=${result.dealScore} combined=${result.combinedScore} completeness=${result.completenessScore}`)
     );
 
     await writeScores(
@@ -304,18 +343,20 @@ export const handler = async (event: any) => {
       result.motivationScore,
       result.dealScore,
       result.combinedScore,
+      result.completenessScore,
     );
 
     return {
       statusCode: 200,
       body: JSON.stringify({
         contactId,
-        motivationScore: result.motivationScore,
-        dealScore:       result.dealScore,
-        combinedScore:   result.combinedScore,
-        suppressed:      result.suppressed,
-        suppressReason:  result.suppressReason,
-        breakdown:       result.breakdown,
+        motivationScore:   result.motivationScore,
+        dealScore:         result.dealScore,
+        combinedScore:     result.combinedScore,
+        completenessScore: result.completenessScore,
+        suppressed:        result.suppressed,
+        suppressReason:    result.suppressReason,
+        breakdown:         result.breakdown,
       }),
     };
 

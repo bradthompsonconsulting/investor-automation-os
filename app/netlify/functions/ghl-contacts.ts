@@ -9,11 +9,12 @@
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
 
-// Score field IDs — hardcoded (confirmed 2026-07-01 via /locations/.../customFields)
+// Score field IDs — hardcoded (confirmed via /locations/.../customFields)
 const SCORE_IDS = {
-  motivation_score: "8vH9yq10xeYVVMHXbS0C",
-  deal_score:       "cfkm0kb9CLvjZgyrcIFz",
-  combined_score:   "9SVnuzznYsZOQQazpxld",
+  motivation_score:        "8vH9yq10xeYVVMHXbS0C",
+  deal_score:              "cfkm0kb9CLvjZgyrcIFz",
+  combined_score:          "9SVnuzznYsZOQQazpxld",
+  data_completeness_score: "r9sD1rlTIqhOx9Mhvftt",
 };
 
 const CORS = {
@@ -84,9 +85,10 @@ export const handler = async (event: any) => {
         phone:           c.phone     ?? "",
         email:           c.email     ?? "",
         dateAdded:       c.dateAdded ?? null,
-        motivationScore: cfValue(cf, SCORE_IDS.motivation_score),
-        dealScore:       cfValue(cf, SCORE_IDS.deal_score),
-        combinedScore:   cfValue(cf, SCORE_IDS.combined_score),
+        motivationScore:    cfValue(cf, SCORE_IDS.motivation_score),
+        dealScore:          cfValue(cf, SCORE_IDS.deal_score),
+        combinedScore:      cfValue(cf, SCORE_IDS.combined_score),
+        completenessScore:  cfValue(cf, SCORE_IDS.data_completeness_score),
       };
     });
 
