@@ -1,6 +1,7 @@
 /**
- * Motivation Score v3 — Netlify function.
+ * Motivation Score v4 — Netlify function.
  * Writes: motivation_score, deal_score, combined_score, data_completeness_score.
+ * Sets exactly one bucket tag (hot/warm/low) based on combined_score.
  * POST body: { contactId: string }
  */
 
@@ -15,6 +16,16 @@ const DATA_COMPLETENESS_FIELD_ID   = "r9sD1rlTIqhOx9Mhvftt";
 // MLS modifier constants (Active −30–35, Expired/Failed +10–15)
 const MLS_ACTIVE_MODIFIER  = -32;
 const MLS_EXPIRED_MODIFIER = +12;
+
+// Bucket tags — exactly one is set per contact on every scoring run
+const BUCKET_TAGS = ["hot", "warm", "low"] as const;
+type BucketTag = typeof BUCKET_TAGS[number];
+
+function getBucketTag(combinedScore: number): BucketTag {
+  if (combinedScore >= 65) return "hot";
+  if (combinedScore >= 40) return "warm";
+  return "low";
+}
 
 // ── GHL helpers ───────────────────────────────────────────────────────────────
 
@@ -73,6 +84,32 @@ async function writeScores(
   if (!res.ok) throw new Error(`PUT /contacts/${contactId} → ${res.status}: ${await res.text()}`);
 }
 
+async function addContactTag(contactId: string, tag: string): Promise<void> {
+  const res = await fetch(`${GHL_BASE}/contacts/${contactId}/tags`, {
+    method: "POST",
+    headers: ghlHeaders(),
+    body: JSON.stringify({ tags: [tag] }),
+  });
+  if (!res.ok) throw new Error(`POST /contacts/${contactId}/tags → ${res.status}: ${await res.text()}`);
+}
+
+async function removeContactTags(contactId: string, tags: string[]): Promise<void> {
+  const res = await fetch(`${GHL_BASE}/contacts/${contactId}/tags`, {
+    method: "DELETE",
+    headers: ghlHeaders(),
+    body: JSON.stringify({ tags }),
+  });
+  if (!res.ok) throw new Error(`DELETE /contacts/${contactId}/tags → ${res.status}: ${await res.text()}`);
+}
+
+async function writeBucketTag(contactId: string, tag: BucketTag): Promise<void> {
+  const toRemove = BUCKET_TAGS.filter(t => t !== tag);
+  await Promise.all([
+    addContactTag(contactId, tag),
+    removeContactTags(contactId, toRemove as unknown as string[]),
+  ]);
+}
+
 // ── Field readers ─────────────────────────────────────────────────────────────
 
 function str(customFields: any[], id: string): string {
@@ -94,6 +131,7 @@ interface ScoreResult {
   dealScore:          number;
   combinedScore:      number;
   completenessScore:  number;
+  bucketTag:          BucketTag;
   suppressed:         boolean;
   suppressReason?:    string;
   breakdown: {
@@ -273,6 +311,7 @@ function computeScores(contact: any, cf: any[], ids: Record<string, string>): Sc
     dealScore,
     combinedScore,
     completenessScore,
+    bucketTag: getBucketTag(combinedScore),
     suppressed:    !hasViableChannel,
     suppressReason: !hasViableChannel ? "no viable contact channel" : undefined,
     breakdown: {
@@ -333,18 +372,21 @@ export const handler = async (event: any) => {
     console.log(
       `[motivation-score] contact=${contactId}` +
       (result.suppressed
-        ? ` SUPPRESSED (${result.suppressReason}) → motivation=0 deal=${result.dealScore} combined=0 completeness=${result.completenessScore}`
-        : ` motivation=${result.motivationScore} deal=${result.dealScore} combined=${result.combinedScore} completeness=${result.completenessScore}`)
+        ? ` SUPPRESSED (${result.suppressReason}) → motivation=0 deal=${result.dealScore} combined=0 completeness=${result.completenessScore} tag=${result.bucketTag}`
+        : ` motivation=${result.motivationScore} deal=${result.dealScore} combined=${result.combinedScore} completeness=${result.completenessScore} tag=${result.bucketTag}`)
     );
 
-    await writeScores(
-      contactId,
-      ids.motivation_score,
-      result.motivationScore,
-      result.dealScore,
-      result.combinedScore,
-      result.completenessScore,
-    );
+    await Promise.all([
+      writeScores(
+        contactId,
+        ids.motivation_score,
+        result.motivationScore,
+        result.dealScore,
+        result.combinedScore,
+        result.completenessScore,
+      ),
+      writeBucketTag(contactId, result.bucketTag),
+    ]);
 
     return {
       statusCode: 200,
@@ -354,6 +396,7 @@ export const handler = async (event: any) => {
         dealScore:         result.dealScore,
         combinedScore:     result.combinedScore,
         completenessScore: result.completenessScore,
+        bucketTag:         result.bucketTag,
         suppressed:        result.suppressed,
         suppressReason:    result.suppressReason,
         breakdown:         result.breakdown,
