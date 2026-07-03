@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+@theme {
+  /* IAOS / Brad Thompson Consulting brand palette */
+  --color-navy:       #07142E;
+  --color-navy-light: #0D1B3E;
+  --color-accent:     #1EC8FF;
+  --color-cta:        #005CE6;
+  --color-card:       #1B2433;
+  --color-surface:    #0A0E1A;
+
+  --font-sans:    "Inter", system-ui, sans-serif;
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: #0A0E1A;
+  color: #F5F7FA;
+  font-family: "Inter", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #1B2433; border-radius: 3px; }

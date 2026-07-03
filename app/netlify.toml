@@ -1,0 +1,24 @@
+# Netlify site config for app.investorautomationos.com
+#
+# Setup: create a second Netlify site from the same GitHub repo.
+#   Site settings → Build & deploy:
+#     Base directory:  app
+#     Build command:   pnpm install && pnpm build
+#     Publish dir:     app/dist
+#     Functions dir:   app/netlify/functions
+#   Site settings → Domain management:
+#     Add custom domain: app.investorautomationos.com
+#     Add CNAME in DNS:  app → <netlify-site>.netlify.app
+
+[build]
+  publish = "dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# SPA catch-all — client-side router handles all paths
+[[redirects]]
+  from = "/*"
+  to   = "/index.html"
+  status = 200
