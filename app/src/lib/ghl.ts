@@ -14,6 +14,20 @@
 const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
 const PROXY       = "/.netlify/functions/ghl-proxy";
 
+// ── Shared types ──────────────────────────────────────────────────────────────
+
+export interface ContactRow {
+  id:              string;
+  firstName:       string;
+  lastName:        string;
+  phone:           string;
+  email:           string;
+  dateAdded:       string | null;
+  motivationScore: number | null;
+  dealScore:       number | null;
+  combinedScore:   number | null;
+}
+
 // ── Transport (swap this block for OAuth in Phase B) ─────────────────────────
 
 async function request<T = unknown>(
@@ -37,6 +51,15 @@ async function request<T = unknown>(
 
 export const ghl = {
   contacts: {
+    // Returns all contacts with scores, paged server-side
+    listAll: async (): Promise<ContactRow[]> => {
+      const res = await fetch("/.netlify/functions/ghl-contacts");
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`ghl-contacts → ${res.status}: ${text}`);
+      }
+      return res.json() as Promise<ContactRow[]>;
+    },
     list: (params?: Record<string, string>) => {
       const qs = new URLSearchParams({ locationId: LOCATION_ID, limit: "25", ...params }).toString();
       return request<any>(`/contacts?${qs}`);
@@ -64,4 +87,3 @@ export const ghl = {
   },
 };
 
-export type { };
