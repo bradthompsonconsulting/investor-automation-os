@@ -85,6 +85,7 @@ export const handler = async (event: any) => {
         phone:           c.phone     ?? "",
         email:           c.email     ?? "",
         dateAdded:       c.dateAdded ?? null,
+        tags:            (c.tags ?? []).map((t: string) => String(t).toLowerCase()),
         motivationScore:    cfValue(cf, SCORE_IDS.motivation_score),
         dealScore:          cfValue(cf, SCORE_IDS.deal_score),
         combinedScore:      cfValue(cf, SCORE_IDS.combined_score),

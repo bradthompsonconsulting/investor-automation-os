@@ -23,10 +23,26 @@ export interface ContactRow {
   phone:             string;
   email:             string;
   dateAdded:         string | null;
+  tags:              string[];
   motivationScore:   number | null;
   dealScore:         number | null;
   combinedScore:     number | null;
   completenessScore: number | null;
+}
+
+// ── Bucket tag helpers ────────────────────────────────────────────────────────
+// Bucket tags (hot/warm/low) are written by the scoring function (motivation-score.ts)
+// as the source of truth for tier assignment. This module only reads them.
+
+export type BucketTag = "hot" | "warm" | "low";
+const BUCKET_TAGS: BucketTag[] = ["hot", "warm", "low"];
+
+export function getBucketTag(contact: ContactRow): BucketTag {
+  return BUCKET_TAGS.find((t) => contact.tags.includes(t)) ?? "low";
+}
+
+export function isProbate(contact: ContactRow): boolean {
+  return contact.tags.includes("probate");
 }
 
 // ── Transport (swap this block for OAuth in Phase B) ─────────────────────────
