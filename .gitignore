@@ -116,3 +116,6 @@ client/public/__manus__/version.json
 # PropStream / skip-trace exports — contain PII (names, phones, addresses)
 *.csv
 exports/
+
+# Wrong package manager — this repo uses pnpm (see pnpm-lock.yaml)
+package-lock.json
