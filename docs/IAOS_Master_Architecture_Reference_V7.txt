@@ -1,0 +1,186 @@
+IAOS — Master Architecture Reference (v7)
+
+CHANGES SINCE V6: Segmentation page SHIPPED and LIVE (read-only bucket view at app.investorautomationos.com/segmentation; ~40 contacts, 5 hot / 12 warm / 23 low, sortable by combined/motivation/deal, completeness badges, probate-only filter — §14, §16). Seller 7 objection follow-up copy PASTED into all 8 nodes (4 email + 4 SMS) — now live (§14d). Repo hygiene locked: *.csv, exports/, and package-lock.json gitignored; pnpm confirmed as sole lockfile (§19). New PARKED item: scoring review of Low-tier contacts reading combined=0 / motivation=0 with a real deal_score (§16).
+
+1. Product Identity
+
+Standalone branded software on top of GoHighLevel — not a reseller/whitelabel. Reads and (eventually) writes GHL data via API through IAOS's own interface.
+Dual purpose: (a) Brad's own wholesaling tool; (b) sellable SaaS for other wholesalers (FMTM).
+Default rule: when ambiguous, choose the client-facing option. Brad is "client #1."
+
+2. Three-Layer Model
+
+Layer 1 — System of Record: GoHighLevel. Contacts, custom fields, opportunities, stages, workflows, comms, compliance. Never duplicated.
+Layer 2 — Orchestration + Compute: Make.com + Netlify functions. Make = cross-system glue. Netlify = pure compute (scoring, MAO).
+Layer 3 — Presentation: IAOS frontend shell. Standalone, GHL-mirrored, IAOS-branded. LIVE at app.investorautomationos.com.
+
+3. Hosting & Domain
+
+Netlify. App at app.investorautomationos.com — DEPLOYED (site "iaos-app," base app, build pnpm install && pnpm build, publish app/dist, functions app/netlify/functions, CNAME at Namecheap, SSL valid).
+Repo: investor-automation-os, auto-deploy from main.
+DNS at Namecheap — do NOT move nameservers to Netlify (breaks mail/GHL records).
+
+4. Orchestration — Make.com
+
+Make = "when X, do Y across systems"; Netlify = computation.
+4a. Normalization: default to native GHL import; build source-specific mapping only when justified.
+
+5. Auth — Swappable, Phased
+
+Long-term: "Sign in with GHL" OAuth 2.0, multi-tenant.
+Constraint: OAuth requires Agency Pro ($4,970/yr). Starter only gives Location API keys.
+Phase A (now): wide open, single-user, token server-side in Netlify env.
+Phase B (at client #1): Agency Pro + OAuth. Auth is a swappable module.
+
+6. Data Access
+
+Read-only everywhere except Pipeline's stage-move (§14a). All access via ONE shared ghl.ts + ghl-proxy.ts. Token never client-side.
+
+7. Frontend Shell — BUILT ✅
+
+React (Vite/Tailwind). GHL-mirrored layout, IAOS navy/cyan, "Phase A" badge.
+Nav (8): Dashboard · Contacts · Pipeline · Segmentation · MAO Calculator · Map · Import · Settings. All routes verified.
+Pages live: Contacts (read-only, scores, sort combined DESC) ✅; Segmentation (read-only bucket view) ✅. Pipeline, MAO, Map, Import, Dashboard, Settings = shell routes pending build.
+
+8. Multi-Tenancy (Phase B)
+
+Stores per-client OAuth tokens. Auth module structured to plug in.
+
+9. Caching / Rate Limits
+
+Dashboard aggregates recompute on interval (~15 min), store + serve snapshot.
+
+10. Scoring System — LIVE, 4 SCORES + BUCKET TAGS ✅
+
+motivation_score (0-100): owner_occupied 25, foreclosure_factor 20, total_condition 7 (worse=higher), phone_type 2. Pool 54, rescaled.
+deal_score (ID cfkm0kb9CLvjZgyrcIFz): est_equity 35, est_ltv 20, total_condition 18 (bell-curve peaks Average), effective_year_built 12, lien_amount 8, est_remaining_loan_balance 7. MLS modifier after.
+combined_score (ID 9SVnuzznYsZOQQazpxld): (motivation^0.4) × (deal^0.6).
+data_completeness_score: % of fields present. Confidence flag, NOT a bucket.
+Suppression (channel-aware): zeroes motivation + combined only if NEITHER email NOR clean mobile. Deal_score always computes.
+Lien: blank = UNKNOWN (absent for completeness, 0 pts). "0"/"None" = known no-lien (present, 8 pts). Dollar = bucketed.
+Live: investorautomationos.com/api/motivation-score, wired into Seller 0. rescore-all.ts committed.
+
+10a. Bucket Tags — LIVE ✅
+
+Exactly ONE tag per contact, set to current combined_score, no upgrade/downgrade in the scoring function: hot ≥65, warm 40-64, low 0-39.
+Every contact gets a tag (suppressed land in low — still mailable). Never touches probate/non-bucket tags.
+Tier movement over time is handled by the WORKFLOWS (demotion), not the scoring function — see §14b.
+Current split: 5 hot / 12 warm / 23 low (confirmed live on Segmentation page).
+
+10b. MAO in Interface (build #6)
+
+Existing MAO webhook → shell tab + inline contact widget.
+
+11. Known GHL Constraints
+
+Opportunity list view: can't show custom scores. Contacts list: can. Kanban: sorts by stage only. List customizations: browser-specific, not backend-saved.
+GHL branches do NOT rejoin/merge. Consequence: a per-touch If/Else pattern dead-ends every branch except the one carrying the sequence — this is what broke the first two Hot builds. Tier cadences are therefore built as ONE linear chain gated by a SINGLE If/Else at the top (see §14b). Any tail action (e.g. demotion) that must run on more than one branch has to be DUPLICATED per branch, not shared.
+
+12. AI Layer — Analyze / Draft / Route / Vet, Never Commit
+
+AI never makes offers, answers valuations, or sends committal messages unsupervised. Scope: canned + AI-drafted replies (human-approved), tough-question deflection to calendar/form, RVM drops, lead vetting.
+
+13. Map — Google Maps
+
+Leads pinned by address, colored by combined_score. Map-prospecting needs property-data API (later).
+
+14. Segmentation / Campaign Command
+
+Buckets = campaign intensity tiers, not inbox categories. Score = how hard to pursue.
+Completeness = confidence flag, never removes from bucket.
+Probate = a TAG, coexists with score bucket. Scored lead ALSO on a separate filterable Probate list for manual next-of-kin search.
+IAOS Segmentation page = read-only VIEW over the GHL-run machine. Does NOT send, enroll, or re-tag.
+
+Segmentation page — SHIPPED & LIVE ✅ (app.investorautomationos.com/segmentation). Three-column Hot/Warm/Low board over live GHL bucket tags, live counts, contact cards sorted by Combined/Motivation/Deal score (click to toggle, mirrors Contacts sort logic), a data-completeness confidence badge visually distinct from the score badges (never affects tier), and a "Probate only" filter toggle that cuts across all three tiers rather than adding a fourth bucket. Purely observational — no send/enroll/tag-write action exists on the page. Files: app/netlify/functions/ghl-contacts.ts (added tags to server-side mapping, token stays server-only), app/src/lib/ghl.ts (ContactRow extended with tags: string[], read-only getBucketTag() / isProbate() helpers), app/src/pages/Segmentation.tsx. Verified live against real GHL data.
+
+14a. Pipeline Page (the one read/write surface)
+
+Reads Opportunity object only (stages), no scores. Write: "Move to" dropdown + Execute (manual routing, e.g. Seller 7 Offer Sent → Closed/LTN/Follow-up). NOT STARTED — next build.
+
+14b. Tier Mail-Cadence Workflows — BUILT & PUBLISHED ✅
+
+Three GHL workflows, each triggered by its bucket tag. Separate from Seller 0 — Seller 0 stays its own trigger-less digital engine (enrolled manually/bulk); the mail workflows are standalone and coexist. No coupling.
+
+ARCHITECTURE (all three): ONE linear chain gated by a SINGLE If/Else at the top — NOT a per-touch check (see §11 for why). Structure:
+- Trigger: Contact Tag added (the tier tag).
+- If/Else "Mail Automation OFF": custom value mail_automation_enabled Is off → OFF branch carries the whole sequence. None branch → empty (END) for now; this is the toggle-ON / vendor path, wired at toggle-ON day (§14c).
+- On the OFF branch: a linear chain of Create Task → Wait → Create Task → Wait ... → demotion tail.
+- Each Create Task: assigned to Brad, due 0 days/today, 8:00 AM. (Cloned tasks drop due dates — always re-verify red dots and re-set 0-days.)
+
+Live workflow names in GHL (exact):
+- "Sequence - Hot Tag Mail"
+- "Sequence - Warm Tag Mail"
+- "Sequence - Low Tag Mail"
+
+HOT (trigger tag hot): 8 touches, every 2 weeks (~4-month window), alternating PRIMARY / POSTCARD (T1 PRIMARY, T2 POSTCARD ... T8 POSTCARD). Tail: Remove hot → Add warm. PUBLISHED.
+WARM (trigger tag warm): 4 touches, monthly (30-day waits, incl. one after T4; ~4-month window), alternating PRIMARY / POSTCARD. Tail: Remove warm → Add low. PUBLISHED.
+LOW (trigger tag low): 4 touches, every 2 months (~8-month window), POSTCARD only. Tail: Remove low ONLY — no Add-tag. Exits mail; contact stays in Seller 0 unless moved to LTN. PUBLISHED.
+
+Demotion chain: Hot (~4mo) → Warm (~4mo) → Low (~8mo) → out = ~16 months total if never engaged. Time-based, handled in the workflows — the scoring function never moves tiers.
+
+Task-based, not slot-tags: each mail touch creates a transient TASK (the "who to mail" list for the OFF/manual path), not a permanent slot tag. Contact only ever carries its one tier tag. At toggle-ON, task steps become vendor mail actions.
+
+Settings per workflow: re-entry should be OFF (a re-fired tier tag must not restart a cadence mid-run). Skip-weekends left OFF on tasks (manual mail-prep task landing on a weekend just waits till Monday).
+
+Recurring GHL AI builder issues (confirmed again this build): (a) refuses to build a clean linear chain — keeps reverting to per-touch branching (build "bones only, no If/Else" first, then insert the single gate manually); (b) off-branch tasks build empty; (c) due dates don't stick (manual 0-days fix); (d) steps sequence out of order; (e) edits to an existing tangled workflow throw network errors — cleaner to rebuild from empty than to patch. Verify each after every AI build.
+
+14c. Direct Mail Toggle
+
+mail_automation_enabled custom value — CREATED, set OFF.
+OFF → creates tasks, pool to manual export. ON → vendor mail action. Flip later, no rebuild.
+Option 1 now (flip in GHL). Option 2 later (toggle in IAOS Settings page writes same custom value — workflows unchanged).
+"Primary" vs "postcard" are investor-configurable slots, not hardcoded formats. Investor maps each slot to their chosen piece/vendor at setup.
+Vendor deferred to toggle-ON day. Candidates: Mailbox Power (cheapest postcards, native in-builder action, postage-only — leads for high-volume postcards), Postalytics (letters+postcards, 2-way data, QR/pURL, webhook), PCM (in-house, broad formats). Multi-vendor by format supported. PropStream/BatchSkipTracing confirmed unable to resolve deceased→heir; probate heir-finding stays manual until a relative-data vendor (TLO/SmartSkip tier) is chosen.
+Toggle-ON day build note: the None branch of each cadence must be built to MIRROR the OFF branch — same touch count, same waits, same demotion tail — with each Create Task swapped for a vendor Send-Mail action. The demotion tail is duplicated onto the None branch (§11); if demotion logic ever changes, change it on BOTH branches.
+
+14d. Mail-Exit on Offer — WIRED ✅
+
+Rule: a contact is removed from ALL mail paths the moment an offer is logged — NOT on mere response. A reply is noisy (wrong number, "not now"); an offer (pipeline stage) is the objective "real deal" signal.
+Implemented inside Seller 7 - Offer Sent (which already triggers on Seller Leads Pipeline → "Seller Offer Sent" stage). Two actions added at the TOP of Seller 7, immediately after the trigger, before "Send Notification":
+  1. Remove from Workflow → "Sequence - Hot Tag Mail", "Sequence - Warm Tag Mail", "Sequence - Low Tag Mail", "Seller 0 - Cold Seller Outreach" (by name — NOT "all"; must not remove from Seller 7 itself).
+  2. Add Contact Tag → offer-made.
+Remove-from-Workflow stops FUTURE touches but does not delete tasks already created. The offer-made tag is the guard: FILTER OUT offer-made on every manual mail export so a live-offer contact is never mailed.
+Exact stage string: "Seller Offer Sent" (not "Offer Made").
+
+Seller 7 objection follow-up copy — REWRITTEN & PASTED ✅. All 8 nodes (4 email + 4 SMS) now hold the objection-focused copy — live in GHL. Reframed from generic "just checking in" to trust-building, objection-focused, direct-with-light-urgency voice. Governing rules for this copy (and all future IAOS seller copy): no "just checking in"; never promise personal/future contact the automated mail can't deliver; lead with the seller's benefit not the offer; argue honestly (including options that don't pay us) to build trust. Four email angles: (1) cost of holding, (2) honest three-options map, (3) differentiators sellers underestimate, (4) the number is retail-minus-costs math, not a lowball. Four SMS: barer, one human line each, no stacked links, "text back" instead of "reply YES/NO". OPEN: a real past-seller story would make a strong 5th proof touch (can't be faked — needs a true story from Brad).
+
+15. Lead Ingestion Map
+
+Forms/PPC auto-enter via GHL form. Bulk cold lists (PropStream/county) = manual PowerShell (works, low priority to automate). The 40 test contacts were personally skip-traced by Brad at PropStream export. Probate lists not yet pulled (scaffolding).
+
+16. Build Sequence
+
+Shell — ✅
+Contacts (read-only, scores, sort combined DESC) — ✅
+Data Completeness Score — ✅
+Bucket tagging — ✅
+Tier mail workflows (Hot/Warm/Low) — ✅ BUILT & PUBLISHED
+Mail-exit-on-offer (Seller 7) — ✅ WIRED
+Seller 7 objection copy — ✅ PASTED (all 8 nodes live)
+Segmentation page (view) — ✅ SHIPPED & LIVE
+Pipeline (+ first write) — NOT STARTED
+MAO in interface — NOT STARTED
+
+Later: Dashboard, AI Layer, Map View, Import automation, Phase B multi-tenancy, probate heir automation, mail toggle Option 2.
+
+IMMEDIATE NEXT: (1) Pipeline page (+ first write surface) — heavier, its own session; (2) MAO in interface — heavier, its own session. Segmentation shipped and Seller 7 copy pasted this session.
+
+PARKED / VERIFY:
+- First live-contact run of the tier cadences is the real test — all three show 0 enrolled. Watch the first hot-tagged contact to confirm tasks generate on the OFF branch and demotion fires at the tail.
+- Carryover unverified: Seller 0 Monday 8am email window, Wait 1 Minute step.
+- SCORING REVIEW: several Low-tier contacts read combined=0 / motivation=0 while carrying a real deal_score (e.g. jose mendoza, roger pan, colette wiley, stephanie wells). Likely missing motivation-input fields scoring as 0 rather than genuine low motivation — they land in Low because 0 sorts to the bottom, which is correct behavior for missing data but may be mislabeling incomplete contacts. Decide whether missing inputs should score 0 or be excluded from tier assignment before acting on the Low tier for mail. Segmentation page reads tags faithfully — this is a scoring-function question, not a display bug.
+- A real past-seller story for a 5th Seller 7 proof touch (needs a true story from Brad).
+
+17. Team
+
+Claude: strategy, specs, GHL config, architecture. Jeff (Claude Code): all code/repo/Netlify from C:\users\brad\investor-automation-os. Brad: GHL UI, plan upgrades, Make setup, ad accounts, mail vendor, Netlify/domain.
+
+18. Cost Summary
+
+Phase A: $0 new. Make.com when orchestration goes live. Agency Pro ($4,970/yr) at client #1. Later volume-based: mail vendor, property-data API, AI API, probate/relative-data vendor.
+
+19. Housekeeping Status
+
+SSL valid. API token rotated. mail_automation_enabled custom value created (OFF). Two dead Hot-cadence draft workflows deleted after v2 verified.
+Repo hygiene (locked this session): *.csv, exports/, and package-lock.json added to .gitignore. PropStream skip-trace CSV exports contain PII (names, phones, addresses) and must NEVER be committed — full git history confirmed clean, no .csv ever tracked on any branch. pnpm-lock.yaml is the authoritative lockfile; package-lock.json is untracked (kept on disk, gitignored) so a stray npm install can't re-track the wrong lockfile. The live Property_Export CSV stays on disk untouched — gitignored, not deleted.
+Carryover unverified: Seller 0 Monday 8am email window, Wait 1 Minute step.
