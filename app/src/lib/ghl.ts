@@ -45,6 +45,30 @@ export function isProbate(contact: ContactRow): boolean {
   return contact.tags.includes("probate");
 }
 
+// ── Pipeline types ────────────────────────────────────────────────────────────
+
+export interface PipelineStage {
+  id:       string;
+  name:     string;
+  position: number;
+}
+
+export interface OpportunityRow {
+  id:              string;
+  contactId:       string;
+  contactName:     string;
+  opportunityName: string;
+  phone:           string;
+  email:           string;
+  stageId:         string;
+}
+
+export interface PipelineData {
+  pipelineId:    string;
+  stages:        PipelineStage[];
+  opportunities: OpportunityRow[];
+}
+
 // ── Transport (swap this block for OAuth in Phase B) ─────────────────────────
 
 async function request<T = unknown>(
@@ -100,7 +124,22 @@ export const ghl = {
     },
     get: (id: string) => request<any>(`/opportunities/${id}`),
     // create: (data: unknown) => request("/opportunities/", "POST", data),
-    // update: (id: string, data: unknown) => request(`/opportunities/${id}`, "PUT", data),
+
+    // Returns Seller Leads Pipeline opportunities + stage list, paged server-side
+    listPipeline: async (): Promise<PipelineData> => {
+      const res = await fetch("/.netlify/functions/ghl-opportunities");
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`ghl-opportunities → ${res.status}: ${text}`);
+      }
+      return res.json() as Promise<PipelineData>;
+    },
+
+    // The ONLY write action in the app. Goes through GHL's standard opportunity-update
+    // API (PUT /opportunities/:id) so GHL's own stage-change triggers fire exactly as
+    // they would from a manual move inside GHL — this never bypasses those triggers.
+    updateStage: (opportunityId: string, pipelineId: string, pipelineStageId: string) =>
+      request<any>(`/opportunities/${opportunityId}`, "PUT", { pipelineId, pipelineStageId }),
   },
 };
 
