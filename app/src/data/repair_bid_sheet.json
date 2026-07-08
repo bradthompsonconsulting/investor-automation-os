@@ -1,0 +1,191 @@
+{
+  "_meta": {
+    "source": "FMTM War Room Flip Calculator Worksheet - Bid Sheet",
+    "note": "Unit costs from FMTM worksheet. unit = sf (sq ft), lf (linear ft), ea (each), ls (lump sum). Some special-formula items noted. Apply 10% fudge factor to category subtotals per FMTM convention.",
+    "fudge_factor_pct": 10
+  },
+  "categories": [
+    {
+      "name": "Roof",
+      "items": [
+        { "label": "Shingle roof", "unit": "sf", "cost": 3.0, "note": "FMTM formula: (1.5 x SF / 100) + $175" },
+        { "label": "Roof sheeting (plywood 1/2, remove & install)", "unit": "sf", "cost": 2.0 },
+        { "label": "Roof repair / patch - hard", "unit": "ea", "cost": 900 },
+        { "label": "Roof repair / patch - easy", "unit": "ea", "cost": 600 },
+        { "label": "Premium for 3-layer tear off", "unit": "sf", "cost": 0.35 },
+        { "label": "Premium for steep pitched roof", "unit": "sf", "cost": 0.20 },
+        { "label": "Fascia - demo & install new", "unit": "lf", "cost": 4.0 },
+        { "label": "Soffit - demo & install new", "unit": "lf", "cost": 5.5 }
+      ]
+    },
+    {
+      "name": "Exterior Paint / Siding",
+      "items": [
+        { "label": "Exterior paint (house SF)", "unit": "sf", "cost": 1.5 },
+        { "label": "Stucco patch", "unit": "ea", "cost": 100 },
+        { "label": "Paint fence", "unit": "sf", "cost": 1.65 },
+        { "label": "Paint detached garage", "unit": "sf", "cost": 1.0 },
+        { "label": "Paint both exterior & interior (whole property)", "unit": "sf", "cost": 3.5 },
+        { "label": "MH skirting", "unit": "ea", "cost": 1200 }
+      ]
+    },
+    {
+      "name": "Interior",
+      "items": [
+        { "label": "Interior painting only", "unit": "sf", "cost": 1.5 },
+        { "label": "Extra wall prep (damaged walls)", "unit": "sf", "cost": 1.5 }
+      ]
+    },
+    {
+      "name": "Landscape",
+      "items": [
+        { "label": "Full landscaping makeover - large lot", "unit": "ls", "cost": 5000 },
+        { "label": "Full landscaping makeover - small lot", "unit": "ls", "cost": 2000 },
+        { "label": "Clean up landscaping & yard only", "unit": "ls", "cost": 2000 },
+        { "label": "Tree removal (per tree)", "unit": "ea", "cost": 500 },
+        { "label": "Tree planting (per tree)", "unit": "ea", "cost": 130 },
+        { "label": "Drainage", "unit": "ea", "cost": 1000 },
+        { "label": "Fence repair", "unit": "lf", "cost": 14 },
+        { "label": "Concrete replace", "unit": "sf", "cost": 4 },
+        { "label": "Pool (drain, clean & fill)", "unit": "ea", "cost": 900 }
+      ]
+    },
+    {
+      "name": "Windows",
+      "items": [
+        { "label": "Window, vinyl, average size", "unit": "ea", "cost": 350 },
+        { "label": "Window, wood, restore existing (historical)", "unit": "ea", "cost": 450 },
+        { "label": "Window, large bay - remove & replace", "unit": "ea", "cost": 850 },
+        { "label": "Window, new w/ drywall & stucco repair", "unit": "ea", "cost": 250 },
+        { "label": "Broken panes", "unit": "ea", "cost": 100 }
+      ]
+    },
+    {
+      "name": "Doors / Trim",
+      "items": [
+        { "label": "New interior doors, closet, hardware & trim (3000 sqft house)", "unit": "ea", "cost": 5500 },
+        { "label": "New interior doors, closet, hardware & trim (1500 sqft house)", "unit": "ea", "cost": 2800 },
+        { "label": "Interior door - prehung hollow-core", "unit": "ea", "cost": 200 },
+        { "label": "Interior sliding closet door", "unit": "ea", "cost": 200 },
+        { "label": "Exterior front door - single w/ hardware & deadbolt", "unit": "ea", "cost": 600 },
+        { "label": "Exterior french patio door - double", "unit": "ea", "cost": 900 },
+        { "label": "Exterior sliding glass door - double", "unit": "ea", "cost": 900 },
+        { "label": "Garage door", "unit": "ea", "cost": 900 },
+        { "label": "Crown molding", "unit": "lf", "cost": 4.5 },
+        { "label": "New baseboard trim", "unit": "lf", "cost": 3.0 },
+        { "label": "Raised panel wood wainscoting", "unit": "lf", "cost": 20 }
+      ]
+    },
+    {
+      "name": "Electrical",
+      "items": [
+        { "label": "Rewire entire house, new panel & lighting (1500 sqft)", "unit": "ea", "cost": 8500 },
+        { "label": "Basic electrical work & lighting (1500 sqft)", "unit": "ea", "cost": 3500 },
+        { "label": "Replace electrical panel only", "unit": "ea", "cost": 2500 },
+        { "label": "Replace all lighting fixtures (1500 sqft)", "unit": "ea", "cost": 200 },
+        { "label": "Lighting fixture", "unit": "ea", "cost": 75 },
+        { "label": "Ceiling fan", "unit": "ea", "cost": 120 }
+      ]
+    },
+    {
+      "name": "HVAC / Plumbing",
+      "items": [
+        { "label": "Service heating & cooling system only", "unit": "ea", "cost": 8500 },
+        { "label": "Wall heater (new or remove & replace)", "unit": "ea", "cost": 5000 },
+        { "label": "Replace boiler unit only", "unit": "ea", "cost": 2200 },
+        { "label": "Replace boiler & hot water baseboard system", "unit": "ea", "cost": 2500 },
+        { "label": "Replace forced air ductwork only", "unit": "ea", "cost": 3200 },
+        { "label": "Gas forced hot air heating + AC + ductwork", "unit": "ea", "cost": 6500 },
+        { "label": "Gas forced hot air heating + ductwork", "unit": "ea", "cost": 3000 },
+        { "label": "Gas forced hot air unit only", "unit": "ea", "cost": 600 },
+        { "label": "Air conditioning unit only", "unit": "ea", "cost": 500 },
+        { "label": "Compressor", "unit": "ea", "cost": 1200 },
+        { "label": "Water heater", "unit": "ea", "cost": 800 }
+      ]
+    },
+    {
+      "name": "Kitchen",
+      "items": [
+        { "label": "High end kitchen ($15k-$20k)", "unit": "ea", "cost": 15000 },
+        { "label": "Median kitchen ($12k-$15k)", "unit": "ea", "cost": 12000 },
+        { "label": "Low end kitchen", "unit": "ea", "cost": 10000 },
+        { "label": "Low end kitchen - refinish existing cabinets", "unit": "ea", "cost": 7000 },
+        { "label": "Kitchen extra custom items", "unit": "ea", "cost": 500 },
+        { "label": "Luxury home appliances", "unit": "ea", "cost": 12000 },
+        { "label": "High end home appliances", "unit": "ea", "cost": 7000 },
+        { "label": "Median home appliances", "unit": "ea", "cost": 4500 },
+        { "label": "Low end home appliances", "unit": "ea", "cost": 2000 },
+        { "label": "Cabinets", "unit": "lf", "cost": 225 },
+        { "label": "Countertops", "unit": "sf", "cost": 75 },
+        { "label": "Sink", "unit": "ea", "cost": 400 },
+        { "label": "Sink faucet", "unit": "ea", "cost": 350 },
+        { "label": "Garbage disposal", "unit": "ea", "cost": 250 },
+        { "label": "Refrigerator", "unit": "ea", "cost": 1200 },
+        { "label": "Range hood (high)", "unit": "ea", "cost": 850 },
+        { "label": "Range hood (basic)", "unit": "ea", "cost": 400 },
+        { "label": "Dishwasher", "unit": "ea", "cost": 600 },
+        { "label": "Microwave", "unit": "ea", "cost": 350 }
+      ]
+    },
+    {
+      "name": "Bath",
+      "items": [
+        { "label": "Large master bath - replace everything", "unit": "ea", "cost": 14000 },
+        { "label": "Full bath - replace everything", "unit": "ea", "cost": 7500 },
+        { "label": "Half bath - replace everything", "unit": "ea", "cost": 5000 },
+        { "label": "Vanity cabinet - basic", "unit": "ea", "cost": 350 },
+        { "label": "Vanity cabinet - mid", "unit": "ea", "cost": 700 },
+        { "label": "Vanity mirror", "unit": "ea", "cost": 75 },
+        { "label": "Sink", "unit": "ea", "cost": 125 },
+        { "label": "Sink faucet", "unit": "ea", "cost": 200 },
+        { "label": "Toilet - basic", "unit": "ea", "cost": 150 },
+        { "label": "Toilet - mid", "unit": "ea", "cost": 200 },
+        { "label": "Bathtub", "unit": "ea", "cost": 200 },
+        { "label": "Bathtub - fiberglass", "unit": "ea", "cost": 500 },
+        { "label": "Bathtub/surround kit - fiberglass", "unit": "ea", "cost": 650 },
+        { "label": "Shower stall/surround kit - fiberglass", "unit": "ea", "cost": 500 },
+        { "label": "Showerhead & faucet kit", "unit": "ea", "cost": 300 },
+        { "label": "Towel bar kit", "unit": "ea", "cost": 75 },
+        { "label": "Reglaze tub", "unit": "ea", "cost": 700 }
+      ]
+    },
+    {
+      "name": "Flooring",
+      "items": [
+        { "label": "Hardwood flooring - solid wood", "unit": "sf", "cost": 8.5 },
+        { "label": "Engineered hardwood flooring", "unit": "sf", "cost": 6.5 },
+        { "label": "Laminate hardwood flooring", "unit": "sf", "cost": 5.0 },
+        { "label": "Sand & refinish existing hardwood", "unit": "sf", "cost": 2.75 },
+        { "label": "Carpet", "unit": "sf", "cost": 1.35 },
+        { "label": "Vinyl or linoleum flooring", "unit": "sf", "cost": 2.0 },
+        { "label": "Ceramic floor tile - kitchen", "unit": "sf", "cost": 10.0 },
+        { "label": "Backsplash wall tile - kitchen", "unit": "sf", "cost": 20.0 },
+        { "label": "Ceramic floor tile - bathrooms", "unit": "sf", "cost": 8.0 },
+        { "label": "Shower wall tile - bathrooms", "unit": "sf", "cost": 10.0 },
+        { "label": "Shower accent wall tile - bathrooms", "unit": "sf", "cost": 18.0 },
+        { "label": "Ceramic floor tile - other areas", "unit": "sf", "cost": 10.0 },
+        { "label": "Baseboard (3in paint grade)", "unit": "lf", "cost": 0.30 },
+        { "label": "Mobile home laminate/vinyl", "unit": "sf", "cost": 1.5 },
+        { "label": "MH subfloor - repair soft spots", "unit": "ea", "cost": 600 }
+      ]
+    },
+    {
+      "name": "Misc / Demo / Permits",
+      "items": [
+        { "label": "Demolition (fill one 40yd dumpster)", "unit": "ea", "cost": 750 },
+        { "label": "Dumpster rental (40 yard)", "unit": "ea", "cost": 500 },
+        { "label": "Termite fumigation & treatment", "unit": "ls", "cost": 1000 },
+        { "label": "Mold removal & abatement (minimum)", "unit": "ls", "cost": 2000 },
+        { "label": "Asbestos removal & abatement (minimum)", "unit": "ls", "cost": 1500 },
+        { "label": "Construction permits - remodel (city)", "unit": "ls", "cost": 1800 },
+        { "label": "Construction permits - addition (city)", "unit": "ea", "cost": 5000 },
+        { "label": "Construction permits - deck (city)", "unit": "ea", "cost": 800 },
+        { "label": "Construction permits - over the counter", "unit": "ea", "cost": 750 },
+        { "label": "Construction permits - full submittal (county)", "unit": "ea", "cost": 1800 },
+        { "label": "Construction permits - addition (county)", "unit": "ea", "cost": 5000 },
+        { "label": "Construction permits - deck (county)", "unit": "ea", "cost": 800 },
+        { "label": "Permit (per permit)", "unit": "ea", "cost": 300 }
+      ]
+    }
+  ]
+}
