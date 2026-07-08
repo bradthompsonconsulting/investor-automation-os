@@ -111,7 +111,12 @@ export const ghl = {
       return request<any>(`/contacts?${qs}`);
     },
     get: (id: string) => request<any>(`/contacts/${id}`),
-    // update: (id: string, data: unknown) => request(`/contacts/${id}`, "PUT", data),
+
+    // MAO Calculator Phase 6 "Save Offer to GHL" — writes ONLY the given custom
+    // fields (the offer_ fields). Body carries nothing else: no tags key, so this
+    // can never add/remove a tag (e.g. offer-made) as a side effect.
+    saveOfferFields: (contactId: string, customFields: { id: string; field_value: unknown }[]) =>
+      request<any>(`/contacts/${contactId}`, "PUT", { customFields }),
   },
 
   customFields: {
@@ -140,11 +145,19 @@ export const ghl = {
       return res.json() as Promise<PipelineData>;
     },
 
-    // The ONLY write action in the app. Goes through GHL's standard opportunity-update
-    // API (PUT /opportunities/:id) so GHL's own stage-change triggers fire exactly as
-    // they would from a manual move inside GHL — this never bypasses those triggers.
+    // The ONLY write action in the Pipeline page. Goes through GHL's standard
+    // opportunity-update API (PUT /opportunities/:id) so GHL's own stage-change
+    // triggers fire exactly as they would from a manual move inside GHL — this
+    // never bypasses those triggers.
     updateStage: (opportunityId: string, pipelineId: string, pipelineStageId: string) =>
       request<any>(`/opportunities/${opportunityId}`, "PUT", { pipelineId, pipelineStageId }),
+
+    // MAO Calculator Phase 6 "Save Offer to GHL" — writes ONLY the given custom
+    // fields (the offer_ fields). Body carries nothing else: no pipelineStageId
+    // key, so this can never move the pipeline stage as a side effect — that
+    // stays tied to the deliberate Pipeline-page "Move to" action (V7 §14d).
+    saveOfferFields: (opportunityId: string, customFields: { id: string; field_value: unknown }[]) =>
+      request<any>(`/opportunities/${opportunityId}`, "PUT", { customFields }),
   },
 };
 

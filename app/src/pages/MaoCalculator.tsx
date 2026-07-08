@@ -32,13 +32,30 @@ const SOURCE_FIELD_IDS = {
   repairEstimate:      "hId4Yog6u5GP1Iwz1aNx",
 };
 
-// offer_ fields (Phase 1, Opportunity-side) — preferred over the source fields
-// above when present, since they reflect the last actual saved calculator state.
+// offer_ fields (Phase 1) — created on BOTH Contact and Opportunity, same 7
+// field names, different IDs per model. Opportunity-side is read for
+// prepopulate (preferred over the source fields above when present, since
+// they reflect the last actual saved calculator state). Save (Phase 6)
+// writes both sides, overwriting each save — no history, latest only.
 const OFFER_FIELD_IDS = {
-  offer_price:        "4YiACDV4uB3zOlAdNIBb",
-  offer_arv:           "Nm1LZvQzaCGvXDq7TRCh",
-  offer_repair_total:  "XbW0B973nuaLtIjMkzO9",
-  offer_date:          "73oLHWnVjmOGSrBo5sC6",
+  opportunity: {
+    offer_price:         "4YiACDV4uB3zOlAdNIBb",
+    offer_mao:           "9jm2SoN2aDtUtbesL0kG",
+    offer_wholesale_fee: "GxChepYArmgPllhKPq0R",
+    offer_repair_total:  "XbW0B973nuaLtIjMkzO9",
+    offer_margin:        "eY5BOqE9juGpBfqwacWT",
+    offer_arv:           "Nm1LZvQzaCGvXDq7TRCh",
+    offer_date:          "73oLHWnVjmOGSrBo5sC6",
+  },
+  contact: {
+    offer_price:         "v2VO2wUwTYRojmU7VXyZ",
+    offer_mao:           "aAMFPmgxGZT422uGAQOx",
+    offer_wholesale_fee: "qYzkp66x87rG7Pbs36GP",
+    offer_repair_total:  "2EpRGXb8rj4RtHfFhYbB",
+    offer_margin:        "ec06A3RId4Isorc97jeQ",
+    offer_arv:           "Z88Y6IqCK1i7hObZcrQM",
+    offer_date:          "SJ6x7OqUxTKg1ri8ltb7",
+  },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────────
@@ -176,12 +193,14 @@ function ContactLinkPanel({
   query, onQueryChange, results, onSelect, error,
   linked, onUnlink, lastSavedDate,
   pendingContact, onConfirmOverwrite,
+  onSave, saving, saveError, justSaved,
 }: {
   query: string; onQueryChange: (q: string) => void;
   results: ContactRow[]; onSelect: (c: ContactRow) => void; error: string | null;
   linked: { id: string; name: string; address: string } | null; onUnlink: () => void;
   lastSavedDate: string | null;
   pendingContact: ContactRow | null; onConfirmOverwrite: (yes: boolean) => void;
+  onSave: () => void; saving: boolean; saveError: string | null; justSaved: boolean;
 }) {
   if (pendingContact) {
     const name = `${pendingContact.firstName} ${pendingContact.lastName}`.trim() || "this contact";
@@ -226,20 +245,35 @@ function ContactLinkPanel({
             {linked.address && <div style={{ fontSize: "12px", color: "#64748B" }}>{linked.address}</div>}
             {lastSavedDate && (
               <div style={{ fontSize: "11px", color: "#334155", marginTop: "4px" }}>
-                Last saved {new Date(lastSavedDate).toLocaleDateString()}
+                Last saved {new Date(lastSavedDate).toLocaleDateString(undefined, { timeZone: "UTC" })}
               </div>
             )}
           </div>
-          <button
-            onClick={onUnlink}
-            style={{
-              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", fontWeight: 600,
-              padding: "6px 12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.12)",
-              background: "transparent", color: "#64748B", cursor: "pointer",
-            }}
-          >
-            <X size={12} /> Unlink
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            {justSaved && <span style={{ fontSize: "12px", color: "#22C55E" }}>Saved ✓</span>}
+            {saveError && <span style={{ fontSize: "11px", color: "#F87171" }}>{saveError}</span>}
+            <button
+              onClick={onSave}
+              disabled={saving}
+              style={{
+                fontSize: "12px", fontWeight: 600, padding: "7px 14px", borderRadius: "6px",
+                border: "1px solid rgba(30,200,255,0.4)", background: "rgba(30,200,255,0.12)",
+                color: "#1EC8FF", cursor: saving ? "default" : "pointer", opacity: saving ? 0.6 : 1,
+              }}
+            >
+              {saving ? "Saving…" : "Save Offer to GHL"}
+            </button>
+            <button
+              onClick={onUnlink}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", fontWeight: 600,
+                padding: "7px 12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.12)",
+                background: "transparent", color: "#64748B", cursor: "pointer",
+              }}
+            >
+              <X size={12} /> Unlink
+            </button>
+          </div>
         </div>
       </SectionCard>
     );
@@ -845,6 +879,12 @@ export default function MaoCalculator() {
   const [linkedOpportunityId, setLinkedOpportunityId] = useState<string | null>(null);
   const [lastSavedDate, setLastSavedDate] = useState<string | null>(null);
 
+  // Save Offer / Clear (Phase 6)
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccessAt, setSaveSuccessAt] = useState<number | null>(null);
+  const [confirmingClear, setConfirmingClear] = useState(false);
+
   // Repair estimator (shared)
   const [repairMode, setRepairMode] = useState<"quick" | "granular">("quick");
   const [quickRepair, setQuickRepair] = useState<Num>(0);
@@ -963,11 +1003,11 @@ export default function MaoCalculator() {
 
     const cf = opp?.customFields ?? [];
     // offer_ fields (last actual saved state) win over the older source fields.
-    const arvSource = cfNum(cf, OFFER_FIELD_IDS.offer_arv) ?? cfNum(cf, SOURCE_FIELD_IDS.arv);
-    const repairSource = cfNum(cf, OFFER_FIELD_IDS.offer_repair_total) ?? cfNum(cf, SOURCE_FIELD_IDS.repairEstimate);
+    const arvSource = cfNum(cf, OFFER_FIELD_IDS.opportunity.offer_arv) ?? cfNum(cf, SOURCE_FIELD_IDS.arv);
+    const repairSource = cfNum(cf, OFFER_FIELD_IDS.opportunity.offer_repair_total) ?? cfNum(cf, SOURCE_FIELD_IDS.repairEstimate);
     const feeSource = cfNum(cf, SOURCE_FIELD_IDS.assignmentFeeTarget);
-    const offerPriceSource = cfNum(cf, OFFER_FIELD_IDS.offer_price);
-    const offerDateSource = cfText(cf, OFFER_FIELD_IDS.offer_date);
+    const offerPriceSource = cfNum(cf, OFFER_FIELD_IDS.opportunity.offer_price);
+    const offerDateSource = cfText(cf, OFFER_FIELD_IDS.opportunity.offer_date);
 
     if (arvSource !== null) setArv(arvSource);
     if (repairSource !== null) { setRepairMode("quick"); setQuickRepair(repairSource); }
@@ -1007,6 +1047,13 @@ export default function MaoCalculator() {
     if (!offerManuallySet) setOfferToSeller(arvN > 0 ? Math.round(mao) : "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mao, arvN, offerManuallySet]);
+
+  // "Saved ✓" is transient — clear it a few seconds after a successful save.
+  useEffect(() => {
+    if (saveSuccessAt === null) return;
+    const t = setTimeout(() => setSaveSuccessAt(null), 3000);
+    return () => clearTimeout(t);
+  }, [saveSuccessAt]);
 
   function handleOfferChange(v: Num) {
     setOfferToSeller(v);
@@ -1073,13 +1120,110 @@ export default function MaoCalculator() {
   const pmProfit = cashProfit - totalFinance;
   const pmROI = allInCost > 0 ? pmProfit / allInCost : null;
 
+  // ── Save Offer to GHL (Phase 6) ────────────────────────────────────────────────
+  // CRITICAL GUARDRAIL: writes ONLY the offer_ fields, via saveOfferFields() which
+  // sends nothing but a customFields array — no pipelineStageId, no tags. This can
+  // never move the pipeline stage, add offer-made, or fire Seller 7 / mail-exit.
+  // Saving an offer suggestion is deliberately separate from sending one (that's
+  // the Pipeline page's "Move to Seller Offer Sent" action, V7 §14d).
+  async function handleSave() {
+    if (!linkedContact) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const values: Record<string, unknown> = {
+        offer_price: offerToSellerN,
+        offer_mao: mao,
+        offer_wholesale_fee: actualAssignmentFee,
+        offer_repair_total: repairTotal,
+        offer_margin: buyerExpectedProfit,
+        offer_arv: arvN,
+        offer_date: todayIso,
+      };
+
+      const contactFields = Object.entries(OFFER_FIELD_IDS.contact).map(([key, id]) => ({
+        id, field_value: values[key],
+      }));
+      const writes = [ghl.contacts.saveOfferFields(linkedContact.id, contactFields)];
+
+      if (linkedOpportunityId) {
+        const oppFields = Object.entries(OFFER_FIELD_IDS.opportunity).map(([key, id]) => ({
+          id, field_value: values[key],
+        }));
+        writes.push(ghl.opportunities.saveOfferFields(linkedOpportunityId, oppFields));
+      }
+
+      await Promise.all(writes);
+      setLastSavedDate(todayIso);
+      setSaveSuccessAt(Date.now());
+    } catch (e) {
+      setSaveError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function resetAll() {
+    setArv(""); setAskingPrice(""); setSellingHolding(0);
+    setAssignmentFeeTarget(5000); setFeeFloor(5000);
+    setBuyerProfitMode("$"); setBuyerProfitInput(0);
+    setOfferToSeller(""); setOfferManuallySet(false);
+    setRepairMode("quick"); setQuickRepair(0); setQuantities({});
+    setPurchaseClosingPct(2); setHoldMonths(6);
+    setUtilitiesMonthly(0); setInsuranceYearly(0); setTaxesYearly(0);
+    setRealtorPct(5); setSaleEscrowPct(1.23); setOtherCosts(0);
+    setFinancingType("cash");
+    setHmLTV(70); setHmRate(12); setHmPoints(2); setHmAddlFees(0);
+    setPmLoanAmount(0); setPmRate(10); setPmAmortYears(30); setPmPoints(2); setPmInterestOnly(false);
+    setSearchQuery(""); setSearchResults([]); setSearchError(null); setPendingContact(null);
+    unlinkContact();
+    setSaveError(null); setSaveSuccessAt(null);
+    setConfirmingClear(false);
+  }
+
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
-        <Calculator size={20} style={{ color: "#1EC8FF" }} />
-        <h1 style={{ fontSize: "22px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif", margin: 0 }}>
-          MAO Deal Calculator
-        </h1>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", flexWrap: "wrap", gap: "10px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <Calculator size={20} style={{ color: "#1EC8FF" }} />
+          <h1 style={{ fontSize: "22px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif", margin: 0 }}>
+            MAO Deal Calculator
+          </h1>
+        </div>
+        {confirmingClear ? (
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "12px", color: "#F1F5F9" }}>Clear everything?</span>
+            <button
+              onClick={resetAll}
+              style={{
+                fontSize: "12px", fontWeight: 600, padding: "6px 12px", borderRadius: "6px",
+                border: "1px solid rgba(239,68,68,0.4)", background: "rgba(239,68,68,0.12)", color: "#EF4444", cursor: "pointer",
+              }}
+            >
+              Confirm
+            </button>
+            <button
+              onClick={() => setConfirmingClear(false)}
+              style={{
+                fontSize: "12px", fontWeight: 600, padding: "6px 12px", borderRadius: "6px",
+                border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "#64748B", cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setConfirmingClear(true)}
+            style={{
+              fontSize: "12px", fontWeight: 600, padding: "6px 12px", borderRadius: "6px",
+              border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "#64748B", cursor: "pointer",
+            }}
+          >
+            Clear
+          </button>
+        )}
       </div>
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 18px" }}>
         Fully standalone — type numbers, get live MAO / margin / flip analysis. No contact required.
@@ -1096,6 +1240,10 @@ export default function MaoCalculator() {
         lastSavedDate={lastSavedDate}
         pendingContact={pendingContact}
         onConfirmOverwrite={confirmOverwrite}
+        onSave={handleSave}
+        saving={saving}
+        saveError={saveError}
+        justSaved={saveSuccessAt !== null}
       />
 
       <DealSummaryHeader
