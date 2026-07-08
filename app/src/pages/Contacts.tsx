@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
-import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, Users } from "lucide-react";
+import { Link } from "react-router-dom";
+import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, Users, Calculator } from "lucide-react";
 import { ghl, type ContactRow } from "../lib/ghl";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -118,7 +119,7 @@ const COLUMNS: ColumnDef[] = [
 function SkeletonRow() {
   return (
     <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-      {[160, 120, 180, 44, 44, 44].map((w, i) => (
+      {[160, 120, 180, 44, 44, 44, 70].map((w, i) => (
         <td key={i} style={{ padding: "12px 16px" }}>
           <div
             style={{
@@ -240,6 +241,13 @@ export default function Contacts() {
                     </span>
                   </th>
                 ))}
+                <th style={{
+                  padding: "10px 16px", textAlign: "center", fontSize: "11px", fontWeight: 600,
+                  letterSpacing: "0.06em", textTransform: "uppercase", color: "#475569",
+                  whiteSpace: "nowrap", background: "#07142E",
+                }}>
+                  Analyze
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -247,7 +255,7 @@ export default function Contacts() {
                 Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)
               ) : sorted.length === 0 ? (
                 <tr>
-                  <td colSpan={COLUMNS.length} style={{ padding: "60px 16px", textAlign: "center" }}>
+                  <td colSpan={COLUMNS.length + 1} style={{ padding: "60px 16px", textAlign: "center" }}>
                     <Users size={32} style={{ color: "#334155", margin: "0 auto 12px" }} />
                     <p style={{ color: "#475569", margin: 0 }}>No contacts found</p>
                   </td>
@@ -268,6 +276,19 @@ export default function Contacts() {
                         {col.render(contact)}
                       </td>
                     ))}
+                    <td style={{ padding: "11px 16px", textAlign: "center" }}>
+                      <Link
+                        to={`/mao-calculator?contactId=${encodeURIComponent(contact.id)}`}
+                        title="Analyze in Deal Calculator"
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
+                          padding: "5px 10px", borderRadius: "6px", border: "1px solid rgba(30,200,255,0.3)",
+                          background: "rgba(30,200,255,0.08)", color: "#1EC8FF", textDecoration: "none",
+                        }}
+                      >
+                        <Calculator size={12} /> Analyze
+                      </Link>
+                    </td>
                   </tr>
                 ))
               )}

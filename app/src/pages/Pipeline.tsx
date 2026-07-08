@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
-import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, GitBranch, Check, X } from "lucide-react";
+import { Link } from "react-router-dom";
+import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, GitBranch, Check, X, Calculator } from "lucide-react";
 import { ghl, type OpportunityRow, type PipelineStage } from "../lib/ghl";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -147,7 +148,7 @@ function MoveToControl({
 function SkeletonRow() {
   return (
     <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-      {[160, 160, 120, 220].map((w, i) => (
+      {[160, 160, 120, 220, 70].map((w, i) => (
         <td key={i} style={{ padding: "12px 16px" }}>
           <div style={{
             height: "14px", width: `${w}px`, borderRadius: "4px",
@@ -300,6 +301,13 @@ export default function Pipeline() {
                 }}>
                   Move To
                 </th>
+                <th style={{
+                  padding: "10px 16px", textAlign: "center", fontSize: "11px", fontWeight: 600,
+                  letterSpacing: "0.06em", textTransform: "uppercase", color: "#475569",
+                  whiteSpace: "nowrap", background: "#07142E",
+                }}>
+                  Analyze
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -307,7 +315,7 @@ export default function Pipeline() {
                 Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)
               ) : sorted.length === 0 ? (
                 <tr>
-                  <td colSpan={4} style={{ padding: "60px 16px", textAlign: "center" }}>
+                  <td colSpan={5} style={{ padding: "60px 16px", textAlign: "center" }}>
                     <GitBranch size={32} style={{ color: "#334155", margin: "0 auto 12px" }} />
                     <p style={{ color: "#475569", margin: 0 }}>No opportunities found</p>
                   </td>
@@ -331,6 +339,19 @@ export default function Pipeline() {
                         pipelineId={pipelineId}
                         onMoved={handleMoved}
                       />
+                    </td>
+                    <td style={{ padding: "11px 16px", textAlign: "center" }}>
+                      <Link
+                        to={`/mao-calculator?contactId=${encodeURIComponent(o.contactId)}`}
+                        title="Analyze in Deal Calculator"
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
+                          padding: "5px 10px", borderRadius: "6px", border: "1px solid rgba(30,200,255,0.3)",
+                          background: "rgba(30,200,255,0.08)", color: "#1EC8FF", textDecoration: "none",
+                        }}
+                      >
+                        <Calculator size={12} /> Analyze
+                      </Link>
                     </td>
                   </tr>
                 ))

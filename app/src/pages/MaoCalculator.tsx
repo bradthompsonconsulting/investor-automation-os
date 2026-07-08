@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ChevronDown, Calculator, Search, X } from "lucide-react";
 import repairBidSheet from "../data/repair_bid_sheet.json";
 import { ghl, type ContactRow, type OpportunityRow } from "../lib/ghl";
@@ -854,6 +855,10 @@ function FlipSection(props: {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function MaoCalculator() {
+  // Phase 7 handoff — the ONLY thing that pre-loads a contact. Read once on
+  // mount; opening this page any other way (nav link, direct URL) stays blank.
+  const [searchParams, setSearchParams] = useSearchParams();
+
   // Section A — Wholesale (buyer-profit-first MAO)
   const [arv, setArv] = useState<Num>("");
   const [askingPrice, setAskingPrice] = useState<Num>("");
@@ -976,6 +981,29 @@ export default function MaoCalculator() {
       applyContactData(c, true);
     }
   }
+
+  // Phase 7 handoff (Contacts/Pipeline "Analyze in Deal Calculator") — runs once
+  // on mount only. Reuses selectContact() exactly as the search results do; on a
+  // fresh mount every field is still at its default, so hasTypedSectionAData()
+  // is false and this fills directly with no overwrite popup — no separate
+  // "pre-load" code path exists. Strips the query param immediately so a later
+  // refresh opens blank; only the handoff link itself ever triggers a load.
+  useEffect(() => {
+    const handoffId = searchParams.get("contactId");
+    if (!handoffId) return;
+    setSearchParams({}, { replace: true });
+
+    (async () => {
+      try {
+        const rows = await ensureContactsLoaded();
+        const contact = rows.find((c) => c.id === handoffId);
+        if (contact) selectContact(contact);
+      } catch (e) {
+        setSearchError((e as Error).message);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function confirmOverwrite(yes: boolean) {
     if (!pendingContact) return;
