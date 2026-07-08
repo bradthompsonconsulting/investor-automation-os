@@ -1,12 +1,14 @@
-import { useState, useMemo, useEffect } from "react";
-import { ChevronDown, Calculator } from "lucide-react";
+import { useState, useMemo, useEffect, useRef } from "react";
+import { ChevronDown, Calculator, Search, X } from "lucide-react";
 import repairBidSheet from "../data/repair_bid_sheet.json";
+import { ghl, type ContactRow, type OpportunityRow } from "../lib/ghl";
 
 /**
  * MAO Deal Calculator — standalone by design (docs/specs/mao_calculator_spec.md §0).
  * Phases 2-4: page shell, Deal Summary header, Wholesale + Flip sections, shared
  * repair estimator. Zero GHL involvement — pure client-side calculation.
- * Search/prepopulate/save (Phases 5-7) come in a later pass.
+ * Phase 5: GHL search + prepopulate (this pass). Save (Phase 6) and the
+ * Contacts/Pipeline handoff button (Phase 7) come next.
  */
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -19,6 +21,25 @@ interface RepairCategory { name: string; items: RepairItem[] }
 
 const CATEGORIES = repairBidSheet.categories as RepairCategory[];
 const FUDGE_FACTOR = 1 + (repairBidSheet._meta.fudge_factor_pct as number) / 100;
+
+// Known SOURCE custom field IDs (spec §1) — read FROM these for prepopulate,
+// never written to. Opportunity-side only; the old Wholesale Fee %/Closing
+// Costs/MAO/Viability Flag fields belonged to the dropped §2a formula and
+// have no home in the new model, so they're intentionally not read here.
+const SOURCE_FIELD_IDS = {
+  arv:                 "cBkygqcHRseZUGCYYeba",
+  assignmentFeeTarget: "xwbPw1JVkgJevJTPNmxa",
+  repairEstimate:      "hId4Yog6u5GP1Iwz1aNx",
+};
+
+// offer_ fields (Phase 1, Opportunity-side) — preferred over the source fields
+// above when present, since they reflect the last actual saved calculator state.
+const OFFER_FIELD_IDS = {
+  offer_price:        "4YiACDV4uB3zOlAdNIBb",
+  offer_arv:           "Nm1LZvQzaCGvXDq7TRCh",
+  offer_repair_total:  "XbW0B973nuaLtIjMkzO9",
+  offer_date:          "73oLHWnVjmOGSrBo5sC6",
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────────
 
@@ -38,6 +59,31 @@ function fmtPct(v: number | null, digits = 1): string {
 
 function parseInput(raw: string): Num {
   return raw === "" ? "" : parseFloat(raw);
+}
+
+// GHL's opportunity customFields shape varies by field dataType — NUMERICAL/DATE
+// fields come back as fieldValueNumber/fieldValueDate rather than value/fieldValue
+// (confirmed live; not just the value/fieldValue pair the rest of the repo assumes).
+function cfRaw(cf: OpportunityRow["customFields"], id: string): unknown {
+  const f = cf.find((x) => x.id === id) as any;
+  if (!f) return null;
+  return f.value ?? f.fieldValue ?? f.fieldValueNumber ?? f.fieldValueString ?? f.fieldValueDate ?? null;
+}
+
+function cfNum(cf: OpportunityRow["customFields"], id: string): number | null {
+  const raw = cfRaw(cf, id);
+  if (raw === null || raw === undefined || raw === "") return null;
+  const num = typeof raw === "number" ? raw : parseFloat(String(raw));
+  return isNaN(num) ? null : num;
+}
+
+function cfText(cf: OpportunityRow["customFields"], id: string): string | null {
+  const raw = cfRaw(cf, id);
+  if (raw === null || raw === undefined) return null;
+  // fieldValueDate is a unix-ms timestamp number, not a string
+  if (typeof raw === "number") return new Date(raw).toISOString();
+  const s = String(raw).trim();
+  return s.length > 0 ? s : null;
 }
 
 // ── Shared field atoms ───────────────────────────────────────────────────────────
@@ -121,6 +167,122 @@ function SectionCard({ title, subtitle, children }: { title: string; subtitle?: 
 const GRID_STYLE: React.CSSProperties = {
   display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "14px",
 };
+
+// ── Search & Link Contact (Phase 5) ──────────────────────────────────────────────
+// Purely additive to the standalone calc — search/select only ever fills fields
+// or links a contact; it never creates one (spec §0: no "Create New Contact").
+
+function ContactLinkPanel({
+  query, onQueryChange, results, onSelect, error,
+  linked, onUnlink, lastSavedDate,
+  pendingContact, onConfirmOverwrite,
+}: {
+  query: string; onQueryChange: (q: string) => void;
+  results: ContactRow[]; onSelect: (c: ContactRow) => void; error: string | null;
+  linked: { id: string; name: string; address: string } | null; onUnlink: () => void;
+  lastSavedDate: string | null;
+  pendingContact: ContactRow | null; onConfirmOverwrite: (yes: boolean) => void;
+}) {
+  if (pendingContact) {
+    const name = `${pendingContact.firstName} ${pendingContact.lastName}`.trim() || "this contact";
+    return (
+      <SectionCard title="Load Saved Info?">
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "13px", color: "#F1F5F9" }}>
+            Load {name}'s saved info into the calculator? Typed values stay put — only fields the contact
+            actually has data for get filled.
+          </span>
+          <div style={{ display: "flex", gap: "8px", marginLeft: "auto" }}>
+            <button
+              onClick={() => onConfirmOverwrite(true)}
+              style={{
+                fontSize: "12px", fontWeight: 600, padding: "7px 14px", borderRadius: "6px",
+                border: "1px solid rgba(34,197,94,0.4)", background: "rgba(34,197,94,0.12)", color: "#22C55E", cursor: "pointer",
+              }}
+            >
+              Yes, load
+            </button>
+            <button
+              onClick={() => onConfirmOverwrite(false)}
+              style={{
+                fontSize: "12px", fontWeight: 600, padding: "7px 14px", borderRadius: "6px",
+                border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "#64748B", cursor: "pointer",
+              }}
+            >
+              No, just link
+            </button>
+          </div>
+        </div>
+      </SectionCard>
+    );
+  }
+
+  if (linked) {
+    return (
+      <SectionCard title="Linked Contact">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+          <div>
+            <div style={{ fontSize: "14px", fontWeight: 600, color: "#F1F5F9" }}>{linked.name}</div>
+            {linked.address && <div style={{ fontSize: "12px", color: "#64748B" }}>{linked.address}</div>}
+            {lastSavedDate && (
+              <div style={{ fontSize: "11px", color: "#334155", marginTop: "4px" }}>
+                Last saved {new Date(lastSavedDate).toLocaleDateString()}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={onUnlink}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", fontWeight: 600,
+              padding: "6px 12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.12)",
+              background: "transparent", color: "#64748B", cursor: "pointer",
+            }}
+          >
+            <X size={12} /> Unlink
+          </button>
+        </div>
+      </SectionCard>
+    );
+  }
+
+  return (
+    <SectionCard title="Search & Link Contact" subtitle="Optional — the calculator works fully without a linked contact.">
+      <div style={{ position: "relative" }}>
+        <Search size={14} style={{ position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", color: "#475569" }} />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => onQueryChange(e.target.value)}
+          placeholder="Search by seller name or property address…"
+          style={{
+            width: "100%", background: "#0A0E1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "6px",
+            color: "#F1F5F9", fontSize: "13px", padding: "9px 12px 9px 34px",
+          }}
+        />
+      </div>
+      {error && <p style={{ fontSize: "11px", color: "#F87171", margin: "8px 0 0" }}>{error}</p>}
+      {results.length > 0 && (
+        <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "4px" }}>
+          {results.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => onSelect(c)}
+              style={{
+                textAlign: "left", padding: "8px 10px", borderRadius: "6px",
+                border: "1px solid rgba(255,255,255,0.08)", background: "#0A0E1A", cursor: "pointer",
+              }}
+            >
+              <div style={{ fontSize: "13px", color: "#F1F5F9" }}>{c.firstName} {c.lastName}</div>
+              <div style={{ fontSize: "11px", color: "#64748B" }}>
+                {[c.address1, c.city].filter(Boolean).join(", ")}{c.phone && ` · ${c.phone}`}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
 
 // ── Deal Summary header ──────────────────────────────────────────────────────────
 
@@ -671,6 +833,18 @@ export default function MaoCalculator() {
   const [offerToSeller, setOfferToSeller] = useState<Num>("");
   const [offerManuallySet, setOfferManuallySet] = useState(false);
 
+  // Search & Link Contact (Phase 5) — default state is blank/unlinked; nothing
+  // pre-loads except via the Phase 7 handoff (not built yet).
+  const [contactsCache, setContactsCache] = useState<ContactRow[] | null>(null);
+  const contactsPromiseRef = useRef<Promise<ContactRow[]> | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<ContactRow[]>([]);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [pendingContact, setPendingContact] = useState<ContactRow | null>(null);
+  const [linkedContact, setLinkedContact] = useState<{ id: string; name: string; address: string } | null>(null);
+  const [linkedOpportunityId, setLinkedOpportunityId] = useState<string | null>(null);
+  const [lastSavedDate, setLastSavedDate] = useState<string | null>(null);
+
   // Repair estimator (shared)
   const [repairMode, setRepairMode] = useState<"quick" | "granular">("quick");
   const [quickRepair, setQuickRepair] = useState<Num>(0);
@@ -712,6 +886,101 @@ export default function MaoCalculator() {
   }, [quantities]);
   const granularTotal = granularRaw * FUDGE_FACTOR;
   const repairTotal = repairMode === "quick" ? n(quickRepair) : granularTotal;
+
+  // ── Search & Link Contact (Phase 5) ───────────────────────────────────────────
+
+  async function ensureContactsLoaded(): Promise<ContactRow[]> {
+    if (contactsCache) return contactsCache;
+    if (!contactsPromiseRef.current) {
+      contactsPromiseRef.current = ghl.contacts.listAll().then((rows) => {
+        setContactsCache(rows);
+        return rows;
+      });
+    }
+    return contactsPromiseRef.current;
+  }
+
+  async function handleSearchChange(q: string) {
+    setSearchQuery(q);
+    setSearchError(null);
+    if (q.trim().length < 2) {
+      setSearchResults([]);
+      return;
+    }
+    try {
+      const rows = await ensureContactsLoaded();
+      const needle = q.trim().toLowerCase();
+      const matches = rows.filter((c) => {
+        const name = `${c.firstName} ${c.lastName}`.toLowerCase();
+        const addr = `${c.address1} ${c.city}`.toLowerCase();
+        return name.includes(needle) || addr.includes(needle);
+      }).slice(0, 8);
+      setSearchResults(matches);
+    } catch (e) {
+      setSearchError((e as Error).message);
+    }
+  }
+
+  // Only checks the specific fields prepopulation would actually touch —
+  // Section B is never prepopulated, so it's irrelevant to this guard.
+  function hasTypedSectionAData(): boolean {
+    return arv !== "" || repairTotal !== 0 || n(assignmentFeeTarget) !== 5000 || offerManuallySet;
+  }
+
+  function selectContact(c: ContactRow) {
+    setSearchResults([]);
+    setSearchQuery("");
+    if (hasTypedSectionAData()) {
+      setPendingContact(c);
+    } else {
+      applyContactData(c, true);
+    }
+  }
+
+  async function confirmOverwrite(yes: boolean) {
+    if (!pendingContact) return;
+    await applyContactData(pendingContact, yes);
+    setPendingContact(null);
+  }
+
+  // fill=false ("No, just link"): links the contact for Save (Phase 6) but
+  // touches no field — never blanks a value the user already typed.
+  async function applyContactData(c: ContactRow, fill: boolean) {
+    const name = `${c.firstName} ${c.lastName}`.trim();
+    const address = [c.address1, c.city].filter(Boolean).join(", ");
+    setLinkedContact({ id: c.id, name, address });
+
+    let opp: OpportunityRow | undefined;
+    try {
+      const pipeline = await ghl.opportunities.listPipeline();
+      opp = pipeline.opportunities.find((o) => o.contactId === c.id);
+      setLinkedOpportunityId(opp?.id ?? null);
+    } catch {
+      setLinkedOpportunityId(null);
+    }
+
+    if (!fill) return;
+
+    const cf = opp?.customFields ?? [];
+    // offer_ fields (last actual saved state) win over the older source fields.
+    const arvSource = cfNum(cf, OFFER_FIELD_IDS.offer_arv) ?? cfNum(cf, SOURCE_FIELD_IDS.arv);
+    const repairSource = cfNum(cf, OFFER_FIELD_IDS.offer_repair_total) ?? cfNum(cf, SOURCE_FIELD_IDS.repairEstimate);
+    const feeSource = cfNum(cf, SOURCE_FIELD_IDS.assignmentFeeTarget);
+    const offerPriceSource = cfNum(cf, OFFER_FIELD_IDS.offer_price);
+    const offerDateSource = cfText(cf, OFFER_FIELD_IDS.offer_date);
+
+    if (arvSource !== null) setArv(arvSource);
+    if (repairSource !== null) { setRepairMode("quick"); setQuickRepair(repairSource); }
+    if (feeSource !== null) setAssignmentFeeTarget(feeSource);
+    if (offerPriceSource !== null) { setOfferToSeller(offerPriceSource); setOfferManuallySet(true); }
+    setLastSavedDate(offerDateSource);
+  }
+
+  function unlinkContact() {
+    setLinkedContact(null);
+    setLinkedOpportunityId(null);
+    setLastSavedDate(null);
+  }
 
   // ── Section A derived — buyer-profit-first MAO ────────────────────────────────
   // MAO = ARV − Rehab − Selling/Holding − Target Buyer Profit − Assignment Fee.
@@ -815,6 +1084,19 @@ export default function MaoCalculator() {
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 18px" }}>
         Fully standalone — type numbers, get live MAO / margin / flip analysis. No contact required.
       </p>
+
+      <ContactLinkPanel
+        query={searchQuery}
+        onQueryChange={handleSearchChange}
+        results={searchResults}
+        onSelect={selectContact}
+        error={searchError}
+        linked={linkedContact}
+        onUnlink={unlinkContact}
+        lastSavedDate={lastSavedDate}
+        pendingContact={pendingContact}
+        onConfirmOverwrite={confirmOverwrite}
+      />
 
       <DealSummaryHeader
         offerToSeller={offerToSeller}

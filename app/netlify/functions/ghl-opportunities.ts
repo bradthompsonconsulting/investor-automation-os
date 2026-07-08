@@ -85,6 +85,7 @@ export const handler = async (event: any) => {
       phone:           o.contact?.phone ?? "",
       email:           o.contact?.email ?? "",
       stageId:         o.pipelineStageId ?? "",
+      customFields:    o.customFields ?? [],
     }));
 
     return {

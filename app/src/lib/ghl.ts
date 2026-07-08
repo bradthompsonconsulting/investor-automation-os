@@ -22,6 +22,10 @@ export interface ContactRow {
   lastName:          string;
   phone:             string;
   email:             string;
+  address1:          string;
+  city:              string;
+  state:             string;
+  postalCode:        string;
   dateAdded:         string | null;
   tags:              string[];
   motivationScore:   number | null;
@@ -61,6 +65,7 @@ export interface OpportunityRow {
   phone:           string;
   email:           string;
   stageId:         string;
+  customFields:    { id: string; [key: string]: unknown }[];
 }
 
 export interface PipelineData {
