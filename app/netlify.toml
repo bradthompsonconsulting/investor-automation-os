@@ -17,6 +17,11 @@
 [build.environment]
   NODE_VERSION = "22"
 
+# Friday mailer digest — fires 13:00 UTC = 8am CDT (drifts to 7am during CST,
+# Nov-Mar; acceptable for a once-a-week "~8am CT" heads-up email).
+[functions."mailer-digest"]
+  schedule = "0 13 * * 5"
+
 # SPA catch-all — client-side router handles all paths
 [[redirects]]
   from = "/*"

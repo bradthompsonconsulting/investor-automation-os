@@ -119,3 +119,9 @@ exports/
 
 # Wrong package manager — this repo uses pnpm (see pnpm-lock.yaml)
 package-lock.json
+
+# Local Netlify folder
+.netlify
+
+# Netlify CLI edge-functions bootstrap cache (local dev only)
+deno.lock

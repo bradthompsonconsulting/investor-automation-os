@@ -3,6 +3,7 @@ import Layout from "./components/Layout";
 import Dashboard     from "./pages/Dashboard";
 import Contacts      from "./pages/Contacts";
 import Pipeline      from "./pages/Pipeline";
+import Mailers       from "./pages/Mailers";
 import Segmentation  from "./pages/Segmentation";
 import MaoCalculator from "./pages/MaoCalculator";
 import MapPage       from "./pages/MapPage";
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="dashboard"     element={<Dashboard />} />
           <Route path="contacts"      element={<Contacts />} />
           <Route path="pipeline"      element={<Pipeline />} />
+          <Route path="mailers"       element={<Mailers />} />
           <Route path="segmentation"  element={<Segmentation />} />
           <Route path="mao-calculator"element={<MaoCalculator />} />
           <Route path="map"           element={<MapPage />} />

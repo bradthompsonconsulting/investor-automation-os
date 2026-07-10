@@ -49,6 +49,49 @@ export function isProbate(contact: ContactRow): boolean {
   return contact.tags.includes("probate");
 }
 
+// ── Mailer types ─────────────────────────────────────────────────────────────
+
+export type Tier = "hot" | "warm" | "low";
+export type MailerType = "Primary" | "Postcard";
+
+export interface MailerTaskRow {
+  taskId:          string;
+  contactId:       string;
+  contactName:     string;
+  address:         string;
+  hasAddress:      boolean;
+  tier:            Tier;
+  mailerType:      MailerType;
+  touchNumber:     number;
+  dueDate:         string;
+  dueDateCT:       string;
+  completed:       boolean;
+  hasBusinessName: boolean;
+  companyName:     string | null;
+}
+
+export interface MailerGroup {
+  key:   string;
+  label: string;
+  rows:  MailerTaskRow[];
+}
+
+export interface MailerDigest {
+  weekStartCT: string;
+  weekEndCT:   string;
+  thisWeekReady:    MailerGroup[];
+  thisWeekBusiness: MailerGroup[];
+  overdue:          MailerGroup[];
+  noAddress:        MailerTaskRow[];
+  totals: {
+    ready:     number;
+    business:  number;
+    overdue:   number;
+    noAddress: number;
+    byMailerType: Record<string, number>;
+  };
+}
+
 // ── Pipeline types ────────────────────────────────────────────────────────────
 
 export interface PipelineStage {
@@ -158,6 +201,25 @@ export const ghl = {
     // stays tied to the deliberate Pipeline-page "Move to" action (V7 §14d).
     saveOfferFields: (opportunityId: string, customFields: { id: string; field_value: unknown }[]) =>
       request<any>(`/opportunities/${opportunityId}`, "PUT", { customFields }),
+  },
+
+  mailers: {
+    // Shared query — this-week-ready / business-flagged / overdue / no-address
+    list: async (): Promise<MailerDigest> => {
+      const res = await fetch("/.netlify/functions/ghl-mailers");
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`ghl-mailers → ${res.status}: ${text}`);
+      }
+      return res.json() as Promise<MailerDigest>;
+    },
+
+    // The ONLY write action on the Mailers page. Body carries nothing but
+    // { completed: true }, sent to GHL's dedicated task-completion sub-resource,
+    // so it cannot touch the task's title/dueDate/assignedTo, or any
+    // contact/tag/pipeline field.
+    completeTask: (contactId: string, taskId: string) =>
+      request<any>(`/contacts/${contactId}/tasks/${taskId}/completed`, "PUT", { completed: true }),
   },
 };
 
