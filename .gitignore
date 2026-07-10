@@ -125,3 +125,6 @@ package-lock.json
 
 # Netlify CLI edge-functions bootstrap cache (local dev only)
 deno.lock
+
+# Stray local exports/handoff zips — never intentionally tracked
+*.zip
