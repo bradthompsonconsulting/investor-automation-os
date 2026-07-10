@@ -22,6 +22,29 @@ const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // since a contact's tag can move on (demotion) after the task was created.
 const TASK_TITLE_RE = /^(hot|warm|low)\s+mail\s*—\s*touch\s*(\d+)\s*\((primary|postcard)\)/i;
 
+// Business-flag detection, part 2: native companyName is the primary signal,
+// but plenty of business-owned contacts only show it in the contact's display
+// name (e.g. "Woodleigh Holdings LLC"). Word-boundary, case-insensitive match
+// against this list — tunable in one place.
+const BUSINESS_ENTITY_TOKENS = [
+  "LLC", "L.L.C.", "INC", "CORP", "CORPORATION", "COMPANY",
+  "CUSTODIAN", "LP", "LLP", "LTD", "LIMITED", "PARTNERS", "PROPERTIES",
+  "HOLDINGS", "ENTERPRISES", "REALTY", "REAL ESTATE", "ASSOCIATION", "FUND",
+];
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const BUSINESS_ENTITY_RE = new RegExp(
+  `\\b(?:${BUSINESS_ENTITY_TOKENS.map(escapeRegExp).join("|")})\\b`,
+  "i",
+);
+
+function looksLikeBusinessName(name: string): boolean {
+  return BUSINESS_ENTITY_RE.test(name);
+}
+
 export type Tier = "hot" | "warm" | "low";
 export type MailerType = "Primary" | "Postcard";
 
@@ -212,7 +235,7 @@ export async function fetchAllMailerTaskRows(token: string): Promise<MailerTaskR
         dueDate,
         dueDateCT:       dueDate ? toCentralDateString(new Date(dueDate)) : "",
         completed:       !!t.completed,
-        hasBusinessName: !!companyName,
+        hasBusinessName: !!companyName || looksLikeBusinessName(c.contactName),
         companyName,
       });
     }
