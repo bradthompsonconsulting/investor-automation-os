@@ -17,7 +17,7 @@ const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
 // every other custom-value ID already hardcoded in this codebase.
 const MAILER_DIGEST_RECIPIENT_ID = "IjDam7C5cUR4l7uENWQT";
 
-const RESEND_FROM = "IAOS Mailers <mailers@investorautomationos.com>";
+const RESEND_FROM = "IAOS Mailers <digest@mailers.investorautomationos.com>";
 
 async function getDigestRecipient(token: string): Promise<string> {
   const res = await fetch(
