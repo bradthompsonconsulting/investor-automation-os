@@ -1,6 +1,6 @@
-IAOS — Master Architecture Reference (v10)
+IAOS — Master Architecture Reference (v10.1)
 
-CHANGES SINCE V9: MAILERS FEATURE COMPLETE ✅ — app page + Friday email digest, shipped, pushed, and verified live at app.investorautomationos.com/mailers (§14f). One shared query (mailer-shared.ts) feeds both consumers: the page's this-week-ready / business-flagged / overdue / no-address view, and a scheduled Friday-morning email through Resend. The only write is manual bulk-complete (PUT .../tasks/:id/completed, body {completed:true} only) — verified live against a real task (Neelima Bale, Hot Touch 1) with an independent GHL re-fetch confirming title/dueDate/assignedTo untouched and the row dropping off every list. TIER CADENCES CONFIRMED LIVE — all 40 contacts enrolled (5 hot / 12 warm / 23 low), generating real Touch-N tasks with the exact title format `"{Tier} mail — Touch {N} ({PRIMARY|POSTCARD})"` (§14b PARKED item partially resolved — task generation confirmed; demotion still unverified, time-based). mailer_digest_recipient custom value created (§14f). Env-var naming drift resolved: new functions read GHL_PRIVATE_API_KEY with a GHL_API_TOKEN fallback so both naming conventions work without touching the three pre-existing functions (§11/§19).
+CHANGES SINCE V10: Resend account created, sending domain mailers.investorautomationos.com verified (DKIM+SPF+MX all green in Resend). RESEND_API_KEY + GHL_PRIVATE_API_KEY added to the CORRECT Netlify project (app.investorautomationos.com / "iaos-app"). DIGEST FROM-ADDRESS FIXED ✅ — mailer-digest.ts now sends from digest@mailers.investorautomationos.com (the verified subdomain, not the root domain); verified live via manual invoke (HTTP 200, Resend ID returned, email delivered to brad@bradthompsonconsulting.com). BUSINESS-FLAG DETECTION WIDENED ✅ — mailer-shared.ts now flags a row business-flagged when EITHER native companyName is set OR the contact's display name word-boundary-matches a tunable entity-token list (LLC, L.L.C., INC, CORP, CORPORATION, COMPANY, CUSTODIAN, LP, LLP, LTD, LIMITED, PARTNERS, PROPERTIES, HOLDINGS, ENTERPRISES, REALTY, REAL ESTATE, ASSOCIATION, FUND); TRUST deliberately excluded since family/living trusts are individual sellers, not businesses — COMPANY and CUSTODIAN still catch institutional entities like "Equity Trust Company Custodian." Commit ba3b974. OVERDUE BRANCH CONFIRMED CORRECT ✅ — already properly wired (incomplete + hasAddress + dueDateCT < weekStartCT); the 0 count is expected and will populate once a mail task ages past the current week window, not a bug. CRITICAL NETLIFY LESSON: there are TWO Netlify projects — investorautomationos.com (marketing) and app.investorautomationos.com (iaos-app, where functions run). Env vars for functions MUST be set on the iaos-app project, not the marketing project. This cost 30 minutes of debugging this session.
 
 1. Product Identity
 
@@ -18,9 +18,10 @@ Layer 3 — Presentation: IAOS frontend shell. Standalone, GHL-mirrored, IAOS-br
 
 Netlify. App at app.investorautomationos.com — DEPLOYED (site "iaos-app," base app, build pnpm install && pnpm build, publish app/dist, functions app/netlify/functions, CNAME at Namecheap, SSL valid).
 Marketing site at investorautomationos.com — separate Netlify project, same repo. Both auto-deploy from main.
+CRITICAL: TWO SEPARATE NETLIFY PROJECTS exist. Functions (ghl-mailers, mailer-digest, ghl-contacts, etc.) run on the iaos-app project (app.investorautomationos.com). Env vars for functions must be set THERE, not on the marketing project. The marketing project's env vars are irrelevant to function execution.
 Repo: investor-automation-os, auto-deploy from main.
 DNS at Namecheap — do NOT move nameservers to Netlify (breaks mail/GHL records).
-NETLIFY BILLING: Personal plan ($9/mo, 1,000 credits/mo, resets ~6th). Auto-recharge is OFF — hard credit ceiling until reset; a heavy multi-commit day can pause deploys. Free-tier "out of credits" once SKIPPED a production deploy mid-session (commit pushed to GitHub but Netlify never built it) — fix was the plan upgrade + manual "Trigger deploy." Two live projects (app + marketing) + turnovercost.com. (Brad monitors credit ceiling himself; a full prior month on Personal never hit it.)
+NETLIFY BILLING: Personal plan ($9/mo, 1,000 credits/mo, resets ~6th). Auto-recharge is OFF — hard credit ceiling until reset; a heavy multi-commit day can pause deploys. Two live projects (app + marketing) + turnovercost.com. (Brad monitors credit ceiling himself.)
 DEPLOY-VERIFY METHOD (no Netlify CLI auth/build-hook in repo): confirm a push actually deployed by curling the live site and comparing the Vite bundle hash (content-fingerprinted, changes every build) + grepping the live bundle for the new feature's signature strings. Phase 6, Phase 7, and Mailers all verified this way, then a real-browser click-through (§14f).
 
 4. Orchestration — Make.com
@@ -185,7 +186,7 @@ All three lists grouped dynamically by tier+mailerType (e.g. "Hot Primary", "War
 
 MANUAL BULK-COMPLETE (the only write): checkbox per row + "check all" per group + a page-level "Mark as Completed" button. Loops checked rows with a small concurrency cap (3), calling ghl.mailers.completeTask(contactId, taskId) → PUT /contacts/{contactId}/tasks/{taskId}/completed with body {completed:true} ONLY — through the existing generic ghl-proxy.ts pipe, no new write-side function. Cannot touch title/dueDate/assignedTo or any contact/tag/pipeline field — same minimal-PUT-to-a-dedicated-endpoint guardrail pattern as updateStage (§14a) and saveOfferFields (§14e). VERIFIED LIVE: completed a real task (Neelima Bale, Hot Touch 1) via the browser; independent GHL re-fetch confirmed completed:true with title/dueDate/assignedTo byte-identical; production ready-count dropped 40→39 and the row disappeared from every list.
 
-FRIDAY EMAIL DIGEST: app/netlify/functions/mailer-digest.ts, scheduled via app/netlify.toml (`schedule = "0 13 * * 5"`, i.e. 13:00 UTC = 8am CDT, drifts to 7am during CST Nov-Mar — accepted as a known limitation for a once-a-week "~8am CT" heads-up, not engineered around). Read-only — all completing happens on the page. Same shared query, same three lists (no-address omitted), header with total counts by mailer type. RECIPIENT is read from the mailer_digest_recipient GHL custom value AT SEND TIME (GET /locations/{id}/customValues/{id}, not hardcoded) — makes the destination per-account configurable for future clients with zero code changes; only the custom value's ID (IjDam7C5cUR4l7uENWQT) is fixed in code, same as every other custom-value ID already in this codebase. Created this session, value set to brad@bradthompsonconsulting.com. Sends via Resend — single shared RESEND_API_KEY (Brad's own account, one key, no per-client setup), from address mailers@investorautomationos.com. OPEN: RESEND_API_KEY not yet added to Netlify env and the sending domain not yet verified in Resend — the scheduled function is deployed but will no-op with a clean "not configured" log until Brad completes that setup (§ PARKED, below). No urgency — Friday-only.
+FRIDAY EMAIL DIGEST: app/netlify/functions/mailer-digest.ts, scheduled via app/netlify.toml (`schedule = "0 13 * * 5"`, i.e. 13:00 UTC = 8am CDT, drifts to 7am during CST Nov-Mar — accepted as a known limitation for a once-a-week "~8am CT" heads-up, not engineered around). Read-only — all completing happens on the page. Same shared query, same three lists (no-address omitted), header with total counts by mailer type. RECIPIENT is read from the mailer_digest_recipient GHL custom value AT SEND TIME (GET /locations/{id}/customValues/{id}, not hardcoded) — makes the destination per-account configurable for future clients with zero code changes; only the custom value's ID (IjDam7C5cUR4l7uENWQT) is fixed in code, same as every other custom-value ID already in this codebase. Created this session, value set to brad@bradthompsonconsulting.com. Sends via Resend — single shared RESEND_API_KEY (Brad's own account, one key, no per-client setup). SENDING DOMAIN: mailers.investorautomationos.com — verified in Resend (DKIM+SPF+MX all green). BUG: the from-address in mailer-digest.ts still references the root domain investorautomationos.com, NOT the verified subdomain mailers.investorautomationos.com — Resend rejects with 403 "domain not verified." ONE CODE FIX: update the from-address to digest@mailers.investorautomationos.com, commit, push, redeploy, then manually invoke the URL to confirm the email lands.
 
 Files: app/netlify/functions/lib/mailer-shared.ts (shared query), app/netlify/functions/ghl-mailers.ts (page API), app/netlify/functions/mailer-digest.ts (scheduled email), app/src/pages/Mailers.tsx, app/src/lib/ghl.ts (mailers.list / mailers.completeTask), app/netlify.toml (schedule block).
 Onboarding note: mailer_digest_recipient needs a line in whatever new-client onboarding checklist Brad/Claude maintain outside this repo — not added here, since that checklist isn't part of this codebase.
@@ -199,11 +200,10 @@ Forms/PPC auto-enter via GHL form. Bulk cold lists (PropStream/county) = manual 
 Shell ✅ · Contacts ✅ · Data Completeness ✅ · Bucket tagging ✅ · Tier mail workflows ✅ (live-contact run confirmed, §14b) · Mail-exit-on-offer ✅ · Seller 7 copy ✅ · Segmentation page ✅ · Pipeline page ✅ · MAO Calculator (all 7 phases) ✅ · Mailers (app page + Friday digest) ✅.
 Later: Dashboard, AI Layer, Map View, Import automation, Phase B multi-tenancy, probate heir automation, mail toggle Option 2, marketing/screenshots page for the gated calc.
 
-IMMEDIATE NEXT: nothing forced. Mailers is done end-to-end on the app-page side; the email side just needs Brad's Resend setup (PARKED, below) — no code work left there. Pick from the "Later" list per the 90-day rule (does this directly help get IAOS clients or wholesale leads?).
+IMMEDIATE NEXT: Fix the digest from-address (one line in mailer-digest.ts), then manually invoke to confirm email lands. After that, pick from "Later" per the 90-day rule.
 
 PARKED / VERIFY:
-- Resend setup: add RESEND_API_KEY to Netlify env + verify a sending domain (e.g. mailers@investorautomationos.com) so the Friday digest can actually send. Deployed and waiting, not urgent.
-- Manually invoke mailer-digest once Resend is wired, to confirm a real email lands before trusting the Friday cron.
+- Digest from-address fix: change from investorautomationos.com to mailers.investorautomationos.com in mailer-digest.ts, commit, push, redeploy, invoke URL, confirm email lands at brad@bradthompsonconsulting.com. This is the ONLY remaining code task for the Mailers feature.
 - Tier cadence DEMOTION (Hot→Warm→Low→out) is still unverified — task generation is confirmed live (§14b), but the multi-month demotion timers haven't come due yet.
 - Carryover unverified: Seller 0 Monday 8am email window, Wait 1 Minute step.
 - A real past-seller story for a 5th Seller 7 proof touch (do not revisit until Brad has a sale).
@@ -211,10 +211,15 @@ PARKED / VERIFY:
 - mao-webhook.ts still reads opportunity custom fields under the old value/fieldValue keys (§11) — low-priority tech debt; likely irrelevant now that the standalone deal-analyzer page it served is gone. Align to fieldValueNumber/fieldValueDate only if/when touched.
 - GHL_API_TOKEN vs GHL_PRIVATE_API_KEY naming drift (§11) — new functions support both via fallback; reconciling the three original functions to one name is low-priority cleanup, not urgent.
 
-RESOLVED THIS SESSION:
+RESOLVED THIS SESSION (V10/V10.1):
 - Mailers feature — shipped, pushed, verified live end-to-end including a real production write (§14f).
 - Tier cadence FIRST LIVE-CONTACT RUN — task generation confirmed live for all three tiers (§14b). (Demotion remains open, above.)
 - Local netlify dev env/function-directory resolution issues (§11) — fixed for this session; app/.env now holds the token, --functions flag forces the correct directory.
+- Resend account created, mailers.investorautomationos.com domain verified (DKIM+SPF+MX). RESEND_API_KEY added to Netlify iaos-app project env.
+- GHL_PRIVATE_API_KEY added to Netlify iaos-app project env.
+- Env vars placed on WRONG Netlify project initially (investorautomationos.com marketing site instead of iaos-app) — discovered and corrected. Documented in §3 to prevent recurrence.
+- *.zip added to .gitignore; stray handoff zip removed from repo tracking (11535e0).
+- V10 master architecture reference committed to docs/ (b7c7e65).
 
 RESOLVED PRIOR SESSION (V9, no longer open):
 - Scoring "anomaly" — working as intended (§10); do not re-flag.
@@ -227,13 +232,14 @@ Claude: strategy, specs, GHL config, architecture, watching Jeff's approval prom
 
 18. Cost Summary
 
-Phase A: Netlify Personal $9/mo. Resend free tier (shared account, single API key) for the Mailers digest — revisit if/when volume outgrows the free tier. Make.com when orchestration goes live. Agency Pro ($4,970/yr) at client #1. Later volume-based: mail vendor, property-data API, AI API, probate/relative-data vendor.
+Phase A: Netlify Personal $9/mo. Resend free tier (shared account, single API key, verified domain mailers.investorautomationos.com) for the Mailers digest — revisit if/when volume outgrows the free tier. Make.com when orchestration goes live. Agency Pro ($4,970/yr) at client #1. Later volume-based: mail vendor, property-data API, AI API, probate/relative-data vendor.
 
 19. Housekeeping Status
 
 SSL valid. mail_automation_enabled custom value created (OFF). mailer_digest_recipient custom value created (ID IjDam7C5cUR4l7uENWQT), value brad@bradthompsonconsulting.com on this account.
-Repo hygiene locked: *.csv, exports/, and package-lock.json gitignored. PropStream skip-trace CSVs contain PII and must NEVER be committed — git history confirmed clean, no .csv ever tracked. pnpm-lock.yaml is the authoritative lockfile; package-lock.json untracked (on disk, gitignored). Property_Export CSV stays on disk, gitignored, not deleted. deno.lock (Netlify CLI edge-functions bootstrap cache, local-dev-only noise) now gitignored too.
-Netlify: Personal plan ($9/mo, 1,000 credits, auto-recharge OFF). Live projects: app.investorautomationos.com, investorautomationos.com, turnovercost.com.
+Repo hygiene locked: *.csv, exports/, package-lock.json, *.zip all gitignored. PropStream skip-trace CSVs contain PII and must NEVER be committed — git history confirmed clean, no .csv ever tracked. pnpm-lock.yaml is the authoritative lockfile; package-lock.json untracked (on disk, gitignored). Property_Export CSV stays on disk, gitignored, not deleted. deno.lock (Netlify CLI edge-functions bootstrap cache, local-dev-only noise) now gitignored too.
+Netlify: Personal plan ($9/mo, 1,000 credits, auto-recharge OFF). Live projects: app.investorautomationos.com (iaos-app — functions live here), investorautomationos.com (marketing), turnovercost.com. FUNCTION ENV VARS MUST BE SET ON iaos-app, NOT on the marketing project.
 Local .env: root .env stays a single clean line (GHL_PRIVATE_API_KEY only). app/.env ALSO now holds a copy of that same line — netlify dev resolves env relative to its own base directory, not repo root, so the app-site functions need their own copy for local testing (§11). Both gitignored.
-V9 master reference committed alone (9714c20) and pushed. (This V10 supersedes it — commit + push V10 to docs/.)
+V10 master reference committed (b7c7e65) and pushed. (This V10.1 supersedes it.)
 GHL TOKEN ROTATION (from V9, presumed complete): the new token (pit-6a78…) auto-became primary and the old exposed token (pit-6b17…) auto-expired per GHL's rotation window. No further action noted this session.
+Resend: account bradthompsonconsulting (brad@bradthompsonconsulting.com). Verified domain: mailers.investorautomationos.com (DNS at Namecheap: DKIM TXT on resend._domainkey.mailers, SPF TXT on send.mailers, MX on send.mailers). API key name: "IAOS Mailer Digest."
