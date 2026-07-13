@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  AlertCircle, Clock, FileCheck, Mail as MailIcon, ShieldAlert, CalendarClock,
+  AlertCircle, Clock, FileCheck, Mail as MailIcon, Inbox, CalendarClock,
   ChevronDown, Flame, Sun, Snowflake, PhoneCall, StickyNote, ExternalLink,
 } from "lucide-react";
 import {
   ghl, getBucketTag,
   type ContactRow, type MailerDigest, type PipelineData, type BucketTag,
+  type UnansweredInboundRow,
 } from "../lib/ghl";
 
 /**
@@ -168,19 +169,26 @@ function Tile({
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const [contacts, setContacts]   = useState<ContactRow[] | null>(null);
-  const [digest, setDigest]       = useState<MailerDigest | null>(null);
-  const [pipeline, setPipeline]   = useState<PipelineData | null>(null);
-  const [error, setError]         = useState<string | null>(null);
-  const [newSince, setNewSince]   = useState<number | null>(null);
-  const [expanded, setExpanded]   = useState<"tasks" | "offers" | null>(null);
+  const [contacts, setContacts]     = useState<ContactRow[] | null>(null);
+  const [digest, setDigest]         = useState<MailerDigest | null>(null);
+  const [pipeline, setPipeline]     = useState<PipelineData | null>(null);
+  const [unanswered, setUnanswered] = useState<UnansweredInboundRow[] | null>(null);
+  const [error, setError]           = useState<string | null>(null);
+  const [newSince, setNewSince]     = useState<number | null>(null);
+  const [expanded, setExpanded]     = useState<"tasks" | "offers" | null>(null);
 
   useEffect(() => {
-    Promise.all([ghl.contacts.listAll(), ghl.mailers.list(), ghl.opportunities.listPipeline()])
-      .then(([c, d, p]) => {
+    Promise.all([
+      ghl.contacts.listAll(),
+      ghl.mailers.list(),
+      ghl.opportunities.listPipeline(),
+      ghl.conversations.unansweredInbound(),
+    ])
+      .then(([c, d, p, u]) => {
         setContacts(c);
         setDigest(d);
         setPipeline(p);
+        setUnanswered(u);
 
         const prevVisit = localStorage.getItem(LAST_VISIT_KEY);
         setNewSince(prevVisit ? c.filter((row) => row.dateAdded && row.dateAdded > prevVisit).length : 0);
@@ -189,7 +197,7 @@ export default function Dashboard() {
       .catch((e: Error) => setError(e.message));
   }, []);
 
-  const loading = !contacts || !digest || !pipeline;
+  const loading = !contacts || !digest || !pipeline || !unanswered;
   const today = useMemo(() => todayCT(), []);
 
   // Tile 1 — Tasks due today: every mailer-cadence task (the only task type
@@ -346,19 +354,48 @@ export default function Dashboard() {
       {/* 2. Waiting on me */}
       <SectionHeading>Waiting on Me</SectionHeading>
       <div style={{ marginBottom: "28px" }}>
-        {/* 2.1 Unanswered inbound — blocked, not built */}
-        <Card tone="warn" style={{ marginBottom: "10px", display: "flex", gap: "10px", alignItems: "flex-start" }}>
-          <ShieldAlert size={16} style={{ color: "#F59E0B", marginTop: "1px", flexShrink: 0 }} />
-          <div>
-            <div style={{ fontSize: "13px", fontWeight: 600, color: "#F1F5F9" }}>Unanswered inbound — blocked</div>
-            <div style={{ fontSize: "12px", color: "#64748B", marginTop: "2px" }}>
-              The GHL private-integration token isn't authorized for Conversations (confirmed live: GET /conversations/search
-              returned 401 "not authorized for this scope" this session). Reading unanswered inbound replies needs that
-              scope granted on GHL's side first — this sub-section can't populate without it, so it's left empty rather
-              than guessed. Highest-priority item once the scope is added.
-            </div>
+        {/* 2.1 Unanswered inbound — HIGHEST priority, top of the entire queue (spec §2.1) */}
+        <SectionHeading count={unanswered?.length ?? 0}>Unanswered Inbound</SectionHeading>
+        <p style={{ fontSize: "11px", color: "#334155", margin: "-4px 0 10px" }}>
+          Oldest unanswered reply first — the seller ignored longest is closest to giving up.
+        </p>
+        {loading ? (
+          <Card tone="muted" style={{ marginBottom: "10px" }}>
+            <p style={{ fontSize: "12px", color: "#334155", margin: 0 }}>Loading…</p>
+          </Card>
+        ) : (unanswered?.length ?? 0) === 0 ? (
+          <Card tone="muted" style={{ marginBottom: "10px", display: "flex", gap: "10px", alignItems: "flex-start" }}>
+            <Inbox size={16} style={{ color: "#475569", marginTop: "1px", flexShrink: 0 }} />
+            <p style={{ fontSize: "12px", color: "#64748B", margin: 0 }}>No unanswered inbound replies right now.</p>
+          </Card>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
+            {unanswered!.map((r) => {
+              const days = Math.floor((Date.now() - r.lastMessageDate) / 86_400_000);
+              return (
+                <Card key={r.conversationId} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
+                  <Inbox size={15} style={{ color: "#F59E0B", flexShrink: 0 }} />
+                  <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>
+                    {r.contactName}
+                  </span>
+                  <span style={{ fontSize: "12px", color: "#64748B", whiteSpace: "nowrap" }}>
+                    {r.phone || r.email || "—"}
+                  </span>
+                  <span style={{ fontSize: "12px", color: "#94A3B8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+                    {r.preview || <em style={{ color: "#334155" }}>(no preview)</em>}
+                  </span>
+                  <span style={{
+                    marginLeft: "auto", fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
+                    background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.35)", color: "#F59E0B",
+                    whiteSpace: "nowrap",
+                  }}>
+                    waiting {days}d
+                  </span>
+                </Card>
+              );
+            })}
           </div>
-        </Card>
+        )}
 
         {/* 2.2 Callbacks — field doesn't exist yet, wired for layout only */}
         <Card tone="muted" style={{ marginBottom: "10px", display: "flex", gap: "10px", alignItems: "flex-start" }}>

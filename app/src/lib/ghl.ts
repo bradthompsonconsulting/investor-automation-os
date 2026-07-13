@@ -95,6 +95,19 @@ export interface MailerDigest {
   };
 }
 
+// ── Conversations types ───────────────────────────────────────────────────────
+
+export interface UnansweredInboundRow {
+  conversationId:  string;
+  contactId:       string;
+  contactName:     string;
+  phone:           string;
+  email:           string;
+  lastMessageDate: number;
+  preview:         string;
+  unreadCount:     number;
+}
+
 // ── Pipeline types ────────────────────────────────────────────────────────────
 
 export interface PipelineStage {
@@ -204,6 +217,19 @@ export const ghl = {
     // stays tied to the deliberate Pipeline-page "Move to" action (V7 §14d).
     saveOfferFields: (opportunityId: string, customFields: { id: string; field_value: unknown }[]) =>
       request<any>(`/opportunities/${opportunityId}`, "PUT", { customFields }),
+  },
+
+  conversations: {
+    // Dashboard §2.1 — conversations whose last message is inbound with no
+    // outbound reply since, oldest first. Read-only: GET /conversations/search.
+    unansweredInbound: async (): Promise<UnansweredInboundRow[]> => {
+      const res = await fetch("/.netlify/functions/ghl-conversations");
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`ghl-conversations → ${res.status}: ${text}`);
+      }
+      return res.json() as Promise<UnansweredInboundRow[]>;
+    },
   },
 
   mailers: {
