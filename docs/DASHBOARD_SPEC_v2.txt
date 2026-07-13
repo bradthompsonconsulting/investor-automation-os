@@ -142,9 +142,14 @@ the new-client onboarding checklist (maintained outside this repo).
 BUILD PHASING (est. 2-4 Jeff sessions)
   Phase 1 — Read dashboard shell: action tiles, call queue (sort+phone filter), pipeline
             health strip. All read-only. No calling, no writes. Fully testable alone.
-  Phase 2 — Notes write (new-note-per-attempt, autosave-on-blur) + last_call_attempt marker +
-            grey-out/12h-reset + Lead-Queue rename + layout reorder (Pipeline Health up,
-            Waiting-on-Me above Lead Queue) + 15-row cap + escalation-out on inbound.
+  Phase 2 (Build 2A) — ✅ SHIPPED & VERIFIED LIVE. Notes write (new-note-per-attempt,
+            autosave-on-blur) + last_call_attempt marker + grey-out/12h-reset + Lead-Queue
+            rename + layout reorder (Pipeline Health up, Waiting-on-Me above Lead Queue) +
+            15-row cap + escalation-out on inbound + read-only Callbacks sub-section. Verified
+            live via Playwright against production: auto-focus-on-open, Call-click doesn't
+            steal focus, and a real note save on Neelima Bale produced exactly the two allowed
+            writes (POST note + PUT last_call_attempt only, tags/stage untouched). Test note
+            deleted after verification. Click-to-call and callback scheduling remain Phase 2B/3.
   Phase 3 — Callback scheduling (calendar popup) + the "Waiting on me" group (inbound,
             overdue/today callbacks). Offers-awaiting only if a clean read signal exists.
   Phase 4 — Click-to-call button + call_mode toggle (A/B). Ends with the LIVE TEST CALL
@@ -158,3 +163,12 @@ OPEN ITEMS (resolve before or during the phase that needs them; do NOT guess)
   2. Offers-awaiting-response: confirm whether a no-write read signal for "offer sent"
      exists. If not, stays DEFERRED. (Needed Phase 3.)
   3. Live test call: first outbound from +1 972-954-8586 — walk through together. (Phase 4.)
+  4. last_call_attempt date/time precision: ACCEPTED LIMITATION (Build 2A live verification,
+     Neelima Bale test note). GHL's last_call_attempt field is typed DATE, not DATETIME — it
+     silently truncates the time-of-day on write, storing e.g. "2026-07-13" even though the
+     app sends a full ISO timestamp. The 12h grey/un-grey window is exact within a single
+     browser session (an in-memory timestamp override carries the real time), but after a
+     reload the app re-derives last_call_attempt from GHL's date-only value, losing hour-level
+     precision across sessions. Accepted as-is: dialing stays inside 8am-8pm, so the 12h window
+     never straddles a date boundary in practice. Revisit only if calling hours ever expand
+     past midnight-crossing territory.
