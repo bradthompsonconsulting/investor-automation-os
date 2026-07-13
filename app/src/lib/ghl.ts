@@ -19,6 +19,11 @@ const PROXY       = "/.netlify/functions/ghl-proxy";
 // writes outside the already-established offer_/stage/task write paths.
 const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
 
+// Dashboard Phase 3 — the third and last scoped write (spec guardrails).
+// DATE type, contact model, same ID already used for the read side (§14f note:
+// this field predates Phase 3's write — Build 2A only read it).
+const CALLBACK_DATETIME_ID = "JeQWtwpwUbvPA50UfuPU";
+
 // Dashboard Phase 2B — GHL's public API cannot trigger an outbound call (it
 // can only log one that already happened); the click-to-call button hands off
 // to GHL's own contact page, where GHL's native dialer applies the Number's
@@ -202,6 +207,15 @@ export const ghl = {
     setLastCallAttempt: (contactId: string, iso: string) =>
       request<any>(`/contacts/${contactId}`, "PUT", {
         customFields: [{ id: LAST_CALL_ATTEMPT_ID, field_value: iso }],
+      }),
+
+    // Dashboard Phase 3 — the schedule-callback control. Body carries ONLY the
+    // one customFields entry, same minimal-PUT guardrail as setLastCallAttempt.
+    // Pass null (not "") to clear — GHL silently ignores an empty string on a
+    // DATE field.
+    setCallbackDatetime: (contactId: string, iso: string | null) =>
+      request<any>(`/contacts/${contactId}`, "PUT", {
+        customFields: [{ id: CALLBACK_DATETIME_ID, field_value: iso }],
       }),
   },
 

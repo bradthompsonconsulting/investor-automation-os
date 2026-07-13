@@ -11,16 +11,21 @@ import {
 } from "../lib/ghl";
 
 /**
- * Dashboard — Build 2A + 2B per docs/DASHBOARD_SPEC_v2.txt.
- * Writes allowed, and ONLY these two (both fire together on note-save):
- *   1. ghl.notes.create()            -> POST /contacts/{id}/notes
- *   2. ghl.contacts.setLastCallAttempt() -> PUT /contacts/{id} (last_call_attempt only)
+ * Dashboard — Build 2A + 2B + Phase 3 per docs/DASHBOARD_SPEC_v2.txt.
+ * Writes allowed, and ONLY these three:
+ *   1. ghl.notes.create()               -> POST /contacts/{id}/notes
+ *   2. ghl.contacts.setLastCallAttempt() -> PUT /contacts/{id} (last_call_attempt only,
+ *      fires together with #1 the instant a note saves)
+ *   3. ghl.contacts.setCallbackDatetime() -> PUT /contacts/{id} (callback_datetime only,
+ *      fires only from the schedule-callback popover — independent of #1/#2)
  * Everything else on this page is read-only. GHL's public API cannot trigger
  * an outbound call (only log one after the fact), so the Call button opens
  * the contact's GHL page in a new tab (window.open — no GHL API call at all)
  * where GHL's native dialer applies the Number's own softphone/forward
  * config. Opening that tab is independent of the attempt system: it never
  * sets last_call_attempt or greys a row — only a saved note does that.
+ * Scheduling a callback is likewise independent of the attempt system: it
+ * never sets last_call_attempt or greys a row either.
  * call_mode/call_forward_number custom values exist in GHL but are
  * intentionally unused here — GHL's own dialer reads its own Number config,
  * not our custom values, so there's nothing for this app to branch on.
@@ -91,6 +96,15 @@ function formatCallbackTime(iso: string): string {
   });
 }
 
+// <input type="datetime-local"> is inherently browser-local time — no explicit
+// timezone conversion needed here (Brad's browser is already Central), just a
+// straight local-time round-trip via the Date object's local getters/parsing.
+function toDatetimeLocalValue(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function TierBadge({ tier }: { tier: BucketTag }) {
   const color = TIER_COLOR[tier];
   const Icon = TIER_ICON[tier];
@@ -124,6 +138,83 @@ function ScoreChip({ score }: { score: number | null }) {
     }}>
       {score ?? "—"}
     </span>
+  );
+}
+
+// Schedule-callback popover — Phase 3's write control. Save/Clear are the
+// only two actions; both are single-field PUTs via setCallbackDatetime.
+// Deliberately does NOT use the Call button's no-steal-focus treatment: this
+// is its own intentional action, not something that should coexist silently
+// with mid-note typing, so letting it blur (and save) an open note is fine.
+function CallbackPopover({
+  current, saving, error, onSave, onClear, onClose,
+}: {
+  current: string | null;
+  saving: boolean;
+  error: string | null;
+  onSave: (iso: string) => void;
+  onClear: () => void;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(current ? toDatetimeLocalValue(current) : "");
+  return (
+    <div
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20, minWidth: "220px",
+        background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "8px",
+        padding: "10px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+      }}
+    >
+      <input
+        type="datetime-local"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        disabled={saving}
+        style={{
+          width: "100%", fontSize: "12px", padding: "5px 7px", borderRadius: "6px",
+          border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.04)", color: "#F1F5F9",
+        }}
+      />
+      <div style={{ display: "flex", gap: "6px", marginTop: "8px" }}>
+        <button
+          disabled={!value || saving}
+          onClick={() => onSave(new Date(value).toISOString())}
+          style={{
+            fontSize: "11px", fontWeight: 600, padding: "5px 10px", borderRadius: "6px", border: "none",
+            background: !value || saving ? "rgba(30,200,255,0.08)" : "rgba(30,200,255,0.18)",
+            color: !value || saving ? "#334155" : "#1EC8FF", cursor: !value || saving ? "not-allowed" : "pointer",
+          }}
+        >
+          Save
+        </button>
+        {current && (
+          <button
+            disabled={saving}
+            onClick={onClear}
+            style={{
+              fontSize: "11px", fontWeight: 600, padding: "5px 10px", borderRadius: "6px",
+              border: "1px solid rgba(239,68,68,0.3)", background: "rgba(239,68,68,0.08)", color: "#F87171",
+              cursor: saving ? "not-allowed" : "pointer",
+            }}
+          >
+            Clear
+          </button>
+        )}
+        <button
+          disabled={saving}
+          onClick={onClose}
+          style={{
+            fontSize: "11px", fontWeight: 600, padding: "5px 10px", borderRadius: "6px",
+            border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#64748B",
+            cursor: saving ? "not-allowed" : "pointer", marginLeft: "auto",
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+      {error && <div style={{ fontSize: "10px", color: "#F87171", marginTop: "6px" }}>{error}</div>}
+    </div>
   );
 }
 
@@ -231,6 +322,32 @@ export default function Dashboard() {
   const [openContactId, setOpenContactId]   = useState<string | null>(null);
   const noteInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
+  // Phase 3 — schedule-callback popover state. Only one popover open at a
+  // time, keyed by contactId regardless of which section (Lead Queue or
+  // Waiting on Me) triggered it.
+  const [callbackOverride, setCallbackOverride] = useState<Record<string, string | null>>({});
+  const [callbackPopoverId, setCallbackPopoverId] = useState<string | null>(null);
+  const [callbackSaving, setCallbackSaving]     = useState(false);
+  const [callbackError, setCallbackError]       = useState<string | null>(null);
+
+  function effectiveCallback(c: ContactRow): string | null {
+    return c.id in callbackOverride ? callbackOverride[c.id] : c.callbackDatetime;
+  }
+
+  async function handleSaveCallback(contactId: string, iso: string | null) {
+    setCallbackSaving(true);
+    setCallbackError(null);
+    try {
+      await ghl.contacts.setCallbackDatetime(contactId, iso);
+      setCallbackOverride((prev) => ({ ...prev, [contactId]: iso }));
+      setCallbackPopoverId(null);
+    } catch (e) {
+      setCallbackError((e as Error).message);
+    } finally {
+      setCallbackSaving(false);
+    }
+  }
+
   // Periodic re-render only — lets the 12h auto-reset move a row out of BAND 3
   // without requiring a reload while the page is left open.
   const [nowTick, setNowTick] = useState(0);
@@ -304,17 +421,21 @@ export default function Dashboard() {
         !!row.contact?.tags.includes("offer-made"));
   }, [pipeline, contacts, sellerOfferSentStageId]);
 
-  // Waiting-on-me 3.2 — callbacks, read-only this build. Overdue = scheduled
-  // before today's CT calendar date; Today = scheduled on today's CT date.
-  // Future-dated callbacks aren't due yet, so they're excluded from both lists.
+  // Waiting-on-me 3.2 — callbacks. Overdue = scheduled before today's CT
+  // calendar date; Today = scheduled on today's CT date. Future-dated
+  // callbacks aren't due yet, so they're excluded from both lists. Scheduling
+  // (Phase 3) writes callback_datetime via the popover below.
   const callbacks = useMemo(() => {
-    const withCb = (contacts ?? []).filter((c) => c.callbackDatetime);
-    const byTime = (a: ContactRow, b: ContactRow) =>
-      new Date(a.callbackDatetime!).getTime() - new Date(b.callbackDatetime!).getTime();
-    const overdue = withCb.filter((c) => ctDateString(new Date(c.callbackDatetime!)) < today).sort(byTime);
-    const dueToday = withCb.filter((c) => ctDateString(new Date(c.callbackDatetime!)) === today).sort(byTime);
+    const withCb = (contacts ?? [])
+      .map((c) => ({ contact: c, cb: effectiveCallback(c) }))
+      .filter((x): x is { contact: ContactRow; cb: string } => !!x.cb);
+    const byTime = (a: typeof withCb[number], b: typeof withCb[number]) =>
+      new Date(a.cb).getTime() - new Date(b.cb).getTime();
+    const overdue = withCb.filter((x) => ctDateString(new Date(x.cb)) < today).sort(byTime);
+    const dueToday = withCb.filter((x) => ctDateString(new Date(x.cb)) === today).sort(byTime);
     return { overdue, dueToday };
-  }, [contacts, today]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contacts, today, callbackOverride]);
 
   // Escalation out (§3 / §4 "Escalation out") — anyone with a live unanswered
   // inbound signal leaves the Lead Queue entirely; they already surface under
@@ -433,8 +554,9 @@ export default function Dashboard() {
         )}
       </div>
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 18px" }}>
-        What needs your attention today. Only two writes happen anywhere on this page: saving a note, and marking a
-        call attempt the instant a note saves. Nothing here sends, enrolls, re-tags, or moves a stage.
+        What needs your attention today. Only three writes happen anywhere on this page: saving a note, marking a
+        call attempt the instant a note saves, and scheduling/clearing a callback. Nothing here sends, enrolls,
+        re-tags, or moves a stage.
       </p>
 
       {/* 1. Action tiles */}
@@ -563,7 +685,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* 3.2 Callbacks — read-only this build; scheduling (writing callback_datetime) is 2B */}
+        {/* 3.2 Callbacks — scheduling (writing callback_datetime) is Phase 3 */}
         <SectionHeading count={callbacks.overdue.length + callbacks.dueToday.length}>Callbacks</SectionHeading>
         {callbacks.overdue.length === 0 && callbacks.dueToday.length === 0 ? (
           <Card tone="muted" style={{ marginBottom: "10px", display: "flex", gap: "10px", alignItems: "flex-start" }}>
@@ -572,30 +694,68 @@ export default function Dashboard() {
           </Card>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
-            {callbacks.overdue.map((c) => (
+            {callbacks.overdue.map(({ contact: c, cb }) => (
               <Card key={c.id} tone="warn" style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
                 <CalendarClock size={15} style={{ color: "#F87171", flexShrink: 0 }} />
                 <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>{contactName(c)}</span>
                 <span style={{ fontSize: "12px", color: "#64748B" }}>{c.phone || "—"}</span>
                 <span style={{
-                  marginLeft: "auto", fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
+                  fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
                   background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)", color: "#F87171",
                 }}>
-                  Overdue — {formatCallbackTime(c.callbackDatetime!)}
+                  Overdue — {formatCallbackTime(cb)}
                 </span>
+                <div style={{ position: "relative", marginLeft: "auto" }}>
+                  <button
+                    onClick={() => { setCallbackPopoverId((v) => (v === c.id ? null : c.id)); setCallbackError(null); }}
+                    style={{
+                      fontSize: "11px", fontWeight: 600, padding: "5px 9px", borderRadius: "7px",
+                      border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#1EC8FF", cursor: "pointer",
+                    }}
+                  >
+                    Reschedule
+                  </button>
+                  {callbackPopoverId === c.id && (
+                    <CallbackPopover
+                      current={cb} saving={callbackSaving} error={callbackError}
+                      onSave={(iso) => handleSaveCallback(c.id, iso)}
+                      onClear={() => handleSaveCallback(c.id, null)}
+                      onClose={() => setCallbackPopoverId(null)}
+                    />
+                  )}
+                </div>
               </Card>
             ))}
-            {callbacks.dueToday.map((c) => (
+            {callbacks.dueToday.map(({ contact: c, cb }) => (
               <Card key={c.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
                 <CalendarClock size={15} style={{ color: "#1EC8FF", flexShrink: 0 }} />
                 <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>{contactName(c)}</span>
                 <span style={{ fontSize: "12px", color: "#64748B" }}>{c.phone || "—"}</span>
                 <span style={{
-                  marginLeft: "auto", fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
+                  fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
                   background: "rgba(30,200,255,0.12)", border: "1px solid rgba(30,200,255,0.35)", color: "#1EC8FF",
                 }}>
-                  Today — {formatCallbackTime(c.callbackDatetime!)}
+                  Today — {formatCallbackTime(cb)}
                 </span>
+                <div style={{ position: "relative", marginLeft: "auto" }}>
+                  <button
+                    onClick={() => { setCallbackPopoverId((v) => (v === c.id ? null : c.id)); setCallbackError(null); }}
+                    style={{
+                      fontSize: "11px", fontWeight: 600, padding: "5px 9px", borderRadius: "7px",
+                      border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#1EC8FF", cursor: "pointer",
+                    }}
+                  >
+                    Reschedule
+                  </button>
+                  {callbackPopoverId === c.id && (
+                    <CallbackPopover
+                      current={cb} saving={callbackSaving} error={callbackError}
+                      onSave={(iso) => handleSaveCallback(c.id, iso)}
+                      onClear={() => handleSaveCallback(c.id, null)}
+                      onClose={() => setCallbackPopoverId(null)}
+                    />
+                  )}
+                </div>
               </Card>
             ))}
           </div>
@@ -629,10 +789,10 @@ export default function Dashboard() {
       <SectionHeading count={leadQueue.length}>Lead Queue</SectionHeading>
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 12px", maxWidth: "820px" }}>
         Attempted-but-no-response (oldest attempt first) → never-attempted (tier + score, mailer-overdue bubbles to
-        tier top) → freshly-attempted (greyed, bottom). A note is the only thing that marks an attempt — the Call
-        button is dial-only this build and never greys a row. Anyone who's engaged (e.g. an unanswered inbound reply)
-        moves to Waiting on Me and drops out of this list. Showing {Math.min(RESURFACE_VISIBLE_ROWS, leadQueue.length)}
-        {" "}of {leadQueue.length} — scroll for the rest.
+        tier top) → freshly-attempted (greyed, bottom). A note is the only thing that marks an attempt — Call opens
+        GHL to dial and the callback icon schedules a follow-up, but neither one greys a row on its own. Anyone who's
+        engaged (e.g. an unanswered inbound reply) moves to Waiting on Me and drops out of this list. Showing{" "}
+        {Math.min(RESURFACE_VISIBLE_ROWS, leadQueue.length)} of {leadQueue.length} — scroll for the rest.
       </p>
       <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>
         <div style={{ overflow: "auto", maxHeight: `${RESURFACE_VISIBLE_ROWS * 44}px` }}>
@@ -656,6 +816,7 @@ export default function Dashboard() {
                   const greyed = band === 3;
                   const isOpen = openContactId === c.id;
                   const err = saveError[c.id];
+                  const cb = effectiveCallback(c);
                   return (
                     <tr
                       key={c.id}
@@ -673,6 +834,11 @@ export default function Dashboard() {
                             OVERDUE
                           </span>
                         )}
+                        {cb && (
+                          <span style={{ marginLeft: "6px", fontSize: "10px", fontWeight: 600, color: "#1EC8FF" }} title={`Callback scheduled: ${formatCallbackTime(cb)}`}>
+                            CALLBACK {formatCallbackTime(cb)}
+                          </span>
+                        )}
                       </td>
                       <td style={{ padding: "9px 16px", color: "#94A3B8", fontSize: "13px", whiteSpace: "nowrap" }}>{c.phone || "—"}</td>
                       <td style={{ padding: "9px 16px" }}><TierBadge tier={tier} /></td>
@@ -682,22 +848,50 @@ export default function Dashboard() {
                         {attempt ? `Attempted ${relativeTime(attempt)}` : "Not yet contacted"}
                       </td>
                       <td style={{ padding: "9px 16px" }}>
-                        <button
-                          tabIndex={-1}
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            window.open(ghlContactDetailUrl(c.id), "_blank", "noopener,noreferrer");
-                          }}
-                          title="Open in GHL to call — uses the verified 972-954-8586 number"
-                          style={{
-                            display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
-                            padding: "5px 9px", borderRadius: "7px", border: "1px solid rgba(30,200,255,0.25)",
-                            background: "rgba(30,200,255,0.06)", color: "#1EC8FF", cursor: "pointer",
-                          }}
-                        >
-                          <PhoneCall size={12} /> Call
-                        </button>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <button
+                            tabIndex={-1}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              window.open(ghlContactDetailUrl(c.id), "_blank", "noopener,noreferrer");
+                            }}
+                            title="Open in GHL to call — uses the verified 972-954-8586 number"
+                            style={{
+                              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
+                              padding: "5px 9px", borderRadius: "7px", border: "1px solid rgba(30,200,255,0.25)",
+                              background: "rgba(30,200,255,0.06)", color: "#1EC8FF", cursor: "pointer",
+                            }}
+                          >
+                            <PhoneCall size={12} /> Call
+                          </button>
+                          <div style={{ position: "relative" }}>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setCallbackPopoverId((v) => (v === c.id ? null : c.id));
+                                setCallbackError(null);
+                              }}
+                              title={cb ? `Callback scheduled: ${formatCallbackTime(cb)} — click to reschedule` : "Schedule a callback"}
+                              style={{
+                                display: "inline-flex", alignItems: "center", padding: "5px 7px", borderRadius: "7px",
+                                border: "1px solid rgba(255,255,255,0.1)",
+                                background: cb ? "rgba(30,200,255,0.1)" : "transparent",
+                                color: cb ? "#1EC8FF" : "#475569", cursor: "pointer",
+                              }}
+                            >
+                              <CalendarClock size={12} />
+                            </button>
+                            {callbackPopoverId === c.id && (
+                              <CallbackPopover
+                                current={cb} saving={callbackSaving} error={callbackError}
+                                onSave={(iso) => handleSaveCallback(c.id, iso)}
+                                onClear={() => handleSaveCallback(c.id, null)}
+                                onClose={() => setCallbackPopoverId(null)}
+                              />
+                            )}
+                          </div>
+                        </div>
                       </td>
                       <td style={{ padding: "9px 16px", minWidth: "200px" }} onClick={(e) => e.stopPropagation()}>
                         <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>

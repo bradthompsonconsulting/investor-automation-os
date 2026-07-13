@@ -168,8 +168,16 @@ BUILD PHASING (est. 2-4 Jeff sessions)
             steal focus, and a real note save on Neelima Bale produced exactly the two allowed
             writes (POST note + PUT last_call_attempt only, tags/stage untouched). Test note
             deleted after verification. Click-to-call and callback scheduling remain Phase 2B/3.
-  Phase 3 — Callback scheduling (calendar popup) + the "Waiting on me" group (inbound,
-            overdue/today callbacks). Offers-awaiting only if a clean read signal exists.
+  Phase 3 — ✅ SHIPPED. Callback scheduling: a calendar+time popup (native
+            <input type="datetime-local">) on each Lead Queue row and on each Waiting-on-Me
+            Callbacks row, writing callback_datetime via the third and last scoped write
+            (ghl.contacts.setCallbackDatetime — single-field PUT, same minimal-PUT guardrail
+            as setLastCallAttempt; Clear sends null, not ""). Independent of the attempt
+            system: scheduling/clearing a callback never sets last_call_attempt or greys a
+            row. Lead Queue rows show a small CALLBACK badge next to the name when one's set.
+            The "Waiting on me" inbound/overdue/today callback group itself was already live
+            since Build 2A (read side) — this phase added the write. Offers-awaiting was
+            already resolved via a clean read signal in Build 2A (§3.3).
   Phase 4 (Build 2B) — ✅ SHIPPED. Click-to-call, revised: GHL's API can't trigger a real
             outbound call (researched, see CALLING section), so the button opens the
             contact's GHL page in a new tab instead of an in-app dial + call_mode toggle.
