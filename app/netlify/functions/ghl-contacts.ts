@@ -17,6 +17,11 @@ const SCORE_IDS = {
   data_completeness_score: "r9sD1rlTIqhOx9Mhvftt",
 };
 
+// Contact-side offer_price (§14e OFFER_FIELD_IDS.contact.offer_price in
+// MaoCalculator.tsx) — read-only here, used by the Dashboard's "Offers to
+// review" tile to detect a saved-but-unsent offer. Never written by this function.
+const OFFER_PRICE_ID = "v2VO2wUwTYRojmU7VXyZ";
+
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Headers": "Content-Type",
@@ -68,7 +73,7 @@ export const handler = async (event: any) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: CORS, body: "" };
   if (event.httpMethod !== "GET") return { statusCode: 405, headers: CORS, body: "Method Not Allowed" };
 
-  const token = process.env.GHL_API_TOKEN;
+  const token = process.env.GHL_PRIVATE_API_KEY ?? process.env.GHL_API_TOKEN;
   if (!token) {
     return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: "GHL_API_TOKEN not configured" }) };
   }
@@ -94,6 +99,7 @@ export const handler = async (event: any) => {
         dealScore:          cfValue(cf, SCORE_IDS.deal_score),
         combinedScore:      cfValue(cf, SCORE_IDS.combined_score),
         completenessScore:  cfValue(cf, SCORE_IDS.data_completeness_score),
+        offerPrice:         cfValue(cf, OFFER_PRICE_ID),
       };
     });
 

@@ -32,6 +32,9 @@ export interface ContactRow {
   dealScore:         number | null;
   combinedScore:     number | null;
   completenessScore: number | null;
+  // Contact-side offer_price (§14e) — non-null once a MAO offer has been saved
+  // via the calculator. Read-only signal for the Dashboard's "Offers to review" tile.
+  offerPrice:        number | null;
 }
 
 // ── Bucket tag helpers ────────────────────────────────────────────────────────

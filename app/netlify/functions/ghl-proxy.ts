@@ -35,7 +35,7 @@ export const handler = async (event: any) => {
   const res = await fetch(url, {
     method: event.httpMethod,
     headers: {
-      Authorization: `Bearer ${process.env.GHL_API_TOKEN}`,
+      Authorization: `Bearer ${process.env.GHL_PRIVATE_API_KEY ?? process.env.GHL_API_TOKEN}`,
       Version: "2021-07-28",
       "Content-Type": "application/json",
     },
