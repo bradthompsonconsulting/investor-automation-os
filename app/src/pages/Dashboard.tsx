@@ -5,19 +5,25 @@ import {
   ChevronDown, Flame, Sun, Snowflake, PhoneCall, StickyNote, ExternalLink,
 } from "lucide-react";
 import {
-  ghl, getBucketTag,
+  ghl, getBucketTag, ghlContactDetailUrl,
   type ContactRow, type MailerDigest, type PipelineData, type BucketTag,
   type UnansweredInboundRow,
 } from "../lib/ghl";
 
 /**
- * Dashboard — Build 2A per docs/DASHBOARD_SPEC_v2.txt.
+ * Dashboard — Build 2A + 2B per docs/DASHBOARD_SPEC_v2.txt.
  * Writes allowed, and ONLY these two (both fire together on note-save):
  *   1. ghl.notes.create()            -> POST /contacts/{id}/notes
  *   2. ghl.contacts.setLastCallAttempt() -> PUT /contacts/{id} (last_call_attempt only)
- * Everything else on this page is read-only. Click-to-call and callback
- * scheduling (writing callback_datetime) are 2B — the Call button here is a
- * dial-only placeholder that never sets an attempt or greys a row.
+ * Everything else on this page is read-only. GHL's public API cannot trigger
+ * an outbound call (only log one after the fact), so the Call button opens
+ * the contact's GHL page in a new tab (window.open — no GHL API call at all)
+ * where GHL's native dialer applies the Number's own softphone/forward
+ * config. Opening that tab is independent of the attempt system: it never
+ * sets last_call_attempt or greys a row — only a saved note does that.
+ * call_mode/call_forward_number custom values exist in GHL but are
+ * intentionally unused here — GHL's own dialer reads its own Number config,
+ * not our custom values, so there's nothing for this app to branch on.
  */
 
 // ── Tunables (single source of truth, per spec) ───────────────────────────────
@@ -679,8 +685,11 @@ export default function Dashboard() {
                         <button
                           tabIndex={-1}
                           onMouseDown={(e) => e.preventDefault()}
-                          onClick={(e) => e.stopPropagation()}
-                          title="Call — dial-only placeholder (real dialing wired in Phase 2B)"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            window.open(ghlContactDetailUrl(c.id), "_blank", "noopener,noreferrer");
+                          }}
+                          title="Open in GHL to call — uses the verified 972-954-8586 number"
                           style={{
                             display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
                             padding: "5px 9px", borderRadius: "7px", border: "1px solid rgba(30,200,255,0.25)",

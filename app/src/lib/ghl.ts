@@ -19,6 +19,14 @@ const PROXY       = "/.netlify/functions/ghl-proxy";
 // writes outside the already-established offer_/stage/task write paths.
 const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
 
+// Dashboard Phase 2B — GHL's public API cannot trigger an outbound call (it
+// can only log one that already happened); the click-to-call button hands off
+// to GHL's own contact page, where GHL's native dialer applies the Number's
+// own softphone/forward config. Pure string builder, no network call.
+export function ghlContactDetailUrl(contactId: string): string {
+  return `https://app.gohighlevel.com/v2/location/${LOCATION_ID}/contacts/detail/${contactId}`;
+}
+
 // ── Shared types ──────────────────────────────────────────────────────────────
 
 export interface ContactRow {
