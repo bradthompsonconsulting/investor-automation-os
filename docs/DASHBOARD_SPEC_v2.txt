@@ -1,0 +1,160 @@
+IAOS DASHBOARD — BUILD SPEC v2
+"What Needs Action" daily view. Companion to Master Architecture Reference V10.2. (v2: Phase-2 review — layout reorder, Call Queue renamed Lead Queue, resurface/grey-out rules, escalation, 15-row cap.)
+
+PURPOSE
+The default landing surface. Answers one question: what needs my attention right now.
+Two priority groups, in this order:
+  (A) They're waiting on ME  — inbound replies, overdue callbacks, today's callbacks,
+                               sent offers pending response.
+  (B) Who I should reach cold — the tier+score call queue.
+Layout enforces the order: group A always sits above group B so urgency is structural,
+not something Brad has to remember.
+
+GUARDRAILS (non-negotiable, same posture as the rest of IAOS)
+- GHL is system of record. Dashboard is READ-ONLY except the three scoped writes below.
+- Writes allowed:
+    1. Notes  -> POST to the contact Notes sub-resource (/contacts/{id}/notes). New note
+       per call attempt, never overwrite.
+    2. Callback date/time -> a dedicated custom field (see NEW FIELDS).
+    3. Attempt marker -> a dedicated custom field (see NEW FIELDS).
+- NEVER touches: tags, pipeline stage, offer_ fields, workflows. No Seller-7 / mail-exit.
+- All GHL access through the existing shared ghl.ts + ghl-proxy.ts. Token never client-side.
+- Clearing a NUMERICAL/DATE custom field uses null, not empty string (GHL ignores "").
+- NO MAO calculator surfaced anywhere on this page — no offer math, no "analyze" button.
+
+PAGE LAYOUT (top to bottom) — REVISED v2 per Brad's Phase-2 review
+
+Ordering principle: the most-missed content goes highest, because nobody scrolls to
+find it. Action tiles and Pipeline Health are glanceable status that must be "in your
+face"; Waiting on Me is the priority work; Lead Queue is the long cold list at the bottom.
+
+1. ACTION TILES (row of counts, read-only)
+   - Tasks due today
+   - Offers to review = contacts with saved offer_ fields but no offer yet sent.
+     (Count only. No offer values, no calculator link shown.)
+   - Mailers ready this week (reuse mailer-shared.ts)
+   - New since last login = badge, not a section.
+
+2. PIPELINE HEALTH STRIP (small, single row)
+   MOVED UP (was below the queue in v1). Rationale: it's glanceable status nobody would
+   scroll for, so it must sit high where it's seen. Contact counts per bucket + per
+   pipeline stage; "deals in active negotiation" folds in here. Read-only. Must stay
+   compact — one row, does not dominate.
+
+3. WAITING ON ME (priority work — anyone who has engaged)
+   A contact who has responded in ANY way (inbound SMS/email, seller-form submission,
+   and later a booked appointment) is REMOVED from the Lead Queue and escalated here.
+   They are never a cold call once they have engaged. Sub-groups in fixed priority order;
+   overdue-first sorts WITHIN a group, never across groups.
+   3.1 Unanswered inbound: inbound SMS/email in GHL Conversations with no outbound reply
+       since. SORT: OLDEST unanswered reply first (longest-waiting seller on top). LIVE.
+   3.2 Callbacks: overdue first (most overdue on top), then today by scheduled time.
+       Reads callback_datetime.
+   3.3 Offers awaiting seller response: offer SENT and in the waiting window (opportunity
+       in "Seller Offer Sent" stage carrying offer-made tag — no-write read signal). LIVE.
+   3.4 Appointments (FUTURE): booked calendar appointments. Deferred until Calendars phase.
+
+4. LEAD QUEUE (renamed from "Call Queue" — cold outreach, the long list at the bottom)
+   Contacts who have NOT engaged. Everything about the cold-call worklist lives here.
+   VISIBLE CAP: show ~15 rows; the remainder are reached by SCROLL within the section
+   (RESURFACE_VISIBLE_ROWS = 15, tunable). Do not render all 39+ at once.
+
+   SORT (three bands, top to bottom):
+     BAND 1 — Attempted-but-no-response, OLDEST last-attempt first. These are contacts
+       you have called at least once (last_call_attempt set) who have NOT engaged. The
+       one you called longest ago rises highest — persistence on touched leads beats
+       spraying brand-new ones. Sort ascending by last_call_attempt.
+     BAND 2 — Never-attempted, by tier + score (Hot -> Warm -> Low, score DESC within).
+       This is the original mailer-priority sort. Overdue-within-tier bubbles to top of
+       its tier.
+     BAND 3 — Freshly-attempted (GREYED), at the very bottom. See GREY-OUT below.
+
+   FILTER: has a valid phone. BUCKET-AGNOSTIC. Low-bucket contacts WITH a phone are IN
+   the queue (below Hot/Warm). Only address-only (no phone) are excluded from the queue.
+
+   ROW: name, phone, tier, score, address, last-contact indicator, Call button, Notes.
+
+   GREY-OUT / ATTEMPT STATE (Phase 2 core):
+   - THE NOTE IS THE ATTEMPT-OF-RECORD. "Attempted" is set ONLY when a note is saved.
+     Saving any non-empty note (1 character is enough, e.g. "." or "x") sets last_call_attempt
+     to now, writes a NEW timestamped GHL note, greys the row, and drops it to BAND 3.
+   - The Call button is INDEPENDENT and DIAL-ONLY. Clicking Call does NOT grey the row and
+     does NOT set attempted. A call with no note leaves the row UN-GREYED on purpose — the
+     visual nudge that the call has not been logged yet. Rationale (Brad): never allow a call
+     with no note in the system; and allow marking attempted WITHOUT calling (a note like
+     "bad number" or "try Thursday" is a valid attempt that greys the row without a dial).
+   - Opening a contact and even clicking Call, with NO note saved, does NOT grey it.
+   - NOTES FIELD AUTO-FOCUS: when a contact opens, the cursor auto-lands in the notes field
+     (no click needed) so Brad can type immediately. Cursor stays there until he clicks out.
+     Purpose: remove all friction from note entry, since the note is mandatory for an attempt
+     to register. Autosave on blur.
+   - CALL BUTTON MUST NOT STEAL FOCUS: clicking Call does NOT move the cursor out of the notes
+     field (build the button to not grab focus - mousedown preventDefault or tabIndex=-1). Brad
+     can be mid-note, click Call, and keep typing. Only clicking another input or empty space
+     blurs the notes field. Consequence (consistent): since Call does not blur, clicking Call
+     does NOT fire the autosave and does NOT create the attempt - the note saves only when Brad
+     actually clicks away. This matches the note-is-the-attempt rule exactly.
+   - On attempt, the row GREYS and drops to BAND 3 (bottom). Greyed rows stay VISIBLE at
+     the bottom (not hidden), reachable by scroll.
+   - Grey is INFORMATIONAL, NOT a lockout. It only signals "you already tried this one."
+     The row stays fully clickable; Brad can reopen and call again inside the window
+     anytime. Grey never prevents a callback.
+   - Clicking a greyed row OPENS the contact (edit notes / click-to-call again). It does
+     NOT un-grey. Only the timer un-greys it.
+   - 12-HOUR AUTO-RESET (RESURFACE_HOURS = 12, flat, tunable in ONE place): when
+     now - last_call_attempt >= 12h, the row auto-un-greys and rejoins the active sort
+     as if no attempt was made for ranking purposes — BUT all notes are KEPT (notes are
+     permanent GHL notes; only the visual attempt-state expires). After un-grey it re-enters
+     BAND 1 (attempted-but-no-response, oldest-first) since last_call_attempt still exists
+     and is now the oldest.
+   - Overnight everyone attempted resets, so each morning starts with a full active queue.
+
+   Escalation out (see WAITING ON ME §3): the instant a contact has an inbound signal,
+   they leave the Lead Queue entirely and appear under Waiting on Me. Phase 2 covers the
+   text/email signal (live via ghl-conversations). Seller-form and appointment signals are
+   added as those reads come online (form: confirm signal; appointment: Calendars phase).
+
+CALLING — Option A + Option B, investor-selectable
+Telephony is GHL/Lead Connector (Twilio underneath). Number +1 972-954-8586 is live, A2P
+verified, SHAKEN/STIR + CNAM + Voice Integrity all approved. Both call modes are a GHL
+setting, NOT two code paths — the click-to-call button is identical in both.
+   - Option A — Browser softphone (WebRTC): call rings in the browser, uses computer
+     mic/speakers. USB headset recommended (not required).
+   - Option B — Forward-to-phone: GHL rings Brad's cell/desk first, then bridges to the
+     seller. Set via the number's Forwarding Number field.
+   - IMPLEMENTATION: one custom value  call_mode  (values: softphone | forward) read
+     per-account at load, same pattern as mailer_digest_recipient (fixed ID in code,
+     per-account value). In forward mode, read a second custom value  call_forward_number
+     for the destination. Button behavior does not branch on mode — mode is a GHL/config
+     concern. This makes both modes available to future SaaS clients by config, zero rebuild.
+   - NO MAKE REQUIRED. GHL logs calls natively. Make is phase-2 ONLY if a call OUTCOME
+     should auto-trigger a workflow (e.g. no-answer -> auto next touch). Out of scope for v1.
+
+NEW GHL FIELDS / CUSTOM VALUES TO CREATE (Brad-side, before wiring)
+  - callback_datetime      custom field (DATE/date-time) on contact
+  - last_call_attempt      custom field (DATE) on contact — set when a note saves
+  - call_mode              custom value (softphone | forward), per-account
+  - call_forward_number    custom value (destination for forward mode)
+Follow the fixed-ID-in-code + per-account-value convention already used for
+mailer_digest_recipient. Add call_mode / call_forward_number / mailer_digest_recipient to
+the new-client onboarding checklist (maintained outside this repo).
+
+BUILD PHASING (est. 2-4 Jeff sessions)
+  Phase 1 — Read dashboard shell: action tiles, call queue (sort+phone filter), pipeline
+            health strip. All read-only. No calling, no writes. Fully testable alone.
+  Phase 2 — Notes write (new-note-per-attempt, autosave-on-blur) + last_call_attempt marker +
+            grey-out/12h-reset + Lead-Queue rename + layout reorder (Pipeline Health up,
+            Waiting-on-Me above Lead Queue) + 15-row cap + escalation-out on inbound.
+  Phase 3 — Callback scheduling (calendar popup) + the "Waiting on me" group (inbound,
+            overdue/today callbacks). Offers-awaiting only if a clean read signal exists.
+  Phase 4 — Click-to-call button + call_mode toggle (A/B). Ends with the LIVE TEST CALL
+            walkthrough — Brad's first outbound ever from this number.
+
+OPEN ITEMS (resolve before or during the phase that needs them; do NOT guess)
+  1. Resurface rule: RESOLVED (Phase-2 review). Grey = informational attempt-marker, not a
+     lockout. 12h flat auto-reset (RESURFACE_HOURS=12, tunable). Click-to-open (not un-grey);
+     only the timer un-greys. Sort: oldest-attempt band on top, never-attempted by tier+score,
+     freshly-attempted greyed at bottom. Notes always kept. See LEAD QUEUE section.
+  2. Offers-awaiting-response: confirm whether a no-write read signal for "offer sent"
+     exists. If not, stays DEFERRED. (Needed Phase 3.)
+  3. Live test call: first outbound from +1 972-954-8586 — walk through together. (Phase 4.)
