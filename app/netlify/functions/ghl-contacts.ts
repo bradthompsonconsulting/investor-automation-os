@@ -22,6 +22,13 @@ const SCORE_IDS = {
 // review" tile to detect a saved-but-unsent offer. Never written by this function.
 const OFFER_PRICE_ID = "v2VO2wUwTYRojmU7VXyZ";
 
+// Dashboard Phase 2 fields (confirmed live via /locations/.../customFields).
+// Both DATE type on contact. callback_datetime is read-only here (Phase 3
+// writes it); last_call_attempt is read here and written by ghl-notes.ts
+// only — this function never writes either.
+const CALLBACK_DATETIME_ID = "JeQWtwpwUbvPA50UfuPU";
+const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
+
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Headers": "Content-Type",
@@ -39,6 +46,20 @@ function cfValue(customFields: any[], id: string): number | null {
   if (raw === null || raw === undefined) return null;
   const n = typeof raw === "number" ? raw : parseFloat(String(raw));
   return isNaN(n) ? null : n;
+}
+
+// DATE fields (callback_datetime, last_call_attempt) come back as a unix-ms
+// number under fieldValueDate — normalize to ISO so the client only ever
+// deals in date strings.
+function cfDate(customFields: any[], id: string): string | null {
+  const f = customFields?.find((cf: any) => cf.id === id);
+  const raw = f?.value ?? f?.fieldValue ?? f?.fieldValueDate ?? null;
+  if (raw === null || raw === undefined || raw === "") return null;
+  if (typeof raw === "number") return new Date(raw).toISOString();
+  const s = String(raw).trim();
+  if (!s) return null;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 async function fetchAllContacts(token: string): Promise<any[]> {
@@ -100,6 +121,8 @@ export const handler = async (event: any) => {
         combinedScore:      cfValue(cf, SCORE_IDS.combined_score),
         completenessScore:  cfValue(cf, SCORE_IDS.data_completeness_score),
         offerPrice:         cfValue(cf, OFFER_PRICE_ID),
+        callbackDatetime:   cfDate(cf, CALLBACK_DATETIME_ID),
+        lastCallAttempt:    cfDate(cf, LAST_CALL_ATTEMPT_ID),
       };
     });
 

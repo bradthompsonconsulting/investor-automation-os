@@ -14,6 +14,11 @@
 const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
 const PROXY       = "/.netlify/functions/ghl-proxy";
 
+// Dashboard Phase 2 — confirmed live via /locations/.../customFields (both
+// DATE type, contact model). last_call_attempt is the ONLY field this module
+// writes outside the already-established offer_/stage/task write paths.
+const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
+
 // ── Shared types ──────────────────────────────────────────────────────────────
 
 export interface ContactRow {
@@ -35,6 +40,11 @@ export interface ContactRow {
   // Contact-side offer_price (§14e) — non-null once a MAO offer has been saved
   // via the calculator. Read-only signal for the Dashboard's "Offers to review" tile.
   offerPrice:        number | null;
+  // Dashboard Phase 2 fields (ISO strings). callback_datetime is read-only until
+  // Phase 3 wires scheduling; last_call_attempt is written by setLastCallAttempt
+  // below, on every note save, and nowhere else.
+  callbackDatetime:  string | null;
+  lastCallAttempt:   string | null;
 }
 
 // ── Bucket tag helpers ────────────────────────────────────────────────────────
@@ -176,6 +186,22 @@ export const ghl = {
     // can never add/remove a tag (e.g. offer-made) as a side effect.
     saveOfferFields: (contactId: string, customFields: { id: string; field_value: unknown }[]) =>
       request<any>(`/contacts/${contactId}`, "PUT", { customFields }),
+
+    // Dashboard Phase 2 — the note-is-the-attempt rule (spec §5). Body carries
+    // ONLY the one customFields entry, so this can never touch tags/stage/offer_
+    // fields as a side effect. Called exactly once, right after a note saves —
+    // never on its own, never from a Call click.
+    setLastCallAttempt: (contactId: string, iso: string) =>
+      request<any>(`/contacts/${contactId}`, "PUT", {
+        customFields: [{ id: LAST_CALL_ATTEMPT_ID, field_value: iso }],
+      }),
+  },
+
+  notes: {
+    // Dashboard Phase 2 — the ONLY note-write path. Always a NEW note, never
+    // an overwrite/edit of a prior one (GHL has no "edit" call site here).
+    create: (contactId: string, body: string) =>
+      request<any>(`/contacts/${contactId}/notes`, "POST", { body }),
   },
 
   customFields: {

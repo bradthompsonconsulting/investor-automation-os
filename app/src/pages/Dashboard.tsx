@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertCircle, Clock, FileCheck, Mail as MailIcon, Inbox, CalendarClock,
@@ -11,22 +11,30 @@ import {
 } from "../lib/ghl";
 
 /**
- * Dashboard — Phase 1 (read-only shell) per docs/DASHBOARD_SPEC_v1.txt.
- * Zero writes: this page only calls ghl.contacts.listAll(), ghl.mailers.list(),
- * and ghl.opportunities.listPipeline() — all existing GET-only reads. No MAO
- * calculator link or offer math is surfaced anywhere (spec guardrail).
- *
- * Notes/callback-scheduling/click-to-call are Phase 2-4 — every control for
- * them here is disabled/placeholder, wired for layout only.
+ * Dashboard — Build 2A per docs/DASHBOARD_SPEC_v2.txt.
+ * Writes allowed, and ONLY these two (both fire together on note-save):
+ *   1. ghl.notes.create()            -> POST /contacts/{id}/notes
+ *   2. ghl.contacts.setLastCallAttempt() -> PUT /contacts/{id} (last_call_attempt only)
+ * Everything else on this page is read-only. Click-to-call and callback
+ * scheduling (writing callback_datetime) are 2B — the Call button here is a
+ * dial-only placeholder that never sets an attempt or greys a row.
  */
 
-// ── Central-time "today", same convention as mailer-shared.ts ────────────────
+// ── Tunables (single source of truth, per spec) ───────────────────────────────
+
+const RESURFACE_HOURS = 12;         // flat auto-reset window for a fresh attempt
+const RESURFACE_VISIBLE_ROWS = 15;  // Lead Queue visible-row cap before scroll
+
+// ── Central-time date helpers, same convention as mailer-shared.ts ───────────
 
 const CT_DATE_FMT = new Intl.DateTimeFormat("en-CA", {
   timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit",
 });
+function ctDateString(d: Date): string {
+  return CT_DATE_FMT.format(d);
+}
 function todayCT(): string {
-  return CT_DATE_FMT.format(new Date());
+  return ctDateString(new Date());
 }
 
 // Browser-local only — never sent to GHL. Marks "since I was last on this
@@ -58,9 +66,23 @@ function contactName(c: ContactRow): string {
 }
 
 function formatAddress(c: ContactRow): string {
-  const cityStateZip = [c.city, [c.state, c.postalCode].filter(Boolean).join(" ")]
+  const cityStateZip = [c.city, [c.state, c.postalCode].filter(Boolean).join(", ")]
     .filter(Boolean).join(", ");
   return [c.address1, cityStateZip].filter(Boolean).join(", ") || "—";
+}
+
+function relativeTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours < 1) return "under 1h ago";
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function formatCallbackTime(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", {
+    timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
 }
 
 function TierBadge({ tier }: { tier: BucketTag }) {
@@ -166,6 +188,24 @@ function Tile({
   return <button onClick={onClick} style={style}>{body}</button>;
 }
 
+// ── Lead Queue row shape ─────────────────────────────────────────────────────
+
+type Band = 1 | 2 | 3;
+
+interface LeadRow {
+  contact: ContactRow;
+  tier: BucketTag;
+  overdueMailer: boolean;
+  attempt: string | null; // effective last_call_attempt (override-merged)
+  band: Band;
+}
+
+function getBand(attempt: string | null): Band {
+  if (!attempt) return 2;
+  const ageMs = Date.now() - new Date(attempt).getTime();
+  return ageMs >= RESURFACE_HOURS * 3_600_000 ? 1 : 3;
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -176,6 +216,26 @@ export default function Dashboard() {
   const [error, setError]           = useState<string | null>(null);
   const [newSince, setNewSince]     = useState<number | null>(null);
   const [expanded, setExpanded]     = useState<"tasks" | "offers" | null>(null);
+
+  // Lead Queue attempt/note state — see spec §5 "notes = attempt-of-record".
+  const [draftNotes, setDraftNotes]         = useState<Record<string, string>>({});
+  const [attemptOverride, setAttemptOverride] = useState<Record<string, string>>({});
+  const [savingIds, setSavingIds]           = useState<Set<string>>(new Set());
+  const [saveError, setSaveError]           = useState<Record<string, string>>({});
+  const [openContactId, setOpenContactId]   = useState<string | null>(null);
+  const noteInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  // Periodic re-render only — lets the 12h auto-reset move a row out of BAND 3
+  // without requiring a reload while the page is left open.
+  const [nowTick, setNowTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setNowTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (openContactId) noteInputRefs.current[openContactId]?.focus();
+  }, [openContactId]);
 
   useEffect(() => {
     Promise.all([
@@ -221,10 +281,9 @@ export default function Dashboard() {
     [contacts],
   );
 
-  // Waiting-on-me 2.3 — a clean read-only "sent, awaiting response" signal:
+  // Waiting-on-me 3.3 — a clean read-only "sent, awaiting response" signal:
   // opportunity currently sitting in the Seller Offer Sent stage (the exact
-  // stage Seller 7 fires from) AND the contact carries offer-made. Resolves
-  // the spec's OPEN ITEM #2 without inferring anything not already in GHL.
+  // stage Seller 7 fires from) AND the contact carries offer-made.
   const sellerOfferSentStageId = useMemo(
     () => pipeline?.stages.find((s) => s.name === "Seller Offer Sent")?.id ?? null,
     [pipeline],
@@ -239,25 +298,63 @@ export default function Dashboard() {
         !!row.contact?.tags.includes("offer-made"));
   }, [pipeline, contacts, sellerOfferSentStageId]);
 
-  // Call queue overdue-bubble: reuse the mailer digest's own "Overdue" bucket
-  // as the only real "falling behind" signal available this phase (no
-  // callback/attempt tracking exists yet — that's Phase 2/3).
+  // Waiting-on-me 3.2 — callbacks, read-only this build. Overdue = scheduled
+  // before today's CT calendar date; Today = scheduled on today's CT date.
+  // Future-dated callbacks aren't due yet, so they're excluded from both lists.
+  const callbacks = useMemo(() => {
+    const withCb = (contacts ?? []).filter((c) => c.callbackDatetime);
+    const byTime = (a: ContactRow, b: ContactRow) =>
+      new Date(a.callbackDatetime!).getTime() - new Date(b.callbackDatetime!).getTime();
+    const overdue = withCb.filter((c) => ctDateString(new Date(c.callbackDatetime!)) < today).sort(byTime);
+    const dueToday = withCb.filter((c) => ctDateString(new Date(c.callbackDatetime!)) === today).sort(byTime);
+    return { overdue, dueToday };
+  }, [contacts, today]);
+
+  // Escalation out (§3 / §4 "Escalation out") — anyone with a live unanswered
+  // inbound signal leaves the Lead Queue entirely; they already surface under
+  // Waiting on Me §3.1. Seller-form/appointment signals join this set as those
+  // reads come online.
+  const escalatedContactIds = useMemo(
+    () => new Set((unanswered ?? []).map((r) => r.contactId)),
+    [unanswered],
+  );
+
+  // Lead Queue overdue-in-tier bubble: reuse the mailer digest's own "Overdue"
+  // bucket as the "falling behind cadence" signal for BAND 2 ranking.
   const overdueContactIds = useMemo(
     () => new Set((digest?.overdue ?? []).flatMap((g) => g.rows.map((r) => r.contactId))),
     [digest],
   );
 
-  const callQueue = useMemo(() => {
-    return (contacts ?? [])
-      .filter((c) => c.phone?.trim())
-      .map((c) => ({ contact: c, tier: getBucketTag(c), overdue: overdueContactIds.has(c.id) }))
-      .sort((a, b) => {
-        const tierDiff = TIER_ORDER.indexOf(a.tier) - TIER_ORDER.indexOf(b.tier);
-        if (tierDiff !== 0) return tierDiff;
-        if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
-        return (b.contact.combinedScore ?? -1) - (a.contact.combinedScore ?? -1);
+  const leadQueue = useMemo<LeadRow[]>(() => {
+    void nowTick; // re-derive bands as clock advances past RESURFACE_HOURS
+    const rows: LeadRow[] = (contacts ?? [])
+      .filter((c) => c.phone?.trim() && !escalatedContactIds.has(c.id))
+      .map((c) => {
+        const attempt = attemptOverride[c.id] ?? c.lastCallAttempt ?? null;
+        return {
+          contact: c,
+          tier: getBucketTag(c),
+          overdueMailer: overdueContactIds.has(c.id),
+          attempt,
+          band: getBand(attempt),
+        };
       });
-  }, [contacts, overdueContactIds]);
+
+    return rows.sort((a, b) => {
+      if (a.band !== b.band) return a.band - b.band;
+      if (a.band !== 2) {
+        // BAND 1 (attempted, no response) and BAND 3 (freshly attempted):
+        // oldest attempt first — in BAND 3 this also means "closest to un-greying" on top.
+        return new Date(a.attempt!).getTime() - new Date(b.attempt!).getTime();
+      }
+      // BAND 2 — never-attempted: tier + score, mailer-cadence-overdue bubbles to tier top.
+      const tierDiff = TIER_ORDER.indexOf(a.tier) - TIER_ORDER.indexOf(b.tier);
+      if (tierDiff !== 0) return tierDiff;
+      if (a.overdueMailer !== b.overdueMailer) return a.overdueMailer ? -1 : 1;
+      return (b.contact.combinedScore ?? -1) - (a.contact.combinedScore ?? -1);
+    });
+  }, [contacts, escalatedContactIds, overdueContactIds, attemptOverride, nowTick]);
 
   const bucketCounts = useMemo(() => {
     const counts: Record<BucketTag, number> = { hot: 0, warm: 0, low: 0 };
@@ -271,6 +368,37 @@ export default function Dashboard() {
       .sort((a, b) => a.position - b.position)
       .map((s) => ({ stage: s, count: pipeline.opportunities.filter((o) => o.stageId === s.id).length }));
   }, [pipeline]);
+
+  // The note IS the attempt (spec §5). Empty/whitespace-only notes are not an
+  // attempt and do nothing on blur. Note-save and attempt-marker are two
+  // separate GHL calls — if the second fails, the note (already saved) is not
+  // rolled back; the row just doesn't grey until the marker write succeeds.
+  async function handleNoteBlur(contactId: string) {
+    const text = (draftNotes[contactId] ?? "").trim();
+    if (!text || savingIds.has(contactId)) return;
+
+    setSavingIds((s) => new Set(s).add(contactId));
+    setSaveError((prev) => { const next = { ...prev }; delete next[contactId]; return next; });
+
+    try {
+      await ghl.notes.create(contactId, text);
+      setDraftNotes((prev) => ({ ...prev, [contactId]: "" }));
+
+      const nowIso = new Date().toISOString();
+      try {
+        await ghl.contacts.setLastCallAttempt(contactId, nowIso);
+        setAttemptOverride((prev) => ({ ...prev, [contactId]: nowIso }));
+      } catch (e) {
+        setSaveError((prev) => ({
+          ...prev, [contactId]: `Note saved, but couldn't mark attempted: ${(e as Error).message}`,
+        }));
+      }
+    } catch (e) {
+      setSaveError((prev) => ({ ...prev, [contactId]: (e as Error).message }));
+    } finally {
+      setSavingIds((s) => { const next = new Set(s); next.delete(contactId); return next; });
+    }
+  }
 
   if (error) {
     return (
@@ -299,11 +427,12 @@ export default function Dashboard() {
         )}
       </div>
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 18px" }}>
-        Read-only. What needs your attention today — nothing here sends, enrolls, re-tags, or moves a stage.
+        What needs your attention today. Only two writes happen anywhere on this page: saving a note, and marking a
+        call attempt the instant a note saves. Nothing here sends, enrolls, re-tags, or moves a stage.
       </p>
 
       {/* 1. Action tiles */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "12px", marginBottom: "28px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "12px", marginBottom: "20px" }}>
         <Tile
           icon={Clock} label="Tasks due today" count={tasksDueToday.length} loading={loading}
           expanded={expanded === "tasks"} onClick={() => setExpanded((v) => (v === "tasks" ? null : "tasks"))}
@@ -316,7 +445,7 @@ export default function Dashboard() {
       </div>
 
       {expanded === "tasks" && (
-        <Card style={{ marginTop: "-16px", marginBottom: "24px" }}>
+        <Card style={{ marginBottom: "20px" }}>
           {tasksDueToday.length === 0 ? (
             <p style={{ fontSize: "12px", color: "#334155", margin: 0 }}>Nothing due today.</p>
           ) : (
@@ -334,7 +463,7 @@ export default function Dashboard() {
       )}
 
       {expanded === "offers" && (
-        <Card style={{ marginTop: "-16px", marginBottom: "24px" }}>
+        <Card style={{ marginBottom: "20px" }}>
           {offersToReview.length === 0 ? (
             <p style={{ fontSize: "12px", color: "#334155", margin: 0 }}>No saved offers awaiting send.</p>
           ) : (
@@ -351,10 +480,41 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {/* 2. Waiting on me */}
+      {/* 2. Pipeline Health strip — moved up (v2): glanceable status nobody would scroll for */}
+      <div style={{ marginBottom: "28px" }}>
+        <SectionHeading>Pipeline Health</SectionHeading>
+        <div style={{
+          display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center",
+          background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "10px 14px",
+        }}>
+          {(Object.keys(bucketCounts) as BucketTag[]).map((tier) => (
+            <span key={tier} style={{
+              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
+              padding: "4px 10px", borderRadius: "999px",
+              background: `${TIER_COLOR[tier]}1A`, border: `1px solid ${TIER_COLOR[tier]}44`, color: TIER_COLOR[tier],
+            }}>
+              {tier[0].toUpperCase()}{tier.slice(1)} {loading ? "…" : bucketCounts[tier]}
+            </span>
+          ))}
+          <span style={{ width: "1px", height: "16px", background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
+          {stageCounts.map(({ stage, count }) => (
+            <span key={stage.id} style={{
+              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 500,
+              padding: "4px 10px", borderRadius: "999px",
+              background: `${STAGE_COLOR[stage.name] ?? "#475569"}14`,
+              border: `1px solid ${STAGE_COLOR[stage.name] ?? "#475569"}33`,
+              color: STAGE_COLOR[stage.name] ?? "#94A3B8",
+            }}>
+              {stage.name} {count}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* 3. Waiting on Me — anyone who has engaged, above the Lead Queue */}
       <SectionHeading>Waiting on Me</SectionHeading>
       <div style={{ marginBottom: "28px" }}>
-        {/* 2.1 Unanswered inbound — HIGHEST priority, top of the entire queue (spec §2.1) */}
+        {/* 3.1 Unanswered inbound — HIGHEST priority, top of the entire queue */}
         <SectionHeading count={unanswered?.length ?? 0}>Unanswered Inbound</SectionHeading>
         <p style={{ fontSize: "11px", color: "#334155", margin: "-4px 0 10px" }}>
           Oldest unanswered reply first — the seller ignored longest is closest to giving up.
@@ -397,19 +557,45 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* 2.2 Callbacks — field doesn't exist yet, wired for layout only */}
-        <Card tone="muted" style={{ marginBottom: "10px", display: "flex", gap: "10px", alignItems: "flex-start" }}>
-          <CalendarClock size={16} style={{ color: "#475569", marginTop: "1px", flexShrink: 0 }} />
-          <div>
-            <div style={{ fontSize: "13px", fontWeight: 600, color: "#F1F5F9" }}>Callbacks</div>
-            <div style={{ fontSize: "12px", color: "#64748B", marginTop: "2px" }}>
-              No callback_datetime field exists in GHL yet — this group is empty by construction, not a bug. Populates
-              once that field and the Phase 3 scheduling control are built.
-            </div>
+        {/* 3.2 Callbacks — read-only this build; scheduling (writing callback_datetime) is 2B */}
+        <SectionHeading count={callbacks.overdue.length + callbacks.dueToday.length}>Callbacks</SectionHeading>
+        {callbacks.overdue.length === 0 && callbacks.dueToday.length === 0 ? (
+          <Card tone="muted" style={{ marginBottom: "10px", display: "flex", gap: "10px", alignItems: "flex-start" }}>
+            <CalendarClock size={16} style={{ color: "#475569", marginTop: "1px", flexShrink: 0 }} />
+            <p style={{ fontSize: "12px", color: "#64748B", margin: 0 }}>No callbacks scheduled.</p>
+          </Card>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
+            {callbacks.overdue.map((c) => (
+              <Card key={c.id} tone="warn" style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
+                <CalendarClock size={15} style={{ color: "#F87171", flexShrink: 0 }} />
+                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>{contactName(c)}</span>
+                <span style={{ fontSize: "12px", color: "#64748B" }}>{c.phone || "—"}</span>
+                <span style={{
+                  marginLeft: "auto", fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
+                  background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)", color: "#F87171",
+                }}>
+                  Overdue — {formatCallbackTime(c.callbackDatetime!)}
+                </span>
+              </Card>
+            ))}
+            {callbacks.dueToday.map((c) => (
+              <Card key={c.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
+                <CalendarClock size={15} style={{ color: "#1EC8FF", flexShrink: 0 }} />
+                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>{contactName(c)}</span>
+                <span style={{ fontSize: "12px", color: "#64748B" }}>{c.phone || "—"}</span>
+                <span style={{
+                  marginLeft: "auto", fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
+                  background: "rgba(30,200,255,0.12)", border: "1px solid rgba(30,200,255,0.35)", color: "#1EC8FF",
+                }}>
+                  Today — {formatCallbackTime(c.callbackDatetime!)}
+                </span>
+              </Card>
+            ))}
           </div>
-        </Card>
+        )}
 
-        {/* 2.3 Offers awaiting seller response — real read signal, implemented */}
+        {/* 3.3 Offers awaiting seller response — read signal, implemented */}
         <SectionHeading count={offersAwaiting.length}>Offers Awaiting Response</SectionHeading>
         {offersAwaiting.length === 0 ? (
           <Card tone="muted">
@@ -433,20 +619,22 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* 3. Call queue */}
-      <SectionHeading count={callQueue.length}>Call Queue</SectionHeading>
-      <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 12px" }}>
-        Tier + score order (Hot → Warm → Low, score desc within tier); a mailer-cadence-overdue contact bubbles to the
-        top of its tier. Bucket-agnostic — Low contacts with a phone are included. Calling and notes are Phase 4/2 — the
-        controls below are placeholders only.
+      {/* 4. Lead Queue (renamed from Call Queue) — cold outreach, the long list at the bottom */}
+      <SectionHeading count={leadQueue.length}>Lead Queue</SectionHeading>
+      <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 12px", maxWidth: "820px" }}>
+        Attempted-but-no-response (oldest attempt first) → never-attempted (tier + score, mailer-overdue bubbles to
+        tier top) → freshly-attempted (greyed, bottom). A note is the only thing that marks an attempt — the Call
+        button is dial-only this build and never greys a row. Anyone who's engaged (e.g. an unanswered inbound reply)
+        moves to Waiting on Me and drops out of this list. Showing {Math.min(RESURFACE_VISIBLE_ROWS, leadQueue.length)}
+        {" "}of {leadQueue.length} — scroll for the rest.
       </p>
       <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "760px" }}>
+        <div style={{ overflow: "auto", maxHeight: `${RESURFACE_VISIBLE_ROWS * 44}px` }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "820px" }}>
             <thead>
-              <tr style={{ background: "#07142E", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                {["Name", "Phone", "Tier", "Score", "Address", "Last Contact", "", ""].map((h) => (
-                  <th key={h} style={{ padding: "9px 16px", textAlign: "left", fontSize: "11px", fontWeight: 600, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+              <tr style={{ background: "#07142E", position: "sticky", top: 0, zIndex: 1 }}>
+                {["Name", "Phone", "Tier", "Score", "Address", "Last Contact", "", "Notes"].map((h) => (
+                  <th key={h} style={{ padding: "9px 16px", textAlign: "left", fontSize: "11px", fontWeight: 600, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
                     {h}
                   </th>
                 ))}
@@ -455,81 +643,79 @@ export default function Dashboard() {
             <tbody>
               {loading ? (
                 <tr><td colSpan={8} style={{ padding: "20px 16px", textAlign: "center", color: "#334155", fontSize: "13px" }}>Loading…</td></tr>
-              ) : callQueue.length === 0 ? (
+              ) : leadQueue.length === 0 ? (
                 <tr><td colSpan={8} style={{ padding: "20px 16px", textAlign: "center", color: "#334155", fontSize: "13px" }}>No contacts with a phone number.</td></tr>
               ) : (
-                callQueue.map(({ contact: c, tier, overdue }) => (
-                  <tr key={c.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                    <td style={{ padding: "9px 16px", fontWeight: 500, color: "#F1F5F9", whiteSpace: "nowrap" }}>
-                      {contactName(c)}
-                      {overdue && (
-                        <span style={{ marginLeft: "6px", fontSize: "10px", fontWeight: 600, color: "#F87171" }} title="Overdue in the mailer cadence">
-                          OVERDUE
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ padding: "9px 16px", color: "#94A3B8", fontSize: "13px", whiteSpace: "nowrap" }}>{c.phone || "—"}</td>
-                    <td style={{ padding: "9px 16px" }}><TierBadge tier={tier} /></td>
-                    <td style={{ padding: "9px 16px" }}><ScoreChip score={c.combinedScore} /></td>
-                    <td style={{ padding: "9px 16px", color: "#94A3B8", fontSize: "13px" }}>{formatAddress(c)}</td>
-                    <td style={{ padding: "9px 16px", color: "#334155", fontSize: "12px", whiteSpace: "nowrap" }} title="No attempt-tracking yet — Phase 2">
-                      Not yet contacted
-                    </td>
-                    <td style={{ padding: "9px 16px" }}>
-                      <button disabled title="Click-to-call — Phase 4" style={{
-                        display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
-                        padding: "5px 9px", borderRadius: "7px", border: "1px solid rgba(255,255,255,0.08)",
-                        background: "transparent", color: "#334155", cursor: "not-allowed",
-                      }}>
-                        <PhoneCall size={12} /> Call
-                      </button>
-                    </td>
-                    <td style={{ padding: "9px 16px", minWidth: "160px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                        <StickyNote size={12} style={{ color: "#334155" }} />
-                        <input disabled placeholder="Notes — Phase 2" style={{
-                          width: "100%", fontSize: "11px", padding: "5px 8px", borderRadius: "6px",
-                          border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.02)",
-                          color: "#334155", cursor: "not-allowed",
-                        }} />
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                leadQueue.map(({ contact: c, tier, overdueMailer, attempt, band }) => {
+                  const greyed = band === 3;
+                  const isOpen = openContactId === c.id;
+                  const err = saveError[c.id];
+                  return (
+                    <tr
+                      key={c.id}
+                      onClick={() => setOpenContactId(c.id)}
+                      style={{
+                        borderBottom: "1px solid rgba(255,255,255,0.04)", cursor: "pointer",
+                        opacity: greyed ? 0.55 : 1,
+                        background: isOpen ? "rgba(30,200,255,0.05)" : "transparent",
+                      }}
+                    >
+                      <td style={{ padding: "9px 16px", fontWeight: 500, color: "#F1F5F9", whiteSpace: "nowrap" }}>
+                        {contactName(c)}
+                        {overdueMailer && (
+                          <span style={{ marginLeft: "6px", fontSize: "10px", fontWeight: 600, color: "#F87171" }} title="Overdue in the mailer cadence">
+                            OVERDUE
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ padding: "9px 16px", color: "#94A3B8", fontSize: "13px", whiteSpace: "nowrap" }}>{c.phone || "—"}</td>
+                      <td style={{ padding: "9px 16px" }}><TierBadge tier={tier} /></td>
+                      <td style={{ padding: "9px 16px" }}><ScoreChip score={c.combinedScore} /></td>
+                      <td style={{ padding: "9px 16px", color: "#94A3B8", fontSize: "13px" }}>{formatAddress(c)}</td>
+                      <td style={{ padding: "9px 16px", color: attempt ? (greyed ? "#475569" : "#F59E0B") : "#334155", fontSize: "12px", whiteSpace: "nowrap" }}>
+                        {attempt ? `Attempted ${relativeTime(attempt)}` : "Not yet contacted"}
+                      </td>
+                      <td style={{ padding: "9px 16px" }}>
+                        <button
+                          tabIndex={-1}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={(e) => e.stopPropagation()}
+                          title="Call — dial-only placeholder (real dialing wired in Phase 2B)"
+                          style={{
+                            display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
+                            padding: "5px 9px", borderRadius: "7px", border: "1px solid rgba(30,200,255,0.25)",
+                            background: "rgba(30,200,255,0.06)", color: "#1EC8FF", cursor: "pointer",
+                          }}
+                        >
+                          <PhoneCall size={12} /> Call
+                        </button>
+                      </td>
+                      <td style={{ padding: "9px 16px", minWidth: "200px" }} onClick={(e) => e.stopPropagation()}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                          <StickyNote size={12} style={{ color: "#475569", flexShrink: 0 }} />
+                          <input
+                            ref={(el) => { noteInputRefs.current[c.id] = el; }}
+                            value={draftNotes[c.id] ?? ""}
+                            disabled={savingIds.has(c.id)}
+                            onChange={(e) => setDraftNotes((prev) => ({ ...prev, [c.id]: e.target.value }))}
+                            onFocus={() => setOpenContactId(c.id)}
+                            onBlur={() => handleNoteBlur(c.id)}
+                            placeholder={savingIds.has(c.id) ? "Saving…" : "Note (any text = attempted)…"}
+                            style={{
+                              width: "100%", fontSize: "11px", padding: "5px 8px", borderRadius: "6px",
+                              border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.03)",
+                              color: "#F1F5F9",
+                            }}
+                          />
+                        </div>
+                        {err && <div style={{ fontSize: "10px", color: "#F87171", marginTop: "3px" }}>{err}</div>}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
-        </div>
-      </div>
-
-      {/* 4. Pipeline health strip */}
-      <div style={{ marginTop: "28px" }}>
-        <SectionHeading>Pipeline Health</SectionHeading>
-        <div style={{
-          display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center",
-          background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "10px 14px",
-        }}>
-          {(Object.keys(bucketCounts) as BucketTag[]).map((tier) => (
-            <span key={tier} style={{
-              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
-              padding: "4px 10px", borderRadius: "999px",
-              background: `${TIER_COLOR[tier]}1A`, border: `1px solid ${TIER_COLOR[tier]}44`, color: TIER_COLOR[tier],
-            }}>
-              {tier[0].toUpperCase()}{tier.slice(1)} {loading ? "…" : bucketCounts[tier]}
-            </span>
-          ))}
-          <span style={{ width: "1px", height: "16px", background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
-          {stageCounts.map(({ stage, count }) => (
-            <span key={stage.id} style={{
-              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 500,
-              padding: "4px 10px", borderRadius: "999px",
-              background: `${STAGE_COLOR[stage.name] ?? "#475569"}14`,
-              border: `1px solid ${STAGE_COLOR[stage.name] ?? "#475569"}33`,
-              color: STAGE_COLOR[stage.name] ?? "#94A3B8",
-            }}>
-              {stage.name} {count}
-            </span>
-          ))}
         </div>
       </div>
     </div>
