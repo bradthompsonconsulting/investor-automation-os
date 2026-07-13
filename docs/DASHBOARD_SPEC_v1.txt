@@ -33,17 +33,25 @@ PAGE LAYOUT (top to bottom)
      marker/badge, not a full section.
 
 2. WAITING ON ME  (group A — sits above the cold queue)
-   - Unanswered inbound: contacts with an inbound SMS/email in GHL Conversations with no
-     outbound reply after it. HIGHEST priority — surface first. Reads GHL conversations.
-   - Overdue callbacks: callback_datetime in the past, still not actioned. Flagged late.
-   - Callbacks due today: callback_datetime = today.
-   - Offers awaiting seller response: offer has been SENT (not just calculated) and is in
-     the waiting window. Only include if the offer/Seller workflow exposes a "sent/awaiting"
-     signal that can be read WITHOUT writing anything. If no clean read signal exists, mark
-     this sub-section DEFERRED rather than inferring it — do not guess state.
+   Sub-groups appear in the fixed priority order below. Groups hold their rank; the
+   overdue-first rule sorts WITHIN a group, never across groups (a longest-waiting
+   inbound always outranks an overdue callback, which always outranks a cold lead).
+   2.1 Unanswered inbound: contacts with an inbound SMS/email in GHL Conversations with
+       no outbound reply after it. HIGHEST priority — top of the entire queue. Reads GHL
+       conversations. SORT: OLDEST unanswered reply first (longest-waiting seller on top).
+       Rationale: the seller ignored longest is the one closest to giving up — not newest.
+   2.2 Callbacks: SORT overdue first (most overdue on top), then callbacks due today by
+       scheduled time. overdue = callback_datetime in the past, still not actioned (flag
+       late); today = callback_datetime is today.
+   2.3 Offers awaiting seller response: offer has been SENT (not just calculated) and is in
+       the waiting window. Only include if the offer/Seller workflow exposes a "sent/awaiting"
+       signal that can be read WITHOUT writing anything. If no clean read signal exists, mark
+       this sub-section DEFERRED rather than inferring it — do not guess state.
 
 3. CALL QUEUE  (group B — cold outreach, below group A)
-   - Sort: tier + score (Hot/Warm/Low ranking, then score within).
+   Contacts who have NOT replied. Sits entirely below group A.
+   - Sort: tier + score = the mailer priority (Hot -> Warm -> Low, score DESC within each).
+     Any overdue item within this group sorts to the top of its tier (overdue-first rule).
    - FILTER: has a valid phone. BUCKET-AGNOSTIC. Low-bucket contacts WITH a phone ARE in
      the queue, ranked below Hot/Warm. Only address-only contacts (no phone) are excluded
      from calling — they still get mailed elsewhere. Do NOT filter the queue by bucket.
