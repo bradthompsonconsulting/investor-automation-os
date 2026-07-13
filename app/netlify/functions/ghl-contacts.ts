@@ -22,12 +22,16 @@ const SCORE_IDS = {
 // review" tile to detect a saved-but-unsent offer. Never written by this function.
 const OFFER_PRICE_ID = "v2VO2wUwTYRojmU7VXyZ";
 
-// Dashboard Phase 2 fields (confirmed live via /locations/.../customFields).
-// Both DATE type on contact. callback_datetime is read-only here (Phase 3
-// writes it); last_call_attempt is read here and written by ghl-notes.ts
-// only — this function never writes either.
+// Dashboard Phase 2/3 fields (confirmed live via /locations/.../customFields).
+// callback_datetime and last_call_attempt are DATE type on contact; this
+// function only reads them, never writes.
 const CALLBACK_DATETIME_ID = "JeQWtwpwUbvPA50UfuPU";
 const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
+
+// Companion TEXT field — GHL's DATE type truncates time-of-day on write, so
+// this holds the exact ISO string written in the same PUT as
+// callback_datetime. Read-only here; written by ghl.contacts.setCallbackDatetime.
+const CALLBACK_DATETIME_PRECISE_ID = "7qRUkZQK8bi2HNo7zDHd";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -60,6 +64,18 @@ function cfDate(customFields: any[], id: string): string | null {
   if (!s) return null;
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// TEXT fields — plain string passthrough. Validates the stored value actually
+// parses as a date before trusting it (defensive against a stray manual edit
+// in GHL's UI), returning null rather than a garbage timestamp otherwise.
+function cfText(customFields: any[], id: string): string | null {
+  const f = customFields?.find((cf: any) => cf.id === id);
+  const raw = f?.value ?? f?.fieldValue ?? null;
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  return isNaN(new Date(s).getTime()) ? null : s;
 }
 
 async function fetchAllContacts(token: string): Promise<any[]> {
@@ -121,8 +137,9 @@ export const handler = async (event: any) => {
         combinedScore:      cfValue(cf, SCORE_IDS.combined_score),
         completenessScore:  cfValue(cf, SCORE_IDS.data_completeness_score),
         offerPrice:         cfValue(cf, OFFER_PRICE_ID),
-        callbackDatetime:   cfDate(cf, CALLBACK_DATETIME_ID),
-        lastCallAttempt:    cfDate(cf, LAST_CALL_ATTEMPT_ID),
+        callbackDatetime:        cfDate(cf, CALLBACK_DATETIME_ID),
+        callbackDatetimePrecise: cfText(cf, CALLBACK_DATETIME_PRECISE_ID),
+        lastCallAttempt:         cfDate(cf, LAST_CALL_ATTEMPT_ID),
       };
     });
 

@@ -24,6 +24,13 @@ const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
 // this field predates Phase 3's write — Build 2A only read it).
 const CALLBACK_DATETIME_ID = "JeQWtwpwUbvPA50UfuPU";
 
+// Companion TEXT field — GHL's DATE type silently truncates time-of-day on
+// write (confirmed live: a 2pm CT callback round-tripped as "Jul 14, 7pm").
+// callback_datetime is still written for GHL's own UI, but this field is our
+// own read path's source of truth so overdue/today bucketing survives a
+// reload. Written in the SAME PUT as callback_datetime — no new write action.
+const CALLBACK_DATETIME_PRECISE_ID = "7qRUkZQK8bi2HNo7zDHd";
+
 // Dashboard Phase 2B — GHL's public API cannot trigger an outbound call (it
 // can only log one that already happened); the click-to-call button hands off
 // to GHL's own contact page, where GHL's native dialer applies the Number's
@@ -53,11 +60,15 @@ export interface ContactRow {
   // Contact-side offer_price (§14e) — non-null once a MAO offer has been saved
   // via the calculator. Read-only signal for the Dashboard's "Offers to review" tile.
   offerPrice:        number | null;
-  // Dashboard Phase 2 fields (ISO strings). callback_datetime is read-only until
-  // Phase 3 wires scheduling; last_call_attempt is written by setLastCallAttempt
-  // below, on every note save, and nowhere else.
-  callbackDatetime:  string | null;
-  lastCallAttempt:   string | null;
+  // Dashboard Phase 2/3 fields (ISO strings). last_call_attempt is written by
+  // setLastCallAttempt on every note save, nowhere else. callback_datetime is
+  // written by setCallbackDatetime but is DATE-typed in GHL (time-of-day gets
+  // truncated) — callbackDatetimePrecise is the exact companion value written
+  // in the same call; prefer it when reading, fall back to callbackDatetime
+  // only if it's ever missing.
+  callbackDatetime:        string | null;
+  callbackDatetimePrecise: string | null;
+  lastCallAttempt:         string | null;
 }
 
 // ── Bucket tag helpers ────────────────────────────────────────────────────────
@@ -209,13 +220,18 @@ export const ghl = {
         customFields: [{ id: LAST_CALL_ATTEMPT_ID, field_value: iso }],
       }),
 
-    // Dashboard Phase 3 — the schedule-callback control. Body carries ONLY the
-    // one customFields entry, same minimal-PUT guardrail as setLastCallAttempt.
-    // Pass null (not "") to clear — GHL silently ignores an empty string on a
-    // DATE field.
+    // Dashboard Phase 3 — the schedule-callback control. Still ONE write
+    // action: a single PUT carrying exactly these two customFields entries,
+    // nothing else (no tags/stage/offer_ keys). callback_datetime is DATE-typed
+    // in GHL and truncates time-of-day, so callback_datetime_precise (TEXT)
+    // rides along in the same call as the exact value our own read path uses.
+    // Pass null (not "") to clear both — GHL silently ignores an empty string.
     setCallbackDatetime: (contactId: string, iso: string | null) =>
       request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [{ id: CALLBACK_DATETIME_ID, field_value: iso }],
+        customFields: [
+          { id: CALLBACK_DATETIME_ID, field_value: iso },
+          { id: CALLBACK_DATETIME_PRECISE_ID, field_value: iso },
+        ],
       }),
   },
 

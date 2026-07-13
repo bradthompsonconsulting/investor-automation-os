@@ -16,8 +16,10 @@ import {
  *   1. ghl.notes.create()               -> POST /contacts/{id}/notes
  *   2. ghl.contacts.setLastCallAttempt() -> PUT /contacts/{id} (last_call_attempt only,
  *      fires together with #1 the instant a note saves)
- *   3. ghl.contacts.setCallbackDatetime() -> PUT /contacts/{id} (callback_datetime only,
- *      fires only from the schedule-callback popover — independent of #1/#2)
+ *   3. ghl.contacts.setCallbackDatetime() -> PUT /contacts/{id} (callback_datetime +
+ *      callback_datetime_precise, same single call — the latter is an exact-ISO TEXT
+ *      companion field since GHL's DATE type truncates time-of-day; fires only from
+ *      the schedule-callback popover — independent of #1/#2)
  * Everything else on this page is read-only. GHL's public API cannot trigger
  * an outbound call (only log one after the fact), so the Call button opens
  * the contact's GHL page in a new tab (window.open — no GHL API call at all)
@@ -330,8 +332,13 @@ export default function Dashboard() {
   const [callbackSaving, setCallbackSaving]     = useState(false);
   const [callbackError, setCallbackError]       = useState<string | null>(null);
 
+  // Prefer the in-session override (always exact), then the exact TEXT
+  // companion field, and only fall back to the DATE field (which GHL
+  // truncates to date-only) if the precise field is ever missing — e.g. a
+  // callback set before this fix shipped, or a manual edit in GHL's own UI.
   function effectiveCallback(c: ContactRow): string | null {
-    return c.id in callbackOverride ? callbackOverride[c.id] : c.callbackDatetime;
+    if (c.id in callbackOverride) return callbackOverride[c.id];
+    return c.callbackDatetimePrecise ?? c.callbackDatetime;
   }
 
   async function handleSaveCallback(contactId: string, iso: string | null) {
