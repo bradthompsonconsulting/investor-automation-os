@@ -40,6 +40,12 @@ import {
 const RESURFACE_HOURS = 12;         // flat auto-reset window for a fresh attempt
 const RESURFACE_VISIBLE_ROWS = 15;  // Lead Queue visible-row cap before scroll
 
+// Presentation cap so Pipeline Health / Waiting on Me / Lead Queue end at the
+// same right edge as the To Do Items + Sales row above them, instead of
+// stretching full-width. Matches that row's rendered width (3x140px tiles +
+// gap + 2x140px Sales cards + gap).
+const CONTENT_MAX_WIDTH = "760px";
+
 // ── Central-time date helpers, same convention as mailer-shared.ts ───────────
 
 const CT_DATE_FMT = new Intl.DateTimeFormat("en-CA", {
@@ -250,7 +256,13 @@ function Card({ children, tone, style }: { children: React.ReactNode; tone?: "wa
   );
 }
 
-function SectionHeading({ children, count }: { children: React.ReactNode; count?: number }) {
+function SectionHeading({
+  children, count, href,
+}: {
+  children: React.ReactNode;
+  count?: number;
+  href?: string;
+}) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
       <h2 style={{ fontSize: "15px", fontWeight: 600, color: "#F1F5F9", margin: 0, fontFamily: "Space Grotesk, sans-serif" }}>
@@ -260,6 +272,11 @@ function SectionHeading({ children, count }: { children: React.ReactNode; count?
         <span style={{ fontSize: "11px", fontWeight: 500, padding: "1px 7px", borderRadius: "999px", background: "#1B2433", color: "#64748B" }}>
           {count}
         </span>
+      )}
+      {href && (
+        <Link to={href} style={{ display: "inline-flex", alignItems: "center" }} title={`Open ${href}`}>
+          <ExternalLink size={13} style={{ color: "#475569" }} />
+        </Link>
       )}
     </div>
   );
@@ -316,7 +333,7 @@ function CongratsStat({ label, value }: { label: string; value: number }) {
   return (
     <div style={{
       background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(34,197,94,0.25)",
-      padding: "9px 11px", width: "90px", flex: "0 0 auto",
+      padding: "9px 11px", width: "140px", flex: "0 0 auto",
     }}>
       <div style={{ fontSize: "19px", fontWeight: 700, color: "#22C55E", fontFamily: "Space Grotesk, sans-serif", margin: "0 0 1px" }}>
         {value}
@@ -615,7 +632,7 @@ export default function Dashboard() {
       </p>
 
       {/* Pipeline Health strip — moved to the very top: glanceable status nobody would scroll for */}
-      <div style={{ marginBottom: "28px" }}>
+      <div style={{ marginBottom: "28px", maxWidth: CONTENT_MAX_WIDTH }}>
         <SectionHeading>Pipeline Health</SectionHeading>
         <div style={{
           display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center",
@@ -666,7 +683,7 @@ export default function Dashboard() {
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
             <PartyPopper size={15} style={{ color: "#22C55E" }} />
             <h2 style={{ fontSize: "15px", fontWeight: 600, color: "#F1F5F9", margin: 0, fontFamily: "Space Grotesk, sans-serif" }}>
-              Congrats
+              Sales
             </h2>
           </div>
           <div style={{ display: "flex", gap: "10px" }}>
@@ -714,7 +731,7 @@ export default function Dashboard() {
 
       {/* 3. Waiting on Me — anyone who has engaged, above the Lead Queue */}
       <SectionHeading>Waiting on Me</SectionHeading>
-      <div style={{ marginBottom: "28px" }}>
+      <div style={{ marginBottom: "28px", maxWidth: CONTENT_MAX_WIDTH }}>
         {/* 3.1 Unanswered inbound — HIGHEST priority, top of the entire queue */}
         <SectionHeading count={unanswered?.length ?? 0}>Unanswered Inbound</SectionHeading>
         <p style={{ fontSize: "11px", color: "#334155", margin: "-4px 0 10px" }}>
@@ -859,21 +876,31 @@ export default function Dashboard() {
       </div>
 
       {/* 4. Lead Queue (renamed from Call Queue) — cold outreach, the long list at the bottom */}
-      <SectionHeading count={leadQueue.length}>Lead Queue</SectionHeading>
-      <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 12px", maxWidth: "820px" }}>
+      <SectionHeading count={leadQueue.length} href="/contacts">Lead Queue</SectionHeading>
+      <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 12px", maxWidth: CONTENT_MAX_WIDTH }}>
         Attempted-but-no-response (oldest attempt first) → never-attempted (tier + score, mailer-overdue bubbles to
         tier top) → freshly-attempted (greyed, bottom). A note is the only thing that marks an attempt — Call opens
         GHL to dial and the callback icon schedules a follow-up, but neither one greys a row on its own. Anyone who's
         engaged (e.g. an unanswered inbound reply) moves to Waiting on Me and drops out of this list. Showing{" "}
         {Math.min(RESURFACE_VISIBLE_ROWS, leadQueue.length)} of {leadQueue.length} — scroll for the rest.
       </p>
-      <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>
+      <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden", maxWidth: CONTENT_MAX_WIDTH }}>
         <div style={{ overflow: "auto", maxHeight: `${RESURFACE_VISIBLE_ROWS * 44}px` }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "820px" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+            <colgroup>
+              <col style={{ width: "17%" }} /> {/* Name */}
+              <col style={{ width: "13%" }} /> {/* Phone */}
+              <col style={{ width: "8%" }} />  {/* Tier */}
+              <col style={{ width: "6%" }} />  {/* Score */}
+              <col style={{ width: "18%" }} /> {/* Address */}
+              <col style={{ width: "13%" }} /> {/* Last Contact */}
+              <col style={{ width: "13%" }} /> {/* Call/callback actions */}
+              <col style={{ width: "12%" }} /> {/* Notes */}
+            </colgroup>
             <thead>
               <tr style={{ background: "#07142E", position: "sticky", top: 0, zIndex: 1 }}>
                 {["Name", "Phone", "Tier", "Score", "Address", "Last Contact", "", "Notes"].map((h) => (
-                  <th key={h} style={{ padding: "9px 16px", textAlign: "left", fontSize: "11px", fontWeight: 600, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                  <th key={h} style={{ padding: "9px 10px", textAlign: "left", fontSize: "11px", fontWeight: 600, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid rgba(255,255,255,0.08)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {h}
                   </th>
                 ))}
@@ -900,27 +927,31 @@ export default function Dashboard() {
                         background: isOpen ? "rgba(30,200,255,0.05)" : "transparent",
                       }}
                     >
-                      <td style={{ padding: "9px 16px", fontWeight: 500, color: "#F1F5F9", whiteSpace: "nowrap" }}>
-                        {contactName(c)}
-                        {overdueMailer && (
-                          <span style={{ marginLeft: "6px", fontSize: "10px", fontWeight: 600, color: "#F87171" }} title="Overdue in the mailer cadence">
-                            OVERDUE
+                      <td style={{ padding: "9px 10px", fontWeight: 500, color: "#F1F5F9", overflow: "hidden" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "5px", overflow: "hidden" }}>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {contactName(c)}
                           </span>
-                        )}
-                        {cb && (
-                          <span style={{ marginLeft: "6px", fontSize: "10px", fontWeight: 600, color: "#1EC8FF" }} title={`Callback scheduled: ${formatCallbackTime(cb)}`}>
-                            CALLBACK {formatCallbackTime(cb)}
-                          </span>
-                        )}
+                          {overdueMailer && (
+                            <span style={{ flexShrink: 0, fontSize: "10px", fontWeight: 600, color: "#F87171" }} title="Overdue in the mailer cadence">
+                              OVERDUE
+                            </span>
+                          )}
+                          {cb && (
+                            <span style={{ flexShrink: 0, fontSize: "10px", fontWeight: 600, color: "#1EC8FF" }} title={`Callback scheduled: ${formatCallbackTime(cb)}`}>
+                              CALLBACK
+                            </span>
+                          )}
+                        </div>
                       </td>
-                      <td style={{ padding: "9px 16px", color: "#94A3B8", fontSize: "13px", whiteSpace: "nowrap" }}>{c.phone || "—"}</td>
-                      <td style={{ padding: "9px 16px" }}><TierBadge tier={tier} /></td>
-                      <td style={{ padding: "9px 16px" }}><ScoreChip score={c.combinedScore} /></td>
-                      <td style={{ padding: "9px 16px", color: "#94A3B8", fontSize: "13px" }}>{formatAddress(c)}</td>
-                      <td style={{ padding: "9px 16px", color: attempt ? (greyed ? "#475569" : "#F59E0B") : "#334155", fontSize: "12px", whiteSpace: "nowrap" }}>
+                      <td style={{ padding: "9px 10px", color: "#94A3B8", fontSize: "13px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.phone || "—"}</td>
+                      <td style={{ padding: "9px 10px", overflow: "hidden" }}><TierBadge tier={tier} /></td>
+                      <td style={{ padding: "9px 10px", overflow: "hidden" }}><ScoreChip score={c.combinedScore} /></td>
+                      <td style={{ padding: "9px 10px", color: "#94A3B8", fontSize: "13px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{formatAddress(c)}</td>
+                      <td style={{ padding: "9px 10px", color: attempt ? (greyed ? "#475569" : "#F59E0B") : "#334155", fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {attempt ? `Attempted ${relativeTime(attempt)}` : "Not yet contacted"}
                       </td>
-                      <td style={{ padding: "9px 16px" }}>
+                      <td style={{ padding: "9px 8px", overflow: "hidden" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                           <button
                             tabIndex={-1}
@@ -966,7 +997,7 @@ export default function Dashboard() {
                           </div>
                         </div>
                       </td>
-                      <td style={{ padding: "9px 16px", minWidth: "200px" }} onClick={(e) => e.stopPropagation()}>
+                      <td style={{ padding: "9px 8px", overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
                         <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
                           <StickyNote size={12} style={{ color: "#475569", flexShrink: 0 }} />
                           <input
