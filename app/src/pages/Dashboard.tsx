@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertCircle, Clock, FileCheck, Mail as MailIcon, Inbox, CalendarClock,
-  ChevronDown, Flame, Sun, Snowflake, PhoneCall, StickyNote, ExternalLink,
+  ChevronDown, Flame, Sun, Snowflake, PhoneCall, StickyNote, ExternalLink, PartyPopper,
 } from "lucide-react";
 import {
   ghl, getBucketTag, ghlContactDetailUrl,
@@ -109,6 +109,19 @@ function toDatetimeLocalValue(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Default value when the popover opens with no existing callback — today,
+// rounded up to the next :00/:30 mark so it lines up with the input's
+// step={1800} constraint and Save is immediately usable. UX default only;
+// does not change what setCallbackDatetime writes (that's still whatever
+// the field holds when Save is clicked).
+function defaultCallbackLocalValue(): string {
+  const d = new Date();
+  if (d.getMinutes() < 30) d.setMinutes(30, 0, 0);
+  else d.setHours(d.getHours() + 1, 0, 0, 0);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function TierBadge({ tier }: { tier: BucketTag }) {
   const color = TIER_COLOR[tier];
   const Icon = TIER_ICON[tier];
@@ -160,7 +173,9 @@ function CallbackPopover({
   onClear: () => void;
   onClose: () => void;
 }) {
-  const [value, setValue] = useState(current ? toDatetimeLocalValue(current) : "");
+  // Defaults to today (rounded to the next :00/:30) rather than blank, so
+  // Save is usable immediately without requiring input first.
+  const [value, setValue] = useState(current ? toDatetimeLocalValue(current) : defaultCallbackLocalValue());
   return (
     <div
       onClick={(e) => e.stopPropagation()}
@@ -172,6 +187,7 @@ function CallbackPopover({
     >
       <input
         type="datetime-local"
+        step={1800}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         disabled={saving}
@@ -185,9 +201,9 @@ function CallbackPopover({
           disabled={!value || saving}
           onClick={() => onSave(new Date(value).toISOString())}
           style={{
-            fontSize: "11px", fontWeight: 600, padding: "5px 10px", borderRadius: "6px", border: "none",
-            background: !value || saving ? "rgba(30,200,255,0.08)" : "rgba(30,200,255,0.18)",
-            color: !value || saving ? "#334155" : "#1EC8FF", cursor: !value || saving ? "not-allowed" : "pointer",
+            fontSize: "12px", fontWeight: 700, padding: "7px 14px", borderRadius: "6px", border: "none",
+            background: !value || saving ? "rgba(30,200,255,0.15)" : "#1EC8FF",
+            color: !value || saving ? "#64748B" : "#07142E", cursor: !value || saving ? "not-allowed" : "pointer",
           }}
         >
           Save
@@ -265,28 +281,49 @@ function Tile({
   const body = (
     <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <Icon size={16} style={{ color: "#1EC8FF" }} />
+        <Icon size={14} style={{ color: "#1EC8FF" }} />
         {href ? (
-          <ExternalLink size={13} style={{ color: "#475569" }} />
+          <ExternalLink size={11} style={{ color: "#475569" }} />
         ) : onClick ? (
-          <ChevronDown size={14} style={{ color: "#475569", transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+          <ChevronDown size={12} style={{ color: "#475569", transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
         ) : null}
       </div>
-      <div style={{ fontSize: "26px", fontWeight: 700, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif", margin: "8px 0 2px" }}>
+      <div style={{ fontSize: "19px", fontWeight: 700, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif", margin: "5px 0 1px" }}>
         {loading ? "…" : count}
       </div>
-      <div style={{ fontSize: "12px", color: "#64748B" }}>{label}</div>
+      <div style={{ fontSize: "11px", color: "#64748B" }}>{label}</div>
     </>
   );
 
+  // Compact card, not a full-width block — fixed intrinsic width so it sits
+  // side-by-side with the others instead of stretching to fill the row.
   const style: React.CSSProperties = {
     background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)",
-    padding: "14px 16px", textAlign: "left", cursor: onClick || href ? "pointer" : "default",
-    display: "block", width: "100%",
+    padding: "9px 11px", textAlign: "left", cursor: onClick || href ? "pointer" : "default",
+    display: "block", width: "140px", flex: "0 0 auto",
   };
 
   if (href) return <Link to={href} style={style}>{body}</Link>;
   return <button onClick={onClick} style={style}>{body}</button>;
+}
+
+// Closed-sellers celebration shell. Hardcoded 0/0 on purpose — no live
+// Closed-Won-by-date read wired yet (the existing Pipeline Health stage
+// count is an all-time total, not month/YTD-scoped, so it can't be reused
+// here without misrepresenting the number).
+// TODO: wire to a live Closed-Won-by-date read once that data source exists.
+function CongratsStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div style={{
+      background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(34,197,94,0.25)",
+      padding: "9px 11px", width: "90px", flex: "0 0 auto",
+    }}>
+      <div style={{ fontSize: "19px", fontWeight: 700, color: "#22C55E", fontFamily: "Space Grotesk, sans-serif", margin: "0 0 1px" }}>
+        {value}
+      </div>
+      <div style={{ fontSize: "11px", color: "#64748B" }}>{label}</div>
+    </div>
+  );
 }
 
 // ── Lead Queue row shape ─────────────────────────────────────────────────────
@@ -577,17 +614,66 @@ export default function Dashboard() {
         re-tags, or moves a stage.
       </p>
 
-      {/* 1. Action tiles */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "12px", marginBottom: "20px" }}>
-        <Tile
-          icon={Clock} label="Tasks due today" count={tasksDueToday.length} loading={loading}
-          expanded={expanded === "tasks"} onClick={() => setExpanded((v) => (v === "tasks" ? null : "tasks"))}
-        />
-        <Tile
-          icon={FileCheck} label="Offers to review" count={offersToReview.length} loading={loading}
-          expanded={expanded === "offers"} onClick={() => setExpanded((v) => (v === "offers" ? null : "offers"))}
-        />
-        <Tile icon={MailIcon} label="Mailers ready this week" count={digest?.totals.ready ?? 0} loading={loading} href="/mailers" />
+      {/* Pipeline Health strip — moved to the very top: glanceable status nobody would scroll for */}
+      <div style={{ marginBottom: "28px" }}>
+        <SectionHeading>Pipeline Health</SectionHeading>
+        <div style={{
+          display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center",
+          background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "10px 14px",
+        }}>
+          {(Object.keys(bucketCounts) as BucketTag[]).map((tier) => (
+            <span key={tier} style={{
+              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
+              padding: "4px 10px", borderRadius: "999px",
+              background: `${TIER_COLOR[tier]}1A`, border: `1px solid ${TIER_COLOR[tier]}44`, color: TIER_COLOR[tier],
+            }}>
+              {tier[0].toUpperCase()}{tier.slice(1)} {loading ? "…" : bucketCounts[tier]}
+            </span>
+          ))}
+          <span style={{ width: "1px", height: "16px", background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
+          {stageCounts.map(({ stage, count }) => (
+            <span key={stage.id} style={{
+              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 500,
+              padding: "4px 10px", borderRadius: "999px",
+              background: `${STAGE_COLOR[stage.name] ?? "#475569"}14`,
+              border: `1px solid ${STAGE_COLOR[stage.name] ?? "#475569"}33`,
+              color: STAGE_COLOR[stage.name] ?? "#94A3B8",
+            }}>
+              {stage.name} {count}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* 1. To Do Items (left) + Congrats (right) */}
+      <div style={{ display: "flex", gap: "24px", alignItems: "flex-start", flexWrap: "wrap", marginBottom: "20px" }}>
+        <div>
+          <SectionHeading>To Do Items</SectionHeading>
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+            <Tile
+              icon={Clock} label="Tasks due today" count={tasksDueToday.length} loading={loading}
+              expanded={expanded === "tasks"} onClick={() => setExpanded((v) => (v === "tasks" ? null : "tasks"))}
+            />
+            <Tile
+              icon={FileCheck} label="Offers to review" count={offersToReview.length} loading={loading}
+              expanded={expanded === "offers"} onClick={() => setExpanded((v) => (v === "offers" ? null : "offers"))}
+            />
+            <Tile icon={MailIcon} label="Mailers ready this week" count={digest?.totals.ready ?? 0} loading={loading} href="/mailers" />
+          </div>
+        </div>
+
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+            <PartyPopper size={15} style={{ color: "#22C55E" }} />
+            <h2 style={{ fontSize: "15px", fontWeight: 600, color: "#F1F5F9", margin: 0, fontFamily: "Space Grotesk, sans-serif" }}>
+              Congrats
+            </h2>
+          </div>
+          <div style={{ display: "flex", gap: "10px" }}>
+            <CongratsStat label="This Month" value={0} />
+            <CongratsStat label="YTD" value={0} />
+          </div>
+        </div>
       </div>
 
       {expanded === "tasks" && (
@@ -625,37 +711,6 @@ export default function Dashboard() {
           )}
         </Card>
       )}
-
-      {/* 2. Pipeline Health strip — moved up (v2): glanceable status nobody would scroll for */}
-      <div style={{ marginBottom: "28px" }}>
-        <SectionHeading>Pipeline Health</SectionHeading>
-        <div style={{
-          display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center",
-          background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "10px 14px",
-        }}>
-          {(Object.keys(bucketCounts) as BucketTag[]).map((tier) => (
-            <span key={tier} style={{
-              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
-              padding: "4px 10px", borderRadius: "999px",
-              background: `${TIER_COLOR[tier]}1A`, border: `1px solid ${TIER_COLOR[tier]}44`, color: TIER_COLOR[tier],
-            }}>
-              {tier[0].toUpperCase()}{tier.slice(1)} {loading ? "…" : bucketCounts[tier]}
-            </span>
-          ))}
-          <span style={{ width: "1px", height: "16px", background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
-          {stageCounts.map(({ stage, count }) => (
-            <span key={stage.id} style={{
-              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 500,
-              padding: "4px 10px", borderRadius: "999px",
-              background: `${STAGE_COLOR[stage.name] ?? "#475569"}14`,
-              border: `1px solid ${STAGE_COLOR[stage.name] ?? "#475569"}33`,
-              color: STAGE_COLOR[stage.name] ?? "#94A3B8",
-            }}>
-              {stage.name} {count}
-            </span>
-          ))}
-        </div>
-      </div>
 
       {/* 3. Waiting on Me — anyone who has engaged, above the Lead Queue */}
       <SectionHeading>Waiting on Me</SectionHeading>
@@ -727,8 +782,8 @@ export default function Dashboard() {
                   <button
                     onClick={() => { setCallbackPopoverId((v) => (v === c.id ? null : c.id)); setCallbackError(null); }}
                     style={{
-                      fontSize: "11px", fontWeight: 600, padding: "5px 9px", borderRadius: "7px",
-                      border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#1EC8FF", cursor: "pointer",
+                      fontSize: "12px", fontWeight: 700, padding: "7px 12px", borderRadius: "7px",
+                      border: "1px solid rgba(30,200,255,0.35)", background: "rgba(30,200,255,0.12)", color: "#1EC8FF", cursor: "pointer",
                     }}
                   >
                     Reschedule
@@ -759,8 +814,8 @@ export default function Dashboard() {
                   <button
                     onClick={() => { setCallbackPopoverId((v) => (v === c.id ? null : c.id)); setCallbackError(null); }}
                     style={{
-                      fontSize: "11px", fontWeight: 600, padding: "5px 9px", borderRadius: "7px",
-                      border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#1EC8FF", cursor: "pointer",
+                      fontSize: "12px", fontWeight: 700, padding: "7px 12px", borderRadius: "7px",
+                      border: "1px solid rgba(30,200,255,0.35)", background: "rgba(30,200,255,0.12)", color: "#1EC8FF", cursor: "pointer",
                     }}
                   >
                     Reschedule
@@ -892,13 +947,13 @@ export default function Dashboard() {
                               }}
                               title={cb ? `Callback scheduled: ${formatCallbackTime(cb)} — click to reschedule` : "Schedule a callback"}
                               style={{
-                                display: "inline-flex", alignItems: "center", padding: "5px 7px", borderRadius: "7px",
-                                border: "1px solid rgba(255,255,255,0.1)",
-                                background: cb ? "rgba(30,200,255,0.1)" : "transparent",
-                                color: cb ? "#1EC8FF" : "#475569", cursor: "pointer",
+                                display: "inline-flex", alignItems: "center", padding: "6px 9px", borderRadius: "7px",
+                                border: "1px solid rgba(30,200,255,0.35)",
+                                background: cb ? "rgba(30,200,255,0.18)" : "rgba(30,200,255,0.08)",
+                                color: "#1EC8FF", cursor: "pointer",
                               }}
                             >
-                              <CalendarClock size={12} />
+                              <CalendarClock size={15} />
                             </button>
                             {callbackPopoverId === c.id && (
                               <CallbackPopover
