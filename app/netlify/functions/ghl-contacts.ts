@@ -33,6 +33,11 @@ const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
 // callback_datetime. Read-only here; written by ghl.contacts.setCallbackDatetime.
 const CALLBACK_DATETIME_PRECISE_ID = "7qRUkZQK8bi2HNo7zDHd";
 
+// Companion TEXT field for last_call_attempt — same DATE-truncation bug
+// (confirmed live: a ~15min-old note displayed as "Attempted 16h ago").
+// Read-only here; written by ghl.contacts.setLastCallAttempt.
+const LAST_CALL_ATTEMPT_PRECISE_ID = "2vz1igGMxF3wv7HaWm97";
+
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Headers": "Content-Type",
@@ -140,6 +145,7 @@ export const handler = async (event: any) => {
         callbackDatetime:        cfDate(cf, CALLBACK_DATETIME_ID),
         callbackDatetimePrecise: cfText(cf, CALLBACK_DATETIME_PRECISE_ID),
         lastCallAttempt:         cfDate(cf, LAST_CALL_ATTEMPT_ID),
+        lastCallAttemptPrecise:  cfText(cf, LAST_CALL_ATTEMPT_PRECISE_ID),
       };
     });
 

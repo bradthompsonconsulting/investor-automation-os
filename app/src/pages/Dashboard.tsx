@@ -14,8 +14,10 @@ import {
  * Dashboard — Build 2A + 2B + Phase 3 per docs/DASHBOARD_SPEC_v2.txt.
  * Writes allowed, and ONLY these three:
  *   1. ghl.notes.create()               -> POST /contacts/{id}/notes
- *   2. ghl.contacts.setLastCallAttempt() -> PUT /contacts/{id} (last_call_attempt only,
- *      fires together with #1 the instant a note saves)
+ *   2. ghl.contacts.setLastCallAttempt() -> PUT /contacts/{id} (last_call_attempt +
+ *      last_call_attempt_precise, same single call — the latter is an exact-ISO TEXT
+ *      companion field since GHL's DATE type truncates time-of-day; fires together
+ *      with #1 the instant a note saves)
  *   3. ghl.contacts.setCallbackDatetime() -> PUT /contacts/{id} (callback_datetime +
  *      callback_datetime_precise, same single call — the latter is an exact-ISO TEXT
  *      companion field since GHL's DATE type truncates time-of-day; fires only from
@@ -324,6 +326,15 @@ export default function Dashboard() {
   const [openContactId, setOpenContactId]   = useState<string | null>(null);
   const noteInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
+  // Prefer the in-session override (always exact, set right after a save),
+  // then the exact TEXT companion field, and only fall back to the DATE
+  // field (which GHL truncates to date-only) if the precise field is ever
+  // missing — e.g. an attempt set before this fix shipped.
+  function effectiveLastAttempt(c: ContactRow): string | null {
+    if (c.id in attemptOverride) return attemptOverride[c.id];
+    return c.lastCallAttemptPrecise ?? c.lastCallAttempt;
+  }
+
   // Phase 3 — schedule-callback popover state. Only one popover open at a
   // time, keyed by contactId regardless of which section (Lead Queue or
   // Waiting on Me) triggered it.
@@ -465,7 +476,7 @@ export default function Dashboard() {
     const rows: LeadRow[] = (contacts ?? [])
       .filter((c) => c.phone?.trim() && !escalatedContactIds.has(c.id))
       .map((c) => {
-        const attempt = attemptOverride[c.id] ?? c.lastCallAttempt ?? null;
+        const attempt = effectiveLastAttempt(c);
         return {
           contact: c,
           tier: getBucketTag(c),

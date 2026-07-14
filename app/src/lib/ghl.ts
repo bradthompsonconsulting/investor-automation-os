@@ -19,6 +19,14 @@ const PROXY       = "/.netlify/functions/ghl-proxy";
 // writes outside the already-established offer_/stage/task write paths.
 const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
 
+// Companion TEXT field — same DATE-truncation bug as callback_datetime
+// (confirmed live: a note saved ~15min prior displayed as "Attempted 16h
+// ago" because the DATE field truncates to midnight UTC). last_call_attempt
+// is still written for GHL's own UI; this field is our own read path's
+// source of truth. Written in the SAME PUT as last_call_attempt — no new
+// write action, still inside the three-write invariant.
+const LAST_CALL_ATTEMPT_PRECISE_ID = "2vz1igGMxF3wv7HaWm97";
+
 // Dashboard Phase 3 — the third and last scoped write (spec guardrails).
 // DATE type, contact model, same ID already used for the read side (§14f note:
 // this field predates Phase 3's write — Build 2A only read it).
@@ -60,15 +68,15 @@ export interface ContactRow {
   // Contact-side offer_price (§14e) — non-null once a MAO offer has been saved
   // via the calculator. Read-only signal for the Dashboard's "Offers to review" tile.
   offerPrice:        number | null;
-  // Dashboard Phase 2/3 fields (ISO strings). last_call_attempt is written by
-  // setLastCallAttempt on every note save, nowhere else. callback_datetime is
-  // written by setCallbackDatetime but is DATE-typed in GHL (time-of-day gets
-  // truncated) — callbackDatetimePrecise is the exact companion value written
-  // in the same call; prefer it when reading, fall back to callbackDatetime
-  // only if it's ever missing.
+  // Dashboard Phase 2/3 fields (ISO strings). Both last_call_attempt and
+  // callback_datetime are DATE-typed in GHL and truncate time-of-day on
+  // write — each has a TEXT companion field carrying the exact value,
+  // written in the same call; prefer the precise field, fall back to the
+  // truncated DATE field only if it's ever missing.
   callbackDatetime:        string | null;
   callbackDatetimePrecise: string | null;
   lastCallAttempt:         string | null;
+  lastCallAttemptPrecise:  string | null;
 }
 
 // ── Bucket tag helpers ────────────────────────────────────────────────────────
@@ -211,13 +219,19 @@ export const ghl = {
     saveOfferFields: (contactId: string, customFields: { id: string; field_value: unknown }[]) =>
       request<any>(`/contacts/${contactId}`, "PUT", { customFields }),
 
-    // Dashboard Phase 2 — the note-is-the-attempt rule (spec §5). Body carries
-    // ONLY the one customFields entry, so this can never touch tags/stage/offer_
-    // fields as a side effect. Called exactly once, right after a note saves —
-    // never on its own, never from a Call click.
+    // Dashboard Phase 2 — the note-is-the-attempt rule (spec §5). Still ONE
+    // write action: a single PUT carrying exactly these two customFields
+    // entries, nothing else (no tags/stage/offer_ keys). last_call_attempt is
+    // DATE-typed in GHL and truncates time-of-day, so last_call_attempt_precise
+    // (TEXT) rides along in the same call as the exact value our own read path
+    // uses. Called exactly once, right after a note saves — never on its own,
+    // never from a Call click.
     setLastCallAttempt: (contactId: string, iso: string) =>
       request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [{ id: LAST_CALL_ATTEMPT_ID, field_value: iso }],
+        customFields: [
+          { id: LAST_CALL_ATTEMPT_ID, field_value: iso },
+          { id: LAST_CALL_ATTEMPT_PRECISE_ID, field_value: iso },
+        ],
       }),
 
     // Dashboard Phase 3 — the schedule-callback control. Still ONE write
