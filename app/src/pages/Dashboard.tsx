@@ -40,11 +40,10 @@ import {
 const RESURFACE_HOURS = 12;         // flat auto-reset window for a fresh attempt
 const RESURFACE_VISIBLE_ROWS = 15;  // Lead Queue visible-row cap before scroll
 
-// Presentation cap so Pipeline Health / Waiting on Me / Lead Queue end at the
-// same right edge as the To Do Items + Sales row above them, instead of
-// stretching full-width. Matches that row's rendered width (3x140px tiles +
-// gap + 2x140px Sales cards + gap).
-const CONTENT_MAX_WIDTH = "760px";
+// Presentation cap so Waiting on Me / Lead Queue stop short of the far edge
+// of a wide monitor instead of stretching full-width. NOT applied to
+// Pipeline Health, which needs more room to stay on one row (see below).
+const CONTENT_MAX_WIDTH = "1600px";
 
 // ── Central-time date helpers, same convention as mailer-shared.ts ───────────
 
@@ -631,8 +630,11 @@ export default function Dashboard() {
         re-tags, or moves a stage.
       </p>
 
-      {/* Pipeline Health strip — moved to the very top: glanceable status nobody would scroll for */}
-      <div style={{ marginBottom: "28px", maxWidth: CONTENT_MAX_WIDTH }}>
+      {/* Pipeline Health strip — moved to the very top: glanceable status nobody would scroll for.
+          Deliberately NOT capped by CONTENT_MAX_WIDTH — needs more room than the other sections to
+          stay on one row. At normal-or-wider windows the full pill set (~1800px) fits with room to
+          spare; on a narrowed window it wraps to a second line (no horizontal scrollbar anywhere). */}
+      <div style={{ marginBottom: "28px" }}>
         <SectionHeading>Pipeline Health</SectionHeading>
         <div style={{
           display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center",
@@ -888,14 +890,14 @@ export default function Dashboard() {
         <div style={{ overflow: "auto", maxHeight: `${RESURFACE_VISIBLE_ROWS * 44}px` }}>
           <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
             <colgroup>
-              <col style={{ width: "15%" }} /> {/* Name */}
-              <col style={{ width: "12%" }} /> {/* Phone */}
-              <col style={{ width: "8%" }} />  {/* Tier */}
-              <col style={{ width: "8%" }} />  {/* Score — needs enough room that the "SCORE" header itself doesn't truncate */}
-              <col style={{ width: "15%" }} /> {/* Address */}
-              <col style={{ width: "16%" }} /> {/* Last Contact — "LAST CONTACT" is a long header label */}
-              <col style={{ width: "14%" }} /> {/* Call/callback actions */}
-              <col style={{ width: "12%" }} /> {/* Notes */}
+              <col style={{ width: "14%" }} /> {/* Name — full names */}
+              <col style={{ width: "10%" }} /> {/* Phone — full "+1XXXXXXXXXX" */}
+              <col style={{ width: "8%" }} />  {/* Tier — full badge text (e.g. "Warm") */}
+              <col style={{ width: "5%" }} />  {/* Score */}
+              <col style={{ width: "23%" }} /> {/* Address — full one-line street address */}
+              <col style={{ width: "13%" }} /> {/* Last Contact — full "Attempted Xh ago" */}
+              <col style={{ width: "10%" }} /> {/* Call/callback actions */}
+              <col style={{ width: "17%" }} /> {/* Notes — comfortably typeable */}
             </colgroup>
             <thead>
               <tr style={{ background: "#07142E", position: "sticky", top: 0, zIndex: 1 }}>
