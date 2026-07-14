@@ -888,13 +888,13 @@ export default function Dashboard() {
         <div style={{ overflow: "auto", maxHeight: `${RESURFACE_VISIBLE_ROWS * 44}px` }}>
           <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
             <colgroup>
-              <col style={{ width: "17%" }} /> {/* Name */}
-              <col style={{ width: "13%" }} /> {/* Phone */}
+              <col style={{ width: "15%" }} /> {/* Name */}
+              <col style={{ width: "12%" }} /> {/* Phone */}
               <col style={{ width: "8%" }} />  {/* Tier */}
-              <col style={{ width: "6%" }} />  {/* Score */}
-              <col style={{ width: "18%" }} /> {/* Address */}
-              <col style={{ width: "13%" }} /> {/* Last Contact */}
-              <col style={{ width: "13%" }} /> {/* Call/callback actions */}
+              <col style={{ width: "8%" }} />  {/* Score — needs enough room that the "SCORE" header itself doesn't truncate */}
+              <col style={{ width: "15%" }} /> {/* Address */}
+              <col style={{ width: "16%" }} /> {/* Last Contact — "LAST CONTACT" is a long header label */}
+              <col style={{ width: "14%" }} /> {/* Call/callback actions */}
               <col style={{ width: "12%" }} /> {/* Notes */}
             </colgroup>
             <thead>
