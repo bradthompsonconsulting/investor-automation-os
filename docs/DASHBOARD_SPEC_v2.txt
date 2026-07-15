@@ -139,6 +139,11 @@ call_mode / call_forward_number custom values: DEAD for call-routing purposes un
 Option 1 — GHL's dialer reads its own Number config, not these custom values, so there's
 nothing for this app to branch on. Per Brad's call: left in place in GHL, unused by any
 code, no UI built around them. Not deleted — future options (below) could still use them.
+FORWARD-LOOKING NOTE (about a currently-dead field, NOT a plan): the original v2 draft
+intended call_mode to be read per-account at load, the same pattern as
+mailer_digest_recipient (fixed ID in code, per-account value), so softphone-vs-forward
+would become available to future SaaS clients by config with zero rebuild. Recorded only so
+that intent isn't lost if a future option revives the field; it is not scheduled work.
 
 OPTION 2 — Forward-to-phone: unchanged as a GHL-side account setting (Number's Forwarding
 Number field); no app code involved either way, since Option 1 hands off to GHL regardless
