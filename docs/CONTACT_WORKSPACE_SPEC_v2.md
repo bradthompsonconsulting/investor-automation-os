@@ -288,13 +288,62 @@ Steps 1–5 are all on proven paths. **Step 6 is no longer a new mechanism** —
 
 Per established pattern:
 - Verify live at `app.investorautomationos.com`, never localhost
-- Bundle hash grep before/after each deploy
+- Bundle-hash gate before asserting — but "hash changed" ≠ "your code is live"; use the discriminating method in §9.2
 - Write audit after any write-path change: confirm still exactly 3 write actions
 - Any write test scoped to a single contact by explicit ID (never `.first()` or a queue index)
 - Test contact: Neelima Bale `FiIT0hUaxVCIuokQpZuc`
-- Poll for round-trips; never fixed-timeout waits (GHL read-propagation lag is real)
+- Poll for round-trips; never fixed-timeout waits (GHL read-propagation lag is real — §11 measured ~105s on the grey rule's own path)
 - Reload retests must use a real `page.reload()` — in-session override masks bugs
 - Verify at a wide viewport (~2560px) matching Brad's actual screen, not the 1280px default
+- Every harness self-checks that it actually ran (assert the write/interception fired; fail loud + non-zero otherwise) — an assertion over zero events is a false pass
+
+### 9.1 VERIFIED LIVE — callback wiring, 2026-07-15
+
+The shared callback helper (`app/src/lib/callbackWrite.ts`, `scheduleCallbackGated`) was wired
+into BOTH surfaces — implemented in `b76802a` (feat: wire both surfaces), deployed to production
+alongside `17c6238` (playwright devDep for the harnesses). All three required verifications ran
+live at `app.investorautomationos.com`, 2560px, against Neelima Bale `FiIT0hUaxVCIuokQpZuc` by
+explicit ID. Actual numbers, not "passed":
+
+**Bundle gate (deploy-is-live proof; method in §9.2).** Old code built to `index-DlH3mUN9.js`;
+the wired commit built to `index-BCwmjQxm.js`; prod served `index-BCwmjQxm.js`. Old ≠ new proves
+the hash discriminates; prod == new proves the wired code is under test. Each harness re-asserted
+this hash at runtime before any assertion.
+
+1. **Dashboard live grey test.** Scheduling from a Lead Queue row fired exactly three gated writes
+   in order — `callback` (PUT, 200) → `note` (POST, 201) → `attempt` (PUT, 200), no fourth.
+   `last_call_attempt` advanced `2026-07-15T20:53:34.890Z → 22:09:26.014Z` — the assertion keys on
+   the timestamp VALUE advancing, NOT band membership (Neelima was already band 3, so membership
+   alone would be a tautology that cannot fail). `listAll` converged to the fresh value after 35
+   polls (~105s — see §11). Real `page.reload()` → row `opacity 0.55`, band 3, keyed off
+   `last_call_attempt` (not note presence). Callback cleared afterward.
+2. **Dashboard `route.abort` gate-failure test.** Aborting proxy writes (match = string
+   `url.includes('/.netlify/functions/ghl-proxy')`, not a regex) with the callback write failing:
+   aborts callback=1, note=0, attempt=0 — the gate HELD, note+attempt never attempted. Error
+   surfaced ("Couldn't schedule callback: Failed to fetch"), popover stayed open (callback-stage →
+   open). `last_call_attempt` unchanged (`22:09:26.014Z`). INTERCEPTION_FIRED true, counted inside
+   the abort so a matcher that never fired fails loud rather than false-passing.
+3. **Workspace re-runs (extraction unchanged).** Phase A happy path: three gated writes
+   `callback(200) → note(201) → attempt(200)`, attempt advanced `22:09:26.014Z → 22:18:56.259Z`
+   and persisted (single-record read). Phase B `route.abort` gate: callback=1, note=0, attempt=0,
+   error surfaced, popover open, no state change. Confirms the extraction into
+   `scheduleCallbackGated` left the Workspace's observable behavior identical to the Dashboard's.
+
+Final live state: Neelima's callback cleared; `last_call_attempt` left at `22:18:56.259Z`
+(harmless permanent marker on the established test contact); test notes left in place.
+
+### 9.2 Bundle-gate methodology — "hash changed" is not "your code is live"
+
+A changed bundle hash proves *a* deploy happened, not that *your commit* is what deployed. The
+gate that actually proves it (used in §9.1, now the standard):
+1. Build the commit under test locally → the expected entry hash (here `index-BCwmjQxm.js`).
+2. Build the PARENT commit → prove the hash DISCRIMINATES (old `index-DlH3mUN9.js` ≠ new). A change
+   that doesn't move the hash would make the whole gate worthless; this step catches exactly that.
+3. Poll prod `index.html` until its entry hash equals the expected hash. Equality against a
+   *discriminating* hash is the proof; a bare before/after change is not.
+Each harness then re-asserts the live hash at runtime before making any assertion. (Vite content-
+hashes chunks, so the same source + deps reproduces the same hash; a CSS-only or comment-only
+change may not move the JS hash — step 2 is what tells you whether the hash can prove anything.)
 
 ---
 
@@ -308,12 +357,10 @@ Per established pattern:
 5. ~~Contacts list: Analyze button / score columns~~ → **keep as-is.** The grid's value is comparison across leads; the detail view's is depth on one. Folding Analyze in means analyzing one at a time — worse at the job the grid exists to do. Different surfaces, different jobs.
 6. ~~Grey rule / a completed call greying a row~~ → **resolved (Brad, 2026-07-15).** Settled from source: the MECHANISM is a fresh `last_call_attempt` greys (notes are not read by the grey computation); the four cases are consequences of the note+`setLastCallAttempt` pairing convention. No separate "a completed call greys" decision exists. See §6 (incl. the STEP 6 REQUIREMENT that disposition capture must call `setLastCallAttempt`).
 7. ~~Path B backstop~~ → **rejected (§5.4).** IAOS writes a note only on an explicit outcome; silence is not a signal. The call-end-event verification prerequisite is therefore gone.
+8. ~~Dashboard callback handler must grey~~ → **done (2026-07-15).** Both surfaces wired onto the shared `scheduleCallbackGated` (`b76802a`; deployed alongside `17c6238`). Scheduling a callback from the Dashboard now fires the same gated `setCallbackDatetime → notes.create → setLastCallAttempt` pairing as the Workspace, so the row greys off a fresh `last_call_attempt` on BOTH surfaces; clearing stays a lone `setCallbackDatetime(null)`. Verified live with numbers — §9.1 (Dashboard grey test + Workspace re-runs). Was "Decided — pending its own task"; the task is complete.
 
 **Open — needs Brad:**
-- **Lead Queue UI copy** (`Dashboard.tsx`, the "A note is the only thing that marks an attempt" blurb) is wrong as a mechanism (§6: a fresh `last_call_attempt` greys, not the note) but is telling a user something roughly true about how to use the tool. Wording is **undecided**; it's user-facing copy with its own build/deploy/verify cycle. Left unshipped pending a decision on the phrasing.
-
-**Decided — pending its own task (not open questions):**
-- **Dashboard callback handler must grey (DECIDED, Brad 2026-07-15).** The Dashboard's `handleSaveCallback` currently writes only `setCallbackDatetime` — so scheduling a callback from the Dashboard does NOT grey, unlike the Workspace (§8 step 3). Fix: give the Dashboard handler the same gated `setCallbackDatetime → notes.create → setLastCallAttempt` pairing as the Workspace. §6 stays as written — the Dashboard is what's wrong, not the spec. Reason: scheduling a callback IS a disposition — a real outcome of working the lead — and the lead must not resurface in 12h just because it was scheduled from the Dashboard instead of the Workspace. Same action, same behavior, both surfaces. Its own task (code + deploy + verify).
+- **Lead Queue UI copy** (`Dashboard.tsx:816`, the "A note is the only thing that marks an attempt" blurb) is wrong as a mechanism (§6: a fresh `last_call_attempt` greys, not the note) but is telling a user something roughly true about how to use the tool. Wording is **undecided**; it's user-facing copy with its own build/deploy/verify cycle. **Untouched by the callback wiring** — the wiring changed the handler, not this blurb (the line moved 783 → 816 only because wiring added code above it). Still wrong, still unshipped, pending a decision on the phrasing.
 
 **Open — housekeeping, not blockers:**
 - §5.6 item 3 — does `/api/phone-lookup` write `Phone Type` back to the contact? If so, the three-write invariant has an undocumented exception in production and needs scoping language.
@@ -332,6 +379,8 @@ Found while locating the source of a stale-attempt-on-reload symptom in the Work
 - **Single-record GET** — fresh immediately (poll #1, 0.0s).
 - **List endpoint, called DIRECTLY with the PIT (Netlify bypassed entirely)** — returned the PRIOR value for ≥20s, caught up somewhere in the 20–53s window. Across earlier runs the same list lag ran to several minutes.
 - **Our `ghl-contacts` Netlify function** — tracked the list endpoint value-for-value; it adds no lag and no cache of its own. Function response headers: `cache-control: no-cache`, `age` 0–1, `netlify-cdn-cache-control` / `cdn-cache-control` null, a distinct `x-nf-request-id` per hit. **Not our cache. Not fixable with a cache header** — the cache hypothesis is dead.
+
+**Measured again on the grey rule's own path, 2026-07-15 (callback-wiring Verify #1, §9.1).** After scheduling a callback from the Dashboard Lead Queue, the Netlify `ghl-contacts` (`listAll`) path took **~105s** — 35 polls at a 3s cadence — to reflect the fresh `last_call_attempt`. That is well beyond the 20–53s of the direct-endpoint probe above, and it is the exact path the grey rule reads to key a row off `last_call_attempt`. **Stated plainly: any fixed wait shorter than ~105s would have produced a false negative** — the reload would have read the stale (pre-write) attempt and the row would have looked un-greyed, wrongly failing the test (or, in production, briefly showing a scheduled lead as not-yet-worked). This is why the grey check polls `listAll` to convergence and never fixed-waits (§9). Treat ~105s as a realistic figure for this path on a busy account, not a ceiling — earlier runs ran to several minutes.
 
 **The sharper problem — a transient record DROP, not just staleness.** At one sample (elapsed 55.3s) the list endpoint returned the contact **absent from the results entirely** (`not-in-list`), bracketed by present-and-fresh readings at 53.0s and 87.4s. Mid-reindex, GHL's list index dropped the record, then restored it. Two ~30s stalls where the list endpoint hung before responding were also observed, consistent with reindex churn.
 

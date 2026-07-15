@@ -177,9 +177,17 @@ BUILD PHASING (est. 2-4 Jeff sessions)
             popup (native <input type="datetime-local">) on each Lead Queue row and on each
             Waiting-on-Me Callbacks row, writing callback_datetime via the third and last
             scoped write (ghl.contacts.setCallbackDatetime — single-field PUT, same
-            minimal-PUT guardrail as setLastCallAttempt; Clear sends null, not ""). Independent
-            of the attempt system: scheduling/clearing a callback never sets last_call_attempt
-            or greys a row. Lead Queue rows show a small CALLBACK badge next to the name when
+            minimal-PUT guardrail as setLastCallAttempt; Clear sends null, not ""). As Phase 3
+            ORIGINALLY shipped this was independent of the attempt system: scheduling/clearing a
+            callback did not set last_call_attempt or grey a row.
+            *** SUPERSEDED 2026-07-15 (commit b76802a, deployed w/ 17c6238): SCHEDULING a callback
+            now IS a disposition and greys. *** Both surfaces (Dashboard + Workspace) were wired
+            onto the shared gated pairing setCallbackDatetime → notes.create → setLastCallAttempt
+            (app/src/lib/callbackWrite.ts, scheduleCallbackGated), so scheduling writes a fresh
+            last_call_attempt and greys the row on both surfaces — verified live with numbers, see
+            CONTACT_WORKSPACE_SPEC_v2.md §9.1. CLEARING is unchanged: still a lone
+            setCallbackDatetime(null), no note, no attempt, no grey. Lead Queue rows show a small
+            CALLBACK badge next to the name when
             one's set. The "Waiting on me" inbound/overdue/today callback group itself was
             already live since Build 2A (read side) — this phase added the write.
             Offers-awaiting was already resolved via a clean read signal in Build 2A (§3.3).
