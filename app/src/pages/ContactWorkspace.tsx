@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { ghl, getBucketTag, type ContactRow, type BucketTag } from "../lib/ghl";
 import { CallbackPopover } from "../components/CallbackPopover";
+import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 
 /**
  * Contact Workspace — docs/CONTACT_WORKSPACE_SPEC_v2.md §8 steps 1-3.
@@ -97,12 +98,8 @@ function formatNoteDate(iso: string): string {
   });
 }
 
-// Callback display + note copy (§6.1 "Callback scheduled for {Mon D, h:mm A}").
-function formatCallbackTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-US", {
-    timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-  });
-}
+// Callback display + note copy (§6.1 "Callback scheduled for {Mon D, h:mm A}")
+// — the shared formatter, imported from ../lib/callbackWrite.
 
 interface NoteRow { id: string; body: string; dateAdded: string }
 
@@ -224,31 +221,24 @@ export default function ContactWorkspace() {
   async function handleSaveCallback(iso: string) {
     setCallbackSaving(true);
     setCallbackError(null);
-    try {
-      await ghl.contacts.setCallbackDatetime(id, iso); // write: callback (both fields, one call)
-    } catch (e) {
-      setCallbackError(`Couldn't schedule callback: ${(e as Error).message}`);
-      setCallbackSaving(false);
-      return; // gate: callback failed → no note, no attempt
-    }
-    setCallbackOverride(iso);
-    try {
-      await ghl.notes.create(id, `Callback scheduled for ${formatCallbackTime(iso)}`); // write: note
-    } catch (e) {
-      setCallbackError(`Callback scheduled, but couldn't write the note: ${(e as Error).message}`);
-      setCallbackSaving(false);
-      loadNotes();
-      return; // gate: note failed → don't mark attempt
-    }
-    try {
-      const nowIso = new Date().toISOString();
-      await ghl.contacts.setLastCallAttempt(id, nowIso); // write: attempt (the note greys)
-      setAttemptOverride(nowIso);
-    } catch (e) {
-      setCallbackError(`Callback + note saved, but couldn't mark attempted: ${(e as Error).message}`);
-    }
+    const result = await scheduleCallbackGated(ghl, id, iso);
     setCallbackSaving(false);
-    setCallbackOpen(false);
+
+    if (result.ok) {
+      setCallbackOverride(iso);
+      setAttemptOverride(result.attemptIso);
+      setCallbackOpen(false);
+      loadNotes();
+      return;
+    }
+
+    // A persisted callback (note/attempt stage) still shows as scheduled; a
+    // callback-stage failure never wrote it, so the override stays put.
+    if (result.callbackPersisted) setCallbackOverride(iso);
+    setCallbackError(result.error);
+    if (result.stage === "callback") return; // gate held: no note, no attempt; popover stays open
+    // Note failed → popover stays open. Attempt failed → callback+note saved, close it.
+    if (result.stage === "attempt") setCallbackOpen(false);
     loadNotes();
   }
 

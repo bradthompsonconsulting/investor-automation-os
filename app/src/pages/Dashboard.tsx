@@ -10,6 +10,7 @@ import {
   type UnansweredInboundRow,
 } from "../lib/ghl";
 import { CallbackPopover } from "../components/CallbackPopover";
+import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 
 /**
  * Dashboard — Build 2A + 2B + Phase 3 per docs/DASHBOARD_SPEC_v2.txt.
@@ -31,12 +32,12 @@ import { CallbackPopover } from "../components/CallbackPopover";
  * sets last_call_attempt, so it never greys a row. (Grey keys off a fresh
  * last_call_attempt — written by the note→setLastCallAttempt pairing — not by
  * a note on its own; see DASHBOARD_SPEC_v2.txt §GREY-OUT MECHANISM.)
- * NOTE: this Dashboard's callback handler still writes only setCallbackDatetime,
- * so scheduling a callback here does NOT yet grey — the §6 "callback greys on
- * both surfaces" change is currently implemented in the Workspace only. DECIDED
- * FIX pending its own task: this handler gets the same gated
- * setCallbackDatetime → notes.create → setLastCallAttempt pairing (see
- * CONTACT_WORKSPACE_SPEC_v2.md §10).
+ * Scheduling a callback IS a disposition, so this handler runs the same gated
+ * setCallbackDatetime → notes.create → setLastCallAttempt pairing the Workspace
+ * uses (shared scheduleCallbackGated, ../lib/callbackWrite) — the fresh
+ * last_call_attempt greys the row on BOTH surfaces (CONTACT_WORKSPACE_SPEC_v2.md
+ * §6/§10). Clearing a callback is not a disposition: it writes only
+ * setCallbackDatetime(null), no note, no attempt.
  * call_mode/call_forward_number custom values exist in GHL but are
  * intentionally unused here — GHL's own dialer reads its own Number config,
  * not our custom values, so there's nothing for this app to branch on.
@@ -106,11 +107,7 @@ function relativeTime(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-function formatCallbackTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-US", {
-    timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-  });
-}
+// formatCallbackTime is the shared formatter, imported from ../lib/callbackWrite.
 
 function TierBadge({ tier }: { tier: BucketTag }) {
   const color = TIER_COLOR[tier];
@@ -313,15 +310,45 @@ export default function Dashboard() {
   async function handleSaveCallback(contactId: string, iso: string | null) {
     setCallbackSaving(true);
     setCallbackError(null);
-    try {
-      await ghl.contacts.setCallbackDatetime(contactId, iso);
-      setCallbackOverride((prev) => ({ ...prev, [contactId]: iso }));
-      setCallbackPopoverId(null);
-    } catch (e) {
-      setCallbackError((e as Error).message);
-    } finally {
-      setCallbackSaving(false);
+
+    // Clearing is not a disposition — just clear the field, no note, no attempt.
+    if (iso === null) {
+      try {
+        await ghl.contacts.setCallbackDatetime(contactId, null);
+        setCallbackOverride((prev) => ({ ...prev, [contactId]: null }));
+        setCallbackPopoverId(null);
+      } catch (e) {
+        setCallbackError((e as Error).message);
+      } finally {
+        setCallbackSaving(false);
+      }
+      return;
     }
+
+    // Scheduling IS a disposition (§10): gated callback → note → attempt via the
+    // shared helper, so the fresh last_call_attempt greys this row just like the
+    // Workspace. Still exactly the three sanctioned writes.
+    const result = await scheduleCallbackGated(ghl, contactId, iso);
+    setCallbackSaving(false);
+
+    if (result.ok) {
+      setCallbackOverride((prev) => ({ ...prev, [contactId]: iso }));
+      setAttemptOverride((prev) => ({ ...prev, [contactId]: result.attemptIso }));
+      setCallbackPopoverId(null);
+      return;
+    }
+
+    // Failure mapping mirrors the Workspace stage-for-stage (shared helper, one
+    // behavior). A persisted callback (note/attempt stage) still shows as
+    // scheduled; a callback-stage failure never wrote it. The popover stays open
+    // only where a retry is clean (callback stage: nothing saved; note stage:
+    // retry re-writes the same callback iso) and CLOSES on attempt-stage failure
+    // — callback+note are already saved, so a retry would duplicate the note.
+    if (result.callbackPersisted) {
+      setCallbackOverride((prev) => ({ ...prev, [contactId]: iso }));
+    }
+    setCallbackError(result.error);
+    if (result.stage === "attempt") setCallbackPopoverId(null);
   }
 
   // Periodic re-render only — lets the 12h auto-reset move a row out of BAND 3
