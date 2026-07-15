@@ -254,6 +254,14 @@ export const ghl = {
     // an overwrite/edit of a prior one (GHL has no "edit" call site here).
     create: (contactId: string, body: string) =>
       request<any>(`/contacts/${contactId}/notes`, "POST", { body }),
+
+    // Contact Workspace §8 step 2 — READ-ONLY note history. GET only; not a
+    // write, does not touch the three-write invariant. Returns GHL's
+    // { notes: [{ id, body, dateAdded, ... }] } shape verbatim (no shadow copy).
+    list: (contactId: string) =>
+      request<{ notes?: { id: string; body: string; dateAdded: string }[] }>(
+        `/contacts/${contactId}/notes`,
+      ),
   },
 
   customFields: {
