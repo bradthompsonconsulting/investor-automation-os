@@ -6,37 +6,10 @@
  * paging through the GHL API server-side so the client gets one flat array.
  */
 
+import { parseContact } from "./lib/contact-parse";
+
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
-
-// Score field IDs — hardcoded (confirmed via /locations/.../customFields)
-const SCORE_IDS = {
-  motivation_score:        "8vH9yq10xeYVVMHXbS0C",
-  deal_score:              "cfkm0kb9CLvjZgyrcIFz",
-  combined_score:          "9SVnuzznYsZOQQazpxld",
-  data_completeness_score: "r9sD1rlTIqhOx9Mhvftt",
-};
-
-// Contact-side offer_price (§14e OFFER_FIELD_IDS.contact.offer_price in
-// MaoCalculator.tsx) — read-only here, used by the Dashboard's "Offers to
-// review" tile to detect a saved-but-unsent offer. Never written by this function.
-const OFFER_PRICE_ID = "v2VO2wUwTYRojmU7VXyZ";
-
-// Dashboard Phase 2/3 fields (confirmed live via /locations/.../customFields).
-// callback_datetime and last_call_attempt are DATE type on contact; this
-// function only reads them, never writes.
-const CALLBACK_DATETIME_ID = "JeQWtwpwUbvPA50UfuPU";
-const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
-
-// Companion TEXT field — GHL's DATE type truncates time-of-day on write, so
-// this holds the exact ISO string written in the same PUT as
-// callback_datetime. Read-only here; written by ghl.contacts.setCallbackDatetime.
-const CALLBACK_DATETIME_PRECISE_ID = "7qRUkZQK8bi2HNo7zDHd";
-
-// Companion TEXT field for last_call_attempt — same DATE-truncation bug
-// (confirmed live: a ~15min-old note displayed as "Attempted 16h ago").
-// Read-only here; written by ghl.contacts.setLastCallAttempt.
-const LAST_CALL_ATTEMPT_PRECISE_ID = "2vz1igGMxF3wv7HaWm97";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -48,40 +21,6 @@ function headers(token: string) {
 }
 
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
-
-function cfValue(customFields: any[], id: string): number | null {
-  const f = customFields?.find((cf: any) => cf.id === id);
-  const raw = f?.value ?? f?.fieldValue ?? null;
-  if (raw === null || raw === undefined) return null;
-  const n = typeof raw === "number" ? raw : parseFloat(String(raw));
-  return isNaN(n) ? null : n;
-}
-
-// DATE fields (callback_datetime, last_call_attempt) come back as a unix-ms
-// number under fieldValueDate — normalize to ISO so the client only ever
-// deals in date strings.
-function cfDate(customFields: any[], id: string): string | null {
-  const f = customFields?.find((cf: any) => cf.id === id);
-  const raw = f?.value ?? f?.fieldValue ?? f?.fieldValueDate ?? null;
-  if (raw === null || raw === undefined || raw === "") return null;
-  if (typeof raw === "number") return new Date(raw).toISOString();
-  const s = String(raw).trim();
-  if (!s) return null;
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-// TEXT fields — plain string passthrough. Validates the stored value actually
-// parses as a date before trusting it (defensive against a stray manual edit
-// in GHL's UI), returning null rather than a garbage timestamp otherwise.
-function cfText(customFields: any[], id: string): string | null {
-  const f = customFields?.find((cf: any) => cf.id === id);
-  const raw = f?.value ?? f?.fieldValue ?? null;
-  if (raw === null || raw === undefined) return null;
-  const s = String(raw).trim();
-  if (!s) return null;
-  return isNaN(new Date(s).getTime()) ? null : s;
-}
 
 async function fetchAllContacts(token: string): Promise<any[]> {
   const all: any[] = [];
@@ -123,31 +62,7 @@ export const handler = async (event: any) => {
   try {
     const raw = await fetchAllContacts(token);
 
-    const contacts = raw.map((c: any) => {
-      const cf: any[] = c.customFields ?? [];
-      return {
-        id:              c.id,
-        firstName:       c.firstName ?? "",
-        lastName:        c.lastName  ?? "",
-        phone:           c.phone     ?? "",
-        email:           c.email     ?? "",
-        address1:        c.address1  ?? "",
-        city:            c.city      ?? "",
-        state:           c.state     ?? "",
-        postalCode:      c.postalCode ?? "",
-        dateAdded:       c.dateAdded ?? null,
-        tags:            (c.tags ?? []).map((t: string) => String(t).toLowerCase()),
-        motivationScore:    cfValue(cf, SCORE_IDS.motivation_score),
-        dealScore:          cfValue(cf, SCORE_IDS.deal_score),
-        combinedScore:      cfValue(cf, SCORE_IDS.combined_score),
-        completenessScore:  cfValue(cf, SCORE_IDS.data_completeness_score),
-        offerPrice:         cfValue(cf, OFFER_PRICE_ID),
-        callbackDatetime:        cfDate(cf, CALLBACK_DATETIME_ID),
-        callbackDatetimePrecise: cfText(cf, CALLBACK_DATETIME_PRECISE_ID),
-        lastCallAttempt:         cfDate(cf, LAST_CALL_ATTEMPT_ID),
-        lastCallAttemptPrecise:  cfText(cf, LAST_CALL_ATTEMPT_PRECISE_ID),
-      };
-    });
+    const contacts = raw.map(parseContact);
 
     return {
       statusCode: 200,

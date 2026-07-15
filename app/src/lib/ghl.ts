@@ -198,7 +198,10 @@ async function request<T = unknown>(
 
 export const ghl = {
   contacts: {
-    // Returns all contacts with scores, paged server-side
+    // Returns all contacts with scores, paged server-side. Reads GHL's
+    // eventually-consistent LIST endpoint — can lag/drop a record mid-reindex
+    // (CONTACT_WORKSPACE_SPEC_v2.md §11). Prefer getOne() when you need one
+    // contact fresh (e.g. right after a write).
     listAll: async (): Promise<ContactRow[]> => {
       const res = await fetch("/.netlify/functions/ghl-contacts");
       if (!res.ok) {
@@ -206,6 +209,19 @@ export const ghl = {
         throw new Error(`ghl-contacts → ${res.status}: ${text}`);
       }
       return res.json() as Promise<ContactRow[]>;
+    },
+
+    // Returns ONE parsed ContactRow from GHL's immediate single-record endpoint
+    // (no list-index lag). Read-only. Same parser as listAll, so the shape is
+    // identical. Used by the Contact Workspace so a reload right after a write
+    // shows fresh data.
+    getOne: async (id: string): Promise<ContactRow> => {
+      const res = await fetch(`/.netlify/functions/ghl-contact?id=${encodeURIComponent(id)}`);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`ghl-contact → ${res.status}: ${text}`);
+      }
+      return res.json() as Promise<ContactRow>;
     },
     list: (params?: Record<string, string>) => {
       const qs = new URLSearchParams({ locationId: LOCATION_ID, limit: "25", ...params }).toString();

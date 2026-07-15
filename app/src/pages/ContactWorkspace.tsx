@@ -120,13 +120,14 @@ export default function ContactWorkspace() {
 
   function loadContact() {
     setError(null);
-    ghl.contacts.listAll()
-      .then((all) => {
-        const found = all.find((c) => c.id === id) ?? null;
-        setContact(found);
-        setNotFound(!found);
+    // Single-record read (immediate, no list-index lag — §11). A 404 means the
+    // contact genuinely doesn't exist; any other failure is a real error.
+    ghl.contacts.getOne(id)
+      .then((c) => { setContact(c); setNotFound(false); })
+      .catch((e: Error) => {
+        if (/→ 404/.test(e.message)) setNotFound(true);
+        else setError(e.message);
       })
-      .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
   }
 
