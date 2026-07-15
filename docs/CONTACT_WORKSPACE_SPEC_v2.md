@@ -6,8 +6,8 @@ Supersedes CONTACT_WORKSPACE_SPEC_v1.md. Sits alongside `IAOS_Master_Architectur
 **Changes from v1:**
 - §5 open questions all answered by live test (contact ID, auth, idempotency) — see §5.1
 - §5 new constraint discovered: the Custom Disposition prompt is transient and unrecoverable — see §5.2
-- §5 redesigned: Path A + Path B reconciliation, not either/or — see §5.4
-- §6 amended: a completed call now greys a row (was: only a note greys)
+- §5 redesigned: Path A only — Path B (call-end backstop) rejected, silence is not a signal — see §5.4
+- §6 grey rule restated as four explicit cases: a note greys, a call never greys (a disposition greys only because it writes a note) — see §6
 - §7 layout changed to two-column
 - §8 step 6 de-risked: the GHL→IAOS receive path already exists in production
 
@@ -146,9 +146,7 @@ The Custom Disposition picker appears **in the Call Summary panel the moment you
 
 This is GHL's UI. No setting controls the timeout, no default-disposition config exists, no API touches it. Not fixable from our side.
 
-**Consequence if unmitigated:** every call dispositioned outside that window is lost permanently — no webhook, no note, no grey — and the lead resurfaces as never-attempted. At 40 calls/day this silently under-counts real work.
-
-**This is a nuisance, not a ceiling.** Unlike the dial API (§1), the underlying data is not gated: the disposition arrives when tapped, and the call-end event carries duration regardless. See §5.4.
+**Accepted consequence (Brad, 2026-07-15):** a call dispositioned outside that window produces no webhook — so IAOS writes no note and greys nothing. The lead resurfaces as never-attempted and gets re-dialed. This is accepted deliberately. The remedy is the **manual note**: if Brad wants that attempt on record, he types one, which greys the row like any other note. IAOS does not infer an outcome from silence — a missed disposition is not a signal (see §5.4, Path B rejected).
 
 ### 5.3 WHAT GHL EXPOSES
 
@@ -161,27 +159,23 @@ This is GHL's UI. No setting controls the timeout, no default-disposition config
 - Custom Disposition value — surfaces in Call Reporting UI and as a Workflow trigger filter
 - No `CallDispositionSet` webhook event exists. The only call-completion event is `VoiceAiCallEnd`, scoped to AI-agent calls only.
 
-### 5.4 DESIGN — PATH A + PATH B RECONCILIATION
+### 5.4 DESIGN — PATH A ONLY (Path B rejected, Brad 2026-07-15)
 
-v1 framed A and B as either/or. That was wrong. B is the **backstop** that closes §5.2's gap. Both write through the existing note path to one endpoint.
-
-**Path A — disposition tapped (the good case):**
+**Path A — disposition tapped (the only path):**
 1. GHL Workflow: trigger Call details / Custom disposition (all six); action Webhook -> IAOS endpoint, customData per §5.1, `X-IAOS-Secret` header.
 2. IAOS writes note: `Call: {disposition} — {duration}s`
-3. Note-save fires the existing `setLastCallAttempt` path -> row greys.
+3. Note-save fires the existing `setLastCallAttempt` path -> row greys (via the note, like any other note).
 
-**Path B — nothing tapped (the backstop):**
-1. Call-end event reaches IAOS with contact ID + duration via the conversations read path.
-2. IAOS writes note: `Call — {duration}s, no disposition`
-3. Same grey path.
+**Path B — call-end backstop with no disposition — REJECTED.** v1 proposed writing `Call — {duration}s, no disposition` from the call-end event whenever nothing was tapped, as a backstop for §5.2's gap. Rejected deliberately:
 
-**Reconciliation:** both land at the same endpoint. If a disposition note already exists for that call, skip. Path A wins.
+> **IAOS writes a note only when Brad explicitly signals an outcome. The absence of a disposition is not a signal.** Inferring one would put an unauthored note on a seller's permanent record — the record that matters most — on the strength of silence. A missed disposition is handled by §5.2's accepted consequence (the lead re-dials) and the manual-note remedy, not by machine inference.
 
-**Note copy is deliberately truthful.** Path B does NOT default to "No Answer" or any other disposition. A 55-second connected call written up as "No Answer" is a false record, and `duration` in the payload proves it false. These notes are permanent GHL records on the leads that matter most; they say what is known and nothing more.
+Consequences of dropping Path B:
+- The **call-end-event / `conversations.readonly` prerequisite verification is removed** — nothing depends on it anymore.
+- The **reconciliation / dedupe logic is removed** — with one path there is nothing to reconcile.
+- The grey rule stays clean (§6): a disposition writes a note and greys through the note; a call with no disposition writes nothing and does not grey.
 
 **Still exactly three writes.** No new write action. Invariant intact.
-
-**PREREQUISITE — verify before building Path B:** confirm that call-end events actually fire for **LC Phone softphone calls** carrying contact ID + duration on the `conversations/message.readonly` scope. The spike asserted this; nobody has confirmed it against a real softphone call. Same class of assumption that cost two rounds on 2026-07-15. Verify empirically, do not trust the doc.
 
 ### 5.5 INVARIANT RULING (LOCKED — Brad, 2026-07-14)
 
@@ -200,34 +194,31 @@ Discovered 2026-07-15. The **Phone Type Validation** workflow (`4ed31e4a-8c95-45
 2. That workflow uses Custom webhook (LC Premium) and meters per execution on **every contact created**. Already a live cost line in the account. Reason enough for the disposition webhook to stay on the free standard Webhook action.
 3. The Wait 10s -> If/Else on Phone Type implies IAOS writes `Phone Type` back to the contact — a write outside the three. Either the invariant was always scoped to the lead-working path and phone-lookup is exempt, or there is an undocumented fourth write in production. **Resolve before the invariant is stated as absolute anywhere.**
 
-## 6. CALLBACK BEHAVIOR CHANGE (LOCKED — Brad, 2026-07-14)
+## 6. THE GREY RULE + CALLBACK BEHAVIOR (LOCKED — Brad)
 
-**Change from Dashboard v2:** scheduling a callback now **writes a note and marks the attempt**, greying the row.
+**The grey rule, as Brad's four cases (2026-07-15):**
 
-- Note copy: `Callback scheduled for {Mon D, h:mm A}`
-- Fires the existing note → attempt → grey path. No new write action.
-- Reverses the prior "callback never greys" rule deliberately, per Brad.
-- Applies on both Dashboard and Workspace.
+```
+no call + note                          = grey
+no call + no note                       = no grey
+call + disposition (writes a note)      = grey  (via the note, as always)
+call + no disposition (no note)         = no grey
+```
 
-**Unchanged:** nothing else greys in Waiting on Me.
+**Unifying principle, unchanged: a note greys; a call never greys.** There is no "a call greys" rule and none is needed. A disposition (Path A, §5.4) writes a note automatically, so it greys *through the note*, like anything else. A call with no disposition writes no note (Path B rejected, §5.4) and does not grey. The Call button itself — which only proves you opened a tab — has never greyed and still doesn't.
 
-### 6.1 SECOND GREY CHANGE — A COMPLETED CALL NOW GREYS (needs Brad's sign-off)
+**Callback scheduling greys — change from Dashboard v2 (LOCKED, Brad 2026-07-14):** scheduling a callback **writes a note** (`Callback scheduled for {Mon D, h:mm A}`) and marks the attempt, so it greys — consistent with the rule above, because it is a note. Fires the existing note → attempt → grey path; no new write action; applies on both Dashboard and Workspace. Reverses the prior "callback never greys" rule deliberately.
 
-Consequence of §5.4. Under Path A + Path B, every completed call produces a note, so every completed call greys the row.
+**Grey triggers, exhaustive:** a typed note, a scheduled callback, a tapped disposition. All three are notes. Nothing else greys — including in Waiting on Me.
 
-The old rule — "the Call button never greys, only a note greys" — protected against the **Dashboard Call button** greying a row, and that button only proves you opened a tab. It proves nothing about a call. A call-end event carrying a real duration is different evidence: it proves a connected call happened.
-
-So this is a scope correction, not a reversal. But it is a change, and it is Brad's to make deliberately.
-
-**Grey triggers after this phase:** a note (unchanged, still the record of attempt), a scheduled callback (§6), a completed call via §5.4. Nothing else.
-
-### 6.2 NOTE COPY (LOCKED)
+### 6.1 NOTE COPY (LOCKED)
 
 ```
 Call: {disposition} — {duration}s
-Call — {duration}s, no disposition
 Callback scheduled for {Mon D, h:mm A}
 ```
+
+(The Path-B `Call — {duration}s, no disposition` copy is removed — Path B is rejected, §5.4.)
 
 Internal notes, not seller-facing — the "no just checking in" copy rule doesn't apply here. Keep them parseable; they'll be grepped later.
 
@@ -266,7 +257,7 @@ Reuse from Dashboard (proven):
 - Tier/Score badge components
 - `CONTENT_MAX_WIDTH` = 1600px
 
-Copy rules apply to seller-facing content: no "just checking in" language; lead with the seller's benefit; never promise follow-up the automation can't back. Internal note copy is governed by §6.2.
+Copy rules apply to seller-facing content: no "just checking in" language; lead with the seller's benefit; never promise follow-up the automation can't back. Internal note copy is governed by §6.1.
 
 ---
 
@@ -278,7 +269,7 @@ Copy rules apply to seller-facing content: no "just checking in" language; lead 
 3. **Callback** — popover + write. Reuse Dashboard's component. Include the note+grey change (§6).
 4. **Call button** — tab-hop to GHL. Trivial; same as Dashboard.
 5. **Conversation history** — read-only render from the existing conversations read path.
-6. **Disposition capture** — new Netlify function + GHL workflow, per §5.4. §5 open questions are closed; the only prerequisite left is the Path B verification in §5.4.
+6. **Disposition capture** — new Netlify function + GHL workflow, per §5.4 (Path A only). §5 open questions are closed; no prerequisites remain (the Path B call-end verification was dropped with Path B).
 7. **Dashboard name-click** → deep-link to `/contacts/:id`.
 
 Steps 1–5 are all on proven paths. **Step 6 is no longer a new mechanism** — GHL → IAOS webhook receive already runs in production (§5.6). Steps 1–2 can start immediately; they touch none of §5.
@@ -304,17 +295,16 @@ Per established pattern:
 ## 10. OPEN DECISIONS FOR BRAD
 
 **Closed since v1:**
-1. ~~§5 — confirm Path A~~ → confirmed and verified live (§5.1). Redesigned as A+B reconciliation (§5.4).
+1. ~~§5 — confirm Path A~~ → confirmed and verified live (§5.1). Path A only; Path B rejected (§5.4).
 2. ~~§7 layout shape~~ → revised to two-column (§7).
-3. ~~Note copy~~ → locked (§6.2).
+3. ~~Note copy~~ → locked (§6.1).
 4. ~~`offer_` fields in the Workspace~~ → **omit entirely.** Read-only offer data on a work surface invites "why can't I edit this," and the answer is an invariant you'd defend every time you look at the screen. The Workspace is a calling surface.
 5. ~~Contacts list: Analyze button / score columns~~ → **keep as-is.** The grid's value is comparison across leads; the detail view's is depth on one. Folding Analyze in means analyzing one at a time — worse at the job the grid exists to do. Different surfaces, different jobs.
+6. ~~Grey rule / a completed call greying a row~~ → **resolved (Brad, 2026-07-15).** A note greys; a call never greys. Path A produces a note automatically, so nothing about the grey rule changes — no separate "a completed call greys" decision exists. Four cases locked in §6.
+7. ~~Path B backstop~~ → **rejected (§5.4).** IAOS writes a note only on an explicit outcome; silence is not a signal. The call-end-event verification prerequisite is therefore gone.
 
 **Open — needs Brad:**
-- **§6.1 — a completed call now greys a row.** Sign off or reject. This is the one real behavioral decision left in the spec.
-
-**Open — needs verification before step 6 (not before steps 1–5):**
-- **§5.4 prerequisite** — do call-end events fire for LC Phone softphone calls carrying contact ID + duration on `conversations/message.readonly`? Verify empirically.
+- (none — the §6.1 grey decision is closed above; the §5.4 Path B prerequisite is gone.)
 
 **Open — housekeeping, not blockers:**
 - §5.6 item 3 — does `/api/phone-lookup` write `Phone Type` back to the contact? If so, the three-write invariant has an undocumented exception in production and needs scoping language.
