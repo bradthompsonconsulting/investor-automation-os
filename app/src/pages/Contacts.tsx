@@ -65,10 +65,17 @@ const COLUMNS: ColumnDef[] = [
     key: "name",
     label: "Name",
     sortable: true,
+    // Name deep-links to the Contact Workspace detail view (§3 / §8 step 2b).
+    // Read-only navigation — no GHL call, no write.
     render: (c) => (
-      <span style={{ fontWeight: 500, color: "#F1F5F9" }}>
+      <Link
+        to={`/contacts/${c.id}`}
+        style={{ fontWeight: 500, color: "#F1F5F9", textDecoration: "none", cursor: "pointer" }}
+        onMouseEnter={(e) => (e.currentTarget.style.color = "#1EC8FF")}
+        onMouseLeave={(e) => (e.currentTarget.style.color = "#F1F5F9")}
+      >
         {[c.firstName, c.lastName].filter(Boolean).join(" ") || <em style={{ color: "#475569" }}>Unknown</em>}
-      </span>
+      </Link>
     ),
   },
   {

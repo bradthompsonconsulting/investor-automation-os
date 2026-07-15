@@ -274,6 +274,7 @@ Copy rules apply to seller-facing content: no "just checking in" language; lead 
 
 1. **Read-only detail view** — route `/contacts/:id`, display name/phone/address/tier/score. Prove the read path.
 2. **Notes** — history display + new-note write. Reuse Dashboard's autosave/attempt/grey.
+2b. **Contacts list → detail link** — wrap the contact NAME in `Contacts.tsx` with a `Link` to `/contacts/:id` (per §3). Read-only, no writes. Distinct from the Dashboard name-click (step 7) — different surface (the Contacts grid, not the Lead Queue). Placed before step 3 because it is the other half of §3's navigation and rides the step-1/2 read path already shipped.
 3. **Callback** — popover + write. Reuse Dashboard's component. Include the note+grey change (§6).
 4. **Call button** — tab-hop to GHL. Trivial; same as Dashboard.
 5. **Conversation history** — read-only render from the existing conversations read path.
