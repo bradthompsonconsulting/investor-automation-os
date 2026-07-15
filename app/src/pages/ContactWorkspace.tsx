@@ -2,24 +2,26 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft, Phone, MapPin, StickyNote, AlertCircle, Loader2,
-  Flame, Sun, Snowflake,
+  Flame, Sun, Snowflake, CalendarClock,
 } from "lucide-react";
 import { ghl, getBucketTag, type ContactRow, type BucketTag } from "../lib/ghl";
+import { CallbackPopover } from "../components/CallbackPopover";
 
 /**
- * Contact Workspace — docs/CONTACT_WORKSPACE_SPEC_v2.md §8 steps 1-2.
+ * Contact Workspace — docs/CONTACT_WORKSPACE_SPEC_v2.md §8 steps 1-3.
  *   Step 1: read-only detail (name/phone/address/tier/score), two-column shell.
- *   Step 2: note history (newest first) + new-note autosave-on-blur, reusing the
- *   Dashboard's exact note -> setLastCallAttempt sequence.
+ *   Step 2: note history (newest first) + new-note autosave-on-blur.
+ *   Step 3: callback scheduling via the shared CallbackPopover. Scheduling
+ *   writes a note ("Callback scheduled for …"), which greys — §6's existing
+ *   rule, gated callback → note → attempt (§6/§5.4 truthfulness).
  *
  * Reads live from GHL every mount — NO app-side shadow copy (contact via the
- * same listAll() parsed ContactRow the Dashboard uses; notes via a read-only
- * GET). Right column (conversation history) is a placeholder until step 5.
- * Callback (step 3), Call button (step 4), and disposition (step 6) are NOT in
- * scope here.
+ * single-record getOne, §11; notes via a read-only GET). Right column
+ * (conversation history) is a placeholder until step 5. Call button (step 4)
+ * and disposition (step 6) are NOT in scope here.
  *
- * Writes on this page — both pre-existing, two of the three sanctioned (§4):
- *   ghl.notes.create() + ghl.contacts.setLastCallAttempt()
+ * Writes on this page — all three sanctioned (§4), all pre-existing methods:
+ *   ghl.notes.create() + ghl.contacts.setLastCallAttempt() + ghl.contacts.setCallbackDatetime()
  * No new write action. tags / stage / offer_ / workflows: never.
  */
 
@@ -95,6 +97,13 @@ function formatNoteDate(iso: string): string {
   });
 }
 
+// Callback display + note copy (§6.1 "Callback scheduled for {Mon D, h:mm A}").
+function formatCallbackTime(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", {
+    timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+}
+
 interface NoteRow { id: string; body: string; dateAdded: string }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -117,6 +126,14 @@ export default function ContactWorkspace() {
   // page.reload() to confirm the value actually persisted to GHL, since this
   // override would otherwise mask a bad round-trip.
   const [attemptOverride, setAttemptOverride] = useState<string | null>(null);
+
+  // Callback state — reuses the shared CallbackPopover. Override: undefined =
+  // use the contact's stored value; null = cleared this session; string =
+  // scheduled this session.
+  const [callbackOverride, setCallbackOverride] = useState<string | null | undefined>(undefined);
+  const [callbackOpen, setCallbackOpen]         = useState(false);
+  const [callbackSaving, setCallbackSaving]     = useState(false);
+  const [callbackError, setCallbackError]       = useState<string | null>(null);
 
   function loadContact() {
     setError(null);
@@ -148,6 +165,9 @@ export default function ContactWorkspace() {
     setContact(null);
     setNotes(null);
     setAttemptOverride(null);
+    setCallbackOverride(undefined);
+    setCallbackOpen(false);
+    setCallbackError(null);
     loadContact();
     loadNotes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -160,6 +180,14 @@ export default function ContactWorkspace() {
     if (attemptOverride) return attemptOverride;
     return contact?.lastCallAttemptPrecise ?? contact?.lastCallAttempt ?? null;
   }, [attemptOverride, contact]);
+
+  // Effective callback: in-session override wins, then precise, then the
+  // truncated DATE field — same precise→DATE fallback as effectiveCallback on
+  // the Dashboard.
+  const callback = useMemo(() => {
+    if (callbackOverride !== undefined) return callbackOverride;
+    return contact?.callbackDatetimePrecise ?? contact?.callbackDatetime ?? null;
+  }, [callbackOverride, contact]);
 
   // The note IS the attempt (§4/§6). Empty/whitespace notes do nothing. Same
   // two-call sequence the Dashboard uses: create note, then mark attempt. After
@@ -185,6 +213,57 @@ export default function ContactWorkspace() {
       setSaveError((e as Error).message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Scheduling a callback writes a note; a note greys (§6). Gated per Brad: the
+  // callback must persist before the note asserts it exists, and the note must
+  // persist before the attempt is marked — never a note claiming an unproven
+  // callback. Still exactly three writes (setCallbackDatetime + notes.create +
+  // setLastCallAttempt), no new method.
+  async function handleSaveCallback(iso: string) {
+    setCallbackSaving(true);
+    setCallbackError(null);
+    try {
+      await ghl.contacts.setCallbackDatetime(id, iso); // write: callback (both fields, one call)
+    } catch (e) {
+      setCallbackError(`Couldn't schedule callback: ${(e as Error).message}`);
+      setCallbackSaving(false);
+      return; // gate: callback failed → no note, no attempt
+    }
+    setCallbackOverride(iso);
+    try {
+      await ghl.notes.create(id, `Callback scheduled for ${formatCallbackTime(iso)}`); // write: note
+    } catch (e) {
+      setCallbackError(`Callback scheduled, but couldn't write the note: ${(e as Error).message}`);
+      setCallbackSaving(false);
+      loadNotes();
+      return; // gate: note failed → don't mark attempt
+    }
+    try {
+      const nowIso = new Date().toISOString();
+      await ghl.contacts.setLastCallAttempt(id, nowIso); // write: attempt (the note greys)
+      setAttemptOverride(nowIso);
+    } catch (e) {
+      setCallbackError(`Callback + note saved, but couldn't mark attempted: ${(e as Error).message}`);
+    }
+    setCallbackSaving(false);
+    setCallbackOpen(false);
+    loadNotes();
+  }
+
+  // Clearing is not scheduling — no note, no attempt. Clears the field only.
+  async function handleClearCallback() {
+    setCallbackSaving(true);
+    setCallbackError(null);
+    try {
+      await ghl.contacts.setCallbackDatetime(id, null);
+      setCallbackOverride(null);
+      setCallbackOpen(false);
+    } catch (e) {
+      setCallbackError(`Couldn't clear callback: ${(e as Error).message}`);
+    } finally {
+      setCallbackSaving(false);
     }
   }
 
@@ -244,6 +323,39 @@ export default function ContactWorkspace() {
             <ScoreChip label="Mot" score={contact.motivationScore} />
             <ScoreChip label="Deal" score={contact.dealScore} />
           </div>
+        )}
+      </div>
+
+      {/* Actions (§7). Call button is step 4; callback (step 3) is here. */}
+      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px" }}>
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={() => { setCallbackOpen((v) => !v); setCallbackError(null); }}
+            disabled={loading}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", fontWeight: 600,
+              padding: "8px 14px", borderRadius: "8px", border: "1px solid rgba(30,200,255,0.35)",
+              background: callback ? "rgba(30,200,255,0.18)" : "rgba(30,200,255,0.08)",
+              color: "#1EC8FF", cursor: loading ? "not-allowed" : "pointer",
+            }}
+          >
+            <CalendarClock size={14} /> {callback ? "Reschedule Callback" : "Schedule Callback"}
+          </button>
+          {callbackOpen && (
+            <CallbackPopover
+              current={callback}
+              saving={callbackSaving}
+              error={callbackError}
+              onSave={handleSaveCallback}
+              onClear={handleClearCallback}
+              onClose={() => setCallbackOpen(false)}
+            />
+          )}
+        </div>
+        {callback && (
+          <span style={{ fontSize: "12px", fontWeight: 500, color: "#1EC8FF" }}>
+            Callback: {formatCallbackTime(callback)}
+          </span>
         )}
       </div>
 
