@@ -75,14 +75,18 @@ face"; Waiting on Me is the priority work; Lead Queue is the long cold list at t
    ROW: name, phone, tier, score, address, last-contact indicator, Call button, Notes.
 
    GREY-OUT / ATTEMPT STATE (Phase 2 core):
-   - THE NOTE IS THE ATTEMPT-OF-RECORD. "Attempted" is set ONLY when a note is saved.
-     Saving any non-empty note (1 character is enough, e.g. "." or "x") sets last_call_attempt
-     to now, writes a NEW timestamped GHL note, greys the row, and drops it to BAND 3.
-   - The Call button is INDEPENDENT and DIAL-ONLY. Clicking Call does NOT grey the row and
-     does NOT set attempted. A call with no note leaves the row UN-GREYED on purpose — the
+   - MECHANISM (from source): a fresh last_call_attempt (< RESURFACE_HOURS) greys a row and
+     drops it to BAND 3. Nothing else greys; notes are NOT read by the grey computation.
+   - CONVENTION: a note is how a human marks an attempt. Saving any non-empty note (1 character
+     is enough, e.g. "." or "x") writes a NEW timestamped GHL note AND sets last_call_attempt to
+     now, in that gated pairing. The note is the human-readable record; last_call_attempt is what
+     greys. A note without setLastCallAttempt would NOT grey; setLastCallAttempt without a note
+     would grey with no record of why.
+   - The Call button is INDEPENDENT and DIAL-ONLY. Clicking Call does NOT set last_call_attempt
+     and does NOT grey the row. A call with no note leaves the row UN-GREYED on purpose — the
      visual nudge that the call has not been logged yet. Rationale (Brad): never allow a call
      with no note in the system; and allow marking attempted WITHOUT calling (a note like
-     "bad number" or "try Thursday" is a valid attempt that greys the row without a dial).
+     "bad number" or "try Thursday" writes last_call_attempt and greys the row without a dial).
    - Opening a contact and even clicking Call, with NO note saved, does NOT grey it.
    - NOTES FIELD AUTO-FOCUS: when a contact opens, the cursor auto-lands in the notes field
      (no click needed) so Brad can type immediately. Cursor stays there until he clicks out.
@@ -93,7 +97,7 @@ face"; Waiting on Me is the priority work; Lead Queue is the long cold list at t
      can be mid-note, click Call, and keep typing. Only clicking another input or empty space
      blurs the notes field. Consequence (consistent): since Call does not blur, clicking Call
      does NOT fire the autosave and does NOT create the attempt - the note saves only when Brad
-     actually clicks away. This matches the note-is-the-attempt rule exactly.
+     actually clicks away. This matches the note→setLastCallAttempt pairing (MECHANISM above) exactly.
    - On attempt, the row GREYS and drops to BAND 3 (bottom). Greyed rows stay VISIBLE at
      the bottom (not hidden), reachable by scroll.
    - Grey is INFORMATIONAL, NOT a lockout. It only signals "you already tried this one."
@@ -127,8 +131,9 @@ new tab via window.open — no GHL API call at all. Brad clicks GHL's native cal
 there; GHL's own dialer applies the Number's own softphone/forward config, using the
 verified +1 972-954-8586 number (A2P, SHAKEN/STIR, CNAM, Voice Integrity all approved).
 Opening the tab is independent of the attempt system — it does NOT set last_call_attempt
-or grey a row; only a saved note does (unchanged from Build 2A). Verified: still does not
-steal focus from the notes field (same tabIndex=-1 + mousedown-preventDefault guard).
+or grey a row (grey keys off a fresh last_call_attempt, which only the note→setLastCallAttempt
+pairing writes; unchanged from Build 2A). Verified: still does not steal focus from the notes
+field (same tabIndex=-1 + mousedown-preventDefault guard).
 
 call_mode / call_forward_number custom values: DEAD for call-routing purposes under
 Option 1 — GHL's dialer reads its own Number config, not these custom values, so there's

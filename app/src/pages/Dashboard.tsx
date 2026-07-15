@@ -28,9 +28,15 @@ import { CallbackPopover } from "../components/CallbackPopover";
  * the contact's GHL page in a new tab (window.open — no GHL API call at all)
  * where GHL's native dialer applies the Number's own softphone/forward
  * config. Opening that tab is independent of the attempt system: it never
- * sets last_call_attempt or greys a row — only a saved note does that.
- * Scheduling a callback is likewise independent of the attempt system: it
- * never sets last_call_attempt or greys a row either.
+ * sets last_call_attempt, so it never greys a row. (Grey keys off a fresh
+ * last_call_attempt — written by the note→setLastCallAttempt pairing — not by
+ * a note on its own; see DASHBOARD_SPEC_v2.txt §GREY-OUT MECHANISM.)
+ * NOTE: this Dashboard's callback handler still writes only setCallbackDatetime,
+ * so scheduling a callback here does NOT yet grey — the §6 "callback greys on
+ * both surfaces" change is currently implemented in the Workspace only. DECIDED
+ * FIX pending its own task: this handler gets the same gated
+ * setCallbackDatetime → notes.create → setLastCallAttempt pairing (see
+ * CONTACT_WORKSPACE_SPEC_v2.md §10).
  * call_mode/call_forward_number custom values exist in GHL but are
  * intentionally unused here — GHL's own dialer reads its own Number config,
  * not our custom values, so there's nothing for this app to branch on.

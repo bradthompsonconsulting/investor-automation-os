@@ -7,7 +7,7 @@ Supersedes CONTACT_WORKSPACE_SPEC_v1.md. Sits alongside `IAOS_Master_Architectur
 - §5 open questions all answered by live test (contact ID, auth, idempotency) — see §5.1
 - §5 new constraint discovered: the Custom Disposition prompt is transient and unrecoverable — see §5.2
 - §5 redesigned: Path A only — Path B (call-end backstop) rejected, silence is not a signal — see §5.4
-- §6 grey rule restated as four explicit cases: a note greys, a call never greys (a disposition greys only because it writes a note) — see §6
+- §6 grey rule stated from source: MECHANISM is a fresh last_call_attempt greys (notes are not read by the grey computation); the four cases are consequences of the note+setLastCallAttempt pairing convention — see §6
 - §7 layout changed to two-column
 - §8 step 6 de-risked: the GHL→IAOS receive path already exists in production
 
@@ -91,7 +91,7 @@ The Dashboard's three-write invariant carries forward unchanged. The Workspace a
 
 **HARD NO, unchanged:** tags, pipeline stage, `offer_` fields, workflow triggers. IAOS never fires a workflow.
 
-**Note remains the only thing that marks an attempt.** The Call button does not set attempt or grey a row. Callback scheduling DOES now write a note and mark the attempt (locked this session — see §6).
+**`last_call_attempt` is what greys; `setLastCallAttempt` is the only thing that sets it (§6 MECHANISM).** Every write path that should grey pairs `notes.create` with `setLastCallAttempt` (the note is the record; the attempt greys). The Call button does neither — it does not grey a row. Callback scheduling now writes both, in gated order (locked this session — see §6).
 
 **No-drift invariant holds:** GHL is sole system of record. No app-side shadow copy. Every value displayed is read from GHL.
 
@@ -146,7 +146,7 @@ The Custom Disposition picker appears **in the Call Summary panel the moment you
 
 This is GHL's UI. No setting controls the timeout, no default-disposition config exists, no API touches it. Not fixable from our side.
 
-**Accepted consequence (Brad, 2026-07-15):** a call dispositioned outside that window produces no webhook — so IAOS writes no note and greys nothing. The lead resurfaces as never-attempted and gets re-dialed. This is accepted deliberately. The remedy is the **manual note**: if Brad wants that attempt on record, he types one, which greys the row like any other note. IAOS does not infer an outcome from silence — a missed disposition is not a signal (see §5.4, Path B rejected).
+**Accepted consequence (Brad, 2026-07-15):** a call dispositioned outside that window produces no webhook — so IAOS writes no note and greys nothing. The lead resurfaces as never-attempted and gets re-dialed. This is accepted deliberately. The remedy is the **manual note**: if Brad wants that attempt on record, he types one; the note-save pairs with `setLastCallAttempt` (§6), and the fresh `last_call_attempt` greys the row. IAOS does not infer an outcome from silence — a missed disposition is not a signal (see §5.4, Path B rejected).
 
 ### 5.3 WHAT GHL EXPOSES
 
@@ -164,7 +164,7 @@ This is GHL's UI. No setting controls the timeout, no default-disposition config
 **Path A — disposition tapped (the only path):**
 1. GHL Workflow: trigger Call details / Custom disposition (all six); action Webhook -> IAOS endpoint, customData per §5.1, `X-IAOS-Secret` header.
 2. IAOS writes note: `Call: {disposition} — {duration}s`
-3. Note-save fires the existing `setLastCallAttempt` path -> row greys (via the note, like any other note).
+3. IAOS then calls `setLastCallAttempt` (paired with the note, §6 CONVENTION) -> the fresh `last_call_attempt` greys the row. **The note alone does NOT grey — the webhook MUST call `setLastCallAttempt` too (§6 STEP 6 REQUIREMENT).**
 
 **Path B — call-end backstop with no disposition — REJECTED.** v1 proposed writing `Call — {duration}s, no disposition` from the call-end event whenever nothing was tapped, as a backstop for §5.2's gap. Rejected deliberately:
 
@@ -173,7 +173,7 @@ This is GHL's UI. No setting controls the timeout, no default-disposition config
 Consequences of dropping Path B:
 - The **call-end-event / `conversations.readonly` prerequisite verification is removed** — nothing depends on it anymore.
 - The **reconciliation / dedupe logic is removed** — with one path there is nothing to reconcile.
-- The grey rule stays clean (§6): a disposition writes a note and greys through the note; a call with no disposition writes nothing and does not grey.
+- The grey rule stays clean (§6): a disposition writes a note AND `setLastCallAttempt` (which greys); a call with no disposition writes neither and does not grey.
 
 **Still exactly three writes.** No new write action. Invariant intact.
 
@@ -196,20 +196,26 @@ Discovered 2026-07-15. The **Phone Type Validation** workflow (`4ed31e4a-8c95-45
 
 ## 6. THE GREY RULE + CALLBACK BEHAVIOR (LOCKED — Brad)
 
-**The grey rule, as Brad's four cases (2026-07-15):**
+Established from source (Dashboard `getBand(effectiveLastAttempt(c))` → band 3 → `opacity: 0.55`; the chain reads only `last_call_attempt`/`_precise`, never notes), 2026-07-15:
+
+**MECHANISM:** a fresh `last_call_attempt` (< `RESURFACE_HOURS`) greys a row. Nothing else greys. Notes are not read by the grey computation.
+
+**CONVENTION:** every path that should grey writes a note AND `setLastCallAttempt` together, in that order, gated. The note is the human-readable record; `last_call_attempt` is what greys.
+
+**CONSEQUENCE:** the four cases hold only while that pairing is honored. A path that writes a note without `setLastCallAttempt` will not grey (breaks case 3). A path that sets `last_call_attempt` without a note will grey with no record of why.
 
 ```
 no call + note                          = grey
 no call + no note                       = no grey
-call + disposition (writes a note)      = grey  (via the note, as always)
+call + disposition (writes a note)      = grey
 call + no disposition (no note)         = no grey
 ```
 
-**Unifying principle, unchanged: a note greys; a call never greys.** There is no "a call greys" rule and none is needed. A disposition (Path A, §5.4) writes a note automatically, so it greys *through the note*, like anything else. A call with no disposition writes no note (Path B rejected, §5.4) and does not grey. The Call button itself — which only proves you opened a tab — has never greyed and still doesn't.
+**STEP 6 REQUIREMENT:** the disposition-capture webhook must call `setLastCallAttempt` alongside `notes.create`, or dispositioned calls will not grey.
 
-**Callback scheduling greys — change from Dashboard v2 (LOCKED, Brad 2026-07-14):** scheduling a callback **writes a note** (`Callback scheduled for {Mon D, h:mm A}`) and marks the attempt, so it greys — consistent with the rule above, because it is a note. Fires the existing note → attempt → grey path; no new write action; applies on both Dashboard and Workspace. Reverses the prior "callback never greys" rule deliberately.
+**Callback scheduling greys — change from Dashboard v2 (LOCKED, Brad 2026-07-14):** scheduling a callback writes a note (`Callback scheduled for {Mon D, h:mm A}`) and then `setLastCallAttempt`, in that gated order — so it greys by the convention above, not because "a note greys." Clearing a callback writes neither and does not grey. No new write action; applies on both Dashboard and Workspace. Reverses the prior "callback never greys" rule deliberately.
 
-**Grey triggers, exhaustive:** a typed note, a scheduled callback, a tapped disposition. All three are notes. Nothing else greys — including in Waiting on Me.
+**Gated write order + failure behavior (Workspace callback, verified live 2026-07-15):** `setCallbackDatetime` → `notes.create` → `setLastCallAttempt`, each gating the next — the callback must persist before the note asserts it, and the note before the attempt is marked. This proves the frontend control-flow gate — don't call notes.create unless setCallbackDatetime resolved — which is exactly what the commit claims. It does not exercise a GHL-side partial failure (GHL never gets the chance, by design).
 
 ### 6.1 NOTE COPY (LOCKED)
 
@@ -266,7 +272,7 @@ Copy rules apply to seller-facing content: no "just checking in" language; lead 
 1. **Read-only detail view** — route `/contacts/:id`, display name/phone/address/tier/score. Prove the read path.
 2. **Notes** — history display + new-note write. Reuse Dashboard's autosave/attempt/grey.
 2b. **Contacts list → detail link** — wrap the contact NAME in `Contacts.tsx` with a `Link` to `/contacts/:id` (per §3). Read-only, no writes. Distinct from the Dashboard name-click (step 7) — different surface (the Contacts grid, not the Lead Queue). Placed before step 3 because it is the other half of §3's navigation and rides the step-1/2 read path already shipped.
-3. **Callback** — popover + write. Reuse Dashboard's component. Include the note+grey change (§6).
+3. **Callback** — popover + write. Reuse Dashboard's component. Scheduling writes a note + `setLastCallAttempt` (gated), and the fresh `last_call_attempt` greys per §6.
 4. **Call button** — tab-hop to GHL. Trivial; same as Dashboard.
 5. **Conversation history** — read-only render from the existing conversations read path.
 6. **Disposition capture** — new Netlify function + GHL workflow, per §5.4 (Path A only). §5 open questions are closed; no prerequisites remain (the Path B call-end verification was dropped with Path B).
@@ -300,11 +306,14 @@ Per established pattern:
 3. ~~Note copy~~ → locked (§6.1).
 4. ~~`offer_` fields in the Workspace~~ → **omit entirely.** Read-only offer data on a work surface invites "why can't I edit this," and the answer is an invariant you'd defend every time you look at the screen. The Workspace is a calling surface.
 5. ~~Contacts list: Analyze button / score columns~~ → **keep as-is.** The grid's value is comparison across leads; the detail view's is depth on one. Folding Analyze in means analyzing one at a time — worse at the job the grid exists to do. Different surfaces, different jobs.
-6. ~~Grey rule / a completed call greying a row~~ → **resolved (Brad, 2026-07-15).** A note greys; a call never greys. Path A produces a note automatically, so nothing about the grey rule changes — no separate "a completed call greys" decision exists. Four cases locked in §6.
+6. ~~Grey rule / a completed call greying a row~~ → **resolved (Brad, 2026-07-15).** Settled from source: the MECHANISM is a fresh `last_call_attempt` greys (notes are not read by the grey computation); the four cases are consequences of the note+`setLastCallAttempt` pairing convention. No separate "a completed call greys" decision exists. See §6 (incl. the STEP 6 REQUIREMENT that disposition capture must call `setLastCallAttempt`).
 7. ~~Path B backstop~~ → **rejected (§5.4).** IAOS writes a note only on an explicit outcome; silence is not a signal. The call-end-event verification prerequisite is therefore gone.
 
 **Open — needs Brad:**
-- (none — the §6.1 grey decision is closed above; the §5.4 Path B prerequisite is gone.)
+- **Lead Queue UI copy** (`Dashboard.tsx`, the "A note is the only thing that marks an attempt" blurb) is wrong as a mechanism (§6: a fresh `last_call_attempt` greys, not the note) but is telling a user something roughly true about how to use the tool. Wording is **undecided**; it's user-facing copy with its own build/deploy/verify cycle. Left unshipped pending a decision on the phrasing.
+
+**Decided — pending its own task (not open questions):**
+- **Dashboard callback handler must grey (DECIDED, Brad 2026-07-15).** The Dashboard's `handleSaveCallback` currently writes only `setCallbackDatetime` — so scheduling a callback from the Dashboard does NOT grey, unlike the Workspace (§8 step 3). Fix: give the Dashboard handler the same gated `setCallbackDatetime → notes.create → setLastCallAttempt` pairing as the Workspace. §6 stays as written — the Dashboard is what's wrong, not the spec. Reason: scheduling a callback IS a disposition — a real outcome of working the lead — and the lead must not resurface in 12h just because it was scheduled from the Dashboard instead of the Workspace. Same action, same behavior, both surfaces. Its own task (code + deploy + verify).
 
 **Open — housekeeping, not blockers:**
 - §5.6 item 3 — does `/api/phone-lookup` write `Phone Type` back to the contact? If so, the three-write invariant has an undocumented exception in production and needs scoping language.
