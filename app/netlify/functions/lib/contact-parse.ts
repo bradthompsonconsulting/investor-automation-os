@@ -22,7 +22,10 @@ const OFFER_PRICE_ID = "v2VO2wUwTYRojmU7VXyZ";
 // callback_datetime and last_call_attempt are DATE type on contact; parsing
 // here only reads them, never writes.
 const CALLBACK_DATETIME_ID = "JeQWtwpwUbvPA50UfuPU";
-const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
+// Exported: the disposition-capture function (ghl-disposition.ts) writes these
+// two, server-side, so it must share the SAME ids as the read parser — never a
+// second copy that can drift.
+export const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
 
 // Companion TEXT field — GHL's DATE type truncates time-of-day on write, so
 // this holds the exact ISO string written in the same PUT as
@@ -31,8 +34,9 @@ const CALLBACK_DATETIME_PRECISE_ID = "7qRUkZQK8bi2HNo7zDHd";
 
 // Companion TEXT field for last_call_attempt — same DATE-truncation bug
 // (confirmed live: a ~15min-old note displayed as "Attempted 16h ago").
-// Read-only here; written by ghl.contacts.setLastCallAttempt.
-const LAST_CALL_ATTEMPT_PRECISE_ID = "2vz1igGMxF3wv7HaWm97";
+// Read-only here; written by ghl.contacts.setLastCallAttempt AND, server-side,
+// by ghl-disposition.ts — so it is exported alongside LAST_CALL_ATTEMPT_ID.
+export const LAST_CALL_ATTEMPT_PRECISE_ID = "2vz1igGMxF3wv7HaWm97";
 
 function cfValue(customFields: any[], id: string): number | null {
   const f = customFields?.find((cf: any) => cf.id === id);
