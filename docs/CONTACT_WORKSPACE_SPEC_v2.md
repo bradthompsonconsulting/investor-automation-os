@@ -87,7 +87,7 @@ The Dashboard's three-write invariant carries forward unchanged. The Workspace a
 
 1. `ghl.notes.create()` → POST `/contacts/{id}/notes`
 2. `ghl.contacts.setLastCallAttempt()` → PUT, carries `last_call_attempt` (`lGoNXM9Wrte4m7ShwQPT`) + `last_call_attempt_precise` (`2vz1igGMxF3wv7HaWm97`) in ONE call
-3. `ghl.contacts.setCallbackDatetime()` → PUT, carries `callback_datetime` (`JeQWtwpwUbvPA5OUfuPU`) + `callback_datetime_precise` (`7qRUkZQK8bi2HNo7zDHd`) in ONE call
+3. `ghl.contacts.setCallbackDatetime()` → PUT, carries `callback_datetime` (`JeQWtwpwUbvPA50UfuPU`) + `callback_datetime_precise` (`7qRUkZQK8bi2HNo7zDHd`) in ONE call
 
 **HARD NO, unchanged:** tags, pipeline stage, `offer_` fields, workflow triggers. IAOS never fires a workflow.
 
