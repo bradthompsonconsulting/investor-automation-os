@@ -1,6 +1,6 @@
 # IAOS — CONTACT WORKSPACE SPEC v2
 
-Status: §5 verified live 2026-07-15. §7 revised. Ready for Brad's sign-off, then build.
+Status: §5 verified live 2026-07-15. §7 revised. §8 steps 1–5 SHIPPED + verified live (steps 4–5 in `dc60d1e`, 2026-07-16 — §9.3). Remaining: step 6 (disposition capture), step 7 (Dashboard name-click).
 Supersedes CONTACT_WORKSPACE_SPEC_v1.md. Sits alongside `IAOS_Master_Architecture_Reference_V10_2.txt` and `DASHBOARD_SPEC_v2.txt`.
 
 **Changes from v1:**
@@ -273,8 +273,8 @@ Copy rules apply to seller-facing content: no "just checking in" language; lead 
 2. **Notes** — history display + new-note write. Reuse Dashboard's autosave/attempt/grey.
 2b. **Contacts list → detail link** — wrap the contact NAME in `Contacts.tsx` with a `Link` to `/contacts/:id` (per §3). Read-only, no writes. Distinct from the Dashboard name-click (step 7) — different surface (the Contacts grid, not the Lead Queue). Placed before step 3 because it is the other half of §3's navigation and rides the step-1/2 read path already shipped.
 3. **Callback** — popover + write. Reuse Dashboard's component. Scheduling writes a note + `setLastCallAttempt` (gated), and the fresh `last_call_attempt` greys per §6.
-4. **Call button** — tab-hop to GHL. Trivial; same as Dashboard.
-5. **Conversation history** — read-only render from the existing conversations read path.
+4. **Call button** — tab-hop to GHL. Trivial; same as Dashboard. **SHIPPED + VERIFIED LIVE (`dc60d1e`, 2026-07-16 — §9.3).** Opens the GHL contact page in a new tab; writes nothing, greys nothing.
+5. **Conversation history** — read-only render from the existing conversations read path. **SHIPPED + VERIFIED LIVE (`dc60d1e`, 2026-07-16 — §9.3).** `TYPE_EMAIL` allowlist (useMemo) over the complete transcript; observed GHL shapes in §12.
 6. **Disposition capture** — new Netlify function + GHL workflow, per §5.4 (Path A only). §5 open questions are closed; no prerequisites remain (the Path B call-end verification was dropped with Path B).
 7. **Dashboard name-click** → deep-link to `/contacts/:id`.
 
@@ -345,6 +345,40 @@ Each harness then re-asserts the live hash at runtime before making any assertio
 hashes chunks, so the same source + deps reproduces the same hash; a CSS-only or comment-only
 change may not move the JS hash — step 2 is what tells you whether the hash can prove anything.)
 
+### 9.3 VERIFIED LIVE — steps 4–5 (Call button + conversation history), 2026-07-16
+
+Shipped in **`dc60d1e`** (`feat: Contact Workspace call button + conversation history (§8 steps 4-5)`).
+Verified live at `app.investorautomationos.com`, 2560px, against Neelima Bale `FiIT0hUaxVCIuokQpZuc`
+by explicit ID, after a real `page.reload()`. Harness self-check: **checksRun=19, failures=0** — a
+floor of 19 checks, so an early throw or a rendered-nothing panel fails loud instead of false-passing.
+
+**Bundle gate (§9.2).** dc60d1e built to `index-Cw1s0sdN.js`; parent `1cf32d0` built to
+`index-DIMiNVpY.js` (old ≠ new → the hash discriminates); prod served `index-Cw1s0sdN.js`, matched on
+poll #1. The harness re-asserted the live hash at runtime before any assertion.
+
+**Step 5 — conversation history (read-only).**
+- Endpoint ground truth: `messages.length = 7` — 4 `TYPE_EMAIL`, 3 `TYPE_ACTIVITY_OPPORTUNITY`.
+- Panel rendered **exactly 4 bubbles** (4 Sent/Received labels, 4 "· Email" channel labels); empty-state absent.
+- Filter proof — the REAL invariant, robust to a live send bumping 7/4/3 → 8/5/3: bubbles == emails,
+  and total − bubbles == activity == 3. Live: **7 total → 4 bubbles → 3 filtered.**
+- `"Opportunity updated"` / `"Opportunity created"` absent from the Workspace DOM.
+
+**Audits.**
+- Network: **listAll (`ghl-contacts`) = 0.** Audit provably attached — **6 function GETs** across
+  goto+reload: `ghl-contact ×2`, `ghl-proxy ×2` (single-record read + notes read), `ghl-contact-conversations ×2`.
+  "Zero listAll" is distinguishable from "audit never attached" by that positive control.
+- Writes: **none** (`writes=[]`). No note, no `last_call_attempt`, no callback field. Rendering history is not an attempt (§6).
+
+**Step 4 — Call button.**
+- Requested URL asserted **pre-redirect** (captured at the context level before the click — `window.open`
+  navigates before a popup-scoped listener can attach, and GHL redirects the popup to a login page):
+  `https://app.gohighlevel.com/v2/location/jmHG4B8RdzwpfqruNf68/contacts/detail/FiIT0hUaxVCIuokQpZuc`.
+- Writes nothing: post-click write count 0; app-function request count unchanged (before=6, after=6). Never greys a row (§6).
+
+Harness note: the first run surfaced a test-harness false negative on the Call assertion (it caught
+GHL's login-page Google-Sign-In iframe `document` request instead of the top-level nav); fixed by
+capturing the requested URL at the context level. No product code changed during verification.
+
 ---
 
 ## 10. OPEN DECISIONS FOR BRAD
@@ -368,6 +402,14 @@ change may not move the JS hash — step 2 is what tells you whether the hash ca
 - Test contact Brad Thompson (`9fbH2VCcZvzVNhsR9zjc`) carries `phone-validated-unknown` and sits in the live Lead Queue. Strip the tag.
 - Test workflow `9d1d5cc9-86de-47f7-93b8-f39dc2e4c971` is published and pointed at a webhook.site URL that expires 7 days from 2026-07-15. Unpublish.
 - Test contact Neelima Bale (`FiIT0hUaxVCIuokQpZuc`) accumulated several labeled `[Claude Code — …]` verification notes and a live `last_call_attempt` during the §11 probes. Harmless (permanent notes on the established test contact) but present; clear if a clean slate is wanted.
+
+**Open — security & integrity (recorded during the steps 4–5 review, 2026-07-16; named, not chased):**
+- **Zero inbound auth on all 8 netlify functions, plus `Access-Control-Allow-Origin: *`.** Any client that knows a URL can read GHL contact/conversation/opportunity data. **Deferred by Brad's call — single-tenant today.** TRIGGER to fix is **the first user who isn't Brad, not a lead count.** Multi-tenant needs a session-derived `locationId` per request, **never client-supplied**.
+- **`ghl-proxy.ts:9` "Phase B: validate OAuth token here"** — never implemented. Same gap, already flagged in the proxy's own header.
+- **`/api/phone-lookup` unauthenticated** (§5.6 item 1), and it is **unresolved whether it writes `Phone Type` back** to the contact — a possible undocumented **4th production write** (§5.6 item 3). Resolve before the three-write invariant is stated as absolute anywhere.
+- **§9.2's gate proves `deployed == repo` for the FRONTEND bundle only, NOT for the netlify functions.** The bundle-hash gate covers `index-*.js`; deployed function code has no equivalent gate and can drift from the repo undetected.
+- **Token mismatch, three ways.** Docs name `pit-6a78…d0f7` canonical; `app/.env` carries `pit-b2e9…` (lacks the Conversations scope); prod uses a **third** set configured in Netlify's dashboard. **Netlify's is authoritative for prod.** Record which token is authoritative for what before touching auth — a local test can pass or fail for reasons that don't reflect prod.
+- **Two `TYPE_ACTIVITY_OPPORTUNITY` rows on 2026-07-07** (source `app`, from "Investor Automation OS") flipped the pipeline `New Lead ↔ Seller Offer Sent` ten minutes apart. **Something carrying the IAOS credential moved pipeline stages** — which the write invariant says IAOS never does. Cause **unproven; do not design a fix against it.** Recorded as a data point; watch for recurrence.
 
 ---
 
@@ -396,3 +438,27 @@ Found while locating the source of a stale-attempt-on-reload symptom in the Work
 - **Client-side address filtering / search** (MAO calc, Contacts) — a dropped contact won't match a search transiently → "not found" for a record that exists.
 
 **Not fixed.** The Workspace read-path change sidesteps it for the detail view (single-record read). Lead Queue, rescore-all, and search still ride the list endpoint and remain exposed; whether to harden those is a separate decision.
+
+---
+
+## 12. OBSERVED GHL CONVERSATION SHAPES (from the prod probe — `bd6906a` deployed, stripped in `1cf32d0`)
+
+Captured by the deploy-as-probe `?debug` block that shipped in `bd6906a` and was stripped in `1cf32d0`
+once the shapes were observed. **OBSERVED from prod, not inferred:**
+
+- **`GET /conversations/search?locationId=&contactId=`** works server-side and returns a `conversationId`
+  **reliably** (the function's fail-loud 502 guard for a conversation lacking an `id` never triggered on
+  real data, but is kept).
+- **`GET /conversations/{id}/messages`** — per-message fields observed: `direction`, `messageType`
+  (STRING enum, e.g. `TYPE_EMAIL` / `TYPE_ACTIVITY_OPPORTUNITY`), `body`, `dateAdded` (ISO), `type`
+  (**NUMERIC**), `source`, `conversationId`, `contentType`, `meta.email.subject`. Payload **nests as
+  `messages.messages[]`** (with `nextPage` / `lastMessageId` alongside).
+- **GHL wire order is DESCENDING** (newest first). `ghl-contact-conversations` re-sorts **ASCENDING**
+  (oldest→newest) so a call-prep transcript reads the way the conversation happened (§7). The client does
+  NOT re-sort — it renders the function's order.
+- **Pagination:** `MESSAGE_CAP=500`, `limit=100` per page, `lastMessageId` cursor. The returned array is
+  the **COMPLETE** transcript.
+- **`TYPE_ACTIVITY_OPPORTUNITY` rows are interleaved with real messages** (pipeline-activity noise —
+  "Opportunity created/updated"). They MUST be filtered for display. **Filter on the `messageType`
+  STRING (`TYPE_EMAIL` allowlist), NEVER the numeric `type` field** — SMS (`TYPE_SMS`) joins the
+  allowlist later. Verified live: 7 total → 4 shown → 3 filtered (§9.3).
