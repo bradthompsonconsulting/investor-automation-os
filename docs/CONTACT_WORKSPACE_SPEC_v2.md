@@ -1,6 +1,6 @@
 # IAOS — CONTACT WORKSPACE SPEC v2
 
-Status: §5 verified live 2026-07-15. §7 revised. §8 steps 1–5 SHIPPED + verified live (steps 4–5 in `dc60d1e`, 2026-07-16 — §9.3). Remaining: step 6 (disposition capture), step 7 (Dashboard name-click).
+Status: §5 verified live 2026-07-15. §7 revised. §8 steps 1–6 SHIPPED + verified live (steps 4–5 in `dc60d1e`; step 6 disposition capture in `6fa154c`, 2026-07-16 — §9.3/§9.4). Remaining: step 7 (Dashboard name-click).
 Supersedes CONTACT_WORKSPACE_SPEC_v1.md. Sits alongside `IAOS_Master_Architecture_Reference_V10_2.txt` and `DASHBOARD_SPEC_v2.txt`.
 
 **Changes from v1:**
@@ -211,7 +211,7 @@ call + disposition (writes a note)      = grey
 call + no disposition (no note)         = no grey
 ```
 
-**STEP 6 REQUIREMENT:** the disposition-capture webhook must call `setLastCallAttempt` alongside `notes.create`, or dispositioned calls will not grey.
+**STEP 6 REQUIREMENT:** the disposition-capture webhook must call `setLastCallAttempt` alongside `notes.create`, or dispositioned calls will not grey. **— SATISFIED (`6fa154c`, verified live §9.4):** `ghl-disposition.ts` fires `setLastCallAttempt` alongside `notes.create`, gated (note→attempt), and returns **502 on attempt-failure** so the endpoint never returns 2xx with the row un-greyed; GHL retries and a dedupe-by-recent-notes guard keeps the retry idempotent.
 
 **Callback scheduling greys — change from Dashboard v2 (LOCKED, Brad 2026-07-14):** scheduling a callback writes a note (`Callback scheduled for {Mon D, h:mm A}`) and then `setLastCallAttempt`, in that gated order — so it greys by the convention above, not because "a note greys." Clearing a callback writes neither and does not grey. No new write action; applies on both Dashboard and Workspace. Reverses the prior "callback never greys" rule deliberately.
 
@@ -275,7 +275,7 @@ Copy rules apply to seller-facing content: no "just checking in" language; lead 
 3. **Callback** — popover + write. Reuse Dashboard's component. Scheduling writes a note + `setLastCallAttempt` (gated), and the fresh `last_call_attempt` greys per §6.
 4. **Call button** — tab-hop to GHL. Trivial; same as Dashboard. **SHIPPED + VERIFIED LIVE (`dc60d1e`, 2026-07-16 — §9.3).** Opens the GHL contact page in a new tab; writes nothing, greys nothing.
 5. **Conversation history** — read-only render from the existing conversations read path. **SHIPPED + VERIFIED LIVE (`dc60d1e`, 2026-07-16 — §9.3).** `TYPE_EMAIL` allowlist (useMemo) over the complete transcript; observed GHL shapes in §12.
-6. **Disposition capture** — new Netlify function + GHL workflow, per §5.4 (Path A only). §5 open questions are closed; no prerequisites remain (the Path B call-end verification was dropped with Path B).
+6. **Disposition capture** — new Netlify function + GHL workflow, per §5.4 (Path A only). **SHIPPED + VERIFIED LIVE (`6fa154c`, 2026-07-16 — §9.4).** `ghl-disposition.ts` receives the workflow's Webhook POST and writes note→attempt, gated; the STEP 6 REQUIREMENT (setLastCallAttempt alongside notes.create) is satisfied and proven live. §5 open questions were closed; no prerequisites remained (the Path B call-end verification was dropped with Path B).
 7. **Dashboard name-click** → deep-link to `/contacts/:id`.
 
 Steps 1–5 are all on proven paths. **Step 6 is no longer a new mechanism** — GHL → IAOS webhook receive already runs in production (§5.6). Steps 1–2 can start immediately; they touch none of §5.
@@ -379,6 +379,46 @@ Harness note: the first run surfaced a test-harness false negative on the Call a
 GHL's login-page Google-Sign-In iframe `document` request instead of the top-level nav); fixed by
 capturing the requested URL at the context level. No product code changed during verification.
 
+### 9.4 VERIFIED LIVE — step 6 (disposition capture), 2026-07-16
+
+Shipped in `6fa154c` (`ghl-disposition.ts` + field IDs exported from `lib/contact-parse.ts`).
+Server-side webhook, so there is NO frontend bundle to gate (§9.2 does not apply) and NO
+function-deploy gate exists (§10) — verified by hitting the live endpoint directly. Test contact
+`FiIT0hUaxVCIuokQpZuc`, secret from `app/.env`. Harness self-check floor met on both artifacts.
+
+**Write / auth / idempotency (main harness — 13 of 15 checks passed, then it THREW):** the run
+threw at the browser step (a harness casing bug, below) before `dashboard-row-found` and
+`row-greyed-0.55` could execute, so the `checksRun<15` floor caught it as **exit 2 (FAILED)** — not
+a clean pass. The 13 that ran, all passing:
+- **bad-secret → 401 AND zero writes** — `last_call_attempt` unchanged, matching-note count 0→0.
+  Made MEANINGFUL by the positive control `audit-detects-writes` (the good write moved the same
+  before/after reads), so "zero writes" is distinguishable from "audit never attached" — not a
+  dead-read false pass. no-secret → 401 likewise.
+- **good-secret → 200** `{ok, noteWritten:true, attemptMarked:true}`; note +1 (exactly one matching
+  note); `last_call_attempt` advanced `2026-07-15T22:18:56.259Z → 2026-07-16T20:16:30.523Z`.
+- **double-POST (idempotency) → 200** with `noteWritten:false`; still exactly ONE note (dedupe held).
+
+**Grey (proven standalone, 3/3 — the main run's browser step threw on a harness bug, below):**
+- `fresh-attempt-under-12h`: value `2026-07-16T20:16:31.383Z`, age 0.19h → band 3.
+- `pre-write-was-ungreyed`: prior attempt **22.0h** old → row WAS band-1/ungreyed, so the
+  ungreyed→greyed transition is non-tautological.
+- `listall-converged`: **4 polls / 11s** (poll to convergence, never fixed-wait — see §11 addendum).
+- Real `page.reload()` → Neelima's Lead Queue row **opacity 0.55** (band 3), keyed on the fresh
+  attempt VALUE, not band membership.
+
+**STEP 6 REQUIREMENT proven:** `setLastCallAttempt` fires alongside `notes.create`, gated
+(note→attempt); the endpoint returns **502 on attempt-failure** so it never 2xx's with the row
+un-greyed (GHL retries; dedupe keeps it idempotent). Still exactly the three sanctioned writes.
+
+**Auth (X-IAOS-Secret):** hashed constant-time compare of a server-side secret (GHL Custom Value →
+Netlify env `IAOS_WEBHOOK_SECRET`). Decision + scope in §10 Closed #9 — authenticates the disposition
+WEBHOOK only; does NOT reopen the other seven read-only functions (auth stays deferred).
+
+**Harness note:** the main run threw on the Dashboard grey step because GHL's list vs single-record
+endpoints disagree on name casing (§10 open item) — the selector searched "Neelima Bale" but listAll
+renders "neelima bale". A test-harness bug, not a product defect; the grey was then proven standalone
+with a case-insensitive, row-keyed wait. No product code changed during verification.
+
 ---
 
 ## 10. OPEN DECISIONS FOR BRAD
@@ -392,6 +432,7 @@ capturing the requested URL at the context level. No product code changed during
 6. ~~Grey rule / a completed call greying a row~~ → **resolved (Brad, 2026-07-15).** Settled from source: the MECHANISM is a fresh `last_call_attempt` greys (notes are not read by the grey computation); the four cases are consequences of the note+`setLastCallAttempt` pairing convention. No separate "a completed call greys" decision exists. See §6 (incl. the STEP 6 REQUIREMENT that disposition capture must call `setLastCallAttempt`).
 7. ~~Path B backstop~~ → **rejected (§5.4).** IAOS writes a note only on an explicit outcome; silence is not a signal. The call-end-event verification prerequisite is therefore gone.
 8. ~~Dashboard callback handler must grey~~ → **done (2026-07-15).** Both surfaces wired onto the shared `scheduleCallbackGated` (`b76802a`; deployed alongside `17c6238`). Scheduling a callback from the Dashboard now fires the same gated `setCallbackDatetime → notes.create → setLastCallAttempt` pairing as the Workspace, so the row greys off a fresh `last_call_attempt` on BOTH surfaces; clearing stays a lone `setCallbackDatetime(null)`. Verified live with numbers — §9.1 (Dashboard grey test + Workspace re-runs). Was "Decided — pending its own task"; the task is complete.
+9. ~~§8 step 6 auth (X-IAOS-Secret)~~ → **decided + implemented (`6fa154c`, 2026-07-16).** The disposition webhook is a server-to-server WRITE endpoint whose secret lives server-side (GHL Custom Value → Netlify env `IAOS_WEBHOOK_SECRET`) — a different risk class than the deferred read-only browser functions (a bundled secret isn't a secret; a server-held one is). So it verifies `X-IAOS-Secret` (hashed constant-time compare, 401 otherwise) from day one. **Scope: this authenticates the disposition webhook ONLY; it does NOT reopen the other seven functions**, whose auth stays deferred (trigger unchanged: first user who isn't Brad). Verified live §9.4.
 
 **Open — needs Brad:**
 - **Lead Queue UI copy** (`Dashboard.tsx:816`, the "A note is the only thing that marks an attempt" blurb) is wrong as a mechanism (§6: a fresh `last_call_attempt` greys, not the note) but is telling a user something roughly true about how to use the tool. Wording is **undecided**; it's user-facing copy with its own build/deploy/verify cycle. **Untouched by the callback wiring** — the wiring changed the handler, not this blurb (the line moved 783 → 816 only because wiring added code above it). Still wrong, still unshipped, pending a decision on the phrasing.
@@ -404,11 +445,12 @@ capturing the requested URL at the context level. No product code changed during
 - Test contact Neelima Bale (`FiIT0hUaxVCIuokQpZuc`) accumulated several labeled `[Claude Code — …]` verification notes and a live `last_call_attempt` during the §11 probes. Harmless (permanent notes on the established test contact) but present; clear if a clean slate is wanted.
 
 **Open — security & integrity (recorded during the steps 4–5 review, 2026-07-16; named, not chased):**
-- **Zero inbound auth on all 8 netlify functions, plus `Access-Control-Allow-Origin: *`.** Any client that knows a URL can read GHL contact/conversation/opportunity data. **Deferred by Brad's call — single-tenant today.** TRIGGER to fix is **the first user who isn't Brad, not a lead count.** Multi-tenant needs a session-derived `locationId` per request, **never client-supplied**.
+- **Zero inbound auth on the seven read-only, browser-facing netlify functions, plus `Access-Control-Allow-Origin: *`.** Any client that knows a URL can read GHL contact/conversation/opportunity data. **Deferred by Brad's call — single-tenant today.** TRIGGER to fix is **the first user who isn't Brad, not a lead count.** Multi-tenant needs a session-derived `locationId` per request, **never client-supplied**. (The eighth function, `ghl-disposition`, is the exception — a server-to-server WRITE endpoint, authed with `X-IAOS-Secret` from day one; §10 Closed #9. Its auth does NOT reopen these seven.)
 - **`ghl-proxy.ts:9` "Phase B: validate OAuth token here"** — never implemented. Same gap, already flagged in the proxy's own header.
 - **`/api/phone-lookup` unauthenticated** (§5.6 item 1), and it is **unresolved whether it writes `Phone Type` back** to the contact — a possible undocumented **4th production write** (§5.6 item 3). Resolve before the three-write invariant is stated as absolute anywhere.
 - **§9.2's gate proves `deployed == repo` for the FRONTEND bundle only, NOT for the netlify functions.** The bundle-hash gate covers `index-*.js`; deployed function code has no equivalent gate and can drift from the repo undetected.
-- **Token mismatch, three ways.** Docs name `pit-6a78…d0f7` canonical; `app/.env` carries `pit-b2e9…` (lacks the Conversations scope); prod uses a **third** set configured in Netlify's dashboard. **Netlify's is authoritative for prod.** Record which token is authoritative for what before touching auth — a local test can pass or fail for reasons that don't reflect prod.
+- **Secret/token mismatch, now FOUR ways.** GHL API token: docs name `pit-6a78…d0f7` canonical; `app/.env` carries `pit-b2e9…` (lacks the Conversations scope); prod uses a **third** set configured in Netlify's dashboard (**authoritative for prod**). And now (2026-07-16) `IAOS_WEBHOOK_SECRET` exists in two places — `app/.env` (local, for the harness) and a **separate** Netlify-set prod copy, mirrored as a GHL Custom Value (**authoritative for prod**). Record which secret is authoritative for what before touching auth — a local test can pass or fail for reasons that don't reflect prod.
+- **`ghl-contacts` (listAll) returns `firstName`/`lastName` LOWERCASE; `ghl-contact` (single-record) returns proper case.** The Dashboard renders from listAll, so it **displays every contact name lowercase** (e.g. "neelima bale"; single-record gives "Neelima Bale"). Observed 2026-07-16 during step 6 verification — it broke a name-based test selector. **Cosmetic, live, unfixed. Cause unproven — do not design a fix against it.**
 - **Two `TYPE_ACTIVITY_OPPORTUNITY` rows on 2026-07-07** (source `app`, from "Investor Automation OS") flipped the pipeline `New Lead ↔ Seller Offer Sent` ten minutes apart. **Something carrying the IAOS credential moved pipeline stages** — which the write invariant says IAOS never does. Cause **unproven; do not design a fix against it.** Recorded as a data point; watch for recurrence.
 
 ---
@@ -438,6 +480,8 @@ Found while locating the source of a stale-attempt-on-reload symptom in the Work
 - **Client-side address filtering / search** (MAO calc, Contacts) — a dropped contact won't match a search transiently → "not found" for a record that exists.
 
 **Not fixed.** The Workspace read-path change sidesteps it for the detail view (single-record read). Lead Queue, rescore-all, and search still ride the list endpoint and remain exposed; whether to harden those is a separate decision.
+
+**Addendum (2026-07-16, step-6 verification) — convergence timing is VARIABLE; the range is the point.** `listAll` convergence after the disposition write measured **11s (4 polls)**, versus **~105s** on the callback-grey path 2026-07-15 (§9.1). Same endpoint, order-of-magnitude spread. This is exactly why every grey/attempt check **polls to convergence and never fixed-waits**: a fixed wait tuned to 11s would false-negative the 105s case, and one tuned to 105s wastes 90s on the fast case. Treat neither number as representative — poll.
 
 ---
 
