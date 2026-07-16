@@ -1,6 +1,6 @@
 # IAOS — CONVERSATIONS SPEC v1 (READ-ONLY phase)
 
-Status: read-only phase built 2026-07-16, pending live verification (harness + Brad sign-off).
+Status: read-only phase SHIPPED (`c3dd42a`) + VERIFIED LIVE 2026-07-16 — 10/10 harness, see §6.1.
 Coverage Roadmap surface #3 (master ref §2a). Sits alongside `DASHBOARD_SPEC_v2.txt` +
 `CONTACT_WORKSPACE_SPEC_v2.md` (whose §5/§8/§12 established the conversation read path this reuses).
 
@@ -71,7 +71,35 @@ explicit ID (never index/.first()):
 Harness checks: bundle gate, thread-list shape/count, thread scoped-by-id, message delta (activity
 filtered), inbound-SMS message renders (john sanchez), zero-writes (POST/PUT == 0) with a read-GET
 positive control, no listAll on the path. Self-check floor = the LITERAL `check()` count in the written
-harness (counted, not estimated). Numbers recorded here after the run.
+harness (counted, not estimated).
+
+### 6.1 VERIFIED LIVE — 2026-07-16 (`c3dd42a`)
+
+**10/10 PASS, exit 0. Floor 10 == the literal `check()` count in the harness** (counted from the file;
+the wait-fix edit added no checks). **Run 4× consecutively clean.** Bundle gate: `c3dd42a` →
+`index-W5jrh93x.js`; parent `2147900` → `index-vC0u0CHt.js` (discriminates); prod matched poll #1;
+re-asserted at runtime.
+
+Real numbers:
+- `threads-endpoint-ok`: 41 threads (rows carry `conversationId/contactId/contactName/lastMessageDirection`).
+- `threadlist-count-matches`: DOM 41 == endpoint 41.
+- `target-thread-present`: john sanchez at index 6 of 41.
+- `thread-scoped-by-id`: click → Workspace link `→ /contacts/05gYdxJcyNTCKWTwkbbs` (id-scoped, not index).
+- `message-delta`: endpoint total **6 → 4 shown → 2 filtered** (activity dropped); DOM bubbles **4**.
+- `inbound-sms-renders`: endpoint inbound SMS **1**; DOM "STOP" bubble marked **Received + Sms** = true.
+- `write-audit-attached`: 2 GETs (`ghl-conversations 1`, `ghl-contact-conversations 1`) — positive control.
+- `zero-writes`: `writes=[]`; `no-listall-on-path`: `ghl-contacts = 0`.
+
+**Diagnostic (separate probe, 3 runs):** the `ghl-contact-conversations` GET for john returned
+**200, count=6** every run; DOM bubble timeline `[0, 0, 4, 4, 4, …]` — 0 for the first ~800ms (messages
+GET in flight, spinner), then **stable at 4**. The bubbles render and persist; the read path is not flaky.
+
+**Pre-fix 8/10 — recorded as what it was, not rounded away.** The FIRST harness run was a real **8/10
+FAIL (exit 1)**: `message-delta` and `inbound-sms-renders` read `domBubbles=0` because the harness
+evaluated the DOM inside that ~800ms pre-render window (it waited on the Workspace deep-link, which
+renders in the header the instant a thread is selected — ahead of the messages). Fixed by adding a
+second wait keyed on the message bubbles actually rendering. That 8/10 was a **harness-timing artifact,
+superseded by the fix** — NOT a product defect (the wire proved 200/6 and a stable 4-bubble render).
 
 ## 7. OPEN ITEMS
 
