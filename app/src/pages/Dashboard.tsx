@@ -894,7 +894,7 @@ export default function Dashboard() {
                               e.stopPropagation();
                               window.open(ghlContactDetailUrl(c.id), "_blank", "noopener,noreferrer");
                             }}
-                            title="Open in GHL to call — uses the verified 972-954-8586 number"
+                            title="Open in GHL to call"
                             style={{
                               display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
                               padding: "5px 9px", borderRadius: "7px", border: "1px solid rgba(30,200,255,0.25)",
