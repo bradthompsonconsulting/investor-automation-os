@@ -1,6 +1,6 @@
 # IAOS — CONTACT WORKSPACE SPEC v2
 
-Status: §5 verified live 2026-07-15. §7 revised. §8 steps 1–6 SHIPPED + verified live (steps 4–5 in `dc60d1e`; step 6 disposition capture in `6fa154c`, 2026-07-16 — §9.3/§9.4). Remaining: step 7 (Dashboard name-click).
+Status: §5 verified live 2026-07-15. §7 revised. **§8 steps 1–7 all SHIPPED + verified live** (steps 4–5 `dc60d1e` §9.3; step 6 disposition capture `6fa154c` §9.4; step 7 name-click deep-link `becaa17` §9.5 — 2026-07-16). No §8 build work remains. ONE thing outstanding, not code: step 6's GHL-side trigger→webhook path awaits a real dispositioned call from Brad (§9.4 PENDING).
 Supersedes CONTACT_WORKSPACE_SPEC_v1.md. Sits alongside `IAOS_Master_Architecture_Reference_V10_2.txt` and `DASHBOARD_SPEC_v2.txt`.
 
 **Changes from v1:**
@@ -276,9 +276,9 @@ Copy rules apply to seller-facing content: no "just checking in" language; lead 
 4. **Call button** — tab-hop to GHL. Trivial; same as Dashboard. **SHIPPED + VERIFIED LIVE (`dc60d1e`, 2026-07-16 — §9.3).** Opens the GHL contact page in a new tab; writes nothing, greys nothing.
 5. **Conversation history** — read-only render from the existing conversations read path. **SHIPPED + VERIFIED LIVE (`dc60d1e`, 2026-07-16 — §9.3).** `TYPE_EMAIL` allowlist (useMemo) over the complete transcript; observed GHL shapes in §12.
 6. **Disposition capture** — new Netlify function + GHL workflow, per §5.4 (Path A only). **SHIPPED + VERIFIED LIVE (`6fa154c`, 2026-07-16 — §9.4).** `ghl-disposition.ts` receives the workflow's Webhook POST and writes note→attempt, gated; the STEP 6 REQUIREMENT (setLastCallAttempt alongside notes.create) is satisfied and proven live. §5 open questions were closed; no prerequisites remained (the Path B call-end verification was dropped with Path B).
-7. **Dashboard name-click** → deep-link to `/contacts/:id`.
+7. **Dashboard name-click** → deep-link to `/contacts/:id`. **SHIPPED + VERIFIED LIVE (`becaa17`, 2026-07-16 — §9.5).** Lead Queue contact name wrapped in a react-router `Link` (Dashboard-only, Lead Queue only); pure navigation — writes nothing (no note, no `last_call_attempt`), same rule as the step-4 Call button.
 
-Steps 1–5 are all on proven paths. **Step 6 is no longer a new mechanism** — GHL → IAOS webhook receive already runs in production (§5.6). Steps 1–2 can start immediately; they touch none of §5.
+**All of §8 (steps 1–7) is shipped + verified live as of 2026-07-16.** The only thing outstanding is not a build step: step 6's GHL-side trigger→webhook path awaits a real dispositioned call from Brad (§9.4 PENDING). Steps 1–5 were always on proven paths; step 6 was never a new mechanism (GHL → IAOS webhook receive already runs in production, §5.6).
 
 **Deferred until the Workspace is live:** Lead Queue column reorder, Call button removal from Dashboard rows (#3/#4/#5/#10a from Brad's original list).
 
@@ -418,6 +418,47 @@ WEBHOOK only; does NOT reopen the other seven read-only functions (auth stays de
 endpoints disagree on name casing (§10 open item) — the selector searched "Neelima Bale" but listAll
 renders "neelima bale". A test-harness bug, not a product defect; the grey was then proven standalone
 with a case-insensitive, row-keyed wait. No product code changed during verification.
+
+**PENDING — GHL-side trigger→webhook, awaiting a real dispositioned call (this is a live-test item,
+NOT a build gap).** Everything above proves the IAOS side: a harness POST to `ghl-disposition` returns
+200, writes note+attempt, and is idempotent. What is NOT yet proven live is GHL's side — that tapping a
+Custom Disposition on a real softphone call fires the published Workflow, which POSTs to
+`ghl-disposition` with the right `customData` and `X-IAOS-Secret`. **The Workflow is wired and
+published** (URL → `/.netlify/functions/ghl-disposition`; header `X-IAOS-Secret` =
+`{{ custom_values.iaos_webhook_secret }}`; all six dispositions on the trigger filter). It needs one
+real dispositioned call from Brad's softphone to close the loop. **Constraint (§5.2):** the disposition
+picker is transient — it appears in the Call Summary the instant you hang up and closes after ~1–2 min
+of inactivity, unrecoverable once closed. So the live test MUST tap the disposition inside that window;
+a call left un-dispositioned proves nothing (and, by design, writes nothing — the lead just re-dials).
+
+### 9.5 VERIFIED LIVE — step 7 (Dashboard name-click deep-link), 2026-07-16
+
+Shipped in `becaa17`. Verified live at `app.investorautomationos.com`, 2560px. Harness:
+**checksRun=8, failures=0** — the floor (8) equals the exact count of `check()` calls, so no partial
+run could pass.
+
+**Bundle gate (§9.2).** `becaa17` built to `index-vC0u0CHt.js`; parent `e2d764d` built to
+`index-Cw1s0sdN.js` (discriminates). The parent is the SAME bundle as `dc60d1e` because the commits
+between (`616c33b`, `6fa154c`, `e2d764d`) touched only docs and a netlify function — none of which
+enter the client bundle. A legitimate unchanged baseline, not a coincidental collision. Prod served
+`index-vC0u0CHt.js` (poll #3); re-asserted at runtime.
+
+**Real numbers:**
+- `namelink-present`: the Lead Queue name is `<a href="/contacts/FiIT0hUaxVCIuokQpZuc">`.
+- `target-is-non-first`: targetIndex **39 of 40** — Neelima at the queue bottom (band 3). Clicking a
+  NON-first row is what discriminates against an "always navigates to the first contact" bug.
+- `url-is-target-id`: click → `/contacts/FiIT0hUaxVCIuokQpZuc` (the clicked contact's id, not an
+  index / `.first()`).
+- `workspace-shows-target`: `ContactWorkspace` rendered that contact.
+- `write-audit-attached`: **3 read GETs** after the click (`ghl-contact`, `ghl-proxy`,
+  `ghl-contact-conversations`) — positive control proving the audit was watching.
+- `zero-writes-on-nav`: `writes=[]` (no POST/PUT).
+- `attempt-unchanged`: `last_call_attempt` byte-identical `2026-07-16T20:16:31.383Z` before and after.
+
+**INVARIANT (recorded): the name-click is PURE NAVIGATION** — it writes nothing (no note, no
+`last_call_attempt`), the same rule as the step-4 Call button (§6). Navigation is not an attempt.
+Proven, not asserted: `zero-writes-on-nav` + `attempt-unchanged`, with the read-GET positive control
+ruling out "audit never attached." No new write action; the three-write invariant is untouched.
 
 ---
 
