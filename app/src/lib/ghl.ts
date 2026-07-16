@@ -150,6 +150,25 @@ export interface UnansweredInboundRow {
   unreadCount:     number;
 }
 
+// Contact Workspace §8 step 5 — per-contact message history (read-only). Mirrors
+// the ghl-contact-conversations function's response shape. PENDING live shape
+// confirmation (message field names) — see spec §8 step 5 open questions.
+export interface ConvMessageRow {
+  id:             string;
+  conversationId: string;
+  contactId:      string;
+  direction:      string; // "inbound" | "outbound"
+  channel:        string; // friendly label (SMS / Email / Call / …)
+  messageType:    string; // raw GHL enum
+  body:           string;
+  dateAdded:      string; // ISO
+}
+export interface ContactConversations {
+  contactId:         string;
+  conversationCount: number;
+  messages:          ConvMessageRow[];
+}
+
 // ── Pipeline types ────────────────────────────────────────────────────────────
 
 export interface PipelineStage {
@@ -331,6 +350,19 @@ export const ghl = {
         throw new Error(`ghl-conversations → ${res.status}: ${text}`);
       }
       return res.json() as Promise<UnansweredInboundRow[]>;
+    },
+
+    // Contact Workspace §8 step 5 — ONE contact's message history, oldest→newest,
+    // read-only. Scoped by explicit contactId via the CONVERSATIONS API (search
+    // by contactId → that conversation's messages); never the contacts list
+    // endpoint, so it does not inherit §11's listAll lag/drop. No writes.
+    forContact: async (contactId: string): Promise<ContactConversations> => {
+      const res = await fetch(`/.netlify/functions/ghl-contact-conversations?id=${encodeURIComponent(contactId)}`);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`ghl-contact-conversations → ${res.status}: ${text}`);
+      }
+      return res.json() as Promise<ContactConversations>;
     },
   },
 

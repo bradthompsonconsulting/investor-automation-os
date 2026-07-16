@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
-  ArrowLeft, Phone, MapPin, StickyNote, AlertCircle, Loader2,
-  Flame, Sun, Snowflake, CalendarClock,
+  ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2,
+  Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight,
 } from "lucide-react";
-import { ghl, getBucketTag, type ContactRow, type BucketTag } from "../lib/ghl";
+import { ghl, getBucketTag, ghlContactDetailUrl, type ContactRow, type BucketTag, type ConvMessageRow } from "../lib/ghl";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 
@@ -116,6 +116,10 @@ export default function ContactWorkspace() {
   const [notes, setNotes]           = useState<NoteRow[] | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
 
+  // Step 5 — conversation history (read-only, scoped by explicit contactId).
+  const [conversations, setConversations]           = useState<ConvMessageRow[] | null>(null);
+  const [conversationsError, setConversationsError] = useState<string | null>(null);
+
   const [draft, setDraft]         = useState("");
   const [saving, setSaving]       = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -157,16 +161,28 @@ export default function ContactWorkspace() {
       .catch((e: Error) => setNotesError(e.message));
   }
 
+  // Read-only, GET-only. Scoped by explicit contactId via the conversations API
+  // (§8 step 5) — never listAll, so §11's list lag/drop does not apply here.
+  function loadConversations() {
+    setConversationsError(null);
+    ghl.conversations.forContact(id)
+      .then((res) => setConversations(res.messages))
+      .catch((e: Error) => setConversationsError(e.message));
+  }
+
   useEffect(() => {
     setLoading(true);
     setContact(null);
     setNotes(null);
+    setConversations(null);
+    setConversationsError(null);
     setAttemptOverride(null);
     setCallbackOverride(undefined);
     setCallbackOpen(false);
     setCallbackError(null);
     loadContact();
     loadNotes();
+    loadConversations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -185,6 +201,17 @@ export default function ContactWorkspace() {
     if (callbackOverride !== undefined) return callbackOverride;
     return contact?.callbackDatetimePrecise ?? contact?.callbackDatetime ?? null;
   }, [callbackOverride, contact]);
+
+  // Displayable transcript (§8 step 5): the function returns the COMPLETE, ascending
+  // transcript — real messages AND GHL pipeline-activity rows (TYPE_ACTIVITY_OPPORTUNITY
+  // "Opportunity created/updated" etc.). Those are noise, not conversation. Allowlist
+  // on messageType — NOT the numeric `type` field — so SMS (TYPE_SMS) just joins the
+  // set later. Already oldest→newest from the function; do not re-sort.
+  const CONVERSATION_TYPES = ["TYPE_EMAIL"];
+  const displayMessages = useMemo(
+    () => (conversations ?? []).filter((m) => CONVERSATION_TYPES.includes(m.messageType)),
+    [conversations],
+  );
 
   // The note IS the attempt (§4/§6). Empty/whitespace notes do nothing. Same
   // two-call sequence the Dashboard uses: create note, then mark attempt. After
@@ -316,8 +343,26 @@ export default function ContactWorkspace() {
         )}
       </div>
 
-      {/* Actions (§7). Call button is step 4; callback (step 3) is here. */}
+      {/* Actions (§7). Call button (step 4) opens GHL's own dialer in a new tab —
+          GHL's public API can't originate a call (§1). It writes NOTHING: no note,
+          no last_call_attempt, no callback, so it NEVER greys a row (§6: "call +
+          no disposition (no note) = no grey"). tabIndex=-1 + mousedown-prevent keep
+          it from stealing focus from the note input (Dashboard parity). */}
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px" }}>
+        <button
+          tabIndex={-1}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => window.open(ghlContactDetailUrl(id), "_blank", "noopener,noreferrer")}
+          disabled={loading}
+          title="Open in GHL to call"
+          style={{
+            display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", fontWeight: 600,
+            padding: "8px 14px", borderRadius: "8px", border: "1px solid rgba(30,200,255,0.35)",
+            background: "rgba(30,200,255,0.08)", color: "#1EC8FF", cursor: loading ? "not-allowed" : "pointer",
+          }}
+        >
+          <PhoneCall size={14} /> Call
+        </button>
         <div style={{ position: "relative" }}>
           <button
             onClick={() => { setCallbackOpen((v) => !v); setCallbackError(null); }}
@@ -400,12 +445,49 @@ export default function ContactWorkspace() {
           )}
         </div>
 
-        {/* RIGHT — conversation history placeholder (step 5) */}
+        {/* RIGHT — conversation history (step 5). Read-only transcript, oldest→newest
+            (reads the way the call prep needs it). Scoped by explicit contactId; no writes. */}
         <div style={{ flex: "1 1 420px", minWidth: "320px" }}>
           <h2 style={{ fontSize: "15px", fontWeight: 600, color: "#F1F5F9", margin: "0 0 10px", fontFamily: "Space Grotesk, sans-serif" }}>Conversation History</h2>
-          <div style={{ background: "#0D1B3E", border: "1px dashed rgba(255,255,255,0.12)", borderRadius: "10px", padding: "24px 16px", color: "#334155", fontSize: "13px", textAlign: "center" }}>
-            Conversation history — coming in step 5.
-          </div>
+          {conversationsError ? (
+            <div style={{ fontSize: "12px", color: "#F87171" }}>Failed to load conversation history: {conversationsError}</div>
+          ) : conversations === null ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#334155", fontSize: "12px" }}>
+              <Loader2 size={13} className="animate-spin" /> Loading conversation history…
+            </div>
+          ) : displayMessages.length === 0 ? (
+            <div style={{ background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "18px 16px", color: "#334155", fontSize: "13px", textAlign: "center" }}>
+              No conversation history.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "60vh", overflowY: "auto" }}>
+              {displayMessages.map((m) => {
+                const outbound = m.direction === "outbound";
+                return (
+                  <div
+                    key={m.id || `${m.conversationId}-${m.dateAdded}`}
+                    style={{
+                      alignSelf: outbound ? "flex-end" : "flex-start",
+                      maxWidth: "85%",
+                      background: outbound ? "rgba(30,200,255,0.10)" : "#0D1B3E",
+                      border: `1px solid ${outbound ? "rgba(30,200,255,0.25)" : "rgba(255,255,255,0.08)"}`,
+                      borderRadius: "10px", padding: "8px 12px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: "#475569", marginBottom: "4px" }}>
+                      {outbound ? <ArrowUpRight size={11} style={{ color: "#1EC8FF" }} /> : <ArrowDownLeft size={11} style={{ color: "#64748B" }} />}
+                      <span style={{ fontWeight: 600, color: outbound ? "#1EC8FF" : "#94A3B8" }}>{outbound ? "Sent" : "Received"}</span>
+                      <span>· {m.channel}</span>
+                      <span>· {formatNoteDate(m.dateAdded)}</span>
+                    </div>
+                    <div style={{ fontSize: "13px", color: "#E2E8F0", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                      {m.body || <span style={{ color: "#475569", fontStyle: "italic" }}>({m.channel.toLowerCase()}, no text)</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>
