@@ -90,35 +90,6 @@ export const handler = async (event: any) => {
   const token = process.env.GHL_PRIVATE_API_KEY ?? process.env.GHL_API_TOKEN;
   if (!token) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
 
-  // TEMPORARY probe (deploy-as-probe, step-5 shape confirmation) — read-only raw
-  // echo of the GHL search + first conversation's messages, so field names and
-  // ordering can be OBSERVED, not inferred. STRIP THIS before shipping step 5.
-  if (event.queryStringParameters?.debug) {
-    const sParams = new URLSearchParams({ locationId: LOCATION_ID, contactId: id });
-    const sRes  = await fetch(`${GHL_BASE}/conversations/search?${sParams}`, { headers: headers(token) });
-    const sBody = await sRes.json().catch(() => ({}));
-    const convId = sBody?.conversations?.[0]?.id;
-    let mStatus: number | null = null, mBody: any = null;
-    if (convId) {
-      const mRes = await fetch(`${GHL_BASE}/conversations/${convId}/messages?limit=5`, { headers: headers(token) });
-      mStatus = mRes.status;
-      mBody   = await mRes.json().catch(() => ({}));
-    }
-    return {
-      statusCode: 200,
-      headers: { ...CORS, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        debug: true,
-        searchStatus: sRes.status,
-        searchConversationCount: (sBody?.conversations ?? []).length,
-        searchFirstConversationId: convId ?? null,
-        searchFirstConversationKeys: sBody?.conversations?.[0] ? Object.keys(sBody.conversations[0]) : null,
-        messagesStatus: mStatus,
-        messagesRaw: mBody, // raw, in GHL's own order — lets us observe field names + ordering
-      }, null, 2),
-    };
-  }
-
   try {
     // 1) Conversation(s) for THIS contact — scoped by explicit contactId.
     const sParams = new URLSearchParams({ locationId: LOCATION_ID, contactId: id });
