@@ -137,3 +137,17 @@ superseded by the fix** — NOT a product defect (the wire proved 200/6 and a st
   component — a deliberate choice to avoid touching the already-verified `ContactWorkspace.tsx`. NOT a
   defect; recorded so it isn't rediscovered as a surprise. If a third consumer appears, extract a shared
   `<MessageBubble>` then (and re-verify both surfaces), not before.
+- **Email-bubble collapse — the dupe now DIVERGES on purpose (2026-07-16).** Conversations email bubbles
+  collapse to `CLAMP_LINES = 5` via CSS `-webkit-line-clamp` with an Expand/Show-less control shown only
+  when the body overflows (measured `scrollHeight > clientHeight` while clamped; per-bubble local state,
+  resets on thread change; SMS never collapses). `ContactWorkspace.tsx` was deliberately NOT changed —
+  its bubble render stays verified/as-is — so the two bubble renders are no longer identical. Extends
+  the intentional-dupe note above: any future shared `<MessageBubble>` extraction must reconcile the
+  collapse behavior and re-verify BOTH surfaces.
+- **Unread badge — OBSERVED SHIPPED behavior (passive mirror), NOT unread management.** The thread list
+  renders a read-only badge of GHL's `unreadCount` per thread: `ghl-conversations.ts:106` maps
+  `c.unreadCount ?? 0` → `Conversations.tsx:179` renders `{t.unreadCount > 0 && <span>{t.unreadCount}</span>}`.
+  OBSERVED live: john sanchez `05gYdxJcyNTCKWTwkbbs` `unreadCount=1` (1 of 41 threads). This is a passive
+  READ — IAOS manages NO unread state: no mark-as-read (a write), no unread filter, no IAOS-side
+  read/unread tracking. Those are the unshipped **unread MANAGEMENT** step (master ref §2a). Recorded as
+  shipped read-only behavior so the record is not misread as "no unread info surfaces at all."

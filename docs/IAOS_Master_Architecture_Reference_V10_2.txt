@@ -23,7 +23,7 @@ Layer 3 — Presentation: IAOS frontend shell. Standalone, GHL-mirrored, IAOS-br
 
 IAOS puts a client-first front-end on every GHL surface a wholesaler needs, so the client never works leads in GHL directly. Each surface is its own multi-session build with its own spec, shipped working before the next begins. GHL stays sole system of record for all of them (see INVARIANT below).
   1. Dashboard — "what needs action" daily hub. DONE ✅ — built + live (spec: docs/DASHBOARD_SPEC_v2.txt; v1 superseded). The launch point the other surfaces plug into.
-  2. Conversations — two-way SMS/email inbox in-app (send + receive, threads, unread state). DONE ✅ (READ-ONLY) — cross-contact thread list + per-thread message history shipped + verified live (spec: docs/CONVERSATIONS_SPEC.md; code c3dd42a, verification df0fbd1). NOT shipped: the SEND/compose path (write), and unread state — both separately-scoped later steps.
+  2. Conversations — two-way SMS/email inbox in-app (send + receive, threads, unread state). DONE ✅ (READ-ONLY) — cross-contact thread list + per-thread message history shipped + verified live (spec: docs/CONVERSATIONS_SPEC.md; code c3dd42a, verification df0fbd1). NOT shipped: the SEND/compose path (write), and unread MANAGEMENT — no mark-as-read (a write), no unread filter, no IAOS-side read/unread tracking. A read-only badge passively mirrors GHL's unreadCount (ghl-conversations.ts:106 → Conversations.tsx:179). Both separately-scoped later steps.
   3. Calendars — view availability, book/reschedule appointments in-app.
   4. Contacts / Opportunities — full create/edit/manage depth beyond the current read-oriented views.
 Sequence is Claude's recommendation and Brad's call to change.

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import {
   MessageSquare, Mail, ArrowDownLeft, ArrowUpRight, Loader2, ExternalLink,
@@ -30,6 +30,72 @@ function formatEpoch(ms: number): string {
   return new Date(ms).toLocaleString("en-US", {
     timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
   });
+}
+
+const CLAMP_LINES = 5;
+
+// One message bubble. EMAIL bodies collapse to CLAMP_LINES via CSS line-clamp
+// (line-based, not character count — width-independent, never breaks mid-word),
+// with an Expand control shown ONLY when the body actually overflows. SMS bodies
+// never collapse (short by nature). `expanded` is per-bubble local state that
+// resets when the thread changes: bubbles are keyed by message id, so a new
+// thread remounts them collapsed. No persistence, no storage.
+//
+// DELIBERATE divergence from ContactWorkspace's bubble render (which does NOT
+// collapse) — Conversations-only, that surface stays verified/as-is. See
+// docs/CONVERSATIONS_SPEC.md §7.
+function MessageBubble({ m }: { m: ConvMessageRow }) {
+  const outbound = m.direction === "outbound";
+  const isSms = m.messageType === "TYPE_SMS";
+  const collapsible = !isSms;
+
+  const [expanded, setExpanded]     = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  // Measure overflow WHILE clamped (mount + body change; NOT on expand, so the
+  // control stays visible after expanding). scrollHeight > clientHeight ⇒ the
+  // line-clamp is truncating content → the Expand control is warranted.
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!collapsible || !el) return;
+    setOverflowing(el.scrollHeight > el.clientHeight + 1);
+  }, [m.body, collapsible]);
+
+  const clamp = collapsible && !expanded;
+  const bodyStyle: CSSProperties = {
+    fontSize: "13px", color: "#E2E8F0", whiteSpace: "pre-wrap", wordBreak: "break-word",
+    ...(clamp
+      ? { display: "-webkit-box", WebkitLineClamp: CLAMP_LINES, WebkitBoxOrient: "vertical", overflow: "hidden" }
+      : {}),
+  };
+
+  return (
+    <div style={{
+      alignSelf: outbound ? "flex-end" : "flex-start", maxWidth: "80%",
+      background: outbound ? "rgba(30,200,255,0.10)" : "#0A1633",
+      border: `1px solid ${outbound ? "rgba(30,200,255,0.25)" : "rgba(255,255,255,0.08)"}`,
+      borderRadius: "10px", padding: "8px 12px",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: "#475569", marginBottom: "4px" }}>
+        {isSms ? <MessageSquare size={11} /> : <Mail size={11} />}
+        <span style={{ fontWeight: 600, color: outbound ? "#1EC8FF" : "#94A3B8" }}>{outbound ? "Sent" : "Received"}</span>
+        <span>· {m.channel}</span>
+        <span>· {formatDate(m.dateAdded)}</span>
+      </div>
+      <div ref={bodyRef} style={bodyStyle}>
+        {m.body || <span style={{ color: "#475569", fontStyle: "italic" }}>({m.channel.toLowerCase()}, no text)</span>}
+      </div>
+      {collapsible && overflowing && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          style={{ marginTop: "6px", background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: "11px", fontWeight: 600, color: "#1EC8FF" }}
+        >
+          {expanded ? "Show less" : "Expand"}
+        </button>
+      )}
+    </div>
+  );
 }
 
 export default function Conversations() {
@@ -146,30 +212,9 @@ export default function Conversations() {
                   <div style={{ fontSize: "13px", color: "#334155", textAlign: "center", paddingTop: "20px" }}>No messages in this thread.</div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {displayMessages.map((m) => {
-                      const outbound = m.direction === "outbound";
-                      const isSms = m.messageType === "TYPE_SMS";
-                      return (
-                        <div key={m.id || `${m.conversationId}-${m.dateAdded}`}
-                          style={{
-                            alignSelf: outbound ? "flex-end" : "flex-start", maxWidth: "80%",
-                            background: outbound ? "rgba(30,200,255,0.10)" : "#0A1633",
-                            border: `1px solid ${outbound ? "rgba(30,200,255,0.25)" : "rgba(255,255,255,0.08)"}`,
-                            borderRadius: "10px", padding: "8px 12px",
-                          }}
-                        >
-                          <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: "#475569", marginBottom: "4px" }}>
-                            {isSms ? <MessageSquare size={11} /> : <Mail size={11} />}
-                            <span style={{ fontWeight: 600, color: outbound ? "#1EC8FF" : "#94A3B8" }}>{outbound ? "Sent" : "Received"}</span>
-                            <span>· {m.channel}</span>
-                            <span>· {formatDate(m.dateAdded)}</span>
-                          </div>
-                          <div style={{ fontSize: "13px", color: "#E2E8F0", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                            {m.body || <span style={{ color: "#475569", fontStyle: "italic" }}>({m.channel.toLowerCase()}, no text)</span>}
-                          </div>
-                        </div>
-                      );
-                    })}
+                    {displayMessages.map((m) => (
+                      <MessageBubble key={m.id || `${m.conversationId}-${m.dateAdded}`} m={m} />
+                    ))}
                   </div>
                 )}
               </div>
