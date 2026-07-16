@@ -62,6 +62,20 @@ export interface UnansweredInboundRow {
   unreadCount:    number;
 }
 
+// Full thread-list row (?scope=all). Superset of the unanswered row + the last
+// message's direction, so the inbox can show a sent/received hint. Read-only.
+export interface ThreadRow {
+  conversationId: string;
+  contactId:      string;
+  contactName:    string;
+  phone:          string;
+  email:          string;
+  lastMessageDate: number;
+  lastMessageDirection: string; // "inbound" | "outbound"
+  preview:        string;
+  unreadCount:    number;
+}
+
 export const handler = async (event: any) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: CORS, body: "" };
   if (event.httpMethod !== "GET") return { statusCode: 405, headers: CORS, body: "Method Not Allowed" };
@@ -73,6 +87,31 @@ export const handler = async (event: any) => {
 
   try {
     const all = await fetchAllConversations(token);
+
+    // ?scope=all — full thread list (every conversation, newest first), the
+    // Conversations inbox source. Opt-in only; the DEFAULT (no param) stays the
+    // unanswered-inbound filter below so the Dashboard's consumer is unchanged.
+    // Same GET path, no new endpoint. Read-only.
+    if (event.queryStringParameters?.scope === "all") {
+      const threads: ThreadRow[] = all
+        .map((c) => ({
+          conversationId:       c.id,
+          contactId:            c.contactId ?? "",
+          contactName:          c.contactName || c.fullName || "(no name)",
+          phone:                c.phone ?? "",
+          email:                c.email ?? "",
+          lastMessageDate:      c.lastMessageDate ?? 0,
+          lastMessageDirection: c.lastMessageDirection ?? "",
+          preview:              String(c.lastMessageBody ?? "").trim(),
+          unreadCount:          c.unreadCount ?? 0,
+        }))
+        .sort((a, b) => b.lastMessageDate - a.lastMessageDate); // newest first (inbox)
+      return {
+        statusCode: 200,
+        headers: { ...CORS, "Content-Type": "application/json" },
+        body: JSON.stringify(threads),
+      };
+    }
 
     // Last message direction "inbound" = the contact spoke last with no
     // outbound reply since — exactly the spec's "unanswered inbound" definition.

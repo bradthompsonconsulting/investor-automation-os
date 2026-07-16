@@ -3,6 +3,7 @@ import Layout from "./components/Layout";
 import Dashboard        from "./pages/Dashboard";
 import Contacts         from "./pages/Contacts";
 import ContactWorkspace from "./pages/ContactWorkspace";
+import Conversations    from "./pages/Conversations";
 import Pipeline      from "./pages/Pipeline";
 import Mailers       from "./pages/Mailers";
 import Segmentation  from "./pages/Segmentation";
@@ -20,6 +21,7 @@ export default function App() {
           <Route path="dashboard"     element={<Dashboard />} />
           <Route path="contacts"      element={<Contacts />} />
           <Route path="contacts/:id"  element={<ContactWorkspace />} />
+          <Route path="conversations" element={<Conversations />} />
           <Route path="pipeline"      element={<Pipeline />} />
           <Route path="mailers"       element={<Mailers />} />
           <Route path="segmentation"  element={<Segmentation />} />

@@ -150,6 +150,21 @@ export interface UnansweredInboundRow {
   unreadCount:     number;
 }
 
+// Conversations phase — full thread-list row (read-only). Mirrors the
+// ghl-conversations ?scope=all response. Superset of the unanswered row + the
+// last message's direction so the inbox can show a sent/received hint.
+export interface ThreadRow {
+  conversationId:  string;
+  contactId:       string;
+  contactName:     string;
+  phone:           string;
+  email:           string;
+  lastMessageDate: number;
+  lastMessageDirection: string; // "inbound" | "outbound"
+  preview:         string;
+  unreadCount:     number;
+}
+
 // Contact Workspace §8 step 5 — per-contact message history (read-only). Mirrors
 // the ghl-contact-conversations function's response shape. PENDING live shape
 // confirmation (message field names) — see spec §8 step 5 open questions.
@@ -350,6 +365,18 @@ export const ghl = {
         throw new Error(`ghl-conversations → ${res.status}: ${text}`);
       }
       return res.json() as Promise<UnansweredInboundRow[]>;
+    },
+
+    // Conversations phase — full thread list (every conversation, newest first),
+    // read-only. Opts into the unfiltered branch via ?scope=all on the SAME
+    // function; no new endpoint (default stays unanswered-filtered above).
+    threads: async (): Promise<ThreadRow[]> => {
+      const res = await fetch("/.netlify/functions/ghl-conversations?scope=all");
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`ghl-conversations?scope=all → ${res.status}: ${text}`);
+      }
+      return res.json() as Promise<ThreadRow[]>;
     },
 
     // Contact Workspace §8 step 5 — ONE contact's message history, oldest→newest,

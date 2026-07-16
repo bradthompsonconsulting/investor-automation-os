@@ -2,6 +2,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
   Users,
+  MessageSquare,
   GitBranch,
   Mail,
   Filter,
@@ -14,6 +15,7 @@ import {
 const NAV = [
   { label: "Dashboard",     to: "/dashboard",     icon: LayoutDashboard },
   { label: "Contacts",      to: "/contacts",       icon: Users           },
+  { label: "Conversations", to: "/conversations",  icon: MessageSquare   },
   { label: "Pipeline",      to: "/pipeline",       icon: GitBranch       },
   { label: "Mailers",       to: "/mailers",        icon: Mail            },
   { label: "Segmentation",  to: "/segmentation",   icon: Filter          },
