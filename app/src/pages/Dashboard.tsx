@@ -863,9 +863,19 @@ export default function Dashboard() {
                     >
                       <td style={{ padding: "9px 10px", fontWeight: 500, color: "#F1F5F9", overflow: "hidden" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "5px", overflow: "hidden" }}>
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {/* §8 step 7 / §3 — name-click deep-links to the contact's IAOS workspace
+                              (Dashboard-only, Lead Queue only). stopPropagation so the row's onClick
+                              (open inline note editor) does NOT also fire. PURE NAVIGATION — writes
+                              NOTHING: no note, no last_call_attempt. Opening a contact is not an
+                              attempt, the same rule as the step-4 Call button (§6): it greys nothing. */}
+                          <Link
+                            to={`/contacts/${c.id}`}
+                            onClick={(e) => e.stopPropagation()}
+                            title="Open workspace"
+                            style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "inherit", textDecoration: "none" }}
+                          >
                             {contactName(c)}
-                          </span>
+                          </Link>
                           {overdueMailer && (
                             <span style={{ flexShrink: 0, fontSize: "10px", fontWeight: 600, color: "#F87171" }} title="Overdue in the mailer cadence">
                               OVERDUE
