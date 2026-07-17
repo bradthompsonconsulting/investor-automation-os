@@ -101,6 +101,33 @@ renders in the header the instant a thread is selected — ahead of the messages
 second wait keyed on the message bubbles actually rendering. That 8/10 was a **harness-timing artifact,
 superseded by the fix** — NOT a product defect (the wire proved 200/6 and a stable 4-bubble render).
 
+### 6.2 VERIFIED LIVE — email-bubble collapse — 2026-07-16 (`0804767`)
+
+**13/13 PASS, exit 0. Floor 13 == the literal `check()` count** (the read-only harness extended with 3
+collapse checks; the original 10 re-ran green as a regression). Bundle gate: `0804767` →
+`index-BHR7Coqc.js`; parent `159a269` → `index-W5jrh93x.js` (discriminates); prod matched poll #1.
+
+Collapse numbers (fixture: john sanchez `05gYdxJcyNTCKWTwkbbs` — 3 long emails + 1 inbound SMS):
+- `email-clamped-and-expandable`: **3 Expand buttons** (all 3 emails overflow 5 lines); first email body
+  `scrollHeight > clientHeight` = clamped.
+- `sms-not-collapsed`: the SMS "STOP" bubble has NO Expand button and its body is not clamped.
+- `expand-reveals-full`: click Expand → button becomes "Show less", body no longer clamped (full text shown).
+Regression: `message-delta` 6→4→2 (DOM bubbles 4), inbound-SMS renders, `zero-writes`, `no-listall` — all
+still green with the local `MessageBubble` refactor.
+
+**Short-EMAIL caveat — a NARROW gap, not the outbound-SMS kind.** The Expand control is gated on
+`collapsible && overflowing`. Both relevant false-outcomes are exercised LIVE:
+- `collapsible === false` (SMS) → button correctly ABSENT — **live-verified** (`sms-not-collapsed`).
+- `collapsible === true && overflowing === true` (long email) → button correctly PRESENT + clamps —
+  **live-verified** (`email-clamped-and-expandable`).
+The ONE remaining combination is unverified: `collapsible === true && overflowing === false` — a SHORT
+EMAIL that fits ≤5 lines, where the button should be absent. No such email exists in the location (all
+71 emails are 874+ chars / 30+ newlines). So this is a **single unexercised sub-branch, NOT a
+whole-feature gap**: the "button absent when it shouldn't show" outcome IS proven live via the SMS path;
+only the short-EMAIL variant is open. This is narrower than the outbound-SMS item (which has zero data of
+its kind at all) — the record should not flatten the two together. **Code-correct, not live-verified.
+Trigger: first email that fits ≤5 lines.**
+
 ## 7. OPEN ITEMS
 
 - **SMS rendering — inbound live-verified, outbound NOT (observed 2026-07-16).** Recorded verbatim:
