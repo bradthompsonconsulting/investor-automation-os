@@ -13,6 +13,12 @@
 [build]
   publish = "dist"
   functions = "netlify/functions"
+  # Skip the build when the commit changed nothing under app/ (e.g. docs-only
+  # commits) — saves Netlify credits. Netlify runs `ignore` from the base dir
+  # (app/, set in the site UI), so `-- .` scopes the diff to app/. Exit 0 = skip
+  # build, non-zero = build. Fails safe: if ever run from repo root instead, it
+  # just always builds — it can never silently stop deploying app/ changes.
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- ."
 
 [build.environment]
   NODE_VERSION = "22"
