@@ -184,6 +184,27 @@ export interface ContactConversations {
   messages:          ConvMessageRow[];
 }
 
+// Calendars read view (CALENDARS_SPEC §3) — one appointment row. Mirrors the
+// ghl-calendar-events response. `status` is the correctly-spelled
+// appointmentStatus (never the misspelled appoinmentStatus GHL also ships).
+export interface CalendarEventRow {
+  id:             string;
+  calendarId:     string;
+  calendarName:   string;
+  title:          string;
+  startTime:      string; // ISO w/ tz, as GHL returns
+  endTime:        string;
+  status:         string;
+  contactId:      string;
+  assignedUserId: string;
+  notes:          string;
+}
+export interface CalendarEventsResult {
+  window:    { startTime: number; endTime: number };
+  calendars: { id: string; name: string }[];
+  events:    CalendarEventRow[];
+}
+
 // ── Pipeline types ────────────────────────────────────────────────────────────
 
 export interface PipelineStage {
@@ -390,6 +411,24 @@ export const ghl = {
         throw new Error(`ghl-contact-conversations → ${res.status}: ${text}`);
       }
       return res.json() as Promise<ContactConversations>;
+    },
+  },
+
+  calendars: {
+    // Calendars read view (CALENDARS_SPEC §3) — appointments across the location's
+    // calendars for a window, read-only. The server fans over each calendarId.
+    // Pass an explicit window (ms epoch); the server defaults to now → +30 days.
+    events: async (startTime?: number, endTime?: number): Promise<CalendarEventsResult> => {
+      const qs = new URLSearchParams();
+      if (startTime != null) qs.set("startTime", String(startTime));
+      if (endTime   != null) qs.set("endTime",   String(endTime));
+      const url = `/.netlify/functions/ghl-calendar-events${qs.toString() ? `?${qs}` : ""}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`ghl-calendar-events → ${res.status}: ${text}`);
+      }
+      return res.json() as Promise<CalendarEventsResult>;
     },
   },
 

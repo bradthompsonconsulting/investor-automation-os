@@ -4,6 +4,7 @@ import Dashboard        from "./pages/Dashboard";
 import Contacts         from "./pages/Contacts";
 import ContactWorkspace from "./pages/ContactWorkspace";
 import Conversations    from "./pages/Conversations";
+import Calendars       from "./pages/Calendars";
 import Pipeline      from "./pages/Pipeline";
 import Mailers       from "./pages/Mailers";
 import Segmentation  from "./pages/Segmentation";
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="contacts"      element={<Contacts />} />
           <Route path="contacts/:id"  element={<ContactWorkspace />} />
           <Route path="conversations" element={<Conversations />} />
+          <Route path="calendars"     element={<Calendars />} />
           <Route path="pipeline"      element={<Pipeline />} />
           <Route path="mailers"       element={<Mailers />} />
           <Route path="segmentation"  element={<Segmentation />} />
