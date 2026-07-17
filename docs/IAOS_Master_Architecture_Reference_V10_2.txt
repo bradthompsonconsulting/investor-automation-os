@@ -31,6 +31,8 @@ BUILD-ORDER NOTE (build history, NOT a roadmap decision): a Contact Workspace su
 
 INVARIANT — NO DRIFT (applies to every surface, present and future): GHL is the sole system of record. The app holds NO shadow copy of lead data — it writes straight through to GHL and reads live from GHL, so app and GHL can never disagree. Every write is scoped to fields nothing else computes or a workflow touches, so writes cannot stomp GHL-side state (same discipline as Save Offer = offer_ only §14e, mailer-complete = completion flag only §14f). Live GHL-to-app push (webhooks) is explicitly NOT required for v1 of any surface — clients work in-app, and the app is current on every load/refresh because it reads live.
 
+INVARIANT — GHL-FIRST (settled 2026-07-17, applies to every surface, present and future): GHL is the sole system of record AND the sole system of BEHAVIOR. IAOS is a front-end over GHL's engine, not a reimplementation of it. Where GHL already provides a mechanism — booking widgets, confirmation emails, workflows, scheduling logic — the app SURFACES it rather than rebuilding it. Building our own path is the EXCEPTION and requires an OBSERVED finding that GHL has no path, not an assumption that it doesn't. Rationale: GHL's mechanisms are proven and maintained upstream; anything we build from scratch is ours to break and ours to fix.
+
 3. Hosting & Domain
 
 Netlify. App at app.investorautomationos.com — DEPLOYED (site "iaos-app," base app, build pnpm install && pnpm build, publish app/dist, functions app/netlify/functions, CNAME at Namecheap, SSL valid).
