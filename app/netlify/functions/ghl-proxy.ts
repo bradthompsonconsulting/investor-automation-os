@@ -1,5 +1,5 @@
 /**
- * GHL API proxy — server-side function, holds GHL_API_TOKEN.
+ * GHL API proxy — server-side function, holds the GHL token.
  *
  * The browser client calls /.netlify/functions/ghl-proxy?path=/contacts/...
  * This function forwards the request to GHL with the API key and returns
@@ -9,7 +9,9 @@
  * Phase B: validate OAuth token here before forwarding; key auth stays here.
  *
  * Env vars required (set in Netlify site env):
- *   GHL_API_TOKEN — GHL private integration token
+ *   GHL_PRIVATE_API_KEY (preferred) or GHL_API_TOKEN (fallback) — the GHL private
+ *   integration token. Code reads `GHL_PRIVATE_API_KEY ?? GHL_API_TOKEN`; with
+ *   both set on the app site, GHL_PRIVATE_API_KEY always wins.
  */
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
