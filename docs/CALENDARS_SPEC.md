@@ -1,6 +1,6 @@
 # IAOS — CALENDARS SPEC v1
 
-Status: read endpoint PROBED live 2026-07-17 (OBSERVED, from the wire); the read VIEW is NOT built. Coverage Roadmap surface after Conversations (master ref §2a, locked order Dashboard → Conversations → Calendars → Contacts/Opportunities). **GHL-FIRST invariant applies** (master ref §2a): surface what GHL returns, build nothing GHL already does.
+Status: read VIEW SHIPPED + verified live 2026-07-17 (`bb74450`; §5, 10/10). Booking/reschedule + availability (write phase) NOT built. Coverage Roadmap surface after Conversations (master ref §2a, locked order Dashboard → Conversations → Calendars → Contacts/Opportunities). **GHL-FIRST invariant applies** (master ref §2a): surface what GHL returns, build nothing GHL already does.
 
 ## 0. LOCATION CALENDARS (OBSERVED 2026-07-17)
 
@@ -33,3 +33,18 @@ Calendars WRITE = **OBSERVED present** (`POST /calendars/events/block-slots` →
 ## 4. OPEN ITEMS
 
 - **userId scope span — UNKNOWN (named, not chased).** Whether a `userId` query returns appointments across ALL calendars a user is assigned to is UNKNOWN — only Seller-calendar appointments were OBSERVED under `userId` (2026-07-17). Fan-over-calendarId (§3) sidesteps it for v1; it matters for the multi-user SaaS shape later. Verify before relying on `userId` scoping for a location-wide read.
+
+## 5. VERIFIED LIVE — read view — 2026-07-17 (`bb74450`)
+
+**10/10 PASS, exit 0. Floor 10, counted from the harness file** (an off-by-one was caught and fixed, 9 → 10, before the run). **Clean 10/10 first run — no partial.**
+
+**Bundle gate (§9.2) — OBSERVED discriminating, live not just in theory:** parent `ab2859e` built to `index-BHR7Coqc.js`; commit `bb74450` built to `index-BpdCKBIX.js`. Prod **poll #1 served `index-BHR7Coqc.js`** (old), **poll #2 served `index-BpdCKBIX.js`** (deploy landed) — the gate discriminated ON THE WIRE, old→new, not just at build time. Harness re-asserted `live == expected` at runtime.
+
+**Real numbers:**
+- `endpoint-jul20-exactly-2`: HTTP 200, events = 2.
+- `endpoint-baseline-ids`: `["PZdh1iE9jZ55wDRL8qcL","fvAktDkilpq3nxp8ZWuS"]` — exactly the §1 #5 / §3 baseline.
+- `endpoint-status-confirmed`: `["confirmed","confirmed"]` — read from the correctly-spelled `appointmentStatus`, never `appoinmentStatus`.
+- Page (`/calendars`, default today→+30d window covering Jul 20): **2** Workspace deep-links to `/contacts/9fbH2VCcZvzVNhsR9zjc`; title "Seller Consultation - Brad Thompson" present; 9:00 AM + 12:00 PM present.
+- Read-only proven: `write-audit-attached` (1 GET to `ghl-calendar-events`, positive control); `zero-writes` `writes=[]`; `no-listall-on-path` `ghl-contacts = 0`.
+
+**No-run guards held:** the render wait resolved (the page produced the 2 rows) and `write-audit-attached` saw the endpoint GET — so "code never ran" would have failed loud; a mid-run throw would have tripped the floor (exit 2). It was a clean first run, so there is no partial to disclose.
