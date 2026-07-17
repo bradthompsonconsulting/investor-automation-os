@@ -1,6 +1,14 @@
 [build]
   publish = "dist/public"
   functions = "netlify/functions"
+  # Skip the marketing build when a commit changed ONLY docs/ — saves Netlify
+  # credits on docs-only commits. This site has no base dir, so Netlify runs
+  # `ignore` from the repo root; the exclude-pathspec means "build unless every
+  # changed file is under docs/". Fail-safe by design: any change outside docs/
+  # (client/, server/, shared/, config, app/, anything) still builds. We do NOT
+  # exclude app/ — the marketing build command is UI-set and unverifiable from
+  # the repo, so we don't assume it never reads app/.
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- ':(exclude)docs'"
 
 [[redirects]]
   from = "https://veterancashoffer.com/*"
