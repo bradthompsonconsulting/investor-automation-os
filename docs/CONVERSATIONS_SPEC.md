@@ -128,6 +128,32 @@ only the short-EMAIL variant is open. This is narrower than the outbound-SMS ite
 its kind at all) — the record should not flatten the two together. **Code-correct, not live-verified.
 Trigger: first email that fits ≤5 lines.**
 
+### 6.3 VERIFIED LIVE — §8.1 inner label "Conversations" → "History" — 2026-07-20 (`261a191`)
+
+**14/14 PASS, exit 0. `checksRun=14`, `failures=0`. Floor 14 == the literal `check()` count** in the
+harness (counted from the file: lines 30/36/65/66/75/103/104/106/126/128/139/148/150/151 — the original 13
+plus one positive inner-label check; guard is `< 14`). The original 13 re-ran green as a regression.
+
+Bundle gate (§9.2): `261a191` → `index-D7eW48eb.js`; parent `79cbddb` → `index-BpdCKBIX.js` (discriminates).
+Both hashes were built locally BEFORE commit — the parent build reproduced the then-current prod bundle
+`index-BpdCKBIX.js` EXACTLY, and the child differed, so the gate had a real discriminator (not the stale
+`index-BHR7Coqc.js` from §6.2). Prod flipped `BpdCKBIX` → `D7eW48eb` and the harness matched at runtime.
+
+The one new check — `inner-label-history-outer-conversations`: `h1s=["History"]`, `navConversations=true`
+(sole page `<h1>` reads "History"; Sidebar nav still reads "Conversations"). Regression numbers unchanged
+from §6.1/§6.2: threads 41/41, target john sanchez at index 6, thread scoped by id, message-delta 6→4→2
+(DOM bubbles 4), inbound SMS renders, email clamp+expand (3 buttons), SMS not collapsed, expand reveals
+full, write-audit attached (2 GETs), `zero-writes []`, no listAll on path.
+
+**Harness now COMMITTED at `app/scripts/verify-conversations.cjs`** (`require("playwright")` from
+`app/node_modules`) — it had gone stale-pinned twice living in scratchpad. Future threads inherit it and
+RE-PIN `EXPECTED` per run; do not rebuild it.
+
+**Netlify deploy-log line NOT agent-observable** (no Netlify dashboard/CLI/API access). "App built `261a191`,
+not a docs-only skip" was proven instead by the runtime hash flip — prod serving the exact locally-built
+`D7eW48eb` (a skip would have left `BpdCKBIX`; the bundle gate aborts rather than false-passing). OBSERVED
+via the bundle, INFERRED-free; the literal log stays Brad's to read.
+
 ## 7. OPEN ITEMS
 
 - **SMS rendering — inbound live-verified, outbound NOT (observed 2026-07-16).** Recorded verbatim:
