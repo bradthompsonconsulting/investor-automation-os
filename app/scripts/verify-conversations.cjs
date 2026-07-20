@@ -5,11 +5,11 @@
    expected hash, then run (§9.2 bundle gate). Read-only: thread list + message
    history render; ZERO writes. Fails LOUD (non-zero) on any no-run.
    Floor = literal check() count — COUNT it from this file, never assume.
-   Currently 14 (10 read-only §6.1 + 3 collapse §6.2 + 1 positive inner-label §8.1). */
+   Currently 15 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title). */
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-D7eW48eb.js"; // §8.1 commit (h1 "Conversations" → "History"). RE-PIN every run.
+const EXPECTED = "index-YgvDrCUD.js"; // Header top-bar titles fix. RE-PIN to the bundle under test every run.
 const TARGET   = "05gYdxJcyNTCKWTwkbbs"; // john sanchez — has the 1 inbound SMS + emails; a scoping + SMS + delta fixture
 const THREADS_URL = `${ORIGIN}/.netlify/functions/ghl-conversations?scope=all`;
 const MSGS_URL    = `${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${TARGET}`;
@@ -75,6 +75,13 @@ function check(name, cond, detail = "") {
   check("inner-label-history-outer-conversations",
     labels.h1.includes("History") && !labels.h1.includes("Conversations") && labels.navConversations,
     `h1s=${JSON.stringify(labels.h1)} navConversations=${labels.navConversations}`);
+
+  // Header top-bar title — the dark app-bar <h2> reads the page name ("Conversations")
+  // on /conversations, no longer the "IAOS" fallback (Header.tsx TITLES key added).
+  const topBar = await page.evaluate(() =>
+    [...document.querySelectorAll("h2")].map((h) => (h.textContent || "").trim()),
+  );
+  check("top-bar-title-conversations", topBar.includes("Conversations"), `h2s=${JSON.stringify(topBar)}`);
 
   // Click the target thread by its endpoint-order index (DOM renders in endpoint order).
   await page.evaluate((idx) => {
@@ -152,6 +159,6 @@ function check(name, cond, detail = "") {
   await browser.close();
 
   console.log(`\nchecksRun=${checksRun} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
-  if (checksRun < 14) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
+  if (checksRun < 15) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
