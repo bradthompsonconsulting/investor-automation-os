@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
-  MessageSquare, Mail, ArrowDownLeft, ArrowUpRight, Loader2, ExternalLink,
+  MessageSquare, Mail, ArrowDownLeft, ArrowUpRight, Loader2, ExternalLink, FileText,
 } from "lucide-react";
 import { ghl, type ThreadRow, type ConvMessageRow } from "../lib/ghl";
 
@@ -19,6 +19,9 @@ import { ghl, type ThreadRow, type ConvMessageRow } from "../lib/ghl";
  */
 
 const CONVERSATION_TYPES = ["TYPE_EMAIL", "TYPE_SMS"];
+
+// Notes (§8.6) come from /contacts/:id/notes — Brad's own record, no direction/channel.
+type NoteRow = { id: string; body: string; dateAdded: string };
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString("en-US", {
@@ -98,6 +101,53 @@ function MessageBubble({ m }: { m: ConvMessageRow }) {
   );
 }
 
+// A note renders PLAIN (§8.3): no direction, no Sent/Received tag, no alignment —
+// just a timestamp and the body. Notes are Brad's own record, not a message to anyone.
+function NoteEntry({ n }: { n: NoteRow }) {
+  return (
+    <div style={{ background: "#0A1633", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", padding: "8px 10px" }}>
+      <div style={{ fontSize: "10px", color: "#475569", marginBottom: "4px" }}>{formatDate(n.dateAdded)}</div>
+      <div style={{ fontSize: "13px", color: "#E2E8F0", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+        {n.body || <span style={{ color: "#475569", fontStyle: "italic" }}>(empty note)</span>}
+      </div>
+    </div>
+  );
+}
+
+// One labeled channel section (§8.2). ALWAYS renders — never collapses (§8.4):
+// shows its own loading / error / empty state, else its rows. Each section owns
+// an internal scroll so the layout never jumps as a thread's counts change.
+function ThreadSection({
+  title, icon, count, loading, error, empty, emptyLabel, children, style,
+}: {
+  title: string; icon: ReactNode; count: number | null;
+  loading: boolean; error: string | null; empty: boolean; emptyLabel: string;
+  children: ReactNode; style?: CSSProperties;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, background: "#0A1226", border: "1px solid rgba(255,255,255,0.07)", borderRadius: "10px", overflow: "hidden", ...style }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 12px", borderBottom: "1px solid rgba(255,255,255,0.07)", fontSize: "11px", fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "#94A3B8" }}>
+        {icon}
+        <span>{title}</span>
+        {count != null && count > 0 && <span style={{ color: "#475569", fontWeight: 600 }}>· {count}</span>}
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "10px 12px", minHeight: 0 }}>
+        {error ? (
+          <div style={{ fontSize: "12px", color: "#F87171" }}>{error}</div>
+        ) : loading ? (
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#334155", fontSize: "12px" }}>
+            <Loader2 size={13} className="animate-spin" /> Loading…
+          </div>
+        ) : empty ? (
+          <div style={{ fontSize: "12px", color: "#334155", textAlign: "center", paddingTop: "10px" }}>{emptyLabel}</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>{children}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Conversations() {
   const [threads, setThreads]           = useState<ThreadRow[] | null>(null);
   const [threadsError, setThreadsError] = useState<string | null>(null);
@@ -105,6 +155,9 @@ export default function Conversations() {
   const [selected, setSelected]         = useState<ThreadRow | null>(null);
   const [messages, setMessages]         = useState<ConvMessageRow[] | null>(null);
   const [messagesError, setMessagesError] = useState<string | null>(null);
+
+  const [notes, setNotes]               = useState<NoteRow[] | null>(null);
+  const [notesError, setNotesError]     = useState<string | null>(null);
 
   useEffect(() => {
     setThreadsError(null);
@@ -119,9 +172,16 @@ export default function Conversations() {
     if (!selected) return;
     setMessages(null);
     setMessagesError(null);
+    setNotes(null);
+    setNotesError(null);
     ghl.conversations.forContact(selected.contactId)
       .then((res) => setMessages(res.messages))
       .catch((e: Error) => setMessagesError(e.message));
+    // Notes come from the notes endpoint (§8.6), NOT the conversation feed —
+    // read-only GET (ghl.notes.list), zero writes. Sorted oldest→newest below.
+    ghl.notes.list(selected.contactId)
+      .then((res) => setNotes(res.notes ?? []))
+      .catch((e: Error) => setNotesError(e.message));
   }, [selected]);
 
   // Displayable messages: the endpoint returns the complete transcript incl.
@@ -130,6 +190,15 @@ export default function Conversations() {
   const displayMessages = useMemo(
     () => (messages ?? []).filter((m) => CONVERSATION_TYPES.includes(m.messageType)),
     [messages],
+  );
+  // §8.2 — per-section split of the SAME loaded feed (no new fetch). Order preserved
+  // (already oldest→newest from the function).
+  const texts  = useMemo(() => displayMessages.filter((m) => m.messageType === "TYPE_SMS"),   [displayMessages]);
+  const emails = useMemo(() => displayMessages.filter((m) => m.messageType === "TYPE_EMAIL"), [displayMessages]);
+  // Notes oldest→newest by dateAdded (§8.6) — same read order as the message sections.
+  const sortedNotes = useMemo(
+    () => [...(notes ?? [])].sort((a, b) => new Date(a.dateAdded).getTime() - new Date(b.dateAdded).getTime()),
+    [notes],
   );
 
   return (
@@ -201,22 +270,44 @@ export default function Conversations() {
                   <ExternalLink size={12} /> Workspace
                 </Link>
               </div>
-              <div style={{ flex: 1, overflowY: "auto", padding: "14px 16px" }}>
-                {messagesError ? (
-                  <div style={{ fontSize: "12px", color: "#F87171" }}>Failed to load messages: {messagesError}</div>
-                ) : messages === null ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#334155", fontSize: "12px" }}>
-                    <Loader2 size={13} className="animate-spin" /> Loading messages…
-                  </div>
-                ) : displayMessages.length === 0 ? (
-                  <div style={{ fontSize: "13px", color: "#334155", textAlign: "center", paddingTop: "20px" }}>No messages in this thread.</div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {displayMessages.map((m) => (
-                      <MessageBubble key={m.id || `${m.conversationId}-${m.dateAdded}`} m={m} />
-                    ))}
-                  </div>
-                )}
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "12px", padding: "12px 14px", minHeight: 0 }}>
+                {/* Top row — Notes (left) | Text (right), §8.2 */}
+                <div style={{ display: "flex", gap: "12px", flex: "0 0 38%", minHeight: 0 }}>
+                  <ThreadSection
+                    title="Notes" icon={<FileText size={12} />}
+                    count={notes ? sortedNotes.length : null}
+                    loading={notes === null && !notesError}
+                    error={notesError ? `Failed to load notes: ${notesError}` : null}
+                    empty={sortedNotes.length === 0}
+                    emptyLabel="No notes."
+                    style={{ flex: 1 }}
+                  >
+                    {sortedNotes.map((n) => <NoteEntry key={n.id || n.dateAdded} n={n} />)}
+                  </ThreadSection>
+                  <ThreadSection
+                    title="Text" icon={<MessageSquare size={12} />}
+                    count={messages ? texts.length : null}
+                    loading={messages === null && !messagesError}
+                    error={messagesError ? `Failed to load messages: ${messagesError}` : null}
+                    empty={texts.length === 0}
+                    emptyLabel="No texts."
+                    style={{ flex: 1 }}
+                  >
+                    {texts.map((m) => <MessageBubble key={m.id || `${m.conversationId}-${m.dateAdded}`} m={m} />)}
+                  </ThreadSection>
+                </div>
+                {/* Email — full width below, §8.2 */}
+                <ThreadSection
+                  title="Email" icon={<Mail size={12} />}
+                  count={messages ? emails.length : null}
+                  loading={messages === null && !messagesError}
+                  error={messagesError ? `Failed to load messages: ${messagesError}` : null}
+                  empty={emails.length === 0}
+                  emptyLabel="No emails."
+                  style={{ flex: 1 }}
+                >
+                  {emails.map((m) => <MessageBubble key={m.id || `${m.conversationId}-${m.dateAdded}`} m={m} />)}
+                </ThreadSection>
               </div>
             </>
           )}

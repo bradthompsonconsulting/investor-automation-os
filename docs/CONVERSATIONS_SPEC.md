@@ -276,6 +276,17 @@ mistaken for permanent UI.
 ## 8.6 Notes data source — D1 RESOLVED 2026-07-20
 - **Source = `/contacts/:id/notes`** (`ghl.notes.list`, `app/src/lib/ghl.ts:332`; the read-only note history
   already used by Contact Workspace §8 step 2). Read-only GET; no write, invariant untouched.
+- **Transport — Option A, chosen deliberately 2026-07-20 (not a default):** the notes read routes through
+  the generic `ghl-proxy` passthrough via `ghl.notes.list` (GET only) — the SAME path the Contact Workspace
+  already ships, NOT a new dedicated function. **OBSERVED:** `ghl-proxy.ts:38` forwards ANY method
+  (`method: event.httpMethod`), so the proxy is write-*capable*; but this read uses GET only, and read-only
+  is enforced by (a) the GET method and (b) the harness `zero-writes` audit, which filters ALL captured
+  netlify-function requests — `ghl-proxy` included (the request listener matches `…/functions/([^/?]+)`) —
+  by METHOD. **Rationale (Brad):** ghl-proxy's write-capability is already on the deferred
+  seven-unauthed-functions item; piecemeal hardening now (a dedicated GET-only notes function, rejected
+  Option B) would NOT close that item — the security pass will — and would diverge from the proven
+  Workspace read. So reuse the shipped path; the invariant holds by method + audit, not by the function
+  being write-locked.
 - **Shows ALL of the contact's notes — NO origin filtering, no call-vs-manual distinction.** A disposition
   note reads as a call note by its content; a human can tell. Do NOT build any filter or type split.
 - The section is named **"Notes"** (not "Call Notes").

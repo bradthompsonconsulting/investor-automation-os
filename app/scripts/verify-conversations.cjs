@@ -5,11 +5,13 @@
    expected hash, then run (§9.2 bundle gate). Read-only: thread list + message
    history render; ZERO writes. Fails LOUD (non-zero) on any no-run.
    Floor = literal check() count — COUNT it from this file, never assume.
-   Currently 15 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title). */
+   Currently 19 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title
+   + 4 layout §8.2/§8.4/§8.6: three-sections, section-placement, notes-data-driven,
+   empty-text). */
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-YgvDrCUD.js"; // Header top-bar titles fix. RE-PIN to the bundle under test every run.
+const EXPECTED = "index-B6PPkWme.js"; // §8.2/§8.4/§8.6 three-section layout + notes. RE-PIN to the bundle under test every run.
 const TARGET   = "05gYdxJcyNTCKWTwkbbs"; // john sanchez — has the 1 inbound SMS + emails; a scoping + SMS + delta fixture
 const THREADS_URL = `${ORIGIN}/.netlify/functions/ghl-conversations?scope=all`;
 const MSGS_URL    = `${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${TARGET}`;
@@ -21,6 +23,30 @@ function check(name, cond, detail = "") {
   checksRun++;
   console.log(`${cond ? "PASS" : "FAIL"}  ${name}  ${detail}`);
   if (!cond) failures.push(name);
+}
+
+// Reads the three thread-pane sections (§8.2) from the DOM, keyed by their uppercase
+// header label (Notes/Text/Email): row count, empty-state text, and whether the STOP
+// SMS is inside. Used for the layout + placement + empty-state checks.
+async function readSections(page) {
+  return page.evaluate(() => {
+    const titles = ["Notes", "Text", "Email"];
+    const out = {};
+    const headers = [...document.querySelectorAll("div")].filter((d) => d.style && d.style.textTransform === "uppercase");
+    for (const h of headers) {
+      const span = h.querySelector("span");
+      const title = span ? span.textContent.trim() : "";
+      if (!titles.includes(title)) continue;
+      const body = h.nextElementSibling;
+      const rowsWrap = body ? [...body.children].find((c) => c.style && c.style.flexDirection === "column") : null;
+      out[title] = {
+        rowCount:  rowsWrap ? rowsWrap.children.length : 0,
+        emptyText: (!rowsWrap && body) ? body.textContent.trim() : "",
+        hasSTOP:   !!(body && /STOP/.test(body.textContent)),
+      };
+    }
+    return out;
+  });
 }
 
 (async () => {
@@ -41,6 +67,21 @@ function check(name, cond, detail = "") {
   const total = msgs.messages.length;
   const shown = msgs.messages.filter((m) => SHOWN_TYPES.includes(m.messageType)).length;
   const smsInbound = msgs.messages.filter((m) => m.messageType === "TYPE_SMS" && m.direction === "inbound").length;
+  const smsCount   = msgs.messages.filter((m) => m.messageType === "TYPE_SMS").length;
+  const emailCount = msgs.messages.filter((m) => m.messageType === "TYPE_EMAIL").length;
+
+  // Notes ground truth — the SAME read-only path the app uses (§8.6, Option A):
+  // GET ghl-proxy?path=/contacts/:id/notes. GET only; the browser's own proxy request
+  // is audited by METHOD in zero-writes below (this harness-side fetch is not).
+  const NOTES_URL = `${ORIGIN}/.netlify/functions/ghl-proxy?path=${encodeURIComponent(`/contacts/${TARGET}/notes`)}`;
+  const notesGT = ((await (await fetch(NOTES_URL)).json()).notes ?? []).length;
+
+  // Empty-state fixture (§8.4) — Neelima Bale: emails, ZERO SMS. Her Text section
+  // must render "No texts." Ground truth via the SAME GET-only dedicated function
+  // (ghl-contact-conversations), NOT the generic proxy.
+  const NEELIMA = "FiIT0hUaxVCIuokQpZuc";
+  const neeMsgs = await (await fetch(`${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${NEELIMA}`)).json();
+  const neeSms  = neeMsgs.messages.filter((m) => m.messageType === "TYPE_SMS").length;
 
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 2560, height: 1440 } });
@@ -113,6 +154,31 @@ function check(name, cond, detail = "") {
   check("inbound-sms-renders", smsInbound >= 1 && right.stopIsInboundSms,
     `endpointInboundSms=${smsInbound} domStopInboundSms=${right.stopIsInboundSms}`);
 
+  // ── §8.2/§8.4 three-section layout (Notes | Text top row, Email full width) ──
+  const secs = await readSections(page);
+  check("three-sections-present",
+    !!secs.Notes && !!secs.Text && !!secs.Email,
+    `headers=${JSON.stringify(Object.keys(secs))}`);
+  // Channels segregated: SMS ONLY in Text, emails ONLY in Email, STOP in Text not Email.
+  check("section-placement",
+    !!secs.Text && !!secs.Email &&
+    secs.Text.rowCount === smsCount && secs.Email.rowCount === emailCount &&
+    secs.Text.hasSTOP === true && secs.Email.hasSTOP === false,
+    `text{rows=${secs.Text && secs.Text.rowCount},stop=${secs.Text && secs.Text.hasSTOP}}==sms=${smsCount} | email{rows=${secs.Email && secs.Email.rowCount},stop=${secs.Email && secs.Email.hasSTOP}}==email=${emailCount}`);
+
+  // Notes render DATA-DRIVEN (§8.6): Notes.rowCount == the notes-endpoint count. Notes
+  // load independently of messages, so wait for the Notes section to leave "Loading…".
+  await page.waitForFunction(() => {
+    const h = [...document.querySelectorAll("div")].find((d) => d.style && d.style.textTransform === "uppercase"
+      && d.querySelector("span") && d.querySelector("span").textContent.trim() === "Notes");
+    const body = h && h.nextElementSibling;
+    return body && !/Loading/.test(body.textContent);
+  }, { timeout: 30000 });
+  const notesResolved = await readSections(page);
+  check("notes-section-data-driven",
+    !!notesResolved.Notes && notesResolved.Notes.rowCount === notesGT,
+    `domNotes=${notesResolved.Notes && notesResolved.Notes.rowCount} endpointNotes=${notesGT}`);
+
   // ── Collapse (email line-clamp + Expand; SMS never collapses) ──
   // Expand/Show-less buttons exist ONLY in email bubbles (thread-list buttons
   // carry names/previews, not that text). Body = the button's previous sibling.
@@ -146,19 +212,47 @@ function check(name, cond, detail = "") {
   check("expand-reveals-full", afterExpand.btnText === "Show less" && afterExpand.bodyClampedAfter === false,
     `btn=${afterExpand.btnText} bodyStillClamped=${afterExpand.bodyClampedAfter}`);
 
+  // ── §8.4 empty-state — switch to Neelima Bale (emails, 0 SMS) → Text "No texts." ──
+  const neeIndex = Array.isArray(threads) ? threads.findIndex((t) => t.contactId === NEELIMA) : -1;
+  let neeText = null;
+  if (neeIndex >= 0 && neeSms === 0) {
+    await page.evaluate((idx) => {
+      const col = [...document.querySelectorAll("div")].find((d) => d.style && d.style.flex && d.style.flex.includes("360px"));
+      col.querySelectorAll("button")[idx].click();
+    }, neeIndex);
+    // Wait for the Text section to reach Neelima's terminal empty state ("No texts.").
+    // John's Text (which has the STOP bubble) never shows this, so it can't race in.
+    await page.waitForFunction(() => {
+      const h = [...document.querySelectorAll("div")].find((d) => d.style && d.style.textTransform === "uppercase"
+        && d.querySelector("span") && d.querySelector("span").textContent.trim() === "Text");
+      const body = h && h.nextElementSibling;
+      return body && /No texts\./.test(body.textContent);
+    }, { timeout: 30000 });
+    neeText = (await readSections(page)).Text;
+  }
+  check("empty-text-section",
+    neeIndex >= 0 && neeSms === 0 && !!neeText && neeText.rowCount === 0 && neeText.emptyText === "No texts.",
+    `neeIndex=${neeIndex} endpointSms=${neeSms} domTextRows=${neeText && neeText.rowCount} emptyText="${neeText && neeText.emptyText}"`);
+
   // ── Audits ──
   const gets = fnReqs.filter((r) => r.method === "GET");
   const writes = fnReqs.filter((r) => ["POST", "PUT", "PATCH", "DELETE"].includes(r.method));
   const listAll = fnReqs.filter((r) => r.fn === "ghl-contacts");
   const convReqs = fnReqs.filter((r) => r.fn === "ghl-conversations");
   const ccReqs = fnReqs.filter((r) => r.fn === "ghl-contact-conversations");
-  check("write-audit-attached", gets.length > 0 && convReqs.length > 0 && ccReqs.length > 0,
-    `GETs=${gets.length} ghl-conversations=${convReqs.length} ghl-contact-conversations=${ccReqs.length}`);
+  const proxyReqs = fnReqs.filter((r) => r.fn === "ghl-proxy"); // the NOTES read path (§8.6, Option A)
+  // write-audit now also requires the notes read (ghl-proxy GET) to have gone out.
+  check("write-audit-attached", gets.length > 0 && convReqs.length > 0 && ccReqs.length > 0 && proxyReqs.length > 0,
+    `GETs=${gets.length} ghl-conversations=${convReqs.length} ghl-contact-conversations=${ccReqs.length} ghl-proxy/notes=${proxyReqs.length}`);
+  // zero-writes filters ALL captured fnReqs by METHOD — ghl-proxy (the NOTES read)
+  // included — so a write via the generic proxy would be caught here too. This is
+  // the safety basis for Option A (§8.6): read-only enforced by method, not by the
+  // proxy being GET-locked.
   check("zero-writes", writes.length === 0, `writes=${JSON.stringify(writes.map((w) => `${w.method} ${w.fn}`))}`);
   check("no-listall-on-path", listAll.length === 0, `ghl-contacts(listAll)=${listAll.length}`);
   await browser.close();
 
   console.log(`\nchecksRun=${checksRun} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
-  if (checksRun < 15) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
+  if (checksRun < 19) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
