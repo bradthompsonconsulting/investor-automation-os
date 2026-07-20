@@ -5,9 +5,9 @@
    expected hash, then run (§9.2 bundle gate). Read-only: thread list + message
    history render; ZERO writes. Fails LOUD (non-zero) on any no-run.
    Floor = literal check() count — COUNT it from this file, never assume.
-   Currently 19 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title
-   + 4 layout §8.2/§8.4/§8.6: three-sections, section-placement, notes-data-driven,
-   empty-text). */
+   Currently 20 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title
+   + 5 layout §8.2/§8.4/§8.6: three-sections, section-placement, notes-data-driven
+   (empty), notes-populated, empty-text). */
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
@@ -82,6 +82,10 @@ async function readSections(page) {
   const NEELIMA = "FiIT0hUaxVCIuokQpZuc";
   const neeMsgs = await (await fetch(`${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${NEELIMA}`)).json();
   const neeSms  = neeMsgs.messages.filter((m) => m.messageType === "TYPE_SMS").length;
+  // Neelima is ALSO the populated-notes fixture (§8.6) — OBSERVED 12 notes (john has 0,
+  // Brad Thompson has 0). Notes.rowCount must match this and be > 0. Same GET proxy path.
+  const NEE_NOTES_URL = `${ORIGIN}/.netlify/functions/ghl-proxy?path=${encodeURIComponent(`/contacts/${NEELIMA}/notes`)}`;
+  const neeNotesGT = ((await (await fetch(NEE_NOTES_URL)).json()).notes ?? []).length;
 
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 2560, height: 1440 } });
@@ -214,7 +218,7 @@ async function readSections(page) {
 
   // ── §8.4 empty-state — switch to Neelima Bale (emails, 0 SMS) → Text "No texts." ──
   const neeIndex = Array.isArray(threads) ? threads.findIndex((t) => t.contactId === NEELIMA) : -1;
-  let neeText = null;
+  let neeText = null, neeNotes = null;
   if (neeIndex >= 0 && neeSms === 0) {
     await page.evaluate((idx) => {
       const col = [...document.querySelectorAll("div")].find((d) => d.style && d.style.flex && d.style.flex.includes("360px"));
@@ -228,11 +232,27 @@ async function readSections(page) {
       const body = h && h.nextElementSibling;
       return body && /No texts\./.test(body.textContent);
     }, { timeout: 30000 });
-    neeText = (await readSections(page)).Text;
+    // Notes load independently — wait for Neelima's Notes section to leave "Loading…".
+    // The Text wait above already committed selection to Neelima (notes were reset to
+    // Loading on select), so john's stale "No notes." can't race in.
+    await page.waitForFunction(() => {
+      const h = [...document.querySelectorAll("div")].find((d) => d.style && d.style.textTransform === "uppercase"
+        && d.querySelector("span") && d.querySelector("span").textContent.trim() === "Notes");
+      const body = h && h.nextElementSibling;
+      return body && !/Loading/.test(body.textContent);
+    }, { timeout: 30000 });
+    const neeSecs = await readSections(page);
+    neeText  = neeSecs.Text;
+    neeNotes = neeSecs.Notes;
   }
   check("empty-text-section",
     neeIndex >= 0 && neeSms === 0 && !!neeText && neeText.rowCount === 0 && neeText.emptyText === "No texts.",
     `neeIndex=${neeIndex} endpointSms=${neeSms} domTextRows=${neeText && neeText.rowCount} emptyText="${neeText && neeText.emptyText}"`);
+  // Populated-notes fixture (§8.6): Neelima has REAL notes — Notes.rowCount == endpoint, >0.
+  // Closes the john N=0 gap (that check proved wiring + empty; this proves the >0 render).
+  check("notes-populated-data-driven",
+    neeNotesGT > 0 && !!neeNotes && neeNotes.rowCount === neeNotesGT,
+    `endpointNotes=${neeNotesGT} domNotes=${neeNotes && neeNotes.rowCount}`);
 
   // ── Audits ──
   const gets = fnReqs.filter((r) => r.method === "GET");
@@ -253,6 +273,6 @@ async function readSections(page) {
   await browser.close();
 
   console.log(`\nchecksRun=${checksRun} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
-  if (checksRun < 19) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
+  if (checksRun < 20) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
