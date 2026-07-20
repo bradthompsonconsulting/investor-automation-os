@@ -178,3 +178,111 @@ Trigger: first email that fits ≤5 lines.**
   READ — IAOS manages NO unread state: no mark-as-read (a write), no unread filter, no IAOS-side
   read/unread tracking. Those are the unshipped **unread MANAGEMENT** step (master ref §2a). Recorded as
   shipped read-only behavior so the record is not misread as "no unread info surfaces at all."
+
+---
+
+# 8. REWORK v2 — thread pane re-layout (2026-07-20) — PLAN, NOT YET BUILT
+
+Status: **PLANNED**, no code written. All decisions RESOLVED (D1/D2 below, settled by Brad 2026-07-20 —
+nothing pending). Still **READ-ONLY** — this rework adds ZERO write actions; the three-write invariant is
+untouched. Where noted, §8 SUPERSEDES the v1 right-pane description in §1 and the single-list filter in §5;
+§1–§7 stay as the historical v1 record (do not delete). Every §8 change is "just layout / read" — and per
+Brad's standing rule that does NOT skip verification: each piece ships behind the harness floor + bundle
+gate (§9.2 method), against an already-shipped verified surface.
+
+## 8.0 Scope of this rework
+Five changes to the RIGHT (thread) pane. The LEFT thread-list pane (§1) is unchanged. Pieces are independent
+and ship one at a time, diff-before-every-commit. The investigation (§8.7) is a RECORDED FINDING, resolved.
+
+## 8.1 Header label — inner "Conversations" → "History"
+The page renders its own `<h1>` heading ("Conversations", `app/src/pages/Conversations.tsx:139`) in ADDITION
+to the persistent chrome label. This duplicates the section name (the same doubling Pipeline has: Sidebar
+"Pipeline" + page `<h1>Pipeline</h1>`). Change the PAGE `<h1>` text to **"History"**. Leave the OUTER labels
+untouched: the Sidebar nav item stays "Conversations" (`app/src/components/Sidebar.tsx:19`) and the Header
+chrome is not touched. Pure text change, one line, no data/logic.
+
+## 8.2 Layout — three labeled sections (SUPERSEDES §1's single-list right pane)
+Within the selected thread's right pane, replace the single chronological bubble list with THREE
+sections, each with its own header, each holding ONLY that channel's items sorted by timestamp within the
+section:
+- **Top row, split two-up side by side:** **Notes** (left) and **Text** (right).
+- **Below, full width:** **Email**.
+Rationale (Brad): emails run long (all 71 in the location are 874+ chars, multi-paragraph); texts and notes
+are short. Email earns full width; the two short channels share the narrow top row.
+Sources:
+- **Email** = existing feed, `messageType === "TYPE_EMAIL"`.
+- **Text**  = existing feed, `messageType === "TYPE_SMS"`.
+  (Both split out of the SAME `ghl-contact-conversations` response already loaded — a client-side partition,
+  no new endpoint. This replaces the §5 combined `[TYPE_EMAIL, TYPE_SMS]` allowlist with a per-section split
+  of the same two types. Workflow self-notifications stay in Text/Email — see §8.7, D2; NO exclusion filter.)
+- **Notes** = the notes endpoint, NOT the conversation feed — see §8.6 (D1 resolved).
+
+## 8.3 Bubble styling — per-section (Text keeps alignment; Email uses the tag; Notes plain) — REVISES §1
+Direction signal differs by section (Brad, 2026-07-20):
+- **Text** — KEEP phone-style left/right indent: incoming (received) left, outgoing (sent) right. Cramped in
+  the narrow top panel is fine — that's the familiar SMS read. (This RETAINS the v1 `alignSelf`
+  flex-start/flex-end behavior at `Conversations.tsx:75` for the Text section.)
+- **Email** — use the **Sent/Received tag + color**, NOT alignment: uniform equal-width rows, one per row,
+  sorted by timestamp, with the direction shown by the tag. (The v1 bubble already carries a "Sent"/"Received"
+  label + cyan/slate color at `Conversations.tsx:82`; the Email section keeps that signal and drops the
+  alignment.)
+- **Notes** — render **PLAIN: NO left/right alignment AND NO Sent/Received tag.** A note has no direction —
+  it's Brad's own record, not a message to anyone — so both signals are meaningless. Uniform timestamped
+  entries only (dateAdded + body), one per row.
+Email-collapse (§6.2, `CLAMP_LINES=5` Expand/Show-less) is retained in the Email section as-is.
+
+## 8.4 Empty states — sections never collapse (matches Mailers)
+All three sections ALWAYS render, even when empty. A contact with emails but no texts still shows the Text
+section with an empty state. Reuse the Mailers empty-state idiom ("Nothing due this week." —
+`app/src/pages/Mailers.tsx:302`); per-section copy e.g. "No texts." / "No emails." / "No notes."
+Consistent contact-to-contact so the layout never jumps.
+
+## 8.5 GHL Reply button — TEMPORARY, remove when write ships
+At the top of each contact's thread pane, a button that DEEP-LINKS to that contact's GHL conversation so
+Brad can reply inside GHL directly. Pure navigation (an `<a>`/link out to GHL) — writes NOTHING, adds no
+write action, stays inside read-only. Likely target: the GHL contact/conversation URL (cf. the existing
+`ghlContactDetailUrl(contactId)` builder, `app/src/lib/ghl.ts:46`, → `app.gohighlevel.com/v2/location/…`);
+confirm the exact conversation-deep-link path during build.
+**TEMPORARY — this button MUST be removed when Conversations gets write capability (send/compose).** A
+future thread scoping the send path: DELETE this button as part of that work. Recorded here so it is not
+mistaken for permanent UI.
+
+## 8.6 Notes data source — D1 RESOLVED 2026-07-20
+- **Source = `/contacts/:id/notes`** (`ghl.notes.list`, `app/src/lib/ghl.ts:332`; the read-only note history
+  already used by Contact Workspace §8 step 2). Read-only GET; no write, invariant untouched.
+- **Shows ALL of the contact's notes — NO origin filtering, no call-vs-manual distinction.** A disposition
+  note reads as a call note by its content; a human can tell. Do NOT build any filter or type split.
+- The section is named **"Notes"** (not "Call Notes").
+- **Why NOT the TYPE_CALL call log:** OBSERVED 2026-07-20 (fixture Brad Thompson `9fbH2VCcZvzVNhsR9zjc`) that
+  GHL call logs arrive in the conversation feed as `messageType: TYPE_CALL` with an **empty body (`""`)** —
+  call-log EVENTS carry no readable text. Readable notes live only on the notes endpoint. So Notes pulls the
+  notes endpoint, not TYPE_CALL. (No raw-field probe needed — decision settled.)
+- Fields consumed from the notes response: `{ notes: [{ id, body, dateAdded }] }` (already the shape
+  `ghl.notes.list` returns). **Sort oldest→newest by `dateAdded`** — consistent with the Text/Email sections
+  and the §7 "reads the way it happened" convention.
+- Rendered PLAIN per §8.3: no alignment, no Sent/Received tag — timestamped entries only.
+
+## 8.7 Workflow-notification messages — investigation finding + D2 RESOLVED 2026-07-20
+- **FINDING (OBSERVED, why the "raw workflow output" appears in the thread):** those objects are real
+  `TYPE_SMS` / `TYPE_EMAIL` messages, NOT notes/system events. Thread `9fbH2VCcZvzVNhsR9zjc`, 20 messages,
+  all `direction: outbound`. Type totals: TYPE_SMS 9, TYPE_EMAIL 4, TYPE_CALL 2, TYPE_ACTIVITY_OPPORTUNITY 3,
+  TYPE_ACTIVITY_APPOINTMENT 2. Each "workflow output" line maps to a real conversation type: "🏠 New Seller
+  Lead" → TYPE_SMS (idx 5,14); "Seller Replied:" → TYPE_SMS (idx 7); "Seller Appointment Booked" → TYPE_EMAIL
+  (idx 10,16) + TYPE_SMS (idx 11,17); "…sitting in Seller Follow-Up for 2 days" → TYPE_SMS (idx 18);
+  "Appointment Reminder in 10 Minutes" → TYPE_SMS (idx 19). These are workflow→Brad internal notifications
+  GHL emits as bona-fide TYPE_SMS/TYPE_EMAIL objects on the contact's conversation. The genuine system events
+  ARE correctly typed (`TYPE_ACTIVITY_*`) and the §5 allowlist already drops them; the notifications survive
+  because they are genuinely TYPE_SMS/TYPE_EMAIL — `messageType` cannot discriminate them.
+- **D2 RESOLVED (Brad):** these workflow self-notifications **STAY** in the Text and Email sections. **No
+  exclusion, no discriminator, no filter.** Recorded so a future thread does not "fix" it as noise.
+
+## 8.8 Build sequence + verification (each piece: diff-before-commit, harness floor, bundle gate §9.2)
+Recommended order, smallest-blast-radius first:
+1. §8.1 header label (trivial, no data).
+2. §8.3 bubble styling (Text alignment retained; Email+Notes tag treatment; regression-verify §6.1/§6.2 green).
+3. §8.2 + §8.4 three-section layout + empty states (Email/Text split of existing feed; sections never collapse).
+4. §8.6 Notes section — wire the notes endpoint (`ghl.notes.list`) into the left top panel.
+5. §8.5 temporary GHL Reply button.
+Each step re-runs the existing harness (floor = literal `check()` count) plus new checks for the piece;
+bundle gate discriminates commit vs parent and polls prod to the expected hash before any "live" claim.
+No open decisions remain — build straight through the sequence.
