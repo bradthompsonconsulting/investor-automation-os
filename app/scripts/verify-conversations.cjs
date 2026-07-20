@@ -5,13 +5,13 @@
    expected hash, then run (§9.2 bundle gate). Read-only: thread list + message
    history render; ZERO writes. Fails LOUD (non-zero) on any no-run.
    Floor = literal check() count — COUNT it from this file, never assume.
-   Currently 20 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title
+   Currently 21 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title
    + 5 layout §8.2/§8.4/§8.6: three-sections, section-placement, notes-data-driven
-   (empty), notes-populated, empty-text). */
+   (empty), notes-populated, empty-text + 1 §8.3 bubble-alignment). */
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-B6PPkWme.js"; // §8.2/§8.4/§8.6 three-section layout + notes. RE-PIN to the bundle under test every run.
+const EXPECTED = "index-BSie5hdy.js"; // §8.3 bubble styling + 60/40 proportion + half-height headers. RE-PIN to the bundle under test every run.
 const TARGET   = "05gYdxJcyNTCKWTwkbbs"; // john sanchez — has the 1 inbound SMS + emails; a scoping + SMS + delta fixture
 const THREADS_URL = `${ORIGIN}/.netlify/functions/ghl-conversations?scope=all`;
 const MSGS_URL    = `${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${TARGET}`;
@@ -170,6 +170,26 @@ async function readSections(page) {
     secs.Text.hasSTOP === true && secs.Email.hasSTOP === false,
     `text{rows=${secs.Text && secs.Text.rowCount},stop=${secs.Text && secs.Text.hasSTOP}}==sms=${smsCount} | email{rows=${secs.Email && secs.Email.rowCount},stop=${secs.Email && secs.Email.hasSTOP}}==email=${emailCount}`);
 
+  // §8.3 — Email bubbles are full-width flush left (alignSelf "stretch"); Text keeps
+  // phone alignment (the inbound STOP SMS → "flex-start"). Computed style is discrete →
+  // robust. john has both a Text SMS and emails in this one thread.
+  const align = await page.evaluate(() => {
+    const cs = (el) => (el ? getComputedStyle(el).alignSelf : null);
+    const headers = [...document.querySelectorAll("div")].filter((d) => d.style && d.style.textTransform === "uppercase");
+    const firstBubble = (title) => {
+      const h = headers.find((x) => x.querySelector("span") && x.querySelector("span").textContent.trim() === title);
+      const body = h && h.nextElementSibling;
+      const wrap = body ? [...body.children].find((c) => c.style && c.style.flexDirection === "column") : null;
+      return wrap ? wrap.children[0] : null;
+    };
+    const textB = firstBubble("Text");
+    const emailB = firstBubble("Email");
+    return { textAlign: cs(textB), emailAlign: cs(emailB), textIsStop: !!(textB && /STOP/.test(textB.textContent)) };
+  });
+  check("bubble-alignment",
+    align.emailAlign === "stretch" && align.textAlign === "flex-start" && align.textIsStop === true,
+    `emailAlign=${align.emailAlign} textAlign=${align.textAlign} textIsStop=${align.textIsStop}`);
+
   // Notes render DATA-DRIVEN (§8.6): Notes.rowCount == the notes-endpoint count. Notes
   // load independently of messages, so wait for the Notes section to leave "Loading…".
   await page.waitForFunction(() => {
@@ -273,6 +293,6 @@ async function readSections(page) {
   await browser.close();
 
   console.log(`\nchecksRun=${checksRun} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
-  if (checksRun < 20) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
+  if (checksRun < 21) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });

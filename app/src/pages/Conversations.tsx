@@ -75,7 +75,11 @@ function MessageBubble({ m }: { m: ConvMessageRow }) {
 
   return (
     <div style={{
-      alignSelf: outbound ? "flex-end" : "flex-start", maxWidth: "80%",
+      // §8.3 — Text keeps phone alignment (outbound right, inbound left); Email is
+      // full-width flush left (alignSelf stretch), direction shown by the Sent/Received
+      // tag + color only. Notes render plain via NoteEntry (not this component).
+      alignSelf: isSms ? (outbound ? "flex-end" : "flex-start") : "stretch",
+      maxWidth: isSms ? "80%" : "100%",
       background: outbound ? "rgba(30,200,255,0.10)" : "#0A1633",
       border: `1px solid ${outbound ? "rgba(30,200,255,0.25)" : "rgba(255,255,255,0.08)"}`,
       borderRadius: "10px", padding: "8px 12px",
@@ -126,7 +130,7 @@ function ThreadSection({
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, background: "#0A1226", border: "1px solid rgba(255,255,255,0.07)", borderRadius: "10px", overflow: "hidden", ...style }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 12px", borderBottom: "1px solid rgba(255,255,255,0.07)", fontSize: "11px", fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "#94A3B8" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "4px 12px", borderBottom: "1px solid rgba(255,255,255,0.07)", fontSize: "11px", fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "#94A3B8" }}>
         {icon}
         <span>{title}</span>
         {count != null && count > 0 && <span style={{ color: "#475569", fontWeight: 600 }}>· {count}</span>}
@@ -271,8 +275,8 @@ export default function Conversations() {
                 </Link>
               </div>
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "12px", padding: "12px 14px", minHeight: 0 }}>
-                {/* Top row — Notes (left) | Text (right), §8.2 */}
-                <div style={{ display: "flex", gap: "12px", flex: "0 0 38%", minHeight: 0 }}>
+                {/* Top row — Notes (left) | Text (right), §8.2. §8.3: 60% pane height (Email fills the rest). */}
+                <div style={{ display: "flex", gap: "12px", flex: "0 0 60%", minHeight: 0 }}>
                   <ThreadSection
                     title="Notes" icon={<FileText size={12} />}
                     count={notes ? sortedNotes.length : null}
