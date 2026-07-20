@@ -154,6 +154,35 @@ not a docs-only skip" was proven instead by the runtime hash flip — prod servi
 `D7eW48eb` (a skip would have left `BpdCKBIX`; the bundle gate aborts rather than false-passing). OBSERVED
 via the bundle, INFERRED-free; the literal log stays Brad's to read.
 
+### 6.4 VERIFIED LIVE — §8.2/§8.4/§8.6 three-section layout + notes — 2026-07-20 (`867d058` + `20883bf`)
+
+**20/20 PASS, exit 0. `checksRun=20`, `failures=0`. Floor 20 == the literal `check()` count** (counted from
+the file; the 15 prior — §6.1/§6.2 + §8.1 inner-label + the interim top-bar-title check that took floor
+14→15 at `e04b608` — re-ran green as regression, + 5 new layout checks).
+
+Bundle gate (§9.2): `867d058` (the layout code) → `index-B6PPkWme.js`; parent `e04b608` → `index-YgvDrCUD.js`
+(discriminates; both built locally, parent reproduced then-prod exactly). Prod converged to `B6PPkWme` on
+poll #1. The follow-up `20883bf` is **scripts-only** (harness `.cjs`, not bundled) → the rebuild produced the
+SAME `B6PPkWme` (Conversations.tsx unchanged); prod hash correctly UNCHANGED, and the harness ran green
+against it.
+
+The five new checks:
+- `three-sections-present`: `headers=["Notes","Text","Email"]`.
+- `section-placement`: `text{rows=1,stop=true}==sms=1 | email{rows=4,stop=false}==email=4` — SMS lands in
+  Text (with the STOP), emails in Email, counts match the endpoint, not intermixed.
+- `notes-section-data-driven` (john sanchez `05gYdxJcyNTCKWTwkbbs`, 0 notes): `domNotes=0 endpointNotes=0` —
+  the EMPTY path + notes wiring.
+- `notes-populated-data-driven` (Neelima Bale `FiIT0hUaxVCIuokQpZuc`, 12 notes): `endpointNotes=12
+  domNotes=12` — the POPULATED render (>0). **Closes the john-N=0 gap honestly** (`20883bf`): the empty
+  check alone did not exercise notes rendering with rows; this does.
+- `empty-text-section` (Neelima, 0 SMS): `domTextRows=0 emptyText="No texts."` — §8.4 empty state.
+
+**Notes fixtures — OBSERVED 2026-07-20:** of the 41 thread contacts, only **Neelima Bale (12 notes)** and
+**Summer Carter (1)** have any; **john sanchez and Brad Thompson `9fbH2VCcZvzVNhsR9zjc` have 0.** Neelima is
+the dual fixture (empty Text + populated Notes). Notes read via `ghl-proxy` GET (Option A, §8.6):
+`write-audit-attached` now requires that proxy GET (`ghl-proxy/notes=2`), and `zero-writes` audits ALL
+functions incl. ghl-proxy by method — `writes=[]`. No listAll on the path.
+
 ## 7. OPEN ITEMS
 
 - **SMS rendering — inbound live-verified, outbound NOT (observed 2026-07-16).** Recorded verbatim:
@@ -314,12 +343,15 @@ mistaken for permanent UI.
   exclusion, no discriminator, no filter.** Recorded so a future thread does not "fix" it as noise.
 
 ## 8.8 Build sequence + verification (each piece: diff-before-commit, harness floor, bundle gate §9.2)
-Recommended order, smallest-blast-radius first:
-1. §8.1 header label (trivial, no data).
-2. §8.3 bubble styling (Text alignment retained; Email+Notes tag treatment; regression-verify §6.1/§6.2 green).
-3. §8.2 + §8.4 three-section layout + empty states (Email/Text split of existing feed; sections never collapse).
-4. §8.6 Notes section — wire the notes endpoint (`ghl.notes.list`) into the left top panel.
-5. §8.5 temporary GHL Reply button.
+Actual build order (RESEQUENCED at Brad's direction — §8.2 structure before §8.3 polish; §8.6 folded into §8.2):
+1. **§8.1 header label — DONE + verified** (`261a191`; §6.3, floor 14).
+   - **Header top-bar titles fix — DONE + verified** (`e04b608`; interim floor 15; a separate micro-change,
+     not an original §8.8 step — /conversations, /calendars, /mailers TITLES keys).
+2. **§8.2 + §8.4 three-section layout + empty states — DONE + verified** (`867d058`; §6.4, bundle `B6PPkWme`).
+3. **§8.6 Notes section (Option A, `ghl.notes.list`/ghl-proxy GET) — DONE + verified** (folded into `867d058`;
+   populated-notes gap closed `20883bf`; §6.4, floor 20).
+4. §8.3 bubble styling (Text alignment retained; Email tag; Notes already plain) — NOT built.
+5. §8.5 temporary GHL Reply button — NOT built.
 Each step re-runs the existing harness (floor = literal `check()` count) plus new checks for the piece;
 bundle gate discriminates commit vs parent and polls prod to the expected hash before any "live" claim.
-No open decisions remain — build straight through the sequence.
+No open decisions remain — build straight through the remaining sequence (§8.3, then §8.5).
