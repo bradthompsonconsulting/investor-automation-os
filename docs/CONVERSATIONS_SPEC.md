@@ -183,6 +183,43 @@ the dual fixture (empty Text + populated Notes). Notes read via `ghl-proxy` GET 
 `write-audit-attached` now requires that proxy GET (`ghl-proxy/notes=2`), and `zero-writes` audits ALL
 functions incl. ghl-proxy by method — `writes=[]`. No listAll on the path.
 
+### 6.5 VERIFIED LIVE — §8.3 per-section bubble styling — 2026-07-20 (`39c414b`)
+
+**21/21 PASS, exit 0. `checksRun=21`, `failures=0`. Floor 21 == the literal `check()` count**
+(counted from the file; guard is `if (checksRun < 21)`. The 20 prior — §6.1/§6.2 + §8.1 inner-label
++ top-bar-title + the 5 §8.2/§8.4/§8.6 layout checks — re-ran green as regression, + 1 new §8.3
+alignment check). Harness = the committed `app/scripts/verify-conversations.cjs`, `EXPECTED` re-pinned
+to the bundle under test.
+
+Bundle gate (§9.2): `39c414b` → `index-BSie5hdy.js`; parent `82d8c77` → `index-B6PPkWme.js`
+(discriminates). **Basis (recorded honestly):** the child `BSie5hdy` is OBSERVED live — the harness gate
+pulled it from prod this run and matched. The parent `B6PPkWme` is CARRIED from §6.4 (`82d8c77` is
+docs-only and `20883bf` scripts-only, both reproducing `867d058`'s `B6PPkWme`); prod flipping
+`B6PPkWme → BSie5hdy` proves the app built (a docs-only skip would have left `B6PPkWme`) — the §6.3
+runtime-flip reasoning, NOT a fresh dual local build this session.
+
+The §8.3 change under test: **Email** bubbles are full-width flush-left (`alignSelf: stretch`), direction
+shown by the Sent/Received tag + color, alignment dropped; **Text** RETAINS phone-style alignment (inbound
+STOP SMS → `flex-start`); **Notes** stay plain (no alignment, no tag). Plus the 60/40 top-row proportion
+and half-height section headers (`39c414b` subject).
+
+The one new check — `bubble-alignment`: `emailAlign=stretch textAlign=flex-start textIsStop=true` (first
+Email bubble stretches full width; first Text bubble is the inbound STOP SMS, left-aligned).
+
+**Live john sanchez numbers — the thread GREW since §6.1/§6.2 (recorded, not carried forward):**
+`message-delta` now reads `endpointTotal=8 shown=5 filtered=3 domBubbles=5` (was 6→4→2 in §6.1/§6.2 —
+the thread gained messages; DOM tracked the endpoint exactly). `section-placement`:
+`text{rows=1,stop=true}==sms=1 | email{rows=4,stop=false}==email=4` — SMS (the STOP) in Text, 4 emails in
+Email, segregated. Do not reconcile against the stale 6→4→2; these are the live figures for this run.
+
+Regression numbers unchanged from §6.1/§6.2/§6.4: threads 41/41, target john sanchez at index 6, thread
+scoped by id, inner-label `["History"]` + nav "Conversations", top-bar title "Conversations", inbound SMS
+renders, three sections `["Notes","Text","Email"]`, notes empty (john `domNotes=0 endpointNotes=0`) +
+populated (Neelima `endpointNotes=12 domNotes=12`), empty-text (Neelima `"No texts."`, index 38), email
+clamp+expand (4 Expand buttons), SMS not collapsed, expand reveals full, write-audit attached
+(`GETs=5 ghl-conversations=1 ghl-contact-conversations=2 ghl-proxy/notes=2`), `zero-writes []`, no listAll
+on path.
+
 ## 7. OPEN ITEMS
 
 - **SMS rendering — inbound live-verified, outbound NOT (observed 2026-07-16).** Recorded verbatim:
@@ -350,7 +387,9 @@ Actual build order (RESEQUENCED at Brad's direction — §8.2 structure before �
 2. **§8.2 + §8.4 three-section layout + empty states — DONE + verified** (`867d058`; §6.4, bundle `B6PPkWme`).
 3. **§8.6 Notes section (Option A, `ghl.notes.list`/ghl-proxy GET) — DONE + verified** (folded into `867d058`;
    populated-notes gap closed `20883bf`; §6.4, floor 20).
-4. §8.3 bubble styling (Text alignment retained; Email tag; Notes already plain) — NOT built.
+4. **§8.3 bubble styling (Text alignment retained; Email tag; Notes already plain) — DONE + verified**
+   (`39c414b`; §6.5, floor 21, bundle `BSie5hdy`). Also carried the 60/40 top-row proportion + half-height
+   section headers.
 5. §8.5 temporary GHL Reply button — NOT built.
 Each step re-runs the existing harness (floor = literal `check()` count) plus new checks for the piece;
 bundle gate discriminates commit vs parent and polls prod to the expected hash before any "live" claim.
