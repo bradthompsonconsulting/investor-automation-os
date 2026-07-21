@@ -40,6 +40,13 @@ Consequence: **no field is writable on assumption.** Each writable field earns w
 - **OBSERVED** (`GET /locations/jmHG4B8RdzwpfqruNf68`, 2026-07-21): `settings.contactUniqueIdentifiers = ["email", "phone"]` and `allowDuplicateContact: false` — dedup is ON and keyed on the primary email + primary phone. These are the identity/dedup anchors; editing them risks a merge/collision. Read-only in edit is the safe floor.
 - Object paths (OBSERVED, `GET /contacts/{id}`): primary = scalar `contact.email` / `contact.phone`.
 
+**The address block is READ-ONLY in edit — but on a DISTINCT justification (business-identity, NOT dedup).**
+
+- Scope: the address-identity set = `address1`, `city`, `state`, `postalCode` ONLY. **`country` is EXCLUDED** — US is implied and is not part of the address-identity set.
+- **Justification is a BUSINESS RULE, not a technical dedup constraint.** One contact = one property = one address; editing the address on an existing contact corrupts the one-contact-one-property keying. That is the reason it is read-only in edit — and it is DIFFERENT from the email/phone reason.
+- **Address is NOT a GHL dedup key** — it is NOT in `contactUniqueIdentifiers` (`["email","phone"]`, OBSERVED above), so editing it would NOT trigger a GHL merge/collision. The read-only rule here is OURS (business), not GHL's (dedup). Do not conflate the two justifications.
+- Treatment mirrors email/phone: **READ-ONLY in edit, READ/WRITE only at create** (a new property = a new contact; the address-identity set is set at creation — §4.5).
+
 **`contact.additionalEmails` and `contact.additionalPhones` are READ/WRITE — but flagged PROVISIONAL.**
 
 - Rationale: additional emails/phones are reachability data, not identity.
@@ -58,8 +65,10 @@ Consequence: **no field is writable on assumption.** Each writable field earns w
 
 **A new `ghl.contacts.create()` POST. Ships only after its own inert-proof.**
 
-- On create, identity fields (`email`, `phone`) ARE read/write — they are being set for the first time, not edited on an existing dedup anchor, so the Class 2 read-only rule does not apply at creation.
+- On create, identity fields (`email`, `phone`, and the address-identity set `address1`/`city`/`state`/`postalCode`) ARE read/write — they are being set for the first time (a new property = a new contact), not edited on an existing dedup/business-identity anchor, so the Class 2 read-only rule does not apply at creation.
 - Create is a distinct write action from the three in §4.0 and from Class 1 edits. It ships only after its own inert-proof (create the fixture contact, confirm no unexpected workflow/tag/stage side effect on creation — note the Phone Type Validation workflow already fires on Contact Created, `CONTACT_WORKSPACE_SPEC §5.6`, so "inert" here means no side effect BEYOND the known, accepted ones).
+
+**Opportunity creation model (design note, Brad 2026-07-21):** opportunities are created **only via GHL workflow** — IAOS does not create opportunities (consistent with the workflow HARD NO, §4.1). **One opportunity per contact is the intended state.** This is a design intent, not a GHL-enforced limit; it is also why the multi-opportunity-per-contact pagination case is off the happy path (flagged INFERRED-not-exercised in the recon-findings log below).
 
 ### 4.6 Workflow-trigger classification is NOT API-derivable (carried verbatim, OBSERVED 2026-07-21)
 
