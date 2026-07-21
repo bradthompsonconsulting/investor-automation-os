@@ -5,9 +5,10 @@
    expected hash, then run (§9.2 bundle gate). Read-only: thread list + message
    history render; ZERO writes. Fails LOUD (non-zero) on any no-run.
    Floor = literal check() count — COUNT it from this file, never assume.
-   Currently 21 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title
+   Currently 22 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title
    + 5 layout §8.2/§8.4/§8.6: three-sections, section-placement, notes-data-driven
-   (empty), notes-populated, empty-text + 1 §8.3 bubble-alignment). */
+   (empty), notes-populated, empty-text + 1 §8.3 bubble-alignment
+   + 1 §8.5 ghl-reply-link-present). */
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
@@ -153,6 +154,17 @@ async function readSections(page) {
   }, TARGET);
 
   check("thread-scoped-by-id", right.hasLink, `Workspace link → /contacts/${TARGET} present=${right.hasLink}`);
+
+  // §8.5 — TEMPORARY GHL Reply deep-link: pure-navigation <a> (NOT a <button>/onClick),
+  // href → GHL contact-detail for the SELECTED contact, target=_blank. External host, so it
+  // adds ZERO netlify-function traffic — the zero-writes audit below stays [] by construction.
+  const reply = await page.evaluate((id) => {
+    const a = [...document.querySelectorAll("a")].find((x) => /app\.gohighlevel\.com\/v2\/location\//.test(x.getAttribute("href") || "") && (x.getAttribute("href") || "").includes(id));
+    return a ? { tag: a.tagName, href: a.getAttribute("href"), target: a.getAttribute("target") } : null;
+  }, TARGET);
+  check("ghl-reply-link-present",
+    !!reply && reply.tag === "A" && reply.target === "_blank" && reply.href.startsWith("https://app.gohighlevel.com/v2/location/") && reply.href.includes(TARGET),
+    `tag=${reply && reply.tag} target=${reply && reply.target} href=${reply && reply.href}`);
   check("message-delta", right.bubbles === shown && total !== shown,
     `endpointTotal=${total} shown=${shown} filtered=${total - shown} domBubbles=${right.bubbles}`);
   check("inbound-sms-renders", smsInbound >= 1 && right.stopIsInboundSms,
@@ -293,6 +305,6 @@ async function readSections(page) {
   await browser.close();
 
   console.log(`\nchecksRun=${checksRun} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
-  if (checksRun < 21) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
+  if (checksRun < 22) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });

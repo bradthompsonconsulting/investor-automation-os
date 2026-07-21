@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import {
   MessageSquare, Mail, ArrowDownLeft, ArrowUpRight, Loader2, ExternalLink, FileText,
 } from "lucide-react";
-import { ghl, type ThreadRow, type ConvMessageRow } from "../lib/ghl";
+import { ghl, ghlContactDetailUrl, type ThreadRow, type ConvMessageRow } from "../lib/ghl";
 
 /**
  * Conversations — READ-ONLY inbox (Coverage Roadmap surface #3). Two-pane:
@@ -273,6 +273,18 @@ export default function Conversations() {
                 <Link to={`/contacts/${selected.contactId}`} title="Open workspace" style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#1EC8FF", textDecoration: "none" }}>
                   <ExternalLink size={12} /> Workspace
                 </Link>
+                {/* §8.5 TEMPORARY — GHL Reply deep-link (read-only, pure navigation, writes NOTHING).
+                    DELETE THIS BUTTON when Conversations gets write/compose (send path) — it exists
+                    ONLY to bridge the read-only gap. Not permanent UI. See docs/CONVERSATIONS_SPEC.md §8.5. */}
+                <a
+                  href={ghlContactDetailUrl(selected.contactId)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Reply inside GHL"
+                  style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#1EC8FF", textDecoration: "none" }}
+                >
+                  <ExternalLink size={12} /> Reply in GHL
+                </a>
               </div>
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "12px", padding: "12px 14px", minHeight: 0 }}>
                 {/* Top row — Notes (left) | Text (right), §8.2. §8.3: 60% pane height (Email fills the rest). */}
