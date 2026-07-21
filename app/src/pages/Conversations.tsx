@@ -207,10 +207,53 @@ export default function Conversations() {
 
   return (
     <div style={{ padding: "24px 28px", height: "calc(100vh - 0px)", display: "flex", flexDirection: "column" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "9px", marginBottom: "16px" }}>
-        <MessageSquare size={20} style={{ color: "#1EC8FF" }} />
-        <h1 style={{ fontSize: "20px", fontWeight: 700, color: "#F1F5F9", margin: 0, fontFamily: "Space Grotesk, sans-serif" }}>History</h1>
-        <span style={{ fontSize: "11px", color: "#475569", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "999px", padding: "2px 8px" }}>Read-only</span>
+      {/* Navy header banner — a visual TWIN of the Contacts/Workspace identity card
+          (ContactWorkspace.tsx §"Identity header": same #0D1B3E backing, border,
+          radius, and 22px/600 Space Grotesk name). The selected contact's name sits
+          LARGE in the SAME navy card as the Reply-in-GHL button, so who-you're-acting-on
+          is tied to the action button. READ-ONLY: the name is an already-read value and
+          the button is the §8.5 pure-navigation deep-link — no writes of any kind. */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", flexWrap: "wrap",
+        background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px",
+        padding: "14px 18px", marginBottom: "16px",
+      }}>
+        {/* LEFT — section label + (when a thread is selected) the large contact name */}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+          <MessageSquare size={20} style={{ color: "#1EC8FF", flexShrink: 0 }} />
+          <h1 style={{ fontSize: "20px", fontWeight: 700, color: "#F1F5F9", margin: 0, fontFamily: "Space Grotesk, sans-serif" }}>History</h1>
+          {selected && (
+            <>
+              <span style={{ width: "1px", height: "22px", background: "rgba(255,255,255,0.14)", flexShrink: 0 }} />
+              <span style={{ minWidth: 0, fontSize: "22px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {selected.contactName}
+              </span>
+            </>
+          )}
+          <span style={{ flexShrink: 0, fontSize: "11px", color: "#475569", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "999px", padding: "2px 8px" }}>Read-only</span>
+        </div>
+        {/* RIGHT — thread actions (only with a selected thread): Workspace deep-link +
+            §8.5 Reply-in-GHL. Both moved up from the old thread-pane strip INTO this card
+            so the name and the Reply button share one container. */}
+        {selected && (
+          <div style={{ display: "flex", alignItems: "center", gap: "14px", flexShrink: 0 }}>
+            <Link to={`/contacts/${selected.contactId}`} title="Open workspace" style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#1EC8FF", textDecoration: "none" }}>
+              <ExternalLink size={12} /> Workspace
+            </Link>
+            {/* §8.5 TEMPORARY — GHL Reply deep-link (read-only, pure navigation, writes NOTHING).
+                DELETE THIS BUTTON when Conversations gets write/compose (send path) — it exists
+                ONLY to bridge the read-only gap. Not permanent UI. See docs/CONVERSATIONS_SPEC.md §8.5. */}
+            <a
+              href={ghlContactDetailUrl(selected.contactId)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Reply inside GHL"
+              style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#1EC8FF", textDecoration: "none" }}
+            >
+              <ExternalLink size={12} /> Reply in GHL
+            </a>
+          </div>
+        )}
       </div>
 
       <div style={{ display: "flex", gap: "16px", flex: 1, minHeight: 0 }}>
@@ -268,24 +311,8 @@ export default function Conversations() {
             </div>
           ) : (
             <>
-              <div style={{ padding: "11px 16px", borderBottom: "1px solid rgba(255,255,255,0.08)", display: "flex", alignItems: "center", gap: "8px" }}>
-                <span style={{ fontSize: "14px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif" }}>{selected.contactName}</span>
-                <Link to={`/contacts/${selected.contactId}`} title="Open workspace" style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#1EC8FF", textDecoration: "none" }}>
-                  <ExternalLink size={12} /> Workspace
-                </Link>
-                {/* §8.5 TEMPORARY — GHL Reply deep-link (read-only, pure navigation, writes NOTHING).
-                    DELETE THIS BUTTON when Conversations gets write/compose (send path) — it exists
-                    ONLY to bridge the read-only gap. Not permanent UI. See docs/CONVERSATIONS_SPEC.md §8.5. */}
-                <a
-                  href={ghlContactDetailUrl(selected.contactId)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title="Reply inside GHL"
-                  style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#1EC8FF", textDecoration: "none" }}
-                >
-                  <ExternalLink size={12} /> Reply in GHL
-                </a>
-              </div>
+              {/* Thread-pane header strip removed — the contact name, Workspace link, and
+                  §8.5 Reply-in-GHL button now live in the top navy banner (see above). */}
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "12px", padding: "12px 14px", minHeight: 0 }}>
                 {/* Top row — Notes (left) | Text (right), §8.2. §8.3: 60% pane height (Email fills the rest). */}
                 <div style={{ display: "flex", gap: "12px", flex: "0 0 60%", minHeight: 0 }}>

@@ -5,10 +5,10 @@
    expected hash, then run (§9.2 bundle gate). Read-only: thread list + message
    history render; ZERO writes. Fails LOUD (non-zero) on any no-run.
    Floor = literal check() count — COUNT it from this file, never assume.
-   Currently 22 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title
+   Currently 23 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title
    + 5 layout §8.2/§8.4/§8.6: three-sections, section-placement, notes-data-driven
    (empty), notes-populated, empty-text + 1 §8.3 bubble-alignment
-   + 1 §8.5 ghl-reply-link-present). */
+   + 1 §8.5 ghl-reply-link-present + 1 §8.9 name-and-reply-same-card). */
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
@@ -165,6 +165,30 @@ async function readSections(page) {
   check("ghl-reply-link-present",
     !!reply && reply.tag === "A" && reply.target === "_blank" && reply.href.startsWith("https://app.gohighlevel.com/v2/location/") && reply.href.includes(TARGET),
     `tag=${reply && reply.tag} target=${reply && reply.target} href=${reply && reply.href}`);
+
+  // §8.9 — the LARGE contact name and the §8.5 Reply-in-GHL <a> live in the SAME
+  // navy header card (ties who-you're-acting-on to the action button). Not merely
+  // "the name renders somewhere": find the Reply <a>, climb to the banner ancestor
+  // (the one containing "History"), and assert that SAME container holds both the
+  // Reply link AND the name — at LARGE size (>=20px, vs the old 14px strip). Name
+  // match is case-insensitive (thread-name casing is not guaranteed on the wire).
+  const johnName = (johnIndex >= 0 && threads[johnIndex]) ? threads[johnIndex].contactName : "";
+  const banner = await page.evaluate((args) => {
+    const { name, target } = args;
+    const a = [...document.querySelectorAll("a")].find((x) => /app\.gohighlevel\.com\/v2\/location\//.test(x.getAttribute("href") || "") && (x.getAttribute("href") || "").includes(target));
+    if (!a) return { ok: false, reason: "no-reply-link" };
+    let card = a.parentElement;
+    while (card && !/History/.test(card.textContent || "")) card = card.parentElement;
+    if (!card) return { ok: false, reason: "no-history-banner-ancestor" };
+    const txt = card.textContent || "";
+    const hasName  = !!name && txt.toLowerCase().includes(name.toLowerCase());
+    const hasReply = /Reply in GHL/.test(txt);
+    const nameEl = [...card.querySelectorAll("span")].find((s) => (s.textContent || "").trim().toLowerCase() === (name || "").toLowerCase());
+    const nameFontPx = nameEl ? parseFloat(getComputedStyle(nameEl).fontSize) : 0;
+    return { ok: hasName && hasReply && card.contains(a) && nameFontPx >= 20, reason: "", hasName, hasReply, nameFontPx };
+  }, { name: johnName, target: TARGET });
+  check("name-and-reply-same-card", banner.ok,
+    `hasName=${banner.hasName} hasReply=${banner.hasReply} nameFontPx=${banner.nameFontPx} reason=${banner.reason || "-"}`);
   check("message-delta", right.bubbles === shown && total !== shown,
     `endpointTotal=${total} shown=${shown} filtered=${total - shown} domBubbles=${right.bubbles}`);
   check("inbound-sms-renders", smsInbound >= 1 && right.stopIsInboundSms,
@@ -305,6 +329,6 @@ async function readSections(page) {
   await browser.close();
 
   console.log(`\nchecksRun=${checksRun} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
-  if (checksRun < 22) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
+  if (checksRun < 23) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
