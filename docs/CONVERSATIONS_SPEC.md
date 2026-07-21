@@ -324,6 +324,59 @@ full, bubble-alignment (`emailAlign=stretch textAlign=flex-start textIsStop=true
 (`GETs=5 ghl-conversations=1 ghl-contact-conversations=2 ghl-proxy/notes=2`), `zero-writes []`, no listAll
 on path.
 
+### 6.8 VERIFIED LIVE — §8.9 banner name indented under the Notes column — 2026-07-21 (`1a7bee7`)
+
+**23/23 PASS, exit 0. `checksRun=23`, `failures=0`. Floor 23 == the literal `check()` count**
+(`grep -c 'check("'` = 23; guard `if (checksRun < 23)`). **NO new check** — this is a layout-only indent,
+covered by the existing invariant checks (`name-and-reply-same-card`, `inner-label-history…`) re-running
+green as regression PLUS a live viewport confirmation (below). The harness proves the banner invariants +
+deploy-is-live; it does NOT machine-assert the pixel alignment. Harness = the committed
+`app/scripts/verify-conversations.cjs`, `EXPECTED` re-pinned to the bundle under test (`DkmsrUiR → CwSbtBkM`).
+
+Bundle gate (§9.2): `1a7bee7` → `index-CwSbtBkM.js`; parent `4e95bce` → `index-DkmsrUiR.js` (discriminates).
+**Basis (recorded honestly):** child `CwSbtBkM` is a fresh LOCAL build (`tsc -b` passed) AND is OBSERVED live
+— the harness gate pulled it from prod and matched. The parent `DkmsrUiR` is CARRIED from §6.7 (`4e95bce`
+is docs + scripts only on top of the banner `70cdef6`, so it reproduces `DkmsrUiR`); prod flipping
+`DkmsrUiR → CwSbtBkM` (poll #1) proves the app built — a docs/scripts-reproduce would have left `DkmsrUiR`.
+
+The §8.9 change under test: the selected contact's name is INDENTED so its **left edge lands on the Notes
+column** below it. The indent is a **single `NAME_INDENT` constant derived from shared `THREAD_LIST_WIDTH`
++ `PANE_GAP`** — the SAME constants now driving the thread-list flex-basis and the two-pane gap — so the
+name **tracks the column** instead of a welded magic literal (change the column width once → both move).
+`NAME_INDENT = THREAD_LIST_WIDTH(360) + PANE_GAP(16) + 15 (rightpane border 1 + body pad-left 14) − 19
+(banner border 1 + pad-left 18) = 372px`, targeting the Notes card's left edge (all `box-sizing:border-box`).
+The name is **ONE guarded `<span>`** (the old separator `·` rule removed; the Read-only pill moved into the
+fixed leading zone), staying in the banner (same card as Reply-in-GHL), **22px, same node** — layout ONLY,
+NOT moved into the Notes column subtree. **READ-ONLY — no write actions added; three-write invariant untouched.**
+
+**Pixel alignment — VISUALLY CONFIRMED live by Brad (not machine-asserted):** at Brad's real viewport on
+`app.investorautomationos.com/conversations`, the large name's left edge lands under the Notes column, checked
+across TWO threads. Recorded honestly: the harness cannot assert cross-container pixel alignment; this line is
+the human confirmation that closes it. (A local `vite preview` was tried first and abandoned — it serves the
+static build but not the netlify functions, so threads returned the SPA HTML instead of JSON and no thread
+could be selected; the live prod check was the only path to a rendered name.)
+
+The regression checks that guard the invariants stayed GREEN through the indent: `name-and-reply-same-card`
+(`hasName=true hasReply=true nameFontPx=22` — name still in the banner, same card as Reply, still 22px after
+the restructure into the fixed leading zone) and `inner-label-history-outer-conversations` (`h1s=["History"]`
+— exactly one `<h1>`, the name is a `<span>` sibling; the leading-zone wrapper added no second heading).
+
+**Live john sanchez numbers — recorded, NOT carried forward:** target at **index 7** of 41
+(`threadlist-count-matches dom=41 endpoint=41`). `message-delta` reads `endpointTotal=8 shown=5 filtered=3
+domBubbles=5` and `section-placement` reads `text{rows=1,stop=true}==sms=1 | email{rows=4,stop=false}==email=4`
+(unchanged from §6.6/§6.7's live figures). Do not reconcile the index against §6.5's index-6; index is
+activity-ordered.
+
+Regression numbers unchanged from §6.7: threads 41/41, thread scoped by id (Workspace link in the banner,
+still found), inner-label `["History"]` + nav "Conversations", top-bar title "Conversations",
+`ghl-reply-link-present` green, inbound SMS renders (`endpointInboundSms=1 domStopInboundSms=true`), three
+sections `["Notes","Text","Email"]`, notes empty (john `domNotes=0 endpointNotes=0`) + populated (Neelima
+`endpointNotes=12 domNotes=12`), empty-text (Neelima `"No texts."`, index 38), email clamp+expand (4 Expand
+buttons), SMS not collapsed, expand reveals full, bubble-alignment
+(`emailAlign=stretch textAlign=flex-start textIsStop=true`), write-audit attached
+(`GETs=5 ghl-conversations=1 ghl-contact-conversations=2 ghl-proxy/notes=2`), `zero-writes []`, no listAll
+on path.
+
 ## 7. OPEN ITEMS
 
 - **SMS rendering — inbound live-verified, outbound NOT (observed 2026-07-16).** Recorded verbatim:
