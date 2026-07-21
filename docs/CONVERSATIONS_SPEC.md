@@ -220,6 +220,45 @@ clamp+expand (4 Expand buttons), SMS not collapsed, expand reveals full, write-a
 (`GETs=5 ghl-conversations=1 ghl-contact-conversations=2 ghl-proxy/notes=2`), `zero-writes []`, no listAll
 on path.
 
+### 6.6 VERIFIED LIVE — §8.5 temporary GHL Reply deep-link — 2026-07-21 (`5f57319`)
+
+**22/22 PASS, exit 0. `checksRun=22`, `failures=0`. Floor 22 == the literal `check()` count**
+(counted from the file; guard is `if (checksRun < 22)`. The 21 prior — §6.1/§6.2 + §8.1 inner-label
++ top-bar-title + the 5 §8.2/§8.4/§8.6 layout checks + the §8.3 bubble-alignment check — re-ran green
+as regression, + 1 new §8.5 `ghl-reply-link-present` check). Harness = the committed
+`app/scripts/verify-conversations.cjs`, `EXPECTED` re-pinned to the bundle under test.
+
+Bundle gate (§9.2): `5f57319` → `index-C8PEXds6.js`; parent `776e98c` → `index-BSie5hdy.js`
+(discriminates). **Basis (recorded honestly):** the child `C8PEXds6` is OBSERVED live — the harness gate
+pulled it from prod this run and matched. The parent `BSie5hdy` is CARRIED from §6.5 (`776e98c` is
+docs-only, reproducing `39c414b`'s `BSie5hdy`); prod flipping `BSie5hdy → C8PEXds6` proves the app built
+(a docs-only skip would have left `BSie5hdy`) — runtime-flip reasoning, NOT a fresh dual local build.
+
+The §8.5 change under test: a TEMPORARY GHL Reply deep-link at the top of the thread pane — a pure-navigation
+`<a target="_blank">` to the SELECTED contact's GHL conversation, writing NOTHING. External host, so it adds
+ZERO netlify-function traffic; `zero-writes` stays `[]` by construction. MUST be removed when Conversations
+gets write capability (§8.5).
+
+The one new check — `ghl-reply-link-present`: `tag=A target=_blank href=https://app.gohighlevel.com/v2/location/jmHG4B8RdzwpfqruNf68/contacts/detail/05gYdxJcyNTCKWTwkbbs`
+(an `<a>`, not a `<button>`; opens a new tab; href is the GHL contact-detail path for the selected
+john-sanchez contact `05gYdxJcyNTCKWTwkbbs`).
+
+**Live john sanchez numbers — recorded, NOT carried forward:** target now at **index 7** of 41 (was index 6
+in §6.5 — the thread list re-ordered by newest-activity; DOM tracked the endpoint order exactly,
+`threadlist-count-matches dom=41 endpoint=41`). `message-delta` reads `endpointTotal=8 shown=5 filtered=3
+domBubbles=5` and `section-placement` reads `text{rows=1,stop=true}==sms=1 | email{rows=4,stop=false}==email=4`
+(both unchanged from §6.5's live figures; the thread body did not grow this run, only its list position moved).
+Do not reconcile the index against §6.5's index-6; index is activity-ordered and moves.
+
+Regression numbers unchanged from §6.5: threads 41/41, thread scoped by id, inner-label `["History"]` + nav
+"Conversations", top-bar title "Conversations", inbound SMS renders (`endpointInboundSms=1 domStopInboundSms=true`),
+three sections `["Notes","Text","Email"]`, notes empty (john `domNotes=0 endpointNotes=0`) + populated
+(Neelima `endpointNotes=12 domNotes=12`), empty-text (Neelima `"No texts."`, index 38), email clamp+expand
+(4 Expand buttons), SMS not collapsed, expand reveals full, bubble-alignment
+(`emailAlign=stretch textAlign=flex-start textIsStop=true`), write-audit attached
+(`GETs=5 ghl-conversations=1 ghl-contact-conversations=2 ghl-proxy/notes=2`), `zero-writes []`, no listAll
+on path.
+
 ## 7. OPEN ITEMS
 
 - **SMS rendering — inbound live-verified, outbound NOT (observed 2026-07-16).** Recorded verbatim:

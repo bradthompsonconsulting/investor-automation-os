@@ -12,7 +12,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-BSie5hdy.js"; // §8.3 bubble styling + 60/40 proportion + half-height headers. RE-PIN to the bundle under test every run.
+const EXPECTED = "index-C8PEXds6.js"; // §8.5 temporary GHL Reply deep-link (5f57319). RE-PIN to the bundle under test every run.
 const TARGET   = "05gYdxJcyNTCKWTwkbbs"; // john sanchez — has the 1 inbound SMS + emails; a scoping + SMS + delta fixture
 const THREADS_URL = `${ORIGIN}/.netlify/functions/ghl-conversations?scope=all`;
 const MSGS_URL    = `${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${TARGET}`;
