@@ -377,6 +377,58 @@ buttons), SMS not collapsed, expand reveals full, bubble-alignment
 (`GETs=5 ghl-conversations=1 ghl-contact-conversations=2 ghl-proxy/notes=2`), `zero-writes []`, no listAll
 on path.
 
+### 6.9 VERIFIED LIVE — §8.10 banner Call button (tab-hop to GHL contact-detail) — 2026-07-21 (`fd55523`)
+
+**24/24 PASS, exit 0. `checksRun=24`, `failures=0`. Floor 24 == the literal `check()` count**
+(`grep -c 'check("'` = 24; guard `if (checksRun < 24)`). The 23 prior re-ran green as regression, + 1 new
+§8.10 `call-link-present` check. Harness = the committed `app/scripts/verify-conversations.cjs`, `EXPECTED`
+re-pinned to the bundle under test (`CwSbtBkM → Bg9d3CqX`).
+
+Bundle gate (§9.2): `fd55523` → `index-Bg9d3CqX.js`; parent `d804ac4` → `index-CwSbtBkM.js` (discriminates).
+**Basis (recorded honestly):** all three hashes were put on the wire before push — child `Bg9d3CqX` freshly
+rebuilt from the working tree, parent `d804ac4` built to `CwSbtBkM` (carried from earlier this session; it
+reproduced prod EXACTLY), and prod curled at `CwSbtBkM` — so `Bg9d3CqX ≠ {parent == prod == CwSbtBkM}` is a
+real discriminator. This is APP code; prod flipped `CwSbtBkM → Bg9d3CqX` (poll #1), proving the Call code is live.
+
+The §8.10 change under test: a **Call button** added to the navy banner **next to Reply-in-GHL** — an
+`<a target="_blank">` that reuses the **SAME `ghlContactDetailUrl(contactId)` helper as Reply**, constructing
+**NO new URL/param**. **Recon 2026-07-21 (OBSERVED):** GHL exposes no deep-link that opens the dialer directly
+— the softphone is an in-UI click (green phone icon / click-to-dial), not a URL; `tel:` does not trigger it
+(GHL docs + capability spike, `CONTACT_WORKSPACE_SPEC §1`). So Call hands off to the contact-detail page where
+GHL's own softphone is clicked — the SAME accepted platform constraint as the Workspace Call button. **Pure
+navigation, READ-ONLY, writes NOTHING; external host, so it adds ZERO netlify-function traffic.**
+
+The one new check — `call-link-present`: `tag=A target=_blank
+href=https://app.gohighlevel.com/v2/location/jmHG4B8RdzwpfqruNf68/contacts/detail/05gYdxJcyNTCKWTwkbbs`. It
+finds the Call `<a>` by its **"Call" text** (distinct from Reply, which the older `ghl-reply-link-present`
+finds href-first) and asserts it's an `<a target=_blank>` pointing at the contact-detail URL for the selected
+contact. **Honest scope:** Call and Reply hit the IDENTICAL URL, so this check proves the Call link **exists
+and points at contact-detail**, NOT that it opens a dialer — there is no dialer deep-link to assert (recon).
+The two checks key off different DOM nodes (Reply by href-first, Call by "Call" text), so DOM order can't
+cross-match them; both stayed green.
+
+**Softphone hand-off — VISUALLY CONFIRMED live by Brad (not machine-asserted):** at Brad's viewport, Call
+renders next to Reply as a pair; clicking it tab-hops to the **correct contact (Nanneta Ellis)** and **GHL's
+softphone opens**. The harness cannot assert that GHL's softphone launches on the far side of the tab-hop
+(external host); this line is the human confirmation that closes it — the same shape as the Workspace Call
+button's accepted ceiling.
+
+**Live john sanchez numbers — recorded, NOT carried forward:** target at **index 7** of 41
+(`threadlist-count-matches dom=41 endpoint=41`). `message-delta` reads `endpointTotal=8 shown=5 filtered=3
+domBubbles=5` and `section-placement` reads `text{rows=1,stop=true}==sms=1 | email{rows=4,stop=false}==email=4`
+(unchanged from §6.6–§6.8's live figures). Do not reconcile the index against §6.5's index-6; index is
+activity-ordered.
+
+Regression numbers unchanged from §6.8: threads 41/41, thread scoped by id (Workspace link in the banner),
+inner-label `["History"]` + nav "Conversations", top-bar title "Conversations", `ghl-reply-link-present` green
+(Reply unchanged, same href), `name-and-reply-same-card` green (`nameFontPx=22`), inbound SMS renders
+(`endpointInboundSms=1 domStopInboundSms=true`), three sections `["Notes","Text","Email"]`, notes empty (john
+`domNotes=0 endpointNotes=0`) + populated (Neelima `endpointNotes=12 domNotes=12`), empty-text (Neelima
+`"No texts."`, index 38), email clamp+expand (4 Expand buttons), SMS not collapsed, expand reveals full,
+bubble-alignment (`emailAlign=stretch textAlign=flex-start textIsStop=true`), write-audit attached
+(`GETs=5 ghl-conversations=1 ghl-contact-conversations=2 ghl-proxy/notes=2`), `zero-writes []`, no listAll
+on path.
+
 ## 7. OPEN ITEMS
 
 - **SMS rendering — inbound live-verified, outbound NOT (observed 2026-07-16).** Recorded verbatim:

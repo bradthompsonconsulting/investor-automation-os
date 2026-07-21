@@ -13,7 +13,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-CwSbtBkM.js"; // §8.9 banner — name indented under the Notes column (1a7bee7). RE-PIN to the bundle under test every run.
+const EXPECTED = "index-Bg9d3CqX.js"; // §8.10 banner Call button (tab-hop to contact-detail), fd55523. RE-PIN to the bundle under test every run.
 const TARGET   = "05gYdxJcyNTCKWTwkbbs"; // john sanchez — has the 1 inbound SMS + emails; a scoping + SMS + delta fixture
 const THREADS_URL = `${ORIGIN}/.netlify/functions/ghl-conversations?scope=all`;
 const MSGS_URL    = `${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${TARGET}`;
