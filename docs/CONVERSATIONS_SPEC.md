@@ -272,6 +272,58 @@ three sections `["Notes","Text","Email"]`, notes empty (john `domNotes=0 endpoin
 (`GETs=5 ghl-conversations=1 ghl-contact-conversations=2 ghl-proxy/notes=2`), `zero-writes []`, no listAll
 on path.
 
+### 6.7 VERIFIED LIVE — §8.9 navy-header banner (contact name + Reply-in-GHL in one card) — 2026-07-21 (`70cdef6`)
+
+**23/23 PASS, exit 0. `checksRun=23`, `failures=0`. Floor 23 == the literal `check()` count**
+(counted from the file; guard is `if (checksRun < 23)`. The 22 prior — §6.1/§6.2 + §8.1 inner-label
++ top-bar-title + the 5 §8.2/§8.4/§8.6 layout checks + the §8.3 bubble-alignment check + the §8.5
+`ghl-reply-link-present` check — re-ran green as regression, + 1 new §8.9 `name-and-reply-same-card`
+check). Harness = the committed `app/scripts/verify-conversations.cjs`, `EXPECTED` re-pinned to the
+bundle under test (`C8PEXds6 → DkmsrUiR`).
+
+Bundle gate (§9.2): `70cdef6` → `index-DkmsrUiR.js`; parent `bc4bfea` → `index-C8PEXds6.js`
+(discriminates). **Basis (recorded honestly):** this is a fresh DUAL LOCAL BUILD — child `70cdef6` built
+to `DkmsrUiR` and parent `bc4bfea` built to `C8PEXds6` (which reproduced the then-current prod bundle
+EXACTLY), so the gate had a real discriminator (child ≠ parent, child ≠ prior-prod). This is APP code
+(exit-1 on `git diff -- app/`), so the app site BUILT (not a docs-only skip); prod flipped
+`C8PEXds6 → DkmsrUiR` on poll #1 and the harness matched at runtime.
+
+The §8.9 change under test: the selected contact's name now renders **LARGE (22px / 600 Space Grotesk,
+`#F1F5F9`)** in a `#0D1B3E` navy banner — a visual twin of the Contacts/Workspace identity card — to the
+right of the "History" `<h1>`, in the **SAME navy card as the §8.5 Reply-in-GHL button** so who-you're-acting-on
+is tied to the action. The old small (14px) thread-pane name strip was removed; its name + Workspace
+deep-link + Reply-in-GHL button all moved up into the banner. **READ-ONLY — pure layout: the name is an
+already-read value (`ThreadRow.contactName`), the button is the pure-navigation §8.5 deep-link. ZERO write
+actions added; the three-write invariant is untouched.**
+
+The one new check — `name-and-reply-same-card`: `hasName=true hasReply=true nameFontPx=22`. It does NOT
+merely assert the name renders somewhere — it finds the Reply `<a>`, climbs to the banner ancestor (the
+container holding "History"), and asserts that SAME container holds BOTH the Reply link AND the name at
+LARGE size (`nameFontPx=22`, ≥20px — distinguishing it from the removed 14px strip). Name match is
+case-insensitive (thread-name casing is not guaranteed on the wire). This enforces the explicit requirement
+that the large name and the Reply button share one navy card.
+
+`inner-label-history-outer-conversations` stayed GREEN (`h1s=["History"]`): exactly ONE `<h1>History</h1>`
+survives (the old top-level header `<div>` was replaced wholesale by the banner, not duplicated), and the
+large name is a `<span>` sibling, not a second `<h1>` — so the exact-match h1 assertion did not regress.
+
+**Live john sanchez numbers — recorded, NOT carried forward:** target at **index 7** of 41
+(`threadlist-count-matches dom=41 endpoint=41`; same index as §6.6 this run). `message-delta` reads
+`endpointTotal=8 shown=5 filtered=3 domBubbles=5` and `section-placement` reads
+`text{rows=1,stop=true}==sms=1 | email{rows=4,stop=false}==email=4` (unchanged from §6.6's live figures —
+the thread body did not grow). Do not reconcile the index against §6.5's index-6; index is activity-ordered.
+
+Regression numbers unchanged from §6.6: threads 41/41, thread scoped by id (Workspace link
+`/contacts/05gYdxJcyNTCKWTwkbbs` — now IN the banner, still found), inner-label `["History"]` + nav
+"Conversations", top-bar title "Conversations", `ghl-reply-link-present` green (the Reply `<a target=_blank>`,
+relocated to the banner, still an `<a>` to the GHL contact-detail), inbound SMS renders
+(`endpointInboundSms=1 domStopInboundSms=true`), three sections `["Notes","Text","Email"]`, notes empty
+(john `domNotes=0 endpointNotes=0`) + populated (Neelima `endpointNotes=12 domNotes=12`), empty-text
+(Neelima `"No texts."`, index 38), email clamp+expand (4 Expand buttons), SMS not collapsed, expand reveals
+full, bubble-alignment (`emailAlign=stretch textAlign=flex-start textIsStop=true`), write-audit attached
+(`GETs=5 ghl-conversations=1 ghl-contact-conversations=2 ghl-proxy/notes=2`), `zero-writes []`, no listAll
+on path.
+
 ## 7. OPEN ITEMS
 
 - **SMS rendering — inbound live-verified, outbound NOT (observed 2026-07-16).** Recorded verbatim:
