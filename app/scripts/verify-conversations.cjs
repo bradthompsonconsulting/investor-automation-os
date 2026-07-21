@@ -5,10 +5,11 @@
    expected hash, then run (§9.2 bundle gate). Read-only: thread list + message
    history render; ZERO writes. Fails LOUD (non-zero) on any no-run.
    Floor = literal check() count — COUNT it from this file, never assume.
-   Currently 23 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title
+   Currently 24 (10 §6.1 + 3 collapse §6.2 + 1 inner-label §8.1 + 1 top-bar title
    + 5 layout §8.2/§8.4/§8.6: three-sections, section-placement, notes-data-driven
    (empty), notes-populated, empty-text + 1 §8.3 bubble-alignment
-   + 1 §8.5 ghl-reply-link-present + 1 §8.9 name-and-reply-same-card). */
+   + 1 §8.5 ghl-reply-link-present + 1 §8.9 name-and-reply-same-card
+   + 1 §8.10 call-link-present). */
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
@@ -165,6 +166,22 @@ async function readSections(page) {
   check("ghl-reply-link-present",
     !!reply && reply.tag === "A" && reply.target === "_blank" && reply.href.startsWith("https://app.gohighlevel.com/v2/location/") && reply.href.includes(TARGET),
     `tag=${reply && reply.tag} target=${reply && reply.target} href=${reply && reply.href}`);
+
+  // §8.10 — Call button: a tab-hop <a target=_blank> to the SAME contact-detail URL as
+  // Reply (reuses ghlContactDetailUrl, NO new param — GHL exposes no dialer deep-link,
+  // recon 2026-07-21). Distinguished from Reply by its "Call" text; assert it's an <a>,
+  // opens a new tab, and points at the contact-detail page for the selected contact.
+  // Read-only navigation — no writes (the zero-writes audit covers it).
+  const callLink = await page.evaluate((id) => {
+    const a = [...document.querySelectorAll("a")].find((x) =>
+      /(^|\s)Call(\s|$)/.test((x.textContent || "").trim()) &&
+      /app\.gohighlevel\.com\/v2\/location\//.test(x.getAttribute("href") || "") &&
+      (x.getAttribute("href") || "").includes(id));
+    return a ? { tag: a.tagName, href: a.getAttribute("href"), target: a.getAttribute("target") } : null;
+  }, TARGET);
+  check("call-link-present",
+    !!callLink && callLink.tag === "A" && callLink.target === "_blank" && callLink.href.startsWith("https://app.gohighlevel.com/v2/location/") && callLink.href.includes(TARGET),
+    `tag=${callLink && callLink.tag} target=${callLink && callLink.target} href=${callLink && callLink.href}`);
 
   // §8.9 — the LARGE contact name and the §8.5 Reply-in-GHL <a> live in the SAME
   // navy header card (ties who-you're-acting-on to the action button). Not merely
@@ -329,6 +346,6 @@ async function readSections(page) {
   await browser.close();
 
   console.log(`\nchecksRun=${checksRun} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
-  if (checksRun < 23) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
+  if (checksRun < 24) { console.log("ABORT — harness ran too few checks; treat as FAILED"); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });

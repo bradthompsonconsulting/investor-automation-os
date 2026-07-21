@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
-  MessageSquare, Mail, ArrowDownLeft, ArrowUpRight, Loader2, ExternalLink, FileText,
+  MessageSquare, Mail, ArrowDownLeft, ArrowUpRight, Loader2, ExternalLink, FileText, Phone,
 } from "lucide-react";
 import { ghl, ghlContactDetailUrl, type ThreadRow, type ConvMessageRow } from "../lib/ghl";
 
@@ -268,6 +268,21 @@ export default function Conversations() {
               style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#1EC8FF", textDecoration: "none" }}
             >
               <ExternalLink size={12} /> Reply in GHL
+            </a>
+            {/* Call — tab-hop to the SAME GHL contact-detail page (reuses ghlContactDetailUrl,
+                NO new URL/param). GHL exposes no deep-link that opens the dialer directly (recon
+                2026-07-21, OBSERVED: the softphone is an in-UI click, not a URL), so Call hands off
+                to the contact page where GHL's own softphone is clicked — the same accepted platform
+                constraint as the Workspace Call button (CONTACT_WORKSPACE_SPEC §1). Pure navigation,
+                writes NOTHING; identical read-only hand-off to Reply-in-GHL above. */}
+            <a
+              href={ghlContactDetailUrl(selected.contactId)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Call inside GHL (opens the contact in GHL)"
+              style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#1EC8FF", textDecoration: "none" }}
+            >
+              <Phone size={12} /> Call
             </a>
           </div>
         )}
