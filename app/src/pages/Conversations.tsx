@@ -37,6 +37,19 @@ function formatEpoch(ms: number): string {
 
 const CLAMP_LINES = 5;
 
+// Shared layout constants — the two-pane grid AND the banner name-indent reference the
+// SAME column width/gap, so the banner name tracks the Notes column instead of drifting
+// from a magic literal. Change THREAD_LIST_WIDTH/PANE_GAP once → the list column and the
+// name indent move together.
+const THREAD_LIST_WIDTH = 360; // px — left thread-list column (flex-basis of the list below)
+const PANE_GAP = 16;           // px — gap between the thread list and the right pane
+// The banner name's left edge aligns to the Notes card's left edge. Derived ONCE from the
+// shared column constants above + the (rarely-changing) inset terms, all box-sizing:border-box:
+//   Notes card X (from page origin) = THREAD_LIST_WIDTH + PANE_GAP + 15 (rightpane border 1 + body pad-left 14)
+//   banner LEFT-cluster X           = 19 (banner border 1 + banner pad-left 18)
+//   NAME_INDENT = Notes card X − banner cluster X
+const NAME_INDENT = THREAD_LIST_WIDTH + PANE_GAP + 15 - 19; // = 372px, tracks THREAD_LIST_WIDTH/PANE_GAP
+
 // One message bubble. EMAIL bodies collapse to CLAMP_LINES via CSS line-clamp
 // (line-based, not character count — width-independent, never breaks mid-word),
 // with an Expand control shown ONLY when the body actually overflows. SMS bodies
@@ -218,19 +231,23 @@ export default function Conversations() {
         background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px",
         padding: "14px 18px", marginBottom: "16px",
       }}>
-        {/* LEFT — section label + (when a thread is selected) the large contact name */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
-          <MessageSquare size={20} style={{ color: "#1EC8FF", flexShrink: 0 }} />
-          <h1 style={{ fontSize: "20px", fontWeight: 700, color: "#F1F5F9", margin: 0, fontFamily: "Space Grotesk, sans-serif" }}>History</h1>
+        {/* LEFT — section label in a fixed-width zone (width = the shared NAME_INDENT,
+            derived from THREAD_LIST_WIDTH + PANE_GAP so it tracks the column, not a magic
+            literal), then the large contact name whose left edge lands on the Notes column
+            below. ONE guarded <span> for the name — it stays in THIS banner (same card as
+            Reply-in-GHL), 22px, same node; the indent is layout-only, NOT a move into the
+            Notes column subtree (§8.9). */}
+        <div style={{ display: "flex", alignItems: "center", gap: "0px", minWidth: 0, flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", width: `${NAME_INDENT}px`, flexShrink: 0, overflow: "hidden" }}>
+            <MessageSquare size={20} style={{ color: "#1EC8FF", flexShrink: 0 }} />
+            <h1 style={{ fontSize: "20px", fontWeight: 700, color: "#F1F5F9", margin: 0, fontFamily: "Space Grotesk, sans-serif" }}>History</h1>
+            <span style={{ flexShrink: 0, fontSize: "11px", color: "#475569", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "999px", padding: "2px 8px" }}>Read-only</span>
+          </div>
           {selected && (
-            <>
-              <span style={{ width: "1px", height: "22px", background: "rgba(255,255,255,0.14)", flexShrink: 0 }} />
-              <span style={{ minWidth: 0, fontSize: "22px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {selected.contactName}
-              </span>
-            </>
+            <span style={{ minWidth: 0, fontSize: "22px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {selected.contactName}
+            </span>
           )}
-          <span style={{ flexShrink: 0, fontSize: "11px", color: "#475569", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "999px", padding: "2px 8px" }}>Read-only</span>
         </div>
         {/* RIGHT — thread actions (only with a selected thread): Workspace deep-link +
             §8.5 Reply-in-GHL. Both moved up from the old thread-pane strip INTO this card
@@ -256,9 +273,9 @@ export default function Conversations() {
         )}
       </div>
 
-      <div style={{ display: "flex", gap: "16px", flex: 1, minHeight: 0 }}>
+      <div style={{ display: "flex", gap: `${PANE_GAP}px`, flex: 1, minHeight: 0 }}>
         {/* LEFT — thread list */}
-        <div style={{ flex: "0 0 360px", display: "flex", flexDirection: "column", background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "12px", overflow: "hidden" }}>
+        <div style={{ flex: `0 0 ${THREAD_LIST_WIDTH}px`, display: "flex", flexDirection: "column", background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "12px", overflow: "hidden" }}>
           <div style={{ padding: "10px 14px", borderBottom: "1px solid rgba(255,255,255,0.08)", fontSize: "12px", fontWeight: 600, color: "#94A3B8" }}>
             {threads ? `${threads.length} thread${threads.length === 1 ? "" : "s"}` : "Threads"}
           </div>
