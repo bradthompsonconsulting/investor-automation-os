@@ -234,6 +234,19 @@ pulled it from prod this run and matched. The parent `BSie5hdy` is CARRIED from 
 docs-only, reproducing `39c414b`'s `BSie5hdy`); prod flipping `BSie5hdy → C8PEXds6` proves the app built
 (a docs-only skip would have left `BSie5hdy`) — runtime-flip reasoning, NOT a fresh dual local build.
 
+**Deploy-behavior CORRECTION (observed off the Deploy tab 2026-07-21, `d7fae9d` — the commit that added
+THIS §6.6 record + the EXPECTED re-pin):** `d7fae9d`'s original commit message said "app + marketing sites
+skip" — that was WRONG for the app site. `d7fae9d` touched `app/scripts/verify-conversations.cjs`, and the
+app `ignore` rule scopes to base dir `app/` (`git diff … -- .`), so ANY file under `app/` — scripts
+included — triggers a BUILD, not a skip. **What actually happened:** the app site **BUILT** (17s, 10
+functions, Published) but **REPRODUCED `C8PEXds6`** — deterministic build, Netlify "All files already
+uploaded by a previous deploy with the same commits," so **the served prod hash stayed `C8PEXds6` and the
+harness `EXPECTED` still matches** (no gate re-run needed). **Marketing DID skip** (its rule excludes
+`docs/`, and the only non-`app/` file was `docs/`; still on `6550bcc`). The discriminator is `app/` SCOPE,
+NOT scripts-vs-source — see the corrected SESSION_HANDOFF Netlify rule. The §6.5 "`20883bf` scripts-only
+skipped" belief was the same conflation: it BUILT-and-reproduced too. The 22/22 record above stands
+unchanged — prod serves the exact bundle it was verified against.
+
 The §8.5 change under test: a TEMPORARY GHL Reply deep-link at the top of the thread pane — a pure-navigation
 `<a target="_blank">` to the SELECTED contact's GHL conversation, writing NOTHING. External host, so it adds
 ZERO netlify-function traffic; `zero-writes` stays `[]` by construction. MUST be removed when Conversations
