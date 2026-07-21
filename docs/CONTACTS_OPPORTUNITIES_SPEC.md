@@ -1,0 +1,72 @@
+# IAOS — CONTACTS / OPPORTUNITIES SPEC
+
+Status: **DRAFT — §4-v3 (write invariant) ONLY.** No other section drafted yet. This is roadmap surface #4 (master ref §2a, locked sequence: Dashboard → Conversations → Calendars → **Contacts/Opportunities**). The write-class model below is Brad-decided (2026-07-21) and recon-backed; everything else in this file is TBD and deliberately left unwritten until the write class is locked.
+
+Sits alongside `IAOS_Master_Architecture_Reference_V10_2.txt`, `DASHBOARD_SPEC_v2.txt`, `CONTACT_WORKSPACE_SPEC_v2.md`, `CONVERSATIONS_SPEC.md`, `CALENDARS_SPEC.md`.
+
+---
+
+## 4. WRITE INVARIANT (v3 — field-edit write classes)
+
+This surface is the first that EDITS contact fields. That is a materially larger write surface than every prior phase, all of which wrote only the three sanctioned actions (notes, `last_call_attempt`, callback). v3 does NOT loosen those three — it carries them forward unchanged and layers a classified field-edit model on top, gated per class.
+
+### 4.0 Carried forward UNCHANGED — the three-write invariant (Workspace §4)
+
+The Dashboard/Workspace three sanctioned write actions are untouched by this surface:
+
+1. `ghl.notes.create()` → POST `/contacts/{id}/notes`
+2. `ghl.contacts.setLastCallAttempt()` → PUT `last_call_attempt` (+`_precise`) in ONE call
+3. `ghl.contacts.setCallbackDatetime()` → PUT `callback_datetime` (+`_precise`) in ONE call
+
+**No-drift invariant holds:** GHL is sole system of record. No app-side shadow copy. Every value displayed is read from GHL.
+
+### 4.1 HARD NO — unchanged from Workspace §4
+
+**Tags, pipeline stage, `offer_` fields, workflow triggers.** IAOS never fires a workflow. This is unchanged from `CONTACT_WORKSPACE_SPEC_v2.md` §4 and is NOT relaxed by any write class below. Editing a contact field is not a licence to touch a tag, move a stage, or set an offer field.
+
+### 4.2 Why classification, not a blanket field-edit toggle
+
+Editing a native/custom contact field can have side effects IAOS does not control:
+
+- **Identity fields anchor dedup/merge.** The location deduplicates on them (§4.3, OBSERVED).
+- **A field change can fire a GHL workflow.** Whether it does is **NOT API-derivable** (see the verbatim finding in §4.6). We cannot enumerate which field changes trigger a workflow, so we cannot pre-classify a field as inert from the API alone.
+
+Consequence: **no field is writable on assumption.** Each writable field earns write access by a per-field **inert-proof** on the fixture (edit the field on `bradt75@gmail.com` / `214-914-6151`, the clean no-DnD fixture per `SESSION_HANDOFF.md`, and confirm no tag/stage/offer/workflow side effect resulted). Recon is the input to classification; the inert-proof is what unlocks a write.
+
+### 4.3 CLASS 2 — IDENTITY fields
+
+**`contact.email` (primary) and `contact.phone` (primary) are READ-ONLY in edit.**
+
+- **OBSERVED** (`GET /locations/jmHG4B8RdzwpfqruNf68`, 2026-07-21): `settings.contactUniqueIdentifiers = ["email", "phone"]` and `allowDuplicateContact: false` — dedup is ON and keyed on the primary email + primary phone. These are the identity/dedup anchors; editing them risks a merge/collision. Read-only in edit is the safe floor.
+- Object paths (OBSERVED, `GET /contacts/{id}`): primary = scalar `contact.email` / `contact.phone`.
+
+**`contact.additionalEmails` and `contact.additionalPhones` are READ/WRITE — but flagged PROVISIONAL.**
+
+- Rationale: additional emails/phones are reachability data, not identity.
+- **PROVISIONAL, pending a fixture collision-test.** Whether the additional-value arrays sit INSIDE or OUTSIDE the dedup set is **UNKNOWN via API** — `contactUniqueIdentifiers` names only `email`/`phone` (primary field names) and does not enumerate additional-field participation; no duplicate-settings endpoint exists (`/locations/{id}/settings`, `/duplicate-settings`, `/duplicates/settings`, `/settings/duplicates` all 404). Read/write on additionals ships ONLY after a fixture collision-test PROVES additionals are outside the dedup set. Until then, treat as read-only.
+- **Element shape UNKNOWN, resolve at build.** OBSERVED that `additionalEmails` / `additionalPhones` exist as top-level array fields, but ALL 41 contacts in the location have them empty (`[]`) — so whether each element is a bare string or an object (value + label/type) is not observable from location data. Resolve against the wire at build time before writing them.
+
+### 4.4 CLASS 1 — FIELD-EDIT (non-identity native + custom fields)
+
+**Writable ONLY after a per-field inert-proof on the `bradt75` fixture.**
+
+- Covers non-identity native contact fields and custom fields.
+- No field is writable on assumption (§4.2). Because workflow triggers are not API-enumerable (§4.6), each field must be individually proven inert on the fixture — edit it, confirm no tag/stage/offer/workflow side effect — before it is exposed as editable.
+- HARD NO (§4.1) still bounds this class: even a "field edit" must never touch a tag, stage, or `offer_` field.
+
+### 4.5 CLASS 3 — CREATE NEW CONTACT
+
+**A new `ghl.contacts.create()` POST. Ships only after its own inert-proof.**
+
+- On create, identity fields (`email`, `phone`) ARE read/write — they are being set for the first time, not edited on an existing dedup anchor, so the Class 2 read-only rule does not apply at creation.
+- Create is a distinct write action from the three in §4.0 and from Class 1 edits. It ships only after its own inert-proof (create the fixture contact, confirm no unexpected workflow/tag/stage side effect on creation — note the Phone Type Validation workflow already fires on Contact Created, `CONTACT_WORKSPACE_SPEC §5.6`, so "inert" here means no side effect BEYOND the known, accepted ones).
+
+### 4.6 Workflow-trigger classification is NOT API-derivable (carried verbatim, OBSERVED 2026-07-21)
+
+> GHL v2 API exposes workflow inventory (GET /workflows/?locationId) but NOT trigger config; /workflows/{id} and /workflows/{id}/triggers both 404. SAFE/DANGEROUS classification is not API-derivable.
+
+Consequence for this surface: we cannot build a trigger table that says "editing field X fires workflow Y." The per-field inert-proof (§4.2/§4.4) is the substitute — it observes the effect of an edit directly on the fixture rather than predicting it from an un-enumerable trigger config. Do NOT infer triggers from workflow names.
+
+---
+
+_Sections 0–3 and 5+ intentionally not drafted yet — §4-v3 write invariant only, per Brad 2026-07-21._
