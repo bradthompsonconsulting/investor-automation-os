@@ -69,4 +69,17 @@ Consequence for this surface: we cannot build a trigger table that says "editing
 
 ---
 
-_Sections 0–3 and 5+ intentionally not drafted yet — §4-v3 write invariant only, per Brad 2026-07-21._
+## RECON FINDINGS — Opportunities read path (OBSERVED on the wire 2026-07-21)
+
+Append-only recon log. Separate from the section outline above (§0–3 and §5+ are still undrafted); this records wire facts as they are established. Fixture: bradt75 (`bradt75@gmail.com`, contact id `9fbH2VCcZvzVNhsR9zjc`).
+
+- **Contact→opportunities read — RESOLVED.** `GET /opportunities/search?location_id={loc}&contact_id={id}` → **HTTP 200**, returns exactly that contact's opportunities, **server-side filtered** (`meta.total: 1` for bradt75, opp `4zCenJMlSlrwPF5UUQRv`). This is the path to use. No client-side filtering needed.
+  - **BOTH params are snake_case: `location_id` and `contact_id`.** camelCase `contactId` / `locationId` → **HTTP 422**. **This is the root cause of the prior recorded 422 — wrong param CASE, NOT a missing endpoint.** `/opportunities/search` was always the right endpoint.
+- **`GET /contacts/{id}/opportunities` → HTTP 404 (dead).** No such nested endpoint (`Cannot GET ...` / Not Found). Do not use.
+- **Opportunity object carries a contact back-reference three ways** (from `GET /opportunities/search?location_id={loc}` with no contact filter, 41 opps, HTTP 200): top-level **`contactId`** (string), nested **`contact`** object (`id`/`name`/`email`/`phone`/`tags`/`score`), and **`relations[]`** (`OPPORTUNITIES_CONTACTS_ASSOCIATION`, `recordId` = contact id). Client-side filter on `contactId` is a **viable fallback**, but the server-side `contact_id` filter (above) is **preferred** — no over-fetch, paginated.
+- **INFERRED, NOT OBSERVED — single-contact multi-opportunity PAGINATION is untested.** bradt75 has exactly **1** opportunity, so `meta.nextPageUrl` / `startAfter` + `startAfterId` were *seen in the response shape* but never *exercised* across a page boundary for one contact. Confirm pagination against a multi-opp contact before relying on it.
+- **GENERAL GOTCHA — `/opportunities/search` params are snake_case** (`location_id`, `contact_id`), unlike the contacts endpoints which take `locationId` (camelCase). Mixing the convention → 422. Watch this when reusing query-building code across the two endpoints.
+
+---
+
+_Narrative sections 0–3 and 5+ intentionally not drafted yet — §4-v3 write invariant + the recon-findings log only, per Brad 2026-07-21._
