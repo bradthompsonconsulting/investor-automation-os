@@ -79,6 +79,35 @@ export interface ContactRow {
   lastCallAttemptPrecise:  string | null;
 }
 
+// ── Contacts surface (Phase A) types ──────────────────────────────────────────
+// Read layer for the /contacts/:id detail view (CONTACTS_OPPORTUNITIES_SPEC.md
+// §5.2 Phase A). Unlike ContactRow (a curated Dashboard subset), ContactDetail
+// carries the native identity fields plus the SPARSE populated custom-field
+// values from the wire — only the fields this contact has a value for (3 on
+// bradt75), NOT all 96 — straight from GHL's single-record endpoint. Read-only.
+// The all-96 SUPERSET (field definitions, order, folder headings, Additional
+// Info subgroups) is the separate render-config layer from
+// docs/CONTACT_FIELD_REFERENCE.md (a later step); the detail view joins the 96
+// definitions against these sparse values to render all 96.
+
+export interface ContactDetailField {
+  id:    string;   // custom-field id — matches CONTACT_FIELD_REFERENCE.md Part 1
+  value: unknown;  // GHL-typed value; the render layer formats per dataType
+}
+
+export interface ContactDetail {
+  id:         string;
+  firstName:  string;
+  lastName:   string;
+  email:      string;   // primary email — identity, read-only in edit (§4.3)
+  phone:      string;   // primary phone — identity, read-only in edit (§4.3)
+  address1:   string;   // address-identity block (§4.3) — country EXCLUDED
+  city:       string;
+  state:      string;
+  postalCode: string;
+  customFields: ContactDetailField[]; // sparse: only this contact's populated values (3 on bradt75), by id — NOT all 96
+}
+
 // ── Bucket tag helpers ────────────────────────────────────────────────────────
 // Bucket tags (hot/warm/low) are written by the scoring function (motivation-score.ts)
 // as the source of truth for tier assignment. This module only reads them.
@@ -277,6 +306,35 @@ export const ghl = {
         throw new Error(`ghl-contact → ${res.status}: ${text}`);
       }
       return res.json() as Promise<ContactRow>;
+    },
+
+    // Contacts surface Phase A (§5.2) — single-contact read for the /contacts/:id
+    // detail view: native identity + the SPARSE populated custom-field values
+    // from the wire (only the fields this contact has a value for — 3 on
+    // bradt75; NOT the curated ContactRow, and NOT all 96). Read-only, via the
+    // immediate single-record endpoint (GET /contacts/{id}). GHL omits unset
+    // native keys (e.g. address on a contact with none — CONTACT_FIELD_REFERENCE
+    // caveat 1), so each defaults to ""; customFields carries only populated
+    // values. The all-96 SUPERSET (field definitions + render order) is the
+    // separate render-config layer (CONTACT_FIELD_REFERENCE Part 1); the detail
+    // view joins the 96 definitions against these sparse values to render all 96.
+    getDetail: async (id: string): Promise<ContactDetail> => {
+      const raw = await request<any>(`/contacts/${id}`);
+      const c   = raw.contact ?? raw;
+      return {
+        id:         c.id,
+        firstName:  c.firstName  ?? "",
+        lastName:   c.lastName   ?? "",
+        email:      c.email      ?? "",
+        phone:      c.phone      ?? "",
+        address1:   c.address1   ?? "",
+        city:       c.city       ?? "",
+        state:      c.state      ?? "",
+        postalCode: c.postalCode ?? "",
+        customFields: Array.isArray(c.customFields)
+          ? c.customFields.map((f: any) => ({ id: f.id, value: f.value }))
+          : [],
+      };
     },
     list: (params?: Record<string, string>) => {
       const qs = new URLSearchParams({ locationId: LOCATION_ID, limit: "25", ...params }).toString();
