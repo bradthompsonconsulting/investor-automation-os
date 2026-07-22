@@ -161,7 +161,7 @@ Layout rules for the Contacts surface — the **`/contacts/:id` detail view** (b
 
 - **Columns (V1):** Name · Phone · Email · Property Address · Date Added.
 - **Sort:** clickable headers on **Name** and **Date Added** ONLY. **Default: Date Added, newest first.**
-- **Search:** a **single input** over **name / email / phone**, **passthrough to GHL contact search** (the list `query` param). **Address is EXCLUDED from search** — the GHL contact-search API does not match on address. *(The passthrough match behavior is a build-time wire-confirm, per the OBSERVED discipline — not yet verified this session.)*
+- **Search:** a **single input** over **name / email / phone**, **passthrough to GHL contact search** (the list `query` param). **Address is EXCLUDED from search — OBSERVED, not assumed** (2026-07-22): four `query` legs via `ghl-proxy` against bradt75 — `Thompson` / `bradt75@gmail.com` / `2149146151` each returned **HTTP 200, count 1, target present**; `Greenway` (a real token of its `property_address` "2623 Greenway Dr") returned **HTTP 200, count 0, target absent**. So GHL's contact-search `query` matches name/email/phone but NOT the property-address custom field.
 - **Filters: NONE in V1.**
 - **No inline editing** (§2.1); a row **selects → opens `/contacts/:id`** via the already-shipped grid→detail link (§3 / Contact Workspace §8 step 2b) — no new navigation.
 
