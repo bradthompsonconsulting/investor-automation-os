@@ -42,8 +42,12 @@ This boundary is locked. This surface does **NOT** extend Contact Workspace conc
 ### 2.3 Read-only in edit (per §4.3, unchanged)
 
 - **Primary email, primary phone, and the address block (`address1` / `city` / `state` / `postalCode`)** are read-only in edit. This restates the §4.3 rule for the read view — it is not re-decided here.
-- **Correction path — if an identity field is wrong, CREATE A NEW CONTACT.** Do not edit the identity field to fix it.
-- **No cleanup process for the superseded record is needed.** A bad number fails to connect and washes out via call disposition; a good number that reaches the wrong person resolves through normal lead work. The superseded record needs no explicit archive/delete step.
+- **Correction path is THREE-WAY (amended 2026-07-22 — supersedes the earlier flat rule "any identity error → create a new contact"):**
+  - **(a) NEW property / address** → **create a new contact.** One contact = one property; a genuinely different property is a genuinely different record (Class 3 create, §4.5).
+  - **(b) ALTERNATE phone / email** — an additional way to reach the SAME person, not a fix to the primary → **write to the `Phone 2–5` / `Email 2–4` custom fields** (the canonical reachability home — see the field-inventory recon log below), **NOT a new contact.**
+  - **(c) TYPO in the PRIMARY phone / email** → **do NOT create a new contact** — that manufactures the exact duplicate the dedup model exists to prevent. The primary stays **READ-ONLY in IAOS**; the repair happens **inside GHL.**
+  - **Rationale: GHL is the repair shop; IAOS handles normal daily work.** IAOS never edits an identity anchor; a mistyped primary is fixed in GHL, not by spawning a second record from the app.
+- **No cleanup of a superseded record is needed — and only case (a) creates one.** A bad number fails to connect and washes out via call disposition; a good number that reaches the wrong person resolves through normal lead work. **Scope note:** this "washes out" path covers a **BAD LEAD** — it does **NOT** cover a **typo on a LIVE record**, which is case (c) above (fixed in GHL, not washed out).
 
 ### 2.4 Out of scope
 
@@ -147,6 +151,33 @@ Append-only recon log. Separate from the section outline above (§0–3 drafted;
 - **Opportunity object carries a contact back-reference three ways** (from `GET /opportunities/search?location_id={loc}` with no contact filter, 41 opps, HTTP 200): top-level **`contactId`** (string), nested **`contact`** object (`id`/`name`/`email`/`phone`/`tags`/`score`), and **`relations[]`** (`OPPORTUNITIES_CONTACTS_ASSOCIATION`, `recordId` = contact id). Client-side filter on `contactId` is a **viable fallback**, but the server-side `contact_id` filter (above) is **preferred** — no over-fetch, paginated.
 - **INFERRED, NOT OBSERVED — single-contact multi-opportunity PAGINATION is untested.** bradt75 has exactly **1** opportunity, so `meta.nextPageUrl` / `startAfter` + `startAfterId` were *seen in the response shape* but never *exercised* across a page boundary for one contact. Confirm pagination against a multi-opp contact before relying on it.
 - **GENERAL GOTCHA — `/opportunities/search` params are snake_case** (`location_id`, `contact_id`), unlike the contacts endpoints which take `locationId` (camelCase). Mixing the convention → 422. Watch this when reusing query-building code across the two endpoints.
+
+### Field inventory — Contacts edit surface (OBSERVED on the wire 2026-07-22)
+
+Two reads: `GET /locations/jmHG4B8RdzwpfqruNf68/customFields` (HTTP 200) and a full single-record `GET /contacts/9fbH2VCcZvzVNhsR9zjc` (bradt75, HTTP 200). **No field is classified safe/dangerous here — that is the per-field inert-proof's job (§4.2/§4.4), not inferable from names.**
+
+- **CUSTOM fields — 96 definitions, ALL `model: contact`.** ZERO opportunity-scoped custom fields in this location → **no §2.4 opportunities/custom-field overlap to police.** The full name/id/dataType/fieldKey list is on the wire; dataType breakdown by count:
+  - **TEXT ≈ 40** — Phone Type, Mailing Address/City/State/Zip/County/Care-of-Name, Phone 2–5 + Phone 1–5 DNC, Email 2–4, Property Address/Type/Status/Notes, APN, County, Owner Occupied, condition fields (Interior/Exterior/Bathroom/Kitchen/Total), Owner 2 First/Last, Business Website, MLS Status, Litigator, Foreclosure Factor, Wholesaling Market, SMS Sender Name, Do Not Mail, Sending Domain, Booking Calendar Link, `last_call_attempt_precise`, `callback_datetime_precise`, Marketing Lists
+  - **NUMERICAL ≈ 30** — the `offer_*` set (Offer ARV/MAO/Margin/Price/Repair Total/Wholesale Fee), scores (Motivation/Combined/Deal/Data Completeness), Est. Value/Equity/LTV/Remaining Loan Balance, Bedrooms, Total Bathrooms, Building/Lot Sqft, Total Assessed Value, MLS Amount, Last Sale Amount, Hold Months, Effective Year Built, Total Open Loans, Lien Amount
+  - **MONETORY 5** — Loan Amount, Asking Price, Carrying Cost, Estimated Repairs, ARV
+  - **DATE 7** — Last Sale Date, MLS Date, Callback Datetime, Last Call Attempt, Follow Up Date, Offer Date, Date Added to List
+  - **SINGLE_OPTIONS 5** — Has Sending Domain, Has Booking Calendar, Existing GHL Account, Has Existing Leads, MAO Viability Flag
+  - **MULTIPLE_OPTIONS 4** — Lead Source, Timeline to Sell, Occupancy Status, Motivation Level
+  - **LARGE_TEXT 2** — Onboarding Notes, Repair Line Items
+  - **FLOAT 1** — Interest Rate · **PHONE 1** — Business Phone · **FILE_UPLOAD 1** — Upload Your Lead CSV
+- **NATIVE fields — 26 top-level keys present on the bradt75 record**, with types:
+  - `id` (string, immutable), `dateAdded`/`dateUpdated` (ISO string, system), `locationId` (string, system), `type` (string `lead`)
+  - `firstName`/`lastName` (string); `firstNameLowerCase`/`lastNameLowerCase`/`fullNameLowerCase` (string, **derived/system** — the lowercase-names finding); `email`+`emailLowerCase` (string); `phone` (string `+12149146151`); `phoneLabel` (string `Mobile`); `country` (string `US`)
+  - `timezone` (string), `source` (string), `assignedTo` (string, user id)
+  - `tags` (array of string — **HARD NO §4.1**), `followers` (array, empty)
+  - `additionalEmails` (array, empty), `additionalPhones` (array, empty)
+  - `attributionSource` / `lastAttributionSource` / `createdBy` (object, system-populated tracking)
+  - `customFields` (array of `{id, value}` — nested carrier for the custom values above; 3 populated on bradt75)
+- **CAVEAT 1 — the contact GET returns only POPULATED native keys.** bradt75 has no address set, so `address1` / `city` / `state` / `postalCode` (the §4.3 address-identity block) are **ABSENT from this record**. Absence = **empty-on-this-record, NOT absent-from-schema.** The full native address set must be confirmed against a contact that HAS an address, or against the create-contact schema, before the read/edit view relies on those keys.
+- **CAVEAT 2 — `contact.customFields` is a nested `{id, value}` array** carrying only that contact's populated custom values (3 on bradt75). The 96 `customFields` definitions are the **superset**; a contact surfaces only the ones it has values for.
+- **CAVEAT 3 — `additionalEmails`/`additionalPhones` element shape STILL unobservable** (both `[]` on bradt75, consistent with the §4.3 record). AND reachability data ALSO lives in separate custom TEXT fields (`Phone 2–5`, `Email 2–4`) distinct from these native arrays — **two different homes for the same kind of data; an unresolved design question for §5** (which home the edit surface writes, and how the two reconcile).
+- **CAVEAT 4 — recon used Jeff's `pit-b2e9…` token, NOT prod's `…d0f7`.** Both reads returned HTTP 200; scopes (Custom Fields, Contacts) sufficient for READ. This is a read-recon, **not a prod-credential test.**
+- **PROVISIONAL DIRECTION (2026-07-22) — reachability home decided (provisionally).** The two-homes question from CAVEAT 3 gets a working answer: **the custom fields `Phone 2–5` / `Email 2–4` are the CANONICAL home for alternate reachability data**, because the **PropStream import already populates them** — the data already lives there. The native `additionalPhones` / `additionalEmails` arrays stay **READ-ONLY and unused** until collision behavior, element shape, and workflow usage are verified on the wire. **DO NOT mirror values into both homes** (one source of truth, no drift). **UNVERIFIED:** whether GHL workflows read the custom fields or the native arrays is **NOT confirmable from the repo** — workflow config lives in GHL (per §4.6, trigger/read config is not API-derivable). Resolve on the wire before relying on either as the workflow-visible home.
 
 ---
 
