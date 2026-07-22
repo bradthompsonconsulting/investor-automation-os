@@ -1,6 +1,6 @@
 # IAOS — CONTACTS / OPPORTUNITIES SPEC
 
-Status: **DRAFT — §0–3 (narrative: why / boundary / scope / navigation) + §4-v3 (write invariant) + §5 (surface design & build: layout / build order / verification) + recon log.** §5.1–5.3 drafted 2026-07-22. This is roadmap surface #4 (master ref §2a, locked sequence: Dashboard → Conversations → Calendars → **Contacts/Opportunities**). §0–3 and the write-class model are Brad-decided (2026-07-21/22) and recon-backed; the §5.3 Phase A verification floor integer remains TBD.
+Status: **DRAFT — §0–3 (narrative: why / boundary / scope / navigation) + §4-v3 (write invariant) + §5 (surface design & build: layout / build order / verification) + recon log.** §5.1–5.3 drafted 2026-07-22. This is roadmap surface #4 (master ref §2a, locked sequence: Dashboard → Conversations → Calendars → **Contacts/Opportunities**). §0–3 and the write-class model are Brad-decided (2026-07-21/22) and recon-backed; the §5.3 Phase A verification floor integer is **122**.
 
 **This phase covers Contacts only. Opportunities are deliberately out of scope and will be specified separately** (§2.4).
 
@@ -152,7 +152,7 @@ Layout rules for the `/contacts/:id` edit view. **RULES ONLY — no field is ass
 - **Within each folder, fields render in GHL `position` order** (the order the reference file's field table is already sorted within a `parentId`).
 - **`Additional Info` (`qYS1wakeOTmfgjyeSJ8M`) is the SOLE exception to native grouping.** It holds **73 of 96** fields, so it is internally subdivided into IAOS subgroups. This is the ONLY folder where IAOS departs from GHL's native grouping, and the reason is exactly the observed **73/96** concentration. Every OTHER folder renders **flat** (no subgroups).
 - **Precise companion fields are never independently editable.** `last_call_attempt_precise` and `callback_datetime_precise` have no standalone control; each is written ONLY in the same operation that writes its paired field (`last_call_attempt` / `callback_datetime`, per §4.0).
-- **Each `Phone N DNC` field renders adjacent to its `Phone N` field** — the DNC flag sits with the number it qualifies.
+- **Each `Phone N DNC` field renders adjacent to its `Phone N` field** — the DNC flag sits with the number it qualifies. **`Phone 1 DNC` is the exception:** there is no `Phone 1` custom field (the primary phone is a native identity field, not among the 96), so `Phone 1 DNC` renders adjacent to the **native primary phone** within the Reachability subgroup. The intent of the rule is that **no phone number renders without its DNC status.**
 - **Native identity fields are out of this section's scope.** Primary phone, primary email, and the address block are NOT custom fields and are NOT among the 96; their placement is governed by §4-v3 Class 2 (§4.3) and is not restated here.
 
 ### 5.2 Build order
@@ -177,16 +177,16 @@ Two **separate build phases with separate verification** — NOT one phase with 
 ### 5.3 Verification
 
 - **Each phase has its own harness with its own self-check floor.** The floor is the **exact count of `check()` calls on the happy path**, and it is **written into this spec BEFORE the harness exists** — never derived from a run. A floor set after observing a run passes partial runs as clean.
-- **Phase A floor — read assertions only.** It covers: the grid renders; search / filter / sort behave; the detail view renders all **96** custom fields in **folder-then-`position`** order; the **four `Additional Info` subgroups** render; each `Phone N DNC` renders **adjacent** to its `Phone N`; and **no input element exists anywhere on the detail view**.
+- **Phase A floor — read assertions only.** It covers: the grid renders; search / filter / sort behave; the detail view renders all **96** custom fields in **folder-then-subgroup-then-`position`** order for `Additional Info` (its four subgroups in the order Reachability, Property, Investor, System, each internally by GHL `position` — NOT raw `position` across all 73) and **folder-then-`position`** order for every other folder; the **native identity fields render — primary phone, primary email, `address1`, `city`, `state`, `postalCode` — as SIX separate assertions** (the address block is asserted **field-by-field, NOT as one block**, because a partial address render is still a defect); the **four `Additional Info` subgroups** render; each `Phone N DNC` renders **adjacent** to its `Phone N`; and **no input element exists anywhere on the detail view**. **Each of the 96 field assertions checks presence AND rendered ordinal in one `check()`, so there is no separate global order assertion.**
 - **Phase A verification runs against the LIVE deploy** at `app.investorautomationos.com`, **never localhost**, and passes the **§9.2 bundle gate**: the parent hash must **discriminate** from the current commit hash to confirm a new deploy is actually live.
 - **Layout is verified at Brad's WIDE viewport, not only at 1280px.** DOM checks at 1280 have passed when the rendered result was wrong at ~2560px.
 - **Phase B adds one write assertion per field** as its inert-proof passes; the Phase B floor **increments with each unlocked field and is restated at each increment**.
 
-**Phase A floor integer — TBD.** It is countable only once the harness assertions are enumerated, and it MUST be written into this section BEFORE the harness is coded — never back-filled from a passing run.
+**Phase A floor integer — 122.** Enumerated as `check()` calls on the happy path: grid + search + filter + sort (4) + six folder sections (6) + the 96 custom fields (96) + four `Additional Info` subgroups (4) + six native identity fields — primary phone, primary email, `address1`, `city`, `state`, `postalCode` (6) + five `Phone N DNC` adjacencies, incl. `Phone 1 DNC` against the native primary phone (5) + no-input-element (1) = **122**. Written into this section BEFORE the harness is coded, per the rule above — never back-filled from a passing run.
 
 ---
 
-_Narrative §0–3 (per Brad) and §5 (surface design & build: layout / build order / verification) drafted 2026-07-22; the §5.3 Phase A verification floor integer remains TBD._
+_Narrative §0–3 (per Brad) and §5 (surface design & build: layout / build order / verification) drafted 2026-07-22; the §5.3 Phase A verification floor integer is 122._
 
 ---
 
