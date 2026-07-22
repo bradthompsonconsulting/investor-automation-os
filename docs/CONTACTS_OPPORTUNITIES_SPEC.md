@@ -141,6 +141,10 @@ Consequence for this surface: we cannot build a trigger table that says "editing
 
 ---
 
+_Narrative §0–3 drafted 2026-07-22 (per Brad); §5+ intentionally not drafted yet._
+
+---
+
 ## RECON FINDINGS — Opportunities read path (OBSERVED on the wire 2026-07-21)
 
 Append-only recon log. Separate from the section outline above (§0–3 drafted; §5+ undrafted); this records wire facts as they are established. Fixture: bradt75 (`bradt75@gmail.com`, contact id `9fbH2VCcZvzVNhsR9zjc`).
@@ -178,7 +182,3 @@ Two reads: `GET /locations/jmHG4B8RdzwpfqruNf68/customFields` (HTTP 200) and a f
 - **CAVEAT 3 — `additionalEmails`/`additionalPhones` element shape STILL unobservable** (both `[]` on bradt75, consistent with the §4.3 record). AND reachability data ALSO lives in separate custom TEXT fields (`Phone 2–5`, `Email 2–4`) distinct from these native arrays — **two different homes for the same kind of data; an unresolved design question for §5** (which home the edit surface writes, and how the two reconcile).
 - **CAVEAT 4 — recon used Jeff's `pit-b2e9…` token, NOT prod's `…d0f7`.** Both reads returned HTTP 200; scopes (Custom Fields, Contacts) sufficient for READ. This is a read-recon, **not a prod-credential test.**
 - **PROVISIONAL DIRECTION (2026-07-22) — reachability home decided (provisionally).** The two-homes question from CAVEAT 3 gets a working answer: **the custom fields `Phone 2–5` / `Email 2–4` are the CANONICAL home for alternate reachability data**, because the **PropStream import already populates them** — the data already lives there. The native `additionalPhones` / `additionalEmails` arrays stay **READ-ONLY and unused** until collision behavior, element shape, and workflow usage are verified on the wire. **DO NOT mirror values into both homes** (one source of truth, no drift). **UNVERIFIED:** whether GHL workflows read the custom fields or the native arrays is **NOT confirmable from the repo** — workflow config lives in GHL (per §4.6, trigger/read config is not API-derivable). Resolve on the wire before relying on either as the workflow-visible home.
-
----
-
-_Narrative §0–3 drafted 2026-07-22 (per Brad); §5+ intentionally not drafted yet._
