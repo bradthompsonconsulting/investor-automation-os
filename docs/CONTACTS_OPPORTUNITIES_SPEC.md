@@ -1,8 +1,67 @@
 # IAOS — CONTACTS / OPPORTUNITIES SPEC
 
-Status: **DRAFT — §4-v3 (write invariant) ONLY.** No other section drafted yet. This is roadmap surface #4 (master ref §2a, locked sequence: Dashboard → Conversations → Calendars → **Contacts/Opportunities**). The write-class model below is Brad-decided (2026-07-21) and recon-backed; everything else in this file is TBD and deliberately left unwritten until the write class is locked.
+Status: **DRAFT — §0–3 (narrative: why / boundary / scope / navigation) + §4-v3 (write invariant) + recon log.** §5+ still undrafted. This is roadmap surface #4 (master ref §2a, locked sequence: Dashboard → Conversations → Calendars → **Contacts/Opportunities**). §0–3 and the write-class model are Brad-decided (2026-07-21/22) and recon-backed; §5+ is TBD.
+
+**This phase covers Contacts only. Opportunities are deliberately out of scope and will be specified separately** (§2.4).
 
 Sits alongside `IAOS_Master_Architecture_Reference_V10_2.txt`, `DASHBOARD_SPEC_v2.txt`, `CONTACT_WORKSPACE_SPEC_v2.md`, `CONVERSATIONS_SPEC.md`, `CALENDARS_SPEC.md`.
+
+---
+
+## 0. WHY THIS SURFACE EXISTS
+
+Contacts is the record-**management** surface. Where Conversations is where the investor *works the lead* — texting, calling, emailing, taking notes, setting callbacks — Contacts is where they *manage the record*.
+
+Outlook model: **Inbox = daily work; Contacts = address book.** Conversations is the inbox (where you go to do today's work); Contacts is the address book (where you go to correct a record, look someone up, or add a new person). Two different jobs, two different surfaces.
+
+**Contact Workspace is TRANSITIONAL.** Its working-the-lead features — notes, callback, conversation history, the Call action — belong to Conversations and migrate there over time. Do NOT build any part of this surface assuming Workspace is permanent or that its feature set is the target shape. (See §3 for the shared-route consequence during the transition.)
+
+---
+
+## 1. SCOPE BOUNDARY (LOCKED)
+
+- **Conversations = working the lead.**
+- **Contacts = managing the record.**
+
+This boundary is locked. This surface does **NOT** extend Contact Workspace conceptually — it is not "Workspace v2." Contacts and Workspace share a route during the transition only (§3); that shared route is a migration artifact, not a merge of the two surfaces. A reader must not conclude the surfaces combined.
+
+---
+
+## 2. SCOPE
+
+### 2.1 In scope
+
+- **Contact detail record editing** at `/contacts/:id` — native fields, custom fields, property info. Editing happens ONLY on the detail view.
+- **Contacts grid** — list / search / filter / sort; choose which contact to open. **NO inline editing in the grid** — the grid selects a record; editing is on the detail view only.
+- **Create New Contact** — Class 3 (§4.5), gated on its own inert-proof.
+
+### 2.2 Display-only (NOT editable)
+
+- **Score and Tier** are computed **system outputs, not contact data.** They are never editable — a manual edit would weaken the scoring model and be overwritten on the next rescore. The detail view MAY surface the contributing factors behind a Score/Tier; the values themselves stay read-only display.
+
+### 2.3 Read-only in edit (per §4.3, unchanged)
+
+- **Primary email, primary phone, and the address block (`address1` / `city` / `state` / `postalCode`)** are read-only in edit. This restates the §4.3 rule for the read view — it is not re-decided here.
+- **Correction path — if an identity field is wrong, CREATE A NEW CONTACT.** Do not edit the identity field to fix it.
+- **No cleanup process for the superseded record is needed.** A bad number fails to connect and washes out via call disposition; a good number that reaches the wrong person resolves through normal lead work. The superseded record needs no explicit archive/delete step.
+
+### 2.4 Out of scope
+
+- **Opportunities** — deliberately out of scope; **this phase covers Contacts only. Opportunities will be specified separately.** The **RECON FINDINGS — Opportunities read path** log at the bottom of this file is retained as **FUTURE REFERENCE ONLY** — it is not an in-scope feature of this phase.
+- **Tags, pipeline stage, `offer_` fields** — HARD NO, unchanged (§4.1).
+
+### 2.5 Recorded, not scoped (GHL-side config, not IAOS code)
+
+- **Bad-number call disposition → route the opportunity to Lost / Not Interested via a GHL WORKFLOW.** When a call disposition marks a number bad, the opportunity should route to Lost/Not Interested. This is **GHL-side workflow config, not IAOS code** — it extends the already-proven disposition webhook path (`CONTACT_WORKSPACE_SPEC` §5.6). Recorded here so it is not lost; it is NOT a build item for this surface.
+
+---
+
+## 3. NAVIGATION
+
+- **Contacts owns `/contacts/:id`** as the record-management (detail) view.
+- **During the transition, that same route ALSO hosts the existing Contact Workspace working-the-lead features** (notes, callback, conversation history, Call) until they migrate to Conversations (§0). Stated explicitly so a reader does NOT conclude the two surfaces merged — they cohabit one route temporarily; that is all.
+- **Do NOT create a temporary second detail route.** The transition is handled on the one `/contacts/:id` route, not by standing up a parallel Workspace URL.
+- The **grid → detail link already shipped** (Contact Workspace §8 step 2b) — Contacts reuses it; no new grid→detail navigation is built here.
 
 ---
 
@@ -80,7 +139,7 @@ Consequence for this surface: we cannot build a trigger table that says "editing
 
 ## RECON FINDINGS — Opportunities read path (OBSERVED on the wire 2026-07-21)
 
-Append-only recon log. Separate from the section outline above (§0–3 and §5+ are still undrafted); this records wire facts as they are established. Fixture: bradt75 (`bradt75@gmail.com`, contact id `9fbH2VCcZvzVNhsR9zjc`).
+Append-only recon log. Separate from the section outline above (§0–3 drafted; §5+ undrafted); this records wire facts as they are established. Fixture: bradt75 (`bradt75@gmail.com`, contact id `9fbH2VCcZvzVNhsR9zjc`).
 
 - **Contact→opportunities read — RESOLVED.** `GET /opportunities/search?location_id={loc}&contact_id={id}` → **HTTP 200**, returns exactly that contact's opportunities, **server-side filtered** (`meta.total: 1` for bradt75, opp `4zCenJMlSlrwPF5UUQRv`). This is the path to use. No client-side filtering needed.
   - **BOTH params are snake_case: `location_id` and `contact_id`.** camelCase `contactId` / `locationId` → **HTTP 422**. **This is the root cause of the prior recorded 422 — wrong param CASE, NOT a missing endpoint.** `/opportunities/search` was always the right endpoint.
@@ -91,4 +150,4 @@ Append-only recon log. Separate from the section outline above (§0–3 and §5+
 
 ---
 
-_Narrative sections 0–3 and 5+ intentionally not drafted yet — §4-v3 write invariant + the recon-findings log only, per Brad 2026-07-21._
+_Narrative §0–3 drafted 2026-07-22 (per Brad); §5+ intentionally not drafted yet._
