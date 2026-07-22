@@ -140,4 +140,86 @@ This file has **two clearly separated parts**. Keep them separate:
 Nothing here is a wire fact. Every entry is a deliberate IAOS choice. This part is intentionally near-empty: **no per-field inert-proof has run**, so no field is characterized beyond what is recorded below.
 
 - **Folder `YslJ5oke73JrBOgaq0np` (the 7 `offer_` fields) is the `CONTACTS_OPPORTUNITIES_SPEC.md` §4.1 HARD NO set.** Its members (from Part 1): Offer Price, Offer MAO, Offer Wholesale Fee, Offer Repair Total, Offer Margin, Offer ARV, Offer Date.
-- **Folder `qYS1wakeOTmfgjyeSJ8M` "Additional Info" holds 73 of 96 fields** — GHL's folder grouping is OBSERVED but insufficient as the sole layout driver for §5.1 (one folder carrying ~76% of fields provides little structure). No subdivision is proposed here.
+- **Folder `qYS1wakeOTmfgjyeSJ8M` "Additional Info" holds 73 of 96 fields** — GHL's folder grouping is OBSERVED but insufficient as the sole layout driver for §5.1 (one folder carrying ~76% of fields provides little structure). The four-subgroup subdivision that resolves this is defined immediately below.
+
+### `Additional Info` subdivision — four IAOS subgroups
+
+**IAOS DECISION, not a wire fact.** GHL groups all 73 of these fields into the single `Additional Info` folder (`qYS1wakeOTmfgjyeSJ8M`). That flat 73/96 concentration (recorded above) is unusable as one section, so — and ONLY for this folder (§5.1) — IAOS subdivides it into **exactly four subgroups: Reachability, Property, Investor, System.** This subdivision is an IAOS layout decision justified by the observed 73/96 concentration; it is **not present on the wire** (GHL knows only the one folder). Every one of the 73 fields lands in **exactly one** subgroup.
+
+Per-subgroup counts: **Reachability 22 · Property 30 · Investor 14 · System 7** (sum = **73**). Ordered by subgroup, then by GHL `position` within each subgroup:
+
+| field name | fieldKey | subgroup |
+|---|---|---|
+| Phone 1 DNC | `contact.phone_1_dnc` | Reachability |
+| Phone 2 | `contact.phone_2` | Reachability |
+| Phone 2 DNC | `contact.phone_2_dnc` | Reachability |
+| Phone 3 | `contact.phone_3` | Reachability |
+| Phone 3 DNC | `contact.phone_3_dnc` | Reachability |
+| Phone 4 | `contact.phone_4` | Reachability |
+| Phone 4 DNC | `contact.phone_4_dnc` | Reachability |
+| Phone 5 | `contact.phone_5` | Reachability |
+| Phone 5 DNC | `contact.phone_5_dnc` | Reachability |
+| Email 2 | `contact.email_2` | Reachability |
+| Email 3 | `contact.email_3` | Reachability |
+| Email 4 | `contact.email_4` | Reachability |
+| Owner 2 First Name | `contact.owner_2_first_name` | Reachability |
+| Owner 2 Last Name | `contact.owner_2_last_name` | Reachability |
+| Litigator | `contact.litigator` | Reachability |
+| Mailing Care of Name | `contact.mailing_care_of_name` | Reachability |
+| Mailing Address | `contact.mailing_address` | Reachability |
+| Mailing City | `contact.mailing_city` | Reachability |
+| Mailing State | `contact.mailing_state` | Reachability |
+| Mailing Zip | `contact.mailing_zip` | Reachability |
+| Mailing County | `contact.mailing_county` | Reachability |
+| Do Not Mail | `contact.do_not_mail` | Reachability |
+| Property Address | `contact.property_address` | Property |
+| Loan Amount | `contact.loan_amount` | Property |
+| Interest Rate | `contact.interest_rate` | Property |
+| County | `contact.county` | Property |
+| APN | `contact.apn` | Property |
+| Property Status | `contact.property_status` | Property |
+| Property Type | `contact.property_type` | Property |
+| Bedrooms | `contact.bedrooms` | Property |
+| Total Bathrooms | `contact.total_bathrooms` | Property |
+| Building Sqft | `contact.building_sqft` | Property |
+| Lot Size Sqft | `contact.lot_size_sqft` | Property |
+| Effective Year Built | `contact.effective_year_built` | Property |
+| Total Assessed Value | `contact.total_assessed_value` | Property |
+| Last Sale Date | `contact.last_sale_date` | Property |
+| Last Sale Amount | `contact.last_sale_amount` | Property |
+| Total Open Loans | `contact.total_open_loans` | Property |
+| Est. Remaining Loan Balance | `contact.est_remaining_loan_balance` | Property |
+| Est. Value | `contact.est_value` | Property |
+| Est. Loan-to-Value | `contact.est_ltv` | Property |
+| Est. Equity | `contact.est_equity` | Property |
+| MLS Status | `contact.mls_status` | Property |
+| MLS Date | `contact.mls_date` | Property |
+| MLS Amount | `contact.mls_amount` | Property |
+| Lien Amount | `contact.lien_amount` | Property |
+| Foreclosure Factor | `contact.foreclosure_factor` | Property |
+| Total Condition | `contact.total_condition` | Property |
+| Interior Condition | `contact.interior_condition` | Property |
+| Bathroom Condition | `contact.bathroom_condition` | Property |
+| Kitchen Condition | `contact.kitchen_condition` | Property |
+| Exterior Condition | `contact.exterior_condition` | Property |
+| Asking Price | `contact.asking_price` | Investor |
+| ARV | `contact.arv` | Investor |
+| Estimated Repairs | `contact.estimated_repairs` | Investor |
+| Motivation Level | `contact.motivation_level` | Investor |
+| Timeline to Sell | `contact.timeline_to_sell` | Investor |
+| Lead Source | `contact.lead_source` | Investor |
+| Occupancy Status | `contact.occupancy_status` | Investor |
+| Follow Up Date | `contact.follow_up_date` | Investor |
+| MAO Viability Flag | `contact.mao_viability_flag` | Investor |
+| Hold Months | `contact.hold_months` | Investor |
+| Carrying Cost | `contact.carrying_cost` | Investor |
+| Repair Line Items | `contact.repair_line_items` | Investor |
+| Owner Occupied | `contact.owner_occupied` | Investor |
+| Property Notes | `contact.property_notes` | Investor |
+| Marketing Lists | `contact.marketing_lists` | System |
+| Date Added to List | `contact.date_added_to_list` | System |
+| Motivation Score | `contact.motivation_score` | System |
+| Deal Score | `contact.deal_score` | System |
+| Combined Score | `contact.combined_score` | System |
+| Data Completeness Score | `contact.data_completeness_score` | System |
+| Callback Datetime Precise | `contact.callback_datetime_precise` | System |

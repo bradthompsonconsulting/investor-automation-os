@@ -1,6 +1,6 @@
 # IAOS — CONTACTS / OPPORTUNITIES SPEC
 
-Status: **DRAFT — §0–3 (narrative: why / boundary / scope / navigation) + §4-v3 (write invariant) + recon log.** §5+ still undrafted. This is roadmap surface #4 (master ref §2a, locked sequence: Dashboard → Conversations → Calendars → **Contacts/Opportunities**). §0–3 and the write-class model are Brad-decided (2026-07-21/22) and recon-backed; §5+ is TBD.
+Status: **DRAFT — §0–3 (narrative: why / boundary / scope / navigation) + §4-v3 (write invariant) + §5 (surface design & build: layout / build order / verification) + recon log.** §5.1–5.3 drafted 2026-07-22. This is roadmap surface #4 (master ref §2a, locked sequence: Dashboard → Conversations → Calendars → **Contacts/Opportunities**). §0–3 and the write-class model are Brad-decided (2026-07-21/22) and recon-backed; the §5.3 Phase A verification floor integer remains TBD.
 
 **This phase covers Contacts only. Opportunities are deliberately out of scope and will be specified separately** (§2.4).
 
@@ -141,7 +141,52 @@ Consequence for this surface: we cannot build a trigger table that says "editing
 
 ---
 
-_Narrative §0–3 drafted 2026-07-22 (per Brad); §5+ intentionally not drafted yet._
+## 5. SURFACE DESIGN AND BUILD
+
+### 5.1 Layout rules
+
+Layout rules for the `/contacts/:id` edit view. **RULES ONLY — no field is assigned to a group here.** The field→group mapping (and how `Additional Info` is subdivided) lives in `docs/CONTACT_FIELD_REFERENCE.md` (Part 2 — IAOS DECISIONS), not in this spec.
+
+- **Single long scrolling form.** The edit view is one long scrolling form on `/contacts/:id` — no tabs, no wizard, no pagination.
+- **Primary sections are GHL's six custom-field folders**, rendered in the order given in `docs/CONTACT_FIELD_REFERENCE.md` (the folder table, Part 1). **Section headings use GHL's folder names verbatim.**
+- **Within each folder, fields render in GHL `position` order** (the order the reference file's field table is already sorted within a `parentId`).
+- **`Additional Info` (`qYS1wakeOTmfgjyeSJ8M`) is the SOLE exception to native grouping.** It holds **73 of 96** fields, so it is internally subdivided into IAOS subgroups. This is the ONLY folder where IAOS departs from GHL's native grouping, and the reason is exactly the observed **73/96** concentration. Every OTHER folder renders **flat** (no subgroups).
+- **Precise companion fields are never independently editable.** `last_call_attempt_precise` and `callback_datetime_precise` have no standalone control; each is written ONLY in the same operation that writes its paired field (`last_call_attempt` / `callback_datetime`, per §4.0).
+- **Each `Phone N DNC` field renders adjacent to its `Phone N` field** — the DNC flag sits with the number it qualifies.
+- **Native identity fields are out of this section's scope.** Primary phone, primary email, and the address block are NOT custom fields and are NOT among the 96; their placement is governed by §4-v3 Class 2 (§4.3) and is not restated here.
+
+### 5.2 Build order
+
+Two **separate build phases with separate verification** — NOT one phase with conditional gates (reason at the end of this section).
+
+**Phase A — read-only.**
+
+- Ships: the grid (list / search / filter / sort) and the `/contacts/:id` detail **display** of all 96 custom fields plus the native identity fields.
+- **No writes; no fixture proofs required.** Ships on its own bundle gate (§9.2).
+- **Edit affordances are ABSENT in Phase A, not disabled** — render read-only text, no input elements. A greyed-out input the reader cannot distinguish from a wired one that failed is not an acceptable intermediate state.
+
+**Phase B — edit affordances, unlocked per field.**
+
+- Each **Class 1** field (§4.4) becomes writable ONLY after its own inert-proof passes on the `bradt75` fixture.
+- **Class 2** identity fields (§4.3) stay **read-only in the edit view regardless of proof**.
+- **Class 3** create (§4.5) is its own sub-phase with its own proof.
+- The **§4.1 HARD NO** fields — the seven `offer_` fields (GHL folder "Offer") — **never become editable**.
+
+**Why two build phases, not one phase with conditional gates:** Phase A's harness contains **no GHL write**, so its assertion floor is a **fixed count of read assertions**. Mixing write proofs into Phase A would make that floor **shift as proofs land** — so Phase A and Phase B are separate build phases with separate verification, each with a stable floor.
+
+### 5.3 Verification
+
+- **Each phase has its own harness with its own self-check floor.** The floor is the **exact count of `check()` calls on the happy path**, and it is **written into this spec BEFORE the harness exists** — never derived from a run. A floor set after observing a run passes partial runs as clean.
+- **Phase A floor — read assertions only.** It covers: the grid renders; search / filter / sort behave; the detail view renders all **96** custom fields in **folder-then-`position`** order; the **four `Additional Info` subgroups** render; each `Phone N DNC` renders **adjacent** to its `Phone N`; and **no input element exists anywhere on the detail view**.
+- **Phase A verification runs against the LIVE deploy** at `app.investorautomationos.com`, **never localhost**, and passes the **§9.2 bundle gate**: the parent hash must **discriminate** from the current commit hash to confirm a new deploy is actually live.
+- **Layout is verified at Brad's WIDE viewport, not only at 1280px.** DOM checks at 1280 have passed when the rendered result was wrong at ~2560px.
+- **Phase B adds one write assertion per field** as its inert-proof passes; the Phase B floor **increments with each unlocked field and is restated at each increment**.
+
+**Phase A floor integer — TBD.** It is countable only once the harness assertions are enumerated, and it MUST be written into this section BEFORE the harness is coded — never back-filled from a passing run.
+
+---
+
+_Narrative §0–3 (per Brad) and §5 (surface design & build: layout / build order / verification) drafted 2026-07-22; the §5.3 Phase A verification floor integer remains TBD._
 
 ---
 
