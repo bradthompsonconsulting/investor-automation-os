@@ -77,6 +77,10 @@ export interface ContactRow {
   callbackDatetimePrecise: string | null;
   lastCallAttempt:         string | null;
   lastCallAttemptPrecise:  string | null;
+  // Contacts grid V1 (§5.1) — the deal's subject-property address, from the
+  // contact.property_address custom field (tG4gGFI8JB2VjWeuqYMx). "" when the
+  // field is absent. Surfaced by parseContact via the list read — no extra fetch.
+  propertyAddress:         string;
 }
 
 // ── Contacts surface (Phase A) types ──────────────────────────────────────────

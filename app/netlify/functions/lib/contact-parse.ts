@@ -18,6 +18,12 @@ const SCORE_IDS = {
 // review" tile to detect a saved-but-unsent offer. Never written by this function.
 const OFFER_PRICE_ID = "v2VO2wUwTYRojmU7VXyZ";
 
+// Property Address (contact.property_address) — the deal's subject-property
+// address, a TEXT custom field. Confirmed live: tG4gGFI8JB2VjWeuqYMx =
+// "2623 Greenway Dr" on bradt75, present BY VALUE in both the list and
+// single-record reads (the list does not truncate custom fields). Read-only.
+const PROPERTY_ADDRESS_ID = "tG4gGFI8JB2VjWeuqYMx";
+
 // Dashboard Phase 2/3 fields (confirmed live via /locations/.../customFields).
 // callback_datetime and last_call_attempt are DATE type on contact; parsing
 // here only reads them, never writes.
@@ -72,6 +78,17 @@ function cfText(customFields: any[], id: string): string | null {
   return isNaN(new Date(s).getTime()) ? null : s;
 }
 
+// Plain TEXT passthrough — the field's raw string value, or "" if the field is
+// absent/empty. Unlike cfText, does NOT date-validate (property_address is a
+// street address, never a date) and defaults to "" to match the native address
+// fields — never null, undefined, or a thrown error on an absent field.
+function cfString(customFields: any[], id: string): string {
+  const f = customFields?.find((cf: any) => cf.id === id);
+  const raw = f?.value ?? f?.fieldValue ?? null;
+  if (raw === null || raw === undefined) return "";
+  return String(raw).trim();
+}
+
 // Raw GHL contact -> our ContactRow shape. Field order preserved exactly as it
 // was inline in ghl-contacts.ts so the serialized output is byte-identical.
 export function parseContact(c: any) {
@@ -97,5 +114,6 @@ export function parseContact(c: any) {
     callbackDatetimePrecise: cfText(cf, CALLBACK_DATETIME_PRECISE_ID),
     lastCallAttempt:         cfDate(cf, LAST_CALL_ATTEMPT_ID),
     lastCallAttemptPrecise:  cfText(cf, LAST_CALL_ATTEMPT_PRECISE_ID),
+    propertyAddress:         cfString(cf, PROPERTY_ADDRESS_ID),
   };
 }
