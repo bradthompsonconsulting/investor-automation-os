@@ -18,6 +18,22 @@ This file has **two clearly separated parts**. Keep them separate:
 - **Sort:** by `parentId`, then `position`
 - **Regenerate:** re-run the source call and re-sort by (`parentId`, `position`); this table is a pure projection of the response — diff a fresh pull against it to detect any field add/remove/rename/regroup.
 
+### Folders (the objects the field `parentId` values reference)
+
+- **Folder source path:** `GET /locations/jmHG4B8RdzwpfqruNf68/customFields/{id}` — the single-record custom-field lookup resolves a folder id and returns the folder record (`documentType: folder`). HTTP 200 for each id below.
+- **No collection endpoint for folders was found.** Three collection-style paths tried, all failed: `/customFields/folder` → **400**, `/customFields/folders` → **400** (both parsed as a single-field lookup: "CustomField with id … not found"), `/customFields?model=folder` → **422** ("model must be a valid enum value").
+
+| parentId | folder name | documentType | standard | field count |
+|---|---|---|---|---|
+| `2kmTfkj3wxLc0v52AxHS` | IAOS Onboarding | folder | false | 11 |
+| `8NV0bLrpGEi4bRflnasN` | Contact | folder | true | 1 |
+| `8WVFNtuUuYZ4aEqrUWMb` | Form \| IAOS Client Intake Form | folder | false | 1 |
+| `YslJ5oke73JrBOgaq0np` | Offer | folder | false | 7 |
+| `kmPmjCjI4noq8KISyq2e` | General Info | folder | true | 3 |
+| `qYS1wakeOTmfgjyeSJ8M` | Additional Info | folder | true | 73 |
+
+(Field counts sum to 96, matching the field table below.)
+
 | name | id | fieldKey | dataType | position | parentId | standard |
 |---|---|---|---|---|---|---|
 | Business Phone | `nuQ6CNjg191xgSUHqQKE` | `contact.business_phone` | PHONE | 50 | `2kmTfkj3wxLc0v52AxHS` | false |
@@ -124,3 +140,4 @@ This file has **two clearly separated parts**. Keep them separate:
 Nothing here is a wire fact. Every entry is a deliberate IAOS choice. This part is intentionally near-empty: **no per-field inert-proof has run**, so no field is characterized beyond what is recorded below.
 
 - **Folder `YslJ5oke73JrBOgaq0np` (the 7 `offer_` fields) is the `CONTACTS_OPPORTUNITIES_SPEC.md` §4.1 HARD NO set.** Its members (from Part 1): Offer Price, Offer MAO, Offer Wholesale Fee, Offer Repair Total, Offer Margin, Offer ARV, Offer Date.
+- **Folder `qYS1wakeOTmfgjyeSJ8M` "Additional Info" holds 73 of 96 fields** — GHL's folder grouping is OBSERVED but insufficient as the sole layout driver for §5.1 (one folder carrying ~76% of fields provides little structure). No subdivision is proposed here.
