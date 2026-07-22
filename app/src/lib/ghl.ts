@@ -112,6 +112,24 @@ export interface ContactDetail {
   customFields: ContactDetailField[]; // sparse: only this contact's populated values (3 on bradt75), by id — NOT all 96
 }
 
+// Contacts grid V1 row (§5.1 Grid layout) — the five displayed column fields
+// (Name · Phone · Email · Property Address · Date Added) plus a NON-VISIBLE
+// `id`. A read-only projection of ContactRow. `name` is firstName+lastName
+// joined; listAll lowercases names (existing finding), so display-casing is the
+// grid component's job, not this read.
+export interface ContactGridRow {
+  // NON-VISIBLE — carried only for the row → /contacts/:id link (§5.1 / §3 /
+  // Workspace §8 step 2b) and React row keys. NOT a sixth column: do not render
+  // it. The five displayed columns are unchanged, so the §5.3 grid assertions
+  // and floor 122 are unaffected.
+  id:              string;
+  name:            string;      // firstName + lastName, joined; "" if both empty
+  phone:           string;
+  email:           string;
+  propertyAddress: string;      // contact.property_address; "" when absent
+  dateAdded:       string | null;
+}
+
 // ── Bucket tag helpers ────────────────────────────────────────────────────────
 // Bucket tags (hot/warm/low) are written by the scoring function (motivation-score.ts)
 // as the source of truth for tier assignment. This module only reads them.
@@ -339,6 +357,37 @@ export const ghl = {
           ? c.customFields.map((f: any) => ({ id: f.id, value: f.value }))
           : [],
       };
+    },
+
+    // Contacts grid V1 (§5.1) — read-only projection of listAll() down to the
+    // five displayed column fields (name / phone / email / propertyAddress /
+    // dateAdded) plus a NON-VISIBLE id, carried only for the §5.1 line 166 row →
+    // /contacts/:id link and the React row key (NOT a sixth column — do not
+    // render it; the displayed columns and the §5.3 floor of 122 are unchanged).
+    // Tolerates the carried transient — the list endpoint has
+    // returned a blank/non-JSON body once this session, on which listAll()
+    // throws (JSON.parse) — with ONE retry, then SURFACES the failure; never a
+    // silent empty array.
+    gridRows: async (): Promise<ContactGridRow[]> => {
+      const toRow = (c: ContactRow): ContactGridRow => ({
+        id:              c.id,
+        name:            [c.firstName, c.lastName].filter(Boolean).join(" "),
+        phone:           c.phone,
+        email:           c.email,
+        propertyAddress: c.propertyAddress,
+        dateAdded:       c.dateAdded,
+      });
+      try {
+        return (await ghl.contacts.listAll()).map(toRow);
+      } catch (first) {
+        try {
+          return (await ghl.contacts.listAll()).map(toRow);
+        } catch (second) {
+          throw new Error(
+            `contacts.gridRows: list read failed after one retry — ${second instanceof Error ? second.message : String(second)}`,
+          );
+        }
+      }
     },
     list: (params?: Record<string, string>) => {
       const qs = new URLSearchParams({ locationId: LOCATION_ID, limit: "25", ...params }).toString();
