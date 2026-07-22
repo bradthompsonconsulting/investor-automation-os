@@ -45,9 +45,9 @@ This boundary is locked. This surface does **NOT** extend Contact Workspace conc
 - **Correction path is THREE-WAY (amended 2026-07-22 — supersedes the earlier flat rule "any identity error → create a new contact"):**
   - **(a) NEW property / address** → **create a new contact.** One contact = one property; a genuinely different property is a genuinely different record (Class 3 create, §4.5).
   - **(b) ALTERNATE phone / email** — an additional way to reach the SAME person, not a fix to the primary → **write to the `Phone 2–5` / `Email 2–4` custom fields** (the canonical reachability home — see the field-inventory recon log below), **NOT a new contact.**
-  - **(c) TYPO in the PRIMARY phone / email** → **do NOT create a new contact** — that manufactures the exact duplicate the dedup model exists to prevent. The primary stays **READ-ONLY in IAOS**; the repair happens **inside GHL.**
-  - **Rationale: GHL is the repair shop; IAOS handles normal daily work.** IAOS never edits an identity anchor; a mistyped primary is fixed in GHL, not by spawning a second record from the app.
-- **No cleanup of a superseded record is needed — and only case (a) creates one.** A bad number fails to connect and washes out via call disposition; a good number that reaches the wrong person resolves through normal lead work. **Scope note:** this "washes out" path covers a **BAD LEAD** — it does **NOT** cover a **typo on a LIVE record**, which is case (c) above (fixed in GHL, not washed out).
+  - **(c) TYPO in the PRIMARY phone / email** → **do NOT create a new contact** — that manufactures the exact duplicate the dedup model exists to prevent. The primary stays **READ-ONLY in IAOS**; the repair happens **OUTSIDE the IAOS edit surface (currently GHL).**
+  - **Rationale: IAOS handles normal daily work; identity anchors are repaired elsewhere.** IAOS never edits an identity anchor; a mistyped primary is repaired **outside the IAOS edit surface (currently GHL)**, not by spawning a second record from the app.
+- **No cleanup of a superseded record is needed — and only case (a) creates one.** A bad number fails to connect and washes out via call disposition; a good number that reaches the wrong person resolves through normal lead work. **Scope note:** this "washes out" path covers a **BAD LEAD** — it does **NOT** cover a **typo on a LIVE record**, which is case (c) above (repaired outside the IAOS edit surface, not washed out).
 
 ### 2.4 Out of scope
 
