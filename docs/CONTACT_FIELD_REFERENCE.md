@@ -223,3 +223,5 @@ Per-subgroup counts: **Reachability 22 · Property 30 · Investor 14 · System 7
 | Combined Score | `contact.combined_score` | System |
 | Data Completeness Score | `contact.data_completeness_score` | System |
 | Callback Datetime Precise | `contact.callback_datetime_precise` | System |
+
+**Render exception — `Phone 1 DNC` (`contact.phone_1_dnc`):** its **data subgroup is Reachability** (row above, unchanged — Reachability stays 22, partition stays 22 / 30 / 14 / 7 = 73). But per `CONTACTS_OPPORTUNITIES_SPEC.md` §5.1, it is **RENDERED in the identity block, adjacent to the native primary phone** — NOT within the Reachability render sequence — with **global rendered ordinal 1**. This is the one field whose data subgroup and rendered location diverge: this table records the data mapping; the render location is the §5.1 exception.
