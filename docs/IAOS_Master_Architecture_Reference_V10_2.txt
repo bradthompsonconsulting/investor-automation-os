@@ -68,7 +68,9 @@ Pages live: Contacts (§5.1 V1 grid as of 061a2b6 — five columns: Name, Phone,
 
 7a. Text-input convention (app-wide) — RECORDED INTENT
 
-TEXT-INPUT CONVENTION (all input bubbles, every surface): Shift+Enter inserts a newline; Enter performs the primary action — notes SAVE, conversation replies SEND. Irreversible/destructive actions NEVER execute from Enter alone. This matches universal convention (Gmail / Slack / iMessage); violating it costs more in friction than it saves in accidents.
+TEXT-INPUT CONVENTION (all input bubbles, every surface): Shift+Enter inserts a newline; Enter performs the primary action — notes SAVE, conversation replies SEND. Irreversible/destructive actions NEVER execute from Enter alone. A filter/search box has NO primary action, so Enter does nothing there — the Contacts search box correctly takes no action on Enter. This matches universal convention (Gmail / Slack / iMessage); violating it costs more in friction than it saves in accidents.
+
+ENTER-TO-SAVE SCOPING (DECIDED 2026-07-23, RECORDED INTENT — no code exists on any surface): the two NOTE inputs — Dashboard notes and Contact Workspace notes — get Enter=Save, Shift+Enter=newline. Both are the SAME INTERNAL write class and sit inside the existing note-to-attempt path. Conversation replies (Enter=SEND) are a DISTINCT OUTWARD write class and are explicitly DEFERRED until the outbound-send surface is designed and verified — not in scope, not partially in scope, not dragged into this change. No verification claim is made — no run has established this behavior.
 
 CONVERSATION UNDO-SEND — OPEN, GHL-FIRST. Before building any IAOS "Undo Send", determine whether GHL exposes delayed/scheduled sending that IAOS can simply surface. If GHL does NOT — OBSERVED, not assumed — then any IAOS-side send delay is a CUSTOM path and must be SEPARATELY SPECIFIED, stating its guarantees and its failure behavior on tab close, navigation, refresh, and connectivity loss. Do NOT advertise "Undo Send" until the transport can prove the message has not yet left.
 
