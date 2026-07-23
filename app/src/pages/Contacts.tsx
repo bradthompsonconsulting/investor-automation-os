@@ -14,6 +14,17 @@ function fmtDate(iso: string | null): string {
     : d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
+// ── Phone formatting (§5.1 phone display) ───────────────────────────────────────
+// DISPLAY ONLY. The raw stored E.164 value is never mutated — this is a pure
+// render-time transform. A value matching +1 followed by EXACTLY 10 digits renders
+// as area-prefix-line (214-914-6151, country code dropped); anything else — wrong
+// length, non-US, malformed, empty — returns the input unchanged. Search reads the
+// raw value, not this output (§5.1 search-unaffected invariant).
+function formatPhone(raw: string): string {
+  const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(raw);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : raw;
+}
+
 // ── Column definitions (§5.1 Grid V1 — five columns; Name + Date Added sortable) ─
 
 // §5.1 Sort: only Name and Date Added carry a sortKey → only they are clickable.
@@ -47,7 +58,7 @@ const COLUMNS: ColumnDef[] = [
     label: "Phone",
     render: (r) => (
       <span style={{ color: "#94A3B8", fontFamily: "monospace", fontSize: "13px" }}>
-        {r.phone || <span style={{ color: "#334155" }}>—</span>}
+        {formatPhone(r.phone) || <span style={{ color: "#334155" }}>—</span>}
       </span>
     ),
   },
