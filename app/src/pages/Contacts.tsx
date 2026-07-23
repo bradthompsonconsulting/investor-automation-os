@@ -100,6 +100,7 @@ export default function Contacts() {
   const [rows,    setRows]    = useState<ContactGridRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState<string | null>(null);
+  const [search,  setSearch]  = useState("");
 
   useEffect(() => {
     ghl.contacts.gridRows()
@@ -116,6 +117,29 @@ export default function Contacts() {
     () => [...rows].sort((a, b) => (b.dateAdded ?? "").localeCompare(a.dateAdded ?? "")),
     [rows],
   );
+
+  // §5.1 Search (V1 — client-side, TWO-BRANCH). Filters over `ordered`, so the
+  // fixed Date-Added-newest-first order is preserved — search narrows the list,
+  // never reorders it. Branch 1: a digits-only query is matched as a SUBSTRING
+  // against the row's phone with non-digits stripped (so 2149146151 matches the
+  // stored E.164 +12149146151); Name and Email are excluded from this path.
+  // Branch 2: any query containing a non-digit uses case-insensitive substring
+  // matching across Name, Phone, Email. Property Address is excluded (mirrors
+  // GHL's own query behavior). No fuzzy matching, no ranking.
+  const filtered = useMemo(() => {
+    const q = search.trim();
+    if (!q) return ordered;
+    if (/^\d+$/.test(q)) {
+      return ordered.filter((r) => r.phone.replace(/\D/g, "").includes(q));
+    }
+    const lc = q.toLowerCase();
+    return ordered.filter(
+      (r) =>
+        r.name.toLowerCase().includes(lc) ||
+        r.phone.toLowerCase().includes(lc) ||
+        r.email.toLowerCase().includes(lc),
+    );
+  }, [ordered, search]);
 
   // ── Error state ─────────────────────────────────────────────────────────────
   if (error) {
@@ -142,10 +166,22 @@ export default function Contacts() {
               fontSize: "12px", fontWeight: 500, padding: "2px 8px", borderRadius: "999px",
               background: "#1B2433", color: "#64748B",
             }}>
-              {rows.length.toLocaleString()}
+              {(search.trim() ? filtered.length : rows.length).toLocaleString()}
             </span>
           )}
         </div>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search name, phone, email…"
+          style={{ width: "280px", padding: "8px 12px", fontSize: "13px",
+                   color: "#F1F5F9", background: "#0D1B3E",
+                   border: "1px solid rgba(255,255,255,0.10)",
+                   borderRadius: "8px", outline: "none" }}
+          onFocus={(e) => (e.currentTarget.style.borderColor = "#1EC8FF")}
+          onBlur={(e)  => (e.currentTarget.style.borderColor = "rgba(255,255,255,0.10)")}
+        />
       </div>
 
       {/* Table card */}
@@ -177,15 +213,19 @@ export default function Contacts() {
             <tbody>
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)
-              ) : ordered.length === 0 ? (
+              ) : filtered.length === 0 ? (
                 <tr>
                   <td colSpan={COLUMNS.length} style={{ padding: "60px 16px", textAlign: "center" }}>
                     <Users size={32} style={{ color: "#334155", margin: "0 auto 12px" }} />
-                    <p style={{ color: "#475569", margin: 0 }}>No contacts found</p>
+                    <p style={{ color: "#475569", margin: 0 }}>
+                      {search.trim()
+                        ? `No contacts match "${search.trim()}"`
+                        : "No contacts found"}
+                    </p>
                   </td>
                 </tr>
               ) : (
-                ordered.map((row) => (
+                filtered.map((row) => (
                   <tr
                     key={row.id}
                     style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}
