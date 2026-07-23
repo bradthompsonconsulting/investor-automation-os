@@ -171,6 +171,16 @@ Layout rules for the Contacts surface — the **`/contacts/:id` detail view** (b
 - **Tier** — **NOT a field.** Derived from the `hot`/`warm`/`low` bucket tags via `getBucketTag`, **defaulting to `"low"`** when absent — so *every* contact has one. A "Tier filter" would just be a **tag filter relabeled**; out for V1.
 - **Combined Score, Last Call Attempt, callback fields** — **prioritization / calling behavior**, which lives on the **Dashboard**. Available as **later sorts, not V1 columns**.
 
+**Implementation — `app/src/pages/Contacts.tsx` BECOMES the §5.1 V1 grid (DECIDED 2026-07-23).** The existing routed `/contacts` page is **rebuilt into this grid** — NOT a new unreferenced component, and NOT an accidental regression. It is the deliberate expression of the **three-surface model** (**Dashboard = prioritization · Conversations = working the lead · Contacts = record management**): the old Contacts page carried Dashboard-style scoring/analysis that belongs on the Dashboard, so it is removed here on purpose.
+
+- **Planned removals (intentional):**
+  - the **Combined / Motivation / Deal score columns** — removed.
+  - **score sorting** — removed (V1 sorts only **Name** + **Date Added**, per the Sort rule above).
+  - the **Analyze → `/mao-calculator` link** — removed from Contacts (analysis is a Dashboard/calculator concern, not the record-management grid).
+- **Preserved:**
+  - **Name → `/contacts/:id`** (the Contact Workspace) — the row's navigation target is unchanged.
+  - **all five inbound `/contacts` entry points** continue to land on this page: `Sidebar.tsx:18`, `Header.tsx:5`, `ContactWorkspace.tsx` 293/304/314, `Dashboard.tsx:813` (line numbers OBSERVED 2026-07-23 — re-verify before edit, code moves).
+
 **Verification (floor stays 122):** §5.3 already allots the grid **4** assertions — grid renders, search behaves, filter behaves, sort behaves. V1 has no filters, so the **"filter" assertion asserts that NO filter control renders** (an absence check, parallel to the no-input-element assertion) — it flips to a positive filter-behaves check when filters land. No change to the floor.
 
 ### 5.2 Build order
