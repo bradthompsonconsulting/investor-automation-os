@@ -57,7 +57,7 @@ const COLUMNS: ColumnDef[] = [
   {
     label: "Phone",
     render: (r) => (
-      <span style={{ color: "#94A3B8", fontFamily: "monospace", fontSize: "13px" }}>
+      <span style={{ color: "#94A3B8", fontSize: "13px" }}>
         {formatPhone(r.phone) || <span style={{ color: "#334155" }}>—</span>}
       </span>
     ),
