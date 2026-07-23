@@ -66,6 +66,14 @@ React (Vite/Tailwind). GHL-mirrored layout, IAOS navy/cyan, "Phase A" badge.
 Nav (9): Dashboard · Contacts · Pipeline · Mailers · Segmentation · MAO Calculator · Map · Import · Settings. All routes verified.
 Pages live: Contacts (read-only, scores, sort combined DESC, + "Analyze" handoff column) ✅; Pipeline (read/write stage-move, + "Analyze" handoff column) ✅; Mailers (this-week-ready / business-flagged / overdue / no-address + manual bulk-complete) ✅; Segmentation (read-only bucket view) ✅; MAO Calculator (all 7 phases — standalone calc + GHL search/prepopulate + reference-only save) ✅. Map, Import, Dashboard, Settings = shell routes pending build.
 
+7a. Text-input convention (app-wide) — RECORDED INTENT
+
+TEXT-INPUT CONVENTION (all input bubbles, every surface): Shift+Enter inserts a newline; Enter performs the primary action — notes SAVE, conversation replies SEND. Irreversible/destructive actions NEVER execute from Enter alone. This matches universal convention (Gmail / Slack / iMessage); violating it costs more in friction than it saves in accidents.
+
+CONVERSATION UNDO-SEND — OPEN, GHL-FIRST. Before building any IAOS "Undo Send", determine whether GHL exposes delayed/scheduled sending that IAOS can simply surface. If GHL does NOT — OBSERVED, not assumed — then any IAOS-side send delay is a CUSTOM path and must be SEPARATELY SPECIFIED, stating its guarantees and its failure behavior on tab close, navigation, refresh, and connectivity loss. Do NOT advertise "Undo Send" until the transport can prove the message has not yet left.
+
+Scope note: Conversations send is currently UNTESTED and unbuilt (§2a item 2; write-scope UNKNOWN per §11) — this is RECORDED INTENT, not a change to shipped behavior.
+
 8. Multi-Tenancy (Phase B)
 
 Stores per-client OAuth tokens. Auth module structured to plug in.
