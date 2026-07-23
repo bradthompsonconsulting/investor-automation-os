@@ -202,7 +202,7 @@ Two **separate build phases with separate verification** — NOT one phase with 
 
 **Phase A — read-only.**
 
-- Ships: the grid (list / search / filter / sort) and the `/contacts/:id` detail **display** of all 96 custom fields plus the native identity fields.
+- Ships: the grid (list / search / filter / sort) and the `/contacts/:id` detail **display** of all custom fields the live definitions fetch returns (96 at present) plus the native identity fields — sourced per §5.4 (LIVE field set; runtime asserts no count, only the harness pins 96).
 - **No writes; no fixture proofs required.** Ships on its own bundle gate (§9.2).
 - **Edit affordances are ABSENT in Phase A, not disabled** — render read-only text, no input elements. A greyed-out input the reader cannot distinguish from a wired one that failed is not an acceptable intermediate state.
 
@@ -227,9 +227,20 @@ Two **separate build phases with separate verification** — NOT one phase with 
 
 **Unexercised branches (not defects, not pending work):** the null-`dateAdded` sort branch and the non-empty malformed-phone display fallback are NOT live-coverable under the current Phase A production-only harness constraints. OBSERVED 2026-07-23 against 42 live rows: 42/42 have `dateAdded` (GHL stamps it at creation) and 0 rows are non-empty non-US/malformed. A passing 123/123 run therefore does NOT mean these branches were exercised. Synthetic fixtures, a test location, or a later local/mock harness could cover them; none exists today.
 
+### 5.4 Render-config data source & runtime failure contract (DECIDED 2026-07-23)
+
+The detail view's field set, folder assignment, and ordering are sourced **LIVE from GHL at runtime**; the ONLY checked-in IAOS artifact is the `Additional Info` subgroup mapping. **GHL-FIRST as applied:** GHL owns schema and ordering; IAOS owns only the one organizational layer GHL does not provide.
+
+- **LIVE from GHL at runtime:** field set, folder assignment (`parentId`), `position`, field definitions, and types. OBSERVED via the deployed `ghl-proxy` `GET /locations/jmHG4B8RdzwpfqruNf68/customFields` — HTTP 200, 96 fields, `parentId` 96/96, `position` 96/96. Runtime renders exactly what this returns.
+- **CHECKED-IN IAOS config — the `Additional Info` subgroup mapping ONLY**, keyed by field id / `fieldKey`, applied ONLY within the `Additional Info` folder (`qYS1wakeOTmfgjyeSJ8M`). OBSERVED: no key on any field encodes subgroup membership; all 73 share that one `parentId`. Partition counted from the `CONTACT_FIELD_REFERENCE.md` Part 2 table rows (not the summary line): Reachability 22 · Property 30 · Investor 14 · System 7 = 73; 73 distinct `fieldKey`s; 0 in two subgroups; 0 unassigned.
+- **Folder and field metadata are NOT duplicated in code** — duplication creates drift for no benefit. The subgroup map is the sole exception, and only because GHL has no wire representation of it.
+- **The harness's static canonical 96-ID list is VERIFICATION-ONLY** — never imported by runtime. The harness pins 96; runtime does not.
+- **RUNTIME FAILURE MODE:** if the live field-definition response is unavailable or malformed, the detail view surfaces an **explicit error state**. It MUST NOT render partially, and it MUST NOT fall back to the static 96-ID list — a fallback would silently convert a fetch failure into a passing-looking render.
+- **"Malformed" is a SHAPE condition, not a count:** non-200, unparseable body, or returned fields missing `parentId`/`position`. **Runtime MUST NOT assert a field count** — GHL owns the schema; if the location gains or loses a field, runtime renders what GHL returns. **Only the harness pins 96.**
+
 ---
 
-_Narrative §0–3 (per Brad) and §5 (surface design & build: layout / build order / verification) drafted 2026-07-22; the §5.3 Phase A verification floor integer is 123 (raised from 122 on 2026-07-23 by the phone-format display check)._
+_Narrative §0–3 (per Brad) and §5 (surface design & build: layout / build order / verification / render-config data source) drafted 2026-07-22 (§5.4 render-config source & runtime failure contract added 2026-07-23); the §5.3 Phase A verification floor integer is 123 (raised from 122 on 2026-07-23 by the phone-format display check)._
 
 ---
 
