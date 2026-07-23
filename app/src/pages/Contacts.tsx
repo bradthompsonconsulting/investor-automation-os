@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, Users } from "lucide-react";
+import { AlertCircle, Users, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
 import { ghl, type ContactGridRow } from "../lib/ghl";
 
 // ── Date formatting ────────────────────────────────────────────────────────────
@@ -14,16 +14,21 @@ function fmtDate(iso: string | null): string {
     : d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
-// ── Column definitions (§5.1 Grid V1 — five columns; no clickable sorting) ─────
+// ── Column definitions (§5.1 Grid V1 — five columns; Name + Date Added sortable) ─
+
+// §5.1 Sort: only Name and Date Added carry a sortKey → only they are clickable.
+type SortKey = "name" | "dateAdded";
 
 interface ColumnDef {
   label: string;
+  sortKey?: SortKey; // present ⇒ header is clickable-to-sort; absent ⇒ inert header
   render: (r: ContactGridRow) => React.ReactNode;
 }
 
 const COLUMNS: ColumnDef[] = [
   {
     label: "Name",
+    sortKey: "name",
     // Name links to the Contact Workspace (§5.1 / §3 / §8 step 2b) via the row's
     // NON-VISIBLE id. Read-only navigation — no GHL call, no write. Casing is
     // PRESERVED as returned (§5.1 casing decision) — never title-cased.
@@ -64,6 +69,7 @@ const COLUMNS: ColumnDef[] = [
   },
   {
     label: "Date Added",
+    sortKey: "dateAdded",
     render: (r) => (
       <span style={{ color: "#94A3B8", fontSize: "13px", whiteSpace: "nowrap" }}>
         {fmtDate(r.dateAdded)}
@@ -101,6 +107,12 @@ export default function Contacts() {
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState<string | null>(null);
   const [search,  setSearch]  = useState("");
+  // §5.1 Sort: single active column + direction. Initial = Date Added, descending
+  // (unchanged from 4c0db07). No persistence — resets to this on remount.
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
+    key: "dateAdded",
+    dir: "desc",
+  });
 
   useEffect(() => {
     ghl.contacts.gridRows()
@@ -109,17 +121,41 @@ export default function Contacts() {
       .finally(() => setLoading(false));
   }, []);
 
-  // §5.1 default order: Date Added, newest first. This is the fixed presentation
-  // order, NOT clickable column sorting (that interactive feature is a later
-  // slice). ISO date strings compare lexicographically = chronologically; a null
-  // dateAdded ("") sorts last.
-  const ordered = useMemo(
-    () => [...rows].sort((a, b) => (b.dateAdded ?? "").localeCompare(a.dateAdded ?? "")),
-    [rows],
-  );
+  // §5.1 Sort: `ordered` is the sort-driven spine that `filtered` consumes below,
+  // so search narrows without reordering. Name → localeCompare (accents fold to
+  // base letter; names are OBSERVED lowercased so case is moot). Date Added →
+  // lexicographic ISO compare = chronological; a null/absent dateAdded sorts LAST
+  // in BOTH directions (never floats to the top of an ascending sort). Default
+  // {dateAdded, desc} reproduces the prior newest-first order.
+  const ordered = useMemo(() => {
+    const dir = sort.dir === "asc" ? 1 : -1;
+    const copy = [...rows];
+    if (sort.key === "name") {
+      copy.sort((a, b) => dir * a.name.localeCompare(b.name));
+    } else {
+      copy.sort((a, b) => {
+        if (!a.dateAdded && !b.dateAdded) return 0;
+        if (!a.dateAdded) return 1;
+        if (!b.dateAdded) return -1;
+        return dir * a.dateAdded.localeCompare(b.dateAdded);
+      });
+    }
+    return copy;
+  }, [rows, sort]);
+
+  // §5.1 Sort toggle: clicking the active column flips its direction; clicking a
+  // different sortable column makes it active at its initial direction (Name →
+  // asc, Date Added → desc). Two-state only — no return-to-default third click.
+  function onHeaderClick(key: SortKey) {
+    setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: key === "name" ? "asc" : "desc" },
+    );
+  }
 
   // §5.1 Search (V1 — client-side, TWO-BRANCH). Filters over `ordered`, so the
-  // fixed Date-Added-newest-first order is preserved — search narrows the list,
+  // active sort order is preserved — search narrows the list,
   // never reorders it. Branch 1: a digits-only query is matched as a SUBSTRING
   // against the row's phone with non-digits stripped (so 2149146151 matches the
   // stored E.164 +12149146151); Name and Email are excluded from this path.
@@ -190,24 +226,42 @@ export default function Contacts() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                {COLUMNS.map((col) => (
-                  <th
-                    key={col.label}
-                    style={{
-                      padding: "10px 16px",
-                      textAlign: "left",
-                      fontSize: "11px",
-                      fontWeight: 600,
-                      letterSpacing: "0.06em",
-                      textTransform: "uppercase",
-                      color: "#475569",
-                      whiteSpace: "nowrap",
-                      background: "#07142E",
-                    }}
-                  >
-                    {col.label}
-                  </th>
-                ))}
+                {COLUMNS.map((col) => {
+                  const active = !!col.sortKey && sort.key === col.sortKey;
+                  return (
+                    <th
+                      key={col.label}
+                      onClick={col.sortKey ? () => onHeaderClick(col.sortKey!) : undefined}
+                      style={{
+                        padding: "10px 16px",
+                        textAlign: "left",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                        color: "#475569",
+                        whiteSpace: "nowrap",
+                        background: "#07142E",
+                        cursor: col.sortKey ? "pointer" : "default",
+                        userSelect: "none",
+                      }}
+                    >
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                        {col.label}
+                        {col.sortKey &&
+                          (active ? (
+                            sort.dir === "asc" ? (
+                              <ChevronUp size={13} style={{ color: "#1EC8FF" }} />
+                            ) : (
+                              <ChevronDown size={13} style={{ color: "#1EC8FF" }} />
+                            )
+                          ) : (
+                            <ChevronsUpDown size={13} style={{ color: "#334155" }} />
+                          ))}
+                      </span>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>

@@ -64,7 +64,7 @@ Read-only everywhere except Pipeline stage-move (§14a), MAO Calculator "Save Of
 
 React (Vite/Tailwind). GHL-mirrored layout, IAOS navy/cyan, "Phase A" badge.
 Nav (9): Dashboard · Contacts · Pipeline · Mailers · Segmentation · MAO Calculator · Map · Import · Settings. All routes verified.
-Pages live: Contacts (§5.1 V1 grid as of 061a2b6 — five columns: Name, Phone, Email, Property Address, Date Added; no scores, no Analyze column; fixed Date-Added-newest-first order; row name links to Contact Workspace) ✅; Pipeline (read/write stage-move, + "Analyze" handoff column) ✅; Mailers (this-week-ready / business-flagged / overdue / no-address + manual bulk-complete) ✅; Segmentation (read-only bucket view) ✅; MAO Calculator (all 7 phases — standalone calc + GHL search/prepopulate + reference-only save) ✅. Map, Import, Dashboard, Settings = shell routes pending build.
+Pages live: Contacts (§5.1 V1 grid as of 061a2b6 — five columns: Name, Phone, Email, Property Address, Date Added; no scores, no Analyze column; default Date-Added-newest-first order, sortable by Name and Date Added; row name links to Contact Workspace) ✅; Pipeline (read/write stage-move, + "Analyze" handoff column) ✅; Mailers (this-week-ready / business-flagged / overdue / no-address + manual bulk-complete) ✅; Segmentation (read-only bucket view) ✅; MAO Calculator (all 7 phases — standalone calc + GHL search/prepopulate + reference-only save) ✅. Map, Import, Dashboard, Settings = shell routes pending build.
 
 7a. Text-input convention (app-wide) — RECORDED INTENT
 
