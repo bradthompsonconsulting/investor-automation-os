@@ -13,7 +13,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-REPIN_AFTER_DEPLOY.js"; // §9.2 — PLACEHOLDER. The data-testid ContactWorkspace change ships a NEW bundle; UPDATE this to the real served hash AFTER the deploy, before running. Do not guess a hash.
+const EXPECTED = "index-hN7nM3rs.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
 const TARGET   = "FiIT0hUaxVCIuokQpZuc"; // detail-view fixture (checks 6-119)
 const BRADT75  = "9fbH2VCcZvzVNhsR9zjc"; // phone-format fixture — +12149146151 → 214-914-6151 (check 5)
 
