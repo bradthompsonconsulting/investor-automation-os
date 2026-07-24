@@ -110,6 +110,16 @@ export interface ContactDetail {
   state:      string;
   postalCode: string;
   customFields: ContactDetailField[]; // sparse: only this contact's populated values (3 on bradt75), by id — NOT all 96
+  dndSettings?: Record<string, { status?: string; message?: string }>;
+}
+
+// Render-config field definition (§5.4) — LIVE superset via GET /locations/{id}/customFields.
+export interface CustomFieldDef {
+  id: string;
+  name: string;
+  dataType: string;
+  parentId: string;
+  position: number;
 }
 
 // Contacts grid V1 row (§5.1 Grid layout) — the five displayed column fields
@@ -356,6 +366,7 @@ export const ghl = {
         customFields: Array.isArray(c.customFields)
           ? c.customFields.map((f: any) => ({ id: f.id, value: f.value }))
           : [],
+        dndSettings: c.dndSettings,
       };
     },
 
@@ -447,7 +458,7 @@ export const ghl = {
   },
 
   customFields: {
-    list: () => request<any>(`/locations/${LOCATION_ID}/customFields`),
+    list: () => request<{ customFields: CustomFieldDef[] }>(`/locations/${LOCATION_ID}/customFields`),
   },
 
   pipelines: {

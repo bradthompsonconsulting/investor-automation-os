@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
-  ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2,
+  ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2, BellOff,
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight,
 } from "lucide-react";
-import { ghl, getBucketTag, ghlContactDetailUrl, type ContactRow, type BucketTag, type ConvMessageRow } from "../lib/ghl";
+import { ghl, getBucketTag, ghlContactDetailUrl, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow } from "../lib/ghl";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
@@ -114,6 +114,21 @@ export default function ContactWorkspace() {
   const [notFound, setNotFound] = useState(false);
   const [error, setError]       = useState<string | null>(null);
 
+  // Detail record (getDetail) — SEPARATE from the getOne-backed `contact` above.
+  // Own loading/error; a failure here is section-scoped (D3) and must NOT touch
+  // the identity header, actions, notes, or conversation history. Consumed only
+  // by the Offer section (touchpoint 4).
+  const [detail, setDetail]               = useState<ContactDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(true);
+  const [detailError, setDetailError]     = useState<string | null>(null);
+
+  // Render-config field definitions (§5.4) — LIVE all-fields superset. Own
+  // loading/error, section-scoped (D3); consumed only by the Offer section
+  // (touchpoint 4). A defs failure touches nothing else.
+  const [defs, setDefs]               = useState<CustomFieldDef[] | null>(null);
+  const [defsLoading, setDefsLoading] = useState(true);
+  const [defsError, setDefsError]     = useState<string | null>(null);
+
   const [notes, setNotes]           = useState<NoteRow[] | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
 
@@ -171,9 +186,51 @@ export default function ContactWorkspace() {
       .catch((e: Error) => setConversationsError(e.message));
   }
 
+  // Detail record read (D3) — own loading/error, section-scoped. getOne stays the
+  // identity-header source; getDetail feeds only the Offer section (touchpoint 4).
+  // A failure here sets detailError and touches nothing else.
+  function loadDetail() {
+    setDetailError(null);
+    ghl.contacts.getDetail(id)
+      .then((d) => setDetail(d))
+      .catch((e: Error) => setDetailError(e.message))
+      .finally(() => setDetailLoading(false));
+  }
+
+  // Render-config read (§5.4 / §6 failure contract) — own loading/error,
+  // section-scoped (D3). SHAPE assertion, never a count: malformed (non-array,
+  // or any entry missing parentId/position) sets defsError and does NOT set
+  // defs. 96 is never checked at runtime — runtime renders what GHL returns.
+  function loadDefs() {
+    setDefsError(null);
+    ghl.customFields.list()
+      .then((body) => {
+        const arr = body?.customFields;
+        if (!Array.isArray(arr)) {
+          setDefsError("Malformed render-config: customFields is not an array");
+          return;
+        }
+        const bad = arr.find((f) => f.parentId == null || f.position == null);
+        if (bad) {
+          const which = bad.parentId == null ? "parentId" : "position";
+          setDefsError(`Malformed render-config: field ${bad.id ?? "(unknown id)"} missing ${which}`);
+          return;
+        }
+        setDefs(arr);
+      })
+      .catch((e: Error) => setDefsError(e.message))
+      .finally(() => setDefsLoading(false));
+  }
+
   useEffect(() => {
     setLoading(true);
     setContact(null);
+    setDetailLoading(true);
+    setDetail(null);
+    setDetailError(null);
+    setDefsLoading(true);
+    setDefs(null);
+    setDefsError(null);
     setNotes(null);
     setConversations(null);
     setConversationsError(null);
@@ -182,6 +239,8 @@ export default function ContactWorkspace() {
     setCallbackOpen(false);
     setCallbackError(null);
     loadContact();
+    loadDetail();
+    loadDefs();
     loadNotes();
     loadConversations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -213,6 +272,23 @@ export default function ContactWorkspace() {
     () => (conversations ?? []).filter((m) => CONVERSATION_TYPES.includes(m.messageType)),
     [conversations],
   );
+
+  // Offer folder render model (§5.4 join) — the LIVE definition superset for
+  // folder YslJ5oke73JrBOgaq0np, position-ordered, left-joined to detail's sparse
+  // values by id. A def with no value entry is INCLUDED, value absent (== null
+  // test, never falsiness — 0 is a real value). Null until defs load; does NOT
+  // wait on detail. Consumer: touchpoint 4.
+  const offerModel = useMemo(() => {
+    if (defs == null) return null;
+    const values = detail?.customFields ?? [];
+    return defs
+      .filter((d) => d.parentId === "YslJ5oke73JrBOgaq0np")
+      .sort((a, b) => a.position - b.position)
+      .map((d) => {
+        const entry = values.find((v) => v.id === d.id);
+        return { id: d.id, name: d.name, dataType: d.dataType, value: entry == null ? undefined : entry.value };
+      });
+  }, [defs, detail]);
 
   // The note IS the attempt (§4/§6). Empty/whitespace notes do nothing. Same
   // two-call sequence the Dashboard uses: create note, then mark attempt. After
@@ -332,6 +408,12 @@ export default function ContactWorkspace() {
             <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
               <MapPin size={13} style={{ color: "#475569" }} /> {loading ? "…" : formatAddress(contact!)}
             </span>
+            {detail?.dndSettings && Object.keys(detail.dndSettings).length > 0 &&
+              Object.entries(detail.dndSettings).map(([channel, v]) => (
+                <span key={channel} style={{ display: "inline-flex", alignItems: "center", gap: "6px", color: "#F59E0B" }}>
+                  <BellOff size={13} /> {channel}: {v?.status ?? "—"}
+                </span>
+              ))}
           </div>
         </div>
         {!loading && contact && (
@@ -392,6 +474,42 @@ export default function ContactWorkspace() {
           <span style={{ fontSize: "12px", fontWeight: 500, color: "#1EC8FF" }}>
             Callback: {formatCallbackTime(callback)}
           </span>
+        )}
+      </div>
+
+      {/* Offer section (§5.4) — full-width band between the actions row and the
+          two-column work area. Section-scoped states (D3): defsError/detailError
+          → error; defsLoading → loading; offerModel → fields. Nothing else on the
+          page depends on defs/detail, so every other section keeps working. */}
+      <div style={{ marginBottom: "18px" }}>
+        <h2 style={{ fontSize: "15px", fontWeight: 600, color: "#F1F5F9", margin: "0 0 10px", fontFamily: "Space Grotesk, sans-serif" }}>Offer</h2>
+        {(defsError || detailError) ? (
+          <div style={{ background: "#0D1B3E", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "10px", padding: "14px 16px", color: "#F87171", fontSize: "13px" }}>
+            Couldn't load fields: {defsError || detailError}
+          </div>
+        ) : defsLoading ? (
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#334155", fontSize: "12px" }}>
+            <Loader2 size={13} className="animate-spin" /> Loading fields…
+          </div>
+        ) : offerModel && (
+          <div style={{ background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "12px 16px", display: "flex", flexDirection: "column", gap: "6px" }}>
+            {offerModel.map((f) => {
+              const display =
+                f.value == null
+                  ? "—"
+                  : f.dataType === "DATE"
+                    ? String(f.value)
+                    : f.dataType === "MONETORY"
+                      ? String(f.value)
+                      : String(f.value);
+              return (
+                <div key={f.id} style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
+                  <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
+                  <span style={{ color: "#E2E8F0" }}>{display}</span>
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
 
