@@ -116,11 +116,25 @@ export interface ContactDetail {
 // Render-config field definition (§5.4) — LIVE superset via GET /locations/{id}/customFields.
 export interface CustomFieldDef {
   id: string;
+  fieldKey: string;
   name: string;
   dataType: string;
   parentId: string;
   position: number;
 }
+
+// Folder record (§5.4) — resolved via GET /locations/{id}/customFields/{id}
+// (documentType "folder"). The list endpoint carries only fields, not folders.
+export interface CustomFieldFolder {
+  id: string;
+  name: string;
+  documentType: string;
+  position: number;
+}
+
+// Folder-record cache (§5.4) — module-scope, page-session lifetime. getFolder
+// populates it; nothing clears or invalidates it.
+const folderCache = new Map<string, CustomFieldFolder>();
 
 // Contacts grid V1 row (§5.1 Grid layout) — the five displayed column fields
 // (Name · Phone · Email · Property Address · Date Added) plus a NON-VISIBLE
@@ -459,6 +473,16 @@ export const ghl = {
 
   customFields: {
     list: () => request<{ customFields: CustomFieldDef[] }>(`/locations/${LOCATION_ID}/customFields`),
+    // Folder record (§5.4) — cache-first (module-scope folderCache, page-session
+    // lifetime). Returns the cached record if present; otherwise fetches, caches,
+    // and returns. Never clears/invalidates.
+    getFolder: async (id: string): Promise<CustomFieldFolder> => {
+      const cached = folderCache.get(id);
+      if (cached) return cached;
+      const body = await request<{ customField: CustomFieldFolder }>(`/locations/${LOCATION_ID}/customFields/${id}`);
+      folderCache.set(id, body.customField);
+      return body.customField;
+    },
   },
 
   pipelines: {

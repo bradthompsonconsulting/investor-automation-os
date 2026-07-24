@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2, BellOff,
-  Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight,
+  Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
 } from "lucide-react";
 import { ghl, getBucketTag, ghlContactDetailUrl, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow } from "../lib/ghl";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
+import { ADDITIONAL_INFO_SUBGROUPS, type AdditionalInfoSubgroup } from "../config/additionalInfoSubgroups";
 
 /**
  * Contact Workspace — docs/CONTACT_WORKSPACE_SPEC_v2.md §8 steps 1-3.
@@ -104,6 +105,26 @@ function formatNoteDate(iso: string): string {
 
 interface NoteRow { id: string; body: string; dateAdded: string }
 
+// §5.4 Additional Info subdivision — one shape + one bucketer.
+type RecordField = { id: string; fieldKey: string; name: string; dataType: string; value: unknown };
+const SUBGROUP_ORDER: AdditionalInfoSubgroup[] = ["Reachability", "Property", "Investor", "System"];
+
+// Buckets the Additional Info folder's (position-ordered) fields into the four
+// IAOS subgroups via ADDITIONAL_INFO_SUBGROUPS (keyed by fieldKey). A fieldKey
+// absent from the config is NEVER dropped — it appends to the END of System.
+// Position order is preserved within each subgroup.
+function groupAdditionalInfo(fields: RecordField[]): { subgroup: AdditionalInfoSubgroup; fields: RecordField[] }[] {
+  const buckets: Record<AdditionalInfoSubgroup, RecordField[]> = { Reachability: [], Property: [], Investor: [], System: [] };
+  const unknown: RecordField[] = [];
+  for (const f of fields) {
+    const sub = ADDITIONAL_INFO_SUBGROUPS[f.fieldKey];
+    if (sub) buckets[sub].push(f);
+    else unknown.push(f);
+  }
+  buckets.System.push(...unknown);
+  return SUBGROUP_ORDER.map((subgroup) => ({ subgroup, fields: buckets[subgroup] }));
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 export default function ContactWorkspace() {
@@ -128,6 +149,14 @@ export default function ContactWorkspace() {
   const [defs, setDefs]               = useState<CustomFieldDef[] | null>(null);
   const [defsLoading, setDefsLoading] = useState(true);
   const [defsError, setDefsError]     = useState<string | null>(null);
+
+  // Folder display names (§5.4) — Map<parentId, name>, insertion-ordered to the
+  // IAOS display order (Offer first, then remaining by folder position). Own
+  // loading flag; a fetch failure sets the EXISTING defsError (no third error
+  // state). `expanded` = the set of expanded folder ids; Offer starts open.
+  const [folderNames, setFolderNames]               = useState<Map<string, string> | null>(null);
+  const [folderNamesLoading, setFolderNamesLoading] = useState(true);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["YslJ5oke73JrBOgaq0np"]));
 
   const [notes, setNotes]           = useState<NoteRow[] | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
@@ -246,6 +275,31 @@ export default function ContactWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // Folder names (§5.4) — after defs resolve, fetch every distinct parentId in
+  // parallel and build the display-ordered name map. ORDER is an IAOS
+  // presentation decision (NOT GHL's): Offer first, then remaining folders
+  // ascending by the FOLDER's own position from getFolder. A fetch failure sets
+  // the existing defsError. The cancelled guard drops a stale in-flight result
+  // when defs/id changes. getFolder is cache-first, so revisits don't refetch.
+  useEffect(() => {
+    if (defs == null) { setFolderNames(null); setFolderNamesLoading(true); return; }
+    let cancelled = false;
+    const OFFER_FOLDER_ID = "YslJ5oke73JrBOgaq0np";
+    const distinct = [...new Set(defs.map((d) => d.parentId))];
+    Promise.all(distinct.map((pid) => ghl.customFields.getFolder(pid)))
+      .then((folders) => {
+        if (cancelled) return;
+        const ordered = [...folders].sort((a, b) =>
+          a.id === OFFER_FOLDER_ID ? -1 : b.id === OFFER_FOLDER_ID ? 1 : a.position - b.position);
+        const map = new Map<string, string>();
+        ordered.forEach((f) => map.set(f.id, f.name));
+        setFolderNames(map);
+      })
+      .catch((e: Error) => { if (!cancelled) setDefsError(e.message); })
+      .finally(() => { if (!cancelled) setFolderNamesLoading(false); });
+    return () => { cancelled = true; };
+  }, [defs]);
+
   // Effective last attempt: in-session override wins (just saved), then the
   // exact TEXT companion, then the truncated DATE field — same resolver shape
   // as the Dashboard's effectiveLastAttempt.
@@ -273,21 +327,41 @@ export default function ContactWorkspace() {
     [conversations],
   );
 
-  // Offer folder render model (§5.4 join) — the LIVE definition superset for
-  // folder YslJ5oke73JrBOgaq0np, position-ordered, left-joined to detail's sparse
-  // values by id. A def with no value entry is INCLUDED, value absent (== null
-  // test, never falsiness — 0 is a real value). Null until defs load; does NOT
-  // wait on detail. Consumer: touchpoint 4.
-  const offerModel = useMemo(() => {
+  // Record render model (§5.4 join) — generalizes the Offer join to ALL folders.
+  // Groups every def by parentId (grouping hardcodes NO folder id), position-
+  // orders each folder, and left-joins detail's sparse values by id (superset
+  // preserved; an unmatched def is INCLUDED with value absent — == null test,
+  // never falsiness, so 0 and wire null survive). recordModel emits the Offer
+  // folder (YslJ5oke73JrBOgaq0np) FIRST, but its emission order is NOT the
+  // display order — the render maps [...folderNames], never recordModel, so this
+  // order never reaches the DOM. Display order is the DECIDED IAOS rule, owned
+  // by the folder-names effect's sort: Offer first, then the remaining folders
+  // ascending by each folder's own GHL position. Null until defs load; does NOT
+  // wait on detail.
+  const recordModel = useMemo(() => {
     if (defs == null) return null;
+    const OFFER_FOLDER_ID = "YslJ5oke73JrBOgaq0np";
     const values = detail?.customFields ?? [];
-    return defs
-      .filter((d) => d.parentId === "YslJ5oke73JrBOgaq0np")
-      .sort((a, b) => a.position - b.position)
-      .map((d) => {
-        const entry = values.find((v) => v.id === d.id);
-        return { id: d.id, name: d.name, dataType: d.dataType, value: entry == null ? undefined : entry.value };
-      });
+    const byFolder = new Map<string, CustomFieldDef[]>();
+    for (const d of defs) {
+      const arr = byFolder.get(d.parentId);
+      if (arr) arr.push(d);
+      else byFolder.set(d.parentId, [d]);
+    }
+    const parentIds = [...byFolder.keys()];
+    const ordered = [
+      ...parentIds.filter((p) => p === OFFER_FOLDER_ID),
+      ...parentIds.filter((p) => p !== OFFER_FOLDER_ID),
+    ];
+    return ordered.map((parentId) => ({
+      parentId,
+      fields: byFolder.get(parentId)!
+        .sort((a, b) => a.position - b.position)
+        .map((d) => {
+          const entry = values.find((v) => v.id === d.id);
+          return { id: d.id, fieldKey: d.fieldKey, name: d.name, dataType: d.dataType, value: entry == null ? undefined : entry.value };
+        }),
+    }));
   }, [defs, detail]);
 
   // The note IS the attempt (§4/§6). Empty/whitespace notes do nothing. Same
@@ -477,35 +551,81 @@ export default function ContactWorkspace() {
         )}
       </div>
 
-      {/* Offer section (§5.4) — full-width band between the actions row and the
-          two-column work area. Section-scoped states (D3): defsError/detailError
-          → error; defsLoading → loading; offerModel → fields. Nothing else on the
-          page depends on defs/detail, so every other section keeps working. */}
+      {/* Record section (§5.4) — all six folders, collapsible. Live field defs +
+          folder names from GHL; ORDER is an IAOS presentation decision (Offer
+          first, then remaining folders ascending by GHL folder position), NOT
+          GHL's own order (see the folder-names effect). Section-scoped states
+          (D3), precedence unchanged: defsError/detailError → error; defs or
+          folder-names loading → loading; else fields. Collapsed bodies stay
+          MOUNTED (display:none) — every field row is in the DOM regardless of
+          collapse state. Nothing else on the page depends on defs/detail. */}
       <div style={{ marginBottom: "18px" }}>
-        <h2 style={{ fontSize: "15px", fontWeight: 600, color: "#F1F5F9", margin: "0 0 10px", fontFamily: "Space Grotesk, sans-serif" }}>Offer</h2>
         {(defsError || detailError) ? (
           <div style={{ background: "#0D1B3E", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "10px", padding: "14px 16px", color: "#F87171", fontSize: "13px" }}>
             Couldn't load fields: {defsError || detailError}
           </div>
-        ) : defsLoading ? (
+        ) : (defsLoading || folderNamesLoading) ? (
           <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#334155", fontSize: "12px" }}>
             <Loader2 size={13} className="animate-spin" /> Loading fields…
           </div>
-        ) : offerModel && (
-          <div style={{ background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "12px 16px", display: "flex", flexDirection: "column", gap: "6px" }}>
-            {offerModel.map((f) => {
-              const display =
-                f.value == null
-                  ? "—"
-                  : f.dataType === "DATE"
-                    ? String(f.value)
-                    : f.dataType === "MONETORY"
-                      ? String(f.value)
-                      : String(f.value);
+        ) : (recordModel && folderNames) && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            {[...folderNames].map(([parentId, folderName]) => {
+              const folder = recordModel.find((r) => r.parentId === parentId);
+              const open = expanded.has(parentId);
               return (
-                <div key={f.id} style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
-                  <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
-                  <span style={{ color: "#E2E8F0" }}>{display}</span>
+                <div key={parentId} style={{ background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", overflow: "hidden" }}>
+                  <button
+                    onClick={() => setExpanded((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(parentId)) next.delete(parentId); else next.add(parentId);
+                      return next;
+                    })}
+                    style={{ width: "100%", display: "flex", alignItems: "center", gap: "8px", padding: "10px 16px", background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
+                  >
+                    {open ? <ChevronDown size={14} style={{ color: "#64748B" }} /> : <ChevronRight size={14} style={{ color: "#64748B" }} />}
+                    <span style={{ fontSize: "14px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif" }}>{folderName}</span>
+                  </button>
+                  <div style={{ display: open ? "flex" : "none", flexDirection: "column", gap: "6px", padding: "0 16px 12px" }}>
+                    {parentId === "qYS1wakeOTmfgjyeSJ8M"
+                      ? groupAdditionalInfo(folder?.fields ?? []).map(({ subgroup, fields }) => (
+                          <div key={subgroup} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                            <div style={{ fontSize: "11px", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", color: "#64748B", marginTop: "4px" }}>{subgroup}</div>
+                            {fields.map((f) => {
+                              const display =
+                                f.value == null
+                                  ? "—"
+                                  : f.dataType === "DATE"
+                                    ? String(f.value)
+                                    : f.dataType === "MONETORY"
+                                      ? String(f.value)
+                                      : String(f.value);
+                              return (
+                                <div key={f.id} style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
+                                  <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
+                                  <span style={{ color: "#E2E8F0" }}>{display}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ))
+                      : (folder?.fields ?? []).map((f) => {
+                          const display =
+                            f.value == null
+                              ? "—"
+                              : f.dataType === "DATE"
+                                ? String(f.value)
+                                : f.dataType === "MONETORY"
+                                  ? String(f.value)
+                                  : String(f.value);
+                          return (
+                            <div key={f.id} style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
+                              <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
+                              <span style={{ color: "#E2E8F0" }}>{display}</span>
+                            </div>
+                          );
+                        })}
+                  </div>
                 </div>
               );
             })}
