@@ -83,6 +83,12 @@
 
 **NEXT:** Contacts detail view code slice.
 
+## 2026-07-24 — Contacts detail view Phase A VERIFIED LIVE + secret rotation
+
+- **Contacts detail view Phase A: VERIFIED LIVE at floor 119.** Harness `app/scripts/verify-contacts.cjs` at commit `25b3de5`, bundle `index-hN7nM3rs.js`, **119/119 clean run** (checksRun=119, failures=0) on fixture `FiIT0hUaxVCIuokQpZuc` (Neelima Bale). Covers grid (5) + six folder sections (6) + 96 custom fields (96) + four Additional Info subgroups counted from DOM 22/30/14/7 (4) + three D1 identity-header renders (3) + four Phone N DNC adjacencies (4) + no-input scoped to the record section + identity header (1). Floor was reconciled 123 → 119 against D1 (identity = reused ContactWorkspace header: name / formatted phone / combined address; Phone 1 DNC renders in Reachability, not the identity block) and the no-input assertion SCOPED to the Phase A field display (§5.3, `03ba60f`).
+- **Harness re-pin discipline:** `verify-contacts.cjs` `EXPECTED` must be re-pinned to the served bundle hash after ANY app-code deploy — the §9.2 bundle gate `exit 1` aborts before check 1 on a mismatch. `data-testid="record-section"` + `data-testid="identity-header"` hooks were added to ContactWorkspace so check #119 targets a stable scope, not a positional DOM walk (a MISSING hook fails #119, never a zero-input pass).
+- **Secret rotation (SECURITY):** `IAOS_WEBHOOK_SECRET` had been set to the bradt75 GHL contact ID `9fbH2VCcZvzVNhsR9zjc` — a value that is public throughout `docs/`. It surfaced when Netlify secret-scan flagged that literal on the harness fixture (harness commit `9ff7ab0` build FAILED to publish for this reason). Rotated to a fresh random value in **GHL Custom Value `iaos_webhook_secret`** + the **Netlify env var**, both confirmed live (old value now `401`s at `ghl-disposition`, which validates the `X-IAOS-Secret` header against `process.env.IAOS_WEBHOOK_SECRET`). The **16 fixture references** to `9fbH2VCcZvzVNhsR9zjc` across the harness + docs STAY — it is a public contact ID again, not the secret. No repo edit was needed to rotate (the secret lives only in Netlify/GHL, never committed).
+
 ## Commit map — through 2026-07-22 (oldest → newest; all on `main`, pushed)
 Contact Workspace §8 (already in the specs, not re-detailed): step 7 `becaa17`, spec recording `0015a85` (steps 4–5 `dc60d1e`, step 6 `6fa154c`).
 - `2147900` — master ref: §2a roadmap reverted to the locked sequence.
