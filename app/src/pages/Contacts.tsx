@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, Users, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
 import { ghl, type ContactGridRow } from "../lib/ghl";
+import { formatPhone } from "../lib/format";
 
 // ── Date formatting ────────────────────────────────────────────────────────────
 // Date Added column: gridRows() passes the ISO string (or null); render a short
@@ -12,17 +13,6 @@ function fmtDate(iso: string | null): string {
   return isNaN(d.getTime())
     ? "—"
     : d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
-}
-
-// ── Phone formatting (§5.1 phone display) ───────────────────────────────────────
-// DISPLAY ONLY. The raw stored E.164 value is never mutated — this is a pure
-// render-time transform. A value matching +1 followed by EXACTLY 10 digits renders
-// as area-prefix-line (214-914-6151, country code dropped); anything else — wrong
-// length, non-US, malformed, empty — returns the input unchanged. Search reads the
-// raw value, not this output (§5.1 search-unaffected invariant).
-function formatPhone(raw: string): string {
-  const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(raw);
-  return m ? `${m[1]}-${m[2]}-${m[3]}` : raw;
 }
 
 // ── Column definitions (§5.1 Grid V1 — five columns; Name + Date Added sortable) ─

@@ -7,6 +7,7 @@ import {
 import { ghl, getBucketTag, ghlContactDetailUrl, type ContactRow, type BucketTag, type ConvMessageRow } from "../lib/ghl";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
+import { formatPhone } from "../lib/format";
 
 /**
  * Contact Workspace — docs/CONTACT_WORKSPACE_SPEC_v2.md §8 steps 1-3.
@@ -326,7 +327,7 @@ export default function ContactWorkspace() {
           </h1>
           <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap", fontSize: "13px", color: "#94A3B8" }}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-              <Phone size={13} style={{ color: "#475569" }} /> {loading ? "…" : (contact!.phone || "—")}
+              <Phone size={13} style={{ color: "#475569" }} /> {loading ? "…" : (formatPhone(contact!.phone) || "—")}
             </span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
               <MapPin size={13} style={{ color: "#475569" }} /> {loading ? "…" : formatAddress(contact!)}
