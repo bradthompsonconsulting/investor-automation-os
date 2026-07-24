@@ -467,7 +467,7 @@ export default function ContactWorkspace() {
       </Link>
 
       {/* Identity header */}
-      <div style={{
+      <div data-testid="identity-header" style={{
         display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "16px", flexWrap: "wrap",
         background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "16px 18px", marginBottom: "18px",
       }}>
@@ -569,7 +569,7 @@ export default function ContactWorkspace() {
             <Loader2 size={13} className="animate-spin" /> Loading fields…
           </div>
         ) : (recordModel && folderNames) && (
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div data-testid="record-section" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             {[...folderNames].map(([parentId, folderName]) => {
               const folder = recordModel.find((r) => r.parentId === parentId);
               const open = expanded.has(parentId);
