@@ -83,9 +83,11 @@ The Dashboard/Workspace three sanctioned write actions are untouched by this sur
 
 **No-drift invariant holds:** GHL is sole system of record. No app-side shadow copy. Every value displayed is read from GHL.
 
-### 4.1 HARD NO — unchanged from Workspace §4
+### 4.1 HARD NO — Workspace §4 set, extended 2026-07-27
 
 **Tags, pipeline stage, `offer_` fields, workflow triggers.** IAOS never fires a workflow. This is unchanged from `CONTACT_WORKSPACE_SPEC_v2.md` §4 and is NOT relaxed by any write class below. Editing a contact field is not a licence to touch a tag, move a stage, or set an offer field.
+
+**Do Not Mail** (`contact.do_not_mail` / `BDu234KJVQAP5MiXTQx3` / TEXT / Reachability). Added 2026-07-27, not from Workspace §4. It gates real physical mail to real sellers. Never editable in IAOS under any write class.
 
 ### 4.2 Why classification, not a blanket field-edit toggle
 
