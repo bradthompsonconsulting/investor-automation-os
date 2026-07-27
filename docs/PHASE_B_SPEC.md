@@ -85,10 +85,31 @@ Steps:
 5. Restore the original value with a second one-field PUT. Verify
    restoration by the same polling read.
 
-Restore constraint: B1 candidates are drawn only from fields already
-populated on the bradt75 fixture. Restore is therefore a write of a
-known prior string. Clear semantics for an empty TEXT field (empty
-string vs null) are UNKNOWN and are out of scope for B1.
+Restore constraint. Where the target field is populated on bradt75,
+restore is a write of the known prior string. Where it is unpopulated —
+the ordinary case, since bradt75 is not a property lead — restore is a
+clear, and clear semantics for a TEXT field are UNKNOWN.
+
+The FIRST inert-proof establishes those semantics as part of its own
+restore step. It is not an extra step; on an unpopulated field the
+clear IS the restore:
+  1. write a temporary value to the target field
+  2. poll the singular GET until the value is observed
+  3. run the 10.3 step-4 confirmation on that write
+  4. clear the field
+  5. poll and record the EXACT observed result: does the field's key
+     disappear from the customFields array, or does it return with an
+     empty-string value?
+  6. record the observed behavior verbatim in 10.4 Part 1 before any
+     second field is proven
+
+If the key returns as empty string rather than disappearing, the
+fixture is permanently altered — a field that was absent now exists
+as empty. Record that as residue in 10.4 Part 1. It does not
+invalidate the proof.
+
+Once observed, clear semantics are OBSERVED for every subsequent
+field and this procedure is not repeated.
 
 ### 10.4 Evidence record
 docs/PHASE_B_INERT_PROOFS.md. One entry per field, in two dated parts.
@@ -146,8 +167,7 @@ Per unlocked field, 4 checks are added:
 
 Check 2 is vacuous if the field is unpopulated on the harness fixture —
 empty compared against empty passes before any Phase B code runs. B1
-candidates must therefore be populated on Neelima as well as on
-bradt75 (10.6).
+candidates must therefore be populated on Neelima (10.6).
 
 Floor = 119 + 4N, N = unlocked field count. Restated at each increment.
 The equality constant is updated with every unlock commit. Exact
@@ -181,24 +201,34 @@ B0 — Read-only recon. No PUT. Output transcribed as message text.
 
 B1 — First five Class 1 fields. Selected from B0 output against all of:
   - dataType TEXT
-  - populated on bradt75 (restore is a known prior string, 10.3)
   - populated on Neelima (harness check 2 is non-vacuous, 10.5)
-  - not computed or import-owned
+  - not computed or import-owned. NOT wire-derivable — B0 confirmed
+    the schema exposes no ownership flag. This is an operational
+    determination and is recorded per field with the reason.
   - not offer_, not an identity field per
     CONTACTS_OPPORTUNITIES_SPEC.md §4.3, not additionalEmails or
     additionalPhones
   - no companion field or special formatting requirement
+
+Populated status on bradt75 is NOT a criterion. B0 OBSERVED that
+bradt75 and Neelima have disjoint populated Property sets — bradt75
+carries exactly one Property field (property_address, itself excluded
+per CONTACTS_OPPORTUNITIES_SPEC.md §4.3). Requiring both would make
+B1 unsatisfiable. Restore on an unpopulated field is handled by the
+first-proof clear-semantics procedure (10.3).
+
   No DATE-typed field in B1. GHL DATE fields truncate time-of-day to
   midnight UTC, which passes an inert-proof cleanly while losing
   precision. Companion-field handling is deferred.
   One field per PUT. Batched multi-field save is deferred; a batched
   payload can carry an unproven field on a dirty-tracking error.
 
-Field names are not pinned until B0 output is read. Property Status and
-Property Type are suspected picklists (SINGLE OPTIONS / DROPDOWN) and
-are INFERRED as such, not observed. Picklist write semantics — value
-must match an existing option, unmatched value may write blank or 422 —
-are out of B1 scope.
+Field names are not pinned until B0 output is read.
+B0 OBSERVED (2026-07-27) that Property Status and Property Type are
+both dataType TEXT, not picklists. No Property def carries a
+picklistOptions key; the key exists in the schema for genuinely
+picklist-typed fields elsewhere. Property-subgroup dataTypes observed:
+TEXT, NUMERICAL, DATE, MONETORY, FLOAT.
 
 If fewer than five fields satisfy every criterion, B1 ships with fewer.
 The criteria are not relaxed to reach five.

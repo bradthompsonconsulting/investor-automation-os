@@ -110,6 +110,12 @@ Consequence: **no field is writable on assumption.** Each writable field earns w
 - **Address is NOT a GHL dedup key** — it is NOT in `contactUniqueIdentifiers` (`["email","phone"]`, OBSERVED above), so editing it would NOT trigger a GHL merge/collision. The read-only rule here is OURS (business), not GHL's (dedup). Do not conflate the two justifications.
 - Treatment mirrors email/phone: **READ-ONLY in edit, READ/WRITE only at create** (a new property = a new contact; the address-identity set is set at creation — §4.5).
 
+Custom field contact.property_address (id tG4gGFI8JB2VjWeuqYMx) is
+READ-ONLY in edit under the same business rule. It is a custom field,
+not part of the native address-identity set, but it carries the same
+one-contact-one-property identity concept and is treated identically:
+read/display only in edit, read/write at create. Recorded 2026-07-27.
+
 **`contact.additionalEmails` and `contact.additionalPhones` are READ/WRITE — but flagged PROVISIONAL.**
 
 - Rationale: additional emails/phones are reachability data, not identity.
