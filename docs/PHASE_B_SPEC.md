@@ -85,6 +85,8 @@ Steps:
 5. Restore the original value with a second one-field PUT. Verify
    restoration by the same polling read.
 
+Write separation. Each PUT in an inert-proof — the step-2 write and the step-5 restore, and in the first proof the temporary write and the clear — is independently approved, independently executed, and independently verified before the next PUT begins. No procedure runs two writes under a single approval. This spec fixes the invariant, not the tooling that satisfies it.
+
 Restore constraint. Where the target field is populated on bradt75,
 restore is a write of the known prior string. Where it is unpopulated —
 the ordinary case, since bradt75 is not a property lead — restore is a
