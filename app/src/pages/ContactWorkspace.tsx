@@ -4,7 +4,7 @@ import {
   ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2, BellOff,
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
 } from "lucide-react";
-import { ghl, getBucketTag, ghlContactDetailUrl, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow } from "../lib/ghl";
+import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow } from "../lib/ghl";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
@@ -127,7 +127,68 @@ function groupAdditionalInfo(fields: RecordField[]): { subgroup: AdditionalInfoS
 
 // §5.4 single-field render — extracted read-only, byte-identical to the prior inline
 // block (same display derivation, same div/spans/styles). No edit capability.
-function FieldRow({ f }: { f: RecordField }) {
+// Phase B PB-D2/PB-D3 — the property_notes unlocked row. Owns its own draft,
+// dirty, saving and error state so ContactWorkspace holds no per-field edit
+// state. Save calls the named write setPropertyNotes (PB-D1) exactly once;
+// Cancel restores the wire value and performs NO write. Empty draft is a real
+// clear per PB-D1, not a skip.
+function PropertyNotesRow({ f, contactId }: { f: RecordField; contactId: string }) {
+  const wire = f.value == null ? "" : String(f.value);
+  const [draft, setDraft] = useState(wire);
+  const [saved, setSaved] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const current = saved == null ? wire : saved;
+  const dirty = draft !== current;
+
+  async function handleSave() {
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      await ghl.contacts.setPropertyNotes(contactId, draft);
+      setSaved(draft);
+    } catch (e) {
+      setSaveErr((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
+      <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: 1 }}>
+        <textarea
+          data-testid={`field-input-${f.id}`}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={3}
+          style={{ width: "100%", background: "#0F172A", color: "#E2E8F0", border: "1px solid #334155", borderRadius: "4px", padding: "6px", fontSize: "13px", fontFamily: "inherit" }}
+        />
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <button
+            data-testid={`field-save-${f.id}`}
+            onClick={handleSave}
+            disabled={!dirty || saving}
+          >
+            {saving ? "Saving..." : "Save"}
+          </button>
+          <button
+            data-testid={`field-cancel-${f.id}`}
+            onClick={() => setDraft(current)}
+            disabled={!dirty || saving}
+          >
+            Cancel
+          </button>
+          {saveErr && <span style={{ color: "#F87171" }}>{saveErr}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FieldRow({ f, contactId }: { f: RecordField; contactId: string }) {
+  if (f.id === PROPERTY_NOTES_ID) return <PropertyNotesRow f={f} contactId={contactId} />;
   const display =
     f.value == null
       ? "—"
@@ -611,12 +672,12 @@ export default function ContactWorkspace() {
                           <div key={subgroup} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                             <div style={{ fontSize: "11px", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", color: "#64748B", marginTop: "4px" }}>{subgroup}</div>
                             {fields.map((f) => (
-                              <FieldRow key={f.id} f={f} />
+                              <FieldRow key={f.id} f={f} contactId={id} />
                             ))}
                           </div>
                         ))
                       : (folder?.fields ?? []).map((f) => (
-                          <FieldRow key={f.id} f={f} />
+                          <FieldRow key={f.id} f={f} contactId={id} />
                         ))}
                   </div>
                 </div>

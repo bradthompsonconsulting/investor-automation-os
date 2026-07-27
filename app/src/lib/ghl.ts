@@ -39,6 +39,10 @@ const CALLBACK_DATETIME_ID = "JeQWtwpwUbvPA50UfuPU";
 // reload. Written in the SAME PUT as callback_datetime — no new write action.
 const CALLBACK_DATETIME_PRECISE_ID = "7qRUkZQK8bi2HNo7zDHd";
 
+// Phase B PB-D1 — property_notes, the first Class 1 unlocked field.
+// Additional Info > Investor subgroup, TEXT-typed.
+export const PROPERTY_NOTES_ID = "k7O0TYVMpqCpnMHRLPol";
+
 // Dashboard Phase 2B — GHL's public API cannot trigger an outbound call (it
 // can only log one that already happened); the click-to-call button hands off
 // to GHL's own contact page, where GHL's native dialer applies the Number's
@@ -453,6 +457,19 @@ export const ghl = {
           { id: CALLBACK_DATETIME_ID, field_value: iso },
           { id: CALLBACK_DATETIME_PRECISE_ID, field_value: iso },
         ],
+      }),
+
+    // Phase B PB-D1 — the first authorized Class 1 app write and the fourth
+    // named GHL write. ONE field per PUT: this body carries exactly one
+    // customFields entry and nothing else (no tags/stage/offer_ keys).
+    // property_notes is TEXT-typed. Unlike callback_datetime above, an empty
+    // string is a REAL clear here: field_value "" removes the key from
+    // customFields entirely (KEY_ABSENT, OBSERVED in the inert-proof). Do NOT
+    // copy the null-to-clear pattern from setCallbackDatetime — that is
+    // DATE-field behavior and does not apply to this field.
+    setPropertyNotes: (contactId: string, value: string) =>
+      request<any>(`/contacts/${contactId}`, "PUT", {
+        customFields: [{ id: PROPERTY_NOTES_ID, field_value: value }],
       }),
   },
 

@@ -7,7 +7,8 @@
    Floor 119 = grid (5) + six folder sections (6) + 96 custom fields (96)
              + four Additional Info subgroups (4) + three D1 identity-header renders (3)
              + four Phone N DNC adjacencies (4) + no-input (1).
-   Success ONLY when checksRun === 119 AND every check passed. Any throw exits nonzero.
+   Phase B PB-D5: floor = 119 + 4N, N = unlocked field count. N=1, so 123.
+   Success ONLY when checksRun === 123 AND every check passed. Any throw exits nonzero.
    The 96-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
@@ -15,6 +16,7 @@ const { chromium } = require("playwright");
 const ORIGIN   = "https://app.investorautomationos.com";
 const EXPECTED = "index-CcVL6jQW.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
 const TARGET   = "FiIT0hUaxVCIuokQpZuc"; // detail-view fixture (checks 6-119)
+const PROPERTY_NOTES_ID = "k7O0TYVMpqCpnMHRLPol"; // PB-D5 unlock allowlist, N=1. Hardcoded here per the verification-only rule above; never imported from app code.
 const BRADT75  = "9fbH2VCcZvzVNhsR9zjc"; // phone-format fixture — +12149146151 → 214-914-6151 (check 5)
 
 // ── Static canonical record (VERIFICATION-ONLY; hardcoded, never imported) ──────
@@ -142,7 +144,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check("phone-format", bradInPayload && bradCell === "214-914-6151",
     `inPayload=${bradInPayload} renderedPhone="${bradCell}"`);
 
-  // ═══ CHECKS 6-119 — /contacts/:id detail ═══
+  // ═══ CHECKS 6-123 — /contacts/:id detail ═══
   await page.goto(`${ORIGIN}/contacts/${TARGET}`, { waitUntil: "load" });
   await page.waitForFunction(() => {
     const btns = [...document.querySelectorAll("button")].filter((b) =>
@@ -196,11 +198,32 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const recordContainer = document.querySelector('[data-testid="record-section"]');
     const identityHeader = document.querySelector('[data-testid="identity-header"]');
     const scopeMissing = !recordContainer || !identityHeader;
-    let inputCount = 0;
-    for (const el of [recordContainer, identityHeader].filter(Boolean)) {
-      inputCount += el.querySelectorAll("input, textarea, select, [contenteditable=''], [contenteditable='true']").length;
+    const SEL = "input, textarea, select, [contenteditable=''], [contenteditable='true']";
+    // PB-D5 allowlist, N=1. Literal repeated here because page.evaluate runs in
+    // the browser and cannot see Node scope. Drift from PROPERTY_NOTES_ID is
+    // caught by the unlockedId guard before any check runs.
+    const UNLOCKED_ID = "k7O0TYVMpqCpnMHRLPol";
+    const identityInputs = identityHeader ? identityHeader.querySelectorAll(SEL).length : 0;
+    let allowlistedInputs = 0;
+    let strayInputs = 0;
+    const unlocked = { count: 0, tag: "", value: null, disabled: null, readOnly: null, saveCount: 0, cancelCount: 0 };
+    if (recordContainer) {
+      for (const el of recordContainer.querySelectorAll(SEL)) {
+        if ((el.getAttribute("data-testid") || "") === "field-input-" + UNLOCKED_ID) allowlistedInputs++;
+        else strayInputs++;
+      }
+      const uEls = recordContainer.querySelectorAll('[data-testid="field-input-' + UNLOCKED_ID + '"]');
+      unlocked.count = uEls.length;
+      if (uEls.length === 1) {
+        unlocked.tag = uEls[0].tagName;
+        unlocked.value = uEls[0].value;
+        unlocked.disabled = uEls[0].disabled;
+        unlocked.readOnly = uEls[0].readOnly;
+      }
+      unlocked.saveCount = recordContainer.querySelectorAll('[data-testid="field-save-' + UNLOCKED_ID + '"]').length;
+      unlocked.cancelCount = recordContainer.querySelectorAll('[data-testid="field-cancel-' + UNLOCKED_ID + '"]').length;
     }
-    return { folders, identityName, identityPhone, identityAddress, inputCount, scopeMissing, folderCount: folders.length };
+    return { folders, identityName, identityPhone, identityAddress, identityInputs, strayInputs, allowlistedInputs, unlocked, unlockedId: UNLOCKED_ID, scopeMissing, folderCount: folders.length };
   });
 
   const byName = (n) => rec.folders.find((f) => f.name === n);
@@ -242,6 +265,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // 112-114 — D1 identity header: name, formatted phone, combined address.
   const contact = fnBodies.map((b) => (b.json && (b.json.contact || b.json))).find((c) => c && c.id === TARGET && ("phone" in c || "firstName" in c || "lastName" in c)) || null;
+  const wireNotes = (() => {
+    const vals = (contact && contact.customFields) || [];
+    const entry = vals.find((v) => v && v.id === PROPERTY_NOTES_ID);
+    return entry == null || entry.value == null ? "" : String(entry.value);
+  })();
   const expName = contact ? ([contact.firstName, contact.lastName].filter(Boolean).join(" ") || "Unknown") : null;
   const expPhone = contact ? (formatPhone(contact.phone) || "—") : null;
   const expAddr = contact ? formatAddress(contact) : null;
@@ -260,16 +288,33 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check(`dnc-adjacent:Phone ${n}`, pi >= 0 && di === pi + 1, `Phone ${n}@${pi} Phone ${n} DNC@${di}`);
   }
 
-  // 119 — no editable form controls within the SCOPED Phase A field display (record + identity).
+  // 119 — allowlist: no inputs in scope except the unlocked field's. Checks 120-123 follow.
   // Targets the stable data-testid hooks; a MISSING hook is a FAILURE, never a zero-input pass.
-  check("no-input-in-field-display", !rec.scopeMissing && rec.inputCount === 0,
-    `scopeMissing=${rec.scopeMissing} scopedInputs=${rec.inputCount}`);
+  if (rec.unlockedId !== PROPERTY_NOTES_ID) { console.log("ABORT - allowlist ID drift between Node and browser scope"); process.exit(5); }
+
+  check("no-input-outside-allowlist",
+    !rec.scopeMissing && rec.identityInputs === 0 && rec.strayInputs === 0,
+    `scopeMissing=${rec.scopeMissing} identityInputs=${rec.identityInputs} strayInputs=${rec.strayInputs} allowlisted=${rec.allowlistedInputs}`);
+
+  check("unlocked-textarea-present",
+    rec.unlocked.count === 1 && rec.unlocked.tag === "TEXTAREA" && rec.unlocked.disabled === false && rec.unlocked.readOnly === false,
+    `count=${rec.unlocked.count} tag=${rec.unlocked.tag} disabled=${rec.unlocked.disabled} readOnly=${rec.unlocked.readOnly}`);
+
+  check("unlocked-textarea-value-from-wire",
+    wireNotes !== "" && rec.unlocked.value === wireNotes,
+    `dom=${JSON.stringify(rec.unlocked.value)} wire=${JSON.stringify(wireNotes)}`);
+
+  check("unlocked-save-present", rec.unlocked.saveCount === 1,
+    `saveCount=${rec.unlocked.saveCount}`);
+
+  check("unlocked-cancel-present", rec.unlocked.cancelCount === 1,
+    `cancelCount=${rec.unlocked.cancelCount}`);
 
   await browser.close();
 
-  // ── Self-check: exactly 119, all unique, all passed — else nonzero ──
+  // ── Self-check: exactly 123, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 119) { console.log(`ABORT — expected 119 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 123) { console.log(`ABORT — expected 123 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
