@@ -125,6 +125,25 @@ function groupAdditionalInfo(fields: RecordField[]): { subgroup: AdditionalInfoS
   return SUBGROUP_ORDER.map((subgroup) => ({ subgroup, fields: buckets[subgroup] }));
 }
 
+// §5.4 single-field render — extracted read-only, byte-identical to the prior inline
+// block (same display derivation, same div/spans/styles). No edit capability.
+function FieldRow({ f }: { f: RecordField }) {
+  const display =
+    f.value == null
+      ? "—"
+      : f.dataType === "DATE"
+        ? String(f.value)
+        : f.dataType === "MONETORY"
+          ? String(f.value)
+          : String(f.value);
+  return (
+    <div style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
+      <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
+      <span style={{ color: "#E2E8F0" }}>{display}</span>
+    </div>
+  );
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 export default function ContactWorkspace() {
@@ -591,40 +610,14 @@ export default function ContactWorkspace() {
                       ? groupAdditionalInfo(folder?.fields ?? []).map(({ subgroup, fields }) => (
                           <div key={subgroup} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                             <div style={{ fontSize: "11px", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", color: "#64748B", marginTop: "4px" }}>{subgroup}</div>
-                            {fields.map((f) => {
-                              const display =
-                                f.value == null
-                                  ? "—"
-                                  : f.dataType === "DATE"
-                                    ? String(f.value)
-                                    : f.dataType === "MONETORY"
-                                      ? String(f.value)
-                                      : String(f.value);
-                              return (
-                                <div key={f.id} style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
-                                  <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
-                                  <span style={{ color: "#E2E8F0" }}>{display}</span>
-                                </div>
-                              );
-                            })}
+                            {fields.map((f) => (
+                              <FieldRow key={f.id} f={f} />
+                            ))}
                           </div>
                         ))
-                      : (folder?.fields ?? []).map((f) => {
-                          const display =
-                            f.value == null
-                              ? "—"
-                              : f.dataType === "DATE"
-                                ? String(f.value)
-                                : f.dataType === "MONETORY"
-                                  ? String(f.value)
-                                  : String(f.value);
-                          return (
-                            <div key={f.id} style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
-                              <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
-                              <span style={{ color: "#E2E8F0" }}>{display}</span>
-                            </div>
-                          );
-                        })}
+                      : (folder?.fields ?? []).map((f) => (
+                          <FieldRow key={f.id} f={f} />
+                        ))}
                   </div>
                 </div>
               );
