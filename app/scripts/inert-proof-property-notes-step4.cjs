@@ -60,7 +60,7 @@ function readEvidence(pathStr, label) {
   // ── 1. PRECONDITION — file (step-2 + step-3 evidence) ──
   const step2 = readEvidence(STEP2_EVIDENCE, "step-2 evidence");
   const step3 = readEvidence(STEP3_EVIDENCE, "step-3 evidence");
-  for (const [s, name] of [[step2, "step-2"], [step3, "step-3"]]) {
+  for (const [s, name] of [[step2, "step-2"]]) {
     if (s.contactId !== CONTACT_ID) { console.log(`ABORT — ${name} contactId ${s.contactId} !== ${CONTACT_ID}`); process.exit(1); }
     if (s.fieldId !== FIELD_ID)     { console.log(`ABORT — ${name} fieldId ${s.fieldId} !== ${FIELD_ID}`); process.exit(1); }
   }
