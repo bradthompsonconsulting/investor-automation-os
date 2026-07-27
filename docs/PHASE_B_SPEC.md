@@ -265,3 +265,15 @@ Property subgroup yielded zero candidates: 20 fail on dataType, 9 are
 import-owned, Property Type is feed-derived, property_address is read-only
 per CONTACTS_OPPORTUNITIES_SPEC.md §4.3. The human-maintained fields are in
 Investor.
+
+### 10.7 B1 unlock decisions — property_notes
+
+PB-D2 — Control shape. The unlocked control is a `<textarea>`, not `<input type="text">`. Property Notes is free-form and grows past one line. Explicit Save and explicit Cancel controls. NO blur autosave — the §9.4 note-field onBlur pattern is not the Class 1 pattern. Newlines are entered naturally and are not intercepted.
+
+PB-D3 — Harness hook. The textarea, its Save control, and its Cancel control each carry a `data-testid` keyed to the field ID, conforming to §10.5 checks 1, 3 and 4. An earlier `data-field-id` proposal is WITHDRAWN; `data-testid` is the existing convention.
+
+PB-D4 — Check 1 scope. §10.5 check 1 additionally asserts the textarea is neither `disabled` nor `readonly`. This sits within check 1 and does NOT change the 4-per-field count.
+
+PB-D5 — B1 pin. N = 1. Floor = 119 + 4(1) = 123. The `checksRun` equality constant is updated in the same commit as the unlock. `k7O0TYVMpqCpnMHRLPol` is the only ID on the allowlist.
+
+Fixture note: `property_notes` is populated on Neelima / `FiIT0hUaxVCIuokQpZuc`, so §10.5 check 2 compares non-empty against non-empty and is not vacuous.

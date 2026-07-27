@@ -83,6 +83,8 @@ The Dashboard/Workspace three sanctioned write actions are untouched by this sur
 
 **No-drift invariant holds:** GHL is sole system of record. No app-side shadow copy. Every value displayed is read from GHL.
 
+**Class 1 writes are enumerated in 4.4 and are NOT part of this carried-forward set.** The three writes above remain exactly three. A Class 1 field-edit write does not join this list and does not alter the Workspace provenance of these three.
+
 ### 4.1 HARD NO — Workspace §4 set, extended 2026-07-27
 
 **Tags, pipeline stage, `offer_` fields, workflow triggers.** IAOS never fires a workflow. This is unchanged from `CONTACT_WORKSPACE_SPEC_v2.md` §4 and is NOT relaxed by any write class below. Editing a contact field is not a licence to touch a tag, move a stage, or set an offer field.
@@ -131,6 +133,15 @@ read/display only in edit, read/write at create. Recorded 2026-07-27.
 - Covers non-identity native contact fields and custom fields.
 - No field is writable on assumption (§4.2). Because workflow triggers are not API-enumerable (§4.6), each field must be individually proven inert on the fixture — edit it, confirm no tag/stage/offer/workflow side effect — before it is exposed as editable.
 - HARD NO (§4.1) still bounds this class: even a "field edit" must never touch a tag, stage, or `offer_` field.
+
+**PB-D1 — `setPropertyNotes` (DECIDED 2026-07-27).** First authorized Class 1 app write; fourth named GHL write overall. Authorized by the `property_notes` inert-proof Part 1, `docs/PHASE_B_INERT_PROOFS.md`, run on `bradt75` per this section.
+
+- Public surface is `ghl.contacts.setPropertyNotes(contactId, value)` and nothing else. A PRIVATE one-field custom-field PUT helper is permitted. A PUBLIC generic `setContactCustomField(fieldId, value)` is NOT — a setter parameterized over field ID dissolves the named-write discipline. Each newly unlocked field earns its own named public method by its own decision.
+- Transport, OBSERVED: `PUT /contacts/{id}` via `ghl-proxy`, `Content-Type: application/json`, body `{ "customFields": [ { "id": "k7O0TYVMpqCpnMHRLPol", "field_value": <string> } ] }`.
+- Reads return `value`. Writes take `field_value`. NOT interchangeable (OBSERVED).
+- One field per PUT. This write never carries a second `customFields` entry.
+- Empty string is a real write, not a skip. `field_value: ""` removes the key from `customFields` entirely (KEY_ABSENT, OBSERVED). Clearing is a write.
+- HARD NO (§4.1) bounds this write unchanged. `offer_` fields never receive an input regardless of class.
 
 ### 4.5 CLASS 3 — CREATE NEW CONTACT
 
