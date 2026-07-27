@@ -186,7 +186,7 @@ moves the bundle.
 
 ### 10.6 Build sequence
 B0 — Read-only recon. No PUT. Output transcribed as message text.
-  1. Every Additional Info -> Property field on BOTH fixtures:
+  1. Every Additional Info field — all 73, all four subgroups — on BOTH fixtures:
        - FiIT0hUaxVCIuokQpZuc (Neelima) — harness display fixture
        - 9fbH2VCcZvzVNhsR9zjc (bradt75) — inert-proof write fixture
      For each: name, fieldKey, field ID, dataType, picklist options if
@@ -199,7 +199,7 @@ B0 — Read-only recon. No PUT. Output transcribed as message text.
      location_id are OBSERVED to work; camelCase contactId returns 422.
      Print the call and one live response showing stage.
 
-B1 — First five Class 1 fields. Selected from B0 output against all of:
+B1 — Class 1 field set. Selected from B0 output against all of:
   - dataType TEXT
   - populated on Neelima (harness check 2 is non-vacuous, 10.5)
   - not computed or import-owned. NOT wire-derivable — B0 confirmed
@@ -232,3 +232,34 @@ TEXT, NUMERICAL, DATE, MONETORY, FLOAT.
 
 If fewer than five fields satisfy every criterion, B1 ships with fewer.
 The criteria are not relaxed to reach five.
+
+B1 PINNED (2026-07-27). One field satisfies every criterion above.
+
+Property Notes
+  field ID   k7O0TYVMpqCpnMHRLPol
+  fieldKey   contact.property_notes
+  dataType   TEXT
+  parentId   qYS1wakeOTmfgjyeSJ8M (Additional Info)
+  subgroup   Investor — config-derived; the schema exposes no subgroup
+
+Not import-owned: the operational determination required by the criterion
+above is that Property Notes is human-maintained free text. No import
+populates it.
+
+Neelima FiIT0hUaxVCIuokQpZuc — POPULATED. Value OBSERVED on the wire
+2026-07-27 via singular GET, verbatim:
+  This is a property note on Neelima!  Yep it is!
+Two spaces between "Neelima!" and "Yep". Harness check 2 asserts this
+string exactly.
+
+Provenance: populated by Brad through the GHL UI 2026-07-27 to qualify the
+field. Recorded here rather than relaxing any criterion.
+
+bradt75 9fbH2VCcZvzVNhsR9zjc — UNPOPULATED per B0. The wire representation
+of an unpopulated field, key absent versus empty string, is UNKNOWN and is
+established by the first inert-proof (10.3).
+
+Property subgroup yielded zero candidates: 20 fail on dataType, 9 are
+import-owned, Property Type is feed-derived, property_address is read-only
+per CONTACTS_OPPORTUNITIES_SPEC.md §4.3. The human-maintained fields are in
+Investor.
