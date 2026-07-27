@@ -1,4 +1,4 @@
-# IAOS — Session Handoff (2026-07-17; last refreshed 2026-07-23)
+# IAOS — Session Handoff (2026-07-17; last refreshed 2026-07-27)
 
 **Repo tip (updated 2026-07-23): `87754a5` on `main`, pushed; prod app bundle `BKZ_cWof` — §9.2 verified live at `c502f90` (poll regex corrected to `[A-Za-z0-9_-]+`).** (bundle **moved `B76Jox53` → `B2TRJzB0`** with `1512c64`'s runtime code (`gridRows`). The intervening `644398c` was a **type-only** `ContactRow` interface field plus a `contact-parse.ts` FUNCTION change, so the CLIENT bundle stayed `B76Jox53` and that deploy was verified at the FUNCTION level — the `propertyAddress` KEY on the parsed `ghl-contacts` row — NOT by a hash change. App-code commits on this surface so far: `1d9769a` / `644398c` / `1512c64`; docs-only commits still Cancel both sites.). The Conversations navy-header **banner** is built out through **§8.10**: the selected contact's name renders LARGE (22px) indented under the Notes column, in one card with the Workspace / Reply-in-GHL / **Call** action links. **§8.10 Call button VERIFIED LIVE 24/24** (`CONVERSATIONS_SPEC.md` §6.9; harness floor now **24**, bundle `Bg9d3CqX`). Call + Reply BOTH tab-hop to the GHL contact-detail page (reused `ghlContactDetailUrl`, no new URL); there is **no in-app dialer — GHL exposes none** (recon 2026-07-21, OBSERVED: the softphone is an in-UI click, not a deep-link). Still **READ-ONLY — zero writes**, three-write invariant untouched. Banner history: §8.9 name-in-banner (§6.7) → name indent (§6.8) → §8.10 Call (§6.9). **Next roadmap surface: Contacts/Opportunities** (master ref §2a; full create/edit/manage depth).
 
@@ -88,6 +88,27 @@
 - **Contacts detail view Phase A: VERIFIED LIVE at floor 119.** Harness `app/scripts/verify-contacts.cjs` at commit `25b3de5`, bundle `index-hN7nM3rs.js`, **119/119 clean run** (checksRun=119, failures=0) on fixture `FiIT0hUaxVCIuokQpZuc` (Neelima Bale). Covers grid (5) + six folder sections (6) + 96 custom fields (96) + four Additional Info subgroups counted from DOM 22/30/14/7 (4) + three D1 identity-header renders (3) + four Phone N DNC adjacencies (4) + no-input scoped to the record section + identity header (1). Floor was reconciled 123 → 119 against D1 (identity = reused ContactWorkspace header: name / formatted phone / combined address; Phone 1 DNC renders in Reachability, not the identity block) and the no-input assertion SCOPED to the Phase A field display (§5.3, `03ba60f`).
 - **Harness re-pin discipline:** `verify-contacts.cjs` `EXPECTED` must be re-pinned to the served bundle hash after ANY app-code deploy — the §9.2 bundle gate `exit 1` aborts before check 1 on a mismatch. `data-testid="record-section"` + `data-testid="identity-header"` hooks were added to ContactWorkspace so check #119 targets a stable scope, not a positional DOM walk (a MISSING hook fails #119, never a zero-input pass).
 - **Secret rotation (SECURITY):** `IAOS_WEBHOOK_SECRET` had been set to the bradt75 GHL contact ID `9fbH2VCcZvzVNhsR9zjc` — a value that is public throughout `docs/`. It surfaced when Netlify secret-scan flagged that literal on the harness fixture (harness commit `9ff7ab0` build FAILED to publish for this reason). Rotated to a fresh random value in **GHL Custom Value `iaos_webhook_secret`** + the **Netlify env var**, both confirmed live (old value now `401`s at `ghl-disposition`, which validates the `X-IAOS-Secret` header against `process.env.IAOS_WEBHOOK_SECRET`). The **16 fixture references** to `9fbH2VCcZvzVNhsR9zjc` across the harness + docs STAY — it is a public contact ID again, not the secret. No repo edit was needed to rotate (the secret lives only in Netlify/GHL, never committed).
+
+## 2026-07-27 — Phase B B1 CLOSED: property_notes unlocked, floor 123, Part 1 + Part 2 PASS
+
+Commits this session (from `git log 82771c6..HEAD`, oldest to newest, all on `main`, pushed):
+
+- `2baefd7` docs: PB-D1 setPropertyNotes named write, PB-D2 through PB-D5 B1 unlock decisions
+- `190a0f3` feat: unlock property_notes textarea per PB-D1 through PB-D5, harness floor 123
+- `fd6689e` harness: re-pin EXPECTED to DrFkq5CQ after property_notes unlock deploy
+- `3178f54` docs: PHASE_B_INERT_PROOFS Part 2, property_notes UI behavior verified
+
+**State.** HEAD `3178f54`. Served bundle `index-DrFkq5CQ.js`; harness `EXPECTED` pinned to match. Harness passes at `checksRun=123 uniqueNames=123 failures=0`.
+
+**What closed.** `property_notes` / `k7O0TYVMpqCpnMHRLPol` is the first Class 1 unlocked field. PB-D1 through PB-D5 are recorded — PB-D1 in `CONTACTS_OPPORTUNITIES_SPEC.md` 4.4 as the fourth named GHL write, PB-D2 through PB-D5 in `PHASE_B_SPEC.md` 10.7. Inert-proof Part 1 and Part 2 both PASS in `PHASE_B_INERT_PROOFS.md`.
+
+**Sequence that held, reusable for the next field.** Docs-only commit authorizing the write, THEN app code. The write did not exist in code before the spec said it existed.
+
+**New OBSERVED fact.** Newlines round-trip through app to proxy to GHL and back on a TEXT custom field, breaks intact. Previously UNKNOWN.
+
+**Open UNKNOWN.** One unreproduced Save failure on a page held open across the `190a0f3` deploy. Cause UNKNOWN; stale bundle INFERRED not observed. Recorded in Part 2. Revisit only if it recurs on a freshly loaded page.
+
+**Next.** Second unlocked field repeats B0 wire read, inert-proof, unlock, 4N. Floor moves 123 to 127. No candidate pinned — B0 must confirm TEXT type and population on Neelima first, per 10.5's vacuity rule.
 
 ## Commit map — through 2026-07-22 (oldest → newest; all on `main`, pushed)
 Contact Workspace §8 (already in the specs, not re-detailed): step 7 `becaa17`, spec recording `0015a85` (steps 4–5 `dc60d1e`, step 6 `6fa154c`).
