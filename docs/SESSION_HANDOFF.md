@@ -110,6 +110,52 @@ Commits this session (from `git log 82771c6..HEAD`, oldest to newest, all on `ma
 
 **Next.** Second unlocked field repeats B0 wire read, inert-proof, unlock, 4N. Floor moves 123 to 127. No candidate pinned — B0 must confirm TEXT type and population on Neelima first, per 10.5's vacuity rule.
 
+## 2026-07-28 — Phase B B2: ARV MONETORY inert-proof Part 1 PASS
+
+**Commits (oldest → newest, all pushed).**
+- `0bbbb31` docs: PHASE_B_SPEC 10.8 editor taxonomy, PB-D6 through PB-D15
+- `dcf7384` docs: PHASE_B_INERT_PROOFS contact.arv Part 1, MONETORY write and clear contracts OBSERVED
+- `0a8a24d` scripts: ARV MONETORY inert-proof steps 1-5, evidence artifacts for PB B2
+
+**State.** HEAD `0a8a24d`. Served bundle `index-DrFkq5CQ.js`; harness `EXPECTED` pinned
+to match — verified from the wire after the `0a8a24d` deploy, no re-pin needed. Harness
+floor unchanged at 123. bradt75 restored to its exact 5-field Phase A baseline.
+
+**What closed.** Three MONETORY UNKNOWNs, all OBSERVED on `wMBTGWMs97yysQFx7Vad` (ARV):
+write accepts an unquoted JS number; no coercion to string and no rounding at two
+decimals (187500.25 round-tripped exactly, typeof number); `field_value:""` returns
+KEY_ABSENT, same as TEXT and NOT ignored as DATE ignores it. The step-4b null fallback
+was designed for and never needed.
+
+**PB-D6 amended in practice.** §10.8 left the B2 field unpinned by design. It is now
+ARV — chosen because it was the only MONETORY with an already-OBSERVED read contract,
+so no extra write to Neelima was needed to satisfy §10.5's vacuity rule.
+
+**Method note that earned its keep.** The step-3 poll asserted PRESENCE, not value
+equality, and recorded raw value / typeof / strict-equality as OBSERVED lines. Copying
+the property_notes value-equality assertion verbatim would have reported a coercion
+finding as a proof failure. Where the stored representation IS the unknown under test,
+it cannot also be the assertion.
+
+**Corrected record.** `PHASE_B_INERT_PROOFS.md` previously stated clear semantics were
+settled "for every subsequent field" off the TEXT proof alone. Narrowed to TEXT.
+MONETORY agrees, but two agreeing dataTypes is not a general rule — DATE disagrees.
+Per-dataType first proof stands.
+
+**Deploy-rule correction.** Only pure `docs/` commits cancel BOTH Netlify sites. The
+`app/scripts/` commit built and published both, `iaos-app` in 16s with "all files
+already uploaded" — byte-identical output, bundle unmoved.
+
+**Next.** B2 is proven, not shipped. Remaining: a PB-D naming `setARV` (§4.4 forbids a
+generic parameterized setter, so each field earns its own named public method); the
+currency editor per §10.8's currency + explicit pair; floor 123 → 127; `EXPECTED`
+re-pin after that deploy; then Part 2 UI verification.
+
+**Open UNKNOWN carried.** ARV is almost certainly a read input to the MAO Calculator.
+The Part 1 proof PUT via script with no UI mounted, so it structurally cannot detect a
+UI-triggered `offer_` recompute. That belongs to Part 2, not to Part 1's inertness
+result.
+
 ## Commit map — through 2026-07-22 (oldest → newest; all on `main`, pushed)
 Contact Workspace §8 (already in the specs, not re-detailed): step 7 `becaa17`, spec recording `0015a85` (steps 4–5 `dc60d1e`, step 6 `6fa154c`).
 - `2147900` — master ref: §2a roadmap reverted to the locked sequence.
