@@ -7,8 +7,8 @@
    Floor 119 = grid (5) + six folder sections (6) + 96 custom fields (96)
              + four Additional Info subgroups (4) + three D1 identity-header renders (3)
              + four Phone N DNC adjacencies (4) + no-input (1).
-   Phase B PB-D5: floor = 119 + 4N, N = unlocked field count. N=1, so 123.
-   Success ONLY when checksRun === 123 AND every check passed. Any throw exits nonzero.
+   Phase B PB-D5/PB-D13: floor = 119 + 4N, N = unlocked field count. N=2, so 127.
+   Success ONLY when checksRun === 127 AND every check passed. Any throw exits nonzero.
    The 96-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
@@ -17,6 +17,7 @@ const ORIGIN   = "https://app.investorautomationos.com";
 const EXPECTED = "index-DrFkq5CQ.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
 const TARGET   = "FiIT0hUaxVCIuokQpZuc"; // detail-view fixture (checks 6-119)
 const PROPERTY_NOTES_ID = "k7O0TYVMpqCpnMHRLPol"; // PB-D5 unlock allowlist, N=1. Hardcoded here per the verification-only rule above; never imported from app code.
+const ARV_ID = "wMBTGWMs97yysQFx7Vad"; // PB-D16/PB-D17 unlock allowlist, N=2. Hardcoded per the same verification-only rule.
 const BRADT75  = "9fbH2VCcZvzVNhsR9zjc"; // phone-format fixture — +12149146151 → 214-914-6151 (check 5)
 
 // ── Static canonical record (VERIFICATION-ONLY; hardcoded, never imported) ──────
@@ -144,7 +145,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check("phone-format", bradInPayload && bradCell === "214-914-6151",
     `inPayload=${bradInPayload} renderedPhone="${bradCell}"`);
 
-  // ═══ CHECKS 6-123 — /contacts/:id detail ═══
+  // ═══ CHECKS 6-127 — /contacts/:id detail ═══
   await page.goto(`${ORIGIN}/contacts/${TARGET}`, { waitUntil: "load" });
   await page.waitForFunction(() => {
     const btns = [...document.querySelectorAll("button")].filter((b) =>
@@ -203,6 +204,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // the browser and cannot see Node scope. Drift from PROPERTY_NOTES_ID is
     // caught by the unlockedId guard before any check runs.
     const UNLOCKED_ID = "k7O0TYVMpqCpnMHRLPol";
+    const ARV_ID_B = "wMBTGWMs97yysQFx7Vad";
     const identityInputs = identityHeader ? identityHeader.querySelectorAll(SEL).length : 0;
     let allowlistedInputs = 0;
     let strayInputs = 0;
@@ -223,7 +225,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       unlocked.saveCount = recordContainer.querySelectorAll('[data-testid="field-save-' + UNLOCKED_ID + '"]').length;
       unlocked.cancelCount = recordContainer.querySelectorAll('[data-testid="field-cancel-' + UNLOCKED_ID + '"]').length;
     }
-    return { folders, identityName, identityPhone, identityAddress, identityInputs, strayInputs, allowlistedInputs, unlocked, unlockedId: UNLOCKED_ID, scopeMissing, folderCount: folders.length };
+    // PB-D17 Model B — at rest ARV renders a DISPLAY span and NO input. The
+    // display-to-edit swap means the at-rest no-input scan above passes for ARV
+    // regardless of configuration, so editability is proven by activation below.
+    const arv = { displayCount: 0, displayText: "", inputAtRest: 0 };
+    if (recordContainer) {
+      const dEls = recordContainer.querySelectorAll('[data-testid="field-display-' + ARV_ID_B + '"]');
+      arv.displayCount = dEls.length;
+      if (dEls.length === 1) arv.displayText = (dEls[0].textContent || "").trim();
+      arv.inputAtRest = recordContainer.querySelectorAll('[data-testid="field-input-' + ARV_ID_B + '"]').length;
+    }
+    return { folders, identityName, identityPhone, identityAddress, identityInputs, strayInputs, allowlistedInputs, unlocked, unlockedId: UNLOCKED_ID, arv, arvId: ARV_ID_B, scopeMissing, folderCount: folders.length };
   });
 
   const byName = (n) => rec.folders.find((f) => f.name === n);
@@ -288,7 +300,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check(`dnc-adjacent:Phone ${n}`, pi >= 0 && di === pi + 1, `Phone ${n}@${pi} Phone ${n} DNC@${di}`);
   }
 
-  // 119 — allowlist: no inputs in scope except the unlocked field's. Checks 120-123 follow.
+  // 119 — allowlist: no inputs in scope except the unlocked field's. Checks 120-127 follow.
   // Targets the stable data-testid hooks; a MISSING hook is a FAILURE, never a zero-input pass.
   if (rec.unlockedId !== PROPERTY_NOTES_ID) { console.log("ABORT - allowlist ID drift between Node and browser scope"); process.exit(5); }
 
@@ -310,11 +322,75 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check("unlocked-cancel-present", rec.unlocked.cancelCount === 1,
     `cancelCount=${rec.unlocked.cancelCount}`);
 
+  // ── 124-127 — ARV, currency + inline (PB-D17). Node-side drift guard first. ──
+  if (rec.arvId !== ARV_ID) { console.log("ABORT - ARV allowlist ID drift between Node and browser scope"); process.exit(5); }
+
+  const wireArv = (() => {
+    const vals = (contact && contact.customFields) || [];
+    const entry = vals.find((v) => v && v.id === ARV_ID);
+    if (entry == null || entry.value == null || entry.value === "") return "";
+    const n = Number(entry.value);
+    return Number.isNaN(n) ? "" : n;
+  })();
+  // Harness-local copy of the app's currency display transform (NOT imported).
+  const expArvDisplay = wireArv === ""
+    ? "—"
+    : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(wireArv);
+
+  check("currency-display-present",
+    rec.arv.displayCount === 1 && rec.arv.inputAtRest === 0,
+    `displayCount=${rec.arv.displayCount} inputAtRest=${rec.arv.inputAtRest}`);
+
+  check("currency-display-formatted",
+    wireArv !== "" && rec.arv.displayText === expArvDisplay,
+    `dom=${JSON.stringify(rec.arv.displayText)} expect=${JSON.stringify(expArvDisplay)} wire=${JSON.stringify(wireArv)}`);
+
+  // ACTIVATION. The ARV row is MOUNTED but hidden by its collapsed Investor parent
+  // (display:none, ContactWorkspace line 798), so a visibility-aware Playwright
+  // click would time out. An in-page element.click() fires the React handler
+  // regardless of visibility — same precedent as the sort-header click above.
+  // PB-D17 harness write-safety: this harness types NOTHING and dispatches NO
+  // blur. Blur is a commit path under inline, so manufacturing one inside a
+  // read-only harness would be a write. The editor is deliberately left OPEN —
+  // checks 126-127 are the LAST checks in this file and nothing follows them.
+  await page.evaluate((id) => {
+    const el = document.querySelector('[data-testid="field-display-' + id + '"]');
+    if (el) el.click();
+  }, ARV_ID);
+  await sleep(300);
+
+  const arvEdit = await page.evaluate((id) => {
+    const container = document.querySelector('[data-testid="record-section"]');
+    const out = { scopeMissing: !container, count: 0, tag: "", value: null, disabled: null, readOnly: null, saveCount: 0, cancelCount: 0 };
+    if (!container) return out;
+    const inputs = container.querySelectorAll('[data-testid="field-input-' + id + '"]');
+    out.count = inputs.length;
+    if (inputs.length === 1) {
+      out.tag = inputs[0].tagName;
+      out.value = inputs[0].value;
+      out.disabled = inputs[0].disabled;
+      out.readOnly = inputs[0].readOnly;
+    }
+    out.saveCount = container.querySelectorAll('[data-testid="field-save-' + id + '"]').length;
+    out.cancelCount = container.querySelectorAll('[data-testid="field-cancel-' + id + '"]').length;
+    return out;
+  }, ARV_ID);
+
+  check("currency-edit-raw-value",
+    !arvEdit.scopeMissing && arvEdit.count === 1 && arvEdit.tag === "INPUT" &&
+    arvEdit.disabled === false && arvEdit.readOnly === false &&
+    wireArv !== "" && arvEdit.value === String(wireArv),
+    `count=${arvEdit.count} tag=${arvEdit.tag} value=${JSON.stringify(arvEdit.value)} expect=${JSON.stringify(String(wireArv))} disabled=${arvEdit.disabled} readOnly=${arvEdit.readOnly}`);
+
+  check("currency-no-commit-controls",
+    arvEdit.saveCount === 0 && arvEdit.cancelCount === 0,
+    `saveCount=${arvEdit.saveCount} cancelCount=${arvEdit.cancelCount}`);
+
   await browser.close();
 
-  // ── Self-check: exactly 123, all unique, all passed — else nonzero ──
+  // ── Self-check: exactly 127, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 123) { console.log(`ABORT — expected 123 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 127) { console.log(`ABORT — expected 127 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });

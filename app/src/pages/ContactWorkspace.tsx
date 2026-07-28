@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2, BellOff,
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
 } from "lucide-react";
-import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow } from "../lib/ghl";
+import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow } from "../lib/ghl";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
@@ -187,8 +187,137 @@ function PropertyNotesRow({ f, contactId }: { f: RecordField; contactId: string 
   );
 }
 
+// PB-D20 — accepted currency syntax. Optional leading "-", optional "$", digits with
+// EITHER correct thousands grouping OR no commas at all, optional single decimal.
+// Malformed grouping is INVALID and is never silently stripped: 25,00,0 must not
+// become 25000.
+const CURRENCY_RE = /^-?\$?(\d{1,3}(,\d{3})*|\d+)(\.\d+)?$/;
+
+// Phase B PB-D16/D17/D19/D20/D21 — the ARV unlocked row. currency + inline.
+// Model B display-to-edit swap: formatted currency at rest, raw number while editing.
+// No Save/Cancel controls. Enter, Tab, or click-out commits; Escape cancels.
+function ArvRow({ f, contactId }: { f: RecordField; contactId: string }) {
+  const wire: number | "" =
+    typeof f.value === "number" ? f.value
+    : f.value == null || f.value === "" ? ""
+    : Number.isNaN(Number(f.value)) ? "" : Number(f.value);
+  const [saved, setSaved] = useState<number | "" | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [invalid, setInvalid] = useState(false);
+  const [status, setStatus] = useState<"idle" | "verifying" | "saved" | "unconfirmed" | "failed" | "unverified">("idle");
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+  const cancelRef = useRef(false);
+  const current: number | "" = saved == null ? wire : saved;
+
+  const fmt = (v: number | "") =>
+    v === ""
+      ? "—"
+      : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
+
+  function beginEdit() {
+    setDraft(current === "" ? "" : String(current));
+    setInvalid(false);
+    setErrMsg(null);
+    setStatus("idle");
+    setEditing(true);
+  }
+
+  // PB-D21 — "Saved" means GHL was read back and confirmed, never that the PUT
+  // returned 2xx. Bounded poll of the SINGULAR contact read, never the PUT echo.
+  // Equality is SEMANTIC: numeric compare for a save, KEY ABSENCE for a clear.
+  // 0 and missing are different states. The PUT is NEVER repeated.
+  async function verify(expected: number | ""): Promise<"saved" | "unconfirmed"> {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const d = await ghl.contacts.getDetail(contactId);
+      const entry = d.customFields.find((cf) => cf.id === ARV_ID);
+      if (expected === "") {
+        if (!entry) return "saved";
+      } else if (entry && Number(entry.value) === expected) {
+        return "saved";
+      }
+    }
+    return "unconfirmed";
+  }
+
+  async function commit() {
+    const raw = draft.trim();
+    // PB-D20 — invalid input does NOT commit and does NOT cancel. The editor stays
+    // open with the draft preserved. Focus is never forced back.
+    if (raw !== "" && !CURRENCY_RE.test(raw)) { setInvalid(true); return; }
+    setInvalid(false);
+    const next: number | "" = raw === "" ? "" : Number(raw.replace(/[$,]/g, ""));
+    // PB-D10 — unchanged value fires no PUT.
+    if (next === current) { setEditing(false); return; }
+    setEditing(false);
+    setStatus("verifying");
+    setErrMsg(null);
+    try {
+      await ghl.contacts.setARV(contactId, next);
+    } catch (e) {
+      setErrMsg((e as Error).message);
+      setStatus("failed");
+      return;
+    }
+    setSaved(next);
+    try {
+      setStatus(await verify(next));
+    } catch (e) {
+      setErrMsg((e as Error).message);
+      setStatus("unverified");
+    }
+  }
+
+  // PB-D19 — Escape sets a REF, not state. A state update is not visible to the
+  // blur handler in the same event sequence, and blur is what commits.
+  function handleBlur() {
+    if (cancelRef.current) { cancelRef.current = false; setEditing(false); setInvalid(false); return; }
+    void commit();
+  }
+
+  function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Escape") { cancelRef.current = true; e.currentTarget.blur(); return; }
+    if (e.key === "Enter") { e.preventDefault(); void commit(); }
+  }
+
+  return (
+    <div style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
+      <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
+      <div style={{ display: "flex", gap: "8px", alignItems: "center", flex: 1 }}>
+        {editing ? (
+          <input
+            data-testid={`field-input-${f.id}`}
+            value={draft}
+            autoFocus
+            onChange={(e) => { setDraft(e.target.value); setInvalid(false); }}
+            onBlur={handleBlur}
+            onKeyDown={handleKeyDown}
+            style={{ width: "160px", background: "#0F172A", color: "#E2E8F0", border: `1px solid ${invalid ? "#F87171" : "#334155"}`, borderRadius: "4px", padding: "4px 6px", fontSize: "13px", fontFamily: "inherit" }}
+          />
+        ) : (
+          <span
+            data-testid={`field-display-${f.id}`}
+            onClick={beginEdit}
+            style={{ color: "#E2E8F0", cursor: "text" }}
+          >
+            {fmt(current)}
+          </span>
+        )}
+        {invalid && <span style={{ color: "#F87171" }}>Not a valid amount</span>}
+        {status === "verifying" && <span style={{ color: "#94A3B8" }}>Verifying...</span>}
+        {status === "saved" && <span style={{ color: "#94A3B8" }}>Saved</span>}
+        {status === "unconfirmed" && <span style={{ color: "#94A3B8" }}>Save accepted — not yet confirmed</span>}
+        {status === "failed" && <span style={{ color: "#F87171" }}>Save failed{errMsg ? `: ${errMsg}` : ""}</span>}
+        {status === "unverified" && <span style={{ color: "#F87171" }}>Couldn't verify save</span>}
+      </div>
+    </div>
+  );
+}
+
 function FieldRow({ f, contactId }: { f: RecordField; contactId: string }) {
   if (f.id === PROPERTY_NOTES_ID) return <PropertyNotesRow f={f} contactId={contactId} />;
+  if (f.id === ARV_ID) return <ArvRow f={f} contactId={contactId} />;
   const display =
     f.value == null
       ? "—"

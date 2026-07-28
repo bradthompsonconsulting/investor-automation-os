@@ -42,6 +42,7 @@ const CALLBACK_DATETIME_PRECISE_ID = "7qRUkZQK8bi2HNo7zDHd";
 // Phase B PB-D1 — property_notes, the first Class 1 unlocked field.
 // Additional Info > Investor subgroup, TEXT-typed.
 export const PROPERTY_NOTES_ID = "k7O0TYVMpqCpnMHRLPol";
+export const ARV_ID = "wMBTGWMs97yysQFx7Vad"; // MONETORY, PB-D16/PB-D17 — B2 unlock
 
 // Dashboard Phase 2B — GHL's public API cannot trigger an outbound call (it
 // can only log one that already happened); the click-to-call button hands off
@@ -471,6 +472,22 @@ export const ghl = {
       request<any>(`/contacts/${contactId}`, "PUT", {
         customFields: [{ id: PROPERTY_NOTES_ID, field_value: value }],
       }),
+
+    // PB-D16 — PRIVATE monetary transport. Not exported, not reachable from app code.
+    // §4.4 permits a private one-field PUT helper; a PUBLIC setter parameterized over
+    // field ID is forbidden, because dataType proves serialization, not field safety
+    // (§4.6: workflow triggers are per-field and not API-derivable). Each unlocked
+    // MONETORY field earns its own named public method below by its own decision.
+    // MONETORY write contract, OBSERVED 2026-07-28: an unquoted JS number is accepted
+    // and round-trips exactly; "" clears to KEY_ABSENT.
+    _putMonetaryField: (contactId: string, fieldId: string, value: number | "") =>
+      request<any>(`/contacts/${contactId}`, "PUT", {
+        customFields: [{ id: fieldId, field_value: value }],
+      }),
+
+    // PB-D16 — fifth named write. ARV only. Empty string is a real clear, not a skip.
+    setARV: (contactId: string, value: number | "") =>
+      ghl.contacts._putMonetaryField(contactId, ARV_ID, value),
   },
 
   notes: {
