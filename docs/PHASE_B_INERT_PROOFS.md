@@ -116,8 +116,8 @@ not cover save/cancel behavior by design.
 
 ## contact.arv
 
-First MONETORY-class field. Fixture bradt75 / 9fbH2VCcZvzVNhsR9zjc per
-CONTACTS_OPPORTUNITIES_SPEC.md §4.2. No Part 2 — no unlock has shipped.
+First MONETORY-class field. Part 1 fixture bradt75 / 9fbH2VCcZvzVNhsR9zjc per
+CONTACTS_OPPORTUNITIES_SPEC.md §4.2. Part 2 names its own fixture; see below.
 
 ### Part 1 — inert-proof (2026-07-28) — PASS
 
@@ -174,3 +174,72 @@ rule — DATE already disagrees. The per-dataType first proof stands.
 
 **Evidence artifacts.**
 Scripts app/scripts/inert-proof-arv.cjs and inert-proof-arv-step2 through step5 .cjs
+
+### Part 2 — UI behavior
+
+**PASS (2026-07-28).** Verified manually against the deployed unlock, commit
+cae3435, bundle index-CZhV6PIw.js, harness re-pin 5f022fc. Fixture Neelima /
+FiIT0hUaxVCIuokQpZuc — NOT the bradt75 write fixture used in Part 1. ARV is
+ABSENT on bradt75 and every display-side case below requires a populated value,
+so §10.5's vacuity rule forced the display fixture. Deviation recorded, not
+silent. Observations taken from the browser DevTools Network panel filtered to
+ghl-proxy, Preserve log on, not inferred.
+
+**At rest.**
+- Display span renders $250,000.50. No input element present. PB-D17's Model B
+  display→edit swap confirmed in the DOM.
+
+**Cancellation.**
+- Escape after typing 999: display reverted, ZERO requests. PB-D19's synchronous
+  cancellation verified on the wire, not only in the ref.
+
+**Invalid input.**
+- 25,00,0 then Enter: editor STAYED OPEN, draft preserved, red border, inline
+  "Not a valid amount", ZERO requests. PB-D20's grouping rule holds — the
+  malformed value was not silently stripped to 25000 and focus was not forced.
+
+**No-op.**
+- Unchanged value plus click-out: ZERO requests. PB-D10 confirmed from the UI.
+
+**Commits — exactly one PUT and one GET each, four times.**
+- Enter, 260000. Saved.
+- Tab, 265000.75. Saved, focus advanced to Property Notes. Decimals survive the
+  UI round-trip, matching the Part 1 write contract.
+- Click-out, 270000. Saved.
+- Enter, accepted syntax $250,000.50. Saved; $ and comma normalized and a bare
+  number sent to GHL. This commit doubled as the fixture restore.
+
+**Enter double-commit — no second write. OBSERVED, with a caveat.**
+Enter calls commit() directly and the unmount also fires blur, calling commit()
+again. Exactly one PUT appeared on every Enter commit; the second call
+short-circuits before the network on PB-D10's unchanged-value guard. The absence
+of a second PUT is OBSERVED. The caveat is structural: correctness rests on the
+guard rather than on a single commit path, which is the shape PB-D21 rejects
+elsewhere. Known defect, not fixed in cae3435.
+
+**Verify poll — hit on attempt 1, all four commits. NEW OBSERVATION.**
+PB-D21's bounded poll never needed a second attempt; GHL's singular GET
+reflected the write within roughly 250ms every time, so "Save accepted — not yet
+confirmed" was never reached. Separately, verify() sleeps 1000ms BEFORE its
+first read, so every save displayed "Verifying…" for a full second despite the
+read being available far earlier. Known defect, not fixed in cae3435.
+
+**Persistence.**
+- Hard refresh: $250,000.50 persisted.
+
+**NOT EXERCISED — failure branches.**
+"Save failed" (PUT non-2xx) and "Couldn't verify save" (GET errors) were not
+reached. No natural way to induce either during normal operation. The intended
+method is DevTools request blocking on the ghl-proxy GET, conditional on the
+verify GET and the save PUT being distinguishable by URL — if they share a URL
+and differ only by method, blocking kills the PUT and exercises "Save failed"
+instead. That distinction is UNKNOWN and must be OBSERVED before the test is
+designed. These branches are unverified; nothing above is evidence that they
+work.
+
+**Evidence artifacts.**
+Manual verification, browser DevTools, no script. Unlock commit cae3435; harness
+re-pin 5f022fc; harness race fix 7dd0352. Harness at floor 127 passing is
+recorded separately per §10.5 and does not cover commit or cancellation behavior
+by design — per PB-D17 the at-rest no-input allowlist governs the DOM but does
+not prove editability, and the harness must not type or dispatch blur.
