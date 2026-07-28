@@ -361,3 +361,30 @@ Harness write-safety, binding: the harness MUST NOT modify the value. Activate, 
 PB-D18 - `contact.arv` has NO app-side consumer. OBSERVED 2026-07-28. MaoCalculator reads opportunity-side fields exclusively: `const cf = opp?.customFields ?? []`, with `SOURCE_FIELD_IDS.arv = cBkygqcHRseZUGCYYeba`, a different field from the contact ARV `wMBTGWMs97yysQFx7Vad`. The contact field appears nowhere in app/src except ADDITIONAL_INFO_SUBGROUPS, which files it under Investor for display. Unlocking it cannot trigger a calculator recompute. The MAO-recompute question raised against Part 1 is closed here rather than carried into Part 2. Prepopulate is mount-time into component state with no reactive subscription — recorded for future reference, not load-bearing here.
 
 PB-D19 - Escape cancellation is synchronous. Under `inline`, Escape MUST set a cancellation flag via `useRef`, never `useState` — a state update is not visible to the blur handler in the same event sequence, so a state-based flag reads stale and the blur commits the value Escape was pressed to discard. The blur handler MUST check the ref before committing. The flag resets after the blur handler has consumed it. Per PB-D10's accepted risk, a successful wrong write has no undo, which makes Escape the ONLY protection on the entire `inline` class; a blur that commits after Escape defeats that protection silently and leaves no trace. Part 2 manual verification for any `inline` field MUST include: edit the value, press Escape, and confirm ZERO PUT requests in the Network panel. A reverted display alone proves nothing — the app can write the new value and repaint the old one, and the two are indistinguishable on screen.
+
+PB-D20 - Currency input syntax and invalid handling, `currency + inline`. Accepted at commit, after trimming leading and trailing whitespace: optional leading `-`, optional `$`, digits with EITHER correctly grouped thousands commas OR no commas at all, optional single decimal point followed by digits. Commas must form correct thousands groups, `\d{1,3}(,\d{3})*`. Malformed grouping is INVALID and is NEVER silently stripped — `25,00,0` must not become `25000`.
+
+  valid:    187500.25   $187,500.25   187,500   $250000   -1200   (empty)
+  invalid:  25,00,0   1,2345   12.3.4   abc   $   -   1,234,56
+
+Empty input is valid and is a real clear to KEY_ABSENT (PB-D16, OBSERVED). Normalization for the wire: strip `$` and commas from an ACCEPTED string, then parse. GHL receives a bare unquoted number.
+
+Invalid input does NOT commit and does NOT cancel. The editor REMAINS OPEN with the draft preserved, fires no PUT, and shows an inline validation message. On Enter, focus stays in the field. On click-out or Tab, focus moves normally — the editor stays open but unfocused, and clicking it returns focus. Focus is NEVER forced back on blur; an input that recaptures focus on every exit is a trap the user cannot leave. Escape is the only cancel, and reaching it after focus has moved requires clicking back into the field, which is acceptable because the draft remains visible.
+
+Silent cancellation of invalid input is FORBIDDEN. A vanished value and a saved value are indistinguishable on screen — the same defect class PB-D19 exists to prevent.
+
+PB-D21 - What "Saved" asserts, `inline` class. "Saved" means GHL was read back and confirmed. It does NOT mean the PUT returned 2xx.
+
+  PUT 2xx                          -> "Verifying..."
+  readback matches expected         -> "Saved"
+  readback completes, no match      -> "Save accepted — not yet confirmed"
+  PUT non-2xx or throws             -> "Save failed"
+  readback GET errors or throws     -> "Couldn't verify save"
+
+Verification is a bounded poll of the SINGULAR contact GET — the same instrument the inert-proofs use — and NEVER the PUT echo, which can reflect what was sent rather than what was stored. Bound: 3 attempts, 1s apart, beginning after the PUT resolves.
+
+Readback equality is SEMANTIC, not textual. A numeric save is confirmed when the returned value compares equal AS A NUMBER to the value sent. A clear is confirmed when the field key is ABSENT from customFields. Never compare formatted strings such as `$187,500.25`. Never treat an absent key and a numeric `0` as equivalent — they are different states.
+
+The PUT is NEVER automatically repeated. A lagging read is not a failed write, and a retry would write twice. This is why timeout reads "accepted — not yet confirmed" rather than "failed": the wording must not invite the user to click again. "Save failed" is reserved for a PUT that did not succeed; a verification GET that errors is a separate and weaker claim, since the write may well have landed.
+
+Supersedes the optimistic post-PUT pattern in `setPropertyNotes` for the `inline` class ONLY. PB-D12 freezes property_notes as implemented; it is not retrofitted.
