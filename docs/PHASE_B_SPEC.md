@@ -277,3 +277,68 @@ PB-D4 — Check 1 scope. §10.5 check 1 additionally asserts the textarea is nei
 PB-D5 — B1 pin. N = 1. Floor = 119 + 4(1) = 123. The `checksRun` equality constant is updated in the same commit as the unlock. `k7O0TYVMpqCpnMHRLPol` is the only ID on the allowlist.
 
 Fixture note: `property_notes` is populated on Neelima / `FiIT0hUaxVCIuokQpZuc`, so §10.5 check 2 compares non-empty against non-empty and is not vacuous.
+
+### 10.8 Editor taxonomy
+
+Design principle: editor classes are implemented once; fields are proven individually. UI is reusable. Workflow-trigger risk is field-specific and not API-derivable (§4.6), so every field keeps its own inert-proof regardless of how many fields already share its editor.
+
+PB-D6 - B2 is the MONETORY editor class. The specific proof field is selected from the Investor subgroup (ARV, Asking Price, Estimated Repairs, Carrying Cost) immediately before the inert-proof, not now. All four are human-maintained per 10.6, absent on bradt75, and share a dataType. Only ARV is currently populated on Neelima; choosing any other requires populating it there first to satisfy 10.5's vacuity rule.
+
+PB-D7 - Editor and commit behavior are separate axes. `editor` answers how a field is edited. `commitBehavior` answers when the write fires. They are declared independently. Combining them into single names (inlineCurrency, saveText) conflates two concerns and does not scale.
+
+PB-D8 - Every field declares an editor, including locked ones. The config is total across all 96 custom fields. `editor: "none"` means deliberately not editable, and is distinct from a missing entry, which means undecided. `offer_` fields declare `none`; the 4.1 HARD NO remains the governing rule and the declaration only makes it visible in the same table as everything else. The unlock allowlist is derived from this config, not maintained separately.
+
+PB-D9 - Editor classes. Editor is a declared property of the field. `dataType` supplies the default only; per-field override is routine, not exceptional. Three overrides are already known: property_notes is TEXT but uses textarea, Owner Occupied is TEXT but reads as a yes/no, Timeline to Sell is MULTIPLE_OPTIONS but is operationally single-choice.
+
+  inlineText  - default for TEXT
+  textarea    - LARGE_TEXT, and TEXT by override
+  currency    - MONETORY
+  number      - NUMERICAL, FLOAT
+  date        - DATE
+  choice      - SINGLE_OPTIONS, and MULTIPLE_OPTIONS by override
+  phone       - PHONE
+  file        - FILE_UPLOAD, expected `none` in practice
+  none        - not editable
+
+PB-D10 - Commit behaviors.
+
+  explicit  - Save and Cancel controls. Save writes. Cancel restores the wire value and writes nothing.
+  inline    - Enter, Tab, or clicking out of the field saves. Escape cancels and restores the wire value. No persistent Save/Cancel controls. Unchanged value fires no PUT. State shown as Saving / Saved / Failed. The pre-edit value is held in component state for the page session so a failed write restores it.
+  immediate - selecting a value writes at once.
+
+Accepted risk on `inline`: every exit path except Escape commits, and a successful write of a wrong value is committed to GHL with no undo. Component state protects a FAILED write within the page session only. No post-save undo in V1; adding one would require a second compensating PUT workflow and is out of scope. Unchanged-value no-op reduces pointless writes and is NOT undo protection.
+
+Caution on `immediate`: it is the only commit mode with no user-visible moment to reconsider. Its first inert-proof carries a correspondingly higher bar.
+
+PB-D11 - Permitted pairs. Editor and commitBehavior are not freely composable. Only these pairs are valid:
+
+  textarea + explicit
+  inlineText + inline
+  currency + inline
+  number + inline
+  date + inline
+  choice + immediate
+  phone + inline
+  file + none
+  none + none
+
+`textarea + inline` is explicitly NOT permitted. Click-out saving a long free-text note is the accidental-write case this taxonomy exists to avoid.
+
+PB-D12 - property_notes is FROZEN as implemented. It is textarea + explicit. It is not retrofitted to any later pattern, and its harness checks 120-123 stand unchanged. It is the proof of concept, not the template.
+
+PB-D13 - 10.5 amendment. The floor formula 119 + 4N is UNCHANGED. Every unlocked field contributes exactly four checks; the floor stays trivially auditable. What varies is the check TEMPLATE, selected by the editor + commitBehavior pair, not the count. 10.5's literal check list (input present / value from wire / Save present / Cancel present) is hereby scoped to the textarea + explicit template only.
+
+  textarea + explicit:  control present, value from wire, Save present, Cancel present
+  inlineText + inline:  control present, value from wire, editable (not disabled, not readonly), NO commit controls rendered
+
+Templates for the remaining pairs are defined when their first field is unlocked, not speculatively. Each template is exactly four checks.
+
+PB-D14 - MONETORY read contract, OBSERVED 2026-07-28 on `contact.arv` / `wMBTGWMs97yysQFx7Vad`, Neelima. Value returns as a raw JavaScript number: `{"id":"wMBTGWMs97yysQFx7Vad","value":250000.5}`, `typeof` number. Decimals preserved. No currency symbol, no thousands separator, no string wrapper. Currency formatting is presentation only. Independently corroborated by the seven `offer_` fields, which also return bare numbers.
+
+STILL UNKNOWN, and only a PUT can settle: whether the write accepts a number or a string, whether GHL coerces or rounds on readback, and what clears a MONETORY field. TEXT clears with `field_value: ""`; DATE ignores empty string and requires null (see the setCallbackDatetime comment in ghl.ts). MONETORY may follow either. The B2 inert-proof must handle both outcomes and must not assume the TEXT result carries over.
+
+PB-D15 - Parameterized inert-proof runner is OUT OF SCOPE until after the MONETORY proof. B2 uses hand-written, separately approved proof steps following the property_notes precedent. With two completed proofs in hand, the runner is defined from two observed contracts rather than one, and parameterizes only what genuinely varies: field ID, dataType, temporary value, clear value, restore value (distinct from clear, since a field arriving populated must be restored rather than cleared), comparison strategy, and fixture expectations. The runner is the next leverage slice after B2 and before any third class.
+
+Also record, non-blocking:
+- Owner Occupied returns the STRING "No" on a TEXT field, not a boolean. A checkbox is correct UX but must serialize to whatever GHL expects, likely "Yes"/"No". UNKNOWN until proven.
+- Timeline to Sell returns `["90+ Days"]`, a single-element array, on BOTH fixtures. MULTIPLE_OPTIONS write shape is UNKNOWN.
