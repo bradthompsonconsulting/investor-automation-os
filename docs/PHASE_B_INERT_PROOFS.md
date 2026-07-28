@@ -298,3 +298,59 @@ baseline of 250000.5.
 "Save accepted — not yet confirmed" — 2xx PUT with no match inside the poll
 bound. Not reached; the poll hit on attempt 1 on every successful commit across
 Parts 2 and 3.
+
+### Part 4 — UI behavior after the Enter/verify cleanup
+
+**PASS (2026-07-28).** Commit 15ab0a3, bundle index-CAm1I0Dq.js, harness re-pin
+c64d3fc. Fixture Neelima / FiIT0hUaxVCIuokQpZuc, hard-refreshed onto the new
+bundle before the first commit. Browser DevTools, Network filtered to ghl-proxy
+with the Method column enabled. Method is the ONLY reliable PUT/GET
+discriminator — response size does not separate them, since the two endpoints
+carry different payloads. The size heuristic used informally in Parts 2 and 3
+should not be relied on again.
+
+**Three commit paths, one write each. PASS.**
+- Enter, 260000: PUT 200 3.4 kB / 751 ms, GET 200 1.7 kB / 240 ms. Saved.
+- Tab, 265000.75: PUT 200 3.4 kB / 605 ms, GET 200 1.7 kB / 289 ms. Saved.
+  Decimals survive under the blur-single-path commit, consistent with the Part 1
+  MONETORY write contract and the Part 2 round-trip.
+- Click-out, 270000: PUT 200 3.2 kB / 422 ms, GET 200 1.6 kB / 230 ms. Saved.
+
+**Enter double-commit CLOSED.** Part 2 recorded exactly one PUT on Enter but
+attributed it to PB-D10's unchanged-value guard. That attribution does not
+survive the code: setSaved runs only after the PUT resolves, so at unmount the
+guard would not have short-circuited. Whatever suppressed the second write in
+Part 2 was not the guard. Under 15ab0a3 the question is moot — Enter calls blur
+and blur is the single commit path — and one PUT per Enter is OBSERVED here on
+the wire. The Part 2 sentence naming the guard is INCORRECT AS WRITTEN and is
+superseded by this entry.
+
+**Verify poll — attempt 1, every commit, reading immediately.**
+With the 1000ms pre-read sleep removed, the first read still matched on every
+commit including a slow one (PUT 1.73 s, GET 272 ms). GHL reflects a MONETORY
+write faster than the PUT round-trip itself, so the removed sleep was pure dead
+time. "Save accepted — not yet confirmed" remains unreached.
+
+**NEW OBSERVATION — focus is lost on invalid input. OPEN.**
+Typed 25,00,0 and pressed Enter. The editor stayed open with the draft
+preserved, red border, inline "Not a valid amount", ZERO requests — and focus
+went NOWHERE. Typing a character with no intervening click produced nothing. A
+click back into the field restored focus with the draft intact (25,00,0 became
+25,00,09, still invalid, still zero requests), and a subsequent valid commit
+behaved normally: 1 PUT + 1 GET, Saved.
+
+This was INFERRED from source before the test and is now OBSERVED. The editor is
+open but inert until clicked. PB-D20 says focus is NEVER forced back, which this
+honors literally; PB-D20 does not say what focus SHOULD do, and the answer in
+practice is "nothing." The condition is pre-existing on the Tab and click-out
+paths, which already committed through blur; 15ab0a3 extends it to Enter, making
+all three paths consistent on an unspecified behavior rather than introducing a
+new one. Recorded as an open interaction-spec gap, not fixed.
+
+**Fixture restored.** ARV re-committed as 250000.50: 1 PUT + 1 GET, both 2xx,
+Saved, persisted across hard refresh. Neelima back to baseline 250000.5.
+
+**STILL NOT EXERCISED.** "Save failed" (PUT non-2xx) — no method identified.
+"Save accepted — not yet confirmed" — never reached across Parts 2, 3, and 4.
+The Part 3 Offline-window technique is no longer available; the pre-read sleep
+it depended on was removed by 15ab0a3.
