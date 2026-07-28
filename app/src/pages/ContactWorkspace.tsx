@@ -229,7 +229,7 @@ function ArvRow({ f, contactId }: { f: RecordField; contactId: string }) {
   // 0 and missing are different states. The PUT is NEVER repeated.
   async function verify(expected: number | ""): Promise<"saved" | "unconfirmed"> {
     for (let attempt = 1; attempt <= 3; attempt++) {
-      await new Promise((r) => setTimeout(r, 1000));
+      if (attempt > 1) await new Promise((r) => setTimeout(r, 1000));
       const d = await ghl.contacts.getDetail(contactId);
       const entry = d.customFields.find((cf) => cf.id === ARV_ID);
       if (expected === "") {
@@ -278,7 +278,7 @@ function ArvRow({ f, contactId }: { f: RecordField; contactId: string }) {
 
   function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Escape") { cancelRef.current = true; e.currentTarget.blur(); return; }
-    if (e.key === "Enter") { e.preventDefault(); void commit(); }
+    if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
   }
 
   return (

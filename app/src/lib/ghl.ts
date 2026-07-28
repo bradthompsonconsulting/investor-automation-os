@@ -473,7 +473,10 @@ export const ghl = {
         customFields: [{ id: PROPERTY_NOTES_ID, field_value: value }],
       }),
 
-    // PB-D16 — PRIVATE monetary transport. Not exported, not reachable from app code.
+    // PB-D16 — PRIVATE monetary transport BY CONVENTION, not by enforcement. It is
+    // exported and reachable as ghl.contacts._putMonetaryField; the underscore is the
+    // signal, not a barrier. The real guard is that no caller may use it except a
+    // named per-field setter, admitted by its own decision.
     // §4.4 permits a private one-field PUT helper; a PUBLIC setter parameterized over
     // field ID is forbidden, because dataType proves serialization, not field safety
     // (§4.6: workflow triggers are per-field and not API-derivable). Each unlocked
