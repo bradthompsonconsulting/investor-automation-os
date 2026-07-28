@@ -234,8 +234,9 @@ method is DevTools request blocking on the ghl-proxy GET, conditional on the
 verify GET and the save PUT being distinguishable by URL — if they share a URL
 and differ only by method, blocking kills the PUT and exercises "Save failed"
 instead. That distinction is UNKNOWN and must be OBSERVED before the test is
-designed. These branches are unverified; nothing above is evidence that they
-work.
+designed. These branches were unverified as of Part 2. See Part 3 — the URL
+distinction was OBSERVED as identical, blocking was rejected, and "Couldn't
+verify save" was exercised by another method. "Save failed" remains unverified.
 
 **Evidence artifacts.**
 Manual verification, browser DevTools, no script. Unlock commit cae3435; harness
@@ -243,3 +244,57 @@ re-pin 5f022fc; harness race fix 7dd0352. Harness at floor 127 passing is
 recorded separately per §10.5 and does not cover commit or cancellation behavior
 by design — per PB-D17 the at-rest no-input allowlist governs the DOM but does
 not prove editability, and the harness must not type or dispatch blur.
+
+### Part 3 — failure branch, GET error
+
+**PASS (2026-07-28).** Same build as Part 2 — commit cae3435, bundle
+index-CZhV6PIw.js, no deploy between. Fixture Neelima / FiIT0hUaxVCIuokQpZuc.
+Browser DevTools, Network filtered to ghl-proxy.
+
+**Blocking rejected — the method Part 2 named does not work. OBSERVED.**
+Every contacts-path row carries the identical URL,
+ghl-proxy?path=%2Fcontacts%2FFiIT0hUaxVCIuokQpZuc, for both the save PUT and the
+verify GET. The path is fully rendered, not truncated. There is no method
+discriminator in the URL and DevTools request blocking matches on URL only.
+Blocking that pattern would kill the PUT alongside the GET and exercise "Save
+failed" instead of the intended branch. The UNKNOWN Part 2 recorded is now
+settled, and the answer invalidated the plan.
+
+**Method used instead.** Network conditions toggled to Offline in the window
+between PUT completion and the first verify read. This depends on verify()
+sleeping 1000ms BEFORE its first read — the known defect recorded in Part 2 is
+what made the window wide enough to hit by hand. See the reusability note below.
+
+**Result — PB-D21 GET-error branch PASS.**
+ARV committed as 100000 by Enter. Exactly two rows appeared:
+  PUT   200, 3.2 kB, 587 ms
+  GET   (failed) net::ERR_..., 0.0 kB, 2 ms
+UI rendered "Couldn't verify save" beside a retained $100,000.00 display. No
+second PUT. PB-D21's no-auto-repeat guarantee held under a real transport
+failure, not by inspection.
+
+**Display retention is correct.** The optimistic value was retained rather than
+reverted. The PUT was accepted; only verification failed. Reverting would have
+misreported a write that had in fact landed.
+
+**NEW OBSERVATION — spec gap, OPEN.**
+Exactly ONE failed GET appeared, not three. A thrown fetch error exits the poll
+immediately; PB-D21's bound of 3 attempts 1s apart governs the NO-MATCH case, not
+the ERROR case. This is defensible behavior — a disconnected transport will not
+heal within 2s — but it is not what PB-D21's text says, and it was never a
+recorded decision. OBSERVED here; PB-D21 not yet reconciled. Open item.
+
+**Method not reusable after the pending cleanup.** The planned verify()
+read-then-sleep fix removes the 1000ms pre-read window this test depended on.
+Any future re-run of this branch needs a new method. Recorded so the technique
+is not assumed available.
+
+**Fixture restored.** Network restored to No throttling, ARV re-committed as
+250000.50 by Enter: 1 PUT + 1 GET, both 2xx, "Saved". Neelima back to its Part 2
+baseline of 250000.5.
+
+**STILL NOT EXERCISED.**
+"Save failed" — PUT returns non-2xx. Not reached; no method identified.
+"Save accepted — not yet confirmed" — 2xx PUT with no match inside the poll
+bound. Not reached; the poll hit on attempt 1 on every successful commit across
+Parts 2 and 3.
