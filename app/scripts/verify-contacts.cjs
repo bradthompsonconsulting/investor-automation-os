@@ -276,7 +276,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   });
 
   // 112-114 — D1 identity header: name, formatted phone, combined address.
-  const contact = fnBodies.map((b) => (b.json && (b.json.contact || b.json))).find((c) => c && c.id === TARGET && ("phone" in c || "firstName" in c || "lastName" in c)) || null;
+  // Source the contact from the ghl-proxy single-record response ONLY. The page also
+  // calls /ghl-contact (getOne), whose curated ContactRow satisfies the same id +
+  // name predicate but carries NO customFields — a content-only match races between
+  // the two and silently yields wire="" (OBSERVED 2026-07-28). Match the ENDPOINT,
+  // as the grid capture at line 93 does, not the shape.
+  const contact = fnBodies
+    .filter((b) => /\/ghl-proxy\?/.test(b.url) && /%2Fcontacts%2F/i.test(b.url))
+    .map((b) => (b.json && (b.json.contact || b.json)))
+    .find((c) => c && c.id === TARGET && ("phone" in c || "firstName" in c || "lastName" in c)) || null;
   const wireNotes = (() => {
     const vals = (contact && contact.customFields) || [];
     const entry = vals.find((v) => v && v.id === PROPERTY_NOTES_ID);
