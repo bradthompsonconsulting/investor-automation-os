@@ -52,8 +52,10 @@ KEY_ABSENT. The key is removed from the customFields array entirely.
 It does NOT return as an empty string. No permanent fixture residue.
 Observed on poll 1 of 15 via singular GET.
 
-Per 10.3, clear semantics are now OBSERVED for every subsequent field and this
-determination is not repeated.
+Per 10.3, clear semantics are now OBSERVED for TEXT. This determination is not
+repeated for other TEXT fields. It does NOT carry to other dataTypes: DATE ignores
+"" and requires null (see setCallbackDatetime in ghl.ts). Each new dataType tests
+clear semantics in its own first proof.
 
 **Restore confirmation — all four PASS.**
   PASS othersUnchanged
@@ -111,3 +113,64 @@ should be revisited.
 Manual verification, browser DevTools. Unlock commit 190a0f3; harness re-pin
 fd6689e. Harness at floor 123 passing is recorded separately per 10.5 and does
 not cover save/cancel behavior by design.
+
+## contact.arv
+
+First MONETORY-class field. Fixture bradt75 / 9fbH2VCcZvzVNhsR9zjc per
+CONTACTS_OPPORTUNITIES_SPEC.md §4.2. No Part 2 — no unlock has shipped.
+
+### Part 1 — inert-proof (2026-07-28) — PASS
+
+Target wMBTGWMs97yysQFx7Vad (ARV), dataType MONETORY. ABSENT on the fixture before
+the proof, so "restore" IS "clear" — the restore step depended on the clear-semantics
+unknown the proof was run to settle. Both outcomes were designed for up front.
+
+**Before-state.** ARV ABSENT. 5 custom fields, tags ["seller-lead"], opportunity
+4zCenJMlSlrwPF5UUQRv, pipelineStageId 71227a30-2303-4165-aa58-e56860146959.
+
+**PUT 1 — temporary value.**
+Body as sent:
+  {"customFields":[{"id":"wMBTGWMs97yysQFx7Vad","field_value":187500.25}]}
+Sent as an unquoted JS number via JSON.stringify — the shape a currency editor
+would send. HTTP 200.
+
+**Step-4 confirmation after PUT 1 — all five PASS.**
+Target observed on poll 1 of 15 via singular GET, not the PUT echo.
+  PASS targetPresent     presence, not value equality — the stored representation
+                         was the UNKNOWN under test and could not be an assertion
+  PASS othersUnchanged
+  PASS tagsUnchanged
+  PASS offersAbsent
+  PASS stageUnchanged
+
+**MONETORY WRITE contract, OBSERVED.**
+raw value 187500.25, typeof number, strictly equal to the number sent. A MONETORY
+write accepts an unquoted number. GHL neither coerces to string nor rounds at two
+decimals. This is the write-side complement to the read contract in PHASE_B_SPEC.md
+§10.8 PB-D14, and unlike PB-D14 it was observed on a value chosen for the test.
+
+**PUT 2 — clear.**
+Body as sent:
+  {"customFields":[{"id":"wMBTGWMs97yysQFx7Vad","field_value":""}]}
+HTTP 200. A 200 alone does not distinguish removal from silent ignore — DATE returns
+200 on "" and ignores it. The singular GET settled it.
+
+**MONETORY clear semantics, OBSERVED.**
+KEY_ABSENT on poll 1 of 15. field_value:"" removes the key entirely, same as TEXT,
+NOT ignored as DATE ignores it. The step-4b null fallback that was designed for was
+not needed and was never built.
+
+**Restore confirmation — all four PASS.**
+  PASS othersUnchanged
+  PASS tagsUnchanged
+  PASS offersAbsent
+  PASS stageUnchanged
+bradt75 returned to its exact before-state: same five custom fields, same values,
+same tags, same stage. ARV absent, as it was before the proof.
+
+**Findings carried forward.**
+MONETORY and TEXT agree on clear semantics. Two agreeing dataTypes is not a general
+rule — DATE already disagrees. The per-dataType first proof stands.
+
+**Evidence artifacts.**
+Scripts app/scripts/inert-proof-arv.cjs and inert-proof-arv-step2 through step5 .cjs
