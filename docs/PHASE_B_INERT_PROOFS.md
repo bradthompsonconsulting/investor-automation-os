@@ -442,3 +442,60 @@ settle (a) versus (b) from source rather than from the UI, then design a
 deterministic test. Both the focus behavior and the empty-clear contract may
 need changes; they are not the same defect and must not be conflated, but they
 must be tested as one path.
+
+### Part 6 — PB-D20 failure isolated. Part 5's FAIL is SUPERSEDED.
+
+**2026-07-29, same day, no deploy between.** Bundle index-Dg2_4V9j.js read
+directly over the wire with curl. No UI interaction; this entry is source
+inspection of the SERVED artifact, not behavior.
+
+**PB-D20 focus retention — PASS. Implemented as specified.**
+The deployed keydown handler, verbatim from the bundle:
+
+  function P(ae){
+    if(ae.key==="Escape"){G.current=!0,ae.currentTarget.blur();return}
+    ae.key==="Enter"&&(ae.preventDefault(),Z()&&ae.currentTarget.blur())
+  }
+
+Z()&&ae.currentTarget.blur() short-circuits. On an invalid draft Z() returns
+false and blur never fires, so focus stays in the input. That is PB-D20's "On
+Enter, focus stays in the field," satisfied in the served code.
+
+Z is draftIsValid, minified. Verbatim from the bundle:
+
+  function Z(){const ae=j.trim();return ae!==""&&!Xg.test(ae)?(_(!0),!1):!0}
+
+Trim, test against the currency regex, set the invalid flag and return false on
+failure, otherwise true. commit() opens with if(!Z())return, so the defensive
+gate is present as well.
+
+**Part 5's FAIL is SUPERSEDED.** Part 5 recorded PB-D20 focus retention as FAIL
+with mechanism NOT ISOLATED, and named two candidates. Candidate (a) — the fix
+did not take on the deployed bundle — is now DISPROVED. Candidate (b) is
+CONFIRMED. Part 5's finding was correct on the evidence then available and is
+wrong as a standing conclusion; this entry supersedes it. Part 5 is not edited.
+
+**What actually happened, reconstructed.**
+  1. 25,00,0 plus Enter. Z() false, no blur, focus RETAINED, error shown. Correct.
+  2. Select-all-delete to recover from the rejected draft. Draft is now empty.
+  3. Enter. Empty is VALID per PB-D20, so Z() returns true, blur fires, commit
+     runs, and empty commits a real clear to KEY_ABSENT per PB-D16.
+  4. ARV renders as "—". The row is a display span again; the editor is gone.
+
+From outside this is one event: "it rejected my entry and then erased the field."
+Both halves are individually spec-compliant. The defect is in the interaction,
+not in either rule.
+
+This also explains the "cannot change anything, refresh does nothing" observed at
+the time — after the clear the row is a display span, and the Additional Info
+folder collapses on reload, so there was no input to type into.
+
+**Deployment and compilation candidates CLOSED.** The served bundle contains the
+reviewed fix, correctly compiled. Neither a deployment mismatch nor a
+minification artifact is implicated. Recorded because ruling these out was the
+reason to read the served artifact rather than the repo.
+
+**What remains OPEN.** Whether an empty draft should commit a clear on Enter at
+all, given that select-all-delete is both the natural recovery from a rejected
+draft and the destructive gesture. That is a specification question against
+PB-D20 and PB-D16, not a defect in either. No code changes until it is decided.
