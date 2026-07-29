@@ -367,7 +367,7 @@ PB-D20 - Currency input syntax and invalid handling, `currency + inline`. Accept
   valid:    187500.25   $187,500.25   187,500   $250000   -1200   (empty)
   invalid:  25,00,0   1,2345   12.3.4   abc   $   -   1,234,56
 
-Empty input is valid and is a real clear to KEY_ABSENT (PB-D16, OBSERVED). Normalization for the wire: strip `$` and commas from an ACCEPTED string, then parse. GHL receives a bare unquoted number.
+Empty input is valid SYNTAX — it is not rejected and does not raise the validation message. It is NOT a clear. See PB-D22: an empty draft exits edit mode and restores the current persisted value, and issues no PUT. Normalization for the wire: strip `$` and commas from an ACCEPTED string, then parse. GHL receives a bare unquoted number.
 
 Invalid input does NOT commit and does NOT cancel. The editor REMAINS OPEN with the draft preserved, fires no PUT, and shows an inline validation message. On Enter, focus stays in the field. On click-out or Tab, focus moves normally — the editor stays open but unfocused, and clicking it returns focus. Focus is NEVER forced back on blur; an input that recaptures focus on every exit is a trap the user cannot leave. Escape is the only cancel, and reaching it after focus has moved requires clicking back into the field, which is acceptable because the draft remains visible.
 
@@ -400,3 +400,21 @@ Readback equality is SEMANTIC, not textual. A numeric save is confirmed when the
 The PUT is NEVER automatically repeated. A lagging read is not a failed write, and a retry would write twice. This is why timeout reads "accepted — not yet confirmed" rather than "failed": the wording must not invite the user to click again. "Save failed" is reserved for a PUT that did not succeed; a verification GET that errors is a separate and weaker claim, since the write may well have landed.
 
 Supersedes the optimistic post-PUT pattern in `setPropertyNotes` for the `inline` class ONLY. PB-D12 freezes property_notes as implemented; it is not retrofitted.
+
+PB-D22 - An empty draft is not a clear, `inline` class. On Enter, Tab, or blur with an empty draft, the inline editor exits edit mode and restores the current persisted value. No PUT is issued. Clearing the field is intentionally NOT available through the inline monetary editor.
+
+Editing and clearing are different intents. Editing changes an existing value; clearing removes the existence of one. They share a wire representation but not a risk profile, and the inline editor was designed for the first. PB-D16 defines `field_value:""` -> KEY_ABSENT as the API contract and that contract is UNCHANGED; `setARV(contactId, "")` still performs a real clear. What PB-D22 removes is the KEYSTROKE that reaches it. An API operation existing does not oblige every surface to expose it.
+
+The failure this prevents was OBSERVED, not hypothetical (PHASE_B_INERT_PROOFS.md Part 6). Invalid input leaves the editor open with a bad draft, per PB-D20. The natural recovery is select-all-delete. Under the prior rule that draft was then VALID, so Enter committed a clear and the field's value was gone. Both halves were individually spec-compliant; the destructive act sat one keystroke behind the most common correction gesture, with nothing on screen distinguishing it from an edit.
+
+Two alternatives were considered and rejected.
+  - Leave it as written. Internally consistent, but keeps a destructive write behind the recovery gesture for no benefit.
+  - Suppress the clear only when the row was previously invalid. Fixes the observed path by making Enter mean two different things on an identical-looking empty field, depending on session history the user cannot see. That is an invisible mode, which is the defect class PB-D19 exists to prevent. It also requires a clear affordance in the row, which PB-D17 forbids for this class.
+
+PB-D22 is stateless. It does not depend on how the draft became empty, and it adds no control to the row.
+
+This does not weaken PB-D19. Escape remains the general cancel for ANY draft. PB-D22 governs only the empty case, and its restore is the same visible outcome, reached differently.
+
+Scope note: for a field that is ALREADY absent, behavior is unchanged — `beginEdit` opens with an empty draft, so PB-D10's unchanged-value guard already fires no PUT. PB-D22 changes exactly one path: a populated field emptied and committed.
+
+Consequence accepted: there is currently NO way to clear a MONETARY field from the UI. That is deliberate. An explicit clear action is deferred until there is a real requirement for one; designing it will mean reopening PB-D17's no-commit-controls rule for a narrow case, and that is a better trade taken on demand than pre-built.
