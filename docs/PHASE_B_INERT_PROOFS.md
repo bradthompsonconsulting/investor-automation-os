@@ -500,7 +500,7 @@ all, given that select-all-delete is both the natural recovery from a rejected
 draft and the destructive gesture. That is a specification question against
 PB-D20 and PB-D16, not a defect in either. No code changes until it is decided.
 
-## Part 7 — PB-D22 manual verification, ARV on FiIT0hUaxVCIuokQpZuc
+### Part 7 — PB-D22 manual verification, ARV on FiIT0hUaxVCIuokQpZuc
 
 Bundle under test: `index-DGhQbSl_.js`. Every observed network request in this Part listed `index-DGhQbSl_.js:3` in the DevTools Initiator column, confirming these tests executed against the pinned bundle. Method column enabled; filter `ghl-proxy`; Preserve log on.
 

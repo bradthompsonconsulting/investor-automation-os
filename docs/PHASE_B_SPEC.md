@@ -405,7 +405,7 @@ PB-D22 - An empty draft is not a clear, `inline` class. On Enter, Tab, or blur w
 
 Editing and clearing are different intents. Editing changes an existing value; clearing removes the existence of one. They share a wire representation but not a risk profile, and the inline editor was designed for the first. PB-D16 defines `field_value:""` -> KEY_ABSENT as the API contract and that contract is UNCHANGED; `setARV(contactId, "")` still performs a real clear. What PB-D22 removes is the KEYSTROKE that reaches it. An API operation existing does not oblige every surface to expose it.
 
-The failure this prevents was OBSERVED, not hypothetical (PHASE_B_INERT_PROOFS.md Part 6). Invalid input leaves the editor open with a bad draft, per PB-D20. The natural recovery is select-all-delete. Under the prior rule that draft was then VALID, so Enter committed a clear and the field's value was gone. Both halves were individually spec-compliant; the destructive act sat one keystroke behind the most common correction gesture, with nothing on screen distinguishing it from an edit.
+The failure this prevents was OBSERVED, not hypothetical (PHASE_B_INERT_PROOFS.md Parts 5-7). Invalid input leaves the editor open with a bad draft, per PB-D20. The natural recovery is select-all-delete. Under the prior rule that draft was then VALID, so Enter committed a clear and the field's value was gone. Both halves were individually spec-compliant; the destructive act sat one keystroke behind the most common correction gesture, with nothing on screen distinguishing it from an edit.
 
 Two alternatives were considered and rejected.
   - Leave it as written. Internally consistent, but keeps a destructive write behind the recovery gesture for no benefit.
