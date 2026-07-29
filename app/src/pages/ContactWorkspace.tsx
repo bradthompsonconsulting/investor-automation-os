@@ -227,25 +227,52 @@ function ArvRow({ f, contactId }: { f: RecordField; contactId: string }) {
   // returned 2xx. Bounded poll of the SINGULAR contact read, never the PUT echo.
   // Equality is SEMANTIC: numeric compare for a save, KEY ABSENCE for a clear.
   // 0 and missing are different states. The PUT is NEVER repeated.
-  async function verify(expected: number | ""): Promise<"saved" | "unconfirmed"> {
+  async function verify(expected: number | ""): Promise<"saved" | "unconfirmed" | "unverified"> {
+    // PB-D21 — a thrown read CONSUMES an attempt and the poll continues. The
+    // transport helper throws on any non-2xx as well as on a rejected fetch, so a
+    // transient proxy 5xx is indistinguishable from a dead socket; the bound exists
+    // to absorb exactly that. The terminal state then depends on whether the
+    // instrument ever worked: one COMPLETED read makes the weaker data claim
+    // ("unconfirmed"); only a poll that never once reached GHL is "unverified".
+    let anyCompleted = false;
+    let lastErr: Error | null = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
       if (attempt > 1) await new Promise((r) => setTimeout(r, 1000));
-      const d = await ghl.contacts.getDetail(contactId);
-      const entry = d.customFields.find((cf) => cf.id === ARV_ID);
-      if (expected === "") {
-        if (!entry) return "saved";
-      } else if (entry && Number(entry.value) === expected) {
-        return "saved";
+      try {
+        const d = await ghl.contacts.getDetail(contactId);
+        anyCompleted = true;
+        const entry = d.customFields.find((cf) => cf.id === ARV_ID);
+        if (expected === "") {
+          if (!entry) return "saved";
+        } else if (entry && Number(entry.value) === expected) {
+          return "saved";
+        }
+      } catch (e) {
+        lastErr = e as Error;
       }
     }
+    if (!anyCompleted) {
+      setErrMsg(lastErr ? lastErr.message : null);
+      return "unverified";
+    }
     return "unconfirmed";
+  }
+
+  // PB-D20 — the accepted-syntax predicate, extracted so Enter can consult it
+  // BEFORE causing a blur. Sets the invalid flag as a side effect; returns
+  // whether the draft may proceed to commit. Empty is valid — it is a real clear.
+  function draftIsValid(): boolean {
+    const raw = draft.trim();
+    if (raw !== "" && !CURRENCY_RE.test(raw)) { setInvalid(true); return false; }
+    return true;
   }
 
   async function commit() {
     const raw = draft.trim();
     // PB-D20 — invalid input does NOT commit and does NOT cancel. The editor stays
-    // open with the draft preserved. Focus is never forced back.
-    if (raw !== "" && !CURRENCY_RE.test(raw)) { setInvalid(true); return; }
+    // open with the draft preserved. Focus is never forced back. Defensive gate:
+    // Enter already screened the draft, but Tab and click-out reach commit directly.
+    if (!draftIsValid()) return;
     setInvalid(false);
     const next: number | "" = raw === "" ? "" : Number(raw.replace(/[$,]/g, ""));
     // PB-D10 — unchanged value fires no PUT.
@@ -278,7 +305,11 @@ function ArvRow({ f, contactId }: { f: RecordField; contactId: string }) {
 
   function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Escape") { cancelRef.current = true; e.currentTarget.blur(); return; }
-    if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+    // PB-D20 — "On Enter, focus stays in the field." Blur is the sole commit path,
+    // so Enter must screen the draft FIRST and blur only if it will be accepted.
+    // Blurring unconditionally removes focus even when the commit is rejected,
+    // which is the violation this restores. Re-focusing after blur is forbidden.
+    if (e.key === "Enter") { e.preventDefault(); if (draftIsValid()) e.currentTarget.blur(); }
   }
 
   return (
