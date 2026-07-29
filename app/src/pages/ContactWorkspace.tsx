@@ -274,7 +274,13 @@ function ArvRow({ f, contactId }: { f: RecordField; contactId: string }) {
     // Enter already screened the draft, but Tab and click-out reach commit directly.
     if (!draftIsValid()) return;
     setInvalid(false);
-    const next: number | "" = raw === "" ? "" : Number(raw.replace(/[$,]/g, ""));
+    // PB-D22 — an empty draft is NOT a clear. Exit edit mode and restore the
+    // current persisted value; issue no PUT. Clearing is intentionally not
+    // reachable from the inline editor. The API contract is unchanged:
+    // setARV(contactId, "") still performs a real clear for a future explicit
+    // action. What this removes is the keystroke that reaches it.
+    if (raw === "") { setEditing(false); return; }
+    const next: number = Number(raw.replace(/[$,]/g, ""));
     // PB-D10 — unchanged value fires no PUT.
     if (next === current) { setEditing(false); return; }
     setEditing(false);
