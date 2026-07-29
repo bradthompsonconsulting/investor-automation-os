@@ -365,3 +365,80 @@ Saved, persisted across hard refresh. Neelima back to baseline 250000.5.
 "Save accepted — not yet confirmed" — never reached across Parts 2, 3, and 4.
 The Part 3 Offline-window technique is no longer available; the pre-read sleep
 it depended on was removed by 15ab0a3.
+
+## contact.arv — post-fix verification
+
+### Part 5 — PB-D20/PB-D21 fixes, manual verification. MIXED.
+
+**2026-07-29.** Commit 54aff63, bundle index-Dg2_4V9j.js, harness re-pin 18702b2.
+Fixture Neelima / FiIT0hUaxVCIuokQpZuc. Browser DevTools, Network filtered to
+ghl-proxy, Method column enabled. Harness passed 127/127 against the new bundle
+before manual work began — that covers the at-rest surface only and by design
+exercises neither fix.
+
+**PB-D20 focus retention — FAIL. Mechanism NOT ISOLATED.**
+Required behavior, from PB-D20 verbatim: "On Enter, focus stays in the field."
+The acceptance criterion is behavioral — after an invalid amount plus Enter, the
+NEXT KEYSTROKE must land without an intervening click.
+
+That did not occur reliably. 25,00,0 plus Enter left the editor open with the
+draft and the inline error and fired ZERO requests, all correct; what followed
+was not. Whether the subsequent keystroke landed was not captured on screen and
+the operator's account and the screenshots do not agree closely enough to call
+either way. Recorded as FAIL rather than inconclusive: the criterion is that the
+behavior is reliable, and it was not.
+
+Two candidate mechanisms, both UNTESTED:
+  (a) focus is still lost — the 54aff63 fix did not take on the deployed bundle
+  (b) focus is retained, and the observed failure came entirely from the
+      empty-clear path below
+
+**Empty-clear — PASS against the contract, HAZARDOUS in practice. OPEN.**
+Clearing the field and pressing Enter committed a real clear: PUT 200 3.3 kB,
+ARV displayed as "—", "Saved". This is PB-D20 as written — empty is valid input
+and a real clear to KEY_ABSENT per PB-D16 — and the code is correct.
+
+The hazard is the interaction with the invalid path. A user whose input was
+rejected has an editor sitting open with a bad draft in it; the natural recovery
+is select-all-delete, and that draft is now VALID, so Enter commits a clear and
+the field's value is gone. From outside, "the app rejected my entry and then
+erased the field" is one event, not two. This may also be the whole of the
+FAIL above — if the recovery instinct is select-all-delete, fixing focus alone
+would not have prevented what was observed.
+
+Recorded as an OPEN spec question, not a code defect. Next session tests the two
+as ONE interaction path, not as separate cases.
+
+**Valid Enter commit — PASS.**
+260000 plus Enter: PUT 200 3.2 kB / 331 ms, GET 200 1.6 kB / 280 ms, "Saved".
+Exactly one write. The blur-single-path commit survived the 54aff63 change; this
+was the regression risk in gating the blur and it did not regress.
+
+**"Save failed" — NEWLY EXERCISED. Closes a branch open since Part 2.**
+With Network conditions held Offline, Enter on a changed value produced PUT
+(failed) net::ERR, 0.0 kB, 4 ms, and the UI rendered "Save failed: Failed to
+fetch". PB-D21's PUT-failure branch had been NOT EXERCISED across Parts 2, 3,
+and 4. It is now OBSERVED.
+
+Three consecutive failed PUTs appear in the log. These were separate manual
+Enter presses, not automatic repetition — the no-repeat rule is not implicated.
+Stated here because three identical failures in sequence is exactly what an
+auto-retry would look like and the record should not leave that ambiguous.
+
+**PB-D21 retry-on-thrown-read — NOT TESTED.**
+The 54aff63 change moves the catch inside the poll so a thrown read consumes an
+attempt and the poll continues. That path was not reached: holding Offline kills
+the PUT, so verification never starts. Reaching it requires a SUCCEEDING PUT
+followed by FAILING reads, and the window between them is now approximately zero
+because the pre-read sleep was removed. No instrument currently produces that
+condition — URL blocking kills both, since the PUT and the verify GET share one
+URL and differ only by method. Unverified.
+
+**Fixture restored.** ARV re-committed as 250000.50: PUT 200 3.4 kB / 774 ms,
+GET 200 1.7 kB / 232 ms, "Saved". Neelima back to baseline 250000.5.
+
+**Carried to next session.** Inspect handleKeyDown in the DEPLOYED bundle to
+settle (a) versus (b) from source rather than from the UI, then design a
+deterministic test. Both the focus behavior and the empty-clear contract may
+need changes; they are not the same defect and must not be conflated, but they
+must be tested as one path.
