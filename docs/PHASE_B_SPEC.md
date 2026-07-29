@@ -418,3 +418,19 @@ This does not weaken PB-D19. Escape remains the general cancel for ANY draft. PB
 Scope note: for a field that is ALREADY absent, behavior is unchanged — `beginEdit` opens with an empty draft, so PB-D10's unchanged-value guard already fires no PUT. PB-D22 changes exactly one path: a populated field emptied and committed.
 
 Consequence accepted: there is currently NO way to clear a MONETARY field from the UI. That is deliberate. An explicit clear action is deferred until there is a real requirement for one; designing it will mean reopening PB-D17's no-commit-controls rule for a narrow case, and that is a better trade taken on demand than pre-built.
+
+### PB-D23 — The inert-proof runner is parameterized by field, not by dataType
+
+**Decision.** PB-D15's parameterized inert-proof runner takes a field as its parameter. It does not consult a dataType contract table. No such table is built at this time.
+
+**What is observed, and its scope.** Two fields have completed inert-proof verification: `property_notes` (TEXT, B1, Parts 1–2) and `contact.arv` (MONETORY, B2, Parts 1–7). Their inert-proof behavior is uniform. This is an observation across two fields, one of each dataType — not across dataTypes. One field has been exercised for each dataType (n = 1 per dataType). It is recorded as uniform-as-observed for the fields exercised so far, and carries no claim about any field or dataType not yet proven.
+
+**Fixed-pair rejected.** A two-entry table whose entries hold identical values discriminates nothing. The runner behaves identically with it or without it, and every lookup against it succeeds regardless of whether the runner is correct. It asserts something true before the code under test runs — the tautology trap in structural form.
+
+**Open-registry rejected.** Its first consumer does not exist. No third dataType is unlocked, is a Phase B candidate, or has a proof record. Building it now is abstraction ahead of its first consumer, which §-no-abstraction forbids on every build.
+
+**DATE is not the third entry.** DATE is excluded, and the reason is not that its behavior is known to differ — it is that its behavior is largely UNKNOWN. What is OBSERVED: DATE-typed GHL fields silently truncate time-of-day to midnight UTC, which is why the `_precise` companion TEXT field pattern exists. Its clear semantics and its inert-proof behavior have never been exercised. DATE cannot serve as a third table entry because there is no inert-proof evidence to record for it.
+
+**Trigger to revisit.** Build a dataType contract table only when a third dataType enters inert-proof verification and at least one proven behavior differs from the others. At that point the variation is real, the table has a consumer, and its shape is informed by observed behavior rather than prediction. Fixed-pair versus open-registry is decided then, against the actual third case.
+
+**Unchanged.** This decision governs the runner's parameterization only. It does not alter any field's unlock status, any existing proof record, or PB-D16's wire contract.
