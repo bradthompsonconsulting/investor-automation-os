@@ -434,3 +434,23 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **Trigger to revisit.** Build a dataType contract table only when a third dataType enters inert-proof verification and at least one proven behavior differs from the others. At that point the variation is real, the table has a consumer, and its shape is informed by observed behavior rather than prediction. Fixed-pair versus open-registry is decided then, against the actual third case.
 
 **Unchanged.** This decision governs the runner's parameterization only. It does not alter any field's unlock status, any existing proof record, or PB-D16's wire contract.
+
+### PB-D24 — Rollback semantics when the original wire state is KEY_ABSENT, and the PB-D16 promotion gate
+
+**Decision — strict restoration.** An inert-proof captures both the prior value AND the key's presence before writing. Rollback restores the exact original wire state: if the key was present, PUT the original value; if the key was absent, restore absence. Rollback is not complete until a read confirms the restored wire state. A successful restoring PUT is necessary but not sufficient, per PB-D21.
+
+**Absent-origin mechanism for MONETORY.** `field_value: ""` → KEY_ABSENT, per PB-D16's wire contract. No new mechanism is designed; the restoring call is the same shape as the clearing call already in use.
+
+**Evidence boundary.** That contract was observed through `contact.arv` alone. PB-D16 states the governing distinction directly: dataType proves serialization, not field safety. Clear-on-empty is serialization, so PB-D24 relies on it at the level PB-D16 already generalizes. Field safety is not generalized and is not generalizable — per PB-D16 §4.6, workflow triggers are not API-derivable, so "safe to write" remains a per-field fact. The B3 field must prove its own write safety independently. MONETORY tells the runner how to serialize. It does not tell the runner a field is safe to write.
+
+**Not a cross-dataType rule.** DATE ignores empty string and requires `null` (per the `setCallbackDatetime` comment in `ghl.ts`, recorded in the clear-semantics note at PB-D14). PB-D24's absent-origin mechanism is MONETORY-specific and carries no claim about DATE or any dataType not yet proven. This is the same TEXT/MONETORY-versus-DATE split PB-D23 relies on.
+
+**Alternatives rejected.**
+- *Value-only rollback* — restores prior values but leaves an originally-absent field populated. A proof that can leave the record changed is not an inert-proof. Rejected on definition, not preference.
+- *Require prepopulation* — a field must be populated before participating. This does not remove the absent-origin case; it relocates it. Establishing the precondition means writing into an absent field, which is an unrollbackable absent-origin write, unless the precondition is satisfied by hand for every run — in which case the runner carries a permanent manual step and the absent-origin path stays unproven. Rejected.
+
+**Fixture state at the time of this decision.** On `FiIT0hUaxVCIuokQpZuc` (Neelima), all three candidates are POPULATED — `contact.asking_price` 115000, `contact.estimated_repairs` 15000, `contact.carrying_cost` 6000, wire-confirmed, dataType MONETORY confirmed against the location custom-field schema. On `9fbH2VCcZvzVNhsR9zjc` (bradt75), all three are ABSENT. Both origin states are therefore available deliberately: populated-origin rollback provable on Neelima, absent-origin rollback provable on bradt75. Neither path need be discovered accidentally.
+
+**Promotion gate — eligibility, not authorization.** PB-D16 restricts the public surface to `setARV(contactId, value)`, keeps `putMonetaryField` private, and defers revisiting a class-scoped public setter until a SECOND MONETORY field has passed its own inert-proof. The B3 field is that second field. A passing second MONETORY inert-proof satisfies the eligibility condition for review. It does not itself change the public API. It does not authorize exporting `putMonetaryField`, generalizing it, or adding any public method beyond the named wrapper the newly proven field earns by its own decision. Two safe fields do not prove every MONETORY field safe. The review is a separate named decision, taken deliberately after the proof passes — never as a side effect of it.
+
+**Unchanged.** PB-D16's wire contract, PB-D22's keystroke removal, PB-D23's runner parameterization, and every existing proof record are untouched.
