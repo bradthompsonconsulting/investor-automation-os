@@ -340,12 +340,23 @@ click back into the field restored focus with the draft intact (25,00,0 became
 behaved normally: 1 PUT + 1 GET, Saved.
 
 This was INFERRED from source before the test and is now OBSERVED. The editor is
-open but inert until clicked. PB-D20 says focus is NEVER forced back, which this
-honors literally; PB-D20 does not say what focus SHOULD do, and the answer in
-practice is "nothing." The condition is pre-existing on the Tab and click-out
-paths, which already committed through blur; 15ab0a3 extends it to Enter, making
-all three paths consistent on an unspecified behavior rather than introducing a
-new one. Recorded as an open interaction-spec gap, not fixed.
+open but inert until clicked.
+
+**CORRECTION — this is a spec violation, not a spec gap.** The paragraph above as
+first written claimed PB-D20 does not say what focus should do. It does: "On
+Enter, focus stays in the field." Enter is specified explicitly, and the observed
+behavior is its opposite. PB-D20 further specifies that on click-out or Tab focus
+moves normally and the editor stays open but unfocused — so those two paths are
+COMPLIANT and always were. The claim that this condition was pre-existing on Tab
+and click-out and merely extended to Enter is also wrong: before 15ab0a3, Enter
+called commit() directly with the input still mounted and focused, and satisfied
+the decision. 15ab0a3 routed Enter through blur(), which removes focus by
+definition, and autoFocus fires only at mount so it never returns.
+
+PB-D20 requires no amendment. The implementation must be restored to satisfy it.
+Tracked as a defect for the next app commit; the introducing commit is named here
+rather than in the specification, which states required behavior and carries no
+commit history.
 
 **Fixture restored.** ARV re-committed as 250000.50: 1 PUT + 1 GET, both 2xx,
 Saved, persisted across hard refresh. Neelima back to baseline 250000.5.

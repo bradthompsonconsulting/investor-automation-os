@@ -381,7 +381,11 @@ PB-D21 - What "Saved" asserts, `inline` class. "Saved" means GHL was read back a
   PUT non-2xx or throws             -> "Save failed"
   readback GET errors or throws     -> "Couldn't verify save"
 
-Verification is a bounded poll of the SINGULAR contact GET — the same instrument the inert-proofs use — and NEVER the PUT echo, which can reflect what was sent rather than what was stored. Bound: 3 attempts, 1s apart, beginning after the PUT resolves.
+Verification is a bounded poll of the SINGULAR contact GET — the same instrument the inert-proofs use — and NEVER the PUT echo, which can reflect what was sent rather than what was stored. Bound: 3 attempts, 1s apart, beginning after the PUT resolves. The first attempt runs immediately; the 1s interval separates attempts and does not precede the first.
+
+The bound governs BOTH unsuccessful outcomes, not only a completed read that fails to match. A read that THROWS consumes one attempt and the poll continues. The transport helper throws on any non-2xx as well as on a rejected fetch, so a transient proxy 5xx and a dead socket arrive as the same exception with nothing to distinguish them; a transient 5xx is precisely the case a bounded poll exists to absorb, and abandoning verification on the first one forfeits that for the sake of two seconds. Only after all 3 attempts have been consumed without a confirming read does the state settle to "Couldn't verify save."
+
+This does not weaken the no-repeat rule. The PUT is still never reissued. Retrying is retrying the READ.
 
 Readback equality is SEMANTIC, not textual. A numeric save is confirmed when the returned value compares equal AS A NUMBER to the value sent. A clear is confirmed when the field key is ABSENT from customFields. Never compare formatted strings such as `$187,500.25`. Never treat an absent key and a numeric `0` as equivalent — they are different states.
 
