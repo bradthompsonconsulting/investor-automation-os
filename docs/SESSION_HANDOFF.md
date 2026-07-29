@@ -1,6 +1,6 @@
-# IAOS — Session Handoff (2026-07-17; last refreshed 2026-07-28)
+# IAOS — Session Handoff (2026-07-17; last refreshed 2026-07-29)
 
-**Repo tip (updated 2026-07-28): `31f82e8` on `main`, pushed; prod app bundle `index-CAm1I0Dq.js` — §9.2 verified live, harness EXPECTED pinned to match, floor 127 passing.** **Historical note below is as of 2026-07-23 and is NOT current state.** (bundle **moved `B76Jox53` → `B2TRJzB0`** with `1512c64`'s runtime code (`gridRows`). The intervening `644398c` was a **type-only** `ContactRow` interface field plus a `contact-parse.ts` FUNCTION change, so the CLIENT bundle stayed `B76Jox53` and that deploy was verified at the FUNCTION level — the `propertyAddress` KEY on the parsed `ghl-contacts` row — NOT by a hash change. App-code commits on this surface so far: `1d9769a` / `644398c` / `1512c64`; docs-only commits still Cancel both sites.). The Conversations navy-header **banner** is built out through **§8.10**: the selected contact's name renders LARGE (22px) indented under the Notes column, in one card with the Workspace / Reply-in-GHL / **Call** action links. **§8.10 Call button VERIFIED LIVE 24/24** (`CONVERSATIONS_SPEC.md` §6.9; harness floor now **24**, bundle `Bg9d3CqX`). Call + Reply BOTH tab-hop to the GHL contact-detail page (reused `ghlContactDetailUrl`, no new URL); there is **no in-app dialer — GHL exposes none** (recon 2026-07-21, OBSERVED: the softphone is an in-UI click, not a deep-link). Still **READ-ONLY — zero writes**, three-write invariant untouched. Banner history: §8.9 name-in-banner (§6.7) → name indent (§6.8) → §8.10 Call (§6.9). **Next roadmap surface: Contacts/Opportunities** (master ref §2a; full create/edit/manage depth).
+**Repo tip (updated 2026-07-29): `6f79044` on `main`, pushed; prod app bundle `index-Dg2_4V9j.js` — §9.2 verified live, harness EXPECTED pinned to match, floor 127 passing.** **Historical note below is as of 2026-07-23 and is NOT current state.** (bundle **moved `B76Jox53` → `B2TRJzB0`** with `1512c64`'s runtime code (`gridRows`). The intervening `644398c` was a **type-only** `ContactRow` interface field plus a `contact-parse.ts` FUNCTION change, so the CLIENT bundle stayed `B76Jox53` and that deploy was verified at the FUNCTION level — the `propertyAddress` KEY on the parsed `ghl-contacts` row — NOT by a hash change. App-code commits on this surface so far: `1d9769a` / `644398c` / `1512c64`; docs-only commits still Cancel both sites.). The Conversations navy-header **banner** is built out through **§8.10**: the selected contact's name renders LARGE (22px) indented under the Notes column, in one card with the Workspace / Reply-in-GHL / **Call** action links. **§8.10 Call button VERIFIED LIVE 24/24** (`CONVERSATIONS_SPEC.md` §6.9; harness floor now **24**, bundle `Bg9d3CqX`). Call + Reply BOTH tab-hop to the GHL contact-detail page (reused `ghlContactDetailUrl`, no new URL); there is **no in-app dialer — GHL exposes none** (recon 2026-07-21, OBSERVED: the softphone is an in-UI click, not a deep-link). Still **READ-ONLY — zero writes**, three-write invariant untouched. Banner history: §8.9 name-in-banner (§6.7) → name indent (§6.8) → §8.10 Call (§6.9). **Next roadmap surface: Contacts/Opportunities** (master ref §2a; full create/edit/manage depth).
 
 **Read first, in the repo (I have NOT paraphrased their contents here — read them directly):**
 `docs/IAOS_Master_Architecture_Reference_V10_2.txt` (master ref, internally v10.3), `docs/DASHBOARD_SPEC_v2.txt`, `docs/CONTACT_WORKSPACE_SPEC_v2.md`, `docs/CONVERSATIONS_SPEC.md`, `docs/CALENDARS_SPEC.md`, `docs/CONTACTS_OPPORTUNITIES_SPEC.md` (surface #4 — §0–3 + §4-v3 + **§5 (surface design & build) DRAFTED** + recon-findings log; the §5.3 Phase A floor integer is **123** (Phase A = grid + detail per §5.2; raised 122→123 at `e6109f0`); the enumerated field inventory lives in the companion **`docs/CONTACT_FIELD_REFERENCE.md`**; see the surface-#4 block below). The master ref §2a is the locked Coverage Roadmap: **Dashboard → Conversations → Calendars → Contacts/Opportunities** (order is locked; a Contact Workspace surface was built between Dashboard and Conversations as *build history*, not a roadmap re-sequence).
@@ -222,6 +222,90 @@ remaining MONETORY candidates (Asking Price, Estimated Repairs, Carrying Cost) a
 both fixtures, so §10.5's vacuity rule requires populating Neelima first. That is a manual
 GHL edit, not an IAOS write task: no app write path exists for those fields and PB-D16 says
 none will until each passes its own proof.
+
+## 2026-07-29 — PB-D20 and PB-D21 decided and shipped; PB-D20 FAILS on the wire
+
+**Commits (oldest → newest, all pushed).**
+- `8e0cf8b` docs: PHASE_B_SPEC PB-D21 bound covers thrown reads, correct Part 4 PB-D20 finding to spec violation
+- `556dfd5` docs: PHASE_B_SPEC PB-D21 terminal state distinguishes completed from thrown reads
+- `54aff63` fix: Enter keeps focus on invalid input per PB-D20, verify poll absorbs thrown reads per PB-D21
+- `18702b2` harness: re-pin EXPECTED to Dg2_4V9j after PB-D20/PB-D21 fix deploy
+- `6f79044` docs: PHASE_B_INERT_PROOFS Part 5, PB-D20 focus FAIL mechanism not isolated, Save failed branch exercised
+
+**State.** HEAD `6f79044`. Served bundle `index-Dg2_4V9j.js`; harness `EXPECTED`
+pinned to match and verified against the live deploy. Floor 127, checksRun=127
+failures=0. Neelima restored to ARV 250000.5; bradt75 untouched.
+
+**PB-D20 was never a spec gap.** The prior session recorded it as one. It is not:
+PB-D20 says "On Enter, focus stays in the field," which specifies the Enter case
+explicitly, and the observed behavior was its opposite. `15ab0a3` introduced the
+violation by routing Enter through `blur()`. Tab and click-out were always
+compliant. The decision needed no amendment; the implementation needed a fix.
+
+**PB-D21 amended twice.** First to state that a thrown read consumes an attempt
+and the poll continues — the transport helper throws on any non-2xx as well as a
+rejected fetch, so a transient 5xx and a dead socket are the same exception, and
+a transient 5xx is exactly what a bounded poll exists to absorb. Then to fix a
+contradiction introduced by that amendment: an exhausted poll settles to "Save
+accepted — not yet confirmed" if ANY read completed, and to "Couldn't verify
+save" only if all three threw. A completed read is evidence about the data; a
+thrown read is evidence about the instrument.
+
+**`54aff63` implements both.** `draftIsValid()` extracted so Enter screens the
+draft BEFORE causing a blur and blurs only if it will be accepted; blur remains
+the sole commit path. `verify()` moves its try/catch inside the loop and tracks
+`anyCompleted`/`lastErr`.
+
+**PB-D20 STILL FAILS ON THE DEPLOYED BUNDLE. Mechanism not isolated.** Manual
+verification could not confirm that a keystroke lands after an invalid Enter
+without an intervening click. Two candidates, both untested: the fix did not take,
+or the failure came entirely from the empty-clear path below. Recorded in
+PHASE_B_INERT_PROOFS.md Part 5. This is the first item next session.
+
+**NEW OPEN spec question — the empty-clear foot-gun.** Clearing the field and
+pressing Enter commits a real clear. That is PB-D20 and PB-D16 as written and the
+code is correct. The hazard is the interaction: a rejected draft leaves the editor
+open, the natural recovery is select-all-delete, and that draft is now VALID, so
+Enter erases the field. From outside it reads as one event — "it rejected my entry
+and then wiped the field." May be the whole of the FAIL above. Test the two as ONE
+interaction path, not as separate cases.
+
+**"Save failed" branch NEWLY EXERCISED.** Held Offline, Enter on a changed value
+produced a failed PUT and the UI rendered "Save failed: Failed to fetch". Open
+since Part 2, now OBSERVED. Three consecutive failed PUTs in the log were separate
+manual Enter presses, not auto-repeat.
+
+**Still unexercised.** PB-D21's retry-on-thrown-read is UNVERIFIED — reaching it
+needs a succeeding PUT followed by failing reads, and that window is now ~0ms since
+the pre-read sleep was removed. "Save accepted — not yet confirmed" has never been
+reached across Parts 2 through 5. No instrument produces either condition: URL
+blocking kills the PUT alongside the GET, since they share one URL and differ only
+by method.
+
+**Process rules added this session, both from observed failures.**
+- NO `git commit --amend` without explicit approval, even when unpushed. An amend
+  is a history rewrite and requires a stop. Jeff amended unprompted after mangling
+  a commit message.
+- Commit messages use ONE plain `-m "message"`. No heredoc, here-string, or other
+  shell-specific multiline syntax. PowerShell here-string syntax in the Bash tool
+  put literal `@` lines into a commit message.
+
+**Watch item.** Jeff substituted a prose description for `git diff` output twice
+this session after being asked to print it. The diff is the checkpoint that reads
+the whole file rather than three approval fragments; a description is not that
+checkpoint.
+
+**Deferred cosmetic.** `verify-contacts.cjs` `TARGET` carries `// detail-view
+fixture (checks 6-119)`. Floor is 127.
+
+**Next.** Isolate the PB-D20 failure by reading `handleKeyDown` in the DEPLOYED
+bundle rather than the repo, then design a deterministic test covering the focus
+and empty-clear paths together. After that, PB-D15's parameterized inert-proof
+runner — settle fixed-pair versus open-registry for the dataType contract table
+BEFORE writing code, since TEXT and MONETORY agree on clear semantics and DATE
+does not. Remaining MONETORY candidates (Asking Price, Estimated Repairs, Carrying
+Cost) are still ABSENT on both fixtures; §10.5 vacuity requires populating Neelima
+by hand in GHL first.
 
 ## Commit map — through 2026-07-22 (oldest → newest; all on `main`, pushed)
 Contact Workspace §8 (already in the specs, not re-detailed): step 7 `becaa17`, spec recording `0015a85` (steps 4–5 `dc60d1e`, step 6 `6fa154c`).
