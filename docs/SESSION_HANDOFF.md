@@ -395,3 +395,38 @@ Brad is a clean GHL contact — **bradt75@gmail.com / 214-914-6151, no DnD.** Us
 1. **Does the Conversations SEND write join the three-write invariant, or form a new write class?** (Invariant today: notes + last_call_attempt + callback; send is a new outward-facing write to a seller.)
 2. **Same for Calendars BOOK/reschedule** — new write class, or folded in?
 Both now DEFAULT to GHL-FIRST: **surface GHL's mechanism (booking widget, send path), build our own only on an OBSERVED finding that GHL has none.** Both must gate on DnD (john sanchez's "DnD enabled by customer" is the live example). The write-class decision stays Brad's to make.
+
+## 2026-07-29 (later session) — PB-D22 shipped; PB-D20 failure isolated and superseded
+
+**Commits (oldest → newest, all pushed).**
+- `573d294` docs: SESSION_HANDOFF 2026-07-29, PB-D20 and PB-D21 shipped, PB-D20 fails on the wire
+- `618d399` docs: PHASE_B_INERT_PROOFS Part 6, PB-D20 focus PASS on served bundle, Part 5 FAIL superseded
+- `54e2d69` docs: PHASE_B_SPEC PB-D22, empty draft restores rather than clears, PB-D20 empty clause amended
+- `218e732` fix: empty draft restores rather than clears per PB-D22
+- `c72770d` harness: re-pin EXPECTED to index-DGhQbSl_.js after PB-D22 deploy
+- `9462a38` docs: PHASE_B_INERT_PROOFS Part 7, PB-D22 post-invalid recovery verified on the wire, Tests 1-3 PASS
+
+**State.** HEAD `9462a38`, working tree clean. Served bundle `index-DGhQbSl_.js`; harness `EXPECTED` pinned to match and verified against the live deploy. Floor 127, checksRun=127 failures=0. Neelima ARV 250000.5; bradt75 untouched.
+
+**The previously reported PB-D20 failure was superseded.** Inspection of the served bundle (rather than the repository source) showed the invalid-draft guard present in the compiled artifact. The helper appears minified as `Z`, and the keydown path only blurs when that guard succeeds. The reviewed fix was present and correctly compiled, so the Part 5 observation is contradicted rather than explained. The empty-clear path is the likely source and is recorded as INFERRED, not observed. Part 5's FAIL is SUPERSEDED by Part 6. Part 5 was not edited.
+
+**The real defect was the empty-clear.** Invalid input leaves the editor open, which is correct. Select-all-delete is the natural recovery. That draft is VALID, so Enter committed a real clear and the field was erased. Both halves individually spec-compliant; the hazard was entirely in their interaction.
+
+**PB-D22 decided.** Empty is not a clear. On Enter, Tab, or blur an empty draft exits edit mode and restores the current persisted value, with no PUT. Two alternatives rejected: status quo, which leaves a destructive act behind the recovery gesture; and suppress-only-after-invalid, which creates an invisible mode — PB-D19's defect class — and would need an affordance PB-D17 forbids. PB-D16's wire contract is unchanged: `setARV(id, "")` still clears. PB-D22 removes only the inline keystroke that could invoke that operation. Consequence accepted deliberately: there is NO way to clear a MONETORY field from the UI until an explicit action is designed.
+
+**PB-D20's empty clause amended in place.** "Empty input is valid and is a real clear" contradicted PB-D22. The spec must read true standing alone.
+
+**Part 7 — PB-D22 verified on the wire.** Test 1 (clean empty + Enter): zero requests, restored. Test 2 (the exact sequence that erased the field): invalid Enter holds the editor open with zero requests, select-all-delete then Enter closes and restores with zero requests, reopen shows `250000.5` with the invalid flag reset. Test 3 (regression): each valid commit produced exactly one PUT 200 followed by one GET 200. Every observed request listed `index-DGhQbSl_.js:3` in the DevTools Initiator column, confirming the tests executed against the pinned bundle.
+
+**Still unexercised.** PB-D21's retry-on-thrown-read remains UNVERIFIED — each PUT was followed by exactly one successful verification GET, so no retry condition arose. "Save accepted — not yet confirmed" has never been reached across Parts 2 through 7. No instrument produces either condition: PUT and verify GET share one URL and differ only by method, so URL blocking kills both. A method-aware intercepting proxy would work but was rejected — it would sit in front of a live write path. No attempt was made to introduce a method-aware proxy solely to exercise these branches. The realistic answer is a controllable test hook, or it stays unverified.
+
+**Instruction-shape rules added this session, all from repeated observed failures.** These govern how prompts are written, not how Jeff behaves.
+- Exactly one executable step per message. Narrative before or after is fine. A step may chain a validating read with `;` where the second command exists only to check the first (the diff form below); no second independent action belongs in the same message. A commit was lost to batching: add/status/commit sent together, commit ran first against an empty index.
+- Diffs are never "shown." The working form is two messages: `git diff <path> > /tmp/d.txt; wc -l /tmp/d.txt`, then `cat /tmp/d.txt`. The line count catches truncation or fabrication. Run it BEFORE staging — after commit the working tree is clean and the diff is empty.
+- All prompts go in copy bubbles, including bare git commands.
+- Commit messages: ONE plain `-m`, verified after commit with `git log -1 --format=%s` before pushing.
+- Section-structure conventions must be read from the file before editing it. This session's rollover carried a "stale HEAD `31f82e8`" cosmetic that was not a defect: each session section holds its own State paragraph, accurate as of that section.
+
+**Deferred cosmetic, carried.** `verify-contacts.cjs` `TARGET` carries `// detail-view fixture (checks 6-119)`. Floor is 127. It lives under `app/`, so fixing it triggers a build on both sites and an `EXPECTED` re-pin check — it must be its own commit, never bundled with docs.
+
+**Next.** PB-D15's parameterized inert-proof runner. Settle fixed-pair versus open-registry for the dataType contract table BEFORE writing code: TEXT and MONETORY agree on clear semantics and DATE does not, so a two-entry table would encode an agreement that isn't general. Remaining MONETORY candidates (Asking Price, Estimated Repairs, Carrying Cost) are ABSENT on both fixtures; §10.5 vacuity requires populating Neelima by hand in GHL first — a manual precondition, not an IAOS write task.
