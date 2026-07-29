@@ -383,7 +383,15 @@ PB-D21 - What "Saved" asserts, `inline` class. "Saved" means GHL was read back a
 
 Verification is a bounded poll of the SINGULAR contact GET — the same instrument the inert-proofs use — and NEVER the PUT echo, which can reflect what was sent rather than what was stored. Bound: 3 attempts, 1s apart, beginning after the PUT resolves. The first attempt runs immediately; the 1s interval separates attempts and does not precede the first.
 
-The bound governs BOTH unsuccessful outcomes, not only a completed read that fails to match. A read that THROWS consumes one attempt and the poll continues. The transport helper throws on any non-2xx as well as on a rejected fetch, so a transient proxy 5xx and a dead socket arrive as the same exception with nothing to distinguish them; a transient 5xx is precisely the case a bounded poll exists to absorb, and abandoning verification on the first one forfeits that for the sake of two seconds. Only after all 3 attempts have been consumed without a confirming read does the state settle to "Couldn't verify save."
+The bound governs BOTH unsuccessful outcomes, not only a completed read that fails to match. A read that THROWS consumes one attempt and the poll continues. The transport helper throws on any non-2xx as well as on a rejected fetch, so a transient proxy 5xx and a dead socket arrive as the same exception with nothing to distinguish them; a transient 5xx is precisely the case a bounded poll exists to absorb, and abandoning verification on the first one forfeits that for the sake of two seconds.
+
+Which terminal state an exhausted poll settles to depends on whether the instrument ever worked. The two failure states in the table above make different claims and must not be collapsed:
+
+  at least one read COMPLETED, none matched       -> "Save accepted — not yet confirmed"
+  all 3 reads THREW, none completed               -> "Couldn't verify save"
+  mixed: some threw, some completed, none matched -> "Save accepted — not yet confirmed"
+
+A completed read is evidence ABOUT THE DATA — GHL answered and the value was not there yet. A thrown read is evidence ABOUT THE INSTRUMENT — nothing was learned either way. One clean read is enough to make the weaker data claim, so the mixed case follows the completed rule. "Couldn't verify save" is reserved for a poll that never once reached GHL.
 
 This does not weaken the no-repeat rule. The PUT is still never reissued. Retrying is retrying the READ.
 
