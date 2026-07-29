@@ -499,3 +499,25 @@ reason to read the served artifact rather than the repo.
 all, given that select-all-delete is both the natural recovery from a rejected
 draft and the destructive gesture. That is a specification question against
 PB-D20 and PB-D16, not a defect in either. No code changes until it is decided.
+
+## Part 7 — PB-D22 manual verification, ARV on FiIT0hUaxVCIuokQpZuc
+
+Bundle under test: `index-DGhQbSl_.js`. Every observed network request in this Part listed `index-DGhQbSl_.js:3` in the DevTools Initiator column, confirming these tests executed against the pinned bundle. Method column enabled; filter `ghl-proxy`; Preserve log on.
+
+**Test 1 — empty draft + Enter on a populated field (clean path).** Zero requests. Editor closed. ARV display restored to `$250,000.50`. PASS.
+
+**Test 2 — full recovery path (the sequence that erased the field on 2026-07-28).**
+- Click ARV, type `25,00,0`, Enter: red border, "Not a valid amount", editor open, focus retained, **zero requests**.
+- Select-all, Delete: editor empty, **zero requests**.
+- Enter: editor closed, ARV display restored to `$250,000.50`, **zero requests** in a Preserve-log capture taken after the keystroke.
+- Reopen ARV: editor opens with `250000.5`, no red border, no error text. The invalid flag is reset on PB-D22 exit.
+
+PASS. PB-D22 covers the complete post-invalid recovery path. The field was not cleared and no PUT was issued. Step 3 independently corroborates Part 6: focus was retained on invalid input.
+
+**Test 3 — valid commit still works.**
+- `260000` + Enter: exactly two requests, PUT 200 (947 ms) then GET 200 (241 ms). Display `$260,000.00`, "Saved".
+- `250000.5` + Enter: exactly two requests, PUT 200 (633 ms) then GET 200 (226 ms). Display `$250,000.50`, "Saved".
+
+PASS. Fixture restored to `250000.5`.
+
+**Not exercised in Part 7:** PB-D21 retry-on-thrown-read. Each successful PUT was followed by exactly one successful verification GET; no retry condition occurred. "Save accepted — not yet confirmed" was likewise not reached and remains UNVERIFIED.
