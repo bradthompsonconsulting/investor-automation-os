@@ -454,3 +454,19 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **Promotion gate — eligibility, not authorization.** PB-D16 restricts the public surface to `setARV(contactId, value)`, keeps `putMonetaryField` private, and defers revisiting a class-scoped public setter until a SECOND MONETORY field has passed its own inert-proof. The B3 field is that second field. A passing second MONETORY inert-proof satisfies the eligibility condition for review. It does not itself change the public API. It does not authorize exporting `putMonetaryField`, generalizing it, or adding any public method beyond the named wrapper the newly proven field earns by its own decision. Two safe fields do not prove every MONETORY field safe. The review is a separate named decision, taken deliberately after the proof passes — never as a side effect of it.
 
 **Unchanged.** PB-D16's wire contract, PB-D22's keystroke removal, PB-D23's runner parameterization, and every existing proof record are untouched.
+
+### PB-D25 — Post-write assertion is value equality, not presence
+
+**Decision.** Every TEXT or MONETORY inert-proof write step asserts that the field's read-back value equals the value sent. Presence of the field key is not a sufficient pass condition.
+
+**What is observed, and its scope.** `inert-proof-property-notes-step3.cjs` gates on `deepEqual(entry.value, tempValue)`. `inert-proof-arv-step3.cjs` gates on `!!entry` alone, and states its reason in-line: MONETORY stored representation was unknown, and ARV was absent at capture, so presence alone was taken to prove the write landed. That script also records `observedValue`, `observedType`, and `strictEqualsTemp` without asserting on them.
+
+**The presence-only path is a closed bootstrap.** PB-D14 established the MONETORY read contract — bare JavaScript number, `typeof` number, decimals preserved, no wrapper — corroborated across the seven `offer_` fields. The unknown that justified presence-only is closed. The weaker assertion was an artifact of discovery order, not a property of MONETORY, and does not transfer to any subsequent field.
+
+**Origin state does not weaken the assertion.** Absent-origin versus present-origin determines what the rollback restores to, per PB-D24. It does not determine assertion strength. An absent-origin field is written and then read back for equality like any other.
+
+**DATE is not in scope.** DATE's stored representation is unproven, and DATE truncates time-of-day. Whether equality is assertable for DATE is UNKNOWN and is not decided here. This is the same TEXT/MONETORY-versus-DATE split PB-D23 relies on.
+
+**Trigger to revisit.** A dataType whose read-back representation is not yet observed. The first inert-proof for such a dataType may record its observed representation without asserting equality, exactly as ARV-step3 did, and that recording is what closes the unknown for subsequent fields of that dataType.
+
+**Unchanged.** PB-D14's read contract, PB-D16's wire contract, PB-D23's runner parameterization, PB-D24's restoration semantics and promotion gate, and every existing proof record are untouched. Passing the write assertion does not reduce the requirement to verify restored state afterward.
