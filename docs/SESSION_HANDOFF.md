@@ -470,3 +470,35 @@ Both now DEFAULT to GHL-FIRST: **surface GHL's mechanism (booking widget, send p
 **Still unexercised.** PB-D21's retry-on-thrown-read remains UNVERIFIED. "Save accepted — not yet confirmed" has never been reached. Two of Neelima's 51 customFields remain unaccounted for and uninvestigated. The `verify-contacts.cjs` `TARGET` comment cosmetic remains open.
 
 **Next.** PB-D15's parameterized inert-proof runner, in `app/scripts/` per precedent, asserting value equality per PB-D25. First `app/` commit since `218e732`. When the first `app/` commit is ready, run §9.2 step 2 — build the commit and its parent and compare hashes — before assuming a re-pin is needed; if the hashes do not discriminate, record that the gate has no evidentiary power for this commit rather than treating it as a failure. B3 field designation still deferred, tie still unbroken.
+
+## 2026-07-30 — PB-D29 shipped; capture stage implemented AND executed; evidence archive established
+
+**Commits today** (oldest → newest, from `git log`, all on `main`, all pushed):
+
+- `ff24d74` docs: PHASE_B_SPEC PB-D26 runner stage ownership and boundaries
+- `bc9e4c0` docs: PHASE_B_SPEC PB-D27 one stage per invocation, PB-D28 in-file keyed field registry
+- `2af4c82` feat: inert-proof-runner.cjs dispatcher skeleton per PB-D26/D27/D28, scripts-only so bundle hash does not discriminate
+- `bb2b896` docs: JEFF_OUTPUT_RULES verbatim output requirement for build oversight
+- `1438678` docs: PHASE_B_SPEC PB-D29 stage exit codes and evidence path derivation
+- `9e82d03` docs: PB_D15_EVIDENCE_ARCHIVE provenance manifest for original step-1 evidence
+- `ff33568` feat: inert-proof-runner capture stage per PB-D23/D26/D27/D28/D29, read-only, two GETs, no PUT
+
+Netlify: the five `docs/` commits Canceled on both sites; `2af4c82` and `ff33568` Published on both. Bundle stayed `index-DGhQbSl_.js` across both app commits — a `.cjs` under `app/scripts/` builds both sites but does not move the Vite entry hash. `EXPECTED` at `verify-contacts.cjs:17` needs no re-pin. Confirmed twice now.
+
+**PB-D29 — decided and shipped.** Dispatcher exit codes stay 10–13. Each implemented stage allocates distinct codes for its own distinct failure branches; future ranges are assigned when those stages exist, not in advance. Evidence paths are derived, not stored: a directory constant plus a filename from stage and field, with the registry key mapped through the existing script-name convention. Existing `-step<N>.json` filenames are retained and stage maps to step number internally. §10.4 governs `PHASE_B_INERT_PROOFS.md` (markdown, per field, two dated parts) and does NOT govern transient stage evidence JSON.
+
+**Evidence archive.** PB-D29's derivation reproduces the two original step-1 evidence filenames exactly, so capture overwrites them. Both originals were copied to `C:\Users\brad\Documents\IAOS Evidence\PB-D15 originals\` before capture ran, with SHA-256 verified byte-identical and mtimes preserved. `docs/PB_D15_EVIDENCE_ARCHIVE.md` records filenames, timestamps, byte counts, and hashes. The JSON itself is deliberately NOT committed — it carries live contact IDs, tags, full custom-field values, and opportunity IDs.
+
+**Capture — implemented and EXECUTED.** `capture arv` and `capture property_notes` both ran against live GHL and both exited `0`. Read-only: two GETs, no PUT. Each reproduced its hand-written step-1 evidence semantically and structurally — the only added key is `fieldKey`, the only differing value is `timestamp`. Every load-bearing field (`contactId`, `fieldId`, `fieldPresent`, the full `customFields` array, `tags`, all seven `offerIds`, all four opportunity/pipeline IDs) came back byte-identical two and three days after the originals. PB-D29's filename derivation confirmed on the wire: `property_notes` → `inert-proof-property-notes-step1.json`.
+
+Both fields report ABSENT on bradt75. **Populated-origin restore per PB-D24 has still never executed** and must not be inferred from these absent-origin captures.
+
+**Operational facts now load-bearing:**
+
+- The runner must be invoked from the repo root. A prior `cd app` for a build persists into later commands and produces `MODULE_NOT_FOUND` on `app/app/scripts/...`.
+- Node's module loader exits `1`, below the dispatcher's 10–13. An exit of `1` means the script never started, not that a stage failed.
+- Jeff's tool result clips the final line of stdout. When an exit code is the thing being read, redirect script stdout to `/dev/null` so `echo "EXIT=$?"` lands first.
+
+**Still open:** PB-D21 retry-on-thrown-read UNVERIFIED. "Save accepted — not yet confirmed" never reached. Two of Neelima's 51 customFields unaccounted for. Clear-semantics note at `PHASE_B_SPEC.md:338` sits in an unlabeled RESOLVED block with no PB-D number. `verify-contacts.cjs` TARGET comment cosmetic. B3 field designation deferred; asking_price / estimated_repairs / carrying_cost tie unbroken. Seven unauthenticated Netlify functions with `ACAO:*` — deferred by explicit call, trigger is first non-Brad user. One MCP server needs authentication (`/mcp`), unexamined. Heading at `SESSION_HANDOFF.md:451` carries a stray `</parameter>` fragment from prior tooling — cosmetic, not corrected here to keep this diff clean.
+
+**Next.** Execute no further stages yet. Read the write-stage precondition and failure structure, then implement `write` only after its exit-code branches and evidence contract are enumerated from the existing scripts. Populated-origin restore remains unverified and must not be inferred from the absent-origin captures.
