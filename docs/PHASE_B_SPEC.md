@@ -486,3 +486,29 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **Stage count is not file count.** The four stages are responsibilities, not a mapping onto the existing five-file layout. The current files split write across two stages and have no restore stage; that reflects the structure of the existing proofs rather than the architectural stage model. PB-D24 governs what restore does.
 
 **Unchanged.** PB-D14's read contract, PB-D16's wire contract, PB-D21's retry requirement, PB-D23's runner parameterization, PB-D24's restoration semantics, and PB-D25's assertion contract are untouched.
+
+### PB-D27 — One stage per process invocation
+
+**Decision.** A single invocation of the inert-proof runner executes exactly one stage. The stage is a required selector. There is no `all`, no default stage, no implicit sequencing, and no automatic transition to the next stage. Advancing requires a separate command.
+
+**Guards.** A missing stage selector, an unrecognized stage, or more than one stage argument each exit non-zero without performing any network call.
+
+**Why the checkpoint is the point.** The hand-written proofs placed a human decision between every step: capture, then write, then verify, then clear, then verify again — each a separate deliberate command. That interval is where a wrong temp value, a wrong fixture, or an unexpected before-state gets caught before the next write compounds it. Collapsing the runner into a single sequenced invocation would remove the checkpoint while leaving every other safety property intact, which is what makes the erosion easy to justify and hard to notice.
+
+**This does not follow from PB-D26.** PB-D26 assigns exclusive responsibilities to stages. It does not constrain how many stages one process may run. Stage separation and invocation separation are different properties; this decision supplies the second.
+
+**Unchanged.** PB-D24's restoration semantics, PB-D25's assertion contract, and PB-D26's stage ownership are untouched.
+
+### PB-D28 — Runner field configuration is an in-file keyed registry
+
+**Decision.** All field-specific configuration lives in a keyed registry inside the runner file. Invocation accepts exactly two bounded selectors: `<stage> <fieldKey>`. No field ID, temporary value, clear value, or comparison rule is accepted from the command line.
+
+**Guards.** An unrecognized field key exits non-zero before any network call, as does a stage/field combination the registry does not support. Validation precedes network access.
+
+**Why in-file rather than CLI or a separate JSON.** Every write-bearing value stays under version control and appears in a diff before it can reach a record — the same review path that caught wording in this spec. A mistyped temporary value at a prompt is a real write to a real contact with no reviewer between the keystroke and the PUT. A separate JSON file adds an artifact and load path without any independent consumer or reuse requirement; the registry is internal for the same reason, per the no-abstraction-without-its-first-consumer rule.
+
+**Restore is a strategy, not a stored value.** PB-D15 lists "restore value (distinct from clear, since a field arriving populated must be restored rather than cleared)" among the runner's parameters. Its own parenthetical grounds that in what capture observed, and PB-D24 settled it: restore targets the exact original wire state, value or absence. The registry therefore carries a restore *strategy*, never a hardcoded restore value. This refines how PB-D15's parameter may be used in the same way PB-D23 refined its `dataType` parameter; it does not remove the parameter.
+
+**The absence mechanism is registry configuration; the restore target is not.** What value achieves KEY_ABSENT is dataType-dependent — MONETORY uses `field_value: ""` per PB-D24, the proven TEXT clear path uses `""`, and DATE requires `null` and is out of scope. That mechanism belongs in the registry. The value a populated field is restored *to* comes from capture and never from the registry.
+
+**Unchanged.** PB-D15's parameter list, PB-D23's parameterization, PB-D24's restoration semantics, PB-D25's assertion contract, PB-D26's stage ownership, and PB-D27's invocation constraint are untouched.
