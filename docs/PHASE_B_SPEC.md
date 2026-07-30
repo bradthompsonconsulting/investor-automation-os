@@ -512,3 +512,17 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **The absence mechanism is registry configuration; the restore target is not.** What value achieves KEY_ABSENT is dataType-dependent — MONETORY uses `field_value: ""` per PB-D24, the proven TEXT clear path uses `""`, and DATE requires `null` and is out of scope. That mechanism belongs in the registry. The value a populated field is restored *to* comes from capture and never from the registry.
 
 **Unchanged.** PB-D15's parameter list, PB-D23's parameterization, PB-D24's restoration semantics, PB-D25's assertion contract, PB-D26's stage ownership, and PB-D27's invocation constraint are untouched.
+
+### PB-D29 — Stage exit codes and evidence path derivation
+
+**Decision.** Two things the runner's stages require that no prior decision allocates: exit-code ownership and evidence file paths.
+
+**Exit codes.** Dispatcher exit codes remain 10–13 per PB-D27. Each implemented stage allocates distinct exit codes for its own distinct failure branches. Future stage ranges are assigned when those stages are implemented.
+
+**Evidence path is derived, not stored.** The registry carries no evidence path. A directory constant plus a filename derived from stage and field. The field portion is produced by applying the existing script-name convention to the registry key — observed: `property_notes` → `property-notes`.
+
+**Existing evidence filenames are retained.** Stage evidence keeps the `-step<N>.json` form already on disk for both proof families. The runner maps stage to step number internally. No migration of the existing proof corpus is undertaken, as no benefit from renaming has been identified.
+
+**Not §10.4.** §10.4 governs `docs/PHASE_B_INERT_PROOFS.md` — markdown, per field, two dated parts, authorizing the unlock commit. Transient stage evidence JSON is a separate artifact and is not governed by those rules.
+
+**Unchanged.** PB-D23 through PB-D28 are untouched.
