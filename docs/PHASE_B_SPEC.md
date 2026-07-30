@@ -470,3 +470,19 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **Trigger to revisit.** A dataType whose read-back representation is not yet observed. The first inert-proof for such a dataType may record its observed representation without asserting equality, exactly as ARV-step3 did, and that recording is what closes the unknown for subsequent fields of that dataType.
 
 **Unchanged.** PB-D14's read contract, PB-D16's wire contract, PB-D23's runner parameterization, PB-D24's restoration semantics and promotion gate, and every existing proof record are untouched. Passing the write assertion does not reduce the requirement to verify restored state afterward.
+
+### PB-D26 — Runner stage ownership and boundaries
+
+**Decision.** The parameterized inert-proof runner is organized into four stages with exclusive responsibilities: **capture**, **write**, **verify**, and **restore**. Each stage owns one concern. Cross-stage responsibilities are prohibited. Write does not poll or verify its own effect; verify does not issue writes.
+
+**What is observed, and its scope.** The existing hand-written proofs already demonstrate this separation. `inert-proof-arv.cjs` performs two GETs and no writes, capturing the full `customFields` array, `tags`, the seven `offer_` IDs, and the opportunity/pipeline IDs. `inert-proof-arv-step2.cjs` performs exactly one PUT, captures `responseStatus` and the response body, and comments its own boundary: no re-read, no poll. `inert-proof-arv-step3.cjs` is read-only and performs the poll and comparison. The runner formalizes stage boundaries already present in the hand-written proofs rather than introducing a new execution model.
+
+**Preconditions belong to write, not verify.** The write stage may perform observational reads to establish that a write is safe to perform — `inert-proof-arv-step2.cjs` gates on both the step-1 evidence file and a live re-read requiring the record unchanged. A precondition establishes that the write *should be issued*; verification establishes what the write *did*. The boundary is by purpose, not by method.
+
+**Why the write/verify split is load-bearing.** PB-D21's retry-on-thrown-read remains UNVERIFIED because every PUT in Parts 2–7 was followed by exactly one successful verify read, so no retry condition ever arose. Keeping verification separate preserves PB-D21's independently testable retry path.
+
+**Each stage records evidence before terminating.** A failed PUT is an observation, not an aborted run. `inert-proof-arv-step2.cjs` writes failure evidence to its evidence path before `exit 5`. Every stage persists what it observed prior to any non-zero exit.
+
+**Stage count is not file count.** The four stages are responsibilities, not a mapping onto the existing five-file layout. The current files split write across two stages and have no restore stage; that reflects the structure of the existing proofs rather than the architectural stage model. PB-D24 governs what restore does.
+
+**Unchanged.** PB-D14's read contract, PB-D16's wire contract, PB-D21's retry requirement, PB-D23's runner parameterization, PB-D24's restoration semantics, and PB-D25's assertion contract are untouched.
