@@ -530,3 +530,31 @@ Netlify: `cd96a78` and `6bb6269` Canceled on both sites; `d033183` Published on 
 **Still open:** PB-D21 retry-on-thrown-read UNVERIFIED. Two of Neelima's 51 customFields unaccounted for. Clear-semantics note at `PHASE_B_SPEC.md:338` sits in an unlabeled RESOLVED block with no PB-D number. `verify-contacts.cjs` TARGET comment cosmetic. B3 field designation deferred; asking_price / estimated_repairs / carrying_cost tie unbroken. Seven unauthenticated Netlify functions with `ACAO:*` deferred by explicit call, trigger is first non-Brad user. One MCP server needs authentication (`/mcp`), unexamined. `SESSION_HANDOFF.md:451` still carries the stray `</parameter>` fragment — cosmetic, deliberately not corrected here to keep the diff clean.
 
 **Next.** Execute `write arv`, or continue implementing `verify`. Do neither before re-reading the write stage's precondition and failure structure from the script itself rather than from this summary.
+
+## 2026-07-31 (evening session) — write stage EXECUTED and cleared; full round-trip verified on the wire
+
+No commits. HEAD remains `86fcd2f`, tree clean. This session executed against live GHL and changed no code.
+
+**Write executed.** `node app/scripts/inert-proof-runner.cjs write arv` — EXIT=0, PUT status 200, evidence written to `inert-proof-arv-step2.json`. Preceded by a full four-window verbatim re-read of `write` (lines 148–230) from the committed file, per the afternoon section's gate. Line numbers had shifted +1 from the pre-commit read because the PB-D28 comment fix added a net line.
+
+**Wire confirmed the write, read-only GET.** `customFieldCount` 5 → 6; `arv` = `187500.25` stored as a JavaScript number, decimals preserved, confirming MONETORY is number-in/number-out; `tagCount` 1, unchanged. A one-field PUT to GHL disturbs nothing outside the named field — observed, not assumed.
+
+**Runner reproduces the hand-written proof.** `diff` of the runner-written step-2 against the archived Jul 28 original: three differences, all inherently per-run — `timestamp`, `responseBody.dateUpdated`, `responseBody.traceId`. `contactId`, `fieldId`, `tempValue`, `requestBody`, `responseStatus`, and the rest of the payload byte-identical. Mirrors the capture-stage result from 7/30.
+
+**Six unarchived originals discovered and archived.** `inert-proof-arv-step4.json` was about to be overwritten by the clear — the same archive-before-overwrite trap as the step-2 files that morning, caught before rather than after. Ten evidence files exist on disk; four were archived. The remaining six — arv step-3/4/5 and property_notes step-3/4/5 — were copied with `cp -p` and SHA-256 verified. All ten pairs compared: seven match, three differ correctly (arv-step1 and pn-step1 overwritten by the 7/30 capture, arv-step2 by today's write). `pn-step2` matching is independent proof that `write property_notes` never fired — its config guard aborted at exit 30 before any network call.
+
+**DEBT: the six new archive files are on disk and SHA-verified but NOT recorded in `docs/PB_D15_EVIDENCE_ARCHIVE.md`.** The manifest still lists only the four step-1/step-2 records. This is the next session's first task.
+
+**Clear executed and confirmed.** `node app/scripts/inert-proof-arv-step4.cjs` — EXIT=0, PUT status 200, `field_value: ""`. Step-4 does not verify its own clear ("no poll, no verify"), so per PB-D24 a fresh contact GET followed: `customFieldCount` back to 5, `wMBTGWMs97yysQFx7Vad` absent from the id list, `tagCount` still 1. The restoring PUT alone was necessary but not sufficient; the read closes it.
+
+**Spec verification before the clear.** `PHASE_B_SPEC.md` read directly in VS Code: line 338 records the MONETORY clear as RESOLVED 2026-07-28 by the B2 inert-proof — the block states the question was open before the proof and answers it, "It did, and MONETORY followed TEXT." Line 406 (PB-D22) states the `field_value:"" -> KEY_ABSENT` API contract is UNCHANGED and `setARV(contactId, "")` still performs a real clear; what PB-D22 removed is the keystroke. Line 420's "NO way to clear a MONETARY field" is explicitly scoped to the UI. Line 442 (PB-D24) designates `field_value: ""` as the absent-origin restore mechanism. Line 452 records that all three MONETORY candidates are ABSENT on bradt75, making absent-origin rollback provable there deliberately.
+
+**Full round-trip, all three legs verified live:** capture → ARV ABSENT (count 5); write → ARV 187500.25 (count 6, PUT 200); clear → ARV ABSENT (count 5, PUT 200).
+
+**Not closed.** `verify` and `restore` remain stubs — this round-trip used the runner for capture and write, and the hand-written `inert-proof-arv-step4.cjs` for the clear. Because there is no `verify` stage, no today-dated step-3 exists; step-4's `confirmations` gate validated against the Jul 28 step-3 record. Both mutating inputs (`tempValue` from today's step-2, live value from the wire) were current, so the clear was coherent, but the proof chain is not same-day end to end. PB-D24's populated-origin restore remains unexercised.
+
+**Operational fact now load-bearing.** Bash `/tmp/*` paths must be `cygpath -w` converted before being handed to Node — Node resolves `/tmp/` literally to `C:\tmp\`, which does not exist. Write curl output to a literal Windows path when Node will read it.
+
+**Not corrected.** `inert-proof-arv-step4.cjs` lines 16–18 carry a pre-resolution comment stating MONETORY clear semantics are UNKNOWN and describing a step-4b/null fallback that was never needed. Superseded by spec line 338. Same class as the stale PB-D28 registry comment corrected in `d033183`; left as-is here.
+
+**Next.** Record the six step-3/4/5 archive files in `docs/PB_D15_EVIDENCE_ARCHIVE.md`, then implement `verify`.
