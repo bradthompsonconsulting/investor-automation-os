@@ -526,3 +526,21 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **Not §10.4.** §10.4 governs `docs/PHASE_B_INERT_PROOFS.md` — markdown, per field, two dated parts, authorizing the unlock commit. Transient stage evidence JSON is a separate artifact and is not governed by those rules.
 
 **Unchanged.** PB-D23 through PB-D28 are untouched.
+
+### PB-D30 — Write stage contract: absent-origin only, observed temp values, five exit codes
+
+**Decision.** The write stage inherits the existing step-2 contract without relaxation. It writes only to fields observed absent both in capture evidence and live, only with temporary values observed from existing scripts, and reports five distinct failure classes.
+
+**Overwrite guards are inherited unchanged.** Write aborts if the live field is already populated, and aborts if capture evidence records `fieldPresent !== false`. The two protect different things — the live check protects the contact's current state, the evidence check protects the integrity of the proof sequence. Neither is relaxed to make PB-D24's populated-origin restore reachable.
+
+**Populated-origin restoration requires a separately specified mechanism.** An explicit mode or a separate proof fixture, specified on its own terms. It is not an expansion of ordinary write, and PB-D24's populated-origin path remains unexercised until that mechanism exists.
+
+**`tempValue` is registry configuration, observed only.** `arv` receives `tempValue: 187500.25`, observed from `inert-proof-arv-step2.cjs`. `property_notes` receives none; no TEXT temporary value has been observed. `write property_notes` therefore aborts before any network call with `write aborted: config.tempValue is not defined for fieldKey=property_notes`. A registry key being supported is distinct from its being write-enabled.
+
+**Write stage exit codes, per PB-D29's allocation rule.** 30 file/config precondition — missing capture evidence, malformed evidence, contact or field identity mismatch, missing `tempValue`, recorded `fieldPresent !== false`. 31 live precondition — contact id mismatch, field presently populated, the live `customFields` or `tags` no longer deep-equal the capture snapshot. 32 PUT returned non-2xx, with response evidence written under the seven-key contract. 33 evidence persistence failure. 34 transport failure before a response, response-body handling failure, or any unexpected runtime exception not classified above. The exit code identifies the failure class; the abort message identifies the specific predicate.
+
+**Evidence persistence failure takes precedence.** Any failure to persist stage evidence exits 33, regardless of whether the PUT returned 2xx, returned non-2xx, or failed after a response was received. A non-2xx response earns 32 only when the seven-key evidence record was successfully written. The dangerous condition is a mutation attempt that is no longer durably recorded, and that condition outranks the response status in classification.
+
+**Live precondition is contact-only.** Step 2 issues no opportunity search and the runner's write stage does not add one. Opportunity and pipeline state is captured by the capture stage and is not re-verified before a write.
+
+**Unchanged.** PB-D23 through PB-D29 are untouched.
