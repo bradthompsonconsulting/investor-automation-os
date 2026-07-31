@@ -1,20 +1,31 @@
 /* Parameterized inert-proof runner per docs/PHASE_B_SPEC.md PB-D26 (stage ownership
    and boundaries), PB-D27 (one stage per process invocation), PB-D28 (field
    configuration is an in-file keyed registry), and PB-D29 (stage exit codes and
-   evidence path derivation). Stages implemented: capture. The write, verify, and
-   restore bodies remain placeholders and perform no network calls. Capture is
-   READ-ONLY against GHL — two GETs, no PUT, safe to re-run at any time. */
+   evidence path derivation), and PB-D30 (write stage contract). Stages implemented:
+   capture and write. The verify and restore bodies remain placeholders and perform no
+   network calls. Capture is READ-ONLY against GHL — two GETs, no PUT, safe to re-run at
+   any time. Write performs EXACTLY ONE PUT and only to a field observed absent both in
+   capture evidence and live. */
 const fs = require("fs");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const LOC    = "jmHG4B8RdzwpfqruNf68";
 
-// PB-D28 — in-file keyed field registry. Only observed values live here. tempValue,
-// clearValue, restore strategy, and comparison rules are intentionally absent; they are
-// not yet observed and will be added when the write stage is implemented.
+// PB-D28 — in-file keyed field registry. Only observed values live here. PB-D30 —
+// tempValue is present where observed (arv), and null where no temporary value has
+// been observed yet (property_notes, TEXT). clearValue, restore strategy, and
+// comparison rules remain intentionally absent until observed.
 const FIELDS = {
-  arv:            { fieldId: "wMBTGWMs97yysQFx7Vad", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc" },
-  property_notes: { fieldId: "k7O0TYVMpqCpnMHRLPol", dataType: "TEXT",     contactId: "9fbH2VCcZvzVNhsR9zjc" },
+  arv: {
+    fieldId: "wMBTGWMs97yysQFx7Vad", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    // Observed from inert-proof-arv-step2.cjs. PB-D30 — observed temporary values only.
+    tempValue: 187500.25,
+  },
+  property_notes: {
+    fieldId: "k7O0TYVMpqCpnMHRLPol", dataType: "TEXT", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    // No observed TEXT temporary value yet; intentionally not write-enabled per PB-D30.
+    tempValue: null,
+  },
 };
 
 // The seven offer_ fields (CONTACTS_OPPORTUNITIES_SPEC.md §4 HARD NO — must stay unchanged).
@@ -33,7 +44,7 @@ const OFFER_IDS = [
 // existing script-name convention (property_notes → property-notes). Existing
 // -step<N>.json filenames are retained; stage maps to step number here, internally.
 const EVIDENCE_DIR = "C:/Users/brad/AppData/Local/Temp";
-const STEP_BY_STAGE = { capture: 1 };
+const STEP_BY_STAGE = { capture: 1, write: 2 };
 const evidencePathFor = (stage, fieldKey) =>
   `${EVIDENCE_DIR}/inert-proof-${fieldKey.replace(/_/g, "-")}-step${STEP_BY_STAGE[stage]}.json`;
 
@@ -52,8 +63,25 @@ async function getJson(url, label) {
   return body;
 }
 
-// PB-D26 — four stages, exclusive responsibilities. Capture is implemented; the
-// write, verify, and restore bodies are placeholders only.
+// Structural deep-equal: order-sensitive for arrays, order-insensitive for object keys.
+function deepEqual(a, b) {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a === null || b === null) return a === b;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((x, i) => deepEqual(x, b[i]));
+  }
+  if (typeof a === "object") {
+    const ka = Object.keys(a), kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    return ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && deepEqual(a[k], b[k]));
+  }
+  return false;
+}
+
+// PB-D26 — four stages, exclusive responsibilities. Capture and write are implemented;
+// the verify and restore bodies are placeholders only.
 async function capture(config) {
   const { fieldKey, fieldId, contactId, LOC: locationId } = config;
   const outPath = evidencePathFor("capture", fieldKey);
@@ -118,8 +146,87 @@ async function capture(config) {
 }
 
 async function write(config) {
-  console.log(`write — fieldKey ${config.fieldKey}`);
-  // TODO: implement write stage (preconditions + exactly one PUT).
+  const { fieldKey, fieldId, contactId, tempValue } = config;
+  const capturePath = evidencePathFor("capture", fieldKey);
+  const outPath = evidencePathFor("write", fieldKey);
+  let responseStatus = null;
+  let responseReceived = false;
+  try {
+    // ── 1. PRECONDITION — config (registry write-enablement, PB-D30) ──
+    if (tempValue == null) {
+      console.log(`write aborted: config.tempValue is not defined for fieldKey=${fieldKey}`);
+      process.exit(30);
+    }
+
+    // ── 2. PRECONDITION — file (capture evidence) ──
+    if (!fs.existsSync(capturePath)) { console.log(`ABORT — capture evidence not found: ${capturePath}`); process.exit(30); }
+    let cap;
+    try { cap = JSON.parse(fs.readFileSync(capturePath, "utf8")); }
+    catch (e) { console.log(`ABORT — capture evidence does not parse: ${e.message}`); process.exit(30); }
+    if (cap.contactId !== contactId) { console.log(`ABORT — capture contactId ${cap.contactId} !== ${contactId}`); process.exit(30); }
+    if (cap.fieldId !== fieldId)     { console.log(`ABORT — capture fieldId ${cap.fieldId} !== ${fieldId}`); process.exit(30); }
+    if (cap.fieldPresent !== false)  { console.log(`ABORT — capture fieldPresent is ${cap.fieldPresent}, expected false`); process.exit(30); }
+    const capCustom = Array.isArray(cap.customFields) ? cap.customFields : null;
+    const capTags   = Array.isArray(cap.tags) ? cap.tags : null;
+    if (!capCustom || !capTags) { console.log("ABORT — capture customFields/tags not arrays"); process.exit(30); }
+
+    // ── 3. PRECONDITION — live (contact unchanged since capture; contact-only per PB-D30) ──
+    const contactBody = await getJson(PROXY(`/contacts/${contactId}`), "contact GET");
+    const c = contactBody.contact || contactBody;
+    if (c.id !== contactId) { console.log(`ABORT — live contact id ${c.id} !== ${contactId}`); process.exit(31); }
+    const liveCustom = Array.isArray(c.customFields) ? c.customFields : [];
+    const liveTags = Array.isArray(c.tags) ? c.tags : [];
+    if (liveCustom.some((f) => f.id === fieldId)) { console.log(`ABORT — fieldId already present live; refusing to overwrite`); process.exit(31); }
+    if (!deepEqual(liveCustom, capCustom)) { console.log("ABORT — live customFields no longer deep-equal the capture snapshot"); process.exit(31); }
+    if (!deepEqual(liveTags, capTags))     { console.log("ABORT — live tags no longer deep-equal the capture snapshot"); process.exit(31); }
+
+    // ── 4. All preconditions passed — perform EXACTLY ONE PUT ──
+    console.log("PRECONDITIONS PASSED — config, capture evidence, and live state; proceeding to one PUT");
+    const requestBody = { customFields: [{ id: fieldId, field_value: tempValue }] };
+    let putResp;
+    try { putResp = await fetch(PROXY(`/contacts/${contactId}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) }); }
+    catch (e) { throw new Error(`PUT fetch threw — ${e.message}`); }
+    responseStatus = putResp.status;
+    responseReceived = true;
+    const rawText = await putResp.text();
+    let responseBody;
+    try { responseBody = JSON.parse(rawText); }
+    catch { responseBody = rawText; }
+
+    // ── 5. Persist evidence BEFORE classifying the response (PB-D30: 33 takes precedence) ──
+    const evidence = {
+      timestamp: new Date().toISOString(),
+      contactId,
+      fieldId,
+      tempValue,
+      requestBody,
+      responseStatus,
+      responseBody,
+    };
+    try { fs.writeFileSync(outPath, JSON.stringify(evidence, null, 2), "utf8"); }
+    catch (e) {
+      console.error(`EVIDENCE PERSISTENCE FAILED — ${e.message}; PUT response was received, HTTP ${responseStatus}`);
+      process.exit(33);
+    }
+
+    if (responseStatus < 200 || responseStatus >= 300) {
+      console.log(`PUT FAILED — HTTP ${responseStatus}`);
+      console.log(`  evidence written   ${outPath}`);
+      process.exit(32);
+    }
+
+    // ── 6. Summary (no full body) ──
+    console.log("WRITE — one PUT performed (no poll, no verify, no restore)");
+    console.log(`  fieldKey           ${fieldKey}`);
+    console.log(`  contactId          ${contactId}`);
+    console.log(`  fieldId            ${fieldId}`);
+    console.log(`  tempValue          ${tempValue}`);
+    console.log(`  PUT status         ${responseStatus}`);
+    console.log(`  evidence written   ${outPath}`);
+  } catch (e) {
+    console.error(`WRITE ERROR: ${e.message}; PUT response ${responseReceived ? `was received, HTTP ${responseStatus}` : "was not received"}`);
+    process.exit(34);
+  }
 }
 
 async function verify(config) {
