@@ -28,6 +28,12 @@ The evidence records contain production data — live contact IDs, tag lists, co
 - Byte count: 1066
 - SHA-256: `6dd87465853b770f71605f866a45bef165cb8ad52951c2ac1608ae50bac6db25`
 
+- Original filename: `inert-proof-arv-step2.json`
+- Original timestamp: 2026-07-28 11:10:24.890176600 -0500
+- Archived filename: `inert-proof-arv-step2.original-2026-07-28.json`
+- Byte count: 2110
+- SHA-256: `96f649d279f613de223e7886065cf26d0d160e40e2bcce85224a9936262ee598`
+
 ### property_notes
 
 - Original filename: `inert-proof-property-notes-step1.json`
@@ -36,6 +42,12 @@ The evidence records contain production data — live contact IDs, tag lists, co
 - Byte count: 1066
 - SHA-256: `d8d9cc9e7587fcdaeb53ebe1d355720808279f8845ef97fd8dfefafda53b3330`
 
+- Original filename: `inert-proof-property-notes-step2.json`
+- Original timestamp: 2026-07-27 12:02:26.472033200 -0500
+- Archived filename: `inert-proof-property-notes-step2.original-2026-07-27.json`
+- Byte count: 2203
+- SHA-256: `aa3aa3f10f5b6b3561ecdb23d86d3255ce9187020e6b97e970dc5c464b2b815e`
+
 ## Verification
 
-Both source and archive pairs were confirmed byte-identical by SHA-256 comparison before capture was implemented. The copy preserved the original modification times on the archive copies.
+All four source and archive pairs were confirmed byte-identical by SHA-256 comparison. The step-1 pairs were verified before capture was implemented. The step-2 pairs were verified after the write stage was implemented and before any write execution. The copy preserved the original modification times on the archive copies.
