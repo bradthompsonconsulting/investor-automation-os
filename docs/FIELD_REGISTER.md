@@ -1,0 +1,104 @@
+# IAOS Contact Field Register
+
+Generated 2026-08-03 from a live GET of the location custom-field schema. 96 fields observed.
+
+Safety values: Proven (exercised on a named fixture) / Needs Review / Never / Unknown. Unknown is the honest default: per PB-D16 §4.6 workflow triggers are not API-derivable, so no Safety value can be inferred from dataType or name.
+
+| Name | Field Key | Field ID | dataType | parentId | Editor Type | Clear Semantics | Read | Write | Verify | Restore | Safety | Priority | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Callback Datetime | contact.callback_datetime | JeQWtwpwUbvPA50UfuPU | DATE | kmPmjCjI4noq8KISyq2e | date / unimplemented | null required; empty string ignored | Yes | No | Unproven | Unproven | Unknown | Unassigned | Clear semantics recorded from setCallbackDatetime behavior; not independently proven for every DATE field |
+| Date Added to List | contact.date_added_to_list | RrBo7h7WLMDjKfkGtw9m | DATE | qYS1wakeOTmfgjyeSJ8M | date / unimplemented | null required; empty string ignored | Yes | No | Unproven | Unproven | Unknown | Unassigned | Clear semantics recorded from setCallbackDatetime behavior; not independently proven for every DATE field |
+| Follow Up Date | contact.follow_up_date | ldPIeL9SJAyC6PH6clUD | DATE | qYS1wakeOTmfgjyeSJ8M | date / unimplemented | null required; empty string ignored | Yes | No | Unproven | Unproven | Unknown | Unassigned | Clear semantics recorded from setCallbackDatetime behavior; not independently proven for every DATE field |
+| Last Call Attempt | contact.last_call_attempt | lGoNXM9Wrte4m7ShwQPT | DATE | kmPmjCjI4noq8KISyq2e | date / unimplemented | null required; empty string ignored | Yes | No | Unproven | Unproven | Unknown | Unassigned | Clear semantics recorded from setCallbackDatetime behavior; not independently proven for every DATE field |
+| Last Sale Date | contact.last_sale_date | Ba794nce87tnKjz22L2U | DATE | qYS1wakeOTmfgjyeSJ8M | date / unimplemented | null required; empty string ignored | Yes | No | Unproven | Unproven | Unknown | Unassigned | Clear semantics recorded from setCallbackDatetime behavior; not independently proven for every DATE field |
+| MLS Date | contact.mls_date | Cz6aKd0UbphPhkSLqhPv | DATE | qYS1wakeOTmfgjyeSJ8M | date / unimplemented | null required; empty string ignored | Yes | No | Unproven | Unproven | Unknown | Unassigned | Clear semantics recorded from setCallbackDatetime behavior; not independently proven for every DATE field |
+| Offer Date | contact.offer_date | SJ6x7OqUxTKg1ri8ltb7 | DATE | YslJ5oke73JrBOgaq0np | date / unimplemented | null required; empty string ignored | Yes | Never | Unproven | Unproven | Never | Unassigned | Inherited from membership in the existing OFFER_IDS HARD-NO set; field-specific mail-trigger behavior not independently observed |
+| Upload Your Lead CSV (if applicable) | contact.upload_your_lead_csv_if_applicable | K2iMbgOSOqsBcOzcg7R0 | FILE_UPLOAD | 8WVFNtuUuYZ4aEqrUWMb | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Interest Rate | contact.interest_rate | i1mVFCwHIySFFzR1hVfQ | FLOAT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Onboarding Notes | contact.onboarding_notes | 8uMESzer8JOcpqO4OrTr | LARGE_TEXT | 2kmTfkj3wxLc0v52AxHS | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Repair Line Items | contact.repair_line_items | IwVPbXc9dKUzWGpe4NPx | LARGE_TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| ARV | contact.arv | wMBTGWMs97yysQFx7Vad | MONETORY | qYS1wakeOTmfgjyeSJ8M | currency-inline | empty string -> KEY_ABSENT | Yes | Proven | Proven | Proven | Proven on bradt75 only | Done | Full four-stage cycle exercised 2026-08-03; does not generalize to other contacts |
+| Asking Price | contact.asking_price | 60UCjsYT1Ak3Kyy5ZCL8 | MONETORY | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Carrying Cost | contact.carrying_cost | FhcyP63sSAtWInl4Q4iI | MONETORY | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Estimated Repairs | contact.estimated_repairs | OQnud97MfdxMcTgMVTgf | MONETORY | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Loan Amount | contact.loan_amount | 3ZlSKldh0jR2MWhjOmHe | MONETORY | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Lead Source | contact.lead_source | 75JS5wGqhBuSUx7frJok | MULTIPLE_OPTIONS | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Motivation Level | contact.motivation_level | zGuC7cIc0jPe81ZzmsaP | MULTIPLE_OPTIONS | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Occupancy Status | contact.occupancy_status | op57wOVFSMRBFbHmD6ej | MULTIPLE_OPTIONS | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Timeline to Sell | contact.timeline_to_sell | LM4bs21UP3i6OJpUirQQ | MULTIPLE_OPTIONS | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Bedrooms | contact.bedrooms | NgPGkwiRYKJo2pJUA0fD | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Building Sqft | contact.building_sqft | NBESmVYKID36qE4z6CIy | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Combined Score | contact.combined_score | 9SVnuzznYsZOQQazpxld | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Data Completeness Score | contact.data_completeness_score | r9sD1rlTIqhOx9Mhvftt | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Deal Score | contact.deal_score | cfkm0kb9CLvjZgyrcIFz | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Effective Year Built | contact.effective_year_built | LAmqLtHfmVoHz8bn3Smt | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Est. Equity | contact.est_equity | jRukT5GvU6zOHqozD6pP | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Est. Loan-to-Value | contact.est_ltv | fZ9u5cbKLCB4XKWcBHgr | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Est. Remaining Loan Balance | contact.est_remaining_loan_balance | QW1gnJvySbBOQEKeLzhm | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Est. Value | contact.est_value | qiSOMt8S6TVtg7l5Ak32 | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Hold Months | contact.hold_months | Ju1U6ROdDNnCFlsn4eeS | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Last Sale Amount | contact.last_sale_amount | IoDiaRolzX85CxGtitBR | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Lien Amount | contact.lien_amount | y2SFdePy7WZqzJhliwR7 | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Lot Size Sqft | contact.lot_size_sqft | pSZd41d0elvtCBIAOGOX | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| MLS Amount | contact.mls_amount | 5V5OZja1wCzhuSJQFMC7 | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Motivation Score | contact.motivation_score | 8vH9yq10xeYVVMHXbS0C | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Offer ARV | contact.offer_arv | Z88Y6IqCK1i7hObZcrQM | NUMERICAL | YslJ5oke73JrBOgaq0np | unknown | unknown | Yes | Never | Unproven | Unproven | Never | Unassigned | HARD NO per architectural guardrail; in runner OFFER_IDS, verified complete 2026-08-03 |
+| Offer MAO | contact.offer_mao | aAMFPmgxGZT422uGAQOx | NUMERICAL | YslJ5oke73JrBOgaq0np | unknown | unknown | Yes | Never | Unproven | Unproven | Never | Unassigned | HARD NO per architectural guardrail; in runner OFFER_IDS, verified complete 2026-08-03 |
+| Offer Margin | contact.offer_margin | ec06A3RId4Isorc97jeQ | NUMERICAL | YslJ5oke73JrBOgaq0np | unknown | unknown | Yes | Never | Unproven | Unproven | Never | Unassigned | HARD NO per architectural guardrail; in runner OFFER_IDS, verified complete 2026-08-03 |
+| Offer Price | contact.offer_price | v2VO2wUwTYRojmU7VXyZ | NUMERICAL | YslJ5oke73JrBOgaq0np | unknown | unknown | Yes | Never | Unproven | Unproven | Never | Unassigned | HARD NO per architectural guardrail; in runner OFFER_IDS, verified complete 2026-08-03 |
+| Offer Repair Total | contact.offer_repair_total | 2EpRGXb8rj4RtHfFhYbB | NUMERICAL | YslJ5oke73JrBOgaq0np | unknown | unknown | Yes | Never | Unproven | Unproven | Never | Unassigned | HARD NO per architectural guardrail; in runner OFFER_IDS, verified complete 2026-08-03 |
+| Offer Wholesale Fee | contact.offer_wholesale_fee | qYzkp66x87rG7Pbs36GP | NUMERICAL | YslJ5oke73JrBOgaq0np | unknown | unknown | Yes | Never | Unproven | Unproven | Never | Unassigned | HARD NO per architectural guardrail; in runner OFFER_IDS, verified complete 2026-08-03 |
+| Total Assessed Value | contact.total_assessed_value | nePkRIWaCRDPlizizjO8 | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Total Bathrooms | contact.total_bathrooms | Eq0QNB2jynlQQKisRrbg | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Total Open Loans | contact.total_open_loans | 2IwKH45tzP1fCY9ugtjc | NUMERICAL | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Business Phone | contact.business_phone | nuQ6CNjg191xgSUHqQKE | PHONE | 2kmTfkj3wxLc0v52AxHS | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Existing GHL Account | contact.existing_ghl_account | ebGJCMbSeJmok61mw7X7 | SINGLE_OPTIONS | 2kmTfkj3wxLc0v52AxHS | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Has Booking Calendar | contact.has_booking_calendar | YBibHRnsFj3guZrSztS7 | SINGLE_OPTIONS | 2kmTfkj3wxLc0v52AxHS | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Has Existing Leads | contact.has_existing_leads | gAL6XdVAxQIld4AZYvrF | SINGLE_OPTIONS | 2kmTfkj3wxLc0v52AxHS | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Has Sending Domain | contact.has_sending_domain | QyJIHLFd7zDZgOU0ctU8 | SINGLE_OPTIONS | 2kmTfkj3wxLc0v52AxHS | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| MAO Viability Flag | contact.mao_viability_flag | o87cyzuCyScbY72VrOmq | SINGLE_OPTIONS | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| APN | contact.apn | q9zsc4u0VphwgHhuo0q9 | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Bathroom Condition | contact.bathroom_condition | 1qx82ZCe7gDnscCDV6qz | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Booking Calendar Link | contact.booking_calendar_link | ZqeAqwa0H32dx4cyhiv5 | TEXT | 2kmTfkj3wxLc0v52AxHS | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Business Website | contact.business_website | OpINXfJKRJdUHSULBXiU | TEXT | 2kmTfkj3wxLc0v52AxHS | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Callback Datetime Precise | contact.callback_datetime_precise | 7qRUkZQK8bi2HNo7zDHd | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| County | contact.county | kRon68UXcYdwf7qhiN41 | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Do Not Mail | contact.do_not_mail | BDu234KJVQAP5MiXTQx3 | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Needs Review | Unassigned | Compliance-sensitive by name; workflow ownership not verified |
+| Email 2 | contact.email_2 | GtnG0KZ6a387l9c2O4SR | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Email 3 | contact.email_3 | 7nAzvubCqPu2cMnb6208 | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Email 4 | contact.email_4 | 4xWRmf9my1rNy63k5leF | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Exterior Condition | contact.exterior_condition | 21mJCmUYXjhJPCUA3uBr | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Foreclosure Factor | contact.foreclosure_factor | ift3gXXi3SlEOIFBKiSE | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Interior Condition | contact.interior_condition | DQ924ixAQQslu0v7va3u | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Kitchen Condition | contact.kitchen_condition | yGnColCshVmynckoZv7o | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| last_call_attempt_precise | contact.last_call_attempt_precise | 2vz1igGMxF3wv7HaWm97 | TEXT | kmPmjCjI4noq8KISyq2e | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Litigator | contact.litigator | VY4GnE1RYjRwZnN0M72j | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Mailing Address | contact.mailing_address | EUxfdM3Szo6W3nPUFGty | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Mailing Care of Name | contact.mailing_care_of_name | IieItbzIlY0yGzxry4Xd | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Mailing City | contact.mailing_city | RsDLn9BklezGFROL5e72 | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Mailing County | contact.mailing_county | ltlt1wVlfaX6nnen5Uis | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Mailing State | contact.mailing_state | C1CSbz13qufMy5IBeHe1 | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Mailing Zip | contact.mailing_zip | FbBIzADc5UHhDFTkfsWV | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Marketing Lists | contact.marketing_lists | 0GlqkqOlXuARL12qVWss | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Needs Review | Unassigned | Compliance-sensitive by name; workflow ownership not verified |
+| MLS Status | contact.mls_status | QUiXGxWZ3coYgp2z6uPk | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Owner 2 First Name | contact.owner_2_first_name | IsOkUKWeHTMx1elb9GDk | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Owner 2 Last Name | contact.owner_2_last_name | 5TpsB4Ttiou4z6ae18Pu | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Owner Occupied | contact.owner_occupied | TqyNsDVXejt9uwDoQYJb | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Phone 1 DNC | contact.phone_1_dnc | Z6MNxVFyDYcWvHlMs1DQ | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Needs Review | Unassigned | Compliance-sensitive by name; workflow ownership not verified |
+| Phone 2 | contact.phone_2 | A4k5ttImNQzwNiuGtsXn | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Phone 2 DNC | contact.phone_2_dnc | a96a1YMjW8nyECsBV2Bv | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Needs Review | Unassigned | Compliance-sensitive by name; workflow ownership not verified |
+| Phone 3 | contact.phone_3 | Dvb6splg6vnENls89Tk7 | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Phone 3 DNC | contact.phone_3_dnc | BEfYkha0gHwRYNViEqGU | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Needs Review | Unassigned | Compliance-sensitive by name; workflow ownership not verified |
+| Phone 4 | contact.phone_4 | ywf5AV5DoDzoTSg0IGCE | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Phone 4 DNC | contact.phone_4_dnc | fk9osvLxgFNDA2IaCobL | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Needs Review | Unassigned | Compliance-sensitive by name; workflow ownership not verified |
+| Phone 5 | contact.phone_5 | nHY69vgjWrboisxl4Eu7 | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Phone 5 DNC | contact.phone_5_dnc | MItHyeOcp4HpGja2fpoB | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Needs Review | Unassigned | Compliance-sensitive by name; workflow ownership not verified |
+| Phone Type | contact.phone_type | 1cTefPDpZRypKYHtgZrq | TEXT | 8NV0bLrpGEi4bRflnasN | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Property Address | contact.property_address | tG4gGFI8JB2VjWeuqYMx | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Property Notes | contact.property_notes | k7O0TYVMpqCpnMHRLPol | TEXT | qYS1wakeOTmfgjyeSJ8M | textarea-explicit | empty string -> KEY_ABSENT | Yes | No | Unproven | Unproven | Unknown | Unassigned | Runner write aborts at exit 30 (tempValue null); no PUT ever issued. Hand-written TEXT observations: empty string -> KEY_ABSENT, newlines round-trip |
+| Property Status | contact.property_status | vQsnHuf4RwwDFVR6o4vs | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Property Type | contact.property_type | ba4WeG05Y9H4DZNIqtbr | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Sending Domain | contact.sending_domain | f7segVRuW8csg0jAenho | TEXT | 2kmTfkj3wxLc0v52AxHS | unknown | unknown | Yes | No | Unproven | Unproven | Needs Review | Unassigned | Compliance-sensitive by name; workflow ownership not verified |
+| SMS Sender Name | contact.sms_sender_name | ofZIPGHM8lyd7nmuSRw8 | TEXT | 2kmTfkj3wxLc0v52AxHS | unknown | unknown | Yes | No | Unproven | Unproven | Needs Review | Unassigned | Compliance-sensitive by name; workflow ownership not verified |
+| Total Condition | contact.total_condition | TzqqngntzYeC1kSQBZVi | TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Wholesaling Market | contact.wholesaling_market | cuNHdba3jJ4Ftrn3e3go | TEXT | 2kmTfkj3wxLc0v52AxHS | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
