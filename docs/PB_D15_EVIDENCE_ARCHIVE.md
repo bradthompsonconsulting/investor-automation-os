@@ -84,8 +84,34 @@ The evidence records contain production data — live contact IDs, tag lists, co
 - Byte count: 981
 - SHA-256: `c429255cfa928cb8ab1072dca043a1f7d6230c4992425739076ed62706207ee1`
 
+### carrying_cost
+
+- Original filename: `inert-proof-carrying-cost-step1.json`
+- Original timestamp: 2026-08-03 15:39:09.505831400 -0500
+- Archived filename: `inert-proof-carrying-cost-step1.original-2026-08-03.json`
+- Byte count: 1097
+- SHA-256: `29606aaa733ea549e4e1c148e80e470325664f290ee489e40fada254d754f0d4`
+
+- Original filename: `inert-proof-carrying-cost-step2.json`
+- Original timestamp: 2026-08-03 16:18:48.614136600 -0500
+- Archived filename: `inert-proof-carrying-cost-step2.original-2026-08-03.json`
+- Byte count: 2104
+- SHA-256: `ce4618605aee88f5f50bfeefdcceaf10cd5ccdeca92ac5104303a154ad82ad9d`
+
+- Original filename: `inert-proof-carrying-cost-step3.json`
+- Original timestamp: 2026-08-03 16:20:13.864051400 -0500
+- Archived filename: `inert-proof-carrying-cost-step3.original-2026-08-03.json`
+- Byte count: 1222
+- SHA-256: `710e40135cc5a1cbd87eea91b06a3ace029e12d920b93f720ff95e4564272dc6`
+
+- Original filename: `inert-proof-carrying-cost-step4.json`
+- Original timestamp: 2026-08-03 16:23:06.067557000 -0500
+- Archived filename: `inert-proof-carrying-cost-step4.original-2026-08-03.json`
+- Byte count: 3056
+- SHA-256: `f32bee85a9dedd4d1d8eb9ac4ad7d952d755461c2ada1637e996a895cb308646`
+
 ## Verification
 
-All ten source and archive pairs were confirmed byte-identical by SHA-256 comparison at the time each was archived. The step-1 pairs were verified before capture was implemented. The step-2 pairs were verified after the write stage was implemented and before any write execution. The step-3, step-4, and step-5 pairs were verified during the 2026-07-31 evening session. The copy preserved the original modification times on the archive copies.
+All fourteen source and archive pairs were confirmed byte-identical by SHA-256 comparison at the time each was archived. The step-1 pairs were verified before capture was implemented. The step-2 pairs were verified after the write stage was implemented and before any write execution. The step-3, step-4, and step-5 pairs were verified during the 2026-07-31 evening session. The copy preserved the original modification times on the archive copies.
 
 One pair has since diverged. The 2026-07-31 evening clear run rewrote the working copy at `C:\Users\brad\AppData\Local\Temp\inert-proof-arv-step4.json`, which now carries mtime 2026-07-31 18:44:10.143586700 -0500 and SHA-256 `c8c9d5b607f48e0ff6a570c845fc3f33ea0ab62969b223a6907568b0af05b733`. The archived copy recorded above is the pre-clear original and is unaffected. This is the first case where archiving before overwrite preserved a record that would otherwise have been lost.
