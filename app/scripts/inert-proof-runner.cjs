@@ -23,6 +23,11 @@ const FIELDS = {
     tempValue: 187500.25,
     clearValue: "",
   },
+  carrying_cost: {
+    fieldId: "FhcyP63sSAtWInl4Q4iI", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    // No observed MONETORY temporary value for this field; capture-only per B3.
+    tempValue: null,
+  },
   property_notes: {
     fieldId: "k7O0TYVMpqCpnMHRLPol", dataType: "TEXT", contactId: "9fbH2VCcZvzVNhsR9zjc",
     // No observed TEXT temporary value yet; intentionally not write-enabled per PB-D30.
