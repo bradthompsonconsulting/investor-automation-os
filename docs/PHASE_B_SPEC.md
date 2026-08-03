@@ -545,6 +545,8 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 
 **Unchanged.** PB-D23 through PB-D29 are untouched.
 
+**Amendment (2026-08-03): designated test values.** A temporary proof value may be either a previously observed value or a deliberately selected test value explicitly approved before the write. A designated test value must be valid for the field, recognizable during verification, unlikely to be confused with production data, and restored immediately after the proof cycle. The registry entry labels which of the two a value is; a designated test value is never described as observed. `arv`'s `187500.25` remains an observed value per the record above. This amendment supersedes the "observed only" constraint in this section's heading, its Decision paragraph, and its `tempValue` paragraph for future proof values, while preserving the historical provenance of values already recorded.
+
 ### PB-D31 — Verify stage contract: equality poll, fixed evidence schema, five exit codes
 
 **Decision.** The verify stage polls the target field until its read-back value equals the value the write sent, runs a four-item confirmation battery against the step-1 snapshot, and persists a fixed-shape evidence record before every non-zero exit except one. It allocates exit codes 40–44 under PB-D29's rule. It performs no writes and re-runs no write preconditions.
