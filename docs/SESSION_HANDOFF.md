@@ -558,3 +558,31 @@ No commits. HEAD remains `86fcd2f`, tree clean. This session executed against li
 **Not corrected.** `inert-proof-arv-step4.cjs` lines 16–18 carry a pre-resolution comment stating MONETORY clear semantics are UNKNOWN and describing a step-4b/null fallback that was never needed. Superseded by spec line 338. Same class as the stale PB-D28 registry comment corrected in `d033183`; left as-is here.
 
 **Next.** Record the six step-3/4/5 archive files in `docs/PB_D15_EVIDENCE_ARCHIVE.md`, then implement `verify`.
+
+## 2026-08-03 — PB-D31 shipped; verify stage implemented AND executed; full five-leg cycle verified on the wire
+
+**Commits today** (oldest → newest, from `git log`, all on `main`, all pushed):
+
+- `51e7c87` docs: PB_D15_EVIDENCE_ARCHIVE step-3/4/5 originals recorded, ten pairs verified, arv-step4 temp divergence noted
+- `cc34c98` docs: PHASE_B_SPEC PB-D31 verify stage contract, equality poll, fixed evidence schema, five exit codes
+- `ef2c259` feat: verify stage implementation per PB-D31, equality poll, fixed evidence schema, five exit codes
+
+Netlify: `51e7c87` and `cc34c98` Canceled on both sites; `ef2c259` Published on both at 10:25 AM. Served bundle read live from `app.investorautomationos.com` is `index-DGhQbSl_.js`. Fourth observed instance in which an `app/scripts/*.cjs` change built both sites while the served Vite entry hash remained `index-DGhQbSl_.js`. No `EXPECTED` re-pin was required. HEAD is `ef2c259`, tree clean, pushed.
+
+**Verify stage implemented and executed.** `app/scripts/inert-proof-runner.cjs` is now 399 lines. `capture`, `write`, and `verify` are implemented and have all been executed against live GHL; `restore` remains a stub. The verify contract is PB-D31 at `PHASE_B_SPEC.md` lines 548-580: a 15-attempt poll 2s apart gated on `!!entry && deepEqual(entry.value, tempValue)` — presence AND equality per PB-D25, and this is the assertion; nothing downstream restates it. Four-item confirmation battery: `othersUnchanged`, `tagsUnchanged`, `offersAbsent`, `stageUnchanged`. `targetEqualsTemp` / `targetPresent` / `strictEqualsTemp` were deliberately omitted as tautological once the poll succeeds. Exit codes 40 `input_invalid` / 41 `poll_exhausted` / 42 `confirmation_failed` / 43 evidence-persistence / 44 outer catch, 0 on pass. Exit 43 is the single explicit exemption from PB-D26 §484's persist-before-exit rule; there is no fallback writer.
+
+**Verify evidence read directly, not from the console summary.** `inert-proof-arv-step3.json` carries all fourteen PB-D31 keys: `contactId` `9fbH2VCcZvzVNhsR9zjc`, `fieldId` `wMBTGWMs97yysQFx7Vad`, `fieldKey` `arv`, `tempValue` `187500.25`, `pollAttempts` `1`, `observedValue` `187500.25`, `observedType` `"number"`, six `liveCustomFields` entries, one `liveTags` entry `seller-lead`, populated `opportunity`, all four confirmations `true`, `error` `null`, `outcome` `"passed"`. Timestamp `2026-08-03T15:31:44.274Z`. `observedValue` and `observedType` are diagnostic only and are never gated on.
+
+**Full five-leg same-day cycle on bradt75, each leg confirmed from its evidence file.** `capture arv` → ARV ABSENT, count 5, tag 1, opportunity keys populated. `write arv` → PUT 200, `187500.25` stored as a bare JavaScript number, count 5→6. `verify arv` → poll 1/15 equals `tempValue`, four PASS, `outcome: "passed"`. `inert-proof-arv-step4.cjs` (hand-written clear) → PUT 200. `inert-proof-arv-step5.cjs` → KEY_ABSENT confirmed, four PASS. The fixture is back at baseline: ARV absent, `customFieldCount` 5, `tagCount` 1. The hand-written clear-and-verify scripts accepted the runner-generated verify evidence without modification. The verify leg ran at `15:31:44.274Z`, after `ef2c259` published at 10:25 AM, against the committed runner with a clean tree.
+
+**Operational fact now load-bearing.** `EVIDENCE_DIR` resolves to the OS temp directory, not the repo — evidence files land at `C:\Users\brad\AppData\Local\Temp\inert-proof-<fieldKey>-step<N>.json`. The archive-before-overwrite check must be run against that path, not a repo path.
+
+**Observations, no remediation performed.** `capture` and `write` do not satisfy PB-D26 §484 on all failure paths: capture's exits 20/21 fire before its evidence write, write's exits 30/31 fire before its own. `verify` does satisfy it. PB-D21's retry-on-thrown-read remains UNVERIFIED; every read completed first-attempt today.
+
+**Process watch.** The rollover carried the runner at 375 lines; the committed file at the same HEAD is 399. No inherited line numbers are relied upon in this section.
+
+**Still open:** Restore stage unimplemented (PB-D24/D26/D28; strategy-based, not stored value). PB-D24's populated-origin path unexercised — Neelima `FiIT0hUaxVCIuokQpZuc` is that fixture, all three MONETORY candidates POPULATED. B3 field designation deferred. `verify-contacts.cjs` TARGET comment cosmetic. Seven unauthenticated Netlify functions deferred by explicit call, trigger is first non-Brad user. `SESSION_HANDOFF.md:451` still carries the stray `</parameter>` fragment, cosmetic.
+
+**Evidence basis.** Grounded this session: the three commits from `git log`, both Netlify deploy lists, the served bundle via `curl`, the runner line count via `wc -l`, and `inert-proof-arv-step3.json` read directly. Carried from earlier in the session without re-reading: the PB-D31 contract detail, the capture / write / step-4 / step-5 legs, the two §484 observations, and PB-D21's status.
+
+**Next.** Restore stage, spec-before-code per PB-D24/D26/D28, same pattern as PB-D31. Re-read the runner's actual structure before writing any spec that references it.
