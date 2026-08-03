@@ -1,6 +1,6 @@
 # PB-D15 Evidence Archive
 
-Provenance record for the original inert-proof step-1 evidence files, preserved before the PB-D29 runner capture stage was implemented.
+Provenance record for the original inert-proof evidence files, preserved before the PB-D29 runner capture stage was implemented.
 
 ## Why these were preserved
 
@@ -34,6 +34,24 @@ The evidence records contain production data — live contact IDs, tag lists, co
 - Byte count: 2110
 - SHA-256: `96f649d279f613de223e7886065cf26d0d160e40e2bcce85224a9936262ee598`
 
+- Original filename: `inert-proof-arv-step3.json`
+- Original timestamp: 2026-07-28 11:51:06.483836300 -0500
+- Archived filename: `inert-proof-arv-step3.original-2026-07-28.json`
+- Byte count: 1110
+- SHA-256: `116d98c4a9064421b517214395f83c80e9806aee6445e47d94134dfce1932f1f`
+
+- Original filename: `inert-proof-arv-step4.json`
+- Original timestamp: 2026-07-28 12:03:08.565050100 -0500
+- Archived filename: `inert-proof-arv-step4.original-2026-07-28.json`
+- Byte count: 2034
+- SHA-256: `d1bb6107ab31b2e0099a8b38d3bd769a87dc20c0d4e7ecb827b6510ac0343a76`
+
+- Original filename: `inert-proof-arv-step5.json`
+- Original timestamp: 2026-07-28 12:09:07.657875200 -0500
+- Archived filename: `inert-proof-arv-step5.original-2026-07-28.json`
+- Byte count: 981
+- SHA-256: `cc60fc38cffb9568ad8486e71e895860ec6805cd9fbb5baa0c529d66a1939bdc`
+
 ### property_notes
 
 - Original filename: `inert-proof-property-notes-step1.json`
@@ -48,6 +66,26 @@ The evidence records contain production data — live contact IDs, tag lists, co
 - Byte count: 2203
 - SHA-256: `aa3aa3f10f5b6b3561ecdb23d86d3255ce9187020e6b97e970dc5c464b2b815e`
 
+- Original filename: `inert-proof-property-notes-step3.json`
+- Original timestamp: 2026-07-27 12:11:29.014313500 -0500
+- Archived filename: `inert-proof-property-notes-step3.original-2026-07-27.json`
+- Byte count: 1058
+- SHA-256: `969a257beac5f5447c8963ec470e1f8a0dfceb89db1bc0c2a280691f1434903e`
+
+- Original filename: `inert-proof-property-notes-step4.json`
+- Original timestamp: 2026-07-27 12:37:34.727881300 -0500
+- Archived filename: `inert-proof-property-notes-step4.original-2026-07-27.json`
+- Byte count: 2065
+- SHA-256: `d73e82ae32f68a5f8b29252efbb39f0776ad3d741057702f5b2d3f9413aebdde`
+
+- Original filename: `inert-proof-property-notes-step5.json`
+- Original timestamp: 2026-07-27 12:43:36.663304600 -0500
+- Archived filename: `inert-proof-property-notes-step5.original-2026-07-27.json`
+- Byte count: 981
+- SHA-256: `c429255cfa928cb8ab1072dca043a1f7d6230c4992425739076ed62706207ee1`
+
 ## Verification
 
-All four source and archive pairs were confirmed byte-identical by SHA-256 comparison. The step-1 pairs were verified before capture was implemented. The step-2 pairs were verified after the write stage was implemented and before any write execution. The copy preserved the original modification times on the archive copies.
+All ten source and archive pairs were confirmed byte-identical by SHA-256 comparison at the time each was archived. The step-1 pairs were verified before capture was implemented. The step-2 pairs were verified after the write stage was implemented and before any write execution. The step-3, step-4, and step-5 pairs were verified during the 2026-07-31 evening session. The copy preserved the original modification times on the archive copies.
+
+One pair has since diverged. The 2026-07-31 evening clear run rewrote the working copy at `C:\Users\brad\AppData\Local\Temp\inert-proof-arv-step4.json`, which now carries mtime 2026-07-31 18:44:10.143586700 -0500 and SHA-256 `c8c9d5b607f48e0ff6a570c845fc3f33ea0ab62969b223a6907568b0af05b733`. The archived copy recorded above is the pre-clear original and is unaffected. This is the first case where archiving before overwrite preserved a record that would otherwise have been lost.
