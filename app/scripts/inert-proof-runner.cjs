@@ -14,13 +14,14 @@ const LOC    = "jmHG4B8RdzwpfqruNf68";
 
 // PB-D28 — in-file keyed field registry. Only observed values live here. PB-D30 —
 // tempValue is present where observed (arv), and null where no temporary value has
-// been observed yet (property_notes, TEXT). clearValue, restore strategy, and
-// comparison rules remain intentionally absent until observed.
+// been observed yet (property_notes, TEXT).
+// clearValue is the dataType-specific absence mechanism (PB-D32); observed on the wire for MONETORY. Fields without it are not restore-enabled.
 const FIELDS = {
   arv: {
     fieldId: "wMBTGWMs97yysQFx7Vad", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
     // Observed from inert-proof-arv-step2.cjs. PB-D30 — observed temporary values only.
     tempValue: 187500.25,
+    clearValue: "",
   },
   property_notes: {
     fieldId: "k7O0TYVMpqCpnMHRLPol", dataType: "TEXT", contactId: "9fbH2VCcZvzVNhsR9zjc",
@@ -45,7 +46,7 @@ const OFFER_IDS = [
 // existing script-name convention (property_notes → property-notes). Existing
 // -step<N>.json filenames are retained; stage maps to step number here, internally.
 const EVIDENCE_DIR = "C:/Users/brad/AppData/Local/Temp";
-const STEP_BY_STAGE = { capture: 1, write: 2, verify: 3 };
+const STEP_BY_STAGE = { capture: 1, write: 2, verify: 3, restore: 4 };
 const evidencePathFor = (stage, fieldKey) =>
   `${EVIDENCE_DIR}/inert-proof-${fieldKey.replace(/_/g, "-")}-step${STEP_BY_STAGE[stage]}.json`;
 
@@ -370,8 +371,176 @@ async function verify(config) {
 }
 
 async function restore(config) {
-  console.log(`restore — fieldKey ${config.fieldKey}`);
-  // TODO: implement restore stage (per PB-D24 restoration semantics).
+  const { fieldKey, fieldId, contactId, clearValue, LOC: locationId } = config;
+  const capturePath = evidencePathFor("capture", fieldKey);
+  const writePath   = evidencePathFor("write",   fieldKey);
+  const outPath     = evidencePathFor("restore", fieldKey);
+
+  // PB-D32: fixed-shape evidence, seventeen keys, constructible from the outset
+  // so exits 50, 51, 52, 54 and 55 can all persist. Keys are never omitted.
+  const evidence = {
+    timestamp: null,
+    contactId,
+    fieldId,
+    fieldKey,
+    originState: null,
+    restoreStrategy: null,
+    requestBody: null,
+    responseStatus: null,
+    responseBody: null,
+    pollAttempts: null,
+    observedAbsent: null,
+    liveCustomFields: null,
+    liveTags: null,
+    opportunity: null,
+    confirmations: {},
+    error: null,
+    outcome: null,
+  };
+
+  let putIssued = false;
+  let responseReceived = false;
+
+  // PB-D32: restore mutates, so 53 outranks the outcome's own code.
+  const persistOr53 = () => {
+    evidence.timestamp = new Date().toISOString();
+    try { fs.writeFileSync(outPath, JSON.stringify(evidence, null, 2), "utf8"); }
+    catch (e) {
+      console.error(
+        `EVIDENCE PERSISTENCE FAILED — ${e.message}; intended path ${outPath}; ` +
+        `PUT ${putIssued ? "issued" : "not issued"}; ` +
+        `response ${responseReceived ? `received, HTTP ${evidence.responseStatus}` : "not received"}`
+      );
+      process.exit(53);
+    }
+  };
+  const finish = (outcome, code) => {
+    evidence.outcome = outcome;
+    persistOr53();
+    console.log(`  evidence written  ${outPath}`);
+    process.exit(code);
+  };
+
+  try {
+    // 1. INPUT VALIDATION (PB-D32: not a live precondition; write's guards do not recur)
+    if (clearValue === undefined) { console.log(`ABORT — no clearValue configured for fieldKey=${fieldKey}; field is not restore-enabled`); finish("input_invalid", 50); }
+    if (!fs.existsSync(capturePath)) { console.log(`ABORT — capture evidence not found: ${capturePath}`); finish("input_invalid", 50); }
+    if (!fs.existsSync(writePath))   { console.log(`ABORT — write evidence not found: ${writePath}`);     finish("input_invalid", 50); }
+    let cap, wrt;
+    try { cap = JSON.parse(fs.readFileSync(capturePath, "utf8")); }
+    catch (e) { console.log(`ABORT — capture evidence does not parse: ${e.message}`); finish("input_invalid", 50); }
+    try { wrt = JSON.parse(fs.readFileSync(writePath, "utf8")); }
+    catch (e) { console.log(`ABORT — write evidence does not parse: ${e.message}`); finish("input_invalid", 50); }
+    for (const [s, name] of [[cap, "capture"], [wrt, "write"]]) {
+      if (s.contactId !== contactId) { console.log(`ABORT — ${name} contactId ${s.contactId} !== ${contactId}`); finish("input_invalid", 50); }
+      if (s.fieldId   !== fieldId)   { console.log(`ABORT — ${name} fieldId ${s.fieldId} !== ${fieldId}`);       finish("input_invalid", 50); }
+    }
+    if (wrt.responseStatus < 200 || wrt.responseStatus >= 300) {
+      console.log(`ABORT — write evidence does not represent a successful write (HTTP ${wrt.responseStatus})`);
+      finish("input_invalid", 50);
+    }
+    if (cap.fieldPresent !== false) {
+      console.log(`ABORT — capture fieldPresent is ${cap.fieldPresent}, expected false; populated-origin restore is out of scope (PB-D30)`);
+      finish("input_invalid", 50);
+    }
+    const capCustom = Array.isArray(cap.customFields) ? cap.customFields : null;
+    const capTags   = Array.isArray(cap.tags) ? cap.tags : null;
+    if (!capCustom || !capTags) { console.log("ABORT — capture customFields/tags not arrays"); finish("input_invalid", 50); }
+    evidence.originState = { fieldPresent: false, value: null };
+    evidence.restoreStrategy = clearValue;
+
+    // 2. THE RESTORING PUT (PB-D24 absent-origin mechanism; one PUT)
+    console.log("INPUTS VALID — proceeding to one restoring PUT");
+    const requestBody = { customFields: [{ id: fieldId, field_value: clearValue }] };
+    evidence.requestBody = requestBody;
+    let putResp;
+    putIssued = true;
+    try { putResp = await fetch(PROXY(`/contacts/${contactId}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) }); }
+    catch (e) { throw new Error(`PUT fetch threw — ${e.message}`); }
+    responseReceived = true;
+    evidence.responseStatus = putResp.status;
+    const rawText = await putResp.text();
+    try { evidence.responseBody = JSON.parse(rawText); }
+    catch { evidence.responseBody = rawText; }
+    if (putResp.status < 200 || putResp.status >= 300) {
+      console.log(`PUT FAILED — HTTP ${putResp.status}`);
+      finish("put_failed", 55);
+    }
+
+    // 3. POLL for absence (PB-D32: a PUT is necessary but not sufficient, per PB-D24)
+    let liveCustom = [], liveTags = [], absent = false, lastObserved = "(none)";
+    for (let attempt = 1; attempt <= 15; attempt++) {
+      evidence.pollAttempts = attempt;
+      const contactBody = await getJson(PROXY(`/contacts/${contactId}`), `contact GET (poll ${attempt})`);
+      const c = contactBody.contact || contactBody;
+      liveCustom = Array.isArray(c.customFields) ? c.customFields : [];
+      liveTags   = Array.isArray(c.tags) ? c.tags : [];
+      evidence.liveCustomFields = liveCustom;
+      evidence.liveTags = liveTags;
+      const entry = liveCustom.find((f) => f.id === fieldId);
+      lastObserved = entry ? JSON.stringify(entry.value) : "(key absent)";
+      absent = !entry;
+      evidence.observedAbsent = absent;
+      console.log(`poll ${attempt}/15 — ${absent ? "KEY ABSENT" : `still present (observed ${lastObserved})`}`);
+      if (absent) break;
+      if (attempt < 15) await sleep(2000);
+    }
+    if (!absent) {
+      console.log(`POLL EXHAUSTED — key never became absent. Last observed: ${lastObserved}`);
+      finish("poll_exhausted", 51);
+    }
+
+    // 4. CONFIRMATION BATTERY, four items
+    const capById  = new Map(capCustom.map((f) => [f.id, f.value]));
+    const liveById = new Map(liveCustom.map((f) => [f.id, f.value]));
+    let othersUnchanged = true;
+    for (const id of new Set([...capById.keys(), ...liveById.keys()])) {
+      if (id === fieldId) continue;
+      const inC = capById.has(id), inL = liveById.has(id);
+      if (inC !== inL || !deepEqual(capById.get(id), liveById.get(id))) { othersUnchanged = false; break; }
+    }
+    evidence.confirmations.othersUnchanged = othersUnchanged;
+    evidence.confirmations.tagsUnchanged   = deepEqual(liveTags, capTags);
+    evidence.confirmations.offersAbsent    = OFFER_IDS.every((id) => !liveById.has(id));
+
+    const oppPath = `/opportunities/search%3Flocation_id%3D${locationId}%26contact_id%3D${contactId}`;
+    const oppBody = await getJson(PROXY(oppPath), "opportunity search");
+    const opp = Array.isArray(oppBody.opportunities) ? oppBody.opportunities[0] : null;
+    const liveOpp = {
+      opportunityId:    opp ? opp.id : null,
+      pipelineId:       opp ? opp.pipelineId : null,
+      pipelineStageId:  opp ? opp.pipelineStageId : null,
+      pipelineStageUId: opp ? opp.pipelineStageUId : null,
+    };
+    evidence.opportunity = liveOpp;
+    evidence.confirmations.stageUnchanged =
+      liveOpp.opportunityId    === cap.opportunityId &&
+      liveOpp.pipelineId       === cap.pipelineId &&
+      liveOpp.pipelineStageId  === cap.pipelineStageId &&
+      liveOpp.pipelineStageUId === cap.pipelineStageUId;
+
+    Object.entries(evidence.confirmations).forEach(([k, v]) => console.log(`  ${v ? "PASS" : "FAIL"}  ${k}`));
+
+    // 5. Summary + exit
+    console.log("RESTORE — one PUT performed, absence asserted by poll, four confirmations run");
+    console.log(`  fieldKey       ${fieldKey}`);
+    console.log(`  PUT status     ${evidence.responseStatus}`);
+    console.log(`  pollAttempts   ${evidence.pollAttempts}`);
+    const failures = Object.entries(evidence.confirmations).filter(([, v]) => !v).map(([k]) => k);
+    if (failures.length) {
+      console.log(`CONFIRMATION FAILURES: ${JSON.stringify(failures)}`);
+      finish("confirmation_failed", 52);
+    }
+    finish("passed", 0);
+  } catch (e) {
+    console.error(
+      `RESTORE ERROR: ${e.message}; ` +
+      `PUT ${putIssued ? "issued" : "not issued"}; ` +
+      `response ${responseReceived ? `received, HTTP ${evidence.responseStatus}` : "not received"}`
+    );
+    evidence.error = e.message;
+    finish("error", 54);
+  }
 }
 
 const STAGES = { capture, write, verify, restore };
