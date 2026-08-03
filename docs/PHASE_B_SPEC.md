@@ -578,3 +578,27 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **PB-D21's retry-on-thrown-read remains unimplemented and UNVERIFIED.** Any retry on a thrown verification read would belong in the verify stage under PB-D26's stage boundaries. This decision does not add it; a thrown read exits 44 without retry. Adding retry is a separate decision taken when a retry condition has actually been observed.
 
 **Unchanged.** PB-D24's restoration semantics and its requirement that a confirming read closes rollback — that read belongs to restore, and verify's equality assertion does not discharge it. PB-D25's assertion contract. PB-D26's stage ownership and boundaries. PB-D28's registry and invocation shape. PB-D29's exit-code and evidence-path derivation rules. PB-D30's write contract, including its seven-key evidence record.
+
+### PB-D32 — Restore stage contract: absent-origin only, bounded confirming poll, six exit codes
+
+**Decision.** Restore issues the restoring PUT and performs the confirming read in one stage. Per PB-D24 a successful restoring PUT is necessary but not sufficient; rollback is not complete until a read confirms the restored wire state. That read belongs to restore and is not discharged by verify's equality assertion, per PB-D31.
+
+**Scope is absent-origin only.** PB-D30's write contract holds populated-origin restoration behind a separately specified mechanism. This contract does not supply that mechanism and does not reach it. A capture record whose `fieldPresent !== false` is rejected at input validation rather than handled.
+
+**Inputs and their validation.** Restore reads the step-1 and step-2 evidence files for the invoked field, obtains the origin state from step-1 and confirmation of an issued write from step-2, and rejects a missing file, a parse failure, a `contactId` or `fieldId` mismatch against the registry, a step-2 record that does not represent a successful write, or a step-1 record whose `fieldPresent !== false`. This is input validation, not a live precondition: it establishes that restore has a coherent record to restore from. Per PB-D26 the live safe-to-write check belongs to write and does not recur here.
+
+**The restoring call.** One PUT, `field_value: ""`, per PB-D24's absent-origin mechanism for MONETORY. No new mechanism is designed; this is the same shape as the clearing call already in use. Per PB-D28 the absence mechanism is registry configuration; the restore target comes from capture and never from the registry. This first restore implementation is write-enabled only for the MONETORY `arv` configuration. `property_notes` remains unsupported until its restore mechanism and write-enablement are established.
+
+**The confirming read is a bounded poll.** 15 attempts, 2 seconds apart, gate is that the field's key is absent from the live `customFields` array. The timing model is PB-D31's, reused rather than duplicated. A single successful immediate observation on the hand-written step-5 does not establish that absence is always immediately visible; polling prevents a successful clear from being classified as a failure on propagation delay.
+
+**Confirmation battery.** The same four items as verify: `othersUnchanged`, `tagsUnchanged`, `offersAbsent`, `stageUnchanged`.
+
+**Evidence persistence failure outranks response classification.** Restore mutates. PB-D31's exit-43 exemption from PB-D26's persist-before-exit rule was grounded explicitly in verify performing no mutation and therefore risking diagnostics rather than integrity; that reasoning does not transfer. Restore inherits write's PB-D30 precedence rule: if evidence persistence fails after the PUT was attempted or a response was received, restore exits 53 regardless of whether the response was 2xx or non-2xx, and logs whether the PUT was issued, whether a response arrived, and the response status. An unrecorded mutation is the dangerous condition. No fallback writer is introduced.
+
+**Exit codes.** 50 `input_invalid` / 51 `poll_exhausted` / 52 `confirmation_failed` / 53 evidence-persistence / 54 outer catch. 0 on pass. The decade follows PB-D29.
+
+**Sixteen-key evidence, all keys always present, null when unavailable.** `timestamp`, `contactId`, `fieldId`, `fieldKey`, `originState`, `restoreStrategy`, `requestBody`, `responseStatus`, `pollAttempts`, `observedAbsent`, `liveCustomFields`, `liveTags`, `opportunity`, `confirmations`, `error`, `outcome`. `outcome` is one of `passed`, `poll_exhausted`, `confirmation_failed`, `input_invalid`, `error`.
+
+**`originState` is an object.** `{ fieldPresent, value }`, carrying `false` and `null` in this implementation. The object shape holds what capture already records rather than a flattened restatement of it; it is not a pre-authorization of populated-origin restoration, which remains held behind PB-D30's populated-origin restriction and will be specified on its own terms.
+
+**Unchanged.** PB-D24's restoration semantics, including its requirement that a confirming read closes rollback. PB-D25's assertion contract. PB-D26's stage ownership and its persist-before-exit rule, which restore satisfies in full. PB-D28's registry and invocation shape. PB-D29's exit-code and evidence-path derivation rules. PB-D30's write contract and precedence rule. PB-D31's verify contract, including its fourteen-key evidence record and its exit-43 exemption, which is not extended here.
