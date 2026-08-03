@@ -25,8 +25,9 @@ const FIELDS = {
   },
   carrying_cost: {
     fieldId: "FhcyP63sSAtWInl4Q4iI", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
-    // No observed MONETORY temporary value for this field; capture-only per B3.
-    tempValue: null,
+    // Designated test value per PB-D30 amendment (2026-08-03); not observed.
+    tempValue: 4321.25,
+    clearValue: "",
   },
   property_notes: {
     fieldId: "k7O0TYVMpqCpnMHRLPol", dataType: "TEXT", contactId: "9fbH2VCcZvzVNhsR9zjc",
