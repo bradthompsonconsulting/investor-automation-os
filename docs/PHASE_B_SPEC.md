@@ -544,3 +544,37 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **Live precondition is contact-only.** Step 2 issues no opportunity search and the runner's write stage does not add one. Opportunity and pipeline state is captured by the capture stage and is not re-verified before a write.
 
 **Unchanged.** PB-D23 through PB-D29 are untouched.
+
+### PB-D31 — Verify stage contract: equality poll, fixed evidence schema, five exit codes
+
+**Decision.** The verify stage polls the target field until its read-back value equals the value the write sent, runs a four-item confirmation battery against the step-1 snapshot, and persists a fixed-shape evidence record before every non-zero exit except one. It allocates exit codes 40–44 under PB-D29's rule. It performs no writes and re-runs no write preconditions.
+
+**Inputs and their validation.** Verify reads the step-1 and step-2 evidence files for the invoked field, obtains `tempValue` from step-2, and rejects a missing file, a parse failure, a `contactId` or `fieldId` mismatch against the registry, or a step-2 evidence record that does not represent a successful write. This is input validation, not a live precondition: it establishes that verify has a coherent record to verify against, not that a write should be issued. Verify does not re-check whether the live record is still safe to write; per PB-D26 that check belongs to write and does not recur here.
+
+**Poll.** Fifteen attempts, two seconds between, on the singular contact GET. The gate is `!!entry && deepEqual(entry.value, tempValue)` — presence and equality, per PB-D25. This is the assertion; nothing downstream restates it. The poll breaks on the first hit and records the attempt count reached.
+
+**Confirmation battery, four items.** `othersUnchanged` over the union of step-1 and live custom-field ids excluding the target, `tagsUnchanged`, `offersAbsent` across the seven `offer_` ids, and `stageUnchanged` against the step-1 opportunity snapshot.
+
+**Redundant target confirmations are intentionally omitted.** `targetEqualsTemp`, `targetPresent`, and `strictEqualsTemp` each restate information already established by the equality poll from the same live value. Once the poll succeeds, none can independently fail. They are therefore omitted from the confirmation battery, per PB-D23's rejection of structurally tautological assertions.
+
+**`observedValue` and `observedType` are diagnostic, not assertions.** They record what the wire returned so a mismatch is legible rather than merely false. PB-D25 reserves record-without-assert as the bootstrap for a dataType whose read-back representation is unobserved; TEXT and MONETORY are both observed, so recording these is a diagnostic convenience and confers no assertion strength.
+
+**Evidence schema.** The evidence record contains the following top-level keys. Every key is present on every persisted record regardless of outcome. Unavailable values are `null`; keys are never omitted.
+
+`timestamp`, `contactId`, `fieldId`, `fieldKey`, `tempValue`, `pollAttempts`, `observedValue`, `observedType`, `liveCustomFields`, `liveTags`, `opportunity`, `confirmations`, `error`, `outcome`
+
+`confirmations` is a partial object carrying whatever battery items completed, `{}` if none ran. `error` is `null` on every non-exception path. `outcome` is one of `passed`, `poll_exhausted`, `confirmation_failed`, `input_invalid`, `error`.
+
+`fieldKey` is included because invocation is `<stage> <fieldKey>` per PB-D28 and the evidence path derives from stage and field per PB-D29 — it identifies which field a near-empty `input_invalid` record concerns. Its inclusion follows from verify's inputs and does not disturb PB-D30's seven-key write contract, which remains as written.
+
+**Evidence path.** Derived, not stored, per PB-D29: the Temp directory constant plus the existing `-step3.json` filename for the invoked field. Verify is step 3.
+
+**Exit codes.** 40 input invalid — missing, unparseable, or identity-mismatched step-1/step-2 evidence, or a step-2 record that does not represent a successful write; evidence persisted with `outcome: "input_invalid"` where a record can be constructed at all. 41 poll exhausted — fifteen attempts without an equality hit; evidence persisted with `outcome: "poll_exhausted"`, `confirmations: {}`, and `observedValue`/`observedType` from the final attempt. 42 confirmation failed — one or more battery items returned false; evidence persisted with `outcome: "confirmation_failed"` and the full battery. 43 evidence persistence failure. 44 outer catch — any thrown read, including the opportunity GET, and any unexpected runtime exception not classified above; evidence persisted with `outcome: "error"`, the thrown message in `error`, and whatever was observed before the throw.
+
+**A thrown read is not a confirmation failure.** `confirmation_failed` means the instrument completed and produced a negative comparison. A thrown GET means the comparison could not be made. A throw during the opportunity read yields `opportunity: null`, the confirmations that completed before it, the error message, and `outcome: "error"` — exit 44.
+
+**Evidence persistence failure is the single exemption from persist-before-exit.** PB-D26 requires every stage to persist what it observed prior to any non-zero exit. When the persistence itself fails there is no record to write; verify exits 43 and logs the intended path and the serialization or filesystem error to stderr. No fallback path and no second persistence mechanism is introduced: a second write path is an unproven mechanism added to handle the failure of the proven one, and verify risks no mutation, so an unrecorded failure here costs diagnostics rather than integrity. This differs from PB-D30's precedence rule by situation, not by principle — write's exit 33 outranks its response classification because an unrecorded mutation is the dangerous condition; verify performs no mutation, so no precedence question arises.
+
+**PB-D21's retry-on-thrown-read remains unimplemented and UNVERIFIED.** Any retry on a thrown verification read would belong in the verify stage under PB-D26's stage boundaries. This decision does not add it; a thrown read exits 44 without retry. Adding retry is a separate decision taken when a retry condition has actually been observed.
+
+**Unchanged.** PB-D24's restoration semantics and its requirement that a confirming read closes rollback — that read belongs to restore, and verify's equality assertion does not discharge it. PB-D25's assertion contract. PB-D26's stage ownership and boundaries. PB-D28's registry and invocation shape. PB-D29's exit-code and evidence-path derivation rules. PB-D30's write contract, including its seven-key evidence record.
