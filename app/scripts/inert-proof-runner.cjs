@@ -1,11 +1,12 @@
 /* Parameterized inert-proof runner per docs/PHASE_B_SPEC.md PB-D26 (stage ownership
    and boundaries), PB-D27 (one stage per process invocation), PB-D28 (field
    configuration is an in-file keyed registry), and PB-D29 (stage exit codes and
-   evidence path derivation), and PB-D30 (write stage contract). Stages implemented:
-   capture and write. The verify and restore bodies remain placeholders and perform no
-   network calls. Capture is READ-ONLY against GHL — two GETs, no PUT, safe to re-run at
-   any time. Write performs EXACTLY ONE PUT and only to a field observed absent both in
-   capture evidence and live. */
+   evidence path derivation), PB-D30 (write stage contract), and PB-D31
+   (verify stage contract). Stages implemented: capture, write, and verify.
+   The restore body remains a placeholder. Capture and verify are READ-ONLY
+   against GHL — GETs only, no PUT, safe to re-run at any time. Write performs
+   EXACTLY ONE PUT and only to a field observed absent both in capture
+   evidence and live. */
 const fs = require("fs");
 
 const ORIGIN = "https://app.investorautomationos.com";
@@ -44,7 +45,7 @@ const OFFER_IDS = [
 // existing script-name convention (property_notes → property-notes). Existing
 // -step<N>.json filenames are retained; stage maps to step number here, internally.
 const EVIDENCE_DIR = "C:/Users/brad/AppData/Local/Temp";
-const STEP_BY_STAGE = { capture: 1, write: 2 };
+const STEP_BY_STAGE = { capture: 1, write: 2, verify: 3 };
 const evidencePathFor = (stage, fieldKey) =>
   `${EVIDENCE_DIR}/inert-proof-${fieldKey.replace(/_/g, "-")}-step${STEP_BY_STAGE[stage]}.json`;
 
@@ -229,9 +230,143 @@ async function write(config) {
   }
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function verify(config) {
-  console.log(`verify — fieldKey ${config.fieldKey}`);
-  // TODO: implement verify stage (poll + comparison).
+  const { fieldKey, fieldId, contactId, LOC: locationId } = config;
+  const capturePath = evidencePathFor("capture", fieldKey);
+  const writePath   = evidencePathFor("write", fieldKey);
+  const outPath     = evidencePathFor("verify", fieldKey);
+
+  // PB-D31: fixed-shape evidence, constructible from the outset so exits 40, 41,
+  // 42 and 44 can all persist. Keys are never omitted; unavailable values are null.
+  const evidence = {
+    timestamp: null,
+    contactId,
+    fieldId,
+    fieldKey,
+    tempValue: null,
+    pollAttempts: null,
+    observedValue: null,
+    observedType: null,
+    liveCustomFields: null,
+    liveTags: null,
+    opportunity: null,
+    confirmations: {},
+    error: null,
+    outcome: null,
+  };
+
+  // PB-D31: persistence failure is the single exemption from persist-before-exit.
+  const persistOr43 = () => {
+    evidence.timestamp = new Date().toISOString();
+    try { fs.writeFileSync(outPath, JSON.stringify(evidence, null, 2), "utf8"); }
+    catch (e) {
+      console.error(`EVIDENCE PERSISTENCE FAILED — ${e.message}; intended path ${outPath}`);
+      process.exit(43);
+    }
+  };
+  const finish = (outcome, code) => {
+    evidence.outcome = outcome;
+    persistOr43();
+    console.log(`  evidence written  ${outPath}`);
+    process.exit(code);
+  };
+
+  try {
+    // 1. INPUT VALIDATION (PB-D31: not a live precondition; write's guards do not recur)
+    if (!fs.existsSync(capturePath)) { console.log(`ABORT — capture evidence not found: ${capturePath}`); finish("input_invalid", 40); }
+    if (!fs.existsSync(writePath))   { console.log(`ABORT — write evidence not found: ${writePath}`);     finish("input_invalid", 40); }
+    let cap, wrt;
+    try { cap = JSON.parse(fs.readFileSync(capturePath, "utf8")); }
+    catch (e) { console.log(`ABORT — capture evidence does not parse: ${e.message}`); finish("input_invalid", 40); }
+    try { wrt = JSON.parse(fs.readFileSync(writePath, "utf8")); }
+    catch (e) { console.log(`ABORT — write evidence does not parse: ${e.message}`); finish("input_invalid", 40); }
+    for (const [s, name] of [[cap, "capture"], [wrt, "write"]]) {
+      if (s.contactId !== contactId) { console.log(`ABORT — ${name} contactId ${s.contactId} !== ${contactId}`); finish("input_invalid", 40); }
+      if (s.fieldId !== fieldId)     { console.log(`ABORT — ${name} fieldId ${s.fieldId} !== ${fieldId}`);       finish("input_invalid", 40); }
+    }
+    if (wrt.responseStatus < 200 || wrt.responseStatus >= 300) {
+      console.log(`ABORT — write evidence does not represent a successful write (HTTP ${wrt.responseStatus})`);
+      finish("input_invalid", 40);
+    }
+    const tempValue = wrt.tempValue;
+    evidence.tempValue = tempValue;
+    const capCustom = Array.isArray(cap.customFields) ? cap.customFields : null;
+    const capTags   = Array.isArray(cap.tags) ? cap.tags : null;
+    if (!capCustom || !capTags) { console.log("ABORT — capture customFields/tags not arrays"); finish("input_invalid", 40); }
+
+    // 2. POLL for equality (PB-D25: presence AND value equality)
+    let liveCustom = [], liveTags = [], found = false, lastObserved = "(none)";
+    for (let attempt = 1; attempt <= 15; attempt++) {
+      evidence.pollAttempts = attempt;
+      const contactBody = await getJson(PROXY(`/contacts/${contactId}`), `contact GET (poll ${attempt})`);
+      const c = contactBody.contact || contactBody;
+      liveCustom = Array.isArray(c.customFields) ? c.customFields : [];
+      liveTags   = Array.isArray(c.tags) ? c.tags : [];
+      evidence.liveCustomFields = liveCustom;
+      evidence.liveTags = liveTags;
+      const entry = liveCustom.find((f) => f.id === fieldId);
+      evidence.observedValue = entry ? entry.value : null;
+      evidence.observedType  = entry ? typeof entry.value : null;
+      lastObserved = entry ? JSON.stringify(entry.value) : "(field absent)";
+      const hit = !!entry && deepEqual(entry.value, tempValue);
+      console.log(`poll ${attempt}/15 — ${hit ? "EQUALS tempValue" : `not yet (observed ${lastObserved})`}`);
+      if (hit) { found = true; break; }
+      if (attempt < 15) await sleep(2000);
+    }
+    if (!found) {
+      console.log(`POLL EXHAUSTED — read-back never equalled tempValue. Last observed: ${lastObserved}`);
+      finish("poll_exhausted", 41);
+    }
+
+    // 3. CONFIRMATION BATTERY, four items (PB-D31: no redundant target confirmations)
+    const capById  = new Map(capCustom.map((f) => [f.id, f.value]));
+    const liveById = new Map(liveCustom.map((f) => [f.id, f.value]));
+    let othersUnchanged = true;
+    for (const id of new Set([...capById.keys(), ...liveById.keys()])) {
+      if (id === fieldId) continue;
+      const inC = capById.has(id), inL = liveById.has(id);
+      if (inC !== inL || !deepEqual(capById.get(id), liveById.get(id))) { othersUnchanged = false; break; }
+    }
+    evidence.confirmations.othersUnchanged = othersUnchanged;
+    evidence.confirmations.tagsUnchanged   = deepEqual(liveTags, capTags);
+    evidence.confirmations.offersAbsent    = OFFER_IDS.every((id) => !liveById.has(id));
+
+    const oppPath = `/opportunities/search%3Flocation_id%3D${locationId}%26contact_id%3D${contactId}`;
+    const oppBody = await getJson(PROXY(oppPath), "opportunity search");
+    const opp = Array.isArray(oppBody.opportunities) ? oppBody.opportunities[0] : null;
+    const liveOpp = {
+      opportunityId:   opp ? opp.id : null,
+      pipelineId:      opp ? opp.pipelineId : null,
+      pipelineStageId: opp ? opp.pipelineStageId : null,
+      pipelineStageUId:opp ? opp.pipelineStageUId : null,
+    };
+    evidence.opportunity = liveOpp;
+    evidence.confirmations.stageUnchanged =
+      liveOpp.opportunityId    === cap.opportunityId &&
+      liveOpp.pipelineId       === cap.pipelineId &&
+      liveOpp.pipelineStageId  === cap.pipelineStageId &&
+      liveOpp.pipelineStageUId === cap.pipelineStageUId;
+
+    Object.entries(evidence.confirmations).forEach(([k, v]) => console.log(`  ${v ? "PASS" : "FAIL"}  ${k}`));
+
+    // 4. Summary + exit
+    console.log("VERIFY — read-only; equality asserted by poll, four confirmations run");
+    console.log(`  fieldKey          ${fieldKey}`);
+    console.log(`  observed          ${JSON.stringify(evidence.observedValue)} (${evidence.observedType})`);
+    console.log(`  pollAttempts      ${evidence.pollAttempts}`);
+    const failures = Object.entries(evidence.confirmations).filter(([, v]) => !v).map(([k]) => k);
+    if (failures.length) {
+      console.log(`CONFIRMATION FAILURES: ${JSON.stringify(failures)}`);
+      finish("confirmation_failed", 42);
+    }
+    finish("passed", 0);
+  } catch (e) {
+    console.error(`VERIFY ERROR: ${e.message}`);
+    evidence.error = e.message;
+    finish("error", 44);
+  }
 }
 
 async function restore(config) {
