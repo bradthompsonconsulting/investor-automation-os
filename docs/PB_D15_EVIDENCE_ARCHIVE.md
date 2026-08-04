@@ -170,9 +170,44 @@ The evidence records contain production data — live contact IDs, tag lists, co
 
 The two step-1 records originate from the same working filename (`inert-proof-loan-amount-step1.json`). The pre-write capture was archived before the write, per PB-D34; the post-restore independent re-capture later overwrote the working copy in Temp. The `.recapture` suffix distinguishes the archived copies. The archived pre-write record therefore has no surviving working-file counterpart for later comparison; this is expected, not a defect. This is the first field whose archive preserves both sides of the proof cycle.
 
+### asking_price
+
+- Original filename: `inert-proof-asking-price-step1.json`
+- Original timestamp: 2026-08-04 12:45:42.321561600 -0500
+- Archived filename: `inert-proof-asking-price-step1.original-2026-08-04.json`
+- Byte count: 1096
+- SHA-256: `7c1e2798d62340f8348a55a9a6b9dffb5b35a91652cb874abdec40610e28605e`
+
+- Original filename: `inert-proof-asking-price-step2.json`
+- Original timestamp: 2026-08-04 13:26:05.654601200 -0500
+- Archived filename: `inert-proof-asking-price-step2.original-2026-08-04.json`
+- Byte count: 2110
+- SHA-256: `e8a9fefb4d55bc9a3739f231cb32db84b2a85f248a8a3ef45478072458c96484`
+
+- Original filename: `inert-proof-asking-price-step3.json`
+- Original timestamp: 2026-08-04 13:28:09.621518700 -0500
+- Archived filename: `inert-proof-asking-price-step3.original-2026-08-04.json`
+- Byte count: 1227
+- SHA-256: `7c9cf41d66f0f6edc3780044fb1e3efcd5c427fe5095a14f06cfa7796ec9ab9d`
+
+- Original filename: `inert-proof-asking-price-step4.json`
+- Original timestamp: 2026-08-04 13:32:13.741386200 -0500
+- Archived filename: `inert-proof-asking-price-step4.original-2026-08-04.json`
+- Byte count: 3055
+- SHA-256: `018456e18211775bc5c6fe3738f1a2f961b7a8d430978cd835456695c673f87a`
+
+- Original filename: `inert-proof-asking-price-step1.json`
+- Original timestamp: 2026-08-04 13:34:34.661202800 -0500
+- Archived filename: `inert-proof-asking-price-step1.recapture-2026-08-04.json`
+- Byte count: 1096
+- SHA-256: `b7234ac8a783b163907ef3fb5fbec74ec745be14d49df6d8f973a5e5d7fa4546`
+
+The two step-1 records originate from the same working filename (`inert-proof-asking-price-step1.json`). The pre-write capture was archived before the write, per PB-D35; the post-restore independent re-capture later overwrote the working copy in Temp. The `.recapture` suffix distinguishes the archived copies. The archived pre-write record therefore has no surviving working-file counterpart for later comparison; this is expected, not a defect. This is the second field whose archive preserves both sides of the proof cycle.
 ## Verification
 
-All twenty-three source and archive pairs were confirmed byte-identical by SHA-256 comparison at the time each was archived. Of the original fourteen, the step-1 pairs were verified before capture was implemented. The step-2 pairs were verified after the write stage was implemented and before any write execution. The step-3, step-4, and step-5 pairs were verified during the 2026-07-31 evening session. The copy preserved the original modification times on the archive copies.
+All twenty-eight source and archive pairs were confirmed byte-identical by SHA-256 comparison at the time each was archived. Of the original fourteen, the step-1 pairs were verified before capture was implemented. The step-2 pairs were verified after the write stage was implemented and before any write execution. The step-3, step-4, and step-5 pairs were verified during the 2026-07-31 evening session. The copy preserved the original modification times on the archive copies.
+
+The five asking_price pairs were verified on 2026-08-04, each at the moment it was copied, during the B6 cycle rather than in a later batch. As with loan_amount, the pre-write step-1 pair cannot be re-verified against Temp: the independent re-capture overwrote the working copy.
 
 One pair has since diverged. The 2026-07-31 evening clear run rewrote the working copy at `C:\Users\brad\AppData\Local\Temp\inert-proof-arv-step4.json`, which now carries mtime 2026-07-31 18:44:10.143586700 -0500 and SHA-256 `c8c9d5b607f48e0ff6a570c845fc3f33ea0ab62969b223a6907568b0af05b733`. The archived copy recorded above is the pre-clear original and is unaffected. This is the first case where archiving before overwrite preserved a record that would otherwise have been lost.
 
