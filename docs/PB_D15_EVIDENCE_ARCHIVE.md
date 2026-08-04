@@ -136,10 +136,46 @@ The evidence records contain production data — live contact IDs, tag lists, co
 - Byte count: 3060
 - SHA-256: `86cf5c128c0c3c454a8d5e7a3b0fea03837ab666c8690b479ad42ee07e53f21e`
 
+### loan_amount
+
+- Original filename: `inert-proof-loan-amount-step1.json`
+- Original timestamp: 2026-08-04 10:38:26.472242500 -0500
+- Archived filename: `inert-proof-loan-amount-step1.original-2026-08-04.json`
+- Byte count: 1095
+- SHA-256: `3f9bb6cce5807f53740c1332b8d80460cab75b1da9ead62b4e4ac11501c8fbaa`
+
+- Original filename: `inert-proof-loan-amount-step2.json`
+- Original timestamp: 2026-08-04 10:40:08.310820700 -0500
+- Archived filename: `inert-proof-loan-amount-step2.original-2026-08-04.json`
+- Byte count: 2107
+- SHA-256: `96580cb0a1b7cd7f06d855f1a7ccfc6d55ed5454b83dc14c70d45533b103fde1`
+
+- Original filename: `inert-proof-loan-amount-step3.json`
+- Original timestamp: 2026-08-04 10:41:01.970750600 -0500
+- Archived filename: `inert-proof-loan-amount-step3.original-2026-08-04.json`
+- Byte count: 1223
+- SHA-256: `cd4682361dfcab4a9773399caac224501f7ff4352c338efe393c1a5265bec845`
+
+- Original filename: `inert-proof-loan-amount-step4.json`
+- Original timestamp: 2026-08-04 10:41:46.561984100 -0500
+- Archived filename: `inert-proof-loan-amount-step4.original-2026-08-04.json`
+- Byte count: 3054
+- SHA-256: `7fb8d15ee509310b92741845efaec95cc03d22d5424cd97e05c6b535cf292b71`
+
+- Original filename: `inert-proof-loan-amount-step1.json`
+- Original timestamp: 2026-08-04 10:43:14.705218400 -0500
+- Archived filename: `inert-proof-loan-amount-step1.recapture-2026-08-04.json`
+- Byte count: 1095
+- SHA-256: `823bcd91fbe8898da3ed1e4b86b3c2ae62dbcd7c0c93c8a4d7a3e01e3f660284`
+
+The two step-1 records originate from the same working filename (`inert-proof-loan-amount-step1.json`). The pre-write capture was archived before the write, per PB-D34; the post-restore independent re-capture later overwrote the working copy in Temp. The `.recapture` suffix distinguishes the archived copies. The archived pre-write record therefore has no surviving working-file counterpart for later comparison; this is expected, not a defect. This is the first field whose archive preserves both sides of the proof cycle.
+
 ## Verification
 
-All eighteen source and archive pairs were confirmed byte-identical by SHA-256 comparison at the time each was archived. The step-1 pairs were verified before capture was implemented. The step-2 pairs were verified after the write stage was implemented and before any write execution. The step-3, step-4, and step-5 pairs were verified during the 2026-07-31 evening session. The copy preserved the original modification times on the archive copies.
+All twenty-three source and archive pairs were confirmed byte-identical by SHA-256 comparison at the time each was archived. Of the original fourteen, the step-1 pairs were verified before capture was implemented. The step-2 pairs were verified after the write stage was implemented and before any write execution. The step-3, step-4, and step-5 pairs were verified during the 2026-07-31 evening session. The copy preserved the original modification times on the archive copies.
 
 One pair has since diverged. The 2026-07-31 evening clear run rewrote the working copy at `C:\Users\brad\AppData\Local\Temp\inert-proof-arv-step4.json`, which now carries mtime 2026-07-31 18:44:10.143586700 -0500 and SHA-256 `c8c9d5b607f48e0ff6a570c845fc3f33ea0ab62969b223a6907568b0af05b733`. The archived copy recorded above is the pre-clear original and is unaffected. This is the first case where archiving before overwrite preserved a record that would otherwise have been lost.
 
 The four estimated_repairs pairs were verified on 2026-08-04, after the complete four-stage proof cycle rather than at any point during it. That cycle also recorded an exception to the archive-first discipline: the pre-cycle step-1 capture written at 09:38 was overwritten in place by the post-restore capture at 09:52 before any archival, so the pre-write artifact is unrecoverable. The runner does not auto-archive; the earlier carrying_cost ARCHIVED file was created by hand. No information was lost, because the post-restore capture is byte-identical to the pre-cycle baseline apart from its timestamp, which is what the cycle set out to demonstrate. The archived step-1 record above is therefore the post-restore confirming read, not the pre-write precondition, and its 09:52 mtime sits after step-4 at 09:51.
+
+The five `loan_amount` archive pairs were verified on 2026-08-04. The pre-write step-1 pair was verified before the independent re-capture overwrote its working copy; the remaining four were verified after the proof cycle completed. That overwrite was intentional, so the pre-write pair cannot be re-verified against the current Temp file.
