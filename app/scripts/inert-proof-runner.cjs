@@ -46,6 +46,12 @@ const FIELDS = {
     tempValue: 24680.25,
     clearValue: "",
   },
+  asking_price: {
+    fieldId: "60UCjsYT1Ak3Kyy5ZCL8", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    // Designated test value per PB-D35 (2026-08-04); not observed.
+    tempValue: 135790.25,
+    clearValue: "",
+  },
 };
 
 // The seven offer_ fields (CONTACTS_OPPORTUNITIES_SPEC.md §4 HARD NO — must stay unchanged).
