@@ -40,6 +40,12 @@ const FIELDS = {
     tempValue: 8642.75,
     clearValue: "",
   },
+  loan_amount: {
+    fieldId: "3ZlSKldh0jR2MWhjOmHe", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    // Designated test value per PB-D34 (2026-08-04); not observed.
+    tempValue: 24680.25,
+    clearValue: "",
+  },
 };
 
 // The seven offer_ fields (CONTACTS_OPPORTUNITIES_SPEC.md §4 HARD NO — must stay unchanged).
