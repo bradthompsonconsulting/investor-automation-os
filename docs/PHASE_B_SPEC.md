@@ -616,3 +616,13 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **Designated test value.** `8642.75` is approved before the write under the PB-D30 amendment dated 2026-08-03. It is deliberately selected, not observed production data: non-integer to remain on the proven MONETORY decimal path, distinct from ARV `187500.25` and Carrying Cost `4321.25`, recognizable in evidence, and required to be restored immediately after the proof cycle.
 
 **Registry entry is not proof.** Adding the B4 registry entry makes the field eligible to enter the proof sequence; it does not establish safety or authorize the field for application use. Safety is established only if capture, write, verify, and restore complete successfully and the fixture returns to baseline.
+
+### PB-D34 -- B5 field designation and designated test value
+
+**Decision.** `loan_amount` (`contact.loan_amount`, `3ZlSKldh0jR2MWhjOmHe`, MONETORY) is designated as B5 from the remaining MONETORY candidates: `asking_price` and `loan_amount`.
+
+**Selection boundary.** The rationale is inference from field purpose: Loan Amount is less central to seller communication than Asking Price, which sits closer to offer logic and the existing `offer_` HARD-NO pathway. This is not a safety finding. Per section 4.6, workflow triggers are not API-derivable, and `loan_amount` must prove its own field-specific write safety through the complete inert-proof cycle.
+
+**Designated test value.** `24680.25` is approved before the write under the PB-D30 amendment dated 2026-08-03. It is deliberately selected, not observed production data: non-integer to remain on the proven MONETORY decimal path, distinct from ARV `187500.25`, Carrying Cost `4321.25`, and Estimated Repairs `8642.75`, recognizable in evidence, and required to be restored immediately after the proof cycle.
+
+**Registry entry is not proof.** Adding the B5 registry entry makes the field eligible to enter the proof sequence; it does not establish safety or authorize the field for application use. Safety is established only if capture, write, verify, and restore complete successfully and an independent re-capture confirms the fixture returned to baseline. The independent re-capture overwrites the runner's step-1 evidence file in place. Because the runner does not auto-archive, the pre-write step-1 capture must be archived before re-capture or that artifact is lost. Observed at designation: `deal-submit.ts` includes `LOAN_AMOUNT` in the production intake write path, alongside other submitted deal fields. This does not establish field safety, and no safety inference is drawn from it; it does mean B5 exercises a field already writable through production application code.
