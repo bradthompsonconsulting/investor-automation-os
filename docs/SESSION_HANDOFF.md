@@ -675,3 +675,30 @@ Netlify: `c4ec6d0`, `5cf962f`, and `24f5a9d` Canceled on both sites. `c613276` t
 **Still open.** PB-D21 retry UNEXERCISED; all polls this session converged 1/15. PB-D24 populated-origin path unexercised; Neelima `FiIT0hUaxVCIuokQpZuc` is that fixture. Capture and write still do not satisfy PB-D26 persist-before-exit on all failure paths. PB-D16: four proven fields exist; `_putMonetaryField` still has exactly one consumer, `setARV`. The gate literal wording (two observed consumers) and the promotion trigger at spec:454 (proof-passage) describe different things -- unresolved, and not resolved here. Asking Price is the last unproven MONETORY candidate and shares Loan Amount row tail. Runner `clearValue` comment scopes its observation to MONETORY though TEXT has an observed clear. PB-D33/D34 headings use -- where PB-D30/31/32 use em dash. `verify-contacts.cjs` TARGET comment cosmetic. Seven unauthenticated Netlify functions deferred by explicit call; trigger is first non-Brad user.
 
 **Evidence basis.** Commits and full 40-hex hashes from `git log`. Both proof cycles from literal runner stdout. B4 proof cycle ran this session; its leg timings and archive digests were not re-read in this context and are carried from the rollover. B5 five archive records were re-read this session from `stat -c` and `sha256sum` directly. Netlify outcomes from both projects full Deploys lists, read this session. Harness gate lines, exit map, and floor arithmetic read verbatim from `verify-contacts.cjs` source; the 25-versus-127 gap grounded from both numbers in one artifact. Register rows and both diffs read in VS Code before staging. Not re-grounded this session: the runner internal stage logic beyond the FIELDS registry entries, and the served bundle hash -- EXPECTED was not re-read against prod, though no bundling commit landed.
+## 2026-08-04 late afternoon, addendum -- B6 asking_price proven; PB-D34 corrected; production findings
+
+Commits since the 11:37 handoff: `60d014f` (PB-D35 plus the PB-D34 correction), `a12c893` (runner registry entry), `9570d57` (archive doc), `1f1cee2` (register row).
+
+B6 cycle, all OBSERVED from runner stdout: capture 12:45:42 asking_price ABSENT, custom-field count 5, tag count 1. Pre-write step-1 evidence archived before the write per PB-D35. Write 13:26:05 PUT 200, 135790.25 accepted as a bare JS number. Verify 13:28:09 poll 1/15 EQUALS tempValue, four confirmations PASS. Restore 13:32:13 PUT 200, poll 1/15 KEY ABSENT, four confirmations PASS. Independent re-capture 13:34:34 ABSENT, count back to 5, same pipelineStageId. Fixture bradt75 is clean.
+
+Pre-write and post-restore step-1 archives are both 1096 bytes with distinct SHA-256 digests. Restoration is asserted here on the restore PUT, the KEY ABSENT poll, and the independent re-capture. A field-by-field comparison reporting all other fields identical appeared in the terminal but its command and output were not captured to file; it is not the basis for any claim here.
+
+Archive: five asking_price records, count twenty-three to twenty-eight, 28 files on disk. B6 is the second set preserving both sides of the cycle.
+
+Register: all five MONETORY rows read Proven. Class closed.
+
+PB-D34 CORRECTED. The prior claim that deal-submit.ts writes contact.loan_amount in production was false. Source read shows CARRYING_COST and LOAN_AMOUNT contact field IDs going into an opportunity payload only; no customFields array reaches either /contacts call. The spec text is amended.
+
+Production findings, not Phase B, unrecorded before now:
+
+1. deal-submit.ts sends CARRYING_COST and LOAN_AMOUNT contact field IDs inside an opportunity payload. Either those fields exist on both objects or the values are silently dropped on every intake. Unresolved.
+2. ghl-proxy responded live but is absent from netlify/functions/, which holds four files. Functions deploy from more than one location, so the seven unauthenticated functions count is scoped to a set nobody has enumerated.
+
+Workflow findings:
+
+3. `/tmp` in Git Bash resolves to C:/Users/brad/AppData/Local/Temp, the same directory the runner writes inert-proof-*.json evidence to. It is not a scratch area. Scratch output goes to C:/Users/brad/.
+4. git reports LF will be replaced by CRLF on these docs at checkout. Pure LF describes the working copy, not the stored blob; Node CR detection reads the disk, not git normalization.
+5. Guard pattern correction: a trailing-newline split yields wc -l plus 1. A line-count assertion against the raw wc -l value throws after a successful write.
+
+Netlify deploy outcomes for these four commits were NOT observed.
+
