@@ -1,6 +1,6 @@
 # IAOS Contact Field Register
 
-Generated 2026-08-03 from a live GET of the location custom-field schema. 96 fields observed.
+Generated 2026-08-03 from a live GET of the location custom-field schema. 96 fields observed. Hand-amended since generation as fields complete their inert-proof cycles.
 
 Safety values: Proven (exercised on a named fixture) / Needs Review / Never / Unknown. Unknown is the honest default: per PB-D16 §4.6 workflow triggers are not API-derivable, so no Safety value can be inferred from dataType or name.
 
@@ -19,8 +19,8 @@ Safety values: Proven (exercised on a named fixture) / Needs Review / Never / Un
 | Repair Line Items | contact.repair_line_items | IwVPbXc9dKUzWGpe4NPx | LARGE_TEXT | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
 | ARV | contact.arv | wMBTGWMs97yysQFx7Vad | MONETORY | qYS1wakeOTmfgjyeSJ8M | currency-inline | empty string -> KEY_ABSENT | Yes | Proven | Proven | Proven | Proven on bradt75 only | Done | Full four-stage cycle exercised 2026-08-03; does not generalize to other contacts |
 | Asking Price | contact.asking_price | 60UCjsYT1Ak3Kyy5ZCL8 | MONETORY | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
-| Carrying Cost | contact.carrying_cost | FhcyP63sSAtWInl4Q4iI | MONETORY | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
-| Estimated Repairs | contact.estimated_repairs | OQnud97MfdxMcTgMVTgf | MONETORY | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
+| Carrying Cost | contact.carrying_cost | FhcyP63sSAtWInl4Q4iI | MONETORY | qYS1wakeOTmfgjyeSJ8M | unknown | empty string -> KEY_ABSENT | Yes | Proven | Proven | Proven | Proven on bradt75 only | Unassigned | Full four-stage cycle exercised 2026-08-03 under the PB-D30 amendment; no UI editor and no named setter; does not generalize to other contacts |
+| Estimated Repairs | contact.estimated_repairs | OQnud97MfdxMcTgMVTgf | MONETORY | qYS1wakeOTmfgjyeSJ8M | unknown | empty string -> KEY_ABSENT | Yes | Proven | Proven | Proven | Proven on bradt75 only | Unassigned | Full four-stage cycle exercised 2026-08-04 under PB-D33; no UI editor and no named setter; does not generalize to other contacts |
 | Loan Amount | contact.loan_amount | 3ZlSKldh0jR2MWhjOmHe | MONETORY | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
 | Lead Source | contact.lead_source | 75JS5wGqhBuSUx7frJok | MULTIPLE_OPTIONS | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
 | Motivation Level | contact.motivation_level | zGuC7cIc0jPe81ZzmsaP | MULTIPLE_OPTIONS | qYS1wakeOTmfgjyeSJ8M | unknown | unknown | Yes | No | Unproven | Unproven | Unknown | Unassigned |  |
