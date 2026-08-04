@@ -606,3 +606,13 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **Unchanged.** PB-D24's restoration semantics, including its requirement that a confirming read closes rollback. PB-D25's assertion contract. PB-D26's stage ownership and its persist-before-exit rule, which restore satisfies in full. PB-D28's registry and invocation shape. PB-D29's exit-code and evidence-path derivation rules. PB-D30's write contract and precedence rule. PB-D31's verify contract, including its fourteen-key evidence record and its exit-43 exemption, which is not extended here.
 
 **Amendment — non-2xx restore PUT.** A restore PUT that returns non-2xx is a handled failure, not poll exhaustion and not an outer exception. Evidence is persisted with `requestBody`, `responseStatus`, `responseBody`, and `outcome: "put_failed"`, and restore exits 55. Exit 53 retains precedence if that evidence cannot be persisted. The evidence record therefore contains seventeen keys, adding `responseBody` alongside `responseStatus`; `outcome` is one of `passed`, `put_failed`, `poll_exhausted`, `confirmation_failed`, `input_invalid`, or `error`.
+
+### PB-D33 -- B4 field designation and designated test value
+
+**Decision.** `estimated_repairs` (`contact.estimated_repairs`, `OQnud97MfdxMcTgMVTgf`, MONETORY) is designated as B4 from the remaining MONETORY candidates: `asking_price`, `estimated_repairs`, and `loan_amount`.
+
+**Selection boundary.** The rationale is inference from field purpose: Estimated Repairs is more operationally relevant than Loan Amount and appears less likely than Asking Price to participate directly in seller-facing automation. This is not a safety finding. Per section 4.6, workflow triggers are not API-derivable, and `estimated_repairs` must prove its own field-specific write safety through the complete inert-proof cycle.
+
+**Designated test value.** `8642.75` is approved before the write under the PB-D30 amendment dated 2026-08-03. It is deliberately selected, not observed production data: non-integer to remain on the proven MONETORY decimal path, distinct from ARV `187500.25` and Carrying Cost `4321.25`, recognizable in evidence, and required to be restored immediately after the proof cycle.
+
+**Registry entry is not proof.** Adding the B4 registry entry makes the field eligible to enter the proof sequence; it does not establish safety or authorize the field for application use. Safety is established only if capture, write, verify, and restore complete successfully and the fixture returns to baseline.
