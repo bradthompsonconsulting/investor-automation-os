@@ -34,6 +34,12 @@ const FIELDS = {
     // No observed TEXT temporary value yet; intentionally not write-enabled per PB-D30.
     tempValue: null,
   },
+  estimated_repairs: {
+    fieldId: "OQnud97MfdxMcTgMVTgf", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    // Designated test value per PB-D33 (2026-08-04); not observed.
+    tempValue: 8642.75,
+    clearValue: "",
+  },
 };
 
 // The seven offer_ fields (CONTACTS_OPPORTUNITIES_SPEC.md §4 HARD NO — must stay unchanged).
