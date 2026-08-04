@@ -110,8 +110,36 @@ The evidence records contain production data — live contact IDs, tag lists, co
 - Byte count: 3056
 - SHA-256: `f32bee85a9dedd4d1d8eb9ac4ad7d952d755461c2ada1637e996a895cb308646`
 
+### estimated_repairs
+
+- Original filename: `inert-proof-estimated-repairs-step1.json`
+- Original timestamp: 2026-08-04 09:52:42.301656300 -0500
+- Archived filename: `inert-proof-estimated-repairs-step1.original-2026-08-04.json`
+- Byte count: 1101
+- SHA-256: `466a8ec021bc96b707d011385d9b10e15200c4ab25b2a48b22b70c33a5da60ae`
+
+- Original filename: `inert-proof-estimated-repairs-step2.json`
+- Original timestamp: 2026-08-04 09:49:59.304007600 -0500
+- Archived filename: `inert-proof-estimated-repairs-step2.original-2026-08-04.json`
+- Byte count: 2104
+- SHA-256: `0a81f3430af3c57f0bb458a8d4163e687af16ac4888eb7940139ff10b71d0329`
+
+- Original filename: `inert-proof-estimated-repairs-step3.json`
+- Original timestamp: 2026-08-04 09:50:49.732455100 -0500
+- Archived filename: `inert-proof-estimated-repairs-step3.original-2026-08-04.json`
+- Byte count: 1226
+- SHA-256: `09d058e9053025419921ee9e28f30c25d075171ef6de84dfb9d2c9b3daa125fd`
+
+- Original filename: `inert-proof-estimated-repairs-step4.json`
+- Original timestamp: 2026-08-04 09:51:33.648739400 -0500
+- Archived filename: `inert-proof-estimated-repairs-step4.original-2026-08-04.json`
+- Byte count: 3060
+- SHA-256: `86cf5c128c0c3c454a8d5e7a3b0fea03837ab666c8690b479ad42ee07e53f21e`
+
 ## Verification
 
-All fourteen source and archive pairs were confirmed byte-identical by SHA-256 comparison at the time each was archived. The step-1 pairs were verified before capture was implemented. The step-2 pairs were verified after the write stage was implemented and before any write execution. The step-3, step-4, and step-5 pairs were verified during the 2026-07-31 evening session. The copy preserved the original modification times on the archive copies.
+All eighteen source and archive pairs were confirmed byte-identical by SHA-256 comparison at the time each was archived. The step-1 pairs were verified before capture was implemented. The step-2 pairs were verified after the write stage was implemented and before any write execution. The step-3, step-4, and step-5 pairs were verified during the 2026-07-31 evening session. The copy preserved the original modification times on the archive copies.
 
 One pair has since diverged. The 2026-07-31 evening clear run rewrote the working copy at `C:\Users\brad\AppData\Local\Temp\inert-proof-arv-step4.json`, which now carries mtime 2026-07-31 18:44:10.143586700 -0500 and SHA-256 `c8c9d5b607f48e0ff6a570c845fc3f33ea0ab62969b223a6907568b0af05b733`. The archived copy recorded above is the pre-clear original and is unaffected. This is the first case where archiving before overwrite preserved a record that would otherwise have been lost.
+
+The four estimated_repairs pairs were verified on 2026-08-04, after the complete four-stage proof cycle rather than at any point during it. That cycle also recorded an exception to the archive-first discipline: the pre-cycle step-1 capture written at 09:38 was overwritten in place by the post-restore capture at 09:52 before any archival, so the pre-write artifact is unrecoverable. The runner does not auto-archive; the earlier carrying_cost ARCHIVED file was created by hand. No information was lost, because the post-restore capture is byte-identical to the pre-cycle baseline apart from its timestamp, which is what the cycle set out to demonstrate. The archived step-1 record above is therefore the post-restore confirming read, not the pre-write precondition, and its 09:52 mtime sits after step-4 at 09:51.
