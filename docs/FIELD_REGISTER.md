@@ -4,7 +4,7 @@ Generated 2026-08-03 from a live GET of the location custom-field schema. 96 fie
 
 Safety values: Proven (exercised on a named fixture) / Needs Review / Never / Unknown. Unknown is the honest default: per PB-D16 §4.6 workflow triggers are not API-derivable, so no Safety value can be inferred from dataType or name.
 
-Priority column status. The Priority column is retained only as historical, non-normative metadata. It governs no runner behavior, editor availability, field assignment, or application logic and must not be extended or used to infer field readiness. Editor unlocking remains governed by PB-D18 and the Editor Type column.
+Priority column status. The Priority column is retained only as historical, non-normative metadata. The single Done value appears on ARV, which is the only field that is both unlocked for editing and proven through all four runner stages; whether the column was designed to track that correspondence is not established. It is not maintained, governs no runner behavior, editor availability, field assignment, or application logic, and must not be extended or used to infer field readiness. Editor unlocking is governed by the unlock decisions and the harness floor constant, not by this column.
 
 | Name | Field Key | Field ID | dataType | parentId | Editor Type | Clear Semantics | Read | Write | Verify | Restore | Safety | Priority | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
