@@ -636,3 +636,25 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **Designated test value.** `135790.25` is approved before the write under the PB-D30 amendment dated 2026-08-03. It is deliberately selected, not observed production data: non-integer to remain on the proven MONETORY decimal path, distinct from ARV `187500.25`, Carrying Cost `4321.25`, Estimated Repairs `8642.75`, and Loan Amount `24680.25`, recognizable in evidence, and required to be restored immediately after the proof cycle.
 
 **Registry entry is not proof.** Adding the B6 registry entry makes the field eligible to enter the proof sequence; it does not establish safety or authorize the field for application use. Safety is established only if capture, write, verify, and restore complete successfully and an independent re-capture confirms the fixture returned to baseline. The independent re-capture overwrites the runner step-1 evidence file in place. Because the runner does not auto-archive, the pre-write step-1 capture must be archived before the re-capture or that artifact is lost, per PB-D34. Observed at designation: `asking_price` is absent from bradt75 `customFields` on a live proxy read, so B6 is an absent-origin proof and PB-D30 write contract applies as written.
+
+### PB-D36 -- MULTIPLE_OPTIONS clear-semantics probe, occupancy_status
+
+**Decision.** `occupancy_status` (`contact.occupancy_status`, `op57wOVFSMRBFbHmD6ej`, MULTIPLE_OPTIONS) is designated as the field for a clear-semantics discovery probe. Designated write value is `["Vacant"]`, confirmed against the location schema picklistOptions `["Owner Occupied","Tenant Occupied","Vacant"]` read 2026-08-04.
+
+**Scope.** This decision authorizes a probe only. It does not designate B7, does not write-enable the field, and does not add a FIELDS registry entry. The runner is untouched. A separate decision records the observed clear mechanism before `occupancy_status` receives a `clearValue` and enters the four-stage cycle.
+
+**Absent origin.** OBSERVED 2026-08-05: the field is absent from the probe contact. Prior OBSERVED 2026-08-04: absent from all three known fixtures.
+
+**Clear semantics UNKNOWN.** PB-D24 records `field_value: ""` as the absent-origin mechanism for MONETORY per PB-D16 wire contract. The proven TEXT clear path also uses `""`. DATE requires `null` and ignores empty string. Per the note at spec:512 the value achieving KEY_ABSENT is dataType-dependent, so no MONETORY, TEXT, or DATE precedent extends to MULTIPLE_OPTIONS. Candidate representations are `[]`, `""`, and `null`, tried in that order, stopping at the first observed KEY_ABSENT.
+
+**Fixture.** Dedicated disposable contact `HGZAby6snRZfpl0go2Yb` (IAOS Test Probe), created via CRM UI 2026-08-05 for this purpose. No production contact is required and bradt75 is not used. Baseline OBSERVED: customFieldCount 1, tags `["phone-validated-unknown"]`, type lead, occupancy_status ABSENT.
+
+**Acceptance criteria.** On the write, the custom-field ID set must go from `{1cTefPDpZRypKYHtgZrq}` to `{1cTefPDpZRypKYHtgZrq, op57wOVFSMRBFbHmD6ej}`. On a successful clear it must return to `{1cTefPDpZRypKYHtgZrq}`. The symmetric difference on either transition must be exactly `{op57wOVFSMRBFbHmD6ej}`. Phone Type `1cTefPDpZRypKYHtgZrq` must remain present and unchanged throughout. Any other custom-field drift halts the probe.
+
+**Tag mutations are logged, not halting.** `phone-validated-unknown` appeared on the probe contact without any API call from this project, so tags are not stable on an independent timeline and are outside the probe validation set.
+
+**Endpoint limitation.** Proxy contact reads do not return a `dnd` key when it is absent, so `dnd undefined` is a payload-shape observation and not a state finding. DND is outside the scope of this probe.
+
+**Evidence.** The probe writes `probe-multiple-options-clear-occupancy-status-attemptN.json`, deliberately outside the `inert-proof-<field>-stepN.json` namespace so the archive convention stays collision-free when the four-stage cycle later runs on this field.
+
+**Failure outcome.** If all three representations fail to produce KEY_ABSENT, the probe contact retains `["Vacant"]`, that outcome is recorded as the finding, and the four-stage cycle does not proceed.
