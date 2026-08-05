@@ -54,7 +54,7 @@ const FIELDS = {
   },
 };
 
-// The seven offer_ fields (CONTACTS_OPPORTUNITIES_SPEC.md §4 HARD NO — must stay unchanged).
+// The seven offer_ fields (CONTACTS_OPPORTUNITIES_SPEC.md §4 HARD NO in the field-edit model). Asserted by offersUnchanged, not by absence; see PB-D39.
 const OFFER_IDS = [
   "v2VO2wUwTYRojmU7VXyZ", // offer_price
   "aAMFPmgxGZT422uGAQOx", // offer_mao
@@ -356,7 +356,7 @@ async function verify(config) {
     }
     evidence.confirmations.othersUnchanged = othersUnchanged;
     evidence.confirmations.tagsUnchanged   = deepEqual(liveTags, capTags);
-    evidence.confirmations.offersAbsent    = OFFER_IDS.every((id) => !liveById.has(id));
+    evidence.confirmations.offersUnchanged = OFFER_IDS.every((id) => capById.has(id) === liveById.has(id) && deepEqual(capById.get(id), liveById.get(id)));
 
     const oppPath = `/opportunities/search%3Flocation_id%3D${locationId}%26contact_id%3D${contactId}`;
     const oppBody = await getJson(PROXY(oppPath), "opportunity search");
@@ -525,7 +525,7 @@ async function restore(config) {
     }
     evidence.confirmations.othersUnchanged = othersUnchanged;
     evidence.confirmations.tagsUnchanged   = deepEqual(liveTags, capTags);
-    evidence.confirmations.offersAbsent    = OFFER_IDS.every((id) => !liveById.has(id));
+    evidence.confirmations.offersUnchanged = OFFER_IDS.every((id) => capById.has(id) === liveById.has(id) && deepEqual(capById.get(id), liveById.get(id)));
 
     const oppPath = `/opportunities/search%3Flocation_id%3D${locationId}%26contact_id%3D${contactId}`;
     const oppBody = await getJson(PROXY(oppPath), "opportunity search");
