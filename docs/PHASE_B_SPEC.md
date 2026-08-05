@@ -658,3 +658,23 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **Evidence.** The probe writes `probe-multiple-options-clear-occupancy-status-attemptN.json`, deliberately outside the `inert-proof-<field>-stepN.json` namespace so the archive convention stays collision-free when the four-stage cycle later runs on this field.
 
 **Failure outcome.** If all three representations fail to produce KEY_ABSENT, the probe contact retains `["Vacant"]`, that outcome is recorded as the finding, and the four-stage cycle does not proceed.
+
+### PB-D37 -- MULTIPLE_OPTIONS array round-trip observed on occupancy_status
+
+**Decision.** This decision records the write and read-back observation produced by the PB-D36 probe attempt1 and fixes the attempt numbering convention for the remaining clear attempts. It does not designate occupancy_status for B7, does not enable write, and does not create a FIELDS registry entry.
+
+**Observation.** A PUT carrying `field_value: ["Vacant"]` against contact HGZAby6snRZfpl0go2Yb field op57wOVFSMRBFbHmD6ej returned status 200. The subsequent single-record GET returned the value as a JSON array containing one string element, "Vacant". Write shape equals read shape for this observation. Evidence: probe-multiple-options-clear-occupancy-status-attempt1.json, outcome WRITE_CONFIRMED_ARRAY, error null.
+
+**Scope of the finding.** The observation covers one field, one selected option, and the single-record contact GET path. Multi-element arrays are untested. The other three MULTIPLE_OPTIONS register members are untested. No claim is made that array shape generalizes beyond occupancy_status.
+
+**Fixture integrity.** The custom-field ID set moved from {1cTefPDpZRypKYHtgZrq} to {1cTefPDpZRypKYHtgZrq, op57wOVFSMRBFbHmD6ej}, symmetric difference exactly {op57wOVFSMRBFbHmD6ej}. Phone Type remained "Unknown". Tags remained ["phone-validated-unknown"], unchanged. No unrelated drift was observed.
+
+**Proxy capability.** The deployed ghl-proxy accepts PUT. This was previously unverified and is now OBSERVED via the 200 response above.
+
+**Convergence.** The read converged on poll 1 of 60. This is a single observation on the single-record GET path and is NOT a read-your-writes guarantee. The prior convergence outlier of approximately 105 seconds was observed on a different endpoint. POLL_MAX remains 60 for all remaining attempts.
+
+**Attempt numbering.** The PB-D36 attemptN evidence namespace resolves to five slots: attempt0 pre-write baseline; attempt1 write ["Vacant"] and read back; attempt2 clear with []; attempt3 clear with ""; attempt4 clear with null. PB-D36 did not enumerate these; this decision fixes them.
+
+**Fixture state.** occupancy_status on the probe fixture is now populated with ["Vacant"] and remains populated until a clear representation produces KEY_ABSENT, or until all three representations have failed. If all three fail, the field is left set and documented as stranded but schema-valid per PB-D36.
+
+**Precondition for attempt2.** The attempt1 script refused on field-already-present. The clear scripts require the inverse precondition: occupancy_status MUST be present and equal to the array ["Vacant"] before a clear representation is sent. Refuse otherwise.
