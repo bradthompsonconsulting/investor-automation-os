@@ -678,3 +678,23 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **Fixture state.** occupancy_status on the probe fixture is now populated with ["Vacant"] and remains populated until a clear representation produces KEY_ABSENT, or until all three representations have failed. If all three fail, the field is left set and documented as stranded but schema-valid per PB-D36.
 
 **Precondition for attempt2.** The attempt1 script refused on field-already-present. The clear scripts require the inverse precondition: occupancy_status MUST be present and equal to the array ["Vacant"] before a clear representation is sent. Refuse otherwise.
+
+### PB-D38 -- MULTIPLE_OPTIONS clear semantics observed for occupancy_status
+
+**Decision.** This decision records the clear-semantics mechanism discovered by the PB-D36 probe and amends the probe termination rule. It does not designate occupancy_status for any B slot, does not enable write, and does not create a FIELDS registry entry. Those remain closed pending separate decisions.
+
+**Clear mechanism.** A PUT carrying `field_value: ""` against field op57wOVFSMRBFbHmD6ej removed the key entirely. The subsequent read returned occupancy_status ABSENT with the custom-field ID set reduced to {1cTefPDpZRypKYHtgZrq}, symmetric difference exactly {op57wOVFSMRBFbHmD6ej}. Evidence: probe-multiple-options-clear-occupancy-status-attempt3.json, outcome CLEARED_KEY_ABSENT, converged poll 1 of 60.
+
+**Empty array is not a clear.** A PUT carrying `field_value: []` returned status 200 and emptied the selection, but the key remained present holding an empty array. Read-back shape ARRAY_EMPTY, keyAbsent false, symmetric difference empty. Evidence: probe-multiple-options-clear-occupancy-status-attempt2.json, outcome NOT_CLEARED_EMPTY_ARRAY. MULTIPLE_OPTIONS therefore distinguishes an empty-selection state from key absence. No other proven dataType exhibits this: TEXT and MONETORY collapse the empty string directly to KEY_ABSENT.
+
+**Convergence with prior dataTypes.** The clear value for MULTIPLE_OPTIONS is the empty string, matching the proven TEXT path and the PB-D24 MONETORY mechanism. PB-D36 declined to assume that precedent would carry across dataTypes; it is now OBSERVED rather than inferred. DATE remains the exception, requiring null.
+
+**attempt4 not run.** PB-D36 stops the sequence at the first representation producing KEY_ABSENT. attempt3 produced it, so attempt4 (null) was not executed and no evidence record exists for that slot. The behavior of null against MULTIPLE_OPTIONS is UNKNOWN and would require a separate decision to characterize.
+
+**Termination rule amended.** The probe terminates on the first observed KEY_ABSENT or on exhaustion of all designated representations, whichever comes first. PB-D36 stated only the former. An exhausted sequence does not imply the representations had no effect: attempt2 demonstrates that a non-clearing representation may produce a novel non-absent state, and a type-mismatched representation may be rejected outright. Failure to clear and failure to act are distinct outcomes and are recorded distinctly.
+
+**Restore artifacts.** PB-D37 enumerated five attempt slots. A non-clearing attempt that leaves the field in a state other than the documented precondition requires a restore before the next attempt may run. Restores are recorded outside the attemptN namespace, named probe-multiple-options-clear-occupancy-status-restore-after-attemptN.json, and are state management rather than discovery. One such artifact exists, restore-after-attempt2, which returned the field from [] to ["Vacant"] and independently confirmed that writing over an empty array behaves identically to writing over an absent field.
+
+**Fixture state.** The probe fixture self-restored to its attempt0 baseline. occupancy_status is ABSENT, the custom-field ID set is {1cTefPDpZRypKYHtgZrq}, Phone Type is "Unknown", and tags are ["phone-validated-unknown"]. Confirmed by an independent read after the sequence terminated. No restore is owed.
+
+**Scope of the finding.** These observations cover one field, a single-option value, and the single-record contact GET path. Multi-element array clearing is untested. The other three MULTIPLE_OPTIONS register members are untested. No claim is made that these semantics generalize beyond occupancy_status.
