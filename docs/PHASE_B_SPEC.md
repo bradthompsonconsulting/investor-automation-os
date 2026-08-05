@@ -609,6 +609,8 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 
 **Amendment — non-2xx restore PUT.** A restore PUT that returns non-2xx is a handled failure, not poll exhaustion and not an outer exception. Evidence is persisted with `requestBody`, `responseStatus`, `responseBody`, and `outcome: "put_failed"`, and restore exits 55. Exit 53 retains precedence if that evidence cannot be persisted. The evidence record therefore contains seventeen keys, adding `responseBody` alongside `responseStatus`; `outcome` is one of `passed`, `put_failed`, `poll_exhausted`, `confirmation_failed`, `input_invalid`, or `error`.
 
+**Amendment (2026-08-05): confirmation renamed to `offersUnchanged`.** The third battery item is `offersUnchanged`, a step-1-versus-live comparison across the seven `offer_` ids, replacing `offersAbsent` per PB-D39. The battery remains four items. This amendment supersedes the `offersAbsent` name in this section's "Confirmation battery" paragraph for records produced after commit `3fd305a`, while preserving archived records produced before that commit, each of which carries `confirmations.offersAbsent` as written and is not rewritten.
+
 ### PB-D33 -- B4 field designation and designated test value
 
 **Decision.** `estimated_repairs` (`contact.estimated_repairs`, `OQnud97MfdxMcTgMVTgf`, MONETORY) is designated as B4 from the remaining MONETORY candidates: `asking_price`, `estimated_repairs`, and `loan_amount`.
