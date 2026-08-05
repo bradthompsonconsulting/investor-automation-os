@@ -714,3 +714,17 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **What is deliberately given up.** `offersAbsent` asserts an absolute starting state, not stability. Under `offersUnchanged` a fixture whose offer_ fields are already populated at capture no longer halts the run; the runner proceeds and proves the target field against a populated-origin offer_ state. This is a deliberate reduction in what the battery enforces, not an equivalent rewrite. It is accepted because the state being rejected is one a sanctioned writer legitimately produces, and because drift detection is unaffected.
 
 **Not decided here.** Whether bradt75 remains the write fixture is a separate question. A proof fixture reachable by a normal application action is a fixture-selection concern, and this decision addresses only the guard brittleness.
+
+### PB-D40 -- B7 field designation, occupancy_status
+
+**Decision.** `occupancy_status` (`contact.occupancy_status`, `op57wOVFSMRBFbHmD6ej`, MULTIPLE_OPTIONS) is designated as B7 and receives a `FIELDS` registry entry: `fieldId` `op57wOVFSMRBFbHmD6ej`, `dataType` MULTIPLE_OPTIONS, `contactId` `9fbH2VCcZvzVNhsR9zjc`, `tempValue` `["Vacant"]`, `clearValue` `""`. This supplies the `clearValue` and FIELDS registry entry that PB-D36 explicitly reserved for a separate decision and authorizes entry into the existing four-stage cycle. It does not authorize a run; execution is an operational step taken after the registry change lands.
+
+**Origin state.** OBSERVED 2026-08-05 on a single-record GET of `9fbH2VCcZvzVNhsR9zjc`: `customFields` carries five entries -- `1cTefPDpZRypKYHtgZrq`, `LM4bs21UP3i6OJpUirQQ`, `tG4gGFI8JB2VjWeuqYMx`, `2vz1igGMxF3wv7HaWm97`, `lGoNXM9Wrte4m7ShwQPT`. `op57wOVFSMRBFbHmD6ej` is not among them. On this endpoint, populated custom fields appear in `customFields`, so this decision records the field as absent-origin and therefore eligible under PB-D30's absent-origin write contract.
+
+**tempValue provenance.** `["Vacant"]` is adopted from PB-D37, which observed the array round-trip on this field against contact `HGZAby6snRZfpl0go2Yb`. Same field and same location picklist; the value is not re-derived on this fixture.
+
+**clearValue provenance.** `""` is adopted from PB-D38, which observed `field_value: ""` producing KEY_ABSENT on this field. `field_value: []` returns 200 while leaving the key present holding an empty array and is not the clear mechanism. `null` was never sent and its behavior remains UNKNOWN.
+
+**What this proof does not establish.** None of the populated custom fields returned by the observed single-record GET is an `offer_` id. Accordingly, this proof does not exercise `offersUnchanged` against a populated `offer_` state. `offersUnchanged` will execute during the cycle, but this proof does not distinguish its behavior from the superseded `offersAbsent` guard. The populated-origin `offer_` case addressed by PB-D39 remains unexercised.
+
+**Unchanged.** PB-D36's Scope, Fixture, Acceptance criteria, Tag mutations, Endpoint limitation, and Evidence paragraphs. PB-D30's absent-origin restriction and write contract. PB-D31's verify contract as amended. PB-D32's restore contract as amended. PB-D28's registry shape and invocation form. PB-D29's exit-code and evidence-path derivation.
