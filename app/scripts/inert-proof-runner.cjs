@@ -12,10 +12,10 @@ const fs = require("fs");
 const ORIGIN = "https://app.investorautomationos.com";
 const LOC    = "jmHG4B8RdzwpfqruNf68";
 
-// PB-D28 — in-file keyed field registry. Only observed values live here. PB-D30 —
-// tempValue is present where observed (arv), and null where no temporary value has
-// been observed yet (property_notes, TEXT).
-// clearValue is the dataType-specific absence mechanism (PB-D32); observed on the wire for MONETORY. Fields without it are not restore-enabled.
+// PB-D28 — in-file keyed field registry. PB-D30 as amended 2026-08-03: tempValue is
+// either an observed value (arv) or a designated test value approved before the write;
+// each entry states which. null means no temporary value is authorized (property_notes).
+// clearValue is the dataType-specific KEY_ABSENT mechanism; fields without one are not restore-enabled.
 const FIELDS = {
   arv: {
     fieldId: "wMBTGWMs97yysQFx7Vad", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
@@ -50,6 +50,12 @@ const FIELDS = {
     fieldId: "60UCjsYT1Ak3Kyy5ZCL8", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
     // Designated test value per PB-D35 (2026-08-04); not observed.
     tempValue: 135790.25,
+    clearValue: "",
+  },
+  occupancy_status: {
+    fieldId: "op57wOVFSMRBFbHmD6ej", dataType: "MULTIPLE_OPTIONS", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    // Adopted from PB-D37 (2026-08-05); observed on probe contact HGZAby6snRZfpl0go2Yb, not on this fixture.
+    tempValue: ["Vacant"],
     clearValue: "",
   },
 };
