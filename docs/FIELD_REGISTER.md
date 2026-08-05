@@ -4,6 +4,8 @@ Generated 2026-08-03 from a live GET of the location custom-field schema. 96 fie
 
 Safety values: Proven (exercised on a named fixture) / Needs Review / Never / Unknown. Unknown is the honest default: per PB-D16 §4.6 workflow triggers are not API-derivable, so no Safety value can be inferred from dataType or name.
 
+Priority column status. The Priority column is retained only as historical, non-normative metadata. It governs no runner behavior, editor availability, field assignment, or application logic and must not be extended or used to infer field readiness. Editor unlocking remains governed by PB-D18 and the Editor Type column.
+
 | Name | Field Key | Field ID | dataType | parentId | Editor Type | Clear Semantics | Read | Write | Verify | Restore | Safety | Priority | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Callback Datetime | contact.callback_datetime | JeQWtwpwUbvPA50UfuPU | DATE | kmPmjCjI4noq8KISyq2e | date / unimplemented | null required; empty string ignored | Yes | No | Unproven | Unproven | Unknown | Unassigned | Clear semantics recorded from setCallbackDatetime behavior; not independently proven for every DATE field |
