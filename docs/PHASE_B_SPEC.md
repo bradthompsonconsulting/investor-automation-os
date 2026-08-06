@@ -754,3 +754,15 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **Evidence.** Steps 1 through 4 archived to Documents/IAOS Evidence/PB-D15 originals/ as `inert-proof-occupancy-status-step1` through `step4`, `original-2026-08-05`, each SHA-256 verified against its Temp source. Steps 3 and 4 are the first archived records carrying `confirmations.offersUnchanged`; the twelve prior verify and restore records carry `confirmations.offersAbsent`.
 
 **Unchanged.** PB-D40's designation and registry entry. PB-D30's absent-origin restriction and write contract. PB-D31's verify contract as amended. PB-D32's restore contract as amended. PB-D37 and PB-D38, which this cycle corroborates on a second fixture without superseding.
+
+### PB-D42 -- PB-D18's locational clause is superseded by the B2 unlock
+
+**Decision.** PB-D18's clause that `contact.arv` "appears nowhere in app/src except ADDITIONAL_INFO_SUBGROUPS" is no longer true and is superseded. PB-D18 remains in place as written; this decision records what has changed since its observation date and does not amend the flat block.
+
+**What is observed.** OBSERVED 2026-08-06: the literal `wMBTGWMs97yysQFx7Vad` occurs exactly once under `app/src`, at `app/src/lib/ghl.ts:45` -- `export const ARV_ID = "wMBTGWMs97yysQFx7Vad"; // MONETORY, PB-D16/PB-D17 -- B2 unlock`. The literal does not occur in `ADDITIONAL_INFO_SUBGROUPS`. The mechanism by which ARV reaches that grouping was not examined in this read. This search covered `app/src` only.
+
+**Why the clause went stale.** PB-D18 was OBSERVED 2026-07-28, before the B2 unlock. The unlock introduced `ARV_ID` as a write-path constant. The clause was accurate at its observation date and is a point-in-time locational finding, not a standing requirement.
+
+**What PB-D18 still establishes.** Its load-bearing finding is unaffected: `contact.arv` has no app-side consumer. `MaoCalculator` reads opportunity-side fields exclusively, `SOURCE_FIELD_IDS.arv` is `cBkygqcHRseZUGCYYeba`, and the contact/opportunity ARV distinction stands. `ghl.ts:45` is a write-path constant consumed at `ghl.ts:493` by `ghl.contacts._putMonetaryField(contactId, ARV_ID, value)`, not a calculator read. PB-D18's conclusion that unlocking `contact.arv` cannot trigger a calculator recompute therefore remains unchanged. PB-D18's display-side observation and its prepopulate note are likewise untouched.
+
+**Unchanged.** PB-D18 apart from the locational clause. PB-D16's private-helper shape and public surface. PB-D17's template. Every field's unlock status.
