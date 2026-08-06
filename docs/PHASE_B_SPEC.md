@@ -728,3 +728,19 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **What this proof does not establish.** None of the populated custom fields returned by the observed single-record GET is an `offer_` id. Accordingly, this proof does not exercise `offersUnchanged` against a populated `offer_` state. `offersUnchanged` will execute during the cycle, but this proof does not distinguish its behavior from the superseded `offersAbsent` guard. The populated-origin `offer_` case addressed by PB-D39 remains unexercised.
 
 **Unchanged.** PB-D36's Scope, Fixture, Acceptance criteria, Tag mutations, Endpoint limitation, and Evidence paragraphs. PB-D30's absent-origin restriction and write contract. PB-D31's verify contract as amended. PB-D32's restore contract as amended. PB-D28's registry shape and invocation form. PB-D29's exit-code and evidence-path derivation.
+
+### PB-D41 -- B7 inert-proof result, occupancy_status
+
+**Decision.** The four-stage inert-proof cycle authorized by PB-D40 was executed against `occupancy_status` on `9fbH2VCcZvzVNhsR9zjc` on 2026-08-05. All four stages passed. The register row is updated accordingly at `e682860`. This decision records the outcome; it authorizes nothing further.
+
+**Stage results.** capture: field ABSENT, five custom fields, `fieldPresent` false. write: one PUT, status 200, `requestBody` `customFields` id `op57wOVFSMRBFbHmD6ej` `field_value` `["Vacant"]`, response echoed `value` `["Vacant"]`, custom-field count 5 to 6. verify: poll attempt 1 equality, four-item battery 4/4, `outcome` passed. restore: one PUT `field_value` `""`, poll attempt 1 KEY_ABSENT, four-item battery 4/4, `outcome` passed. An independent single-record GET after restore returned five custom fields with the same five ids recorded in PB-D40's Origin state and tags unchanged.
+
+**Established beyond the field.** An array `tempValue` passes through the runner intact: write shape equals read shape for `["Vacant"]` on a second contact, extending PB-D37's probe-contact-only finding to `9fbH2VCcZvzVNhsR9zjc`. `""` clears MULTIPLE_OPTIONS on a second contact, extending PB-D38 the same way. `offersUnchanged` executed live for the first time, in verify and in restore, both PASS.
+
+**Not established.** All seven `offer_` ids were absent throughout, so `offersUnchanged` passed for the reason `offersAbsent` would have. PB-D39's behavioral change remains unexercised, as PB-D40 stated it would. No currently configured proof field uses a fixture with populated `offer_` state, so the distinctive PB-D39 case cannot currently be exercised through the runner.
+
+**Diagnostic limitations observed.** The write stage's console line interpolates `tempValue` directly, so `["Vacant"]` and `"Vacant"` print identically; the evidence record carries the true shape and is the record of truth. `observedType` returns `"object"` for an array, so it cannot distinguish an array from a plain object; per PB-D31 `observedValue` and `observedType` are diagnostic rather than assertions and `deepEqual` is the gate. Neither affects correctness.
+
+**Evidence.** Steps 1 through 4 archived to Documents/IAOS Evidence/PB-D15 originals/ as `inert-proof-occupancy-status-step1` through `step4`, `original-2026-08-05`, each SHA-256 verified against its Temp source. Steps 3 and 4 are the first archived records carrying `confirmations.offersUnchanged`; the twelve prior verify and restore records carry `confirmations.offersAbsent`.
+
+**Unchanged.** PB-D40's designation and registry entry. PB-D30's absent-origin restriction and write contract. PB-D31's verify contract as amended. PB-D32's restore contract as amended. PB-D37 and PB-D38, which this cycle corroborates on a second fixture without superseding.
