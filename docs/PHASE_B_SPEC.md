@@ -621,6 +621,8 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 
 **Registry entry is not proof.** Adding the B4 registry entry makes the field eligible to enter the proof sequence; it does not establish safety or authorize the field for application use. Safety is established only if capture, write, verify, and restore complete successfully and the fixture returns to baseline.
 
+**Amendment (2026-08-06):** The conditions this decision stated as pending have been discharged. `docs/FIELD_REGISTER.md` records the Estimated Repairs row as Write, Verify, and Restore Proven, Safety `Proven on bradt75 only`, with a full four-stage cycle exercised 2026-08-04 under PB-D33. The restoration required by `Designated test value.` and the completion conditions stated in `Registry entry is not proof.` are therefore satisfied as of that cycle. Both paragraphs remain as written, and the `Decision.` and `Selection boundary.` paragraphs are unaffected.
+
 ### PB-D34 -- B5 field designation and designated test value
 
 **Decision.** `loan_amount` (`contact.loan_amount`, `3ZlSKldh0jR2MWhjOmHe`, MONETORY) is designated as B5 from the remaining MONETORY candidates: `asking_price` and `loan_amount`.
