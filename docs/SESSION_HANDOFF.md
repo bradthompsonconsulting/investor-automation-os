@@ -714,3 +714,17 @@ Open, unchanged: deal-submit.ts sends CARRYING_COST and LOAN_AMOUNT contact fiel
 
 Ten untracked apply-*.cjs in C:/Users/brad/ (d33-d37, d42-d46). Retention undecided.
 
+## 2026-08-06 (continued) -- PB-D47; deal-submit.ts field-model classification
+
+The session continued past the handoff commit at `c4f3daa`, which was itself the eleventh of twelve commits on 2026-08-06. This entry supersedes the corresponding carried-forward item in the entry above that describes `deal-submit.ts` as sending two contact field IDs; the count is five.
+
+`deal-submit.ts` was located at `netlify/functions/deal-submit.ts` -- repo root, not under `app/` -- and read whole at 201 lines. Its `FIELD_ID` map at :7-20 holds twelve hardcoded IDs, eleven assembled into `fieldMap` at :138-150 plus `REPAIR_LINE_ITEMS` at :158, all assigned to `oppPayload.customFields` at :173 and POSTed to `/opportunities/`. One POST of `customFields` in the file.
+
+Both field models were read through the deployed proxy at `path=/locations/jmHG4B8RdzwpfqruNf68/customFields` -- `model=opportunity` returned 14 fields, `model=contact` returned 96. All twelve IDs were classified against both lists by exact string equality. Seven are opportunity-model; five are contact-model and absent from the opportunity list: HOLD_MONTHS, CARRYING_COST, LOAN_AMOUNT, INTEREST_RATE, REPAIR_LINE_ITEMS. MAO returned `contact:ABSENT` with `opportunity.mao_max_allowable_offer`, confirming the comparison discriminates.
+
+The proxy accepted a `/locations/` path. Every prior read this arc used `/contacts`.
+
+Recorded as PB-D47, committed `6c12db7`, pushed. Spec 826 to 850 lines, 24 insertions, 0 deletions. Both Netlify sites Canceled; published remains `3a5871a` on both. Read from the Netlify UI, not from a command.
+
+What GHL does with the five on receipt is UNKNOWN. No POST response body from `/opportunities/` has been observed. No remediation was chosen -- that decision waits on the observed response.
+
