@@ -663,6 +663,8 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 
 **Failure outcome.** If all three representations fail to produce KEY_ABSENT, the probe contact retains `["Vacant"]`, that outcome is recorded as the finding, and the four-stage cycle does not proceed.
 
+**Amendment (2026-08-06):** PB-D38 subsequently observed the clear mechanism reserved by this decision. PB-D40 completed the designation and registry entry that this decision explicitly withheld, and PB-D41 records the completed cycle. This amendment supersedes the `Scope.` and `Clear semantics UNKNOWN.` paragraphs only. Of the three candidate representations named there, `""` was observed to produce `KEY_ABSENT` and the sequence terminated at that point; `null` against `MULTIPLE_OPTIONS` was never executed and remains UNKNOWN. The `Decision.`, `Absent origin.`, `Fixture.`, `Acceptance criteria.`, `Tag mutations are logged, not halting.`, `Endpoint limitation.`, `Evidence.`, and `Failure outcome.` paragraphs remain as written.
+
 ### PB-D37 -- MULTIPLE_OPTIONS array round-trip observed on occupancy_status
 
 **Decision.** This decision records the write and read-back observation produced by the PB-D36 probe attempt1 and fixes the attempt numbering convention for the remaining clear attempts. It does not designate occupancy_status for B7, does not enable write, and does not create a FIELDS registry entry.
