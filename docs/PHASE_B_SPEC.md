@@ -685,6 +685,8 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 
 **Precondition for attempt2.** The attempt1 script refused on field-already-present. The clear scripts require the inverse precondition: occupancy_status MUST be present and equal to the array ["Vacant"] before a clear representation is sent. Refuse otherwise.
 
+**Amendment (2026-08-06):** The clear sequence this decision anticipated was executed. PB-D38 records a clear representation producing KEY_ABSENT, satisfying the condition stated in `Fixture state.`, and the attempt2 step governed by `Precondition for attempt2.` has been performed and cannot recur. This amendment supersedes the `Fixture state.` and `Precondition for attempt2.` paragraphs only. The `Decision.`, `Observation.`, `Scope of the finding.`, `Fixture integrity.`, `Proxy capability.`, `Convergence.`, and `Attempt numbering.` paragraphs remain as written.
+
 ### PB-D38 -- MULTIPLE_OPTIONS clear semantics observed for occupancy_status
 
 **Decision.** This decision records the clear-semantics mechanism discovered by the PB-D36 probe and amends the probe termination rule. It does not designate occupancy_status for any B slot, does not enable write, and does not create a FIELDS registry entry. Those remain closed pending separate decisions.
