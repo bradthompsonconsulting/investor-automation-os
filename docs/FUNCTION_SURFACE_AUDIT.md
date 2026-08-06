@@ -243,3 +243,52 @@ Remediation remains UNDECIDED and unauthorized by this document.
 motivation-score.ts and phone-lookup.ts in netlify/functions/, and
 seven read-oriented functions in app/netlify/functions/ including
 ghl-proxy.ts.
+
+## ghl-proxy.ts -- unauthenticated general-purpose GHL pass-through
+
+OBSERVED 2026-08-06, app/netlify/functions/ghl-proxy.ts read whole at
+53 lines.
+
+- handler at :25 takes event: any. OPTIONS returns 204. No other gate
+  precedes the forward: no secret, no header check, no session.
+- CORS is Access-Control-Allow-Origin: "*", with
+  Access-Control-Allow-Methods listing GET, POST, PUT, DELETE and
+  OPTIONS.
+- The forwarded path is read from event.queryStringParameters.path.
+  The only validation is that it is non-empty; a 400 is returned when
+  it is absent.
+- The request URL is formed by concatenation: GHL_BASE + path, where
+  GHL_BASE is https://services.leadconnectorhq.com.
+- The outbound method is event.httpMethod, passed through verbatim.
+- Authorization is Bearer with GHL_PRIVATE_API_KEY, falling back to
+  GHL_API_TOKEN.
+- The caller body is forwarded when the method is POST or PUT.
+- The GHL status code and response body are returned to the caller
+  unchanged.
+
+OBSERVED: the file docblock at :8-9 states that Phase A passes through
+any GHL path and is single-user and wide open, and that Phase B will
+validate an OAuth token in this function before forwarding. The
+current state is therefore a documented deliberate decision with a
+named successor, not an oversight.
+
+INFERRED from the observations recorded for this function: an
+anonymous caller can direct any HTTP method at any path under
+GHL_BASE and have it executed with the private integration token. The
+scope of what that permits is bounded by the token's own permissions.
+
+UNKNOWN: the permissions granted to GHL_PRIVATE_API_KEY have not been
+enumerated. No claim is made here about which specific GHL endpoints
+or operations a caller could reach.
+
+The architectural restrictions this project applies to GHL writes --
+for example avoiding tag changes, pipeline stage moves, offer_ fields
+and workflow triggers -- are implemented in client code. They are
+examples of constraints the proxy itself does not enforce. Whether a
+caller bypassing that client code could perform any of them depends on
+the token permissions recorded as UNKNOWN above.
+
+Historical context does not reduce current exposure. The function is
+deployed and reachable.
+
+Remediation remains UNDECIDED and unauthorized by this document.
