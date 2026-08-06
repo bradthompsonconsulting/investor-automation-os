@@ -3,6 +3,24 @@
 Opened 2026-08-06. Records observed properties of the deployed function
 surface. Findings only; no remediation is authorized by this document.
 
+## Provenance markers
+
+Findings in this document use one of four provenance markers. The
+marker states how the finding was established, not how confident it is.
+
+- OBSERVED -- established by a file read, command output, wire
+  response, or UI reading in the working transcript.
+- VENDOR DOC -- established by authoritative vendor documentation,
+  cited with title, URL, and access date. Not presented as runtime
+  observation and not independently verified against this deployment
+  unless separately stated.
+- INFERRED -- a conclusion drawn from one or more cited observations.
+  The observations it rests on are named.
+- UNKNOWN -- not established by the available evidence.
+
+An unmarked statement is not treated as an evidence-backed finding
+unless its provenance is stated in context.
+
 ## Inventory correction
 
 Earlier sessions carried "seven unauthenticated Netlify functions" as a
