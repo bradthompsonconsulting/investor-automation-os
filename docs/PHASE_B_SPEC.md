@@ -766,3 +766,23 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **What PB-D18 still establishes.** Its load-bearing finding is unaffected: `contact.arv` has no app-side consumer. `MaoCalculator` reads opportunity-side fields exclusively, `SOURCE_FIELD_IDS.arv` is `cBkygqcHRseZUGCYYeba`, and the contact/opportunity ARV distinction stands. `ghl.ts:45` is a write-path constant consumed at `ghl.ts:493` by `ghl.contacts._putMonetaryField(contactId, ARV_ID, value)`, not a calculator read. PB-D18's conclusion that unlocking `contact.arv` cannot trigger a calculator recompute therefore remains unchanged. PB-D18's display-side observation and its prepopulate note are likewise untouched.
 
 **Unchanged.** PB-D18 apart from the locational clause. PB-D16's private-helper shape and public surface. PB-D17's template. Every field's unlock status.
+
+### PB-D43 -- Flat-block supersession convention, and PB-D8's implementation divergence
+
+**Decision.** Two things. First, it fixes how a flat-form decision is superseded. Second, it records that PB-D8 describes a configuration model the code does not implement, without choosing between implementing that model and replacing it.
+
+**Flat-block supersession convention.** PB-D2 through PB-D22 are single-line entries in a list under §10.7 and §10.8, with no heading delimiting each decision. An `**Amendment (date):**` paragraph inserted between two such entries has nothing binding it to the decision above it, unlike the `###`-delimited decisions where ownership is structural. Flat-form entries therefore receive no in-place amendments. Supersession is recorded in a new top-level decision naming the earlier decision and the specific clause. PB-D42 is the first instance; this decision is the second.
+
+**What PB-D8 asserts.** PB-D8 describes a model in which every field declares an editor, including locked fields, and the editor configuration is complete across all custom fields. Within that model, the unlock allowlist is derived from the editor configuration rather than maintained separately.
+
+**What is observed.** OBSERVED 2026-08-06, searched under `app/` only: no occurrence of `editor:`, `editorType`, or `commitBehavior`. No per-field editor configuration was found under `app/`. The unlock allowlist exists instead as hardcoded constants in two files -- `app/src/lib/ghl.ts:44` and `:45` declaring `PROPERTY_NOTES_ID` and `ARV_ID`, and `app/scripts/verify-contacts.cjs:19` and `:20` declaring the same two ids independently, with a third copy at `:206` and `:207` inside `page.evaluate` because the browser scope cannot see Node constants.
+
+**The duplication is deliberate.** `verify-contacts.cjs:19` carries the comment that the ids are hardcoded per the verification-only rule and never imported from app code. Drift between the copies is guarded: `:313` exits 5 on `PROPERTY_NOTES_ID` mismatch between Node and browser scope, `:334` does the same for `ARV_ID`. A verifier that imports from the code it verifies cannot detect drift in that code, so the harness maintaining its own literals is a correctness requirement, not an oversight.
+
+**What this divergence is not.** Not a discharged condition and not a stale observation. PB-D8 describes a design that was never built. An amendment can record that; it cannot reconcile it.
+
+**Resolution deliberately left open.** Two paths exist and this decision selects neither. Either the declared-editor config is built and the app-side allowlist derived from it, or PB-D8's model is explicitly replaced by a different one. The second path would also put PB-D9's "editor is a declared property of the field" in question. Choosing between them is a design decision taken on its own terms, not a side effect of recording the divergence. The harness's independent literals survive either path.
+
+**Scope of the search.** `app/` only. Any such configuration under other repository roots was not examined.
+
+**Unchanged.** PB-D8 as written. PB-D9's editor taxonomy. PB-D13's template scoping. Every field's unlock status. The harness's verification-only rule and its drift guards.
