@@ -112,3 +112,134 @@ The read of ghl-mailers.ts line 22 arrived truncated in transit,
 consistent with the column-105 loss recorded in JEFF_OUTPUT_RULES.md.
 The truncation was in the transport, not the file. Long lines in this
 audit were read with cut -c1-95 to stay under that window.
+
+## Write-capable functions -- inbound authentication survey
+
+OBSERVED 2026-08-06. Four write-capable or send-capable functions
+read. Reads were windowed at structural anchors and piped through
+cut -c1-95 to stay under the transport window described in the
+method note.
+
+### mailer-digest.ts
+
+OBSERVED: registered in app/netlify.toml:28 as
+[functions."mailer-digest"] with schedule = "0 13 * * 5". That is
+13:00 UTC year-round, which is 08:00 during CDT and 07:00 during CST.
+
+VENDOR DOC (Netlify, "Scheduled Functions",
+https://docs.netlify.com/build/functions/scheduled-functions/,
+accessed 2026-08-06): scheduled functions deployed with a cron
+schedule are not directly URL-invocable in production; manual
+production runs occur through the Run now control in the
+authenticated Netlify UI. This platform behavior was not empirically
+tested against this deployment.
+
+OBSERVED: the handler signature at :94 is async () with no
+parameters, so it receives no request object and cannot inspect
+method, headers, or body.
+
+OBSERVED, :94-101: two guard returns precede the try block. Both are
+environment checks -- if (!token) returns 500 and if (!resendKey)
+returns 500. Neither is derived from a request. Past that point the
+handler builds the digest, resolves the recipient from the
+mailer_digest_recipient GHL custom value, POSTs to Resend, and
+returns 200.
+
+OBSERVED: the docblock at :7-8 states the function can be hit
+directly by URL for manual testing. Read against the vendor
+documentation cited above, that holds only under local development
+tooling and is misleading as written.
+
+INFERRED from the vendor documentation and the observed handler
+signature: no public production URL surface is expected. This was not
+independently verified against the deployed function.
+
+### ghl-disposition.ts
+
+OBSERVED: handler at :143 takes event: any. Auth runs before the GHL
+token is read and before any payload parsing.
+
+- Requires IAOS_WEBHOOK_SECRET from process.env; returns 500 if
+  unset rather than proceeding unauthenticated.
+- Reads the x-iaos-secret request header, both casings.
+- Returns 401 if absent or non-matching.
+
+OBSERVED: secretMatches is defined at :53 and called at :152. It
+hashes both sides to a fixed 32 bytes with SHA-256 before
+timingSafeEqual, so the comparison is constant-time and no length is
+leaked.
+
+OBSERVED: three fetch calls in this file. markAttempt issues a PUT to
+/contacts/{id} at :62 whose body sets only LAST_CALL_ATTEMPT_ID and
+LAST_CALL_ATTEMPT_PRECISE_ID. createNote POSTs { body } to
+/contacts/{id}/notes at :76. A third call at :90 is a GET of the same
+notes collection, used by the dedupe guard, and is not a write.
+
+INFERRED from the two observed write calls: the writes correspond to
+the named writes setLastCallAttempt and notes.create. No tags, no
+pipeline stage, and no offer_ fields appear in either body.
+
+INFERRED from the observed ordering and comparison implementation:
+inbound authentication is present before GHL access and uses a
+fixed-length timing-safe comparison.
+
+### deal-submit.ts
+
+OBSERVED: handler at :90 takes event: any. Through :125 there is no
+caller verification of any kind.
+
+- Access-Control-Allow-Origin is "*".
+- OPTIONS returns 204, non-POST returns 405, invalid JSON returns 400.
+- No secret, no header check, no session.
+
+OBSERVED: this authentication-focused read covered the handler
+through :125. PB-D47 separately records the later contact-creation
+and opportunity-creation path from the complete 201-line file read.
+No caller verification occurs before those writes begin.
+
+OBSERVED: a grep across the file for the alternatives handler,
+httpMethod, SECRET, secretMatches, statusCode: 401 and
+statusCode: 403 returned three lines -- :90, :96 and :100 -- matching
+handler and httpMethod. No line matched SECRET, secretMatches,
+statusCode: 401 or statusCode: 403.
+
+INFERRED from the observations recorded for this function: an
+anonymous POST can reach the contact and opportunity write path using
+the server-held GHL credential.
+
+### mao-webhook.ts
+
+OBSERVED: handler at :102 takes event: any. Non-POST returns 405;
+invalid JSON returns 400.
+
+OBSERVED: grep -c for cors, access-control and OPTIONS returned 0.
+There is no CORS handling and no OPTIONS branch.
+
+OBSERVED: through :140 the handler normalises an opportunity ID from
+four candidate payload shapes, then applies loop-breaking logic
+against INPUT_FIELD_IDS. Nothing in that range verifies the caller.
+
+OBSERVED: grep across the file for SECRET returned no matches.
+
+INFERRED from the observations recorded for this function: an
+anonymous POST reaches the handler. The write path beyond :140 is
+unread.
+
+### Comparison
+
+OBSERVED: among the four functions characterized in this section, the
+shared-secret pattern appears only in ghl-disposition.ts. The
+repository as a whole has not been surveyed for it.
+
+INFERRED from the ghl-disposition reads: a working inbound-auth
+pattern for server-to-server callers already exists in this codebase.
+It does not resolve the ghl-mailers.ts case, whose caller is a
+browser and cannot hold a shared secret.
+
+Remediation remains UNDECIDED and unauthorized by this document.
+
+### Not yet read
+
+motivation-score.ts and phone-lookup.ts in netlify/functions/, and
+seven read-oriented functions in app/netlify/functions/ including
+ghl-proxy.ts.
