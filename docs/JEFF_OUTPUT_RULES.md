@@ -49,3 +49,20 @@ insufficient.
 Verbatim output is what makes independent review possible. Every finding in this
 project rests on something read rather than something reported, and the two have
 diverged often enough that the distinction is load-bearing.
+
+## Transport corruption -- fixed-column byte loss
+
+On 2026-08-06, physical lines longer than roughly 104 characters were observed to lose bytes beginning at column 105 or 106. OBSERVED in apply-d47-handoff.cjs: four prose strings lost 7, 9, 8 and 8 characters respectively. Re-sending the identical text reproduced the identical four drops. A fifth string of 537 characters spanned the same window and survived intact; the cause is UNKNOWN and this is a mitigation, not an explanation.
+
+Neither node --check nor endsWith assertions detect this. A truncation inside a string literal is still valid JavaScript, and a mid-segment drop leaves the segment tail unchanged.
+
+Mitigation, required for any generated script carrying prose:
+
+- Cap every physical line at roughly 90 characters.
+- Split long strings into fragments of about 62 characters, assembled with an array and .join().
+- Assert the exact character length of every assembled string against a pinned constant, and place those assertions before the target file is opened, so a corrupt script cannot reach writeFileSync.
+- Read the script back with cat -n and verify the fragments rejoin to the approved text before executing.
+
+## The Write tool reports insertions and modifications differently
+
+A Write that reports only "Added N lines" performed a pure-insertion diff. If a full replacement was requested and no modified lines appear, nothing was replaced. OBSERVED on 2026-08-06: a second write of corrected text reported success and "fully replaced", but the diff showed only additions, and read-back confirmed the four corrupt lines were byte-identical to the previous version. Treat a pure-insertion diff on a claimed replacement as evidence the replacement did not happen.
