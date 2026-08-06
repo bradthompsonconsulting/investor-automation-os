@@ -824,3 +824,27 @@ Consequence accepted: there is currently NO way to clear a MONETARY field from t
 **The divergence originates at PB-D33.** PB-D33 at line 616 designates `estimated_repairs` as B4 from the remaining MONETORY candidates: `asking_price`, `estimated_repairs`, and `loan_amount`. It names no subgroup and cites no prior decision. PB-D33 restates the candidate pool without reference to PB-D6's Investor scoping and includes `loan_amount`, which repository history shows belonged to the Property subgroup. Whether this reflects a deliberate widening of scope is not determinable from the available artifacts. PB-D33's own selection boundary at line 618 weighs Estimated Repairs against Loan Amount and Asking Price on operational relevance, so `loan_amount` was within its field of view and set aside on that basis rather than overlooked.
 
 **Unchanged.** PB-D45's UNKNOWN is superseded as to origin only. PB-D35's selection boundary at line 642 audited PB-D33 and PB-D34's rationale for ordering, not the composition of the pool those fields were drawn from, and remains as written. PB-D6's designation of B2 as the MONETORY editor class and PB-D34's designation of `loan_amount` as B5 are unchanged. This decision resolves the provenance of the enumeration divergence only.
+
+### PB-D47 -- Five contact-model field IDs are sent in the opportunity payload
+
+`netlify/functions/deal-submit.ts` (repo root, not under `app/`; 201 lines at `c4f3daa`) declares a `FIELD_ID` map at :7-20 holding twelve hardcoded GHL custom-field IDs. Eleven are assembled into `fieldMap` at :138-150 and pushed onto `customFields` at :153 when non-null; the twelfth, `REPAIR_LINE_ITEMS`, is appended at :158 when the formatted text is non-empty. That single `customFields` array is assigned to `oppPayload.customFields` at :173 and POSTed to `${GHL_BASE}/opportunities/` by `createOpportunity` at :77. There is exactly one POST of `customFields` in the file.
+
+OBSERVED -- the location's field models were read through the deployed proxy at `path=/locations/jmHG4B8RdzwpfqruNf68/customFields` with `model=opportunity` (14 fields) and `model=contact`, and each of the twelve IDs was matched by exact string equality against both lists.
+
+Seven of the twelve are opportunity-model and land as intended: ARV (`opportunity.arv_after_repair_value`), REPAIR (`opportunity.repair_estimate`), ASKING_PRICE, CLOSING_COSTS, ASSIGNMENT_FEE, MAO, WHOLESALE_FEE.
+
+Five are contact-model and absent from the opportunity list entirely:
+
+- HOLD_MONTHS -- `Ju1U6ROdDNnCFlsn4eeS` -- `contact.hold_months` -- NUMERICAL
+- CARRYING_COST -- `FhcyP63sSAtWInl4Q4iI` -- `contact.carrying_cost` -- MONETORY
+- LOAN_AMOUNT -- `3ZlSKldh0jR2MWhjOmHe` -- `contact.loan_amount` -- MONETORY
+- INTEREST_RATE -- `i1mVFCwHIySFFzR1hVfQ` -- `contact.interest_rate` -- FLOAT
+- REPAIR_LINE_ITEMS -- `IwVPbXc9dKUzWGpe4NPx` -- `contact.repair_line_items` -- LARGE_TEXT
+
+MAO serves as the clean contrast: `Atu5XCjpFElY8H64VG4h` returns `contact:ABSENT` and `opportunity.mao_max_allowable_offer`. MAO demonstrates that the comparison distinguishes between the two models. The five fields above exhibit the opposite pattern.
+
+`contact.loan_amount` is the same field PB-D46 traced to the Property subgroup in `additionalInfoSubgroups.ts`, reached here by an independent path.
+
+UNKNOWN -- what GHL does with the five on receipt. `createOpportunity` throws on `!res.ok` (:82-85) and production intake is not reported as failing, which is consistent with, but not proof of, GHL returning a successful response while ignoring unrecognized entries. No POST response body from `/opportunities/` has been observed, so acceptance, silent discard, and partial acceptance are all live possibilities. This decision records the mismatch and does not assert data loss.
+
+No remediation is chosen here. The candidate paths -- writing the five to the contact, creating opportunity-model equivalents, or dropping them -- differ in scope and in what they imply for the contact write path, and none should be selected before GHL's actual response is observed.
