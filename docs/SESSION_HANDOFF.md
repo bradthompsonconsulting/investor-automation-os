@@ -702,3 +702,15 @@ Workflow findings:
 
 Netlify deploy outcomes for these four commits were NOT observed.
 
+## 2026-08-06 -- PB-D42 through PB-D46; PB-D6 enumeration provenance resolved
+
+Ten commits, d9a24fe..6e3ae8a. Spec 746 -> 826 lines. No original prose altered. Five in-place amendments (D36, D37, D33, D34, D35), five new top-level decisions (D42, D43, D44, D45, D46). Netlify: 6e3ae8a shows Canceled on both sites in the deploy lists; published remains 3a5871a. Read from the Netlify UI, not from a command.
+
+PB-D46 closes PB-D45's UNKNOWN. Six facts, each read from file: b4fb214 2026-07-24 created ADDITIONAL_INFO_SUBGROUPS with contact.loan_amount in Property; assignment pickaxe returns that single commit; config :67-80 holds exactly PB-D6's four Investor MONETORY candidates; 0bbbb31 2026-07-28 authored PB-D6 four days later, single pickaxe hit; PB-D33:616 states its pool as "the remaining MONETORY candidates" naming no subgroup and citing no prior decision; PB-D35:642 audited D33/D34 rationale, not pool composition. PB-D6's enumeration was correct when authored and remains correct; the divergence originates at PB-D33's independent restatement. Whether the widening was deliberate is not determinable from the artifacts.
+
+2026-08-05 is unrecorded in this log. PB-D36 through PB-D41, the MULTIPLE_OPTIONS probe, and the B7 cycle occurred outside the current handoff record. They are not reconstructed here because reconstructing a session from git history alone would not preserve the original contemporaneous record.
+
+Open, unchanged: deal-submit.ts sends CARRYING_COST and LOAN_AMOUNT contact field IDs inside an opportunity payload -- possible silent data loss on every intake, unresolved; PB-D8's resolution; PB-D16 promotion deferred at D44; B8/runtime with offersUnchanged unexercised.
+
+Ten untracked apply-*.cjs in C:/Users/brad/ (d33-d37, d42-d46). Retention undecided.
+
