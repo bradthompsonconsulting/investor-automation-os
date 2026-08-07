@@ -62,6 +62,11 @@ const TERMINAL_STAGE_IDS = new Set([
   "f1960b50-8aa2-4a69-ba58-a7a0dc66ce82", // Lost / Not Interested
 ]);
 
+// PB-D50 — text channels whose STOP_KEYWORD entry hides a contact from
+// Unanswered Inbound. Email is deliberately out of scope; its unsubscribe
+// carries a different message and needs its own decision.
+const OPT_OUT_CHANNELS = ["SMS", "RCS"];
+
 // ── Central-time date helpers, same convention as mailer-shared.ts ───────────
 
 const CT_DATE_FMT = new Intl.DateTimeFormat("en-CA", {
@@ -508,12 +513,30 @@ export default function Dashboard() {
     });
   }, [contacts, escalatedContactIds, overdueContactIds, terminalContactIds, attemptOverride, nowTick]);
 
-  // PB-D49 — render source for §3.1. escalatedContactIds above deliberately
-  // keeps deriving from the UNFILTERED unanswered array, so hiding a terminal
-  // contact here never returns it to the Lead Queue.
+  // PB-D50 — a contact who texted STOP. Matched on message, never on status
+  // and never on the top-level dnd boolean, which reads false even for a
+  // permanent STOP_KEYWORD entry.
+  const optedOutContactIds = useMemo(
+    () =>
+      new Set(
+        (contacts ?? [])
+          .filter((c) =>
+            OPT_OUT_CHANNELS.some((ch) => c.dndSettings?.[ch]?.message === "STOP_KEYWORD"),
+          )
+          .map((c) => c.id),
+      ),
+    [contacts],
+  );
+
+  // PB-D49/PB-D50 — render source for §3.1. escalatedContactIds above
+  // deliberately keeps deriving from the UNFILTERED unanswered array, so
+  // hiding a contact here never returns it to the Lead Queue.
   const visibleUnanswered = useMemo(
-    () => (unanswered ?? []).filter((r) => !terminalContactIds.has(r.contactId)),
-    [unanswered, terminalContactIds],
+    () =>
+      (unanswered ?? []).filter(
+        (r) => !terminalContactIds.has(r.contactId) && !optedOutContactIds.has(r.contactId),
+      ),
+    [unanswered, terminalContactIds, optedOutContactIds],
   );
 
   const bucketCounts = useMemo(() => {

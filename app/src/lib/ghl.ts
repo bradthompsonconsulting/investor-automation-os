@@ -66,6 +66,8 @@ export interface ContactRow {
   postalCode:        string;
   dateAdded:         string | null;
   tags:              string[];
+  // PB-D50 — GHL per-channel DND. Always an object; {} means no DND history.
+  dndSettings:       Record<string, { status?: string; message?: string }>;
   motivationScore:   number | null;
   dealScore:         number | null;
   combinedScore:     number | null;

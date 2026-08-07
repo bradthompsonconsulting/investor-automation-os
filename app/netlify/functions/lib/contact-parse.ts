@@ -105,6 +105,7 @@ export function parseContact(c: any) {
     postalCode:      c.postalCode ?? "",
     dateAdded:       c.dateAdded ?? null,
     tags:            (c.tags ?? []).map((t: string) => String(t).toLowerCase()),
+    dndSettings:     c.dndSettings ?? {},
     motivationScore:    cfValue(cf, SCORE_IDS.motivation_score),
     dealScore:          cfValue(cf, SCORE_IDS.deal_score),
     combinedScore:      cfValue(cf, SCORE_IDS.combined_score),
