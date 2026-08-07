@@ -918,3 +918,50 @@ deferred to a separate decision and is not performed here.
 PB-D23's runner parameterization, PB-D24's restoration semantics,
 PB-D25's assertion contract, the section 14e offer_ guardrail, and every
 existing proof record are untouched.
+
+### PB-D49 -- Terminal-stage exclusion from Dashboard queue sections
+
+**Decision.** A contact is excluded from the Dashboard's Lead Queue and
+Unanswered Inbound sections when all opportunities currently associated
+with that contact sit in a terminal stage. Display-only filtering; no
+write of any kind.
+
+**Rationale.** The Lead Queue and Unanswered Inbound sections are
+intended to surface contacts requiring active follow-up. Contacts whose
+associated opportunities are exclusively in terminal stages are excluded
+because they no longer represent active pipeline work under the current
+Dashboard design. Long-Term Nurture remains visible because it
+represents deferred work, not completed work.
+
+**Terminal stages.** Two, matched by ID, not by name:
+0c45ee3d-7be7-4651-97a4-6df53f53481b Seller Closed-Won
+f1960b50-8aa2-4a69-ba58-a7a0dc66ce82 Lost / Not Interested
+
+**Long-Term Nurture is a deliberate exclusion, not an omission.**
+Stage a7436df7-e05a-4bf0-bd29-70f7066ec0bd is not terminal under this
+decision. Revisit only if live use demonstrates that Long-Term Nurture
+contacts should no longer appear in these queues.
+
+**Callbacks are out of scope, deferred not omitted.** Whether a promised
+follow-up survives its contact reaching a terminal stage is undecided
+product behavior, not a filtering question. A callback may be exactly
+where the loop is meant to close. Section 3.2 is unchanged by this
+decision and requires its own.
+
+**Zero opportunities means not excluded.** A contact with no opportunity
+has no stage and is unaffected by this rule.
+
+**All-opportunities rule.** One non-terminal opportunity keeps the
+contact visible regardless of how many terminal ones sit alongside it.
+
+**Match on ID.** The existing name lookup in Dashboard.tsx
+(s.name === "Seller Offer Sent") is not the pattern to follow. The IDs
+are pinned in the STAGES array in ghl-opportunities.ts.
+
+**Offers Awaiting Response is out of scope.** It already filters to
+Seller Offer Sent, a non-terminal stage, so no terminal contact can
+reach it. Deliberate exclusion.
+
+**Opt-out exclusion is a separate decision.** ContactRow carries no
+dndSettings, so opt-out filtering requires a data-shape change this
+decision does not make.
