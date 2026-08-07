@@ -965,3 +965,71 @@ reach it. Deliberate exclusion.
 **Opt-out exclusion is a separate decision.** ContactRow carries no
 dndSettings, so opt-out filtering requires a data-shape change this
 decision does not make.
+
+### PB-D50 -- Text-channel opt-out exclusion from Unanswered Inbound
+
+**Decision.** A contact is excluded from the Dashboard's Unanswered
+Inbound section when their GHL dndSettings carry an SMS or RCS entry
+whose message is exactly STOP_KEYWORD. Display-only filtering; no write
+of any kind.
+
+**Rationale.** A seller who has texted STOP should not be treated as an
+actionable unanswered text contact unless that opt-out is deliberately
+cleared in GHL. Leaving them in the section the spec designates highest
+priority makes that section majority noise, which is why it was not
+being worked. SMS and RCS are one channel for this purpose.
+
+**Predicate is the message, not the status.** Match on
+message === "STOP_KEYWORD". Do not match on status === "permanent".
+OBSERVED 2026-08-07 across all 44 contacts in the location: every
+permanent entry is STOP_KEYWORD and every STOP_KEYWORD entry is
+permanent, so the two are indistinguishable on current data. They are
+not the same concept. permanent describes GHL's own irreversibility
+claim; STOP_KEYWORD describes what the seller did. The rule follows the
+seller.
+
+**The top-level dnd boolean is not the signal.** OBSERVED: contact
+05gYdxJcyNTCKWTwkbbs carries dnd false while holding permanent
+STOP_KEYWORD entries on both SMS and RCS. The top-level boolean
+therefore cannot be relied upon as the opt-out predicate.
+
+**Presence of a dndSettings entry is not an opt-out.** OBSERVED: five
+contacts carry SMS entries with status active and messages of the form
+TWILIO_ERROR_CODE: 30003, 30005, or 30006. Those are deliverability
+failures, not consent withdrawals. Excluding them would hide leads who
+never opted out and instead have an unreachable or landline number.
+That is a separate problem and this decision does not address it.
+
+**Email unsubscribe is a deliberate exclusion, not an omission.**
+OBSERVED: one contact carries Email, status active, message
+"User clicked on the unsubscribe link". That is a real consent
+withdrawal and STOP_KEYWORD will not catch it. This decision's opt-out
+exclusion is scoped to SMS and RCS. Email consent behavior is undecided
+and requires its own decision.
+
+**Empty object means no DND.** OBSERVED: dndSettings is present on
+44 of 44 contacts; 31 hold an empty object. The key is always defined
+on the list read, so the predicate tests entries, never key presence.
+
+**Reversal is manual and lives in GHL.** IAOS stores no opt-out state
+and reverses nothing. Clearing DND on the GHL contact record makes the
+entry stop matching, and the contact returns on the next Dashboard
+load. No IAOS control for this is authorized by this decision; it would
+be a write.
+
+**Lead Queue is out of scope.** PB-D49 established that
+escalatedContactIds derives from the unfiltered unanswered array, so a
+contact hidden here does not re-enter the Lead Queue. Whether a contact
+who texted STOP should still appear as a cold call is undecided
+product behavior and requires its own decision.
+
+**Data-shape change.** OBSERVED: dndSettings is returned by GHL's
+contacts list endpoint but dropped by parseContact
+(app/netlify/functions/lib/contact-parse.ts), the shared parser behind
+both ghl-contacts and ghl-contact. Carrying it forward there is the
+implementation path this decision authorizes.
+
+**Function surface note.** ghl-contacts has no inbound authentication.
+Carrying dndSettings adds opt-out state to a publicly reachable
+endpoint. Recorded for FUNCTION_SURFACE_AUDIT; it does not block this
+decision.
