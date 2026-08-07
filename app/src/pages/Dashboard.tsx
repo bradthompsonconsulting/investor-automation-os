@@ -53,6 +53,14 @@ const RESURFACE_VISIBLE_ROWS = 15;  // Lead Queue visible-row cap before scroll
 // Pipeline Health, which needs more room to stay on one row (see below).
 const CONTENT_MAX_WIDTH = "1600px";
 
+// PB-D49 — terminal pipeline stages. A contact whose opportunities are ALL in
+// one of these drops out of Lead Queue and Unanswered Inbound. Matched by ID,
+// never by name. Long-Term Nurture is deliberately NOT terminal.
+const TERMINAL_STAGE_IDS = new Set([
+  "0c45ee3d-7be7-4651-97a4-6df53f53481b", // Seller Closed-Won
+  "f1960b50-8aa2-4a69-ba58-a7a0dc66ce82", // Lost / Not Interested
+]);
+
 // ── Central-time date helpers, same convention as mailer-shared.ts ───────────
 
 const CT_DATE_FMT = new Intl.DateTimeFormat("en-CA", {
@@ -456,10 +464,23 @@ export default function Dashboard() {
     [digest],
   );
 
+  // PB-D49 — a contact is terminal only when EVERY one of its opportunities is
+  // in a terminal stage. One non-terminal opportunity keeps it visible. A
+  // contact with no opportunity never lands in this Set, so it is never hidden.
+  const terminalContactIds = useMemo(() => {
+    const byContact = new Map<string, boolean>();
+    for (const o of pipeline?.opportunities ?? []) {
+      if (!o.contactId) continue; // no contact to hide
+      const terminal = TERMINAL_STAGE_IDS.has(o.stageId);
+      byContact.set(o.contactId, (byContact.get(o.contactId) ?? true) && terminal);
+    }
+    return new Set([...byContact].filter(([, allTerminal]) => allTerminal).map(([id]) => id));
+  }, [pipeline]);
+
   const leadQueue = useMemo<LeadRow[]>(() => {
     void nowTick; // re-derive bands as clock advances past RESURFACE_HOURS
     const rows: LeadRow[] = (contacts ?? [])
-      .filter((c) => c.phone?.trim() && !escalatedContactIds.has(c.id))
+      .filter((c) => c.phone?.trim() && !escalatedContactIds.has(c.id) && !terminalContactIds.has(c.id))
       .map((c) => {
         const attempt = effectiveLastAttempt(c);
         return {
@@ -484,7 +505,15 @@ export default function Dashboard() {
       if (a.overdueMailer !== b.overdueMailer) return a.overdueMailer ? -1 : 1;
       return (b.contact.combinedScore ?? -1) - (a.contact.combinedScore ?? -1);
     });
-  }, [contacts, escalatedContactIds, overdueContactIds, attemptOverride, nowTick]);
+  }, [contacts, escalatedContactIds, overdueContactIds, terminalContactIds, attemptOverride, nowTick]);
+
+  // PB-D49 — render source for §3.1. escalatedContactIds above deliberately
+  // keeps deriving from the UNFILTERED unanswered array, so hiding a terminal
+  // contact here never returns it to the Lead Queue.
+  const visibleUnanswered = useMemo(
+    () => (unanswered ?? []).filter((r) => !terminalContactIds.has(r.contactId)),
+    [unanswered, terminalContactIds],
+  );
 
   const bucketCounts = useMemo(() => {
     const counts: Record<BucketTag, number> = { hot: 0, warm: 0, low: 0 };
@@ -667,7 +696,7 @@ export default function Dashboard() {
       <SectionHeading>Waiting on Me</SectionHeading>
       <div style={{ marginBottom: "28px", maxWidth: CONTENT_MAX_WIDTH }}>
         {/* 3.1 Unanswered inbound — HIGHEST priority, top of the entire queue */}
-        <SectionHeading count={unanswered?.length ?? 0}>Unanswered Inbound</SectionHeading>
+        <SectionHeading count={visibleUnanswered.length}>Unanswered Inbound</SectionHeading>
         <p style={{ fontSize: "11px", color: "#334155", margin: "-4px 0 10px" }}>
           Oldest unanswered reply first — the seller ignored longest is closest to giving up.
         </p>
@@ -675,14 +704,14 @@ export default function Dashboard() {
           <Card tone="muted" style={{ marginBottom: "10px" }}>
             <p style={{ fontSize: "12px", color: "#334155", margin: 0 }}>Loading…</p>
           </Card>
-        ) : (unanswered?.length ?? 0) === 0 ? (
+        ) : visibleUnanswered.length === 0 ? (
           <Card tone="muted" style={{ marginBottom: "10px", display: "flex", gap: "10px", alignItems: "flex-start" }}>
             <Inbox size={16} style={{ color: "#475569", marginTop: "1px", flexShrink: 0 }} />
             <p style={{ fontSize: "12px", color: "#64748B", margin: 0 }}>No unanswered inbound replies right now.</p>
           </Card>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
-            {unanswered!.map((r) => {
+            {visibleUnanswered.map((r) => {
               const days = Math.floor((Date.now() - r.lastMessageDate) / 86_400_000);
               return (
                 <Card key={r.conversationId} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
