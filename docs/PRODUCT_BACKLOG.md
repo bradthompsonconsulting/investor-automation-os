@@ -40,7 +40,7 @@ record how IAOS must behave. Keep them separate.
 | Exclude opt-outs from Unanswered Inbound | P1 | High | S | Jeff | Done |
 | Call or note clears the unanswered flag | P1 | High | S | Jeff | Open |
 | Define disposition effect on queue placement | P1 | High | S | Brad | Open |
-| Live disposition test (real softphone call) | P1 | High | S | Brad | Pending |
+| Live disposition test (real softphone call) | P1 | High | S | Brad | Done |
 | Apply PB-D48 classification to FIELD_REGISTER | P1 | High | M | Jeff | Open |
 | Contact Workspace field editors | P1 | High | L | Jeff | Open |
 
@@ -52,11 +52,12 @@ recorded in this file only. PB-D49 covers the terminal-stage half and
 PB-D50 the opt-out half; both were implemented and verified live on
 2026-08-07.
 
-The live disposition test closes CONTACT_WORKSPACE_SPEC_v2 section 9.4,
-which is the only outstanding item on that surface. The webhook path is
-built and authenticated but has never fired from a real dispositioned
-call. The GHL disposition prompt is transient, roughly one to two
-minutes after hangup.
+The live disposition test closed CONTACT_WORKSPACE_SPEC_v2 section 9.4 on
+2026-08-07, and nothing on that surface is outstanding. A real dispositioned
+call wrote both the note and a fresh last_call_attempt, and X-IAOS-Secret
+passed, so the GHL Custom Value and the Netlify env var agree. One open
+observation: the note duration read 10s against a 19-second Call Summary,
+so that number is not call length.
 
 ## P2 -- Investor experience
 

@@ -1,6 +1,6 @@
 # IAOS — CONTACT WORKSPACE SPEC v2
 
-Status: §5 verified live 2026-07-15. §7 revised. **§8 steps 1–7 all SHIPPED + verified live** (steps 4–5 `dc60d1e` §9.3; step 6 disposition capture `6fa154c` §9.4; step 7 name-click deep-link `becaa17` §9.5 — 2026-07-16). No §8 build work remains. ONE thing outstanding, not code: step 6's GHL-side trigger→webhook path awaits a real dispositioned call from Brad (§9.4 PENDING).
+Status: §5 verified live 2026-07-15. §7 revised. **§8 steps 1–7 all SHIPPED + verified live** (steps 4–5 `dc60d1e` §9.3; step 6 disposition capture `6fa154c` §9.4; step 7 name-click deep-link `becaa17` §9.5 — 2026-07-16). No §8 build work remains. §8 is fully closed — step 6’s GHL-side trigger→webhook path VERIFIED LIVE 2026-08-07 by a real dispositioned call (§9.4). Nothing on this surface is outstanding.
 Supersedes CONTACT_WORKSPACE_SPEC_v1.md. Sits alongside `IAOS_Master_Architecture_Reference_V10_2.txt` and `DASHBOARD_SPEC_v2.txt`.
 
 **Changes from v1:**
@@ -278,7 +278,7 @@ Copy rules apply to seller-facing content: no "just checking in" language; lead 
 6. **Disposition capture** — new Netlify function + GHL workflow, per §5.4 (Path A only). **SHIPPED + VERIFIED LIVE (`6fa154c`, 2026-07-16 — §9.4).** `ghl-disposition.ts` receives the workflow's Webhook POST and writes note→attempt, gated; the STEP 6 REQUIREMENT (setLastCallAttempt alongside notes.create) is satisfied and proven live. §5 open questions were closed; no prerequisites remained (the Path B call-end verification was dropped with Path B).
 7. **Dashboard name-click** → deep-link to `/contacts/:id`. **SHIPPED + VERIFIED LIVE (`becaa17`, 2026-07-16 — §9.5).** Lead Queue contact name wrapped in a react-router `Link` (Dashboard-only, Lead Queue only); pure navigation — writes nothing (no note, no `last_call_attempt`), same rule as the step-4 Call button.
 
-**All of §8 (steps 1–7) is shipped + verified live as of 2026-07-16.** The only thing outstanding is not a build step: step 6's GHL-side trigger→webhook path awaits a real dispositioned call from Brad (§9.4 PENDING). Steps 1–5 were always on proven paths; step 6 was never a new mechanism (GHL → IAOS webhook receive already runs in production, §5.6).
+**All of §8 (steps 1–7) is shipped + verified live as of 2026-07-16.** The GHL-side trigger→webhook path closed 2026-08-07 (§9.4). Nothing on this surface is outstanding. Steps 1–5 were always on proven paths; step 6 was never a new mechanism (GHL → IAOS webhook receive already runs in production, §5.6).
 
 **Deferred until the Workspace is live:** Lead Queue column reorder, Call button removal from Dashboard rows (#3/#4/#5/#10a from Brad's original list).
 
@@ -419,17 +419,29 @@ endpoints disagree on name casing (§10 open item) — the selector searched "Ne
 renders "neelima bale". A test-harness bug, not a product defect; the grey was then proven standalone
 with a case-insensitive, row-keyed wait. No product code changed during verification.
 
-**PENDING — GHL-side trigger→webhook, awaiting a real dispositioned call (this is a live-test item,
-NOT a build gap).** Everything above proves the IAOS side: a harness POST to `ghl-disposition` returns
-200, writes note+attempt, and is idempotent. What is NOT yet proven live is GHL's side — that tapping a
-Custom Disposition on a real softphone call fires the published Workflow, which POSTs to
-`ghl-disposition` with the right `customData` and `X-IAOS-Secret`. **The Workflow is wired and
-published** (URL → `/.netlify/functions/ghl-disposition`; header `X-IAOS-Secret` =
-`{{ custom_values.iaos_webhook_secret }}`; all six dispositions on the trigger filter). It needs one
-real dispositioned call from Brad's softphone to close the loop. **Constraint (§5.2):** the disposition
-picker is transient — it appears in the Call Summary the instant you hang up and closes after ~1–2 min
-of inactivity, unrecoverable once closed. So the live test MUST tap the disposition inside that window;
-a call left un-dispositioned proves nothing (and, by design, writes nothing — the lead just re-dials).
+**VERIFIED LIVE — GHL-side trigger→webhook, 2026-08-07.** Source: live application.
+Everything above proves the IAOS side; this closes GHL’s. An outbound softphone call
+to Brad Thompson (`9fbH2VCcZvzVNhsR9zjc`) reported 00 Min 19 Sec in the Call Summary,
+and the **No Answer** disposition was tapped inside the transient window. IAOS wrote
+the note `Call: No Answer — 10s` and a fresh `last_call_attempt`, both observed in the
+Contact Workspace Notes panel with "Last attempted under 1h ago". Both sanctioned
+writes landed. `X-IAOS-Secret` passed, which additionally proves the GHL Custom Value
+and the Netlify env var agree.
+
+**The Workflow as verified:** URL → `/.netlify/functions/ghl-disposition`; header
+`X-IAOS-Secret` = `{{ custom_values.iaos_webhook_secret }}`; all six dispositions on the
+trigger filter. One disposition of the six — No Answer — has now fired end to end; the
+other five share the trigger filter and endpoint but have not individually fired.
+
+**Constraint (§5.2), still binding for any future test:** the disposition picker is
+transient — it appears in the Call Summary the instant you hang up and closes after
+~1–2 min of inactivity, unrecoverable once closed. A call left un-dispositioned proves
+nothing (and, by design, writes nothing — the lead just re-dials).
+
+**Duration is not call length (OBSERVED discrepancy, INFERRED cause).** The Call Summary
+read 19 seconds; the note recorded 10s. `{{phoneCall.duration}}` is documented as
+talk-seconds, so the gap is plausibly ring time — plausible but not established. Read
+the note’s duration as talk-seconds at best, never as call length.
 
 ### 9.5 VERIFIED LIVE — step 7 (Dashboard name-click deep-link), 2026-07-16
 
