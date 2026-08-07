@@ -721,7 +721,7 @@ export default function Dashboard() {
                     {r.contactName}
                   </span>
                   <span style={{ fontSize: "12px", color: "#64748B", whiteSpace: "nowrap" }}>
-                    {r.phone || r.email || "—"}
+                    {formatPhone(r.phone) || r.email || "—"}
                   </span>
                   <span style={{ fontSize: "12px", color: "#94A3B8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
                     {r.preview || <em style={{ color: "#334155" }}>(no preview)</em>}
@@ -752,7 +752,7 @@ export default function Dashboard() {
               <Card key={c.id} tone="warn" style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
                 <CalendarClock size={15} style={{ color: "#F87171", flexShrink: 0 }} />
                 <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>{contactName(c)}</span>
-                <span style={{ fontSize: "12px", color: "#64748B" }}>{c.phone || "—"}</span>
+                <span style={{ fontSize: "12px", color: "#64748B" }}>{formatPhone(c.phone) || "—"}</span>
                 <span style={{
                   fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
                   background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)", color: "#F87171",
@@ -784,7 +784,7 @@ export default function Dashboard() {
               <Card key={c.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
                 <CalendarClock size={15} style={{ color: "#1EC8FF", flexShrink: 0 }} />
                 <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>{contactName(c)}</span>
-                <span style={{ fontSize: "12px", color: "#64748B" }}>{c.phone || "—"}</span>
+                <span style={{ fontSize: "12px", color: "#64748B" }}>{formatPhone(c.phone) || "—"}</span>
                 <span style={{
                   fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
                   background: "rgba(30,200,255,0.12)", border: "1px solid rgba(30,200,255,0.35)", color: "#1EC8FF",
@@ -855,11 +855,11 @@ export default function Dashboard() {
               <col style={{ width: "19%" }} /> {/* Name — full names */}
               <col style={{ width: "10%" }} /> {/* Phone — formatted "214-914-6151" (§5.1) */}
               <col style={{ width: "7%" }} />  {/* Tier — full badge text (e.g. "Warm") */}
-              <col style={{ width: "4%" }} />  {/* Score */}
+              <col style={{ width: "5%" }} />  {/* Score */}
               <col style={{ width: "23%" }} /> {/* Address — full one-line street address */}
               <col style={{ width: "10%" }} /> {/* Last Contact — full "Attempted Xh ago" */}
               <col style={{ width: "10%" }} /> {/* Call/callback actions */}
-              <col style={{ width: "17%" }} /> {/* Notes — comfortably typeable */}
+              <col style={{ width: "16%" }} /> {/* Notes — comfortably typeable */}
             </colgroup>
             <thead>
               <tr style={{ background: "#07142E", position: "sticky", top: 0, zIndex: 1 }}>
