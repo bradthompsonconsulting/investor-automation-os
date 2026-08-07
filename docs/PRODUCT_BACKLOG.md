@@ -36,7 +36,7 @@ record how IAOS must behave. Keep them separate.
 
 | Item | Priority | Value | Effort | Owner | Status |
 | --- | --- | --- | --- | --- | --- |
-| Exclude terminal-stage contacts from both queues | P1 | High | S | Jeff | Open |
+| Exclude terminal-stage contacts from both queues | P1 | High | S | Jeff | Done |
 | Exclude opt-outs from Unanswered Inbound | P1 | High | S | Jeff | Open |
 | Call or note clears the unanswered flag | P1 | High | S | Jeff | Open |
 | Define disposition effect on queue placement | P1 | High | S | Brad | Open |
@@ -48,8 +48,8 @@ Queue filtering is the highest-value work on this list. A contact moved
 to Lost / Not Interested still appears in Waiting on Me, and opt-outs
 whose inbound body is STOP sit permanently at the top of the highest
 priority section. Both were found in live use on 2026-08-06. Detail is
-recorded in the FUNCTION_SURFACE_AUDIT and in this file only; no spec
-decision covers them yet.
+recorded in this file only. PB-D49 covers the terminal-stage half and
+shipped 2026-08-07. The opt-out half has no spec decision yet.
 
 The live disposition test closes CONTACT_WORKSPACE_SPEC_v2 section 9.4,
 which is the only outstanding item on that surface. The webhook path is
@@ -80,7 +80,10 @@ reference, not omissions.
 | Inbound auth on remaining functions | P3 | High | M | Jeff | Deferred |
 | ghl-proxy OAuth successor | P3 | High | L | Jeff | Deferred |
 
-Seven of eight Netlify functions have no inbound authentication. The
+The function surface is fourteen entrypoints across two directories,
+per the inventory correction in FUNCTION_SURFACE_AUDIT. Of the five
+characterized so far, only ghl-disposition.ts has inbound
+authentication. The earlier figure of seven was unsourced. The
 deferral is deliberate and the named trigger is the first user who is
 not Brad. ghl-proxy is the highest-consequence of these: it forwards any
 method to any GHL path with the private token, and its own docblock

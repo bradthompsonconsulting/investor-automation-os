@@ -11,6 +11,7 @@ import {
 } from "../lib/ghl";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
+import { formatPhone } from "../lib/format";
 
 /**
  * Dashboard — Build 2A + 2B + Phase 3 per docs/DASHBOARD_SPEC_v2.txt.
@@ -851,12 +852,12 @@ export default function Dashboard() {
         <div style={{ overflow: "auto", maxHeight: `${RESURFACE_VISIBLE_ROWS * 44}px` }}>
           <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
             <colgroup>
-              <col style={{ width: "14%" }} /> {/* Name — full names */}
-              <col style={{ width: "10%" }} /> {/* Phone — full "+1XXXXXXXXXX" */}
-              <col style={{ width: "8%" }} />  {/* Tier — full badge text (e.g. "Warm") */}
-              <col style={{ width: "5%" }} />  {/* Score */}
+              <col style={{ width: "19%" }} /> {/* Name — full names */}
+              <col style={{ width: "10%" }} /> {/* Phone — formatted "214-914-6151" (§5.1) */}
+              <col style={{ width: "7%" }} />  {/* Tier — full badge text (e.g. "Warm") */}
+              <col style={{ width: "4%" }} />  {/* Score */}
               <col style={{ width: "23%" }} /> {/* Address — full one-line street address */}
-              <col style={{ width: "13%" }} /> {/* Last Contact — full "Attempted Xh ago" */}
+              <col style={{ width: "10%" }} /> {/* Last Contact — full "Attempted Xh ago" */}
               <col style={{ width: "10%" }} /> {/* Call/callback actions */}
               <col style={{ width: "17%" }} /> {/* Notes — comfortably typeable */}
             </colgroup>
@@ -917,7 +918,7 @@ export default function Dashboard() {
                           )}
                         </div>
                       </td>
-                      <td style={{ padding: "9px 10px", color: "#94A3B8", fontSize: "13px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.phone || "—"}</td>
+                      <td style={{ padding: "9px 10px", color: "#94A3B8", fontSize: "13px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{formatPhone(c.phone) || "—"}</td>
                       <td style={{ padding: "9px 10px", overflow: "hidden" }}><TierBadge tier={tier} /></td>
                       <td style={{ padding: "9px 10px", overflow: "hidden" }}><ScoreChip score={c.combinedScore} /></td>
                       <td style={{ padding: "9px 10px", color: "#94A3B8", fontSize: "13px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{formatAddress(c)}</td>
