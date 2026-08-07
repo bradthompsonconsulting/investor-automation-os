@@ -848,3 +848,73 @@ MAO serves as the clean contrast: `Atu5XCjpFElY8H64VG4h` returns `contact:ABSENT
 UNKNOWN -- what GHL does with the five on receipt. `createOpportunity` throws on `!res.ok` (:82-85) and production intake is not reported as failing, which is consistent with, but not proof of, GHL returning a successful response while ignoring unrecognized entries. No POST response body from `/opportunities/` has been observed, so acceptance, silent discard, and partial acceptance are all live possibilities. This decision records the mismatch and does not assert data loss.
 
 No remediation is chosen here. The candidate paths -- writing the five to the contact, creating opportunity-model equivalents, or dropping them -- differ in scope and in what they imply for the contact write path, and none should be selected before GHL's actual response is observed.
+
+### PB-D48 -- Behavior-based field classification supersedes per-field write adjudication
+
+**Decision.** Fields are classified as writable or restricted by the
+observable behavior of a write, not by individual adjudication of each
+field. Serialization approval inherits by dataType. A field is writable
+by default unless writing it directly affects tags, changes pipeline or
+opportunity stage, affects the offer_ fields governed by the
+reference-only guardrail at section 14e of the master architecture
+reference, modifies GHL system-managed data, or is known to participate
+in workflow-triggering behavior.
+
+**Serialization and editors are separate problems.** Serialization
+approval inherits by dataType. Editor implementation does not. A proven
+dataType does not cause any field of that type to appear in the UI, and
+does not reduce the work of building its editor. The current
+FIELD_REGISTER records numerous fields whose editor implementation
+remains unknown. "TEXT is proven" means the write path is known, not
+that TEXT fields are editable in the app.
+
+**Rationale.** This records what Phase B implementation established, not
+a relaxation of the standard. Three things are now in evidence that were
+not when PB-D16 was written. First, dataType serialization has been
+proven independently of individual fields: MONETORY across five fields,
+MULTIPLE_OPTIONS across one, with the clear-semantics differences
+observed rather than assumed (PB-D24, PB-D36, PB-D37). Second, workflow
+behavior in this account is known from the implementation record rather
+than from the API. Per PB-D16 section 4.6 workflow triggers are not
+API-derivable; the cadences at section 14b trigger on bucket tag and
+Seller 7 triggers on pipeline stage, and both are recorded in the master
+architecture reference. Third, no currently implemented workflow depends
+on recomputation of scoring inputs following ordinary contact edits.
+Those fields therefore behave as ordinary editable contact data under
+the current implementation.
+
+**What PB-D16 required, and what changes.** PB-D16 restricted the public
+surface to a named wrapper per field and required each newly unlocked
+field to earn its own decision, on the reasoning that safety is a
+per-field fact. That reasoning was correct given the evidence available
+at the time. With workflow triggers now inventoried, eligibility for
+write capability is determinable by behavioral classification for fields
+outside the exclusions above. Per-field promotion decisions are no
+longer required for fields that fall clearly inside a classified
+category. PB-D16's wire contract is unchanged.
+
+**Classification is scoped to the current implementation.**
+Classification is based on the currently implemented IAOS workflows. If
+a workflow is later introduced or discovered that is triggered directly
+by writes to a contact field, the affected field or fields SHALL be
+reclassified before additional write capability is promoted. A field
+with documented side effects, or whose behavior cannot yet be
+classified, remains individually classified until resolved.
+
+**Intent.** This decision reduces future implementation cost by allowing
+fields that share an already-proven behavioral classification and
+dataType implementation to inherit write eligibility without requiring
+additional architecture decisions. It does not eliminate per-field
+implementation, testing, or UI work.
+
+**Naming collision recorded, not resolved.** The label Phase B denotes
+two different bodies of work. At sections 5 and 8 of the master
+architecture reference it denotes multi-tenancy and OAuth at client #1.
+In this document it denotes the field write-proving arc. Both usages are
+in active documents. This decision records the collision; renaming is
+deferred to a separate decision and is not performed here.
+
+**Unchanged.** PB-D16's wire contract, PB-D22's keystroke removal,
+PB-D23's runner parameterization, PB-D24's restoration semantics,
+PB-D25's assertion contract, the section 14e offer_ guardrail, and every
+existing proof record are untouched.
