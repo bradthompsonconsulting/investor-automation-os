@@ -100,7 +100,7 @@ engineering one.
 | Item | Priority | Value | Effort | Owner | Status |
 | --- | --- | --- | --- | --- | --- |
 | Resolve the Phase B naming collision | P4 | Medium | S | Jeff | Open |
-| Amend provenance markers for direct reads | P4 | Medium | S | Jeff | Open |
+| Amend provenance markers for direct reads | P4 | Medium | S | Jeff | Done |
 | Record transport findings in JEFF_OUTPUT_RULES | P4 | Medium | S | Jeff | Open |
 | Retention decision on the apply-*.cjs scripts | P4 | Low | S | Brad | Open |
 | Backlog grooming | P4 | Medium | S | Brad | Ongoing |
@@ -109,9 +109,10 @@ The Phase B label denotes multi-tenancy in the master architecture
 reference and the field write-proving arc in PHASE_B_SPEC. Recorded at
 PB-D48, renaming deferred.
 
-The provenance vocabulary at FUNCTION_SURFACE_AUDIT defines OBSERVED as
-established in the working transcript. There are now two read channels,
-one of which Jeff cannot see. The definition should name both.
+The provenance vocabulary at FUNCTION_SURFACE_AUDIT now requires every
+OBSERVED finding to name its source. The vocabulary is shared with
+PHASE_B_SPEC. The communication format that carries it is recorded in
+ALIGNMENT_PROCESS.
 
 ## P5 -- Research and validation
 

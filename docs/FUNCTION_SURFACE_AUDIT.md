@@ -8,8 +8,11 @@ surface. Findings only; no remediation is authorized by this document.
 Findings in this document use one of four provenance markers. The
 marker states how the finding was established, not how confident it is.
 
-- OBSERVED -- established by a file read, command output, wire
-  response, or UI reading in the working transcript.
+- OBSERVED -- established by direct observation from a named
+  source. Every OBSERVED finding states its source: for example a
+  repository read, terminal output, a wire response, or the live
+  application. Sources differ in what they can reach. A finding
+  unavailable to one source is not thereby unestablished.
 - VENDOR DOC -- established by authoritative vendor documentation,
   cited with title, URL, and access date. Not presented as runtime
   observation and not independently verified against this deployment
