@@ -37,7 +37,7 @@ record how IAOS must behave. Keep them separate.
 | Item | Priority | Value | Effort | Owner | Status |
 | --- | --- | --- | --- | --- | --- |
 | Exclude terminal-stage contacts from both queues | P1 | High | S | Jeff | Done |
-| Exclude opt-outs from Unanswered Inbound | P1 | High | S | Jeff | Open |
+| Exclude opt-outs from Unanswered Inbound | P1 | High | S | Jeff | Done |
 | Call or note clears the unanswered flag | P1 | High | S | Jeff | Open |
 | Define disposition effect on queue placement | P1 | High | S | Brad | Open |
 | Live disposition test (real softphone call) | P1 | High | S | Brad | Pending |
@@ -49,7 +49,8 @@ to Lost / Not Interested still appears in Waiting on Me, and opt-outs
 whose inbound body is STOP sit permanently at the top of the highest
 priority section. Both were found in live use on 2026-08-06. Detail is
 recorded in this file only. PB-D49 covers the terminal-stage half and
-shipped 2026-08-07. The opt-out half has no spec decision yet.
+PB-D50 the opt-out half; both were implemented and verified live on
+2026-08-07.
 
 The live disposition test closes CONTACT_WORKSPACE_SPEC_v2 section 9.4,
 which is the only outstanding item on that surface. The webhook path is
