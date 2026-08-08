@@ -61,6 +61,7 @@ record how IAOS must behave. Keep them separate.
 | Contact Workspace field editors | IAOS | P1 | High | L | Jeff | Open |
 | Seller 2 CTA: ask for the appointment | GHL | P1 | High | S | Brad (GHL) | Open |
 | Requested Appointment workflow automation | GHL | P1 | High | M | Brad (GHL) | Blocked (CTA) |
+| Incorrect Number: clear phone to Previous Phone | GHL | P1 | High | S | Brad (GHL) | Open |
 
 Queue filtering is the highest-value work on this list. A contact moved
 to Lost / Not Interested still appears in Waiting on Me, and opt-outs
@@ -77,7 +78,7 @@ passed, so the GHL Custom Value and the Netlify env var agree. One open
 observation: the note duration read 10s against a 19-second Call Summary,
 so that number is not call length.
 
-Two GHL rows sit above the remaining IAOS work. Seller 2 -- Engagement
+Three GHL rows sit above the remaining IAOS work. Seller 2 -- Engagement
 Detected does not currently ask the seller to book an appointment by
 email or SMS, so a cold call that reaches engagement lands in a
 sequence that never asks for the thing the call was for. The routing
@@ -89,6 +90,17 @@ is to obtain the appointment through automated follow-up.
 
 Boundary: IAOS records dispositions. GHL owns workflow enrollment,
 branching, timers, and automated communications.
+
+Incorrect Number is the third GHL row and needs no IAOS change at all.
+On that disposition, GHL copies the primary phone into Previous Phone
+and clears the primary. The Lead Queue already filters on a non-empty
+phone, so the contact leaves the queue on the next load and returns
+when a valid number is entered. Previous Phone is named neutrally
+because the disposition records what the person said, not a proven
+fact about the number. One consequence, accepted: the contact still
+appears in the Contacts grid with an em-dash for a phone, but nothing
+anywhere flags that it needs a new number. A "needs a phone number"
+view is a later P2 item.
 
 ## P2 -- Investor experience
 
