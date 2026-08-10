@@ -59,9 +59,10 @@ record how IAOS must behave. Keep them separate.
 | Live disposition test (real softphone call) | IAOS | P1 | High | S | Brad | Done |
 | Apply PB-D48 classification to FIELD_REGISTER | IAOS | P1 | High | M | Jeff | Open |
 | Contact Workspace field editors | IAOS | P1 | High | L | Jeff | Open |
-| Seller 2 CTA: ask for the appointment | GHL | P1 | High | S | Brad (GHL) | Open |
-| Requested Appointment workflow automation | GHL | P1 | High | M | Brad (GHL) | Blocked (CTA) |
+| Seller 2 CTA: ask for the appointment | GHL | P1 | High | S | Brad (GHL) | Done |
+| Requested Appointment workflow automation | GHL | P1 | High | M | Brad (GHL) | Open |
 | Incorrect Number: clear phone to Previous Phone | GHL | P1 | High | S | Brad (GHL) | Open |
+| Seller 3: remove from Seller 6 on appointment booked | GHL | P1 | High | S | Brad (GHL) | Done |
 | Shared GHL config module, Contact Workspace path | IAOS | P1 | High | M | Jeff | Done |
 
 Queue filtering is the highest-value work on this list. A contact moved
@@ -79,15 +80,36 @@ passed, so the GHL Custom Value and the Netlify env var agree. One open
 observation: the note duration read 10s against a 19-second Call Summary,
 so that number is not call length.
 
-Three GHL rows sit above the remaining IAOS work. Seller 2 -- Engagement
-Detected does not currently ask the seller to book an appointment by
-email or SMS, so a cold call that reaches engagement lands in a
-sequence that never asks for the thing the call was for. The routing
-depends on it: when the Requested Appointment disposition is recorded,
-GHL determines whether an appointment exists. If one exists, the
-contact continues through Seller 3 -- Appointment Booked. Otherwise the
-contact is enrolled in Seller 2 -- Engagement Detected, whose purpose
-is to obtain the appointment through automated follow-up.
+Four GHL rows sit above the remaining IAOS work. The Seller 2 CTA
+shipped 2026-08-10: Wait 15 Min followed by Send SMS - Seller Booking
+Link carrying go.investorautomationos.com/seller-calendar. Verified
+live from the Seller 2 execution log -- wait finished, SMS executed,
+Remove from Workflow ran after it. That ordering required moving
+Remove from Workflow to the bottom; in its prior position it
+terminated every run at step 6.
+
+The routing still depends on it: when the Requested Appointment
+disposition is recorded, GHL determines whether an appointment exists.
+If one exists, the contact continues through Seller 3 -- Appointment
+Booked. Otherwise the contact is enrolled in Seller 2 -- Engagement
+Detected, whose purpose is to obtain the appointment through automated
+follow-up. Seller 3's trigger is Appointment status, filtered to event
+type Normal, status confirmed, calendar Seller Calendar Consultation,
+so it fires on a real booking and not on the disposition tap. No
+workflow currently listens on the Requested Appointment disposition.
+
+Seller 3 did not remove a contact from Seller 6 -- Follow-Up Reminder.
+A contact who booked stayed enrolled in Seller 6 and would later have
+the opportunity moved to Long-Term Nurture by Seller 6's tail,
+overwriting Seller Call Booked. Found and fixed 2026-08-10 by adding
+Seller 6 to Seller 3's Remove from Workflow list, now four workflows.
+Two contacts were enrolled at the time of the fix.
+
+Seller 2's Add to Workflow -- Seller 6 is skipped for a contact already
+enrolled in Seller 6. Allow re-entry governs re-entry after leaving; a
+still-enrolled contact is skipped regardless of that setting. Observed
+2026-08-10, recorded so the absent execution-log row is not
+rediscovered as a defect.
 
 Boundary: IAOS records dispositions. GHL owns workflow enrollment,
 branching, timers, and automated communications.
