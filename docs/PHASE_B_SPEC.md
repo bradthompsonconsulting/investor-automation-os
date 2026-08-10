@@ -1033,3 +1033,78 @@ implementation path this decision authorizes.
 Carrying dndSettings adds opt-out state to a publicly reachable
 endpoint. Recorded for FUNCTION_SURFACE_AUDIT; it does not block this
 decision.
+
+### PB-D51 -- Shared environment-selectable GHL configuration module
+
+**Decision.** GHL identifiers used by the Contact Workspace path move
+out of source literals and into one shared configuration module that
+exports production and test identifier maps. A single environment
+selector determines which map each build or runtime consumes; the
+exact selector mechanism is gated on verification below. No behavior
+changes. No new writes. Production values are byte-identical before
+and after.
+
+**Rationale.** GHL identifiers are location-scoped, so a second GHL
+location makes every hardcoded id wrong. They are not secrets -- a
+field id is inert without a token, and the token is the security
+boundary. That means configuration, not environment variables: one
+checked-in module holding both maps, and one variable choosing between
+them, rather than ninety variables.
+
+**One module, imported by both sides.** Vite bundles app/src; esbuild
+bundles app/netlify/functions and follows relative imports outward. A
+pure-data module with no Node and no browser APIs can be consumed by
+both. One source of truth, compile-time validation, no duplication
+guard.
+
+**Scope, included.** OBSERVED, source: repository read 2026-08-10,
+recorded in the Phase 0 inventory.
+- The location id jmHG4B8RdzwpfqruNf68, at all eight occurrences
+  inside app/: seven Netlify functions and app/src/lib/ghl.ts.
+- Contact custom-field ids in app/src/lib/ghl.ts and in
+  app/netlify/functions/lib/contact-parse.ts.
+- The two folder ids in app/src/pages/ContactWorkspace.tsx.
+
+**The location id converts as a unit.** It cannot be partially
+converted. If the Contact Workspace path reads it from config while
+ghl-conversations retains a literal, a single Dashboard load reads two
+locations at once -- a worse state than not converting. All eight
+occurrences inside app/ move together or none do.
+
+**Scope, excluded. Deliberate, not omissions.** Each is correct as it
+stands and converts when its own surface becomes active work.
+- app/src/pages/MaoCalculator.tsx, seventeen offer and source ids.
+- All of netlify/functions/, the marketing site, including its second
+  copy of the location id and pipeline id.
+- The ten pipeline stage UUIDs in ghl-opportunities.ts.
+- TERMINAL_STAGE_IDS in app/src/pages/Dashboard.tsx.
+- All fourteen scripts under app/scripts. These are deliberately
+  pinned to production fixtures and to the deployed proxy. Making
+  them environment-aware adds a surface that would itself need
+  verifying, with no current requirement to run them against a test
+  location.
+
+**Implementation is gated on two verifications.** No identifier moves
+until both are answered from the tooling, not from reasoning.
+1. That the proposed module path resolves under both bundlers --
+   Vite for app/src and esbuild for app/netlify/functions -- and that
+   app/tsconfig.json permits the import in both directions. A neutral
+   location such as app/shared/ is expected to be correct; app/src/
+   may not be.
+2. How the selector is read. Vite statically replaces
+   import.meta.env.VITE_*; esbuild does not parse it, and browser code
+   cannot read process.env. The module therefore cannot read the
+   selector identically on both sides. Either it exports a selector
+   function each side calls with its own value, or the value is
+   supplied by a build-time define. Neither is chosen here.
+
+**Verification is that nothing changed.** Production identifier values
+must be byte-identical after conversion, and the live Dashboard,
+Contact Workspace, and Contacts grid must behave exactly as before.
+This decision authorizes no new capability.
+
+**The test-map schema exists before the test location does.** No test
+identifier values are recorded by this decision. Test selection must
+fail loudly while required values are absent; it must never fall back
+to production identifiers. The test map is populated only after a GHL
+test location is created and its identifiers are read from it.
