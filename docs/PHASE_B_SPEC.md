@@ -1108,3 +1108,57 @@ identifier values are recorded by this decision. Test selection must
 fail loudly while required values are absent; it must never fall back
 to production identifiers. The test map is populated only after a GHL
 test location is created and its identifiers are read from it.
+
+**Amendment (2026-08-10): implementation gate cleared.** This
+supersedes item 1 of the "Implementation is gated on two
+verifications" paragraph and answers item 2. Every other paragraph of
+PB-D51 remains as written -- Decision, Rationale, One module imported
+by both sides, Scope included, The location id converts as a unit,
+Scope excluded, Verification is that nothing changed, and The
+test-map schema exists before the test location does.
+
+Question 1, module path. OBSERVED, source: probe run against the
+working tree at 8fd7e0d. A pure-data module at app/shared/, imported
+by relative path from app/src and from app/netlify/functions
+simultaneously, resolves under all three toolchains: tsc --noEmit
+exit 0, esbuild --bundle --platform=node exit 0, vite build exit 0.
+No path alias, no tsconfig edit, no vite resolve.alias was required.
+app/shared/ is the module location. Two caveats, neither blocking:
+the probe ran tsc --noEmit rather than the tsc -b of the real build
+script, so the rootDir class of error is unproven for an emit path;
+and app/src/ as an alternative location was not tested.
+
+Question 2, selector mechanism. Decided, not observed. The shared
+module exports getConfig(selector). Each side supplies its own value
+at the call site: the client calls
+getConfig(import.meta.env.VITE_IAOS_ENV), the server calls
+getConfig(process.env.IAOS_ENV). No Vite define block and no
+envPrefix setting is added, and app/vite.config.ts is not modified.
+The environment source stays visible where it is consumed rather
+than injected by build configuration.
+
+**The client selector requires a type prerequisite.** OBSERVED,
+source: probe run 2026-08-10. app/ has no vite-env.d.ts and no
+vite/client reference, and app/tsconfig.json declares no types field.
+A file under app/src reading import.meta.env fails type-check with
+TS2339, Property 'env' does not exist on type 'ImportMeta', exit 2.
+Adding app/src/vite-env.d.ts containing a vite/client triple-slash
+reference clears it, exit 0. That file is a prerequisite of the
+client selector and part of this implementation. It is a new file,
+not an edit to app/tsconfig.json, so the Question 1 finding that no
+tsconfig edit was required is unaffected.
+
+**Fail-loud invariant.** getConfig throws when the selector is
+absent, unknown, or resolves to a configuration that is incomplete or
+internally inconsistent. There is no default and no implicit fallback
+to production under any condition. This extends the test-map rule
+above to the selector itself.
+
+**Both selectors are out-of-repo deployment dependencies.** Two
+deployment variables must be configured for the app site in Netlify:
+IAOS_ENV, read at runtime by the functions, and VITE_IAOS_ENV,
+consumed during the client build and baked into the generated bundle.
+OBSERVED: app/netlify.toml declares only NODE_VERSION and contains no
+[context] block of any kind, so no repository check can confirm
+either variable is set. A deploy missing one fails loudly by the
+invariant above rather than silently reading production.
