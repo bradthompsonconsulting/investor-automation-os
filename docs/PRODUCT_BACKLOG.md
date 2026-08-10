@@ -62,6 +62,7 @@ record how IAOS must behave. Keep them separate.
 | Seller 2 CTA: ask for the appointment | GHL | P1 | High | S | Brad (GHL) | Open |
 | Requested Appointment workflow automation | GHL | P1 | High | M | Brad (GHL) | Blocked (CTA) |
 | Incorrect Number: clear phone to Previous Phone | GHL | P1 | High | S | Brad (GHL) | Open |
+| Shared GHL config module, Contact Workspace path | IAOS | P1 | High | M | Jeff | Done |
 
 Queue filtering is the highest-value work on this list. A contact moved
 to Lost / Not Interested still appears in Waiting on Me, and opt-outs
@@ -111,10 +112,23 @@ view is a later P2 item.
 | Navigation and cross-surface flow | IAOS | P2 | Medium | M | Jeff | Open |
 | Conversations send and compose path | IAOS | P2 | High | L | Jeff | Deferred |
 | Calendars booking and reschedule | IAOS | P2 | Medium | L | Jeff | Deferred |
+| Complete identifier conversion for test-location readiness | IAOS | P2 | Medium | L | Jeff | Open |
 
 Conversations and Calendars both shipped read-only. Their write paths
 are separately scoped later phases per the master architecture
 reference, not omissions.
+
+The shared configuration module shipped 2026-08-10 as PB-D51 and was
+verified live. It covers the Contact Workspace path only -- the
+location id across all of app/, contact custom-field ids, and the two
+Contact Workspace folder ids. MaoCalculator, the marketing-site
+functions, the pipeline stage UUIDs, Dashboard terminal stages, and
+the app/scripts harnesses still hold literals by deliberate scope
+decision. Each converts when its own surface becomes active work,
+which is the test-location readiness row above. That row is a
+dependency of any usable GHL test location, not optional cleanup:
+until it lands, a test build still reads production stage and
+pipeline ids.
 
 ## P3 -- Platform
 
