@@ -9,6 +9,7 @@ import { CallbackPopover } from "../components/CallbackPopover";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
 import { ADDITIONAL_INFO_SUBGROUPS, type AdditionalInfoSubgroup } from "../config/additionalInfoSubgroups";
+import { getConfig } from "../../shared/ghl-config";
 
 /**
  * Contact Workspace — docs/CONTACT_WORKSPACE_SPEC_v2.md §8 steps 1-3.
@@ -29,6 +30,13 @@ import { ADDITIONAL_INFO_SUBGROUPS, type AdditionalInfoSubgroup } from "../confi
  */
 
 const CONTENT_MAX_WIDTH = "1600px";
+
+// PB-D51 — both folder ids resolve from the shared config, once at module scope.
+// These replace what were previously two function-local OFFER_FOLDER_ID
+// declarations plus two bare inline literals. Values are unchanged.
+const FOLDERS = getConfig(import.meta.env.VITE_IAOS_ENV).folders;
+const OFFER_FOLDER_ID           = FOLDERS.offer;
+const ADDITIONAL_INFO_FOLDER_ID = FOLDERS.additionalInfo;
 
 // ── Presentational helpers (replicated from Dashboard; purely visual, no
 //    coupling — Dashboard.tsx is intentionally untouched this phase) ──────────
@@ -402,7 +410,7 @@ export default function ContactWorkspace() {
   // state). `expanded` = the set of expanded folder ids; Offer starts open.
   const [folderNames, setFolderNames]               = useState<Map<string, string> | null>(null);
   const [folderNamesLoading, setFolderNamesLoading] = useState(true);
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["YslJ5oke73JrBOgaq0np"]));
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([OFFER_FOLDER_ID]));
 
   const [notes, setNotes]           = useState<NoteRow[] | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
@@ -530,7 +538,6 @@ export default function ContactWorkspace() {
   useEffect(() => {
     if (defs == null) { setFolderNames(null); setFolderNamesLoading(true); return; }
     let cancelled = false;
-    const OFFER_FOLDER_ID = "YslJ5oke73JrBOgaq0np";
     const distinct = [...new Set(defs.map((d) => d.parentId))];
     Promise.all(distinct.map((pid) => ghl.customFields.getFolder(pid)))
       .then((folders) => {
@@ -586,7 +593,6 @@ export default function ContactWorkspace() {
   // wait on detail.
   const recordModel = useMemo(() => {
     if (defs == null) return null;
-    const OFFER_FOLDER_ID = "YslJ5oke73JrBOgaq0np";
     const values = detail?.customFields ?? [];
     const byFolder = new Map<string, CustomFieldDef[]>();
     for (const d of defs) {
@@ -833,7 +839,7 @@ export default function ContactWorkspace() {
                     <span style={{ fontSize: "14px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif" }}>{folderName}</span>
                   </button>
                   <div style={{ display: open ? "flex" : "none", flexDirection: "column", gap: "6px", padding: "0 16px 12px" }}>
-                    {parentId === "qYS1wakeOTmfgjyeSJ8M"
+                    {parentId === ADDITIONAL_INFO_FOLDER_ID
                       ? groupAdditionalInfo(folder?.fields ?? []).map(({ subgroup, fields }) => (
                           <div key={subgroup} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                             <div style={{ fontSize: "11px", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", color: "#64748B", marginTop: "4px" }}>{subgroup}</div>

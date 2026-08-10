@@ -9,8 +9,10 @@
  */
 
 import { buildMailerDigest, type MailerDigest, type MailerGroup } from "./lib/mailer-shared";
+import { getConfig } from "../../shared/ghl-config";
 
-const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
+// PB-D51 — location id resolved once at module scope from the shared config.
+const { locationId: LOCATION_ID } = getConfig(process.env.IAOS_ENV);
 
 // mailer_digest_recipient custom value, created once via the GHL API.
 // The VALUE is read fresh every send — only this pointer ID is fixed, same as

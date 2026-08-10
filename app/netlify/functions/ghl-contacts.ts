@@ -7,9 +7,11 @@
  */
 
 import { parseContact } from "./lib/contact-parse";
+import { getConfig } from "../../shared/ghl-config";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
-const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
+// PB-D51 — location id resolved once at module scope from the shared config.
+const { locationId: LOCATION_ID } = getConfig(process.env.IAOS_ENV);
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",

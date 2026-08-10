@@ -5,44 +5,50 @@
  * share ONE parser and cannot drift. Pure functions, no I/O.
  */
 
-// Score field IDs — hardcoded (confirmed via /locations/.../customFields)
+import { getConfig } from "../../../shared/ghl-config";
+
+// PB-D51 — every field id below now resolves from the shared config, once at
+// module scope. Values are unchanged; only their source moved.
+const FIELDS = getConfig(process.env.IAOS_ENV).fields;
+
+// Score field IDs — confirmed via /locations/.../customFields
 const SCORE_IDS = {
-  motivation_score:        "8vH9yq10xeYVVMHXbS0C",
-  deal_score:              "cfkm0kb9CLvjZgyrcIFz",
-  combined_score:          "9SVnuzznYsZOQQazpxld",
-  data_completeness_score: "r9sD1rlTIqhOx9Mhvftt",
+  motivation_score:        FIELDS.motivationScore,
+  deal_score:              FIELDS.dealScore,
+  combined_score:          FIELDS.combinedScore,
+  data_completeness_score: FIELDS.dataCompletenessScore,
 };
 
 // Contact-side offer_price (§14e OFFER_FIELD_IDS.contact.offer_price in
 // MaoCalculator.tsx) — read-only here, used by the Dashboard's "Offers to
 // review" tile to detect a saved-but-unsent offer. Never written by this function.
-const OFFER_PRICE_ID = "v2VO2wUwTYRojmU7VXyZ";
+const OFFER_PRICE_ID = FIELDS.offerPrice;
 
 // Property Address (contact.property_address) — the deal's subject-property
 // address, a TEXT custom field. Confirmed live: tG4gGFI8JB2VjWeuqYMx =
 // "2623 Greenway Dr" on bradt75, present BY VALUE in both the list and
 // single-record reads (the list does not truncate custom fields). Read-only.
-const PROPERTY_ADDRESS_ID = "tG4gGFI8JB2VjWeuqYMx";
+const PROPERTY_ADDRESS_ID = FIELDS.propertyAddress;
 
 // Dashboard Phase 2/3 fields (confirmed live via /locations/.../customFields).
 // callback_datetime and last_call_attempt are DATE type on contact; parsing
 // here only reads them, never writes.
-const CALLBACK_DATETIME_ID = "JeQWtwpwUbvPA50UfuPU";
+const CALLBACK_DATETIME_ID = FIELDS.callbackDatetime;
 // Exported: the disposition-capture function (ghl-disposition.ts) writes these
 // two, server-side, so it must share the SAME ids as the read parser — never a
 // second copy that can drift.
-export const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
+export const LAST_CALL_ATTEMPT_ID = FIELDS.lastCallAttempt;
 
 // Companion TEXT field — GHL's DATE type truncates time-of-day on write, so
 // this holds the exact ISO string written in the same PUT as
 // callback_datetime. Read-only here; written by ghl.contacts.setCallbackDatetime.
-const CALLBACK_DATETIME_PRECISE_ID = "7qRUkZQK8bi2HNo7zDHd";
+const CALLBACK_DATETIME_PRECISE_ID = FIELDS.callbackDatetimePrecise;
 
 // Companion TEXT field for last_call_attempt — same DATE-truncation bug
 // (confirmed live: a ~15min-old note displayed as "Attempted 16h ago").
 // Read-only here; written by ghl.contacts.setLastCallAttempt AND, server-side,
 // by ghl-disposition.ts — so it is exported alongside LAST_CALL_ATTEMPT_ID.
-export const LAST_CALL_ATTEMPT_PRECISE_ID = "2vz1igGMxF3wv7HaWm97";
+export const LAST_CALL_ATTEMPT_PRECISE_ID = FIELDS.lastCallAttemptPrecise;
 
 function cfValue(customFields: any[], id: string): number | null {
   const f = customFields?.find((cf: any) => cf.id === id);

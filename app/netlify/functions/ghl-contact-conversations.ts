@@ -21,8 +21,11 @@
  * shipping.
  */
 
+import { getConfig } from "../../shared/ghl-config";
+
 const GHL_BASE    = "https://services.leadconnectorhq.com";
-const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
+// PB-D51 — location id resolved once at module scope from the shared config.
+const { locationId: LOCATION_ID } = getConfig(process.env.IAOS_ENV);
 const MESSAGE_CAP = 500; // bound the transcript; sellers won't exceed this in practice
 
 const CORS = {

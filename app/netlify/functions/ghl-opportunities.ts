@@ -6,8 +6,12 @@
  * plus the pipeline's stage list (id/name/position) for the "Move to" control.
  */
 
+import { getConfig } from "../../shared/ghl-config";
+
 const GHL_BASE    = "https://services.leadconnectorhq.com";
-const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
+// PB-D51 — location id resolved once at module scope from the shared config.
+// PIPELINE_ID and STAGES below are deliberately OUT of PB-D51 scope.
+const { locationId: LOCATION_ID } = getConfig(process.env.IAOS_ENV);
 
 // Seller Leads Pipeline — confirmed via GET /opportunities/pipelines
 const PIPELINE_ID = "GpUWK4YlhNqBzm5Hrm58";

@@ -11,13 +11,18 @@
  * without refactoring once implemented.
  */
 
-const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
+import { getConfig } from "../../shared/ghl-config";
+
+// PB-D51 — location id and every field id below resolve from the shared config,
+// once at module scope. Values are unchanged; only their source moved.
+const CONFIG      = getConfig(import.meta.env.VITE_IAOS_ENV);
+const LOCATION_ID = CONFIG.locationId;
 const PROXY       = "/.netlify/functions/ghl-proxy";
 
 // Dashboard Phase 2 — confirmed live via /locations/.../customFields (both
 // DATE type, contact model). last_call_attempt is the ONLY field this module
 // writes outside the already-established offer_/stage/task write paths.
-const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
+const LAST_CALL_ATTEMPT_ID = CONFIG.fields.lastCallAttempt;
 
 // Companion TEXT field — same DATE-truncation bug as callback_datetime
 // (confirmed live: a note saved ~15min prior displayed as "Attempted 16h
@@ -25,24 +30,24 @@ const LAST_CALL_ATTEMPT_ID = "lGoNXM9Wrte4m7ShwQPT";
 // is still written for GHL's own UI; this field is our own read path's
 // source of truth. Written in the SAME PUT as last_call_attempt — no new
 // write action, still inside the three-write invariant.
-const LAST_CALL_ATTEMPT_PRECISE_ID = "2vz1igGMxF3wv7HaWm97";
+const LAST_CALL_ATTEMPT_PRECISE_ID = CONFIG.fields.lastCallAttemptPrecise;
 
 // Dashboard Phase 3 — the third and last scoped write (spec guardrails).
 // DATE type, contact model, same ID already used for the read side (§14f note:
 // this field predates Phase 3's write — Build 2A only read it).
-const CALLBACK_DATETIME_ID = "JeQWtwpwUbvPA50UfuPU";
+const CALLBACK_DATETIME_ID = CONFIG.fields.callbackDatetime;
 
 // Companion TEXT field — GHL's DATE type silently truncates time-of-day on
 // write (confirmed live: a 2pm CT callback round-tripped as "Jul 14, 7pm").
 // callback_datetime is still written for GHL's own UI, but this field is our
 // own read path's source of truth so overdue/today bucketing survives a
 // reload. Written in the SAME PUT as callback_datetime — no new write action.
-const CALLBACK_DATETIME_PRECISE_ID = "7qRUkZQK8bi2HNo7zDHd";
+const CALLBACK_DATETIME_PRECISE_ID = CONFIG.fields.callbackDatetimePrecise;
 
 // Phase B PB-D1 — property_notes, the first Class 1 unlocked field.
 // Additional Info > Investor subgroup, TEXT-typed.
-export const PROPERTY_NOTES_ID = "k7O0TYVMpqCpnMHRLPol";
-export const ARV_ID = "wMBTGWMs97yysQFx7Vad"; // MONETORY, PB-D16/PB-D17 — B2 unlock
+export const PROPERTY_NOTES_ID = CONFIG.fields.propertyNotes;
+export const ARV_ID = CONFIG.fields.arv; // MONETORY, PB-D16/PB-D17 — B2 unlock
 
 // Dashboard Phase 2B — GHL's public API cannot trigger an outbound call (it
 // can only log one that already happened); the click-to-call button hands off
