@@ -1376,7 +1376,7 @@ writes Phone Type back to the contact. It does.
    Dashboard predicates, Waiting on Me Follow-Up section.
 5. Update CONTACT_FIELD_REFERENCE and the harness to the 98-field schema
    and floor 138 before trusting any verification run.
-   
+
 **PB-D52's Incorrect Number mechanism is superseded.** PB-D52 classifies
 that disposition as leaving operational queues "because GHL clears the
 primary phone." That clause is superseded by the Incorrect Number
@@ -1385,3 +1385,31 @@ and no mechanism clears the primary phone today. PB-D52's
 classification of the disposition as invalid reachability is unaffected;
 only its stated mechanism changes. Every other paragraph of PB-D52
 remains as written.
+
+**Amendment (2026-08-11): the reset rule, and the gate is
+discharged.** Phone Status resets to absent by either of two paths.
+Path A: the native primary Phone field changes, observed by a GHL
+Contact changed trigger on that field. A replaced number is a data
+correction and the prior invalidity no longer describes it. Path B: a
+subsequent disposition that PB-D52 classifies as meaningful
+engagement. That classification is PB-D52's and is not restated here;
+a seventh disposition classified there governs this reset without
+further amendment.
+
+No Answer and Voicemail do not reset. Neither establishes that the
+right person was reached -- an unanswered ring and a generic carrier
+greeting are both indistinguishable from a wrong but live number.
+Incorrect Number describes the wrong person, not a dead line, so
+dialability is not the evidence the reset requires.
+
+The Contact changed trigger was characterized 2026-08-10 without being
+used: it fires on selected contact fields only, targets an individual
+field by name, and offers Has changed and Has changed to. Whether it
+fires on the native Phone field specifically is UNKNOWN and must be
+confirmed before Path A is built.
+
+This discharges the gate stated in "Reset requirement, and the gate."
+Creating Phone Status and building the Incorrect Number workflow are
+no longer blocked. The remaining implementation order in
+"Implementation is gated, in this order" stands, with item 1 now
+satisfied.
