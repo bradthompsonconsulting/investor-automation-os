@@ -1319,16 +1319,18 @@ written by phone-lookup.ts from a Twilio lookup. Phone Status records
 whether the primary number is operationally callable for queue
 purposes. The two answer different questions about the same number.
 
-Phone Status is SINGLE_OPTIONS and carries exactly one value:
+Phone Status is SINGLE_OPTIONS and carries two values:
 - Incorrect Number
+- Callable
 
-No second value is predeclared. Undeliverable was considered and
-rejected for now: PB-D50 records five contacts carrying dndSettings
-entries of the form TWILIO_ERROR_CODE 30003, 30005 or 30006, which are
-deliverability failures rather than consent withdrawals, but nothing is
-proposed that would write such a state or act on it. An enum value with
-no writer and no consumer is abstraction ahead of its first consumer.
-It is added when one exists.
+Callable was added 2026-08-11 by the reset amendment below. It has a
+writer and a semantic role, so it satisfies this decision's own test.
+Undeliverable was considered and rejected for now: PB-D50 records five
+contacts carrying dndSettings entries of the form TWILIO_ERROR_CODE
+30003, 30005 or 30006, which are deliverability failures rather than
+consent withdrawals, but nothing is proposed that would write such a
+state or act on it. An enum value with no writer and no consumer is
+abstraction ahead of its first consumer. It is added when one exists.
 
 **Incorrect Number.** A GHL workflow triggered by that disposition sets
 Phone Status to Incorrect Number. IAOS excludes a contact carrying that
@@ -1424,15 +1426,42 @@ classification of the disposition as invalid reachability is unaffected;
 only its stated mechanism changes. Every other paragraph of PB-D52
 remains as written.
 
-**Amendment (2026-08-11): the reset rule, and the gate is
-discharged.** Phone Status resets to absent by either of two paths.
+**Amendment (2026-08-11): the reset rule, the gate, and the Callable
+transition.** This paragraph replaces the reset mechanism stated
+earlier the same day, which held that Phone Status resets to absent by
+either of two paths. That mechanism is unbuildable.
+
+OBSERVED, source: live GHL workflow execution 2026-08-11 16:33:36 --
+an Update contact field action writing an empty value to a
+SINGLE_OPTIONS field executes and changes nothing. The execution log
+records Executed; Phone Status remained Incorrect Number; the native
+phone and Phone Type were unaffected. An empty value against
+SINGLE_OPTIONS is a no-op, not a clear. GHL logs Executed for an
+action having fired, not for it having had an effect. Second instance
+observed today; the first was Seller 2.5's Add to Workflow when Seller
+2 rejected the contact on re-entry.
+
+The reset is therefore an explicit state transition rather than a
+clear: Incorrect Number becomes Callable. Callable asserts that the
+prior Incorrect Number judgment no longer applies. It does not assert
+that the current number is verified.
+
+**The transition invariant.** Callable is written only to a contact
+currently holding Incorrect Number. Both reset paths are gated on that
+condition, and any path added later inherits the rule. A contact that
+never carried Incorrect Number never carries Callable. An ungated
+write would reduce Callable to "the phone was edited" or "the contact
+was worked", neither of which is the signal this field carries, and
+would make the value non-evidentiary within a few months of accrued
+edits.
+
 Path A: the native primary Phone field changes, observed by a GHL
 Contact changed trigger on that field. A replaced number is a data
 correction and the prior invalidity no longer describes it. Path B: a
 subsequent disposition that PB-D52 classifies as meaningful
 engagement. That classification is PB-D52's and is not restated here;
 a seventh disposition classified there governs this reset without
-further amendment.
+further amendment. Both paths write through the invariant above.
 
 No Answer and Voicemail do not reset. Neither establishes that the
 right person was reached -- an unanswered ring and a generic carrier
@@ -1442,15 +1471,22 @@ dialability is not the evidence the reset requires.
 
 The Contact changed trigger was characterized 2026-08-10 without being
 used: it fires on selected contact fields only, targets an individual
-field by name, and offers Has changed and Has changed to. Whether it
-fires on the native Phone field specifically is UNKNOWN and must be
-confirmed before Path A is built.
+field by name, and offers Has changed and Has changed to. OBSERVED,
+source: live GHL builder 2026-08-11 -- it accepts the native Phone
+field as the watched field under both operators. Path A is buildable.
+This discharges only that question. Whether the API can clear a native
+phone where the UI will not, recorded at the Incorrect Number
+paragraph above, remains UNKNOWN and untested.
 
 This discharges the gate stated in "Reset requirement, and the gate."
-Creating Phone Status and building the Incorrect Number workflow are
-no longer blocked. The remaining implementation order in
-"Implementation is gated, in this order" stands, with item 1 now
-satisfied.
+The gate as written was unsatisfiable in its stated order: item 1
+required verifying reset semantics against a SINGLE_OPTIONS field, and
+that verification required the field to exist. Phone Status was
+therefore created 2026-08-11 16:14 ahead of item 1's discharge by
+necessity rather than by bypass, and item 1 was discharged at 16:33 by
+the execution recorded above. Items 3 through 5 stand as written. Item
+5's field-count and harness-floor figures are not amended here and are
+not to be trusted until reconciled separately.
 
 ### PB-D54 -- Cold-outreach eligibility governs Lead Queue membership
 
