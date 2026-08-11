@@ -59,7 +59,7 @@ record how IAOS must behave. Keep them separate.
 | Live disposition test (real softphone call) | IAOS | P1 | High | S | Brad | Done |
 | Apply PB-D48 classification to FIELD_REGISTER | IAOS | P1 | High | M | Jeff | Open |
 | Contact Workspace field editors | IAOS | P1 | High | L | Jeff | Open |
-| Contact Workspace conversation parity: SMS + email collapse | IAOS | P1 | High | S | Jeff | Open |
+| Contact Workspace conversation parity: SMS + email collapse | IAOS | P1 | High | S | Jeff | Done |
 | Seller 2 CTA: ask for the appointment | GHL | P1 | High | S | Brad (GHL) | Done |
 | Requested Appointment workflow automation | GHL | P1 | High | M | Brad (GHL) | Done |
 | Incorrect Number: clear phone to Previous Phone | GHL | P1 | High | S | Brad (GHL) | Open |
@@ -161,25 +161,35 @@ to, the latter with a free-text value input. That is the mechanism a
 persisted-disposition design would use. Recorded as verified rather than
 assumed so the design does not have to re-establish it.
 
-Contact Workspace conversation parity is a display gap found the same
-day. ContactWorkspace.tsx filters the transcript to TYPE_EMAIL only, so
-an SMS sent to a seller is fetched, returned, and dropped at render on
-the surface contacts are worked from. Conversations.tsx allows
-TYPE_EMAIL and TYPE_SMS and renders it correctly. Email bubbles also
-collapse to five lines with an Expand control on Conversations and do
-not collapse in the Workspace. Both divergences were deliberate, and
-both rationales were defensive -- avoid disturbing an already-verified
-surface -- rather than product judgments that email-only and fully
-expanded reads better. The target is parity: add TYPE_SMS to the
-Workspace allowlist and match the five-line collapse with Expand. Both
-changes touch the same render path and trigger the same harness floor
-and bundle re-pin, so they ship together. CONTACTS_DETAIL_SPEC section 3
-names both as preserved in Phase A and needs a dated supersession before
-code moves. One thing to watch rather than pre-solve: section 8.7 of
-CONVERSATIONS_SPEC establishes that GHL emits internal workflow
-notifications as genuine TYPE_SMS objects, so they will interleave into
-the Workspace chronology. Ship parity, observe, then decide whether a
-second filter is warranted.
+Contact Workspace conversation parity shipped 2026-08-11 as D5 in
+CONTACTS_DETAIL_SPEC, which superseded the section 3 preservation of the
+TYPE_EMAIL-only filter. ContactWorkspace.tsx now allows TYPE_EMAIL and
+TYPE_SMS, and email bodies clamp to five CSS line boxes with an Expand
+control shown only on measured overflow. Implementation b134755, harness
+cfd56b2 at exact floor 136, verification record at
+CONTACT_WORKSPACE_SPEC_v2 section 9.6. Run result 136 of 136, zero
+failures.
+
+The workflow-notification interleave that section 8.7 of
+CONVERSATIONS_SPEC warned about was measured on two fixtures before
+shipping rather than after. On Brad's own contact record 24 of 28 SMS
+were internal notifications, because GHL delivers every workflow
+notification to him and his record is where they land. On a real seller,
+Ronald Gordon, the ratio is one notification in three SMS and the other
+two are a genuine exchange, including an inbound question that had been
+sitting unanswered and invisible on this surface. The 24-of-28 figure is
+an artifact of Brad's record being structurally unlike a seller's, and
+does not generalize. No second filter was added. The observation
+section 8.7 asked for arrived before the ship rather than after it, and
+it supported shipping.
+
+Two branches are recorded as unexercised rather than covered. No email
+body anywhere in the location is short enough to fit inside five line
+boxes, so the case where an email does not overflow and renders no
+control has no fixture and no check. And section 9.6's bundle-identity
+proof inspected the served artifact for the new allowlist and the Show
+less string rather than running section 9.2's parent-versus-child hash
+discrimination. Both are named in section 9.6; neither is pending work.
 
 Webhook secret timeline, corrected 2026-08-11. The production
 IAOS_WEBHOOK_SECRET exposure was closed on 2026-07-24, when the value was
