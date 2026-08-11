@@ -430,8 +430,9 @@ and the Netlify env var agree.
 
 **The Workflow as verified:** URL → `/.netlify/functions/ghl-disposition`; header
 `X-IAOS-Secret` = `{{ custom_values.iaos_webhook_secret }}`; all six dispositions on the
-trigger filter. One disposition of the six — No Answer — has now fired end to end; the
-other five share the trigger filter and endpoint but have not individually fired.
+trigger filter. Three dispositions of the six have now fired end to end: No Answer (2026-08-07),
+Requested Appointment and Voicemail (both 2026-08-10). Follow Up, Not Interested and
+Incorrect Number share the trigger filter and endpoint but have not individually fired.
 
 **Constraint (§5.2), still binding for any future test:** the disposition picker is
 transient — it appears in the Call Summary the instant you hang up and closes after
@@ -442,6 +443,22 @@ nothing (and, by design, writes nothing — the lead just re-dials).
 read 19 seconds; the note recorded 10s. `{{phoneCall.duration}}` is documented as
 talk-seconds, so the gap is plausibly ring time — plausible but not established. Read
 the note’s duration as talk-seconds at best, never as call length.
+
+**VERIFIED LIVE — two further dispositions, 2026-08-10.** Source: live application.
+Two more outbound calls to Brad Thompson (`9fbH2VCcZvzVNhsR9zjc`), each dispositioned
+inside the transient window. **Requested Appointment** wrote `Call: Requested Appointment
+— 2s` against a 6-second Call Summary. **Voicemail** wrote `Call: Voicemail — 6s`. Both
+produced a fresh `last_call_attempt`, both observed in the Contact Workspace Notes panel.
+
+The Voicemail call is additionally the post-rotation proof of `IAOS_WEBHOOK_SECRET`: it
+was placed after the secret was rotated in both the GHL Custom Value and the Netlify env
+var, so a passing write establishes the two sides agree on the new value. Rotation itself
+is recorded in PRODUCT_BACKLOG P1, not here — the mechanism this section describes is
+unchanged, only the value behind it.
+
+The duration discrepancy reproduces on both: 2s recorded against 6s, and 6s recorded
+against a call of unmeasured length. Three data points now, all short — the gap has never
+been observed on a long call, so its magnitude is uncharacterized.
 
 ### 9.5 VERIFIED LIVE — step 7 (Dashboard name-click deep-link), 2026-07-16
 
