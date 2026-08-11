@@ -1451,3 +1451,105 @@ Creating Phone Status and building the Incorrect Number workflow are
 no longer blocked. The remaining implementation order in
 "Implementation is gated, in this order" stands, with item 1 now
 satisfied.
+
+### PB-D54 -- Cold-outreach eligibility governs Lead Queue membership
+
+**Decision.** A contact is excluded from the Lead Queue when their
+current state establishes that cold outreach is no longer the right
+work, whether or not that state is rendered anywhere in Waiting on Me.
+Membership derives from underlying state, not from what a section
+happens to display. Display-only filtering; no write of any kind.
+
+**Why this decision exists.** OBSERVED, source: repository read of
+Dashboard.tsx 2026-08-11. The leadQueue memo filters on three
+predicates: a non-empty trimmed phone, absence from
+escalatedContactIds, and absence from terminalContactIds.
+escalatedContactIds derives solely from the unanswered-inbound read.
+Neither the callbacks memo nor the offers-awaiting read contributes to
+it. A contact with a scheduled callback therefore appears in Waiting on
+Me and in the Lead Queue simultaneously, and so does a contact whose
+offer is out and awaiting response. The Dashboard can tell you to cold
+call someone while also telling you that you owe them a callback.
+
+**The Lead Queue copy already claims this behavior.** OBSERVED, same
+read: Dashboard.tsx's Lead Queue blurb states that anyone who has
+engaged moves to Waiting on Me and drops out of the list. That is true
+for unanswered inbound and false for callbacks and offers. This
+decision makes the copy accurate rather than the copy being corrected
+to match a narrower implementation.
+
+**Exclusion predicates.** Six. A contact carrying any one of them is
+absent from the Lead Queue.
+- Live unanswered inbound. Already implemented as
+  escalatedContactIds; unchanged by this decision.
+- Any scheduled callback, including future-dated and overdue. Reads
+  callback_datetime and its precise companion.
+- Offer awaiting response. An open opportunity in Seller Offer Sent
+  carrying the offer-made tag, the same read DASHBOARD_SPEC_v2 section
+  3.3 already performs.
+- Terminal stage. Already implemented as terminalContactIds per
+  PB-D49; unchanged by this decision.
+- The Seller Follow-Up pipeline stage, per PB-D53.
+- Phone Status equal to Incorrect Number, per PB-D53.
+
+**The future-dated callback is the case that decides the rule's
+shape.** The callbacks memo buckets overdue and due-today only;
+a callback scheduled for Thursday renders nowhere until Thursday. An
+exclusion keyed on section membership would leave that contact cold
+callable Monday through Wednesday, which is precisely the error the
+principle at PB-D52's Cold Call Queue amendment exists to prevent. A
+promise to call Thursday is engagement the moment it is made. That the
+Dashboard does not render it yet is a display gap, and Waiting on Me
+may continue to render only overdue and due-today callbacks without
+affecting membership.
+
+**Offers Awaiting Response excludes for a different reason.** The
+other predicates mark work Brad owes. An offer awaiting response marks
+work the seller owes; DASHBOARD_SPEC_v2 section 3.3 describes it as a
+no-write read signal rather than an action. It excludes anyway, because
+the question the Lead Queue answers is whether cold outreach is still
+the right job, and a contact with a live offer out is not a cold
+prospect by any reading.
+
+**Callback reset.** Clearing callback_datetime restores cold-outreach
+eligibility from the callback predicate. Per CONTACT_WORKSPACE_SPEC_v2
+the clear writes setCallbackDatetime(null) alone -- no note, no
+last_call_attempt, no grey -- so a cleared callback and a
+never-scheduled callback are indistinguishable afterward. That is
+intended: clearing is Brad deciding the promise no longer stands, and
+the record of the promise lives in the notes rather than in the field.
+
+**Callbacks do not expire.** An overdue callback remains an exclusion
+until it is cleared or replaced by hand. A promise made three weeks ago
+and never actioned still excludes the contact from cold outreach. The
+system treats an unkept promise as still owed rather than silently
+returning the contact to the cold list. The consequence, accepted: the
+exclusion has no automatic exit, and the only path back is the manual
+clear above.
+
+**Relationship to PB-D49.** PB-D49 established terminal-stage exclusion
+and was silent on callbacks and offers. This decision does not change
+PB-D49's terminal semantics, its two pinned stage ids, its
+all-opportunities rule, or its zero-opportunities rule. Terminal becomes
+one predicate among six rather than one of two. PB-D49's paragraph
+stating that Offers Awaiting Response is out of scope remains correct
+as to that section's own filtering; this decision governs Lead Queue
+membership, not what section 3.3 renders.
+
+**Implementation, and what is available now.** Four of the six
+predicates read data the app already has. unanswered is already
+computed; callback_datetime and its precise companion are already on
+ContactRow; the offer-awaiting read already runs for section 3.3;
+terminal stage is already computed. Seller Follow-Up is available from
+the opportunity data the Dashboard already loads. Only Phone Status
+requires the shared-config, parser, and ContactRow work PB-D53 names,
+so five predicates are implementable independently and the sixth joins
+at PB-D53 step 4.
+
+**Not decided here.** Whether an excluded contact should surface
+anywhere other than the section that already renders them. A contact
+with a future-dated callback is now absent from the Lead Queue and
+rendered nowhere until the callback comes due, which is a narrower
+version of the same display gap named above. Whether Waiting on Me
+should render future callbacks is undecided product behavior and
+requires its own decision.
