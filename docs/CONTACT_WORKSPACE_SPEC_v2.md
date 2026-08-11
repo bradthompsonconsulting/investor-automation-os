@@ -489,6 +489,74 @@ enter the client bundle. A legitimate unchanged baseline, not a coincidental col
 Proven, not asserted: `zero-writes-on-nav` + `attempt-unchanged`, with the read-GET positive control
 ruling out "audit never attached." No new write action; the three-write invariant is untouched.
 
+### 9.6 VERIFIED LIVE — Contact Workspace conversation parity (D5), 2026-08-11
+
+Shipped in `b134755`; harness in `cfd56b2`. Implements `CONTACTS_DETAIL_SPEC` D5, which
+supersedes the `TYPE_EMAIL`-only allowlist recorded at §9.3 above. The Workspace transcript
+now renders `TYPE_EMAIL` and `TYPE_SMS`, and email bodies clamp to five CSS line boxes with
+an Expand control shown only on measured overflow.
+
+**Bundle identity — method differs from §9.2, deliberately.** Verified by inspecting the
+served artifact `index-CBLNJF3q.js` for the new `["TYPE_EMAIL","TYPE_SMS"]` allowlist and
+the `Show less` control string, neither of which exists in the prior bundle
+`index-CLB9NFU-.js`. This proves the deployed bundle contains the D5 implementation. It does
+NOT reproduce §9.2's parent-vs-child hash discrimination. Content inspection answers the
+question §9.2 asks — is my commit what deployed — more directly than a hash comparison does,
+because it interrogates the artifact rather than a proxy for it. Recorded as an alternative
+method, not a replacement; §9.2 remains the standard until a decision says otherwise.
+
+**Harness.** `verify-contacts.cjs` extended from exact floor 127 to exact floor 136. Nine new
+checks, all `d5-` prefixed. Run result: `checksRun=136 uniqueNames=136 failures=0`, exit 0.
+The 127 pre-existing checks passed unchanged, so D5 caused no regression anywhere in the
+record view.
+
+**Two fixtures, by role.**
+- Neelima Bale `FiIT0hUaxVCIuokQpZuc` — regression and email-collapse fixture. Zero SMS, so
+  her transcript must not change under D5. Endpoint delta: 8 rendered bubbles, 4 filtered.
+- Ronald Gordon `DUYVB1FdhFaAdqpa98hn` — mixed-channel exercise fixture. Endpoint delta:
+  5 rendered bubbles, 5 filtered. The only fixture in the location carrying SMS in both
+  directions plus a long inbound email.
+
+Both deltas assert against endpoint ground truth rather than a literal count — rendered
+equals endpoint `TYPE_EMAIL` plus `TYPE_SMS`, and total minus rendered equals the filtered
+remainder. That form survives a live message arriving, and it is what proves `TYPE_CALL` and
+both `TYPE_ACTIVITY_` types stay excluded.
+
+**Collapse round-trip, observed on Neelima's longest email.** Collapsed `clientHeight` 98 →
+expanded 1073 → re-collapsed 98, with the control reading Expand → Show less → Expand. The
+expanded height equals the measured `scrollHeight`, so the clamp releases to full content and
+re-applies, rather than toggling a label. Gordon's long inbound email clamped to the same
+98px from a 936px `scrollHeight` — identical collapsed height across two different bodies on
+two different contacts is what a fixed five-line-box clamp should produce, and the differing
+scroll heights show the measurement is not hardwired.
+
+**SMS.** Gordon rendered three SMS bubbles: two outbound at `alignSelf: flex-end`, one inbound
+at `flex-start`. None rendered a control, including the 535-character outbound SMS — longer
+than Gordon's 819-character email, which does collapse. SMS is non-collapsible by
+construction (`collapsible = !isSms`), so it never reaches the measurement at all.
+
+**UNEXERCISED BRANCH.** No email body on either fixture is short enough to fit inside five
+line boxes, so every email here overflows and every email bubble renders a control. The
+negative case — a short email that does not overflow and therefore renders NO control — has
+no fixture in this location and is covered by no check. SMS does not substitute: it skips the
+measurement rather than passing it. Closing this requires a contact with a genuinely short
+email body. A passing 136/136 does NOT mean this branch was exercised.
+
+**Harness defect found and fixed during the run (recorded because the class recurs).** The
+click helper compared a whitespace-normalised needle against raw `textContent`, while the
+finder normalised both sides. The two expand/collapse checks reported `clicked=false` and
+`clientHeight` unchanged at 98 — a loud failure rather than a silent pass, because "nothing
+happened" is distinguishable from "nothing changed." Fixed by normalising both sides. The
+general lesson: any content-addressed DOM lookup must apply the same normalisation to needle
+and haystack, and a matcher that finds nothing must fail rather than assert over an empty
+set.
+
+**Note on long outbound SMS.** Gordon's 535-character outbound SMS renders uncollapsed, which
+is correct per D5 and matches Conversations. The rationale recorded at `CONVERSATIONS_SPEC`
+§7 for SMS never collapsing is that SMS is "short by nature." That premise holds for seller
+replies and does not hold for templated outbound SMS, which run as long as emails. Recorded
+as an observation about the premise, not a defect and not pending work.
+
 ---
 
 ## 10. OPEN DECISIONS FOR BRAD
@@ -574,5 +642,5 @@ once the shapes were observed. **OBSERVED from prod, not inferred:**
   the **COMPLETE** transcript.
 - **`TYPE_ACTIVITY_OPPORTUNITY` rows are interleaved with real messages** (pipeline-activity noise —
   "Opportunity created/updated"). They MUST be filtered for display. **Filter on the `messageType`
-  STRING (`TYPE_EMAIL` allowlist), NEVER the numeric `type` field** — SMS (`TYPE_SMS`) joins the
-  allowlist later. Verified live: 7 total → 4 shown → 3 filtered (§9.3).
+ STRING (`TYPE_EMAIL` allowlist), NEVER the numeric `type` field** — SMS (`TYPE_SMS`) joined the
+  allowlist under D5, 2026-08-11 (§9.6). Verified live: 7 total → 4 shown → 3 filtered (§9.3).
