@@ -323,6 +323,7 @@ ALIGNMENT_PROCESS.
 | --- | --- | --- | --- | --- | --- | --- |
 | Verify no workflow fires on contact-field write | GHL | P5 | High | S | Brad | Open |
 | Tier cadence demotion verification | GHL | P5 | Low | S | Brad | Parked |
+| Identify the Long-Term Nurture bulk-move mechanism | GHL | P5 | Low | S | Brad | Open |
 | Decide rescore behavior after edits exist | IAOS | P5 | Low | S | Brad | Open |
 | AI layer | IAOS | P5 | Medium | L | Jeff | Future |
 | Map view | IAOS | P5 | Low | L | Jeff | Future |
@@ -336,3 +337,18 @@ Rescoring is inert today because scores drive mail-group assignment
 only. If rescore-all runs after fields have been edited, some contacts
 will change mail group. The consequence is a few misrouted mailers, not
 a broken lead state.
+
+The Long-Term Nurture bulk move is a provenance question, not a
+blocker. Thirty-seven opportunities entered that stage inside a
+61-second window on 2026-07-20 -- the stage holds thirty-eight, the
+other having moved separately -- after being created in a four-second
+import window on 2026-07-01. PB-D52 records the observation and
+concludes only that current stage occupancy cannot serve as an
+engagement signal; nothing operational depends on knowing which
+mechanism moved them. Answering it requires GHL Enrollment history,
+which the public API does not expose -- /workflows/ returns the
+workflow list, and /workflows/{id}, /enrollments, /contacts, /actions
+and /history all 404. Seller 8 - Long-Term Nurture is
+c5fad4f8-393e-4a9c-92f0-187a4c54218a; enrollments stamped 2026-07-20
+near 18:23 would establish the move as workflow-driven, and their
+absence would establish it as coming from outside any workflow.
