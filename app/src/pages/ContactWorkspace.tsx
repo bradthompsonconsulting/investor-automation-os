@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2, BellOff,
@@ -30,6 +30,10 @@ import { getConfig } from "../../shared/ghl-config";
  */
 
 const CONTENT_MAX_WIDTH = "1600px";
+
+// D5 — email bodies clamp to this many rendered lines in the conversation
+// history. Matches Conversations' CLAMP_LINES; SMS never clamps.
+const CLAMP_LINES = 5;
 
 // PB-D51 — both folder ids resolve from the shared config, once at module scope.
 // These replace what were previously two function-local OFFER_FOLDER_ID
@@ -379,6 +383,80 @@ function FieldRow({ f, contactId }: { f: RecordField; contactId: string }) {
   );
 }
 
+// One conversation bubble (D5, docs/CONTACTS_DETAIL_SPEC.md). EMAIL bodies clamp
+// to CLAMP_LINES via CSS line-clamp — line-based, not character count, so it is
+// width-independent and never breaks mid-word — with the control shown ONLY when
+// the body actually overflows. SMS never clamps, matching Conversations.
+//
+// D5 parity is the MECHANISM, not the layout: same clamp and same overflow test
+// as Conversations' MessageBubble, but this bubble keeps the Workspace's 85%
+// direction-aligned form rather than adopting Conversations' full-width email.
+// The line count matches; the visible content does not, and that is accepted.
+//
+// This is local to this file BY DECISION. Extraction is forced only because hooks
+// cannot be called inside the .map() callback the bubble used to live in — it is a
+// mechanical consequence of adding per-bubble state, NOT a shared component.
+// CONVERSATIONS_SPEC §7 holds that a shared MessageBubble waits for a third
+// consumer; there are still two.
+function ConversationBubble({ m }: { m: ConvMessageRow }) {
+  const outbound = m.direction === "outbound";
+  const isSms = m.messageType === "TYPE_SMS";
+  const collapsible = !isSms;
+
+  const [expanded, setExpanded]       = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  // Measure WHILE clamped (mount + body change; NOT on expand, so the control
+  // stays visible after expanding). scrollHeight > clientHeight ⇒ the clamp is
+  // truncating → the control is warranted. `expanded` is deliberately NOT reset by
+  // any effect: bubbles are keyed by message id, so a contact change remounts them
+  // collapsed. Key-based remount is the reset, same as Conversations.
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!collapsible || !el) return;
+    setOverflowing(el.scrollHeight > el.clientHeight + 1);
+  }, [m.body, collapsible]);
+
+  const clamp = collapsible && !expanded;
+  const bodyStyle: CSSProperties = {
+    fontSize: "13px", color: "#E2E8F0", whiteSpace: "pre-wrap", wordBreak: "break-word",
+    ...(clamp
+      ? { display: "-webkit-box", WebkitLineClamp: CLAMP_LINES, WebkitBoxOrient: "vertical", overflow: "hidden" }
+      : {}),
+  };
+
+  return (
+    <div
+      style={{
+        alignSelf: outbound ? "flex-end" : "flex-start",
+        maxWidth: "85%",
+        background: outbound ? "rgba(30,200,255,0.10)" : "#0D1B3E",
+        border: `1px solid ${outbound ? "rgba(30,200,255,0.25)" : "rgba(255,255,255,0.08)"}`,
+        borderRadius: "10px", padding: "8px 12px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: "#475569", marginBottom: "4px" }}>
+        {outbound ? <ArrowUpRight size={11} style={{ color: "#1EC8FF" }} /> : <ArrowDownLeft size={11} style={{ color: "#64748B" }} />}
+        <span style={{ fontWeight: 600, color: outbound ? "#1EC8FF" : "#94A3B8" }}>{outbound ? "Sent" : "Received"}</span>
+        <span>· {m.channel}</span>
+        <span>· {formatNoteDate(m.dateAdded)}</span>
+      </div>
+      <div ref={bodyRef} style={bodyStyle}>
+        {m.body || <span style={{ color: "#475569", fontStyle: "italic" }}>({m.channel.toLowerCase()}, no text)</span>}
+      </div>
+      {collapsible && overflowing && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          style={{ marginTop: "6px", background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: "11px", fontWeight: 600, color: "#1EC8FF" }}
+        >
+          {expanded ? "Show less" : "Expand"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 export default function ContactWorkspace() {
@@ -574,7 +652,7 @@ export default function ContactWorkspace() {
   // "Opportunity created/updated" etc.). Those are noise, not conversation. Allowlist
   // on messageType — NOT the numeric `type` field — so SMS (TYPE_SMS) just joins the
   // set later. Already oldest→newest from the function; do not re-sort.
-  const CONVERSATION_TYPES = ["TYPE_EMAIL"];
+  const CONVERSATION_TYPES = ["TYPE_EMAIL", "TYPE_SMS"];
   const displayMessages = useMemo(
     () => (conversations ?? []).filter((m) => CONVERSATION_TYPES.includes(m.messageType)),
     [conversations],
@@ -926,31 +1004,9 @@ export default function ContactWorkspace() {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "60vh", overflowY: "auto" }}>
-              {displayMessages.map((m) => {
-                const outbound = m.direction === "outbound";
-                return (
-                  <div
-                    key={m.id || `${m.conversationId}-${m.dateAdded}`}
-                    style={{
-                      alignSelf: outbound ? "flex-end" : "flex-start",
-                      maxWidth: "85%",
-                      background: outbound ? "rgba(30,200,255,0.10)" : "#0D1B3E",
-                      border: `1px solid ${outbound ? "rgba(30,200,255,0.25)" : "rgba(255,255,255,0.08)"}`,
-                      borderRadius: "10px", padding: "8px 12px",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: "#475569", marginBottom: "4px" }}>
-                      {outbound ? <ArrowUpRight size={11} style={{ color: "#1EC8FF" }} /> : <ArrowDownLeft size={11} style={{ color: "#64748B" }} />}
-                      <span style={{ fontWeight: 600, color: outbound ? "#1EC8FF" : "#94A3B8" }}>{outbound ? "Sent" : "Received"}</span>
-                      <span>· {m.channel}</span>
-                      <span>· {formatNoteDate(m.dateAdded)}</span>
-                    </div>
-                    <div style={{ fontSize: "13px", color: "#E2E8F0", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                      {m.body || <span style={{ color: "#475569", fontStyle: "italic" }}>({m.channel.toLowerCase()}, no text)</span>}
-                    </div>
-                  </div>
-                );
-              })}
+              {displayMessages.map((m) => (
+                <ConversationBubble key={m.id || `${m.conversationId}-${m.dateAdded}`} m={m} />
+              ))}
             </div>
           )}
         </div>
