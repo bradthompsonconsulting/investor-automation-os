@@ -1162,3 +1162,86 @@ OBSERVED: app/netlify.toml declares only NODE_VERSION and contains no
 [context] block of any kind, so no repository check can confirm
 either variable is set. A deploy missing one fails loudly by the
 invariant above rather than silently reading production.
+
+### PB-D52 -- Call disposition effect on queue placement
+
+**Decision.** Call dispositions define operational meaning, not merely
+call history. Lead Queue membership represents contacts with a working
+phone who have not meaningfully engaged and remain candidates for
+outbound prospecting. Once a disposition records meaningful engagement,
+the contact must leave the Lead Queue unless a later explicit business
+rule deliberately resets that state. Queue placement is recomputed from
+live GHL state; this decision defines the intended semantics and does
+not choose the technical carrier for the engagement state. That
+mechanism is PB-D53.
+
+**Disposition classifications.**
+- No Answer -- no engagement. Remains eligible for Lead Queue. The
+  existing last_call_attempt write greys the row for 12 hours, then it
+  resurfaces.
+- Voicemail -- one-way contact, not meaningful engagement. Remains
+  eligible for Lead Queue. Whether voicemail should use a resurfacing
+  interval other than 12 hours remains open and is not decided here.
+- Requested Appointment -- meaningful engagement. Leaves Lead Queue.
+  Routing is already GHL-owned through Seller 2.5 into Seller 2.
+- Follow Up -- meaningful engagement. Leaves Lead Queue and belongs in
+  Waiting on Me, Follow-Up. The intended durable state is the Seller
+  Follow-Up pipeline stage; the carrier and the Dashboard wiring are
+  decided separately in PB-D53.
+- Incorrect Number -- invalid reachability. Leaves operational queues
+  because GHL clears the primary phone; Lead Queue already requires a
+  working phone.
+- Not Interested -- meaningful engagement with a terminal outcome.
+  Leaves operational queues and belongs in Lost / Not Interested. Stage
+  movement is GHL-owned; IAOS does not write pipeline stage.
+
+**Queue definitions used by this decision.**
+- Lead Queue -- working-phone contacts not yet meaningfully engaged and
+  still appropriate for outbound prospecting.
+- Waiting on Me -- engaged contacts where Brad owns the next action and
+  that action is knowable now or at a scheduled time.
+- Long-Term Nurture -- no immediate human action until a timer or new
+  engagement matures.
+- Terminal -- Closed-Won and Lost / Not Interested; absent from
+  operational queues.
+
+**Long-Term Nurture provenance.** OBSERVED, source: opportunity detail
+endpoint read 2026-08-11. Thirty-seven opportunities entered Long-Term
+Nurture during a 61-second window on 2026-07-20, after the
+opportunities had been created during a four-second import window on
+2026-07-01. The stage currently holds thirty-eight; the additional one
+entered separately, five hours earlier the same day. The bulk operation
+demonstrates that current stage occupancy is not derived from
+individual engagement history and therefore cannot serve as an
+engagement signal. Existing occupancy is not evidence of prior
+engagement, nor evidence of its absence. Which mechanism performed the
+bulk move is UNKNOWN; GHL enrollment history is not exposed by the
+public API and the question is recorded in PRODUCT_BACKLOG P5.
+
+**Status is not terminal state.** OBSERVED, source: same read. All
+forty-two Seller Leads opportunities returned status open, including
+both opportunities sitting in Lost / Not Interested. Operational
+terminality in this account is stage-based, not status-based. PB-D49's
+terminal exclusion keys on stage id and is unaffected.
+
+**Opportunity coverage.** OBSERVED, source: same read. Forty-one of the
+forty-three contacts carrying a non-empty phone have exactly one Seller
+Leads opportunity, and all forty-one are status open. No Lead Queue
+contact with a phone holds more than one. This satisfies the
+precondition that a stage-based carrier would require, and it is
+recorded here so PB-D53 does not have to re-establish it.
+
+**Non-goals.** This decision does not choose the technical engagement
+carrier, does not change the 12-hour resurfacing interval, does not
+clean up historical Long-Term Nurture occupancy, does not authorize any
+new IAOS write, and does not alter pipeline stages directly from IAOS.
+Those belong to PB-D53 or to separate backlog work.
+
+**PB-D49's open callback question is untouched.** PB-D49 left
+undecided whether a promised follow-up survives its contact reaching a
+terminal stage, and this decision does not settle it. Not Interested
+leaving operational queues in this decision applies to Lead Queue,
+Unanswered Inbound, and Offers Awaiting Response only. Whether a
+scheduled callback for a Not Interested contact should still surface in
+Waiting on Me remains undecided product behavior and requires its own
+decision.
