@@ -1245,3 +1245,143 @@ Unanswered Inbound, and Offers Awaiting Response only. Whether a
 scheduled callback for a Not Interested contact should still surface in
 Waiting on Me remains undecided product behavior and requires its own
 decision.
+
+### PB-D53 -- Durable carriers for engagement and reachability state
+
+**Decision.** PB-D52 defines what call dispositions mean for queue
+placement. This decision defines the durable GHL-owned state IAOS reads
+to implement those semantics. The carriers are distinct by concern:
+pipeline stage carries engagement state; a contact custom field carries
+primary-phone reachability state. IAOS does not write any PB-D53
+carrier.
+
+**Engaged follow-up carrier.** The Seller Follow-Up pipeline stage is
+the durable carrier for an engaged contact whose next unscheduled human
+action belongs in Waiting on Me, Follow-Up. A GHL workflow triggered by
+the Follow Up call disposition moves the contact's Seller Leads
+opportunity to that stage. Seller 6 -- Follow-Up Reminder already
+triggers on an open Seller Leads opportunity entering it, and therefore
+already owns the reminder cadence that follows.
+
+**Terminal carrier.** The Lost / Not Interested pipeline stage is the
+durable terminal carrier for the Not Interested disposition. A GHL
+workflow triggered by that disposition moves the Seller Leads
+opportunity to that stage. PB-D49 already excludes it from the queues
+PB-D49 governs. PB-D49's scheduled-callback question remains open per
+PB-D52 and is not settled here.
+
+**Requested Appointment is already routed.** Seller 2.5 listens directly
+on Call details, Custom disposition Requested Appointment, and adds the
+contact to Seller 2. No new carrier is introduced for that disposition.
+
+**Reachability carrier.** A new contact custom field named Phone Status
+carries operational state for the primary phone. It is not Phone Type.
+Phone Type records carrier line type, Mobile, Landline, VoIP or Unknown,
+written by phone-lookup.ts from a Twilio lookup. Phone Status records
+whether the primary number is operationally callable for queue
+purposes. The two answer different questions about the same number.
+
+Phone Status is SINGLE_OPTIONS and carries exactly one value:
+- Incorrect Number
+
+No second value is predeclared. Undeliverable was considered and
+rejected for now: PB-D50 records five contacts carrying dndSettings
+entries of the form TWILIO_ERROR_CODE 30003, 30005 or 30006, which are
+deliverability failures rather than consent withdrawals, but nothing is
+proposed that would write such a state or act on it. An enum value with
+no writer and no consumer is abstraction ahead of its first consumer.
+It is added when one exists.
+
+**Incorrect Number.** A GHL workflow triggered by that disposition sets
+Phone Status to Incorrect Number. IAOS excludes a contact carrying that
+value from the Lead Queue. The native primary phone is not cleared.
+OBSERVED, source: live GHL builder 2026-08-11 -- the Update contact
+field action rejects an empty native Phone value with "Invalid number,
+please make sure to add country code", so the earlier copy-then-clear
+design is blocked at the action level. Whether the API can clear a
+native phone where the UI will not is UNKNOWN and untested, and would
+be an IAOS write outside the sanctioned three in any case.
+
+**Reset requirement, and the gate.** Phone Status is not
+implementation-complete until the rule that restores a corrected number
+to queue eligibility is defined. A new or corrected primary phone must
+have an explicit process that clears or changes Phone Status. Until that
+rule is specified and verified, creating the field and building the
+Incorrect Number workflow are both gated. Excluding a contact with no
+defined path back is a one-way door.
+
+**Field placement.** Phone Status belongs in the standard Contact folder
+8NV0bLrpGEi4bRflnasN, beside Phone Type. OBSERVED, source: repository
+read of CONTACT_FIELD_REFERENCE Part 1 -- that folder is standard true
+and currently holds Phone Type alone. It renders flat, so no subgroup
+assignment is required and additionalInfoSubgroups.ts is unaffected.
+
+**Previous Phone is currently unused.** It was created 2026-08-11 during
+exploration of the Incorrect Number design, before the native-phone
+clear mechanism proved unavailable. No workflow writes it, IAOS does not
+read it, and it sits in Additional Info. This decision neither removes
+it nor assigns it a consumer; its future use is undecided. Its existence
+is not evidence of implemented behavior.
+
+**IAOS read consequences.** Implementing this model requires a later app
+commit. The Dashboard must exclude Seller Follow-Up from the Lead Queue,
+add a Waiting on Me, Follow-Up section sourced from that same stage, and
+exclude non-callable Phone Status values from the Lead Queue.
+
+The shared contact parser does not carry arbitrary custom fields.
+OBSERVED, source: repository read 2026-08-11 -- parseContact projects
+named fields only. Phone Status therefore requires a shared-config field
+id, parser output, a ContactRow field, and a Dashboard predicate. This
+is the same data-shape extension PB-D50 required for dndSettings. This
+decision defines the read model and authorizes no IAOS write.
+
+**Schema-count consequences.** Previous Phone raised the contact
+custom-field total from 96 to 97. Phone Status raises it to 98 and the
+Contact folder from one field to two. CONTACT_FIELD_REFERENCE Part 1's
+folder and field tables and the harness RECORD structure in
+verify-contacts.cjs must both be updated to the actual schema.
+verify-contacts.cjs currently carries an exact floor of 136; two
+additional fields raise the expected floor to 138. The harness aborts on
+exact inequality rather than a less-than, so the floor change is part of
+implementation and not optional cleanup.
+
+**Opportunity precondition.** OBSERVED, recorded at PB-D52 -- forty-one
+of the forty-three contacts carrying a non-empty phone have exactly one
+Seller Leads opportunity, and all forty-one are status open. No contact
+with a phone holds more than one. Stage-backed routing therefore has
+coverage for the current population. A contact with no opportunity is a
+separately handled edge case and does not justify a second engagement
+carrier.
+
+**Long-Term Nurture is not an engagement carrier.** PB-D52 records the
+bulk-move provenance that makes current occupancy of that stage
+non-evidentiary for engagement history. This decision does not read it
+as an engagement bit.
+
+**Scope of the no-write rule.** GHL owns state mutation and IAOS reads
+applies to the PB-D53 carriers only. It is not a claim that IAOS has no
+other contact writes. OBSERVED, source: repository read 2026-08-11 --
+netlify/functions/phone-lookup.ts issues a PUT to /contacts/{id}
+carrying key phone_type, which resolves the question left open at
+CONTACT_WORKSPACE_SPEC_v2 section 5.6 item 3 as to whether that function
+writes Phone Type back to the contact. It does.
+
+**Implementation is gated, in this order.**
+1. Define and verify the Phone Status reset rule for a corrected primary
+   phone.
+2. Create Phone Status only after item 1 resolves.
+3. Build the two GHL disposition workflows, Follow Up and Not
+   Interested.
+4. Build the IAOS read change: shared config, parser, ContactRow,
+   Dashboard predicates, Waiting on Me Follow-Up section.
+5. Update CONTACT_FIELD_REFERENCE and the harness to the 98-field schema
+   and floor 138 before trusting any verification run.
+   
+**PB-D52's Incorrect Number mechanism is superseded.** PB-D52 classifies
+that disposition as leaving operational queues "because GHL clears the
+primary phone." That clause is superseded by the Incorrect Number
+paragraph above: the clear is blocked at the Update contact field action
+and no mechanism clears the primary phone today. PB-D52's
+classification of the disposition as invalid reachability is unaffected;
+only its stated mechanism changes. Every other paragraph of PB-D52
+remains as written.
