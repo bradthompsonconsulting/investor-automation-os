@@ -8,17 +8,42 @@
              + four Additional Info subgroups (4) + three D1 identity-header renders (3)
              + four Phone N DNC adjacencies (4) + no-input (1).
    Phase B PB-D5/PB-D13: floor = 119 + 4N, N = unlocked field count. N=2, so 127.
-   Success ONLY when checksRun === 127 AND every check passed. Any throw exits nonzero.
+   D5 conversation parity (CONTACTS_DETAIL_SPEC D5): + 9 = 136.
+     Neelima (4): delta, long-email-collapsed, expand, collapse.
+     Gordon  (5): delta, sms-rendered, sms-alignment, sms-never-collapses,
+                  inbound-email-collapsed.
+   Success ONLY when checksRun === 136 AND every check passed. Any throw exits nonzero.
    The 96-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-CLB9NFU-.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
+const EXPECTED = "index-CBLNJF3q.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
 const TARGET   = "FiIT0hUaxVCIuokQpZuc"; // detail-view fixture (checks 6-119)
 const PROPERTY_NOTES_ID = "k7O0TYVMpqCpnMHRLPol"; // PB-D5 unlock allowlist, N=1. Hardcoded here per the verification-only rule above; never imported from app code.
 const ARV_ID = "wMBTGWMs97yysQFx7Vad"; // PB-D16/PB-D17 unlock allowlist, N=2. Hardcoded per the same verification-only rule.
 const BRADT75  = "9fbH2VCcZvzVNhsR9zjc"; // phone-format fixture — +12149146151 → 214-914-6151 (check 5)
+
+// ── D5 conversation parity (CONTACTS_DETAIL_SPEC D5) ───────────────────────────
+// TARGET/Neelima is the REGRESSION fixture: emails only, ZERO SMS, so D5 must not
+// change her transcript at all. GORDON is the EXERCISE fixture: SMS in BOTH
+// directions plus a long INBOUND email, the only fixture that covers left-aligned
+// bubbles, both messageType branches, and the filtered remainder together.
+const GORDON = "DUYVB1FdhFaAdqpa98hn"; // ronald gordon
+const NEE_MSGS_URL = `${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${TARGET}`;
+const GOR_MSGS_URL = `${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${GORDON}`;
+const SHOWN_TYPES  = ["TYPE_EMAIL", "TYPE_SMS"]; // the D5 allowlist, mirrored here per the verification-only rule
+// Gordon's long inbound email, identified by BODY CONTENT — never by bubble index,
+// which reorders whenever GHL emits another activity row.
+const GOR_INBOUND_EMAIL_MARK = "Your property information just came through";
+
+// UNEXERCISED BRANCH — recorded, not silently skipped. No email body on either
+// fixture is short enough to fit inside CLAMP_LINES, so every email here overflows
+// and every email bubble renders a control. The negative case — a short email that
+// does NOT overflow and therefore renders NO control — has no fixture in this
+// location and is NOT covered by any check below. SMS does not substitute for it:
+// SMS is non-collapsible by construction, so it never reaches the measurement at
+// all. Closing this needs a contact with a genuinely short email body.
 
 // ── Static canonical record (VERIFICATION-ONLY; hardcoded, never imported) ──────
 // Folder DISPLAY order (folder-names effect: Offer first, then remaining ascending by
@@ -62,12 +87,93 @@ function check(name, cond, detail = "") {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ── D5 helpers — conversation-pane DOM readers ─────────────────────────────────
+// The pane has no data-testid hooks, so it is located structurally: the
+// "Conversation History" h2, then the sibling scroller (the only child with
+// overflowY:auto — the loading and empty states are plain divs). Bubbles are that
+// scroller's direct children; child[0] is the label row, child[1] the body div.
+// The locator is duplicated inside each page.evaluate because evaluate runs in the
+// browser and cannot see Node scope — same constraint the UNLOCKED_ID literal has.
+const PANE_JS = `
+  const h2 = [...document.querySelectorAll("h2")].find((h) => /Conversation History/.test(h.textContent || ""));
+  if (!h2) return null;
+  const pane = h2.parentElement;
+  const scroller = [...pane.children].find((c) => c !== h2 && c.style && c.style.overflowY === "auto");
+`;
+
+// Waits for the pane to LEAVE its loading state — asserting before this races the
+// fetch and reads an empty scroller as a real zero.
+async function waitForConversations(page) {
+  await page.waitForFunction(() => {
+    const h2 = [...document.querySelectorAll("h2")].find((h) => /Conversation History/.test(h.textContent || ""));
+    if (!h2) return false;
+    const pane = h2.parentElement;
+    if ([...pane.querySelectorAll("div")].some((d) => /Loading conversation history/.test(d.textContent || ""))) return false;
+    const scroller = [...pane.children].find((c) => c !== h2 && c.style && c.style.overflowY === "auto");
+    return !!scroller && scroller.children.length > 0;
+  }, { timeout: 45000 });
+}
+
+// One row per rendered bubble. clientHeight/scrollHeight come from the BODY div —
+// the element the clamp is applied to — so overflow is the DOM relationship
+// scrollHeight > clientHeight + 1, never a count of visible text lines (hard
+// newlines consume line boxes without producing that many nonblank lines).
+async function readBubbles(page) {
+  return page.evaluate(new Function(`${PANE_JS}
+    if (!scroller) return null;
+    return [...scroller.children].map((b) => {
+      const label  = (b.children[0] && b.children[0].textContent) || "";
+      const bodyEl = b.children[1] || null;
+      const btn    = b.querySelector("button");
+      return {
+        alignSelf:    getComputedStyle(b).alignSelf,
+        isSms:        /\\u00b7\\s*Sms/.test(label),
+        isEmail:      /\\u00b7\\s*Email/.test(label),
+        outbound:     /Sent/.test(label),
+        body:         bodyEl ? (bodyEl.textContent || "") : "",
+        clientHeight: bodyEl ? bodyEl.clientHeight : -1,
+        scrollHeight: bodyEl ? bodyEl.scrollHeight : -1,
+        control:      btn ? (btn.textContent || "").trim() : null,
+      };
+    });
+  `));
+}
+
+// Clicks the control on the bubble whose body CONTAINS mark — content-addressed,
+// never index-addressed. Returns whether a control was found and clicked.
+async function clickControlByBody(page, mark) {
+  return page.evaluate(new Function("mark", `${PANE_JS}
+    if (!scroller) return false;
+    const b = [...scroller.children].find((x) => (x.children[1] ? x.children[1].textContent || "" : "").replace(/\\s+/g, " ").includes(mark));
+    const btn = b && b.querySelector("button");
+    if (!btn) return false;
+    btn.click();
+    return true;
+  `), mark);
+}
+
 (async () => {
   // ── Bundle gate (§9.2) — prod serves the code under test, FIRST, before any check ──
   const idx = await (await fetch(`${ORIGIN}/index.html?cb=${Math.random()}`, { headers: { "Cache-Control": "no-cache" } })).text();
   const liveHash = (idx.match(/assets\/(index-[A-Za-z0-9_-]+\.js)/) || [])[1] || "NONE";
   if (liveHash !== EXPECTED) { console.log(`ABORT — bundle gate: live=${liveHash} expected=${EXPECTED}`); process.exit(1); }
   console.log(`bundle-gate OK  live=${liveHash}`);
+
+  // ── D5 ground truth from the endpoints ────────────────────────────────────────
+  // Direct Node fetches, BEFORE the browser exists — so they cannot appear in the
+  // page's own response capture (fnBodies), cannot be mistaken for a browser-side
+  // read, and cannot contaminate any request-derived assertion. Same placement and
+  // same rationale as verify-conversations.cjs. GET only; zero writes.
+  const neeGT = await (await fetch(NEE_MSGS_URL)).json();
+  const gorGT = await (await fetch(GOR_MSGS_URL)).json();
+  const counts = (gt) => {
+    const all = (gt && gt.messages) || [];
+    const shown = all.filter((m) => SHOWN_TYPES.includes(m.messageType)).length;
+    return { total: all.length, shown, filtered: all.length - shown, messages: all };
+  };
+  const nee = counts(neeGT);
+  const gor = counts(gorGT);
+  console.log(`d5-ground-truth  neelima total=${nee.total} shown=${nee.shown} filtered=${nee.filtered}  gordon total=${gor.total} shown=${gor.shown} filtered=${gor.filtered}`);
 
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 2560, height: 1440 } });
@@ -394,11 +500,99 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     arvEdit.saveCount === 0 && arvEdit.cancelCount === 0,
     `saveCount=${arvEdit.saveCount} cancelCount=${arvEdit.cancelCount}`);
 
+  // ═══ CHECKS 128-136 — D5 conversation parity ═══
+  // Runs on a SEPARATE page, deliberately. Check 127 leaves the ARV inline editor
+  // OPEN and possibly focused; blur is a commit path, so navigating THAT page — or
+  // clicking anywhere on it — could manufacture a write inside a read-only harness.
+  // A second page leaves page 1 in exactly the end state it has today, untouched
+  // until browser.close(). Nothing below opens an editor or focuses any input, so
+  // no blur-commit path is reachable here either.
+  const page2 = await ctx.newPage();
+
+  // ── 128-131 — Neelima, the regression fixture ──
+  await page2.goto(`${ORIGIN}/contacts/${TARGET}`, { waitUntil: "load" });
+  await waitForConversations(page2);
+  const neeBubbles = await readBubbles(page2);
+  const neeRendered = neeBubbles ? neeBubbles.length : -1;
+
+  check("d5-neelima-delta",
+    neeRendered === nee.shown && (nee.total - neeRendered) === nee.filtered,
+    `rendered=${neeRendered} endpointShown=${nee.shown} total=${nee.total} filteredRemainder=${nee.filtered}`);
+
+  // Longest email body from the ENDPOINT, then located in the DOM by content.
+  const neeLongest = nee.messages
+    .filter((m) => m.messageType === "TYPE_EMAIL")
+    .sort((a, b) => String(b.body || "").length - String(a.body || "").length)[0] || null;
+  const neeMark = neeLongest ? String(neeLongest.body || "").replace(/\s+/g, " ").trim().slice(0, 40) : " ";
+  const neeTarget = (neeBubbles || []).find((b) => b.body.replace(/\s+/g, " ").includes(neeMark)) || null;
+
+  check("d5-neelima-long-email-collapsed",
+    !!neeTarget && neeTarget.isEmail && neeTarget.control === "Expand" &&
+    neeTarget.scrollHeight > neeTarget.clientHeight + 1,
+    `found=${!!neeTarget} control=${JSON.stringify(neeTarget && neeTarget.control)} scrollH=${neeTarget && neeTarget.scrollHeight} clientH=${neeTarget && neeTarget.clientHeight} bodyLen=${neeLongest && String(neeLongest.body || "").length}`);
+
+  const neeClicked = await clickControlByBody(page2, neeMark);
+  await sleep(250);
+  const neeAfterExpand = ((await readBubbles(page2)) || []).find((b) => b.body.replace(/\s+/g, " ").includes(neeMark)) || null;
+
+  check("d5-neelima-expand-grows",
+    neeClicked && !!neeAfterExpand && neeAfterExpand.control === "Show less" &&
+    !!neeTarget && neeAfterExpand.clientHeight > neeTarget.clientHeight,
+    `clicked=${neeClicked} control=${JSON.stringify(neeAfterExpand && neeAfterExpand.control)} clientH ${neeTarget && neeTarget.clientHeight} -> ${neeAfterExpand && neeAfterExpand.clientHeight}`);
+
+  const neeClicked2 = await clickControlByBody(page2, neeMark);
+  await sleep(250);
+  const neeAfterCollapse = ((await readBubbles(page2)) || []).find((b) => b.body.replace(/\s+/g, " ").includes(neeMark)) || null;
+
+  check("d5-neelima-collapse-shrinks",
+    neeClicked2 && !!neeAfterCollapse && neeAfterCollapse.control === "Expand" &&
+    !!neeAfterExpand && neeAfterCollapse.clientHeight < neeAfterExpand.clientHeight,
+    `clicked=${neeClicked2} control=${JSON.stringify(neeAfterCollapse && neeAfterCollapse.control)} clientH ${neeAfterExpand && neeAfterExpand.clientHeight} -> ${neeAfterCollapse && neeAfterCollapse.clientHeight}`);
+
+  // ── 132-136 — Gordon, the exercise fixture ──
+  await page2.goto(`${ORIGIN}/contacts/${GORDON}`, { waitUntil: "load" });
+  await waitForConversations(page2);
+  const gorBubbles = await readBubbles(page2);
+  const gorRendered = gorBubbles ? gorBubbles.length : -1;
+
+  // The delta is what proves TYPE_CALL and BOTH TYPE_ACTIVITY_ types stay filtered:
+  // the remainder is asserted against the endpoint, not against a literal.
+  check("d5-gordon-delta",
+    gorRendered === gor.shown && (gor.total - gorRendered) === gor.filtered,
+    `rendered=${gorRendered} endpointShown=${gor.shown} total=${gor.total} filteredRemainder=${gor.filtered}`);
+
+  const gorSmsGT  = gor.messages.filter((m) => m.messageType === "TYPE_SMS");
+  const gorSmsDom = (gorBubbles || []).filter((b) => b.isSms);
+
+  check("d5-gordon-sms-rendered",
+    gorSmsGT.length > 0 && gorSmsDom.length === gorSmsGT.length,
+    `domSms=${gorSmsDom.length} endpointSms=${gorSmsGT.length}`);
+
+  const smsOut = gorSmsDom.filter((b) => b.outbound);
+  const smsIn  = gorSmsDom.filter((b) => !b.outbound);
+  check("d5-gordon-sms-alignment",
+    smsOut.length > 0 && smsIn.length > 0 &&
+    smsOut.every((b) => b.alignSelf === "flex-end") && smsIn.every((b) => b.alignSelf === "flex-start"),
+    `outbound=${smsOut.length}[${[...new Set(smsOut.map((b) => b.alignSelf))].join(",")}] inbound=${smsIn.length}[${[...new Set(smsIn.map((b) => b.alignSelf))].join(",")}]`);
+
+  // SMS is non-collapsible by construction — including the long outbound one, which
+  // is longer than several emails that DO collapse.
+  const smsLongest = Math.max(0, ...gorSmsGT.map((m) => String(m.body || "").length));
+  check("d5-gordon-sms-never-collapses",
+    gorSmsDom.length > 0 && gorSmsDom.every((b) => b.control === null),
+    `smsBubbles=${gorSmsDom.length} controls=${JSON.stringify(gorSmsDom.map((b) => b.control))} longestSmsChars=${smsLongest}`);
+
+  const gorInEmail = (gorBubbles || []).find((b) => b.isEmail && b.body.includes(GOR_INBOUND_EMAIL_MARK)) || null;
+  check("d5-gordon-inbound-email-collapsed",
+    !!gorInEmail && !gorInEmail.outbound && gorInEmail.alignSelf === "flex-start" &&
+    gorInEmail.control === "Expand" && gorInEmail.scrollHeight > gorInEmail.clientHeight + 1,
+    `found=${!!gorInEmail} outbound=${gorInEmail && gorInEmail.outbound} alignSelf=${gorInEmail && gorInEmail.alignSelf} control=${JSON.stringify(gorInEmail && gorInEmail.control)} scrollH=${gorInEmail && gorInEmail.scrollHeight} clientH=${gorInEmail && gorInEmail.clientHeight}`);
+
   await browser.close();
 
-  // ── Self-check: exactly 127, all unique, all passed — else nonzero ──
+  // ── Self-check: exactly 136, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 127) { console.log(`ABORT — expected 127 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 136) { console.log(`ABORT — expected 136 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
