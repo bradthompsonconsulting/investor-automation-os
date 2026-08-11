@@ -64,6 +64,7 @@ record how IAOS must behave. Keep them separate.
 | Requested Appointment workflow automation | GHL | P1 | High | M | Brad (GHL) | Done |
 | Incorrect Number: clear phone to Previous Phone | GHL | P1 | High | S | Brad (GHL) | Open |
 | Seller 3: remove from Seller 6 on appointment booked | GHL | P1 | High | S | Brad (GHL) | Done |
+| Rotate IAOS_WEBHOOK_SECRET off the published contact id | GHL | P1 | High | S | Brad (GHL) | Done |
 | Shared GHL config module, Contact Workspace path | IAOS | P1 | High | M | Jeff | Done |
 
 Queue filtering is the highest-value work on this list. A contact moved
@@ -180,6 +181,22 @@ notifications as genuine TYPE_SMS objects, so they will interleave into
 the Workspace chronology. Ship parity, observe, then decide whether a
 second filter is warranted.
 
+IAOS_WEBHOOK_SECRET was rotated 2026-08-10. Its prior value was the GHL
+contact id for the Brad Thompson fixture, which is published verbatim in
+CONTACT_WORKSPACE_SPEC_v2 sections 5.1 and 9.4 and in CONVERSATIONS_SPEC
+section 8.7. The repository is public, so the value had been readable by
+anyone since those documents were committed; the exposure long predates
+its discovery. A new random value was set in the GHL Custom Value
+iaos_webhook_secret and in the Netlify IAOS_WEBHOOK_SECRET on iaos-app,
+Production context only, then redeployed at 1bcada9. Confirmed live the
+same evening by a Voicemail disposition writing its note and a fresh
+last_call_attempt, which proves the two sides agree. Exposure was bounded
+to forged notes and attempt markers on seller records via
+ghl-disposition; GHL_PRIVATE_API_KEY was never involved. The general
+lesson is recorded rather than the incident: a secret must not be any
+value that appears anywhere in a public repository, including identifiers
+that read as harmless.
+
 Boundary: IAOS records dispositions. GHL owns workflow enrollment,
 branching, timers, and automated communications.
 
@@ -235,7 +252,14 @@ per the inventory correction in FUNCTION_SURFACE_AUDIT. Of the five
 characterized so far, only ghl-disposition.ts has inbound
 authentication. The earlier figure of seven was unsourced. The
 deferral is deliberate and the named trigger is the first user who is
-not Brad. ghl-proxy is the highest-consequence of these: it forwards any
+not Brad. The repository is public, established 2026-08-10 from an
+unauthenticated GitHub API request returning 200. That does not expose
+the functions themselves, which are unauthenticated regardless of who
+can read the source, but it does mean their URLs, their request shapes,
+and the absence of auth on each are discoverable without guessing. The
+single-tenant argument for deferring still stands; the assumption that
+an attacker would have to find these endpoints does not.
+ghl-proxy is the highest-consequence of these: it forwards any
 method to any GHL path with the private token, and its own docblock
 names the OAuth successor as the Phase B fix. Detail is in
 FUNCTION_SURFACE_AUDIT.
@@ -250,7 +274,7 @@ engineering one.
 | --- | --- | --- | --- | --- | --- | --- |
 | Resolve the Phase B naming collision | IAOS | P4 | Medium | S | Jeff | Open |
 | Amend provenance markers for direct reads | IAOS | P4 | Medium | S | Jeff | Done |
-| Record transport findings in JEFF_OUTPUT_RULES | IAOS | P4 | Medium | S | Jeff | Open |
+| Record transport findings in JEFF_OUTPUT_RULES | IAOS | P4 | Medium | S | Jeff | Done |
 | Retention decision on the apply-*.cjs scripts | IAOS | P4 | Low | S | Brad | Open |
 | Backlog grooming | IAOS | P4 | Medium | S | Brad | Ongoing |
 
