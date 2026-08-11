@@ -1246,6 +1246,44 @@ scheduled callback for a Not Interested contact should still surface in
 Waiting on Me remains undecided product behavior and requires its own
 decision.
 
+**Amendment (2026-08-11): what leaving the Lead Queue means.** Leaving
+the Lead Queue does not mean calling stops. It means cold prospecting
+stops. A contact who engaged is still worked, on a different footing
+and often through a different surface; only the cold-outreach job
+ends. This is the principle behind every classification above, and it
+is stated here because "leaves Lead Queue" reads as "done" without it.
+
+The Lead Queue is conceptually the Cold Call Queue: contacts not yet
+successfully spoken with, whose primary phone is not known invalid. No
+UI name, code identifier, spec section, or API field changes as a
+result of this amendment. The term is introduced to explain the
+queue's operational purpose, not to rename it. Lead Queue remains the
+name everywhere else.
+
+Read that way, the six classifications resolve without further
+argument. No Answer and Voicemail keep cold-calling because no live
+conversation has occurred. Requested Appointment and Follow Up leave
+cold outreach and continue to be worked, the first through Seller 2's
+automated booking sequence and the second by hand. Not Interested
+stops because the seller ended it. Incorrect Number stops because the
+number cannot reach them, and resumes when it can.
+
+**Operational queues, implemented.** Lead Queue, Waiting on Me,
+Long-Term Nurture, and Terminal. Each corresponds to something the
+Dashboard renders or PB-D49 excludes.
+
+**Anticipated operational states, not yet carried.** Two states follow
+from the principle above but have no durable carrier today, and are
+named here so their absence is legible rather than mistaken for a
+defect. Automation: a contact currently being worked by a workflow,
+where the next action is neither cold outreach nor yours. Seller 2
+owns that behavior but writes no state on entry and ends with Remove
+from Workflow, so nothing observable distinguishes a contact inside it
+from one that never entered. Reachability-blocked: a contact still
+worth working whose primary phone is unusable. PB-D53 defines the
+carrier as Phone Status; it is gated and does not yet exist.
+
+
 ### PB-D53 -- Durable carriers for engagement and reachability state
 
 **Decision.** PB-D52 defines what call dispositions mean for queue
