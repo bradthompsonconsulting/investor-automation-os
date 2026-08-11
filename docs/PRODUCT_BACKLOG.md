@@ -64,7 +64,7 @@ record how IAOS must behave. Keep them separate.
 | Requested Appointment workflow automation | GHL | P1 | High | M | Brad (GHL) | Done |
 | Incorrect Number: clear phone to Previous Phone | GHL | P1 | High | S | Brad (GHL) | Open |
 | Seller 3: remove from Seller 6 on appointment booked | GHL | P1 | High | S | Brad (GHL) | Done |
-| Rotate IAOS_WEBHOOK_SECRET off the published contact id | GHL | P1 | High | S | Brad (GHL) | Done |
+| Refresh IAOS_WEBHOOK_SECRET and repair stale app/.env | GHL | P1 | High | S | Brad (GHL) | Done |
 | Shared GHL config module, Contact Workspace path | IAOS | P1 | High | M | Jeff | Done |
 
 Queue filtering is the highest-value work on this list. A contact moved
@@ -181,21 +181,41 @@ notifications as genuine TYPE_SMS objects, so they will interleave into
 the Workspace chronology. Ship parity, observe, then decide whether a
 second filter is warranted.
 
-IAOS_WEBHOOK_SECRET was rotated 2026-08-10. Its prior value was the GHL
-contact id for the Brad Thompson fixture, which is published verbatim in
-CONTACT_WORKSPACE_SPEC_v2 sections 5.1 and 9.4 and in CONVERSATIONS_SPEC
-section 8.7. The repository is public, so the value had been readable by
-anyone since those documents were committed; the exposure long predates
-its discovery. A new random value was set in the GHL Custom Value
-iaos_webhook_secret and in the Netlify IAOS_WEBHOOK_SECRET on iaos-app,
-Production context only, then redeployed at 1bcada9. Confirmed live the
-same evening by a Voicemail disposition writing its note and a fresh
-last_call_attempt, which proves the two sides agree. Exposure was bounded
-to forged notes and attempt markers on seller records via
-ghl-disposition; GHL_PRIVATE_API_KEY was never involved. The general
-lesson is recorded rather than the incident: a secret must not be any
-value that appears anywhere in a public repository, including identifiers
-that read as harmless.
+Webhook secret timeline, corrected 2026-08-11. The production
+IAOS_WEBHOOK_SECRET exposure was closed on 2026-07-24, when the value was
+rotated in both the GHL Custom Value and the Netlify environment after
+Netlify secret-scanning identified that the previous value matched the
+publicly documented Brad fixture contact identifier. That scan failed
+harness commit 9ff7ab0 from publishing, which is how the problem
+surfaced. SESSION_HANDOFF records that no repository edit was required,
+because the production secret lives only in Netlify and GHL.
+
+The 2026-08-10 rotation did not close an ongoing production exposure. It
+refreshed the production secret and repaired a stale local development
+configuration. Inference, supported by two sources: the July 24 handoff
+explicitly states no repository update accompanied the production
+rotation, and on August 10 the local app/.env value still matched the
+original Brad fixture contact identifier. Together these support that the
+local development file retained the pre-July-24 value until it was
+updated during the August 10 maintenance. The filesystem cannot confirm
+this directly, since app/.env's modification time was reset by the
+August 10 edit.
+
+Live verification after the August 10 rotation consisted of a successful
+Voicemail disposition end to end, demonstrating that the current GHL
+Custom Value and Netlify environment variable remain synchronized and
+authenticate correctly. This establishes the current production
+configuration; it is not evidence about the July exposure window. Note
+that app/.env governs local runs only. The two values that must agree for
+ghl-disposition to authenticate are the GHL Custom Value and the Netlify
+environment variable, and the Voicemail write is the only evidence they
+do.
+
+The general lesson stands and is the reason this entry exists: a secret
+must not be any value that appears anywhere in a public repository,
+including identifiers that read as harmless. Netlify secret-scanning is
+the detection mechanism that caught it once and would catch a
+recurrence.
 
 Boundary: IAOS records dispositions. GHL owns workflow enrollment,
 branching, timers, and automated communications.
