@@ -53,9 +53,9 @@ Notes (left column)
 Conversation History (right column)
 - Heading
 - Error, loading, and empty states
-- Read-only transcript bubbles, FILTERED TO TYPE_EMAIL ONLY, Sent/Received + channel + date
+- Read-only transcript bubbles, Sent/Received + channel + date. The TYPE_EMAIL-only filter formerly recorded here is SUPERSEDED by D5.
 
-The blur-autosave note behavior and the TYPE_EMAIL-only filter are PRESERVED AS-IS in Phase A. Neither is a defect to fix in this phase.
+The blur-autosave note behavior is PRESERVED AS-IS in Phase A and is not a defect to fix in this phase. The TYPE_EMAIL-only filter was preserved on the same basis until 2026-08-11 and is now superseded by D5.
 
 ## 4. Decisions of record
 
@@ -66,6 +66,18 @@ D2 — PHONE FORMAT: the detail view formats phone to match the Contacts grid. T
 D3 — FAILURE SCOPE: "never partial render" scopes to the 96-field custom-field section ONLY, not to the route. On render-config failure that section shows an explicit error state and renders no fields. Everything in section 3 continues to work, because none of it depends on render-config.
 
 D4 — DND: display contact-level per-channel DND from dndSettings. Render only when the key is present. Absence means no DND and is NOT an error. Per-phone DNC does not exist in GHL's model and is not built.
+
+D5 — CONVERSATION PARITY (supersedes the §3 TYPE_EMAIL-only preservation, 2026-08-11). The Workspace transcript renders TYPE_EMAIL and TYPE_SMS. An SMS sent to a seller is fetched by ghl-contact-conversations and returned in the response today; it is dropped at render, so the surface contacts are worked from cannot show the message that was just sent. Conversations.tsx has allowed both types since it shipped and renders SMS correctly.
+
+Email bodies collapse to five rendered lines within the existing Workspace bubble width. Collapse uses the same -webkit-line-clamp mechanism and the same overflow detection as Conversations — measured scrollHeight > clientHeight while clamped, so the Expand control appears only when the body actually truncates. It does NOT adopt Conversations' full-width email layout. The Workspace keeps its 85% max-width, direction-aligned bubble; the line count matches, the visible content does not, and that difference is accepted. Changing Workspace email width is out of scope and would contradict the preserve list.
+
+SMS never collapses, matching Conversations. SMS inherits the Workspace's existing direction alignment — outbound right, inbound left — with no new alignment code, because the Workspace already aligns every bubble by direction rather than by type. The channel label already renders the message type, so an SMS self-identifies once it enters the allowlist. No icon change: the Workspace uses direction arrows, not Conversations' per-type icons.
+
+Expansion state is per message and resets when the route contact id changes. Bubbles are already keyed by message id with a conversationId+dateAdded fallback, and the contact-change effect already clears conversations state, so the reset follows from the existing structure rather than from new code — but it is a stated requirement, not an incidental property, and must be verified rather than assumed.
+
+IMPLEMENTATION CONSEQUENCE, not a new abstraction: the bubble is currently inline JSX inside a .map() callback, where React hooks cannot legally be called. Per-bubble state and the overflow effect therefore require extracting a small component local to ContactWorkspace.tsx. This is a mechanical consequence of adding state to a repeated element. It does NOT create a shared cross-surface component — CONVERSATIONS_SPEC section 7 holds that a shared MessageBubble is extracted only when a third consumer appears, and there are still two.
+
+WATCH, DO NOT PRE-SOLVE: CONVERSATIONS_SPEC section 8.7 established that GHL emits internal workflow notifications to Brad as genuine TYPE_SMS objects, which messageType cannot discriminate from real seller messages. On Conversations these sit in a dedicated Text section; in the Workspace's single chronological list they will interleave with seller email. Ship parity, observe the result on real contacts, then decide whether a second filter is warranted. Do not add one preemptively.
 
 ## 5. Render-config source
 
