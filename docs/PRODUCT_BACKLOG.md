@@ -59,8 +59,9 @@ record how IAOS must behave. Keep them separate.
 | Live disposition test (real softphone call) | IAOS | P1 | High | S | Brad | Done |
 | Apply PB-D48 classification to FIELD_REGISTER | IAOS | P1 | High | M | Jeff | Open |
 | Contact Workspace field editors | IAOS | P1 | High | L | Jeff | Open |
+| Contact Workspace conversation parity: SMS + email collapse | IAOS | P1 | High | S | Jeff | Open |
 | Seller 2 CTA: ask for the appointment | GHL | P1 | High | S | Brad (GHL) | Done |
-| Requested Appointment workflow automation | GHL | P1 | High | M | Brad (GHL) | Open |
+| Requested Appointment workflow automation | GHL | P1 | High | M | Brad (GHL) | Done |
 | Incorrect Number: clear phone to Previous Phone | GHL | P1 | High | S | Brad (GHL) | Open |
 | Seller 3: remove from Seller 6 on appointment booked | GHL | P1 | High | S | Brad (GHL) | Done |
 | Shared GHL config module, Contact Workspace path | IAOS | P1 | High | M | Jeff | Done |
@@ -110,6 +111,74 @@ enrolled in Seller 6. Allow re-entry governs re-entry after leaving; a
 still-enrolled contact is skipped regardless of that setting. Observed
 2026-08-10, recorded so the absent execution-log row is not
 rediscovered as a defect.
+
+Requested Appointment routing shipped 2026-08-10 as a separate workflow,
+Seller 2.5 - Routing Requested Appointment Disposition. Trigger Call
+details, Custom disposition contains any of Requested Appointment;
+single action Add to Workflow, Seller 2 - Engagement Detected.
+Published. The architecture is GHL-native by decision: GHL already
+holds the disposition at the originating trigger, so routing needs no
+IAOS change, no new custom field, and no expansion of the write
+contract. The alternative considered and set aside was persisting the
+disposition to a contact field for GHL to watch; that remains available
+if durable disposition state is later wanted for queue placement, and
+should be authorized for that reason rather than as a side effect of
+routing.
+
+Verified live 2026-08-10 by a real dispositioned call on Brad Thompson
+9fbH2VCcZvzVNhsR9zjc. Two findings, one of them general.
+
+Seller 2.5 executed and Seller 2 did not enroll. Seller 2 has Allow
+re-entry OFF and the contact had completed Seller 2 at 4:42 pm the same
+day, so the add was rejected on re-entry. This is the accepted
+behavior: a contact already in Seller 2 is already in the sequence that
+asks for the booking, and restarting it buys nothing. The unresolved
+case is a contact who completed Seller 2 earlier and later taps
+Requested Appointment, which is what this test exercised. Turning
+re-entry ON was rejected because it changes Seller 2 for every
+enrollment path. A Remove-then-Add sequence inside Seller 2.5 was also
+rejected: with re-entry OFF the re-add fails too, leaving the contact
+removed and not re-enrolled, which is worse than the skip.
+
+Add to Workflow logs Executed whether or not the receiving workflow
+accepts. Seller 2.5's execution log read Executed at 5:49:28 pm while
+Seller 2's Enrollment history shows nothing after 4:26:54 pm. The
+sending workflow's log therefore cannot verify an enrollment; only the
+receiving workflow's Enrollment history can. This is general GHL
+behavior, not specific to these two workflows.
+
+Requested Appointment is the second of the six dispositions proven end
+to end through ghl-disposition.ts; No Answer was the first, at
+CONTACT_WORKSPACE_SPEC_v2 section 9.4. The note read
+Call: Requested Appointment -- 2s against a 6-second Call Summary,
+repeating the duration discrepancy already recorded there.
+
+A Contact changed workflow trigger exists and was characterized 2026-08-10
+without being used. It fires on selected contact fields only, targets an
+individual custom field by name, and offers Has changed and Has changed
+to, the latter with a free-text value input. That is the mechanism a
+persisted-disposition design would use. Recorded as verified rather than
+assumed so the design does not have to re-establish it.
+
+Contact Workspace conversation parity is a display gap found the same
+day. ContactWorkspace.tsx filters the transcript to TYPE_EMAIL only, so
+an SMS sent to a seller is fetched, returned, and dropped at render on
+the surface contacts are worked from. Conversations.tsx allows
+TYPE_EMAIL and TYPE_SMS and renders it correctly. Email bubbles also
+collapse to five lines with an Expand control on Conversations and do
+not collapse in the Workspace. Both divergences were deliberate, and
+both rationales were defensive -- avoid disturbing an already-verified
+surface -- rather than product judgments that email-only and fully
+expanded reads better. The target is parity: add TYPE_SMS to the
+Workspace allowlist and match the five-line collapse with Expand. Both
+changes touch the same render path and trigger the same harness floor
+and bundle re-pin, so they ship together. CONTACTS_DETAIL_SPEC section 3
+names both as preserved in Phase A and needs a dated supersession before
+code moves. One thing to watch rather than pre-solve: section 8.7 of
+CONVERSATIONS_SPEC establishes that GHL emits internal workflow
+notifications as genuine TYPE_SMS objects, so they will interleave into
+the Workspace chronology. Ship parity, observe, then decide whether a
+second filter is warranted.
 
 Boundary: IAOS records dispositions. GHL owns workflow enrollment,
 branching, timers, and automated communications.
