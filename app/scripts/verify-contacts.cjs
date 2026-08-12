@@ -4,16 +4,16 @@
    localhost) at Brad's WIDE viewport, and passes the §9.2 bundle gate FIRST — re-pin
    EXPECTED to the bundle under test on every run.
 
-   Floor 119 = grid (5) + six folder sections (6) + 96 custom fields (96)
+   Floor 121 = grid (5) + six folder sections (6) + 98 custom fields (98)
              + four Additional Info subgroups (4) + three D1 identity-header renders (3)
              + four Phone N DNC adjacencies (4) + no-input (1).
-   Phase B PB-D5/PB-D13: floor = 119 + 4N, N = unlocked field count. N=2, so 127.
-   D5 conversation parity (CONTACTS_DETAIL_SPEC D5): + 9 = 136.
+   Phase B PB-D5/PB-D13: floor = 121 + 4N, N = unlocked field count. N=2, so 129.
+   D5 conversation parity (CONTACTS_DETAIL_SPEC D5): + 9 = 138.
      Neelima (4): delta, long-email-collapsed, expand, collapse.
      Gordon  (5): delta, sms-rendered, sms-alignment, sms-never-collapses,
                   inbound-email-collapsed.
-   Success ONLY when checksRun === 136 AND every check passed. Any throw exits nonzero.
-   The 96-field list is STATIC + hardcoded here (verification-only) — never imported from
+   Success ONLY when checksRun === 138 AND every check passed. Any throw exits nonzero.
+   The 98-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
 
@@ -51,10 +51,10 @@ const GOR_INBOUND_EMAIL_MARK = "Your property information just came through";
 // the exact render order. Additional Info is the sole subdivided folder.
 const RECORD = [
   { folder: "Offer", fields: ["Offer Price", "Offer MAO", "Offer Wholesale Fee", "Offer Repair Total", "Offer Margin", "Offer ARV", "Offer Date"] },
-  { folder: "Contact", fields: ["Phone Type"] },
+  { folder: "Contact", fields: ["Phone Type", "Phone Status"] },
   { folder: "General Info", fields: ["Callback Datetime", "Last Call Attempt", "last_call_attempt_precise"] },
   { folder: "Additional Info", subgroups: [
-    { name: "Reachability", fields: ["Phone 1 DNC", "Phone 2", "Phone 2 DNC", "Phone 3", "Phone 3 DNC", "Phone 4", "Phone 4 DNC", "Phone 5", "Phone 5 DNC", "Email 2", "Email 3", "Email 4", "Owner 2 First Name", "Owner 2 Last Name", "Litigator", "Mailing Care of Name", "Mailing Address", "Mailing City", "Mailing State", "Mailing Zip", "Mailing County", "Do Not Mail"] },
+    { name: "Reachability", fields: ["Phone 1 DNC", "Phone 2", "Phone 2 DNC", "Phone 3", "Phone 3 DNC", "Phone 4", "Phone 4 DNC", "Phone 5", "Phone 5 DNC", "Email 2", "Email 3", "Email 4", "Owner 2 First Name", "Owner 2 Last Name", "Litigator", "Mailing Care of Name", "Mailing Address", "Mailing City", "Mailing State", "Mailing Zip", "Mailing County", "Do Not Mail", "Previous Phone"] },
     { name: "Property", fields: ["Property Address", "Loan Amount", "Interest Rate", "County", "APN", "Property Status", "Property Type", "Bedrooms", "Total Bathrooms", "Building Sqft", "Lot Size Sqft", "Effective Year Built", "Total Assessed Value", "Last Sale Date", "Last Sale Amount", "Total Open Loans", "Est. Remaining Loan Balance", "Est. Value", "Est. Loan-to-Value", "Est. Equity", "MLS Status", "MLS Date", "MLS Amount", "Lien Amount", "Foreclosure Factor", "Total Condition", "Interior Condition", "Bathroom Condition", "Kitchen Condition", "Exterior Condition"] },
     { name: "Investor", fields: ["Asking Price", "ARV", "Estimated Repairs", "Motivation Level", "Timeline to Sell", "Lead Source", "Occupancy Status", "Follow Up Date", "MAO Viability Flag", "Hold Months", "Carrying Cost", "Repair Line Items", "Owner Occupied", "Property Notes"] },
     { name: "System", fields: ["Marketing Lists", "Date Added to List", "Motivation Score", "Deal Score", "Combined Score", "Data Completeness Score", "Callback Datetime Precise"] },
@@ -63,7 +63,7 @@ const RECORD = [
   { folder: "Form | IAOS Client Intake Form", fields: ["Upload Your Lead CSV (if applicable)"] },
 ];
 const FOLDER_ORDER = RECORD.map((g) => g.folder);
-const SUBGROUP_EXPECT = [["Reachability", 22], ["Property", 30], ["Investor", 14], ["System", 7]];
+const SUBGROUP_EXPECT = [["Reachability", 23], ["Property", 30], ["Investor", 14], ["System", 7]];
 
 // Harness-local copies of the app's display transforms (NOT imported) — used only to
 // compute the expected identity renders for checks 113/114.
@@ -354,7 +354,7 @@ async function clickControlByBody(page, mark) {
       `got="${dom && dom.name}" display=${dom && dom.display}`);
   });
 
-  // 12-107 — the 96 custom fields: presence + correct section (+ subgroup) + RELATIVE ORDER.
+  // 12-109 — the 98 custom fields: presence + correct section (+ subgroup) + RELATIVE ORDER.
   for (const grp of RECORD) {
     const dom = byName(grp.folder);
     if (grp.subgroups) {
@@ -373,7 +373,7 @@ async function clickControlByBody(page, mark) {
     }
   }
 
-  // 108-111 — four Additional Info subgroups: order + count (22/30/14/7) counted from the DOM.
+  // 110-113 — four Additional Info subgroups: order + count (23/30/14/7) counted from the DOM.
   const domAI = byName("Additional Info");
   SUBGROUP_EXPECT.forEach(([sgName, count], i) => {
     const domSg = domAI && domAI.subgroups[i];
@@ -590,9 +590,9 @@ async function clickControlByBody(page, mark) {
 
   await browser.close();
 
-  // ── Self-check: exactly 136, all unique, all passed — else nonzero ──
+  // ── Self-check: exactly 138, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 136) { console.log(`ABORT — expected 136 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 138) { console.log(`ABORT — expected 138 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });

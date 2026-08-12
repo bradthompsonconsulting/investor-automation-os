@@ -1,15 +1,15 @@
 // Additional Info subgroup mapping (§5.4) — the ONE checked-in IAOS config the
 // spec permits; everything else stays LIVE from GHL. Transcribed verbatim from
 // docs/CONTACT_FIELD_REFERENCE.md (Part 2 table, line 151), fieldKey → subgroup.
-// GHL exposes no subgroup on the wire (all 73 share parentId qYS1wakeOTmfgjyeSJ8M);
+// GHL exposes no subgroup on the wire (all 74 share parentId qYS1wakeOTmfgjyeSJ8M);
 // this is the sole source of the four-way partition. A module-load assertion
-// pins the 73-count and the 22/30/14/7 partition so a transcription drift fails
+// pins the 74-count and the 23/30/14/7 partition so a transcription drift fails
 // loudly at import, not silently at render.
 
 export type AdditionalInfoSubgroup = "Reachability" | "Property" | "Investor" | "System";
 
 export const ADDITIONAL_INFO_SUBGROUPS: Record<string, AdditionalInfoSubgroup> = {
-  // Reachability (22)
+  // Reachability (23)
   "contact.phone_1_dnc": "Reachability",
   "contact.phone_2": "Reachability",
   "contact.phone_2_dnc": "Reachability",
@@ -32,6 +32,7 @@ export const ADDITIONAL_INFO_SUBGROUPS: Record<string, AdditionalInfoSubgroup> =
   "contact.mailing_zip": "Reachability",
   "contact.mailing_county": "Reachability",
   "contact.do_not_mail": "Reachability",
+  "contact.previous_phone": "Reachability",
   // Property (30)
   "contact.property_address": "Property",
   "contact.loan_amount": "Property",
@@ -92,11 +93,11 @@ export const ADDITIONAL_INFO_SUBGROUPS: Record<string, AdditionalInfoSubgroup> =
 // naming the failed condition and the actual number, so it never renders wrong.
 (function assertAdditionalInfoSubgroups() {
   const SUBGROUPS: AdditionalInfoSubgroup[] = ["Reachability", "Property", "Investor", "System"];
-  const EXPECTED: Record<AdditionalInfoSubgroup, number> = { Reachability: 22, Property: 30, Investor: 14, System: 7 };
+  const EXPECTED: Record<AdditionalInfoSubgroup, number> = { Reachability: 23, Property: 30, Investor: 14, System: 7 };
 
   const entries = Object.entries(ADDITIONAL_INFO_SUBGROUPS);
-  if (entries.length !== 73) {
-    throw new Error(`additionalInfoSubgroups: entry count must be 73, got ${entries.length}`);
+  if (entries.length !== 74) {
+    throw new Error(`additionalInfoSubgroups: entry count must be 74, got ${entries.length}`);
   }
 
   const counts: Record<AdditionalInfoSubgroup, number> = { Reachability: 0, Property: 0, Investor: 0, System: 0 };

@@ -13,8 +13,8 @@ This file has **two clearly separated parts**. Keep them separate:
 
 - **Source call:** `GET /.netlify/functions/ghl-proxy?path=/locations/jmHG4B8RdzwpfqruNf68/customFields` → HTTP 200
 - **Location:** `jmHG4B8RdzwpfqruNf68`
-- **Date observed:** 2026-07-22
-- **Total custom fields:** 96 (all `model: contact`; zero opportunity-scoped)
+- **Date observed:** 2026-07-22; re-observed live 2026-08-12 (PB-D53 step 5) — Previous Phone and Phone Status added, total 96 → 98
+- **Total custom fields:** 98 (all `model: contact`; zero opportunity-scoped)
 - **Sort:** by `parentId`, then `position`
 - **Regenerate:** re-run the source call and re-sort by (`parentId`, `position`); this table is a pure projection of the response — diff a fresh pull against it to detect any field add/remove/rename/regroup.
 
@@ -26,13 +26,13 @@ This file has **two clearly separated parts**. Keep them separate:
 | parentId | folder name | documentType | standard | field count |
 |---|---|---|---|---|
 | `2kmTfkj3wxLc0v52AxHS` | IAOS Onboarding | folder | false | 11 |
-| `8NV0bLrpGEi4bRflnasN` | Contact | folder | true | 1 |
+| `8NV0bLrpGEi4bRflnasN` | Contact | folder | true | 2 |
 | `8WVFNtuUuYZ4aEqrUWMb` | Form \| IAOS Client Intake Form | folder | false | 1 |
 | `YslJ5oke73JrBOgaq0np` | Offer | folder | false | 7 |
 | `kmPmjCjI4noq8KISyq2e` | General Info | folder | true | 3 |
-| `qYS1wakeOTmfgjyeSJ8M` | Additional Info | folder | true | 73 |
+| `qYS1wakeOTmfgjyeSJ8M` | Additional Info | folder | true | 74 |
 
-(Field counts sum to 96, matching the field table below.)
+(Field counts sum to 98, matching the field table below.)
 
 | name | id | fieldKey | dataType | position | parentId | standard |
 |---|---|---|---|---|---|---|
@@ -48,6 +48,7 @@ This file has **two clearly separated parts**. Keep them separate:
 | Has Existing Leads | `gAL6XdVAxQIld4AZYvrF` | `contact.has_existing_leads` | SINGLE_OPTIONS | 700 | `2kmTfkj3wxLc0v52AxHS` | false |
 | Existing GHL Account | `ebGJCMbSeJmok61mw7X7` | `contact.existing_ghl_account` | SINGLE_OPTIONS | 750 | `2kmTfkj3wxLc0v52AxHS` | false |
 | Phone Type | `1cTefPDpZRypKYHtgZrq` | `contact.phone_type` | TEXT | 350 | `8NV0bLrpGEi4bRflnasN` | false |
+| Phone Status | `6WJG2a40490bW0c62YFT` | `contact.phone_status` | SINGLE_OPTIONS | 400 | `8NV0bLrpGEi4bRflnasN` | false |
 | Upload Your Lead CSV (if applicable) | `K2iMbgOSOqsBcOzcg7R0` | `contact.upload_your_lead_csv_if_applicable` | FILE_UPLOAD | 50 | `8WVFNtuUuYZ4aEqrUWMb` | false |
 | Offer Price | `v2VO2wUwTYRojmU7VXyZ` | `contact.offer_price` | NUMERICAL | 50 | `YslJ5oke73JrBOgaq0np` | false |
 | Offer MAO | `aAMFPmgxGZT422uGAQOx` | `contact.offer_mao` | NUMERICAL | 100 | `YslJ5oke73JrBOgaq0np` | false |
@@ -132,6 +133,7 @@ This file has **two clearly separated parts**. Keep them separate:
 | Combined Score | `9SVnuzznYsZOQQazpxld` | `contact.combined_score` | NUMERICAL | 3850 | `qYS1wakeOTmfgjyeSJ8M` | false |
 | Data Completeness Score | `r9sD1rlTIqhOx9Mhvftt` | `contact.data_completeness_score` | NUMERICAL | 3900 | `qYS1wakeOTmfgjyeSJ8M` | false |
 | Callback Datetime Precise | `7qRUkZQK8bi2HNo7zDHd` | `contact.callback_datetime_precise` | TEXT | 3950 | `qYS1wakeOTmfgjyeSJ8M` | false |
+| Previous Phone | `Beq8vpNaGCsacoXOct44` | `contact.previous_phone` | TEXT | 4000 | `qYS1wakeOTmfgjyeSJ8M` | false |
 
 ---
 
@@ -140,13 +142,13 @@ This file has **two clearly separated parts**. Keep them separate:
 Nothing here is a wire fact. Every entry is a deliberate IAOS choice. This part is intentionally near-empty: **no per-field inert-proof has run**, so no field is characterized beyond what is recorded below.
 
 - **Folder `YslJ5oke73JrBOgaq0np` (the 7 `offer_` fields) is the `CONTACTS_OPPORTUNITIES_SPEC.md` §4.1 HARD NO set.** Its members (from Part 1): Offer Price, Offer MAO, Offer Wholesale Fee, Offer Repair Total, Offer Margin, Offer ARV, Offer Date.
-- **Folder `qYS1wakeOTmfgjyeSJ8M` "Additional Info" holds 73 of 96 fields** — GHL's folder grouping is OBSERVED but insufficient as the sole layout driver for §5.1 (one folder carrying ~76% of fields provides little structure). The four-subgroup subdivision that resolves this is defined immediately below.
+- **Folder `qYS1wakeOTmfgjyeSJ8M` "Additional Info" holds 74 of 98 fields** — GHL's folder grouping is OBSERVED but insufficient as the sole layout driver for §5.1 (one folder carrying ~76% of fields provides little structure). The four-subgroup subdivision that resolves this is defined immediately below.
 
 ### `Additional Info` subdivision — four IAOS subgroups
 
-**IAOS DECISION, not a wire fact.** GHL groups all 73 of these fields into the single `Additional Info` folder (`qYS1wakeOTmfgjyeSJ8M`). That flat 73/96 concentration (recorded above) is unusable as one section, so — and ONLY for this folder (§5.1) — IAOS subdivides it into **exactly four subgroups: Reachability, Property, Investor, System.** This subdivision is an IAOS layout decision justified by the observed 73/96 concentration; it is **not present on the wire** (GHL knows only the one folder). Every one of the 73 fields lands in **exactly one** subgroup.
+**IAOS DECISION, not a wire fact.** GHL groups all 74 of these fields into the single `Additional Info` folder (`qYS1wakeOTmfgjyeSJ8M`). That flat 74/98 concentration (recorded above) is unusable as one section, so — and ONLY for this folder (§5.1) — IAOS subdivides it into **exactly four subgroups: Reachability, Property, Investor, System.** This subdivision is an IAOS layout decision justified by the observed 74/98 concentration; it is **not present on the wire** (GHL knows only the one folder). Every one of the 74 fields lands in **exactly one** subgroup.
 
-Per-subgroup counts: **Reachability 22 · Property 30 · Investor 14 · System 7** (sum = **73**). Ordered by subgroup, then by GHL `position` within each subgroup:
+Per-subgroup counts: **Reachability 23 · Property 30 · Investor 14 · System 7** (sum = **74**). Ordered by subgroup, then by GHL `position` within each subgroup:
 
 | field name | fieldKey | subgroup |
 |---|---|---|
@@ -172,6 +174,7 @@ Per-subgroup counts: **Reachability 22 · Property 30 · Investor 14 · System 7
 | Mailing Zip | `contact.mailing_zip` | Reachability |
 | Mailing County | `contact.mailing_county` | Reachability |
 | Do Not Mail | `contact.do_not_mail` | Reachability |
+| Previous Phone | `contact.previous_phone` | Reachability |
 | Property Address | `contact.property_address` | Property |
 | Loan Amount | `contact.loan_amount` | Property |
 | Interest Rate | `contact.interest_rate` | Property |
@@ -224,4 +227,4 @@ Per-subgroup counts: **Reachability 22 · Property 30 · Investor 14 · System 7
 | Data Completeness Score | `contact.data_completeness_score` | System |
 | Callback Datetime Precise | `contact.callback_datetime_precise` | System |
 
-**Render exception — `Phone 1 DNC` (`contact.phone_1_dnc`):** its **data subgroup is Reachability** (row above, unchanged — Reachability stays 22, partition stays 22 / 30 / 14 / 7 = 73). But per `CONTACTS_OPPORTUNITIES_SPEC.md` §5.1, it is **RENDERED in the identity block, adjacent to the native primary phone** — NOT within the Reachability render sequence. Its Phase-A assertion (§5.3) is **presence + identity-block section + adjacency to the native primary phone** — NOT an absolute ordinal (the a4208a2 "global ordinal 1" definition was reversed; §5.3 now asserts section + relative order, not a global index). This is the one field whose data subgroup and rendered location diverge: this table records the data mapping; the render location is the §5.1 exception.
+**Render exception — `Phone 1 DNC` (`contact.phone_1_dnc`):** its **data subgroup is Reachability** (row above, unchanged — Reachability stays 23, partition stays 23 / 30 / 14 / 7 = 74). But per `CONTACTS_OPPORTUNITIES_SPEC.md` §5.1, it is **RENDERED in the identity block, adjacent to the native primary phone** — NOT within the Reachability render sequence. Its Phase-A assertion (§5.3) is **presence + identity-block section + adjacency to the native primary phone** — NOT an absolute ordinal (the a4208a2 "global ordinal 1" definition was reversed; §5.3 now asserts section + relative order, not a global index). This is the one field whose data subgroup and rendered location diverge: this table records the data mapping; the render location is the §5.1 exception.
