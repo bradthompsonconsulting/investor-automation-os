@@ -62,6 +62,11 @@ const TERMINAL_STAGE_IDS = new Set([
   "f1960b50-8aa2-4a69-ba58-a7a0dc66ce82", // Lost / Not Interested
 ]);
 
+// PB-D53 -- Seller Follow-Up. Pinned by ID per PB-D49's match-on-ID
+// rule; deliberately NOT in shared config per PB-D51's stage-UUID
+// exclusion, same treatment as TERMINAL_STAGE_IDS above.
+const SELLER_FOLLOW_UP_STAGE_ID = "71227a30-2303-4165-aa58-e56860146959";
+
 // PB-D50 — text channels whose STOP_KEYWORD entry hides a contact from
 // Unanswered Inbound. Email is deliberately out of scope; its unsubscribe
 // carries a different message and needs its own decision.
@@ -483,10 +488,65 @@ export default function Dashboard() {
     return new Set([...byContact].filter(([, allTerminal]) => allTerminal).map(([id]) => id));
   }, [pipeline]);
 
+  // PB-D53 — contacts with at least one Seller Leads opportunity in Seller
+  // Follow-Up. ANY such opportunity qualifies — deliberately NOT the
+  // all-opportunities rule TERMINAL_STAGE_IDS uses above. One engaged
+  // follow-up ends cold outreach; the other opportunities do not undo it.
+  const followUpContactIds = useMemo(
+    () => new Set(
+      (pipeline?.opportunities ?? [])
+        .filter((o) => o.contactId && o.stageId === SELLER_FOLLOW_UP_STAGE_ID)
+        .map((o) => o.contactId),
+    ),
+    [pipeline],
+  );
+
+  // PB-D54 — ANY scheduled callback, future-dated included. Deliberately NOT
+  // the `callbacks` memo above, which splits into overdue/dueToday and DISCARDS
+  // future ones: a promised call-back ends cold outreach the moment it is
+  // scheduled, not when it falls due.
+  const callbackScheduledContactIds = useMemo(
+    () => new Set((contacts ?? []).filter((c) => effectiveCallback(c)).map((c) => c.id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [contacts, callbackOverride],
+  );
+
+  // PB-D54 — an offer is out and the next move is theirs. Derived from the
+  // existing offersAwaiting collection so the two can never disagree.
+  const offersAwaitingContactIds = useMemo(
+    () => new Set(offersAwaiting.map((row) => row.contact.id)),
+    [offersAwaiting],
+  );
+
+  // PB-D54 — the six cold-outreach exclusion predicates, unioned once. Lead
+  // Queue is conceptually the Cold Call Queue: contacts not yet successfully
+  // spoken with, whose primary phone is not known invalid. Leaving it means
+  // cold prospecting stops, NOT that calling stops.
+  //   1. escalated        — live unanswered inbound (Waiting on Me §3.1)
+  //   2. terminal         — ALL opportunities terminal (PB-D49)
+  //   3. callback         — any scheduled callback, future included
+  //   4. offer awaiting   — offer sent, response pending
+  //   5. Seller Follow-Up — engaged, worked by hand (PB-D53)
+  //   6. Incorrect Number — phoneStatus EXACTLY that. "" and "Callable" do NOT
+  //      exclude; "" is the normal state for almost every contact.
+  const coldOutreachExcludedIds = useMemo(() => {
+    const out = new Set<string>([
+      ...escalatedContactIds,
+      ...terminalContactIds,
+      ...callbackScheduledContactIds,
+      ...offersAwaitingContactIds,
+      ...followUpContactIds,
+    ]);
+    for (const c of contacts ?? []) {
+      if (c.phoneStatus === "Incorrect Number") out.add(c.id);
+    }
+    return out;
+  }, [contacts, escalatedContactIds, terminalContactIds, callbackScheduledContactIds, offersAwaitingContactIds, followUpContactIds]);
+
   const leadQueue = useMemo<LeadRow[]>(() => {
     void nowTick; // re-derive bands as clock advances past RESURFACE_HOURS
     const rows: LeadRow[] = (contacts ?? [])
-      .filter((c) => c.phone?.trim() && !escalatedContactIds.has(c.id) && !terminalContactIds.has(c.id))
+      .filter((c) => c.phone?.trim() && !coldOutreachExcludedIds.has(c.id))
       .map((c) => {
         const attempt = effectiveLastAttempt(c);
         return {
@@ -511,7 +571,7 @@ export default function Dashboard() {
       if (a.overdueMailer !== b.overdueMailer) return a.overdueMailer ? -1 : 1;
       return (b.contact.combinedScore ?? -1) - (a.contact.combinedScore ?? -1);
     });
-  }, [contacts, escalatedContactIds, overdueContactIds, terminalContactIds, attemptOverride, nowTick]);
+  }, [contacts, coldOutreachExcludedIds, overdueContactIds, attemptOverride, nowTick]);
 
   // PB-D50 — a contact who texted STOP. Matched on message, never on status
   // and never on the top-level dnd boolean, which reads false even for a

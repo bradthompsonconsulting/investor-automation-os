@@ -15,6 +15,7 @@ export interface GhlConfig {
     dealScore: string;
     combinedScore: string;
     dataCompletenessScore: string;
+    phoneStatus: string;
   };
   folders: {
     offer: string;
@@ -37,6 +38,7 @@ const PRODUCTION: GhlConfig = {
     dealScore:               "cfkm0kb9CLvjZgyrcIFz",
     combinedScore:           "9SVnuzznYsZOQQazpxld",
     dataCompletenessScore:   "r9sD1rlTIqhOx9Mhvftt",
+    phoneStatus:             "6WJG2a40490bW0c62YFT",
   },
   folders: {
     offer:          "YslJ5oke73JrBOgaq0np",
@@ -61,6 +63,7 @@ const TEST: GhlConfig = {
     dealScore:               "",
     combinedScore:           "",
     dataCompletenessScore:   "",
+    phoneStatus:             "",
   },
   folders: {
     offer:          "",
@@ -99,6 +102,7 @@ export function getConfig(selector: string | undefined): GhlConfig {
     ["fields.dealScore", config.fields.dealScore],
     ["fields.combinedScore", config.fields.combinedScore],
     ["fields.dataCompletenessScore", config.fields.dataCompletenessScore],
+    ["fields.phoneStatus", config.fields.phoneStatus],
     ["folders.offer", config.folders.offer],
     ["folders.additionalInfo", config.folders.additionalInfo],
   ];

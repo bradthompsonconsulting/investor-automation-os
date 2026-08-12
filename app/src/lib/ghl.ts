@@ -93,6 +93,11 @@ export interface ContactRow {
   // contact.property_address custom field (tG4gGFI8JB2VjWeuqYMx). "" when the
   // field is absent. Surfaced by parseContact via the list read — no extra fetch.
   propertyAddress:         string;
+  // PB-D53 — contact.phone_status, SINGLE_OPTIONS. Operational state of the
+  // primary phone (NOT Phone Type's carrier line type). "" when unset, which
+  // is the normal state; "Incorrect Number" excludes the contact from the Lead
+  // Queue per PB-D54; "Callable" is set by the reset and does NOT exclude.
+  phoneStatus:             string;
 }
 
 // ── Contacts surface (Phase A) types ──────────────────────────────────────────

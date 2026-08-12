@@ -30,6 +30,12 @@ const OFFER_PRICE_ID = FIELDS.offerPrice;
 // single-record reads (the list does not truncate custom fields). Read-only.
 const PROPERTY_ADDRESS_ID = FIELDS.propertyAddress;
 
+// PB-D53 — phone_status (contact.phone_status), SINGLE_OPTIONS. Operational
+// state of the PRIMARY phone, distinct from Phone Type's carrier line type.
+// Written GHL-side by the Incorrect Number disposition workflow; read-only
+// here and never written by IAOS. "" when absent, which is the common case.
+const PHONE_STATUS_ID = FIELDS.phoneStatus;
+
 // Dashboard Phase 2/3 fields (confirmed live via /locations/.../customFields).
 // callback_datetime and last_call_attempt are DATE type on contact; parsing
 // here only reads them, never writes.
@@ -122,5 +128,6 @@ export function parseContact(c: any) {
     lastCallAttempt:         cfDate(cf, LAST_CALL_ATTEMPT_ID),
     lastCallAttemptPrecise:  cfText(cf, LAST_CALL_ATTEMPT_PRECISE_ID),
     propertyAddress:         cfString(cf, PROPERTY_ADDRESS_ID),
+    phoneStatus:             cfString(cf, PHONE_STATUS_ID),
   };
 }
