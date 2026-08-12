@@ -1582,6 +1582,41 @@ Phone Status now exists in the GHL schema, so verify-contacts.cjs,
 which aborts on checksRun !== 136, will fail on its next run. That
 failure is expected and is the same reconciliation step 5 names.
 
+**Amendment (2026-08-12): step 5 discharged.** This supersedes the
+"Gate status" paragraph above as to step 5. The 98-vs-113 discrepancy
+recorded there is resolved: OBSERVED, source: live read of the
+customFields endpoint through the deployed proxy 2026-08-12 -- the
+Contact model returns 98 custom fields across six folders, matching
+this decision's arithmetic. The Custom Fields screen's 113 counts
+something else, most likely GHL standard fields the custom-field
+endpoint does not return; that figure is not the one any IAOS artifact
+tracks and is not reconciled further.
+
+CONTACT_FIELD_REFERENCE Part 1 now records 98 fields, the Contact
+folder at 2, and Additional Info at 74, with a dated re-observation
+line rather than a silent rewrite. Previous Phone is assigned to
+Reachability in both additionalInfoSubgroups.ts and the reference,
+taking that subgroup to 23 and the partition to 23/30/14/7. The
+assignment is a placement decision, not a wire fact: GHL exposes no
+subgroup, and an unmapped Additional Info field falls to the end of
+System, where Previous Phone was rendering until this change.
+
+verify-contacts.cjs carries RECORD at 98 fields, SUBGROUP_EXPECT at
+23/30/14/7, and an exact floor of 138. OBSERVED 2026-08-12 -- 138/138,
+zero failures, against bundle index-164n205B.js. verify-conversations
+passed 24/24 against the same bundle. The three assertions this
+decision could previously only reason about are now observed: Phone
+Status renders at position 1 of the Contact folder, Previous Phone at
+position 22 of Reachability, and Reachability's DOM count is 23.
+
+**Order of execution differed from the stated order.** Step 5 was
+completed before step 4. Recorded because the numbered list above
+reads as a sequence and this execution did not follow it. It was
+harmless: the schema reference and the harness assert what GHL renders
+and what the existing client config produces, neither of which depends
+on the read model step 4 builds. Step 4 is the sole remaining PB-D53
+implementation item.
+
 ### PB-D54 -- Cold-outreach eligibility governs Lead Queue membership
 
 **Decision.** A contact is excluded from the Lead Queue when their
