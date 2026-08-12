@@ -927,8 +927,10 @@ export default function Dashboard() {
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 12px", maxWidth: CONTENT_MAX_WIDTH }}>
         Attempted-but-no-response (oldest attempt first) → never-attempted (tier + score, mailer-overdue bubbles to
         tier top) → freshly-attempted (greyed, bottom). A note is the only thing that marks an attempt — Call opens
-        GHL to dial and the callback icon schedules a follow-up, but neither one greys a row on its own. Anyone who's
-        engaged (e.g. an unanswered inbound reply) moves to Waiting on Me and drops out of this list. Showing{" "}
+        GHL to dial and the callback icon schedules a follow-up, but neither one greys a row on its own. Contacts stay
+        here while cold outreach is still the right move — they drop out when another state takes over: an unanswered
+        inbound reply, a scheduled callback, an offer awaiting response, Seller Follow-Up, a terminal stage, or a phone
+        marked incorrect. Showing{" "}
         {Math.min(RESURFACE_VISIBLE_ROWS, leadQueue.length)} of {leadQueue.length} — scroll for the rest.
       </p>
       <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden", maxWidth: CONTENT_MAX_WIDTH }}>
@@ -957,7 +959,7 @@ export default function Dashboard() {
               {loading ? (
                 <tr><td colSpan={8} style={{ padding: "20px 16px", textAlign: "center", color: "#334155", fontSize: "13px" }}>Loading…</td></tr>
               ) : leadQueue.length === 0 ? (
-                <tr><td colSpan={8} style={{ padding: "20px 16px", textAlign: "center", color: "#334155", fontSize: "13px" }}>No contacts with a phone number.</td></tr>
+                <tr><td colSpan={8} style={{ padding: "20px 16px", textAlign: "center", color: "#334155", fontSize: "13px" }}>No contacts currently need cold outreach.</td></tr>
               ) : (
                 leadQueue.map(({ contact: c, tier, overdueMailer, attempt, band }) => {
                   const greyed = band === 3;
