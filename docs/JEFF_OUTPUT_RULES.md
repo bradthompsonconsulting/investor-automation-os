@@ -116,3 +116,67 @@ document records.
 
 Read the pre-filled line critically before sending it. It reflects what is
 plausibly next, not what the sequence requires.
+
+## A decision's amendments govern, not its original text
+
+Where a decision carries amendments, the amendment states the current
+position. The superseded paragraph remains only as a record of what was
+believed when it was written. Verify a claim against a decision's LAST
+statement on a point, never its first.
+
+OBSERVED 2026-08-12, seven times in one session: PB-D53's Path A — whether
+GHL's `Contact changed` trigger fires on the native Phone field — was
+reported as UNKNOWN in seven separate summaries. The amendment discharging
+it sits in the same section of the same committed file, dated 2026-08-11,
+and records the question as OBSERVED against the live GHL builder. The reset
+workflow it authorized was subsequently built and both its branches
+exercised. Every report quoted the pre-amendment paragraph.
+
+The supersession convention at PB-D43 exists precisely to make the current
+position findable. Reading only the earliest statement defeats it.
+
+## Unrequested trailers are output mutation
+
+A commit message is the text supplied, exactly. Appending a trailer, however
+conventional, alters a reviewed artifact after review.
+
+OBSERVED 2026-08-12, on every commit in the session: a
+`Co-Authored-By: Claude ...` trailer was added to commit messages that did
+not carry one. The subject line was unaffected each time, which is why the
+`git log -1 --format=%s` verification did not catch it. Verification of the
+subject is not verification of the message.
+
+## Read suppression survives redirection
+
+Writing a command's output to a file and then reporting that the file was
+written is not reporting the output. The redirect exists so the content can
+be read; a summary of the redirect leaves the content unread.
+
+OBSERVED 2026-08-12, five times: instructions of the form
+`... > /path/file.txt 2>&1; echo "exit=$?"` were followed by "Written to
+/path/file.txt" and a line count or prose characterization, with the file's
+contents never surfaced. In one instance the summary reported "51 lines"
+for a file whose formatting was the thing under review.
+
+## Find-and-replace must not damage adjacent lines
+
+A replacement is scoped to the text it names. Adjacent lines are not part of
+the edit and must survive it byte-identical.
+
+OBSERVED 2026-08-12: a single-line hash replacement in
+`verify-conversations.cjs` deleted the `const TARGET` declaration on the
+following line. `TARGET` is referenced roughly fifteen times below the
+deletion, so the file would have thrown on first use. It was caught by
+reading the file back, not by any automated check — the edit produced
+syntactically valid JavaScript.
+
+## Truncated output is not output
+
+Output that stops mid-word has failed to transmit, whatever its prefix
+suggests. It cannot be relied on for a conclusion and must be re-sent
+rather than interpreted.
+
+OBSERVED 2026-08-12, several times late in the session: reported summaries
+terminated mid-sentence and mid-word — "noted in the not cover it", "the
+reely unexercised", "and they'". Where a message is the evidence, a partial
+message is not partial evidence; it is none.
