@@ -62,7 +62,7 @@ record how IAOS must behave. Keep them separate.
 | Contact Workspace conversation parity: SMS + email collapse | IAOS | P1 | High | S | Jeff | Done |
 | Seller 2 CTA: ask for the appointment | GHL | P1 | High | S | Brad (GHL) | Done |
 | Requested Appointment workflow automation | GHL | P1 | High | M | Brad (GHL) | Done |
-| Incorrect Number: clear phone to Previous Phone | GHL | P1 | High | S | Brad (GHL) | Open |
+| Incorrect Number: set Phone Status (PB-D53; clear-phone approach blocked) | GHL | P1 | High | S | Brad (GHL) | Done |
 | Seller 3: remove from Seller 6 on appointment booked | GHL | P1 | High | S | Brad (GHL) | Done |
 | Refresh IAOS_WEBHOOK_SECRET and repair stale app/.env | GHL | P1 | High | S | Brad (GHL) | Done |
 | Shared GHL config module, Contact Workspace path | IAOS | P1 | High | M | Jeff | Done |
