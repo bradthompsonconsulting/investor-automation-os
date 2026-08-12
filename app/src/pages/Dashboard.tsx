@@ -501,6 +501,28 @@ export default function Dashboard() {
     [pipeline],
   );
 
+  // PB-D53 — the Waiting on Me / Follow Up rows. Derived from
+  // followUpContactIds, the SAME Set that excludes these contacts from the
+  // Lead Queue, so the section and the exclusion can never disagree about who
+  // is in Seller Follow-Up. An id with no matching contact is skipped, not
+  // rendered as a blank row.
+  const followUpRows = useMemo(() => {
+    const byId = new Map((contacts ?? []).map((c) => [c.id, c]));
+    const rows = [...followUpContactIds]
+      .map((id) => byId.get(id))
+      .filter((c): c is ContactRow => !!c)
+      .map((c) => ({ contact: c, attempt: effectiveLastAttempt(c) }));
+    // Oldest attempt first, never-attempted at the very top — the same
+    // ordering principle the Lead Queue's BAND 1 uses.
+    return rows.sort((a, b) => {
+      if (a.attempt === null && b.attempt === null) return 0;
+      if (a.attempt === null) return -1;
+      if (b.attempt === null) return 1;
+      return new Date(a.attempt).getTime() - new Date(b.attempt).getTime();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contacts, followUpContactIds, attemptOverride]);
+
   // PB-D54 — ANY scheduled callback, future-dated included. Deliberately NOT
   // the `callbacks` memo above, which splits into overdue/dueToday and DISCARDS
   // future ones: a promised call-back ends cold outreach the moment it is
@@ -892,6 +914,59 @@ export default function Dashboard() {
                       onClose={() => setCallbackPopoverId(null)}
                     />
                   )}
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+
+        {/* 3.2b Follow Up — PB-D53. Contacts whose Seller Leads opportunity sits in
+            Seller Follow-Up: engaged, worked by hand, and deliberately OUT of the
+            Lead Queue (PB-D54). READ-ONLY — this section adds NO write path of any
+            kind: no note, no last_call_attempt, no callback. The Call button is a
+            tab hop to GHL's dialer, same as the Lead Queue's; it places no call
+            from this app and greys nothing. No due date, no reminder state, no
+            reschedule or removal control — a contact stays here while GHL holds
+            the opportunity in that stage, and leaves when GHL moves it. */}
+        <SectionHeading count={followUpRows.length}>Follow Up</SectionHeading>
+        {followUpRows.length === 0 ? (
+          <Card tone="muted" style={{ marginBottom: "10px", display: "flex", gap: "10px", alignItems: "flex-start" }}>
+            <PhoneCall size={16} style={{ color: "#475569", marginTop: "1px", flexShrink: 0 }} />
+            <p style={{ fontSize: "12px", color: "#64748B", margin: 0 }}>No contacts in follow-up right now.</p>
+          </Card>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
+            {followUpRows.map(({ contact: c, attempt }) => (
+              <Card key={c.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
+                <PhoneCall size={15} style={{ color: "#1EC8FF", flexShrink: 0 }} />
+                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>{contactName(c)}</span>
+                <span style={{ fontSize: "12px", color: "#64748B" }}>{formatPhone(c.phone) || "—"}</span>
+                <span style={{ fontSize: "12px", color: attempt ? "#F59E0B" : "#334155" }}>
+                  {attempt ? `Attempted ${relativeTime(attempt)}` : "Not yet contacted"}
+                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginLeft: "auto" }}>
+                  <button
+                    onClick={() => window.open(ghlContactDetailUrl(c.id), "_blank", "noopener,noreferrer")}
+                    title="Open in GHL to call"
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
+                      padding: "5px 9px", borderRadius: "7px", border: "1px solid rgba(30,200,255,0.25)",
+                      background: "rgba(30,200,255,0.06)", color: "#1EC8FF", cursor: "pointer",
+                    }}
+                  >
+                    <PhoneCall size={12} /> Call
+                  </button>
+                  <Link
+                    to={`/contacts/${c.id}`}
+                    title="Open workspace"
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
+                      padding: "5px 9px", borderRadius: "7px", border: "1px solid rgba(30,200,255,0.25)",
+                      background: "rgba(30,200,255,0.06)", color: "#1EC8FF", textDecoration: "none",
+                    }}
+                  >
+                    <ExternalLink size={12} /> Open workspace
+                  </Link>
                 </div>
               </Card>
             ))}
