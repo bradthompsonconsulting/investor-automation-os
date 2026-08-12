@@ -1718,3 +1718,179 @@ rendered nowhere until the callback comes due, which is a narrower
 version of the same display gap named above. Whether Waiting on Me
 should render future callbacks is undecided product behavior and
 requires its own decision.
+
+### PB-D55 -- Underwriting authority belongs to the Opportunity
+
+**Decision.** Underwriting state belongs to the deal, not to the person.
+The Contact carries seller and person data; the Opportunity carries
+property, deal, and underwriting data. Approved underwriting persists to a
+selected Opportunity and nowhere else. This decision fixes the data model
+and the human-approval boundary; it authorizes no code and no write, and
+its implementation is gated below.
+
+**Why the Opportunity.** A seller may hold two properties, sell the same
+property twice, or carry more than one deal at once. Underwriting anchored
+to the Contact collides in every one of those cases, and the collision is
+silent -- the second deal overwrites the first with no record that it
+happened. PB-D52 OBSERVED that 41 of the 43 contacts carrying a phone hold
+exactly one Seller Leads opportunity, so the one-deal case is today's
+normal case; that is a fact about the current population, not a property of
+the model. Contact-side fields have better-proven write safety (five
+MONETORY fields inert-proofed, PB-D33 through PB-D35). Write safety is
+provable on demand. A wrong data model is unwound only by migration.
+
+**Three layers, distinct by owner and by consequence.**
+
+*Proposed underwriting.* Review-only. Not persisted, not readable by any
+GHL workflow, and carrying no authority. In v1 its values are entered by
+hand; a later AI proposer populates the same layer without changing this
+decision or the gate below it. The layer is defined by its lack of
+authority, not by what fills it.
+
+*Approved underwriting.* Persisted to the selected Opportunity on an
+explicit human action. Approval is an explicit user action that accepts the
+proposed underwriting for the selected Opportunity. This is the durable
+state, and the only underwriting state a workflow or a downstream read may
+rely on. OBSERVED, source: live read of the customFields endpoint with
+model=opportunity, 2026-08-12 -- the Opportunity schema already contains
+distinct underwriting input fields and seller-offer fields, including
+`arv_after_repair_value`, `repair_estimate`, `asking_price`,
+`closing_costs`, `assignment_fee_target`, `wholesale_fee_`,
+`mao_max_allowable_offer`, and the separate `offer_*` family. The schema
+already carries the split this decision names.
+
+*Presented offer.* The seven `offer_*` fields, on both objects. These
+record the offer prepared for and ultimately presented to a seller, which
+is a different fact from what the deal underwrites to.
+`mao_max_allowable_offer` and `offer_mao` are deliberately different
+numbers. Current implementation populates these fields before seller
+presentation; the Dashboard's `offersToReview` predicate distinguishes
+offers prepared but not yet presented by the absence of the `offer-made`
+tag. Whether the write moment should move to align with the architectural
+model is not decided here. The §4.1 HARD NO on `offer_` writes is unchanged
+by this decision and is not relaxed by it.
+
+**One production record carries `offer_` test data.** OBSERVED 2026-08-12
+-- opportunity `1AP9BfFPJ2xYZ0RPTm9U` (Neelima Bale) is the only
+opportunity in the location holding custom-field data, and all seven values
+are `offer_*`: price 245001 against MAO 245000.5, repair total 0, margin
+-0.5. A price above MAO at a negative margin is not a deal; it is a
+calculator test that persisted. Under this decision that record reads as a
+presented offer, and it is not one. It is recorded here so a future
+consumer does not treat it as evidence of anything, and so its removal is a
+deliberate act rather than a surprise. Note also that this contact already
+serves as the record-view fixture, the D5 conversation-parity regression
+fixture, and verify-dashboard.cjs's eligible control; adding an
+underwriting role to the same record concentrates more fixture weight on
+one contact than is comfortable.
+
+**Underwriting never writes `offer_`.** The separation is structural rather
+than conventional. PB-D39 OBSERVED that a Save Offer against bradt75
+populated its `offer_` fields and broke subsequent inert-proof runs until
+the confirmation guard was changed; underwriting that wrote `offer_` would
+reproduce that class of failure on every underwritten contact.
+
+**Opportunity selection is required.** The Underwriting workspace operates
+on one identified Opportunity, named on screen. It does not assume the
+first opportunity is the deal. Where a contact holds more than one, the
+deal under underwriting is selected. Where a contact holds none, no
+underwriting becomes authoritative and none is written to the Contact as a
+substitute; the workspace reports the absence and requires an Opportunity
+before proceeding.
+
+**Contact values may seed; the Opportunity owns.** `contact.arv`,
+`contact.estimated_repairs`, `contact.asking_price`, `contact.carrying_cost`
+and `contact.loan_amount` hold existing data and are not deleted by this
+decision. Read order for a proposed value: the Opportunity field first, the
+corresponding Contact field only when the Opportunity field is absent. Once
+approved underwriting is written, the Opportunity value is authoritative
+permanently and the Contact fallback is not consulted again for that deal.
+Seeding is a one-time convenience, not an ongoing synchronization
+mechanism. Approved values are NOT mirrored back to the Contact. A mirror
+recreates the two-source-of-truth condition this decision exists to remove,
+and no consumer for it has been identified.
+
+OBSERVED 2026-08-12 -- no opportunity in the location carries any
+underwriting input value. All seven fields this decision names as
+underwriting inputs are unpopulated across all 42 opportunities, and the
+single opportunity holding custom-field data holds only `offer_*` values.
+Contact fallback will therefore supply the initial proposed values for
+nearly every existing deal, rather than serving only as an edge case.
+
+**Supersession of the contact-side unlocks, for underwriting authority
+only.** PB-D16 established `setARV` as the named public writer for
+`contact.arv`; PB-D17 defined its `currency + inline` editor; PB-D18
+recorded that the field has no app-side consumer; PB-D42 superseded
+PB-D18's locational clause. None is revoked. `contact.arv` remains
+unlocked, editable, and inert-proof Proven, and its harness checks stand
+unchanged. What this decision supersedes is any reading of those decisions
+under which `contact.arv` is the authoritative ARV for a deal. It is not,
+and was not designed to be; PB-D18 recorded it as having no consumer at
+all.
+
+**A named writer, not an overloaded one.** Approved underwriting is written
+through a new named method, `saveUnderwritingFields`, distinct from the
+existing `opportunities.saveOfferFields`. The existing method's name
+describes offers and its body writes arbitrary customFields to
+`/opportunities/{id}`; using it for underwriting would make the call site
+the only place the distinction lives. This follows PB-D16's rule that the
+public surface names what it writes.
+
+**Implementation prerequisites.** No underwriting write occurs until each
+is discharged on its own terms.
+
+1. *Opportunity-side inert proof.* Every proof in
+   PHASE_B_INERT_PROOFS.md targets a contact, and the runner's FIELDS
+   registry carries `contactId` per entry. No opportunity-model field has
+   completed a four-stage cycle. At least one underwriting field must,
+   before routine writes begin. Whether the runner is extended or a
+   separate procedure is used is not decided here.
+
+2. *Opportunity customFields shape.* DISCHARGED 2026-08-12. Every
+   opportunity returned by `ghl-opportunities.ts` carries a `customFields`
+   key, so the read path is established. The projection is sparse: only
+   populated fields appear, the same convention `parseContact` handles on
+   the contact side. Entries are `{id, type, fieldValue<Type>}` -- the
+   value key varies by type, `fieldValueNumber` for `number` and
+   `fieldValueDate` for `date`, and dates arrive as unix milliseconds
+   rather than ISO. This differs from the contact model's `{id, value}`, so
+   an opportunity read path needs its own parser and cannot reuse
+   `parseContact`'s readers. MaoCalculator's three type-specific readers
+   (`cfRaw`, `cfNum`, `cfText`) are the existing precedent. Shapes for
+   dataTypes absent from the one populated record remain unobserved.
+
+3. *Investor-assumption carrier.* Selling costs, buying costs, holding
+   costs, financing costs, and required profit belong to the investor
+   rather than the deal. The Opportunity carries `closing_costs`,
+   `wholesale_fee_` and `assignment_fee_target`; it carries nothing for
+   holding, financing, or required profit. Whether the missing assumptions
+   become investor-profile configuration, new Opportunity fields, or both
+   with per-deal override, is undecided and requires its own decision.
+
+4. *Migration handling.* The seed-then-supersede rule above states the
+   intent. Which contact-side fields participate, whether a value's
+   provenance is surfaced in the UI, and what happens to a contact-side
+   value edited after its Opportunity value became authoritative, are not
+   settled here.
+
+**Consequence.** Underwriting is no longer a calculator. It is a
+review-and-approval workflow. Calculations may be recomputed freely as
+inputs change, because recomputation carries no authority; nothing becomes
+authoritative until explicit approval. Every downstream activity --
+presenting an offer, generating a contract, reporting, automation -- reads
+approved underwriting and never proposed values. This is the same boundary
+PB-D48 draws for field writes and PB-D19 draws for inline edits: the system
+may prepare, and a person commits.
+
+**Not decided here.** The Underwriting workspace's layout and controls. The
+source of proposed ARV and repair values, including whether an AI proposer
+is built and what data would feed it. Contract generation and any state
+after a seller accepts. Whether the four cost assumptions above are
+per-investor or per-deal. Whether `deal-submit.ts`, which OBSERVED
+2026-08-12 has no caller in this repository, is deleted alongside PB-D47.
+
+**Unchanged.** CONTACTS_OPPORTUNITIES_SPEC §4.1's HARD NO on `offer_`
+writes, tags, pipeline stage, and workflow triggers. PB-D16's named-wrapper
+rule and its private-helper shape. PB-D17's editor template. Every field's
+unlock status and every existing proof record. PB-D53's and PB-D54's
+carriers and predicates, none of which this decision touches.
