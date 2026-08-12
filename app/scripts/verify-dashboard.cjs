@@ -4,7 +4,7 @@
    never localhost, and passes the §9.2 bundle gate FIRST — re-pin EXPECTED to
    the bundle under test on every run.
 
-   Floor is 7. Success ONLY when checksRun === 7 AND every check passed.
+   Floor is 8. Success ONLY when checksRun === 8 AND every check passed.
 
    EVERY fixture check asserts its PRECONDITION from the endpoint before
    asserting absence from the queue. An absence with an unconfirmed
@@ -23,6 +23,17 @@
    Check 7 is the positive control. Six absences prove nothing on their own —
    a memo returning an empty Set satisfies all of them. Neelima carries none
    of the six predicates, so she MUST be present.
+
+   Check 8 is the INCLUSION half of check 5's exclusion, and the two are read
+   as a pair. Check 5 alone proves only that a Seller Follow-Up contact is
+   ABSENT from the Lead Queue — it cannot distinguish "correctly routed to
+   the Follow Up section" from "vanished from every surface." That second
+   state is not hypothetical: the app was in it between 3e1f152, which added
+   the exclusion, and 5cb1329, which added the section. Together the pair
+   asserts the whole invariant — a Seller Follow-Up opportunity means absent
+   from the Lead Queue AND present in Follow Up. Both halves share ONE
+   computed precondition so they can never disagree about whether the fixture
+   still qualifies.
 
    UNEXERCISED BRANCH — recorded, not silently skipped. The offers-awaiting
    predicate (offer sent, response pending) has NO live fixture: no contact
@@ -137,7 +148,31 @@ function check(name, cond, detail = "") {
 
   const inQueue = new Set(domIds || []);
 
-  // ── 1 — extraction. Makes checks 2-7 non-vacuous. ──
+  // The Follow Up section is NOT a table — it renders <Card> divs, each with a
+  // Link to /contacts/{id}. Located by its SectionHeading's h2 text, EXACTLY
+  // matched: Waiting on Me renders four sections and their order is a layout
+  // decision that has already changed once, so document order is not a locator.
+  // Exact match rather than substring — "Follow Up" collides with nothing else
+  // today, but a substring match would silently start matching a future
+  // heading that merely contains those words.
+  //
+  // An EMPTY section is a legitimate DOM state: it renders a muted Card with no
+  // links. That yields an empty array here rather than throwing, and check 8
+  // then fails on its assertion half, which is the correct outcome — an empty
+  // Follow Up section when the fixture qualifies IS the regression.
+  const followUpIds = await page.evaluate(() => {
+    const h2 = [...document.querySelectorAll("h2")].find((h) => (h.textContent || "").trim() === "Follow Up");
+    if (!h2) return null;
+    const block = h2.parentElement && h2.parentElement.nextElementSibling;
+    if (!block) return [];
+    return [...block.querySelectorAll('a[href^="/contacts/"]')]
+      .map((a) => (a.getAttribute("href") || "").replace(/^\/contacts\//, "").split(/[/?#]/)[0])
+      .filter(Boolean);
+  });
+
+  const inFollowUp = new Set(followUpIds || []);
+
+  // ── 1 — extraction. Makes checks 2-8 non-vacuous. ──
   const allWellFormed = (domIds || []).every((id) => GHL_ID_RE.test(id));
   check("leadqueue-dom-extraction",
     Array.isArray(domIds) && domIds.length > 0 && allWellFormed,
@@ -169,13 +204,27 @@ function check(name, cond, detail = "") {
       `precondition(hasCallback)=${pre} cb=${JSON.stringify((c && (c.callbackDatetimePrecise || c.callbackDatetime)) || "")} assertion(absentFromQueue)=${absent}`);
   }
 
-  // ── 5 — Seller Follow-Up (ANY such opportunity, per PB-D53) ──
+  // ── 5 + 8 — Seller Follow-Up (ANY such opportunity, per PB-D53). ONE
+  //           precondition, computed once and shared: the exclusion and the
+  //           inclusion must never disagree about whether the fixture still
+  //           qualifies. Recomputing it per check would let them drift. ──
+  const bradFollowUpOpps = oppsFor(BRADT75);
+  const bradInFollowUpStage = bradFollowUpOpps.some((o) => o.stageId === SELLER_FOLLOW_UP_STAGE_ID);
+
   {
-    const opps = oppsFor(BRADT75);
-    const pre = opps.some((o) => o.stageId === SELLER_FOLLOW_UP_STAGE_ID);
     const absent = !inQueue.has(BRADT75);
-    check("exclusion-followup:bradt75", pre && absent,
-      `precondition(anyOppInFollowUp)=${pre} opps=${opps.length} assertion(absentFromQueue)=${absent}`);
+    check("exclusion-followup:bradt75", bradInFollowUpStage && absent,
+      `precondition(anyOppInFollowUp)=${bradInFollowUpStage} opps=${bradFollowUpOpps.length} assertion(absentFromQueue)=${absent}`);
+  }
+
+  // ── 8 — the INCLUSION half of check 5. Same precondition, opposite
+  //        assertion: absent from the Lead Queue is only correct if he is
+  //        present HERE. Ordered immediately after its pair so a reader sees
+  //        the invariant whole. ──
+  {
+    const present = inFollowUp.has(BRADT75);
+    check("inclusion-followup:bradt75", bradInFollowUpStage && present,
+      `precondition(anyOppInFollowUp)=${bradInFollowUpStage} assertion(presentInFollowUp)=${present} followUpRows=${followUpIds ? followUpIds.length : "(section not found)"}`);
   }
 
   // ── 6 — Phone Status EXACTLY "Incorrect Number" ──
@@ -206,8 +255,8 @@ function check(name, cond, detail = "") {
 
   await browser.close();
 
-  // ── Self-check: exactly 7, all passed — else nonzero ──
+  // ── Self-check: exactly 8, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
-  if (checksRun !== 7) { console.log(`ABORT — expected 7 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 8) { console.log(`ABORT — expected 8 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
