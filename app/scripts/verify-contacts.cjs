@@ -523,7 +523,7 @@ async function clickControlByBody(page, mark) {
   const neeLongest = nee.messages
     .filter((m) => m.messageType === "TYPE_EMAIL")
     .sort((a, b) => String(b.body || "").length - String(a.body || "").length)[0] || null;
-  const neeMark = neeLongest ? String(neeLongest.body || "").replace(/\s+/g, " ").trim().slice(0, 40) : " ";
+  const neeMark = neeLongest ? String(neeLongest.body || "").replace(/\s+/g, " ").trim().slice(0, 40) : " ";
   const neeTarget = (neeBubbles || []).find((b) => b.body.replace(/\s+/g, " ").includes(neeMark)) || null;
 
   check("d5-neelima-long-email-collapsed",
