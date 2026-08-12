@@ -1488,6 +1488,100 @@ the execution recorded above. Items 3 through 5 stand as written. Item
 5's field-count and harness-floor figures are not amended here and are
 not to be trusted until reconciled separately.
 
+**Amendment (2026-08-12): implementation complete, steps 1 through 3.**
+Every GHL carrier this decision specifies is built, published, and
+verified against live call events. What follows records what was built
+and what was observed; it changes no rule stated above.
+
+Incorrect Number writer. Workflow Seller - Phone Status Incorrect
+Number. Trigger Call details, filter Custom disposition is Incorrect
+Number, single value. Action Update contact field, Phone Status =
+Incorrect Number, ungated. OBSERVED 2026-08-11 18:03 -- disposition
+fired on a live call, execution log Add to workflow, Update contact
+field Executed, End Of Workflow, and the contact record read Incorrect
+Number.
+
+Reset workflow. Seller - Reset Phone Status on Phone Change. Trigger
+Contact changed, Phone, Has changed. If/Else on Phone Status is
+Incorrect Number. YES branch writes Callable; NO branch ends. Both
+branches OBSERVED 2026-08-11: a contact holding Incorrect Number took
+the Branch and received Callable at 18:13; a contact that had never
+held Incorrect Number enrolled, executed the No branch at 18:15, and
+its Phone Status remained absent. The transition invariant stated
+above is therefore verified rather than merely specified.
+
+Follow Up. Seller - Follow Up. Trigger Call details, Custom
+disposition is Follow Up. Find opportunity on Seller Leads Pipeline,
+most recently created, splitting Opportunity Found from Opportunity
+Not Found. Found branch runs Update opportunity to Seller Follow-Up.
+Not Found ends, which makes the no-opportunity edge case legible in
+the log rather than silent. OBSERVED 2026-08-11 18:42 -- stage moved
+New Lead - Seller to Seller Follow-Up.
+
+Seller 6 enrollment is confirmed, not assumed. This decision states
+above that Seller 6 already owns the reminder cadence. OBSERVED
+2026-08-11 18:42:30 -- Seller 6 enrolled the contact in the same
+second the opportunity entered Seller Follow-Up and advanced to its
+Wait - 2 Days step. Seller 6's trigger is Pipeline stage changed,
+filtered to Seller Leads Pipeline and Seller Follow-Up, read directly
+from the builder rather than inferred from behavior.
+
+Not Interested. Seller - Not Interested. Same shape as Follow Up, with
+Update opportunity to Lost / Not Interested. OBSERVED 2026-08-11 18:49
+-- stage moved Seller Follow-Up to Lost / Not Interested.
+
+**Seller 6 removal, and where it belongs.** Implementing Not Interested
+exposed a gap this decision did not anticipate: the terminal stage move
+does not unenroll the contact from Seller 6. OBSERVED 2026-08-11 --
+a contact whose opportunity sat in Lost / Not Interested remained in
+Seller 6 status Waiting seven minutes later. A seller who ended the
+conversation would continue generating internal follow-up reminders
+until the cadence exhausted.
+
+Removal is implemented as a Remove from Workflow action inside Seller -
+Not Interested, on the Opportunity Found branch, after the stage move.
+Two alternatives were considered. A removal condition on Seller 6
+itself would cover every exit path including manual stage moves, and is
+the more general fix; it was rejected for now because it modifies a
+production workflow carrying live enrollments to solve a problem only
+this workflow creates. Placing removal in the terminal-transition
+workflow follows the precedent already set by Seller 3, which removes
+booked contacts from Seller 6 so the reminder tail cannot overwrite
+newer state.
+
+Sequence is load-bearing: the stage move precedes the removal, so the
+terminal state lands even if the removal step fails.
+
+OBSERVED 2026-08-12 -- a contact was dispositioned Follow Up at
+09:37:41, which moved the opportunity to Seller Follow-Up and enrolled
+it in Seller 6; dispositioned Not Interested at 09:39, which moved the
+opportunity to Lost / Not Interested; and Seller 6's own execution log
+records Removed by - External workflow action, Finished, at 09:40:32.
+Verification was taken from the receiving workflow's log rather than
+the acting workflow's, because a sending workflow logs Executed
+whether or not the receiving side acts.
+
+Two earlier runs of this test passed vacuously and are recorded so the
+failure mode is legible: a contact with no opportunity, and a contact
+that reached the terminal stage without ever passing through Seller
+Follow-Up, both produced an absence from Seller 6 that proved nothing.
+A removal test requires the contact to be enrolled first, confirmed
+before the removing disposition fires.
+
+**Gate status.** Implementation steps 1 through 3 are discharged.
+Steps 4 and 5 are not. Step 4, the IAOS read change, is unbuilt; no
+app code in this repository implements it. Step 5's 98-field schema
+and floor-138 figures conflict with a live reading of the GHL Custom
+Fields screen taken 2026-08-11, which reports 153 fields across all
+objects and 113 on the Contact object. Which figure is correct, and
+what each counts, is UNKNOWN. Step 5 does not proceed until that
+reconciliation is done, and no harness floor is pinned from either
+number before then.
+
+Phone Status now exists in the GHL schema, so verify-contacts.cjs,
+which aborts on checksRun !== 136, will fail on its next run. That
+failure is expected and is the same reconciliation step 5 names.
+
 ### PB-D54 -- Cold-outreach eligibility governs Lead Queue membership
 
 **Decision.** A contact is excluded from the Lead Queue when their
