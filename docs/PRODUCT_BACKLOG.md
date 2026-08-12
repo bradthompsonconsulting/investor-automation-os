@@ -98,7 +98,9 @@ Detected, whose purpose is to obtain the appointment through automated
 follow-up. Seller 3's trigger is Appointment status, filtered to event
 type Normal, status confirmed, calendar Seller Calendar Consultation,
 so it fires on a real booking and not on the disposition tap. No
-workflow currently listens on the Requested Appointment disposition.
+workflow listened on the Requested Appointment disposition when this was
+written. Superseded 2026-08-10 by Seller 2.5 -- Routing Requested
+Appointment Disposition, described below; Seller 3's trigger is unchanged.
 
 Seller 3 did not remove a contact from Seller 6 -- Follow-Up Reminder.
 A contact who booked stayed enrolled in Seller 6 and would later have
