@@ -13,7 +13,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-3Q3sLgnp.js"; // PB-D53 step 4 deploy, 3e1f152. RE-PIN to the bundle under test every run.
+const EXPECTED = "index-CKHsGUPW.js"; // Lead Queue copy fix, 60c5d1b. RE-PIN to the bundle under test every run.
 const TARGET   = "05gYdxJcyNTCKWTwkbbs"; // john sanchez — has the 1 inbound SMS + emails; a scoping + SMS + delta fixture
 const THREADS_URL = `${ORIGIN}/.netlify/functions/ghl-conversations?scope=all`;
 const MSGS_URL    = `${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${TARGET}`;
