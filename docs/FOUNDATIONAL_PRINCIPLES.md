@@ -24,6 +24,14 @@ triggers; the rule that IAOS never writes a field that has not passed its
 own inert-proof; the three sanctioned Dashboard writes. Where a principle
 here and a constraint there appear to conflict, the constraint governs.
 
+**This document is living, and changes through dated amendments.** Later
+amendments supersede conflicting earlier language under the PB-D43
+supersession convention. Historical text is preserved rather than
+rewritten, unless an amendment explicitly corrects a factual error. A
+principle that no longer holds is superseded in place, not deleted, so
+that a reader encountering the older reasoning elsewhere can find what
+replaced it.
+
 **Where this sits.**
 
     FOUNDATIONAL_PRINCIPLES.md   How do we think?
@@ -158,6 +166,18 @@ anticipated.
 what is proposed, what is approved, what is derived, what is persisted, and
 what approval boundary exists -- before discussing React, TypeScript, GHL,
 or Netlify. Implementation follows architecture, never the reverse.
+
+**19. Do not manufacture recommendations from insufficient information.**
+Automation may calculate, classify, and prepare from established facts
+and assumptions. Judgment-based recommendations require sufficient
+evidence to support them. When that evidence does not exist, expose what
+is known, what is unknown, and what additional information would be
+needed -- rather than disguising uncertainty as precision. This extends
+section I's discipline from claims to recommendations: a recommendation
+asserts more than a calculation does, and the standard rises with the
+assertion.
+
+*Amendment 2026-08-13.*
 
 ---
 
