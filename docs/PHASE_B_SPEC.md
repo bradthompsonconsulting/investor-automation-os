@@ -1881,3 +1881,509 @@ writes, tags, pipeline stage, and workflow triggers. PB-D16's named-wrapper
 rule and its private-helper shape. PB-D17's editor template. Every field's
 unlock status and every existing proof record. PB-D53's and PB-D54's
 carriers and predicates, none of which this decision touches.
+
+### PB-D56 -- Underwriting assumptions, their carriers, and the resolution hierarchy
+
+**Decision.** IAOS underwrites wholesale acquisitions backward from a
+representative end buyer's economics. This decision fixes the economic
+model, the eleven investor-level policy assumptions it requires, the
+three-level resolution hierarchy those assumptions resolve through, and
+the GHL carriers that hold them. It authorizes no code and no write. Its
+implementation prerequisites are named at the end.
+
+PB-D55 established that underwriting authority belongs to the
+Opportunity. This decision says what underwriting consists of and where
+its inputs live.
+
+---
+
+## I. The model
+
+**Wholesale-first, buyer-economics-aware.** IAOS does not ask what a
+property is worth. It asks what a representative end buyer could pay and
+still meet their return requirement, then reserves the wholesaler's
+spread from that ceiling. Two outputs, deliberately distinct:
+
+    End-Buyer Maximum Purchase Price
+        = the most a representative flip buyer could pay
+
+    Seller MAO
+        = End-Buyer Maximum Purchase Price - Required Assignment Spread
+
+**"MAO" alone is ambiguous and is not used.** The two numbers differ by
+the assignment spread and answer different questions. Every reference
+names which one it means.
+
+**The waterfall.**
+
+        ARV                              deal input
+      - Repairs                          deal input
+      - End-Buyer Selling Costs
+      - End-Buyer Purchase/Closing Costs
+      - End-Buyer Holding Costs
+      - Required Buyer Profit
+      = Base Buyer Capacity
+
+      / (1 + k)                          k = financing factor
+      = End-Buyer Maximum Purchase Price
+
+      - Required Assignment Spread
+      = Seller MAO
+
+**Financing divides rather than subtracts.** The other deductions reduce
+buyer capacity by a fixed amount. Financing cost scales with purchase
+price, which is the value being solved for, so it enters as a divisor:
+
+    k = LTV x [Points % + (Annual Rate x Hold Months / 12)]
+
+This is a linear relationship with an exact solution, not an
+approximation. It is recorded here so that nobody later "simplifies" the
+division into the subtraction list; doing so would change the answer.
+
+**Three economic kinds, which all reduce Seller MAO identically and are
+not the same thing.**
+
+- *Buyer expenses* -- selling, purchase/closing, holding, financing.
+  Costs a buyer actually incurs.
+- *Buyer requirement* -- required profit. Not an expense; a return
+  threshold the model reserves.
+- *Wholesaler spread* -- the assignment. Not the buyer's at all.
+
+The distinction is recorded because required profit is the deduction
+most likely to be mistaken for a cost and "optimized away" by a future
+reader.
+
+---
+
+## II. The six deductions
+
+### 1. End-Buyer Selling Costs
+
+*Buyer expense.* Estimated transaction costs the end buyer incurs when
+reselling after rehab: agent commissions, seller-side title and escrow,
+transfer and recording charges, seller-paid concessions, and other
+normal disposition costs. Excludes repairs, holding, financing, and
+acquisition costs, each modeled separately.
+
+    Selling Costs = ARV x Effective Selling Cost %
+
+ARV is the resale basis. A separate projected-resale-price input is not
+created; ARV already represents what the renovated property is believed
+to sell for, and two fields that should always agree are two fields that
+can disagree.
+
+Unresolved when ARV is unavailable. This deduction has no independent
+failure mode.
+
+Overridable per deal by percentage or fixed dollar.
+
+### 2. End-Buyer Purchase/Closing Costs
+
+*Buyer expense.* Estimated transaction costs the end buyer incurs to
+acquire: buyer-side title, escrow, attorney, recording, inspections.
+Excludes financing charges -- points, lender fees, interest -- which
+belong to the financing deduction.
+
+    Purchase/Closing Costs = Effective Closing Cost Estimate
+
+A flat dollar amount, deliberately not a percentage. A percentage would
+have to be of purchase price, which is circular, or of ARV, which is a
+convenient denominator rather than an economically correct one.
+
+Always resolves when a default exists. Adds no Gate 1 input.
+
+Overridable per deal by fixed dollar only. A percentage override is not
+offered in V1 because "percentage of what" has no good answer here; if a
+real need appears, it earns its own decision and its circularity is
+solved correctly at that point.
+
+### 3. End-Buyer Holding Costs
+
+*Buyer expense.* Non-financing carrying expenses between acquisition and
+resale: property taxes, insurance, utilities, basic maintenance, HOA.
+Excludes loan interest and financing charges.
+
+    Holding Costs = Effective Monthly Carry x Effective Hold Months
+
+**Both components or neither.** If either component is unavailable and
+has neither a deal value nor a configured default, the entire deduction
+is unresolved. No partial calculation from a defaulted hold period times
+a missing carry. This is the first deduction with a two-component
+structure, which makes the partial case reachable, which is why the rule
+is stated.
+
+**Hold period is not derived from repairs.** A banding rule -- $0-25k
+repairs is three months, $25-50k is five -- looks rigorous and encodes an
+operational assumption nobody has tested. Repair dollars do not reliably
+determine construction duration, permitting, contractor availability, or
+market time.
+
+Overridable per deal on either component independently. A direct
+total-holding-cost override is not offered; the two components explain
+the economics and a third path introduces precedence questions with no
+current need.
+
+### 4. End-Buyer Financing Costs
+
+*Buyer expense.* Financing expense incurred by the modeled buyer class,
+not by any actual buyer. IAOS is not underwriting a specific loan; it is
+estimating what a representative financed flip buyer could afford.
+
+    Purchase Loan  = End-Buyer Purchase Price x Effective LTV
+    Points Cost    = Purchase Loan x Effective Points %
+    Interest Cost  = Purchase Loan x Effective Rate x (Hold Months / 12)
+    Financing Cost = Points Cost + Interest Cost
+
+Solved algebraically through the divisor above rather than approximated.
+
+**Purchase Financing Enabled is a switch with three states, not two.**
+Off yields a financing cost of exactly zero -- a legitimate zero,
+because it is an explicit assumption. On with unresolvable inputs yields
+unresolved. Absent configuration yields unresolved. A missing assumption
+never becomes an assumption of no cost.
+
+**Rehab financing is NOT modeled in V1. This is a known limitation with
+a known direction.** Hard-money products commonly fund renovation as
+well as purchase. Omitting that expense understates the buyer's total
+financing cost, which overstates End-Buyer Maximum Purchase Price and
+therefore overstates Seller MAO. The error is aggressive, not
+conservative. It is accepted because the alternative -- an invented
+average-utilization factor applied to rehab draws -- would be
+unfalsifiable: no available evidence could show it wrong. Rehab
+financing is modeled when real draw behavior can inform it, not before.
+
+**Hold Months is shared.** Holding and financing consume the same
+Effective Hold Months. A deal-level hold override moves both. IAOS
+maintains no separate financing timeline.
+
+### 5. Required Buyer Profit
+
+*Buyer requirement.* The minimum projected gross profit reserved for the
+representative buyer after all modeled buyer expenses. Gross profit, not
+ROI -- return on capital depends on the financing model and is a
+different, derivable number that must not be confused with this one.
+
+    Required Buyer Profit = ARV x Effective Buyer Profit %
+
+Percent of ARV, not of total project cost. Cost includes purchase price,
+which is circular; ARV is not.
+
+**Known imprecision, recorded rather than hidden.** Profit scales with
+ARV while repairs do not, so a light-rehab and a heavy-rehab deal at the
+same ARV reserve the same profit despite different risk. A
+percent-of-cost model would fix this and introduce circularity. The ARV
+basis is the V1 choice and the limitation is a known one.
+
+Unresolved when ARV or the profit percentage is unavailable.
+
+Overridable per deal by percentage or fixed dollar. A "greater of X% or
+$Y" policy is NOT offered in V1. Investors commonly think that way and
+it is a legitimate future model, but building it now creates a profit
+policy engine ahead of its first consumer; the deal override accomplishes
+either requirement today.
+
+### 6. Required Assignment Spread
+
+*Wholesaler spread.* Not a buyer expense. The amount reserved between
+End-Buyer Maximum Purchase Price and Seller MAO.
+
+**Three explicit modes.** The mode is durable state, not provenance --
+it determines the calculation and cannot be reconstructed from the
+resulting number.
+
+    Standard Minimum    Spread = Configured Minimum Assignment Spread
+
+    25% of Buyer Profit Spread = max(Required Buyer Profit x Buyer
+                                 Profit Share %, Configured Minimum)
+
+    Manual              Spread = investor-entered amount, which MAY be
+                                 below the configured minimum
+
+**"Required" buyer profit, deliberately, not "expected."** At the moment
+IAOS calculates, the two are identical: the waterfall solves for maximum
+purchase price by reserving required profit, so expected profit equals
+required profit exactly at MAO. They diverge only when a seller accepts
+below MAO, which is not known at underwriting time and is not what this
+calculation sees. A post-acceptance expected-profit view is a different
+calculation and is not specified here.
+
+**A mode never silently substitutes for another.** If 25% mode is
+selected and Required Buyer Profit is unresolved, the spread is
+unresolved -- it does not fall back to the minimum. Falling back would
+change the calculation because data was missing, which is the same
+defect as unknown-becoming-zero wearing a different hat. An investor who
+wants exactly the minimum without requiring buyer profit to resolve
+selects Standard Minimum, which is what that mode is for.
+
+**Manual below the minimum is permitted and is an exception.** Selecting
+Manual is a deliberate departure from standing policy. A below-minimum
+manual spread may be flagged visually as out-of-parameters but is never
+blocked; there will be situations where a $3,500 assignment is rational.
+It does not become a new default.
+
+**Manual is per-deal and does not persist across deals.** Changing the
+selected deal starts from the standard derived rule.
+
+---
+
+## III. Resolution rules
+
+**Unknown is never zero. Zero is allowed only when zero is an explicit
+assumption or a known value.** This is the governing rule of the entire
+model. A missing input does not become a favorable input. Purchase
+Financing Enabled = Off yields zero legitimately, because someone
+decided it. A missing LTV yields unresolved.
+
+**Conservative bias on starter assumptions.** When IAOS must select a
+starter underwriting assumption from a reasonable range, it prefers the
+assumption that protects wholesaler margin and dispositionability over
+the one that maximizes Seller MAO. IAOS should rather advise an offer
+slightly too low than confidently recommend contracting a deal the buyer
+pool will not take. This governs the starter values in section IV and
+any future starter value.
+
+**Unresolved propagates.** A deduction that cannot resolve makes Base
+Buyer Capacity unresolved, which makes both outputs unresolved. IAOS
+reports what is missing. It does not produce a partial number.
+
+**Gate 1: ARV and Repairs are the minimum deal-specific inputs required
+to produce PROPOSED underwriting.** Every other input resolves from
+policy. Property address, seller motivation, asking price, occupancy,
+timeline, and mortgage balance are essential to acquisition and
+negotiation and are not required to produce a defensible first number.
+
+**Gate 1 governs proposed underwriting only.** PB-D55 establishes
+proposed, approved, and presented as distinct states. That the
+calculation can run from two inputs does not mean approval should. What
+a human requires before approving is a separate question and is not
+settled here.
+
+---
+
+## IV. Investor policy -- eleven values
+
+IAOS V1 starter policy, selected conservatively under the bias rule
+above. These are **underwriting policy assumptions, not observed market
+constants**, and are recorded as such so no future reader treats them as
+facts about real estate.
+
+| Value | Starter | Kind |
+|---|---|---|
+| Default Selling Cost Percentage | 10% | of ARV |
+| Default Closing Cost Estimate | $2,500 | flat |
+| Default Monthly Holding Cost | $500 | per month |
+| Default Hold Period Months | 5 | months |
+| Default Buyer Profit Percentage | 15% | of ARV |
+| Purchase Financing Enabled | On | switch |
+| Default Financing LTV Percentage | 70% | of purchase price |
+| Default Interest Rate Percentage | 12% | annual |
+| Default Financing Points Percentage | 2% | of loan |
+| Standard Minimum Assignment Spread | $5,000 | flat |
+| Buyer Profit Share Percentage | 25% | of required profit |
+
+**Naming convention.** Title-case business names. `Default X` only where
+the value is genuinely a default. Policy-specific names where the value
+is a mode, floor, switch, or standing rule -- Purchase Financing Enabled
+is a switch, Standard Minimum Assignment Spread is a floor, Buyer Profit
+Share Percentage is an active policy setting rather than a fallback.
+
+**Provenance of the starter values.** Ten percent selling costs rather
+than eight, a fifteen percent buyer profit requirement, financing on at
+70/12/2, and a $500 monthly carry are all applications of the
+conservative bias rule. If actual dispositions run cheaper, the surplus
+becomes buyer room rather than a discovery after contracting. Selling
+costs at 10% of ARV is the largest deduction after repairs on most
+deals and moves Seller MAO more than any other single assumption; it is
+the first value to revisit against real disposition data.
+
+---
+
+## V. The resolution hierarchy
+
+Every assumption resolves through exactly this order:
+
+    Deal Override  ->  Investor Policy  ->  IAOS Starter Policy  ->  Unresolved
+
+**Three levels, each with a distinct owner.** IAOS ships starter policy
+so a new investor can calculate immediately without first becoming a
+hard-money underwriting expert. An investor configures their own policy
+when their economics differ. A deal overrides policy when that specific
+deal warrants it.
+
+**A deal override never modifies policy.** Changing an assumption on one
+deal does not change the investor default. Changing the investor default
+is a deliberate settings action.
+
+**Override precedence within a level.** Where both a dollar and a
+percentage override exist for the same value: dollar wins, then
+percentage, then the level below. Exactly one drives the calculation.
+
+**Provenance is derived, never stored.** Which level supplied a value
+follows deterministically from which levels hold one. No `*_source`
+fields are created. The exception is assignment mode, which is not
+provenance -- it changes the calculation and cannot be reconstructed
+from the resulting number.
+
+---
+
+## VI. Carriers
+
+| Concept | Carrier |
+|---|---|
+| Investor policy, all eleven values | GHL Custom Values, location-scoped |
+| Deal-specific inputs | GHL Opportunity custom fields |
+| Deal overrides | Opportunity fields, created on first real need |
+| Assignment spread mode | New Opportunity SINGLE_OPTIONS field |
+| End-Buyer Maximum Purchase Price | New Opportunity NUMERICAL field |
+| Seller MAO | `opportunity.mao_max_allowable_offer` |
+| Provenance | Derived, not persisted |
+| Ready for Underwriting | Derived, not persisted |
+| IAOS-side storage | None. No shadow authority. |
+
+**Custom Values are the policy authority.** OBSERVED 2026-08-12 through
+the deployed proxy: the location holds 42 Custom Values, each carrying
+an id, a name, a `fieldKey` of the form
+`{{ custom_values.default_wholesale_percentage }}` for workflow
+interpolation, and a flat string value. They are location-scoped, which
+is the right scope for investor policy, and workflow-readable, which
+IAOS-side storage would not be.
+
+**Three underwriting-adjacent values already exist and are not equally
+useful.** `Default Closing Cost Estimate` = 2500 fits the new model and
+is retained. `Default Assignment Fee Minimum` = 5000 carries a surviving
+concept under a name this decision replaces. `Default Wholesale
+Percentage` = 70 belongs to the 70%-rule formula retired 2026-08-13 with
+`mao-webhook.ts` and is **obsolete for underwriting** -- it is not part
+of this model and is not read by it.
+
+**None of the three is read by any code.** OBSERVED: all three numbers
+were duplicated as hardcoded literals in application code rather than
+read from GHL. Two of those literals were deleted with `mao-webhook.ts`;
+the third, a $5,000 fee floor, remains in the calculator this model
+replaces. Adopting Custom Values as the policy authority resolves a
+duplication that already exists rather than creating one.
+
+**A deliberate, time-boxed duplicate.** `Standard Minimum Assignment
+Spread` is created as a new Custom Value holding 5000, and is
+authoritative. `Default Assignment Fee Minimum` is NOT renamed and NOT
+deleted, because renaming may change the `fieldKey` and deleting may
+break a GHL workflow that interpolates it -- and whether any workflow
+does is UNKNOWN. Both will hold 5000 until that is verified. This is a
+two-sources-of-truth condition created on purpose; principle 11 is
+satisfied by naming which is authoritative and by time-boxing the
+duplicate to the verification, not by pretending the duplicate does not
+exist. The same holds for `Default Wholesale Percentage`, which is left
+in place and marked obsolete rather than deleted.
+
+**Seller MAO takes `mao_max_allowable_offer`.** OBSERVED 2026-08-13: the
+field is empty on all 42 opportunities, and its only writer,
+`mao-webhook.ts`, was deleted. It has no surviving consumer and no
+semantics to violate. When someone asks a wholesale system "what is my
+MAO," the actionable answer is what can be offered to the seller, so
+Seller MAO is the natural occupant.
+
+**End-Buyer Maximum Purchase Price gets a new field.** No existing field
+on either model represents it. The seven `offer_*` fields on the
+Opportunity record a presented offer and are governed by the §4.1 HARD
+NO; the contact-side candidates are seller inputs, not a buyer price.
+
+**Assignment mode gets a new SINGLE_OPTIONS field.** OBSERVED: no free
+SINGLE_OPTIONS field exists on the contact model -- all six are owned --
+and none on the opportunity model carries this concept. Mode belongs on
+the Opportunity per PB-D55 regardless, since it is deal state.
+
+**Deal overrides are sparse by design.** A field is created when the
+Underwriting Workspace actually persists that override, not because the
+override is theoretically possible. This does NOT mean an investor
+cannot override an assumption; it means a durable Opportunity field is
+created when the override has a consumer.
+
+**Two orphaned candidates, one still in use.** `opportunity.closing_costs`
+and `opportunity.wholesale_fee_` were read only by the two functions
+retired 2026-08-13 and now have no consumer at all -- there are no
+semantics left to violate, and either may be deliberately assigned a
+meaning under this model rather than requiring archaeology.
+`opportunity.assignment_fee_target` is still referenced by
+`MaoCalculator.tsx`, so its disposition is tied to retiring that
+calculator rather than free today.
+
+---
+
+## VII. What this supersedes
+
+**The 70% rule is not the IAOS model.** `MAO = (ARV x 70%) - repairs -
+assignment fee` folds buyer profit and selling and holding costs into a
+single percentage. This model itemizes them. The formula was
+implemented in `mao-webhook.ts`, retired 2026-08-13, and is recorded in
+the master architecture reference as abandoned deliberately. `Default
+Wholesale Percentage` is its last surviving artifact and is obsolete for
+underwriting.
+
+**The current calculator's formula is superseded.**
+`MaoCalculator.tsx` computes `ARV - repairs - sellingHolding -
+targetBuyerProfit - max(feeFloor, assignmentFeeTarget)` with a $5,000
+floor hardcoded. It itemizes more than the 70% rule but does not model
+financing, does not separate End-Buyer Maximum Purchase Price from
+Seller MAO, and reads no configured policy. It is replaced by this
+model, not extended.
+
+**PB-D55 is unchanged.** Underwriting authority belongs to the
+Opportunity. This decision supplies what underwriting is; PB-D55 already
+said where approved underwriting lives.
+
+---
+
+## VIII. Implementation prerequisites
+
+No underwriting write occurs until each is discharged on its own terms.
+PB-D55's four prerequisites remain in force and are not restated here.
+
+1. *Custom Values write capability is UNKNOWN.* The collection read is
+   OBSERVED. Whether IAOS can create or update an individual Custom
+   Value, and how GHL behaves when it does, has not been verified. V1
+   may configure policy by hand in GHL. Any settings UI that writes
+   Custom Values requires its own wire verification first. Note that the
+   location's Custom Values include `iaos_webhook_secret` in plaintext,
+   so any write path touches a store holding a credential.
+
+2. *Workflow references to the two superseded Custom Values are
+   UNKNOWN.* Whether any GHL workflow interpolates
+   `{{ custom_values.default_assignment_fee_minimum }}` or
+   `{{ custom_values.default_wholesale_percentage }}` has not been
+   checked. Both are left in place until it is. Deletion is a separate
+   checked action, not a side effect of this decision.
+
+3. *Nine Custom Values do not exist.* Of the eleven policy values, two
+   have existing carriers and nine must be created. Creation is a GHL
+   action, not a code change, and the starter values in section IV are
+   what they are created holding.
+
+4. *Two Opportunity fields do not exist* -- End-Buyer Maximum Purchase
+   Price and the assignment mode enum. Creating an opportunity-model
+   custom field via the API is OBSERVED possible per the master
+   architecture reference; doing it is not yet done.
+
+5. *No opportunity-side inert proof exists.* PB-D55 records this. It
+   applies with more force here, since this model writes two outputs to
+   the Opportunity rather than one.
+
+---
+
+## IX. Not decided here
+
+The Underwriting Workspace's layout, controls, and interaction model.
+Where the AI proposer's ARV and repair values come from, and whether one
+is built. Contract generation and everything after a seller accepts.
+Whether `contact.arv` and the other contact-side deal fields are
+eventually retired. Whether multiple buyer profiles -- cash, hard money,
+private -- are ever built; V1 has exactly one representative flip buyer.
+The disposition of `MaoCalculator.tsx` itself.
+
+---
+
+## X. Unchanged
+
+CONTACTS_OPPORTUNITIES_SPEC §4.1's HARD NO on `offer_` fields, tags,
+pipeline stage, and workflow triggers. PB-D55 in full. PB-D16's
+named-wrapper rule. Every field's unlock status and every existing proof
+record. PB-D53's and PB-D54's carriers and predicates.
