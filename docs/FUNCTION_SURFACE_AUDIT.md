@@ -49,6 +49,35 @@ than a total was not established.
 Thirteen of the fourteen entrypoints are unread as of this entry. Only
 ghl-mailers.ts has been characterized.
 
+### Inventory as of 2026-08-13
+
+deal-submit.ts and mao-webhook.ts were retired on 2026-08-13 (deleted;
+see their entries below). Recounted from the repository after the
+deletion rather than by subtracting from the 2026-08-06 figures --
+several per-file line counts had drifted independently of this change,
+so the older numbers above are kept as the 2026-08-06 record and are
+not restated as current. OBSERVED 2026-08-13:
+
+- netlify/functions/ (repo root) -- 2 files, 511 lines:
+  motivation-score.ts (410), phone-lookup.ts (101)
+- app/netlify/functions/ -- 10 files, 1078 lines:
+  ghl-calendar-events.ts (112), ghl-contact-conversations.ts (152),
+  ghl-contact.ts (62), ghl-contacts.ts (82),
+  ghl-conversations.ts (150), ghl-disposition.ts (188),
+  ghl-mailers.ts (40), ghl-opportunities.ts (108),
+  ghl-proxy.ts (53), mailer-digest.ts (131)
+- app/netlify/functions/lib/ -- 2 files, 444 lines:
+  contact-parse.ts (133), mailer-shared.ts (311)
+
+Fourteen files, 2033 lines. Twelve are entrypoints; the two files in
+lib/ are helpers.
+
+Of the twelve remaining entrypoints, four have been characterized in
+this document -- ghl-mailers.ts, mailer-digest.ts, ghl-disposition.ts
+and ghl-proxy.ts. Eight are unread. The two retired functions
+accounted for two of the four entries in the write-capable
+authentication survey below, which now covers two.
+
 ## ghl-mailers.ts -- publicly reachable without inbound authentication
 
 OBSERVED, app/netlify/functions/ghl-mailers.ts read whole at 40 lines:
@@ -186,7 +215,15 @@ INFERRED from the observed ordering and comparison implementation:
 inbound authentication is present before GHL access and uses a
 fixed-length timing-safe comparison.
 
-### deal-submit.ts
+### deal-submit.ts -- RETIRED 2026-08-13
+
+RETIRED 2026-08-13. The file was deleted from netlify/functions/. The
+findings below are preserved as the record of what was deployed; they
+describe no current endpoint. Retirement evidence: no caller in the
+repository, no matching GHL webhook among the three configured, and
+zero Netlify invocations across the full 7-day log retention window.
+The unauthenticated write path recorded here was closed by deletion
+rather than by adding authentication.
 
 OBSERVED: handler at :90 takes event: any. Through :125 there is no
 caller verification of any kind.
@@ -196,9 +233,12 @@ caller verification of any kind.
 - No secret, no header check, no session.
 
 OBSERVED: this authentication-focused read covered the handler
-through :125. PB-D47 separately records the later contact-creation
-and opportunity-creation path from the complete 201-line file read.
-No caller verification occurs before those writes begin.
+through :125. PB-D47 separately recorded the later contact-creation
+and opportunity-creation path from the complete 201-line file read;
+that decision was closed by deletion on 2026-08-13 when this function
+was retired, its subject having been the five contact-model field IDs
+in this file's opportunity payload. No caller verification occurred
+before those writes began.
 
 OBSERVED: a grep across the file for the alternatives handler,
 httpMethod, SECRET, secretMatches, statusCode: 401 and
@@ -210,7 +250,20 @@ INFERRED from the observations recorded for this function: an
 anonymous POST can reach the contact and opportunity write path using
 the server-held GHL credential.
 
-### mao-webhook.ts
+### mao-webhook.ts -- RETIRED 2026-08-13
+
+RETIRED 2026-08-13. The file was deleted from netlify/functions/. The
+findings below are preserved as the record of what was deployed; they
+describe no current endpoint. Retirement evidence: no caller in the
+repository, no matching GHL webhook among the three configured, and
+zero Netlify invocations across the full 7-day log retention window.
+Two further grounds specific to this function: its 70%-rule formula is
+obsolete under the underwriting model now being designed, and its
+parser read value/fieldValue, which GHL does not return for NUMERICAL
+opportunity fields, so the write path characterized below was
+unreachable in practice. The unauthenticated write path was closed by
+deletion rather than by adding authentication. The formula itself is
+recorded in the master architecture reference under PARKED / VERIFY.
 
 OBSERVED: handler at :102 takes event: any. Non-POST returns 405;
 invalid JSON returns 400.
@@ -233,6 +286,21 @@ unread.
 OBSERVED: among the four functions characterized in this section, the
 shared-secret pattern appears only in ghl-disposition.ts. The
 repository as a whole has not been surveyed for it.
+
+Two of those four, deal-submit.ts and mao-webhook.ts, were retired on
+2026-08-13. The survey now covers two live functions, mailer-digest.ts
+and ghl-disposition.ts. The observation above is left as written
+because it records what was found at the time.
+
+INFERRED from the four entries in this section as they stood: the two
+retired functions were the only ones of the four that an anonymous
+POST could reach and drive to a GHL write -- ghl-disposition.ts
+verifies a shared secret, and mailer-digest.ts is scheduled with no
+public production URL surface expected. Their removal therefore closes
+the anonymous-write exposure this section recorded, but by deletion
+rather than by adopting the pattern, so it establishes nothing about
+that pattern's adoption elsewhere. ghl-mailers.ts and ghl-proxy.ts,
+characterized outside this section, are unaffected.
 
 INFERRED from the ghl-disposition reads: a working inbound-auth
 pattern for server-to-server callers already exists in this codebase.
