@@ -1,7 +1,8 @@
 # IAOS — Session Handoff
 
-**Refreshed 2026-08-14.** Repo tip `6714fb6` on `main`, pushed, working
-tree clean.
+**Refreshed 2026-08-14.** Repo tip `f64e37b` on `main`, pushed, working
+tree clean. Deployed and verified: 170 harness checks green against the
+served bundle, plus 53 unit checks on the underwriting calculation core.
 
 This file replaces the 2026-07-29 handoff wholesale rather than amending
 it. That version described the repo at `6f79044`, before the Dashboard
@@ -61,8 +62,12 @@ in one command. Run it after every app-code deploy, then run the three
 harnesses. The pin lives in three files and drifted three times when
 edited by hand.
 
-**Live bundle at last check:** `index-BOtn59it.js`. Any app-code deploy
-moves it and stales all three pins.
+**Live bundle at last check:** `index-BOtn59it.js`. OBSERVED 2026-08-14:
+adding the unimported underwriting core did not move the served bundle
+hash -- pure types erase at compile, an unimported module never enters
+the entry chunk, and `.cjs` scripts sit outside the Vite graph entirely.
+Do not generalize this to imported app code; run `repin-harnesses.cjs`
+after every app-code deploy regardless.
 
 ---
 
@@ -82,6 +87,10 @@ Proposed, approved, and presented are distinct states.
 
 **PB-D54 -- six cold-outreach exclusion predicates** govern Lead Queue
 membership. OBSERVED 2026-08-12: 10 of 44 contacts excluded, queue at 34.
+That is a historical snapshot of a moving population, not an invariant.
+OBSERVED 2026-08-14: 45 contacts, queue still 34, so eleven are now
+excluded. Which contact and which predicate is UNKNOWN -- nobody has
+checked. Do not restate the 2026-08-12 figures as current.
 
 **PB-D53 -- durable carriers for engagement and reachability.** Seller
 Follow-Up stage for engagement, `contact.phone_status` for reachability.
@@ -93,6 +102,28 @@ caller and zero invocations over the full log retention window. Deleted,
 deployed, confirmed absent from the marketing site's function list. Their
 rationale is preserved in the architecture reference and the function
 surface audit rather than lost with the code.
+
+**Workspace spec contradiction resolved 2026-08-14** (`9215510`).
+The spec defined Seller MAO as End-Buyer Max minus a Planned Assignment
+Fee, while PB-D56 defines it as End-Buyer Max minus Required Assignment
+Spread. Equal at default, so no worked example distinguished them.
+PB-D56 section II.6 already provides Manual mode as the human override,
+so Planned was a second lever for a concept that had one. Resolved in
+favor of PB-D56: one effective Assignment Spread, three modes, no
+separate Planned Assignment Fee. PB-D56 was not amended.
+
+**Underwriting calculation core shipped 2026-08-14** (`f64e37b`).
+`app/src/lib/underwriting/types.ts` and `compute.ts`, exercised by
+`app/scripts/test-underwriting-core.cjs` at 53 checks, all green.
+Pure functions: no GHL identifiers, no I/O, no React, no writes. The
+runner compiles the core with `tsc --strict` to a temp directory that
+carries its own `package.json` declaring commonjs, because
+`app/package.json` sets `"type": "module"`. The zone 4 worked example
+from the workspace spec is test 1 and reproduces PB-D56's own figures.
+Every designed-against failure mode is pinned: human percentage units,
+NaN, financing-off versus unresolved, no profit-share fallback, the
+$5,000 / $4,999.99 warning boundary, mixed-level provenance, and
+accumulated missing inputs.
 
 ---
 
@@ -172,9 +203,16 @@ push. No chaining. Commit messages are the exact text supplied; the
 
 **Guarded scripts over hand edits.** Any multi-file or exact-text edit
 goes through a validate-all-then-write script that aborts on a count
-mismatch rather than through find-and-replace in the editor. Note that
-several docs are CRLF in the working tree: a script matching `\n`-joined
-patterns must normalize first or it will silently match zero times.
+mismatch rather than through find-and-replace in the editor.
+
+**Check line endings on the target file before scripting an exact-text
+edit.** The working tree contains both LF and CRLF documents -- OBSERVED
+2026-08-14: `UNDERWRITING_WORKSPACE_SPEC.md` is pure CRLF while
+`SESSION_HANDOFF.md` is pure LF. Match the file's observed line endings;
+never assume them from another file. A pattern joined on the wrong
+terminator matches zero times and a shape guard reports success.
+`tr -cd '\r' | wc -c` against `tr -cd '\n' | wc -c` is the reliable
+check; `file` and `cat -A` both misreported this repo at least once.
 
 ---
 
@@ -208,16 +246,68 @@ isn't Brad. Only `ghl-disposition` verifies a secret.
 your own deals, another investor's, or the AI assistant -- is undecided,
 which makes any timeline estimate unfounded.
 
+**`UnitsError` throws rather than resolving to unresolved.** A percentage
+arriving in human units, or a non-finite number, throws out of
+`computeUnderwriting` rather than returning `status: "unresolved"`. That
+is deliberate -- a malformed value is an adapter bug, not a missing
+input, and reporting it as missing would send the operator to populate a
+field that is already populated. The consequence is a requirement on the
+UI layer: whatever renders the workspace must catch it, or one bad Custom
+Value takes the zone down instead of showing a missing-input state. Not
+yet written into `UNDERWRITING_WORKSPACE_SPEC.md`.
+
+**The workspace spec's lifecycle ordering is imperfect, deliberately
+left.** "The economic lifecycle" claims five quantities "in the order
+they come to exist" and lists Assignment Spread first, but the spread is
+consumed at the Seller MAO step and, under profit-share mode, is computed
+from Required Buyer Profit. The defect predates the 2026-08-14
+correction and was excluded from it deliberately to keep that diff
+reviewable. Fixing it is a separate judgment about the document's own
+logic.
+
+**Profit-share below the minimum is floored silently; manual below the
+minimum warns.** PB-D56 line 2096 specifies `max(share, minimum)`, so a
+profit-share spread under the floor is lifted with no warning, while a
+manual spread in the identical position emits
+`MANUAL_SPREAD_BELOW_STANDARD_MINIMUM`. Both behaviors are now pinned by
+tests, so a future change to either breaks a check rather than passing
+unnoticed. Whether the asymmetry is intended is not reopened here.
+
 ---
 
 ## Immediate next steps
 
-1. **The workspace read path.** Read opportunity custom fields, resolve
-   the three-level hierarchy, compute the waterfall, render zones 1, 2
-   and 4. Approve stays disabled. Unblocked by anything.
+1. **The adapter.** Resolve each assumption through Deal Override ->
+   Investor Policy -> IAOS Starter, convert GHL percentage units to
+   decimal fractions, and hand the core `{value, level}` pairs. The
+   eleven Custom Value ids and three Opportunity field ids move into
+   `app/shared/ghl-config.ts` per PB-D51, not copied into call sites
+   from `UNDERWRITING_FIELD_REFERENCE.md`. Opportunity custom fields
+   need their own parser: the wire shape is `{id, type,
+   fieldValue<Type>}`, not the contact model's `{id, value}`.
 
-2. **The opportunity fixture decision**, then the inert proof, then
-   Approve.
+2. **The read path and zones 1, 2 and 4**, Approve disabled. The two
+   open questions in the workspace spec -- where the workspace lives,
+   and how Opportunity selection is presented -- gate the surface but
+   not the calculation.
 
-3. **Workflow-reference verification** in the GHL builder for the two
-   legacy Custom Values, which unblocks deleting them.
+3. **The GHL builder pass.** One session answers two questions that no
+   API read can: whether any workflow watches Opportunity creation or
+   stage entry, and whether either legacy Custom Value is referenced.
+   The first is the missing input for the fixture decision; the second
+   unblocks deleting the deliberate duplicate.
+
+4. **The opportunity fixture decision**, which is not decidable before
+   step 3. Creating a fixture opportunity touches the one trigger type
+   known to be armed in this location; writing to a live seller deal
+   repeats the failure already recorded above at
+   `1AP9BfFPJ2xYZ0RPTm9U`. Neither is obviously smaller until the
+   trigger inventory exists.
+
+5. **The opportunity-side inert proof**, then Approve.
+
+**On parallelizing.** The calculation core is now a proven bounded
+module and is suitable for higher-throughput engineering. The broader
+workspace is not, until the adapter and read contracts settle -- their
+shapes are decided but unbuilt, and parallel work against an unbuilt
+contract produces rework rather than throughput.
