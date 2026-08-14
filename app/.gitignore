@@ -1,2 +1,5 @@
 # Local Netlify folder
 .netlify
+
+# Transient output from app/scripts/test-underwriting-core.cjs
+.tmp-underwriting-test
