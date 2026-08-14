@@ -1,0 +1,935 @@
+TRANSCRIPTION NOTE, added 2026-08-14 when this file entered the repo.
+
+This is the source document behind docs/SELLER_ACQUISITION_WORKFLOW.md.
+The original was written by Brad outside the repository and existed only
+as a conversation attachment. It was brought in because the product
+artifact cites it as primary source, and a governing document whose
+source lives in a chat attachment has a provenance trail that ends
+nowhere.
+
+It was read and transcribed rather than copied byte-for-byte -- the
+original was never on the machine Jeff can reach. It is faithful and it
+is not guaranteed byte-identical. The original upload remains the true
+original if one is ever needed.
+
+Content is complete: the transcription runs from the original first line
+to its final sentence. Whitespace differs -- long runs of blank lines
+between the three parts of the original conversation are collapsed to the
+rules below, and a few non-ASCII marks (check marks, warning triangles,
+arrows) are rendered as ASCII. The line count therefore does not match the
+original and is not cited anywhere as if it did.
+
+The original carries no leading note; everything below this line is the
+source as read.
+
+================================================================
+
+Call Flow of Wholesaler to Seller:
+
+If you were a wholesaler and you were going to make a perfect call to a seller to gather the information you need, produce a quote through the MAO calc we discussed to a total call.  What would the call flow look like and don't leave out how you would want you app to run as the call goes along, so that you can make the perfect call to a seller.  Make an outline to show when an where you would look to what sections you would be in the app for the call.
+
+Yes. I would design the seller call and the IAOS screen as one workflow, not as a phone script sitting beside a calculator.
+
+The rep should almost never have to think, "Where do I go now?" IAOS should advance with the conversation, progressively gather what matters, unlock underwriting when it can, and then support the negotiation without forcing the rep to interrogate the seller.
+
+The governing sequence I'd use is:
+
+Connect -> Understand Why -> Understand Property -> Understand Price -> Underwrite -> Present Offer -> Negotiate -> Close Next Step
+
+And critically, the seller should not experience that as a form being completed.
+
+IAOS Seller Call Flow
+0. Before the seller answers -- Call Prep
+IAOS section: Lead Snapshot
+
+Before dialing, I'd want one compact screen containing everything IAOS already knows.
+
+Seller
+
+Name
+Phone
+Lead source
+Prior conversations/contact attempts
+
+Property
+
+Address
+Property type
+Beds/baths
+Sq. ft.
+Known ownership information
+Occupancy if known
+
+Existing financial information
+
+Seller asking price, if known
+Mortgage/liens, if known
+Previous offer, if any
+
+Research
+
+Preliminary value/ARV information
+Existing comps if available
+Prior repair estimate if one exists
+IAOS behavior
+
+IAOS should distinguish:
+
+Known -- don't ask again.
+Needs Confirmation -- verify naturally.
+Unknown -- gather if relevant.
+
+I'd also want a prominent:
+
+UNDERWRITING STATUS: Not Ready
+Missing: ARV, Repairs
+
+Remember our Gate 1:
+
+ARV + Repairs are the minimum deal-specific inputs required, provided all underwriting assumptions resolve.
+
+The rep knows before the conversation even begins what IAOS still needs.
+
+1. Connect with the seller
+IAOS section: Conversation
+
+The purpose here is not underwriting.
+
+It's getting permission to have a conversation.
+
+The rep should establish:
+
+Right person?
+Right property?
+Still considering selling?
+Is now a reasonable time?
+
+Something conversational like:
+
+"Hey John, this is Dave. I'm calling about the property on Main Street. I understand you may be considering selling it. Is that still something you're looking at?"
+
+IAOS behavior
+
+Don't throw a giant property questionnaire on screen.
+
+Show:
+
+Seller Name
+Property
+Call notes/transcript
+Next suggested topic: Situation
+
+The software should get out of the way.
+
+2. Why are we talking?
+IAOS section: Seller Situation
+
+This is where I'd want the acquisitions person to spend real time.
+
+I want to understand:
+
+Why are they considering selling?
+
+Then naturally:
+
+Why now?
+
+Then:
+
+What happens if they don't sell?
+
+Then:
+
+What matters most about the sale?
+
+IAOS fields might include:
+
+Reason for selling
+Motivation
+Desired outcome
+Timeline
+Important circumstances
+Decision makers
+Obstacles/concerns
+What IAOS should do
+
+The app should allow free conversation first, structured data second.
+
+If there's transcription/AI extraction, even better:
+
+Seller says:
+
+"My mother was living there, but she passed last year. It's been empty for six months and I'm paying taxes and insurance. I really just want to get rid of it before winter."
+
+IAOS proposes:
+
+Occupancy: Vacant
+Motivation: Inherited property / carrying costs
+Timeline: Near term
+Key concern: Convenience / ongoing expenses
+
+Rep confirms rather than manually typing everything.
+
+That's how IAOS can make the rep more present in the conversation, rather than turning them into a data-entry clerk.
+
+3. Understand the property
+IAOS section: Property Condition
+
+Now we need enough information to estimate repairs.
+
+But I wouldn't ask:
+
+"How much do you think repairs will cost?"
+
+Most sellers aren't rehab estimators.
+
+I'd walk the house conversationally.
+
+Exterior
+Roof age/condition
+Siding/exterior
+Windows
+Foundation issues
+Driveway
+Landscaping
+Garage
+Known water/drainage issues
+Mechanical
+HVAC age/condition
+Electrical
+Plumbing
+Water heater
+Septic/well if applicable
+Interior
+Kitchen condition
+Bathrooms
+Flooring
+Paint
+Drywall
+Doors/trim
+Appliances
+Basement
+Signs of water/mold
+Structural concerns
+Improvements
+
+"What have you updated in the last five or ten years?"
+
+That question is valuable because sellers often answer it much more naturally than a 30-item condition checklist.
+
+IAOS behavior
+
+This is where I'd want a Repair Builder operating alongside the conversation.
+
+Not necessarily 50 individual line items on the main screen.
+
+Something like:
+
+Roof -- Good / Repair / Replace / Unknown
+HVAC -- Good / Repair / Replace / Unknown
+Kitchen -- Updated / Cosmetic / Full
+Baths -- Updated / Cosmetic / Full
+Flooring -- Good / Partial / Full
+Paint -- None / Partial / Full
+Structural -- None known / Possible / Known
+Other -- notes
+
+And IAOS continuously updates:
+
+Preliminary Repairs: $38,500
+
+But label it correctly if it's still based on incomplete information:
+
+! Preliminary -- 3 condition items unresolved
+
+That's much better than false precision.
+
+4. Understand occupancy and possession
+IAOS section: Property / Occupancy
+
+I want to know:
+
+Owner occupied?
+Tenant occupied?
+Vacant?
+Family member?
+When can possession transfer?
+
+If tenant occupied:
+
+Lease?
+Rent?
+Expiration?
+Deposit?
+Tenant expected to remain or vacate?
+
+This isn't necessarily required for the MAO formula, but it can dramatically affect whether the transaction is executable.
+
+IAOS should therefore distinguish:
+
+Required for MAO
+
+from:
+
+Required before contract
+
+That's an important product distinction.
+
+5. Understand debt/title complications
+IAOS section: Deal Facts
+
+Naturally determine, where appropriate:
+
+Mortgage remaining?
+Second mortgage?
+HELOC?
+Tax liens?
+HOA balance?
+Probate?
+Multiple owners?
+Divorce?
+Other known title issues?
+
+Again, these don't necessarily calculate the wholesale MAO.
+
+But they answer:
+
+Can the transaction actually be executed at this price?
+
+If Seller MAO eventually comes out at $140K but known payoff is $175K, that's highly relevant.
+
+IAOS should surface:
+
+Potential Equity/Closing Constraint
+
+rather than modifying Seller MAO.
+
+That's important: seller debt doesn't make the property worth more.
+
+6. Seller price discovery
+IAOS section: Price & Expectations
+
+I would want the seller talking first whenever possible.
+
+Questions naturally progress toward:
+
+"What were you hoping to get for the property?"
+
+Then understand the basis:
+
+"How did you arrive at that number?"
+
+And eventually, where appropriate:
+
+"If we could make this simple and close on the timeline you want, how much flexibility do you think you have?"
+
+IAOS captures
+
+Seller Asking Price
+Seller Stated Minimum, if they actually state one
+How price was determined
+Price flexibility
+Other offers/listing status
+
+Very important:
+
+Seller Asking Price != Seller Minimum.
+
+Don't let one overwrite the other.
+
+7. Underwriting Gate
+
+This is where IAOS should become really good.
+
+IAOS section automatically transitions to: Underwriting
+
+At this point, ideally IAOS has:
+
+ARV ok
+Repairs ok
+
+And all configured underwriting assumptions resolve.
+
+The screen changes:
+
+READY TO UNDERWRITE
+
+One button:
+
+Calculate Deal
+
+Or better, calculate continuously once Gate 1 resolves.
+
+IAOS displays the waterfall
+
+For example:
+
+ARV ................................ $300,000
+Repairs ........................... -$40,000
+Selling Costs ................ -$30,000
+Buyer Closing ................ -$2,500
+Holding ........................... -$2,500
+Required Buyer Profit ..... -$45,000
+
+Base Buyer Capacity ........ $180,000
+
+Financing Adjustment ........ calculated
+
+End-Buyer Maximum Purchase Price: $171,592
+
+Then:
+
+Required Assignment Spread ... -$11,250
+
+SELLER MAO: $160,342
+
+That's the number I want the wholesaler protecting.
+
+8. IAOS compares Seller MAO to Seller Ask
+IAOS section: Acquisition Position
+
+This should happen automatically.
+
+Suppose:
+
+Seller Ask: $175,000
+Seller MAO: $160,342
+
+IAOS says:
+
+ABOVE UNDERWRITING RANGE
+
+Gap to MAO: $14,658
+
+Not:
+
+"Offer $150,000."
+
+We've already established why.
+
+IAOS knows the economics.
+
+It does not yet know the perfect negotiating number.
+
+If instead:
+
+Seller Ask: $150,000
+Seller MAO: $160,342
+
+IAOS shows:
+
+WITHIN UNDERWRITING RANGE
+
+Acquisition Cushion at Ask: $10,342
+
+Now the acquisitions rep knows they have something worth pursuing.
+
+9. Human selects the Opening Offer
+IAOS section: Offer Strategy
+
+This is where I want the rep--not the formula--to make the negotiation decision.
+
+IAOS displays:
+
+Seller Ask: $175K
+Seller MAO: $160K
+Gap: $15K
+Seller Motivation: High
+Timeline: 30 days
+Property: Vacant
+Price flexibility: Indicated
+
+Then:
+
+Opening Offer: $________
+
+As soon as the rep enters, say:
+
+$145,000
+
+IAOS shows:
+
+Opening Offer ................. $145K
+Below Seller Ask ............ $30K
+Below Seller MAO ........... $15K
+Acquisition Cushion ........ $15K
+
+And importantly:
+
+Changing Opening Offer does not change Seller MAO.
+
+10. Present the offer -- don't just blurt out a number
+IAOS section remains: Offer Strategy / Live Negotiation
+
+The seller conversation should recap what the rep heard before price.
+
+Conceptually:
+
+"John, based on what you've told me, you're looking to get this handled fairly quickly, you don't want to put more money into the property, and ideally you'd like to sell it as-is without dealing with repairs and listing it. Is that fair?"
+
+Get agreement.
+
+Then explain what the offer represents:
+
+As-is
+Timeline
+No requested seller rehab
+Closing structure
+Any other relevant terms
+
+Then present:
+
+"Based on everything we've gone through, we'd be at $145,000."
+
+Then stop talking.
+
+IAOS behavior
+
+This is important.
+
+Don't cover the screen with prompts immediately after the offer.
+
+I'd actually put IAOS into:
+
+LISTEN MODE
+
+with a simple prompt:
+
+Seller Response
+
+Let the seller respond.
+
+11. Negotiation loop
+IAOS section: Live Negotiation
+
+Now the app becomes a guardrail.
+
+Seller:
+
+"There's no way. I need $165K."
+
+IAOS immediately shows:
+
+Seller Counter: $165,000
+Seller MAO: $160,342
+
+! $4,658 ABOVE UNDERWRITING
+
+The rep knows instantly.
+
+Seller comes back:
+
+"Could you do $155K?"
+
+IAOS:
+
+Seller Counter: $155,000
+MAO: $160,342
+Acquisition Cushion: $5,342
+
+WITHIN STANDARD UNDERWRITING
+
+That's exactly where I want IAOS helping during a live call.
+
+12. Don't negotiate against yourself
+
+The app should record each movement.
+
+IAOS negotiation history
+Round   Seller  Investor
+Ask     $175K   --
+Opening --      $145K
+Counter 1       $165K   --
+Counter 2       --      $150K
+Counter 3       $157K   --
+
+And always visible:
+
+Seller MAO: $160,342
+
+That number does not move because negotiations are happening.
+
+If the rep tries:
+
+Offer: $162,000
+
+IAOS warns:
+
+! $1,658 above Seller MAO -- Outside Standard Underwriting
+
+But I'd allow an authorized human override rather than silently changing the underwriting.
+
+13. If price won't work, diagnose -- don't manipulate the MAO
+IAOS section: Deal Doesn't Work
+
+This is important.
+
+If seller says:
+
+"$175K is absolutely my bottom."
+
+and Seller MAO is $160K, don't let the rep casually change:
+
+ARV $300K -> $325K
+
+just to make the calculator green.
+
+Instead IAOS shows:
+
+Seller Minimum: $175K
+Seller MAO: $160K
+Unresolved Gap: $15K
+
+Then give legitimate next paths:
+
+Follow-up / nurture
+Verify ARV
+Verify repair scope
+Alternative transaction structure
+Pass
+Human-approved outside-parameters decision
+
+If new evidence genuinely changes ARV or repairs, great.
+
+But:
+
+Negotiation pressure should never change underwriting facts.
+
+I'd put that principle into the product spec.
+
+14. Agreement
+IAOS section: Offer Accepted
+
+Seller agrees at:
+
+$155,000
+
+IAOS freezes the negotiation result:
+
+Accepted Price: $155,000
+Seller MAO: $160,342
+Acquisition Cushion: $5,342
+End-Buyer Max: $171,592
+
+Then it should show:
+
+WITHIN STANDARD PARAMETERS
+
+And move into:
+
+Contract Readiness
+
+Now IAOS checks the non-MAO items that matter before paperwork:
+
+Correct legal owner(s)
+Property address
+Agreed purchase price
+Closing timeline
+Occupancy/possession
+Known liens/title complications
+Contract delivery/signing information
+Other required transaction terms
+15. Close the call
+IAOS section: Next Steps
+
+The acquisitions rep summarizes:
+
+Agreed price
+Closing date/timeline
+What happens next
+Who sends what
+When seller should expect documents
+Next contact point
+
+IAOS creates the next actions rather than relying on memory.
+
+For example:
+
+Call Outcome: Verbal Acceptance
+Accepted Price: $155K
+Next Step: Send Agreement
+Follow-up: Today
+Owner: Acquisition Rep
+
+If there's no agreement:
+
+Outcome: Follow-up
+Seller Current Position: $165K
+Our Last Position: $150K
+Seller MAO: $160,342
+Next Call: [date]
+
+That context needs to survive the phone call.
+
+How I'd organize the actual IAOS workspace
+
+I would not make the rep navigate 15 pages corresponding to the 15 steps above.
+
+I'd build one Seller Call Workspace with roughly six sections:
+
+Lead & Seller
+Identity, property, history, call context.
+Situation
+Motivation, timeline, decision makers, seller goals.
+Property
+Condition, repairs, occupancy, photos/notes.
+Price & Deal
+Ask, mortgage/liens, ARV, repairs.
+Underwriting & Offer
+Buyer economics -> Buyer Max -> Seller MAO -> Ask/MAO gap -> Opening Offer.
+Negotiation & Close
+Counters, accepted price, contract readiness, next steps.
+
+The sections can progressively unlock/highlight as the conversation moves.
+
+The most important UI element: a persistent call rail
+
+No matter which section I'm in, I'd keep a small panel visible throughout the call:
+
+CALL STATUS
+
+Seller Ask
+$175,000
+
+ARV
+$300,000
+
+Repairs
+$40,000
+
+Seller MAO
+$160,342
+
+Current Seller Position
+$165,000
+
+Our Current Position
+$150,000
+
+Gap
+$5,000
+
+Underwriting
+Ready / Within Parameters
+
+Before ARV + Repairs resolve:
+
+MAO: Waiting for ARV + Repairs
+
+That means the rep never has to leave the seller conversation to figure out where the deal stands.
+
+And I would give IAOS two simultaneous checklists
+
+This is something I'd add to the design.
+
+Underwriting Readiness
+
+ARV
+Repairs
+Required assumptions
+
+READY TO CALCULATE
+
+Acquisition/Contract Readiness
+
+Seller situation
+Price expectation
+Decision maker
+Occupancy
+Known debt/liens
+Timeline
+Contract terms --
+
+NOT YET CONTRACT READY
+
+That prevents us from repeating the mistake we identified earlier: the information required to calculate MAO is not the same as the information required to intelligently acquire the property.
+
+The complete flow in one line
+
+I'd give your developer this as the master workflow:
+
+PREP -> CONNECT -> SITUATION -> CONDITION -> OCCUPANCY -> DEBT/TITLE -> PRICE -> ARV + REPAIRS -> UNDERWRITE -> BUYER MAX -> SELLER MAO -> COMPARE TO ASK -> CHOOSE OPENING OFFER -> PRESENT -> LISTEN -> NEGOTIATE AGAINST FIXED MAO -> ACCEPT / FOLLOW-UP / PASS -> CONTRACT READINESS -> NEXT ACTION
+
+And there are four numbers I'd pin on screen once available:
+
+Seller Ask -- what they want.
+Seller MAO -- where we must stop.
+Current Seller Position -- where they are now.
+Current Investor Offer -- where we are now.
+
+Those four numbers tell the acquisitions rep the state of the negotiation almost instantly.
+
+The larger design principle I'd give Claude is: IAOS should help the wholesaler listen more, not ask more questions. The app should progressively extract and organize information from a natural conversation, calculate as soon as it legitimately can, keep the MAO ceiling visible during negotiation, and only interrupt the rep when something is missing, contradictory, or outside underwriting parameters.
+
+That is much closer to the "perfect seller call" experience I'd want than a CRM form followed by a calculator followed by a separate offer screen.
+
+================================================================
+
+Do you think that this should all be in 1 phone call or do you think it should be over several, ideally?
+
+Ideally, I would design IAOS for one-call conversion but not require one-call completion.
+
+That distinction matters.
+
+A highly motivated seller with a straightforward property may absolutely be closable in one call. Forcing that seller into "I'll research this and call you tomorrow" creates an unnecessary opportunity for another investor to get the deal.
+
+But trying to force every seller through discovery -> underwriting -> negotiation -> agreement on the first call can hurt rapport, produce weak ARVs/repair estimates, and make the rep sound like they're completing a questionnaire.
+
+I would design around 3 possible call stages
+
+Call 1 -- Discovery + Qualification
+
+Primary objective:
+
+Do I understand the seller, property, and opportunity well enough to know whether this deserves underwriting?
+
+Gather the seller's situation, motivation, timeline, condition, occupancy, price expectations, and enough property information to estimate repairs.
+
+IAOS should be working in the background toward:
+
+ARV
+Repairs
+
+If IAOS already has credible valuation data and the property is straightforward, don't stop just because this was supposed to be a discovery call. Continue.
+
+Call 2 -- Offer + Negotiation
+
+If research is needed, this becomes the natural offer call.
+
+Between calls IAOS/rep can verify:
+
+Comps/ARV
+Repair assumptions
+Any obvious property issues
+Underwriting
+Seller MAO
+
+So when the rep calls back, they're not discovering anymore. They're prepared.
+
+The screen should open directly to something like:
+
+SELLER ASK: $175K
+SELLER MAO: $160K
+GAP: $15K
+MOTIVATION: High
+TIMELINE: 30 days
+KEY SELLER NEED: As-is / fast close
+
+Now the objective is:
+
+Can we reach an agreement at or below Seller MAO?
+
+This is where opening offer -> seller counter -> investor counter -> agreement happens.
+
+Call 3+ -- Follow-Up
+
+This shouldn't be viewed as failure.
+
+A huge part of acquisitions is timing.
+
+Seller says:
+
+"I understand your $155K, but I'm not going below $175K."
+
+Maybe that's a dead deal today.
+
+Thirty days later, the property hasn't sold, they're still paying expenses, another buyer backed out, or their circumstances changed.
+
+IAOS should preserve the negotiation state:
+
+Initial Ask: $190K
+Last Seller Position: $175K
+Our Last Offer: $155K
+Seller MAO: $160K
+Unresolved Gap: $15K
+Seller objection: Price
+Follow-up reason: Seller not yet flexible
+Next follow-up: [date]
+
+The next rep shouldn't have to rediscover the deal.
+
+But here's where I'd change the app design from my previous answer
+
+Don't design IAOS around "Call 1 / Call 2 / Call 3."
+
+Design it around stages of information readiness.
+
+Because a great lead might move through everything in 25 minutes:
+
+Discovery -> Property -> Underwriting -> Offer -> Negotiation -> Verbal Agreement
+
+Another might do:
+
+Discovery -> Research Needed -> Offer tomorrow -> Follow-up x 4 -> Agreement three weeks later
+
+Same workspace. Different pace.
+
+I'd have IAOS maintain a persistent state something like:
+
+Seller Discovery: Complete
+Property Condition: Complete
+Underwriting: Ready
+Seller MAO: $160,342
+Offer: Presented
+Negotiation: Active
+Contract: Not Yet Accepted
+
+Then whenever the seller calls--even unexpectedly--IAOS puts the rep back exactly where the deal left off.
+
+The critical decision: when do we make an offer on Call 1?
+
+I'd give IAOS an Offer Readiness indicator.
+
+If:
+
+Seller understanding
+Property condition sufficient
+ARV confidence sufficient
+Repair estimate confidence sufficient
+Underwriting assumptions resolve
+Seller MAO calculated
+
+then:
+
+READY TO MAKE OFFER
+
+Don't require another call.
+
+If instead:
+
+ARV confidence: Low
+Repairs: Major foundation issue unresolved
+
+then:
+
+RESEARCH BEFORE OFFER
+
+MAO not sufficiently supported.
+
+That's the software protecting the wholesaler from their own urgency.
+
+There's another benefit
+
+It changes how the first call feels.
+
+The rep doesn't have to think:
+
+"I have 37 required questions I need to get through before I can hang up."
+
+Instead:
+
+Have a good seller conversation and move the deal as far forward as the available information legitimately allows.
+
+IAOS listens/extracts information, identifies what's still missing, and tells the rep when underwriting and offer readiness have been reached.
+
+So my ideal isn't one call or three calls.
+
+It's:
+
+Close in one call when the information and seller are ready. Use two when underwriting needs verification. Use follow-up calls when the seller isn't ready. Never add a call merely because the workflow says there should be one.
+
+For the IAOS product, I'd actually make that a design principle:
+
+IAOS is stage-driven, not call-count-driven. Every seller interaction resumes from the last verified state and advances the opportunity as far as the available information supports.
+
+That is how I'd build it.
