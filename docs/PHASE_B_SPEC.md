@@ -2367,10 +2367,31 @@ PB-D55's four prerequisites remain in force and are not restated here.
    Standard Minimum Assignment Spread is therefore among the values to
    create, and the count is ten.
 
+   *DISCHARGED 2026-08-14.* All ten were created in GHL 2026-08-13. OBSERVED 2026-08-14
+   through the deployed proxy: the location holds all eleven policy
+   values, each carrying the starter value section IV specifies. Exact
+   ids, fieldKeys, and creation status are recorded in
+   `docs/UNDERWRITING_FIELD_REFERENCE.md`, which is the authoritative
+   register for these identifiers. Both legacy values -- Default
+   Assignment Fee Minimum and Default Wholesale Percentage -- remain in
+   place as section VI requires, and the deliberate duplicate is
+   therefore live.
+
 4. *Two Opportunity fields do not exist* -- End-Buyer Maximum Purchase
    Price and the assignment mode enum. Creating an opportunity-model
    custom field via the API is OBSERVED possible per the master
    architecture reference; doing it is not yet done.
+
+   *DISCHARGED 2026-08-14.* Both were created in the GHL UI 2026-08-13 rather than
+   via the API. OBSERVED through the deployed proxy: End-Buyer Maximum
+   Purchase Price is NUMERICAL at `zOVIPwzLe41a0SQmwVAJ`, and Assignment
+   Mode is SINGLE_OPTIONS at `TpLo0WRc303TXAaBUbBf` carrying exactly the
+   three option strings section II names, in order. Both sit in folder
+   `FQJ2zGEAIJu0JA9NubCL` beside the existing opportunity underwriting
+   fields. Full detail is in `docs/UNDERWRITING_FIELD_REFERENCE.md`.
+
+   Prerequisite 5 -- no opportunity-side inert proof -- is unaffected and
+   remains the gate on writing either field.
 
 5. *No opportunity-side inert proof exists.* PB-D55 records this. It
    applies with more force here, since this model writes two outputs to
