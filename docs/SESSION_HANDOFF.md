@@ -1,6 +1,6 @@
 # IAOS — Session Handoff
 
-**Refreshed 2026-08-14 (second pass).** Repo tip `b357dc1` on `main`,
+**Refreshed 2026-08-14 (third pass).** Repo tip `411a1af` on `main`,
 pushed, working tree clean. Deployed and verified: 170 harness checks
 green against the served bundle, plus 140 unit checks across two
 runners -- 53 on the calculation core, 87 on the resolver. `tsc
@@ -357,13 +357,48 @@ so the core's financing-off path is exercised only by hand-built test
 inputs. Add the observed token and its test when the GHL builder pass
 reads it; do not infer it.
 
-**Six identifiers are needed before the resolver can be wired live.**
-Opportunity ARV, Opportunity Repair Estimate and Opportunity Asking
-Price -- PB-D55 names the fields on the schema but their ids have never
-been read. Contact Estimated Repairs and Contact Asking Price -- almost
-certainly in `CONTACT_FIELD_REFERENCE.md`, a file read rather than a GHL
-read. Contact ARV is already in config. Ground all of them in one pass
-rather than one at a time.
+**The six deal-fact identifiers are DISCHARGED 2026-08-14** (`d1a08dc`).
+All six are in `app/shared/ghl-config.ts`. Provenance differs per id and
+is recorded here because the opportunity trio appears in no other
+repository document:
+
+    contact.arv                          wMBTGWMs97yysQFx7Vad
+        pre-existing in shared config; corroborated this session
+        against CONTACT_FIELD_REFERENCE.md line 65
+    contact.estimated_repairs            OQnud97MfdxMcTgMVTgf
+        CONTACT_FIELD_REFERENCE.md line 66, MONETORY
+    contact.asking_price                 60UCjsYT1Ak3Kyy5ZCL8
+        CONTACT_FIELD_REFERENCE.md line 64, MONETORY
+    opportunity.arv_after_repair_value   cBkygqcHRseZUGCYYeba
+    opportunity.repair_estimate          hId4Yog6u5GP1Iwz1aNx
+    opportunity.asking_price             YxCDaX7dLhBJL9GLGFpJ
+        all three NUMERICAL, OBSERVED from a live read of
+        /locations/jmHG4B8RdzwpfqruNf68/customFields?model=opportunity
+        through the deployed proxy. The writing script re-read that
+        endpoint and confirmed each id carried its expected fieldKey
+        before the config was touched.
+
+The contact pair lives in the `fields` block; the opportunity trio in a
+new `opportunityFacts` block, kept distinct from `opportunityFields`
+because facts about a deal are not the same kind of thing as the
+underwriting state IAOS produces.
+
+OBSERVED in the same read: the opportunity model carries sixteen custom
+fields, of which `UNDERWRITING_FIELD_REFERENCE.md` documents three. The
+full inventory is not recorded anywhere and is not recorded here; it
+belongs in a field reference, not a session handoff. Seven of the sixteen
+are the `offer_*` HARD NO set and none may enter shared config -- the
+writing script asserted their absence explicitly.
+
+**`ghl-proxy` returns a bare empty body on a GHL 404.** OBSERVED
+2026-08-14: `path=/customFields?model=opportunity` without the location
+scope returns HTTP 404 with zero bytes and no error payload, because
+`ghl-proxy.ts` passes `res.text()` through verbatim. Two runs of that
+call produced nothing and looked like the transient-empty class until a
+third run captured the status with `curl -w '%{http_code}'`. Any
+diagnostic through this proxy needs the status code or it is blind. The
+working path is location-scoped:
+`/locations/{locationId}/customFields?model=opportunity`.
 
 **There is no Custom Values read path.** OBSERVED 2026-08-14, recursive
 read of `app/netlify/functions/` and `app/src/`: the only code touching
@@ -395,12 +430,7 @@ data change.
 
 ## Immediate next steps
 
-1. **Ground the six missing identifiers** in one pass. Three
-   opportunity-side and two contact-side, listed under Known-stale.
-   The contact pair is a file read; the opportunity trio needs a live
-   GHL read. Nothing downstream can be wired until they exist.
-
-2. **The allowlisted underwriting-policy read.** A server-side function
+1. **The allowlisted underwriting-policy read.** A server-side function
    returning only the eleven policy values, never the collection. Its
    response shape is already specified by what `parsePolicy` accepts --
    `{id, value}` pairs -- so the endpoint has one boring translation job
@@ -408,27 +438,27 @@ data change.
    resolver tests are the endpoint's specification, which is why the
    resolver was built first.
 
-3. **The read path and zones 1, 2 and 4**, Approve disabled. The two
+2. **The read path and zones 1, 2 and 4**, Approve disabled. The two
    open questions in the workspace spec -- where the workspace lives,
    and how Opportunity selection is presented -- gate the surface but
    not the calculation. The UI must catch `UnitsError`, or one malformed
    Custom Value takes the zone down instead of showing a missing-input
    state.
 
-4. **The GHL builder pass.** One session answers two questions that no
+3. **The GHL builder pass.** One session answers two questions that no
    API read can: whether any workflow watches Opportunity creation or
    stage entry, and whether either legacy Custom Value is referenced.
    The first is the missing input for the fixture decision; the second
    unblocks deleting the deliberate duplicate.
 
-5. **The opportunity fixture decision**, which is not decidable before
-   step 4. Creating a fixture opportunity touches the one trigger type
+4. **The opportunity fixture decision**, which is not decidable before
+   step 3. Creating a fixture opportunity touches the one trigger type
    known to be armed in this location; writing to a live seller deal
    repeats the failure already recorded above at
    `1AP9BfFPJ2xYZ0RPTm9U`. Neither is obviously smaller until the
    trigger inventory exists.
 
-6. **The opportunity-side inert proof**, then Approve.
+5. **The opportunity-side inert proof**, then Approve.
 
 **On parallelizing.** The calculation core is now a proven bounded
 module and is suitable for higher-throughput engineering. The broader
