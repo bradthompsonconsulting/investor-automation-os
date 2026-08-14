@@ -2353,10 +2353,19 @@ PB-D55's four prerequisites remain in force and are not restated here.
    checked. Both are left in place until it is. Deletion is a separate
    checked action, not a side effect of this decision.
 
-3. *Nine Custom Values do not exist.* Of the eleven policy values, two
-   have existing carriers and nine must be created. Creation is a GHL
+3. *Ten Custom Values do not exist.* Of the eleven policy values,
+   exactly one -- Default Closing Cost Estimate -- exists under its
+   authoritative name. The other ten must be created. Creation is a GHL
    action, not a code change, and the starter values in section IV are
    what they are created holding.
+
+   *Amendment 2026-08-13:* this item originally read nine, counting
+   Default Assignment Fee Minimum as an existing carrier for Standard
+   Minimum Assignment Spread. Section VI states the opposite -- the old
+   value is NOT renamed and is NOT the carrier; it is held temporarily
+   as a documented duplicate while workflow references are verified.
+   Standard Minimum Assignment Spread is therefore among the values to
+   create, and the count is ten.
 
 4. *Two Opportunity fields do not exist* -- End-Buyer Maximum Purchase
    Price and the assignment mode enum. Creating an opportunity-model
