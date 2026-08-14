@@ -357,16 +357,75 @@ built, its method and starter value are undecided, and it is acquisition
 strategy rather than underwriting policy -- it does not join PB-D56's
 eleven.
 
-**Where the workspace lives.** Whether it is a section of the Contact
-Workspace or its own surface. The contact-embedded option inherits
-contact and opportunity data already loaded; a separate surface re-solves
-linkage. Not decided.
+**Where the workspace lives -- DECIDED 2026-08-14.** A dedicated
+Contact-context sub-route at `/contacts/{contactId}/underwriting`, with
+the selected Opportunity named on screen. Not a section of the existing
+Contact page, and not a separate top-level surface.
 
-**Opportunity selection UI.** *Inherited* from PB-D55: the workspace
-operates on one identified Opportunity and does not assume the first is
-the deal. How selection is presented, and what happens when a contact has
-no opportunity, is not designed here.
+*Why a sub-route rather than the Contact page.* The persistent call rail
+is the deciding argument. `SELLER_ACQUISITION_WORKFLOW.md` establishes
+that Seller Ask, Seller MAO, the current seller position and the current
+investor offer stay visible for the whole seller call, because Seller MAO
+is a guardrail during live negotiation. A guardrail that scrolls out of
+view when the seller says a number is not a guardrail. The Contact page
+already renders six folders and ninety-eight fields; four underwriting
+zones plus a persistent rail do not fit inside it without the rail
+losing the one property that makes it useful.
+
+*Why not a separate top-level surface.* Underwriting happens during or
+immediately after a seller conversation. The rep is already looking at
+the contact -- notes, conversation history, asking price. A separate
+destination breaks the workflow the tool exists to serve, and re-solves
+contact-to-opportunity linkage that the contact context already has.
+
+*Designed to grow.* `SELLER_ACQUISITION_WORKFLOW.md` describes a broader
+Seller Acquisition Workspace of roughly six sections, of which
+underwriting is one. This route is chosen so that surface can emerge
+around it rather than replacing it. That is a direction, not a
+commitment: this decision expands no current implementation scope, and
+the deliverable remains the four zones specified above.
+
+**Opportunity selection UI -- DECIDED 2026-08-14.** *Inherited* from
+PB-D55: the workspace operates on one identified Opportunity and does not
+assume the first is the deal. The presentation, which PB-D55 left open:
+
+    exactly one    auto-selected, and named on screen regardless.
+                   There is nothing to guess between, so selection is
+                   not a question put to the operator -- but PB-D55
+                   requires the deal under underwriting to be named,
+                   and one candidate does not relax that.
+
+    more than one  an explicit selector. Never first-match, never
+                   most-recent, never any other silent rule. PB-D55
+                   exists because a seller may hold two properties or
+                   sell the same one twice, and the collision it
+                   guards against is silent.
+
+    none           the workspace reports the absence and underwriting
+                   cannot proceed. *Inherited* from PB-D55: nothing is
+                   written to the Contact as a substitute.
+
+OBSERVED 2026-08-12 (PB-D52): 41 of the 43 contacts carrying a phone hold
+exactly one Seller Leads opportunity, so the auto-select path is today's
+normal case. That is a fact about the current population and not a
+property of the model; the selector is built because the model requires
+it, not because two records happen to need it today.
 
 **Whether approval requires more than Gate 1.** *Inherited* from PB-D56:
 ARV and repairs produce proposed underwriting. Whether a human should be
 able to approve on two inputs alone is a separate question.
+
+The question now has a name. `SELLER_ACQUISITION_WORKFLOW.md` calls it
+Offer Readiness and separates it from Underwriting Readiness: the first
+asks whether IAOS can calculate a defensible Seller MAO, the second
+whether we know enough about the seller and the property to negotiate
+responsibly from it. Gate 1 answers the first and says nothing about
+the second.
+
+Its criteria remain UNDECIDED and are deliberately not invented here.
+Sufficient confidence in an ARV requires knowing what makes an ARV
+confident, and nothing in IAOS knows that. FOUNDATIONAL_PRINCIPLES
+principle 19 forbids manufacturing a recommendation from insufficient
+information; a confidence score invented to satisfy a readiness
+indicator would be exactly that. Naming the gate is progress. Filling
+it in is a separate decision with its own evidence.
