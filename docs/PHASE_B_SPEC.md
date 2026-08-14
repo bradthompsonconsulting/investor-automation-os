@@ -2417,3 +2417,98 @@ CONTACTS_OPPORTUNITIES_SPEC §4.1's HARD NO on `offer_` fields, tags,
 pipeline stage, and workflow triggers. PB-D55 in full. PB-D16's
 named-wrapper rule. Every field's unlock status and every existing proof
 record. PB-D53's and PB-D54's carriers and predicates.
+
+### PB-D57 -- Inbound authentication posture for the V1 function surface
+
+**Decision.** New browser-facing endpoints may ship without inbound
+authentication when they are read-only AND their response is a positive
+allowlist of non-secret, non-personal configuration or reference data.
+This is an explicitly accepted temporary risk of the single-tenant phase,
+not a security design. Before IAOS is used by any second user or tenant,
+real application authentication is a hard prerequisite for every
+browser-facing data endpoint.
+
+**Why this decision exists.** `FUNCTION_SURFACE_AUDIT.md` records the
+authentication approach as UNDECIDED and states three times that
+remediation is unauthorized by that document. OBSERVED 2026-08-14: a
+search of this specification for authentication terms returns two
+incidental notes and no decision. The recurring description of the
+unauthenticated surface as "deferred by decision" was therefore not
+accurate -- nothing had been decided. This decision does not change the
+deployed surface. It states the posture that was already being practised,
+so that adding to that surface is a decision rather than a drift.
+
+**The positive-allowlist requirement is a construction rule, not an
+implementation preference.** An authorized endpoint returns only values
+whose identifiers are explicitly named in its allowlist. Unknown,
+newly created, additional and legacy values are excluded by default.
+Filtering by exclusion -- returning everything except a known-sensitive
+value -- is NOT permitted. PB-D56 section VIII records
+`iaos_webhook_secret` as residing in the location Custom Values store in
+plaintext. Under a positive allowlist, forgetting a newly created
+sensitive value is a harmless omission; under a negative filter, the same
+oversight is browser exposure.
+
+**Server-to-server endpoints are a different case and already have a
+pattern.** OBSERVED: `ghl-disposition.ts` requires `IAOS_WEBHOOK_SECRET`
+from the environment, returns 500 rather than proceeding when it is
+unset, reads `x-iaos-secret` in both casings, and compares constant-time
+by hashing both sides to a fixed 32 bytes before `timingSafeEqual`. That
+pattern is available to any caller that can hold a secret server-side and
+should be used where it applies.
+
+**A secret bundled into browser code is not authentication.** The
+`ghl-disposition.ts` header records this reasoning, and
+`FUNCTION_SURFACE_AUDIT.md` reaches it independently: the shared-secret
+pattern does not resolve a browser caller, because the browser cannot
+hold the secret. No endpoint authorized here may pretend otherwise by
+shipping a static key in the frontend bundle.
+
+**Scope, authorized.** The underwriting-policy read endpoint qualifies:
+GET-only, no write capability, and a response restricted by positive
+allowlist to the eleven investor-policy Custom Values named in
+`app/shared/ghl-config.ts`. Those eleven are underwriting assumptions --
+percentages, dollar amounts, a hold period and a switch. None is a
+secret and none is personal data.
+
+**Scope, NOT authorized. Deliberate exclusions, each still UNDECIDED.**
+This decision does not retroactively bless any existing endpoint, and no
+existing endpoint becomes compliant merely because a new class is
+defined.
+
+- `ghl-proxy.ts` is out of scope. OBSERVED in the function surface audit:
+  it forwards any HTTP method at any path under the GHL base with the
+  private token attached, validated only for non-emptiness. It is neither
+  read-only nor allowlisted and fails this decision's own test on both
+  counts. Its exposure is unchanged and its remediation remains
+  UNDECIDED.
+
+- `ghl-mailers.ts` is out of scope. OBSERVED in the audit: its response
+  carries tier assignments, touch counts and due-date state, which the
+  audit characterises as internal judgments about named individuals. That
+  is personal data, so it fails the non-personal clause even though it is
+  read-only. Its remediation remains UNDECIDED.
+
+- Write-capable browser-facing endpoints are not authorized by this
+  decision in any form. Read-only is a condition of it, not a starting
+  point to be relaxed.
+
+- The eight entrypoints the audit records as unread are not covered.
+  A function is not authorized by this decision until it has been read
+  and found to meet every condition.
+
+**The eventual mechanism is not chosen here.** The audit names four live
+options -- Netlify-level access control, an app session verified in the
+function, a signed cookie, and removing a path from the public HTTP
+surface. This decision selects none of them. It fixes the posture and the
+trigger, not the implementation.
+
+**Trigger.** The first user who is not Brad. At that point browser-facing
+data endpoints require real authentication before that user is onboarded,
+and this decision is superseded rather than amended.
+
+**Unchanged.** CONTACTS_OPPORTUNITIES_SPEC section 4.1 HARD NO on
+`offer_` fields, tags, pipeline stage and workflow triggers. PB-D55 and
+PB-D56 in full. PB-D51 shared configuration. Every existing endpoint's
+deployed behaviour -- this decision authorizes no code change to any
+function that exists today.
