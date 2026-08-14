@@ -16,6 +16,8 @@ export interface GhlConfig {
     combinedScore: string;
     dataCompletenessScore: string;
     phoneStatus: string;
+    estimatedRepairs: string;
+    askingPrice: string;
   };
   folders: {
     offer: string;
@@ -41,6 +43,16 @@ export interface GhlConfig {
     assignmentMode: string;
     sellerMAO: string;
   };
+  /**
+   * Existing Opportunity deal inputs, read by PB-D55 seed-then-supersede.
+   * Distinct from opportunityFields, which holds underwriting outputs and
+   * mode. These are facts about the deal; those are state IAOS produces.
+   */
+  opportunityFacts: {
+    arv: string;
+    repairs: string;
+    askingPrice: string;
+  };
 }
 
 const PRODUCTION: GhlConfig = {
@@ -59,6 +71,8 @@ const PRODUCTION: GhlConfig = {
     combinedScore:           "9SVnuzznYsZOQQazpxld",
     dataCompletenessScore:   "r9sD1rlTIqhOx9Mhvftt",
     phoneStatus:             "6WJG2a40490bW0c62YFT",
+    estimatedRepairs:        "OQnud97MfdxMcTgMVTgf",
+    askingPrice:             "60UCjsYT1Ak3Kyy5ZCL8",
   },
   folders: {
     offer:          "YslJ5oke73JrBOgaq0np",
@@ -82,6 +96,11 @@ const PRODUCTION: GhlConfig = {
     assignmentMode:     "TpLo0WRc303TXAaBUbBf",
     sellerMAO:          "Atu5XCjpFElY8H64VG4h",
   },
+  opportunityFacts: {
+    arv:                "cBkygqcHRseZUGCYYeba",
+    repairs:            "hId4Yog6u5GP1Iwz1aNx",
+    askingPrice:        "YxCDaX7dLhBJL9GLGFpJ",
+  },
 };
 
 // PB-D51 -- schema only. Populated after a GHL test location exists.
@@ -102,6 +121,8 @@ const TEST: GhlConfig = {
     combinedScore:           "",
     dataCompletenessScore:   "",
     phoneStatus:             "",
+    estimatedRepairs:        "",
+    askingPrice:             "",
   },
   folders: {
     offer:          "",
@@ -124,6 +145,11 @@ const TEST: GhlConfig = {
     endBuyerMaxPrice:   "",
     assignmentMode:     "",
     sellerMAO:          "",
+  },
+  opportunityFacts: {
+    arv:                "",
+    repairs:            "",
+    askingPrice:        "",
   },
 };
 
@@ -160,6 +186,9 @@ export function getConfig(selector: string | undefined): GhlConfig {
     ),
     ...Object.entries(config.opportunityFields).map(
       ([k, v]): [string, string] => [`opportunityFields.${k}`, v],
+    ),
+    ...Object.entries(config.opportunityFacts).map(
+      ([k, v]): [string, string] => [`opportunityFacts.${k}`, v],
     ),
   ];
 
