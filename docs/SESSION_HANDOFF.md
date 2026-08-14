@@ -1,10 +1,12 @@
 # IAOS — Session Handoff
 
-**Refreshed 2026-08-14 (third pass).** Repo tip `411a1af` on `main`,
+**Refreshed 2026-08-14 (fourth pass).** Repo tip `af8a71c` on `main`,
 pushed, working tree clean. Deployed and verified: 170 harness checks
 green against the served bundle, plus 140 unit checks across two
 runners -- 53 on the calculation core, 87 on the resolver. `tsc
---noEmit` clean. Zero GHL writes today.
+--noEmit` clean. The underwriting-policy endpoint passed its PB-D57
+acceptance test against the live deploy. Zero GHL writes today --
+every GHL call was a GET.
 
 This file replaces the 2026-07-29 handoff wholesale rather than amending
 it. That version described the repo at `6f79044`, before the Dashboard
@@ -26,9 +28,23 @@ summary of them, including this one.
         claims made in conversation.
 
     docs/PHASE_B_SPEC.md
-        All PB decisions, PB-D1 through PB-D56. The most recent are the
+        All PB decisions, PB-D1 through PB-D57. The most recent are the
         live ones: PB-D53 and PB-D54 govern the Dashboard queues, PB-D55
-        and PB-D56 govern underwriting.
+        and PB-D56 govern underwriting, PB-D57 governs inbound
+        authentication on the function surface.
+
+    docs/SELLER_ACQUISITION_WORKFLOW.md
+        Product-design authority. What IAOS is being built toward: the
+        conversation is the unit of work, the software helps the
+        wholesaler listen rather than ask, and readiness is measured in
+        stages rather than call counts. Read this before proposing any
+        new capability -- it carries the test a feature has to pass.
+
+    docs/CALL_FLOW_OF_WHOLESALER_TO_SELLER.txt
+        The source behind the above, written by Brad. A complete seller
+        call from prep through contract readiness, with what IAOS should
+        be doing at each point. Transcribed into the repo rather than
+        copied; content preserved, whitespace normalized.
 
     docs/UNDERWRITING_WORKSPACE_SPEC.md
         The workspace surface. Implements PB-D55 and PB-D56 and decides
@@ -191,6 +207,51 @@ unrecognized mode, or Manual with no amount, now fails closed and blocks
 the calculation. Before this change the resolver substituted Standard
 Minimum, which would have given an operator who chose Manual a different
 deal than the one they chose, silently.
+
+**Six deal-fact identifiers grounded and configured 2026-08-14**
+(`d1a08dc`). Three contact-side from `CONTACT_FIELD_REFERENCE.md`, three
+opportunity-side from a live schema read. The writing script re-read the
+live endpoint and confirmed each opportunity id carried its expected
+fieldKey before touching config, and asserted that none of the seven
+`offer_*` ids had crept in. Full provenance is under Known-stale.
+
+**PB-D57 -- inbound authentication posture** (`559d4dd`). The recurring
+description of the unauthenticated function surface as "deferred by
+decision" was not accurate. OBSERVED: `FUNCTION_SURFACE_AUDIT.md` records
+the approach as UNDECIDED and states three times that remediation is
+unauthorized by that document, and a search of the spec for
+authentication terms returned two incidental notes and no decision.
+PB-D57 states the posture that was already being practised: new
+browser-facing endpoints may ship unauthenticated when they are read-only
+AND their response is a positive allowlist of non-secret, non-personal
+data, as an explicitly accepted temporary risk of the single-tenant
+phase. It authorizes no existing endpoint -- `ghl-proxy.ts` and
+`ghl-mailers.ts` are named as out of scope and still UNDECIDED, so the
+decision cannot be read as laundering them.
+
+**The underwriting-policy endpoint shipped and passed acceptance**
+(`e1d2bc0`). `app/netlify/functions/ghl-underwriting-policy.ts`, GET-only,
+returning `{ values: [{ id, value }] }` -- the resolver's PolicyValue
+contract, so `parsePolicy` remains the authority on parsing and unit
+conversion. The allowlist is derived from `getConfig().customValues`
+rather than hardcoded, so no id can be served that is not already in
+shared configuration. OBSERVED against the live deploy: HTTP 200, exactly
+eleven entries, every id in the allowlist, all eleven present, every entry
+carrying exactly `id` and `value`, and `iaos_webhook_secret` absent from
+the raw response. That is PB-D57's positive-allowlist rule verified in
+production rather than merely implemented.
+
+**The product direction became a durable artifact** (`6437884`).
+`SELLER_ACQUISITION_WORKFLOW.md` and its source. The finding that matters:
+the unit of work is the seller conversation, not the calculation, and the
+software should help the wholesaler listen rather than turn the call into
+a questionnaire. It also names three distinct readiness gates --
+Underwriting, Offer, Contract -- where the specs previously had one
+defined gate and an unsettled question.
+
+**Workspace location and Opportunity selection decided** (`af8a71c`).
+Two of the workspace spec's four open questions are now decisions with
+their reasoning attached, and a third has a name. See that file.
 
 ---
 
@@ -430,35 +491,33 @@ data change.
 
 ## Immediate next steps
 
-1. **The allowlisted underwriting-policy read.** A server-side function
-   returning only the eleven policy values, never the collection. Its
-   response shape is already specified by what `parsePolicy` accepts --
-   `{id, value}` pairs -- so the endpoint has one boring translation job
-   rather than a design of its own. That ordering is deliberate: the
-   resolver tests are the endpoint's specification, which is why the
-   resolver was built first.
+1. **The read path and zones 1, 2 and 4**, Approve disabled. This is the
+   first client code of the underwriting arc and nothing architectural
+   is in its way: the route is decided
+   (`/contacts/{contactId}/underwriting`), Opportunity selection is
+   decided, the policy endpoint exists and is verified, and the resolver
+   is waiting for a caller. What remains is React.
 
-2. **The read path and zones 1, 2 and 4**, Approve disabled. The two
-   open questions in the workspace spec -- where the workspace lives,
-   and how Opportunity selection is presented -- gate the surface but
-   not the calculation. The UI must catch `UnitsError`, or one malformed
-   Custom Value takes the zone down instead of showing a missing-input
-   state.
+   Two constraints carried from elsewhere. The UI must catch
+   `UnitsError`, or one malformed Custom Value takes the zone down
+   instead of showing a missing-input state. And the opportunity read
+   needs its own parser -- `resolver.ts` has one, and the wire shape is
+   `{id, type, fieldValue<Type>}`, not the contact model's `{id, value}`.
 
-3. **The GHL builder pass.** One session answers two questions that no
+2. **The GHL builder pass.** One session answers two questions that no
    API read can: whether any workflow watches Opportunity creation or
    stage entry, and whether either legacy Custom Value is referenced.
    The first is the missing input for the fixture decision; the second
    unblocks deleting the deliberate duplicate.
 
-4. **The opportunity fixture decision**, which is not decidable before
-   step 3. Creating a fixture opportunity touches the one trigger type
+3. **The opportunity fixture decision**, which is not decidable before
+   step 2. Creating a fixture opportunity touches the one trigger type
    known to be armed in this location; writing to a live seller deal
    repeats the failure already recorded above at
    `1AP9BfFPJ2xYZ0RPTm9U`. Neither is obviously smaller until the
    trigger inventory exists.
 
-5. **The opportunity-side inert proof**, then Approve.
+4. **The opportunity-side inert proof**, then Approve.
 
 **On parallelizing.** The calculation core is now a proven bounded
 module and is suitable for higher-throughput engineering. The broader
