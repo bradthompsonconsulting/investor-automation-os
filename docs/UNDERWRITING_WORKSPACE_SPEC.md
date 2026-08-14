@@ -29,27 +29,30 @@ PB decision.
 
 ## The economic lifecycle
 
-Six named quantities, in the order they come to exist. Naming them
+Five named quantities, in the order they come to exist. Naming them
 separately is the point: several are close in value and none is
 substitutable for another.
 
-    Required Assignment Spread
-        Underwriting guardrail. What policy says the wholesaler should
-        make on this deal. Derived per PB-D56's three modes.
+    Assignment Spread
+        The effective wholesaler spread reserved on this deal. It is
+        produced by PB-D56's three assignment modes:
 
-    Planned Assignment Fee
-        The chosen economics. What the wholesaler intends to make.
-        Defaults to Required Assignment Spread and may be changed.
-        THIS is what Seller MAO subtracts.
+            Standard Minimum
+            25% of Buyer Profit
+            Manual
+
+        Standard Minimum and 25% derive the value from policy. Manual is
+        the human override path. All three produce one effective
+        Assignment Spread; there is no separate Planned Assignment Fee.
 
     End-Buyer Maximum Purchase Price
         The modeled ceiling. What a representative flip buyer could pay
         and still meet their return requirement.
 
     Seller MAO
-        = End-Buyer Maximum Purchase Price - Planned Assignment Fee
+        = End-Buyer Maximum Purchase Price - Assignment Spread
         The acquisition ceiling. The most the wholesaler can pay while
-        preserving the intended economics.
+        preserving the effective assignment economics.
 
     Opening Offer
         A human decision. What the wholesaler actually offers. IAOS does
@@ -59,22 +62,23 @@ substitutable for another.
         A fact, once a contract exists. Owned by contracting, not by
         this workspace.
 
-**Required versus Planned.** Required is the benchmark; Planned is the
-decision. When Planned falls below Required, the workspace flags it as
-outside standard parameters and does not block it -- PB-D56 already
-permits a deliberate exception, and there will be deals where a thinner
-assignment is rational.
+**One spread, three modes.** PB-D56's assignment modes are the complete
+V1 mechanism for determining the Assignment Spread. Manual is not a
+second layer on top of a required value; it is the explicit human
+override mode. When Manual produces an Assignment Spread below the
+configured Standard Minimum Assignment Spread, the workspace flags the
+deal as outside standard parameters and does not block it.
 
 **The chain runs one direction only.** Deal facts and assumptions produce
-End-Buyer Maximum Purchase Price. That plus Planned Assignment Fee
+End-Buyer Maximum Purchase Price. The effective Assignment Spread then
 produces Seller MAO. Nothing downstream of Seller MAO can change it:
 
     Changing Opening Offer NEVER changes Seller MAO.
 
-Seller MAO moves only when deal facts change, when an assumption
-changes, or when Planned Assignment Fee changes. This invariant exists
-because a calculator whose ceiling moves when you decide what to offer
-is not a ceiling.
+Seller MAO moves only when deal facts change, when an underwriting
+assumption changes, or when the effective Assignment Spread changes.
+This invariant exists because a calculator whose ceiling moves when you
+decide what to offer is not a ceiling.
 
 ---
 
@@ -113,8 +117,8 @@ state, not a defect.
 
 Then the supporting figures:
 
-    Required Assignment Spread
-    Planned Assignment Fee
+    Assignment Spread
+    Assignment Mode
     Acquisition Cushion  or  Gap to Underwriting
     Opening Offer                once entered
 
@@ -150,9 +154,9 @@ would be invented.
 
 **A parameters status accompanies the position.** Outside standard
 parameters means an effective value or a resulting decision violates a
-defined investor-policy guardrail -- a Planned Assignment Fee below
-Required, or an Opening Offer above Seller MAO. Outside is never
-blocked, always visible.
+defined investor-policy guardrail -- a Manual Assignment Spread below
+the configured Standard Minimum Assignment Spread, or an Opening Offer
+above Seller MAO. Outside is never blocked, always visible.
 
 **A deal override is not by itself outside parameters.** Overriding hold
 period from five months to three because this rehab is cosmetic is
@@ -167,7 +171,7 @@ teaches its user to lie to themselves.
 
 **Negotiation and decision levers.** Things the wholesaler controls.
 
-    Planned Assignment Fee, and its mode
+    Assignment Spread and mode
     Opening Offer
 
 **Underwriting evidence.** Things that are true or false about the world.
@@ -213,7 +217,7 @@ offer look ordinary.
       / financing factor (1 + k)
       = End-Buyer Maximum Purchase Price    $181,363
 
-      - Planned Assignment Fee                -5,000
+      - Assignment Spread                     -5,000
       = Seller MAO                          $176,363
 
 **Every assumption shows its provenance.**
