@@ -53,11 +53,36 @@ export type Financing =
  * PB-D56 section II.6's three modes. Mode is durable state, not
  * provenance -- it determines the calculation and cannot be
  * reconstructed from the resulting number.
+ *
+ * This type represents a VALID assignment strategy. Failure to determine
+ * one is AssignmentResolution below, deliberately not a fourth member
+ * here: "unresolved" is not a way of assigning a deal.
  */
 export type Assignment =
   | { kind: "standard" }
   | { kind: "profit_share" }
   | { kind: "manual"; amount: number };
+
+/**
+ * A determined assignment strategy, or a statement that one could not be
+ * determined.
+ *
+ * Unresolved is reachable two ways: Assignment Mode is absent or holds an
+ * unrecognized option string, or the mode is Manual and no amount exists.
+ * Both fail closed. An operator who selected Manual and silently received
+ * Standard Minimum economics would be the exact substitution PB-D56
+ * section II.6 forbids between modes.
+ *
+ * Known V1 conservatism: End-Buyer Maximum Purchase Price does not depend
+ * on assignment mode, so the buyer ceiling is arithmetically computable
+ * even when assignment is unresolved. UnderwritingResult is all-or-nothing,
+ * so it is not exposed. Surfacing a valid ceiling alongside an unresolved
+ * Seller MAO is a deliberate result-model enhancement, not a fix to smuggle
+ * in later.
+ */
+export type AssignmentResolution =
+  | Assignment
+  | { kind: "unresolved"; reason: string };
 
 /** The eleven PB-D56 section IV assumptions, plus the two Gate 1 inputs. */
 export type UnderwritingInputs = {
@@ -69,7 +94,7 @@ export type UnderwritingInputs = {
   holdMonths: Resolved<number>;
   buyerProfitPct: Resolved<number>;
   financing: Financing;
-  assignment: Assignment;
+  assignment: AssignmentResolution;
   standardMinimum: Resolved<number>;
   profitSharePct: Resolved<number>;
 };

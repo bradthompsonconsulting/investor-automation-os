@@ -122,6 +122,10 @@ export function computeUnderwriting(
     sharePct = readResolved(acc, "profitSharePct", inputs.profitSharePct, true);
   }
 
+  if (inputs.assignment.kind === "unresolved") {
+    acc.missing.push("assignmentMode");
+  }
+
   if (inputs.assignment.kind === "manual") {
     guardFinite("assignment.amount", inputs.assignment.amount);
   }
@@ -138,6 +142,7 @@ export function computeUnderwriting(
     !stdMin ||
     k === null ||
     financingLevel === null ||
+    inputs.assignment.kind === "unresolved" ||
     (inputs.assignment.kind === "profit_share" && !sharePct)
   ) {
     return { status: "unresolved", missing: acc.missing };
@@ -156,6 +161,8 @@ export function computeUnderwriting(
   const endBuyerMaxPrice = baseBuyerCapacity / (1 + k);
 
   // Assignment spread: three modes, one effective value.
+  // The gate above returns unresolved when assignment is unresolved, so
+  // TypeScript has already narrowed to the three valid strategies here.
   let assignmentSpread: number;
   if (inputs.assignment.kind === "standard") {
     assignmentSpread = stdMin.value;

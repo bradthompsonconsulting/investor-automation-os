@@ -3,3 +3,6 @@
 
 # Transient output from app/scripts/test-underwriting-core.cjs
 .tmp-underwriting-test
+
+# Transient output from app/scripts/test-underwriting-resolver.cjs
+.tmp-resolver-test
