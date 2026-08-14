@@ -21,6 +21,26 @@ export interface GhlConfig {
     offer: string;
     additionalInfo: string;
   };
+  /** Location-scoped investor policy. PB-D56 section IV. */
+  customValues: {
+    sellingCostPct: string;
+    closingCost: string;
+    monthlyCarry: string;
+    holdMonths: string;
+    buyerProfitPct: string;
+    financingEnabled: string;
+    financingLtv: string;
+    financingRate: string;
+    financingPoints: string;
+    standardMinimum: string;
+    profitSharePct: string;
+  };
+  /** Deal-level Opportunity carriers. PB-D56 section VI. */
+  opportunityFields: {
+    endBuyerMaxPrice: string;
+    assignmentMode: string;
+    sellerMAO: string;
+  };
 }
 
 const PRODUCTION: GhlConfig = {
@@ -43,6 +63,24 @@ const PRODUCTION: GhlConfig = {
   folders: {
     offer:          "YslJ5oke73JrBOgaq0np",
     additionalInfo: "qYS1wakeOTmfgjyeSJ8M",
+  },
+  customValues: {
+    sellingCostPct:     "huOzq1VKscRVL6O2Wp20",
+    closingCost:        "kapXvTS9tNYVRn7L3WBY",
+    monthlyCarry:       "GLOwuyga9MW2qA7jfGUC",
+    holdMonths:         "ZABxPRW2bCYZVnnRuLop",
+    buyerProfitPct:     "Ld3CuvhR9KUxYbfT8keM",
+    financingEnabled:   "dq8qdnXR6qxzGy0shUby",
+    financingLtv:       "kEoZ1afVMK2LrSrvnWUR",
+    financingRate:      "veTIWiG4s4cvYTMuVbUY",
+    financingPoints:    "9ONatv0Y9FOfpdDTIkGz",
+    standardMinimum:    "MuQih1mjmxVVOQ01Naq1",
+    profitSharePct:     "XqzNrXRIXXS3dcvAFz6o",
+  },
+  opportunityFields: {
+    endBuyerMaxPrice:   "zOVIPwzLe41a0SQmwVAJ",
+    assignmentMode:     "TpLo0WRc303TXAaBUbBf",
+    sellerMAO:          "Atu5XCjpFElY8H64VG4h",
   },
 };
 
@@ -69,6 +107,24 @@ const TEST: GhlConfig = {
     offer:          "",
     additionalInfo: "",
   },
+  customValues: {
+    sellingCostPct:     "",
+    closingCost:        "",
+    monthlyCarry:       "",
+    holdMonths:         "",
+    buyerProfitPct:     "",
+    financingEnabled:   "",
+    financingLtv:       "",
+    financingRate:      "",
+    financingPoints:    "",
+    standardMinimum:    "",
+    profitSharePct:     "",
+  },
+  opportunityFields: {
+    endBuyerMaxPrice:   "",
+    assignmentMode:     "",
+    sellerMAO:          "",
+  },
 };
 
 export function getConfig(selector: string | undefined): GhlConfig {
@@ -88,23 +144,23 @@ export function getConfig(selector: string | undefined): GhlConfig {
 
   const config: GhlConfig = selector === "production" ? PRODUCTION : TEST;
 
+  // Derived rather than enumerated: a hand-maintained list is a third
+  // place to forget an edit, and an omission silently narrows PB-D51's
+  // fail-loud invariant. Every key in every map is checked automatically.
   const entries: Array<[string, string]> = [
     ["locationId", config.locationId],
-    ["fields.lastCallAttempt", config.fields.lastCallAttempt],
-    ["fields.lastCallAttemptPrecise", config.fields.lastCallAttemptPrecise],
-    ["fields.callbackDatetime", config.fields.callbackDatetime],
-    ["fields.callbackDatetimePrecise", config.fields.callbackDatetimePrecise],
-    ["fields.propertyNotes", config.fields.propertyNotes],
-    ["fields.arv", config.fields.arv],
-    ["fields.propertyAddress", config.fields.propertyAddress],
-    ["fields.offerPrice", config.fields.offerPrice],
-    ["fields.motivationScore", config.fields.motivationScore],
-    ["fields.dealScore", config.fields.dealScore],
-    ["fields.combinedScore", config.fields.combinedScore],
-    ["fields.dataCompletenessScore", config.fields.dataCompletenessScore],
-    ["fields.phoneStatus", config.fields.phoneStatus],
-    ["folders.offer", config.folders.offer],
-    ["folders.additionalInfo", config.folders.additionalInfo],
+    ...Object.entries(config.fields).map(
+      ([k, v]): [string, string] => [`fields.${k}`, v],
+    ),
+    ...Object.entries(config.folders).map(
+      ([k, v]): [string, string] => [`folders.${k}`, v],
+    ),
+    ...Object.entries(config.customValues).map(
+      ([k, v]): [string, string] => [`customValues.${k}`, v],
+    ),
+    ...Object.entries(config.opportunityFields).map(
+      ([k, v]): [string, string] => [`opportunityFields.${k}`, v],
+    ),
   ];
 
   for (const [key, value] of entries) {
