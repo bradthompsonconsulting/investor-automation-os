@@ -69,7 +69,7 @@ if (!fs.existsSync(viewModelPath)) {
 const { toViewModel } = require(viewModelPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 121;
+const FLOOR = 133;
 
 let failures = 0;
 let checks = 0;
@@ -419,6 +419,26 @@ function resolvedResult(over) {
   return computeUnderwriting(resolveInputs(facts, noOverrides(), policy));
 }
 
+/** DealFacts with everything absent. Overridden per case. */
+function emptyFacts(over) {
+  return Object.assign({
+    arv: { kind: 'unresolved', reason: 'absent' },
+    repairs: { kind: 'unresolved', reason: 'absent' },
+    askingPrice: null,
+    assignmentMode: { kind: 'unresolved', reason: 'absent' },
+    manualSpread: null,
+  }, over || {});
+}
+
+/** DealFacts carrying the golden-path ARV and repairs. */
+function goldenFacts(over) {
+  return emptyFacts(Object.assign({
+    arv: { kind: 'value', value: 315000 },
+    repairs: { kind: 'value', value: 41000 },
+    assignmentMode: { kind: 'value', value: 'standard', level: 'deal_override' },
+  }, over || {}));
+}
+
 function vmInput(over) {
   return Object.assign({
     loading: false,
@@ -427,7 +447,7 @@ function vmInput(over) {
     candidates: [OPP],
     selected: OPP,
     result: null,
-    askingPrice: null,
+    facts: goldenFacts(),
     issues: [],
   }, over || {});
 }
@@ -506,31 +526,65 @@ function vmInput(over) {
     parseContactSeeds([], CONTACT_IDS));
   const r = computeUnderwriting(
     resolveInputs(facts, noOverrides(), parsePolicy(fullPolicyValues(), CV_IDS).policy));
-  const s = toViewModel(vmInput({ result: r }));
+  const s = toViewModel(vmInput({ result: r, facts: emptyFacts() }));
   check('vm unresolved state', s.state, 'unresolved');
   check('vm unresolved names missing', s.missing.indexOf('arv') >= 0, true);
   check('vm unresolved names opportunity', s.opportunity.name, 'Main Street');
+  check('vm unresolved labels are operator language', s.missingLabels.indexOf('ARV') >= 0, true);
+  check('vm unresolved labels drop raw keys', s.missingLabels.indexOf('arv') >= 0, false);
+}
+
+/* ---- 24b. Known facts survive an unresolved calculation. The rail must
+   not blank ARV and repairs in the exact state where the operator is
+   being told what is missing. ---- */
+{
+  // ARV and repairs present, assignment mode absent -- the Neelima case.
+  const facts = goldenFacts({ assignmentMode: { kind: 'unresolved', reason: 'not set' } });
+  const policy = parsePolicy(fullPolicyValues(), CV_IDS).policy;
+  const r = computeUnderwriting(resolveInputs(facts, noOverrides(), policy));
+  const s = toViewModel(vmInput({ result: r, facts }));
+  check('vm known-facts precondition is unresolved', s.state, 'unresolved');
+  check('vm known arv survives unresolved', s.known.arv, 315000);
+  check('vm known repairs survives unresolved', s.known.repairs, 41000);
+  check('vm unresolved blocker is assignment mode', s.missing.indexOf('assignmentMode') >= 0, true);
+  check('vm assignment mode label', s.missingLabels.indexOf('Assignment Mode') >= 0, true);
+}
+
+/* ---- 24c. An unmapped missing key falls back to its raw name rather
+   than disappearing from the list. ---- */
+{
+  const r = { status: 'unresolved', missing: ['arv', 'somethingNew'] };
+  const s = toViewModel(vmInput({ result: r, facts: emptyFacts() }));
+  check('vm unmapped key count preserved', s.missingLabels.length, 2);
+  check('vm unmapped key falls back raw', s.missingLabels.indexOf('somethingNew') >= 0, true);
 }
 
 /* ---- 25. Resolved with no asking price: position is asking_unknown. ---- */
 {
-  const s = toViewModel(vmInput({ result: resolvedResult(), askingPrice: null }));
+  const s = toViewModel(vmInput({ result: resolvedResult() }));
   check('vm resolved state', s.state, 'resolved');
   check('vm resolved position unknown', s.position.position, 'asking_unknown');
   check('vm resolved sellerMAO', s.figures.sellerMAO, 176363, 1);
   check('vm resolved no warnings', s.warnings.length, 0);
+  check('vm resolved known arv', s.known.arv, 315000);
+  check('vm resolved known repairs', s.known.repairs, 41000);
 }
 
-/* ---- 26. Position is DERIVED, not passed. Ask below MAO. ---- */
+/* ---- 26. Position is DERIVED from facts, not passed. Ask below MAO. ---- */
 {
-  const s = toViewModel(vmInput({ result: resolvedResult(), askingPrice: 170000 }));
+  const s = toViewModel(vmInput({
+    result: resolvedResult(), facts: goldenFacts({ askingPrice: 170000 }),
+  }));
   check('vm within_range', s.position.position, 'within_range');
   check('vm within_range cushion', s.position.acquisitionCushion, 6363, 1);
+  check('vm within_range known ask', s.known.askingPrice, 170000);
 }
 
 /* ---- 27. Ask above MAO. ---- */
 {
-  const s = toViewModel(vmInput({ result: resolvedResult(), askingPrice: 180000 }));
+  const s = toViewModel(vmInput({
+    result: resolvedResult(), facts: goldenFacts({ askingPrice: 180000 }),
+  }));
   check('vm above_range', s.position.position, 'above_range');
   check('vm above_range gap', s.position.gapToUnderwriting, 3637, 1);
 }
@@ -540,8 +594,11 @@ function vmInput(over) {
 {
   let threw = false;
   let s = null;
-  try { s = toViewModel(vmInput({ result: resolvedResult(), askingPrice: NaN })); }
-  catch (e) { threw = true; }
+  try {
+    s = toViewModel(vmInput({
+      result: resolvedResult(), facts: goldenFacts({ askingPrice: NaN }),
+    }));
+  } catch (e) { threw = true; }
   check('vm NaN ask does not throw', threw, false);
   check('vm NaN ask is configuration_error', s === null ? '(threw)' : s.state, 'configuration_error');
   check('vm NaN ask names askingPrice', s === null ? '(threw)' : s.field, 'askingPrice');
@@ -560,7 +617,7 @@ function vmInput(over) {
   const r = computeUnderwriting(resolveInputs(facts, noOverrides(), withIssue.policy));
 
   const s = toViewModel(vmInput({
-    result: r, askingPrice: null, issues: withIssue.issues,
+    result: r, issues: withIssue.issues,
   }));
   check('vm issues still resolved', s.state, 'resolved');
   check('vm issues position unknown', s.position.position, 'asking_unknown');

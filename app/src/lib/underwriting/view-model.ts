@@ -25,7 +25,7 @@ import type {
   UnderwritingResult,
   Warning,
 } from "./types";
-import type { PolicyParseIssue } from "./resolver-types";
+import type { DealFacts, PolicyParseIssue } from "./resolver-types";
 
 /** The opportunity under underwriting, named on screen per PB-D55. */
 export type SelectedOpportunity = {
@@ -46,6 +46,56 @@ export type SelectedOpportunity = {
 export type PolicyBanner = {
   issues: PolicyParseIssue[];
 };
+
+/**
+ * Deal facts the rail shows whenever an opportunity is selected, resolved
+ * or not. Withholding known values until the calculation completes hides
+ * facts in exactly the state where the operator most needs them: being
+ * told what is missing while what is known is blank.
+ */
+export type KnownFacts = {
+  arv: number | null;
+  repairs: number | null;
+  askingPrice: number | null;
+};
+
+/**
+ * Operator-facing labels for the keys computeUnderwriting pushes into
+ * `missing`. Internal identifiers must never reach the screen -- an
+ * operator cannot act on `assignmentMode` or `financing.ltv`.
+ *
+ * Every key compute.ts can push is mapped. An unmapped key falls back to
+ * its raw name rather than disappearing, but the fallback is a safety net
+ * and not the design: a new missing key should gain a label here.
+ */
+const MISSING_LABELS: Record<string, string> = {
+  arv: "ARV",
+  repairs: "Estimated Repairs",
+  assignmentMode: "Assignment Mode",
+  sellingCostPct: "Selling Cost Percentage",
+  closingCost: "Closing Cost Estimate",
+  monthlyCarry: "Monthly Holding Cost",
+  holdMonths: "Hold Period",
+  buyerProfitPct: "Buyer Profit Percentage",
+  standardMinimum: "Standard Minimum Assignment Spread",
+  profitSharePct: "Buyer Profit Share Percentage",
+  financing: "Purchase Financing",
+  "financing.ltv": "Financing LTV",
+  "financing.rate": "Interest Rate",
+  "financing.points": "Financing Points",
+};
+
+function labelFor(key: string): string {
+  return MISSING_LABELS[key] ?? key;
+}
+
+function knownFacts(facts: DealFacts): KnownFacts {
+  return {
+    arv: facts.arv.kind === "value" ? facts.arv.value : null,
+    repairs: facts.repairs.kind === "value" ? facts.repairs.value : null,
+    askingPrice: facts.askingPrice,
+  };
+}
 
 export type ScreenState =
   /** Any of the three reads still outstanding. */
@@ -88,7 +138,11 @@ export type ScreenState =
    */
   | {
       state: "unresolved";
+      /** Raw keys, for tests and debugging. Never rendered. */
       missing: string[];
+      /** The same keys in operator language. Render these. */
+      missingLabels: string[];
+      known: KnownFacts;
       opportunity: SelectedOpportunity;
       banner: PolicyBanner;
     }
@@ -100,6 +154,7 @@ export type ScreenState =
       provenance: Provenance;
       warnings: Warning[];
       position: AcquisitionPosition;
+      known: KnownFacts;
       opportunity: SelectedOpportunity;
       banner: PolicyBanner;
     }
@@ -122,11 +177,12 @@ export type ViewModelInput = {
   selected: SelectedOpportunity | null;
   result: UnderwritingResult | null;
   /**
-   * The deal's asking price after seed-then-supersede, or null when
-   * neither the opportunity nor the contact carries one. Absence is a
-   * normal state, not a defect.
+   * Deal facts after seed-then-supersede. Passed whole rather than as
+   * selected scalars: the rail needs ARV, repairs and asking price, and
+   * pulling out three fields would make the next rail figure a fourth
+   * special case. Null before an opportunity is selected.
    */
-  askingPrice: number | null;
+  facts: DealFacts | null;
   issues: PolicyParseIssue[];
 };
 
@@ -154,7 +210,7 @@ export function toViewModel(input: ViewModelInput): ScreenState {
     };
   }
 
-  if (input.result === null) {
+  if (input.result === null || input.facts === null) {
     return {
       state: "orchestration_error",
       detail:
@@ -163,12 +219,16 @@ export function toViewModel(input: ViewModelInput): ScreenState {
     };
   }
 
+  const known = knownFacts(input.facts);
+
   const banner: PolicyBanner = { issues: input.issues };
 
   if (input.result.status === "unresolved") {
     return {
       state: "unresolved",
       missing: input.result.missing,
+      missingLabels: input.result.missing.map(labelFor),
+      known,
       opportunity: input.selected,
       banner,
     };
@@ -184,7 +244,7 @@ export function toViewModel(input: ViewModelInput): ScreenState {
   try {
     position = computeAcquisitionPosition({
       sellerMAO: input.result.figures.sellerMAO,
-      askingPrice: input.askingPrice,
+      askingPrice: known.askingPrice,
     });
   } catch (err: any) {
     return {
@@ -202,6 +262,7 @@ export function toViewModel(input: ViewModelInput): ScreenState {
     provenance: input.result.provenance,
     warnings: input.result.warnings,
     position,
+    known,
     opportunity: input.selected,
     banner,
   };

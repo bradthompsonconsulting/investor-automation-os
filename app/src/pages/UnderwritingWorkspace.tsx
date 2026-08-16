@@ -13,7 +13,7 @@ import {
 } from "../lib/underwriting/resolver";
 import { computeUnderwriting } from "../lib/underwriting/compute";
 import { toViewModel, type ScreenState, type SelectedOpportunity } from "../lib/underwriting/view-model";
-import type { PolicyParseIssue } from "../lib/underwriting/resolver-types";
+import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
 import type { UnderwritingResult } from "../lib/underwriting/types";
 
 /**
@@ -207,12 +207,12 @@ export default function UnderwritingWorkspace() {
 
   const pipeline = useMemo(() => {
     if (!contact || !opps || !policyValues || !selected) {
-      return { result: null as UnderwritingResult | null, askingPrice: null as number | null,
+      return { result: null as UnderwritingResult | null, facts: null as DealFacts | null,
                issues: [] as PolicyParseIssue[], computeError: null as { field: string | null; message: string } | null };
     }
     const opp = opps.find((o) => o.id === selected.id);
     if (!opp) {
-      return { result: null, askingPrice: null, issues: [],
+      return { result: null, facts: null as DealFacts | null, issues: [],
                computeError: null as { field: string | null; message: string } | null };
     }
     try {
@@ -222,10 +222,10 @@ export default function UnderwritingWorkspace() {
       const overrides = parseDealOverrides(opp.customFields);
       const facts = resolveDealFacts(oppValues, seeds);
       const inputs = resolveInputs(facts, overrides, policy);
-      return { result: computeUnderwriting(inputs), askingPrice: facts.askingPrice, issues, computeError: null };
+      return { result: computeUnderwriting(inputs), facts, issues, computeError: null };
     } catch (e: any) {
       return {
-        result: null, askingPrice: null, issues: [],
+        result: null, facts: null as DealFacts | null, issues: [],
         computeError: { field: null, message: e?.message ?? "A configured value could not be interpreted." },
       };
     }
@@ -238,14 +238,9 @@ export default function UnderwritingWorkspace() {
     candidates,
     selected,
     result: pipeline.result,
-    askingPrice: pipeline.askingPrice,
+    facts: pipeline.facts,
     issues: pipeline.issues,
   });
-
-  const arv = pipeline.result?.status === "resolved"
-    ? pipeline.result.breakdown.find((l) => l.label === "ARV")?.amount ?? null : null;
-  const repairs = pipeline.result?.status === "resolved"
-    ? Math.abs(pipeline.result.breakdown.find((l) => l.label === "Repairs")?.amount ?? 0) : null;
 
   return (
     <Shell contactId={contactId}>
@@ -255,7 +250,11 @@ export default function UnderwritingWorkspace() {
         </h1>
         <div style={{ fontSize: "13px", color: "#64748B", marginTop: "4px" }}>
           {contactName(contact)}
-          {screen.state === "resolved" || screen.state === "unresolved" || screen.state === "configuration_error"
+          {/* The opportunity name falls back to the contact name when GHL
+              carries none, so the two are frequently identical. Showing
+              "Name · Name" is noise; show the deal only when it differs. */}
+          {(screen.state === "resolved" || screen.state === "unresolved" || screen.state === "configuration_error")
+            && screen.opportunity.name !== contactName(contact)
             ? <> · <span style={{ color: "#94A3B8" }}>{screen.opportunity.name}</span></>
             : null}
         </div>
@@ -318,12 +317,15 @@ export default function UnderwritingWorkspace() {
 
       {screen.state === "unresolved" || screen.state === "resolved" ? (
         <>
+          {/* Known facts show whether or not underwriting resolved. Being
+              told what is missing while what is known is blank is the
+              opposite of useful during a call. */}
           <Rail
-            ask={screen.state === "resolved" ? pipeline.askingPrice : null}
-            arv={arv}
-            repairs={repairs}
+            ask={screen.known.askingPrice}
+            arv={screen.known.arv}
+            repairs={screen.known.repairs}
             mao={screen.state === "resolved" ? screen.figures.sellerMAO : null}
-            waiting={screen.state === "unresolved" ? "Waiting for " + screen.missing.join(", ") : null}
+            waiting={screen.state === "unresolved" ? "Waiting for " + screen.missingLabels.join(", ") : null}
           />
 
           {screen.banner.issues.length > 0 ? (
@@ -339,11 +341,20 @@ export default function UnderwritingWorkspace() {
         </>
       ) : null}
 
+      {/* Operator language only -- `missing` carries internal keys and is
+          never rendered. The previous copy claimed every non-Gate-1 input
+          resolves from policy, which is false for Assignment Mode: it is a
+          deal fact read from the Opportunity, has no starter fallback, and
+          no policy value can clear it. */}
       {screen.state === "unresolved" ? (
         <Notice
           tone="warn"
           title="Underwriting cannot begin"
-          body={`Missing: ${screen.missing.join(", ")}. Gate 1 requires ARV and repairs; every other input resolves from policy.`}
+          body={
+            screen.missingLabels.length === 1
+              ? `${screen.missingLabels[0]} is not set for this opportunity.`
+              : `Not set for this opportunity: ${screen.missingLabels.join(", ")}.`
+          }
         />
       ) : null}
 
