@@ -1,12 +1,17 @@
-/* Re-pin the EXPECTED bundle hash across all three verification harnesses in
-   one command.
+/* Re-pin the EXPECTED bundle hash across every verification harness in one
+   command.
 
    WHY THIS EXISTS. The §9.2 bundle gate requires every harness to name the
-   bundle it was run against, and that pin lives in THREE files. Edited by
+   bundle it was run against, and that pin lives in FOUR files. Edited by
    hand it has drifted on three separate occasions — each time a deploy
    re-pinned the harness under test and left the others behind, so the next
    run aborted at its gate against a bundle nobody had verified. One command
-   that moves all three together removes the failure mode.
+   that moves all of them together removes the failure mode.
+
+   TARGETS IS AN EXPLICIT LIST, NOT A GLOB. A new harness must be added to
+   it or its pin goes stale silently on the next deploy — the gate would
+   then abort correctly but only after someone ran it by hand. Adding a
+   harness means adding a line below.
 
    USAGE
      node app/scripts/repin-harnesses.cjs
@@ -20,8 +25,8 @@
        the local build's hash is known but Netlify has not published yet.
 
    VALIDATE-ALL-THEN-WRITE. Every file is read and checked before any file is
-   written. A partial re-pin is WORSE than none: two harnesses would then
-   verify a different bundle than the third, which is exactly the drift this
+   written. A partial re-pin is WORSE than none: some harnesses would then
+   verify a different bundle than the others, which is exactly the drift this
    script exists to prevent, and it would look like a completed re-pin. Any
    abort writes nothing at all.
 
@@ -41,6 +46,7 @@ const TARGETS = [
   "verify-contacts.cjs",
   "verify-conversations.cjs",
   "verify-dashboard.cjs",
+  "verify-underwriting.cjs",
 ].map((f) => path.join(__dirname, f));
 
 // The pin's own shape, and the assignment that carries it. The assignment is
