@@ -1,12 +1,21 @@
 # IAOS — Session Handoff
 
-**Refreshed 2026-08-14 (fourth pass).** Repo tip `af8a71c` on `main`,
-pushed, working tree clean. Deployed and verified: 170 harness checks
-green against the served bundle, plus 140 unit checks across two
-runners -- 53 on the calculation core, 87 on the resolver. `tsc
---noEmit` clean. The underwriting-policy endpoint passed its PB-D57
-acceptance test against the live deploy. Zero GHL writes today --
-every GHL call was a GET.
+**Refreshed 2026-08-16.** Repo tip `42b85af` on `main`, pushed, working
+tree clean. Eleven commits today. Deployed and verified: 197 harness
+checks green against the served bundle across four harnesses, plus 186
+unit checks across two runners -- 53 on the calculation core, 133 on the
+resolver and view model. `tsc --noEmit` and `pnpm build` clean. The
+underwriting-policy endpoint passed its PB-D57 acceptance test against
+the live deploy.
+
+**CORRECTION to an earlier claim in this file and repeated in
+conversation: today was NOT "zero GHL writes."** Production writes
+occurred, all of them on the disposable IAOS Test Probe contact: one
+opportunity creation, three opportunity-field writes populating the
+fixture, and legacy `offer_*` contact writes made by the superseded MAO
+Calculator. The writes were deliberate and confined to a throwaway
+record, but the earlier statement was wrong and is corrected here rather
+than quietly dropped.
 
 This file replaces the 2026-07-29 handoff wholesale rather than amending
 it. That version described the repo at `6f79044`, before the Dashboard
@@ -68,24 +77,45 @@ Also current: `CONTACT_FIELD_REFERENCE.md` (98 contact custom fields),
 
 **Shipped and verified live.** Dashboard, Contact Workspace,
 Conversations read-only, Calendars read-only. Three verification
-harnesses, 170 checks total, all green against the deployed bundle at
+harnesses, 197 checks total, all green against the deployed bundle at
 the time of their last run:
 
     app/scripts/verify-contacts.cjs        138 checks
     app/scripts/verify-conversations.cjs    24 checks
     app/scripts/verify-dashboard.cjs         8 checks
+    app/scripts/verify-underwriting.cjs     27 checks
 
-The underwriting module is shipped but wired to nothing. Five files
-under `app/src/lib/underwriting/`, exercised by two standalone runners:
+The underwriting module is wired end-to-end and production-verified. Six
+files under `app/src/lib/underwriting/` feed the live
+`/contacts/:id/underwriting` route through the allowlisted policy
+endpoint, and are exercised by two standalone runners as well as by the
+live harness below:
 
     types.ts             the calculation contract
     compute.ts           the waterfall and acquisition position
     starters.ts          PB-D56 section IV, decimal fractions
     resolver-types.ts    wire shapes and the resolution contract
     resolver.ts          parsers, seed-then-supersede, the hierarchy
+    view-model.ts        page state, operator labels, known facts
 
     app/scripts/test-underwriting-core.cjs      53 checks
-    app/scripts/test-underwriting-resolver.cjs  87 checks
+    app/scripts/test-underwriting-resolver.cjs 133 checks
+
+**The underwriting workspace is now live and machine-verified.**
+`verify-underwriting.cjs` runs against the deployed page at
+`/contacts/:id/underwriting` and covers BOTH production-reachable
+states: UNRESOLVED on Neelima, whose Assignment Mode is absent, and
+RESOLVED on the IAOS Test Probe. Each fixture's branch is detected from
+its own rendered page rather than assumed from GHL, so a legitimate data
+change reclassifies rather than fails.
+
+The resolved branch asserts ARITHMETIC, not values. It reads ARV and
+repairs off the rail, recomputes PB-D56's waterfall independently from
+starter-policy constants hardcoded in the harness, and asserts the
+rendered Seller MAO matches. That survives someone editing the fixture
+and still fails on a calculation defect. It is the first end-to-end
+verification that the deployed page computes PB-D56 correctly, as
+opposed to the unit runners verifying the module in isolation.
 
 Both runners compile the TypeScript with `tsc --strict` into a temp
 directory carrying its own `package.json` declaring commonjs, because
@@ -374,6 +404,45 @@ isn't Brad. Only `ghl-disposition` verifies a secret.
 your own deals, another investor's, or the AI assistant -- is undecided,
 which makes any timeline estimate unfounded.
 
+**A production opportunity fixture now exists.** IAOS Underwriting Test,
+opportunity id `OcGWOP9n666i4Q1MLd31`, on the IAOS Test Probe contact
+`HGZAby6snRZfpl0go2Yb`. It carries the three populated fields the
+resolved path needs -- ARV, Repair Estimate and Assignment Mode -- and is
+what `verify-underwriting.cjs` exercises for the RESOLVED branch. DO NOT
+modify or delete it: the resolved production branch and its
+independent arithmetic assertions depend on it existing and staying
+populated.
+
+**PB-D56 prerequisite 5 is no longer blocked by the absence of a
+fixture.** The reason the opportunity-side inert proof could not start
+was that every opportunity in the location was a live seller lead. That
+is no longer true. The prerequisite itself is NOT discharged and the
+inert proof has NOT been run -- what changed is that the controlled work
+can now begin on a disposable record rather than a real deal.
+
+**Stray `offer_*` values sit on the IAOS Test Probe contact.** Written by
+the superseded MAO Calculator during today's fixture work. Contact-side,
+not opportunity-side, and on a throwaway record -- but they are real
+values on a real contact and nobody has cleaned them up. Same class as
+the `offer_*` test data recorded above on Neelima's opportunity.
+
+**Duplicate ARV and repair field families are a demonstrated
+operator-confusion hazard, not a theoretical one.** Both the Contact and
+the Opportunity carry ARV and repair-estimate fields, and the resolver's
+seed-then-supersede rule means the Opportunity silently wins. Today that
+cost real time: values were entered in one place and read from the
+other. The duplication is inherent to PB-D55's authority model and is not
+a defect, but nothing in the UI tells an operator which copy is being
+used.
+
+**The superseded MAO Calculator is still in navigation and still holds a
+GHL write path.** `MaoCalculator.tsx` remains reachable from the nav and
+writes `offer_*` fields on save. Its formula does not model financing and
+does not separate the two PB-D56 outputs, so anything it produces now
+disagrees with the underwriting workspace. Two surfaces that compute
+different numbers for the same deal, one of which writes, is a hazard
+that grows the longer both are exposed.
+
 **`UnitsError` throws rather than resolving to unresolved.** A percentage
 arriving in human units, or a non-finite number, throws out of
 `computeUnderwriting` rather than returning `status: "unresolved"`. That
@@ -489,38 +558,41 @@ data change.
 
 ---
 
+**The GHL builder pass is done — OBSERVED 2026-08-16.** No workflow uses
+Opportunity Created. Pipeline Stage Changed workflows were inspected for
+the Seller pipeline, and Seller 1 is triggered by Form Submitted rather
+than by opportunity creation or stage entry. The controlled fixture was
+created at Seller Leads Pipeline -> New Lead - Seller -> Open and
+remained inert. Brad confirmed the two recently created legacy Custom
+Values have not been added to any workflow, because no workflow has been
+modified since those values were created.
+
+This is the OBSERVED CURRENT PRODUCTION CONFIGURATION and nothing more.
+It does not prove that no future workflow could watch opportunity
+creation or stage entry, and it is not a substitute for the per-field
+inert proof -- PB-D56 section 4.6 still holds that trigger config is not
+API-derivable. What it establishes is that the fixture work performed
+today was inert, and that the inert proof can proceed against a known
+trigger inventory rather than an unknown one.
+
 ## Immediate next steps
 
-1. **The read path and zones 1, 2 and 4**, Approve disabled. This is the
-   first client code of the underwriting arc and nothing architectural
-   is in its way: the route is decided
-   (`/contacts/{contactId}/underwriting`), Opportunity selection is
-   decided, the policy endpoint exists and is verified, and the resolver
-   is waiting for a caller. What remains is React.
+1. **The opportunity-side inert proof — PB-D56 prerequisite 5.** The
+   fixture exists, so the controlled work can start Monday on a
+   disposable record. NOT started, NOT discharged. It runs on
+   `OcGWOP9n666i4Q1MLd31` and follows the same capture / write / verify /
+   restore discipline every contact-side proof used.
 
-   Two constraints carried from elsewhere. The UI must catch
-   `UnitsError`, or one malformed Custom Value takes the zone down
-   instead of showing a missing-input state. And the opportunity read
-   needs its own parser -- `resolver.ts` has one, and the wire shape is
-   `{id, type, fieldValue<Type>}`, not the contact model's `{id, value}`.
-
-2. **The GHL builder pass.** One session answers two questions that no
-   API read can: whether any workflow watches Opportunity creation or
-   stage entry, and whether either legacy Custom Value is referenced.
-   The first is the missing input for the fixture decision; the second
-   unblocks deleting the deliberate duplicate.
-
-3. **The opportunity fixture decision**, which is not decidable before
-   step 2. Creating a fixture opportunity touches the one trigger type
-   known to be armed in this location; writing to a live seller deal
-   repeats the failure already recorded above at
-   `1AP9BfFPJ2xYZ0RPTm9U`. Neither is obviously smaller until the
-   trigger inventory exists.
-
-4. **The opportunity-side inert proof**, then Approve.
+2. **After that proof passes, decide and implement the Approve write
+   path.** Approve stays unrendered until then. What Approve means for
+   Manual mode is still open: no GHL field holds the manual assignment
+   spread amount, so an approved manual underwriting cannot round-trip.
 
 **On parallelizing.** The calculation core is now a proven bounded
-module and is suitable for higher-throughput engineering. The broader
-workspace is not, until the adapter and read contracts settle -- their
-shapes are decided but unbuilt, and parallel work against an unbuilt
-contract produces rework rather than throughput.
+module and is suitable for higher-throughput engineering. The
+underwriting read/render path has now crossed that readiness gate:
+its adapter and read contracts are implemented, production-verified, and
+covered in both resolved and unresolved live states. Higher-throughput
+work is appropriate for bounded follow-on slices that do not cross the
+still-unproven opportunity write boundary. The opportunity-side inert
+proof remains the gate before parallelizing Approve/write-path work.
