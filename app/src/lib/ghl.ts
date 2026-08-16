@@ -322,6 +322,22 @@ export interface PipelineData {
   opportunities: OpportunityRow[];
 }
 
+// ── Underwriting policy ───────────────────────────────────────────────────────
+
+/**
+ * One investor-policy Custom Value as the allowlisted endpoint returns it.
+ * Structurally the resolver's PolicyValue: flat strings carrying no symbols
+ * -- "10" not "10%", "5000" not "$5,000".
+ */
+export interface PolicyValueRow {
+  id:    string;
+  value: string;
+}
+
+export interface PolicyValuesResponse {
+  values: PolicyValueRow[];
+}
+
 // ── Transport (swap this block for OAuth in Phase B) ─────────────────────────
 
 async function request<T = unknown>(
@@ -644,6 +660,28 @@ export const ghl = {
     // contact/tag/pipeline field.
     completeTask: (contactId: string, taskId: string) =>
       request<any>(`/contacts/${contactId}/tasks/${taskId}/completed`, "PUT", { completed: true }),
+  },
+
+  underwriting: {
+    // PB-D57 -- the allowlisted investor-policy read. Returns ONLY the
+    // eleven Custom Values named in shared config, never the collection.
+    // The endpoint filters server-side by positive allowlist; this client
+    // does no filtering of its own and must not start.
+    //
+    // Response shape is the resolver's PolicyValue[] contract, so the
+    // result feeds parsePolicy directly. Parsing, unit conversion and
+    // malformed-vs-absent handling stay in parsePolicy -- nothing here
+    // interprets a value.
+    //
+    // Read-only. This member has no write path and must never acquire one.
+    policy: async (): Promise<PolicyValuesResponse> => {
+      const res = await fetch("/.netlify/functions/ghl-underwriting-policy");
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`ghl-underwriting-policy → ${res.status}: ${text}`);
+      }
+      return res.json() as Promise<PolicyValuesResponse>;
+    },
   },
 };
 

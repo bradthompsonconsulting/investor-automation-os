@@ -30,7 +30,7 @@ try {
   execSync(
     'npx tsc "' + path.join(SRC, 'types.ts') + '" "' + path.join(SRC, 'compute.ts') +
     '" "' + path.join(SRC, 'starters.ts') + '" "' + path.join(SRC, 'resolver-types.ts') +
-    '" "' + path.join(SRC, 'resolver.ts') +
+    '" "' + path.join(SRC, 'resolver.ts') + '" "' + path.join(SRC, 'view-model.ts') +
     '" --outDir "' + TMP + '" --module commonjs --target es2020 --strict',
     { cwd: APP, stdio: 'inherit' }
   );
@@ -60,8 +60,16 @@ const {
 } = require(resolverPath);
 const { computeUnderwriting } = require(computePath);
 
+const viewModelPath = path.join(TMP, 'view-model.js');
+if (!fs.existsSync(viewModelPath)) {
+  console.error('ABORT: expected compiled output at ' + viewModelPath);
+  cleanup();
+  process.exit(11);
+}
+const { toViewModel } = require(viewModelPath);
+
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 87;
+const FLOOR = 121;
 
 let failures = 0;
 let checks = 0;
@@ -392,6 +400,173 @@ const emptyPolicy = () => parsePolicy([], CV_IDS).policy;
   check('end-to-end assignmentSpread', r.figures.assignmentSpread, 5000);
   check('end-to-end sellerMAO', r.figures.sellerMAO, 176363, 1);
   check('end-to-end no warnings', r.warnings.length, 0);
+}
+
+/* ================================================================== */
+/* View model -- page state interpretation                            */
+/* ================================================================== */
+
+const OPP = { id: 'opp-1', name: 'Main Street' };
+const OPP2 = { id: 'opp-2', name: 'Oak Avenue' };
+
+/** A resolved UnderwritingResult built through the real pipeline. */
+function resolvedResult(over) {
+  const policy = parsePolicy(fullPolicyValues(), CV_IDS).policy;
+  const facts = resolveDealFacts(
+    parseOpportunityValues([{ id: 'opp-mode', fieldValueString: 'Standard Minimum' }], OPP_IDS),
+    parseContactSeeds(
+      [{ id: 'c-arv', value: '315000' }, { id: 'c-repairs', value: '41000' }], CONTACT_IDS));
+  return computeUnderwriting(resolveInputs(facts, noOverrides(), policy));
+}
+
+function vmInput(over) {
+  return Object.assign({
+    loading: false,
+    fetchError: null,
+    computeError: null,
+    candidates: [OPP],
+    selected: OPP,
+    result: null,
+    askingPrice: null,
+    issues: [],
+  }, over || {});
+}
+
+/* ---- 16. Loading beats every other input. ---- */
+{
+  const s = toViewModel(vmInput({
+    loading: true, fetchError: 'boom', candidates: [], selected: null,
+  }));
+  check('vm loading wins', s.state, 'loading');
+}
+
+/* ---- 17. Fetch error beats candidates and selection. ---- */
+{
+  const s = toViewModel(vmInput({ fetchError: 'network down' }));
+  check('vm fetch_error state', s.state, 'fetch_error');
+  check('vm fetch_error message', s.message, 'network down');
+}
+
+/* ---- 18. No candidates yields no_opportunity. ---- */
+{
+  const s = toViewModel(vmInput({ candidates: [], selected: null }));
+  check('vm no_opportunity', s.state, 'no_opportunity');
+}
+
+/* ---- 19. Candidates with no selection yields awaiting_selection. ---- */
+{
+  const s = toViewModel(vmInput({ candidates: [OPP, OPP2], selected: null }));
+  check('vm awaiting_selection', s.state, 'awaiting_selection');
+  check('vm awaiting_selection candidates', s.candidates.length, 2);
+}
+
+/* ---- 20. ONE candidate with no selection is still awaiting_selection.
+   The auto-select rule lives in the page, not here. This pins the page's
+   obligation: if it ever stops auto-selecting, a selector for one item
+   appears and this check is what says so. ---- */
+{
+  const s = toViewModel(vmInput({ candidates: [OPP], selected: null }));
+  check('vm one candidate unselected is awaiting_selection', s.state, 'awaiting_selection');
+  check('vm one candidate count', s.candidates.length, 1);
+}
+
+/* ---- 21. Selection precedes the compute-error branch. A compute error
+   before selection means the page calculated early; awaiting_selection is
+   the correct report. ---- */
+{
+  const s = toViewModel(vmInput({
+    candidates: [OPP, OPP2], selected: null,
+    computeError: { field: 'sellingCostPct', message: 'bad units' },
+  }));
+  check('vm selection precedes compute error', s.state, 'awaiting_selection');
+}
+
+/* ---- 22. Compute error after selection yields configuration_error. ---- */
+{
+  const s = toViewModel(vmInput({
+    computeError: { field: 'sellingCostPct', message: 'violates units invariant' },
+  }));
+  check('vm configuration_error state', s.state, 'configuration_error');
+  check('vm configuration_error field', s.field, 'sellingCostPct');
+  check('vm configuration_error names opportunity', s.opportunity.id, 'opp-1');
+}
+
+/* ---- 23. Selected, no error, no result is an orchestration error --
+   never a fetch error. A fetch may have succeeded perfectly. ---- */
+{
+  const s = toViewModel(vmInput({ result: null }));
+  check('vm orchestration_error state', s.state, 'orchestration_error');
+  check('vm orchestration_error is not fetch_error', s.state === 'fetch_error', false);
+}
+
+/* ---- 24. Unresolved result. ---- */
+{
+  const facts = resolveDealFacts(
+    parseOpportunityValues([{ id: 'opp-mode', fieldValueString: 'Standard Minimum' }], OPP_IDS),
+    parseContactSeeds([], CONTACT_IDS));
+  const r = computeUnderwriting(
+    resolveInputs(facts, noOverrides(), parsePolicy(fullPolicyValues(), CV_IDS).policy));
+  const s = toViewModel(vmInput({ result: r }));
+  check('vm unresolved state', s.state, 'unresolved');
+  check('vm unresolved names missing', s.missing.indexOf('arv') >= 0, true);
+  check('vm unresolved names opportunity', s.opportunity.name, 'Main Street');
+}
+
+/* ---- 25. Resolved with no asking price: position is asking_unknown. ---- */
+{
+  const s = toViewModel(vmInput({ result: resolvedResult(), askingPrice: null }));
+  check('vm resolved state', s.state, 'resolved');
+  check('vm resolved position unknown', s.position.position, 'asking_unknown');
+  check('vm resolved sellerMAO', s.figures.sellerMAO, 176363, 1);
+  check('vm resolved no warnings', s.warnings.length, 0);
+}
+
+/* ---- 26. Position is DERIVED, not passed. Ask below MAO. ---- */
+{
+  const s = toViewModel(vmInput({ result: resolvedResult(), askingPrice: 170000 }));
+  check('vm within_range', s.position.position, 'within_range');
+  check('vm within_range cushion', s.position.acquisitionCushion, 6363, 1);
+}
+
+/* ---- 27. Ask above MAO. ---- */
+{
+  const s = toViewModel(vmInput({ result: resolvedResult(), askingPrice: 180000 }));
+  check('vm above_range', s.position.position, 'above_range');
+  check('vm above_range gap', s.position.gapToUnderwriting, 3637, 1);
+}
+
+/* ---- 28. A non-finite asking price becomes configuration_error rather
+   than throwing out of toViewModel. Every path returns a state. ---- */
+{
+  let threw = false;
+  let s = null;
+  try { s = toViewModel(vmInput({ result: resolvedResult(), askingPrice: NaN })); }
+  catch (e) { threw = true; }
+  check('vm NaN ask does not throw', threw, false);
+  check('vm NaN ask is configuration_error', s === null ? '(threw)' : s.state, 'configuration_error');
+  check('vm NaN ask names askingPrice', s === null ? '(threw)' : s.field, 'askingPrice');
+}
+
+/* ---- 29. Issues are a banner, never a state. Calculation status,
+   acquisition position and policy warnings stay independent. ---- */
+{
+  const withIssue = parsePolicy(fullPolicyValues({ 'cv-carry': 'abc' }), CV_IDS);
+  check('vm banner precondition: one issue', withIssue.issues.length, 1);
+
+  const facts = resolveDealFacts(
+    parseOpportunityValues([{ id: 'opp-mode', fieldValueString: 'Standard Minimum' }], OPP_IDS),
+    parseContactSeeds(
+      [{ id: 'c-arv', value: '315000' }, { id: 'c-repairs', value: '41000' }], CONTACT_IDS));
+  const r = computeUnderwriting(resolveInputs(facts, noOverrides(), withIssue.policy));
+
+  const s = toViewModel(vmInput({
+    result: r, askingPrice: null, issues: withIssue.issues,
+  }));
+  check('vm issues still resolved', s.state, 'resolved');
+  check('vm issues position unknown', s.position.position, 'asking_unknown');
+  check('vm issues preserved on banner', s.banner.issues.length, 1);
+  check('vm issues name the key', s.banner.issues[0].key, 'monthlyCarry');
+  check('vm malformed carry fell through to starter', s.figures.baseBuyerCapacity, 190250, 0.5);
 }
 
 cleanup();
