@@ -435,13 +435,26 @@ other. The duplication is inherent to PB-D55's authority model and is not
 a defect, but nothing in the UI tells an operator which copy is being
 used.
 
-**The superseded MAO Calculator is still in navigation and still holds a
-GHL write path.** `MaoCalculator.tsx` remains reachable from the nav and
-writes `offer_*` fields on save. Its formula does not model financing and
-does not separate the two PB-D56 outputs, so anything it produces now
-disagrees with the underwriting workspace. Two surfaces that compute
-different numbers for the same deal, one of which writes, is a hazard
-that grows the longer both are exposed.
+**The superseded MAO Calculator is retired from operator navigation; what
+remains is dormant write-helper cleanup.** Its formula does not model
+financing and does not separate the two PB-D56 outputs, so anything it
+produced disagreed with the underwriting workspace -- two surfaces
+computing different numbers for the same deal, one of which wrote. That
+exposure is closed:
+
+    removed    the sidebar entry, the Header title-map entry, the
+               /mao-calculator route and its import, and the per-row
+               "Analyze in Deal Calculator" link on the Pipeline page
+    retained   MaoCalculator.tsx, still in the repo, now imported by
+               nothing and omitted from the production bundle
+    retained   ghl.contacts.saveOfferFields and
+               ghl.opportunities.saveOfferFields in ghl.ts, both defined
+               with ZERO callers
+
+The remaining issue is the two dormant write helpers, not operator
+exposure. They are unreachable through the UI but still available to any
+future caller, so removing them is a deliberate decision rather than
+something the retirement already accomplished.
 
 **`UnitsError` throws rather than resolving to unresolved.** A percentage
 arriving in human units, or a non-finite number, throws out of
