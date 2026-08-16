@@ -51,7 +51,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-DrOo607N.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
+const EXPECTED = "index-nTLH8FEc.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
 const NEELIMA  = "FiIT0hUaxVCIuokQpZuc"; // unresolved fixture: mode absent
 const PROBE    = "HGZAby6snRZfpl0go2Yb"; // resolved fixture: OcGWOP9n666i4Q1MLd31
 
@@ -84,8 +84,11 @@ function expectedMao(arv, repairs) {
   return base / (1 + k) - POL.standardMinimum;
 }
 
-/** Parses "$1,234" out of rail text by its label. */
-function railMoney(railText, label) {
+/** Parses "$1,234" out of rail text by its label.
+    Named railValueFor, not railMoney: the shared block declares a local
+    `const railMoney` array, which shadows a same-named function for the
+    rest of that scope and threw TypeError on 2026-08-16. */
+function railValueFor(railText, label) {
   const re = new RegExp(label + "\\s*\\n\\s*\\$([\\d,]+)");
   const m = re.exec(railText || "");
   return m ? Number(m[1].replace(/,/g, "")) : null;
@@ -124,9 +127,14 @@ const RAW_KEYS = [
    probe runs 9 shared + its branch. The probe's no_opportunity checks are
    gone -- it now carries an opportunity -- so that state is UNEXERCISED in
    production and recorded as such below. */
-const SHARED = 8;
+/* The two fixtures' shared blocks are NOT symmetrical: Neelima's carries
+   rail-four-positions, which the probe's does not. One SHARED constant was
+   wrong by construction and produced an off-by-one on 2026-08-16. Counted
+   per fixture from the file. */
+const NEE_SHARED     = 9;
 const NEE_UNRESOLVED = 4;
 const NEE_RESOLVED   = 3;
+const PROBE_SHARED     = 8;
 const PROBE_UNRESOLVED = 4;
 const PROBE_RESOLVED   = 6;
 
@@ -330,9 +338,9 @@ async function readPage(page) {
 
     // ARITHMETIC, not values. Read the inputs off the rail, recompute
     // PB-D56's waterfall independently, compare to the rendered MAO.
-    const arv = railMoney(probe.railText, "ARV");
-    const rep = railMoney(probe.railText, "REPAIRS");
-    const mao = railMoney(probe.railText, "SELLER MAO");
+    const arv = railValueFor(probe.railText, "ARV");
+    const rep = railValueFor(probe.railText, "REPAIRS");
+    const mao = railValueFor(probe.railText, "SELLER MAO");
     check("probe-rail-carries-inputs", arv !== null && rep !== null && mao !== null,
       `arv=${arv} repairs=${rep} mao=${mao}`);
 
@@ -373,7 +381,7 @@ async function readPage(page) {
     console.log(`ABORT — a fixture matched neither branch (neelima=${branchRan} probe=${probeBranch})`);
     process.exit(6);
   }
-  const expected = SHARED + neeFloor + SHARED + probeFloor;
+  const expected = NEE_SHARED + neeFloor + PROBE_SHARED + probeFloor;
   console.log(`neelima=${branchRan} probe=${probeBranch} floor=${expected}`);
   if (checksRun !== expected) {
     console.log(`ABORT — expected ${expected} checks (neelima ${branchRan}, probe ${probeBranch}), ran ${checksRun}`);

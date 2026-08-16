@@ -47,7 +47,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-DrOo607N.js"; // §9.2 — RE-PIN to the served bundle on every run
+const EXPECTED = "index-nTLH8FEc.js"; // §9.2 — RE-PIN to the served bundle on every run
 
 // ── Fixtures, one per exclusion predicate plus the eligible control ──────────
 const NEELIMA = "FiIT0hUaxVCIuokQpZuc"; // eligible control — carries NO predicate
