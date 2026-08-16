@@ -8,7 +8,6 @@ const TITLES: Record<string, string> = {
   "/pipeline":      "Pipeline",
   "/mailers":       "Mailers",
   "/segmentation":  "Segmentation",
-  "/mao-calculator":"MAO Calculator",
   "/map":           "Map",
   "/import":        "Import",
   "/settings":      "Settings",

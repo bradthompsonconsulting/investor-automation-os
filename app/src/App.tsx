@@ -9,7 +9,6 @@ import Calendars       from "./pages/Calendars";
 import Pipeline      from "./pages/Pipeline";
 import Mailers       from "./pages/Mailers";
 import Segmentation  from "./pages/Segmentation";
-import MaoCalculator from "./pages/MaoCalculator";
 import MapPage       from "./pages/MapPage";
 import Import        from "./pages/Import";
 import Settings      from "./pages/Settings";
@@ -29,7 +28,6 @@ export default function App() {
           <Route path="pipeline"      element={<Pipeline />} />
           <Route path="mailers"       element={<Mailers />} />
           <Route path="segmentation"  element={<Segmentation />} />
-          <Route path="mao-calculator"element={<MaoCalculator />} />
           <Route path="map"           element={<MapPage />} />
           <Route path="import"        element={<Import />} />
           <Route path="settings"      element={<Settings />} />

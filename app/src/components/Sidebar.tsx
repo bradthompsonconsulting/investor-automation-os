@@ -21,7 +21,6 @@ const NAV = [
   { label: "Pipeline",      to: "/pipeline",       icon: GitBranch       },
   { label: "Mailers",       to: "/mailers",        icon: Mail            },
   { label: "Segmentation",  to: "/segmentation",   icon: Filter          },
-  { label: "MAO Calculator",to: "/mao-calculator", icon: Calculator      },
   { label: "Map",           to: "/map",            icon: Map             },
   { label: "Import",        to: "/import",         icon: Upload          },
   { label: "Settings",      to: "/settings",       icon: Settings        },
