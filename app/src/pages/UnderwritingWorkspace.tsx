@@ -73,6 +73,29 @@ const LEVEL_LABEL: Record<string, string> = {
   iaos_starter: "IAOS Starter",
 };
 
+/**
+ * Operator-facing labels for the Provenance keys. Internal identifiers must
+ * never reach the screen -- the same rule the missing-input labels follow in
+ * view-model.ts. This section rendered `sellingCostPct` and six others
+ * verbatim until 2026-08-16, and survived because it only appears in the
+ * resolved state, which had no production fixture until that day.
+ *
+ * Unmapped keys fall back to the raw name rather than disappearing.
+ */
+const ASSUMPTION_LABEL: Record<string, string> = {
+  sellingCostPct: "Selling Cost Percentage",
+  closingCost: "Closing Cost Estimate",
+  monthlyCarry: "Monthly Holding Cost",
+  holdMonths: "Hold Period",
+  buyerProfitPct: "Buyer Profit Percentage",
+  standardMinimum: "Standard Minimum Assignment Spread",
+  financingEnabled: "Purchase Financing",
+  financingLtv: "Financing LTV",
+  financingRate: "Interest Rate",
+  financingPoints: "Financing Points",
+  profitSharePct: "Buyer Profit Share Percentage",
+};
+
 // ── Presentational pieces ────────────────────────────────────────────────────
 
 function Shell({ contactId, children }: { contactId: string; children: React.ReactNode }) {
@@ -441,7 +464,7 @@ export default function UnderwritingWorkspace() {
             <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 24px", fontSize: "12px", color: "#64748B" }}>
               {Object.entries(screen.provenance).map(([key, level]) => (
                 <span key={key}>
-                  {key}: <span style={{ color: "#94A3B8" }}>{level === null ? "not used" : LEVEL_LABEL[level] ?? level}</span>
+                  {ASSUMPTION_LABEL[key] ?? key}: <span style={{ color: "#94A3B8" }}>{level === null ? "not used" : LEVEL_LABEL[level] ?? level}</span>
                 </span>
               ))}
             </div>
