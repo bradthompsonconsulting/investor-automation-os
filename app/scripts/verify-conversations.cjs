@@ -13,7 +13,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-Ci2gNxwq.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
+const EXPECTED = "index-DrOo607N.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
 const TARGET   = "05gYdxJcyNTCKWTwkbbs"; // john sanchez — has the 1 inbound SMS + emails; a scoping + SMS + delta fixture
 const THREADS_URL = `${ORIGIN}/.netlify/functions/ghl-conversations?scope=all`;
 const MSGS_URL    = `${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${TARGET}`;
