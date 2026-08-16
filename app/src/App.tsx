@@ -3,6 +3,7 @@ import Layout from "./components/Layout";
 import Dashboard        from "./pages/Dashboard";
 import Contacts         from "./pages/Contacts";
 import ContactWorkspace from "./pages/ContactWorkspace";
+import UnderwritingWorkspace from "./pages/UnderwritingWorkspace";
 import Conversations    from "./pages/Conversations";
 import Calendars       from "./pages/Calendars";
 import Pipeline      from "./pages/Pipeline";
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="dashboard"     element={<Dashboard />} />
           <Route path="contacts"      element={<Contacts />} />
           <Route path="contacts/:id"  element={<ContactWorkspace />} />
+          <Route path="contacts/:id/underwriting" element={<UnderwritingWorkspace />} />
           <Route path="conversations" element={<Conversations />} />
           <Route path="calendars"     element={<Calendars />} />
           <Route path="pipeline"      element={<Pipeline />} />
