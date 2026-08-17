@@ -51,7 +51,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-cQyZ3TPY.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
+const EXPECTED = "index-416fCXZW.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
 const NEELIMA  = "FiIT0hUaxVCIuokQpZuc"; // unresolved fixture: mode absent
 const PROBE    = "HGZAby6snRZfpl0go2Yb"; // resolved fixture: OcGWOP9n666i4Q1MLd31
 
