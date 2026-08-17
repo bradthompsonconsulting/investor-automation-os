@@ -2397,6 +2397,21 @@ PB-D55's four prerequisites remain in force and are not restated here.
    applies with more force here, since this model writes two outputs to
    the Opportunity rather than one.
 
+   **Amendment (2026-08-17): DISCHARGED.** An absent-origin inert proof
+   completed against `opportunity.endbuyer_maximum_purchase_price` under
+   PB-D58, with all seven of that decision's section IV conditions met.
+   The results and the evidence filenames are recorded in PB-D58's
+   2026-08-17 results section. The original text above is preserved: it
+   was accurate when written.
+
+   Discharge removes the inert-proof gate. It does NOT authorize or
+   define Approve. What Approve writes, when, and through which named
+   method is PB-D55's `saveUnderwritingFields` question and remains a
+   separate decision. Nor does discharge generalize: a second
+   opportunity field would need its own proof, for the reason PB-D16
+   gives on the contact side -- dataType proves serialization, not field
+   safety.
+
 ---
 
 ## IX. Not decided here
@@ -2733,3 +2748,86 @@ tags, pipeline stage and workflow triggers -- this proof touches none of
 them. PB-D24 through PB-D32 in full: they govern the contact-side runner
 and are neither amended nor extended by this decision. PB-D55 and PB-D56.
 PB-D57. Every existing proof record.
+
+---
+
+## VI. Results, 2026-08-17
+
+**Both cycles completed as specified. PB-D56 prerequisite 5 is
+DISCHARGED.** Ten steps, four mutations, every one restored. The
+fixture trio and the seven `offer_` fields were untouched throughout,
+and the pipeline stage and status never moved.
+
+**Section I, discovery cycle -- `opportunity.closing_costs`.**
+Five steps. Absent at capture. One PUT set the designated test value
+8271.31; read-back equality observed on poll 1. One PUT issued
+`field_value: ""`; the key was observed absent on poll 1.
+`restoredToOrigin` true, all four confirmations green. The field has no
+live consumer -- re-established from current source that day, not
+inherited from section VI of PB-D56.
+
+**Section II, proof cycle --
+`opportunity.endbuyer_maximum_purchase_price`.** Five steps. Absent at
+capture. One PUT set the designated test value 313370.42; read-back
+equality observed on poll 1. One PUT issued `field_value: ""` -- the
+mechanism section I had by then OBSERVED rather than assumed; the key
+was observed absent on poll 1. `restoredToOrigin` true. All seven
+section IV discharge conditions met: absentAtCapture,
+onePutSetTestValue, readBackEquality, verifyBatteryGreen,
+clearPutIssued, keyAbsentOnBoundedPoll, restoreBatteryGreen.
+
+**OBSERVED: opportunity NUMERICAL clear semantics.** `field_value: ""`
+clears an opportunity NUMERICAL custom field to KEY_ABSENT -- the id
+leaves the `customFields` array entirely rather than remaining present
+with an empty value. Reproduced independently on both fields above.
+This is the same representation PB-D24 proved for contact MONETORY, now
+separately observed on a different object and dataType rather than
+assumed to transfer.
+
+**OBSERVED: exact decimal round-trip.** 8271.31 and 313370.42 both read
+back as JavaScript numbers with cents intact, unrounded and
+unstringified. Opportunity NUMERICAL holds two decimal places.
+
+**OBSERVED: the two opportunity read paths serialize custom fields
+differently, and this constrains future code.** The singular
+`GET /opportunities/{id}` returns a NUMERICAL custom-field value under
+`fieldValue` and carries no `type` key. The list endpoint
+`ghl-opportunities` returns the same field under `fieldValueNumber`
+WITH a `type` key. Same object, same dataType, different shape.
+
+Consequence. `readNumberField` in
+`app/src/lib/underwriting/resolver.ts` reads `fieldValueNumber` only,
+and is CORRECT for the list shape it consumes today -- the Underwriting
+Workspace reads through `listPipeline`. It must NOT be reused against
+the singular GET shape without change: it would read every NUMERICAL
+field as absent, silently, and the resolver would report the deal
+unresolved rather than erroring. Approve-path or single-record read code
+must establish which shape it is consuming before reusing that parser.
+
+**Evidence.** Ten files, archived 2026-08-17 with `cp -p` from
+`C:\Users\brad\AppData\Local\Temp` to
+`C:\Users\brad\Documents\IAOS Evidence\`. All ten source and
+destination SHA-256 pairs matched; all ten Temp originals retained.
+
+    inert-proof-opp-closing-costs-step1.json
+    inert-proof-opp-closing-costs-step2.json
+    inert-proof-opp-closing-costs-step3.json
+    inert-proof-opp-closing-costs-step4.json
+    inert-proof-opp-closing-costs-step5.json
+    inert-proof-opp-endbuyer-max-step1.json
+    inert-proof-opp-endbuyer-max-step2.json
+    inert-proof-opp-endbuyer-max-step3.json
+    inert-proof-opp-endbuyer-max-step4.json
+    inert-proof-opp-endbuyer-max-step5.json
+
+**Fixture, retained.** Opportunity `OcGWOP9n666i4Q1MLd31` on contact
+`HGZAby6snRZfpl0go2Yb`, stage `New Lead - Seller`, carrying the three
+underwriting inputs the resolved-branch production harness depends on.
+Both proof targets are absent again. The record is where capture found
+it.
+
+**What remains undischarged.** No GHL field holds the manual assignment
+spread amount, so an approved Manual-mode underwriting still cannot
+round-trip. The Approve write contract is undecided. The existing
+contact-side runner was not extended, per this decision; whether to
+generalize it is a separate decision taken on its own terms.
