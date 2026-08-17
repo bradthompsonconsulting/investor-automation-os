@@ -51,7 +51,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-BQ-px6UC.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
+const EXPECTED = "index-ROFH729Z.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
 const NEELIMA  = "FiIT0hUaxVCIuokQpZuc"; // unresolved fixture: mode absent
 const PROBE    = "HGZAby6snRZfpl0go2Yb"; // resolved fixture: OcGWOP9n666i4Q1MLd31
 
@@ -131,17 +131,24 @@ const RAW_KEYS = [
    rail-four-positions, which the probe's does not. One SHARED constant was
    wrong by construction and produced an off-by-one on 2026-08-16. Counted
    per fixture from the file. */
-const NEE_SHARED     = 9;
-const NEE_UNRESOLVED = 4;
-const NEE_RESOLVED   = 3;
-/* 8 -> 11 on 2026-08-17. PB-D59 section VI as amended: Approve may be
-   rendered, so `probe-approve-absent` was replaced by three checks that
-   assert the contract instead of its absence -- the control renders, it is
-   enabled at rest, and the page does not claim an approval that never
-   happened. Counted from the file, not derived from the delta. */
-const PROBE_SHARED     = 11;
+/* Counted from a RUN's printed output, 2026-08-17, not from line ranges.
+   The line-range method miscounted twice: multi-line page.evaluate blocks
+   read as multiple call sites, and rail-shows-known-money sits in each
+   fixture's BRANCH rather than its shared block. A run prints what actually
+   executed; that is the authority. */
+const NEE_SHARED     = 8;
+const NEE_UNRESOLVED = 5;
+const NEE_RESOLVED   = 4;
+/* 8 -> 9 on 2026-08-17, counted from a run. PB-D59 section VI as amended:
+   Approve may be rendered, so `probe-approve-absent` was replaced by three
+   checks that assert the contract instead of its absence -- the control
+   renders, it is enabled at rest, and the page does not claim an approval
+   that never happened. Net +3 checks, and `probe-rail-shows-known-money`
+   moved out of this count into the resolved branch where it belongs, so the
+   constant moved by one rather than three. */
+const PROBE_SHARED     = 9;
 const PROBE_UNRESOLVED = 4;
-const PROBE_RESOLVED   = 6;
+const PROBE_RESOLVED   = 7;
 
 let checksRun = 0;
 const failures = [];
