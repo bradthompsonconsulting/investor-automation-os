@@ -1,10 +1,15 @@
 # IAOS — Session Handoff
 
-**Refreshed 2026-08-17.** Repo tip `7394dbc` on `main`, pushed, working
-tree clean. Deployed and verified: 197 harness checks green across four
-harnesses on `index-cQyZ3TPY.js`, plus 186 unit checks across two
-runners -- 53 on the calculation core, 133 on the resolver and view
+**Refreshed 2026-08-17.** Repo tip `cf6ea30` on `main`, pushed, working
+tree clean. Deployed and verified: 199 harness checks green across four
+harnesses on `index-ROFH729Z.js`, plus 222 unit checks across two
+runners -- 53 on the calculation core, 169 on the resolver and view
 model. `tsc --noEmit` and `pnpm build` clean.
+
+**APPROVE IS BUILT, DEPLOYED, AND HAS BEEN USED.** The first durable
+underwriting approval in IAOS completed 2026-08-17 on fixture
+`OcGWOP9n666i4Q1MLd31`, verified four independent ways. PB-D59 section
+IX is the authoritative record; read it before touching the write path.
 
 **PB-D56 prerequisite 5 is DISCHARGED and PB-D59's three proofs all
 PASSED. Approve may now be rendered.** That gate had been open since
@@ -599,7 +604,38 @@ API-derivable. What it establishes is that the fixture work performed
 today was inert, and that the inert proof can proceed against a known
 trigger inventory rather than an unknown one.
 
-## The Approve write surface is proven
+## Approve is built, deployed, and has been used
+
+**First production approval, 2026-08-17.** Persisted to fixture
+`OcGWOP9n666i4Q1MLd31`:
+
+    endbuyer_maximum_purchase_price   150142.99
+    mao_max_allowable_offer           145142.99
+    assignment_mode                   "Standard Minimum"
+
+Unchanged by the write: both deal facts, the pipeline stage, the status,
+and all seven `offer_` fields still absent.
+
+**Verified four ways, none of them the UI trusting itself.** The
+method's own strict readback on a singular GET before returning ok; an
+independent singular GET issued separately; the arithmetic -- End-Buyer
+Max minus Seller MAO is exactly 5000.00, the standard minimum spread; and
+a post-approval harness run at 29 of 29 with
+`rendered=145143 recomputed=145143`.
+
+**THE FIXTURE IS AN APPROVED FIXTURE NOW, DELIBERATELY.** Those two
+monetary carriers were absent through every proof cycle and restored
+every time. Approve writes and the value stays. They are intentional
+approved state, NOT test residue, and must not be cleared by anyone
+finding them and reaching for a restore script. PB-D59 section IX says
+so at length.
+
+**Cents, not dollars.** `roundCurrency` rounds before the payload is
+built, because every value the proofs put on the wire carried two
+decimals and the readback comparison is strict equality. The workspace
+displays whole dollars; the record holds cents.
+
+---
 
 PB-D59 section I names three carriers. All three, and the composition,
 are proven inert.
@@ -665,7 +701,45 @@ there and never clears one.
 
 ## Immediate next steps
 
-1. **Build Approve.** PB-D59 section VI as amended 2026-08-17: all three
+1. **DECIDE what an approved underwriting IS. Do not patch it.**
+
+   OBSERVED 2026-08-17, immediately after the first real approval:
+   reloading the workspace renders the resolved deal with Approve idle
+   and available again. The opportunity carries approved values and IAOS
+   has no way to know that. Approval is currently an ACTION, not durable
+   workflow state -- it lives in React and nothing persists it. The
+   production harness confirms it: `approve-idle-on-load` passes on an
+   approved fixture.
+
+   Not a defect against PB-D59, which never claimed otherwise, and not
+   something this slice introduced. It is a real product gap, and the
+   temptation will be to add an indicator. Resist that: the questions
+   arrive together and answering one by implementation decides the rest
+   silently.
+
+   What constitutes approved. Whether re-approval is permitted, and what
+   it means if the figures differ. Whether a deal fact changing after
+   approval invalidates it. What carrier holds a timestamp or an actor --
+   PB-D56 section VI is the register and neither exists. What an operator
+   should see on reopening an approved deal. PB-D59 section VII lists
+   most of these as undecided and now names this one explicitly.
+
+2. **`.gitattributes` is missing and `core.autocrlf` is true.**
+   OBSERVED 2026-08-17: Git normalizes to LF in the object store and
+   writes CRLF to the working tree, so a file's line-ending convention
+   reflects how recently Git touched it rather than how it was authored.
+   `resolver.ts` was LF in the morning and CRLF by afternoon, converted
+   by a stash cycle.
+
+   Guarded scripts now assert UNIFORMITY and derive the newline from what
+   they find, which is correct regardless. But the underlying gap is real
+   and is the `.gitattributes` item this file has carried since the
+   CRLF/LF repo split. Do it as its own isolated commit and design it
+   first: `git add --renormalize .` would rewrite the entire repository,
+   and that diff must not land anywhere near a write path.
+
+3. **ARCHIVED — completed 2026-08-17.** Build Approve. PB-D59 section VI
+   as amended 2026-08-17: all three
    proofs passed, that section is historical, and its restrictions are
    lifted. Approve may be rendered and `saveUnderwritingFields` may be
    called from it. Everything else PB-D59 specifies continues to apply
@@ -678,7 +752,14 @@ there and never clears one.
    section IV requires -- including a partial readback surfacing which
    carriers landed.
 
-2. **Three harness checks assert Approve does not exist, and they must
+4. **ARCHIVED — completed 2026-08-17.** The three harness checks were
+   replaced, not deleted: `approve-absent` became
+   `approve-absent-on-unresolved`, `probe-approve-absent` became
+   `approve-renders-on-resolved` plus `approve-enabled-at-rest` plus
+   `approve-idle-on-load`, and `no-write-controls` narrowed to
+   `no-text-inputs`. The original item follows.
+
+   Three harness checks assert Approve does not exist, and they must
    be REPLACED, not deleted.** `verify-underwriting.cjs` carries
    `approve-absent` and `probe-approve-absent`, both asserting zero
    Approve buttons, and `no-write-controls` asserting zero inputs on the
@@ -693,7 +774,7 @@ there and never clears one.
    and moving on would leave the most consequential control in the
    product unasserted.
 
-3. **What Approve means for Manual mode is still open.** No GHL field
+5. **What Approve means for Manual mode is still open.** No GHL field
    holds the manual assignment spread amount, so an approved
    Manual-mode underwriting cannot round-trip. PB-D59 section VII lists
    this among what it does not decide, along with whether an approved
