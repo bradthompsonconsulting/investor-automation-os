@@ -17,6 +17,7 @@ import type {
   DealInput,
   UnderwritingInputs,
 } from "./types";
+import { MODE_BY_OPTION } from "./resolver-types";
 import type {
   AssignmentModeName,
   ContactSeedFacts,
@@ -208,12 +209,12 @@ export function parsePolicy(
 /* Opportunity and contact parsers                                     */
 /* ------------------------------------------------------------------ */
 
-/** OBSERVED: the exact option strings, in order, per PB-D56 section II. */
-const MODE_BY_OPTION: Record<string, AssignmentModeName> = {
-  "Standard Minimum": "standard",
-  "25% of Buyer Profit": "profit_share",
-  Manual: "manual",
-};
+/* MODE_BY_OPTION moved to resolver-types.ts 2026-08-17 and is imported
+   above. It was private here and correct while parsing was the only
+   direction these labels travelled; PB-D59's Approve write needs the
+   inverse, and two copies of the same three strings would be two sources
+   of truth for a value crossing the wire both ways. Declared once there,
+   derived both ways. */
 
 /**
  * Parses underwriting values from the Opportunity. Authoritative under

@@ -160,6 +160,47 @@ export type ContactSeedFacts = {
 export type AssignmentModeName = "standard" | "profit_share" | "manual";
 
 /**
+ * PB-D56 section II's three option strings, and the ONLY place in this
+ * repository that knows them.
+ *
+ * OBSERVED from the wire, in this order, and confirmed again by PB-D59
+ * Proof A: GHL stores this picklist by LABEL rather than by option id, so
+ * these literals are what travels in both directions -- the resolver reads
+ * them off an Opportunity, and Approve writes one back.
+ *
+ * DECLARED ONCE, DERIVED BOTH WAYS. A second copy of these three strings
+ * anywhere would be a second source of truth for a value that crosses the
+ * wire in both directions. If GHL's labels ever change, one copy gets
+ * updated and the other does not -- and the failure is quiet: Approve
+ * writes an option the picklist does not carry, or the resolver reads a
+ * mode it does not recognize and reports the deal unresolved. Neither
+ * announces itself.
+ *
+ * The domain discriminant is what travels through the calculation core and
+ * the view model. These labels are wire format and stay at the edges.
+ */
+export const ASSIGNMENT_MODE_OPTIONS: ReadonlyArray<readonly [string, AssignmentModeName]> = [
+  ["Standard Minimum", "standard"],
+  ["25% of Buyer Profit", "profit_share"],
+  ["Manual", "manual"],
+] as const;
+
+/** GHL option label -> domain discriminant. Used when parsing an Opportunity. */
+export const MODE_BY_OPTION: Record<string, AssignmentModeName> =
+  Object.fromEntries(ASSIGNMENT_MODE_OPTIONS) as Record<string, AssignmentModeName>;
+
+/**
+ * Domain discriminant -> GHL option label. Used when Approve writes.
+ *
+ * `manual` maps to "Manual" regardless of its amount: the amount is a
+ * separate domain concern with no carrier of its own, and the mode field
+ * records only which calculation governs.
+ */
+export const OPTION_BY_MODE: Record<AssignmentModeName, string> =
+  Object.fromEntries(ASSIGNMENT_MODE_OPTIONS.map(([label, mode]) => [mode, label])) as
+    Record<AssignmentModeName, string>;
+
+/**
  * Deal facts after seed-then-supersede resolution.
  *
  * manualSpread is a bare nullable, not a DealInput: it is required only
