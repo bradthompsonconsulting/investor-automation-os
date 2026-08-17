@@ -3132,6 +3132,55 @@ at a time do not prove a three-field payload behaves as Approve needs.
 Proof B proves the write Approve actually performs, not three writes it
 never will.
 
+**RESULT, 2026-08-17: Proof B PASSED. All three proofs are complete and
+the gate this section describes is closed.**
+
+One custom-fields-only PUT carried all three carriers. On the first
+observed readback all three held what was sent for them; no partial state
+was observed at any poll. One further PUT restored the mixed origin --
+two cleared to KEY_ABSENT, `assignment_mode` returned to
+`"Standard Minimum"` -- and the whole `customFields` array then equalled
+the captured array, carriers included. All nine completion conditions met.
+
+Values were 571204.86 and 398715.29, deliberately distinct from each other
+so a swapped-id defect would fail rather than pass as symmetric, and
+distinct from every prior cycle's values so evidence cannot be confused
+across proofs.
+
+**What this does and does not establish about atomicity.** OBSERVED: on
+this request, all three carriers appeared together on the first readback,
+and no partial state was seen. NOT established: that GHL applies a
+multi-field custom-fields PUT atomically. One successful run is evidence
+the payload shape works; it is not a transaction guarantee, and section IV
+stands unchanged -- GHL documents no transaction and this decision does
+not pretend otherwise. Approve must still treat a partial readback as a
+failure and report it rather than assume it cannot happen.
+
+**Mixed restoration composes.** Two clear-to-absent contracts and one
+restore-to-value contract ran in a single request and each did what its
+own proof established. That was not previously observed: A0 and PB-D58
+ran clear-to-absent alone, Proof A ran restore-to-value alone.
+
+**The closing gate passed.** `verify-underwriting.cjs` was rerun after
+restoration and returned 27 of 27 with the probe RESOLVED and
+`rendered=145143 recomputed=145143`.
+
+**Evidence.** Five files archived 2026-08-17 with `cp -p` to
+`C:\Users\brad\Documents\IAOS Evidence\`, all SHA-256 pairs matched,
+all Temp originals retained -- twenty-five across the four cycles. Five
+proof scripts retained under `app/scripts/`, twenty in total.
+
+    inert-proof-opp-payload-b-step1.json   through -step5.json
+
+**All three carriers and the composition are now proven inert.**
+
+    endbuyer_maximum_purchase_price   PB-D58 section II
+    mao_max_allowable_offer           PB-D59 Proof A0
+    assignment_mode                   PB-D59 Proof A
+    the composed three-field payload  PB-D59 Proof B
+
+---
+
 Proof B's origin state is mixed and its restoration correspondingly so:
 the two NUMERICAL carriers restore to KEY_ABSENT by PB-D58's observed
 mechanism, and `assignment_mode` restores to its original option string by
@@ -3148,16 +3197,41 @@ last because composition is unproven until it is proven.
 
 ## VI. Until all three proofs pass
 
-**Approve is not rendered.** Not as a disabled control -- a greyed button
-implies the feature is one configuration away from working, and it is
-not. The workspace states that Approve is unavailable and why, which is
-what it does today.
+**Amendment (2026-08-17): all three passed. This section is historical
+and its restrictions are lifted.** The original text is preserved below
+because it governed while the gate was open and a reader tracing why
+Approve was unavailable should find what actually applied.
 
-**`saveUnderwritingFields` may be written but not called from the UI.**
-Defining the method is permitted; wiring a control to it is not. If the
-method exists before the proofs pass, nothing user-facing may invoke it.
-Proof B may use the real method rather than a stand-in, which is the
-reason this permission exists.
+**What now holds.** Approve may be rendered and
+`saveUnderwritingFields` may be called from it. Everything else this
+decision specifies continues to apply without exception: one
+custom-fields-only PUT carrying exactly the three carriers, readback on
+the singular GET parsing `fieldValue`, success only when all three are
+confirmed, and a partial readback treated as a FAILURE that is reported
+rather than silently compensated. The gate closing removes a
+precondition; it relaxes no rule in sections I through IV.
+
+**The original text, superseded 2026-08-17:**
+
+> **Approve is not rendered.** Not as a disabled control -- a greyed
+> button implies the feature is one configuration away from working, and
+> it is not. The workspace states that Approve is unavailable and why,
+> which is what it does today.
+>
+> **`saveUnderwritingFields` may be written but not called from the UI.**
+> Defining the method is permitted; wiring a control to it is not. If the
+> method exists before the proofs pass, nothing user-facing may invoke it.
+> Proof B may use the real method rather than a stand-in, which is the
+> reason this permission exists.
+
+**What the harness still asserts, and must be updated deliberately.**
+`verify-underwriting.cjs` carries `approve-absent` and
+`probe-approve-absent`, both asserting zero Approve buttons, and
+`no-write-controls` asserting zero inputs on the page. Those were correct
+while this section forbade rendering. Building Approve makes them fail,
+and that failure is a signal to update the harness with the new contract
+-- not to weaken it. Whatever replaces them should assert what Approve
+must do, not merely stop asserting what it must not.
 
 ---
 
