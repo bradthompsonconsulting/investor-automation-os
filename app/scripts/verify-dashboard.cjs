@@ -47,11 +47,27 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-cQyZ3TPY.js"; // §9.2 — RE-PIN to the served bundle on every run
+const EXPECTED = "index-416fCXZW.js"; // §9.2 — RE-PIN to the served bundle on every run
 
 // ── Fixtures, one per exclusion predicate plus the eligible control ──────────
 const NEELIMA = "FiIT0hUaxVCIuokQpZuc"; // eligible control — carries NO predicate
-const PALERMO = "NISht1R60heBRhyeMyWp"; // unanswered inbound
+/* The unanswered-inbound fixture is SELECTED FROM THE LIVE ENDPOINT, not
+   named here. `NISht1R60heBRhyeMyWp` (palermo) held that role until
+   2026-08-17, when the check failed with
+   precondition(inUnansweredEndpoint)=false -- his unanswered message had
+   been answered or aged out, so the predicate under test no longer applied
+   to him and his presence in the queue was CORRECT.
+
+   That was fixture drift, not a regression, and every other fixture here
+   is exposed to the same class: an unanswered inbound is transient state
+   in a way a terminal stage or a phone status is not.
+
+   WHAT ADAPTS AND WHAT DOES NOT. The invariant is fixed: a contact with
+   an unanswered inbound must not appear in the Lead Queue. Only WHICH
+   contact satisfies the precondition today is read from the wire. That is
+   a different thing from a check that adapts its assertion to what the
+   page renders -- this one still fails if the rule is broken, and still
+   fails if no fixture exists to test it against. */
 const ELLIS   = "3saoIFpdnjvKE14Hghe0"; // terminal stage
 const CARTER  = "yeMPDUExsxV6Zpf8ebTD"; // scheduled callback
 const BRADT75 = "9fbH2VCcZvzVNhsR9zjc"; // Seller Follow-Up
@@ -178,12 +194,24 @@ function check(name, cond, detail = "") {
     Array.isArray(domIds) && domIds.length > 0 && allWellFormed,
     `tableFound=${Array.isArray(domIds)} rows=${domIds ? domIds.length : "(none)"} allIdsWellFormed=${allWellFormed}`);
 
-  // ── 2 — unanswered inbound ──
+  // ── 2 — unanswered inbound, fixture selected from the live endpoint ──
   {
-    const pre = unansweredIds.has(PALERMO);
-    const absent = !inQueue.has(PALERMO);
-    check("exclusion-unanswered:palermo", pre && absent,
-      `precondition(inUnansweredEndpoint)=${pre} assertion(absentFromQueue)=${absent}`);
+    /* Take the first contact the unanswered endpoint reports. Sorted so a
+       run is reproducible against a given endpoint state rather than
+       depending on response order. */
+    const candidates = [...unansweredIds].filter((id) => GHL_ID_RE.test(id)).sort();
+    const fixture = candidates.length > 0 ? candidates[0] : null;
+
+    /* No fixture is a FAILURE, not a skip. The endpoint reporting nobody
+       unanswered means the rule cannot be exercised, and a check that
+       silently passes when it tested nothing is worse than one that fails
+       loudly. The detail names the count so the cause is legible. */
+    const pre = fixture !== null && unansweredIds.has(fixture);
+    const absent = pre && !inQueue.has(fixture);
+    check("exclusion-unanswered", pre && absent,
+      `fixture=${fixture === null ? "(none in endpoint)" : fixture}` +
+      ` unansweredCount=${unansweredIds.size}` +
+      ` precondition(inUnansweredEndpoint)=${pre} assertion(absentFromQueue)=${absent}`);
   }
 
   // ── 3 — terminal stage (ALL opportunities terminal, per PB-D49) ──
