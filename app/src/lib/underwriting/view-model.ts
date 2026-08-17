@@ -19,6 +19,8 @@
 import { computeAcquisitionPosition } from "./compute";
 import type {
   AcquisitionPosition,
+  Assignment,
+  AssignmentResolution,
   Figures,
   Line,
   Provenance,
@@ -206,6 +208,27 @@ export type ScreenState =
       opportunity: SelectedOpportunity;
       banner: PolicyBanner;
       /**
+       * Which of PB-D56 section II's three modes governed this
+       * calculation. The DOMAIN DISCRIMINANT, not the GHL option label:
+       * `{kind: "standard"}`, never the GHL option label. The guard in
+       * this edit's own script rejects any wire label appearing in this
+       * file, and rejected an earlier draft of this very comment for
+       * quoting one -- which is the guard working.
+       *
+       * `Assignment`, not `AssignmentResolution` -- narrowed on the way
+       * in. A resolved calculation cannot have come from an unresolved
+       * assignment: computeUnderwriting returns unresolved when it sees
+       * one. So the resolved state carries a strategy, never the
+       * possibility of one.
+       *
+       * Approve needs it: the write carries assignment_mode alongside the
+       * two monetary carriers, and the mapping to a wire label happens at
+       * the write boundary through OPTION_BY_MODE in resolver-types.ts.
+       * Putting the label here would push wire format into the screen
+       * contract, where nothing else lives.
+       */
+      assignment: Assignment;
+      /**
        * The Approve attempt for this deal. Nested rather than a sibling
        * state: a deal is resolved AND its approval is idle, in flight,
        * succeeded, failed or partial. Only the resolved state carries it
@@ -238,6 +261,20 @@ export type ViewModelInput = {
    * special case. Null before an opportunity is selected.
    */
   facts: DealFacts | null;
+  /**
+   * The assignment strategy the resolver determined, or its statement
+   * that none could be. Supplied by the page from the same pipeline memo
+   * that produced `result`, so the resolver is not run twice and the two
+   * cannot disagree.
+   *
+   * An AssignmentResolution rather than an Assignment because that is
+   * what resolveInputs produces. The narrowing happens here, on the
+   * resolved path, where the calculation has already established that a
+   * strategy exists.
+   *
+   * Null before an opportunity is selected, like `facts`.
+   */
+  assignment: AssignmentResolution | null;
   issues: PolicyParseIssue[];
   /**
    * The Approve attempt's current state, supplied by the page.
@@ -322,6 +359,27 @@ export function toViewModel(input: ViewModelInput): ScreenState {
     };
   }
 
+  /* The calculation resolved, so the assignment it consumed must be one
+     of the three valid strategies -- computeUnderwriting returns
+     unresolved when the assignment is unresolved. If it is not, the page
+     supplied a result and an assignment that did not come from the same
+     resolution, which is a plumbing defect rather than a business state.
+
+     Do NOT fabricate a strategy and do NOT default to standard. An
+     operator who chose Manual and silently received Standard Minimum
+     economics is precisely the substitution PB-D56 section II.6 forbids.
+     This routes to orchestration_error, which exists for combinations the
+     contract says cannot occur. */
+  if (input.assignment === null || input.assignment.kind === "unresolved") {
+    return {
+      state: "orchestration_error",
+      detail:
+        "The calculation resolved but the assignment supplied alongside it " +
+        "is " + (input.assignment === null ? "absent" : "unresolved") +
+        ". These must come from the same resolution.",
+    };
+  }
+
   return {
     state: "resolved",
     figures: input.result.figures,
@@ -333,5 +391,6 @@ export function toViewModel(input: ViewModelInput): ScreenState {
     opportunity: input.selected,
     banner,
     approve: input.approve,
+    assignment: input.assignment,
   };
 }

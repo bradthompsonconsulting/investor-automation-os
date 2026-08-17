@@ -14,7 +14,7 @@ import {
 import { computeUnderwriting } from "../lib/underwriting/compute";
 import { toViewModel, type ApproveState, type ScreenState, type SelectedOpportunity } from "../lib/underwriting/view-model";
 import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
-import type { UnderwritingResult } from "../lib/underwriting/types";
+import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriting/types";
 
 /**
  * Underwriting Workspace — UNDERWRITING_WORKSPACE_SPEC.md.
@@ -242,11 +242,13 @@ export default function UnderwritingWorkspace() {
   const pipeline = useMemo(() => {
     if (!contact || !opps || !policyValues || !selected) {
       return { result: null as UnderwritingResult | null, facts: null as DealFacts | null,
+               assignment: null as AssignmentResolution | null,
                issues: [] as PolicyParseIssue[], computeError: null as { field: string | null; message: string } | null };
     }
     const opp = opps.find((o) => o.id === selected.id);
     if (!opp) {
-      return { result: null, facts: null as DealFacts | null, issues: [],
+      return { result: null, facts: null as DealFacts | null,
+               assignment: null as AssignmentResolution | null, issues: [],
                computeError: null as { field: string | null; message: string } | null };
     }
     try {
@@ -256,10 +258,16 @@ export default function UnderwritingWorkspace() {
       const overrides = parseDealOverrides(opp.customFields);
       const facts = resolveDealFacts(oppValues, seeds);
       const inputs = resolveInputs(facts, overrides, policy);
-      return { result: computeUnderwriting(inputs), facts, issues, computeError: null };
+      /* The assignment travels alongside the result from the SAME
+         resolveInputs call. Re-deriving it separately would let the two
+         disagree -- a resolved calculation paired with an assignment that
+         did not produce it -- which the view model would then have to
+         treat as an orchestration error it could not diagnose. */
+      return { result: computeUnderwriting(inputs), facts, assignment: inputs.assignment, issues, computeError: null };
     } catch (e: any) {
       return {
-        result: null, facts: null as DealFacts | null, issues: [],
+        result: null, facts: null as DealFacts | null,
+        assignment: null as AssignmentResolution | null, issues: [],
         computeError: { field: null, message: e?.message ?? "A configured value could not be interpreted." },
       };
     }
@@ -273,6 +281,7 @@ export default function UnderwritingWorkspace() {
     selected,
     result: pipeline.result,
     facts: pipeline.facts,
+    assignment: pipeline.assignment,
     issues: pipeline.issues,
     approve,
   });

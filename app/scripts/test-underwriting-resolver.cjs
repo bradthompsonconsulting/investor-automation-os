@@ -69,7 +69,7 @@ if (!fs.existsSync(viewModelPath)) {
 const { toViewModel } = require(viewModelPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 159;
+const FLOOR = 169;
 
 let failures = 0;
 let checks = 0;
@@ -448,6 +448,14 @@ function vmInput(over) {
     selected: OPP,
     result: null,
     facts: goldenFacts(),
+    /* PB-D59. ViewModelInput requires an AssignmentResolution alongside
+       the result, and the view model routes a resolved result paired with
+       a null or unresolved assignment to orchestration_error. Omitting
+       this would not fail to compile -- this runner does not typecheck
+       its own call sites -- it would fail roughly thirty checks at once,
+       every one of them for the same reason. The default matches what
+       goldenFacts() produces: a resolved Standard Minimum strategy. */
+    assignment: { kind: 'standard' },
     issues: [],
     /* PB-D59. ViewModelInput requires this; the default is what the page
        holds before any attempt. This runner compiles the TS sources but does
@@ -725,6 +733,52 @@ function vmInput(over) {
   check('vm approve does not move position', after.position.position, base.position.position);
 }
 
+/* ---- 34b. The resolved state carries the assignment DISCRIMINANT, and it
+   survives unchanged. PB-D59's Approve write needs to know which mode
+   governed; the GHL option label is mapped at the write boundary, never
+   here. ---- */
+{
+  const s = toViewModel(vmInput({ result: resolvedResult() }));
+  check('vm resolved carries assignment', s.assignment.kind, 'standard');
+  check('vm assignment is not a wire label',
+    JSON.stringify(s.assignment).indexOf('Standard') >= 0, false);
+}
+
+/* ---- 34c. A different mode survives as itself. Standard is the fixture
+   default, so a passing case on standard alone would not distinguish
+   "threaded correctly" from "hardcoded". ---- */
+{
+  const facts = goldenFacts({
+    assignmentMode: { kind: 'value', value: 'profit_share', level: 'deal_override' },
+  });
+  const policy = parsePolicy(fullPolicyValues(), CV_IDS).policy;
+  const inputs = resolveInputs(facts, noOverrides(), policy);
+  const r = computeUnderwriting(inputs);
+  check('vm profit_share precondition resolves', r.status, 'resolved');
+
+  const s = toViewModel(vmInput({ result: r, facts, assignment: inputs.assignment }));
+  check('vm profit_share survives as itself', s.assignment.kind, 'profit_share');
+  check('vm profit_share still resolved', s.state, 'resolved');
+}
+
+/* ---- 34d. A resolved result paired with an unresolved assignment is an
+   orchestration error, not a silent default. PB-D56 section II.6: an
+   operator who chose one mode and received another's economics is the
+   substitution the whole AssignmentResolution type exists to prevent. ---- */
+{
+  const s = toViewModel(vmInput({
+    result: resolvedResult(),
+    assignment: { kind: 'unresolved', reason: 'test' },
+  }));
+  check('vm resolved plus unresolved assignment is orchestration_error',
+    s.state, 'orchestration_error');
+  check('vm that error does not masquerade as resolved', s.state === 'resolved', false);
+
+  const nulled = toViewModel(vmInput({ result: resolvedResult(), assignment: null }));
+  check('vm resolved plus null assignment is orchestration_error',
+    nulled.state, 'orchestration_error');
+}
+
 /* ---- 35. No state other than resolved carries an approve field. There is
    nothing to approve on a deal that has not resolved. ---- */
 {
@@ -748,6 +802,8 @@ function vmInput(over) {
   }));
   check('vm awaiting_selection precondition', awaiting.state, 'awaiting_selection');
   check('vm awaiting_selection has no approve', awaiting.approve === undefined, true);
+  check('vm awaiting_selection has no assignment', awaiting.assignment === undefined, true);
+  check('vm unresolved has no assignment', unresolved.assignment === undefined, true);
 }
 
 cleanup();
