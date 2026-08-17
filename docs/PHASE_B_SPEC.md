@@ -3237,14 +3237,37 @@ must do, not merely stop asserting what it must not.
 
 ## VII. Not decided here
 
-What the workspace shows after a successful Approve, and whether an
-approved underwriting can be superseded by a later one. Whether approval
-is timestamped or attributed, and if so by what carrier. What happens to
-an approved underwriting when a deal fact later changes. Whether Approve
-requires more than Gate 1 -- `SELLER_ACQUISITION_WORKFLOW.md` names that
-Offer Readiness and records its criteria as undecided. The manual
-assignment spread carrier. Any write to a Contact field. SINGLE_OPTIONS
-clear semantics.
+Whether an approved underwriting can be superseded by a later one.
+Whether approval is timestamped or attributed, and if so by what carrier.
+What happens to an approved underwriting when a deal fact later changes.
+Whether Approve requires more than Gate 1 --
+`SELLER_ACQUISITION_WORKFLOW.md` names that Offer Readiness and records
+its criteria as undecided. The manual assignment spread carrier. Any
+write to a Contact field. SINGLE_OPTIONS clear semantics.
+
+**Amendment (2026-08-17): what the workspace shows after a successful
+Approve is now decided in code, and doing so exposed a larger question
+this list did not previously name.** The control reports success in a
+banner and the state is per-session: it lives in React and nothing
+persists it.
+
+**APPROVAL IS CURRENTLY AN ACTION, NOT DURABLE WORKFLOW STATE.**
+OBSERVED 2026-08-17 on the fixture, immediately after its first real
+approval: reloading the page renders the resolved workspace with Approve
+idle and available again. The opportunity carries approved values, and
+IAOS has no way to know that -- there is no approval timestamp, no actor
+attribution, and no durable approved-state indicator. The production
+harness confirms it: `approve-idle-on-load` passes on an approved
+fixture.
+
+That is consistent with this section, which never claimed otherwise, and
+it is not a defect this slice introduced. It is a genuine product gap and
+it should be DECIDED rather than patched, because the questions arrive
+together: what constitutes approved, whether re-approval is permitted,
+whether a deal fact changing after approval invalidates it, what carrier
+holds a timestamp or an actor, and what an operator should see on
+reopening an approved deal. Building an indicator before answering those
+would be deciding them by implementation.
 
 ---
 
@@ -3255,6 +3278,78 @@ tags, pipeline stage and workflow triggers. PB-D24 through PB-D32: they
 govern the contact-side runner and are neither amended nor extended.
 PB-D55, PB-D56, PB-D57 and PB-D58 in full, including PB-D58 section IV's
 statement that discharge does not authorize Approve -- this decision
-defines what Approve would do and leaves it gated on further proofs.
-As of 2026-08-17 two of the three are complete and Proof B remains, so
-Approve stays unrendered. Every existing proof record.
+defined what Approve would do and gated it on three further proofs.
+
+**Corrected 2026-08-17.** This paragraph previously read that two of the
+three proofs were complete and that Approve stayed unrendered. Both were
+true when written and neither is now: all three passed, and Approve is
+implemented, deployed and used. The earlier amendment updated the count
+in section V and left this sentence standing -- recorded here rather than
+silently rewritten, because a decision register that quietly fixes its
+own contradictions teaches nobody anything. Every existing proof record
+stands unchanged.
+
+---
+
+## IX. First production approval, 2026-08-17
+
+**Approve was used on a live opportunity and it worked.** The first
+durable underwriting approval in IAOS, on fixture
+`OcGWOP9n666i4Q1MLd31` -- "IAOS Underwriting Test", on contact
+`HGZAby6snRZfpl0go2Yb`.
+
+**Persisted.**
+
+    endbuyer_maximum_purchase_price   150142.99
+    mao_max_allowable_offer           145142.99
+    assignment_mode                   "Standard Minimum"
+
+Unchanged by the write: `arv_after_repair_value` at 250000,
+`repair_estimate` at 25000, the pipeline stage, the status, and all seven
+`offer_` fields still absent. Five custom fields on the record, no
+unexpected id.
+
+**Verified in four independent layers**, none of which is the UI taking
+its own word for it:
+
+The method's own readback. `saveUnderwritingFields` compared
+`observed === sent` for all three carriers on a singular GET before
+returning ok. The success banner is downstream of that comparison, not a
+substitute for it.
+
+An independent singular GET, issued separately and read directly. It
+returned the three values above.
+
+The arithmetic. End-Buyer Max minus Seller MAO is exactly 5000.00 -- the
+standard minimum assignment spread. The two persisted figures satisfy
+PB-D56's waterfall relationship without reference to anything the
+application reported.
+
+Post-mutation regression. `verify-underwriting.cjs` rerun after the
+approval returned 29 of 29 with the probe RESOLVED and
+`rendered=145143 recomputed=145143` -- the harness recomputing the
+waterfall from its own hardcoded constants and matching the page.
+
+**Cents, not dollars, and that mattered.** The persisted values carry two
+decimals because `roundCurrency` rounds before the payload is built. Every
+value the proofs put on the wire carried exactly two decimals; a raw
+`computeUnderwriting` output carries full float precision, and the
+readback comparison is strict equality. Sending an unrounded float would
+have stepped outside the proven serialization envelope at the write
+boundary. The workspace displays whole dollars, so no precision the
+operator sees is lost.
+
+**THE FIXTURE IS NOW AN APPROVED FIXTURE, DELIBERATELY.** Its two
+monetary carriers were absent through every proof cycle and restored
+every time, because a proof leaves no trace. Approve's job is the
+opposite: it writes and the value stays. Those populated fields are
+INTENTIONAL APPROVED STATE and must not later be classified as test
+residue and cleared. Anyone finding them and reaching for a restore
+script should read this section first.
+
+**What this closes.** PB-D59 is fully executed: contract specified before
+any code, three proofs passed on a disposable fixture, the method and its
+readback parser built inert, the control shipped with its harness
+contract in the same commit, and the first production approval verified
+four ways. Twenty proof steps and ten restored mutations preceded the
+first write that was allowed to persist.
