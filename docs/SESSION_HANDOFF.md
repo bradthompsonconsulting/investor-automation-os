@@ -1,17 +1,20 @@
 # IAOS — Session Handoff
 
-**Refreshed 2026-08-17.** Repo tip `152e7b1` on `main`, pushed, working
+**Refreshed 2026-08-17.** Repo tip `7394dbc` on `main`, pushed, working
 tree clean. Deployed and verified: 197 harness checks green across four
 harnesses on `index-cQyZ3TPY.js`, plus 186 unit checks across two
 runners -- 53 on the calculation core, 133 on the resolver and view
 model. `tsc --noEmit` and `pnpm build` clean.
 
-**PB-D56 prerequisite 5 is DISCHARGED.** The gate on Approve since
-PB-D55 closed 2026-08-17 by evidence, not argument. Fifteen proof steps
-across three cycles, six production mutations, every one restored to
-origin and verified. The fixture opportunity was restored to its
-captured origin state, and the production harness reconfirmed the same
-underwriting result afterward.
+**PB-D56 prerequisite 5 is DISCHARGED and PB-D59's three proofs all
+PASSED. Approve may now be rendered.** That gate had been open since
+PB-D55 was written; it closed 2026-08-17 by evidence, not argument.
+
+Four proof cycles, twenty steps, ten production mutations, every one
+restored and verified, with the production harness rerun green after
+each. The fixture opportunity was restored to its captured origin state
+every time -- Proof B's final comparison found the whole `customFields`
+array equal to the captured array, carriers included.
 
 **CORRECTION to an earlier claim in this file and repeated in
 conversation: today was NOT "zero GHL writes."** Production writes
@@ -596,41 +599,111 @@ API-derivable. What it establishes is that the fixture work performed
 today was inert, and that the inert proof can proceed against a known
 trigger inventory rather than an unknown one.
 
-## Carrier status for Approve
+## The Approve write surface is proven
 
-PB-D59 section I names three carriers. Two are proven inert; one is not.
+PB-D59 section I names three carriers. All three, and the composition,
+are proven inert.
 
     endbuyer_maximum_purchase_price   PB-D58 section II   proven inert
     mao_max_allowable_offer           PB-D59 Proof A0     proven inert
-    assignment_mode                   Proof A             NOT proven
+    assignment_mode                   PB-D59 Proof A      proven inert
+    the composed three-field payload  PB-D59 Proof B      proven inert
 
-PB-D58 section IV is explicit that discharge does not generalize:
-dataType proves serialization, not field safety. Each carrier earns its
-own proof, and Proof B then proves the composition rather than trusting
-that three separately-proven fields compose.
+Each carrier earned its own proof before the composition was attempted,
+because PB-D58 section IV is explicit that discharge does not
+generalize: dataType proves serialization, not field safety. Proving
+only the payload would have conflated composition failure with field
+failure.
 
-**Evidence.** Fifteen files archived to
+**The `saveUnderwritingFields` contract, fully specified in PB-D59.**
+
+    one custom-fields-only PUT carrying exactly the three carriers
+    readback on the singular GET, parsing `fieldValue`
+    success only when all three are confirmed
+    all-or-nothing at the PRODUCT level, not a storage guarantee
+    a partial readback is a FAILURE, reported and not compensated
+
+**No compensation promise.** GHL documents no transaction and PB-D59
+does not pretend otherwise. Proof B OBSERVED that all three carriers
+appeared together on the first readback with no partial state seen --
+but one successful run is evidence the payload shape works, not an
+atomicity guarantee. Approve must treat a partial readback as a failure
+and surface which fields landed, rather than assuming it cannot happen
+or attempting an automatic compensating write.
+
+**Evidence.** Twenty-five files archived to
 `C:\Users\brad\Documents\IAOS Evidence\` with `cp -p`, every
 SHA-256 pair matched on both sides, every Temp original retained.
-Fifteen proof scripts retained in `app/scripts/` so the method is
+Twenty proof scripts retained in `app/scripts/` so the method is
 auditable and not only the result.
 
-**The two opportunity read paths serialize custom fields differently.**
-The singular `GET /opportunities/{id}` returns a NUMERICAL value under
-`fieldValue` and carries no `type` key; the list endpoint returns the
-same field under `fieldValueNumber` WITH a `type`. Same object, same
-dataType, different shape. `readNumberField` in
-`app/src/lib/underwriting/resolver.ts` is correct for the list shape the
-workspace consumes and MUST NOT be reused against the singular shape --
-it would read every NUMERICAL field as absent, silently, and report the
-deal unresolved rather than erroring. Recorded in PB-D58 section VI and
-constraining PB-D59's readback.
+**The two opportunity read paths serialize custom fields differently,**
+and Proof A established this precisely across dataTypes:
+
+                      singular GET     list endpoint
+    NUMERICAL         fieldValue       fieldValueNumber + type
+    SINGLE_OPTIONS    fieldValue       fieldValueString + type
+
+The singular GET is UNIFORM; the list endpoint varies by dataType. So
+the Approve readback needs ONE parser reading `fieldValue` for all three
+carriers. NEITHER `readNumberField` NOR `readStringField` in
+`app/src/lib/underwriting/resolver.ts` may be reused for it -- against
+the singular shape both return null, the verification would report all
+three carriers absent, and Approve would fail on a write that actually
+succeeded, silently and with a plausible message. Both are correct for
+the list shape the workspace consumes and must stay that way.
+
+**Also OBSERVED across the four cycles.** `field_value: ""` clears an
+opportunity NUMERICAL field to KEY_ABSENT. Opportunity NUMERICAL holds
+two decimal places unrounded. GHL stores SINGLE_OPTIONS by LABEL, not by
+option id, so no translation layer sits between the picklist and the
+wire. SINGLE_OPTIONS clear semantics remain UNKNOWN and are not required
+by the Approve contract -- Approve writes a mode over whatever mode is
+there and never clears one.
 
 ---
 
 ## Immediate next steps
 
-1. **PB-D59 Proof A — `assignment_mode`.** The first SINGLE_OPTIONS
+1. **Build Approve.** PB-D59 section VI as amended 2026-08-17: all three
+   proofs passed, that section is historical, and its restrictions are
+   lifted. Approve may be rendered and `saveUnderwritingFields` may be
+   called from it. Everything else PB-D59 specifies continues to apply
+   without exception -- the gate closing removes a precondition, it
+   relaxes no rule in sections I through IV.
+
+   The slice: define `saveUnderwritingFields` in `app/src/lib/ghl.ts`
+   alongside the existing read methods, write the singular-GET readback
+   parser, wire the control, and render the failure states PB-D59
+   section IV requires -- including a partial readback surfacing which
+   carriers landed.
+
+2. **Three harness checks assert Approve does not exist, and they must
+   be REPLACED, not deleted.** `verify-underwriting.cjs` carries
+   `approve-absent` and `probe-approve-absent`, both asserting zero
+   Approve buttons, and `no-write-controls` asserting zero inputs on the
+   page. All three were correct while PB-D59 section VI forbade
+   rendering. Building Approve makes them fail, and that failure is the
+   signal to update the harness with the new contract.
+
+   Whatever replaces them should assert what Approve MUST do -- that it
+   renders only when underwriting is resolved, that it reports a partial
+   readback as a failure, that it never appears on an unresolved deal --
+   not merely stop asserting what it must not. Deleting the three checks
+   and moving on would leave the most consequential control in the
+   product unasserted.
+
+3. **What Approve means for Manual mode is still open.** No GHL field
+   holds the manual assignment spread amount, so an approved
+   Manual-mode underwriting cannot round-trip. PB-D59 section VII lists
+   this among what it does not decide, along with whether an approved
+   underwriting can be superseded, whether approval is timestamped or
+   attributed, and what happens when a deal fact changes afterward.
+
+ARCHIVED, for the record — the three steps this list carried before
+Proof A and Proof B ran:
+
+A. **PB-D59 Proof A — `assignment_mode`.** The first SINGLE_OPTIONS
    write anywhere in IAOS. POPULATED origin, so restoration means the
    original option string returns exactly rather than a clear to
    absence -- a different contract from PB-D58's and A0's. There is no
@@ -658,7 +731,7 @@ constraining PB-D59's readback.
    one. Nobody may read Proof A as having established how to clear a
    SINGLE_OPTIONS field.
 
-2. **PB-D59 Proof B — the combined three-field payload.** One
+B. **PB-D59 Proof B — the combined three-field payload.** One
    custom-fields-only PUT carrying all three carriers together,
    readback on the singular-GET `fieldValue` shape, the full battery,
    and complete restoration of a mixed origin state -- the two
@@ -666,7 +739,7 @@ constraining PB-D59's readback.
    option string. Composition is part of the contract and is unproven
    until it is proven.
 
-3. **Then Approve may be rendered.** Not before, and PB-D59 section VI
+C. **Then Approve may be rendered.** Not before, and PB-D59 section VI
    forbids rendering it as a disabled control in the meantime.
    `saveUnderwritingFields` may be written but not called from the UI,
    which exists so Proof B can use the real method rather than a
@@ -681,7 +754,12 @@ module and is suitable for higher-throughput engineering. The
 underwriting read/render path has now crossed that readiness gate:
 its adapter and read contracts are implemented, production-verified, and
 covered in both resolved and unresolved live states. Higher-throughput
-work is appropriate for bounded follow-on slices that do not cross the
-still-unproven opportunity write boundary. The opportunity-side inert
-proof is DISCHARGED as of 2026-08-17; PB-D59's Proof A and Proof B are
-now the gate before parallelizing Approve/write-path work.
+work is appropriate for bounded follow-on slices.
+
+**The opportunity write boundary is now proven.** As of 2026-08-17 the
+inert proof is discharged, all three Approve carriers are proven inert,
+and the composed payload is proven. Approve is a bounded implementation
+slice against a fully specified contract rather than exploratory work,
+and is suitable for higher-throughput engineering. What remains
+genuinely open is listed in PB-D59 section VII, not in the write
+mechanics.
