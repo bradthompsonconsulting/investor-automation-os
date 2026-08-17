@@ -2512,3 +2512,224 @@ and this decision is superseded rather than amended.
 PB-D56 in full. PB-D51 shared configuration. Every existing endpoint's
 deployed behaviour -- this decision authorizes no code change to any
 function that exists today.
+
+### PB-D58 -- Opportunity-side inert proof: discovery of clear semantics, then the proof itself
+
+**Decision.** PB-D56 prerequisite 5 is discharged by an absent-origin
+inert proof against one opportunity-model NUMERICAL field. That proof
+cannot begin until the clear representation for opportunity NUMERICAL is
+OBSERVED, so this decision specifies two separate cycles run in order: a
+DISCOVERY cycle on a field with no consumer, then the PROOF cycle on the
+real target. The first establishes the mechanism; only the second
+discharges the prerequisite.
+
+**The two cycles are not the same thing and must not be conflated.** The
+discovery cycle on `closing_costs` is not prerequisite 5 and does not
+partially discharge it. It exists so the proof cycle has a validated
+restore mechanism rather than an assumed one. A discovery cycle that
+leaves residue is a recorded cost, not a failed inert proof, because the
+field it touches has no reader. A proof cycle that leaves residue is a
+failed inert proof by PB-D24's definition.
+
+**Why PB-D26 through PB-D32 do not apply unchanged.** Those decisions are
+contact-shaped in their own text, not merely by convention. PB-D30 states
+"Live precondition is contact-only" and that the runner's write stage adds
+no opportunity search. PB-D31 polls "the singular contact GET" and keys
+its evidence on `contactId`. PB-D32 scopes write-enablement to "the
+MONETORY `arv` configuration". PB-D28's registry hardcodes `contactId` per
+entry. Treating that body of work as silently generalized to a different
+object would be rewriting a committed contract after the fact. This
+decision preserves their discipline -- capture, controlled write, verify,
+restore, evidence at every stage -- and specifies the opportunity version
+on its own terms.
+
+**The existing runner is not extended.** Per the decision taken
+2026-08-13 and recorded in the handoff, the first opportunity proof is
+hand-written following the PB-D15 five-file precedent. Extending
+`inert-proof-runner.cjs` would be a schema change to code seven proven
+contact proofs depend on, made to accommodate an object whose
+serialization behaviour is not yet observed. Whether to generalize the
+runner is a separate decision taken after this proof passes, never as a
+side effect of it.
+
+---
+
+## I. The discovery cycle
+
+**Field.** `opportunity.closing_costs`, id `N8Aa9t1SZhU7XnPPzxWk`,
+NUMERICAL.
+
+**No live consumer, OBSERVED 2026-08-17** by recursive source read of
+`app/`, `netlify/` and `docs/` excluding `node_modules` and `dist`. Every
+code reference is inside `app/.netlify/functions-serve/`, which is the
+Netlify CLI's local build cache for `deal-submit` and `mao-webhook` --
+both deleted from source 2026-08-13, and that directory is covered by
+`app/.gitignore`. Stale build output of retired functions is not a
+consumer. The remaining references are documentation. This claim was
+re-established from current source rather than inherited from PB-D56
+section VI.
+
+**Why not `wholesale_fee_`.** Equally unreferenced, and rejected on
+residue semantics: it is a percentage, so a surviving value reads as a
+plausible configuration setting. A surviving `closing_costs` value on a
+disposable test opportunity is legible as residue.
+
+**Why not `assignment_fee_target`.** OBSERVED 2026-08-17: nine live
+references in `app/src/pages/MaoCalculator.tsx`. The calculator was
+retired from navigation 2026-08-16 but the file remains in the tree, so
+the field is not consumer-free.
+
+**Sequence, one deliberate command per step.**
+
+    1. capture   read the opportunity, record the full customFields
+                 array, the target field's absence, the pipeline stage,
+                 and the seven offer_ ids. No write.
+    2. write     one PUT, a designated test value per PB-D30's 2026-08-03
+                 amendment. No re-read, no poll.
+    3. verify    poll the opportunity GET until the field reads back equal.
+                 No write.
+    4. clear     one PUT attempting a candidate clear representation.
+                 ONE candidate per invocation. No re-read.
+    5. confirm   poll until the key is absent from customFields, or the
+                 attempt is exhausted. No write.
+
+**Candidate clear representations, tried in this order.**
+`field_value: ""` first, because it is the proven contact TEXT and
+MONETORY mechanism per PB-D24 and the cheapest hypothesis. Then
+`field_value: null`, because DATE requires null per the clear-semantics
+note at PB-D14 and NUMERICAL may follow that shape. A third candidate is
+specified only if both fail, and its selection is a separate decision --
+guessing further without evidence is how an unproven mechanism becomes a
+habit.
+
+**The second candidate runs steps 4 and 5 only, and its starting state
+is different.** If `""` does not clear, the field is populated. Steps 2
+and 3 are not repeated -- the value is already there and re-writing it
+would be a second mutation for no information. But the second attempt is
+therefore a POPULATED-origin clear, not an absent-origin one, and the two
+are different experiments: the first asks whether `""` clears a field
+that was absent before the proof wrote to it; the second asks whether
+`null` clears a field that has just resisted `""`. A success on the
+second candidate establishes that `null` clears a populated opportunity
+NUMERICAL field. It does NOT establish what would have happened had
+`null` been tried first, and the evidence records which candidate ran
+against which starting state so no later reader can collapse them.
+
+**The discovery cycle terminates in one of three recorded outcomes.**
+CLEARED, naming the representation that worked -- opportunity NUMERICAL
+clear semantics become OBSERVED and the proof cycle may proceed. NOT
+CLEARED, both candidates exhausted -- the field is left populated, the
+residue is recorded, and the proof cycle does NOT proceed. ERROR, any
+stage failing before its own conclusion -- state recorded as observed and
+the cycle stops.
+
+**A NOT CLEARED outcome blocks prerequisite 5.** It does not weaken the
+inert-proof definition to accommodate it. Without a validated restore
+mechanism there is no absent-origin proof to run, and PB-D24 rejects
+value-only rollback on definition rather than preference.
+
+---
+
+## II. The proof cycle
+
+**Field.** `opportunity.endbuyer_maximum_purchase_price`, id
+`zOVIPwzLe41a0SQmwVAJ`, NUMERICAL. Absent on all 42 opportunities as
+OBSERVED 2026-08-13 and named as the proposed target in the handoff
+since. Absent origin, so PB-D30's and PB-D32's absent-origin contracts
+apply in shape rather than requiring the populated-origin mechanism
+PB-D30 holds behind a separate specification.
+
+**Why not the three populated fixture fields.** `arv_after_repair_value`,
+`repair_estimate` and `assignment_mode` on the fixture carry values set
+2026-08-17 and are the inputs the resolved-branch production harness
+depends on. Proving against them would require the unspecified
+populated-origin mechanism AND would contaminate a working harness
+fixture. Both grounds are independently sufficient.
+
+**Fixture.** Opportunity `OcGWOP9n666i4Q1MLd31`, "IAOS Underwriting
+Test", on contact `HGZAby6snRZfpl0go2Yb` (IAOS Test Probe), in stage
+`New Lead - Seller`. Created deliberately 2026-08-17 as a disposable
+fixture. The same five-step sequence as the discovery cycle, using the
+clear representation the discovery cycle OBSERVED.
+
+**Confirmation battery, adapted to the object.** The four contact items
+become: `othersUnchanged` over the union of capture and live opportunity
+custom-field ids excluding the target; `offersUnchanged` across the seven
+`offer_` opportunity ids; `stageUnchanged` against the captured
+`pipelineStageId`; and `statusUnchanged` against the captured status.
+`tagsUnchanged` is dropped -- tags are a contact-model concept and the
+opportunity payload carries none. `statusUnchanged` replaces it because
+status is the opportunity-side field a stray write could move.
+
+**The write is custom-fields-only.** No `pipelineStageId`, no `status`,
+no `name`, no `monetaryValue` in any PUT body. OBSERVED at architecture
+reference line 118 and verified live: a custom-fields-only PUT cannot
+fire stage triggers. That is the mechanism the whole proof rests on, and
+a PUT body carrying anything else forfeits it.
+
+**Trigger exposure, stated as it stands.** Three trigger types are known
+live in this location: pipeline stage changed, contact tag added, form
+submitted. None watches an opportunity custom field. The GHL builder
+inspection of 2026-08-16 found no workflow using Opportunity Created.
+The retired `mao-webhook.ts` was a webhook on opportunity updates that
+wrote `mao_max_allowable_offer`; its retirement evidence recorded no
+matching GHL webhook among the three configured. Per section 4.6 trigger
+configuration is not API-derivable, so "no workflow watches an
+opportunity custom field" remains unproven rather than disproven. The
+proof proceeds on a disposable fixture for that reason, not despite it.
+
+---
+
+## III. Evidence
+
+**Path.** The existing flat directory, OBSERVED at
+`inert-proof-runner.cjs:78` as `C:/Users/brad/AppData/Local/Temp`, with
+an explicit object prefix:
+`inert-proof-opp-<field>-step<N>.json`. No subdirectory convention exists
+in the current machinery, so one is not invented here. The prefix exists
+so opportunity evidence cannot be mistaken for one of the seven contact
+proofs sharing that directory.
+
+**Every step persists before terminating**, per PB-D26. A failed PUT is an
+observation, not an aborted run. Evidence-persistence failure outranks
+response classification on any mutating step, per PB-D30 and PB-D32:
+an unrecorded mutation is the dangerous condition.
+
+**Durable archive.** Each step's evidence is copied to
+`C:\Users\brad\Documents\IAOS Evidence\` with `cp -p` to preserve
+mtime, and SHA-256 verified on both sides, following the established
+convention. Temp is not an archive.
+
+---
+
+## IV. What discharges the prerequisite
+
+PB-D56 prerequisite 5 is discharged when, and only when, the proof cycle
+on `endbuyer_maximum_purchase_price` completes with: the field observed
+absent at capture; one PUT observed to set the designated test value;
+read-back equality observed; the clear PUT issued; the key observed
+absent again on a bounded poll; and the four-item confirmation battery
+passing on both the verify and restore reads. Anything less is recorded
+as what it is.
+
+**Discharge does not authorize Approve.** It removes the gate PB-D56
+names. What Approve writes, when, and through which named method is
+PB-D55's `saveUnderwritingFields` question and is not settled here. Nor
+does it generalize: two proven opportunity fields would not prove a
+third, for the same reason PB-D16 gives on the contact side -- dataType
+proves serialization, not field safety.
+
+**A known gap that discharge does not close.** No GHL field holds the
+manual assignment spread amount. An approved Manual-mode underwriting
+cannot round-trip regardless of this proof, and that carrier remains an
+open PB-D56 question.
+
+---
+
+## V. Unchanged
+
+CONTACTS_OPPORTUNITIES_SPEC section 4.1's HARD NO on `offer_` fields,
+tags, pipeline stage and workflow triggers -- this proof touches none of
+them. PB-D24 through PB-D32 in full: they govern the contact-side runner
+and are neither amended nor extended by this decision. PB-D55 and PB-D56.
+PB-D57. Every existing proof record.
