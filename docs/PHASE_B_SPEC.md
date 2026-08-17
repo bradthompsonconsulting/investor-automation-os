@@ -2919,13 +2919,31 @@ OBSERVED 2026-08-17, recorded in PB-D58 section VI: the singular
 field under `fieldValueNumber` WITH a `type`. Same object, same dataType,
 different shape.
 
-**`readNumberField` in `app/src/lib/underwriting/resolver.ts` MUST NOT be
-reused for this readback.** It reads `fieldValueNumber` only. Against the
-singular shape it returns null for every field, the verification would
-report all three absent, and Approve would fail on a write that actually
-succeeded. It is correct for the list shape the Underwriting Workspace
-consumes and must stay that way; the readback needs its own parser
-written for `fieldValue`.
+**Amendment (2026-08-17): ONE parser, not two. The singular GET is
+uniform across dataTypes.** Proof A observed `assignment_mode` on both
+endpoints at three points in its cycle -- before, during and after the
+mutation -- and the shapes were invariant:
+
+                      singular GET        list endpoint
+    NUMERICAL         fieldValue          fieldValueNumber + type
+    SINGLE_OPTIONS    fieldValue          fieldValueString + type
+
+So the singular GET carries every dataType under one key while the LIST
+endpoint is the one that varies by dataType. The readback therefore needs
+a single parser reading `fieldValue` for all three carriers, not two
+parsers mirroring the resolver's split. That is simpler than this section
+originally required, and it was not knowable until a SINGLE_OPTIONS field
+had been observed on both endpoints.
+
+**NEITHER `readNumberField` NOR `readStringField` in
+`app/src/lib/underwriting/resolver.ts` may be reused for this readback.**
+`readNumberField` reads `fieldValueNumber` only; `readStringField` reads
+`fieldValueString` then falls back to `value`. Against the singular shape
+both return null -- the singular entry carries neither key -- the
+verification would report all three carriers absent, and Approve would
+fail on a write that actually succeeded, silently and with a plausible
+message. Both are correct for the list shape the Underwriting Workspace
+consumes and must stay that way.
 
 **Success requires all three confirmed.** Read the singular GET, poll
 bounded, compare each of the three against what was sent. The two
@@ -3038,6 +3056,55 @@ read back as the exact string; stage, status and every other custom field
 unmoved; restoring `Standard Minimum` returns the record to origin; the
 restoration verified.
 
+**RESULTS, 2026-08-17. A0 and Proof A both completed. Proof B remains.**
+
+Two of the three proofs this section requires are done, on fixture
+opportunity `OcGWOP9n666i4Q1MLd31`. Ten steps, four mutations, every one
+restored and verified, and the production harness green afterward.
+
+    endbuyer_maximum_purchase_price   PB-D58 section II   proven inert
+    mao_max_allowable_offer           PB-D59 Proof A0     proven inert
+    assignment_mode                   PB-D59 Proof A      proven inert
+
+**A0.** Absent origin, test value 486210.73, cleared with
+`field_value: ""`, key observed absent on poll 1, all seven completion
+conditions met, `restoredToOrigin` true. The carrier was confirmed
+orphaned before the proof designed itself: no live source reads or writes
+it, its only historical writer `mao-webhook.ts` was retired 2026-08-13,
+and it was absent on all 42 opportunities.
+
+**Proof A.** Populated origin `"Standard Minimum"`, temporary value
+`"25% of Buyer Profit"`, restored to the original label. All nine
+completion conditions met. The restored entry is byte-identical to the
+captured entry -- the same key set carrying the same string, which is the
+strongest available statement of restore-to-value. No empty value was
+ever sent.
+
+**OBSERVED: GHL stores SINGLE_OPTIONS by LABEL, not by option id.** The
+schema's three options match PB-D56 section II exactly and in order, the
+stored value appeared verbatim among them at capture, and the write
+carried the literal string. No id-translation layer exists between the
+picklist and the wire, which is one fewer thing for Approve to get wrong.
+
+**SINGLE_OPTIONS clear semantics remain UNKNOWN**, exactly as this
+section requires. Proof A never sent an empty value; its step 4 carried a
+guard that would have aborted if the body ever did.
+
+**The closing gate passed.** `verify-underwriting.cjs` was rerun after
+restoration and returned 27 of 27 with the probe RESOLVED and
+`rendered=145143 recomputed=145143` -- the harness recomputing PB-D56's
+waterfall independently and matching what the page rendered. The mode
+round-trip left the underwriting model computing exactly what it computed
+before.
+
+**Evidence.** Ten files archived 2026-08-17 with `cp -p` to
+`C:\Users\brad\Documents\IAOS Evidence\`, all SHA-256 pairs matched,
+all Temp originals retained. Ten proof scripts retained under
+`app/scripts/` so the method is auditable and not only the result.
+
+    inert-proof-opp-mao-a0-step1.json    through -step5.json
+    inert-proof-opp-mode-a-step1.json    through -step5.json
+
 **The production harness is not a valid gate mid-proof, and this is not a
 regression.** Changing the mode to `25% of Buyer Profit` changes what the
 workspace computes: the spread becomes
@@ -3114,5 +3181,6 @@ tags, pipeline stage and workflow triggers. PB-D24 through PB-D32: they
 govern the contact-side runner and are neither amended nor extended.
 PB-D55, PB-D56, PB-D57 and PB-D58 in full, including PB-D58 section IV's
 statement that discharge does not authorize Approve -- this decision
-defines what Approve would do and leaves it gated on three further
-proofs. Every existing proof record.
+defines what Approve would do and leaves it gated on further proofs.
+As of 2026-08-17 two of the three are complete and Proof B remains, so
+Approve stays unrendered. Every existing proof record.
