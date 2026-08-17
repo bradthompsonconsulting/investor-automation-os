@@ -1,12 +1,17 @@
 # IAOS — Session Handoff
 
-**Refreshed 2026-08-16.** Repo tip `42b85af` on `main`, pushed, working
-tree clean. Eleven commits today. Deployed and verified: 197 harness
-checks green against the served bundle across four harnesses, plus 186
-unit checks across two runners -- 53 on the calculation core, 133 on the
-resolver and view model. `tsc --noEmit` and `pnpm build` clean. The
-underwriting-policy endpoint passed its PB-D57 acceptance test against
-the live deploy.
+**Refreshed 2026-08-17.** Repo tip `152e7b1` on `main`, pushed, working
+tree clean. Deployed and verified: 197 harness checks green across four
+harnesses on `index-cQyZ3TPY.js`, plus 186 unit checks across two
+runners -- 53 on the calculation core, 133 on the resolver and view
+model. `tsc --noEmit` and `pnpm build` clean.
+
+**PB-D56 prerequisite 5 is DISCHARGED.** The gate on Approve since
+PB-D55 closed 2026-08-17 by evidence, not argument. Fifteen proof steps
+across three cycles, six production mutations, every one restored to
+origin and verified. The fixture opportunity was restored to its
+captured origin state, and the production harness reconfirmed the same
+underwriting result afterward.
 
 **CORRECTION to an earlier claim in this file and repeated in
 conversation: today was NOT "zero GHL writes."** Production writes
@@ -37,10 +42,13 @@ summary of them, including this one.
         claims made in conversation.
 
     docs/PHASE_B_SPEC.md
-        All PB decisions, PB-D1 through PB-D57. The most recent are the
+        All PB decisions, PB-D1 through PB-D59. The most recent are the
         live ones: PB-D53 and PB-D54 govern the Dashboard queues, PB-D55
-        and PB-D56 govern underwriting, PB-D57 governs inbound
-        authentication on the function surface.
+        and PB-D56 govern underwriting, PB-D57 governs browser-facing
+        read-endpoint policy -- positive allowlisting, non-secret and
+        non-personal exposure, and the temporary unauthenticated V1
+        risk -- PB-D58 the opportunity-side inert proof, and PB-D59 the
+        Approve write contract.
 
     docs/SELLER_ACQUISITION_WORKFLOW.md
         Product-design authority. What IAOS is being built toward: the
@@ -588,18 +596,85 @@ API-derivable. What it establishes is that the fixture work performed
 today was inert, and that the inert proof can proceed against a known
 trigger inventory rather than an unknown one.
 
+## Carrier status for Approve
+
+PB-D59 section I names three carriers. Two are proven inert; one is not.
+
+    endbuyer_maximum_purchase_price   PB-D58 section II   proven inert
+    mao_max_allowable_offer           PB-D59 Proof A0     proven inert
+    assignment_mode                   Proof A             NOT proven
+
+PB-D58 section IV is explicit that discharge does not generalize:
+dataType proves serialization, not field safety. Each carrier earns its
+own proof, and Proof B then proves the composition rather than trusting
+that three separately-proven fields compose.
+
+**Evidence.** Fifteen files archived to
+`C:\Users\brad\Documents\IAOS Evidence\` with `cp -p`, every
+SHA-256 pair matched on both sides, every Temp original retained.
+Fifteen proof scripts retained in `app/scripts/` so the method is
+auditable and not only the result.
+
+**The two opportunity read paths serialize custom fields differently.**
+The singular `GET /opportunities/{id}` returns a NUMERICAL value under
+`fieldValue` and carries no `type` key; the list endpoint returns the
+same field under `fieldValueNumber` WITH a `type`. Same object, same
+dataType, different shape. `readNumberField` in
+`app/src/lib/underwriting/resolver.ts` is correct for the list shape the
+workspace consumes and MUST NOT be reused against the singular shape --
+it would read every NUMERICAL field as absent, silently, and report the
+deal unresolved rather than erroring. Recorded in PB-D58 section VI and
+constraining PB-D59's readback.
+
+---
+
 ## Immediate next steps
 
-1. **The opportunity-side inert proof — PB-D56 prerequisite 5.** The
-   fixture exists, so the controlled work can start Monday on a
-   disposable record. NOT started, NOT discharged. It runs on
-   `OcGWOP9n666i4Q1MLd31` and follows the same capture / write / verify /
-   restore discipline every contact-side proof used.
+1. **PB-D59 Proof A — `assignment_mode`.** The first SINGLE_OPTIONS
+   write anywhere in IAOS. POPULATED origin, so restoration means the
+   original option string returns exactly rather than a clear to
+   absence -- a different contract from PB-D58's and A0's. There is no
+   consumer-free SINGLE_OPTIONS field to rehearse on: `assignment_mode`
+   is the only one on the opportunity model and it is the field Approve
+   writes, so discovery and the field proof are the same cycle.
 
-2. **After that proof passes, decide and implement the Approve write
-   path.** Approve stays unrendered until then. What Approve means for
-   Manual mode is still open: no GHL field holds the manual assignment
-   spread amount, so an approved manual underwriting cannot round-trip.
+   Writes `25% of Buyer Profit`, verifies, restores `Standard Minimum`
+   exactly. That option keeps the fixture fully resolved while
+   exercising a materially different spread branch. `Manual` was
+   rejected: with no manual-amount carrier it resolves to unresolved,
+   which changes the fixture's state class rather than its values.
+
+   `verify-underwriting.cjs` is NOT a valid gate mid-proof and its
+   failure then is NOT a regression. The harness hardcodes the standard
+   minimum as a verification-only literal and would compare a
+   profit-share figure against a standard-minimum recomputation.
+   Proof A's final step reruns it after restoration and requires the
+   probe to return to RESOLVED with the independent PB-D56 arithmetic
+   check passing. That is the boundary between temporary fixture
+   mutation and post-restoration regression verification.
+
+   SINGLE_OPTIONS clear semantics remain UNKNOWN and are not required:
+   Approve writes a mode over whatever mode is there and never clears
+   one. Nobody may read Proof A as having established how to clear a
+   SINGLE_OPTIONS field.
+
+2. **PB-D59 Proof B — the combined three-field payload.** One
+   custom-fields-only PUT carrying all three carriers together,
+   readback on the singular-GET `fieldValue` shape, the full battery,
+   and complete restoration of a mixed origin state -- the two
+   NUMERICAL carriers to KEY_ABSENT, `assignment_mode` to its original
+   option string. Composition is part of the contract and is unproven
+   until it is proven.
+
+3. **Then Approve may be rendered.** Not before, and PB-D59 section VI
+   forbids rendering it as a disabled control in the meantime.
+   `saveUnderwritingFields` may be written but not called from the UI,
+   which exists so Proof B can use the real method rather than a
+   stand-in.
+
+   What Approve means for Manual mode is still open: no GHL field holds
+   the manual assignment spread amount, so an approved manual
+   underwriting cannot round-trip.
 
 **On parallelizing.** The calculation core is now a proven bounded
 module and is suitable for higher-throughput engineering. The
@@ -608,4 +683,5 @@ its adapter and read contracts are implemented, production-verified, and
 covered in both resolved and unresolved live states. Higher-throughput
 work is appropriate for bounded follow-on slices that do not cross the
 still-unproven opportunity write boundary. The opportunity-side inert
-proof remains the gate before parallelizing Approve/write-path work.
+proof is DISCHARGED as of 2026-08-17; PB-D59's Proof A and Proof B are
+now the gate before parallelizing Approve/write-path work.
