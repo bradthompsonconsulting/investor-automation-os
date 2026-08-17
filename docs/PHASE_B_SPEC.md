@@ -2831,3 +2831,288 @@ spread amount, so an approved Manual-mode underwriting still cannot
 round-trip. The Approve write contract is undecided. The existing
 contact-side runner was not extended, per this decision; whether to
 generalize it is a separate decision taken on its own terms.
+
+### PB-D59 -- The Approve write contract
+
+**Decision.** Approve persists three opportunity custom fields in one
+custom-fields-only PUT through a single named method,
+`saveUnderwritingFields`, and succeeds only when all three values are
+confirmed on a singular-GET readback. It is NOT authorized and MUST NOT
+be rendered until three further proofs pass. This decision defines the
+contract; it does not open the gate.
+
+**`saveUnderwritingFields` is named here for the first time.** OBSERVED
+2026-08-17: the name appears nowhere else in this specification. The
+handoff has attributed it to PB-D55 for some days; PB-D55 requires a
+named method per PB-D16 and does not supply the name. This decision
+supplies it. The attribution was wrong, not the requirement.
+
+---
+
+## I. What Approve persists
+
+Three fields, all on the selected Opportunity. PB-D56 section VI is the
+carrier register and this is its complete set:
+
+    endbuyer_maximum_purchase_price   zOVIPwzLe41a0SQmwVAJ   NUMERICAL
+        The modeled buyer ceiling. Created 2026-08-13.
+
+    mao_max_allowable_offer           Atu5XCjpFElY8H64VG4h   NUMERICAL
+        Seller MAO. Pre-existing, reused rather than created.
+
+    assignment_mode                   TpLo0WRc303TXAaBUbBf   SINGLE_OPTIONS
+        Which of PB-D56 section II's three modes governs. Created
+        2026-08-13, carrying exactly the three option strings that
+        section names, in order.
+
+**Nothing else is written.** Not the opportunity name, stage, status,
+monetary value, assigned user or tags. Not any `offer_` field -- section
+4.1's HARD NO stands and this decision touches none of them. Not the
+deal-fact inputs `arv_after_repair_value`, `repair_estimate` or
+`asking_price`: those are what the operator supplies, not what
+underwriting produces.
+
+**Outputs, not presentation.** The three carriers are the durable
+underwriting decision. The waterfall breakdown, provenance labels,
+acquisition position and financing factor are DERIVED and are not
+persisted -- they are recomputable from the three carriers plus the deal
+facts plus policy, and persisting a derived value creates a second source
+of truth that can disagree with the first. PB-D56's provenance rule is
+the precedent: derived, never stored.
+
+**Not persisted, deliberately.** The Opening Offer is a human negotiation
+decision that PB-D56 section VI records as having no carrier and no
+consumer. The manual assignment spread AMOUNT has no carrier at all --
+`assignment_mode` records which mode governs and nothing records the
+manual dollar figure. An approved Manual-mode underwriting therefore
+cannot round-trip, and this decision does not close that gap.
+
+---
+
+## II. The write method
+
+**`saveUnderwritingFields` is the sole path.** One named method, per
+PB-D16's named-wrapper rule as PB-D55 inherits it. No component composes
+its own PUT. No generic write helper is reused. The method exists so that
+every underwriting write is one grep away from being found.
+
+**One PUT carrying all three fields.** Not three PUTs. OBSERVED PB-D58: a
+custom-fields-only PUT to an opportunity moves nothing else -- not stage,
+not status, not other custom fields. Three separate PUTs would triple the
+window in which a partial state is visible and would require compensating
+writes on failure at step two or three. One request is the smaller
+surface.
+
+**The body carries only `customFields`, and only these three ids.**
+Asserted before the request is issued, key by key, not by substring scan.
+The mechanism the write rests on is that a custom-fields-only PUT cannot
+fire stage triggers; a body carrying anything else forfeits it.
+
+---
+
+## III. Readback, and the shape it must use
+
+**Verification is a singular GET and it must parse `fieldValue`.**
+OBSERVED 2026-08-17, recorded in PB-D58 section VI: the singular
+`GET /opportunities/{id}` returns a NUMERICAL custom-field value under
+`fieldValue` with no `type` key, while the list endpoint returns the same
+field under `fieldValueNumber` WITH a `type`. Same object, same dataType,
+different shape.
+
+**`readNumberField` in `app/src/lib/underwriting/resolver.ts` MUST NOT be
+reused for this readback.** It reads `fieldValueNumber` only. Against the
+singular shape it returns null for every field, the verification would
+report all three absent, and Approve would fail on a write that actually
+succeeded. It is correct for the list shape the Underwriting Workspace
+consumes and must stay that way; the readback needs its own parser
+written for `fieldValue`.
+
+**Success requires all three confirmed.** Read the singular GET, poll
+bounded, compare each of the three against what was sent. The two
+NUMERICAL fields compare by value; `assignment_mode` compares by exact
+option string. A 200 from the PUT is not success -- OBSERVED across both
+PB-D58 cycles that a 200 means the server accepted a request and nothing
+more.
+
+---
+
+## IV. Failure, and what all-or-nothing can honestly mean
+
+**GHL documents no transaction and this decision does not pretend
+otherwise.** One PUT is one request, the closest thing to atomicity
+available. It is not a database transaction and must not be described as
+one.
+
+**All-or-nothing is a PRODUCT-level rule about representation, not a
+storage guarantee.** IAOS sends one three-field PUT and represents the
+deal as approved only after all three values are confirmed on readback.
+If readback is partial, Approve has FAILED, the workspace says so, and
+the deal is not shown as approved. The record may be left in a partial
+state, and the honest thing is to surface that rather than imply a
+rollback occurred.
+
+**No automatic compensating write.** Clearing or reverting a partially
+applied field is itself a mutation. A compensating write may be attempted
+only through a mechanism separately proven safe for the field in
+question. PB-D24 rejects value-only rollback on definition; that
+reasoning applies here.
+
+**A partial state is a reportable condition.** The workspace surfaces
+which fields landed and which did not, and does not represent the
+underwriting as durable. An operator seeing that has better information
+than one seeing a silent failure or a false success.
+
+---
+
+## V. Three proofs stand between this contract and Approve
+
+**PB-D58 discharged prerequisite 5 for ONE field.** Its section IV is
+explicit that discharge does not generalize: dataType proves
+serialization, not field safety. Of the three carriers Approve writes,
+exactly one -- `endbuyer_maximum_purchase_price` -- has an inert proof.
+
+**Why not one combined proof.** Proving the three-field payload alone
+would conflate composition failure with field failure: a failure would
+not say whether the payload shape is wrong or one carrier is unsafe. Each
+carrier is proven alone first, so a Proof B failure points at composition
+and nothing else.
+
+**Consumer status of `mao_max_allowable_offer`, OBSERVED 2026-08-17.**
+Established before designing its proof rather than assumed, because it is
+the one carrier that predates underwriting and once had a writer:
+
+    no live source reads or writes it -- every code reference is under
+        app/.netlify/functions-serve/, the Netlify CLI build cache for
+        deal-submit and mao-webhook, both deleted from source 2026-08-13
+    every `sellerMAO` reference in live source is the COMPUTED figure
+        inside compute.ts, view-model.ts, resolver-types.ts and
+        UnderwritingWorkspace.tsx -- none touches the carrier
+    its only historical writer was mao-webhook.ts, retired 2026-08-13,
+        whose retirement evidence found no matching GHL webhook among the
+        three configured
+    the field is ABSENT on all 42 opportunities, including the fixture
+
+So the carrier is currently orphaned: IAOS computes Seller MAO, displays
+it, and writes it nowhere. A0 is therefore a clean absent-origin
+NUMERICAL proof rather than a proof against a field something reads.
+
+**Proof A0 -- `mao_max_allowable_offer`, absent origin.**
+
+Standalone five-step proof on PB-D58's pattern, using the NUMERICAL clear
+mechanism PB-D58 OBSERVED. Absent at capture, one PUT sets a designated
+test value, read-back equality, one PUT issues `field_value: ""`, key
+observed absent again, full battery on both reads. The cheapest of the
+three proofs and the one that removes the last per-field unknown.
+
+**Proof A -- `assignment_mode`, populated origin, restore to value.**
+
+There is no consumer-free SINGLE_OPTIONS field on the opportunity model to
+rehearse on. `assignment_mode` is the only one, and it is the field
+Approve writes. Discovery and the field proof are therefore the same
+cycle, on a field that matters. That departs from PB-D58 section I's
+pattern and is forced by the schema, not chosen.
+
+The fixture carries `assignment_mode: "Standard Minimum"`, so this proof
+is POPULATED origin and its restoration contract differs from PB-D58's.
+The difference is the point:
+
+    PB-D58, absent origin      restoration = clear to KEY_ABSENT, which
+                               required validated clear semantics
+    Proof A, populated origin  restoration = the original option string
+                               returns exactly
+
+**SINGLE_OPTIONS clear semantics remain UNKNOWN and are NOT required by
+this contract.** Approve writes a mode over whatever mode is there; it
+never clears one. Nobody may read Proof A as having established how to
+clear a SINGLE_OPTIONS field. A future need to clear one requires its own
+proof.
+
+Proof A writes `25% of Buyer Profit`, verifies it, then restores
+`Standard Minimum` exactly. That option keeps the fixture fully resolved
+while exercising a materially different spread branch. `Manual` was
+rejected: with no manual-amount carrier it resolves to unresolved, which
+changes the fixture's state class rather than its values.
+
+**Proof A's battery.** Only `assignment_mode` changed; the new option
+read back as the exact string; stage, status and every other custom field
+unmoved; restoring `Standard Minimum` returns the record to origin; the
+restoration verified.
+
+**The production harness is not a valid gate mid-proof, and this is not a
+regression.** Changing the mode to `25% of Buyer Profit` changes what the
+workspace computes: the spread becomes
+`max(requiredProfit x 0.25, standardMinimum)`, which on the fixture is
+9375 rather than 5000, so the rendered Seller MAO moves.
+`verify-underwriting.cjs` hardcodes the standard minimum as a
+verification-only literal and would compare a profit-share figure against
+a standard-minimum recomputation. Expect it to fail if run while the
+fixture is in the temporary proof state. The proof verifies the temporary
+state directly instead.
+
+Proof A's final step reruns `verify-underwriting.cjs` after restoration
+and requires the probe to return to RESOLVED with the independent PB-D56
+arithmetic check passing. That is the boundary between temporary fixture
+mutation and post-restoration production regression verification.
+
+**Proof B -- the combined three-field payload.**
+
+One custom-fields-only PUT carrying all three carriers together, verified
+by singular GET on the `fieldValue` shape, full battery, complete
+restoration of the origin state.
+
+Composition is part of the contract. Three fields that write correctly one
+at a time do not prove a three-field payload behaves as Approve needs.
+Proof B proves the write Approve actually performs, not three writes it
+never will.
+
+Proof B's origin state is mixed and its restoration correspondingly so:
+the two NUMERICAL carriers restore to KEY_ABSENT by PB-D58's observed
+mechanism, and `assignment_mode` restores to its original option string by
+the mechanism Proof A establishes. Both restoration contracts run in the
+same cycle.
+
+**Sequence, and it is not negotiable.** A0, then A, then B, then Approve
+may be rendered. A0 first because it is the last per-field unknown and the
+cheapest to close. A before B because the first SINGLE_OPTIONS write in
+this project should not happen inside the payload we intend to ship. B
+last because composition is unproven until it is proven.
+
+---
+
+## VI. Until all three proofs pass
+
+**Approve is not rendered.** Not as a disabled control -- a greyed button
+implies the feature is one configuration away from working, and it is
+not. The workspace states that Approve is unavailable and why, which is
+what it does today.
+
+**`saveUnderwritingFields` may be written but not called from the UI.**
+Defining the method is permitted; wiring a control to it is not. If the
+method exists before the proofs pass, nothing user-facing may invoke it.
+Proof B may use the real method rather than a stand-in, which is the
+reason this permission exists.
+
+---
+
+## VII. Not decided here
+
+What the workspace shows after a successful Approve, and whether an
+approved underwriting can be superseded by a later one. Whether approval
+is timestamped or attributed, and if so by what carrier. What happens to
+an approved underwriting when a deal fact later changes. Whether Approve
+requires more than Gate 1 -- `SELLER_ACQUISITION_WORKFLOW.md` names that
+Offer Readiness and records its criteria as undecided. The manual
+assignment spread carrier. Any write to a Contact field. SINGLE_OPTIONS
+clear semantics.
+
+---
+
+## VIII. Unchanged
+
+CONTACTS_OPPORTUNITIES_SPEC section 4.1's HARD NO on `offer_` fields,
+tags, pipeline stage and workflow triggers. PB-D24 through PB-D32: they
+govern the contact-side runner and are neither amended nor extended.
+PB-D55, PB-D56, PB-D57 and PB-D58 in full, including PB-D58 section IV's
+statement that discharge does not authorize Approve -- this decision
+defines what Approve would do and leaves it gated on three further
+proofs. Every existing proof record.
