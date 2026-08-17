@@ -338,6 +338,108 @@ export interface PolicyValuesResponse {
   values: PolicyValueRow[];
 }
 
+// ── Approve write, PB-D59 ─────────────────────────────────────────────────────
+
+/**
+ * Reads a custom-field value from a SINGULAR opportunity GET.
+ *
+ * ONE PARSER FOR EVERY dataType, and that is the finding it encodes.
+ * OBSERVED 2026-08-17 across PB-D58 and PB-D59 Proofs A and B: the
+ * singular `GET /opportunities/{id}` returns every custom-field value
+ * under `fieldValue`, while the LIST endpoint varies by dataType --
+ * `fieldValueNumber` for NUMERICAL, `fieldValueString` for
+ * SINGLE_OPTIONS, each with a `type` key the singular shape omits.
+ *
+ *                    singular GET     list endpoint
+ *   NUMERICAL        fieldValue       fieldValueNumber + type
+ *   SINGLE_OPTIONS   fieldValue       fieldValueString + type
+ *
+ * DO NOT REUSE THE RESOLVER'S READERS HERE. `readNumberField` reads
+ * `fieldValueNumber` only and `readStringField` reads
+ * `fieldValueString ?? value`; against the singular shape both return
+ * null, every carrier would report absent, and Approve would fail on a
+ * write that actually succeeded -- silently, with a plausible message.
+ * Both are correct for the list shape the Underwriting Workspace consumes
+ * and must stay that way. Recorded in PB-D59 section III as amended.
+ *
+ * Strict about WHICH key, deliberately, following the resolver's
+ * precedent: a value arriving under an unexpected key reads as absent
+ * rather than being coalesced. That makes a wire-shape change visible as
+ * a failed readback instead of silently working until it does not.
+ */
+function readSingularFieldValue(entry: any): number | string | null {
+  if (entry === null || entry === undefined) return null;
+  const raw = entry.fieldValue;
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  if (typeof raw === "string") return raw;
+  return null;
+}
+
+/**
+ * Rounds a monetary output to cents before it is persisted.
+ *
+ * WHY THIS EXISTS, and it is a real gap rather than tidiness. Every
+ * NUMERICAL value the PB-D58 and PB-D59 proofs put on the wire carried
+ * exactly two decimal places -- 8271.31, 313370.42, 486210.73, 571204.86,
+ * 398715.29 -- and each round-tripped byte-exact. What GHL does with a
+ * full-precision float such as 145143.47283948 is NOT established by any
+ * proof. `computeUnderwriting` produces exactly that: Seller MAO is a
+ * division result, not a round number.
+ *
+ * Sending an unrounded float would step outside the proven serialization
+ * envelope at the write boundary, and the readback comparison is strict
+ * equality -- so a value GHL altered in the eighth decimal would report
+ * as not landed, and Approve would fail on a write that succeeded.
+ *
+ * Cents are also the right persisted representation for currency. The
+ * workspace already displays these to whole dollars, so no precision the
+ * operator ever sees is lost.
+ */
+function roundCurrency(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * The three carriers Approve persists, PB-D59 section I. Exactly these,
+ * never more: the opportunity name, stage, status, monetary value, tags,
+ * the seven `offer_` fields and the deal-fact inputs are all excluded.
+ *
+ * `assignmentMode` carries one of PB-D56 section II's three option strings.
+ * OBSERVED 2026-08-17 (PB-D59 Proof A): GHL stores this picklist by LABEL,
+ * not by option id, so the literal string is what goes on the wire.
+ */
+export interface UnderwritingApproval {
+  endBuyerMaxPrice: number;
+  sellerMAO:        number;
+  assignmentMode:   string;
+}
+
+/**
+ * One carrier's readback outcome. Approve succeeds only when all three
+ * report `landed: true` -- PB-D59 section III.
+ */
+export interface CarrierReadback {
+  key:      keyof UnderwritingApproval;
+  fieldId:  string;
+  sent:     number | string;
+  observed: number | string | null;
+  landed:   boolean;
+}
+
+/**
+ * What `saveUnderwritingFields` returns. `ok` is true only when every
+ * carrier landed. A partial result is a FAILURE that names which carriers
+ * did and did not land, per PB-D59 section IV -- it is reported, never
+ * silently compensated.
+ */
+export interface UnderwritingWriteResult {
+  ok:        boolean;
+  putStatus: number;
+  carriers:  CarrierReadback[];
+  landed:    number;
+}
+
 // ── Transport (swap this block for OAuth in Phase B) ─────────────────────────
 
 async function request<T = unknown>(
@@ -673,7 +775,9 @@ export const ghl = {
     // malformed-vs-absent handling stay in parsePolicy -- nothing here
     // interprets a value.
     //
-    // Read-only. This member has no write path and must never acquire one.
+    // `policy` is read-only and must never acquire a write path.
+    // Underwriting mutations are exposed separately through explicitly
+    // named methods in this namespace -- see saveUnderwritingFields below.
     policy: async (): Promise<PolicyValuesResponse> => {
       const res = await fetch("/.netlify/functions/ghl-underwriting-policy");
       if (!res.ok) {
@@ -681,6 +785,130 @@ export const ghl = {
         throw new Error(`ghl-underwriting-policy → ${res.status}: ${text}`);
       }
       return res.json() as Promise<PolicyValuesResponse>;
+    },
+
+    /**
+     * PB-D59 -- the Approve write. THE ONLY PATH by which underwriting is
+     * persisted. No component composes its own PUT and no generic write
+     * helper is reused; this method exists so that every underwriting
+     * write is one grep away from being found.
+     *
+     * ONE PUT CARRYING ALL THREE CARRIERS, custom-fields-only. Not three
+     * PUTs: three requests would triple the window in which a partial
+     * state is visible and would require compensating writes on failure
+     * at the second or third. The body is built from the three ids below
+     * and nothing else -- a body carrying pipelineStageId, status, name,
+     * monetaryValue or tags forfeits the mechanism the whole write rests
+     * on, which is that a custom-fields-only PUT cannot fire stage
+     * triggers.
+     *
+     * READBACK PARSES `fieldValue`. OBSERVED 2026-08-17 across PB-D58 and
+     * PB-D59 Proofs A and B: the singular GET returns every dataType under
+     * `fieldValue`, while the LIST endpoint varies -- `fieldValueNumber`
+     * for NUMERICAL, `fieldValueString` for SINGLE_OPTIONS. Neither
+     * `readNumberField` nor `readStringField` in the resolver may be used
+     * here: against the singular shape both return null, all three
+     * carriers would report absent, and Approve would fail on a write that
+     * actually succeeded.
+     *
+     * A 200 IS NOT SUCCESS. It means the server accepted a request.
+     * Success is all three carriers confirmed on readback, and the caller
+     * must check `ok` rather than assuming the absence of a throw means
+     * the underwriting is durable.
+     *
+     * NO COMPENSATING WRITE ON PARTIAL. PB-D59 section IV: GHL documents
+     * no transaction and this method does not pretend otherwise. A partial
+     * result is returned with per-carrier detail so the caller can report
+     * which fields landed. Reverting a partially applied field would
+     * itself be a mutation and is not attempted here.
+     *
+     * Proven inert on a disposable fixture before this method existed:
+     * PB-D58 section II, PB-D59 Proofs A0, A and B. Twenty proof steps,
+     * ten mutations, every one restored.
+     */
+    saveUnderwritingFields: async (
+      opportunityId: string,
+      approval: UnderwritingApproval,
+    ): Promise<UnderwritingWriteResult> => {
+      const ids = CONFIG.opportunityFields;
+
+      /* The two monetary carriers are rounded to cents BEFORE the plan is
+         built, so `plan` holds what is actually persisted. Everything
+         downstream reads from it -- the request body, the `sent` field of
+         each readback, and the strict equality that sets `landed`. A
+         partial report therefore names the figure Approve sent, never the
+         higher-precision figure compute produced internally. Confusing
+         those two would make a failure report unactionable. */
+      const plan: { key: keyof UnderwritingApproval; fieldId: string; value: number | string }[] = [
+        { key: "endBuyerMaxPrice", fieldId: ids.endBuyerMaxPrice, value: roundCurrency(approval.endBuyerMaxPrice) },
+        { key: "sellerMAO",        fieldId: ids.sellerMAO,        value: roundCurrency(approval.sellerMAO) },
+        { key: "assignmentMode",   fieldId: ids.assignmentMode,   value: approval.assignmentMode },
+      ];
+
+      /* The finiteness guards read the INPUT, not the plan. roundCurrency
+         of NaN is NaN and of Infinity is Infinity, so guarding after the
+         rounding would let either through as a plan value and onto the
+         wire. */
+      if (typeof approval.endBuyerMaxPrice !== "number" || !Number.isFinite(approval.endBuyerMaxPrice)) {
+        throw new Error("saveUnderwritingFields: endBuyerMaxPrice must be a finite number");
+      }
+      if (typeof approval.sellerMAO !== "number" || !Number.isFinite(approval.sellerMAO)) {
+        throw new Error("saveUnderwritingFields: sellerMAO must be a finite number");
+      }
+
+      // Guards on the payload itself, before it is sent. Each protects a
+      // property PB-D59 requires and none is redundant with the others.
+      for (const p of plan) {
+        if (!p.fieldId) throw new Error(`saveUnderwritingFields: no configured id for ${p.key}`);
+        if (p.value === "" || p.value === null || p.value === undefined) {
+          throw new Error(`saveUnderwritingFields: ${p.key} is empty; this method clears nothing`);
+        }
+      }
+      if (typeof approval.assignmentMode !== "string") {
+        throw new Error("saveUnderwritingFields: assignmentMode must be a string");
+      }
+      if (new Set(plan.map((p) => p.fieldId)).size !== 3) {
+        throw new Error("saveUnderwritingFields: the three carrier ids are not distinct");
+      }
+
+      const body = { customFields: plan.map((p) => ({ id: p.fieldId, field_value: p.value })) };
+
+      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const putStatus = putRes.status;
+      if (!putRes.ok) {
+        const text = await putRes.text();
+        throw new Error(`saveUnderwritingFields PUT → ${putStatus}: ${text}`);
+      }
+
+      // Readback on the SINGULAR GET, parsing fieldValue. Not the list
+      // endpoint, whose shape varies by dataType.
+      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
+      if (!readRes.ok) {
+        const text = await readRes.text();
+        throw new Error(`saveUnderwritingFields readback → ${readRes.status}: ${text}`);
+      }
+      const readBody = await readRes.json();
+      const opp = readBody.opportunity ?? readBody;
+      const byId = new Map<string, any>((opp.customFields ?? []).map((f: any) => [f.id, f]));
+
+      const carriers: CarrierReadback[] = plan.map((p) => {
+        const entry = byId.get(p.fieldId) ?? null;
+        const observed = entry === null ? null : readSingularFieldValue(entry);
+        return {
+          key: p.key,
+          fieldId: p.fieldId,
+          sent: p.value,
+          observed,
+          landed: observed === p.value,
+        };
+      });
+
+      const landed = carriers.filter((c) => c.landed).length;
+      return { ok: landed === 3, putStatus, carriers, landed };
     },
   },
 };

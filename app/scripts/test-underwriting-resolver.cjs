@@ -69,7 +69,7 @@ if (!fs.existsSync(viewModelPath)) {
 const { toViewModel } = require(viewModelPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 133;
+const FLOOR = 159;
 
 let failures = 0;
 let checks = 0;
@@ -449,6 +449,12 @@ function vmInput(over) {
     result: null,
     facts: goldenFacts(),
     issues: [],
+    /* PB-D59. ViewModelInput requires this; the default is what the page
+       holds before any attempt. This runner compiles the TS sources but does
+       not typecheck its own call sites, so omitting it would produce a
+       resolved state carrying approve: undefined rather than a compile
+       error -- a silent wrong answer instead of a loud one. */
+    approve: { status: 'idle' },
   }, over || {});
 }
 
@@ -624,6 +630,124 @@ function vmInput(over) {
   check('vm issues preserved on banner', s.banner.issues.length, 1);
   check('vm issues name the key', s.banner.issues[0].key, 'monthlyCarry');
   check('vm malformed carry fell through to starter', s.figures.baseBuyerCapacity, 190250, 0.5);
+}
+
+/* ================================================================== */
+/* PB-D59 -- the Approve attempt as a second axis on resolved          */
+/* ================================================================== */
+
+/* SCOPE NOTE. These cases cover ApproveState flowing through toViewModel
+   and nothing else. saveUnderwritingFields and readSingularFieldValue live
+   in app/src/lib/ghl.ts, which this runner does not compile -- that file
+   reads import.meta.env and a .cjs runner cannot load it without a Vite
+   shim.
+
+   readSingularFieldValue is EVIDENCE-BACKED rather than unit-runner-backed.
+   Its contract -- the singular GET returns every dataType under fieldValue
+   -- was OBSERVED four times across PB-D58 and PB-D59 Proofs A and B, on
+   two NUMERICAL fields and one SINGLE_OPTIONS field, before and during and
+   after mutation. PB-D59 Proof B is the governing evidence. A unit test
+   written from the same assumption the parser encodes would be weaker than
+   that, not stronger. */
+
+/* ---- 30. A resolved deal carries the approve state the page supplied,
+   and idle is what an untouched deal reports. ---- */
+{
+  const s = toViewModel(vmInput({ result: resolvedResult() }));
+  check('vm approve default is idle', s.approve.status, 'idle');
+  check('vm approve rides on resolved', s.state, 'resolved');
+}
+
+/* ---- 31. Each status survives unchanged. The view model records the
+   attempt; it never reinterprets it. ---- */
+{
+  const inFlight = toViewModel(vmInput({
+    result: resolvedResult(), approve: { status: 'in_flight' },
+  }));
+  check('vm approve in_flight survives', inFlight.approve.status, 'in_flight');
+  check('vm in_flight still resolved', inFlight.state, 'resolved');
+
+  const ok = toViewModel(vmInput({
+    result: resolvedResult(), approve: { status: 'succeeded' },
+  }));
+  check('vm approve succeeded survives', ok.approve.status, 'succeeded');
+  check('vm succeeded still resolved', ok.state, 'resolved');
+}
+
+/* ---- 32. failed carries its message. The record did not change, so the
+   operator can retry. ---- */
+{
+  const s = toViewModel(vmInput({
+    result: resolvedResult(),
+    approve: { status: 'failed', message: 'PUT returned 502' },
+  }));
+  check('vm approve failed status', s.approve.status, 'failed');
+  check('vm approve failed message', s.approve.message, 'PUT returned 502');
+  check('vm failed still resolved', s.state, 'resolved');
+}
+
+/* ---- 33. partial is NOT failed, and must never be collapsed into it.
+   PB-D59 section IV: a failed write left the record unchanged, a partial
+   one did not. The operator message and the product behaviour differ. ---- */
+{
+  const carriers = [
+    { key: 'endBuyerMaxPrice', landed: true,  sent: 150143, observed: 150143 },
+    { key: 'sellerMAO',        landed: true,  sent: 145143, observed: 145143 },
+    { key: 'assignmentMode',   landed: false, sent: 'Standard Minimum', observed: null },
+  ];
+  const s = toViewModel(vmInput({
+    result: resolvedResult(),
+    approve: { status: 'partial', message: '2 of 3 carriers landed', landed: 2, carriers },
+  }));
+  check('vm approve partial status', s.approve.status, 'partial');
+  check('vm partial is not failed', s.approve.status === 'failed', false);
+  check('vm partial names how many landed', s.approve.landed, 2);
+  check('vm partial carries per-carrier detail', s.approve.carriers.length, 3);
+  check('vm partial names the carrier that did not land',
+    s.approve.carriers.filter((c) => !c.landed)[0].key, 'assignmentMode');
+  check('vm partial still resolved', s.state, 'resolved');
+}
+
+/* ---- 34. The approve status does not disturb the resolved figures.
+   Two independent axes: a write outcome cannot change what the
+   underwriting computed. ---- */
+{
+  const base = toViewModel(vmInput({ result: resolvedResult() }));
+  const after = toViewModel(vmInput({
+    result: resolvedResult(),
+    approve: { status: 'partial', message: 'x', landed: 1, carriers: [] },
+  }));
+  check('vm approve does not move sellerMAO', after.figures.sellerMAO, base.figures.sellerMAO);
+  check('vm approve does not move endBuyerMaxPrice', after.figures.endBuyerMaxPrice, base.figures.endBuyerMaxPrice);
+  check('vm approve does not move the breakdown', after.breakdown.length, base.breakdown.length);
+  check('vm approve does not move provenance',
+    JSON.stringify(after.provenance), JSON.stringify(base.provenance));
+  check('vm approve does not move position', after.position.position, base.position.position);
+}
+
+/* ---- 35. No state other than resolved carries an approve field. There is
+   nothing to approve on a deal that has not resolved. ---- */
+{
+  const unresolvedFacts = emptyFacts();
+  const policy = parsePolicy(fullPolicyValues(), CV_IDS).policy;
+  const r = computeUnderwriting(resolveInputs(unresolvedFacts, noOverrides(), policy));
+  const unresolved = toViewModel(vmInput({
+    result: r, facts: unresolvedFacts, approve: { status: 'succeeded' },
+  }));
+  check('vm unresolved precondition', unresolved.state, 'unresolved');
+  check('vm unresolved has no approve', unresolved.approve === undefined, true);
+
+  const none = toViewModel(vmInput({
+    candidates: [], selected: null, approve: { status: 'succeeded' },
+  }));
+  check('vm no_opportunity precondition', none.state, 'no_opportunity');
+  check('vm no_opportunity has no approve', none.approve === undefined, true);
+
+  const awaiting = toViewModel(vmInput({
+    candidates: [OPP, OPP2], selected: null, approve: { status: 'succeeded' },
+  }));
+  check('vm awaiting_selection precondition', awaiting.state, 'awaiting_selection');
+  check('vm awaiting_selection has no approve', awaiting.approve === undefined, true);
 }
 
 cleanup();

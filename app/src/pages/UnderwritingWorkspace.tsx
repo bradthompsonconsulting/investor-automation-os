@@ -12,7 +12,7 @@ import {
   resolveInputs,
 } from "../lib/underwriting/resolver";
 import { computeUnderwriting } from "../lib/underwriting/compute";
-import { toViewModel, type ScreenState, type SelectedOpportunity } from "../lib/underwriting/view-model";
+import { toViewModel, type ApproveState, type ScreenState, type SelectedOpportunity } from "../lib/underwriting/view-model";
 import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
 import type { UnderwritingResult } from "../lib/underwriting/types";
 
@@ -191,6 +191,17 @@ export default function UnderwritingWorkspace() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [chosenId, setChosenId] = useState<string | null>(null);
 
+  /* PB-D59. The Approve attempt's state, held here because the view model
+     owns the RESULT and never the call -- the page performs the write and
+     hands the outcome in.
+
+     Nothing sets this yet and nothing renders it. PB-D59 section VI as
+     amended permits Approve to be built; this slice deliberately stops
+     before the control, so the write method, its readback parser and these
+     states are all provable before anything is browser-reachable. The
+     setter is unused until the control lands. */
+  const [approve] = useState<ApproveState>({ status: "idle" });
+
   useEffect(() => {
     if (!contactId) return;
     let cancelled = false;
@@ -263,6 +274,7 @@ export default function UnderwritingWorkspace() {
     result: pipeline.result,
     facts: pipeline.facts,
     issues: pipeline.issues,
+    approve,
   });
 
   return (

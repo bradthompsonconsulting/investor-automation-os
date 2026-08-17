@@ -62,6 +62,23 @@ function readNumberField(fields: RawField[], id: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/* readNumberField ABOVE AND readStringField BELOW PARSE THE OPPORTUNITY
+   LIST SHAPE, and only that. readContactNumber further below parses the
+   contact model's {id, value} and is a separate concern.
+
+   OBSERVED 2026-08-17 across PB-D58 and PB-D59 Proofs A and B: the
+   `ghl-opportunities` list endpoint returns NUMERICAL under
+   `fieldValueNumber` and SINGLE_OPTIONS under `fieldValueString`, each
+   with a `type` key. The SINGULAR `GET /opportunities/{id}` returns every
+   dataType under `fieldValue` with no `type`.
+
+   These readers are correct for the list shape the Underwriting Workspace
+   consumes through `listPipeline`, and must stay that way. Against the
+   singular shape both return null -- which would read as every field
+   absent rather than as an error. If you are parsing a singular GET, the
+   parser you want is `readSingularFieldValue` in `app/src/lib/ghl.ts`,
+   private to the Approve write path. PB-D59 section III. */
+
 /** Reads a SINGLE_OPTIONS opportunity field at its expected key. */
 function readStringField(fields: RawField[], id: string): string | null {
   const f = fields.find((x) => x.id === id);

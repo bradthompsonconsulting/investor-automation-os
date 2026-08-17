@@ -97,6 +97,54 @@ function knownFacts(facts: DealFacts): KnownFacts {
   };
 }
 
+/**
+ * The Approve attempt, PB-D59. A SECOND AXIS on the resolved state, not
+ * an alternative to it: underwriting resolution and approval attempt are
+ * independent. A failed write does not make the deal unresolved, and a
+ * successful one does not create a second copy of the resolved figures.
+ *
+ * `partial` is its own status and must never be collapsed into `failed`.
+ * PB-D59 section IV spends a section on the distinction: a failed write
+ * means the record did not change, while a partial one means it DID and
+ * the operator needs to know which carriers landed. The product behaviour
+ * and the operator message are materially different.
+ *
+ * There is no automatic compensating write. PB-D59 section IV: GHL
+ * documents no transaction, reverting a partially applied field would
+ * itself be a mutation, and a partial state is REPORTED rather than
+ * silently repaired.
+ */
+export type ApproveOutcomeCarrier = {
+  key: string;
+  landed: boolean;
+  sent: number | string;
+  observed: number | string | null;
+};
+
+export type ApproveState =
+  /** No attempt has been made. Approve is available if the deal permits. */
+  | { status: "idle" }
+  /** A PUT is outstanding. The control must not be re-invokable. */
+  | { status: "in_flight" }
+  /** All three carriers confirmed on readback. The underwriting is durable. */
+  | { status: "succeeded" }
+  /**
+   * The write did not land. The record is unchanged, so a retry is
+   * meaningful and safe.
+   */
+  | { status: "failed"; message: string }
+  /**
+   * Some carriers landed and some did not. The record IS changed. Not a
+   * retry candidate without a human deciding what to do, and never
+   * represented to the operator as approved.
+   */
+  | {
+      status: "partial";
+      message: string;
+      landed: number;
+      carriers: ApproveOutcomeCarrier[];
+    };
+
 export type ScreenState =
   /** Any of the three reads still outstanding. */
   | { state: "loading" }
@@ -157,6 +205,13 @@ export type ScreenState =
       known: KnownFacts;
       opportunity: SelectedOpportunity;
       banner: PolicyBanner;
+      /**
+       * The Approve attempt for this deal. Nested rather than a sibling
+       * state: a deal is resolved AND its approval is idle, in flight,
+       * succeeded, failed or partial. Only the resolved state carries it
+       * -- there is nothing to approve on an unresolved deal.
+       */
+      approve: ApproveState;
     }
   /**
    * The page supplied a combination of inputs this contract says cannot
@@ -184,6 +239,18 @@ export type ViewModelInput = {
    */
   facts: DealFacts | null;
   issues: PolicyParseIssue[];
+  /**
+   * The Approve attempt's current state, supplied by the page.
+   *
+   * This module owns the RESULT, never the call. The page performs the
+   * write and hands the outcome in, exactly as it does for computeError.
+   * That matters more here than anywhere else in this file: Approve is
+   * the first browser-reachable write in this feature, and a pure view
+   * model cannot accidentally issue one.
+   *
+   * Defaults to idle when the page has not attempted anything.
+   */
+  approve: ApproveState;
 };
 
 export function toViewModel(input: ViewModelInput): ScreenState {
@@ -265,5 +332,6 @@ export function toViewModel(input: ViewModelInput): ScreenState {
     known,
     opportunity: input.selected,
     banner,
+    approve: input.approve,
   };
 }
