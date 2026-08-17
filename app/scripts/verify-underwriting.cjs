@@ -134,7 +134,12 @@ const RAW_KEYS = [
 const NEE_SHARED     = 9;
 const NEE_UNRESOLVED = 4;
 const NEE_RESOLVED   = 3;
-const PROBE_SHARED     = 8;
+/* 8 -> 11 on 2026-08-17. PB-D59 section VI as amended: Approve may be
+   rendered, so `probe-approve-absent` was replaced by three checks that
+   assert the contract instead of its absence -- the control renders, it is
+   enabled at rest, and the page does not claim an approval that never
+   happened. Counted from the file, not derived from the delta. */
+const PROBE_SHARED     = 11;
 const PROBE_UNRESOLVED = 4;
 const PROBE_RESOLVED   = 6;
 
@@ -230,13 +235,22 @@ async function readPage(page) {
 
   // Approve is gated behind PB-D56 prerequisite 5 and must not render as an
   // actionable control.
+  /* PB-D59 section VI as amended 2026-08-17: Approve may be rendered. The
+     three checks that previously asserted zero Approve buttons anywhere
+     were correct while the gate was open; they are REPLACED here with the
+     contract, not deleted. Deleting them would leave the most
+     consequential control in the product unasserted. */
   const approveButtons = await page.evaluate(() =>
     [...document.querySelectorAll("button")].filter((b) => /approve/i.test(b.textContent || "")).length);
-  check("approve-absent", approveButtons === 0, `approveButtons=${approveButtons}`);
+  check("approve-absent-on-unresolved", approveButtons === 0,
+    `approveButtons=${approveButtons} (nothing to approve on an unresolved deal)`);
 
+  /* Text inputs remain forbidden. Zone 3 is editing and every edit is a
+     write; the Approve control is a button, not an input, so this check
+     narrows rather than relaxes. */
   const writeControls = await page.evaluate(() =>
     [...document.querySelectorAll("input, textarea, select")].length);
-  check("no-write-controls", writeControls === 0, `inputs=${writeControls}`);
+  check("no-text-inputs", writeControls === 0, `inputs=${writeControls}`);
 
   // ── State detection from the PAGE, not from GHL ──
   // Case-insensitive: the section headings are styled textTransform:
@@ -307,13 +321,48 @@ async function readPage(page) {
   const probeLeaked = RAW_KEYS.filter((k) => probe.bodyText.includes(k));
   check("probe-no-raw-keys", probeLeaked.length === 0, `leaked=${JSON.stringify(probeLeaked)}`);
 
-  const probeApprove = await page.evaluate(() =>
-    [...document.querySelectorAll("button")].filter((b) => /approve/i.test(b.textContent || "")).length);
-  check("probe-approve-absent", probeApprove === 0, `approveButtons=${probeApprove}`);
+  /* The probe resolves, so Approve MUST render. This is the assertion that
+     replaced "zero buttons": the control exists exactly where the contract
+     says it should. */
+  const probeApprove = await page.evaluate(() => {
+    const btns = [...document.querySelectorAll("button")]
+      .filter((b) => /approve/i.test(b.textContent || ""));
+    return {
+      count: btns.length,
+      label: btns.length > 0 ? (btns[0].textContent || "").trim() : null,
+      disabled: btns.length > 0 ? btns[0].disabled : null,
+    };
+  });
+  check("approve-renders-on-resolved", probeApprove.count === 1,
+    `approveButtons=${probeApprove.count} label=${JSON.stringify(probeApprove.label)}`);
 
+  /* Enabled at rest. The ONLY condition that disables it is a write in
+     flight. A deal carrying an out-of-parameters warning is still
+     approvable -- PB-D56 flags and never blocks, and the investor remains
+     the decision authority. If this check ever fails because someone made
+     warnings disable the control, that is a product regression, not a
+     harness problem. */
+  check("approve-enabled-at-rest", probeApprove.disabled === false,
+    `disabled=${probeApprove.disabled}`);
+
+  /* The page must not report an approval that never happened. A freshly
+     loaded resolved deal is idle: no success banner, no partial report. */
+  const probeApproveState = await page.evaluate(() => {
+    const t = document.body.innerText || "";
+    return {
+      claimsApproved: /Underwriting approved/i.test(t),
+      claimsPartial: /Partially saved/i.test(t),
+      claimsFailed: /Nothing was saved/i.test(t),
+    };
+  });
+  check("approve-idle-on-load",
+    !probeApproveState.claimsApproved && !probeApproveState.claimsPartial && !probeApproveState.claimsFailed,
+    `approved=${probeApproveState.claimsApproved} partial=${probeApproveState.claimsPartial} failed=${probeApproveState.claimsFailed}`);
+
+  /* Text inputs remain forbidden here too. */
   const probeWrites = await page.evaluate(() =>
     [...document.querySelectorAll("input, textarea, select")].length);
-  check("probe-no-write-controls", probeWrites === 0, `inputs=${probeWrites}`);
+  check("probe-no-text-inputs", probeWrites === 0, `inputs=${probeWrites}`);
 
   const probeUnresolved = /Underwriting cannot begin/i.test(probe.bodyText);
   const probeResolved = /How this was calculated/i.test(probe.bodyText);

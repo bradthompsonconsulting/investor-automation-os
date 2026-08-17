@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, AlertCircle, Loader2, Lock } from "lucide-react";
+import { ArrowLeft, AlertCircle, Check, Loader2 } from "lucide-react";
 import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
 import { getConfig } from "../../shared/ghl-config";
 import {
@@ -13,6 +13,7 @@ import {
 } from "../lib/underwriting/resolver";
 import { computeUnderwriting } from "../lib/underwriting/compute";
 import { toViewModel, type ApproveState, type ScreenState, type SelectedOpportunity } from "../lib/underwriting/view-model";
+import { OPTION_BY_MODE } from "../lib/underwriting/resolver-types";
 import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
 import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriting/types";
 
@@ -163,17 +164,111 @@ function Rail({ ask, arv, repairs, mao, waiting }: {
   );
 }
 
-function Approve() {
+/**
+ * PB-D59 -- the Approve control and its outcomes.
+ *
+ * WARNINGS DO NOT BLOCK. A resolved deal carrying an out-of-parameters
+ * warning is still approvable: PB-D56 flags and never blocks, and the
+ * investor remains the decision authority. The warning renders above this
+ * control, where the operator sees it before deciding. Nobody may later
+ * tighten `disabled` to include warnings -- that would make IAOS override
+ * an operator judgment for the first time.
+ *
+ * The only condition that disables the button is a write already in
+ * flight, which prevents a second PUT over an outstanding one.
+ */
+function ApproveControl({ state, onApprove, warningCount }: {
+  state: ApproveState;
+  onApprove: () => void;
+  warningCount: number;
+}) {
+  if (state.status === "succeeded") {
+    return (
+      <div style={{
+        display: "flex", gap: "10px", alignItems: "flex-start", padding: "14px 18px",
+        background: "#22C55E0F", border: "1px solid #22C55E33", borderRadius: "10px", marginTop: "22px",
+      }}>
+        <Check size={16} style={{ color: "#22C55E", flexShrink: 0, marginTop: "1px" }} />
+        <div style={{ fontSize: "13px", color: "#E2E8F0", lineHeight: 1.5 }}>
+          <strong>Underwriting approved.</strong> End-Buyer Maximum Purchase Price,
+          Seller MAO and Assignment Mode were saved to the opportunity and
+          confirmed on read-back.
+        </div>
+      </div>
+    );
+  }
+
+  if (state.status === "partial") {
+    return (
+      <div style={{
+        display: "flex", flexDirection: "column", gap: "10px", padding: "16px 18px",
+        background: "#F59E0B0F", border: "1px solid #F59E0B44", borderRadius: "10px", marginTop: "22px",
+      }}>
+        <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+          <AlertCircle size={18} style={{ color: "#F59E0B", flexShrink: 0, marginTop: "1px" }} />
+          <div>
+            <div style={{ fontSize: "14px", fontWeight: 600, color: "#E2E8F0" }}>
+              Partially saved — NOT approved
+            </div>
+            <div style={{ fontSize: "13px", color: "#94A3B8", marginTop: "5px", lineHeight: 1.5 }}>
+              {state.message} Review the opportunity in GHL before trying again.
+            </div>
+          </div>
+        </div>
+        <div style={{ fontFamily: "Space Grotesk, monospace", fontSize: "12px", paddingLeft: "28px" }}>
+          {state.carriers.map((c) => (
+            <div key={c.key} style={{ display: "flex", gap: "10px", padding: "2px 0" }}>
+              <span style={{ color: c.landed ? "#22C55E" : "#EF4444", width: "62px" }}>
+                {c.landed ? "saved" : "not saved"}
+              </span>
+              <span style={{ color: "#94A3B8" }}>{c.key}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const failed = state.status === "failed";
+  const inFlight = state.status === "in_flight";
+
   return (
-    <div style={{
-      display: "flex", gap: "10px", alignItems: "flex-start", padding: "14px 18px",
-      background: "#0F172A", border: "1px dashed #334155", borderRadius: "10px", marginTop: "22px",
-    }}>
-      <Lock size={16} style={{ color: "#475569", flexShrink: 0, marginTop: "1px" }} />
-      <div style={{ fontSize: "12px", color: "#64748B", lineHeight: 1.5 }}>
-        Approve is not available. Approved underwriting writes to the Opportunity,
-        and no opportunity-model field has completed an inert proof — PB-D56
-        prerequisite 5. This page is read-only until that gate clears.
+    <div style={{ marginTop: "22px" }}>
+      {failed ? (
+        <div style={{
+          display: "flex", gap: "10px", alignItems: "flex-start", padding: "14px 18px",
+          background: "#EF44440F", border: "1px solid #EF444433", borderRadius: "10px",
+          marginBottom: "12px",
+        }}>
+          <AlertCircle size={16} style={{ color: "#EF4444", flexShrink: 0, marginTop: "1px" }} />
+          <div style={{ fontSize: "13px", color: "#94A3B8", lineHeight: 1.5 }}>
+            <span style={{ color: "#E2E8F0", fontWeight: 600 }}>Nothing was saved.</span>{" "}
+            {state.message} The opportunity is unchanged, so trying again is safe.
+          </div>
+        </div>
+      ) : null}
+
+      <button
+        onClick={onApprove}
+        disabled={inFlight}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: "8px",
+          padding: "10px 18px", borderRadius: "8px", cursor: inFlight ? "default" : "pointer",
+          background: inFlight ? "#1E293B" : "#1EC8FF",
+          color: inFlight ? "#64748B" : "#0B1220",
+          border: "none", fontSize: "13px", fontWeight: 700,
+        }}
+      >
+        {inFlight ? "Saving…" : failed ? "Try again" : "Approve underwriting"}
+      </button>
+
+      <div style={{ fontSize: "11px", color: "#475569", marginTop: "8px", lineHeight: 1.5 }}>
+        Writes End-Buyer Maximum Purchase Price, Seller MAO and Assignment Mode
+        to the opportunity. Nothing else is written — not the stage, the status,
+        or any offer field.
+        {warningCount > 0
+          ? " This deal carries a warning above; approving is permitted and the decision is yours."
+          : ""}
       </div>
     </div>
   );
@@ -200,7 +295,7 @@ export default function UnderwritingWorkspace() {
      before the control, so the write method, its readback parser and these
      states are all provable before anything is browser-reachable. The
      setter is unused until the control lands. */
-  const [approve] = useState<ApproveState>({ status: "idle" });
+  const [approve, setApprove] = useState<ApproveState>({ status: "idle" });
 
   useEffect(() => {
     if (!contactId) return;
@@ -285,6 +380,68 @@ export default function UnderwritingWorkspace() {
     issues: pipeline.issues,
     approve,
   });
+
+  /**
+   * PB-D59 -- the Approve write. THE ONLY place in the UI that initiates
+   * an underwriting mutation.
+   *
+   * The page owns the call; the view model owns only its result. That
+   * boundary matters most here, because this is the first
+   * browser-reachable write in this feature and a pure view model cannot
+   * accidentally issue one.
+   *
+   * PROVEN INERT BEFORE IT WAS REACHABLE. PB-D58 section II and PB-D59
+   * Proofs A0, A and B: twenty proof steps, ten production mutations,
+   * every one restored, the exact three-field payload proven on a
+   * disposable fixture before this handler existed.
+   */
+  async function onApprove() {
+    if (screen.state !== "resolved") return;
+    if (screen.approve.status === "in_flight") return;
+
+    setApprove({ status: "in_flight" });
+
+    try {
+      /* The domain discriminant maps to a GHL option label HERE, at the
+         write boundary, through the single mapping in resolver-types.ts.
+         The screen contract carries the discriminant and never the label. */
+      const result = await ghl.underwriting.saveUnderwritingFields(screen.opportunity.id, {
+        endBuyerMaxPrice: screen.figures.endBuyerMaxPrice,
+        sellerMAO: screen.figures.sellerMAO,
+        assignmentMode: OPTION_BY_MODE[screen.assignment.kind],
+      });
+
+      if (result.ok) {
+        setApprove({ status: "succeeded" });
+        return;
+      }
+
+      /* PARTIAL. Some carriers landed and some did not, so the record IS
+         changed. PB-D59 section IV: reported, never silently compensated,
+         and never represented to the operator as approved. No retry is
+         offered -- a second write over a partially applied state needs a
+         human deciding what the state should be. */
+      setApprove({
+        status: "partial",
+        message: `${result.landed} of 3 fields were saved. The opportunity has changed and is not approved.`,
+        landed: result.landed,
+        carriers: result.carriers.map((c) => ({
+          key: c.key,
+          landed: c.landed,
+          sent: c.sent,
+          observed: c.observed,
+        })),
+      });
+    } catch (e: any) {
+      /* FAILED. The PUT threw or returned non-2xx, so nothing was written
+         and the record is unchanged. A retry is meaningful and safe, which
+         is exactly what distinguishes this from partial. */
+      setApprove({
+        status: "failed",
+        message: e?.message ?? "The write could not be completed.",
+      });
+    }
+  }
 
   return (
     <Shell contactId={contactId}>
@@ -491,7 +648,11 @@ export default function UnderwritingWorkspace() {
             </div>
           </div>
 
-          <Approve />
+          <ApproveControl
+            state={screen.approve}
+            onApprove={onApprove}
+            warningCount={screen.warnings.length}
+          />
         </>
       ) : null}
     </Shell>
