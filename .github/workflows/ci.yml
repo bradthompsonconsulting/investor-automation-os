@@ -32,13 +32,26 @@
 #   machines: a bare runner with no selector produced the first hash, and a
 #   developer machine where app/.env sets it produced the second.
 #
-# PNPM VERSION IS A LITERAL PIN, NOT READ FROM packageManager
-#   The step below hardcodes 10.4.1. That happens to equal what root
-#   package.json declares in its packageManager field, but this workflow does
-#   not read that field — the two can drift apart silently. app/pnpm-lock.yaml
-#   is lockfileVersion 9.0. The whole sequence was verified on a clean runner
-#   with pnpm 10.28.0, so if 10.4.1 behaves differently that is a real finding,
-#   not a reason to widen scope.
+# PNPM VERSION COMES FROM packageManager. DO NOT ADD A version INPUT.
+#   OBSERVED 2026-08-18, CI run #1 on ec3dd32 failed in 0s at Set up pnpm:
+#     Multiple versions of pnpm specified:
+#       - version 10.4.1 in the GitHub Action config with the key "version"
+#       - version pnpm@10.4.1+sha512... in the package.json with the key
+#         "packageManager"
+#   pnpm/action-setup@v4's bundled dist compares d.replace("pnpm@","") against
+#   the version input, WITHOUT stripping the +sha512 integrity suffix, so an
+#   exactly-matching version still throws. The fix on master adds
+#   .split('+')[0]; the v4 tag does not carry it. Root package.json declares
+#   pnpm@10.4.1, so omitting the input lets the action read it from there —
+#   single source of truth, and no conflict to resolve.
+#   app/pnpm-lock.yaml is lockfileVersion 9.0. The whole sequence was verified
+#   on a clean runner with pnpm 10.28.0; if 10.4.1 behaves differently against
+#   that lockfile it is a real finding, not a reason to widen scope.
+#
+# KNOWN NON-BLOCKING WARNING
+#   actions/checkout@v4 and pnpm/action-setup@v4 target Node 20, which GitHub
+#   has deprecated and now force-runs on Node 24. Advisory only, and left
+#   unaddressed deliberately to keep this change minimal.
 
 name: CI
 
@@ -67,10 +80,10 @@ jobs:
 
       # pnpm must be installed before setup-node, or the pnpm cache cannot
       # resolve its store path.
+      # No version input, deliberately — see the header. The version is read
+      # from root package.json's packageManager field.
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
 
       - name: Set up Node
         uses: actions/setup-node@v4
