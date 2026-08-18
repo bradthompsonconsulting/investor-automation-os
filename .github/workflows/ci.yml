@@ -1,0 +1,92 @@
+# IAOS — Gate 2 CI. Offline deterministic verification only.
+#
+# WHAT THIS DOES
+#   Bootstraps from a clean runner, typechecks and builds the app, then runs the
+#   two offline unit runners: 53 calculation-core checks and 169 resolver /
+#   view-model checks. Both assert an exact floor, so an added or removed case
+#   fails the run rather than passing quietly.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO
+#   No production reach. No secrets. No GoHighLevel. No Netlify. No deployment.
+#   No Playwright and no live harnesses — verify-contacts, verify-conversations,
+#   verify-dashboard and verify-underwriting all drive a browser against the
+#   deployed site and are out of scope.
+#
+#   verify-proxy-boundary.cjs is ALSO out of scope, and that is deliberate. It is
+#   Node-only and browserless but it is NOT offline: it calls IAOS_ORIGIN, whose
+#   default is production, and four of its ten probes are write-method requests.
+#   Running it per-commit would make this workflow a standing route from
+#   development into production. It joins automated verification once a staging
+#   origin exists; production execution stays an explicitly authorized
+#   post-deploy job.
+#
+# VITE_IAOS_ENV IS NOT SET HERE, ON PURPOSE
+#   OBSERVED 2026-08-18 on a clean runner at fca9edc: with the selector set to
+#   "production" the build emits index-ROFH729Z.js at 372.46 kB, byte-matching
+#   what production serves; unset, it emits index-DMGAm8ca.js at 370.65 kB. The
+#   selector is baked in at build time by Vite, and app/.env is gitignored, so a
+#   clean clone cannot reproduce the production artifact. This workflow treats
+#   the build as a COMPILE CHECK, not as a promotable artifact, so it leaves the
+#   selector unset and keeps CI free of production configuration. Do not read
+#   this job's bundle hash as evidence about production. Corroborated from two
+#   machines: a bare runner with no selector produced the first hash, and a
+#   developer machine where app/.env sets it produced the second.
+#
+# PNPM VERSION IS A LITERAL PIN, NOT READ FROM packageManager
+#   The step below hardcodes 10.4.1. That happens to equal what root
+#   package.json declares in its packageManager field, but this workflow does
+#   not read that field — the two can drift apart silently. app/pnpm-lock.yaml
+#   is lockfileVersion 9.0. The whole sequence was verified on a clean runner
+#   with pnpm 10.28.0, so if 10.4.1 behaves differently that is a real finding,
+#   not a reason to widen scope.
+
+name: CI
+
+# Every push, on every branch. pull_request is deliberately absent: this repo
+# has no PR workflow today, so adding it would only produce duplicate runs for
+# same-repo branches. Add it when PRs actually enter the process.
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Build and offline checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # pnpm must be installed before setup-node, or the pnpm cache cannot
+      # resolve its store path.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Install app dependencies
+        run: pnpm install --dir app --frozen-lockfile
+
+      - name: Typecheck and build
+        run: pnpm --dir app build
+
+      - name: Calculation core — 53 checks
+        run: node app/scripts/test-underwriting-core.cjs
+
+      - name: Resolver and view model — 169 checks
+        run: node app/scripts/test-underwriting-resolver.cjs
