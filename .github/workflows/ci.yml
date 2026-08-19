@@ -6,6 +6,36 @@
 #   checks, and 86 Netlify-observer checks. All three assert an exact floor, so
 #   an added or removed case fails the run rather than passing quietly.
 #
+# GATE 4B-4 (2026-08-19) — THE IDENTIFIER BOUNDARY, AND WHY ITS SCOPE STOPS
+#   scripts/test-identifier-boundary.cjs asserts that no GoHighLevel-shaped
+#   identifier literal exists in deployed application source outside
+#   app/shared/ghl-config.ts. Gates 4B-2 and 4B-3 centralized every one of them;
+#   without an assertion that is a convention rather than a boundary, and the
+#   next feature reopens it one pasted id at a time.
+#
+#   Scope is the PRODUCTION RUNTIME BOUNDARY — app/src, app/netlify, app/shared,
+#   netlify/functions, client/src, shared — which is what the two netlify.toml
+#   files actually deploy. All six must exist; a missing one is a hard failure,
+#   because a silently skipped directory is a silently unguarded one.
+#
+#   app/scripts AND scripts ARE NOT SCANNED, and that is not an exemption. Those
+#   harnesses do reach production and do pin production identifiers, so they are
+#   genuinely part of environment safety — but their binding is an ORIGIN and a
+#   CREDENTIAL, not a literal compiled into a deployed artifact. The control that
+#   fits them is the staging origin and test location created at Gate 4C. Two
+#   control planes; neither is exempt.
+#
+#   There is also a real false positive. scripts/netlify-status.cjs holds two
+#   36-character UUIDs which are NETLIFY SITE IDS with no GoHighLevel
+#   relationship at all. A UUID is a UUID whoever issued it, so scanning that
+#   tree would flag the Gate 3 deployment observer — and excluding it by name
+#   would read as "this file may hold GHL ids", which is the opposite of true.
+#
+#   FLOOR 9 IS AUTHORED AND LOCKED. It moves only by deliberate addition or
+#   removal with a stated reason, never by back-filling from a result. It is
+#   deliberately not one-check-per-file: that floor would drift whenever anyone
+#   added a file and would stop meaning anything.
+#
 # GATE 4B-2b (2026-08-19) — WHY THE ROOT-FUNCTION TYPECHECK IS SCOPED
 #   netlify/functions/motivation-score.ts and phone-lookup.ts were typechecked by
 #   NOTHING. The root tsconfig includes only client/src, shared/ and server/; the
@@ -166,3 +196,6 @@ jobs:
       # one. See the header for why it is scoped rather than using pnpm check.
       - name: Typecheck root Netlify functions
         run: ./app/node_modules/.bin/tsc -p netlify/functions/tsconfig.json
+
+      - name: Identifier boundary — 9 offline checks
+        run: node scripts/test-identifier-boundary.cjs
