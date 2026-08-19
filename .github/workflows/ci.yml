@@ -6,6 +6,38 @@
 #   checks, and 86 Netlify-observer checks. All three assert an exact floor, so
 #   an added or removed case fails the run rather than passing quietly.
 #
+# GATE 4B-2b (2026-08-19) — WHY THE ROOT-FUNCTION TYPECHECK IS SCOPED
+#   netlify/functions/motivation-score.ts and phone-lookup.ts were typechecked by
+#   NOTHING. The root tsconfig includes only client/src, shared/ and server/; the
+#   app tsconfig covers app/netlify; and this workflow builds app/ alone. Gate
+#   4B-3 introduces the repository's first root->app/ import into one of those
+#   files, so without a check CI could not fail a wrong import path or property
+#   name before it reached a live unauthenticated production writer.
+#
+#   DO NOT "SIMPLIFY" THIS INTO `pnpm check`. That script DOES NOT PASS TODAY.
+#   OBSERVED at 5dfe9b2 with the full root dependency tree installed: two errors,
+#   both TS2339 "Property 'external' does not exist", both in
+#   client/src/components/Navigation.tsx, both pre-existing and unrelated. Wiring
+#   the root check in would require editing the marketing site's PUBLISHED client
+#   to make this gate green — a production code change in service of a CI step.
+#   Those two errors are BACKLOG, deliberately unfixed here.
+#
+#   typeRoots in netlify/functions/tsconfig.json is LOAD-BEARING, not decoration.
+#   tsc resolves `types: ["node"]` by walking up from the tsconfig's OWN
+#   directory, which from netlify/functions never reaches app/node_modules/@types
+#   — and this workflow installs app dependencies only. Without the explicit list
+#   the step fails TS2688 "Cannot find type definition file for 'node'" every
+#   single time — a permanently red gate that reads as broken code. Both paths
+#   are listed so it resolves whether root or app dependencies are present.
+#
+#   SCOPE, stated precisely: `include` bounds the ENTRYPOINT set to root Netlify
+#   functions. Imported dependencies are still typechecked TRANSITIVELY —
+#   TypeScript follows ../../app/shared/ghl-config into app/ regardless of
+#   include, which is exactly what makes a wrong property name fail. What the
+#   scoping buys is only that client/, server/ and shared/ are never entrypoints,
+#   so this check cannot inherit their current debt. It does NOT promise
+#   immunity from future transitive debt.
+#
 # GATE 3.1 (2026-08-19) — WHY THE OBSERVER SUITE IS HERE AND THE OBSERVER IS NOT
 #   "No Netlify" below is a real exclusion and it still holds. It covers
 #   scripts/netlify-status.cjs, which calls the Netlify API and stays out of this
@@ -129,3 +161,8 @@ jobs:
 
       - name: Netlify observer — 86 offline checks
         run: node scripts/netlify-status.test.cjs
+
+      # Not a counted runner — a typecheck. No floor, and it must not be given
+      # one. See the header for why it is scoped rather than using pnpm check.
+      - name: Typecheck root Netlify functions
+        run: ./app/node_modules/.bin/tsc -p netlify/functions/tsconfig.json
