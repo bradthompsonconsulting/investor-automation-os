@@ -1,0 +1,44 @@
+{
+  "_case": "Tip built and published. Includes a deploy-preview decoy carrying the SAME commit in an error state, placed first so a missing context/branch filter would classify on it and produce a false RED.",
+  "site": { "name": "fixture-site", "id": "site-0000" },
+  "tip": { "sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "committedAtIso": "2026-08-19T11:50:00.000Z" },
+  "nowIso": "2026-08-19T12:00:00.000Z",
+  "graceSeconds": 300,
+  "publishedDeployId": "d-tip-ready",
+  "deploysWindowFull": false,
+  "deploys": [
+    {
+      "id": "d-preview-decoy",
+      "commit_ref": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "state": "error",
+      "context": "deploy-preview",
+      "branch": "pr-1",
+      "error_message": "preview build failed",
+      "deploy_time": null,
+      "created_at": "2026-08-19T11:52:00.000Z",
+      "updated_at": "2026-08-19T11:52:10.000Z"
+    },
+    {
+      "id": "d-tip-ready",
+      "commit_ref": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "state": "ready",
+      "context": "production",
+      "branch": "main",
+      "error_message": null,
+      "deploy_time": 20,
+      "created_at": "2026-08-19T11:51:00.000Z",
+      "updated_at": "2026-08-19T11:51:35.000Z"
+    },
+    {
+      "id": "d-old-ready",
+      "commit_ref": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "state": "ready",
+      "context": "production",
+      "branch": "main",
+      "error_message": null,
+      "deploy_time": 18,
+      "created_at": "2026-08-19T10:00:00.000Z",
+      "updated_at": "2026-08-19T10:00:30.000Z"
+    }
+  ]
+}

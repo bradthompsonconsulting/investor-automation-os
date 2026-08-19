@@ -1,0 +1,22 @@
+{
+  "_case": "Tip pushed 120s ago, grace 300s, Netlify has not created a deploy record yet. Must be indeterminate — this is the normal state seconds after a push and must never read as RED.",
+  "site": { "name": "fixture-site", "id": "site-0000" },
+  "tip": { "sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "committedAtIso": "2026-08-19T11:58:00.000Z" },
+  "nowIso": "2026-08-19T12:00:00.000Z",
+  "graceSeconds": 300,
+  "publishedDeployId": "d-prev-ready",
+  "deploysWindowFull": false,
+  "deploys": [
+    {
+      "id": "d-prev-ready",
+      "commit_ref": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "state": "ready",
+      "context": "production",
+      "branch": "main",
+      "error_message": null,
+      "deploy_time": 17,
+      "created_at": "2026-08-19T10:00:00.000Z",
+      "updated_at": "2026-08-19T10:00:30.000Z"
+    }
+  ]
+}

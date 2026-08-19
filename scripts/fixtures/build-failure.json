@@ -1,0 +1,33 @@
+{
+  "_case": "Genuine build failure — error state with a message that is NOT the no-content-change string. Synthesized: no real failed Netlify build has been observed on these sites, and one must never be manufactured against production merely for proof.",
+  "site": { "name": "fixture-site", "id": "site-0000" },
+  "tip": { "sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "committedAtIso": "2026-08-19T11:50:00.000Z" },
+  "nowIso": "2026-08-19T12:00:00.000Z",
+  "graceSeconds": 300,
+  "publishedDeployId": "d-prev-ready",
+  "deploysWindowFull": false,
+  "deploys": [
+    {
+      "id": "d-tip-fail",
+      "commit_ref": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "state": "error",
+      "context": "production",
+      "branch": "main",
+      "error_message": "Failed during stage 'building site': Build script returned non-zero exit code: 2",
+      "deploy_time": 41,
+      "created_at": "2026-08-19T11:51:00.000Z",
+      "updated_at": "2026-08-19T11:51:55.000Z"
+    },
+    {
+      "id": "d-prev-ready",
+      "commit_ref": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "state": "ready",
+      "context": "production",
+      "branch": "main",
+      "error_message": null,
+      "deploy_time": 17,
+      "created_at": "2026-08-19T10:00:00.000Z",
+      "updated_at": "2026-08-19T10:00:30.000Z"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "_case": "Genuinely insufficient window. The tip has no deploy record, the window came back FULL, AND its oldest entry (09:00) is NEWER than the tip commit (08:00) — so deploys older than anything we hold may exist beyond the page boundary and the absence proves nothing. Must fail closed to cannot_observe. Contrast with no-record-past-grace.json, where a full window that reaches back past the tip makes the same absence meaningful.",
+  "site": { "name": "fixture-site", "id": "site-0000" },
+  "tip": { "sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "committedAtIso": "2026-08-19T08:00:00.000Z" },
+  "nowIso": "2026-08-19T12:00:00.000Z",
+  "graceSeconds": 300,
+  "publishedDeployId": "d-prev-ready",
+  "deploysWindowFull": true,
+  "deploys": [
+    {
+      "id": "d-prev-ready",
+      "commit_ref": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "state": "ready",
+      "context": "production",
+      "branch": "main",
+      "error_message": null,
+      "deploy_time": 17,
+      "created_at": "2026-08-19T09:00:00.000Z",
+      "updated_at": "2026-08-19T09:00:30.000Z"
+    }
+  ]
+}

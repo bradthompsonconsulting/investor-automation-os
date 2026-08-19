@@ -1,0 +1,22 @@
+{
+  "_case": "REGRESSION PIN for the pagination bug. The tip is two hours old with no deploy record, and the window came back FULL — but its oldest entry (09:00) predates the tip commit (10:00), so the window demonstrably reaches back far enough to prove Netlify never saw this commit. Must be NOT_SEEN_STALE, not PAGINATION_TRUNCATED. Keying on window fullness alone made this branch unreachable in production, where both sites sit at a full 100-deploy window as their steady state. NOTE: this is also the shape produced by the known grace-clock false RED, where a rebased commit carries an old committer timestamp but was pushed seconds ago. See the header of netlify-status.cjs.",
+  "site": { "name": "fixture-site", "id": "site-0000" },
+  "tip": { "sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "committedAtIso": "2026-08-19T10:00:00.000Z" },
+  "nowIso": "2026-08-19T12:00:00.000Z",
+  "graceSeconds": 300,
+  "publishedDeployId": "d-prev-ready",
+  "deploysWindowFull": true,
+  "deploys": [
+    {
+      "id": "d-prev-ready",
+      "commit_ref": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "state": "ready",
+      "context": "production",
+      "branch": "main",
+      "error_message": null,
+      "deploy_time": 17,
+      "created_at": "2026-08-19T09:00:00.000Z",
+      "updated_at": "2026-08-19T09:00:30.000Z"
+    }
+  ]
+}

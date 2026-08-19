@@ -1,0 +1,33 @@
+{
+  "_case": "A deploy state outside the positive allowlist. Only ready and error have ever been observed, so this branch is the safety mechanism and must fail closed to cannot_observe rather than guess.",
+  "site": { "name": "fixture-site", "id": "site-0000" },
+  "tip": { "sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "committedAtIso": "2026-08-19T11:50:00.000Z" },
+  "nowIso": "2026-08-19T12:00:00.000Z",
+  "graceSeconds": 300,
+  "publishedDeployId": "d-prev-ready",
+  "deploysWindowFull": false,
+  "deploys": [
+    {
+      "id": "d-tip-weird",
+      "commit_ref": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "state": "quarantined",
+      "context": "production",
+      "branch": "main",
+      "error_message": null,
+      "deploy_time": null,
+      "created_at": "2026-08-19T11:51:00.000Z",
+      "updated_at": "2026-08-19T11:51:05.000Z"
+    },
+    {
+      "id": "d-prev-ready",
+      "commit_ref": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "state": "ready",
+      "context": "production",
+      "branch": "main",
+      "error_message": null,
+      "deploy_time": 17,
+      "created_at": "2026-08-19T10:00:00.000Z",
+      "updated_at": "2026-08-19T10:00:30.000Z"
+    }
+  ]
+}
