@@ -90,7 +90,7 @@ export const handler = async (event: any) => {
   const id = event.queryStringParameters?.id;
   if (!id) return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "missing ?id" }) };
 
-  const token = process.env.GHL_PRIVATE_API_KEY ?? process.env.GHL_API_TOKEN;
+  const token = process.env.GHL_PRIVATE_API_KEY;
   if (!token) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
 
   try {

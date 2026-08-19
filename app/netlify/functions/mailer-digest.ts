@@ -94,7 +94,7 @@ function renderEmailHtml(digest: MailerDigest): string {
 }
 
 export const handler = async () => {
-  const token = process.env.GHL_PRIVATE_API_KEY ?? process.env.GHL_API_TOKEN;
+  const token = process.env.GHL_PRIVATE_API_KEY;
   const resendKey = process.env.RESEND_API_KEY;
 
   if (!token) return { statusCode: 500, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };

@@ -153,7 +153,7 @@ export const handler = async (event: any) => {
     return json(401, { error: "unauthorized" });
   }
 
-  const token = process.env.GHL_PRIVATE_API_KEY ?? process.env.GHL_API_TOKEN;
+  const token = process.env.GHL_PRIVATE_API_KEY;
   if (!token) return json(500, { error: "GHL_PRIVATE_API_KEY not configured" });
 
   // ── Payload — read customData only, ignore the ~2.8kB of empty fields (§5.1) ──

@@ -54,7 +54,7 @@ export const handler = async (event: any) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: CORS, body: "" };
   if (event.httpMethod !== "GET")     return { statusCode: 405, headers: CORS, body: "Method Not Allowed" };
 
-  const token = process.env.GHL_PRIVATE_API_KEY ?? process.env.GHL_API_TOKEN;
+  const token = process.env.GHL_PRIVATE_API_KEY;
   if (!token) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
 
   const now = Date.now();

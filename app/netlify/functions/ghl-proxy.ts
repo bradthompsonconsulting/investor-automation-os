@@ -31,8 +31,10 @@
  * allowlist working correctly.
  *
  * Env vars required (set in Netlify site env):
- *   GHL_PRIVATE_API_KEY (preferred) or GHL_API_TOKEN — the GHL private
- *   integration token. Code reads `GHL_PRIVATE_API_KEY ?? GHL_API_TOKEN`.
+ *   GHL_PRIVATE_API_KEY — the GHL private integration token. REQUIRED, with no
+ *   fallback and no default, matching getConfig's "there is no default"
+ *   doctrine. A missing value is REFUSED before any outbound request rather
+ *   than substituted from a second variable.
  *   IAOS_ENV — PB-D51 selector; scopes which location's paths are permitted.
  */
 
@@ -134,7 +136,19 @@ export const handler = async (event: any) => {
     };
   }
 
-  const token = process.env.GHL_PRIVATE_API_KEY ?? process.env.GHL_API_TOKEN;
+  const token = process.env.GHL_PRIVATE_API_KEY;
+  if (!token) {
+    // REQUIRED, no fallback. Before this guard existed the missing-credential
+    // path built `Bearer undefined` and sent it upstream, so the failure
+    // surfaced as a GHL 401 rather than as our own misconfiguration. Refuse
+    // here, before the outbound request.
+    return {
+      statusCode: 500,
+      headers: CORS,
+      body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }),
+    };
+  }
+
   const url   = `${GHL_BASE}${raw}`;
 
   const res = await fetch(url, {

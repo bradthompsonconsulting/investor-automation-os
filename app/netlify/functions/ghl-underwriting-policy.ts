@@ -1,5 +1,5 @@
 /**
- * Underwriting policy — server-side function. Holds GHL_API_TOKEN.
+ * Underwriting policy — server-side function. Requires GHL_PRIVATE_API_KEY; no fallback.
  *
  * GET /.netlify/functions/ghl-underwriting-policy
  * Returns ONLY the eleven investor-policy Custom Values named in shared
@@ -54,9 +54,9 @@ export const handler = async (event: any) => {
   // GET only. This endpoint has no write path and must never acquire one.
   if (event.httpMethod !== "GET") return { statusCode: 405, headers: CORS, body: "Method Not Allowed" };
 
-  const token = process.env.GHL_PRIVATE_API_KEY ?? process.env.GHL_API_TOKEN;
+  const token = process.env.GHL_PRIVATE_API_KEY;
   if (!token) {
-    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: "GHL_API_TOKEN not configured" }) };
+    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
   }
 
   try {
