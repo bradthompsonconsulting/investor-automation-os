@@ -1,10 +1,10 @@
 # IAOS — Session Handoff
 
-**Refreshed 2026-08-17.** Repo tip `cf6ea30` on `main`, pushed, working
-tree clean. Deployed and verified: 199 harness checks green across four
-harnesses on `index-ROFH729Z.js`, plus 222 unit checks across two
-runners -- 53 on the calculation core, 169 on the resolver and view
-model. `tsc --noEmit` and `pnpm build` clean.
+**Refreshed 2026-08-19.** Repo tip `9a5603d` on `main`, pushed, working
+tree clean. Deployed and verified as of 2026-08-17, NOT re-run since: 199
+harness checks green across four harnesses on `index-ROFH729Z.js`, plus
+222 unit checks across two runners -- 53 on the calculation core, 169 on
+the resolver and view model. `tsc --noEmit` and `pnpm build` clean.
 
 **APPROVE IS BUILT, DEPLOYED, AND HAS BEEN USED.** The first durable
 underwriting approval in IAOS completed 2026-08-17 on fixture
