@@ -2,9 +2,32 @@
 #
 # WHAT THIS DOES
 #   Bootstraps from a clean runner, typechecks and builds the app, then runs the
-#   two offline unit runners: 53 calculation-core checks and 169 resolver /
-#   view-model checks. Both assert an exact floor, so an added or removed case
-#   fails the run rather than passing quietly.
+#   three offline runners: 53 calculation-core checks, 169 resolver / view-model
+#   checks, and 86 Netlify-observer checks. All three assert an exact floor, so
+#   an added or removed case fails the run rather than passing quietly.
+#
+# GATE 3.1 (2026-08-19) — WHY THE OBSERVER SUITE IS HERE AND THE OBSERVER IS NOT
+#   "No Netlify" below is a real exclusion and it still holds. It covers
+#   scripts/netlify-status.cjs, which calls the Netlify API and stays out of this
+#   workflow. It does NOT cover scripts/netlify-status.test.cjs, which is the pure
+#   classify() half of that module driven by the twelve JSON fixtures in
+#   scripts/fixtures/ and never reaches the network.
+#
+#   That suite was not dispositioned either way when this workflow was written,
+#   for a reason simpler than any reading of these comments: this file was last
+#   touched at 2846f07 and the observer landed at a6de5f5, the following day. The
+#   workflow predates the thing it would have had to exclude.
+#
+#   Direct requires are node:fs, node:path and the module under test. Loading the
+#   module under test also pulls in node:child_process, which is used for `gh`
+#   inside functions and is never executed by the suite. No install, no network,
+#   no secrets. It has no dependency on any step above it and would pass in first
+#   position; it is placed last for narrative order only.
+#
+#   SCOPE OF THE GUARANTEE, stated honestly: the suite's static assertions bound
+#   fetch and http-client imports. They do NOT bound subprocess use — an edit that
+#   shelled out via execFileSync would pass all 86 checks. Closing that is Gate
+#   3.2 and is deliberately not attempted in this commit.
 #
 # WHAT THIS DELIBERATELY DOES NOT DO
 #   No production reach. No secrets. No GoHighLevel. No Netlify. No deployment.
@@ -103,3 +126,6 @@ jobs:
 
       - name: Resolver and view model — 169 checks
         run: node app/scripts/test-underwriting-resolver.cjs
+
+      - name: Netlify observer — 86 offline checks
+        run: node scripts/netlify-status.test.cjs
