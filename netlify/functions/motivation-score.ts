@@ -5,13 +5,20 @@
  * POST body: { contactId: string }
  */
 
-const GHL_BASE    = "https://services.leadconnectorhq.com";
-const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
+import { getConfig } from "../../app/shared/ghl-config";
 
-// Output field IDs (hardcoded)
-const DEAL_SCORE_FIELD_ID          = "cfkm0kb9CLvjZgyrcIFz";
-const COMBINED_SCORE_FIELD_ID      = "9SVnuzznYsZOQQazpxld";
-const DATA_COMPLETENESS_FIELD_ID   = "r9sD1rlTIqhOx9Mhvftt";
+// PB-D51 — location and output field ids resolve once at module scope from the
+// shared config. Gate 4B-3: these four were the last identifiers in the system
+// that no environment selector could reach, so with IAOS_ENV=test every other
+// function would have failed closed while this one kept writing to production.
+const CONFIG      = getConfig(process.env.IAOS_ENV);
+const GHL_BASE    = "https://services.leadconnectorhq.com";
+const LOCATION_ID = CONFIG.locationId;
+
+// Output field IDs — resolved from shared config, not hardcoded.
+const DEAL_SCORE_FIELD_ID        = CONFIG.fields.dealScore;
+const COMBINED_SCORE_FIELD_ID    = CONFIG.fields.combinedScore;
+const DATA_COMPLETENESS_FIELD_ID = CONFIG.fields.dataCompletenessScore;
 
 // MLS modifier constants (Active −30–35, Expired/Failed +10–15)
 const MLS_ACTIVE_MODIFIER  = -32;
