@@ -9,25 +9,28 @@
 import { getConfig } from "../../shared/ghl-config";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
-// PB-D51 — location id resolved once at module scope from the shared config.
-// PIPELINE_ID and STAGES below are deliberately OUT of PB-D51 scope.
-const { locationId: LOCATION_ID } = getConfig(process.env.IAOS_ENV);
+// PB-D51 — location, pipeline and stage ids all resolve once at module scope
+// from the shared config. Gate 4B-2 reversed PB-D51's original exclusion of
+// pipeline and stage UUIDs: a stage id is exactly as environment-bound as a
+// field id, and leaving them here meant a populated TEST map would still have
+// resolved production stages.
+const CONFIG      = getConfig(process.env.IAOS_ENV);
+const LOCATION_ID = CONFIG.locationId;
+const PIPELINE_ID = CONFIG.pipelines.sellerLeads;
 
-// Seller Leads Pipeline — confirmed via GET /opportunities/pipelines
-const PIPELINE_ID = "GpUWK4YlhNqBzm5Hrm58";
-
-// Stages — hardcoded, confirmed via GET /opportunities/pipelines. Order is authoritative.
+// Names and positions stay here deliberately — they are display metadata, not
+// environment-bound identifiers. ORDER IS AUTHORITATIVE.
 const STAGES = [
-  { id: "0f0511af-2e59-49c9-a141-12a7f1c78914", name: "New Lead - Seller",     position: 0 },
-  { id: "c7d1e692-8d9f-4527-a756-724e468800e7", name: "Contact Initiated",     position: 1 },
-  { id: "5b6634e6-098f-453e-b08e-09c78af682a7", name: "Seller Call Booked",    position: 2 },
-  { id: "02992967-3b10-4ae6-ae89-81daf622fc59", name: "No Show",               position: 3 },
-  { id: "3ac16587-0db8-48ca-9ec0-536e67db9963", name: "Seller Call Completed", position: 4 },
-  { id: "71227a30-2303-4165-aa58-e56860146959", name: "Seller Follow-Up",      position: 5 },
-  { id: "a0f01076-5019-4abc-b809-7f4b0218dd35", name: "Seller Offer Sent",     position: 6 },
-  { id: "0c45ee3d-7be7-4651-97a4-6df53f53481b", name: "Seller Closed-Won",     position: 7 },
-  { id: "a7436df7-e05a-4bf0-bd29-70f7066ec0bd", name: "Long-Term Nurture",     position: 8 },
-  { id: "f1960b50-8aa2-4a69-ba58-a7a0dc66ce82", name: "Lost / Not Interested", position: 9 },
+  { id: CONFIG.stages.newLeadSeller,       name: "New Lead - Seller",     position: 0 },
+  { id: CONFIG.stages.contactInitiated,    name: "Contact Initiated",     position: 1 },
+  { id: CONFIG.stages.sellerCallBooked,    name: "Seller Call Booked",    position: 2 },
+  { id: CONFIG.stages.noShow,              name: "No Show",               position: 3 },
+  { id: CONFIG.stages.sellerCallCompleted, name: "Seller Call Completed", position: 4 },
+  { id: CONFIG.stages.sellerFollowUp,      name: "Seller Follow-Up",      position: 5 },
+  { id: CONFIG.stages.sellerOfferSent,     name: "Seller Offer Sent",     position: 6 },
+  { id: CONFIG.stages.sellerClosedWon,     name: "Seller Closed-Won",     position: 7 },
+  { id: CONFIG.stages.longTermNurture,     name: "Long-Term Nurture",     position: 8 },
+  { id: CONFIG.stages.lostNotInterested,   name: "Lost / Not Interested", position: 9 },
 ];
 
 const CORS = {

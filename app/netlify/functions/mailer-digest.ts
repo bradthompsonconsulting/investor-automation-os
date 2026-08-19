@@ -11,13 +11,16 @@
 import { buildMailerDigest, type MailerDigest, type MailerGroup } from "./lib/mailer-shared";
 import { getConfig } from "../../shared/ghl-config";
 
-// PB-D51 — location id resolved once at module scope from the shared config.
-const { locationId: LOCATION_ID } = getConfig(process.env.IAOS_ENV);
+// PB-D51 — location id and custom-value pointers resolve once at module scope
+// from the shared config.
+const CONFIG      = getConfig(process.env.IAOS_ENV);
+const LOCATION_ID = CONFIG.locationId;
 
-// mailer_digest_recipient custom value, created once via the GHL API.
-// The VALUE is read fresh every send — only this pointer ID is fixed, same as
-// every other custom-value ID already hardcoded in this codebase.
-const MAILER_DIGEST_RECIPIENT_ID = "IjDam7C5cUR4l7uENWQT";
+// mailer_digest_recipient custom value, created once via the GHL API. The
+// VALUE is read fresh every send; only this pointer ID is fixed, and as of
+// Gate 4B-2 it resolves from shared config like every other identifier rather
+// than being hardcoded here.
+const MAILER_DIGEST_RECIPIENT_ID = CONFIG.customValues.mailerDigestRecipient;
 
 const RESEND_FROM = "IAOS Mailers <digest@mailers.investorautomationos.com>";
 

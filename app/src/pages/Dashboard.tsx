@@ -9,6 +9,7 @@ import {
   type ContactRow, type MailerDigest, type PipelineData, type BucketTag,
   type UnansweredInboundRow,
 } from "../lib/ghl";
+import { getConfig } from "../../shared/ghl-config";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
@@ -57,15 +58,17 @@ const CONTENT_MAX_WIDTH = "1600px";
 // PB-D49 — terminal pipeline stages. A contact whose opportunities are ALL in
 // one of these drops out of Lead Queue and Unanswered Inbound. Matched by ID,
 // never by name. Long-Term Nurture is deliberately NOT terminal.
+const STAGES_CFG = getConfig(import.meta.env.VITE_IAOS_ENV).stages;
+
 const TERMINAL_STAGE_IDS = new Set([
-  "0c45ee3d-7be7-4651-97a4-6df53f53481b", // Seller Closed-Won
-  "f1960b50-8aa2-4a69-ba58-a7a0dc66ce82", // Lost / Not Interested
+  STAGES_CFG.sellerClosedWon,
+  STAGES_CFG.lostNotInterested,
 ]);
 
-// PB-D53 -- Seller Follow-Up. Pinned by ID per PB-D49's match-on-ID
-// rule; deliberately NOT in shared config per PB-D51's stage-UUID
-// exclusion, same treatment as TERMINAL_STAGE_IDS above.
-const SELLER_FOLLOW_UP_STAGE_ID = "71227a30-2303-4165-aa58-e56860146959";
+// PB-D53 -- Seller Follow-Up. Pinned by ID per PB-D49's match-on-ID rule.
+// Gate 4B-2 moved this id into shared config, reversing PB-D51's original
+// stage-UUID exclusion; the match-on-ID rule itself is unchanged.
+const SELLER_FOLLOW_UP_STAGE_ID = STAGES_CFG.sellerFollowUp;
 
 // PB-D50 — text channels whose STOP_KEYWORD entry hides a contact from
 // Unanswered Inbound. Email is deliberately out of scope; its unsubscribe
