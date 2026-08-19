@@ -699,6 +699,110 @@ there and never clears one.
 
 ---
 
+## Gate 3 — Netlify observability, SHIPPED AND VERIFIED 2026-08-19
+
+**The human is out of the loop between a push and deployment state.**
+`scripts/netlify-status.cjs` reads Netlify's deploy ledger and answers, per
+production site and without anyone opening a browser: what happened to the
+repo tip, and is the published deploy the right one.
+
+Commit `a6de5f5`, fourteen files.
+
+    scripts/netlify-status.cjs        GET-only I/O shell + pure classifier
+    scripts/netlify-status.test.cjs   86 offline checks, floor 86
+    scripts/fixtures/*.json           12 minimal sanitized classify() inputs
+
+**Verified on the way in.** CI green in 29s across 222 deterministic checks.
+The observer's own offline suite 86/86 green — run BEFORE any live call, and
+again against the committed tree afterwards.
+
+**Two independent questions, never conflated.** Q1 is what happened to the
+tip. Q2 is whether the published deploy is the newest ready one.
+EXPECTED_BEHIND is the COMPOSITE of INTENTIONAL_SKIP + PUBLISH_CURRENT,
+derived rather than asserted, so "behind but fine" cannot be claimed unless
+both halves independently hold.
+
+**The deploy ledger is authoritative and the ignore rules are NOT
+reconstructed locally.** They cannot be: `$CACHED_COMMIT_REF` is Netlify's
+last BUILT commit and is invisible from the repo, and `app/netlify.toml`'s
+`-- .` scope depends on a base directory set in the Netlify UI. Any local
+replication would be a second, drifting implementation of a rule whose inputs
+are unobservable.
+
+**Final live state, OBSERVED 2026-08-19 against tip `a6de5f5`:**
+
+    investor-automation-os   DEPLOYED + PUBLISH_CURRENT
+    iaos-app                 INTENTIONAL_SKIP + PUBLISH_CURRENT
+                             -> EXPECTED_BEHIND
+    OVERALL                  HEALTHY, exit 0, retryable=false
+
+**The race branch fired live on its first opportunity.** Run immediately after
+the push, the observer returned IN_FLIGHT on the marketing site with
+`state=building`, OVERALL INDETERMINATE, exit 3, retryable=true — the exact
+moment a naive observer reports a false RED — then resolved to HEALTHY once
+the build finished. That branch was fixture-proven offline before it was ever
+seen in production.
+
+**Exits are four-way, not binary.** 0 healthy, 1 unhealthy, 2 cannot observe,
+3 indeterminate by timing. `retryable` separates an expired credential from a
+transient network failure, so a scheduler cannot retry forever against a dead
+token. Unhealthy deliberately OUTRANKS cannot_observe: a real failure must
+alert rather than be masked by an unreadable site.
+
+**The observer caused ZERO Netlify mutations.** Read-only by construction, not
+by intent — the PAT carries write authority and nothing about the credential
+enforces this. What enforces it: exactly one `fetch()` call site, method the
+hardcoded literal `"GET"`, no write verb anywhere in the file, no
+`/accounts/{slug}/env` call, `gh` invoked with no `-X`. All asserted
+STATICALLY by the test against the observer's own source. The only two deploys
+created that day came from the push itself — a real build on marketing, a skip
+on app, both predicted in advance.
+
+**A pagination defect was found in review and fixed BEFORE the commit.** The
+first draft failed closed whenever the fetched deploy window came back full.
+OBSERVED: both production sites return a full 100-deploy window as their
+STEADY STATE, which made NOT_SEEN_STALE permanently unreachable — the observer
+could never report that Netlify had never seen a commit, which is one of the
+failures it exists to catch. A RED branch that can never fire is a false GREEN
+wearing a fail-closed costume. Truncation now blocks classification only when
+the window does not reach back past the tip commit's timestamp.
+
+**Floor rule, now recorded in both file headers.** On first authorship the
+floor may be set from the first complete successful authored run. After that
+baseline exists it may NEVER be changed merely to make a changed run pass —
+only when checks are deliberately added or removed, with the reason in the
+commit. A floor edited to match a surprising run is not a floor. History: 82
+baseline, 86 after the pagination fix.
+
+**KNOWN FALSE-RED EDGE, documented in the file header rather than left for
+whoever rebases first.** Grace is measured from the tip commit's committer
+timestamp, which is NOT when it was pushed. After an amend, rebase or
+cherry-pick, a commit authored yesterday and pushed thirty seconds ago reads
+as far past the 5-minute grace and returns NOT_SEEN_STALE on a completely
+normal push. There is no clean fix in a stateless observer.
+
+**What Gate 3 does NOT do.** It observes and exits. It does not alert, page,
+schedule itself, or write anywhere. Wiring it to a scheduler is a separate
+decision that has not been taken.
+
+**Three minor items, none blocking.**
+
+    CRLF        All fourteen files warned `LF will be replaced by CRLF` on
+                staging. That is `core.autocrlf=true` with no
+                `.gitattributes` — the open item this file already carries
+                under Immediate next steps. Pre-existing and untouched; the
+                files are LF in the object store.
+    Node 20     A pre-existing CI annotation, NOT caused by this commit:
+                actions/checkout@v4, actions/setup-node@v4 and
+                pnpm/action-setup@v4 target the deprecated Node 20 and are
+                forced onto Node 24. The run is green.
+    Window      Both sites report `deploysWindowFull=true` together with
+                `windowReachesBackToTip=true`. The 100-deploy window
+                genuinely reaches back past the tip on both, which is
+                precisely why the pagination correction mattered.
+
+---
+
 ## Immediate next steps
 
 1. **DECIDE what an approved underwriting IS. Do not patch it.**
