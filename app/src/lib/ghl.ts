@@ -11,11 +11,11 @@
  * without refactoring once implemented.
  */
 
-import { getConfig } from "../../shared/ghl-config";
+import { getRuntimeConfig } from "../../shared/ghl-config";
 
 // PB-D51 — location id and every field id below resolve from the shared config,
 // once at module scope. Values are unchanged; only their source moved.
-const CONFIG      = getConfig(import.meta.env.VITE_IAOS_ENV);
+const CONFIG      = getRuntimeConfig();
 const LOCATION_ID = CONFIG.locationId;
 const PROXY       = "/.netlify/functions/ghl-proxy";
 

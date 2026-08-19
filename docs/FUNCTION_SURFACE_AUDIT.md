@@ -78,6 +78,48 @@ and ghl-proxy.ts. Eight are unread. The two retired functions
 accounted for two of the four entries in the write-capable
 authentication survey below, which now covers two.
 
+### Inventory as of 2026-08-19
+
+Recounted from the repository at Gate 4B-5, not derived by adding to
+the 2026-08-13 figures.
+
+- netlify/functions/ (repo root) -- 2 files, 518 lines:
+  motivation-score.ts (417), phone-lookup.ts (101)
+- app/netlify/functions/ -- 12 files, 1350 lines:
+  ghl-calendar-events.ts (112), ghl-contact-conversations.ts (152),
+  ghl-contact.ts (62), ghl-contacts.ts (82),
+  ghl-conversations.ts (150), ghl-disposition.ts (188),
+  ghl-mailers.ts (40), ghl-opportunities.ts (111),
+  ghl-proxy.ts (170), ghl-underwriting-policy.ts (94),
+  iaos-runtime-config.ts (55), mailer-digest.ts (134)
+- app/netlify/functions/lib/ -- 2 files, 444 lines:
+  contact-parse.ts (133), mailer-shared.ts (311)
+
+Sixteen files, 2312 lines. FOURTEEN are entrypoints; the two files in
+lib/ are helpers.
+
+Two were added since 2026-08-13: ghl-underwriting-policy.ts and, at
+Gate 4B-5, iaos-runtime-config.ts.
+
+**Fourteen is correct for the first time, and was wrong every previous
+time it was asserted.** PRODUCT_BACKLOG.md has claimed a fourteen-
+entrypoint surface since before it was ever true. At the revision where
+that sentence was written the entrypoint count was TWELVE; fourteen was
+the count of *.ts FILES, which includes the two lib/ helpers that are
+not entrypoints. The figure is now right by arithmetic rather than by
+coincidence, and is recorded here so nobody later reads the agreement
+between the two documents as corroboration. It is not: one was wrong
+and has been corrected.
+
+**iaos-runtime-config.ts (Gate 4B-5)** -- GET only, no credential, no
+inbound authentication. Serves the browser a projection of shared
+config so the frontend artifact no longer carries a build-time
+selector. getConfig runs at module scope, so an absent or unrecognized
+IAOS_ENV kills the function at load rather than serving a default.
+Response is configuration identifiers only -- no token, no secret, no
+server-only key, no contact data of any kind -- which is PB-D57's
+positive-allowlist rule. Cache-Control: private, no-store.
+
 ## ghl-mailers.ts -- publicly reachable without inbound authentication
 
 OBSERVED, app/netlify/functions/ghl-mailers.ts read whole at 40 lines:

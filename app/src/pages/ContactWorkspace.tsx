@@ -9,7 +9,7 @@ import { CallbackPopover } from "../components/CallbackPopover";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
 import { ADDITIONAL_INFO_SUBGROUPS, type AdditionalInfoSubgroup } from "../config/additionalInfoSubgroups";
-import { getConfig } from "../../shared/ghl-config";
+import { getRuntimeConfig } from "../../shared/ghl-config";
 
 /**
  * Contact Workspace — docs/CONTACT_WORKSPACE_SPEC_v2.md §8 steps 1-3.
@@ -38,7 +38,7 @@ const CLAMP_LINES = 5;
 // PB-D51 — both folder ids resolve from the shared config, once at module scope.
 // These replace what were previously two function-local OFFER_FOLDER_ID
 // declarations plus two bare inline literals. Values are unchanged.
-const FOLDERS = getConfig(import.meta.env.VITE_IAOS_ENV).folders;
+const FOLDERS = getRuntimeConfig().folders;
 const OFFER_FOLDER_ID           = FOLDERS.offer;
 const ADDITIONAL_INFO_FOLDER_ID = FOLDERS.additionalInfo;
 

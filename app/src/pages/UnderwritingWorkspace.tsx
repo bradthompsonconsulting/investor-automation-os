@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, AlertCircle, Check, Loader2 } from "lucide-react";
 import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
-import { getConfig } from "../../shared/ghl-config";
+import { getRuntimeConfig } from "../../shared/ghl-config";
 import {
   parsePolicy,
   parseOpportunityValues,
@@ -39,7 +39,7 @@ import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriti
  */
 
 const CONTENT_MAX_WIDTH = "1600px";
-const CONFIG = getConfig(import.meta.env.VITE_IAOS_ENV);
+const CONFIG = getRuntimeConfig();
 
 const CV_IDS = CONFIG.customValues;
 const OPP_IDS = {

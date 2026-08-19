@@ -280,7 +280,12 @@ pipeline ids.
 | ghl-proxy OAuth successor | IAOS | P3 | High | L | Jeff | Deferred |
 
 The function surface is fourteen entrypoints across two directories,
-per the inventory correction in FUNCTION_SURFACE_AUDIT. Of the five
+per the 2026-08-19 inventory in FUNCTION_SURFACE_AUDIT. That figure is
+correct as of Gate 4B-5 and was WRONG at every earlier revision of this
+file: when the sentence was first written the entrypoint count was
+twelve, and fourteen was the count of *.ts files including the two
+lib/ helpers, which are not entrypoints. It is right now by arithmetic,
+not because the original claim has been vindicated. Of the five
 characterized so far, only ghl-disposition.ts has inbound
 authentication. The earlier figure of seven was unsourced. The
 deferral is deliberate and the named trigger is the first user who is

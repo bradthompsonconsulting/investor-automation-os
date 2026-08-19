@@ -257,14 +257,166 @@ export function getConfig(selector: string | undefined): GhlConfig {
     ),
   ];
 
-  for (const [key, value] of entries) {
-    if (value.trim() === "") {
-      throw new Error(
-        `[ghl-config] selector ${JSON.stringify(selector)} resolves to an ` +
-          `incomplete configuration: ${key} is empty.`,
-      );
-    }
+  const missing = firstIncompleteKey(entries);
+  if (missing !== null) {
+    throw new Error(
+      `[ghl-config] selector ${JSON.stringify(selector)} resolves to an ` +
+        `incomplete configuration: ${missing} is empty.`,
+    );
   }
 
   return config;
+}
+
+/**
+ * THE completeness check. ONE implementation, shared by getConfig above and by
+ * setRuntimeConfig below — a second validator would let one path accept a
+ * payload the other rejects, which is the defect class Gate 4B removed at the
+ * identifier level and Gate 4B-4 removed at the matcher level.
+ *
+ * The typeof guard is inert for getConfig, whose maps are typed string
+ * literals. It matters only on the runtime path, where the input arrives over
+ * the wire and an absent key is `undefined` rather than "".
+ */
+function firstIncompleteKey(entries: Array<[string, string]>): string | null {
+  for (const [key, value] of entries) {
+    if (typeof value !== "string" || value.trim() === "") return key;
+  }
+  return null;
+}
+
+// ── Runtime configuration (Gate 4B-5) ──────────────────────────────────────
+//
+// The browser no longer receives a build-time selector. It fetches a projection
+// of this config at boot, and main.tsx populates the singleton below BEFORE it
+// dynamically imports App. Every module-scope getRuntimeConfig() call downstream
+// therefore sees a populated value, exactly as the build-time constant used to
+// behave — the change is WHEN it is known, not HOW it is read.
+
+/**
+ * The payload contract. ONE source of truth: the endpoint PROJECTS through it
+ * and the browser VALIDATES against it, so the served shape and the checked
+ * shape cannot drift apart.
+ *
+ * These are the keys the four frontend call sites actually consume, and nothing
+ * else. Deliberately absent: pipelines (server-only, ghl-opportunities),
+ * customValues.mailerDigestRecipient (server-only, mailer-digest), and the seven
+ * contact fields no browser code reads. Nothing here is a secret; adding a key
+ * that is means this comment is now wrong.
+ */
+const RUNTIME_GROUPS = {
+  fields: [
+    "lastCallAttempt",
+    "lastCallAttemptPrecise",
+    "callbackDatetime",
+    "callbackDatetimePrecise",
+    "propertyNotes",
+    "arv",
+    "estimatedRepairs",
+    "askingPrice",
+  ],
+  folders: ["offer", "additionalInfo"],
+  customValues: [
+    "sellingCostPct",
+    "closingCost",
+    "monthlyCarry",
+    "holdMonths",
+    "buyerProfitPct",
+    "financingEnabled",
+    "financingLtv",
+    "financingRate",
+    "financingPoints",
+    "standardMinimum",
+    "profitSharePct",
+  ],
+  opportunityFields: ["endBuyerMaxPrice", "assignmentMode", "sellerMAO"],
+  opportunityFacts: ["arv", "repairs", "askingPrice"],
+  stages: ["sellerClosedWon", "lostNotInterested", "sellerFollowUp"],
+} as const;
+
+export interface RuntimeConfig {
+  locationId: string;
+  fields: Pick<
+    GhlConfig["fields"],
+    | "lastCallAttempt"
+    | "lastCallAttemptPrecise"
+    | "callbackDatetime"
+    | "callbackDatetimePrecise"
+    | "propertyNotes"
+    | "arv"
+    | "estimatedRepairs"
+    | "askingPrice"
+  >;
+  folders: GhlConfig["folders"];
+  customValues: Omit<GhlConfig["customValues"], "mailerDigestRecipient">;
+  opportunityFields: GhlConfig["opportunityFields"];
+  opportunityFacts: GhlConfig["opportunityFacts"];
+  stages: Pick<
+    GhlConfig["stages"],
+    "sellerClosedWon" | "lostNotInterested" | "sellerFollowUp"
+  >;
+}
+
+/** Server side: project a full config down to what the browser consumes. */
+export function projectRuntimeConfig(config: GhlConfig): RuntimeConfig {
+  const out: Record<string, unknown> = { locationId: config.locationId };
+  for (const [group, keys] of Object.entries(RUNTIME_GROUPS)) {
+    const source = config[group as keyof GhlConfig] as Record<string, string>;
+    const picked: Record<string, string> = {};
+    for (const key of keys as readonly string[]) picked[key] = source[key];
+    out[group] = picked;
+  }
+  return out as unknown as RuntimeConfig;
+}
+
+/** Derived entries for an untrusted payload, walked against RUNTIME_GROUPS. */
+function runtimeEntries(payload: unknown): Array<[string, string]> {
+  const p = (payload ?? {}) as Record<string, Record<string, string> | string>;
+  const entries: Array<[string, string]> = [
+    ["locationId", p.locationId as string],
+  ];
+  for (const [group, keys] of Object.entries(RUNTIME_GROUPS)) {
+    const g = p[group] as Record<string, string> | undefined;
+    for (const key of keys as readonly string[]) {
+      // An absent group yields undefined per key, which the shared check
+      // rejects — so a payload missing a whole group fails closed rather than
+      // passing because it had nothing to walk.
+      entries.push([`${group}.${key}`, g == null ? (undefined as unknown as string) : g[key]]);
+    }
+  }
+  return entries;
+}
+
+let RUNTIME: RuntimeConfig | null = null;
+
+/**
+ * Validate a fetched payload and populate the singleton. Throws on anything
+ * incomplete, which is what keeps main.tsx from importing App.
+ */
+export function setRuntimeConfig(payload: unknown): RuntimeConfig {
+  const missing = firstIncompleteKey(runtimeEntries(payload));
+  if (missing !== null) {
+    throw new Error(
+      `[ghl-config] runtime configuration is incomplete: ${missing} is ` +
+        `empty or absent.`,
+    );
+  }
+  RUNTIME = payload as RuntimeConfig;
+  return RUNTIME;
+}
+
+/**
+ * Read the runtime config. Throws if boot has not populated it — which cannot
+ * happen through the supported path, because App is only imported after
+ * setRuntimeConfig succeeds. A throw here means someone imported an
+ * application module outside that boot sequence.
+ */
+export function getRuntimeConfig(): RuntimeConfig {
+  if (RUNTIME === null) {
+    throw new Error(
+      "[ghl-config] runtime configuration was read before it was set. " +
+        "App must only be imported after setRuntimeConfig() succeeds.",
+    );
+  }
+  return RUNTIME;
 }

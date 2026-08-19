@@ -9,7 +9,7 @@ import {
   type ContactRow, type MailerDigest, type PipelineData, type BucketTag,
   type UnansweredInboundRow,
 } from "../lib/ghl";
-import { getConfig } from "../../shared/ghl-config";
+import { getRuntimeConfig } from "../../shared/ghl-config";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
@@ -58,7 +58,7 @@ const CONTENT_MAX_WIDTH = "1600px";
 // PB-D49 — terminal pipeline stages. A contact whose opportunities are ALL in
 // one of these drops out of Lead Queue and Unanswered Inbound. Matched by ID,
 // never by name. Long-Term Nurture is deliberately NOT terminal.
-const STAGES_CFG = getConfig(import.meta.env.VITE_IAOS_ENV).stages;
+const STAGES_CFG = getRuntimeConfig().stages;
 
 const TERMINAL_STAGE_IDS = new Set([
   STAGES_CFG.sellerClosedWon,
