@@ -138,3 +138,11 @@ candidate-bindings.json
 # The frozen binding artifact is scripts/ghl-bindings.json.
 capture-production.json
 capture-none.json
+
+# Gate 4C C3b: local Test Environment credential. Never committed.
+# Master copy lives in Brad's password manager.
+.env.test
+
+# Gate 4C C3b transients: Test Environment capture output.
+capture-test.json
+capture-test-verified.json

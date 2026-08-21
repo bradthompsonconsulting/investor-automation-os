@@ -71,7 +71,7 @@ interface Args {
   expect: "production" | "test" | "none";
   credentialFile: string;
   out: string | null;
-  redProof: "R1" | "R2" | "R3" | "R4" | "R5" | null;
+  redProof: "R1" | "R2" | "R3" | "R4" | "R5" | "R6" | null;
 }
 
 function die(message: string): never {
@@ -106,10 +106,13 @@ function parseArgs(argv: string[]): Args {
   }
 
   const redProof = get("--red-proof");
-  const valid = ["R1", "R2", "R3", "R4", "R5"];
+  const valid = ["R1", "R2", "R3", "R4", "R5", "R6"];
   if (redProof && !valid.includes(redProof)) {
     die(`--red-proof must be one of ${valid.join(", ")}; got ${JSON.stringify(redProof)}.`);
   }
+  // R1-R3 mutate the EXPECTED map, which --expect none does not have. R6
+  // mutates the CAPTURED map, so it is valid in every mode -- and --expect none
+  // is the mode it exists to guard.
   if (redProof && ["R1", "R2", "R3"].includes(redProof) && expect === "none") {
     die(`--red-proof ${redProof} requires --expect production or test; there is no expected map to mutate.`);
   }
@@ -542,6 +545,27 @@ async function main(): Promise<number> {
 
   rows.sort((a, b) => a.key.localeCompare(b.key));
 
+  // ── R6 mutates the CAPTURED map, in memory, nothing on disk. ─────────────
+  //
+  // It substitutes one discovered id with that key's PRODUCTION counterpart,
+  // which is precisely the condition N4 exists to catch: a "test" capture that
+  // is really carrying production identifiers. Without R6, N4 passing on a
+  // location nobody can check by inspection would be a box turning green rather
+  // than evidence.
+  if (args.redProof === "R6") {
+    const eligible = rows.filter((r) => r.provenance === "DISCOVERED" && r.captured);
+    if (eligible.length === 0) {
+      die("--red-proof R6 cannot run: no DISCOVERED key resolved, so there is no capture to substitute.");
+    }
+    const victim = eligible[0];
+    const prodValue = readPath(structuredClone(getConfig("production")) as Record<string, any>, victim.key);
+    if (prodValue === undefined) {
+      die(`--red-proof R6 cannot run: "${victim.key}" has no production counterpart to substitute.`);
+    }
+    victim.captured = String(prodValue);
+    console.error(`RED PROOF R6: replaced the captured id for "${victim.key}" with its production counterpart`);
+  }
+
   // ── R1 / R2 / R3 mutate the EXPECTED map, after resolution. ───────────────
   //
   // ADOPTED FROM THE REVIEWED CANDIDATE, deliberately. The target must be a key
@@ -652,26 +676,39 @@ async function main(): Promise<number> {
     assertions.push({ id: "G2", label: "value equality                       ", pass: g2 });
     assertions.push({ id: "G3", label: "cardinality                          ", pass: g3 });
 
-    // ── N4 — SHIPS UNTESTED. Its first execution is C3's evidence. ──────────
-    // A TEST capture must differ from PRODUCTION at every key; equality means
-    // the Snapshot carried production identifiers across, or the wrong location
-    // was read. Never explain an equality away -- name the key and investigate.
-    // Unreachable in this commit: C2B-2 is authorized against production only,
-    // and --expect test throws out of getConfig until C3 populates TEST.
-    let n4 = true;
-    if (args.expect === "test") {
-      const prod = structuredClone(getConfig("production")) as Record<string, any>;
-      for (const r of rows) {
-        if (r.provenance !== "DISCOVERED" || !r.captured) continue;
-        if (r.captured === readPath(prod, r.key)) {
-          n4 = false;
-          notes.push(`N4  ${r.key} captured the PRODUCTION identifier from the test location`);
-        }
-      }
-      assertions.push({ id: "N4", label: "test identifiers differ from prod    ", pass: n4 });
-    }
+    ok = g1 && g2 && g3;
+  }
 
-    ok = g1 && g2 && g3 && n4;
+  // ── N4 — gated on LOCATION, not on --expect. ─────────────────────────────
+  //
+  // The invariant: if you claim this is non-production, prove the captured
+  // identifiers are not production identifiers. That is a property of the
+  // LOCATION, so tying it to an expectation mode was wrong -- it left
+  // --expect none, the mode a fresh location is actually captured in,
+  // completely unguarded.
+  //
+  // Compared against the production CONFIG MAP, which is local data already
+  // verified 47/47. No production credential is loaded and no
+  // production-addressed request is issued.
+  //
+  // Skipped when the location IS production, where comparing production against
+  // production would be meaningless. NOTE: this means --expect test against a
+  // production location no longer evaluates N4, where the C2B-2 gate did.
+  const productionLocation = String((getConfig("production") as Record<string, any>).locationId);
+  if (args.location !== productionLocation) {
+    const prod = structuredClone(getConfig("production")) as Record<string, any>;
+    let n4 = true;
+    for (const r of rows) {
+      // locationId is SUPPLIED, and when this gate is active it cannot match
+      // production by construction -- it is the very thing that opened the gate.
+      if (r.provenance !== "DISCOVERED" || !r.captured) continue;
+      if (r.captured === readPath(prod, r.key)) {
+        n4 = false;
+        notes.push(`N4  ${r.key} captured the PRODUCTION identifier ${r.captured}`);
+      }
+    }
+    assertions.push({ id: "N4", label: "non-production ids differ from prod  ", pass: n4 });
+    ok = ok && n4;
   }
 
   const result = {
