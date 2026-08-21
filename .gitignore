@@ -133,3 +133,8 @@ deno.lock
 # The frozen artifact is scripts/ghl-bindings.json — committing both would
 # leave two files with no way to tell which is authoritative.
 candidate-bindings.json
+
+# Gate 4C C2B-2 transients: capture tool output, reproducible on demand.
+# The frozen binding artifact is scripts/ghl-bindings.json.
+capture-production.json
+capture-none.json
