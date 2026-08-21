@@ -1,0 +1,405 @@
+{
+  "schemaVersion": 1,
+  "derivedFrom": {
+    "locationId": "jmHG4B8RdzwpfqruNf68",
+    "configBase": "05e7e01",
+    "schemaLeafCount": 47
+  },
+  "suppliedKeys": [
+    "locationId"
+  ],
+  "bindings": [
+    {
+      "key": "customValues.buyerProfitPct",
+      "surface": "S-4",
+      "handleField": "fieldKey",
+      "handle": "default_buyer_profit_percentage",
+      "handleRaw": "{{ custom_values.default_buyer_profit_percentage }}",
+      "scope": null
+    },
+    {
+      "key": "customValues.closingCost",
+      "surface": "S-4",
+      "handleField": "fieldKey",
+      "handle": "default_closing_cost_estimate",
+      "handleRaw": "{{ custom_values.default_closing_cost_estimate }}",
+      "scope": null
+    },
+    {
+      "key": "customValues.financingEnabled",
+      "surface": "S-4",
+      "handleField": "fieldKey",
+      "handle": "purchase_financing_enabled",
+      "handleRaw": "{{ custom_values.purchase_financing_enabled }}",
+      "scope": null
+    },
+    {
+      "key": "customValues.financingLtv",
+      "surface": "S-4",
+      "handleField": "fieldKey",
+      "handle": "default_financing_ltv_percentage",
+      "handleRaw": "{{ custom_values.default_financing_ltv_percentage }}",
+      "scope": null
+    },
+    {
+      "key": "customValues.financingPoints",
+      "surface": "S-4",
+      "handleField": "fieldKey",
+      "handle": "default_financing_points_percentage",
+      "handleRaw": "{{ custom_values.default_financing_points_percentage }}",
+      "scope": null
+    },
+    {
+      "key": "customValues.financingRate",
+      "surface": "S-4",
+      "handleField": "fieldKey",
+      "handle": "default_interest_rate_percentage",
+      "handleRaw": "{{ custom_values.default_interest_rate_percentage }}",
+      "scope": null
+    },
+    {
+      "key": "customValues.holdMonths",
+      "surface": "S-4",
+      "handleField": "fieldKey",
+      "handle": "default_hold_period_months",
+      "handleRaw": "{{ custom_values.default_hold_period_months }}",
+      "scope": null
+    },
+    {
+      "key": "customValues.mailerDigestRecipient",
+      "surface": "S-4",
+      "handleField": "fieldKey",
+      "handle": "mailer_digest_recipient",
+      "handleRaw": "{{ custom_values.mailer_digest_recipient }}",
+      "scope": null
+    },
+    {
+      "key": "customValues.monthlyCarry",
+      "surface": "S-4",
+      "handleField": "fieldKey",
+      "handle": "default_monthly_holding_cost",
+      "handleRaw": "{{ custom_values.default_monthly_holding_cost }}",
+      "scope": null
+    },
+    {
+      "key": "customValues.profitSharePct",
+      "surface": "S-4",
+      "handleField": "fieldKey",
+      "handle": "buyer_profit_share_percentage",
+      "handleRaw": "{{ custom_values.buyer_profit_share_percentage }}",
+      "scope": null
+    },
+    {
+      "key": "customValues.sellingCostPct",
+      "surface": "S-4",
+      "handleField": "fieldKey",
+      "handle": "default_selling_cost_percentage",
+      "handleRaw": "{{ custom_values.default_selling_cost_percentage }}",
+      "scope": null
+    },
+    {
+      "key": "customValues.standardMinimum",
+      "surface": "S-4",
+      "handleField": "fieldKey",
+      "handle": "standard_minimum_assignment_spread",
+      "handleRaw": "{{ custom_values.standard_minimum_assignment_spread }}",
+      "scope": null
+    },
+    {
+      "key": "fields.arv",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "arv",
+      "handleRaw": "contact.arv",
+      "scope": null
+    },
+    {
+      "key": "fields.askingPrice",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "asking_price",
+      "handleRaw": "contact.asking_price",
+      "scope": null
+    },
+    {
+      "key": "fields.callbackDatetime",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "callback_datetime",
+      "handleRaw": "contact.callback_datetime",
+      "scope": null
+    },
+    {
+      "key": "fields.callbackDatetimePrecise",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "callback_datetime_precise",
+      "handleRaw": "contact.callback_datetime_precise",
+      "scope": null
+    },
+    {
+      "key": "fields.combinedScore",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "combined_score",
+      "handleRaw": "contact.combined_score",
+      "scope": null
+    },
+    {
+      "key": "fields.dataCompletenessScore",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "data_completeness_score",
+      "handleRaw": "contact.data_completeness_score",
+      "scope": null
+    },
+    {
+      "key": "fields.dealScore",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "deal_score",
+      "handleRaw": "contact.deal_score",
+      "scope": null
+    },
+    {
+      "key": "fields.estimatedRepairs",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "estimated_repairs",
+      "handleRaw": "contact.estimated_repairs",
+      "scope": null
+    },
+    {
+      "key": "fields.lastCallAttempt",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "last_call_attempt",
+      "handleRaw": "contact.last_call_attempt",
+      "scope": null
+    },
+    {
+      "key": "fields.lastCallAttemptPrecise",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "last_call_attempt_precise",
+      "handleRaw": "contact.last_call_attempt_precise",
+      "scope": null
+    },
+    {
+      "key": "fields.motivationScore",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "motivation_score",
+      "handleRaw": "contact.motivation_score",
+      "scope": null
+    },
+    {
+      "key": "fields.offerPrice",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "offer_price",
+      "handleRaw": "contact.offer_price",
+      "scope": null
+    },
+    {
+      "key": "fields.phoneStatus",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "phone_status",
+      "handleRaw": "contact.phone_status",
+      "scope": null
+    },
+    {
+      "key": "fields.propertyAddress",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "property_address",
+      "handleRaw": "contact.property_address",
+      "scope": null
+    },
+    {
+      "key": "fields.propertyNotes",
+      "surface": "S-1",
+      "handleField": "fieldKey",
+      "handle": "property_notes",
+      "handleRaw": "contact.property_notes",
+      "scope": null
+    },
+    {
+      "key": "folders.additionalInfo",
+      "surface": "S-3",
+      "handleField": "name",
+      "handle": "Additional Info",
+      "handleRaw": "Additional Info",
+      "scope": {
+        "model": "contact"
+      }
+    },
+    {
+      "key": "folders.offer",
+      "surface": "S-3",
+      "handleField": "name",
+      "handle": "Offer",
+      "handleRaw": "Offer",
+      "scope": {
+        "model": "contact"
+      }
+    },
+    {
+      "key": "opportunityFacts.arv",
+      "surface": "S-2",
+      "handleField": "fieldKey",
+      "handle": "arv_after_repair_value",
+      "handleRaw": "opportunity.arv_after_repair_value",
+      "scope": null
+    },
+    {
+      "key": "opportunityFacts.askingPrice",
+      "surface": "S-2",
+      "handleField": "fieldKey",
+      "handle": "asking_price",
+      "handleRaw": "opportunity.asking_price",
+      "scope": null
+    },
+    {
+      "key": "opportunityFacts.repairs",
+      "surface": "S-2",
+      "handleField": "fieldKey",
+      "handle": "repair_estimate",
+      "handleRaw": "opportunity.repair_estimate",
+      "scope": null
+    },
+    {
+      "key": "opportunityFields.assignmentMode",
+      "surface": "S-2",
+      "handleField": "fieldKey",
+      "handle": "assignment_mode",
+      "handleRaw": "opportunity.assignment_mode",
+      "scope": null
+    },
+    {
+      "key": "opportunityFields.endBuyerMaxPrice",
+      "surface": "S-2",
+      "handleField": "fieldKey",
+      "handle": "endbuyer_maximum_purchase_price",
+      "handleRaw": "opportunity.endbuyer_maximum_purchase_price",
+      "scope": null
+    },
+    {
+      "key": "opportunityFields.sellerMAO",
+      "surface": "S-2",
+      "handleField": "fieldKey",
+      "handle": "mao_max_allowable_offer",
+      "handleRaw": "opportunity.mao_max_allowable_offer",
+      "scope": null
+    },
+    {
+      "key": "pipelines.sellerLeads",
+      "surface": "S-5",
+      "handleField": "name",
+      "handle": "Seller Leads Pipeline",
+      "handleRaw": "Seller Leads Pipeline",
+      "scope": null
+    },
+    {
+      "key": "stages.contactInitiated",
+      "surface": "S-6",
+      "handleField": "name",
+      "handle": "Contact Initiated",
+      "handleRaw": "Contact Initiated",
+      "scope": {
+        "parentPipelineKey": "pipelines.sellerLeads"
+      }
+    },
+    {
+      "key": "stages.longTermNurture",
+      "surface": "S-6",
+      "handleField": "name",
+      "handle": "Long-Term Nurture",
+      "handleRaw": "Long-Term Nurture",
+      "scope": {
+        "parentPipelineKey": "pipelines.sellerLeads"
+      }
+    },
+    {
+      "key": "stages.lostNotInterested",
+      "surface": "S-6",
+      "handleField": "name",
+      "handle": "Lost / Not Interested",
+      "handleRaw": "Lost / Not Interested",
+      "scope": {
+        "parentPipelineKey": "pipelines.sellerLeads"
+      }
+    },
+    {
+      "key": "stages.newLeadSeller",
+      "surface": "S-6",
+      "handleField": "name",
+      "handle": "New Lead - Seller",
+      "handleRaw": "New Lead - Seller",
+      "scope": {
+        "parentPipelineKey": "pipelines.sellerLeads"
+      }
+    },
+    {
+      "key": "stages.noShow",
+      "surface": "S-6",
+      "handleField": "name",
+      "handle": "No Show",
+      "handleRaw": "No Show",
+      "scope": {
+        "parentPipelineKey": "pipelines.sellerLeads"
+      }
+    },
+    {
+      "key": "stages.sellerCallBooked",
+      "surface": "S-6",
+      "handleField": "name",
+      "handle": "Seller Call Booked",
+      "handleRaw": "Seller Call Booked",
+      "scope": {
+        "parentPipelineKey": "pipelines.sellerLeads"
+      }
+    },
+    {
+      "key": "stages.sellerCallCompleted",
+      "surface": "S-6",
+      "handleField": "name",
+      "handle": "Seller Call Completed",
+      "handleRaw": "Seller Call Completed",
+      "scope": {
+        "parentPipelineKey": "pipelines.sellerLeads"
+      }
+    },
+    {
+      "key": "stages.sellerClosedWon",
+      "surface": "S-6",
+      "handleField": "name",
+      "handle": "Seller Closed-Won",
+      "handleRaw": "Seller Closed-Won",
+      "scope": {
+        "parentPipelineKey": "pipelines.sellerLeads"
+      }
+    },
+    {
+      "key": "stages.sellerFollowUp",
+      "surface": "S-6",
+      "handleField": "name",
+      "handle": "Seller Follow-Up",
+      "handleRaw": "Seller Follow-Up",
+      "scope": {
+        "parentPipelineKey": "pipelines.sellerLeads"
+      }
+    },
+    {
+      "key": "stages.sellerOfferSent",
+      "surface": "S-6",
+      "handleField": "name",
+      "handle": "Seller Offer Sent",
+      "handleRaw": "Seller Offer Sent",
+      "scope": {
+        "parentPipelineKey": "pipelines.sellerLeads"
+      }
+    }
+  ]
+}

@@ -128,3 +128,8 @@ deno.lock
 
 # Stray local exports/handoff zips — never intentionally tracked
 *.zip
+
+# Gate 4C C2B-1 transient: the generator emits this candidate for review.
+# The frozen artifact is scripts/ghl-bindings.json — committing both would
+# leave two files with no way to tell which is authoritative.
+candidate-bindings.json
