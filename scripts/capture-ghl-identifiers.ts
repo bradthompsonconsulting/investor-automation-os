@@ -33,21 +33,29 @@
  *
  * THE KEY COUNT IS NEVER HARDCODED. It comes from walking getConfig("production").
  *
- * MUST BE RUN FROM THE REPOSITORY ROOT. The artifact is resolved by the fixed
- * relative path below, exactly as scripts/derive-ghl-bindings.ts resolves it. If
- * CI ever invokes either from another working directory, this is where it breaks.
+ * THE CREDENTIAL FILE IS THE CREDENTIAL SELECTOR. --credential-file is required, has no
+ * default and no fallback, and the token is read ONLY from that file's parsed
+ * contents -- never from ambient process state. Both credential files use the
+ * same variable name, GHL_PRIVATE_API_KEY, so which file is named IS the
+ * decision, and it is recorded in every invocation. The alternative -- editing
+ * one .env before a run and editing it back after -- depends on a human undoing
+ * a change correctly and leaves no record of which credential a run used.
+ *
+ * MUST BE RUN FROM THE REPOSITORY ROOT. Both the artifact and the credential
+ * file are resolved by relative path, exactly as scripts/derive-ghl-bindings.ts
+ * resolves the artifact. If CI ever invokes either from another working
+ * directory, this is where it breaks.
  *
  * Usage:
  *   npx tsx scripts/capture-ghl-identifiers.ts --location <id> --expect <production|test|none>
+ *                                              --credential-file <path>
  *                                              [--out <path>] [--red-proof <R1|R2|R3|R4|R5>]
  * Exit: 0 only when A0 passes and every row resolved and matched. Non-zero otherwise.
  */
 
-import { config as loadEnv } from "dotenv";
+import { parse as parseEnvFile } from "dotenv";
 import { readFileSync, writeFileSync } from "node:fs";
 import { getConfig } from "../app/shared/ghl-config.ts";
-
-loadEnv();
 
 const BASE = "https://services.leadconnectorhq.com";
 const API_VERSION = "2021-07-28";
@@ -61,6 +69,7 @@ const SYNTHETIC_VALUE = "AAAAAAAAAAAAAAAAAAAA";
 interface Args {
   location: string;
   expect: "production" | "test" | "none";
+  credentialFile: string;
   out: string | null;
   redProof: "R1" | "R2" | "R3" | "R4" | "R5" | null;
 }
@@ -88,6 +97,14 @@ function parseArgs(argv: string[]): Args {
     die(`--expect must be production, test or none; got ${JSON.stringify(expect)}.`);
   }
 
+  // The credential SOURCE is an explicit decision, never inferred. There is one
+  // variable name across every credential file, so the file named here is the
+  // whole of the choice.
+  const credentialFile = get("--credential-file");
+  if (!credentialFile) {
+    die("--credential-file is required. There is no default and no fallback; name the credential file.");
+  }
+
   const redProof = get("--red-proof");
   const valid = ["R1", "R2", "R3", "R4", "R5"];
   if (redProof && !valid.includes(redProof)) {
@@ -100,6 +117,7 @@ function parseArgs(argv: string[]): Args {
   return {
     location,
     expect,
+    credentialFile,
     out: get("--out"),
     redProof: (redProof as Args["redProof"]) ?? null,
   };
@@ -320,9 +338,35 @@ async function main(): Promise<number> {
   }
 
   // ── Only past A0 do we touch the credential or the network. ───────────────
-  const token = process.env.GHL_PRIVATE_API_KEY;
-  if (!token) {
-    die("GHL_PRIVATE_API_KEY is not set. Expected it in the repo-root .env, loaded by dotenv.");
+  //
+  // dotenv.parse(), NOT dotenv.config(). config() writes into process.env and,
+  // critically, does NOT overwrite a value already present there -- so a tool
+  // that called config({ path }) and then read process.env.GHL_PRIVATE_API_KEY
+  // could silently use an ambient shell value while the named file was ignored:
+  // the file loads, its variable is discarded, and nothing reports it. That
+  // would satisfy "loads only the named file" while violating "reads only that
+  // file's contents". parse() returns the file's contents as a plain object and
+  // never touches process.env, so ambient state cannot participate at all.
+  let envText: string;
+  try {
+    envText = readFileSync(args.credentialFile, "utf8");
+  } catch {
+    die(
+      `--credential-file ${args.credentialFile} could not be read. No credential was loaded and ` +
+        `no request was issued.`,
+    );
+  }
+
+  const fileVars = parseEnvFile(envText);
+  const token = fileVars.GHL_PRIVATE_API_KEY;
+  if (token === undefined) {
+    die(
+      `GHL_PRIVATE_API_KEY is not present in ${args.credentialFile}. There is no fallback ` +
+        `to ambient environment, and no other file is consulted.`,
+    );
+  }
+  if (token.trim() === "") {
+    die(`GHL_PRIVATE_API_KEY is present but empty in ${args.credentialFile}.`);
   }
 
   // TWO INDEPENDENT DEEP COPIES. getConfig returns the same module-level object
@@ -633,6 +677,9 @@ async function main(): Promise<number> {
   const result = {
     location: args.location,
     expect: args.expect,
+    // The credential FILE, never the credential. Which file was named is the
+    // decision this run made, and it belongs in the evidence.
+    credentialFile: args.credentialFile,
     redProof: args.redProof,
     artifact: {
       path: ARTIFACT,
