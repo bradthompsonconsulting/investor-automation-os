@@ -34,7 +34,9 @@ config();
 // addresses. Gate 4C Phase 2 replaces it with the environment-derived target;
 // only where the comparand comes from changes, never the comparison itself.
 const MUTATION_TARGET = "production";
-const KNOWN_FLAGS = ["--authorize-mutation"];
+// --dry-run is accepted here from PRE-3 commit 2 but does nothing until commit
+// 3, which gives it the positive-control stop at the loop entry.
+const KNOWN_FLAGS = ["--authorize-mutation", "--dry-run"];
 
 const rawArgs = process.argv.slice(2);
 
@@ -46,25 +48,58 @@ for (const a of rawArgs) {
   }
 }
 
-const authArg = rawArgs.find((a) => a.split("=")[0] === "--authorize-mutation");
-if (!authArg) {
+// DUPLICATE FIRST, refusing regardless of order or values. .find() returned the
+// first match and discarded the rest, so
+// --authorize-mutation=production --authorize-mutation=test PASSED while the
+// operator's last word was ignored -- failing open in exactly the
+// edited-saved-command-line case this affirmation defends against.
+const authArgs = rawArgs.filter((a) => a.split("=")[0] === "--authorize-mutation");
+if (authArgs.length > 1) {
   console.error(
-    "ERROR: no mutation authorization supplied. This script re-scores every contact in the " +
-      `location and requires --authorize-mutation=${MUTATION_TARGET}. There is no default.`,
+    `ERROR: duplicated authorization flag — --authorize-mutation was supplied ${authArgs.length} ` +
+      "times. Refusing: honouring either one would let an edited command line authorize a " +
+      "target nobody read.",
   );
   process.exit(2);
 }
 
-const authValue = authArg.includes("=") ? authArg.slice(authArg.indexOf("=") + 1) : "";
-if (authValue !== MUTATION_TARGET) {
+const authArg = authArgs[0];
+const authValue =
+  authArg === undefined ? null : authArg.includes("=") ? authArg.slice(authArg.indexOf("=") + 1) : "";
+
+// A WRONG TARGET REFUSES IN EVERY MODE, --dry-run included.
+if (authValue !== null && authValue !== MUTATION_TARGET) {
   console.error(
     `ERROR: authorization mismatch. --authorize-mutation named ${JSON.stringify(authValue)}, ` +
-      `but this script targets ${JSON.stringify(MUTATION_TARGET)}. Refusing.`,
+      `but this script targets ${JSON.stringify(MUTATION_TARGET)}. Refusing in every mode, ` +
+      "including --dry-run.",
   );
   process.exit(2);
 }
 
-console.log(`AUTHORIZATION PASSED — mutation authorized for target "${MUTATION_TARGET}" by --authorize-mutation=${authValue}`);
+// POLARITY: you ADD authorization to mutate; you never mutate by DELETING a
+// word. A preview therefore needs no authorization -- but the gate is still
+// ALWAYS evaluated and ALWAYS reports.
+const IS_PREVIEW = rawArgs.includes("--dry-run");
+if (authValue === null) {
+  if (IS_PREVIEW) {
+    console.log(
+      "NOT AUTHORIZED — preview only. No mutation authorization was supplied, so no writes " +
+        "will be attempted.",
+    );
+  } else {
+    console.error(
+      "ERROR: mutation authorization is required. This script re-scores every contact in the " +
+        `location. Supply --authorize-mutation=${MUTATION_TARGET} to write, or --dry-run to ` +
+        "enumerate without writing.",
+    );
+    process.exit(2);
+  }
+} else {
+  console.log(
+    `AUTHORIZATION PASSED — mutation authorized for target "${MUTATION_TARGET}" by --authorize-mutation=${authValue}`,
+  );
+}
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
