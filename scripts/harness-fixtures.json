@@ -1,0 +1,46 @@
+{
+  "_invariant": [
+    "These identifiers must NOT resolve through the same source the harness resolves through. A harness that asserts an identifier was not touched cannot obtain it from the resolver under test: one resolver defect would move both the assertion and the thing asserted, and the assertion would pass trivially.",
+    "These values must NOT be merged into app/shared/ghl-config.ts. Adding them changes schemaLeafCount, invalidates the frozen binding artifact scripts/ghl-bindings.json, and trips A0.",
+    "Merging this file into GhlConfig defeats every assertion that reads it. If that looks like a tidy refactor, read the two paragraphs above again."
+  ],
+  "production": {
+    "untouchedPins": {
+      "contactOfferFields": {
+        "offer_mao": "aAMFPmgxGZT422uGAQOx",
+        "offer_wholesale_fee": "qYzkp66x87rG7Pbs36GP",
+        "offer_repair_total": "2EpRGXb8rj4RtHfFhYbB",
+        "offer_margin": "ec06A3RId4Isorc97jeQ",
+        "offer_arv": "Z88Y6IqCK1i7hObZcrQM",
+        "offer_date": "SJ6x7OqUxTKg1ri8ltb7"
+      },
+      "opportunityOfferFields": {
+        "offer_price": "4YiACDV4uB3zOlAdNIBb",
+        "offer_date": "73oLHWnVjmOGSrBo5sC6",
+        "offer_mao": "9jm2SoN2aDtUtbesL0kG",
+        "offer_wholesale_fee": "GxChepYArmgPllhKPq0R",
+        "offer_arv": "Nm1LZvQzaCGvXDq7TRCh",
+        "offer_repair_total": "XbW0B973nuaLtIjMkzO9",
+        "offer_margin": "eY5BOqE9juGpBfqwacWT"
+      },
+      "opportunityFields": {
+        "closing_costs": "N8Aa9t1SZhU7XnPPzxWk"
+      },
+      "runnerRegistryFields": {
+        "carrying_cost": "FhcyP63sSAtWInl4Q4iI",
+        "loan_amount": "3ZlSKldh0jR2MWhjOmHe",
+        "occupancy_status": "op57wOVFSMRBFbHmD6ej"
+      }
+    },
+    "fixtureRecords": {
+      "contacts": {
+        "bradt75": "9fbH2VCcZvzVNhsR9zjc",
+        "iaosTestProbe": "HGZAby6snRZfpl0go2Yb",
+        "neelima": "FiIT0hUaxVCIuokQpZuc"
+      },
+      "opportunities": {
+        "iaosUnderwritingTest": "OcGWOP9n666i4Q1MLd31"
+      }
+    }
+  }
+}
