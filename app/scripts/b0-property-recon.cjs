@@ -2,7 +2,7 @@
    Three GETs only: location custom-fields schema, and singular contact GET on
    two fixtures. Safe to re-run at any time. */
 /* B0 — read-only recon for Phase B (docs/PHASE_B_SPEC.md §10.6). THREE GETs via the
-   deployed ghl-proxy. NO PUT/POST/write of any kind. Reports all 73 Additional Info
+   deployed ghl-proxy. NO PUT/POST/write of any kind. Reports all 74 Additional Info
    fields grouped by subgroup (Reachability / Property / Investor / System); rosters and
    subgroup membership come from the config file (app/src/config/additionalInfoSubgroups.ts),
    never guessed — the schema does NOT expose subgroup. A CONFIG SANITY CHECK runs first
@@ -49,8 +49,8 @@ async function getJson(url, label) {
   // ── CONFIG SANITY CHECK (pre-network; passes even if every network call fails) ──
   const cfgFail = [];
   if (propertyKeys.length !== 30) cfgFail.push(`Property roster in config = ${propertyKeys.length}, expected 30`);
-  if (aiRosterKeys.size   !== 73) cfgFail.push(`Additional Info roster in config = ${aiRosterKeys.size}, expected 73`);
-  if (aiEntries.length    !== 73) cfgFail.push(`AI entries in config = ${aiEntries.length}, expected 73 (duplicate key?)`);
+  if (aiRosterKeys.size   !== 74) cfgFail.push(`Additional Info roster in config = ${aiRosterKeys.size}, expected 74`);
+  if (aiEntries.length    !== 74) cfgFail.push(`AI entries in config = ${aiEntries.length}, expected 74 (duplicate key?)`);
   if (cfgFail.length) {
     console.log("CONFIG SANITY CHECK FAILED (pre-network) — STOPPED:");
     cfgFail.forEach((f) => console.log("  " + f));
@@ -68,7 +68,7 @@ async function getJson(url, label) {
   const unresolved = propertyKeys.filter((k) => byKey(k).length === 0);
   const ambiguous  = propertyKeys.filter((k) => byKey(k).length > 1);
   const propertyDefs = defs.filter((d) => propertySet.has(d.fieldKey));
-  // AI-wide resolution (needed to iterate all 73 safely; subsumes the Property check).
+  // AI-wide resolution (needed to iterate all 74 safely; subsumes the Property check).
   const aiUnresolved = [...aiRosterKeys].filter((k) => byKey(k).length === 0);
   const aiAmbiguous  = [...aiRosterKeys].filter((k) => byKey(k).length > 1);
 
@@ -83,7 +83,7 @@ async function getJson(url, label) {
   if (unresolved.length)          fail.push(`(b) config keys with ZERO live defs [config→schema unresolved]: ${JSON.stringify(unresolved)}`);
   if (ambiguous.length)           fail.push(`(b) config keys with >1 live def [ambiguous]: ${JSON.stringify(ambiguous)}`);
   if (propParentIds.length !== 1) fail.push(`(c) 30 Property defs span ${propParentIds.length} distinct parentIds: ${JSON.stringify(propParentIds)}`);
-  if (aiParent && aiDefs.length !== 73) fail.push(`(c) Additional Info folder (parentId ${aiParent}) carries ${aiDefs.length} defs, expected 73`);
+  if (aiParent && aiDefs.length !== 74) fail.push(`(c) Additional Info folder (parentId ${aiParent}) carries ${aiDefs.length} defs, expected 74`);
   if (aiOrphans.length)           fail.push(`(c) AI-folder wire fields absent from config roster [real orphans]: ${JSON.stringify(aiOrphans)}`);
   if (aiUnresolved.length)        fail.push(`(d) AI config keys with ZERO live defs: ${JSON.stringify(aiUnresolved)}`);
   if (aiAmbiguous.length)         fail.push(`(d) AI config keys with >1 live def: ${JSON.stringify(aiAmbiguous)}`);
@@ -109,7 +109,7 @@ async function getJson(url, label) {
   const optKeyProp   = propUnionKeys.find((k) => /picklist|option/i.test(k)) || null;
   const optKeySchema = schemaUnionKeys.find((k) => /picklist|option/i.test(k)) || null;
 
-  console.log("LIVE ASSERTIONS PASS: (a) 30 Property resolved  (b) 0 Property unresolved / 0 ambiguous  (c) 1 parentId, folder=73, 0 orphans  (d) 73 AI resolved, 0 unresolved / 0 ambiguous");
+  console.log("LIVE ASSERTIONS PASS: (a) 30 Property resolved  (b) 0 Property unresolved / 0 ambiguous  (c) 1 parentId, folder=74, 0 orphans  (d) 74 AI resolved, 0 unresolved / 0 ambiguous");
   console.log(`OBSERVED Additional Info parentId (from wire, not a constant): ${aiParent}  — folder def count = ${aiDefs.length}`);
   console.log("SCHEMA MEMBERSHIP: folder EXPOSED via parentId (above); subgroup NOT exposed by schema — subgroup column is config-derived.");
   console.log(`TOP-LEVEL KEYS on first resolved Property def (${firstDef.fieldKey}): ${JSON.stringify(Object.keys(firstDef))}`);
