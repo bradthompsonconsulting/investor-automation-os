@@ -1,10 +1,26 @@
 /**
  * Fetches all contacts from GHL and re-scores each via the live endpoint.
  *
- * Run: GHL_PRIVATE_API_KEY=pit-... npx tsx scripts/rescore-all.ts --authorize-mutation=production
+ * Run: npx tsx scripts/rescore-all.ts --credential-file=.env --dry-run
+ *
+ * THE LINE ABOVE IS THE ONLY RUNNABLE LINE IN THIS DOCBLOCK, AND IT STOPS
+ * BEFORE THE FIRST WRITE. That is deliberate. An invocation printed in a
+ * docblock is instruction shaped -- it gets copied, not read -- so the one on
+ * offer here is the one
+ * that is safe to copy. To actually write, you must add --authorize-mutation
+ * with the target named, and remove --dry-run: two edits to a line that
+ * announces what it does, rather than one paste that quietly rewrites every
+ * contact in the location. No mutating invocation is written out below, for
+ * the same reason.
  *
  * Required to WRITE: --authorize-mutation=<target>, naming the environment this
  * script targets. There is no default, and a wrong target refuses in every mode.
+ *
+ * Required ALWAYS: --credential-file=<path>, naming the file the GHL credential
+ * is read from. There is no default and no fallback. Both environments use the
+ * same variable name, GHL_PRIVATE_API_KEY, so WHICH FILE IS NAMED IS the
+ * environment selection -- an inherited shell value must never be able to make
+ * that choice silently.
  *
  * Not required for --dry-run, which enumerates every contact and stops at the
  * scoring loop: you add authorization to mutate, you never mutate by deleting a
@@ -17,16 +33,16 @@
  * function under its own separate credential.
  */
 
-import { config } from "dotenv";
-config();
+import { readFileSync } from "node:fs";
+import { parse as parseEnvFile } from "dotenv";
 
 // ── Mutation authorization (Gate 4C PRE-2) ───────────────────────────────────
 //
 // Before PRE-2 this file parsed no arguments at all, so there was no invocation
 // that was not a full production run -- appending a flag such as --help was
 // ignored and every contact in the location was rewritten. The parser arrives
-// here with the gate, and only what the gate needs: no --dry-run, no --env, no
-// --credential-file. Those are PRE-3 and PRE-4, kept separate so each is
+// here with the gate, and only what the gate needs. --dry-run arrived in PRE-3
+// and --credential-file in PRE-4, each kept to its own commit so each is
 // independently reviewable.
 //
 // EVALUATED BEFORE THE CREDENTIAL, deliberately. Authorization is about INTENT;
@@ -38,9 +54,13 @@ config();
 // addresses. Gate 4C Phase 2 replaces it with the environment-derived target;
 // only where the comparand comes from changes, never the comparison itself.
 const MUTATION_TARGET = "production";
-// --dry-run is accepted here from PRE-3 commit 2 but does nothing until commit
-// 3, which gives it the positive-control stop at the loop entry.
-const KNOWN_FLAGS = ["--authorize-mutation", "--dry-run"];
+// This allowlist has NO `startsWith("--")` escape, unlike the importer's, which
+// must admit a positional CSV path. Here every token that is not an allowlisted
+// flag refuses. That is correct -- this script takes no positionals -- but it
+// means --credential-file must use this file's `=` syntax: the capture tool's
+// space-separated `--credential-file <path>` would have its PATH refused at the
+// loop below as an unrecognized argument. One flag syntax per file.
+const KNOWN_FLAGS = ["--authorize-mutation", "--dry-run", "--credential-file"];
 
 const rawArgs = process.argv.slice(2);
 
@@ -105,17 +125,54 @@ if (authValue === null) {
   );
 }
 
+// ── Credential source (Gate 4C PRE-4) ────────────────────────────────────────
+//
+// SECOND, always after the authorization gate above. Authorization is INTENT and
+// a credential is CAPABILITY, so intent is settled first -- which also means
+// there is no way to reach this gate without having already satisfied the
+// production authorization.
+//
+// Extracted here; read inside the async main, before the first request.
+//
+// DUPLICATE FIRST, mirroring the --authorize-mutation check above, because this
+// flag is the same class: it decides which environment's credential is used, so
+// a first-wins .find() would run against one file while the operator's last word
+// named another. Refusing costs nothing; a credential nobody read is the whole
+// failure this flag exists to prevent.
+const credentialArgs = rawArgs.filter((a) => a.split("=")[0] === "--credential-file");
+if (credentialArgs.length > 1) {
+  console.error(
+    `ERROR: duplicated credential flag — --credential-file was supplied ${credentialArgs.length} ` +
+      "times. Refusing: honouring either one would let an edited command line select a " +
+      "credential nobody read.",
+  );
+  process.exit(2);
+}
+
+const credentialArg = credentialArgs[0];
+const credentialFile =
+  credentialArg === undefined
+    ? null
+    : credentialArg.includes("=")
+      ? credentialArg.slice(credentialArg.indexOf("=") + 1)
+      : "";
+
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
 const SCORE_URL   = "https://investor-automation-os.netlify.app/.netlify/functions/motivation-score";
-const TOKEN       = process.env.GHL_PRIVATE_API_KEY ?? "";
 const DELAY_MS    = 250; // ~4 req/sec — stay safe
 
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 interface ContactMeta { id: string; firstName: string; lastName: string; }
 
-async function fetchAllIds(): Promise<ContactMeta[]> {
+// TOKEN IS A PARAMETER, not module state. The module-level `const TOKEN` this
+// replaced was assigned from process.env at import time, which made the
+// credential ambient: every function in the file could reach it, and nothing
+// recorded where it came from. Threading it explicitly means the only way this
+// function gets a token is for a caller to hand it one that the credential gate
+// resolved from a named file.
+async function fetchAllIds(token: string): Promise<ContactMeta[]> {
   const all: ContactMeta[] = [];
   let startAfterId: string | undefined;
   let startAfter: number | undefined;
@@ -126,7 +183,7 @@ async function fetchAllIds(): Promise<ContactMeta[]> {
     if (startAfter)   params.set("startAfter",   String(startAfter));
 
     const res  = await fetch(`${GHL_BASE}/contacts?${params}`, {
-      headers: { Authorization: `Bearer ${TOKEN}`, Version: "2021-07-28" },
+      headers: { Authorization: `Bearer ${token}`, Version: "2021-07-28" },
     });
     const body = await res.json() as any;
     if (!res.ok) throw new Error(`GET /contacts → ${res.status}: ${JSON.stringify(body)}`);
@@ -158,10 +215,57 @@ async function score(contact: ContactMeta): Promise<any> {
 }
 
 (async () => {
-  if (!TOKEN) { console.error("GHL_PRIVATE_API_KEY not set"); process.exit(1); }
+  // The `if (!TOKEN)` guard that stood here is gone, deliberately. It tested a
+  // falsy string, which `?? ""` guaranteed it would never see as anything but
+  // "" -- so it could report "not set" but never report WHICH source was
+  // consulted or that the wrong one was. The four refusals below replace it and
+  // test the conditions that actually matter.
+  if (credentialFile === null) {
+    console.error(
+      "ERROR: --credential-file is required. There is no default and no fallback; name the " +
+        "file the GHL credential is read from. Both environments use the same variable name, " +
+        "so which file is named IS the environment selection.",
+    );
+    process.exit(2);
+  }
+
+  // dotenv.parse(), NOT dotenv.config(). config() writes into process.env and,
+  // critically, does NOT overwrite a value already present there -- so a tool
+  // that called config({ path }) and then read process.env.GHL_PRIVATE_API_KEY
+  // could silently use an ambient shell value while the named file was ignored:
+  // the file loads, its variable is discarded, and nothing reports it. That
+  // would satisfy "loads only the named file" while violating "reads only that
+  // file's contents". parse() returns the file's contents as a plain object and
+  // never touches process.env, so ambient state cannot participate at all.
+  let envText: string;
+  try {
+    envText = readFileSync(credentialFile, "utf8");
+  } catch {
+    console.error(
+      `ERROR: --credential-file ${credentialFile} could not be read. No credential was loaded ` +
+        "and no request was issued.",
+    );
+    process.exit(2);
+  }
+
+  const fileVars = parseEnvFile(envText);
+  const token = fileVars.GHL_PRIVATE_API_KEY;
+  if (token === undefined) {
+    console.error(
+      `ERROR: GHL_PRIVATE_API_KEY is not present in ${credentialFile}. There is no fallback to ` +
+        "the ambient environment, and no other file is consulted.",
+    );
+    process.exit(2);
+  }
+  if (token.trim() === "") {
+    console.error(`ERROR: GHL_PRIVATE_API_KEY is present but empty in ${credentialFile}.`);
+    process.exit(2);
+  }
+
+  console.log(`CREDENTIAL SOURCE — ${credentialFile}`);
 
   console.log("Fetching contacts from GHL...");
-  const contacts = await fetchAllIds();
+  const contacts = await fetchAllIds(token);
 
   // ── Positive control (Gate 4C PRE-3) ───────────────────────────────────────
   //
