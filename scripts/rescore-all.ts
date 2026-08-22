@@ -1,10 +1,70 @@
 /**
  * Fetches all contacts from GHL and re-scores each via the live endpoint.
- * Run: GHL_PRIVATE_API_KEY=pit-... npx tsx scripts/rescore-all.ts
+ *
+ * Run: GHL_PRIVATE_API_KEY=pit-... npx tsx scripts/rescore-all.ts --authorize-mutation=production
+ *
+ * REQUIRED: --authorize-mutation=<target>, naming the environment this script
+ * targets. There is no default.
+ *
+ * This is a BULK PRODUCTION WRITER. It enumerates every contact in the location
+ * and POSTs each to the deployed motivation-score function, which writes four
+ * score fields and sets a bucket tag per contact. This script's own token
+ * authorizes only the enumeration GET; the writes are performed by that
+ * function under its own separate credential.
  */
 
 import { config } from "dotenv";
 config();
+
+// ── Mutation authorization (Gate 4C PRE-2) ───────────────────────────────────
+//
+// Before PRE-2 this file parsed no arguments at all, so there was no invocation
+// that was not a full production run -- appending a flag such as --help was
+// ignored and every contact in the location was rewritten. The parser arrives
+// here with the gate, and only what the gate needs: no --dry-run, no --env, no
+// --credential-file. Those are PRE-3 and PRE-4, kept separate so each is
+// independently reviewable.
+//
+// EVALUATED BEFORE THE CREDENTIAL, deliberately. Authorization is about INTENT;
+// a credential is about CAPABILITY. Checking intent first means a refusal proof
+// needs no credential present, and cannot refuse for the credential's reason
+// while appearing to refuse for the gate's.
+//
+// MUTATION_TARGET names the environment the hardcoded LOCATION_ID below
+// addresses. Gate 4C Phase 2 replaces it with the environment-derived target;
+// only where the comparand comes from changes, never the comparison itself.
+const MUTATION_TARGET = "production";
+const KNOWN_FLAGS = ["--authorize-mutation"];
+
+const rawArgs = process.argv.slice(2);
+
+for (const a of rawArgs) {
+  const name = a.split("=")[0];
+  if (!KNOWN_FLAGS.includes(name)) {
+    console.error(`ERROR: unrecognized argument ${name}. Refusing rather than ignoring it.`);
+    process.exit(2);
+  }
+}
+
+const authArg = rawArgs.find((a) => a.split("=")[0] === "--authorize-mutation");
+if (!authArg) {
+  console.error(
+    "ERROR: no mutation authorization supplied. This script re-scores every contact in the " +
+      `location and requires --authorize-mutation=${MUTATION_TARGET}. There is no default.`,
+  );
+  process.exit(2);
+}
+
+const authValue = authArg.includes("=") ? authArg.slice(authArg.indexOf("=") + 1) : "";
+if (authValue !== MUTATION_TARGET) {
+  console.error(
+    `ERROR: authorization mismatch. --authorize-mutation named ${JSON.stringify(authValue)}, ` +
+      `but this script targets ${JSON.stringify(MUTATION_TARGET)}. Refusing.`,
+  );
+  process.exit(2);
+}
+
+console.log(`AUTHORIZATION PASSED — mutation authorized for target "${MUTATION_TARGET}" by --authorize-mutation=${authValue}`);
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
