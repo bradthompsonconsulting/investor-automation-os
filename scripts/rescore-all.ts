@@ -3,8 +3,12 @@
  *
  * Run: GHL_PRIVATE_API_KEY=pit-... npx tsx scripts/rescore-all.ts --authorize-mutation=production
  *
- * REQUIRED: --authorize-mutation=<target>, naming the environment this script
- * targets. There is no default.
+ * Required to WRITE: --authorize-mutation=<target>, naming the environment this
+ * script targets. There is no default, and a wrong target refuses in every mode.
+ *
+ * Not required for --dry-run, which enumerates every contact and stops at the
+ * scoring loop: you add authorization to mutate, you never mutate by deleting a
+ * word.
  *
  * This is a BULK PRODUCTION WRITER. It enumerates every contact in the location
  * and POSTs each to the deployed motivation-score function, which writes four
@@ -158,6 +162,31 @@ async function score(contact: ContactMeta): Promise<any> {
 
   console.log("Fetching contacts from GHL...");
   const contacts = await fetchAllIds();
+
+  // ── Positive control (Gate 4C PRE-3) ───────────────────────────────────────
+  //
+  // THE LOOP BELOW IS THE ONLY WRITER IN THIS FILE. Everything above this line
+  // is enumeration: fetchAllIds() issues GET /contacts and nothing else, and no
+  // other call site in this module uses a method other than GET. Stopping HERE
+  // therefore makes --dry-run a proof and not a claim -- the run reaches the
+  // last instruction before the first write, reports what it would have
+  // written to, and exits.
+  //
+  // A refusal proves a gate CAN refuse. It cannot prove the gate would have
+  // ALLOWED anything, because a script that exits 2 on every input passes every
+  // refusal test. This path is the control: it runs the whole enumeration
+  // against the real location, returns a count only a real run could produce,
+  // and exits 0 -- which is the evidence that the four refusals are refusing
+  // something real.
+  if (IS_PREVIEW) {
+    console.log(
+      `PREVIEW COMPLETE — enumerated ${contacts.length} contacts. Stopping before the scoring ` +
+        "loop, which is the only writer in this file. No POST was issued and no contact was " +
+        "modified.",
+    );
+    process.exit(0);
+  }
+
   console.log(`Found ${contacts.length} contacts. Re-scoring via live endpoint...\n`);
 
   const rows: Array<{
