@@ -12,9 +12,38 @@ const fs = require("fs");
 const path = require("path");
 
 const ORIGIN  = "https://app.investorautomationos.com";
-const LOC     = "jmHG4B8RdzwpfqruNf68";
-const NEELIMA = "FiIT0hUaxVCIuokQpZuc"; // harness display fixture
-const BRADT75 = "9fbH2VCcZvzVNhsR9zjc"; // inert-proof write fixture (read only here)
+
+// ── Identifier resolution (Gate 4C S5). No literal, no default, no fallback. ──
+// LOC resolves through canonical ghl-config via the CommonJS loader. The two
+// fixture records resolve from the harness carrier, which needs no loader.
+// --env is required; absent or unknown refuses, and a typo'd flag leaves it
+// absent, so the refusal is fail-closed by construction.
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
+
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let LOC;
+try {
+  LOC = ghlConfig.getConfig(ENV).locationId;
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures     = fixtures[ENV];
+const fixtureContacts = envFixtures && envFixtures.fixtureRecords && envFixtures.fixtureRecords.contacts;
+if (!fixtureContacts || !fixtureContacts.neelima || !fixtureContacts.bradt75) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.contacts.neelima and ${ENV}.fixtureRecords.contacts.bradt75. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+const NEELIMA = fixtureContacts.neelima; // harness display fixture
+const BRADT75 = fixtureContacts.bradt75; // inert-proof write fixture (read only here)
 
 // Literal /contacts + /locations path; no nested ?&= to encode; NO --data-urlencode.
 const PROXY = (p) => `${ORIGIN}/.netlify/functions/ghl-proxy?path=${p}`;
