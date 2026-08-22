@@ -1,8 +1,12 @@
 /**
  * PropStream CSV → GHL contact importer.
  *
- * Run:    npx tsx scripts/import-propstream-csv.ts <csv-file> [options]
+ * Run:    npx tsx scripts/import-propstream-csv.ts <csv-file> --authorize-mutation=production [options]
  * Options:
+ *   --authorize-mutation=<target>   REQUIRED. Must name the environment this
+ *                 script targets. Always evaluated, including under --dry-run:
+ *                 --dry-run decides whether writes happen, not whether the run
+ *                 was authorized.
  *   --limit N     Process only first N data rows (for test runs; default: all)
  *   --dry-run     Parse and print payloads without calling GHL API
  * Env:    GHL_PRIVATE_API_KEY
@@ -20,6 +24,60 @@ import { config } from "dotenv";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 config();
+
+// ── Mutation authorization (Gate 4C PRE-2) ───────────────────────────────────
+//
+// This script creates and updates contacts in GHL. Before PRE-2 the only thing
+// between an invocation and a production write was the ABSENCE of --dry-run:
+// omitting a flag authorized. A separate affirmation now takes that job away
+// from it, and --dry-run keeps its original meaning as a preview switch.
+//
+// EVALUATED BEFORE THE CREDENTIAL, deliberately. Authorization is about INTENT;
+// a credential is about CAPABILITY. Checking intent first means a refusal proof
+// needs no credential present, and cannot refuse for the credential's reason
+// while appearing to refuse for the gate's.
+//
+// ALWAYS EVALUATED, including under --dry-run. --dry-run governs whether writes
+// happen, never whether the run was authorized -- otherwise the pass path could
+// only ever be traversed by a run that also mutates, and there would be no way
+// to prove the gate can PASS without proving it by writing to production.
+//
+// MUTATION_TARGET names the environment the hardcoded LOCATION_ID below
+// addresses. Gate 4C Phase 2 replaces it with the environment-derived target;
+// only where the comparand comes from changes, never the comparison itself.
+const MUTATION_TARGET = "production";
+const KNOWN_FLAGS = ["--authorize-mutation", "--dry-run", "--limit"];
+
+const rawArgs = process.argv.slice(2);
+
+for (const a of rawArgs) {
+  if (!a.startsWith("--")) continue;
+  const name = a.split("=")[0];
+  if (!KNOWN_FLAGS.includes(name)) {
+    console.error(`ERROR: unrecognized argument ${name}. Refusing rather than ignoring it.`);
+    process.exit(2);
+  }
+}
+
+const authArg = rawArgs.find((a) => a.split("=")[0] === "--authorize-mutation");
+if (!authArg) {
+  console.error(
+    "ERROR: no mutation authorization supplied. This script writes to GHL and requires " +
+      `--authorize-mutation=${MUTATION_TARGET}. There is no default.`,
+  );
+  process.exit(2);
+}
+
+const authValue = authArg.includes("=") ? authArg.slice(authArg.indexOf("=") + 1) : "";
+if (authValue !== MUTATION_TARGET) {
+  console.error(
+    `ERROR: authorization mismatch. --authorize-mutation named ${JSON.stringify(authValue)}, ` +
+      `but this script targets ${JSON.stringify(MUTATION_TARGET)}. Refusing.`,
+  );
+  process.exit(2);
+}
+
+console.log(`AUTHORIZATION PASSED — mutation authorized for target "${MUTATION_TARGET}" by --authorize-mutation=${authValue}`);
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
