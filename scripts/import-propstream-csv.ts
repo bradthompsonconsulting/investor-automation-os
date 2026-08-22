@@ -3,10 +3,12 @@
  *
  * Run:    npx tsx scripts/import-propstream-csv.ts <csv-file> --authorize-mutation=production [options]
  * Options:
- *   --authorize-mutation=<target>   REQUIRED. Must name the environment this
- *                 script targets. Always evaluated, including under --dry-run:
- *                 --dry-run decides whether writes happen, not whether the run
- *                 was authorized.
+ *   --authorize-mutation=<target>   Required to WRITE. Must name the environment
+ *                 this script targets. Not required for --dry-run: you add
+ *                 authorization to mutate, you never mutate by deleting a word.
+ *                 The gate is still always evaluated and always reports, and a
+ *                 WRONG target refuses in every mode. Supplying it twice
+ *                 refuses.
  *   --limit N     Process only first N data rows (for test runs; default: all)
  *   --dry-run     Parse and print payloads without calling GHL API
  * Env:    GHL_PRIVATE_API_KEY
@@ -59,25 +61,60 @@ for (const a of rawArgs) {
   }
 }
 
-const authArg = rawArgs.find((a) => a.split("=")[0] === "--authorize-mutation");
-if (!authArg) {
+// DUPLICATE FIRST, and it refuses regardless of order or values. .find() would
+// return the first match and silently discard the rest, so
+// --authorize-mutation=production --authorize-mutation=test would PASS while
+// the operator's last word was ignored. That is the edited-saved-command-line
+// case a target-named affirmation exists to defend against, failing open.
+const authArgs = rawArgs.filter((a) => a.split("=")[0] === "--authorize-mutation");
+if (authArgs.length > 1) {
   console.error(
-    "ERROR: no mutation authorization supplied. This script writes to GHL and requires " +
-      `--authorize-mutation=${MUTATION_TARGET}. There is no default.`,
+    `ERROR: duplicated authorization flag — --authorize-mutation was supplied ${authArgs.length} ` +
+      "times. Refusing: honouring either one would let an edited command line authorize a " +
+      "target nobody read.",
   );
   process.exit(2);
 }
 
-const authValue = authArg.includes("=") ? authArg.slice(authArg.indexOf("=") + 1) : "";
-if (authValue !== MUTATION_TARGET) {
+const authArg = authArgs[0];
+const authValue =
+  authArg === undefined ? null : authArg.includes("=") ? authArg.slice(authArg.indexOf("=") + 1) : "";
+
+// A WRONG TARGET REFUSES IN EVERY MODE, --dry-run included. Absence means "I am
+// not asking to mutate"; a wrong target means "I asked to mutate something
+// else", which is a mistake worth stopping on whatever mode you are in.
+if (authValue !== null && authValue !== MUTATION_TARGET) {
   console.error(
     `ERROR: authorization mismatch. --authorize-mutation named ${JSON.stringify(authValue)}, ` +
-      `but this script targets ${JSON.stringify(MUTATION_TARGET)}. Refusing.`,
+      `but this script targets ${JSON.stringify(MUTATION_TARGET)}. Refusing in every mode, ` +
+      "including --dry-run.",
   );
   process.exit(2);
 }
 
-console.log(`AUTHORIZATION PASSED — mutation authorized for target "${MUTATION_TARGET}" by --authorize-mutation=${authValue}`);
+// POLARITY: you ADD authorization to mutate; you never mutate by DELETING a
+// word. Requiring authorization for a preview made the step from safe to
+// dangerous "delete --dry-run from a line that already says production", which
+// reconstructs omission-authorizes one layer up. So a preview needs no
+// authorization -- but the gate is still ALWAYS evaluated and ALWAYS reports.
+if (authValue === null) {
+  if (rawArgs.includes("--dry-run")) {
+    console.log(
+      "NOT AUTHORIZED — preview only. No mutation authorization was supplied, so no writes " +
+        "will be attempted.",
+    );
+  } else {
+    console.error(
+      "ERROR: mutation authorization is required. This script writes to GHL. Supply " +
+        `--authorize-mutation=${MUTATION_TARGET} to write, or --dry-run to preview without writing.`,
+    );
+    process.exit(2);
+  }
+} else {
+  console.log(
+    `AUTHORIZATION PASSED — mutation authorized for target "${MUTATION_TARGET}" by --authorize-mutation=${authValue}`,
+  );
+}
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
