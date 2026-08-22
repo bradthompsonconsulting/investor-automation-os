@@ -6,3 +6,5 @@
 
 # Transient output from app/scripts/test-underwriting-resolver.cjs
 .tmp-resolver-test
+.tmp-ghl-config-loader-*
+.tmp-loader-redproof-*
