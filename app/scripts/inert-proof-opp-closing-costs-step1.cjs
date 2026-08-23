@@ -5,7 +5,7 @@
  * full pre-write state so steps 2 through 5 have something to compare
  * against and something to restore toward.
  *
- * FIELD: opportunity.closing_costs, N8Aa9t1SZhU7XnPPzxWk, NUMERICAL.
+ * FIELD: opportunity.closing_costs, NUMERICAL.
  * Chosen because it has no live consumer — OBSERVED 2026-08-17, every code
  * reference is inside app/.netlify/functions-serve/, the Netlify CLI's
  * build cache for two functions deleted from source 2026-08-13.
@@ -15,31 +15,89 @@
  * endbuyer_maximum_purchase_price has a validated restore mechanism rather
  * than an assumed one. Only that later proof discharges the prerequisite.
  *
- * All identifiers are hardcoded here, never imported from app code — the
- * verification-only rule the contact proofs and harnesses follow.
+ * IDENTIFIER RESOLUTION (Gate 4C C4a, Stair 2). Nothing is hardcoded here any
+ * more: the locationId resolves from the canonical config through
+ * getConfig(--env), and the opportunity fixture, the contact fixture and every
+ * opportunity-side pin resolve from scripts/harness-fixtures.json. The former
+ * "all identifiers are hardcoded here" note described the pre-conversion file
+ * and would now be false.
  */
 
 const fs = require("fs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31"; // IAOS Underwriting Test
-const CONTACT_ID     = "HGZAby6snRZfpl0go2Yb"; // IAOS Test Probe
-const TARGET_ID      = "N8Aa9t1SZhU7XnPPzxWk"; // opportunity.closing_costs
+/* ── Environment resolution ────────────────────────────────────────────────
+   getConfig(ENV) runs BEFORE the carrier lookup, deliberately. That ordering is
+   what makes an unknown --env surface [ghl-config]'s OWN message unwrapped, and
+   what makes --env=test reach a VALID Test config and then refuse at the
+   carrier's absent Test section rather than short-circuiting earlier.
+
+   THE LOADER RESOLVES EXACTLY ONE LEAF HERE — the locationId. This file has NO
+   Class-1 field: its target and the seven offer_ ids are all carrier
+   untouchedPins, not canonical-config members. That is why the loader appears
+   to pull a single value out of a whole config. It is not over-engineering and
+   must not be "simplified" away — the locationId is environment-bound and the
+   canonical config is its only legitimate source. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+const LOC = config.locationId;
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureContacts      = fixtureRecords && fixtureRecords.contacts;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest ||
+    !fixtureContacts || !fixtureContacts.iaosTestProbe) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.opportunities.iaosUnderwritingTest and ${ENV}.fixtureRecords.contacts.iaosTestProbe. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const envPins           = envFixtures.untouchedPins;
+const opportunityFields = envPins && envPins.opportunityFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+/* Named for its carrier GROUP, not collapsed into a generic offerIds: the
+   carrier deliberately distinguishes opportunityOfferFields from
+   contactOfferFields, and a local name must not erase that. Object.values
+   preserves the carrier's key order, which matters — record.offerIds is
+   compared for content AND order by the downstream provenance check. */
+const opportunityOfferFields = envPins && envPins.opportunityOfferFields
+  ? Object.values(envPins.opportunityOfferFields)
+  : undefined;
+if (!opportunityOfferFields || opportunityOfferFields.length !== 7) {
+  console.error(`REFUSED: harness-fixtures.json carries no seven-member opportunityOfferFields for "${ENV}" — expected ${ENV}.untouchedPins.opportunityOfferFields. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest; // IAOS Underwriting Test
+const CONTACT_ID     = fixtureContacts.iaosTestProbe;             // IAOS Test Probe
+// Historical local name, kept deliberately: it resolves the canonical
+// closing_costs opportunity field, whose identity now lives in the carrier.
+const TARGET_ID      = opportunityFields.closing_costs;
 const TARGET_KEY     = "closing_costs";
 
 /* The seven offer_ opportunity ids — the §4.1 HARD NO set. Captured so
    offersUnchanged can be asserted later. This proof writes to none of them. */
-const OFFER_IDS = [
-  "4YiACDV4uB3zOlAdNIBb", // offer_price
-  "73oLHWnVjmOGSrBo5sC6", // offer_date
-  "9jm2SoN2aDtUtbesL0kG", // offer_mao
-  "GxChepYArmgPllhKPq0R", // offer_wholesale_fee
-  "Nm1LZvQzaCGvXDq7TRCh", // offer_arv
-  "XbW0B973nuaLtIjMkzO9", // offer_repair_total
-  "eY5BOqE9juGpBfqwacWT", // offer_margin
-];
+const OFFER_IDS = opportunityOfferFields;
 
 const EVIDENCE = "C:/Users/brad/AppData/Local/Temp/inert-proof-opp-closing-costs-step1.json";
 
@@ -75,7 +133,7 @@ function fail(code, msg, extra) {
   const fieldPresent = targetEntry !== null;
 
   // ── GET 2: the opportunity custom-field schema, to confirm dataType ──
-  const schemaUrl = `${PROXY}?path=${encodeURIComponent("/locations/jmHG4B8RdzwpfqruNf68/customFields?model=opportunity")}`;
+  const schemaUrl = `${PROXY}?path=${encodeURIComponent(`/locations/${LOC}/customFields?model=opportunity`)}`;
   const schemaRes = await fetch(schemaUrl);
   const schemaText = await schemaRes.text();
   if (!schemaRes.ok) fail(24, `GET customFields?model=opportunity → ${schemaRes.status}`, schemaText.slice(0, 400));
