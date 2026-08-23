@@ -8,9 +8,60 @@
    EXACTLY ONE PUT and only to a field observed absent both in capture
    evidence and live. */
 const fs = require("fs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
-const LOC    = "jmHG4B8RdzwpfqruNf68";
+
+/* Environment resolution (Gate 4C C4a, Stair 3). getConfig(ENV) runs BEFORE the
+   carrier lookup so an unknown --env surfaces [ghl-config]'s own message
+   unwrapped, and --env=test reaches a valid Test config and then refuses at the
+   carrier's absent Test section. EVERY environment-owned value below — the
+   locationId, every registry fieldId, every registry contactId and all seven
+   offer ids — derives from this one parsed ENV. There is no second selector and
+   no fallback.
+
+   Placed above the stage dispatcher so a refusal is genuinely offline: no
+   stage function runs, no GET is issued, and neither write verb is reachable. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const LOC = config.locationId;
+
+const envFixtures     = fixtures[ENV];
+const fixtureContacts = envFixtures && envFixtures.fixtureRecords && envFixtures.fixtureRecords.contacts;
+if (!fixtureContacts || !fixtureContacts.bradt75) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.contacts.bradt75. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const envPins              = envFixtures.untouchedPins;
+const runnerRegistryFields = envPins && envPins.runnerRegistryFields;
+if (!runnerRegistryFields || !runnerRegistryFields.carrying_cost
+    || !runnerRegistryFields.loan_amount || !runnerRegistryFields.occupancy_status) {
+  console.error(`REFUSED: harness-fixtures.json carries no runnerRegistryFields for "${ENV}" — expected ${ENV}.untouchedPins.runnerRegistryFields with carrying_cost, loan_amount and occupancy_status. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const contactOfferFields = envPins && envPins.contactOfferFields
+  ? Object.values(envPins.contactOfferFields)
+  : undefined;
+if (!contactOfferFields || contactOfferFields.length !== 6) {
+  console.error(`REFUSED: harness-fixtures.json carries no six-member contactOfferFields for "${ENV}" — expected ${ENV}.untouchedPins.contactOfferFields. Refusing rather than inventing them.`);
+  process.exit(4);
+}
 
 // PB-D28 — in-file keyed field registry. PB-D30 as amended 2026-08-03: tempValue is
 // either an observed value (arv) or a designated test value approved before the write;
@@ -18,58 +69,55 @@ const LOC    = "jmHG4B8RdzwpfqruNf68";
 // clearValue is the dataType-specific KEY_ABSENT mechanism; fields without one are not restore-enabled.
 const FIELDS = {
   arv: {
-    fieldId: "wMBTGWMs97yysQFx7Vad", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    fieldId: config.fields.arv, dataType: "MONETORY", contactId: fixtureContacts.bradt75,
     // Observed from inert-proof-arv-step2.cjs. PB-D30 — observed temporary values only.
     tempValue: 187500.25,
     clearValue: "",
   },
   carrying_cost: {
-    fieldId: "FhcyP63sSAtWInl4Q4iI", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    fieldId: runnerRegistryFields.carrying_cost, dataType: "MONETORY", contactId: fixtureContacts.bradt75,
     // Designated test value per PB-D30 amendment (2026-08-03); not observed.
     tempValue: 4321.25,
     clearValue: "",
   },
   property_notes: {
-    fieldId: "k7O0TYVMpqCpnMHRLPol", dataType: "TEXT", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    fieldId: config.fields.propertyNotes, dataType: "TEXT", contactId: fixtureContacts.bradt75,
     // No observed TEXT temporary value yet; intentionally not write-enabled per PB-D30.
     tempValue: null,
   },
   estimated_repairs: {
-    fieldId: "OQnud97MfdxMcTgMVTgf", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    fieldId: config.fields.estimatedRepairs, dataType: "MONETORY", contactId: fixtureContacts.bradt75,
     // Designated test value per PB-D33 (2026-08-04); not observed.
     tempValue: 8642.75,
     clearValue: "",
   },
   loan_amount: {
-    fieldId: "3ZlSKldh0jR2MWhjOmHe", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    fieldId: runnerRegistryFields.loan_amount, dataType: "MONETORY", contactId: fixtureContacts.bradt75,
     // Designated test value per PB-D34 (2026-08-04); not observed.
     tempValue: 24680.25,
     clearValue: "",
   },
   asking_price: {
-    fieldId: "60UCjsYT1Ak3Kyy5ZCL8", dataType: "MONETORY", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    fieldId: config.fields.askingPrice, dataType: "MONETORY", contactId: fixtureContacts.bradt75,
     // Designated test value per PB-D35 (2026-08-04); not observed.
     tempValue: 135790.25,
     clearValue: "",
   },
   occupancy_status: {
-    fieldId: "op57wOVFSMRBFbHmD6ej", dataType: "MULTIPLE_OPTIONS", contactId: "9fbH2VCcZvzVNhsR9zjc",
+    fieldId: runnerRegistryFields.occupancy_status, dataType: "MULTIPLE_OPTIONS", contactId: fixtureContacts.bradt75,
     // Adopted from PB-D37 (2026-08-05); observed on probe contact HGZAby6snRZfpl0go2Yb, not on this fixture.
     tempValue: ["Vacant"],
     clearValue: "",
   },
 };
 
-// The seven offer_ fields (CONTACTS_OPPORTUNITIES_SPEC.md §4 HARD NO in the field-edit model). Asserted by offersUnchanged, not by absence; see PB-D39.
-const OFFER_IDS = [
-  "v2VO2wUwTYRojmU7VXyZ", // offer_price
-  "aAMFPmgxGZT422uGAQOx", // offer_mao
-  "qYzkp66x87rG7Pbs36GP", // offer_wholesale_fee
-  "2EpRGXb8rj4RtHfFhYbB", // offer_repair_total
-  "ec06A3RId4Isorc97jeQ", // offer_margin
-  "Z88Y6IqCK1i7hObZcrQM", // offer_arv
-  "SJ6x7OqUxTKg1ri8ltb7", // offer_date
-];
+/* The seven offer_ fields (CONTACTS_OPPORTUNITIES_SPEC.md §4 HARD NO in the field-edit
+   model). Asserted by offersUnchanged, not by absence; see PB-D39. offer_price is
+   config-owned; the other six are carrier untouchedPins. The mixed source is
+   intentional and the order is the original order: offer_price, then
+   contactOfferFields in carrier key order — this array is persisted as
+   `offerIds` in capture evidence, which is compared for content AND order. */
+const OFFER_IDS = [config.fields.offerPrice, ...contactOfferFields];
 
 // PB-D29 — evidence path is derived, not stored: a directory constant plus a filename
 // derived from stage and field. Registry-key underscores become hyphens to match the
@@ -578,7 +626,11 @@ const STAGES = { capture, write, verify, restore };
 // PB-D27 — dispatcher: exactly two positional args <stage> <fieldKey>. Validation runs
 // before any stage function; exactly one stage is invoked per process.
 (async () => {
-  const args = process.argv.slice(2);
+  /* --env=<environment> is consumed by the environment preamble above and is NOT a
+     positional argument. It is filtered out here so PB-D27's "exactly two positional
+     args" contract still means <stage> <fieldKey>; without this the flag counts as a
+     third positional and every stage invocation aborts at exit 12. */
+  const args = process.argv.slice(2).filter((a) => !a.startsWith("--env="));
   const stage = args[0];
   const fieldKey = args[1];
 

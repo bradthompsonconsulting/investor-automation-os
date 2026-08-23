@@ -8,10 +8,40 @@
    builder, and getJson helper verbatim. Fixture bradt75, per
    CONTACTS_OPPORTUNITIES_SPEC.md §4.2. */
 const fs = require("fs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN     = "https://app.investorautomationos.com";
-const CONTACT_ID = "9fbH2VCcZvzVNhsR9zjc"; // bradt75 — inert-proof write fixture
-const FIELD_ID   = "wMBTGWMs97yysQFx7Vad"; // ARV (MONETORY) — B2 target
+
+/* Environment resolution (Gate 4C C4a, Stair 3). getConfig(ENV) runs BEFORE the
+   carrier lookup so an unknown --env surfaces [ghl-config]'s own message
+   unwrapped, and --env=test reaches a valid Test config and then refuses at the
+   carrier's absent Test section. EVERY environment-owned value below derives
+   from this one parsed ENV — there is no second selector and no fallback. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures     = fixtures[ENV];
+const fixtureContacts = envFixtures && envFixtures.fixtureRecords && envFixtures.fixtureRecords.contacts;
+if (!fixtureContacts || !fixtureContacts.bradt75) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.contacts.bradt75. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const CONTACT_ID = fixtureContacts.bradt75; // bradt75 — inert-proof write fixture
+const FIELD_ID   = config.fields.arv;       // ARV (MONETORY) — B2 target
 
 // MONETORY write shape UNKNOWN. Sent as a JS number, unquoted on the wire via
 // JSON.stringify — the shape a currency editor would send. String is the fallback.

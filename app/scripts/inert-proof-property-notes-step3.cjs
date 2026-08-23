@@ -7,22 +7,57 @@
    confirmation against the step-1 before-state snapshot. Reuses the step-2 constants,
    PROXY builder, getJson helper, and deepEqual verbatim. Fixture bradt75. */
 const fs = require("fs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN     = "https://app.investorautomationos.com";
-const LOC        = "jmHG4B8RdzwpfqruNf68";
-const CONTACT_ID = "9fbH2VCcZvzVNhsR9zjc"; // bradt75 — inert-proof write fixture
-const FIELD_ID   = "k7O0TYVMpqCpnMHRLPol"; // Property Notes (contact.property_notes)
 
-// The seven offer_ fields (CONTACTS_OPPORTUNITIES_SPEC.md §4 HARD NO — must stay unchanged).
-const OFFER_IDS = [
-  "v2VO2wUwTYRojmU7VXyZ", // offer_price
-  "aAMFPmgxGZT422uGAQOx", // offer_mao
-  "qYzkp66x87rG7Pbs36GP", // offer_wholesale_fee
-  "2EpRGXb8rj4RtHfFhYbB", // offer_repair_total
-  "ec06A3RId4Isorc97jeQ", // offer_margin
-  "Z88Y6IqCK1i7hObZcrQM", // offer_arv
-  "SJ6x7OqUxTKg1ri8ltb7", // offer_date
-];
+/* Environment resolution (Gate 4C C4a, Stair 3). getConfig(ENV) runs BEFORE the
+   carrier lookup so an unknown --env surfaces [ghl-config]'s own message
+   unwrapped, and --env=test reaches a valid Test config and then refuses at the
+   carrier's absent Test section. EVERY environment-owned value below derives
+   from this one parsed ENV — there is no second selector and no fallback. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const LOC = config.locationId;
+
+const envFixtures     = fixtures[ENV];
+const fixtureContacts = envFixtures && envFixtures.fixtureRecords && envFixtures.fixtureRecords.contacts;
+if (!fixtureContacts || !fixtureContacts.bradt75) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.contacts.bradt75. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const CONTACT_ID = fixtureContacts.bradt75;     // bradt75 — inert-proof write fixture
+const FIELD_ID   = config.fields.propertyNotes; // Property Notes (contact.property_notes)
+
+/* The seven offer_ fields (CONTACTS_OPPORTUNITIES_SPEC.md §4 HARD NO — must stay
+   unchanged). offer_price is config-owned; the other six are carrier
+   untouchedPins. The mixed source is intentional and the order is the original
+   order: offer_price, then contactOfferFields in carrier key order. Bound to a
+   local named for its carrier group, not collapsed into a generic. */
+const envPins            = envFixtures.untouchedPins;
+const contactOfferFields = envPins && envPins.contactOfferFields
+  ? Object.values(envPins.contactOfferFields)
+  : undefined;
+if (!contactOfferFields || contactOfferFields.length !== 6) {
+  console.error(`REFUSED: harness-fixtures.json carries no six-member contactOfferFields for "${ENV}" — expected ${ENV}.untouchedPins.contactOfferFields. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+const OFFER_IDS = [config.fields.offerPrice, ...contactOfferFields];
 
 const STEP1_EVIDENCE = "C:/Users/brad/AppData/Local/Temp/inert-proof-property-notes-step1.json";
 const STEP2_EVIDENCE = "C:/Users/brad/AppData/Local/Temp/inert-proof-property-notes-step2.json";

@@ -8,10 +8,40 @@
    live precondition (field currently holds the step-2 tempValue). Reuses the step-2
    constants, PROXY builder, getJson helper, and deepEqual verbatim. Fixture bradt75. */
 const fs = require("fs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN     = "https://app.investorautomationos.com";
-const CONTACT_ID = "9fbH2VCcZvzVNhsR9zjc"; // bradt75 — inert-proof write fixture
-const FIELD_ID   = "k7O0TYVMpqCpnMHRLPol"; // Property Notes (contact.property_notes)
+
+/* Environment resolution (Gate 4C C4a, Stair 3). getConfig(ENV) runs BEFORE the
+   carrier lookup so an unknown --env surfaces [ghl-config]'s own message
+   unwrapped, and --env=test reaches a valid Test config and then refuses at the
+   carrier's absent Test section. EVERY environment-owned value below derives
+   from this one parsed ENV — there is no second selector and no fallback. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures     = fixtures[ENV];
+const fixtureContacts = envFixtures && envFixtures.fixtureRecords && envFixtures.fixtureRecords.contacts;
+if (!fixtureContacts || !fixtureContacts.bradt75) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.contacts.bradt75. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const CONTACT_ID = fixtureContacts.bradt75;     // bradt75 — inert-proof write fixture
+const FIELD_ID   = config.fields.propertyNotes; // Property Notes (contact.property_notes)
 
 const CLEAR_VALUE     = "";
 const STEP2_EVIDENCE  = "C:/Users/brad/AppData/Local/Temp/inert-proof-property-notes-step2.json";
