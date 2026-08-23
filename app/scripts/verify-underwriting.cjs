@@ -52,8 +52,36 @@ const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
 const EXPECTED = "index-D5pIVH_h.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
-const NEELIMA  = "FiIT0hUaxVCIuokQpZuc"; // unresolved fixture: mode absent
-const PROBE    = "HGZAby6snRZfpl0go2Yb"; // resolved fixture: OcGWOP9n666i4Q1MLd31
+
+/* Environment + fixture carrier (Gate 4C C4a).
+
+   NO config loader here, deliberately. This harness resolves contact-record
+   fixtures ONLY and carries no locationId, so getConfig() would resolve
+   nothing and would be dead infrastructure inside a gate instrument.
+   require() reads the carrier JSON natively.
+
+   Placed ABOVE the bundle gate on purpose: a refusal must be genuinely
+   offline -- no browser launched, no network reached. The gate does not move.
+
+   NOTE: the POL constants below stay hardcoded. They are the policy this
+   harness CHECKS, and a verifier that resolved its expectations from the
+   source under test could not detect drift in that source. */
+const FIXTURES = require("../../scripts/harness-fixtures.json");
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (!envArg) {
+  console.log("ABORT — missing --env=<environment> (expected --env=production)");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+const CARRIER = (FIXTURES[ENV] || {}).fixtureRecords;
+if (!CARRIER || !CARRIER.contacts) {
+  console.log(`ABORT — carrier has no fixtureRecords.contacts for environment "${ENV}" (scripts/harness-fixtures.json)`);
+  process.exit(4);
+}
+const CONTACTS = CARRIER.contacts;
+
+const NEELIMA  = CONTACTS.neelima;      // unresolved fixture: mode absent
+const PROBE    = CONTACTS.iaosTestProbe; // resolved fixture: OcGWOP9n666i4Q1MLd31
 
 /* PB-D56 section IV starter policy, VERIFICATION-ONLY: hardcoded here,
    never imported from app code, per the rule verify-contacts.cjs states. A

@@ -14,7 +14,31 @@ const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
 const EXPECTED = "index-D5pIVH_h.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
-const TARGET   = "05gYdxJcyNTCKWTwkbbs"; // john sanchez — has the 1 inbound SMS + emails; a scoping + SMS + delta fixture
+
+/* Environment + fixture carrier (Gate 4C C4a).
+
+   NO config loader here, deliberately. This harness resolves contact-record
+   fixtures ONLY and carries no locationId, so getConfig() would resolve
+   nothing and would be dead infrastructure inside a gate instrument.
+   require() reads the carrier JSON natively.
+
+   Placed ABOVE the §9.2 bundle gate on purpose: a refusal must be genuinely
+   offline -- no browser launched, no network reached. The gate does not move. */
+const FIXTURES = require("../../scripts/harness-fixtures.json");
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (!envArg) {
+  console.log("ABORT — missing --env=<environment> (expected --env=production)");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+const CARRIER = (FIXTURES[ENV] || {}).fixtureRecords;
+if (!CARRIER || !CARRIER.contacts) {
+  console.log(`ABORT — carrier has no fixtureRecords.contacts for environment "${ENV}" (scripts/harness-fixtures.json)`);
+  process.exit(4);
+}
+const CONTACTS = CARRIER.contacts;
+
+const TARGET   = CONTACTS.johnSanchez; // john sanchez — has the 1 inbound SMS + emails; a scoping + SMS + delta fixture
 const THREADS_URL = `${ORIGIN}/.netlify/functions/ghl-conversations?scope=all`;
 const MSGS_URL    = `${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${TARGET}`;
 const SHOWN_TYPES = ["TYPE_EMAIL", "TYPE_SMS"];
@@ -81,7 +105,7 @@ async function readSections(page) {
   // Empty-state fixture (§8.4) — Neelima Bale: emails, ZERO SMS. Her Text section
   // must render "No texts." Ground truth via the SAME GET-only dedicated function
   // (ghl-contact-conversations), NOT the generic proxy.
-  const NEELIMA = "FiIT0hUaxVCIuokQpZuc";
+  const NEELIMA = CONTACTS.neelima;
   const neeMsgs = await (await fetch(`${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${NEELIMA}`)).json();
   const neeSms  = neeMsgs.messages.filter((m) => m.messageType === "TYPE_SMS").length;
   // Neelima is ALSO the populated-notes fixture (§8.6) — OBSERVED 12 notes (john has 0,

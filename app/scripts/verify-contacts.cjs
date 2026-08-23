@@ -19,17 +19,49 @@ const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
 const EXPECTED = "index-D5pIVH_h.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
-const TARGET   = "FiIT0hUaxVCIuokQpZuc"; // detail-view fixture (checks 6-119)
+
+/* Environment + fixture carrier (Gate 4C C4a).
+
+   NO config loader here, deliberately. This harness resolves contact-record
+   fixtures ONLY and carries no locationId, so getConfig() would resolve
+   nothing and would be dead infrastructure inside a gate instrument.
+   require() reads the carrier JSON natively.
+
+   Placed ABOVE the §9.2 bundle gate on purpose: a refusal must be genuinely
+   offline -- no browser launched, no network reached. The gate does not move.
+
+   CARVE-OUT, stated here so a later reader does not "finish the job":
+   PROPERTY_NOTES_ID and ARV_ID below stay HARDCODED, as do their duplicates
+   inside page.evaluate and the drift guards that compare the two scopes.
+   They are the allowlist this harness CHECKS. A verifier that resolved its
+   expectations from the source under test could not detect drift in that
+   source -- converting them would delete a working control and install the
+   exact circularity it exists to prevent. */
+const FIXTURES = require("../../scripts/harness-fixtures.json");
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (!envArg) {
+  console.log("ABORT — missing --env=<environment> (expected --env=production)");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+const CARRIER = (FIXTURES[ENV] || {}).fixtureRecords;
+if (!CARRIER || !CARRIER.contacts) {
+  console.log(`ABORT — carrier has no fixtureRecords.contacts for environment "${ENV}" (scripts/harness-fixtures.json)`);
+  process.exit(4);
+}
+const CONTACTS = CARRIER.contacts;
+
+const TARGET   = CONTACTS.neelima; // detail-view fixture (checks 6-119)
 const PROPERTY_NOTES_ID = "k7O0TYVMpqCpnMHRLPol"; // PB-D5 unlock allowlist, N=1. Hardcoded here per the verification-only rule above; never imported from app code.
 const ARV_ID = "wMBTGWMs97yysQFx7Vad"; // PB-D16/PB-D17 unlock allowlist, N=2. Hardcoded per the same verification-only rule.
-const BRADT75  = "9fbH2VCcZvzVNhsR9zjc"; // phone-format fixture — +12149146151 → 214-914-6151 (check 5)
+const BRADT75  = CONTACTS.bradt75; // phone-format fixture — +12149146151 → 214-914-6151 (check 5)
 
 // ── D5 conversation parity (CONTACTS_DETAIL_SPEC D5) ───────────────────────────
 // TARGET/Neelima is the REGRESSION fixture: emails only, ZERO SMS, so D5 must not
 // change her transcript at all. GORDON is the EXERCISE fixture: SMS in BOTH
 // directions plus a long INBOUND email, the only fixture that covers left-aligned
 // bubbles, both messageType branches, and the filtered remainder together.
-const GORDON = "DUYVB1FdhFaAdqpa98hn"; // ronald gordon
+const GORDON = CONTACTS.ronaldGordon; // ronald gordon
 const NEE_MSGS_URL = `${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${TARGET}`;
 const GOR_MSGS_URL = `${ORIGIN}/.netlify/functions/ghl-contact-conversations?id=${GORDON}`;
 const SHOWN_TYPES  = ["TYPE_EMAIL", "TYPE_SMS"]; // the D5 allowlist, mirrored here per the verification-only rule

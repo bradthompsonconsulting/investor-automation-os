@@ -49,8 +49,31 @@ const { chromium } = require("playwright");
 const ORIGIN   = "https://app.investorautomationos.com";
 const EXPECTED = "index-D5pIVH_h.js"; // §9.2 — RE-PIN to the served bundle on every run
 
+// ── Environment + fixture carrier (Gate 4C C4a) ──────────────────────────────
+// NO config loader here, deliberately. This harness resolves contact-record
+// fixtures ONLY and carries no locationId, so getConfig() would resolve nothing
+// and would be dead infrastructure inside a gate instrument. require() reads the
+// carrier JSON natively.
+//
+// Placed ABOVE the §9.2 bundle gate on purpose: a refusal must be genuinely
+// offline — no browser launched, no network reached. The gate itself does not
+// move.
+const FIXTURES = require("../../scripts/harness-fixtures.json");
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (!envArg) {
+  console.log("ABORT — missing --env=<environment> (expected --env=production)");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+const CARRIER = (FIXTURES[ENV] || {}).fixtureRecords;
+if (!CARRIER || !CARRIER.contacts) {
+  console.log(`ABORT — carrier has no fixtureRecords.contacts for environment "${ENV}" (scripts/harness-fixtures.json)`);
+  process.exit(4);
+}
+const CONTACTS = CARRIER.contacts;
+
 // ── Fixtures, one per exclusion predicate plus the eligible control ──────────
-const NEELIMA = "FiIT0hUaxVCIuokQpZuc"; // eligible control — carries NO predicate
+const NEELIMA = CONTACTS.neelima; // eligible control — carries NO predicate
 /* The unanswered-inbound fixture is SELECTED FROM THE LIVE ENDPOINT, not
    named here. `NISht1R60heBRhyeMyWp` (palermo) held that role until
    2026-08-17, when the check failed with
@@ -68,10 +91,10 @@ const NEELIMA = "FiIT0hUaxVCIuokQpZuc"; // eligible control — carries NO predi
    a different thing from a check that adapts its assertion to what the
    page renders -- this one still fails if the rule is broken, and still
    fails if no fixture exists to test it against. */
-const ELLIS   = "3saoIFpdnjvKE14Hghe0"; // terminal stage
-const CARTER  = "yeMPDUExsxV6Zpf8ebTD"; // scheduled callback
-const BRADT75 = "9fbH2VCcZvzVNhsR9zjc"; // Seller Follow-Up
-const PROBE   = "YZJwNmyD6F1ire1jNFyu"; // Phone Status = Incorrect Number
+const ELLIS   = CONTACTS.nannetaEllis;        // terminal stage
+const CARTER  = CONTACTS.summerCarter;        // scheduled callback
+const BRADT75 = CONTACTS.bradt75;             // Seller Follow-Up
+const PROBE   = CONTACTS.testPhoneStatusReset; // Phone Status = Incorrect Number
 
 // Stage ids — hardcoded here per the verification-only rule (never imported
 // from app code), and per PB-D51's deliberate exclusion of stage UUIDs from
