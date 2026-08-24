@@ -87,7 +87,7 @@ const STEP3    = "C:/Users/brad/AppData/Local/Temp/inert-proof-opp-closing-costs
 const EVIDENCE = "C:/Users/brad/AppData/Local/Temp/inert-proof-opp-closing-costs-step4.json";
 
 function fail(code, msg, extra) {
-  console.error(`ABORT — ${msg}`);
+  console.error(`ABORT [refusal ${code}] — ${msg}`);
   if (extra !== undefined) console.error(extra);
   process.exit(code);
 }

@@ -130,7 +130,7 @@ const PBD58_CONFIRM = "C:/Users/brad/AppData/Local/Temp/inert-proof-opp-endbuyer
 const EVIDENCE = "C:/Users/brad/AppData/Local/Temp/inert-proof-opp-mao-a0-step1.json";
 
 function fail(code, msg, extra) {
-  console.error(`ABORT — ${msg}`);
+  console.error(`ABORT [refusal ${code}] — ${msg}`);
   if (extra !== undefined) console.error(extra);
   process.exit(code);
 }

@@ -95,7 +95,7 @@ const EVIDENCE = "C:/Users/brad/AppData/Local/Temp/inert-proof-opp-mao-a0-step3.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function fail(code, msg, extra) {
-  console.error(`ABORT — ${msg}`);
+  console.error(`ABORT [refusal ${code}] — ${msg}`);
   if (extra !== undefined) console.error(extra);
   process.exit(code);
 }

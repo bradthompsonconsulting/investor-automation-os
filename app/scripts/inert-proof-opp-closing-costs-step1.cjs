@@ -103,7 +103,7 @@ const OFFER_IDS = opportunityOfferFields;
 const EVIDENCE = "C:/Users/brad/AppData/Local/Temp/inert-proof-opp-closing-costs-step1.json";
 
 function fail(code, msg, extra) {
-  console.error(`ABORT — ${msg}`);
+  console.error(`ABORT [refusal ${code}] — ${msg}`);
   if (extra !== undefined) console.error(extra);
   process.exit(code);
 }

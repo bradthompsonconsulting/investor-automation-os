@@ -369,7 +369,7 @@ async function verify(config) {
   const finish = (outcome, code) => {
     evidence.outcome = outcome;
     persistOr43();
-    console.log(`  evidence written  ${outPath}`);
+    console.log(`  outcome ${outcome} — ${code === 0 ? "complete" : `refusal ${code}`}; evidence written  ${outPath}`);
     process.exit(code);
   };
 
@@ -535,7 +535,7 @@ async function restore(config) {
   const finish = (outcome, code) => {
     evidence.outcome = outcome;
     persistOr53();
-    console.log(`  evidence written  ${outPath}`);
+    console.log(`  outcome ${outcome} — ${code === 0 ? "complete" : `refusal ${code}`}; evidence written  ${outPath}`);
     process.exit(code);
   };
 
