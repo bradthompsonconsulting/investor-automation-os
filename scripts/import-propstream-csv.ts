@@ -25,6 +25,7 @@
 import { config } from "dotenv";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import { getConfig } from "../app/shared/ghl-config";
 config();
 
 // ── Mutation authorization (Gate 4C PRE-2) ───────────────────────────────────
@@ -44,11 +45,27 @@ config();
 // only ever be traversed by a run that also mutates, and there would be no way
 // to prove the gate can PASS without proving it by writing to production.
 //
-// MUTATION_TARGET names the environment the hardcoded LOCATION_ID below
-// addresses. Gate 4C Phase 2 replaces it with the environment-derived target;
-// only where the comparand comes from changes, never the comparison itself.
+// TWO SELECTORS, DELIBERATELY SEPARATE (Gate 4C C4a, Stair 9A).
+//
+// An earlier version of this comment said Phase 2 would replace MUTATION_TARGET
+// with an environment-derived target. That is NOT what happened and the
+// statement was a false forward promise sitting in the file. What is true:
+//
+//   ENV              parsed from --env, governs CONFIG RESOLUTION. Either
+//                    environment resolves; there is no default and no fallback.
+//   MUTATION_TARGET  independently restricts MUTATION to production, and stays
+//                    a literal. It is not derived from ENV and must not become
+//                    derived from it.
+//
+// They are separate on purpose. If MUTATION_TARGET were derived from ENV, then
+// --env=test --authorize-mutation=test would agree with itself and authorize a
+// Test mutation. Test mutation is NOT available in this tool; that prohibition
+// is a standing decision with its own sandbox-readiness debt, and a conversion
+// must not create the path around it as a side effect. Before this change the
+// absence of a Test mutation path was an ACCIDENT of MUTATION_TARGET being a
+// const with a mismatch check. It is now an explicitly named refusal.
 const MUTATION_TARGET = "production";
-const KNOWN_FLAGS = ["--authorize-mutation", "--dry-run", "--limit"];
+const KNOWN_FLAGS = ["--env", "--authorize-mutation", "--dry-run", "--limit"];
 
 const rawArgs = process.argv.slice(2);
 
@@ -60,6 +77,66 @@ for (const a of rawArgs) {
     process.exit(2);
   }
 }
+
+// ── Environment selection (Gate 4C C4a, Stair 9A) ────────────────────────────
+//
+// EVALUATED BEFORE CONFIG RESOLUTION AND BEFORE ANY NETWORK CALL. Every refusal
+// below exits while LOCATION_ID is still unbound and long before the first
+// fetch, so no request can be issued under an environment nobody named.
+//
+// DUPLICATE FIRST, mirroring --authorize-mutation below and for the same
+// reason: .find() would honour one value and discard the operator's last word,
+// and this flag decides which location the run addresses.
+const envArgs = rawArgs.filter((a) => a.split("=")[0] === "--env");
+if (envArgs.length > 1) {
+  console.error(
+    `ERROR: duplicated environment flag — --env was supplied ${envArgs.length} times. ` +
+      "Refusing: honouring either one would let an edited command line select an environment " +
+      "nobody read.",
+  );
+  process.exit(2);
+}
+
+const envArg = envArgs[0];
+const ENV =
+  envArg === undefined ? null : envArg.includes("=") ? envArg.slice(envArg.indexOf("=") + 1) : "";
+
+if (ENV === null) {
+  console.error(
+    "ERROR: --env=<environment> is required. There is no default and no fallback environment. " +
+      "Expected --env=production or --env=test.",
+  );
+  process.exit(2);
+}
+
+// CASE SENSITIVITY IS DELIBERATE AND LOAD-BEARING. getConfig rejects
+// "Production" as an unknown selector, and that refusal is kept rather than
+// normalised away: the target-named affirmation doctrine rests on the
+// operator's exact words, and a selector that accepts variants is a selector
+// that can be typed two ways.
+//
+// The throw is CAUGHT rather than allowed to surface. Every other refusal in
+// this file prints a named cause; an uncaught throw would print a stack trace
+// instead, which is the wrong direction of travel for a file being converted.
+// Named ghlConfig, not config: dotenv's config() is already imported into this
+// module's scope above, and shadowing it would be a redeclaration error.
+let ghlConfig;
+try {
+  ghlConfig = getConfig(ENV);
+} catch (e) {
+  console.error(
+    `ERROR: --env=${JSON.stringify(ENV)} did not resolve to a configuration. ` +
+      `Underlying reason: ${(e as Error).message}`,
+  );
+  process.exit(2);
+}
+
+// REPORTS THE RESOLVED VALUE, NOT ONLY THE SELECTOR. Printing "--env=production"
+// proves which selector was parsed; it does not prove what that selector
+// resolved to, and the entire risk of this conversion is contacts landing in
+// the wrong location. The locationId below is the value that reaches the
+// customFields GET, the duplicate lookup, and the contact-creation POST body.
+console.log(`ENVIRONMENT — --env=${ENV} resolved to locationId ${ghlConfig.locationId}`);
 
 // DUPLICATE FIRST, and it refuses regardless of order or values. .find() would
 // return the first match and silently discard the rest, so
@@ -80,9 +157,36 @@ const authArg = authArgs[0];
 const authValue =
   authArg === undefined ? null : authArg.includes("=") ? authArg.slice(authArg.indexOf("=") + 1) : "";
 
+// ── Refusal 1 of 2: THE TWO FLAGS MUST AGREE ─────────────────────────────────
+//
+// Checked BEFORE the production-only restriction below, so each state gets the
+// message that describes it:
+//
+//   --env=production --authorize-mutation=test   -> DISAGREEMENT (here)
+//   --env=test       --authorize-mutation=production -> DISAGREEMENT (here)
+//   --env=test       --authorize-mutation=test   -> agree, then PROHIBITION below
+//
+// If this check were the only one, the third row would PASS and Test mutation
+// would become possible. It is not the only one, deliberately. See the two-
+// selector note above.
+if (authValue !== null && authValue !== ENV) {
+  console.error(
+    `ERROR: environment disagreement. --env named ${JSON.stringify(ENV)} but ` +
+      `--authorize-mutation named ${JSON.stringify(authValue)}. Your two flags name different ` +
+      "environments. Refusing in every mode, including --dry-run.",
+  );
+  process.exit(2);
+}
+
+// ── Refusal 2 of 2: MUTATION IS PRODUCTION-ONLY ──────────────────────────────
+//
 // A WRONG TARGET REFUSES IN EVERY MODE, --dry-run included. Absence means "I am
 // not asking to mutate"; a wrong target means "I asked to mutate something
 // else", which is a mistake worth stopping on whatever mode you are in.
+//
+// Reached only when the two flags already AGREE, so at this point a non-
+// production target means the operator coherently asked to mutate Test. That
+// is the prohibition, not a typo, and the message says so.
 if (authValue !== null && authValue !== MUTATION_TARGET) {
   console.error(
     `ERROR: authorization mismatch. --authorize-mutation named ${JSON.stringify(authValue)}, ` +
@@ -117,7 +221,16 @@ if (authValue === null) {
 }
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
-const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
+/* THE CONVERSION (Gate 4C C4a, Stair 9A). One identity, one resolution site,
+   one executable occurrence. CONFIG-owned: locationId.
+
+   ⚠ THIS VALUE REACHES A MUTATING CALL. Unlike rescore-all.ts — whose
+   LOCATION_ID constrains only what is enumerated, its writes being targeted by
+   IAOS_ENV on a different deployment — this binding is spread into the contact-
+   creation POST body below and decides which GHL location receives created
+   contacts. It also scopes the duplicate lookup whose result the update PUT
+   then modifies. Resolution scope MODULE, consumption scope MODULE. */
+const LOCATION_ID = ghlConfig.locationId;
 const API_KEY     = process.env.GHL_PRIVATE_API_KEY;
 
 if (!API_KEY) {
