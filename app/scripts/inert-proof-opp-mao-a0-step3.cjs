@@ -23,18 +23,66 @@
  */
 
 const fs = require("fs");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31";
-const TARGET_ID      = "Atu5XCjpFElY8H64VG4h";
+/* ── Environment resolution (Gate 4C C4a, Stair 6) ─────────────────────────
+   getConfig(ENV) runs BEFORE the carrier lookup so an unknown --env surfaces
+   [ghl-config]'s OWN message unwrapped, and --env=test reaches a VALID Test
+   config and then refuses at the carrier's absent Test section.
+
+   LOADER *AND* CARRIER, like every member of this family. THE TAIL'S REASON IS
+   NOT THE HEAD'S: no locationId is resolved here — only step 1 makes the schema
+   request. The loader is required for the TARGET alone, mao_max_allowable_offer
+   being a canonical-config member (opportunityFields.sellerMAO).
+
+   NO CONTACTS GUARD HERE, deliberately. This file resolves no contact id, and a
+   guard on a section it never reads would refuse on something it does not
+   trust. Section guards are per file, not per family. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixtureRecords.opportunities.iaosUnderwritingTest for "${ENV}" (scripts/harness-fixtures.json). Refusing rather than inventing it.`);
+  process.exit(4);
+}
+
+const envPins           = envFixtures.untouchedPins;
+const opportunityFields = envPins && envPins.opportunityFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest;
+const TARGET_ID      = config.opportunityFields.sellerMAO;
 const TARGET_KEY     = "mao_max_allowable_offer";
 const TEST_VALUE     = 486210.73;
 
+/* Mixed ownership in one binding: endBuyerMaxPrice is CONFIG-owned,
+   closing_costs is CARRIER-owned. One resolution site, two owners. */
 const PBD58_TARGETS = {
-  endbuyer_maximum_purchase_price: "zOVIPwzLe41a0SQmwVAJ",
-  closing_costs:                   "N8Aa9t1SZhU7XnPPzxWk",
+  endbuyer_maximum_purchase_price: config.opportunityFields.endBuyerMaxPrice,
+  closing_costs:                   opportunityFields.closing_costs,
 };
 
 const MAX_POLLS = 15;
@@ -71,6 +119,47 @@ function entryValue(entry) {
   try { wrote = JSON.parse(fs.readFileSync(STEP2, "utf8")); }
   catch (e) { fail(261, `cannot read step 2 evidence: ${e.message}`); }
 
+  assertEnvironment(cap, ENV, "step-1 evidence");
+
+  /* NOTE — step-2 read site: consumes NO environment-owned value.
+     It consumes wrote.cycle, wrote.putStatus and wrote.testValue and nothing
+     else — a cycle marker, an HTTP integer off putRes.status, and the
+     designated numeric constant. Producer-reachable classification: none of the
+     three can hold an identifier under any run.
+     STOP if you are adding a field here: this read site has no environment
+     assertion because nothing environment-owned crosses it today. The artifact
+     itself is NOT clean — it carries opportunityId, contactId, fieldId,
+     requestBody and capturedStageId, four distinct environment-owned values,
+     unread. Adding one to this consumption set REQUIRES an
+     assertEnvironment(...) call at this site first. The same artifact IS read
+     through a CHECK at step 5 — a NOTE classifies the read site, not the
+     artifact. */
+
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism, and NOT coverage.
+     ⚠ RECORD THE RATIO. At this read site 1 value is COMPARED (opportunityId,
+     L166 below) and 14 are ADOPTED BY VALUE with no comparison — the 3 ids
+     inside customFields, the 7 inside offerIds, pipelineStageId, and the 3
+     inside fixtureState. BY FIELD that same site reads 1 to 4, which is the
+     misleading figure. Family-wide: 12 COMPARED to 36 ADOPTED by value,
+     12 to 12 by field.
+
+     ⚠ fieldId IS NOT COMPARED AT THIS SITE AT ALL. This file never reads
+     cap.fieldId. It is the weakest read site in the family and a per-site
+     verdict of "CHECK, protected" would be true and useless.
+
+     ⚠ THE OWN=YES / LIT=NO QUADRANT. pipelineStageId and its persisted
+     derivative liveStageId are ENVIRONMENT-OWNED BY VALUE — they match
+     canonical config stages.* — while appearing as a source literal NOWHERE in
+     this family. Conversion does NOTHING for them; there is no literal to
+     convert. The assertEnvironment call above is the ONLY thing standing
+     between them and a cross-environment consumption. Their sole comparison, at
+     L224 below, is against the LIVE wire value: drift detection, not
+     provenance.
+
+     FOUR VALUES ARE ADOPTED EVERYWHERE THEY APPEAR AND COMPARED NOWHERE in
+     this family: customFields, offerIds, fixtureState and pipelineStageId.
+
+     Retained deliberately as defense-in-depth; do not remove or weaken. */
   if (cap.cycle !== "a0" || wrote.cycle !== "a0") {
     fail(262, `evidence is not from cycle a0`, `step1=${cap.cycle} step2=${wrote.cycle}`);
   }
@@ -146,6 +235,7 @@ function entryValue(entry) {
   const pbd58TargetsAbsent = pbd58Residue.length === 0;
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "verify",
     cycle: "a0",

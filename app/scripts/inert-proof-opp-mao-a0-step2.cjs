@@ -19,18 +19,66 @@
  */
 
 const fs = require("fs");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31";
-const CONTACT_ID     = "HGZAby6snRZfpl0go2Yb";
-const TARGET_ID      = "Atu5XCjpFElY8H64VG4h";
+/* ── Environment resolution (Gate 4C C4a, Stair 6) ─────────────────────────
+   getConfig(ENV) runs BEFORE the carrier lookup so an unknown --env surfaces
+   [ghl-config]'s OWN message unwrapped, and --env=test reaches a VALID Test
+   config and then refuses at the carrier's absent Test section.
+
+   LOADER *AND* CARRIER, like every member of this family. THE TAIL'S REASON IS
+   NOT THE HEAD'S: this file resolves no locationId — only step 1 makes the
+   schema request. The loader is required here for the TARGET alone,
+   mao_max_allowable_offer being a canonical-config member
+   (opportunityFields.sellerMAO). The idiom follows the identifier's owner, not
+   the file's role in the family. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureContacts      = fixtureRecords && fixtureRecords.contacts;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest ||
+    !fixtureContacts || !fixtureContacts.iaosTestProbe) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.opportunities.iaosUnderwritingTest and ${ENV}.fixtureRecords.contacts.iaosTestProbe. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const envPins           = envFixtures.untouchedPins;
+const opportunityFields = envPins && envPins.opportunityFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest;
+const CONTACT_ID     = fixtureContacts.iaosTestProbe;
+const TARGET_ID      = config.opportunityFields.sellerMAO;
 const TARGET_KEY     = "mao_max_allowable_offer";
 
+/* Mixed ownership in one binding: endBuyerMaxPrice is CONFIG-owned,
+   closing_costs is CARRIER-owned. One resolution site, two owners. */
 const PBD58_TARGETS = {
-  endbuyer_maximum_purchase_price: "zOVIPwzLe41a0SQmwVAJ",
-  closing_costs:                   "N8Aa9t1SZhU7XnPPzxWk",
+  endbuyer_maximum_purchase_price: config.opportunityFields.endBuyerMaxPrice,
+  closing_costs:                   opportunityFields.closing_costs,
 };
 
 const TEST_VALUE = 486210.73;
@@ -49,6 +97,39 @@ function fail(code, msg, extra) {
   try { cap = JSON.parse(fs.readFileSync(STEP1, "utf8")); }
   catch (e) { fail(230, `cannot read step 1 evidence: ${e.message}`); }
 
+  assertEnvironment(cap, ENV, "step-1 evidence");
+
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism, and NOT coverage.
+     The two comparisons below check an artifact identifier against a locally
+     resolved constant. They catch a stale or mismatched capture and do
+     incidentally reject SOME environment crossings. The assertEnvironment call
+     above is the Stair P mechanism; these are not a substitute for it.
+
+     ⚠ RECORD THE RATIO, NOT THE CLASSIFICATION. At this read site 2 values are
+     COMPARED (opportunityId L134, fieldId L135) and 4 are ADOPTED with no
+     comparison (pipelineStageId, and the three ids inside fixtureState).
+     Family-wide the split is 12 COMPARED to 36 ADOPTED BY VALUE, against
+     12 to 12 BY FIELD. The by-field figure reads as half-protected and is the
+     misleading one; customFields and offerIds — counted by the values inside
+     them at steps 3 and 5 — account for the whole divergence. A bulk capture
+     counted as one adopted value undercounts by three to seven.
+
+     ⚠ THE OWN=YES / LIT=NO QUADRANT. pipelineStageId, and its persisted
+     derivative capturedStageId below, are ENVIRONMENT-OWNED BY VALUE — they
+     match canonical config stages.* — while appearing as a source literal
+     NOWHERE in this family. Conversion does NOTHING for them: there is no
+     literal to convert, they arrive through a wire capture. The provenance
+     assertion above is the ONLY thing standing between them and a
+     cross-environment consumption. Their sole comparison, at L153 below, is
+     against the LIVE wire value: that detects drift between capture and
+     now and establishes NOTHING about which environment produced them.
+     Different job, different claim. Do not read a literal scan's silence as
+     ownership.
+
+     FOUR VALUES ARE ADOPTED EVERYWHERE THEY APPEAR AND COMPARED NOWHERE in
+     this family: customFields, offerIds, fixtureState and pipelineStageId.
+
+     Retained deliberately as defense-in-depth; do not remove or weaken. */
   if (cap.cycle !== "a0") fail(231, `step 1 evidence is from cycle ${JSON.stringify(cap.cycle)}, not a0`);
   if (cap.opportunityId !== OPPORTUNITY_ID) fail(232, `step 1 names a different opportunity`);
   if (cap.fieldId !== TARGET_ID) fail(233, `step 1 names a different field: ${cap.fieldId}`);
@@ -125,6 +206,7 @@ function fail(code, msg, extra) {
   }
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "write",
     cycle: "a0",

@@ -16,19 +16,66 @@
  */
 
 const fs = require("fs");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31";
-const CONTACT_ID     = "HGZAby6snRZfpl0go2Yb";
-const TARGET_ID      = "Atu5XCjpFElY8H64VG4h";
+/* ── Environment resolution (Gate 4C C4a, Stair 6) ─────────────────────────
+   getConfig(ENV) runs BEFORE the carrier lookup so an unknown --env surfaces
+   [ghl-config]'s OWN message unwrapped, and --env=test reaches a VALID Test
+   config and then refuses at the carrier's absent Test section.
+
+   LOADER *AND* CARRIER, like every member of this family. THE TAIL'S REASON IS
+   NOT THE HEAD'S: no locationId is resolved here — only step 1 makes the schema
+   request. The loader is required for the TARGET alone, mao_max_allowable_offer
+   being a canonical-config member (opportunityFields.sellerMAO). The idiom
+   follows the identifier's owner, not the file's role in the family. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureContacts      = fixtureRecords && fixtureRecords.contacts;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest ||
+    !fixtureContacts || !fixtureContacts.iaosTestProbe) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.opportunities.iaosUnderwritingTest and ${ENV}.fixtureRecords.contacts.iaosTestProbe. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const envPins           = envFixtures.untouchedPins;
+const opportunityFields = envPins && envPins.opportunityFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest;
+const CONTACT_ID     = fixtureContacts.iaosTestProbe;
+const TARGET_ID      = config.opportunityFields.sellerMAO;
 const TARGET_KEY     = "mao_max_allowable_offer";
 const TEST_VALUE     = 486210.73;
 
+/* Mixed ownership in one binding: endBuyerMaxPrice is CONFIG-owned,
+   closing_costs is CARRIER-owned. One resolution site, two owners. */
 const PBD58_TARGETS = {
-  endbuyer_maximum_purchase_price: "zOVIPwzLe41a0SQmwVAJ",
-  closing_costs:                   "N8Aa9t1SZhU7XnPPzxWk",
+  endbuyer_maximum_purchase_price: config.opportunityFields.endBuyerMaxPrice,
+  closing_costs:                   opportunityFields.closing_costs,
 };
 
 const CLEAR_VALUE = "";
@@ -59,6 +106,54 @@ function entryValue(entry) {
   try { ver = JSON.parse(fs.readFileSync(STEP3, "utf8")); }
   catch (e) { fail(281, `cannot read step 3 evidence: ${e.message}`); }
 
+  assertEnvironment(cap, ENV, "step-1 evidence");
+
+  /* NOTE — step-3 read site: consumes NO environment-owned value.
+     It consumes ver.cycle, ver.matched, ver.confirmations, ver.fixtureUnchanged,
+     ver.pbd58TargetsAbsent, ver.observedValue and ver.observedKey and nothing
+     else. Producer-reachable: a cycle marker, six booleans (pbd58TargetsAbsent
+     is pbd58Residue.length === 0, always boolean), the observed number, and a
+     CLOSED FOUR-VALUE ENUM from entryValue() — fieldValue / fieldValueNumber /
+     field_value / value. None can hold an identifier under any run.
+     ⚠ ver.pbd58Residue IS NOT CONSUMED, and that is load-bearing: it is the one
+     field of step-3's record that WOULD carry the two PB-D58 target ids. Adding
+     it here flips this row to CHECK.
+     STOP if you are adding a field here: this read site has no environment
+     assertion because nothing environment-owned crosses it today. The artifact
+     itself is NOT clean — it carries opportunityId, fieldId, observedEntry,
+     liveStageId and four ids inside liveCustomFields, six distinct
+     environment-owned values, unread. Adding one REQUIRES an
+     assertEnvironment(...) call at this site first. The same artifact IS read
+     through a CHECK at step 5 — a NOTE classifies the read site, not the
+     artifact. */
+
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism, and NOT coverage.
+     ⚠ RECORD THE RATIO. At this read site 1 value is COMPARED (opportunityId,
+     L160 below) and 4 are ADOPTED with no comparison (pipelineStageId and the
+     three ids inside fixtureState). Family-wide: 12 COMPARED to 36 ADOPTED BY
+     VALUE, 12 to 12 BY FIELD — the by-field figure reads as half-protected and
+     is the misleading one. This guard sits in front of a PUT, which makes the
+     temptation to read it as coverage stronger here than anywhere else in the
+     family. It is not coverage. 1-of-5 is the honest measure.
+
+     ⚠ THE OWN=YES / LIT=NO QUADRANT. pipelineStageId and its persisted
+     derivative capturedStageId are ENVIRONMENT-OWNED BY VALUE — matching
+     canonical config stages.* — while appearing as a source literal NOWHERE in
+     this family. Conversion does NOTHING for them; there is no literal to
+     convert, they arrive through a wire capture. The assertEnvironment call
+     above is the ONLY thing standing between them and a cross-environment
+     consumption, and it is the only such thing above this file's PUT. Their
+     sole comparison, at L184 below, is against the LIVE wire value: that
+     detects drift between capture and now and establishes NOTHING about which
+     environment produced them.
+
+     FOUR VALUES ARE ADOPTED EVERYWHERE THEY APPEAR AND COMPARED NOWHERE in
+     this family: customFields, offerIds, fixtureState and pipelineStageId. Two
+     of them — fixtureState and pipelineStageId — are consumed by this file
+     directly and neither is validated by anything above the PUT other than the
+     assertEnvironment call.
+
+     Retained deliberately as defense-in-depth; do not remove or weaken. */
   if (cap.cycle !== "a0" || ver.cycle !== "a0") {
     fail(282, `evidence is not from cycle a0`, `step1=${cap.cycle} step3=${ver.cycle}`);
   }
@@ -144,6 +239,7 @@ function entryValue(entry) {
   }
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "restore",
     cycle: "a0",
