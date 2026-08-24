@@ -23,22 +23,76 @@
  */
 
 const fs = require("fs");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 const LIST   = `${ORIGIN}/.netlify/functions/ghl-opportunities`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31";
-const TARGET_ID      = "TpLo0WRc303TXAaBUbBf";
+/* ── Environment resolution (Gate 4C C4a, Stair 7) ─────────────────────────
+   TIER 1 PREAMBLE, module scope. getConfig(ENV) runs BEFORE the carrier lookup
+   so an unknown --env surfaces [ghl-config]'s OWN message unwrapped, and
+   --env=test reaches a VALID Test config and then refuses at the carrier's
+   absent Test section.
+
+   LOADER *AND* CARRIER, following the identifier's owner rather than the
+   file's role.
+
+   ⚠ THIS FILE IS A TAIL, AND THE FAMILY IS NOT UNIFORM. The head resolves
+   config.locationId for its schema GET; THIS FILE DOES NOT AND MUST NOT — it
+   makes no schema request. It loads config for its own config-owned values
+   only: the target assignment_mode, and the two prior proof carriers in
+   PRIOR_TARGETS below.
+
+   NO CONTACTS GUARD HERE, deliberately. This file resolves no contact id, and
+   a guard on a section it never reads would refuse on something it does not
+   trust. Section guards are per file, not per family. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixtureRecords.opportunities.iaosUnderwritingTest for "${ENV}" (scripts/harness-fixtures.json). Refusing rather than inventing it.`);
+  process.exit(4);
+}
+
+const envPins           = envFixtures.untouchedPins;
+const opportunityFields = envPins && envPins.opportunityFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest;
+const TARGET_ID      = config.opportunityFields.assignmentMode;
 const TARGET_KEY     = "assignment_mode";
 
 const ORIGIN_OPTION = "Standard Minimum";
 const TEMP_OPTION   = "25% of Buyer Profit";
 
+/* ONE resolution site, THREE values — MIXED OWNERSHIP. endBuyerMaxPrice and
+   sellerMAO are CONFIG-owned; closing_costs is CARRIER-owned. Contributes
+   (3 - 1) = 2 to the occurrence-vs-resolution-site gap. */
 const PRIOR_TARGETS = {
-  endbuyer_maximum_purchase_price: "zOVIPwzLe41a0SQmwVAJ",
-  mao_max_allowable_offer:         "Atu5XCjpFElY8H64VG4h",
-  closing_costs:                   "N8Aa9t1SZhU7XnPPzxWk",
+  endbuyer_maximum_purchase_price: config.opportunityFields.endBuyerMaxPrice,
+  mao_max_allowable_offer:         config.opportunityFields.sellerMAO,
+  closing_costs:                   opportunityFields.closing_costs,
 };
 
 const MAX_POLLS = 15;
@@ -73,6 +127,50 @@ function optionOf(entry) {
   try { wrote = JSON.parse(fs.readFileSync(STEP2, "utf8")); }
   catch (e) { fail(391, `cannot read step 2 evidence: ${e.message}`); }
 
+  assertEnvironment(cap, ENV, "step-1 evidence");
+
+  /* NOTE — SITE ④, step-2 read site: consumes NO environment-owned value.
+     It consumes wrote.cycle, wrote.putStatus and wrote.tempOption and nothing
+     else — a cycle marker, an HTTP integer off putRes.status, and a PICKLIST
+     LABEL ("25% of Buyer Profit"). The label is not an identifier and is not in
+     the 73-value predicate set; classify off ids, never off labels.
+     STOP if you are adding a field here: this read site has no environment
+     assertion because nothing environment-owned crosses it today. The artifact
+     itself is NOT clean — it carries opportunityId, contactId, fieldId and
+     capturedStageId, with requestBody re-carrying the field id: four distinct
+     environment-owned values, unread. Adding one REQUIRES an
+     assertEnvironment(...) call at this site first. The same artifact IS read
+     through a CHECK at step 5 — a NOTE classifies the read site, not the
+     artifact. */
+
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism, and NOT coverage.
+     ⚠ RECORD THE RATIO. At this read site (SITE ③) 1 value is COMPARED —
+     opportunityId, L177 below — and 14 are ADOPTED BY VALUE: the 3 ids inside
+     customFields, the 7 inside offerIds, pipelineStageId, the 2 inside
+     fixtureState, and the id inside the wireShape ENTRY OBJECT adopted at L290.
+     BY FIELD the same site reads 1 to 5. Family-wide: 12 COMPARED to 36
+     ADOPTED by value, 12 to 16 by field.
+
+     ⚠ fieldId IS NOT COMPARED AT THIS SITE AT ALL. This file never reads
+     cap.fieldId. It is the weakest read site in the family and a per-site
+     verdict of "CHECK, protected" would be true and useless.
+
+     ⚠ ENTRY OBJECTS ARE NOT OPAQUE. wireShape is the {"id": …, "fieldValue": …}
+     shape: the environment-owned id sits nested beside a human label. Count the
+     id INSIDE it and classify off that id. A scan for named id fields does not
+     see it, and a scan for bulk id arrays does not either.
+
+     ⚠ COMPARED means compared against a LOCALLY RESOLVED CONSTANT. A comparison
+     against a LIVE WIRE value is ADOPTED, always. pipelineStageId's only check,
+     at L253 below, is against the live wire: drift consistency, not provenance.
+
+     ⚠ THE OWN=YES / LIT=NO QUADRANT. pipelineStageId and its persisted
+     derivative liveStageId are environment-owned by value and appear as a
+     source literal NOWHERE in this family. Conversion does nothing for them;
+     the assertion above is their only protection. Do not record them as
+     converted.
+
+     Retained deliberately as defense-in-depth; do not remove or weaken. */
   if (cap.cycle !== "proof-a" || wrote.cycle !== "proof-a") {
     fail(392, `evidence is not from cycle proof-a`, `step1=${cap.cycle} step2=${wrote.cycle}`);
   }
@@ -166,6 +264,7 @@ function optionOf(entry) {
   const priorTargetsAbsent = priorResidue.length === 0;
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "verify",
     cycle: "proof-a",

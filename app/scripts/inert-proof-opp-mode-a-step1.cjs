@@ -4,9 +4,13 @@
  * Nothing here mutates: two GETs, one evidence file, and a hard stop if any
  * precondition differs from what PB-D59 section V specifies.
  *
- * FIELD: opportunity.assignment_mode, TpLo0WRc303TXAaBUbBf, SINGLE_OPTIONS.
- * The third of PB-D59's three Approve carriers and the only one still
- * unproven.
+ * FIELD: opportunity.assignment_mode, SINGLE_OPTIONS. The third of PB-D59's
+ * three Approve carriers and the only one still unproven. The field id is NOT
+ * written here any more: it resolves from canonical config at
+ * opportunityFields.assignmentMode. The raw literal that stood in this
+ * sentence was an unenforced duplicate of the binding below — every
+ * behavioural instrument reported the file clean while it sat in prose
+ * (Gate 4C C4a, Stair 7).
  *
  * POPULATED ORIGIN, and that is the point. The fixture carries
  * "Standard Minimum". Restoration therefore means the ORIGINAL OPTION
@@ -37,14 +41,73 @@
  */
 
 const fs = require("fs");
+const { stamp } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 const LIST   = `${ORIGIN}/.netlify/functions/ghl-opportunities`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31"; // IAOS Underwriting Test
-const CONTACT_ID     = "HGZAby6snRZfpl0go2Yb"; // IAOS Test Probe
-const TARGET_ID      = "TpLo0WRc303TXAaBUbBf"; // assignment_mode
+/* ── Environment resolution (Gate 4C C4a, Stair 7) ─────────────────────────
+   TIER 1 PREAMBLE, module scope. getConfig(ENV) runs BEFORE any carrier lookup,
+   deliberately: that ordering is what makes an unknown --env surface
+   [ghl-config]'s OWN message unwrapped, and what makes --env=test reach a VALID
+   Test config and then refuse at the carrier's absent Test section.
+
+   LOADER *AND* CARRIER. The idiom follows the IDENTIFIER'S OWNER, not the
+   file's role: assignment_mode is a canonical-config member
+   (opportunityFields.assignmentMode), so every file binding the target needs
+   the loader. Do not generalise to other families — closing-costs' tails are
+   carrier-only because THAT family's target is a carrier untouchedPin.
+
+   ⚠ THIS FILE IS THE HEAD, AND THE FAMILY IS NOT UNIFORM. step1 is the ONLY
+   member that resolves config.locationId — it needs it for the schema GET
+   below, which no tail makes. The four tails load config for their own
+   config-owned target and prior carriers and nothing else, and each says so in
+   its own header. Do not copy this paragraph into a tail; it would be true of
+   the file next door rather than of the file it sits in. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+const LOC = config.locationId;
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureContacts      = fixtureRecords && fixtureRecords.contacts;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest ||
+    !fixtureContacts || !fixtureContacts.iaosTestProbe) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.opportunities.iaosUnderwritingTest and ${ENV}.fixtureRecords.contacts.iaosTestProbe. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const envPins                = envFixtures.untouchedPins;
+const opportunityFields      = envPins && envPins.opportunityFields;
+const opportunityOfferFields = envPins && envPins.opportunityOfferFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+if (!opportunityOfferFields || Object.keys(opportunityOfferFields).length !== 7) {
+  console.error(`REFUSED: harness-fixtures.json carries no seven-member opportunityOfferFields for "${ENV}" — expected ${ENV}.untouchedPins.opportunityOfferFields. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest; // IAOS Underwriting Test
+const CONTACT_ID     = fixtureContacts.iaosTestProbe;             // IAOS Test Probe
+const TARGET_ID      = config.opportunityFields.assignmentMode;   // assignment_mode
 const TARGET_KEY     = "assignment_mode";
 
 const ORIGIN_OPTION = "Standard Minimum";      // expected current value
@@ -59,23 +122,27 @@ const EXPECTED_OPTIONS = ["Standard Minimum", "25% of Buyer Profit", "Manual"];
    KEY_ABSENT by PB-D58 and A0, and a value on either means something wrote
    since. */
 const PROVEN_CARRIERS = {
-  endbuyer_maximum_purchase_price: "zOVIPwzLe41a0SQmwVAJ",
-  mao_max_allowable_offer:         "Atu5XCjpFElY8H64VG4h",
+  endbuyer_maximum_purchase_price: config.opportunityFields.endBuyerMaxPrice,
+  mao_max_allowable_offer:         config.opportunityFields.sellerMAO,
 };
-const PBD58_DISCOVERY = { closing_costs: "N8Aa9t1SZhU7XnPPzxWk" };
+/* ONE resolution site, ONE value — a single-value object literal. It is a
+   resolution site and it contributes NOTHING to the occurrence-vs-site gap.
+   CARRIER-owned, unlike PROVEN_CARRIERS above, which is CONFIG-owned. */
+const PBD58_DISCOVERY = { closing_costs: opportunityFields.closing_costs };
 
 /* The two deal facts the resolved-branch harness depends on. assignment_mode
    is the third but it is the target, so it is tracked separately. */
 const FIXTURE_IDS = {
-  arv_after_repair_value: "cBkygqcHRseZUGCYYeba",
-  repair_estimate:        "hId4Yog6u5GP1Iwz1aNx",
+  arv_after_repair_value: config.opportunityFacts.arv,
+  repair_estimate:        config.opportunityFacts.repairs,
 };
 
-const OFFER_IDS = [
-  "4YiACDV4uB3zOlAdNIBb", "73oLHWnVjmOGSrBo5sC6", "9jm2SoN2aDtUtbesL0kG",
-  "GxChepYArmgPllhKPq0R", "Nm1LZvQzaCGvXDq7TRCh", "XbW0B973nuaLtIjMkzO9",
-  "eY5BOqE9juGpBfqwacWT",
-];
+/* Carrier key order IS the original literal order — offer_price, offer_date,
+   offer_mao, offer_wholesale_fee, offer_arv, offer_repair_total, offer_margin.
+   Object.values preserves it, so offerIds is written to evidence in the same
+   order as before conversion. Verified at conversion; do not reorder the
+   carrier group without re-checking this. */
+const OFFER_IDS = Object.values(opportunityOfferFields);
 
 const A0_CONFIRM = "C:/Users/brad/AppData/Local/Temp/inert-proof-opp-mao-a0-step5.json";
 const EVIDENCE   = "C:/Users/brad/AppData/Local/Temp/inert-proof-opp-mode-a-step1.json";
@@ -97,6 +164,44 @@ function shapeOf(entry) {
   let a0;
   try { a0 = JSON.parse(fs.readFileSync(A0_CONFIRM, "utf8")); }
   catch (e) { fail(330, `cannot read A0 confirm evidence: ${e.message}`); }
+
+  /* NOTE — SITE ①, cross-family read site (mao-a0 step-5 confirm evidence):
+     consumes NO environment-owned value.
+
+     It consumes exactly FIVE fields and nothing else: outcome,
+     restoredToOrigin, confirmations, a0Complete and complete. Classified from
+     the PRODUCER'S REACHABLE CONSTRUCTION, not from bytes on disk — in
+     inert-proof-opp-mao-a0-step5.cjs, outcome is a closed three-value enum
+     (CLEARED / UNCHANGED / EMPTIED), restoredToOrigin is a boolean
+     conjunction, confirmations is four booleans, complete is seven booleans,
+     and a0Complete is every() over those. None is derived from an identifier,
+     so none can hold an environment-owned value for ANY artifact that producer
+     could write.
+
+     ⚠ NOT THE SAME SET AS THE NEIGHBOURING HEAD. mao-a0-step1's own
+     cross-family read consumes SIX fields — the five above plus `mechanism`.
+     Adjacent families, different consumption sets. Do not pattern-match one
+     onto the other.
+
+     The artifact itself is NOT clean. It carries opportunityId, fieldId,
+     liveStageId and three ids inside liveCustomFields — six environment-owned
+     values, all unread here. A NOTE classifies the READ SITE, not the artifact.
+
+     ⚠ LOAD-BEARING, AND CONDITIONALLY SO. This is what lets Proof A bootstrap.
+     The only mao-a0-step5 artifact in existence is the unstamped Aug-17 one,
+     and mao-a0's tails are disarmed by an absent canonical step-1 and cannot
+     regenerate it. Were this site a CHECK, assertEnvironment would take the
+     no-stamp branch and refuse at 6 against the only artifact there is,
+     leaving no path to stamped evidence for this family at all.
+
+     The prohibition is conditional on the CURRENT evidence topology, not a
+     standing law. Adding an environment-owned field to this consumption set
+     does not merely require an assertEnvironment(...) call first — it requires
+     re-deciding whether this family can bootstrap. Re-test the topology rather
+     than obeying this comment if the topology changes. The same property holds
+     upstream at mao-a0-step1 <- endbuyer-max-step5, and downstream at
+     payload-b-step1, which reads BOTH this family's step-5 output and
+     mao-a0's — two dependencies, both NOTEs, both for this reason. */
 
   if (a0.outcome !== "CLEARED") fail(331, `A0 outcome was ${JSON.stringify(a0.outcome)}, not CLEARED`);
   if (a0.restoredToOrigin !== true) fail(332, `A0 did not restore to origin`, JSON.stringify(a0.confirmations));
@@ -138,7 +243,24 @@ function shapeOf(entry) {
   const listShape = shapeOf(listEntry);
 
   // ── GET 3: the schema, for dataType and the picklist options ──
-  const schemaUrl = `${PROXY}?path=${encodeURIComponent("/locations/jmHG4B8RdzwpfqruNf68/customFields?model=opportunity")}`;
+  /* ⚠ THE ONE R1 SITE IN THIS FAMILY — 1 occurrence at 1 resolution site.
+     TIER 2 per-site lookup. Every other binding in all five files resolves at
+     module scope above the async body and is therefore reachable
+     unconditionally (R0 ×37). This one is not: it sits below the async
+     boundary, so it is reached only after the three A0 gates, GET-1's status
+     and JSON checks, both identity checks, and the list-endpoint status, JSON
+     and presence checks — eleven aborts upstream of it.
+
+     LOC is resolved in the Tier 1 preamble at module scope; only the SITE that
+     consumes it lives here. The preamble is NOT hoisted into the async scope
+     and must not be: doing so would put configuration resolution behind the
+     guards it is meant to precede. Converted in place.
+
+     Contrast mao-a0, whose equivalent site its run never reached because a
+     live residue check aborted first. This one IS reachable on a normal run,
+     so a refusal proof that stops earlier proves nothing about it either way —
+     record which it is rather than inferring from exit status. */
+  const schemaUrl = `${PROXY}?path=${encodeURIComponent(`/locations/${LOC}/customFields?model=opportunity`)}`;
   const schemaRes = await fetch(schemaUrl);
   const schemaText = await schemaRes.text();
   if (!schemaRes.ok) fail(341, `GET customFields?model=opportunity → ${schemaRes.status}`, schemaText.slice(0, 400));
@@ -192,6 +314,7 @@ function shapeOf(entry) {
   }));
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "capture",
     cycle: "proof-a",

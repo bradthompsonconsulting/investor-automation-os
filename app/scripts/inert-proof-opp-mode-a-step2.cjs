@@ -31,22 +31,74 @@
  */
 
 const fs = require("fs");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31";
-const CONTACT_ID     = "HGZAby6snRZfpl0go2Yb";
-const TARGET_ID      = "TpLo0WRc303TXAaBUbBf";
+/* ── Environment resolution (Gate 4C C4a, Stair 7) ─────────────────────────
+   TIER 1 PREAMBLE, module scope. getConfig(ENV) runs BEFORE the carrier lookup
+   so an unknown --env surfaces [ghl-config]'s OWN message unwrapped, and
+   --env=test reaches a VALID Test config and then refuses at the carrier's
+   absent Test section.
+
+   LOADER *AND* CARRIER, following the identifier's owner rather than the
+   file's role.
+
+   ⚠ THIS FILE IS A TAIL, AND THE FAMILY IS NOT UNIFORM. The head resolves
+   config.locationId for its schema GET; THIS FILE DOES NOT AND MUST NOT — it
+   makes no schema request. It loads config for its own config-owned values
+   only: the target assignment_mode, and the two prior proof carriers in
+   PRIOR_TARGETS below. That is the tail's reason, and it is not the head's. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureContacts      = fixtureRecords && fixtureRecords.contacts;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest ||
+    !fixtureContacts || !fixtureContacts.iaosTestProbe) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.opportunities.iaosUnderwritingTest and ${ENV}.fixtureRecords.contacts.iaosTestProbe. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const envPins           = envFixtures.untouchedPins;
+const opportunityFields = envPins && envPins.opportunityFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest;
+const CONTACT_ID     = fixtureContacts.iaosTestProbe;
+const TARGET_ID      = config.opportunityFields.assignmentMode;
 const TARGET_KEY     = "assignment_mode";
 
 const ORIGIN_OPTION = "Standard Minimum";
 const TEMP_OPTION   = "25% of Buyer Profit";
 
+/* ONE resolution site, THREE values — MIXED OWNERSHIP. endBuyerMaxPrice and
+   sellerMAO are CONFIG-owned; closing_costs is CARRIER-owned. Contributes
+   (3 - 1) = 2 to the occurrence-vs-resolution-site gap. */
 const PRIOR_TARGETS = {
-  endbuyer_maximum_purchase_price: "zOVIPwzLe41a0SQmwVAJ",
-  mao_max_allowable_offer:         "Atu5XCjpFElY8H64VG4h",
-  closing_costs:                   "N8Aa9t1SZhU7XnPPzxWk",
+  endbuyer_maximum_purchase_price: config.opportunityFields.endBuyerMaxPrice,
+  mao_max_allowable_offer:         config.opportunityFields.sellerMAO,
+  closing_costs:                   opportunityFields.closing_costs,
 };
 
 const STEP1    = "C:/Users/brad/AppData/Local/Temp/inert-proof-opp-mode-a-step1.json";
@@ -68,6 +120,37 @@ function optionOf(entry) {
   try { cap = JSON.parse(fs.readFileSync(STEP1, "utf8")); }
   catch (e) { fail(360, `cannot read step 1 evidence: ${e.message}`); }
 
+  assertEnvironment(cap, ENV, "step-1 evidence");
+
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism, and NOT coverage.
+     The assertEnvironment call above is the Stair P mechanism; the comparisons
+     below are not a substitute for it.
+
+     ⚠ RECORD THE RATIO, NOT THE CLASSIFICATION. At this read site (SITE ②)
+     2 values are COMPARED — opportunityId L155, fieldId L156 — and 3 are
+     ADOPTED with no comparison: pipelineStageId and the two ids inside
+     fixtureState. Family-wide: 12 COMPARED to 36 ADOPTED BY VALUE, against
+     12 to 16 BY FIELD. The by-field figure reads as better protected and is
+     the misleading one.
+
+     ⚠ COMPARED MEANS COMPARED AGAINST A LOCALLY RESOLVED CONSTANT. A
+     comparison against a LIVE WIRE value is ADOPTED, always — it establishes
+     drift consistency between capture and now, never environment provenance.
+     pipelineStageId's only check, at L180 below, is against the live wire, so
+     it is ADOPTED despite looking like a comparison.
+
+     ⚠ THE OWN=YES / LIT=NO QUADRANT. pipelineStageId, and its persisted
+     derivative capturedStageId, are ENVIRONMENT-OWNED BY VALUE — they match
+     canonical config stages.* — while appearing as a source literal NOWHERE in
+     this family. CONVERSION DOES NOTHING FOR THEM: there is no literal to
+     convert, they arrive from the wire. The assertion above is the only
+     protection they have. Do not record them as converted.
+
+     SIX VALUES ARE ADOPTED EVERYWHERE THEY APPEAR AND COMPARED NOWHERE in this
+     family: customFields, offerIds, fixtureState, pipelineStageId, and the two
+     entry-object carriers originEntry and wireShape.
+
+     Retained deliberately as defense-in-depth; do not remove or weaken. */
   if (cap.cycle !== "proof-a") fail(361, `step 1 evidence is from cycle ${JSON.stringify(cap.cycle)}, not proof-a`);
   if (cap.opportunityId !== OPPORTUNITY_ID) fail(362, `step 1 names a different opportunity`);
   if (cap.fieldId !== TARGET_ID) fail(363, `step 1 names a different field: ${cap.fieldId}`);
@@ -157,6 +240,7 @@ function optionOf(entry) {
   }
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "write",
     cycle: "proof-a",

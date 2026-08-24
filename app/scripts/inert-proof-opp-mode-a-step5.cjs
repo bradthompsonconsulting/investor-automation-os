@@ -26,22 +26,76 @@
  */
 
 const fs = require("fs");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 const LIST   = `${ORIGIN}/.netlify/functions/ghl-opportunities`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31";
-const TARGET_ID      = "TpLo0WRc303TXAaBUbBf";
+/* ── Environment resolution (Gate 4C C4a, Stair 7) ─────────────────────────
+   TIER 1 PREAMBLE, module scope. getConfig(ENV) runs BEFORE the carrier lookup
+   so an unknown --env surfaces [ghl-config]'s OWN message unwrapped, and
+   --env=test reaches a VALID Test config and then refuses at the carrier's
+   absent Test section.
+
+   LOADER *AND* CARRIER, following the identifier's owner rather than the
+   file's role.
+
+   ⚠ THIS FILE IS A TAIL, AND THE FAMILY IS NOT UNIFORM. The head resolves
+   config.locationId for its schema GET; THIS FILE DOES NOT AND MUST NOT — it
+   makes no schema request. It loads config for its own config-owned values
+   only: the target assignment_mode, and the two prior proof carriers in
+   PRIOR_TARGETS below.
+
+   NO CONTACTS GUARD HERE, deliberately — this file resolves no contact id, and
+   a guard on a section it never reads would refuse on something it does not
+   trust. Section guards are per file, not per family. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixtureRecords.opportunities.iaosUnderwritingTest for "${ENV}" (scripts/harness-fixtures.json). Refusing rather than inventing it.`);
+  process.exit(4);
+}
+
+const envPins           = envFixtures.untouchedPins;
+const opportunityFields = envPins && envPins.opportunityFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest;
+const TARGET_ID      = config.opportunityFields.assignmentMode;
 const TARGET_KEY     = "assignment_mode";
 
 const ORIGIN_OPTION = "Standard Minimum";
 const TEMP_OPTION   = "25% of Buyer Profit";
 
+/* ONE resolution site, THREE values — MIXED OWNERSHIP. endBuyerMaxPrice and
+   sellerMAO are CONFIG-owned; closing_costs is CARRIER-owned. Contributes
+   (3 - 1) = 2 to the occurrence-vs-resolution-site gap. */
 const PRIOR_TARGETS = {
-  endbuyer_maximum_purchase_price: "zOVIPwzLe41a0SQmwVAJ",
-  mao_max_allowable_offer:         "Atu5XCjpFElY8H64VG4h",
-  closing_costs:                   "N8Aa9t1SZhU7XnPPzxWk",
+  endbuyer_maximum_purchase_price: config.opportunityFields.endBuyerMaxPrice,
+  mao_max_allowable_offer:         config.opportunityFields.sellerMAO,
+  closing_costs:                   opportunityFields.closing_costs,
 };
 
 const MAX_POLLS = 15;
@@ -72,11 +126,61 @@ function optionOf(entry) {
 }
 
 (async () => {
+  /* FOUR READ SITES, ONE LOOP — sites ⑦⑧⑨⑩. This file reads all four upstream
+     artifacts, and the loop below is four distinct read sites, not one. Every
+     one is a CHECK: the identity block beneath consumes opportunityId and
+     fieldId from EACH artifact, so an environment-owned value crosses at all
+     four.
+
+     The assertion therefore lives INSIDE the loop and fires once per artifact,
+     labelled with that artifact, before any environment-owned value from it is
+     trusted. Four separate calls outside the loop would say the same thing and
+     drift apart the first time someone edited one of them.
+
+     ⚠ Note step 2's and step 3's artifacts are read through a NOTE at step 3
+     and step 4 respectively, and through a CHECK here. Same artifacts,
+     different read sites, different class. A NOTE classifies the read site. */
+  const EVIDENCE_LABEL = { s1: "step-1 evidence", s2: "step-2 evidence", s3: "step-3 evidence", s4: "step-4 evidence" };
   const ev = {};
   for (const [name, path] of [["s1", STEP1], ["s2", STEP2], ["s3", STEP3], ["s4", STEP4]]) {
     try { ev[name] = JSON.parse(fs.readFileSync(path, "utf8")); }
     catch (e) { fail(440, `cannot read ${name} evidence: ${e.message}`); }
+    assertEnvironment(ev[name], ENV, EVIDENCE_LABEL[name]);
   }
+
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism, and NOT coverage.
+     ⚠ RECORD THE RATIO. The identity block below compares opportunityId and
+     fieldId on all four artifacts. Against step-1 (SITE ⑦) that is 2 COMPARED
+     to 15 ADOPTED BY VALUE — the 3 ids inside customFields, the 7 inside
+     offerIds, pipelineStageId, the 2 inside fixtureState, and the ids inside
+     TWO ENTRY-OBJECT CARRIERS: originEntry (adopted at the shape comparison and
+     re-persisted as capturedEntry) and wireShape (adopted into wireShape.before).
+     BY FIELD that same site reads 2 to 6. Against s2 and s4 it is 2 to 0.
+     Against s3 (SITE ⑨) it is 2 to 1 — wireShapeDuring, a third entry-object
+     carrier, is adopted into wireShape.during.
+     Family-wide: 12 COMPARED to 36 ADOPTED by value, 12 to 16 by field.
+
+     ⚠ capturedEntry IS NOT A SECOND ADOPTION. It is cap.originEntry read once
+     and persisted under a new name. Counting it separately would double-count
+     the same id.
+
+     ⚠ COMPARED means compared against a LOCALLY RESOLVED CONSTANT. The
+     originEntry shape check below compares against the LIVE WIRE entry, so it
+     is ADOPTED, not COMPARED — as is pipelineStageId's live check. Both
+     establish drift consistency between capture and now and nothing about
+     which environment produced the value.
+
+     ⚠ THE OWN=YES / LIT=NO QUADRANT. pipelineStageId and liveStageId are
+     environment-owned by value with NO source literal in this family.
+     Conversion does nothing for them; the in-loop assertion above is their only
+     protection. Do not record them as converted.
+
+     SIX VALUES ARE ADOPTED EVERYWHERE THEY APPEAR AND COMPARED NOWHERE in this
+     family: customFields, offerIds, fixtureState, pipelineStageId, originEntry
+     and the wireShape carriers. This file consumes all six off the step-1 and
+     step-3 artifacts and writes its own conclusions from them, so the ratio
+     here is not an abstraction — it is the provenance of the Proof A
+     completion record. */
   for (const [name, rec] of Object.entries(ev)) {
     if (rec.cycle !== "proof-a") fail(441, `${name} evidence is from cycle ${JSON.stringify(rec.cycle)}`);
     if (rec.opportunityId !== OPPORTUNITY_ID) fail(442, `${name} names a different opportunity`);
@@ -202,6 +306,7 @@ function optionOf(entry) {
   const proofAComplete = Object.values(complete).every(Boolean);
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "confirm",
     cycle: "proof-a",
