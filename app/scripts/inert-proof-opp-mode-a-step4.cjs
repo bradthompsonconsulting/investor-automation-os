@@ -301,13 +301,19 @@ function optionOf(entry) {
     process.exit(433);
   }
 
-  console.log(`RESTORE issued — PUT status ${putStatus}`);
+  const putOk = putStatus >= 200 && putStatus < 300;
+  const REFUSAL = 434;
+  console.log(`${putOk ? "RESTORE issued" : "RESTORE FAILED"} — PUT status ${putStatus}`);
   console.log(`  from      ${JSON.stringify(TEMP_OPTION)}`);
   console.log(`  to        ${JSON.stringify(ORIGIN_OPTION)}`);
   console.log(`  body      ${serialized}`);
   console.log(`  evidence  ${EVIDENCE}`);
-  console.log("  No re-read issued. Step 5 confirms the original label is back.");
-  process.exit(putStatus >= 200 && putStatus < 300 ? 0 : 434);
+  if (putOk) {
+    console.log("  No re-read issued. Step 5 confirms the original label is back.");
+    process.exit(0);
+  }
+  console.log(`  Whether ${JSON.stringify(ORIGIN_OPTION)} was restored is UNKNOWN. Step 5 observes; do not re-run step 4. Refusal ${REFUSAL}.`);
+  process.exit(REFUSAL);
 })().catch((e) => {
   console.error("RESTORE THREW OUTSIDE THE REQUEST:", (e && e.stack) || e);
   process.exit(435);

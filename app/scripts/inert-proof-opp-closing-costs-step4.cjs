@@ -255,11 +255,17 @@ function entryValue(entry) {
     process.exit(77);
   }
 
-  console.log(`CLEAR issued — PUT status ${putStatus}`);
+  const putOk = putStatus >= 200 && putStatus < 300;
+  const REFUSAL = 78;
+  console.log(`${putOk ? "CLEAR issued" : "CLEAR FAILED"} — PUT status ${putStatus}`);
   console.log(`  body      ${serialized}`);
   console.log(`  evidence  ${EVIDENCE}`);
-  console.log("  No re-read issued. Step 5 observes whether the key is absent.");
-  process.exit(putStatus >= 200 && putStatus < 300 ? 0 : 78);
+  if (putOk) {
+    console.log("  No re-read issued. Step 5 observes whether the key is absent.");
+    process.exit(0);
+  }
+  console.log(`  Whether the clear landed is UNKNOWN. Step 5 observes; do not re-run step 4. Refusal ${REFUSAL}.`);
+  process.exit(REFUSAL);
 })().catch((e) => {
   console.error("CLEAR THREW OUTSIDE THE REQUEST:", (e && e.stack) || e);
   process.exit(79);

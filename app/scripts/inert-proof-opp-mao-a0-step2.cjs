@@ -242,12 +242,18 @@ function fail(code, msg, extra) {
     process.exit(250);
   }
 
-  console.log(`WRITE issued — PUT status ${putStatus}`);
+  const putOk = putStatus >= 200 && putStatus < 300;
+  const REFUSAL = 251;
+  console.log(`${putOk ? "WRITE issued" : "WRITE FAILED"} — PUT status ${putStatus}`);
   console.log(`  value     ${TEST_VALUE}`);
   console.log(`  body      ${serialized}`);
   console.log(`  evidence  ${EVIDENCE}`);
-  console.log("  No re-read issued. Step 3 verifies.");
-  process.exit(putStatus >= 200 && putStatus < 300 ? 0 : 251);
+  if (putOk) {
+    console.log("  No re-read issued. Step 3 verifies.");
+    process.exit(0);
+  }
+  console.log(`  Whether the mutation landed is UNKNOWN. Step 3 observes; do not re-run step 2. Refusal ${REFUSAL}.`);
+  process.exit(REFUSAL);
 })().catch((e) => {
   console.error("WRITE THREW OUTSIDE THE REQUEST:", (e && e.stack) || e);
   process.exit(252);

@@ -361,13 +361,19 @@ function readValue(entry) {
     process.exit(569);
   }
 
-  console.log(`RESTORE issued — PUT status ${putStatus}`);
+  const putOk = putStatus >= 200 && putStatus < 300;
+  const REFUSAL = 570;
+  console.log(`${putOk ? "RESTORE issued" : "RESTORE FAILED"} — PUT status ${putStatus}`);
   console.log(`  endbuyer_maximum_purchase_price  -> KEY_ABSENT`);
   console.log(`  mao_max_allowable_offer          -> KEY_ABSENT`);
   console.log(`  assignment_mode                  -> ${JSON.stringify(MODE_ORIGIN)}`);
   console.log(`  evidence  ${EVIDENCE}`);
-  console.log("  No re-read issued. Step 5 confirms the mixed origin returned.");
-  process.exit(putStatus >= 200 && putStatus < 300 ? 0 : 570);
+  if (putOk) {
+    console.log("  No re-read issued. Step 5 confirms the mixed origin returned.");
+    process.exit(0);
+  }
+  console.log(`  Whether the mixed origin returned is UNKNOWN. Step 5 observes; do not re-run step 4. Refusal ${REFUSAL}.`);
+  process.exit(REFUSAL);
 })().catch((e) => {
   console.error("RESTORE THREW OUTSIDE THE REQUEST:", (e && e.stack) || e);
   process.exit(571);

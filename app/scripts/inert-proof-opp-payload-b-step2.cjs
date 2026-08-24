@@ -323,16 +323,24 @@ function readValue(entry) {
     process.exit(509);
   }
 
-  console.log(`WRITE issued — PUT status ${putStatus}`);
+  const putOk = putStatus >= 200 && putStatus < 300;
+  const REFUSAL = 510;
+  console.log(`${putOk ? "WRITE issued" : "WRITE FAILED"} — PUT status ${putStatus}`);
   console.log(`  endbuyer_maximum_purchase_price  <- ${ENDBUYER_VALUE}`);
   console.log(`  mao_max_allowable_offer          <- ${MAO_VALUE}`);
   console.log(`  assignment_mode                  <- ${JSON.stringify(MODE_VALUE)}  (was ${JSON.stringify(MODE_ORIGIN)})`);
   console.log(`  evidence  ${EVIDENCE}`);
   console.log("");
-  console.log("  The fixture is now in the TEMPORARY proof state.");
+  console.log(putOk
+    ? "  The fixture is now in the TEMPORARY proof state."
+    : "  The fixture MAY be in the TEMPORARY proof state — the PUT status does not say.");
   console.log("  Do NOT run verify-underwriting.cjs until step 4 restores and step 5 confirms.");
-  console.log("  No re-read issued. Step 3 verifies all three landed.");
-  process.exit(putStatus >= 200 && putStatus < 300 ? 0 : 510);
+  if (putOk) {
+    console.log("  No re-read issued. Step 3 verifies all three landed.");
+    process.exit(0);
+  }
+  console.log(`  Whether any of the three values landed is UNKNOWN. Step 3 observes; do not re-run step 2. Refusal ${REFUSAL}.`);
+  process.exit(REFUSAL);
 })().catch((e) => {
   console.error("WRITE THREW OUTSIDE THE REQUEST:", (e && e.stack) || e);
   process.exit(511);

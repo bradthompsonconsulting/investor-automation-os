@@ -261,12 +261,18 @@ function entryValue(entry) {
     process.exit(180);
   }
 
-  console.log(`RESTORE issued — PUT status ${putStatus}`);
+  const putOk = putStatus >= 200 && putStatus < 300;
+  const REFUSAL = 181;
+  console.log(`${putOk ? "RESTORE issued" : "RESTORE FAILED"} — PUT status ${putStatus}`);
   console.log(`  mechanism ${CLEAR_LABEL}`);
   console.log(`  body      ${serialized}`);
   console.log(`  evidence  ${EVIDENCE}`);
-  console.log("  No re-read issued. Step 5 observes whether the key is absent.");
-  process.exit(putStatus >= 200 && putStatus < 300 ? 0 : 181);
+  if (putOk) {
+    console.log("  No re-read issued. Step 5 observes whether the key is absent.");
+    process.exit(0);
+  }
+  console.log(`  Whether the restore landed is UNKNOWN. Step 5 observes; do not re-run step 4. Refusal ${REFUSAL}.`);
+  process.exit(REFUSAL);
 })().catch((e) => {
   console.error("RESTORE THREW OUTSIDE THE REQUEST:", (e && e.stack) || e);
   process.exit(182);

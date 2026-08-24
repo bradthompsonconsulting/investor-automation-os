@@ -278,16 +278,24 @@ function optionOf(entry) {
     process.exit(384);
   }
 
-  console.log(`WRITE issued — PUT status ${putStatus}`);
+  const putOk = putStatus >= 200 && putStatus < 300;
+  const REFUSAL = 385;
+  console.log(`${putOk ? "WRITE issued" : "WRITE FAILED"} — PUT status ${putStatus}`);
   console.log(`  from      ${JSON.stringify(ORIGIN_OPTION)}`);
   console.log(`  to        ${JSON.stringify(TEMP_OPTION)}`);
   console.log(`  body      ${serialized}`);
   console.log(`  evidence  ${EVIDENCE}`);
   console.log("");
-  console.log("  The fixture is now in the TEMPORARY proof state.");
+  console.log(putOk
+    ? "  The fixture is now in the TEMPORARY proof state."
+    : "  The fixture MAY be in the TEMPORARY proof state — the PUT status does not say.");
   console.log("  Do NOT run verify-underwriting.cjs until step 4 restores and step 5 confirms.");
-  console.log("  No re-read issued. Step 3 verifies the exact label landed.");
-  process.exit(putStatus >= 200 && putStatus < 300 ? 0 : 385);
+  if (putOk) {
+    console.log("  No re-read issued. Step 3 verifies the exact label landed.");
+    process.exit(0);
+  }
+  console.log(`  Whether ${JSON.stringify(TEMP_OPTION)} landed is UNKNOWN. Step 3 observes; do not re-run step 2. Refusal ${REFUSAL}.`);
+  process.exit(REFUSAL);
 })().catch((e) => {
   console.error("WRITE THREW OUTSIDE THE REQUEST:", (e && e.stack) || e);
   process.exit(386);
