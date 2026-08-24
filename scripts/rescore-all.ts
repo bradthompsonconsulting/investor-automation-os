@@ -35,6 +35,7 @@
 
 import { readFileSync } from "node:fs";
 import { parse as parseEnvFile } from "dotenv";
+import { getConfig } from "../app/shared/ghl-config";
 
 // ── Mutation authorization (Gate 4C PRE-2) ───────────────────────────────────
 //
@@ -60,7 +61,7 @@ const MUTATION_TARGET = "production";
 // means --credential-file must use this file's `=` syntax: the capture tool's
 // space-separated `--credential-file <path>` would have its PATH refused at the
 // loop below as an unrecognized argument. One flag syntax per file.
-const KNOWN_FLAGS = ["--authorize-mutation", "--dry-run", "--credential-file"];
+const KNOWN_FLAGS = ["--env", "--authorize-mutation", "--dry-run", "--credential-file"];
 
 const rawArgs = process.argv.slice(2);
 
@@ -71,6 +72,60 @@ for (const a of rawArgs) {
     process.exit(2);
   }
 }
+
+// ── Environment selection (Gate 4C C4a, Stair 9B) ────────────────────────────
+//
+// EVALUATED BEFORE CONFIG RESOLUTION AND BEFORE ANY NETWORK CALL. Every refusal
+// below exits while LOCATION_ID is still unbound.
+//
+// TWO SELECTORS, DELIBERATELY SEPARATE, exactly as in the importer. ENV governs
+// CONFIG RESOLUTION; MUTATION_TARGET independently restricts MUTATION to
+// production and stays a literal. Deriving one from the other would let
+// --env=test --authorize-mutation=test agree with itself and authorize a Test
+// mutation, which is not available in this tool.
+//
+// DUPLICATE FIRST, mirroring both other flags: this one decides which location
+// the run enumerates.
+const envArgs = rawArgs.filter((a) => a.split("=")[0] === "--env");
+if (envArgs.length > 1) {
+  console.error(
+    `ERROR: duplicated environment flag — --env was supplied ${envArgs.length} times. ` +
+      "Refusing: honouring either one would let an edited command line select an environment " +
+      "nobody read.",
+  );
+  process.exit(2);
+}
+
+const envArg = envArgs[0];
+const ENV =
+  envArg === undefined ? null : envArg.includes("=") ? envArg.slice(envArg.indexOf("=") + 1) : "";
+
+if (ENV === null) {
+  console.error(
+    "ERROR: --env=<environment> is required. There is no default and no fallback environment. " +
+      "Expected --env=production or --env=test.",
+  );
+  process.exit(2);
+}
+
+// CASE SENSITIVITY IS DELIBERATE. getConfig rejects "Production" as an unknown
+// selector and that refusal is kept rather than normalised away.
+//
+// The throw is CAUGHT rather than allowed to surface. Every refusal in this file
+// names its own cause; an uncaught throw would print a stack trace instead, and
+// this file is the reference model for that property.
+let ghlConfig;
+try {
+  ghlConfig = getConfig(ENV);
+} catch (e) {
+  console.error(
+    `ERROR: --env=${JSON.stringify(ENV)} did not resolve to a configuration. ` +
+      `Underlying reason: ${(e as Error).message}`,
+  );
+  process.exit(2);
+}
+
+console.log(`ENVIRONMENT — --env=${ENV} resolved to locationId ${ghlConfig.locationId}`);
 
 // DUPLICATE FIRST, refusing regardless of order or values. .find() returned the
 // first match and discarded the rest, so
@@ -91,7 +146,25 @@ const authArg = authArgs[0];
 const authValue =
   authArg === undefined ? null : authArg.includes("=") ? authArg.slice(authArg.indexOf("=") + 1) : "";
 
-// A WRONG TARGET REFUSES IN EVERY MODE, --dry-run included.
+// ── Refusal 1 of 2: THE TWO FLAGS MUST AGREE ─────────────────────────────────
+//
+// Checked BEFORE the production-only restriction below, so each state reports
+// the cause that actually describes it: disagreement when the flags name
+// different environments, prohibition when they agree on a non-production one.
+if (authValue !== null && authValue !== ENV) {
+  console.error(
+    `ERROR: environment disagreement. --env named ${JSON.stringify(ENV)} but ` +
+      `--authorize-mutation named ${JSON.stringify(authValue)}. Your two flags name different ` +
+      "environments. Refusing in every mode, including --dry-run.",
+  );
+  process.exit(2);
+}
+
+// ── Refusal 2 of 2: MUTATION IS PRODUCTION-ONLY ──────────────────────────────
+//
+// A WRONG TARGET REFUSES IN EVERY MODE, --dry-run included. Reached only when
+// the two flags already agree, so a non-production target here means the
+// operator coherently asked to mutate Test. That is the prohibition.
 if (authValue !== null && authValue !== MUTATION_TARGET) {
   console.error(
     `ERROR: authorization mismatch. --authorize-mutation named ${JSON.stringify(authValue)}, ` +
@@ -158,7 +231,28 @@ const credentialFile =
       : "";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
-const LOCATION_ID = "jmHG4B8RdzwpfqruNf68";
+/* THE CONVERSION (Gate 4C C4a, Stair 9B). One identity, one resolution site,
+   one executable occurrence. CONFIG-owned: locationId. LOADER ONLY — this file
+   has zero carrier-owned identifiers, so a carrier import would be dead.
+
+   ⚠ WHAT THIS VALUE GOVERNS, AND WHAT IT DOES NOT.
+
+   Parsed ENV governs ENUMERATION ONLY. This binding is consumed at exactly one
+   place — the locationId query parameter of the contacts GET below — and it
+   reaches no mutating call anywhere in this file.
+
+   The POST to the scoring function carries NEITHER this value NOR any
+   credential. Its body is {contactId} alone. The callee, netlify/functions/
+   motivation-score.ts, independently selects its environment by reading
+   IAOS_ENV at module scope ON THE MARKETING DEPLOYMENT, and authorizes its own
+   GHL writes with its own GHL_API_TOKEN. Nothing in the request can influence
+   either.
+
+   THEREFORE THIS CONVERSION DOES NOT PROVE THE RESCORE WRITE PATH IS
+   ENVIRONMENT-COHERENT. It makes the read environment-aware and verifiable.
+   The write target remains decided by a variable on a different deployment
+   that this harness cannot reach, observe, or constrain. */
+const LOCATION_ID = ghlConfig.locationId;
 const SCORE_URL   = "https://investor-automation-os.netlify.app/.netlify/functions/motivation-score";
 const DELAY_MS    = 250; // ~4 req/sec — stay safe
 
@@ -263,6 +357,85 @@ async function score(contact: ContactMeta): Promise<any> {
   }
 
   console.log(`CREDENTIAL SOURCE — ${credentialFile}`);
+
+  // ── Environment pairing verification (Gate 4C C4a, Stair 9B) ───────────────
+  //
+  // THE PROBLEM THIS SOLVES. Both environments use the same credential variable
+  // name, and a credential file is a bare KEY=value with nothing in it naming
+  // which world it belongs to. So --env and --credential-file are two
+  // environment selectors and the second one CANNOT DECLARE ITSELF. There is
+  // nothing to compare them against locally.
+  //
+  // So we do not compare them locally. We ask GHL. A read-only
+  // GET /locations/:id authenticated with the credential either confirms the
+  // resolved location or it does not, and that answer is the pairing check.
+  //
+  // MEASURED 2026-08-24 before this was written:
+  //   production credential + production locationId -> 200, id matches exactly
+  //   production credential + TEST locationId       -> 403 Forbidden
+  // The 200-for-a-mismatch case, which would have made this check useless, does
+  // not occur.
+  //
+  // ⚠ WHAT THE REFUSAL MAY CLAIM. Also measured: a MALFORMED id returns the
+  // SAME 403 with the SAME body as a valid location the credential does not
+  // own. The endpoint does not tell us WHY it refused, so this message says
+  // only what we know — the credential could not confirm the resolved location
+  // — and never asserts that the credential belongs elsewhere or that the
+  // location does not exist. This file is the reference model for messages that
+  // name their cause exactly; it does not get to start asserting causes it
+  // cannot observe.
+  //
+  // FAIL-CLOSED ON UNREACHABLE, DELIBERATELY. If GHL cannot be reached the run
+  // refuses rather than proceeding unverified. The operational cost is real: a
+  // connectivity blip now blocks a legitimate run. That is the accepted trade,
+  // not an oversight.
+  //
+  // RUNS ON EVERY PATH THAT REACHES THE NETWORK, PREVIEW INCLUDED. Preview is
+  // this file's discriminating proof and it cannot prove the pairing if it
+  // skips the check.
+  //
+  // ⚠ SCOPE OF THE GUARANTEE. This confirms the credential and the resolved
+  // location agree FOR THE ENUMERATION. It says nothing about the write path,
+  // because the write path uses neither of them — see the LOCATION_ID note.
+  let pairing: Response;
+  try {
+    pairing = await fetch(`${GHL_BASE}/locations/${LOCATION_ID}`, {
+      headers: { Authorization: `Bearer ${token}`, Version: "2021-07-28" },
+    });
+  } catch (e) {
+    console.error(
+      `ERROR: could not reach GHL to verify the environment pairing for --env=${ENV}. ` +
+        `No contact was enumerated and no write was attempted. Underlying reason: ` +
+        `${(e as Error).message}`,
+    );
+    process.exit(2);
+  }
+
+  if (!pairing.ok) {
+    console.error(
+      `ERROR: the credential in ${credentialFile} could not confirm the location resolved by ` +
+        `--env=${ENV} (${LOCATION_ID}). GHL answered ${pairing.status}. This does not identify ` +
+        "which environment the credential belongs to — GHL returns the same refusal for a " +
+        "location you do not own and for one that cannot exist — only that the pairing is " +
+        "unconfirmed. Refusing rather than enumerating against an unverified pairing.",
+    );
+    process.exit(2);
+  }
+
+  // DEFENSIVE, and expected to be structurally unreachable: we asked for this
+  // exact id, so a 200 should carry it back. Implemented anyway; recorded as
+  // unreachable rather than as covered.
+  const pairingBody = (await pairing.json()) as any;
+  const confirmedId = (pairingBody?.location ?? pairingBody)?.id;
+  if (confirmedId !== LOCATION_ID) {
+    console.error(
+      `ERROR: GHL confirmed a different location than --env=${ENV} resolved. Expected ` +
+        `${LOCATION_ID}, GHL returned ${JSON.stringify(confirmedId)}. Refusing.`,
+    );
+    process.exit(2);
+  }
+
+  console.log(`PAIRING VERIFIED — the credential confirms location ${LOCATION_ID}`);
 
   console.log("Fetching contacts from GHL...");
   const contacts = await fetchAllIds(token);
