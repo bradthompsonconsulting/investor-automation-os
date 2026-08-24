@@ -3,9 +3,12 @@
  * THE PROOF CYCLE. Unlike section I's discovery cycle, this one discharges
  * PB-D56 prerequisite 5 when all five steps complete as specified.
  *
- * FIELD: opportunity.endbuyer_maximum_purchase_price,
- * zOVIPwzLe41a0SQmwVAJ, NUMERICAL. Absent on all 42 opportunities as
- * OBSERVED 2026-08-13.
+ * FIELD: opportunity.endbuyer_maximum_purchase_price, NUMERICAL. Absent on
+ * all 42 opportunities as OBSERVED 2026-08-13. The field id is NOT written
+ * here any more: it resolves from canonical config at
+ * opportunityFields.endBuyerMaxPrice. The raw literal that stood in this
+ * sentence was an unenforced duplicate — every behavioural instrument
+ * reported the file clean while it sat in prose (Gate 4C C4a, Stair 5).
  *
  * Not the three populated fixture fields: arv_after_repair_value,
  * repair_estimate and assignment_mode carry values the resolved-branch
@@ -20,28 +23,86 @@
  */
 
 const fs = require("fs");
+const { stamp } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31"; // IAOS Underwriting Test
-const CONTACT_ID     = "HGZAby6snRZfpl0go2Yb"; // IAOS Test Probe
-const TARGET_ID      = "zOVIPwzLe41a0SQmwVAJ"; // endbuyer_maximum_purchase_price
+/* ── Environment resolution (Gate 4C C4a, Stair 5) ─────────────────────────
+   getConfig(ENV) runs BEFORE the carrier lookup, deliberately. That ordering is
+   what makes an unknown --env surface [ghl-config]'s OWN message unwrapped, and
+   what makes --env=test reach a VALID Test config and then refuse at the
+   carrier's absent Test section rather than short-circuiting earlier.
+
+   THIS FAMILY IS LOADER *AND* CARRIER IN ALL FIVE MEMBERS, and the reason is
+   worth stating because the closing-costs family is not. The idiom follows the
+   IDENTIFIER'S OWNER, not the file's role. endbuyer_maximum_purchase_price is a
+   canonical-config member (opportunityFields.endBuyerMaxPrice), so every file
+   touching it needs the loader — heads and tails alike. closing_costs, by
+   contrast, is a carrier untouchedPin, which is the only reason that family's
+   tails could be carrier-only. "Tails are carrier-only" was never a rule; it
+   was a fact about where one field happens to live. Do not generalise either
+   shape to the remaining families. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+const LOC = config.locationId;
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureContacts      = fixtureRecords && fixtureRecords.contacts;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest ||
+    !fixtureContacts || !fixtureContacts.iaosTestProbe) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.opportunities.iaosUnderwritingTest and ${ENV}.fixtureRecords.contacts.iaosTestProbe. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const envPins               = envFixtures.untouchedPins;
+const opportunityFields     = envPins && envPins.opportunityFields;
+const opportunityOfferFields = envPins && envPins.opportunityOfferFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+if (!opportunityOfferFields || Object.keys(opportunityOfferFields).length !== 7) {
+  console.error(`REFUSED: harness-fixtures.json carries no seven-member opportunityOfferFields for "${ENV}" — expected ${ENV}.untouchedPins.opportunityOfferFields. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest; // IAOS Underwriting Test
+const CONTACT_ID     = fixtureContacts.iaosTestProbe;             // IAOS Test Probe
+const TARGET_ID      = config.opportunityFields.endBuyerMaxPrice; // endbuyer_maximum_purchase_price
 const TARGET_KEY     = "endbuyer_maximum_purchase_price";
 
-const OFFER_IDS = [
-  "4YiACDV4uB3zOlAdNIBb", "73oLHWnVjmOGSrBo5sC6", "9jm2SoN2aDtUtbesL0kG",
-  "GxChepYArmgPllhKPq0R", "Nm1LZvQzaCGvXDq7TRCh", "XbW0B973nuaLtIjMkzO9",
-  "eY5BOqE9juGpBfqwacWT",
-];
+/* Carrier key order IS the original literal order — offer_price, offer_date,
+   offer_mao, offer_wholesale_fee, offer_arv, offer_repair_total, offer_margin.
+   Object.values preserves it, so offerIds is written to evidence in the same
+   order as before conversion. Verified at conversion; do not reorder the
+   carrier group without re-checking this. */
+const OFFER_IDS = Object.values(opportunityOfferFields);
 
 /* The three fixture fields the resolved-branch harness depends on. Captured
    explicitly so drift in any of them is visible by name rather than only as
-   an othersUnchanged failure. */
+   an othersUnchanged failure. All three are canonical-config members, not
+   carrier pins — hence config, per the owner rule above. */
 const FIXTURE_IDS = {
-  arv_after_repair_value: "cBkygqcHRseZUGCYYeba",
-  repair_estimate:        "hId4Yog6u5GP1Iwz1aNx",
-  assignment_mode:        "TpLo0WRc303TXAaBUbBf",
+  arv_after_repair_value: config.opportunityFacts.arv,
+  repair_estimate:        config.opportunityFacts.repairs,
+  assignment_mode:        config.opportunityFields.assignmentMode,
 };
 
 /* Section I's confirm evidence. Read as a precondition: this cycle depends
@@ -60,6 +121,40 @@ function fail(code, msg, extra) {
   let disc;
   try { disc = JSON.parse(fs.readFileSync(DISCOVERY_CONFIRM, "utf8")); }
   catch (e) { fail(90, `cannot read the discovery cycle's confirm evidence: ${e.message}`); }
+
+  /* NOTE — cross-family read site (closing-costs step-5 confirm evidence):
+     consumes NO environment-owned value.
+
+     It consumes exactly six fields and nothing else: outcome, restoredToOrigin,
+     confirmations, dataType, candidateLabel and timestamp. An outcome enum, two
+     booleans and four more inside confirmations, a schema dataType string, a
+     mechanism label and an ISO timestamp. None is derived from an identifier, so
+     none can hold an environment-owned value for ANY artifact that producer
+     could write — not merely for the one currently on disk.
+
+     The artifact itself is NOT clean. It carries opportunityId, fieldId,
+     liveStageId, liveCustomFields and observedEntry — five environment-owned
+     fields, unread here.
+
+     ⚠ THIS NOTE IS LOAD-BEARING. Under the CURRENT evidence topology, making
+     this site a CHECK would break bootstrap, because the only available
+     closing-costs step-5 artifact is intentionally unstamped. Any future
+     environment-owned consumption at this site requires re-evaluating the
+     bootstrap path before adding an assertion — the prohibition is conditional
+     on that topology, not a standing law, and it should be re-tested rather
+     than obeyed if the topology changes.
+
+     This is the only read of an artifact produced by a different family, and
+     that family's tails are disarmed by an absent canonical step-1 and cannot
+     regenerate it. The artifact this site reads will therefore stay unstamped.
+     Because this site is a NOTE, step 1 still runs and can produce a STAMPED
+     output of its own. Add an environment-owned field to this destructure and
+     this site must become a CHECK — which would refuse at 6 against the only
+     artifact that exists, leaving no path to stamped evidence for this family
+     at all. The same property holds one family later, at
+     mao-a0-step1 <- endbuyer-max-step5. Adding a field here does not merely
+     require an assertEnvironment(...) call first; it requires re-deciding
+     whether this family can bootstrap. */
 
   if (disc.outcome !== "CLEARED") {
     fail(91, `discovery cycle outcome was ${JSON.stringify(disc.outcome)}, not CLEARED`,
@@ -93,7 +188,15 @@ function fail(code, msg, extra) {
 
   // ── The discovery target must be absent again. Section I said it restored;
   //    this verifies that live rather than trusting the evidence file. ──
-  const DISCOVERY_TARGET = "N8Aa9t1SZhU7XnPPzxWk";
+  /* ⚠ THE ONE NON-R0 RESOLUTION SITE IN THIS FAMILY. Every other identifier in
+     all five files resolves at module scope, above the async body, so it is
+     reachable unconditionally. This one is not: it sits after the first GET, so
+     it is reached only when the discovery-cycle file gates pass AND that GET
+     returns 200 AND both identity checks pass. Left in place deliberately —
+     hoisting it would move a lookup above the guards that currently precede it.
+     Recorded because a refusal proof that never reaches this line proves nothing
+     about it. */
+  const DISCOVERY_TARGET = opportunityFields.closing_costs;
   const discoveryResidue = customFields.find((f) => f.id === DISCOVERY_TARGET) ?? null;
   if (discoveryResidue !== null) {
     fail(98, `the discovery cycle's field still carries a value`, JSON.stringify(discoveryResidue));
@@ -101,7 +204,7 @@ function fail(code, msg, extra) {
   console.log("PRECHECK residue ok — the discovery field is absent live, not merely per its evidence");
 
   // ── GET 2: the schema, to confirm dataType from source ──
-  const schemaUrl = `${PROXY}?path=${encodeURIComponent("/locations/jmHG4B8RdzwpfqruNf68/customFields?model=opportunity")}`;
+  const schemaUrl = `${PROXY}?path=${encodeURIComponent(`/locations/${LOC}/customFields?model=opportunity`)}`;
   const schemaRes = await fetch(schemaUrl);
   const schemaText = await schemaRes.text();
   if (!schemaRes.ok) fail(99, `GET customFields?model=opportunity → ${schemaRes.status}`, schemaText.slice(0, 400));
@@ -122,6 +225,7 @@ function fail(code, msg, extra) {
   }));
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "capture",
     cycle: "proof",

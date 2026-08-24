@@ -32,14 +32,59 @@
  */
 
 const fs = require("fs");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31";
-const TARGET_ID      = "zOVIPwzLe41a0SQmwVAJ";
+/* ── Environment resolution (Gate 4C C4a, Stair 5) ─────────────────────────
+   getConfig(ENV) runs BEFORE the carrier lookup so an unknown --env surfaces
+   [ghl-config]'s OWN message unwrapped, and --env=test reaches a VALID Test
+   config and then refuses at the carrier's absent Test section.
+
+   LOADER *AND* CARRIER, like every member of this family — the target field is
+   a canonical-config member, so the idiom follows the identifier's owner rather
+   than the file's role.
+
+   NO CONTACTS GUARD HERE, deliberately. This file resolves no contact id, and a
+   guard on a section it never reads would refuse on something it does not
+   trust. Section guards are per file, not per family. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixtureRecords.opportunities.iaosUnderwritingTest for "${ENV}" (scripts/harness-fixtures.json). Refusing rather than inventing it.`);
+  process.exit(4);
+}
+
+const envPins           = envFixtures.untouchedPins;
+const opportunityFields = envPins && envPins.opportunityFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest;
+const TARGET_ID      = config.opportunityFields.endBuyerMaxPrice;
 const TARGET_KEY     = "endbuyer_maximum_purchase_price";
-const DISCOVERY_ID   = "N8Aa9t1SZhU7XnPPzxWk";
+const DISCOVERY_ID   = opportunityFields.closing_costs;
 const TEST_VALUE     = 313370.42;
 
 const MAX_POLLS = 15;
@@ -75,7 +120,42 @@ function entryValue(entry) {
   catch (e) { fail(140, `cannot read step 1 evidence: ${e.message}`); }
   try { wrote = JSON.parse(fs.readFileSync(STEP2, "utf8")); }
   catch (e) { fail(141, `cannot read step 2 evidence: ${e.message}`); }
+  assertEnvironment(cap, ENV, "step-1 evidence");
 
+  /* NOTE — step-2 read site: consumes NO environment-owned value.
+     It consumes wrote.cycle, wrote.putStatus and wrote.testValue and nothing
+     else. A cycle marker, an HTTP integer and the designated numeric test
+     value.
+     STOP if you are adding a field here: this read site has no environment
+     assertion because nothing environment-owned crosses it today. The artifact
+     itself is NOT clean — it carries opportunityId, contactId, fieldId,
+     requestBody and capturedStageId, five environment-owned fields, unread.
+     Adding one to this destructure REQUIRES an assertEnvironment(...) call at
+     this site first. Note the same artifact IS read through a CHECK at
+     step 5 — a NOTE classifies this read site, not the artifact. */
+
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism, and NOT coverage.
+     ⚠ RECORD THE RATIO. At this read site 1 value is COMPARED (opportunityId,
+     L79 below) and 11 are ADOPTED with no comparison — the 3 ids inside
+     customFields, the 7 inside offerIds, and pipelineStageId. Family-wide:
+     12 COMPARED to 30 ADOPTED by value. This is the weakest ratio in the
+     family and a per-site verdict of "CHECK, protected" would be true and
+     useless.
+
+     FOUR VALUES ARE ADOPTED EVERYWHERE THEY APPEAR AND COMPARED NOWHERE in
+     this family: customFields, offerIds, fixtureState and pipelineStageId.
+     Not once, in any of the five files, is any of them checked against a
+     locally resolved constant. They also carry most of the environment-owned
+     content, which is why the ratio and not the classification is the honest
+     summary.
+
+     ⚠ pipelineStageId has NO source literal — it arrives from the wire and is
+     persisted — so no identifier-based instrument sees it. Its only comparison,
+     at L146 below, is against the LIVE wire value: that detects drift and
+     establishes nothing about which environment produced it. The environment
+     question is answered by assertEnvironment above and only there.
+
+     Retained deliberately as defense-in-depth; do not remove or weaken. */
   if (cap.opportunityId !== OPPORTUNITY_ID) fail(142, `step 1 names a different opportunity`);
   if (cap.cycle !== "proof" || wrote.cycle !== "proof") {
     fail(143, `evidence is not from the proof cycle`, `step1=${cap.cycle} step2=${wrote.cycle}`);
@@ -153,6 +233,7 @@ function entryValue(entry) {
   const discoveryStillAbsent = !liveById.has(DISCOVERY_ID);
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "verify",
     cycle: "proof",

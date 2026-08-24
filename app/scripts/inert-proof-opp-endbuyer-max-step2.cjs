@@ -24,15 +24,59 @@
  */
 
 const fs = require("fs");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31";
-const CONTACT_ID     = "HGZAby6snRZfpl0go2Yb";
-const TARGET_ID      = "zOVIPwzLe41a0SQmwVAJ";
+/* ── Environment resolution (Gate 4C C4a, Stair 5) ─────────────────────────
+   getConfig(ENV) runs BEFORE the carrier lookup so an unknown --env surfaces
+   [ghl-config]'s OWN message unwrapped, and --env=test reaches a VALID Test
+   config and then refuses at the carrier's absent Test section.
+
+   LOADER *AND* CARRIER, like every member of this family. The target field is a
+   canonical-config member, so a tail needs the loader exactly as the head does.
+   The idiom follows the identifier's owner, not the file's role in the family.
+   No locationId is resolved here — only step 1 makes the schema request. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureContacts      = fixtureRecords && fixtureRecords.contacts;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest ||
+    !fixtureContacts || !fixtureContacts.iaosTestProbe) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.opportunities.iaosUnderwritingTest and ${ENV}.fixtureRecords.contacts.iaosTestProbe. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const envPins           = envFixtures.untouchedPins;
+const opportunityFields = envPins && envPins.opportunityFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest;
+const CONTACT_ID     = fixtureContacts.iaosTestProbe;
+const TARGET_ID      = config.opportunityFields.endBuyerMaxPrice;
 const TARGET_KEY     = "endbuyer_maximum_purchase_price";
-const DISCOVERY_ID   = "N8Aa9t1SZhU7XnPPzxWk";
+const DISCOVERY_ID   = opportunityFields.closing_costs;
 
 const TEST_VALUE = 313370.42;
 
@@ -49,7 +93,32 @@ function fail(code, msg, extra) {
   let cap;
   try { cap = JSON.parse(fs.readFileSync(STEP1, "utf8")); }
   catch (e) { fail(110, `cannot read step 1 evidence: ${e.message}`); }
+  assertEnvironment(cap, ENV, "step-1 evidence");
 
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism, and NOT coverage.
+     The two comparisons below check an artifact identifier against a locally
+     resolved constant. They catch a stale or mismatched capture and do
+     incidentally reject SOME environment crossings. The assertEnvironment call
+     above is the Stair P mechanism; these are not a substitute for it.
+
+     ⚠ RECORD THE RATIO, NOT THE CLASSIFICATION. At this read site 2 values are
+     COMPARED (opportunityId, fieldId) and 4 are ADOPTED with no comparison
+     (pipelineStageId, and the three ids inside fixtureState). Family-wide the
+     split is 12 COMPARED to 30 ADOPTED by value. customFields, offerIds,
+     fixtureState and pipelineStageId are ADOPTED at every site they appear and
+     are compared against a locally resolved constant NOWHERE in this family.
+     "An identity guard is present" is true here and invites exactly the wrong
+     conclusion; 2-of-6 is the honest measure.
+
+     ⚠ pipelineStageId IS A CLASS OF ITS OWN. It has NO source literal anywhere
+     in this family — it arrives from the wire and is persisted — so no
+     identifier-based instrument can see it, and no conversion scan will ever
+     report it. Its only comparison, at L74 below, is against the LIVE wire
+     value. That detects drift between capture and now. It establishes nothing
+     about which environment produced it. Different job, different claim; the
+     environment question is answered by assertEnvironment above and only there.
+
+     Retained deliberately as defense-in-depth; do not remove or weaken. */
   if (cap.opportunityId !== OPPORTUNITY_ID) fail(111, `step 1 names a different opportunity: ${cap.opportunityId}`);
   if (cap.fieldId !== TARGET_ID) fail(112, `step 1 names a different field: ${cap.fieldId}`);
   if (cap.dataType !== "NUMERICAL") fail(113, `step 1 recorded dataType ${JSON.stringify(cap.dataType)}`);
@@ -144,6 +213,7 @@ function fail(code, msg, extra) {
   }
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "write",
     cycle: "proof",

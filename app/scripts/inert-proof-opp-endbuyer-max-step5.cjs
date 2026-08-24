@@ -20,14 +20,58 @@
  */
 
 const fs = require("fs");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31";
-const TARGET_ID      = "zOVIPwzLe41a0SQmwVAJ";
+/* ── Environment resolution (Gate 4C C4a, Stair 5) ─────────────────────────
+   getConfig(ENV) runs BEFORE the carrier lookup so an unknown --env surfaces
+   [ghl-config]'s OWN message unwrapped, and --env=test reaches a VALID Test
+   config and then refuses at the carrier's absent Test section.
+
+   LOADER *AND* CARRIER, like every member of this family. The idiom follows the
+   identifier's owner, not the file's role.
+
+   NO CONTACTS GUARD HERE, deliberately — this file resolves no contact id, and
+   a guard on a section it never reads would refuse on something it does not
+   trust. Section guards are per file, not per family. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixtureRecords.opportunities.iaosUnderwritingTest for "${ENV}" (scripts/harness-fixtures.json). Refusing rather than inventing it.`);
+  process.exit(4);
+}
+
+const envPins           = envFixtures.untouchedPins;
+const opportunityFields = envPins && envPins.opportunityFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest;
+const TARGET_ID      = config.opportunityFields.endBuyerMaxPrice;
 const TARGET_KEY     = "endbuyer_maximum_purchase_price";
-const DISCOVERY_ID   = "N8Aa9t1SZhU7XnPPzxWk";
+const DISCOVERY_ID   = opportunityFields.closing_costs;
 const TEST_VALUE     = 313370.42;
 
 const MAX_POLLS = 15;
@@ -56,12 +100,50 @@ function entryValue(entry) {
 }
 
 (async () => {
+  /* FOUR READ SITES, ONE LOOP. This file reads all four upstream artifacts, and
+     the loop below is four distinct read sites, not one. Every one of them is a
+     CHECK: the identity block at L67-L68 consumes opportunityId and fieldId from
+     EACH artifact, so an environment-owned value crosses at all four.
+
+     The assertion therefore lives INSIDE the loop and fires once per artifact,
+     labelled with that artifact, before any environment-owned value from it is
+     trusted. Four separate calls outside the loop would say the same thing and
+     drift apart the first time someone edits one of them.
+
+     ⚠ Note step 2's and step 3's artifacts are read through a NOTE at step 3 and
+     step 4 respectively, and through a CHECK here. Same artifacts, different
+     read sites, different class. A NOTE classifies the read site. */
   const ev = {};
+  const EVIDENCE_LABEL = { s1: "step-1 evidence", s2: "step-2 evidence", s3: "step-3 evidence", s4: "step-4 evidence" };
   for (const [name, path] of [["s1", STEP1], ["s2", STEP2], ["s3", STEP3], ["s4", STEP4]]) {
     try { ev[name] = JSON.parse(fs.readFileSync(path, "utf8")); }
     catch (e) { fail(190, `cannot read ${name} evidence: ${e.message}`); }
+    assertEnvironment(ev[name], ENV, EVIDENCE_LABEL[name]);
   }
 
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism, and NOT coverage.
+     ⚠ RECORD THE RATIO. This block compares opportunityId and fieldId on all
+     four artifacts. Against step-1 that is 2 COMPARED to 11 ADOPTED — the 3 ids
+     inside customFields, the 7 inside offerIds, and pipelineStageId, none of
+     which is compared against a locally resolved constant anywhere in this
+     family. Against s2, s3 and s4 it is 2 compared to 0 adopted, because this
+     file consumes nothing environment-owned from them beyond the two it checks.
+     Family-wide: 12 COMPARED to 30 ADOPTED by value.
+
+     FOUR VALUES ARE ADOPTED EVERYWHERE THEY APPEAR AND COMPARED NOWHERE in
+     this family: customFields, offerIds, fixtureState and pipelineStageId.
+     Not once, in any of the five files, is any of them checked against a
+     locally resolved constant. This file consumes all four off the step-1
+     artifact and writes its own conclusions from them, so the ratio here is
+     not an abstraction — it is the provenance of the discharge record.
+
+     ⚠ pipelineStageId has NO source literal — it arrives from the wire and is
+     persisted — so no identifier-based instrument sees it. Its only comparison,
+     at L138 below, is against the LIVE wire value: that detects drift and
+     establishes nothing about which environment produced it. The environment
+     question is answered by the in-loop assertEnvironment above and only there.
+
+     Retained deliberately as defense-in-depth; do not remove or weaken. */
   for (const [name, rec] of Object.entries(ev)) {
     if (rec.cycle !== "proof") fail(191, `${name} evidence is from cycle ${JSON.stringify(rec.cycle)}`);
     if (rec.opportunityId !== OPPORTUNITY_ID) fail(192, `${name} names a different opportunity`);
@@ -163,6 +245,7 @@ function entryValue(entry) {
   const dischargeable = Object.values(discharge).every(Boolean);
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "confirm",
     cycle: "proof",
