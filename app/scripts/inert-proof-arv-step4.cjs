@@ -10,6 +10,7 @@
 const fs = require("fs");
 const ghlConfig = require("./ghl-config-loader.cjs");
 const fixtures  = require("../../scripts/harness-fixtures.json");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
 
 const ORIGIN     = "https://app.investorautomationos.com";
 
@@ -93,6 +94,30 @@ function readEvidence(pathStr, label) {
   // ── 1. PRECONDITION — file (step-2 + step-3 evidence) ──
   const step2 = readEvidence(STEP2_EVIDENCE, "step-2 evidence");
   const step3 = readEvidence(STEP3_EVIDENCE, "step-3 evidence");
+  assertEnvironment(step2, ENV, "step-2 evidence");
+  /* NOTE — step-3 read site: consumes NO environment-owned value.
+     It consumes step3.confirmations and nothing else. The four booleans gate whether the clear may proceed.
+     STOP if you are adding a field here: this read site has no environment
+     assertion because nothing environment-owned crosses it today. The
+     artifact itself is NOT clean — it carries contactId, fieldId and other
+     environment-owned values, unread. Adding one to this destructure REQUIRES
+     an assertEnvironment(...) call at this site first. */
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism.
+     This guard compares an artifact identifier against a locally resolved
+     constant. It exists to catch a stale or mismatched capture, and it does
+     incidentally reject SOME environment crossings as a side effect. Do not
+     treat it as the Stair P environment check — the assertEnvironment call
+     above is that, and this is not a substitute for it.
+  
+     It is narrow: it covers only the two compared identifiers, and says
+     nothing about the bulk wire captures (customFields, opportunity.*) that
+     carry most of the environment-owned content.
+  
+     And when it DOES fire on a crossing it reports the wrong thing: the
+     message says a record mismatch, sending the operator hunting for a stale
+     capture while the actual cause is an environment crossing. That
+     misdirection is why it cannot be the mechanism. Retained deliberately as
+     defense-in-depth; do not remove or weaken. */
   for (const [s, name] of [[step2, "step-2"]]) {
     if (s.contactId !== CONTACT_ID) { console.log(`ABORT — ${name} contactId ${s.contactId} !== ${CONTACT_ID}`); process.exit(1); }
     if (s.fieldId !== FIELD_ID)     { console.log(`ABORT — ${name} fieldId ${s.fieldId} !== ${FIELD_ID}`); process.exit(1); }
@@ -132,12 +157,13 @@ function readEvidence(pathStr, label) {
   if (responseStatus < 200 || responseStatus >= 300) {
     console.log(`PUT FAILED — HTTP ${responseStatus}`);
     console.log(typeof responseBody === "string" ? responseBody.slice(0, 600) : JSON.stringify(responseBody).slice(0, 600));
-    fs.writeFileSync(STEP4_EVIDENCE, JSON.stringify({ timestamp: new Date().toISOString(), contactId: CONTACT_ID, fieldId: FIELD_ID, clearValue: CLEAR_VALUE, priorValue: tempValue, requestBody, responseStatus, responseBody }, null, 2), "utf8");
+    fs.writeFileSync(STEP4_EVIDENCE, JSON.stringify({ ...stamp(ENV), timestamp: new Date().toISOString(), contactId: CONTACT_ID, fieldId: FIELD_ID, clearValue: CLEAR_VALUE, priorValue: tempValue, requestBody, responseStatus, responseBody }, null, 2), "utf8");
     process.exit(5);
   }
 
   // ── 6. Persist step-4 evidence ──
   const evidence = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     contactId: CONTACT_ID,
     fieldId: FIELD_ID,

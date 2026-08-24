@@ -10,6 +10,7 @@
 const fs = require("fs");
 const ghlConfig = require("./ghl-config-loader.cjs");
 const fixtures  = require("../../scripts/harness-fixtures.json");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
 
 const ORIGIN = "https://app.investorautomationos.com";
 
@@ -194,6 +195,7 @@ async function capture(config) {
 
     // ── evidence record ──
     const evidence = {
+      ...stamp(ENV),
       timestamp: new Date().toISOString(),
       fieldKey,
       contactId,
@@ -243,6 +245,23 @@ async function write(config) {
     let cap;
     try { cap = JSON.parse(fs.readFileSync(capturePath, "utf8")); }
     catch (e) { console.log(`ABORT — capture evidence does not parse: ${e.message}`); process.exit(30); }
+    assertEnvironment(cap, ENV, "capture evidence");
+    /* INCIDENTAL PROTECTION — NOT the provenance mechanism.
+       This guard compares an artifact identifier against a locally resolved
+       constant. It exists to catch a stale or mismatched capture, and it does
+       incidentally reject SOME environment crossings as a side effect. Do not
+       treat it as the Stair P environment check — the assertEnvironment call
+       above is that, and this is not a substitute for it.
+    
+       It is narrow: it covers only the two compared identifiers, and says
+       nothing about the bulk wire captures (customFields, opportunity.*) that
+       carry most of the environment-owned content.
+    
+       And when it DOES fire on a crossing it reports the wrong thing: the
+       message says a record mismatch, sending the operator hunting for a stale
+       capture while the actual cause is an environment crossing. That
+       misdirection is why it cannot be the mechanism. Retained deliberately as
+       defense-in-depth; do not remove or weaken. */
     if (cap.contactId !== contactId) { console.log(`ABORT — capture contactId ${cap.contactId} !== ${contactId}`); process.exit(30); }
     if (cap.fieldId !== fieldId)     { console.log(`ABORT — capture fieldId ${cap.fieldId} !== ${fieldId}`); process.exit(30); }
     if (cap.fieldPresent !== false)  { console.log(`ABORT — capture fieldPresent is ${cap.fieldPresent}, expected false`); process.exit(30); }
@@ -275,6 +294,7 @@ async function write(config) {
 
     // ── 5. Persist evidence BEFORE classifying the response (PB-D30: 33 takes precedence) ──
     const evidence = {
+      ...stamp(ENV),
       timestamp: new Date().toISOString(),
       contactId,
       fieldId,
@@ -320,6 +340,7 @@ async function verify(config) {
   // PB-D31: fixed-shape evidence, constructible from the outset so exits 40, 41,
   // 42 and 44 can all persist. Keys are never omitted; unavailable values are null.
   const evidence = {
+    ...stamp(ENV),
     timestamp: null,
     contactId,
     fieldId,
@@ -361,6 +382,24 @@ async function verify(config) {
     catch (e) { console.log(`ABORT — capture evidence does not parse: ${e.message}`); finish("input_invalid", 40); }
     try { wrt = JSON.parse(fs.readFileSync(writePath, "utf8")); }
     catch (e) { console.log(`ABORT — write evidence does not parse: ${e.message}`); finish("input_invalid", 40); }
+    assertEnvironment(cap, ENV, "capture evidence");
+    assertEnvironment(wrt, ENV, "write evidence");
+    /* INCIDENTAL PROTECTION — NOT the provenance mechanism.
+       This guard compares an artifact identifier against a locally resolved
+       constant. It exists to catch a stale or mismatched capture, and it does
+       incidentally reject SOME environment crossings as a side effect. Do not
+       treat it as the Stair P environment check — the assertEnvironment call
+       above is that, and this is not a substitute for it.
+    
+       It is narrow: it covers only the two compared identifiers, and says
+       nothing about the bulk wire captures (customFields, opportunity.*) that
+       carry most of the environment-owned content.
+    
+       And when it DOES fire on a crossing it reports the wrong thing: the
+       message says a record mismatch, sending the operator hunting for a stale
+       capture while the actual cause is an environment crossing. That
+       misdirection is why it cannot be the mechanism. Retained deliberately as
+       defense-in-depth; do not remove or weaken. */
     for (const [s, name] of [[cap, "capture"], [wrt, "write"]]) {
       if (s.contactId !== contactId) { console.log(`ABORT — ${name} contactId ${s.contactId} !== ${contactId}`); finish("input_invalid", 40); }
       if (s.fieldId !== fieldId)     { console.log(`ABORT — ${name} fieldId ${s.fieldId} !== ${fieldId}`);       finish("input_invalid", 40); }
@@ -457,6 +496,7 @@ async function restore(config) {
   // PB-D32: fixed-shape evidence, seventeen keys, constructible from the outset
   // so exits 50, 51, 52, 54 and 55 can all persist. Keys are never omitted.
   const evidence = {
+    ...stamp(ENV),
     timestamp: null,
     contactId,
     fieldId,
@@ -509,6 +549,24 @@ async function restore(config) {
     catch (e) { console.log(`ABORT — capture evidence does not parse: ${e.message}`); finish("input_invalid", 50); }
     try { wrt = JSON.parse(fs.readFileSync(writePath, "utf8")); }
     catch (e) { console.log(`ABORT — write evidence does not parse: ${e.message}`); finish("input_invalid", 50); }
+    assertEnvironment(cap, ENV, "capture evidence");
+    assertEnvironment(wrt, ENV, "write evidence");
+    /* INCIDENTAL PROTECTION — NOT the provenance mechanism.
+       This guard compares an artifact identifier against a locally resolved
+       constant. It exists to catch a stale or mismatched capture, and it does
+       incidentally reject SOME environment crossings as a side effect. Do not
+       treat it as the Stair P environment check — the assertEnvironment call
+       above is that, and this is not a substitute for it.
+    
+       It is narrow: it covers only the two compared identifiers, and says
+       nothing about the bulk wire captures (customFields, opportunity.*) that
+       carry most of the environment-owned content.
+    
+       And when it DOES fire on a crossing it reports the wrong thing: the
+       message says a record mismatch, sending the operator hunting for a stale
+       capture while the actual cause is an environment crossing. That
+       misdirection is why it cannot be the mechanism. Retained deliberately as
+       defense-in-depth; do not remove or weaken. */
     for (const [s, name] of [[cap, "capture"], [wrt, "write"]]) {
       if (s.contactId !== contactId) { console.log(`ABORT — ${name} contactId ${s.contactId} !== ${contactId}`); finish("input_invalid", 50); }
       if (s.fieldId   !== fieldId)   { console.log(`ABORT — ${name} fieldId ${s.fieldId} !== ${fieldId}`);       finish("input_invalid", 50); }

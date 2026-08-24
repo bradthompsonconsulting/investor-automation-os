@@ -18,6 +18,7 @@ const ORIGIN     = "https://app.investorautomationos.com";
 // fail-closed by construction.
 const ghlConfig = require("./ghl-config-loader.cjs");
 const fixtures  = require("../../scripts/harness-fixtures.json");
+const { stamp } = require("./evidence-provenance.cjs");
 
 const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
 if (envArg === undefined) {
@@ -104,6 +105,7 @@ async function getJson(url, label) {
 
   // ── evidence record ──
   const evidence = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     contactId: CONTACT_ID,
     fieldId: FIELD_ID,

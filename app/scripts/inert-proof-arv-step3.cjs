@@ -9,6 +9,7 @@
 const fs = require("fs");
 const ghlConfig = require("./ghl-config-loader.cjs");
 const fixtures  = require("../../scripts/harness-fixtures.json");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
 
 const ORIGIN     = "https://app.investorautomationos.com";
 
@@ -107,6 +108,24 @@ function readEvidence(pathStr, label) {
   // ── 1. PRECONDITION — step-1 and step-2 evidence ──
   const step1 = readEvidence(STEP1_EVIDENCE, "step-1 evidence");
   const step2 = readEvidence(STEP2_EVIDENCE, "step-2 evidence");
+  assertEnvironment(step1, ENV, "step-1 evidence");
+  assertEnvironment(step2, ENV, "step-2 evidence");
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism.
+     This guard compares an artifact identifier against a locally resolved
+     constant. It exists to catch a stale or mismatched capture, and it does
+     incidentally reject SOME environment crossings as a side effect. Do not
+     treat it as the Stair P environment check — the assertEnvironment call
+     above is that, and this is not a substitute for it.
+  
+     It is narrow: it covers only the two compared identifiers, and says
+     nothing about the bulk wire captures (customFields, opportunity.*) that
+     carry most of the environment-owned content.
+  
+     And when it DOES fire on a crossing it reports the wrong thing: the
+     message says a record mismatch, sending the operator hunting for a stale
+     capture while the actual cause is an environment crossing. That
+     misdirection is why it cannot be the mechanism. Retained deliberately as
+     defense-in-depth; do not remove or weaken. */
   for (const [s, name] of [[step1, "step-1"], [step2, "step-2"]]) {
     if (s.contactId !== CONTACT_ID) { console.log(`ABORT — ${name} contactId ${s.contactId} !== ${CONTACT_ID}`); process.exit(1); }
     if (s.fieldId !== FIELD_ID)     { console.log(`ABORT — ${name} fieldId ${s.fieldId} !== ${FIELD_ID}`); process.exit(1); }
@@ -191,6 +210,7 @@ function readEvidence(pathStr, label) {
 
   // ── 4. Persist step-3 evidence ──
   const evidence = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     pollAttempts,
     observedValue,

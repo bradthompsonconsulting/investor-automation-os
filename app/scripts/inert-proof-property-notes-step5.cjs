@@ -10,6 +10,7 @@
 const fs = require("fs");
 const ghlConfig = require("./ghl-config-loader.cjs");
 const fixtures  = require("../../scripts/harness-fixtures.json");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
 
 const ORIGIN     = "https://app.investorautomationos.com";
 
@@ -118,6 +119,21 @@ function classify(entry, tempValue) {
   const step1 = readEvidence(STEP1_EVIDENCE, "step-1 evidence");
   const step2 = readEvidence(STEP2_EVIDENCE, "step-2 evidence");
   const step4 = readEvidence(STEP4_EVIDENCE, "step-4 evidence");
+  assertEnvironment(step1, ENV, "step-1 evidence");
+  /* NOTE — step-2 read site: consumes NO environment-owned value.
+     It consumes step2.tempValue and nothing else. A designated TEXT value, used only to classify the observed clear result.
+     STOP if you are adding a field here: this read site has no environment
+     assertion because nothing environment-owned crosses it today. The
+     artifact itself is NOT clean — it carries contactId, fieldId and other
+     environment-owned values, unread. Adding one to this destructure REQUIRES
+     an assertEnvironment(...) call at this site first. */
+  /* NOTE — step-4 read site: consumes NO environment-owned value.
+     It consumes step4.responseStatus and nothing else. An HTTP integer, checked for 200.
+     STOP if you are adding a field here: this read site has no environment
+     assertion because nothing environment-owned crosses it today. The
+     artifact itself is NOT clean — it carries contactId, fieldId and other
+     environment-owned values, unread. Adding one to this destructure REQUIRES
+     an assertEnvironment(...) call at this site first. */
   if (step4.responseStatus !== 200) { console.log(`ABORT — step-4 responseStatus ${step4.responseStatus} !== 200`); process.exit(1); }
   const tempValue = step2.tempValue;
   const step1Custom = Array.isArray(step1.customFields) ? step1.customFields : [];
@@ -178,6 +194,7 @@ function classify(entry, tempValue) {
 
   // ── 5. Persist step-5 evidence ──
   const evidence = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     pollAttempts,
     clearResultState,
