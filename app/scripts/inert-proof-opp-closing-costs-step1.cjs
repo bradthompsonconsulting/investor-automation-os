@@ -24,6 +24,7 @@
  */
 
 const fs = require("fs");
+const { stamp } = require("./evidence-provenance.cjs");
 const ghlConfig = require("./ghl-config-loader.cjs");
 const fixtures  = require("../../scripts/harness-fixtures.json");
 
@@ -149,6 +150,7 @@ function fail(code, msg, extra) {
   }
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "capture",
     cycle: "discovery",

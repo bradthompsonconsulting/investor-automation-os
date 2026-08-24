@@ -35,15 +35,31 @@
 /* Exit code for an artifact environment provenance refusal.
  *
  * Lives here so every present and future consumer inherits one convention
- * rather than reproducing it. Verified unused across the eleven-file P-1
- * surface, which was already using 0 1 2 3 4 5 10 11 12 13 20 21 22 30 31 32
- * 33 34 40 41 42 43 44 50 51 52 53 54 55.
+ * rather than reproducing it. Nothing hardcodes the number.
  *
- * BOTH failure modes exit 60. The MESSAGE distinguishes a legacy artifact from
+ * 6 is free across the FULL PLANNED ADOPTION POPULATION of 36 files, measured
+ * by behaviour across all four exit mechanisms in use: direct literals,
+ * fail(code, …), finish(outcome, code), and ternary-carried forms. A
+ * literal-only scan is not sufficient — it misses roughly sixty codes on
+ * closing-costs alone and nine on the runner. 6 also sits adjacent to 4, the
+ * existing cross-cutting environment/argv refusal used with the same meaning
+ * on more than one surface, and outside every family and stage block.
+ *
+ * WHY THIS CHANGED, because the widening is the useful part. This constant was
+ * 60. That was CORRECT against the contact surface as measured at the time: 60
+ * was genuinely free there against the 29 codes then in service. It became
+ * unsuitable the moment the complete adoption surface was measured —
+ * inert-proof-opp-closing-costs-step4.cjs L60 already owns 60 for "cannot read
+ * step 1 evidence", so a provenance refusal there would have been numerically
+ * indistinguishable from an unrelated failure. The constant widened from
+ * surface-local measurement to full-adoption measurement. It was not that 6
+ * had always been the answer; it is that the question was scoped too narrowly.
+ *
+ * BOTH failure modes exit 6. The MESSAGE distinguishes a legacy artifact from
  * a detected crossing — the operator needs to tell those apart, but the shell
  * only needs to know the run refused on provenance. Do not split this into two
  * codes without deciding what a caller would do differently with each. */
-const PROVENANCE_REFUSAL = 60;
+const PROVENANCE_REFUSAL = 6;
 
 /** The environment stamp, for spreading at the head of a record next to
  *  timestamp. Takes the caller's ALREADY-PARSED env verbatim — not a selector

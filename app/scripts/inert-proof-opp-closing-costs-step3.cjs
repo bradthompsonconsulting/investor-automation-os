@@ -27,12 +27,52 @@
  */
 
 const fs = require("fs");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
+const fixtures = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31";
-const TARGET_ID      = "N8Aa9t1SZhU7XnPPzxWk";
+
+/* ── Environment resolution (Gate 4C C4a, Stair 4 + P-2) ──────────────────
+   CARRIER-ONLY, and the absence of the loader is DELIBERATE AND MEASURED.
+
+   step1 carries ghl-config-loader.cjs because it needs config.locationId for
+   its schema GET at /locations/${LOC}/customFields?model=opportunity. This
+   file calls only /opportunities/${OPPORTUNITY_ID} and needs nothing from the
+   canonical config: measured, zero of the 47 ghl-config Production values
+   appear in this file, with a fired positive control. Adding getConfig here
+   would resolve nothing and install dead infrastructure inside a gate
+   instrument. Do not "standardize" the loader in to match step1.
+
+   Every environment-owned value below derives from this ONE parsed ENV.
+   There is no second selector, no fallback and no default. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("ABORT — missing --env=<environment> (expected --env=production)");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+/* Section guards. Each names the section that failed. This file is guarded for
+   exactly the sections it resolves and no others — guarding a section this
+   file never reads would refuse on something it does not trust. */
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest) {
+  console.error(`ABORT — carrier has no fixtureRecords.opportunities.iaosUnderwritingTest for environment "${ENV}" (scripts/harness-fixtures.json)`);
+  process.exit(4);
+}
+
+const envPins           = envFixtures && envFixtures.untouchedPins;
+const opportunityFields = envPins && envPins.opportunityFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`ABORT — carrier has no untouchedPins.opportunityFields.closing_costs for environment "${ENV}" (scripts/harness-fixtures.json)`);
+  process.exit(4);
+}
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest;
+const TARGET_ID      = opportunityFields.closing_costs;
 const TARGET_KEY     = "closing_costs";
 const TEST_VALUE     = 8271.31;
 
@@ -72,6 +112,31 @@ function entryValue(entry) {
   try { wrote = JSON.parse(fs.readFileSync(STEP2, "utf8")); }
   catch (e) { fail(51, `cannot read step 2 evidence: ${e.message}`); }
 
+  assertEnvironment(cap, ENV, "step-1 evidence");
+
+  /* NOTE — site 3 read site (step-2 evidence): consumes NO environment-owned value.
+     It consumes wrote.putStatus and wrote.testValue and nothing else. An HTTP integer and a designated NUMERICAL test value.
+     ⚠ THE ARTIFACT IS NOT CLEAN. step-2 evidence carries 9 environment-owned
+     values, sitting there unread. This site is a NOTE because of what it
+     CONSUMES, not because the file is safe.
+     STOP if you are adding a field to this destructure: consuming an
+     environment-owned value here REQUIRES an assertEnvironment(...) call at
+     this site first. */
+
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism.
+     These guards compare an artifact identifier against a locally resolved
+     constant. They catch a stale or mismatched capture, and incidentally
+     reject SOME environment crossings as a side effect. The assertEnvironment
+     call above is the provenance check; this is not a substitute for it.
+
+     Narrow: at this site opportunityId (and in step2, fieldId) are the ONLY
+     environment-owned values compared. Everything else this site consumes —
+     offerIds, customFields, pipelineStageId — is ADOPTED with no comparison.
+
+     And misdirecting: when one DOES fire on a crossing it reports a record
+     mismatch, sending the operator hunting for a stale capture while the real
+     cause is an environment crossing. Retained as defense-in-depth; do not
+     remove or weaken. */
   if (cap.opportunityId !== OPPORTUNITY_ID) fail(52, `step 1 names a different opportunity`);
   if (wrote.putStatus === null) fail(53, `step 2 recorded no PUT status; it threw. Do not proceed blind.`);
   console.log(`PRECHECK ok — step 2 recorded PUT status ${wrote.putStatus}, test value ${wrote.testValue}`);
@@ -129,6 +194,7 @@ function entryValue(entry) {
   const statusUnchanged = opp.status === cap.status;
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "verify",
     cycle: "discovery",
