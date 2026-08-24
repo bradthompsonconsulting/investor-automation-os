@@ -23,23 +23,83 @@
  */
 
 const fs = require("fs");
+const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 const LIST   = `${ORIGIN}/.netlify/functions/ghl-opportunities`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31";
+/* ── Environment resolution (Gate 4C C4a, Stair 8) ─────────────────────────
+   TIER 1 PREAMBLE, module scope. getConfig(ENV) runs BEFORE the carrier lookup
+   so an unknown --env surfaces [ghl-config]'s OWN message unwrapped, and
+   --env=test reaches a VALID Test config and then refuses at the carrier's
+   absent Test section.
 
-const ENDBUYER_ID = "zOVIPwzLe41a0SQmwVAJ";
-const MAO_ID      = "Atu5XCjpFElY8H64VG4h";
-const MODE_ID     = "TpLo0WRc303TXAaBUbBf";
+   LOADER *AND* CARRIER, following the identifier's owner rather than the
+   file's role.
+
+   ⚠ THREE CARRIERS, NO SINGLE TARGET. This family proves a three-field
+   payload in one request. There is no "the target" here and no fieldId
+   anywhere in the family. All THREE proof carriers are CONFIG-owned and are
+   bound below as three separate consts:
+       ENDBUYER_ID -> opportunityFields.endBuyerMaxPrice
+       MAO_ID      -> opportunityFields.sellerMAO
+       MODE_ID     -> opportunityFields.assignmentMode
+   That is why this file needs the loader.
+
+   ⚠ THIS FILE IS A TAIL, AND THE FAMILY IS NOT UNIFORM. The head resolves
+   config.locationId for its schema GET; THIS FILE DOES NOT AND MUST NOT — it
+   makes no schema request. It loads config for its own three config-owned
+   carriers and nothing else. That is the tail's reason, and it is not the
+   head's.
+
+   NO CONTACTS GUARD HERE, deliberately. This file resolves no contact id, and
+   a guard on a section it never reads would refuse on something it does not
+   trust. Section guards are per file, not per family. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixtureRecords.opportunities.iaosUnderwritingTest for "${ENV}" (scripts/harness-fixtures.json). Refusing rather than inventing it.`);
+  process.exit(4);
+}
+
+const envPins           = envFixtures.untouchedPins;
+const opportunityFields = envPins && envPins.opportunityFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest;
+
+const ENDBUYER_ID = config.opportunityFields.endBuyerMaxPrice;
+const MAO_ID      = config.opportunityFields.sellerMAO;
+const MODE_ID     = config.opportunityFields.assignmentMode;
 
 const ENDBUYER_VALUE = 571204.86;
 const MAO_VALUE      = 398715.29;
 const MODE_VALUE     = "25% of Buyer Profit";
 const MODE_ORIGIN    = "Standard Minimum";
 
-const DISCOVERY_ID = "N8Aa9t1SZhU7XnPPzxWk";
+const DISCOVERY_ID = opportunityFields.closing_costs;
 
 const MAX_POLLS = 15;
 const POLL_MS   = 2000;
@@ -72,11 +132,76 @@ function readValue(entry) {
 }
 
 (async () => {
+  /* FOUR READ SITES, ONE LOOP — sites ⑧⑨⑩⑪. This file reads all four upstream
+     artifacts, and the loop below is four distinct read sites, not one. Every
+     one is a CHECK: the identity block beneath consumes opportunityId from
+     EACH artifact, so an environment-owned value crosses at all four.
+
+     ⚠ ONE VALUE COMPARED PER ARTIFACT, NOT TWO. Prior families compared
+     opportunityId AND fieldId here. This family has no fieldId — three
+     carriers, no single target — so opportunityId is the only comparison
+     available. That is why the family-wide COMPARED column is 7 rather than
+     the 12 the two preceding families reached.
+
+     The assertion lives INSIDE the loop and fires once per artifact, labelled
+     with that artifact, before any environment-owned value from it is trusted.
+     Four separate calls outside the loop would say the same thing and drift
+     apart the first time someone edited one of them.
+
+     ⚠ Note step 2's and step 3's artifacts are read through a NOTE at step 3
+     and step 4 respectively, and through a CHECK here. Same artifacts,
+     different read sites, different class. A NOTE classifies the read site. */
+  const EVIDENCE_LABEL = { s1: "step-1 evidence", s2: "step-2 evidence", s3: "step-3 evidence", s4: "step-4 evidence" };
   const ev = {};
   for (const [name, path] of [["s1", STEP1], ["s2", STEP2], ["s3", STEP3], ["s4", STEP4]]) {
     try { ev[name] = JSON.parse(fs.readFileSync(path, "utf8")); }
     catch (e) { fail(580, `cannot read ${name} evidence: ${e.message}`); }
+    assertEnvironment(ev[name], ENV, EVIDENCE_LABEL[name]);
   }
+
+  /* INCIDENTAL PROTECTION — NOT the provenance mechanism, and NOT coverage.
+     ⚠ RECORD THE RATIO. The identity block below compares opportunityId on all
+     four artifacts. Against step-1 (SITE ⑧) that is 1 COMPARED to 16 ADOPTED
+     BY VALUE — the three carrier ids inside cap.carriers, the 3 inside
+     customFields, the 7 inside offerIds, pipelineStageId, and the 2 inside
+     fixtureState. BY FIELD that reads 1 to 5. Against s2, s3 and s4 it is
+     1 to 0 each: this file consumes nothing environment-owned from them beyond
+     the id it checks — notably NOT s3's perCarrier, wireShapeDuring or
+     liveCustomFields, and NOT s2's sent.
+
+     ⚠ THOSE FOUR ARE NOT OPAQUE FIELDS. sent and perCarrier are
+     KEYED CARRIER MAPS — three members keyed by field name, each with an environment-owned
+     id nested inside beside a human key. wireShapeDuring is ENTRY OBJECTS,
+     three carrier ids one per member. liveCustomFields is a BULK WIRE CAPTURE
+     with five distinct ids. Count the ids INSIDE each; never classify off the
+     key name or the label. Reading any of them here adds 3, 3, 3 or 5 ADOPTED
+     values to this site and does not change its CHECK class, but it does
+     change the ratio — recompute it if you add one.
+
+     ⚠ wireShapeAfter, written by THIS file, is also an ENTRY OBJECT carrying
+     an environment-owned carrier id. It is produced here, not consumed, so it
+     appears in no ratio — but it is environment-owned content this producer
+     persists, and the stamp above is what makes its provenance checkable.
+     Family-wide: 7 COMPARED to 41 ADOPTED by value, 7 to 15 by field.
+
+     ⚠ COMPARED means compared against a LOCALLY RESOLVED CONSTANT. Every
+     comparison against a LIVE WIRE value below — pipelineStageId at L304 among
+     them — is ADOPTED, always. Drift consistency, never provenance.
+
+     ⚠ THE OWN=YES / LIT=NO QUADRANT. pipelineStageId and liveStageId are
+     environment-owned by value with NO source literal in this family.
+     Conversion does nothing for them; the in-loop assertion above is their
+     only protection. Do not report them as converted.
+
+     SIX VALUES ARE ADOPTED EVERYWHERE THEY APPEAR AND COMPARED NOWHERE in this
+     family: carriers, customFields, offerIds, fixtureState, pipelineStageId,
+     and the wireShape entry-object carriers. This file consumes the first five
+     off the step-1 artifact and writes its own conclusions from them, so the
+     ratio here is the provenance of the Proof B completion record.
+
+     ⚠ TERMINAL FAMILY. Nothing reads this file's output — measured, zero
+     forward consumers of payload-b-step5. No downstream bootstrap depends on
+     whether this record is stamped. */
   for (const [name, rec] of Object.entries(ev)) {
     if (rec.cycle !== "proof-b") fail(581, `${name} evidence is from cycle ${JSON.stringify(rec.cycle)}`);
     if (rec.opportunityId !== OPPORTUNITY_ID) fail(582, `${name} names a different opportunity`);
@@ -225,6 +350,7 @@ function readValue(entry) {
   const proofBComplete = Object.values(complete).every(Boolean);
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "confirm",
     cycle: "proof-b",

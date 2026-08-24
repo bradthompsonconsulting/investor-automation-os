@@ -32,20 +32,86 @@
  */
 
 const fs = require("fs");
+const { stamp } = require("./evidence-provenance.cjs");
+const ghlConfig = require("./ghl-config-loader.cjs");
+const fixtures  = require("../../scripts/harness-fixtures.json");
 
 const ORIGIN = "https://app.investorautomationos.com";
 const PROXY  = `${ORIGIN}/.netlify/functions/ghl-proxy`;
 const LIST   = `${ORIGIN}/.netlify/functions/ghl-opportunities`;
 
-const OPPORTUNITY_ID = "OcGWOP9n666i4Q1MLd31";
-const CONTACT_ID     = "HGZAby6snRZfpl0go2Yb";
+/* ── Environment resolution (Gate 4C C4a, Stair 8) ─────────────────────────
+   TIER 1 PREAMBLE, module scope. getConfig(ENV) runs BEFORE any carrier
+   lookup, deliberately: that ordering is what makes an unknown --env surface
+   [ghl-config]'s OWN message unwrapped, and what makes --env=test reach a
+   VALID Test config and then refuse at the carrier's absent Test section.
+
+   LOADER *AND* CARRIER. The idiom follows the IDENTIFIER'S OWNER, not the
+   file's role.
+
+   ⚠ THREE CARRIERS, NO SINGLE TARGET. This family proves a three-field
+   payload in one request. There is no "the target" here and no fieldId
+   anywhere in the family — do not write or read any comment in these five
+   files as though there were one. All THREE proof carriers are CONFIG-owned:
+       endbuyer_maximum_purchase_price -> opportunityFields.endBuyerMaxPrice
+       mao_max_allowable_offer         -> opportunityFields.sellerMAO
+       assignment_mode                 -> opportunityFields.assignmentMode
+   Each is bound below in CARRIERS; the four tails bind the same three as
+   separate consts. That is why every file needs the loader.
+
+   ⚠ THIS FILE IS THE HEAD, AND THE FAMILY IS NOT UNIFORM. step1 is the ONLY
+   member that resolves config.locationId — it needs it for the schema GET
+   below, which no tail makes. The four tails load config for their own
+   config-owned carriers and nothing else, and each says so in its own header.
+   Do not copy this paragraph into a tail; it would be true of the file next
+   door rather than of the file it sits in. */
+const envArg = process.argv.slice(2).find((a) => a.startsWith("--env="));
+if (envArg === undefined) {
+  console.error("REFUSED: --env=<environment> is required. Expected --env=production or --env=test. There is no default.");
+  process.exit(4);
+}
+const ENV = envArg.slice("--env=".length);
+
+let config;
+try {
+  config = ghlConfig.getConfig(ENV);
+} catch (e) {
+  console.error(e.message);
+  process.exit(4);
+}
+const LOC = config.locationId;
+
+const envFixtures          = fixtures[ENV];
+const fixtureRecords       = envFixtures && envFixtures.fixtureRecords;
+const fixtureContacts      = fixtureRecords && fixtureRecords.contacts;
+const fixtureOpportunities = fixtureRecords && fixtureRecords.opportunities;
+if (!fixtureOpportunities || !fixtureOpportunities.iaosUnderwritingTest ||
+    !fixtureContacts || !fixtureContacts.iaosTestProbe) {
+  console.error(`REFUSED: harness-fixtures.json carries no fixture records for "${ENV}" — expected ${ENV}.fixtureRecords.opportunities.iaosUnderwritingTest and ${ENV}.fixtureRecords.contacts.iaosTestProbe. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const envPins                = envFixtures.untouchedPins;
+const opportunityFields      = envPins && envPins.opportunityFields;
+const opportunityOfferFields = envPins && envPins.opportunityOfferFields;
+if (!opportunityFields || !opportunityFields.closing_costs) {
+  console.error(`REFUSED: harness-fixtures.json carries no opportunityFields.closing_costs for "${ENV}" — expected ${ENV}.untouchedPins.opportunityFields.closing_costs. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+if (!opportunityOfferFields || Object.keys(opportunityOfferFields).length !== 7) {
+  console.error(`REFUSED: harness-fixtures.json carries no seven-member opportunityOfferFields for "${ENV}" — expected ${ENV}.untouchedPins.opportunityOfferFields. Refusing rather than inventing them.`);
+  process.exit(4);
+}
+
+const OPPORTUNITY_ID = fixtureOpportunities.iaosUnderwritingTest;
+const CONTACT_ID     = fixtureContacts.iaosTestProbe;
 
 /* The three Approve carriers, PB-D59 section I, with their expected origin
    state and restoration contract. */
 const CARRIERS = [
   {
     key: "endbuyer_maximum_purchase_price",
-    id: "zOVIPwzLe41a0SQmwVAJ",
+    id: config.opportunityFields.endBuyerMaxPrice,
     dataType: "NUMERICAL",
     expectPresent: false,
     restore: "clear-to-absent",
@@ -53,7 +119,7 @@ const CARRIERS = [
   },
   {
     key: "mao_max_allowable_offer",
-    id: "Atu5XCjpFElY8H64VG4h",
+    id: config.opportunityFields.sellerMAO,
     dataType: "NUMERICAL",
     expectPresent: false,
     restore: "clear-to-absent",
@@ -61,7 +127,7 @@ const CARRIERS = [
   },
   {
     key: "assignment_mode",
-    id: "TpLo0WRc303TXAaBUbBf",
+    id: config.opportunityFields.assignmentMode,
     dataType: "SINGLE_OPTIONS",
     expectPresent: true,
     expectValue: "Standard Minimum",
@@ -70,21 +136,24 @@ const CARRIERS = [
   },
 ];
 
-/* PB-D58's discovery field. Not a carrier; must still be absent. */
-const DISCOVERY_ID = "N8Aa9t1SZhU7XnPPzxWk";
+/* PB-D58's discovery field. Not a carrier; must still be absent.
+   CARRIER-owned, unlike the three proof carriers above, which are all
+   CONFIG-owned. Single-value binding: one resolution site, one occurrence. */
+const DISCOVERY_ID = opportunityFields.closing_costs;
 
 /* Deal facts the resolved-branch harness depends on. assignment_mode is the
    third but it is a carrier, tracked above. */
 const FIXTURE_IDS = {
-  arv_after_repair_value: "cBkygqcHRseZUGCYYeba",
-  repair_estimate:        "hId4Yog6u5GP1Iwz1aNx",
+  arv_after_repair_value: config.opportunityFacts.arv,
+  repair_estimate:        config.opportunityFacts.repairs,
 };
 
-const OFFER_IDS = [
-  "4YiACDV4uB3zOlAdNIBb", "73oLHWnVjmOGSrBo5sC6", "9jm2SoN2aDtUtbesL0kG",
-  "GxChepYArmgPllhKPq0R", "Nm1LZvQzaCGvXDq7TRCh", "XbW0B973nuaLtIjMkzO9",
-  "eY5BOqE9juGpBfqwacWT",
-];
+/* Carrier key order IS the original literal order — offer_price, offer_date,
+   offer_mao, offer_wholesale_fee, offer_arv, offer_repair_total, offer_margin.
+   Object.values preserves it, so offerIds is written to evidence in the same
+   order as before conversion. Verified at conversion; do not reorder the
+   carrier group without re-checking this. */
+const OFFER_IDS = Object.values(opportunityOfferFields);
 
 const PROOF_A_CONFIRM = "C:/Users/brad/AppData/Local/Temp/inert-proof-opp-mode-a-step5.json";
 const A0_CONFIRM      = "C:/Users/brad/AppData/Local/Temp/inert-proof-opp-mao-a0-step5.json";
@@ -120,6 +189,64 @@ function readValue(entry) {
   try { pa = JSON.parse(fs.readFileSync(PROOF_A_CONFIRM, "utf8")); }
   catch (e) { fail(461, `cannot read Proof A confirm evidence: ${e.message}`); }
 
+  /* NOTE — SITES ① AND ②, the two cross-family read sites. Neither consumes
+     an environment-owned value. This head is the only one in the campaign with
+     TWO upstream dependencies, so there are two notes' worth of reasoning here
+     and both must hold for the family to bootstrap.
+
+     SITE ① — mao-a0 step-5 confirm evidence (read above, L187).
+       Consumes exactly THREE fields: a0Complete, complete, restoredToOrigin.
+       Producer-reachable (inert-proof-opp-mao-a0-step5.cjs): a0Complete is
+       every() over complete (that file L262); complete is seven booleans
+       (that file L251); restoredToOrigin is a boolean conjunction
+       (that file L245). CROSS-FILE citations — they name lines in mao-a0-step5,
+       NOT in this file.
+       Artifact carries 6 distinct environment-owned values UNREAD —
+       opportunityId, fieldId, liveStageId, and three inside liveCustomFields.
+
+     SITE ② — mode-a step-5 confirm evidence (read here, L189).
+       Consumes exactly THREE fields: proofAComplete, complete,
+       restoredToOrigin. Producer-reachable
+       (inert-proof-opp-mode-a-step5.cjs): proofAComplete is every() over
+       complete (that file L306); complete is NINE booleans (that file L293);
+       restoredToOrigin is a boolean conjunction (that file L290). CROSS-FILE
+       citations — they name lines in mode-a-step5, NOT in this file.
+       Artifact carries 5 distinct environment-owned values UNREAD across 14
+       occurrences — opportunityId, fieldId, and the ENTRY-OBJECT carriers
+       observedEntry, capturedEntry and wireShape, plus liveStageId and three
+       inside liveCustomFields.
+
+     ⚠ NOT THE SAME SET AS ANY NEIGHBOURING HEAD. Consumption sets narrow
+     along the chain: endbuyer-max-s5 -> mao-a0-s1 took SIX fields;
+     mao-a0-s5 -> mode-a-s1 took FIVE; both of this head's reads take THREE.
+     Neither reads `outcome`, which mode-a's head did read. Do not
+     pattern-match one head onto another.
+
+     ⚠ BOTH NOTES ARE LOAD-BEARING, AND CONDITIONALLY SO. Each source artifact
+     is the unstamped Aug-17 original, and BOTH producing families rest
+     disarmed behind an absent canonical step-1 and cannot regenerate them.
+     Were either site a CHECK, assertEnvironment would take the no-stamp branch
+     and refuse against an artifact that no longer has a producer — so a single
+     CHECK at either site ends this family's ability to bootstrap. Two
+     dependencies means two ways to lose it.
+
+     The prohibition is conditional on the CURRENT evidence topology, not a
+     standing law. Adding an environment-owned field to either consumption set
+     does not merely require an assertEnvironment(...) call first — it requires
+     re-deciding whether this family can bootstrap at all.
+
+     ⚠ THE FAMILY-WIDE PROTECTION RATIO IS 7 COMPARED : 41 ADOPTED BY VALUE,
+     7 : 15 BY FIELD — the weakest in the campaign, and the reason is
+     structural rather than an oversight. With no fieldId, each CHECK site can
+     compare opportunityId and nothing else; the two preceding families
+     compared two values per artifact and reached 12 COMPARED. Do not "fix"
+     this by inventing a comparison. The per-site breakdown is recorded at the
+     CHECK sites in steps 2, 3, 4 and 5.
+
+     ⚠ NOTHING READS THIS FAMILY'S OUTPUT. payload-b is terminal: measured,
+     zero forward consumers of payload-b-step5. So the bootstrap constraint
+     runs inbound only, and no downstream family inherits it from here. */
+
   if (a0.a0Complete !== true) fail(462, `A0 was not complete`, JSON.stringify(a0.complete));
   if (a0.restoredToOrigin !== true) fail(463, `A0 did not restore to origin`);
   if (pa.proofAComplete !== true) fail(464, `Proof A was not complete`, JSON.stringify(pa.complete));
@@ -146,7 +273,21 @@ function readValue(entry) {
   const byId = new Map(customFields.map((f) => [f.id, f]));
 
   // ── GET 2: the schema, for dataType and picklist confirmation ──
-  const schemaUrl = `${PROXY}?path=${encodeURIComponent("/locations/jmHG4B8RdzwpfqruNf68/customFields?model=opportunity")}`;
+  /* ⚠ THE ONE NON-MODULE-SCOPE SITE IN THIS FAMILY — TWO COLUMNS, NOT ONE.
+     Before conversion the location literal was inlined here, so BOTH its
+     resolution scope and its consumption scope were inside the async body.
+     Installing the Tier-1 preamble moves the RESOLUTION to module scope
+     (const LOC above); what remains here is the CONSUMPTION site.
+
+     Resolution scope: MODULE.  Consumption scope: IIFE (opens L184).
+
+     That split is the point. Every other site in all five files is
+     module/module. This is the only module/IIFE pair, and it is reached only
+     after the two cross-family gates, both GET-1 checks and both identity
+     checks. The preamble is NOT hoisted into the async scope and must not be:
+     doing so would put configuration resolution behind the guards it is meant
+     to precede. */
+  const schemaUrl = `${PROXY}?path=${encodeURIComponent(`/locations/${LOC}/customFields?model=opportunity`)}`;
   const schemaRes = await fetch(schemaUrl);
   const schemaText = await schemaRes.text();
   if (!schemaRes.ok) fail(470, `GET customFields?model=opportunity → ${schemaRes.status}`, schemaText.slice(0, 400));
@@ -221,6 +362,7 @@ function readValue(entry) {
   if (offerPresent.length > 0) problems.push(`offer_ fields present: ${JSON.stringify(offerPresent)}`);
 
   const record = {
+    ...stamp(ENV),
     timestamp: new Date().toISOString(),
     stage: "capture",
     cycle: "proof-b",
