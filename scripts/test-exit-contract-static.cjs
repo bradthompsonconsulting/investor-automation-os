@@ -53,7 +53,28 @@ const CORPUS = [
   "scripts/import-propstream-csv.ts",
 ];
 
-const FLOOR = 9;
+const FLOOR = 10;
+
+/**
+ * AMBIENT-CREDENTIAL ELIMINATION (Gate 4C sandbox, item 2).
+ *
+ * The importer's credential now comes from dotenv.parse() of the file named by
+ * --credential-file, and from nowhere else. Elimination that holds only until the
+ * next edit is a STATE; elimination that cannot come back is a PROPERTY. This is
+ * what makes it the latter.
+ *
+ * SCOPED TO ONE FILE, deliberately. A corpus-wide version would pass today --
+ * every other CORPUS file was checked and none reads process.env outside a
+ * comment -- but item 2 is a statement about this importer, and a broader
+ * assertion would go red for a reason unrelated to what it claims to protect.
+ * Recorded here so the option is documented rather than rediscovered.
+ *
+ * process.env SPECIFICALLY. process.argv reads remain in the file and are
+ * correct, so a naive /process\./ match would false-positive. Comments are
+ * blanked by strip() before this runs, so the prose above ABOUT process.env in
+ * the importer does not trip its own assertion.
+ */
+const AMBIENT_TARGET = "scripts/import-propstream-csv.ts";
 
 let checksRun = 0;
 let failures = 0;
@@ -117,11 +138,14 @@ const wrapperImpls = new Map();
 const finishImpls = [];
 const nonLiteralFinish = [];
 const missingFiles = [];
+/** Stripped source of AMBIENT_TARGET, captured during the walk below. */
+let ambientTargetSrc = null;
 
 for (const rel of CORPUS) {
   const abs = path.join(REPO_ROOT, rel);
   if (!fs.existsSync(abs)) { missingFiles.push(rel); continue; }
   const src = strip(fs.readFileSync(abs, "utf8"));
+  if (rel === AMBIENT_TARGET) ambientTargetSrc = src;
   const lineOf = (off) => src.slice(0, off).split(/\r?\n/).length;
 
   // fail() wrapper definition, if this file has one
@@ -218,6 +242,21 @@ check(
   "corpus-present",
   missingFiles.length === 0 && sites.length > 600,
   missingFiles.length ? `missing ${missingFiles.join(", ")}` : `${CORPUS.length} files, ${sites.length} exit sites`,
+);
+
+/* A null source means the file left CORPUS. That is a FAIL, not a skip: an
+   assertion that silently stops applying is the vacuity failure this suite was
+   written to stop making. */
+const ambientHits =
+  ambientTargetSrc === null ? null : (ambientTargetSrc.match(/process\.env/g) || []).length;
+check(
+  "ambient-credential-eliminated",
+  ambientHits === 0,
+  ambientTargetSrc === null
+    ? `${AMBIENT_TARGET} is not in CORPUS — the assertion has nothing to check`
+    : ambientHits === 0
+      ? `${AMBIENT_TARGET} reads process.env 0 times — the credential comes only from --credential-file`
+      : `${AMBIENT_TARGET} reads process.env ${ambientHits} time(s); ambient credential precedence is back`,
 );
 
 check(

@@ -1,20 +1,35 @@
 /**
  * PropStream CSV → GHL contact importer.
  *
- * Run:    npx tsx scripts/import-propstream-csv.ts <csv-file> --authorize-mutation=production [options]
+ * Run:    npx tsx scripts/import-propstream-csv.ts <csv-file> --env=<environment>
+ *                 --credential-file=<path> --authorize-mutation=<environment>
  * Options:
- *   --authorize-mutation=<target>   Required to WRITE. Must name the environment
- *                 this script targets. Not required for --dry-run: you add
+ *   --env=<environment>             Required ALWAYS. Governs CONFIG RESOLUTION:
+ *                 which GHL location this run addresses. production | test.
+ *                 No default, no fallback. Supplying it twice refuses.
+ *   --credential-file=<path>        Required ALWAYS. Names the file the GHL
+ *                 credential is read from. No default, no fallback, and no
+ *                 ambient environment is consulted. = syntax, not space.
+ *                 Supplying it twice refuses.
+ *   --authorize-mutation=<target>   Required to WRITE. Must name the same
+ *                 environment as --env. Not required for --dry-run: you add
  *                 authorization to mutate, you never mutate by deleting a word.
  *                 The gate is still always evaluated and always reports, and a
- *                 WRONG target refuses in every mode. Supplying it twice
+ *                 DISAGREEING target refuses in every mode. Supplying it twice
  *                 refuses.
  *   --limit N     Process only first N data rows (for test runs; default: all)
+ *                 SPACE syntax, unlike every other flag here. Because csvPath is
+ *                 the first non-flag token, `--limit 1 data.csv` takes "1" as the
+ *                 CSV path. Put the CSV path first, or omit the flag.
  *   --dry-run     Parse and print payloads without calling GHL API
- * Env:    GHL_PRIVATE_API_KEY
+ * Credential:  GHL_PRIVATE_API_KEY, read ONLY from the file named by
+ *              --credential-file. Never from the ambient environment.
  *
  * Behaviour:
- *   - Fetches existing GHL custom field IDs at startup (avoids hardcoding)
+ *   - Fetches existing GHL custom field IDs at startup (avoids hardcoding).
+ *     That same request is the PAIRING GUARD: it REFUSES, before the CSV is read
+ *     and before any write, unless the named credential can read the resolved
+ *     location. See fetchFieldIdMap.
  *   - Checks for existing contact by Phone 1, then Email 1
  *   - Creates new contacts or updates existing ones
  *   - Skips empty/blank field values (never writes empty strings)
@@ -22,11 +37,10 @@
  *   - Exits non-zero if any contacts failed
  */
 
-import { config } from "dotenv";
+import { parse } from "dotenv";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { getConfig } from "../app/shared/ghl-config";
-config();
 
 // ── Mutation authorization (Gate 4C PRE-2) ───────────────────────────────────
 //
@@ -45,27 +59,46 @@ config();
 // only ever be traversed by a run that also mutates, and there would be no way
 // to prove the gate can PASS without proving it by writing to production.
 //
-// TWO SELECTORS, DELIBERATELY SEPARATE (Gate 4C C4a, Stair 9A).
+// THE PRODUCTION-ONLY PROHIBITION WAS LIFTED HERE (2026-08-25, Jess's ruling).
+// The debt it carried was DISCHARGED, not the decision overturned -- the
+// prohibition named its own successor condition and this is that condition
+// arriving. The history matters, so it is recorded rather than deleted:
 //
-// An earlier version of this comment said Phase 2 would replace MUTATION_TARGET
-// with an environment-derived target. That is NOT what happened and the
-// statement was a false forward promise sitting in the file. What is true:
+//   WHAT EXISTED.  A second constant, MUTATION_TARGET = "production", and a
+//   refusal comparing --authorize-mutation against it. Stair 9A's comment here
+//   said it "must not become derived from ENV", because at that time a derived
+//   target would have made --env=test --authorize-mutation=test agree with
+//   itself and opened a Test write as a SIDE EFFECT of a config conversion.
 //
-//   ENV              parsed from --env, governs CONFIG RESOLUTION. Either
-//                    environment resolves; there is no default and no fallback.
-//   MUTATION_TARGET  independently restricts MUTATION to production, and stays
-//                    a literal. It is not derived from ENV and must not become
-//                    derived from it.
+//   WHY IT EXISTED.  Not the ceremony -- two agreeing flags was never the
+//   barrier. It existed because nothing in this file checked that the credential
+//   and the resolved location belonged to the same GHL sub-account, so a Test
+//   write authorized by flags alone could have been issued with whatever
+//   credential ambient state happened to supply. That same comment called the
+//   prohibition "a standing decision with its own sandbox-readiness debt".
 //
-// They are separate on purpose. If MUTATION_TARGET were derived from ENV, then
-// --env=test --authorize-mutation=test would agree with itself and authorize a
-// Test mutation. Test mutation is NOT available in this tool; that prohibition
-// is a standing decision with its own sandbox-readiness debt, and a conversion
-// must not create the path around it as a side effect. Before this change the
-// absence of a Test mutation path was an ACCIDENT of MUTATION_TARGET being a
-// const with a mismatch check. It is now an explicitly named refusal.
-const MUTATION_TARGET = "production";
-const KNOWN_FLAGS = ["--env", "--authorize-mutation", "--dry-run", "--limit"];
+//   WHAT DISCHARGED IT.  Two changes in this commit, in this order and in one
+//   commit because the order is load-bearing. The credential is now NAMED
+//   (--credential-file, below) rather than inherited from the environment, and
+//   the /customFields request that already precedes every write path is now a
+//   PAIRING GUARD that refuses unless the named credential can read the resolved
+//   location. See fetchFieldIdMap. The barrier moved from "Test is forbidden" to
+//   "the credential and the location must agree", which is the property the
+//   prohibition was standing in for.
+//
+//   WHAT REMAINS.  ENV, parsed from --env, governs CONFIG RESOLUTION. The
+//   agreement check below is now the whole flag rule: the two flags must name
+//   the same environment. Test gets exactly the ceremony Production gets --
+//   SYMMETRIC, deliberately. An asymmetry here reads to a future maintainer as
+//   "Test is the lax path", and a sandbox nobody dares use is not a sandbox.
+//
+//   ⚠ ONE CONSEQUENCE, NAMED SO IT IS NOT DISCOVERED. With MUTATION_TARGET gone,
+//   nothing in THIS file names which environments are mutable. The mutable set is
+//   now whatever getConfig accepts -- today exactly production | test. A third
+//   environment added to ghl-config.ts becomes mutable here automatically, with
+//   no decision recorded in this file. Same shape as the PUT-provenance hazard
+//   noted at updateContact.
+const KNOWN_FLAGS = ["--env", "--authorize-mutation", "--credential-file", "--dry-run", "--limit"];
 
 const rawArgs = process.argv.slice(2);
 
@@ -118,8 +151,12 @@ if (ENV === null) {
 // The throw is CAUGHT rather than allowed to surface. Every other refusal in
 // this file prints a named cause; an uncaught throw would print a stack trace
 // instead, which is the wrong direction of travel for a file being converted.
-// Named ghlConfig, not config: dotenv's config() is already imported into this
-// module's scope above, and shadowing it would be a redeclaration error.
+// Named ghlConfig, not config, because `config` names nothing in particular in a
+// file that resolves a GHL configuration AND reads a credential file. (Until
+// this commit there was a second reason -- dotenv's config() was imported into
+// this scope and shadowing it would have been a redeclaration error. That import
+// is gone; only parse() remains, so the hazard is gone and the name is kept on
+// its own merits.)
 let ghlConfig;
 try {
   ghlConfig = getConfig(ENV);
@@ -157,41 +194,26 @@ const authArg = authArgs[0];
 const authValue =
   authArg === undefined ? null : authArg.includes("=") ? authArg.slice(authArg.indexOf("=") + 1) : "";
 
-// ── Refusal 1 of 2: THE TWO FLAGS MUST AGREE ─────────────────────────────────
+// ── THE FLAG RULE: THE TWO FLAGS MUST AGREE ──────────────────────────────────
 //
-// Checked BEFORE the production-only restriction below, so each state gets the
-// message that describes it:
+// Until this commit this was "refusal 1 of 2" and a production-only prohibition
+// followed it. The prohibition is gone (see above), so this is now the whole
+// flag rule:
 //
-//   --env=production --authorize-mutation=test   -> DISAGREEMENT (here)
-//   --env=test       --authorize-mutation=production -> DISAGREEMENT (here)
-//   --env=test       --authorize-mutation=test   -> agree, then PROHIBITION below
+//   --env=production --authorize-mutation=test        -> DISAGREEMENT (here)
+//   --env=test       --authorize-mutation=production   -> DISAGREEMENT (here)
+//   --env=test       --authorize-mutation=test         -> agrees, AUTHORIZED
+//   --env=production --authorize-mutation=production   -> agrees, AUTHORIZED
 //
-// If this check were the only one, the third row would PASS and Test mutation
-// would become possible. It is not the only one, deliberately. See the two-
-// selector note above.
+// The third row is the state this commit exists to create. What stops a Test
+// authorization from writing with a Production credential is no longer a flag
+// comparison -- it is the pairing guard in fetchFieldIdMap, which refuses unless
+// the NAMED credential can read the RESOLVED location.
 if (authValue !== null && authValue !== ENV) {
   console.error(
     `ERROR: environment disagreement. --env named ${JSON.stringify(ENV)} but ` +
       `--authorize-mutation named ${JSON.stringify(authValue)}. Your two flags name different ` +
       "environments. Refusing in every mode, including --dry-run.",
-  );
-  process.exit(2);
-}
-
-// ── Refusal 2 of 2: MUTATION IS PRODUCTION-ONLY ──────────────────────────────
-//
-// A WRONG TARGET REFUSES IN EVERY MODE, --dry-run included. Absence means "I am
-// not asking to mutate"; a wrong target means "I asked to mutate something
-// else", which is a mistake worth stopping on whatever mode you are in.
-//
-// Reached only when the two flags already AGREE, so at this point a non-
-// production target means the operator coherently asked to mutate Test. That
-// is the prohibition, not a typo, and the message says so.
-if (authValue !== null && authValue !== MUTATION_TARGET) {
-  console.error(
-    `ERROR: authorization mismatch. --authorize-mutation named ${JSON.stringify(authValue)}, ` +
-      `but this script targets ${JSON.stringify(MUTATION_TARGET)}. Refusing in every mode, ` +
-      "including --dry-run.",
   );
   process.exit(2);
 }
@@ -210,13 +232,13 @@ if (authValue === null) {
   } else {
     console.error(
       "ERROR: mutation authorization is required. This script writes to GHL. Supply " +
-        `--authorize-mutation=${MUTATION_TARGET} to write, or --dry-run to preview without writing.`,
+        `--authorize-mutation=${ENV} to write, or --dry-run to preview without writing.`,
     );
     process.exit(2);
   }
 } else {
   console.log(
-    `AUTHORIZATION PASSED — mutation authorized for target "${MUTATION_TARGET}" by --authorize-mutation=${authValue}`,
+    `AUTHORIZATION PASSED — mutation authorized for target "${ENV}" by --authorize-mutation=${authValue}`,
   );
 }
 
@@ -231,12 +253,111 @@ const GHL_BASE    = "https://services.leadconnectorhq.com";
    contacts. It also scopes the duplicate lookup whose result the update PUT
    then modifies. Resolution scope MODULE, consumption scope MODULE. */
 const LOCATION_ID = ghlConfig.locationId;
-const API_KEY     = process.env.GHL_PRIVATE_API_KEY;
 
-if (!API_KEY) {
-  console.error("ERROR: GHL_PRIVATE_API_KEY is not set.");
-  process.exit(1);
+// ── Credential source (Gate 4C sandbox, items 1 and 2) ───────────────────────
+//
+// EVALUATED AFTER THE AUTHORIZATION GATE, deliberately -- and this file already
+// argued for the ordering at the top: authorization is about INTENT, a credential
+// is about CAPABILITY, and checking intent first means a refusal proof needs no
+// credential present and cannot refuse for the credential's reason while
+// appearing to refuse for the gate's. Every refusal above still exits before a
+// single byte of credential is read, exactly as it did before this commit.
+//
+// THE CREDENTIAL FILE IS THE CREDENTIAL SELECTOR. Required always, no default
+// and no fallback, and the token is read ONLY from that file's parsed contents.
+// Both environments use the same variable name, GHL_PRIVATE_API_KEY, so WHICH
+// FILE IS NAMED is the whole of the decision -- which is why it is reported.
+//
+// ⚠ = SYNTAX, NOT SPACE. csvPath below is the first non-flag token, so
+// `--credential-file .env.test data.csv` would take ".env.test" as the CSV path
+// and never see the file. --limit is the standing exception in this file and its
+// space syntax is a trap for the same reason; one flag syntax per file, and this
+// flag is on the sane side of it.
+//
+// WHAT THIS REPLACED, AND WHY IT WAS NOT SAFE. Until this commit the credential
+// arrived from process.env after a bare dotenv config(), which resolves .env
+// against process.cwd() and does NOT overwrite a value already present. Three
+// consequences, all measured: an ambient GHL_PRIVATE_API_KEY silently won and
+// nothing reported it; `-r dotenv/config` with DOTENV_CONFIG_PATH selected any
+// file it liked; and running from another directory read a different .env, or
+// none at all. Whether this tool had a credential AT ALL depended on which
+// directory you were standing in, and the only signal was a third-party banner
+// that is easy to miss.
+//
+// parse(), NOT config(). config() writes into process.env and does not overwrite
+// what is already there, so a tool that called config({ path }) and then read
+// process.env could use an ambient value while the named file was silently
+// discarded -- satisfying "loads only the named file" while violating "reads only
+// that file's contents". parse() returns the file's contents as a plain object
+// and never touches process.env, so ambient state cannot participate at all.
+// There are no process.env reads left in this file and the static exit-contract
+// test asserts it; process.argv reads remain and are correct.
+//
+// DUPLICATE FIRST, mirroring --env and --authorize-mutation above and for the
+// same reason: honouring one value and discarding the operator's last word is
+// the edited-saved-command-line failure, and this flag decides which credential
+// the run uses.
+const credentialArgs = rawArgs.filter((a) => a.split("=")[0] === "--credential-file");
+if (credentialArgs.length > 1) {
+  console.error(
+    `ERROR: duplicated credential flag — --credential-file was supplied ${credentialArgs.length} ` +
+      "times. Refusing: honouring either one would let an edited command line select a " +
+      "credential nobody read.",
+  );
+  process.exit(2);
 }
+
+const credentialArg = credentialArgs[0];
+const CREDENTIAL_FILE =
+  credentialArg === undefined
+    ? null
+    : credentialArg.includes("=")
+      ? credentialArg.slice(credentialArg.indexOf("=") + 1)
+      : "";
+
+if (CREDENTIAL_FILE === null) {
+  console.error(
+    "ERROR: --credential-file=<path> is required. There is no default and no fallback; name " +
+      "the file the GHL credential is read from. Both environments use the same variable name, " +
+      "so which file is named IS the credential selection.",
+  );
+  process.exit(2);
+}
+
+let credentialText: string;
+try {
+  credentialText = readFileSync(CREDENTIAL_FILE, "utf8");
+} catch {
+  console.error(
+    `ERROR: the credential file ${JSON.stringify(CREDENTIAL_FILE)} could not be read. No ` +
+      "credential was loaded and no request was issued.",
+  );
+  process.exit(2);
+}
+
+const API_KEY = parse(credentialText).GHL_PRIVATE_API_KEY;
+
+if (API_KEY === undefined) {
+  console.error(
+    `ERROR: GHL_PRIVATE_API_KEY is absent from the credential file ` +
+      `${JSON.stringify(CREDENTIAL_FILE)}. There is no fallback to the ambient environment, ` +
+      "and no other file is consulted.",
+  );
+  process.exit(2);
+}
+
+if (API_KEY.trim() === "") {
+  console.error(
+    `ERROR: GHL_PRIVATE_API_KEY is present but blank in the credential file ` +
+      `${JSON.stringify(CREDENTIAL_FILE)}.`,
+  );
+  process.exit(2);
+}
+
+// THE PATH, NEVER THE VALUE. Which file was named is the decision this run made
+// and it belongs in the evidence; the credential itself belongs nowhere. This is
+// also the first time this tool has ever said what it is using.
+console.log(`CREDENTIAL SOURCE — ${CREDENTIAL_FILE}`);
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -441,14 +562,57 @@ function ghlHeaders() {
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** Returns a map of shortKey → GHL field ID for all contact custom fields. */
+/**
+ * Returns a map of shortKey → GHL field ID for all contact custom fields.
+ *
+ * ── THIS IS ALSO THE PAIRING GUARD (Gate 4C sandbox, item 4) ────────────────
+ *
+ * It is not an added request. This call already existed and already ran before
+ * every write path -- it is the FIRST statement of main(), ahead of the CSV read
+ * and the row loop, and its failure cannot be caught between here and the
+ * process-level handler. Making its error branch a refusal turns a request the
+ * tool already had to make into the barrier that replaces the production-only
+ * prohibition removed above. Fewer permissions and no extra round trip; 9B's
+ * equivalent check uses GET /locations/{id}, and the Test PIT was measured on
+ * 2026-08-25 returning 401 on that endpoint while returning 200 here. Porting
+ * 9B unchanged would have failed under Test -- the environment it exists to
+ * protect.
+ *
+ * WHAT IT PROVES.  That the named credential and the resolved location belong to
+ * the same GHL sub-account -- ENVIRONMENT AGREEMENT. A PIT is issued against one
+ * sub-account; the Production credential was measured getting 403 on the Test
+ * location. So a credential that can read location X belongs to X, and a write
+ * carrying X in its body goes to X. This is the safety property.
+ *
+ * WHAT IT DOES NOT PROVE.  That the credential may WRITE there. Scopes on a PIT
+ * are not uniform -- that is measured, not feared. A capability failure surfaces
+ * at the POST as a refusal and nothing lands anywhere: a failed run, not a
+ * misdirected write.
+ *
+ * ⚠ WHY THIS IS WORTH MORE THAN FAILING FAST. When a POST body's locationId
+ * disagrees with the credential's sub-account, we do not know whether GHL refuses
+ * or ignores the body and writes to the credential's own location. That cannot be
+ * measured without attempting exactly the cross-environment write this guard
+ * exists to prevent. The guard's value is that it makes an unmeasured -- and
+ * un-measurable-without-risk -- GHL behaviour IRRELEVANT. Do not delete it on the
+ * reasoning that GHL would reject a mismatch anyway; that is the thing nobody has
+ * established.
+ */
 async function fetchFieldIdMap(): Promise<Record<string, string>> {
   const res = await fetch(`${GHL_BASE}/locations/${LOCATION_ID}/customFields`, {
     headers: ghlHeaders(),
   });
+  // STATUS ONLY, NEVER THE BODY -- a GHL error body can echo request context.
+  // The body is not read at all rather than merely left out of the message:
+  // not-interpolating is a convention anyone can undo without noticing.
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`GET /customFields → ${res.status}: ${text}`);
+    console.error(
+      `ERROR: the credential in ${CREDENTIAL_FILE} could not read the location resolved by ` +
+        `--env=${ENV} (${LOCATION_ID}). GHL answered ${res.status}. This does not identify which ` +
+        "environment the credential belongs to — only that the pairing is unconfirmed. Refusing " +
+        "rather than writing against an unverified pairing.",
+    );
+    process.exit(2);
   }
   const body: any = await res.json();
   const list: any[] = body.customFields ?? body.fields ?? [];
@@ -505,6 +669,16 @@ async function createContact(
   return [body.contact?.id ?? body.id, "created"];
 }
 
+/**
+ * ⚠ THIS PUT CARRIES NO locationId. Unlike the POST above -- where LOCATION_ID is
+ * spread last into the body and cannot be shadowed -- this request is bound to a
+ * location only by the PROVENANCE of its contactId. It is safe today because
+ * both sources are location-scoped: findContact queries with locationId in the
+ * URL, and the duplicate-conflict id comes from GHL's own response to a POST that
+ * carried locationId. A contactId arriving from any source that is NOT
+ * location-scoped would be written regardless of --env, and nothing in this file
+ * would object.
+ */
 async function updateContact(contactId: string, payload: Record<string, any>): Promise<void> {
   const res = await fetch(`${GHL_BASE}/contacts/${contactId}`, {
     method: "PUT",
