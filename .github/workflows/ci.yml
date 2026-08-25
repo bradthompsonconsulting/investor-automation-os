@@ -199,3 +199,18 @@ jobs:
 
       - name: Identifier boundary — 9 offline checks
         run: node scripts/test-identifier-boundary.cjs
+
+      # Two steps, not one. The failure meanings differ and an operator reading
+      # a CI log should know which without opening the output: static red means
+      # two causes became indistinguishable or a wrapper was forked; runtime red
+      # means observed behaviour diverged from what the source declares.
+      - name: Exit contract, static — 9 offline checks
+        run: node scripts/test-exit-contract-static.cjs
+
+      # Executes six refusal paths and reads what the OS reports. ~45s, of which
+      # ~43s is npx tsc inside ghl-config-loader (PID-keyed temp dir, so nothing
+      # is reused across processes). Both truncating members live in getConfig
+      # families — no carrier-only file declares a code above 86 — so that cost
+      # is unavoidable if truncation is to be observed at all.
+      - name: Exit contract, runtime — 36 checks
+        run: node scripts/test-exit-contract-runtime.cjs
