@@ -12,6 +12,13 @@
  */
 
 import { getRuntimeConfig } from "../../shared/ghl-config";
+/* Board item #2C. The three option LABELS are declared once, in resolver-types,
+   and this module reads them rather than retyping them. Retyping would create a
+   second list that could drift from the one the resolver parses against, and a
+   mode written under a label the resolver does not recognise reads back as an
+   unresolved deal with no explanation. Import direction is one-way: nothing
+   under lib/underwriting imports this module. */
+import { ASSIGNMENT_MODE_OPTIONS } from "./underwriting/resolver-types";
 
 // PB-D51 — location id and every field id below resolve from the shared config,
 // once at module scope. Values are unchanged; only their source moved.
@@ -939,6 +946,83 @@ export const ghl = {
 
       const landed = carriers.filter((c) => c.landed).length;
       return { ok: landed === 3, putStatus, carriers, landed };
+    },
+
+    /**
+     * Board item #2C -- set Assignment Mode alone, BEFORE underwriting resolves.
+     *
+     * WHY THIS IS NOT saveUnderwritingFields. That method writes all three
+     * carriers in one PUT and is only reachable on a RESOLVED deal, because two
+     * of its three values are figures the calculation produced. Assignment Mode
+     * is the opposite case: it is a deal FACT with no starter fallback and no
+     * policy value that can supply it, so an unset mode is itself what leaves
+     * underwriting unresolved. A method that can only run after resolution
+     * cannot fix the thing that prevents resolution. Modelled on it; not reused.
+     *
+     * CUSTOM-FIELDS-ONLY, and this is the load-bearing property. The body
+     * carries `customFields` and nothing else. A body carrying pipelineStageId,
+     * status, name, monetaryValue or tags forfeits the mechanism the whole
+     * write rests on -- that a custom-fields-only PUT cannot fire stage
+     * triggers. Do not add a key here for convenience.
+     *
+     * ONE FIELD, and the value is checked against the declared option labels
+     * BEFORE the request. GHL's field is a picker; a string it does not offer
+     * is not a value it stores, and the resolver parses the label back through
+     * MODE_BY_OPTION. Rejecting locally means a typo fails as a typo instead of
+     * as an unexplained unresolved deal.
+     *
+     * A 200 IS NOT SUCCESS. It means the server accepted a request. Success is
+     * the value confirmed on readback, and the caller must check `ok`.
+     *
+     * READBACK USES THE SINGULAR GET, parsing `fieldValue` via
+     * readSingularFieldValue. The singular and list endpoints return different
+     * wire shapes -- OBSERVED 2026-08-17, the list varies by dataType
+     * (fieldValueString for SINGLE_OPTIONS) while the singular does not. The
+     * three readers in this file are not interchangeable, and reading the wrong
+     * one here would report a failure on a write that succeeded.
+     *
+     * The proxy already allowlists PUT /opportunities/{ID}. No proxy change.
+     */
+    setAssignmentMode: async (
+      opportunityId: string,
+      optionLabel: string,
+    ): Promise<{ ok: boolean; putStatus: number; sent: string; observed: number | string | null }> => {
+      const fieldId = CONFIG.opportunityFields.assignmentMode;
+      if (!fieldId) throw new Error("setAssignmentMode: no configured id for assignmentMode");
+
+      const allowed = ASSIGNMENT_MODE_OPTIONS.map(([label]) => label);
+      if (typeof optionLabel !== "string" || !allowed.includes(optionLabel)) {
+        throw new Error(
+          `setAssignmentMode: ${JSON.stringify(optionLabel)} is not one of the declared ` +
+            `Assignment Mode options (${allowed.map((l) => JSON.stringify(l)).join(", ")}). ` +
+            "Refusing rather than writing a label the resolver cannot read back.",
+        );
+      }
+
+      const body = { customFields: [{ id: fieldId, field_value: optionLabel }] };
+
+      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const putStatus = putRes.status;
+      if (!putRes.ok) {
+        const text = await putRes.text();
+        throw new Error(`setAssignmentMode PUT → ${putStatus}: ${text}`);
+      }
+
+      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
+      if (!readRes.ok) {
+        const text = await readRes.text();
+        throw new Error(`setAssignmentMode readback → ${readRes.status}: ${text}`);
+      }
+      const readBody = await readRes.json();
+      const opp = readBody.opportunity ?? readBody;
+      const entry = (opp.customFields ?? []).find((f: any) => f.id === fieldId) ?? null;
+      const observed = entry === null ? null : readSingularFieldValue(entry);
+
+      return { ok: observed === optionLabel, putStatus, sent: optionLabel, observed };
     },
   },
 };

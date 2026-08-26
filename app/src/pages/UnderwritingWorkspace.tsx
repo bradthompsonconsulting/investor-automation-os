@@ -13,7 +13,7 @@ import {
 } from "../lib/underwriting/resolver";
 import { computeUnderwriting } from "../lib/underwriting/compute";
 import { toViewModel, type ApproveState, type ScreenState, type SelectedOpportunity } from "../lib/underwriting/view-model";
-import { OPTION_BY_MODE } from "../lib/underwriting/resolver-types";
+import { OPTION_BY_MODE, ASSIGNMENT_MODE_OPTIONS } from "../lib/underwriting/resolver-types";
 import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
 import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriting/types";
 
@@ -276,6 +276,118 @@ function ApproveControl({ state, onApprove, warningCount }: {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
+/** What a mode write is doing, for the operator. */
+type ModeWriteState =
+  | { status: "idle" }
+  | { status: "in_flight"; label: string }
+  | { status: "succeeded"; label: string }
+  | { status: "failed"; label: string; message: string }
+  | { status: "unconfirmed"; label: string; observed: string };
+
+/**
+ * Board item #2C -- the Assignment Mode selector.
+ *
+ * WHY IT LIVES IN THE UNRESOLVED STATE. Assignment Mode is a deal fact read
+ * from the Opportunity. It has no starter fallback and no policy value can
+ * supply it, so an UNSET mode is precisely what leaves underwriting unresolved
+ * -- no Seller MAO, and no End-Buyer Maximum either, the latter withheld
+ * deliberately rather than shown alone. A control placed only beside Approve
+ * would be unreachable in the exact situation it exists to fix.
+ *
+ * It renders in the RESOLVED state as well, so a mode can be changed on a deal
+ * that already resolves and the figures recomputed. That is additive; the
+ * unresolved placement is the one that makes the feature work at all.
+ *
+ * MANUAL IS OFFERED AND EXPLAINED, NEVER HIDDEN AND NEVER SILENT. There is no
+ * GHL field for the manual spread amount -- Assignment Mode records WHICH mode
+ * governs and nothing records the dollar figure -- so selecting Manual writes a
+ * true deal fact and underwriting still will not resolve. Out-of-parameters is
+ * flagged, never blocked; a control that offers a choice which quietly yields
+ * no result is worse than one that explains itself. So the option is present,
+ * the consequence is stated before the click, and it is restated after.
+ */
+function AssignmentModeSelector({ currentLabel, state, onSelect }: {
+  currentLabel: string | null;
+  state: ModeWriteState;
+  onSelect: (label: string) => void;
+}) {
+  const busy = state.status === "in_flight";
+  const pendingManual = state.status !== "idle" && state.label === "Manual";
+  const manualIsCurrent = currentLabel === "Manual" || pendingManual;
+
+  return (
+    <div
+      data-testid="assignment-mode-selector"
+      style={{
+        marginTop: "14px", padding: "16px 18px", background: "#0F172A",
+        border: "1px solid #1E293B", borderRadius: "10px",
+      }}
+    >
+      <div style={{ fontSize: "13px", fontWeight: 600, color: "#E2E8F0", marginBottom: "4px" }}>
+        Assignment Mode
+      </div>
+      <div style={{ fontSize: "12px", color: "#64748B", marginBottom: "12px" }}>
+        {currentLabel
+          ? <>Currently <span style={{ color: "#94A3B8" }}>{currentLabel}</span>. Choose a different mode to change it.</>
+          : <>Not set on this opportunity. Underwriting cannot resolve until it is.</>}
+      </div>
+
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+        {ASSIGNMENT_MODE_OPTIONS.map(([label]) => {
+          const isCurrent = label === currentLabel;
+          return (
+            <button
+              key={label}
+              data-testid={`assignment-mode-option-${label.replace(/\s+/g, "-").toLowerCase()}`}
+              onClick={() => onSelect(label)}
+              disabled={busy || isCurrent}
+              title={isCurrent ? "Already the mode on this opportunity" : `Set Assignment Mode to ${label}`}
+              style={{
+                fontSize: "12px", fontWeight: 600, padding: "8px 14px", borderRadius: "8px",
+                border: `1px solid ${isCurrent ? "rgba(30,200,255,0.55)" : "rgba(30,200,255,0.35)"}`,
+                background: isCurrent ? "rgba(30,200,255,0.18)" : "rgba(30,200,255,0.08)",
+                color: "#1EC8FF",
+                cursor: busy || isCurrent ? "default" : "pointer",
+                opacity: busy && !isCurrent ? 0.6 : 1,
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* The Manual carrier gap, stated wherever Manual is the mode in play --
+          whether it is already set, or was just chosen. */}
+      {manualIsCurrent ? (
+        <div data-testid="assignment-mode-manual-note" style={{ marginTop: "12px", fontSize: "12px", color: "#FBBF24", lineHeight: 1.5 }}>
+          Manual is a real mode and it has been recorded, but underwriting will still not
+          resolve under it. GHL holds the mode and not the manual spread amount, so there is
+          no figure to calculate from. Use Standard Minimum or 25% of Buyer Profit to
+          underwrite this deal, or set the spread in GHL once a field exists for it.
+        </div>
+      ) : null}
+
+      <div style={{ marginTop: "10px", fontSize: "12px", minHeight: "18px" }}>
+        {state.status === "in_flight" ? (
+          <span style={{ color: "#94A3B8" }}>Setting {state.label}…</span>
+        ) : null}
+        {state.status === "succeeded" ? (
+          <span data-testid="assignment-mode-saved" style={{ color: "#94A3B8" }}>Saved — {state.label} confirmed on the opportunity.</span>
+        ) : null}
+        {state.status === "unconfirmed" ? (
+          <span style={{ color: "#FBBF24" }}>
+            Write accepted but not confirmed. GHL returned {JSON.stringify(state.observed)} where {JSON.stringify(state.label)} was sent.
+          </span>
+        ) : null}
+        {state.status === "failed" ? (
+          <span style={{ color: "#F87171" }}>Could not set {state.label}: {state.message}</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export default function UnderwritingWorkspace() {
   const { id } = useParams<{ id: string }>();
   const contactId = id ?? "";
@@ -297,6 +409,14 @@ export default function UnderwritingWorkspace() {
      setter is unused until the control lands. */
   const [approve, setApprove] = useState<ApproveState>({ status: "idle" });
 
+  /* Board item #2C. The mode write's state, and a reload counter.
+     A successful mode write changes the input the whole page is derived from,
+     so the page must re-read the opportunity rather than patch its own copy.
+     Patching would make the screen a claim about what we sent; re-reading keeps
+     it a claim about what GHL holds. */
+  const [modeWrite, setModeWrite] = useState<ModeWriteState>({ status: "idle" });
+  const [reloadTick, setReloadTick] = useState(0);
+
   useEffect(() => {
     if (!contactId) return;
     let cancelled = false;
@@ -314,7 +434,7 @@ export default function UnderwritingWorkspace() {
       })
       .catch((e: Error) => { if (!cancelled) setFetchError(e.message); });
     return () => { cancelled = true; };
-  }, [contactId]);
+  }, [contactId, reloadTick]);
 
   const loading = fetchError === null && (contact === null || opps === null || policyValues === null);
 
@@ -395,6 +515,46 @@ export default function UnderwritingWorkspace() {
    * every one restored, the exact three-field payload proven on a
    * disposable fixture before this handler existed.
    */
+  /**
+   * Board item #2C -- the Assignment Mode write. The page owns the call; the
+   * component owns only the presentation of its outcome, mirroring how Approve
+   * is arranged directly below.
+   *
+   * A 200 IS NOT SUCCESS and this handler does not treat it as one: the method
+   * re-reads the singular opportunity and reports `ok` from the readback, and a
+   * write that landed differently is shown as unconfirmed rather than saved.
+   * Only a confirmed write triggers the reload.
+   */
+  async function onSelectMode(label: string) {
+    if (screen.state !== "unresolved" && screen.state !== "resolved") return;
+    const opportunityId = screen.opportunity.id;
+    setModeWrite({ status: "in_flight", label });
+    try {
+      const result = await ghl.underwriting.setAssignmentMode(opportunityId, label);
+      if (result.ok) {
+        setModeWrite({ status: "succeeded", label });
+        setReloadTick((n) => n + 1);
+      } else {
+        setModeWrite({
+          status: "unconfirmed",
+          label,
+          observed: result.observed === null ? "nothing" : String(result.observed),
+        });
+      }
+    } catch (e: any) {
+      setModeWrite({ status: "failed", label, message: e?.message ?? "The write could not be completed." });
+    }
+  }
+
+  /* The label GHL currently holds, for the selector's "Currently ..." line.
+     Read from the RESOLVED assignment when there is one; an unresolved deal is
+     unresolved precisely because the mode is absent or unrecognised, and
+     claiming a current value there would be the page inventing one. */
+  const currentModeLabel: string | null =
+    pipeline.assignment !== null && pipeline.assignment.kind !== "unresolved"
+      ? OPTION_BY_MODE[pipeline.assignment.kind]
+      : null;
+
   async function onApprove() {
     if (screen.state !== "resolved") return;
     if (screen.approve.status === "in_flight") return;
@@ -548,15 +708,25 @@ export default function UnderwritingWorkspace() {
           deal fact read from the Opportunity, has no starter fallback, and
           no policy value can clear it. */}
       {screen.state === "unresolved" ? (
-        <Notice
-          tone="warn"
-          title="Underwriting cannot begin"
-          body={
-            screen.missingLabels.length === 1
-              ? `${screen.missingLabels[0]} is not set for this opportunity.`
-              : `Not set for this opportunity: ${screen.missingLabels.join(", ")}.`
-          }
-        />
+        <>
+          <Notice
+            tone="warn"
+            title="Underwriting cannot begin"
+            body={
+              screen.missingLabels.length === 1
+                ? `${screen.missingLabels[0]} is not set for this opportunity.`
+                : `Not set for this opportunity: ${screen.missingLabels.join(", ")}.`
+            }
+          />
+          {/* Board item #2C. Beside the notice that names the problem, because an
+              unset Assignment Mode is one of the things that notice is naming and
+              this is the only control that fixes it. */}
+          <AssignmentModeSelector
+            currentLabel={currentModeLabel}
+            state={modeWrite}
+            onSelect={onSelectMode}
+          />
+        </>
       ) : null}
 
       {screen.state === "resolved" ? (
@@ -652,6 +822,19 @@ export default function UnderwritingWorkspace() {
             state={screen.approve}
             onApprove={onApprove}
             warningCount={screen.warnings.length}
+          />
+
+          {/* Board item #2C, resolved-state placement. Additive: a resolved deal
+              can have its mode changed and its figures recomputed without going
+              through GHL. The unresolved placement above is the one that makes
+              the feature reachable at all; this one makes it useful afterwards.
+              Below Approve deliberately — changing the mode changes the figures
+              Approve would write, so it reads as a revision of the inputs rather
+              than an alternative to approving. */}
+          <AssignmentModeSelector
+            currentLabel={currentModeLabel}
+            state={modeWrite}
+            onSelect={onSelectMode}
           />
         </>
       ) : null}
