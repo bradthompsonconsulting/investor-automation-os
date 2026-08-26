@@ -306,8 +306,13 @@ type ModeWriteState =
  * no result is worse than one that explains itself. So the option is present,
  * the consequence is stated before the click, and it is restated after.
  */
-function AssignmentModeSelector({ currentLabel, state, onSelect }: {
+function AssignmentModeSelector({ currentLabel, absentReason, state, onSelect }: {
   currentLabel: string | null;
+  /* Why there is no current label, in the resolver's own words. "Not set" and
+     "set to something unrecognised" are different facts and the second one is
+     not an absence — asserting a single cause here would be the same
+     conflation that made Manual unreadable. */
+  absentReason: string | null;
   state: ModeWriteState;
   onSelect: (label: string) => void;
 }) {
@@ -329,7 +334,9 @@ function AssignmentModeSelector({ currentLabel, state, onSelect }: {
       <div style={{ fontSize: "12px", color: "#64748B", marginBottom: "12px" }}>
         {currentLabel
           ? <>Currently <span style={{ color: "#94A3B8" }}>{currentLabel}</span>. Choose a different mode to change it.</>
-          : <>Not set on this opportunity. Underwriting cannot resolve until it is.</>}
+          : <>{absentReason
+                ? absentReason.charAt(0).toUpperCase() + absentReason.slice(1)
+                : "Not set on this opportunity"}. Underwriting cannot resolve until a mode is set.</>}
       </div>
 
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
@@ -547,12 +554,35 @@ export default function UnderwritingWorkspace() {
   }
 
   /* The label GHL currently holds, for the selector's "Currently ..." line.
-     Read from the RESOLVED assignment when there is one; an unresolved deal is
-     unresolved precisely because the mode is absent or unrecognised, and
-     claiming a current value there would be the page inventing one. */
+     Read from the RAW DEAL FACT, not from the resolution.
+
+     ⚠ THE MODE THE OPERATOR SET AND THE RESOLUTION THE MATH REACHED ARE
+     DIFFERENT FACTS, and this selector is the first surface where the gap is
+     visible. resolver.ts sets facts.assignmentMode to {kind:"value",
+     value:"manual"} whenever the picker says Manual, but manualSpread is
+     hardcoded null (the carrier gap: GHL records WHICH mode governs and nothing
+     records the dollar figure), so resolveInputs always returns an UNRESOLVED
+     assignment for Manual. Reading the resolution therefore made
+     currentModeLabel unreachable for "Manual" — an opportunity whose mode was
+     genuinely set claimed "Not set on this opportunity", the carrier-gap note
+     stopped rendering after reload, and the Manual button stayed enabled to
+     write Manual over Manual.
+
+     A set mode that cannot resolve is exactly what Manual IS. Offering it is
+     only defensible while the surface stays honest about it, and honesty here
+     means reporting what GHL holds rather than what the calculator could do
+     with it. */
   const currentModeLabel: string | null =
-    pipeline.assignment !== null && pipeline.assignment.kind !== "unresolved"
-      ? OPTION_BY_MODE[pipeline.assignment.kind]
+    pipeline.facts !== null && pipeline.facts.assignmentMode.kind === "value"
+      ? OPTION_BY_MODE[pipeline.facts.assignmentMode.value]
+      : null;
+
+  /* The resolver's own reason when there is no readable mode. Two distinct
+     causes — absent, and present-but-unrecognised — and the page reports which
+     rather than assuming the first. */
+  const modeAbsentReason: string | null =
+    pipeline.facts !== null && pipeline.facts.assignmentMode.kind === "unresolved"
+      ? pipeline.facts.assignmentMode.reason
       : null;
 
   async function onApprove() {
@@ -723,6 +753,7 @@ export default function UnderwritingWorkspace() {
               this is the only control that fixes it. */}
           <AssignmentModeSelector
             currentLabel={currentModeLabel}
+            absentReason={modeAbsentReason}
             state={modeWrite}
             onSelect={onSelectMode}
           />
@@ -833,6 +864,7 @@ export default function UnderwritingWorkspace() {
               than an alternative to approving. */}
           <AssignmentModeSelector
             currentLabel={currentModeLabel}
+            absentReason={modeAbsentReason}
             state={modeWrite}
             onSelect={onSelectMode}
           />
