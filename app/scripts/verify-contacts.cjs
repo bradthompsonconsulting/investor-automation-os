@@ -262,21 +262,73 @@ async function clickControlByBody(page, mark) {
   const selectCount = await page.evaluate(() => document.querySelectorAll("select").length);
   check("filter-absent", selectCount === 0, `selects=${selectCount}`);
 
-  // 4 — sort behaves: click the Name header → column becomes ascending.
+  /* 4 — sort behaves: click the Name header → the column becomes ascending.
+
+     WHAT THIS USED TO ASSERT, AND WHY IT WAS WRONG. It compared the RENDERED
+     text of every row. The app sorts on the UNDERLYING name, where an empty
+     string collates first; a contact with no name renders as the placeholder
+     "Unknown". So the old check compared a string the sort never saw, and one
+     nameless contact made it fail while the sort was working correctly.
+
+     ⚠ PLACEHOLDER ORDERING IS OBSERVED BEHAVIOUR, NOT A RULED PRODUCT DECISION.
+     Nameless rows land first because "" collates first, and nobody decided
+     that. Freezing "nameless rows sort first" into this check would assert a
+     decision that has never been made, and a later decision to sort
+     placeholders last would then read as a regression. So the position of the
+     nameless block is deliberately NOT asserted. The looser assertion is the
+     point, not an oversight.
+
+     NAMELESSNESS COMES FROM THE PAYLOAD, never from matching the placeholder
+     string. Matching "Unknown" would break the day a real contact is named
+     Unknown, and it would couple this harness to a display transform instead
+     of to data.
+
+     Nameless contacts are a legitimate recurring shape, not bad data: an
+     inbound call or text from a number not already in Contacts makes GHL
+     auto-create a phone-only record. The callback path went live 2026-08-26,
+     so more of these are expected. */
+  const namelessIds = new Set(
+    payload
+      .filter((c) => c && !String(c.firstName || "").trim() && !String(c.lastName || "").trim())
+      .map((c) => c.id),
+  );
+
   await page.evaluate(() => {
     const th = [...document.querySelectorAll("th")].find((t) => /Name/.test(t.textContent || ""));
     if (th) th.click();
   });
   await page.waitForTimeout(300);
-  const sortOk = await page.evaluate(() => {
-    const names = [...document.querySelectorAll("tbody tr")]
-      .filter((tr) => tr.querySelector('a[href^="/contacts/"]'))
-      .map((tr) => (tr.querySelector('a[href^="/contacts/"]').textContent || "").trim().toLowerCase());
-    if (names.length < 2) return false;
-    for (let i = 1; i < names.length; i++) if (names[i - 1].localeCompare(names[i]) > 0) return false;
-    return true;
-  });
-  check("sort-behaves", sortOk, `nameColumnAscendingAfterHeaderClick=${sortOk}`);
+
+  const sortedRows = await page.evaluate(() =>
+    [...document.querySelectorAll("tbody tr")]
+      .map((tr) => tr.querySelector('a[href^="/contacts/"]'))
+      .filter(Boolean)
+      .map((a) => ({
+        id: (a.getAttribute("href") || "").split("/").pop(),
+        text: (a.textContent || "").trim().toLowerCase(),
+      })));
+
+  // (1) THE REAL INVARIANT — rows with a name are ascending among themselves.
+  const named = sortedRows.filter((r) => !namelessIds.has(r.id));
+  let firstBadPair = null;
+  for (let i = 1; i < named.length; i++) {
+    if (named[i - 1].text.localeCompare(named[i].text) > 0) {
+      firstBadPair = [named[i - 1].text, named[i].text];
+      break;
+    }
+  }
+
+  // (2) Nameless rows form one contiguous block. WHERE it sits is not asserted.
+  const namelessIdx = sortedRows.map((r, i) => (namelessIds.has(r.id) ? i : -1)).filter((i) => i !== -1);
+  const contiguous =
+    namelessIdx.length === 0 ||
+    namelessIdx[namelessIdx.length - 1] - namelessIdx[0] + 1 === namelessIdx.length;
+
+  check("sort-behaves",
+    sortedRows.length >= 2 && named.length >= 2 && firstBadPair === null && contiguous,
+    `rows=${sortedRows.length} named=${named.length} nameless=${namelessIdx.length} ` +
+      `namedAscending=${firstBadPair === null}${firstBadPair ? ` firstBadPair=${JSON.stringify(firstBadPair)}` : ""} ` +
+      `namelessContiguous=${contiguous}${namelessIdx.length ? ` atIndices=[${namelessIdx.join(",")}]` : ""}`);
 
   // 5 — phone-format: bradt75 confirmed in the captured payload, then its rendered cell.
   const bradInPayload = payload.some((c) => c && c.id === BRADT75);
