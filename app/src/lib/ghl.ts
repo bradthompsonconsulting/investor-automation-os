@@ -48,6 +48,10 @@ const CALLBACK_DATETIME_PRECISE_ID = CONFIG.fields.callbackDatetimePrecise;
 // Additional Info > Investor subgroup, TEXT-typed.
 export const PROPERTY_NOTES_ID = CONFIG.fields.propertyNotes;
 export const ARV_ID = CONFIG.fields.arv; // MONETORY, PB-D16/PB-D17 — B2 unlock
+// Board item #2B — the second unlocked MONETORY field and the other half of the
+// Gate 1 underwriting pair. ARV was editable and repairs was not, so a deal
+// could not be made underwritable from inside the product.
+export const ESTIMATED_REPAIRS_ID = CONFIG.fields.estimatedRepairs;
 
 // Dashboard Phase 2B — GHL's public API cannot trigger an outbound call (it
 // can only log one that already happened); the click-to-call button hands off
@@ -621,6 +625,32 @@ export const ghl = {
     // PB-D16 — fifth named write. ARV only. Empty string is a real clear, not a skip.
     setARV: (contactId: string, value: number | "") =>
       ghl.contacts._putMonetaryField(contactId, ARV_ID, value),
+
+    // Board item #2B — sixth named write. estimated_repairs only.
+    //
+    // A NAMED METHOD, NOT A PARAMETERIZED SETTER. PB-D16 §4.4 forbids a public
+    // setter that takes a field id from the caller, because dataType proves
+    // SERIALIZATION and not FIELD SAFETY (§4.6: workflow triggers are per-field
+    // and are not API-derivable). So each unlocked MONETORY field earns its own
+    // method by its own decision, and this is that decision for repairs. The UI
+    // row component is shared with ARV — two consumers is the threshold — but
+    // the setter is deliberately not.
+    //
+    // WRITE-SAFETY, PROVEN 2026-08-27 and narrow. GHL Advanced Filters with
+    // Trigger Type = Contact Changed returned exactly one published workflow in
+    // Production, `Seller - Reset Phone Status on Phone Change`, whose filter is
+    // specifically "Phone has changed". No generic contact-field-change workflow
+    // exists in the location, so writing this field enrols no contact in any
+    // workflow by virtue of the field changing. THAT CLEARANCE COVERS THE
+    // Contact Changed TRIGGER TYPE ONLY. It does not extend to DATE fields under
+    // Custom Date Reminder. Irrelevant here — this field is MONETORY — but do
+    // not generalise it to the next unlock.
+    //
+    // MONETORY contract is ARV's, unchanged: an unquoted JS number round-trips
+    // exactly and "" clears to KEY_ABSENT. Do NOT copy setCallbackDatetime's
+    // null-to-clear — that is DATE behavior and does not apply here.
+    setEstimatedRepairs: (contactId: string, value: number | "") =>
+      ghl.contacts._putMonetaryField(contactId, ESTIMATED_REPAIRS_ID, value),
   },
 
   notes: {

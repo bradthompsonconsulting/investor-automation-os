@@ -7,12 +7,18 @@
    Floor 121 = grid (5) + six folder sections (6) + 98 custom fields (98)
              + four Additional Info subgroups (4) + three D1 identity-header renders (3)
              + four Phone N DNC adjacencies (4) + no-input (1).
-   Phase B PB-D5/PB-D13: floor = 121 + 4N, N = unlocked field count. N=2, so 129.
-   D5 conversation parity (CONTACTS_DETAIL_SPEC D5): + 9 = 138.
+   Phase B PB-D5/PB-D13: floor = 121 + 4N, N = unlocked field count.
+     N=1  property_notes  (PB-D5)
+     N=2  arv             (PB-D16/PB-D17)
+     N=3  estimated_repairs (board item #2B) — 121 + 4(3) = 133.
+   Each unlocked field costs FOUR checks: present, value-from-wire, and the two
+   activation assertions. Keep the formula next to the number; a floor without
+   its derivation is how the next unlock gets it wrong.
+   D5 conversation parity (CONTACTS_DETAIL_SPEC D5): + 9 = 142.
      Neelima (4): delta, long-email-collapsed, expand, collapse.
      Gordon  (5): delta, sms-rendered, sms-alignment, sms-never-collapses,
                   inbound-email-collapsed.
-   Success ONLY when checksRun === 138 AND every check passed. Any throw exits nonzero.
+   Success ONLY when checksRun === 142 AND every check passed. Any throw exits nonzero.
    The 98-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
@@ -54,6 +60,7 @@ const CONTACTS = CARRIER.contacts;
 const TARGET   = CONTACTS.neelima; // detail-view fixture (checks 6-119)
 const PROPERTY_NOTES_ID = "k7O0TYVMpqCpnMHRLPol"; // PB-D5 unlock allowlist, N=1. Hardcoded here per the verification-only rule above; never imported from app code.
 const ARV_ID = "wMBTGWMs97yysQFx7Vad"; // PB-D16/PB-D17 unlock allowlist, N=2. Hardcoded per the same verification-only rule.
+const ESTIMATED_REPAIRS_ID = "OQnud97MfdxMcTgMVTgf"; // Board item #2B unlock allowlist, N=3. Hardcoded per the same verification-only rule.
 const BRADT75  = CONTACTS.bradt75; // phone-format fixture — +12149146151 → 214-914-6151 (check 5)
 
 // ── D5 conversation parity (CONTACTS_DETAIL_SPEC D5) ───────────────────────────
@@ -498,7 +505,11 @@ async function clickControlByBody(page, mark) {
   // PB-D17 harness write-safety: this harness types NOTHING and dispatches NO
   // blur. Blur is a commit path under inline, so manufacturing one inside a
   // read-only harness would be a write. The editor is deliberately left OPEN —
-  // checks 126-127 are the LAST checks in this file and nothing follows them.
+  // checks 126-127 are the last checks ON THIS PAGE and nothing further touches
+  // it. (Until board item #2B this said "the last checks in this file", which
+  // stopped being true when repairs and D5 parity were added. The invariant that
+  // matters was always per-page, not per-file: every later check runs on a page
+  // of its own precisely so this editor is never blurred.)
   await page.evaluate((id) => {
     const el = document.querySelector('[data-testid="field-display-' + id + '"]');
     if (el) el.click();
@@ -532,7 +543,99 @@ async function clickControlByBody(page, mark) {
     arvEdit.saveCount === 0 && arvEdit.cancelCount === 0,
     `saveCount=${arvEdit.saveCount} cancelCount=${arvEdit.cancelCount}`);
 
-  // ═══ CHECKS 128-136 — D5 conversation parity ═══
+  // ═══ CHECKS 128-131 — ESTIMATED REPAIRS, the N=3 unlock (board item #2B) ═══
+  //
+  // A DEDICATED PAGE, for the reason check 127 states about itself: an activated
+  // inline editor is the LAST thing done on its page, because blur is a commit
+  // path and clicking anything else on that page manufactures one. ARV's editor
+  // is open on `page` right now. Repairs therefore gets its own page, is checked
+  // at rest and then activated, and that page is likewise never touched again.
+  //
+  // Repairs shares ARV's row component in the app, so these four checks are the
+  // SAME four, asserted against the second field. That is the point: sharing the
+  // component is only safe if both consumers are observed, and a shared component
+  // verified through one consumer is a component verified for one field.
+  //
+  // Node-side drift guard first, mirroring check 124's.
+  if (typeof ESTIMATED_REPAIRS_ID !== "string" || ESTIMATED_REPAIRS_ID.length < 10) {
+    console.log("ABORT - ESTIMATED_REPAIRS allowlist ID missing or malformed in Node scope");
+    process.exit(5);
+  }
+
+  const wireRepairs = (() => {
+    const vals = (contact && contact.customFields) || [];
+    const entry = vals.find((v) => v && v.id === ESTIMATED_REPAIRS_ID);
+    if (entry == null || entry.value == null || entry.value === "") return "";
+    const n = Number(entry.value);
+    return Number.isNaN(n) ? "" : n;
+  })();
+  // Harness-local copy of the app's currency display transform (NOT imported),
+  // same rule as check 125's.
+  const expRepairsDisplay = wireRepairs === ""
+    ? "—"
+    : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(wireRepairs);
+
+  const pageR = await ctx.newPage();
+  await pageR.goto(`${ORIGIN}/contacts/${TARGET}`, { waitUntil: "load" });
+  await sleep(2500);
+
+  const repRest = await pageR.evaluate((id) => {
+    const container = document.querySelector('[data-testid="record-section"]');
+    const out = { scopeMissing: !container, displayCount: 0, displayText: "", inputAtRest: 0 };
+    if (!container) return out;
+    const dEls = container.querySelectorAll('[data-testid="field-display-' + id + '"]');
+    out.displayCount = dEls.length;
+    if (dEls.length === 1) out.displayText = (dEls[0].textContent || "").trim();
+    out.inputAtRest = container.querySelectorAll('[data-testid="field-input-' + id + '"]').length;
+    return out;
+  }, ESTIMATED_REPAIRS_ID);
+
+  check("repairs-display-present",
+    !repRest.scopeMissing && repRest.displayCount === 1 && repRest.inputAtRest === 0,
+    `scopeMissing=${repRest.scopeMissing} displayCount=${repRest.displayCount} inputAtRest=${repRest.inputAtRest}`);
+
+  check("repairs-display-formatted",
+    repRest.displayText === expRepairsDisplay,
+    `dom=${JSON.stringify(repRest.displayText)} expect=${JSON.stringify(expRepairsDisplay)} wire=${JSON.stringify(wireRepairs)}`);
+
+  // ACTIVATION. Same in-page element.click() as check 126 and for the same reason:
+  // the row is mounted but hidden by its collapsed Investor parent, so a
+  // visibility-aware Playwright click would time out. Types NOTHING, dispatches NO
+  // blur. The editor is left OPEN and nothing follows on this page.
+  await pageR.evaluate((id) => {
+    const el = document.querySelector('[data-testid="field-display-' + id + '"]');
+    if (el) el.click();
+  }, ESTIMATED_REPAIRS_ID);
+  await sleep(300);
+
+  const repEdit = await pageR.evaluate((id) => {
+    const container = document.querySelector('[data-testid="record-section"]');
+    const out = { scopeMissing: !container, count: 0, tag: "", value: null, disabled: null, readOnly: null, saveCount: 0, cancelCount: 0 };
+    if (!container) return out;
+    const inputs = container.querySelectorAll('[data-testid="field-input-' + id + '"]');
+    out.count = inputs.length;
+    if (inputs.length === 1) {
+      out.tag = inputs[0].tagName;
+      out.value = inputs[0].value;
+      out.disabled = inputs[0].disabled;
+      out.readOnly = inputs[0].readOnly;
+    }
+    out.saveCount = container.querySelectorAll('[data-testid="field-save-' + id + '"]').length;
+    out.cancelCount = container.querySelectorAll('[data-testid="field-cancel-' + id + '"]').length;
+    return out;
+  }, ESTIMATED_REPAIRS_ID);
+
+  check("repairs-edit-raw-value",
+    !repEdit.scopeMissing && repEdit.count === 1 && repEdit.tag === "INPUT" &&
+    repEdit.disabled === false && repEdit.readOnly === false &&
+    repEdit.value === (wireRepairs === "" ? "" : String(wireRepairs)),
+    `count=${repEdit.count} tag=${repEdit.tag} value=${JSON.stringify(repEdit.value)} expect=${JSON.stringify(wireRepairs === "" ? "" : String(wireRepairs))} disabled=${repEdit.disabled} readOnly=${repEdit.readOnly}`);
+
+  check("repairs-no-commit-controls",
+    repEdit.saveCount === 0 && repEdit.cancelCount === 0,
+    `saveCount=${repEdit.saveCount} cancelCount=${repEdit.cancelCount}`);
+
+  // ═══ CHECKS 132-140 — D5 conversation parity ═══
   // Runs on a SEPARATE page, deliberately. Check 127 leaves the ARV inline editor
   // OPEN and possibly focused; blur is a commit path, so navigating THAT page — or
   // clicking anywhere on it — could manufacture a write inside a read-only harness.
@@ -622,9 +725,9 @@ async function clickControlByBody(page, mark) {
 
   await browser.close();
 
-  // ── Self-check: exactly 138, all unique, all passed — else nonzero ──
+  // ── Self-check: exactly 142, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 138) { console.log(`ABORT — expected 138 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 142) { console.log(`ABORT — expected 142 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });

@@ -5,7 +5,7 @@ import {
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
   Calculator,
 } from "lucide-react";
-import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow } from "../lib/ghl";
+import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow } from "../lib/ghl";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
@@ -206,10 +206,31 @@ function PropertyNotesRow({ f, contactId }: { f: RecordField; contactId: string 
 // become 25000.
 const CURRENCY_RE = /^-?\$?(\d{1,3}(,\d{3})*|\d+)(\.\d+)?$/;
 
-// Phase B PB-D16/D17/D19/D20/D21 — the ARV unlocked row. currency + inline.
+// Phase B PB-D16/D17/D19/D20/D21 — the unlocked MONETORY row. currency + inline.
 // Model B display-to-edit swap: formatted currency at rest, raw number while editing.
 // No Save/Cancel controls. Enter, Tab, or click-out commits; Escape cancels.
-function ArvRow({ f, contactId }: { f: RecordField; contactId: string }) {
+//
+// SHARED BY ARV AND ESTIMATED REPAIRS (board item #2B). Two consumers is the
+// threshold at which this stops being a premature abstraction, and the two rows
+// are behaviourally identical: same currency grammar, same display-to-edit swap,
+// same three-attempt readback, same status vocabulary. A duplicate would have to
+// be kept in step by hand, and the first divergence would be silent.
+//
+// ⚠ THE SETTER IS A PARAMETER; THE FIELD ID IS NOT A PARAMETER OF A SETTER.
+// `save` is supplied by the caller as an already-named method — setARV or
+// setEstimatedRepairs — so what travels is a decision that was made per field,
+// not a field id handed to a generic writer. PB-D16 §4.4 forbids the latter.
+// Sharing the ROW is a UI decision; sharing a WRITER would be a safety decision,
+// and only the first one is being made here.
+//
+// The readback reads `f.id` rather than a module constant. Behaviourally identical
+// — FieldRow dispatches this component only for the field whose row it is — and
+// it removes the second place a field identity would have to be kept in step.
+function MonetaryRow({ f, contactId, save }: {
+  f: RecordField;
+  contactId: string;
+  save: (contactId: string, value: number | "") => Promise<unknown>;
+}) {
   const wire: number | "" =
     typeof f.value === "number" ? f.value
     : f.value == null || f.value === "" ? ""
@@ -254,7 +275,7 @@ function ArvRow({ f, contactId }: { f: RecordField; contactId: string }) {
       try {
         const d = await ghl.contacts.getDetail(contactId);
         anyCompleted = true;
-        const entry = d.customFields.find((cf) => cf.id === ARV_ID);
+        const entry = d.customFields.find((cf) => cf.id === f.id);
         if (expected === "") {
           if (!entry) return "saved";
         } else if (entry && Number(entry.value) === expected) {
@@ -289,8 +310,8 @@ function ArvRow({ f, contactId }: { f: RecordField; contactId: string }) {
     setInvalid(false);
     // PB-D22 — an empty draft is NOT a clear. Exit edit mode and restore the
     // current persisted value; issue no PUT. Clearing is intentionally not
-    // reachable from the inline editor. The API contract is unchanged:
-    // setARV(contactId, "") still performs a real clear for a future explicit
+    // reachable from the inline editor. The API contract is unchanged: each
+    // named setter still performs a real clear on "" for a future explicit
     // action. What this removes is the keystroke that reaches it.
     if (raw === "") { setEditing(false); return; }
     const next: number = Number(raw.replace(/[$,]/g, ""));
@@ -300,7 +321,7 @@ function ArvRow({ f, contactId }: { f: RecordField; contactId: string }) {
     setStatus("verifying");
     setErrMsg(null);
     try {
-      await ghl.contacts.setARV(contactId, next);
+      await save(contactId, next);
     } catch (e) {
       setErrMsg((e as Error).message);
       setStatus("failed");
@@ -367,7 +388,11 @@ function ArvRow({ f, contactId }: { f: RecordField; contactId: string }) {
 
 function FieldRow({ f, contactId }: { f: RecordField; contactId: string }) {
   if (f.id === PROPERTY_NOTES_ID) return <PropertyNotesRow f={f} contactId={contactId} />;
-  if (f.id === ARV_ID) return <ArvRow f={f} contactId={contactId} />;
+  // The two unlocked MONETORY fields. Same row, different named setter — the
+  // dispatch is where each field's write decision is spent, and it is one line
+  // per field so an unlock cannot happen by accident.
+  if (f.id === ARV_ID) return <MonetaryRow f={f} contactId={contactId} save={ghl.contacts.setARV} />;
+  if (f.id === ESTIMATED_REPAIRS_ID) return <MonetaryRow f={f} contactId={contactId} save={ghl.contacts.setEstimatedRepairs} />;
   const display =
     f.value == null
       ? "—"
