@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2, BellOff,
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
+  Calculator,
 } from "lucide-react";
 import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow } from "../lib/ghl";
 import { CallbackPopover } from "../components/CallbackPopover";
@@ -850,6 +851,30 @@ export default function ContactWorkspace() {
         >
           <PhoneCall size={14} /> Call
         </button>
+        {/* Board item #2A — the only entry point to /contacts/:id/underwriting.
+            The route has existed since the Underwriting Workspace shipped and was
+            reachable only by typing the URL, so the surface was effectively
+            unreachable from inside the product.
+
+            <Link>, not window.open: this is an in-app route and the Call button
+            above is the exception, not the pattern — it opens GHL's own dialer
+            because GHL's API cannot originate a call. A new tab here would drop
+            the SPA's loaded state for no gain.
+
+            READ-ONLY. Navigation writes nothing: no note, no last_call_attempt,
+            no callback. Same rule as the Call button and the step-7 name-click
+            deep link -- it can never grey a row. */}
+        <Link
+          to={`/contacts/${id}/underwriting`}
+          data-testid="contact-underwriting-link"
+          style={{
+            display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", fontWeight: 600,
+            padding: "8px 14px", borderRadius: "8px", border: "1px solid rgba(30,200,255,0.35)",
+            background: "rgba(30,200,255,0.08)", color: "#1EC8FF", textDecoration: "none",
+          }}
+        >
+          <Calculator size={14} /> Underwriting
+        </Link>
         <div style={{ position: "relative" }}>
           <button
             onClick={() => { setCallbackOpen((v) => !v); setCallbackError(null); }}
