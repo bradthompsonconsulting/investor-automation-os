@@ -11,6 +11,7 @@ import {
 } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
 import { CallbackPopover } from "../components/CallbackPopover";
+import { readOverrides, effectiveDisposition, type StorageLike } from "../lib/dispositionOverride";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
 
@@ -48,6 +49,20 @@ import { formatPhone } from "../lib/format";
 // ── Tunables (single source of truth, per spec) ───────────────────────────────
 
 const RESURFACE_HOURS = 12;         // flat auto-reset window for a fresh attempt
+
+/* OQ-6(iii) — the partial-write flag's tolerance.
+   NOT a magic number and NOT tied to R5's 60-second prompt. last_call_attempt is
+   written IMMEDIATELY BEFORE the bell in the disposition sequence, so on every
+   SUCCESSFUL disposition the bell is newer than the attempt by one network round
+   trip. A strict comparison would therefore fire on all seven paths, every time.
+   30s is two orders of magnitude above a round trip and ~1,400x below the 12h
+   window that marks a PREVIOUS event, so it blinds nothing. */
+const PARTIAL_WRITE_TOLERANCE_MS = 30_000;
+
+/** sessionStorage, or null where it is unavailable (private mode, SSR). */
+function sessionStore(): StorageLike | null {
+  try { return typeof sessionStorage === "undefined" ? null : sessionStorage; } catch { return null; }
+}
 const RESURFACE_VISIBLE_ROWS = 15;  // Lead Queue visible-row cap before scroll
 
 // Presentation cap so Waiting on Me / Lead Queue stop short of the far edge
@@ -530,6 +545,77 @@ export default function Dashboard() {
   // the `callbacks` memo above, which splits into overdue/dueToday and DISCARDS
   // future ones: a promised call-back ends cold outreach the moment it is
   // scheduled, not when it falls due.
+  /* ── OQ-6 (iii) — the partial-write flag ──────────────────────────────────
+     WHAT IT DETECTS. The bell rang — GHL was told a call outcome happened — but
+     last_call_attempt did not land, so the row is not greyed and re-surfaces as
+     though the call never happened. The disposition sequence writes the attempt
+     BEFORE the bell and does not gate the bell on it (OQ-6(a): withholding for a
+     failed attempt turns one failure into two), so this is the only thing that
+     surfaces that state.
+
+     PRECISE-FIRST, via effectiveLastAttempt — the same convention every other
+     attempt read on this page uses. Inventing a second one here would be how the
+     two drift.
+
+     O1 IS LOAD-BEARING, NOT DECORATIVE. The event time is the NEWER of the
+     session override and the fetched dispositionAt. Without the override this
+     flag is silent inside the ~11-105s listAll convergence window — which is
+     exactly the interval a just-failed attempt lives in. The override is written
+     only AFTER a confirmed bell, so a withheld bell records nothing and this
+     stays correctly silent.
+
+     `void` on the two closure-reached dependencies rather than a lint
+     suppression. This file already carries three exhaustive-deps suppressions —
+     on the digest memo, the follow-up-rows memo and callbackScheduledContactIds
+     — because callbackOverride and attemptOverride are reached through closures
+     the linter cannot follow, so it reads those dependencies as spurious.
+     Exclusion #3's session-currency silently rests on one of them: delete that
+     suppression while tidying and the exclusion stops updating in-session, with
+     nothing failing loudly. The `void nowTick` idiom in leadQueue is the
+     convention that avoids all of it, and it is what this uses.
+     (Named by what they annotate, not by line number — line numbers in comments
+     rot, and this file's own history has an instance of exactly that.) */
+  const dispositionOverrides = useMemo(() => {
+    void nowTick;                       // re-read and prune on the existing 60s tick
+    return readOverrides(sessionStore(), Date.now());
+  }, [nowTick]);
+
+  /** contactId -> the disposition label to name in the badge. */
+  const partialWriteContactIds = useMemo(() => {
+    void nowTick;                       // recency is clock-dependent
+    void attemptOverride;               // reached through effectiveLastAttempt
+    const out = new Map<string, string>();
+    const now = Date.now();
+    for (const c of contacts ?? []) {
+      const ov = dispositionOverrides[c.id];
+      const label = effectiveDisposition(c.callDisposition, c.dispositionAt, ov, now);
+      if (!label) continue;             // no disposition recorded from either source
+
+      const fetchedMs = c.dispositionAt ? Date.parse(c.dispositionAt) : NaN;
+      const overrideMs = ov ? Date.parse(ov.at) : NaN;
+      const eventMs = Math.max(
+        Number.isNaN(fetchedMs) ? -Infinity : fetchedMs,
+        Number.isNaN(overrideMs) ? -Infinity : overrideMs,
+      );
+      if (!Number.isFinite(eventMs)) continue;
+
+      // Recency reuses RESURFACE_HOURS rather than inventing a constant: past
+      // that window a failed attempt has no queue consequence distinguishable
+      // from a successful one, because the row bands as stale either way.
+      // ⚠ That justification does NOT hold for Do Not Call, whose condition
+      // waits rather than decaying. DNC ships in Tranche B and must settle its
+      // own recency bound instead of inheriting this one.
+      if (now - eventMs >= RESURFACE_HOURS * 3_600_000) continue;
+
+      const attempt = effectiveLastAttempt(c);
+      const attemptMs = attempt ? Date.parse(attempt) : NaN;
+      if (Number.isNaN(attemptMs) || eventMs - attemptMs > PARTIAL_WRITE_TOLERANCE_MS) {
+        out.set(c.id, label);
+      }
+    }
+    return out;
+  }, [contacts, dispositionOverrides, attemptOverride, nowTick]);
+
   const callbackScheduledContactIds = useMemo(
     () => new Set((contacts ?? []).filter((c) => effectiveCallback(c)).map((c) => c.id)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1069,6 +1155,19 @@ export default function Dashboard() {
                           >
                             {contactName(c)}
                           </Link>
+                          {/* OQ-6 (iii) — GHL was told a call outcome happened and the
+                              attempt did not land, so this row is not greyed and will
+                              re-surface as though the call never happened. Names the
+                              disposition so the operator knows what to re-record. */}
+                          {partialWriteContactIds.has(c.id) && (
+                            <span
+                              data-testid="partial-write-flag"
+                              style={{ flexShrink: 0, fontSize: "10px", fontWeight: 600, color: "#FBBF24" }}
+                              title={`Disposition "${partialWriteContactIds.get(c.id)}" reached GHL but the call attempt was not recorded — this row is not greyed`}
+                            >
+                              ATTEMPT NOT RECORDED
+                            </span>
+                          )}
                           {overdueMailer && (
                             <span style={{ flexShrink: 0, fontSize: "10px", fontWeight: 600, color: "#F87171" }} title="Overdue in the mailer cadence">
                               OVERDUE

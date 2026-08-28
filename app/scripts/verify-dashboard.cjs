@@ -304,10 +304,39 @@ function check(name, cond, detail = "") {
       `precondition(carriesNoPredicate)=${pre} phone=${JSON.stringify((c && c.phone) || "")} opps=${opps.length} assertion(presentInQueue)=${present}`);
   }
 
+  // ── 8 — OQ-6 (iii): the partial-write flag stays silent on consistent state ──
+  //
+  // WHAT IT ASSERTS. No Lead Queue row carries the ATTEMPT NOT RECORDED badge
+  // while every contact's attempt and disposition event agree. That is the
+  // failure the 30s tolerance exists to prevent: last_call_attempt is written
+  // immediately BEFORE the bell in every disposition path, so a strict
+  // comparison would flag every SUCCESSFUL disposition on all seven paths, and a
+  // signal that cries wolf on the normal path teaches the operator to ignore the
+  // one thing built to be trusted.
+  //
+  // ⚠ RECORDED, NOT SILENTLY SKIPPED. Until a disposition has actually been
+  // recorded in Production, no contact carries iaos_disposition_at and this
+  // assertion is UNEXERCISED — it would pass even if the badge could never
+  // render. The detail line reports the exercised count so the output says so
+  // rather than reading as coverage. It becomes a real regression guard the
+  // moment the first disposition lands, and the positive case cannot be created
+  // here: seeding one is a Production write, which this harness refuses.
+  {
+    const badges = await page.evaluate(() =>
+      document.querySelectorAll('[data-testid="partial-write-flag"]').length);
+    const dispositioned = [...inQueue].filter((id) => {
+      const c = byId.get(id);
+      return !!(c && c.dispositionAt);
+    }).length;
+    check("partial-write-flag-silent-when-consistent", badges === 0,
+      `badges=${badges} queueRows=${inQueue.size} rowsCarryingDispositionAt=${dispositioned}` +
+      (dispositioned === 0 ? " — NOTE: 0, so this assertion is currently UNEXERCISED" : ""));
+  }
+
   await browser.close();
 
-  // ── Self-check: exactly 8, all passed — else nonzero ──
+  // ── Self-check: exactly 9, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
-  if (checksRun !== 8) { console.log(`ABORT — expected 8 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 9) { console.log(`ABORT — expected 9 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
