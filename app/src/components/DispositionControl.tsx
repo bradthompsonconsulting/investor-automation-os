@@ -4,6 +4,7 @@ import {
   readOverrides, recordOverride, effectiveDisposition,
   type StorageLike,
 } from "../lib/dispositionOverride";
+import { formatCallbackTime } from "../lib/callbackWrite";
 
 /**
  * Board 4 Tranche A — the native disposition control.
@@ -185,9 +186,11 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
       // too. setCallbackDatetime writes both the DATE and the TEXT companion in
       // one call (R6 — no new date carrier). NOT scheduleCallbackGated: that
       // wrapper owns its own note and attempt, which this sequence owns.
+      let callbackIso: string | null = null;
       if (followUp) {
+        callbackIso = new Date(followUpAt).toISOString();
         try {
-          await ghl.contacts.setCallbackDatetime(contactId, new Date(followUpAt).toISOString());
+          await ghl.contacts.setCallbackDatetime(contactId, callbackIso);
         } catch (e) {
           setSubmit({
             status: "partial", label,
@@ -200,8 +203,17 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
       // ── 4 · human record, then the grey ───────────────────────────────
       // Note first so an attempt can never grey a row with no record behind it
       // — the ordering ghl-disposition.ts uses for the same reason.
+      // THE NOTE ASSERTS THE CALLBACK, the property scheduleCallbackGated
+      // encodes at callbackWrite.ts:50 and states in its header. This path owns
+      // its own note rather than reusing that wrapper — the wrapper also owns an
+      // attempt, which this sequence writes itself — so the assertion has to be
+      // carried here or the human record silently stops naming the callback
+      // time. Reuses the exported formatter; no second note, no second attempt.
       let noteError: string | null = null;
-      try { await ghl.notes.create(contactId, `Call: ${label}`); }
+      const noteBody = callbackIso
+        ? `Call: ${label} — callback scheduled for ${formatCallbackTime(callbackIso)}`
+        : `Call: ${label}`;
+      try { await ghl.notes.create(contactId, noteBody); }
       catch (e) { noteError = (e as Error).message; }
 
       let attemptError: string | null = null;
