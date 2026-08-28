@@ -46,7 +46,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-DPaQQp7l.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
+const EXPECTED = "index-Dc60s2UT.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
 
 /* Environment + fixture carrier (Gate 4C C4a).
 
