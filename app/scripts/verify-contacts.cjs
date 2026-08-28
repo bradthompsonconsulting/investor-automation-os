@@ -32,7 +32,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-C73gZHs_.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
+const EXPECTED = "index-DPaQQp7l.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
 
 /* Environment + fixture carrier (Gate 4C C4a).
 
@@ -116,7 +116,11 @@ const RECORD = [
   { folder: "Form | IAOS Client Intake Form", fields: ["Upload Your Lead CSV (if applicable)"] },
 ];
 const FOLDER_ORDER = RECORD.map((g) => g.folder);
-const SUBGROUP_EXPECT = [["Reachability", 23], ["Property", 30], ["Investor", 14], ["System", 7]];
+// ⚠ A SECOND, INDEPENDENT COUNT. These numbers are NOT derived from RECORD
+// above, so the two can disagree — and did: Board 4 S1 added three names to
+// RECORD's System subgroup and left this at 7, which failed subgroup-seq-4
+// with the field checks all passing. Update BOTH when a field is added.
+const SUBGROUP_EXPECT = [["Reachability", 23], ["Property", 30], ["Investor", 14], ["System", 10]];
 
 // Harness-local copies of the app's display transforms (NOT imported) — used only to
 // compute the expected identity renders for checks 113/114.
@@ -478,7 +482,7 @@ async function clickControlByBody(page, mark) {
     }
   }
 
-  // 110-113 — four Additional Info subgroups: order + count (23/30/14/7) counted from the DOM.
+  // 110-113 — four Additional Info subgroups: order + count (23/30/14/10) counted from the DOM.
   const domAI = byName("Additional Info");
   SUBGROUP_EXPECT.forEach(([sgName, count], i) => {
     const domSg = domAI && domAI.subgroups[i];
