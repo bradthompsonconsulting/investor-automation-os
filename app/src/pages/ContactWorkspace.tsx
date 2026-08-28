@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow } from "../lib/ghl";
 import { CallbackPopover } from "../components/CallbackPopover";
+import { DispositionControl } from "../components/DispositionControl";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
 import { ADDITIONAL_INFO_SUBGROUPS, type AdditionalInfoSubgroup } from "../config/additionalInfoSubgroups";
@@ -930,6 +931,19 @@ export default function ContactWorkspace() {
           </span>
         )}
       </div>
+
+      {/* Board 4 Tranche A — native disposition capture (R1). Sits directly
+          under Actions because it records the outcome of the call the Call
+          button above hands off to GHL for. onAttempt fires only on a CONFIRMED
+          attempt write, so the in-session override never claims a write that
+          did not land — the same rule the note→attempt path at L738 follows. */}
+      {contact && (
+        <DispositionControl
+          contactId={id!}
+          contact={detail}
+          onAttempt={(iso) => setAttemptOverride(iso)}
+        />
+      )}
 
       {/* Record section (§5.4) — all six folders, collapsible. Live field defs +
           folder names from GHL; ORDER is an IAOS presentation decision (Offer
