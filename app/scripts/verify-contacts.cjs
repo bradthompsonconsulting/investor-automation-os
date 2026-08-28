@@ -930,7 +930,7 @@ async function clickControlByBody(page, mark) {
 
   await browser.close();
 
-  // ── Self-check: exactly 145, all unique, all passed — else nonzero ──
+  // ── Self-check: exactly 159, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
   if (checksRun !== 159) { console.log(`ABORT — expected 159 checks, ran ${checksRun}`); process.exit(2); }
