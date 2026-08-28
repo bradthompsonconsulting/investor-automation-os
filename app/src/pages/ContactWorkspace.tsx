@@ -50,6 +50,49 @@ const ADDITIONAL_INFO_FOLDER_ID = FOLDERS.additionalInfo;
 const TIER_COLOR: Record<BucketTag, string> = { hot: "#EF4444", warm: "#F59E0B", low: "#64748B" };
 const TIER_ICON: Record<BucketTag, typeof Flame> = { hot: Flame, warm: Sun, low: Snowflake };
 
+/* ── Board #5 S1 — the persistent call rail, SHELL ONLY ─────────────────────
+   SELLER_ACQUISITION_WORKFLOW.md L193: "The persistent call rail is the most
+   important UI element in this document." L202: "Before Gate 1 resolves, the
+   rail says what it is waiting for rather than showing a blank or a zero."
+   S1 IS THAT SENTENCE AND NOTHING ELSE. Four cells, four waiting states, no
+   data path of any kind.
+
+   TWO REASONS, NOT ONE — and the rendered text is NEVER derived from the
+   reason. `reason` is a styling/harness hook only; `waitingFor` holds four
+   INDEPENDENT string literals in Brad's verbatim wording. A future edit to the
+   reason union therefore cannot silently reword a cell, and the two classes
+   cannot collapse into one "unavailable" state:
+
+     pending-opportunity-read   a carrier EXISTS and is grounded in ghl-config;
+                                this page simply does not fetch the Opportunity
+                                yet. S2 resolves both cells at once.
+     no-negotiation-carrier     NO carrier exists. SELLER_ACQUISITION_WORKFLOW
+                                L297-300 lists both under "No carrier exists
+                                for: ... negotiation state". Not an S2 fetch —
+                                a carrier decision that has not been made.
+
+   ⚠ SELLER ASK IS DELIBERATELY NOT RENDERED, THOUGH IT IS IN HAND.
+   contact.asking_price is already in the ContactDetail this page fetches at
+   L582 and could be shown today. It is NOT authoritative: resolver.ts:329
+   reads `askingPrice: opportunity.askingPrice ?? contact.askingPrice`, so
+   whenever the Opportunity carries a value the contact value is the one
+   Underwriting IGNORES. Rendering it would ship a rail that disagrees with
+   the underwriting screen about the ask — the exact defect #5 exists to
+   prevent. Ask goes live in S2, paired with MAO, or not at all. */
+type RailReason = "pending-opportunity-read" | "no-negotiation-carrier";
+
+const RAIL_CELLS: {
+  key: string;
+  label: string;
+  reason: RailReason;
+  waitingFor: string;
+}[] = [
+  { key: "seller-ask",      label: "Seller Ask",              reason: "pending-opportunity-read", waitingFor: "unavailable pending Opportunity read" },
+  { key: "seller-mao",      label: "Seller MAO",              reason: "pending-opportunity-read", waitingFor: "unavailable pending Opportunity read" },
+  { key: "seller-position", label: "Current Seller Position", reason: "no-negotiation-carrier",   waitingFor: "WAITING on negotiation carrier" },
+  { key: "investor-offer",  label: "Current Investor Offer",  reason: "no-negotiation-carrier",   waitingFor: "WAITING on negotiation semantics / carrier contract" },
+];
+
 function contactName(c: ContactRow): string {
   return [c.firstName, c.lastName].filter(Boolean).join(" ") || "Unknown";
 }
@@ -855,6 +898,83 @@ export default function ContactWorkspace() {
             <ScoreChip label="Deal" score={contact.dealScore} />
           </div>
         )}
+      </div>
+
+      {/* Board #5 S1 — persistent call rail, SHELL ONLY. See RAIL_CELLS above.
+
+          PLACEMENT is the §D measurement, re-derived here: a FLAT SIBLING
+          between the identity header and Actions. Nothing existing is
+          re-nested or modified — the three blocks were already siblings under
+          one maxWidth wrapper, so this is a pure insert, the same shape as the
+          Board 4 DispositionControl mount below Actions.
+
+          ABOVE Actions, not below: deal economics are the context for the call,
+          so they precede the actions taken on that context. Below Actions would
+          also push the rail under DispositionControl, separating the ask from
+          the disposition that answers it.
+
+          RENDERS UNCONDITIONALLY — no `loading` gate, no `contact` gate. It has
+          no inputs, so it has no loading state; gating it would make a
+          data-free block flicker on every navigation. The identity header
+          above renders unconditionally for the same reason.
+
+          INERT BY CONSTRUCTION: no fetch, no write, no setter, no config read,
+          no parser field, no props, no state, no effect. It cannot grey a row,
+          cannot fire a workflow, and cannot disagree with any other surface,
+          because it reads nothing.
+
+          STICKY, DELIBERATELY — `position: "sticky"`, `top: 0`, `zIndex: 1` on
+          the style object below. SELLER_ACQUISITION_WORKFLOW.md L207-208 is the
+          authority: "A guardrail that scrolls out of view when the seller says
+          a number is not a guardrail." Seller MAO lands in this rail at S2, and
+          a MAO that has scrolled off during a live call is not a guardrail — so
+          the rail outlives the scroll or it fails its only job. The scroll
+          container is <main className="flex-1 overflow-auto p-6"> in
+          Layout.tsx:22; nothing between it and this div sets `overflow`, so
+          nothing clips the sticky.
+
+          ⚠ `top: 0` PINS TO THE SCROLLPORT TOP, ABOVE main's p-6 — so the stuck
+          rail sits flush under the Header, and both are near #0D1B3E. THAT
+          OUTCOME IS KNOWN AND ACCEPTED, not an oversight. Do NOT "fix" it with
+          a bottom border, a top offset or a separator.
+
+          ⚠ `zIndex: 1`, NOT HIGHER. CallbackPopover renders at zIndex 20
+          (CallbackPopover.tsx:50) and MUST draw over a stuck rail; raising this
+          value hides the callback popover behind it.
+
+          Decided in the S1 amendment — see claude/board-5-s1-review-2026-08-28.md. */}
+      <div
+        data-testid="deal-rail"
+        style={{
+          display: "flex", flexWrap: "wrap", gap: "28px",
+          background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)",
+          borderRadius: "10px", padding: "12px 18px", marginBottom: "18px",
+          position: "sticky", top: 0, zIndex: 1,
+        }}
+      >
+        {RAIL_CELLS.map((cell) => (
+          <div key={cell.key} data-testid={`rail-cell-${cell.key}`} style={{ minWidth: 0 }}>
+            <div
+              data-testid={`rail-label-${cell.key}`}
+              style={{
+                fontSize: "11px", fontWeight: 600, letterSpacing: "0.05em",
+                textTransform: "uppercase", color: "#64748B", marginBottom: "3px",
+              }}
+            >
+              {cell.label}
+            </div>
+            {/* Dimmer than its own label and italic, so a waiting state can
+                never be misread as a value. NO ZERO, NO DASH, NO BLANK — the
+                cell states what it is waiting for, per L202. */}
+            <div
+              data-testid={`rail-state-${cell.key}`}
+              data-rail-reason={cell.reason}
+              style={{ fontSize: "12px", fontStyle: "italic", color: "#475569" }}
+            >
+              {cell.waitingFor}
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* Actions (§7). Call button (step 4) opens GHL's own dialer in a new tab —
