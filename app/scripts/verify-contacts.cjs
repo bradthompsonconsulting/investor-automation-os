@@ -23,9 +23,13 @@
    activation assertions. Keep the formula next to the number; a floor without
    its derivation is how the next unlock gets it wrong.
    D5 conversation parity (CONTACTS_DETAIL_SPEC D5): + 9 = 145.
-   Board #5 S1+S2 persistent call rail: + 13 = 158.
-     structure (4)  one rail · actually sticky (computed style) · four cells in
-                    DOM order · identity equals the h1
+     Neelima (4): delta, long-email-collapsed, expand, collapse.
+     Gordon  (5): delta, sms-rendered, sms-alignment, sms-never-collapses,
+                  inbound-email-collapsed.
+   Board #5 S1+S2 persistent call rail: + 14 = 159.
+     structure (5)  one rail · actually sticky (computed style) · z-index is 1
+                    (its own check: the CallbackPopover at 20 must stay above it) ·
+                    four cells in DOM order · identity equals the h1
      ask (4)        value · tone · provenance says "Contact fallback" ·
                     provenance is NOT "Opportunity"
      mao (3)        not-yet-approved text · waiting tone · NO provenance element
@@ -36,10 +40,7 @@
    identity renders.
    REPLACES, does not extend, S1's proposed "rail carries no numeric content"
    check. That invariant expired when S2 gave the rail a legitimate figure.
-     Neelima (4): delta, long-email-collapsed, expand, collapse.
-     Gordon  (5): delta, sms-rendered, sms-alignment, sms-never-collapses,
-                  inbound-email-collapsed.
-   Success ONLY when checksRun === 145 AND every check passed. Any throw exits nonzero.
+   Success ONLY when checksRun === 159 AND every check passed. Any throw exits nonzero.
    The 101-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
@@ -613,7 +614,13 @@ async function clickControlByBody(page, mark) {
 
   check("rail-renders-exactly-one", rec.rail.count === 1, `count=${rec.rail.count}`);
   check("rail-is-sticky", rec.rail.position === "sticky" && rec.rail.top === "0px",
-    `position="${rec.rail.position}" top="${rec.rail.top}" zIndex="${rec.rail.zIndex}"`);
+    `position="${rec.rail.position}" top="${rec.rail.top}"`);
+  /* SEPARATE from rail-is-sticky, not a third condition on it. A combined
+     assertion reports "sticky failed" without saying which property moved.
+     z-index also has its own failure MEANING: at 1 the CallbackPopover
+     (zIndex 20) draws over a stuck rail; raise this and the popover hides
+     behind it. That is a different defect from "the rail stopped sticking". */
+  check("rail-zindex-is-1", rec.rail.zIndex === "1", `zIndex="${rec.rail.zIndex}"`);
   check("rail-four-cells-in-order",
     JSON.stringify(rec.rail.cells.map((c) => c.key)) ===
       JSON.stringify(["seller-ask", "seller-mao", "seller-position", "investor-offer"]),
@@ -926,6 +933,6 @@ async function clickControlByBody(page, mark) {
   // ── Self-check: exactly 145, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 158) { console.log(`ABORT — expected 158 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 159) { console.log(`ABORT — expected 159 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
