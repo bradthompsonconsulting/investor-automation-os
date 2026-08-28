@@ -13,6 +13,11 @@ import {
 } from "../lib/underwriting/resolver";
 import { computeUnderwriting } from "../lib/underwriting/compute";
 import { toViewModel, type ApproveState, type ScreenState, type SelectedOpportunity } from "../lib/underwriting/view-model";
+/* Board #5 S2 — the selection rule moved OUT of this file so the call rail can
+   answer "which opportunity is this deal" with the same code, not a copy of it.
+   Behaviour here is unchanged: these three call sites replace inline logic with
+   calls to the identical logic. */
+import { opportunitiesForContact, opportunityCandidates, selectOpportunity } from "../lib/underwriting/selectOpportunity";
 import { OPTION_BY_MODE, ASSIGNMENT_MODE_OPTIONS } from "../lib/underwriting/resolver-types";
 import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
 import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriting/types";
@@ -436,7 +441,7 @@ export default function UnderwritingWorkspace() {
       .then(([c, pipeline, policy]) => {
         if (cancelled) return;
         setContact(c);
-        setOpps(pipeline.opportunities.filter((o) => o.contactId === contactId));
+        setOpps(opportunitiesForContact(pipeline.opportunities, contactId));
         setPolicyValues(policy.values);
       })
       .catch((e: Error) => { if (!cancelled) setFetchError(e.message); });
@@ -446,7 +451,7 @@ export default function UnderwritingWorkspace() {
   const loading = fetchError === null && (contact === null || opps === null || policyValues === null);
 
   const candidates: SelectedOpportunity[] = useMemo(
-    () => (opps ?? []).map((o) => ({ id: o.id, name: o.opportunityName || o.contactName || o.id })),
+    () => opportunityCandidates(opps),
     [opps],
   );
 
@@ -455,11 +460,10 @@ export default function UnderwritingWorkspace() {
    * effect so a one-item selector never flashes. More than one requires an
    * explicit choice — PB-D55 forbids assuming the first is the deal.
    */
-  const selected: SelectedOpportunity | null = useMemo(() => {
-    if (candidates.length === 1) return candidates[0];
-    if (chosenId === null) return null;
-    return candidates.find((c) => c.id === chosenId) ?? null;
-  }, [candidates, chosenId]);
+  const selected: SelectedOpportunity | null = useMemo(
+    () => selectOpportunity(candidates, chosenId),
+    [candidates, chosenId],
+  );
 
   const pipeline = useMemo(() => {
     if (!contact || !opps || !policyValues || !selected) {
