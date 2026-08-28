@@ -66,6 +66,24 @@ export const CALL_DISPOSITION_ID = CONFIG.fields.callDisposition;
 export const CALL_ROUTING_ID     = CONFIG.fields.callRouting;
 export const DISPOSITION_AT_ID   = CONFIG.fields.dispositionAt;
 
+/* Board #5 S3 — contact.occupancy_status. MULTIPLE_OPTIONS, three options,
+   RULED SINGLE-SELECT. Ids read back live from both locations 2026-08-28. */
+export const OCCUPANCY_STATUS_ID = CONFIG.fields.occupancyStatus;
+
+/**
+ * The three options, as they exist on the field in BOTH locations (observed
+ * 2026-08-28, identical in Production and Test). A union rather than `string`:
+ * the setter below then cannot be handed a value the field does not offer.
+ */
+export type OccupancyStatus = "Owner Occupied" | "Tenant Occupied" | "Vacant";
+
+/** Render order = the option order GHL returns. Not alphabetised. */
+export const OCCUPANCY_OPTIONS: readonly OccupancyStatus[] = [
+  "Owner Occupied",
+  "Tenant Occupied",
+  "Vacant",
+] as const;
+
 // Dashboard Phase 2B — GHL's public API cannot trigger an outbound call (it
 // can only log one that already happened); the click-to-call button hands off
 // to GHL's own contact page, where GHL's native dialer applies the Number's
@@ -704,6 +722,46 @@ export const ghl = {
     // the trigger the four migrated workflows watch. TEXT, not DATE.
     setDispositionAt: (contactId: string, iso: string) =>
       ghl.contacts._putStringField(contactId, DISPOSITION_AT_ID, iso),
+
+    /* Board #5 S3 — PRIVATE options transport, the counterpart to
+       _putMonetaryField and _putStringField and permitted by the same PB-D16
+       §4.4 sentence: a private one-field PUT helper is allowed, a PUBLIC setter
+       parameterized over field ID is not.
+
+       ⚠ THIS HELPER CARRIES NO CARDINALITY OPINION. It sends whatever array it
+       is given. Deciding that occupancy is one element is the named setter's
+       job below, because that is a ruling about ONE FIELD and not a property of
+       MULTIPLE_OPTIONS. A future multi-valued field would pass a longer array
+       through this same helper and would need its OWN named setter and its OWN
+       ruling. Do not add a `single` flag here and do not branch on dataType. */
+    _putOptionsField: (contactId: string, fieldId: string, value: string[] | "") =>
+      request<any>(`/contacts/${contactId}`, "PUT", {
+        customFields: [{ id: fieldId, field_value: value }],
+      }),
+
+    /* Board #5 S3 — occupancy_status. A named method by its own decision; it
+       takes no field id from the caller.
+       ⚠ NOTHING CALLS THIS YET. S3a is inert plumbing: the id exists, the
+       setter exists, and no UI path reaches it until S3b.
+
+       THE WIRE CONTRACT, and the only part of MULTIPLE_OPTIONS that is proven:
+         selected -> a ONE-ELEMENT ARRAY   ["Vacant"]
+         clear    -> ""                     (empty string, NOT an empty array)
+       Both were exercised through the four-stage inert-proof runner on two
+       contacts — PB-D37/D38 on probe HGZAby6snRZfpl0go2Yb and PB-D40/D41 on
+       bradt75. FIELD_REGISTER records the asymmetry that makes the clear value
+       matter: "empty string -> KEY_ABSENT; empty array leaves the key present".
+       An empty array does NOT clear the field. Do not "simplify" "" to [].
+
+       MULTI-ELEMENT SERIALIZATION IS NOT PROVEN AND IS NOT USED HERE. The
+       single-option parameter is what keeps this setter inside what was
+       measured. */
+    setOccupancyStatus: (contactId: string, value: OccupancyStatus | "") =>
+      ghl.contacts._putOptionsField(
+        contactId,
+        OCCUPANCY_STATUS_ID,
+        value === "" ? "" : [value],
+      ),
   },
 
   notes: {

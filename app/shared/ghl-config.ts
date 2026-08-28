@@ -28,6 +28,14 @@ export interface GhlConfig {
     callDisposition: string;
     callRouting: string;
     dispositionAt: string;
+    /* Board #5 S3. contact.occupancy_status, MULTIPLE_OPTIONS, three options:
+       Owner Occupied / Tenant Occupied / Vacant.
+       ⚠ RULED SINGLE-SELECT, AND THE RULING BINDS THIS FIELD ONLY. It is not a
+       property of MULTIPLE_OPTIONS. motivation_level may genuinely be
+       multi-valued and gets its own ruling; nothing here may be generalised to
+       it. Cardinality is a declared property of the field (PB-D9), never
+       inferred from dataType. */
+    occupancyStatus: string;
   };
   folders: {
     offer: string;
@@ -116,6 +124,12 @@ const PRODUCTION: GhlConfig = {
     callDisposition:         "vvgwGb0X4WKOHDGIuoAS",
     callRouting:             "Zjy57J2LgsAIOA5iurz3",
     dispositionAt:           "y92B4WX7RVCFTm3An3WN",
+    // Board #5 S3, READ BACK FROM GHL 2026-08-28 via
+    // GET /locations/{id}/customFields -- not transcribed from FIELD_REGISTER,
+    // which is stale (96 fields recorded, 101 live). fieldKey
+    // contact.occupancy_status, parented to Additional Info, options observed
+    // ["Owner Occupied","Tenant Occupied","Vacant"].
+    occupancyStatus:         "op57wOVFSMRBFbHmD6ej",
   },
   folders: {
     offer:          "YslJ5oke73JrBOgaq0np",
@@ -188,6 +202,12 @@ const TEST: GhlConfig = {
     callDisposition:         "30yWD1NmL12949C7zdfv",
     callRouting:             "W2jz3m0vexRUKTgprgyK",
     dispositionAt:           "aRjrDKXjuY5p5UFvcfyO",
+    // Board #5 S3, read back from the TEST location the same way and on the
+    // same date. NOT resolvable through scripts/ghl-bindings.json: that frozen
+    // artifact predates this key and carries no occupancy binding, so the live
+    // read-back is the provenance -- the same route Board #4 S0 used for the
+    // three carriers above. Options identical to Production.
+    occupancyStatus:         "H3daXFIC1fXl99oG7YX7",
   },
   folders: {
     offer:          "w8jbeT1AwN0YZjA9geAX",
@@ -341,6 +361,9 @@ const RUNTIME_GROUPS = {
     "callDisposition",
     "callRouting",
     "dispositionAt",
+    // Board #5 S3: browser-WRITTEN by the occupancy editor, so its id must
+    // reach the client.
+    "occupancyStatus",
   ],
   folders: ["offer", "additionalInfo"],
   customValues: [
@@ -376,6 +399,7 @@ export interface RuntimeConfig {
     | "callDisposition"
     | "callRouting"
     | "dispositionAt"
+    | "occupancyStatus"
   >;
   folders: GhlConfig["folders"];
   customValues: Omit<GhlConfig["customValues"], "mailerDigestRecipient">;
