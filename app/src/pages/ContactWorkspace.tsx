@@ -6,13 +6,14 @@ import {
   Calculator,
 } from "lucide-react";
 import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow } from "../lib/ghl";
-/* Board #5 S2 — the rail resolves the deal through the SAME code the
-   underwriting screen uses. parseOpportunityValues/parseContactSeeds are
-   resolver.ts's own exported parsers, so the rail cannot drift from
-   Underwriting on how a field is read; selectOpportunity.ts is the extracted
-   PB-D55 selection rule both surfaces now call. */
-import { parseOpportunityValues, parseContactSeeds } from "../lib/underwriting/resolver";
-import { opportunitiesForContact, opportunityCandidates, selectOpportunity, readOpportunityNumber } from "../lib/underwriting/selectOpportunity";
+/* Board #5 S2d — the rail's logic lives in ../lib/rail, a module with no React
+   and no module-scope config read, so it is loadable by a .cjs runner and the
+   Ask precedence can be proven offline. This page supplies the ids and renders
+   what comes back; it decides nothing about the rail. Inside that module the
+   ask precedence still mirrors resolver.ts:329 and still parses both sides
+   through resolver.ts's own exported parsers. */
+import { deriveRailDeal, railCells, type RailDeal, type RailIds } from "../lib/rail";
+import { opportunitiesForContact } from "../lib/underwriting/selectOpportunity";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { DispositionControl } from "../components/DispositionControl";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
@@ -53,23 +54,30 @@ const ADDITIONAL_INFO_FOLDER_ID = FOLDERS.additionalInfo;
 
 /* Board #5 S2 — rail id bindings. Same config keys UnderwritingWorkspace binds
    at its L44-56, so the two surfaces read the same fields by construction.
-   OPP_FACT_IDS is shaped for parseOpportunityValues; only askingPrice is used
-   here, but the parser takes the whole set and passing a partial one would mean
-   re-implementing it. SELLER_MAO_ID is separate: it is an underwriting OUTPUT
-   that Approve persists, not a deal fact. */
+   oppFacts is shaped for parseOpportunityValues; only askingPrice is used by
+   the rail, but the parser takes the whole set and passing a partial one would
+   mean re-implementing it. sellerMAO is separate: it is an underwriting OUTPUT
+   that Approve persists, not a deal fact.
+
+   S2d — THE BINDING STAYS HERE; THE READING MOVED. ../lib/rail takes these as
+   an argument rather than calling getRuntimeConfig() itself, which is what
+   makes it loadable outside a browser. The config keys and therefore the values
+   are unchanged. */
 const RAIL_CONFIG = getRuntimeConfig();
-const OPP_FACT_IDS = {
-  arv:            RAIL_CONFIG.opportunityFacts.arv,
-  repairs:        RAIL_CONFIG.opportunityFacts.repairs,
-  askingPrice:    RAIL_CONFIG.opportunityFacts.askingPrice,
-  assignmentMode: RAIL_CONFIG.opportunityFields.assignmentMode,
+const RAIL_IDS: RailIds = {
+  oppFacts: {
+    arv:            RAIL_CONFIG.opportunityFacts.arv,
+    repairs:        RAIL_CONFIG.opportunityFacts.repairs,
+    askingPrice:    RAIL_CONFIG.opportunityFacts.askingPrice,
+    assignmentMode: RAIL_CONFIG.opportunityFields.assignmentMode,
+  },
+  contactSeeds: {
+    arv:         RAIL_CONFIG.fields.arv,
+    repairs:     RAIL_CONFIG.fields.estimatedRepairs,
+    askingPrice: RAIL_CONFIG.fields.askingPrice,
+  },
+  sellerMAO: RAIL_CONFIG.opportunityFields.sellerMAO,
 };
-const CONTACT_SEED_IDS = {
-  arv:         RAIL_CONFIG.fields.arv,
-  repairs:     RAIL_CONFIG.fields.estimatedRepairs,
-  askingPrice: RAIL_CONFIG.fields.askingPrice,
-};
-const SELLER_MAO_ID = RAIL_CONFIG.opportunityFields.sellerMAO;
 
 // ── Presentational helpers (replicated from Dashboard; purely visual, no
 //    coupling — Dashboard.tsx is intentionally untouched this phase) ──────────
@@ -77,132 +85,6 @@ const SELLER_MAO_ID = RAIL_CONFIG.opportunityFields.sellerMAO;
 const TIER_COLOR: Record<BucketTag, string> = { hot: "#EF4444", warm: "#F59E0B", low: "#64748B" };
 const TIER_ICON: Record<BucketTag, typeof Flame> = { hot: Flame, warm: Sun, low: Snowflake };
 
-/* ── Board #5 — the persistent call rail. S1 shell, S2 Opportunity read ─────
-   SELLER_ACQUISITION_WORKFLOW.md L193: "The persistent call rail is the most
-   important UI element in this document." L202: "Before Gate 1 resolves, the
-   rail says what it is waiting for rather than showing a blank or a zero."
-   THAT SENTENCE IS THE WHOLE CONTRACT and it survives S2 intact: every state
-   below states what is missing. No blank, no zero, no fake value, ever.
-
-   S2 resolved the two Opportunity-backed cells. The other two did NOT become
-   late — they became permanent until a carrier decision is made, and the
-   distinction is the thing this comment exists to protect:
-
-     Seller Ask / Seller MAO         a carrier EXISTS. Resolved from the
-                                     Opportunity read; see railCells().
-     Current Seller Position         NO carrier exists.
-     Current Investor Offer          SELLER_ACQUISITION_WORKFLOW L297-300 lists
-                                     both under "No carrier exists for: ...
-                                     negotiation state". Not a fetch away — a
-                                     carrier decision nobody has made.
-
-   ⚠ DO NOT "RESOLVE" THE LOWER TWO BY POINTING THEM AT A CONVENIENT FIELD.
-   offer_price is the MAO calculator's saved-offer field, not "our current
-   offer in this negotiation"; wiring it here would invent a semantic the data
-   model does not carry. Their waiting strings are verbatim and stay verbatim
-   until a carrier is ruled.
-
-   ⚠ SELLER ASK: AGREEMENT WITH UNDERWRITING, NOT PURITY OF PROVENANCE.
-   S2 mirrors resolver.ts:329 exactly — `opportunity.askingPrice ??
-   contact.askingPrice`. Opportunity first; Contact only when the Opportunity
-   has none. The earlier "never fall back to contact" contract was WITHDRAWN,
-   and correctly: it would have made the rail say "unavailable" while the
-   underwriting screen one click away showed the contact value. Two surfaces
-   disagreeing about the ask is the defect; the fallback itself is a proven,
-   currently legitimate resolver path.
-
-   WHAT MAKES THE FALLBACK SAFE IS DISCLOSURE, NOT AVOIDANCE. Whenever the
-   contact value is used the rail SAYS SO, in the cell, next to the number. A
-   contact fallback must never be able to pass as an Opportunity-owned value.
-   Do not remove the provenance line to tidy the layout.
-
-   ⚠ SELLER MAO HAS NO CONTACT FALLBACK AND MUST NEVER BE GIVEN ONE. It is an
-   Opportunity value that Approve writes. Absent means NOT YET APPROVED, which
-   is a real and different state from "no opportunity" — see railCells(). */
-const RAIL_MONEY = (n: number): string =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-
-/** Which source supplied the displayed Ask. Rendered, never inferred. */
-export type AskSource = "opportunity" | "contact";
-
-/** The rail's read of the deal. Every state is explicit; none is a blank. */
-export type RailDeal =
-  | { state: "loading" }
-  | { state: "error"; message: string }
-  | { state: "no_opportunity" }
-  | { state: "awaiting_selection"; count: number }
-  | {
-      state: "resolved";
-      opportunityName: string;
-      ask: { value: number; source: AskSource } | null;
-      mao: number | null;
-    };
-
-type RailCellView = {
-  key: string;
-  label: string;
-  /** The value, or the statement of what is missing. NEVER blank, zero or "—". */
-  primary: string;
-  /** Provenance / qualifier line. Null when there is nothing to disclose. */
-  provenance: string | null;
-  /** "value" renders as a figure; "waiting" renders dim and italic. */
-  tone: "value" | "waiting";
-};
-
-/**
- * PURE. The whole rail as four ordered cells, derived from one deal read.
- *
- * Position and Investor Offer are NOT part of the deal read at all — no
- * carrier exists for either (SELLER_ACQUISITION_WORKFLOW L297-300), so they
- * carry their S1 waiting strings verbatim in every state. They are not
- * "pending a fetch"; they are pending a carrier decision, and collapsing those
- * two reasons into one is what S1's comment forbade.
- */
-function railCells(deal: RailDeal): RailCellView[] {
-  const waiting = (primary: string): Pick<RailCellView, "primary" | "provenance" | "tone"> =>
-    ({ primary, provenance: null, tone: "waiting" });
-
-  let ask: Pick<RailCellView, "primary" | "provenance" | "tone">;
-  let mao: Pick<RailCellView, "primary" | "provenance" | "tone">;
-
-  switch (deal.state) {
-    case "loading":
-      ask = mao = waiting("reading Opportunity…");
-      break;
-    case "error":
-      ask = mao = waiting(`Opportunity read failed — ${deal.message}`);
-      break;
-    case "no_opportunity":
-      // Board #1 §3: a contact with no Seller Opportunity is an exception, not
-      // a path. Say that, rather than implying a number is merely late.
-      ask = mao = waiting("no Opportunity on this contact");
-      break;
-    case "awaiting_selection":
-      // PB-D55. The rail is read-only and does not choose; it names the count
-      // and sends the operator to the surface that CAN choose.
-      ask = mao = waiting(`${deal.count} Opportunities — select one in Underwriting`);
-      break;
-    case "resolved":
-      ask = deal.ask === null
-        ? waiting("no ask on Opportunity or Contact")
-        : {
-            primary: RAIL_MONEY(deal.ask.value),
-            provenance: deal.ask.source === "opportunity" ? "Opportunity" : "Contact fallback",
-            tone: "value",
-          };
-      mao = deal.mao === null
-        ? waiting("not yet approved — run Underwriting")
-        : { primary: RAIL_MONEY(deal.mao), provenance: "Opportunity", tone: "value" };
-      break;
-  }
-
-  return [
-    { key: "seller-ask", label: "Seller Ask", ...ask },
-    { key: "seller-mao", label: "Seller MAO", ...mao },
-    { key: "seller-position", label: "Current Seller Position", ...waiting("WAITING on negotiation carrier") },
-    { key: "investor-offer", label: "Current Investor Offer", ...waiting("WAITING on negotiation semantics / carrier contract") },
-  ];
-}
 
 function contactName(c: ContactRow): string {
   return [c.firstName, c.lastName].filter(Boolean).join(" ") || "Unknown";
@@ -813,47 +695,15 @@ export default function ContactWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  /* Board #5 S2 — THE RAIL'S DEAL READ. Pure derivation, no effect, no write.
-     Order matters, exactly as toViewModel's does: each branch assumes every
-     branch above it failed.
-
-     ⚠ chosenId is HARD null, not state. The rail does not choose between
-     deals — with more than one candidate it resolves to null and says so.
-     PB-D55 forbids assuming the first is the deal, and a read-only rail
-     silently picking one would be the worst possible place to break that. */
-  const railDeal: RailDeal = useMemo(() => {
-    if (oppsError !== null) return { state: "error", message: oppsError };
-    if (opps === null || detailLoading) return { state: "loading" };
-
-    const candidates = opportunityCandidates(opps);
-    if (candidates.length === 0) return { state: "no_opportunity" };
-
-    const selected = selectOpportunity(candidates, null);
-    if (selected === null) return { state: "awaiting_selection", count: candidates.length };
-
-    const opp = opps.find((o) => o.id === selected.id);
-    if (opp === undefined) return { state: "awaiting_selection", count: candidates.length };
-
-    /* Ask — resolver.ts:329's contract, mirrored: Opportunity first, Contact
-       only on absence. Both sides parsed by resolver.ts's OWN exported
-       parsers, so "what counts as present" cannot drift between this rail and
-       the underwriting screen. The branch that selects the value is the same
-       branch that records the provenance, so the disclosure cannot disagree
-       with the number it labels. */
-    const oppAsk = parseOpportunityValues(opp.customFields, OPP_FACT_IDS).askingPrice;
-    const contactAsk = detail === null
-      ? null
-      : parseContactSeeds(detail.customFields, CONTACT_SEED_IDS).askingPrice;
-
-    let ask: { value: number; source: AskSource } | null = null;
-    if (oppAsk !== null) ask = { value: oppAsk, source: "opportunity" };
-    else if (contactAsk !== null) ask = { value: contactAsk, source: "contact" };
-
-    // MAO — Opportunity ONLY. No fallback exists and none may be added.
-    const mao = readOpportunityNumber(opp.customFields, SELLER_MAO_ID);
-
-    return { state: "resolved", opportunityName: selected.name, ask, mao };
-  }, [opps, oppsError, detail, detailLoading]);
+  /* Board #5 S2d — THE RAIL'S DEAL READ, now delegated to ../lib/rail.
+     Still a pure derivation with no effect and no write; the memo exists only
+     so the derivation does not re-run on unrelated renders. Every branch, the
+     ask precedence, the provenance and the PB-D55 hard-null choice live in
+     deriveRailDeal, where they are reachable by a test. */
+  const railDeal: RailDeal = useMemo(
+    () => deriveRailDeal({ opps, oppsError, detail, detailLoading, ids: RAIL_IDS }),
+    [opps, oppsError, detail, detailLoading],
+  );
 
   // Folder names (§5.4) — after defs resolve, fetch every distinct parentId in
   // parallel and build the display-ordered name map. ORDER is an IAOS
