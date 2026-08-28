@@ -4,22 +4,30 @@
    localhost) at Brad's WIDE viewport, and passes the §9.2 bundle gate FIRST — re-pin
    EXPECTED to the bundle under test on every run.
 
-   Floor 121 = grid (5) + six folder sections (6) + 98 custom fields (98)
+   Floor 124 = grid (5) + six folder sections (6) + 101 custom fields (101)
              + four Additional Info subgroups (4) + three D1 identity-header renders (3)
              + four Phone N DNC adjacencies (4) + no-input (1).
-   Phase B PB-D5/PB-D13: floor = 121 + 4N, N = unlocked field count.
+   The custom-field term moved 98 -> 101 at Board 4 S0: three carrier fields
+   were created in Additional Info (iaos_call_disposition, iaos_call_routing,
+   iaos_disposition_at). THE FIELD COUNT MOVES THE FLOOR WHETHER OR NOT A FIELD
+   IS UNLOCKED -- this list enumerates every field by name, so creating one in
+   GHL fails the folder-section checks BEFORE the floor is reached, which reads
+   as an unrelated red. Field creation and this edit are one sitting.
+   Phase B PB-D5/PB-D13: floor = <field term> + 4N, N = unlocked field count.
      N=1  property_notes  (PB-D5)
      N=2  arv             (PB-D16/PB-D17)
-     N=3  estimated_repairs (board item #2B) — 121 + 4(3) = 133.
+     N=3  estimated_repairs (board item #2B) — 124 + 4(3) = 136.
+   The three Board 4 carriers are NOT unlocked: they are written by the
+   disposition control, never inline-edited, so N stays 3.
    Each unlocked field costs FOUR checks: present, value-from-wire, and the two
    activation assertions. Keep the formula next to the number; a floor without
    its derivation is how the next unlock gets it wrong.
-   D5 conversation parity (CONTACTS_DETAIL_SPEC D5): + 9 = 142.
+   D5 conversation parity (CONTACTS_DETAIL_SPEC D5): + 9 = 145.
      Neelima (4): delta, long-email-collapsed, expand, collapse.
      Gordon  (5): delta, sms-rendered, sms-alignment, sms-never-collapses,
                   inbound-email-collapsed.
-   Success ONLY when checksRun === 142 AND every check passed. Any throw exits nonzero.
-   The 98-field list is STATIC + hardcoded here (verification-only) — never imported from
+   Success ONLY when checksRun === 145 AND every check passed. Any throw exits nonzero.
+   The 101-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
 
@@ -96,7 +104,13 @@ const RECORD = [
     { name: "Reachability", fields: ["Phone 1 DNC", "Phone 2", "Phone 2 DNC", "Phone 3", "Phone 3 DNC", "Phone 4", "Phone 4 DNC", "Phone 5", "Phone 5 DNC", "Email 2", "Email 3", "Email 4", "Owner 2 First Name", "Owner 2 Last Name", "Litigator", "Mailing Care of Name", "Mailing Address", "Mailing City", "Mailing State", "Mailing Zip", "Mailing County", "Do Not Mail", "Previous Phone"] },
     { name: "Property", fields: ["Property Address", "Loan Amount", "Interest Rate", "County", "APN", "Property Status", "Property Type", "Bedrooms", "Total Bathrooms", "Building Sqft", "Lot Size Sqft", "Effective Year Built", "Total Assessed Value", "Last Sale Date", "Last Sale Amount", "Total Open Loans", "Est. Remaining Loan Balance", "Est. Value", "Est. Loan-to-Value", "Est. Equity", "MLS Status", "MLS Date", "MLS Amount", "Lien Amount", "Foreclosure Factor", "Total Condition", "Interior Condition", "Bathroom Condition", "Kitchen Condition", "Exterior Condition"] },
     { name: "Investor", fields: ["Asking Price", "ARV", "Estimated Repairs", "Motivation Level", "Timeline to Sell", "Lead Source", "Occupancy Status", "Follow Up Date", "MAO Viability Flag", "Hold Months", "Carrying Cost", "Repair Line Items", "Owner Occupied", "Property Notes"] },
-    { name: "System", fields: ["Marketing Lists", "Date Added to List", "Motivation Score", "Deal Score", "Combined Score", "Data Completeness Score", "Callback Datetime Precise"] },
+    // Board 4 S0 — the three carriers append at the END of System. GHL positions
+    // 4050/4100/4150 are the three highest in Additional Info (prior max 4000,
+    // "Previous Phone"), so they render last. Their DISPLAY NAMES are lowercase
+    // with underscores, matching what was created in GHL and read back from it —
+    // the checks compare rendered name, so the sheet's title-case form would have
+    // failed three named checks here.
+    { name: "System", fields: ["Marketing Lists", "Date Added to List", "Motivation Score", "Deal Score", "Combined Score", "Data Completeness Score", "Callback Datetime Precise", "iaos_call_disposition", "iaos_call_routing", "iaos_disposition_at"] },
   ]},
   { folder: "IAOS Onboarding", fields: ["Business Phone", "Business Website", "Wholesaling Market", "SMS Sender Name", "Sending Domain", "Booking Calendar Link", "Onboarding Notes", "Has Sending Domain", "Has Booking Calendar", "Has Existing Leads", "Existing GHL Account"] },
   { folder: "Form | IAOS Client Intake Form", fields: ["Upload Your Lead CSV (if applicable)"] },
@@ -777,9 +791,9 @@ async function clickControlByBody(page, mark) {
 
   await browser.close();
 
-  // ── Self-check: exactly 142, all unique, all passed — else nonzero ──
+  // ── Self-check: exactly 145, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 142) { console.log(`ABORT — expected 142 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 145) { console.log(`ABORT — expected 145 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
