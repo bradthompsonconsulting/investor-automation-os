@@ -23,6 +23,19 @@
    activation assertions. Keep the formula next to the number; a floor without
    its derivation is how the next unlock gets it wrong.
    D5 conversation parity (CONTACTS_DETAIL_SPEC D5): + 9 = 145.
+   Board #5 S1+S2 persistent call rail: + 13 = 158.
+     structure (4)  one rail · actually sticky (computed style) · four cells in
+                    DOM order · identity equals the h1
+     ask (4)        value · tone · provenance says "Contact fallback" ·
+                    provenance is NOT "Opportunity"
+     mao (3)        not-yet-approved text · waiting tone · NO provenance element
+     carriers (2)   Position and Investor Offer verbatim
+   NOT a per-unlock term. The PB-D5/PB-D13 4N formula prices an EDITOR unlock;
+   the rail unlocks nothing and N stays 3. This is a structural render term,
+   the same species as the four Additional Info subgroups and the three D1
+   identity renders.
+   REPLACES, does not extend, S1's proposed "rail carries no numeric content"
+   check. That invariant expired when S2 gave the rail a legitimate figure.
      Neelima (4): delta, long-email-collapsed, expand, collapse.
      Gordon  (5): delta, sms-rendered, sms-alignment, sms-never-collapses,
                   inbound-email-collapsed.
@@ -369,6 +382,17 @@ async function clickControlByBody(page, mark) {
     return btns.length === 6 && h1 && h1.textContent.trim() !== "…" && h1.textContent.trim() !== "";
   }, { timeout: 45000 });
 
+  /* Board #5 S2 — the rail's Opportunity read is a SEPARATE fetch from the
+     contact read, so the h1 can be ready while the rail still says "reading
+     Opportunity…". Wait for that state to clear before capturing, or the
+     assertions race the fetch. This waits for the state to RESOLVE, not for a
+     particular answer: an error or no_opportunity clears it too, and would be
+     caught by the assertions rather than hidden by a timeout. */
+  await page.waitForFunction(() => {
+    const s = document.querySelector('[data-testid="rail-state-seller-ask"]');
+    return s && (s.textContent || "").trim() !== "" && !/^reading Opportunity/.test((s.textContent || "").trim());
+  }, { timeout: 45000 });
+
   const rec = await page.evaluate(() => {
     const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
     const btns = [...document.querySelectorAll("button")].filter((b) =>
@@ -450,7 +474,39 @@ async function clickControlByBody(page, mark) {
       if (dEls.length === 1) arv.displayText = (dEls[0].textContent || "").trim();
       arv.inputAtRest = recordContainer.querySelectorAll('[data-testid="field-input-' + ARV_ID_B + '"]').length;
     }
-    return { folders, identityName, identityPhone, identityAddress, identityInputs, strayInputs, allowlistedInputs, unlocked, unlockedId: UNLOCKED_ID, arv, arvId: ARV_ID_B, scopeMissing, folderCount: folders.length };
+    /* Board #5 S1/S2 — the persistent call rail. Read the RENDERED result:
+       the four cells in DOM order, each cell's primary text, its tone, and
+       its provenance line if one rendered at all. Position is read from the
+       computed style, not the inline attribute, because "is it actually
+       sticky" is the question. */
+    const railEl = document.querySelectorAll('[data-testid="deal-rail"]');
+    const rail = { count: railEl.length, position: "", top: "", zIndex: "", identity: "", cells: [] };
+    if (railEl.length === 1) {
+      const el = railEl[0];
+      const cs = getComputedStyle(el);
+      rail.position = cs.position;
+      rail.top = cs.top;
+      rail.zIndex = cs.zIndex;
+      const nameEl = el.querySelector('[data-testid="rail-contact-name"]');
+      rail.identity = norm(nameEl ? nameEl.textContent : "");
+      for (const cell of el.querySelectorAll('[data-testid^="rail-cell-"]')) {
+        const key = (cell.getAttribute("data-testid") || "").replace("rail-cell-", "");
+        const stateEl = cell.querySelector('[data-testid="rail-state-' + key + '"]');
+        const provEl = cell.querySelector('[data-testid="rail-provenance-' + key + '"]');
+        const labelEl = cell.querySelector('[data-testid="rail-label-' + key + '"]');
+        rail.cells.push({
+          key,
+          label: norm(labelEl ? labelEl.textContent : ""),
+          primary: norm(stateEl ? stateEl.textContent : ""),
+          tone: stateEl ? stateEl.getAttribute("data-rail-tone") : null,
+          // null means NO provenance element rendered at all -- distinct from
+          // one that rendered empty.
+          provenance: provEl ? norm(provEl.textContent) : null,
+          provenanceSource: provEl ? provEl.getAttribute("data-rail-source") : null,
+        });
+      }
+    }
+    return { folders, identityName, identityPhone, identityAddress, identityInputs, strayInputs, allowlistedInputs, unlocked, unlockedId: UNLOCKED_ID, arv, arvId: ARV_ID_B, scopeMissing, folderCount: folders.length, rail };
   });
 
   const byName = (n) => rec.folders.find((f) => f.name === n);
@@ -514,6 +570,78 @@ async function clickControlByBody(page, mark) {
     `dom="${rec.identityPhone}" expect="${expPhone}" raw="${contact && contact.phone}"`);
   check("identity-address-combined", !!contact && rec.identityAddress === expAddr,
     `dom="${rec.identityAddress}" expect="${expAddr}"`);
+
+  /* ═══ Board #5 S1 + S2 — THE PERSISTENT CALL RAIL ═══════════════════════
+     REPLACES S1's proposed "rail carries no numeric content" check, which was
+     written when the rail had no data path. It expires here by design: S2
+     legitimately introduces a figure, so the invariant is no longer "no
+     numbers" but "the RIGHT number, labelled with the source that supplied
+     it". The five-item check-10 succession contract is NOT all provable here
+     -- see the offline/live coverage map in the S2 report. This fixture takes
+     ONE branch and only that branch is live-proven.
+
+     ⚠ THE PREDICTION, RECORDED BEFORE THESE ASSERTIONS WERE WRITTEN and
+     before any deploy. Four read-only Production measurements, 2026-08-28,
+     on CONTACTS.neelima = FiIT0hUaxVCIuokQpZuc:
+
+       1. Seller Leads Pipeline Opportunities belonging to Neelima : 1
+          (id 1AP9BfFPJ2xYZ0RPTm9U, "Neelima Bale", status open)
+       2. that Opportunity's Asking Price : ABSENT
+          -- confirmed absent in BOTH the singular GET and, decisively, in the
+             ghl-opportunities list payload the rail actually parses
+       3. Neelima's CONTACT Asking Price : 115000
+       4. that Opportunity's Seller MAO  : ABSENT (same two reads)
+
+     Through the S2 contract those four facts predict the COMPLETE rail:
+
+       Seller (identity)        "Neelima Bale", equal to the h1
+       Seller Ask               "$115,000"   provenance "Contact fallback"   tone value
+       Seller MAO               "not yet approved — run Underwriting"        tone waiting, NO provenance
+       Current Seller Position  "WAITING on negotiation carrier"             tone waiting
+       Current Investor Offer   "WAITING on negotiation semantics / carrier contract"  tone waiting
+       container                position sticky, top 0, z-index 1
+
+     Exactly one Opportunity, so it auto-selects and awaiting_selection is NOT
+     the branch under test. Opportunity Ask absent + Contact Ask present is
+     the CONTACT FALLBACK path -- the single most safety-critical branch,
+     because that is where a contact value could pass as Opportunity-owned.
+     That it is the branch this fixture takes is luck, not design, and the
+     data was NOT altered to obtain it. */
+  const railCellOf = (k) => rec.rail.cells.find((c) => c.key === k) || {};
+  const railAsk = railCellOf("seller-ask");
+  const railMao = railCellOf("seller-mao");
+
+  check("rail-renders-exactly-one", rec.rail.count === 1, `count=${rec.rail.count}`);
+  check("rail-is-sticky", rec.rail.position === "sticky" && rec.rail.top === "0px",
+    `position="${rec.rail.position}" top="${rec.rail.top}" zIndex="${rec.rail.zIndex}"`);
+  check("rail-four-cells-in-order",
+    JSON.stringify(rec.rail.cells.map((c) => c.key)) ===
+      JSON.stringify(["seller-ask", "seller-mao", "seller-position", "investor-offer"]),
+    `keys=${JSON.stringify(rec.rail.cells.map((c) => c.key))}`);
+  // S1 risk (b): a sticky figures bar must never outlive the name it belongs to.
+  check("rail-identity-matches-h1",
+    rec.rail.identity.length > 0 && rec.rail.identity === rec.identityName,
+    `rail="${rec.rail.identity}" h1="${rec.identityName}"`);
+
+  check("rail-ask-value", railAsk.primary === "$115,000", `dom="${railAsk.primary}"`);
+  check("rail-ask-tone-is-value", railAsk.tone === "value", `tone="${railAsk.tone}"`);
+  // THE DISCLOSURE. A contact value must be labelled a contact value.
+  check("rail-ask-provenance-contact-fallback", railAsk.provenance === "Contact fallback",
+    `dom="${railAsk.provenance}" source="${railAsk.provenanceSource}"`);
+  check("rail-ask-provenance-not-opportunity", railAsk.provenance !== "Opportunity",
+    `dom="${railAsk.provenance}"`);
+  check("rail-mao-not-yet-approved", railMao.primary === "not yet approved — run Underwriting",
+    `dom="${railMao.primary}"`);
+  check("rail-mao-tone-is-waiting", railMao.tone === "waiting", `tone="${railMao.tone}"`);
+  // Absence discloses nothing -- there is no source to name.
+  check("rail-mao-renders-no-provenance", railMao.provenance === null,
+    `dom="${railMao.provenance}"`);
+  check("rail-position-waiting-verbatim",
+    railCellOf("seller-position").primary === "WAITING on negotiation carrier",
+    `dom="${railCellOf("seller-position").primary}"`);
+  check("rail-offer-waiting-verbatim",
+    railCellOf("investor-offer").primary === "WAITING on negotiation semantics / carrier contract",
+    `dom="${railCellOf("investor-offer").primary}"`);
 
   // 115-118 — Phone 2-5 DNC each adjacent to its Phone N in Reachability (position order).
   const reach = (domAI && domAI.subgroups.find((s) => s.name === "Reachability")) || { fields: [] };
@@ -798,6 +926,6 @@ async function clickControlByBody(page, mark) {
   // ── Self-check: exactly 145, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 145) { console.log(`ABORT — expected 145 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 158) { console.log(`ABORT — expected 158 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
