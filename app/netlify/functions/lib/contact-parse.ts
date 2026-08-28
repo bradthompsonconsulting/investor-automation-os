@@ -36,6 +36,14 @@ const PROPERTY_ADDRESS_ID = FIELDS.propertyAddress;
 // here and never written by IAOS. "" when absent, which is the common case.
 const PHONE_STATUS_ID = FIELDS.phoneStatus;
 
+// Board 4 carriers. Written by the native disposition control; READ-ONLY here.
+// dispositionAt uses cfText, not cfDate: it carries an exact ISO instant and
+// GHL DATE truncates time-of-day, the same reason last_call_attempt_precise
+// exists alongside the DATE field.
+const CALL_DISPOSITION_ID = FIELDS.callDisposition;
+const CALL_ROUTING_ID     = FIELDS.callRouting;
+const DISPOSITION_AT_ID   = FIELDS.dispositionAt;
+
 // Dashboard Phase 2/3 fields (confirmed live via /locations/.../customFields).
 // callback_datetime and last_call_attempt are DATE type on contact; parsing
 // here only reads them, never writes.
@@ -129,5 +137,8 @@ export function parseContact(c: any) {
     lastCallAttemptPrecise:  cfText(cf, LAST_CALL_ATTEMPT_PRECISE_ID),
     propertyAddress:         cfString(cf, PROPERTY_ADDRESS_ID),
     phoneStatus:             cfString(cf, PHONE_STATUS_ID),
+    callDisposition:         cfString(cf, CALL_DISPOSITION_ID),
+    callRouting:             cfString(cf, CALL_ROUTING_ID),
+    dispositionAt:           cfText(cf, DISPOSITION_AT_ID),
   };
 }

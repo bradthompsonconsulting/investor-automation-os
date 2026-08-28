@@ -79,7 +79,10 @@ export const ADDITIONAL_INFO_SUBGROUPS: Record<string, AdditionalInfoSubgroup> =
   "contact.repair_line_items": "Investor",
   "contact.owner_occupied": "Investor",
   "contact.property_notes": "Investor",
-  // System (7)
+  // System (10) — the three Board 4 carriers are IAOS-generated operational
+  // state, the same class as callback_datetime_precise, NOT investor deal data.
+  // Declared rather than left to groupAdditionalInfo's unmapped-appends-to-System
+  // fallback, which would land them here for the wrong reason.
   "contact.marketing_lists": "System",
   "contact.date_added_to_list": "System",
   "contact.motivation_score": "System",
@@ -87,17 +90,20 @@ export const ADDITIONAL_INFO_SUBGROUPS: Record<string, AdditionalInfoSubgroup> =
   "contact.combined_score": "System",
   "contact.data_completeness_score": "System",
   "contact.callback_datetime_precise": "System",
+  "contact.iaos_call_disposition": "System",
+  "contact.iaos_call_routing": "System",
+  "contact.iaos_disposition_at": "System",
 };
 
 // Startup assertion (§5.4) — runs at module load. Any drift throws at import,
 // naming the failed condition and the actual number, so it never renders wrong.
 (function assertAdditionalInfoSubgroups() {
   const SUBGROUPS: AdditionalInfoSubgroup[] = ["Reachability", "Property", "Investor", "System"];
-  const EXPECTED: Record<AdditionalInfoSubgroup, number> = { Reachability: 23, Property: 30, Investor: 14, System: 7 };
+  const EXPECTED: Record<AdditionalInfoSubgroup, number> = { Reachability: 23, Property: 30, Investor: 14, System: 10 };
 
   const entries = Object.entries(ADDITIONAL_INFO_SUBGROUPS);
-  if (entries.length !== 74) {
-    throw new Error(`additionalInfoSubgroups: entry count must be 74, got ${entries.length}`);
+  if (entries.length !== 77) {
+    throw new Error(`additionalInfoSubgroups: entry count must be 77, got ${entries.length}`);
   }
 
   const counts: Record<AdditionalInfoSubgroup, number> = { Reachability: 0, Property: 0, Investor: 0, System: 0 };

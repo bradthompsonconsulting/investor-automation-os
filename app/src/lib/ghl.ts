@@ -60,6 +60,12 @@ export const ARV_ID = CONFIG.fields.arv; // MONETORY, PB-D16/PB-D17 — B2 unloc
 // could not be made underwritable from inside the product.
 export const ESTIMATED_REPAIRS_ID = CONFIG.fields.estimatedRepairs;
 
+// Board 4 carriers. Exported because the Dashboard and the Contact Workspace
+// both read them; the WRITES go through the three named setters below.
+export const CALL_DISPOSITION_ID = CONFIG.fields.callDisposition;
+export const CALL_ROUTING_ID     = CONFIG.fields.callRouting;
+export const DISPOSITION_AT_ID   = CONFIG.fields.dispositionAt;
+
 // Dashboard Phase 2B — GHL's public API cannot trigger an outbound call (it
 // can only log one that already happened); the click-to-call button hands off
 // to GHL's own contact page, where GHL's native dialer applies the Number's
@@ -109,6 +115,13 @@ export interface ContactRow {
   // is the normal state; "Incorrect Number" excludes the contact from the Lead
   // Queue per PB-D54; "Callable" is set by the reset and does NOT exclude.
   phoneStatus:             string;
+  /* Board 4 carriers. callDisposition/callRouting are SINGLE_OPTIONS and parse
+     through cfString, so "" is the absent state, never null. dispositionAt is
+     TEXT carrying an ISO instant and parses through cfText, so it is null when
+     absent — the same shape as lastCallAttemptPrecise. */
+  callDisposition:         string;
+  callRouting:             string;
+  dispositionAt:           string | null;
 }
 
 // ── Contacts surface (Phase A) types ──────────────────────────────────────────
@@ -658,6 +671,39 @@ export const ghl = {
     // null-to-clear — that is DATE behavior and does not apply here.
     setEstimatedRepairs: (contactId: string, value: number | "") =>
       ghl.contacts._putMonetaryField(contactId, ESTIMATED_REPAIRS_ID, value),
+
+    // Board 4 — PRIVATE string transport, the exact counterpart to
+    // _putMonetaryField above and permitted by the same §4.4 sentence: "a
+    // private one-field PUT helper" is allowed; a PUBLIC setter parameterized
+    // over field ID is not. Three named setters below each spend their own
+    // decision. setPropertyNotes predates this and is deliberately NOT
+    // converted — that would be a refactor, not this commit's business.
+    _putStringField: (contactId: string, fieldId: string, value: string) =>
+      request<any>(`/contacts/${contactId}`, "PUT", {
+        customFields: [{ id: fieldId, field_value: value }],
+      }),
+
+    // Board 4 — the three carrier writes. Each is a named public method by its
+    // own decision; none takes a field id from the caller.
+    //
+    // ⚠ NOTHING CALLS THESE YET. S2 is inert plumbing: the carriers exist, the
+    // setters exist, and no UI path reaches them until S3.
+    //
+    // ⚠ EMPTY IS NOT A CLEAR HERE, AND IT IS NOT MEASURED. GHL's ""-clears-to-
+    // KEY_ABSENT behaviour is OBSERVED for TEXT and MONETORY only; SINGLE_OPTIONS
+    // has never been measured. No caller writes "" to either select field —
+    // "Stay in Cold Outreach" is an explicit value precisely so that clearing is
+    // never required. Do not add a clear path on the assumption that it works.
+    setCallDisposition: (contactId: string, value: string) =>
+      ghl.contacts._putStringField(contactId, CALL_DISPOSITION_ID, value),
+
+    setCallRouting: (contactId: string, value: string) =>
+      ghl.contacts._putStringField(contactId, CALL_ROUTING_ID, value),
+
+    // The bell. An ISO instant, written LAST in the disposition sequence, and
+    // the trigger the four migrated workflows watch. TEXT, not DATE.
+    setDispositionAt: (contactId: string, iso: string) =>
+      ghl.contacts._putStringField(contactId, DISPOSITION_AT_ID, iso),
   },
 
   notes: {

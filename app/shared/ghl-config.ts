@@ -18,6 +18,16 @@ export interface GhlConfig {
     phoneStatus: string;
     estimatedRepairs: string;
     askingPrice: string;
+    /* Board 4 carriers, created S0 2026-08-28. Contact custom fields in the
+       Additional Info folder, written by the native disposition control.
+         callDisposition  SINGLE_OPTIONS, seven values
+         callRouting      SINGLE_OPTIONS, two values
+         dispositionAt    TEXT — an ISO instant. TEXT and not DATE because GHL
+                          DATE truncates time-of-day, and this carries the
+                          moment a call outcome was recorded. */
+    callDisposition: string;
+    callRouting: string;
+    dispositionAt: string;
   };
   folders: {
     offer: string;
@@ -100,6 +110,12 @@ const PRODUCTION: GhlConfig = {
     phoneStatus:             "6WJG2a40490bW0c62YFT",
     estimatedRepairs:        "OQnud97MfdxMcTgMVTgf",
     askingPrice:             "60UCjsYT1Ak3Kyy5ZCL8",
+    // Board 4 S0, read back from GHL 2026-08-28 — not transcribed from the
+    // creation sheet. fieldKeys contact.iaos_call_disposition /
+    // .iaos_call_routing / .iaos_disposition_at, all parented to Additional Info.
+    callDisposition:         "vvgwGb0X4WKOHDGIuoAS",
+    callRouting:             "Zjy57J2LgsAIOA5iurz3",
+    dispositionAt:           "y92B4WX7RVCFTm3An3WN",
   },
   folders: {
     offer:          "YslJ5oke73JrBOgaq0np",
@@ -167,6 +183,11 @@ const TEST: GhlConfig = {
     phoneStatus:             "aLqIaUk3UwvSeu1ijFL8",
     estimatedRepairs:        "SU4n8ylrXnUm8xDi729R",
     askingPrice:             "Oeo3jPhh3ICnU7Cv1iTT",
+    // Board 4 S0, read back from GHL 2026-08-28. Same three fieldKeys and the
+    // same Additional Info parentage as Production; ids differ per location.
+    callDisposition:         "30yWD1NmL12949C7zdfv",
+    callRouting:             "W2jz3m0vexRUKTgprgyK",
+    dispositionAt:           "aRjrDKXjuY5p5UFvcfyO",
   },
   folders: {
     offer:          "w8jbeT1AwN0YZjA9geAX",
@@ -315,6 +336,11 @@ const RUNTIME_GROUPS = {
     "arv",
     "estimatedRepairs",
     "askingPrice",
+    // Board 4: browser-WRITTEN, so unlike phoneStatus (server-parsed only)
+    // these ids must reach the client.
+    "callDisposition",
+    "callRouting",
+    "dispositionAt",
   ],
   folders: ["offer", "additionalInfo"],
   customValues: [
@@ -347,6 +373,9 @@ export interface RuntimeConfig {
     | "arv"
     | "estimatedRepairs"
     | "askingPrice"
+    | "callDisposition"
+    | "callRouting"
+    | "dispositionAt"
   >;
   folders: GhlConfig["folders"];
   customValues: Omit<GhlConfig["customValues"], "mailerDigestRecipient">;
