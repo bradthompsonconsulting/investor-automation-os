@@ -269,8 +269,7 @@ function entryValue(entry) {
      section VI already discharged prerequisite 5 on
      endbuyer_maximum_purchase_price. Meeting them here establishes FIELD
      SAFETY for opportunity.asking_price and nothing wider -- PB-D58 section
-     IV: "two proven opportunity fields would not prove a third." 
-     rather than assumed from the fact that we got this far. */
+     IV: "two proven opportunity fields would not prove a third." */
   const fieldSafety = {
     absentAtCapture:        cap.fieldPresent === false,
     onePutSetTestValue:     ev.s2.putStatus >= 200 && ev.s2.putStatus < 300 && ev.s2.testValue === TEST_VALUE,

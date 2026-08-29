@@ -208,7 +208,11 @@ function entryValue(entry) {
   let observedKey = null;
   let observedEntry = null;
   let matched = false;
-  let fieldValueGuard = null;   // §4B acceptance condition 3, populated in the poll
+  /* Recorded read-shape diagnostic, populated in the poll. NOT A GATE:
+     absence is decided structurally, so neither reader can change any
+     outcome. Ruled 2026-08-29 — gating on it would fail an otherwise valid
+     field-safety proof if GHL ever aligned the two wire shapes. */
+  let fieldValueGuard = null;
 
   while (polls < MAX_POLLS) {
     polls++;
