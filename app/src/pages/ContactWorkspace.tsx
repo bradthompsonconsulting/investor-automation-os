@@ -5,7 +5,7 @@ import {
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
   Calculator,
 } from "lucide-react";
-import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow } from "../lib/ghl";
+import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow } from "../lib/ghl";
 /* Board #5 S2d — the rail's logic lives in ../lib/rail, a module with no React
    and no module-scope config read, so it is loadable by a .cjs runner and the
    Ask precedence can be proven offline. This page supplies the ids and renders
@@ -423,6 +423,237 @@ function MonetaryRow({ f, contactId, save }: {
   );
 }
 
+/* ── Board #5 S3b — the occupancy editor. TEMPLATE: choice-single + immediate ──
+   PB-D11 lists `choice + immediate` as the ONLY permitted pair for the choice
+   editor, so the behaviour below is the taxonomy's, not a local invention.
+   PB-D9's `choice` slot reached by the MULTIPLE_OPTIONS-by-override path.
+
+   ⚠ THE -single SUFFIX IS LOAD-BEARING. Cardinality lives in the template KEY so
+   no future multi-valued field inherits this by being MULTIPLE_OPTIONS. A field
+   ruled multi-valued needs choice-multi, defined at its own first unlock, with
+   its own serialization ruling. Nothing here generalises.
+
+   PB-D17 Model B — display-to-edit swap. Model A (a permanently rendered form
+   control on a 101-field record) stays rejected for the reason PB-D17 gave.
+
+   ACCEPTED RISK ON `immediate`, as locked: a selection is a committed write with
+   no moment to reconsider and no undo. It is acceptable here because the prior
+   value is always reconstructible from what is on screen — three choices, all
+   visible, plus Clear for the unset state — and because the measured workflow
+   surface shows NO workflow watching this field, so a wrong write fires nothing.
+   THAT IS AN OCCUPANCY FINDING, NOT A PROPERTY OF `immediate`. The next field to
+   reach this behaviour earns it by its own review, not by citing this one.
+
+   PB-D10's "Caution on `immediate`" applies: it is the only commit mode with no
+   user-visible moment to reconsider, and its FIRST inert-proof carries a higher
+   evidence bar. That proof is S3c and it has not run. */
+function ChoiceRow({ f, contactId }: { f: RecordField; contactId: string }) {
+  /* The wire shape is an ARRAY for MULTIPLE_OPTIONS — ["Vacant"] — but absence
+     is the common case and a bare string is tolerated rather than trusted.
+
+     THREE STATES, NOT TWO. An earlier draft collapsed "stored but unrecognised"
+     into "empty", and that is a defect: OCCUPANCY_OPTIONS is a constant measured
+     live at S3a and then FROZEN, so if the field's options ever change, or a
+     legacy row carries a retired label, the operator would see — , click once,
+     and overwrite a prior value THEY WERE NEVER SHOWN.
+
+     That is precisely the circumstance the accepted risk on `immediate` forbids:
+     it is permitted only where "the prior value is readily reconstructible from
+     the editor's visible state and available controls". A value that was never
+     rendered is not reconstructible, and the whole pairing rests on that
+     invariant, so it is closed structurally rather than with a warning. */
+  type Wire =
+    | { kind: "empty" }
+    | { kind: "recognised"; value: OccupancyStatus }
+    | { kind: "unrecognised"; raw: string };
+  const wireState: Wire = (() => {
+    const raw = Array.isArray(f.value) ? f.value[0] : f.value;
+    if (raw == null || raw === "") return { kind: "empty" };
+    const s = String(raw);
+    return (OCCUPANCY_OPTIONS as readonly string[]).includes(s)
+      ? { kind: "recognised", value: s as OccupancyStatus }
+      : { kind: "unrecognised", raw: s };
+  })();
+  const wire: OccupancyStatus | "" = wireState.kind === "recognised" ? wireState.value : "";
+
+  const [saved, setSaved] = useState<OccupancyStatus | "" | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [status, setStatus] = useState<"idle" | "verifying" | "saved" | "unconfirmed" | "failed" | "unverified">("idle");
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+  /* Synchronous re-entrancy guard, checked BEFORE any await. Under `immediate`
+     a double-click is two writes; this makes the second a no-op. */
+  const inFlight = useRef(false);
+  const current: OccupancyStatus | "" = saved == null ? wire : saved;
+
+  /* PB-D21 — "Saved" means GHL was read back and confirmed, never that the PUT
+     returned 2xx. Bounded poll of the SINGULAR contact read, never the PUT echo.
+     Equality is SEMANTIC: for a selection the stored value must CONTAIN exactly
+     the chosen option; for a clear it is KEY ABSENCE, because "" yields
+     KEY_ABSENT while an empty array would leave the key present. The PUT is
+     NEVER repeated. */
+  async function verify(expected: OccupancyStatus | ""): Promise<"saved" | "unconfirmed" | "unverified"> {
+    let anyCompleted = false;
+    let lastErr: Error | null = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (attempt > 1) await new Promise((r) => setTimeout(r, 1000));
+      try {
+        const d = await ghl.contacts.getDetail(contactId);
+        anyCompleted = true;
+        const entry = d.customFields.find((cf) => cf.id === f.id);
+        if (expected === "") {
+          if (!entry) return "saved";
+        } else if (entry) {
+          const v = Array.isArray(entry.value) ? entry.value : [entry.value];
+          if (v.length === 1 && String(v[0]) === expected) return "saved";
+        }
+      } catch (e) {
+        lastErr = e as Error;
+      }
+    }
+    if (!anyCompleted) { setErrMsg(lastErr ? lastErr.message : null); return "unverified"; }
+    return "unconfirmed";
+  }
+
+  async function commit(next: OccupancyStatus | "") {
+    if (inFlight.current) return;
+    /* PB-D10 states the unchanged-value no-op for `inline`; the same courtesy is
+       applied here. It reduces pointless writes and is NOT undo protection —
+       PB-D10 says so explicitly and it is just as true under `immediate`. */
+    if (next === current) { setEditing(false); return; }
+    inFlight.current = true;
+    setErrMsg(null);
+    setStatus("verifying");
+    try {
+      await ghl.contacts.setOccupancyStatus(contactId, next);
+    } catch (e) {
+      inFlight.current = false;
+      setErrMsg((e as Error).message);
+      setStatus("failed");
+      return; // stay in edit mode so the operator can retry or correct
+    }
+    const outcome = await verify(next);
+    inFlight.current = false;
+    setStatus(outcome);
+    if (outcome === "saved") {
+      setSaved(next);
+      /* Return to the display so the operator SEES the committed value. That
+         visibility is what the accepted risk rests on — a wrong write must be
+         apparent immediately, because correcting it is the only undo. */
+      setEditing(false);
+    }
+  }
+
+  const label = (v: OccupancyStatus | "") => (v === "" ? "—" : v);
+
+  /* ⚠ UNRECOGNISED VALUE — EARLY RETURN, READ-ONLY, NO COMMIT SURFACE.
+     Placed as a RETURN rather than a branch inside the render so the editing
+     JSX below is STRUCTURALLY UNREACHABLE in this state. "No commit surface"
+     is then a property of the control flow, provable by reading it, rather
+     than a rule someone has to keep honouring in a conditional.
+
+     THE STATE IS A DIAGNOSTIC, NOT A WORKFLOW. It is currently unreachable —
+     S3a measured both environments and the constant matches the live field —
+     so its appearance would itself mean something upstream changed. Read-only
+     forces that to be investigated rather than clicked past. Deliberately NO
+     confirmation flow, NO drift system, NO new architecture: the value is
+     shown, and the way to change it is to find out why it is there.
+
+     The hooks are absent here BY DESIGN: no field-option-*, no field-clear-*,
+     and the display is not activatable. The four template checks are scoped to
+     the recognised-or-empty state and do not describe this branch.
+
+     UNGUARDED, AND THAT IS THE INVARIANT: an unrecognised stored value is
+     ALWAYS read-only in this component. There is no in-session escape and no
+     condition under which this return is skipped — `saved` is written only
+     inside commit(), commit() is reachable only from the editing JSX, and the
+     editing JSX is below this return. The way out is to fix the value in GHL,
+     which changes the wire on the next fetch. */
+  if (wireState.kind === "unrecognised") {
+    return (
+      <div style={{ display: "flex", gap: "12px", fontSize: "13px", alignItems: "flex-start" }}>
+        <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
+        <div style={{ display: "flex", flexDirection: "column", gap: "2px", minWidth: 0 }}>
+          <span
+            data-testid={`field-display-${f.id}`}
+            data-unrecognised="true"
+            style={{ color: "#F59E0B" }}
+          >
+            {wireState.raw}
+          </span>
+          <span style={{ fontSize: "11px", color: "#64748B" }}>
+            Unrecognised stored value — read-only. Not one of this field's options.
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", gap: "12px", fontSize: "13px", alignItems: "flex-start" }}>
+      <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px", minWidth: 0 }}>
+        {!editing ? (
+          <span
+            data-testid={`field-display-${f.id}`}
+            onClick={() => { setStatus("idle"); setErrMsg(null); setEditing(true); }}
+            style={{ color: current === "" ? "#475569" : "#E2E8F0", cursor: "pointer", borderBottom: "1px dashed rgba(148,163,184,0.35)" }}
+          >
+            {label(current)}
+          </span>
+        ) : (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+            {OCCUPANCY_OPTIONS.map((opt, n) => {
+              const isSel = current === opt;
+              return (
+                <button
+                  key={opt}
+                  data-testid={`field-option-${f.id}-${n}`}
+                  data-selected={isSel ? "true" : "false"}
+                  onClick={() => void commit(opt)}
+                  disabled={status === "verifying"}
+                  style={{
+                    fontSize: "12px", fontWeight: 600, padding: "4px 10px", borderRadius: "6px",
+                    cursor: status === "verifying" ? "wait" : "pointer",
+                    border: `1px solid ${isSel ? "rgba(30,200,255,0.55)" : "rgba(255,255,255,0.14)"}`,
+                    background: isSel ? "rgba(30,200,255,0.18)" : "rgba(255,255,255,0.04)",
+                    color: isSel ? "#1EC8FF" : "#CBD5E1",
+                  }}
+                >
+                  {opt}
+                </button>
+              );
+            })}
+            {/* The unset affordance. NOT a fourth option — it writes "", which
+                yields KEY_ABSENT, and the display then reads —. It is the
+                operator's own undo for the empty case, which is bradt75's
+                current state and the state S3c must restore. */}
+            <button
+              data-testid={`field-clear-${f.id}`}
+              onClick={() => void commit("")}
+              disabled={status === "verifying"}
+              style={{
+                fontSize: "12px", padding: "4px 10px", borderRadius: "6px",
+                cursor: status === "verifying" ? "wait" : "pointer",
+                border: "1px dashed rgba(255,255,255,0.18)", background: "transparent", color: "#64748B",
+              }}
+            >
+              Clear
+            </button>
+          </div>
+        )}
+        {status !== "idle" && status !== "saved" && (
+          <span style={{ fontSize: "11px", color: status === "verifying" ? "#64748B" : "#F59E0B" }}>
+            {status === "verifying" ? "Saving…"
+              : status === "failed" ? `Write failed${errMsg ? ` — ${errMsg}` : ""}`
+              : status === "unconfirmed" ? "Write sent but not confirmed — reload to check"
+              : "Could not reach GHL to confirm — reload to check"}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function FieldRow({ f, contactId }: { f: RecordField; contactId: string }) {
   if (f.id === PROPERTY_NOTES_ID) return <PropertyNotesRow f={f} contactId={contactId} />;
   // The two unlocked MONETORY fields. Same row, different named setter — the
@@ -430,6 +661,12 @@ function FieldRow({ f, contactId }: { f: RecordField; contactId: string }) {
   // per field so an unlock cannot happen by accident.
   if (f.id === ARV_ID) return <MonetaryRow f={f} contactId={contactId} save={ghl.contacts.setARV} />;
   if (f.id === ESTIMATED_REPAIRS_ID) return <MonetaryRow f={f} contactId={contactId} save={ghl.contacts.setEstimatedRepairs} />;
+  /* Board #5 S3b — the first `choice` unlock, N 3 -> 4. One line, like the two
+     above: the dispatch is where each field's write decision is spent, and it is
+     one line per field so an unlock cannot happen by accident. ChoiceRow takes no
+     `save` prop — occupancy's setter is named INSIDE it, because the one-element
+     serialization is that field's ruling and must not travel as a parameter. */
+  if (f.id === OCCUPANCY_STATUS_ID) return <ChoiceRow f={f} contactId={contactId} />;
   const display =
     f.value == null
       ? "—"
