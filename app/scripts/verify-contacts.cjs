@@ -708,6 +708,17 @@ async function clickControlByBody(page, mark) {
   const OCC_ID = "op57wOVFSMRBFbHmD6ej"; // contact.occupancy_status — hardcoded per the verification-only rule
   const OCC_OPTIONS = ["Owner Occupied", "Tenant Occupied", "Vacant"];
 
+  /* Settle an interaction on the EXPECTED STATE rather than a fixed timeout --
+     this file's own convention, already used four times above.
+     Playwright's signature is waitForFunction(pageFunction, arg, options); the
+     id travels as `arg` and the timeout as `options`.
+     The timeout is SWALLOWED on purpose: the assertion that follows then
+     reports the OBSERVED counts, which diagnoses the failure, instead of a
+     Playwright stack that only says something did not happen. */
+  const settleFor = async (pred) => {
+    try { await page.waitForFunction(pred, OCC_ID, { timeout: 5000 }); } catch (e) { /* the assertion after reports it */ }
+  };
+
   const occRest = await page.evaluate((id) => {
     const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
     const d = document.querySelectorAll(`[data-testid="field-display-${id}"]`);
@@ -724,8 +735,14 @@ async function clickControlByBody(page, mark) {
       occRest.optionsAtRest === 0 && occRest.clearAtRest === 0,
     `displayCount=${occRest.displayCount} text="${occRest.displayText}" optionsAtRest=${occRest.optionsAtRest} clearAtRest=${occRest.clearAtRest} unrecognised=${occRest.unrecognised}`);
 
-  // ACTIVATE. Inspect. Escape. No option is ever clicked.
+  /* ACTIVATE. Inspect. Exit. No option is ever clicked.
+     SETTLE FIRST, using this file's own convention (waitForFunction, already
+     used four times here) rather than a fixed timeout. This activation would
+     fail CLOSED if it raced -- checks 2-4 would see zero options and go red --
+     but relying on that is relying on luck, and the decline block below has a
+     failure mode where racing fails OPEN. Settle both. */
   await page.click(`[data-testid="field-display-${OCC_ID}"]`);
+  await settleFor((id) => document.querySelectorAll(`[data-testid^="field-option-${id}-"]`).length === 3);
   const occEdit = await page.evaluate((id) => {
     const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
     const opts = [...document.querySelectorAll(`[data-testid^="field-option-${id}-"]`)];
@@ -762,33 +779,49 @@ async function clickControlByBody(page, mark) {
      outside. Both are proven here, INDEPENDENTLY, because they are separate
      listeners and a working Escape says nothing about click-outside.
 
-     ⚠ EACH EXIT IS PROVEN, NEVER ASSUMED. Pressing a key and carrying on is
-     exactly the error this block exists to prevent: an Escape handler that
-     never fires is indistinguishable from one that does nothing. The condition
-     is identical for both paths — the at-rest display is back AND every option
-     control is gone.
+     ⚠ EACH EXIT IS PROVEN, NEVER ASSUMED, AND EACH RE-OPEN IS PROVEN TOO.
+     An earlier draft dispatched the outside mousedown immediately after the
+     re-open click. If that click had not rendered, editRef.current was still
+     null, the handler did nothing, and the exit assertion then read the AT-REST
+     state and PASSED — reporting "click-outside exited" when the editor had
+     never opened. It FAILED OPEN, which is the one failure mode a hard abort
+     must not have. Path 1 was safe only incidentally, because check 4 asserted
+     clear === 1 immediately before it. Path 2 had no such anchor, so it gets an
+     explicit one: the editor is proven OPEN before the dispatch.
 
      PB-D17 holds throughout: NO option is ever chosen and Clear is never
      clicked. Under `immediate`, click count is write count. */
-  const declineProof = async (label) => {
-    const st = await page.evaluate((id) => ({
-      display: document.querySelectorAll(`[data-testid="field-display-${id}"]`).length,
-      options: document.querySelectorAll(`[data-testid^="field-option-${id}-"]`).length,
-      clear: document.querySelectorAll(`[data-testid="field-clear-${id}"]`).length,
-    }), OCC_ID);
-    if (st.display !== 1 || st.options !== 0 || st.clear !== 0) {
-      console.log(`ABORT — ${label} did not exit the occupancy editor: display=${st.display} options=${st.options} clear=${st.clear}`);
-      process.exit(5);
+  const occState = () => page.evaluate((id) => ({
+    display: document.querySelectorAll(`[data-testid="field-display-${id}"]`).length,
+    options: document.querySelectorAll(`[data-testid^="field-option-${id}-"]`).length,
+    clear: document.querySelectorAll(`[data-testid="field-clear-${id}"]`).length,
+  }), OCC_ID);
+
+
+  // exit 6 — 1-5 are taken (bundle gate, floor, throw, carrier/env, allowlist
+  // drift), so a runner can tell a decline-path failure from schema drift.
+  const occAbortUnless = (ok, label, st, expected) => {
+    if (!ok) {
+      console.log(`ABORT — ${label}: expected ${expected}, observed display=${st.display} options=${st.options} clear=${st.clear}`);
+      process.exit(6);
     }
-    console.log(`decline-path OK  ${label} exited  display=${st.display} options=${st.options}`);
+    console.log(`decline-path OK  ${label}  display=${st.display} options=${st.options} clear=${st.clear}`);
   };
 
-  // PATH 1 — Escape. The editor is already open from the four checks above.
-  await page.keyboard.press("Escape");
-  await declineProof("Escape");
+  const AT_REST = (st) => st.display === 1 && st.options === 0 && st.clear === 0;
+  /* clear === 0 is a THIRD term beyond the ruling's display/options pair. It
+     catches a half-exit where the options are gone but the clear affordance
+     lingers. Strictly stronger than what was authorized; recorded as such. */
+  const IS_OPEN = (st) => st.display === 0 && st.options === 3 && st.clear === 1;
 
-  /* PATH 2 — click outside. Re-open, then dispatch a bubbling mousedown on
-     document.body.
+  // PATH 1 — Escape. The editor is open: check 4 asserted clear === 1 above.
+  await page.keyboard.press("Escape");
+  await settleFor((id) => document.querySelectorAll(`[data-testid="field-display-${id}"]`).length === 1);
+  let occSt = await occState();
+  occAbortUnless(AT_REST(occSt), "Escape exited the occupancy editor", occSt, "at-rest (display=1 options=0 clear=0)");
+
+  /* PATH 2 — click outside. Re-open, PROVE OPEN, then dispatch a bubbling
+     mousedown on document.body.
 
      BODY IS INERT BY CONSTRUCTION, not by belief: no coordinates are involved
      so nothing is hit-tested onto a control, no node is injected into the page
@@ -797,12 +830,18 @@ async function clickControlByBody(page, mark) {
      are writes, so "a control I believe is safe" is not the standard.
 
      This exercises the LISTENER. The hit-testing path it skips was measured
-     separately at the ruling and is deliberately NOT restated here: that
-     measurement is point-in-time evidence at one SHA, not a product invariant,
-     and it would become false the day someone adds a mousedown handler. */
+     separately at the ruling and is deliberately NOT restated here: that is
+     point-in-time evidence at one SHA, not a product invariant, and it would
+     become false the day someone adds a mousedown handler. */
   await page.click(`[data-testid="field-display-${OCC_ID}"]`);
+  await settleFor((id) => document.querySelectorAll(`[data-testid^="field-option-${id}-"]`).length === 3);
+  occSt = await occState();
+  occAbortUnless(IS_OPEN(occSt), "re-open before the outside dispatch", occSt, "editor open (display=0 options=3 clear=1)");
+
   await page.evaluate(() => document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
-  await declineProof("click-outside");
+  await settleFor((id) => document.querySelectorAll(`[data-testid="field-display-${id}"]`).length === 1);
+  occSt = await occState();
+  occAbortUnless(AT_REST(occSt), "click-outside exited the occupancy editor", occSt, "at-rest (display=1 options=0 clear=0)");
 
   // 115-118 — Phone 2-5 DNC each adjacent to its Phone N in Reachability (position order).
   const reach = (domAI && domAI.subgroups.find((s) => s.name === "Reachability")) || { fields: [] };
