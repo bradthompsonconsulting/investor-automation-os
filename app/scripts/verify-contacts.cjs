@@ -66,7 +66,23 @@
    NOT A FIELD UNLOCK. N stays 4 and 4N stays 16 -- these price a BEHAVIOUR,
    the same species as the rail's +14 above and expressly not the PB-D5/PB-D13
    per-unlock term.
-   Success ONLY when checksRun === 167 AND every check passed. Any throw exits nonzero.
+   Board #5 4A asymmetric disclosure: + 3 = 170. ALSO NOT A FIELD UNLOCK --
+   N stays 4, 4N stays 16. This is rail behaviour, not another editor.
+     1 rail-ask-fallback-offers-route          the route EXISTS on the only
+                                               branch that can reach it
+     2 rail-ask-fallback-has-no-authority-note the note belongs to the other
+                                               branch and must not appear here
+     3 harness-issued-no-writes                zero PUT/PATCH/DELETE across the
+                                               WHOLE run -- the read-only
+                                               contract made machine-readable,
+                                               and the route's safety claim
+   ⚠ THE OPPORTUNITY BRANCH IS NOT HERE AND CANNOT BE. Measured 2026-08-29 by
+   two independent readers: 0 of 43 Production opportunities carry
+   opportunity.asking_price, so no fixture reaches that branch and
+   manufacturing Production data to get one is forbidden. Route-absent and
+   note-present live in test-rail.cjs as offline assertions. Do not read a
+   green run here as covering both branches.
+   Success ONLY when checksRun === 170 AND every check passed. Any throw exits nonzero.
    The 101-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
@@ -274,7 +290,18 @@ async function clickControlByBody(page, mark) {
 
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 2560, height: 1440 } });
+  /* §4A point 4 — THIS HARNESS IS READ-ONLY BY CONTRACT, so prove it rather
+     than assert it in a comment. Every mutating request the page issues is
+     recorded across the ENTIRE run; the check below requires zero. It also
+     covers the new route control, whose whole safety claim is that opening a
+     GHL tab writes nothing. PB-D17 already forbids the harness modifying a
+     value; this is the machine-readable version of that rule. */
+  const mutatingRequests = [];
   const page = await ctx.newPage();
+  ctx.on("request", (req) => {
+    const m = req.method();
+    if (m === "PUT" || m === "PATCH" || m === "DELETE") mutatingRequests.push(`${m} ${req.url().split("?")[0]}`);
+  });
 
   // Capture the page's OWN netlify-function responses (no independent reads).
   const fnBodies = [];
@@ -530,6 +557,11 @@ async function clickControlByBody(page, mark) {
           // one that rendered empty.
           provenance: provEl ? norm(provEl.textContent) : null,
           provenanceSource: provEl ? provEl.getAttribute("data-rail-source") : null,
+          // §4A — null means the element did not render at all, which is the
+          // assertion in the Opportunity branch. Distinct from an empty label.
+          route: (() => { const e = cell.querySelector(`[data-testid="rail-route-${key}"]`); return e ? norm(e.textContent) : null; })(),
+          routeKind: (() => { const e = cell.querySelector(`[data-testid="rail-route-${key}"]`); return e ? e.getAttribute("data-rail-route") : null; })(),
+          authorityNote: (() => { const e = cell.querySelector(`[data-testid="rail-authority-note-${key}"]`); return e ? norm(e.textContent) : null; })(),
         });
       }
     }
@@ -659,10 +691,23 @@ async function clickControlByBody(page, mark) {
   check("rail-ask-value", railAsk.primary === "$115,000", `dom="${railAsk.primary}"`);
   check("rail-ask-tone-is-value", railAsk.tone === "value", `tone="${railAsk.tone}"`);
   // THE DISCLOSURE. A contact value must be labelled a contact value.
-  check("rail-ask-provenance-contact-fallback", railAsk.provenance === "Contact fallback",
+  /* §4A — the wording now states WHY the contact value governs, not merely
+     that it does. "Contact fallback" alone read as a mysterious source label. */
+  check("rail-ask-provenance-contact-fallback", railAsk.provenance === "Contact fallback — no Opportunity Ask",
     `dom="${railAsk.provenance}" source="${railAsk.provenanceSource}"`);
-  check("rail-ask-provenance-not-opportunity", railAsk.provenance !== "Opportunity",
+  check("rail-ask-provenance-not-opportunity", !String(railAsk.provenance).startsWith("Opportunity"),
     `dom="${railAsk.provenance}"`);
+  /* §4A — THE ASYMMETRY, on the only branch Production can reach. In the
+     contact-fallback state the Opportunity carries no Ask, so the contact
+     record IS authoritative and the existing hop lands on the right field.
+     The Opportunity branch -- route absent, authority note present -- is
+     OFFLINE-ONLY: 0 of 43 Production opportunities carry an Ask, so no fixture
+     reaches it and manufacturing one is forbidden. test-rail.cjs holds those. */
+  check("rail-ask-fallback-offers-route",
+    railAsk.route === "Edit on the Contact in GHL" && railAsk.routeKind === "contact-record",
+    `label="${railAsk.route}" kind="${railAsk.routeKind}"`);
+  check("rail-ask-fallback-has-no-authority-note", railAsk.authorityNote === null,
+    `note=${JSON.stringify(railAsk.authorityNote)} (a note belongs to the Opportunity branch, which has no route)`);
   check("rail-mao-not-yet-approved", railMao.primary === "not yet approved — run Underwriting",
     `dom="${railMao.primary}"`);
   check("rail-mao-tone-is-waiting", railMao.tone === "waiting", `tone="${railMao.tone}"`);
@@ -1303,9 +1348,12 @@ async function clickControlByBody(page, mark) {
 
   await browser.close();
 
-  // ── Self-check: exactly 167, all unique, all passed — else nonzero ──
+  check("harness-issued-no-writes", mutatingRequests.length === 0,
+    `mutating requests observed=${mutatingRequests.length} ${JSON.stringify(mutatingRequests.slice(0, 4))}`);
+
+  // ── Self-check: exactly 170, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 167) { console.log(`ABORT — expected 167 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 170) { console.log(`ABORT — expected 170 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });

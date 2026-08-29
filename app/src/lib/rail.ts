@@ -102,6 +102,24 @@ export type RailCellView = {
   provenance: string | null;
   /** "value" renders as a figure; "waiting" renders dim and italic. */
   tone: "value" | "waiting";
+  /* ── Board #5 §4A — DELIBERATELY ASYMMETRIC DISCLOSURE ────────────────────
+     A route appears ONLY where it can do what it claims.
+
+     ⚠ THE OBVIOUS SYMMETRIC VERSION SENDS BRAD TO EDIT A VALUE THAT IS BEING
+     IGNORED. The only hop IAOS has is ghlContactDetailUrl, which opens the
+     CONTACT record. When the Opportunity carries an Ask it WINS
+     (resolver.ts:329), so that page does not reach the authoritative field at
+     all. Brad would edit contact.asking_price, return, D1 would revalidate
+     correctly, and the rail would show the same number -- a refresh working
+     perfectly while confirming the wrong conclusion. The opportunity
+     deep-link is D4 and is blocked.
+
+     So: CONTACT-FALLBACK state offers the hop, because in that state there IS
+     no Opportunity Ask and the contact value genuinely is authoritative.
+     OPPORTUNITY state offers NO route and says why. Honest until §4B. */
+  route: { kind: "contact-record"; label: string } | null;
+  /** Stated when there is no route, so its absence is explained, never silent. */
+  authorityNote: string | null;
 };
 
 /**
@@ -186,11 +204,12 @@ export function deriveRailDeal(input: {
  * two reasons into one is what S1's comment forbade.
  */
 export function railCells(deal: RailDeal): RailCellView[] {
-  const waiting = (primary: string): Pick<RailCellView, "primary" | "provenance" | "tone"> =>
-    ({ primary, provenance: null, tone: "waiting" });
+  type CellBody = Pick<RailCellView, "primary" | "provenance" | "tone" | "route" | "authorityNote">;
+  const waiting = (primary: string): CellBody =>
+    ({ primary, provenance: null, tone: "waiting", route: null, authorityNote: null });
 
-  let ask: Pick<RailCellView, "primary" | "provenance" | "tone">;
-  let mao: Pick<RailCellView, "primary" | "provenance" | "tone">;
+  let ask: CellBody;
+  let mao: CellBody;
 
   switch (deal.state) {
     case "loading":
@@ -212,14 +231,32 @@ export function railCells(deal: RailDeal): RailCellView[] {
     case "resolved":
       ask = deal.ask === null
         ? waiting("no ask on Opportunity or Contact")
-        : {
-            primary: RAIL_MONEY(deal.ask.value),
-            provenance: deal.ask.source === "opportunity" ? "Opportunity" : "Contact fallback",
-            tone: "value",
-          };
+        : deal.ask.source === "opportunity"
+          ? {
+              primary: RAIL_MONEY(deal.ask.value),
+              /* The selected deal's name rides on the provenance it already
+                 renders -- no new element, no new fetch, no new state. It is
+                 the value deriveRailDeal already returns and railCells used to
+                 discard. ⚠ It is therefore visible ONLY in this branch, which
+                 no Production contact currently reaches: 0 of 43 opportunities
+                 carry an Ask. */
+              provenance: `Opportunity · ${deal.opportunityName}`,
+              tone: "value",
+              route: null,
+              authorityNote: "Authoritative on the Opportunity — not editable from IAOS yet",
+            }
+          : {
+              primary: RAIL_MONEY(deal.ask.value),
+              /* WHY the Contact value governs, not merely that it does. The old
+                 label read "Contact fallback" and left the reason unstated. */
+              provenance: "Contact fallback — no Opportunity Ask",
+              tone: "value",
+              route: { kind: "contact-record", label: "Edit on the Contact in GHL" },
+              authorityNote: null,
+            };
       mao = deal.mao === null
         ? waiting("not yet approved — run Underwriting")
-        : { primary: RAIL_MONEY(deal.mao), provenance: "Opportunity", tone: "value" };
+        : { primary: RAIL_MONEY(deal.mao), provenance: `Opportunity · ${deal.opportunityName}`, tone: "value", route: null, authorityNote: null };
       break;
   }
 

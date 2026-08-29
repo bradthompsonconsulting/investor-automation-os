@@ -1456,10 +1456,40 @@ export default function ContactWorkspace() {
             {cell.provenance !== null && (
               <div
                 data-testid={`rail-provenance-${cell.key}`}
-                data-rail-source={cell.provenance === "Opportunity" ? "opportunity" : "contact"}
-                style={{ fontSize: "10px", letterSpacing: "0.04em", color: cell.provenance === "Opportunity" ? "#64748B" : "#F59E0B", marginTop: "1px" }}
+                data-rail-source={cell.provenance.startsWith("Opportunity") ? "opportunity" : "contact"}
+                style={{ fontSize: "10px", letterSpacing: "0.04em", color: cell.provenance.startsWith("Opportunity") ? "#64748B" : "#F59E0B", marginTop: "1px" }}
               >
                 {cell.provenance}
+              </div>
+            )}
+            {/* §4A — THE ROUTE APPEARS ONLY WHERE IT REACHES THE AUTHORITATIVE
+                FIELD. Contact-fallback means the Opportunity carries no Ask, so
+                the contact record IS the right place to change it and the
+                existing hop lands exactly there. Reuses ghlContactDetailUrl —
+                NO new URL surface; the opportunity deep-link is D4 and blocked.
+                Read-only: window.open writes nothing, exactly like the Call
+                button, so it can never grey a row. */}
+            {cell.route !== null && (
+              <button
+                data-testid={`rail-route-${cell.key}`}
+                data-rail-route={cell.route.kind}
+                onClick={() => window.open(ghlContactDetailUrl(id), "_blank", "noopener,noreferrer")}
+                style={{
+                  marginTop: "3px", fontSize: "10px", fontWeight: 600, padding: "2px 7px",
+                  borderRadius: "5px", border: "1px solid rgba(30,200,255,0.3)",
+                  background: "rgba(30,200,255,0.07)", color: "#1EC8FF", cursor: "pointer",
+                }}
+              >
+                {cell.route.label}
+              </button>
+            )}
+            {/* Stated so the ABSENCE of a route is explained rather than silent. */}
+            {cell.authorityNote !== null && (
+              <div
+                data-testid={`rail-authority-note-${cell.key}`}
+                style={{ fontSize: "10px", fontStyle: "italic", color: "#64748B", marginTop: "2px", maxWidth: "220px" }}
+              >
+                {cell.authorityNote}
               </div>
             )}
           </div>

@@ -123,7 +123,7 @@ for (const [name, fn] of Object.entries({ deriveRailDeal, railCells })) {
 
 /* FLOOR -- a literal count of the check() call sites in this file, taken from
    the finished file and never back-filled from a passing run. */
-const FLOOR = 62;
+const FLOOR = 74;
 let checks = 0;
 let failures = 0;
 
@@ -185,10 +185,45 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
   const cell = cellOf(deal, 'seller-ask');
   check('case2 deal resolves', deal.state, 'resolved');
   check('case2 ask value is the OPPORTUNITY value', deal.ask, { value: 210000, source: 'opportunity' });
-  check('case2 provenance says Opportunity', cell.provenance, 'Opportunity');
+  check('case2 provenance says Opportunity', cell.provenance, 'Opportunity · Alpha Deal');
   check('case2 renders the opportunity figure', cell.primary, '$210,000');
   check('case2 tone is a value, not waiting', cell.tone, 'value');
   check('case2 the contact figure appears nowhere', cell.primary.includes('175'), false);
+}
+
+/* ===== Board #5 §4A -- ASYMMETRIC DISCLOSURE, BOTH BRANCHES =====
+   ⚠ THE OPPORTUNITY BRANCH IS OFFLINE-ONLY AND CANNOT BE OTHERWISE. Measured
+   2026-08-29: 0 of 43 Production opportunities carry opportunity.asking_price,
+   confirmed by two independent readers (the ghl-opportunities list and the
+   singular GET). So no fixture reaches it, and manufacturing Production data
+   to get a branch is forbidden -- the same ruling as awaiting_selection. These
+   are the ONLY assertions that will ever exercise it. */
+{
+  const oppSourced = derive({ 'o-ask': 210000, 'o-mao': 165000 }, { 'c-ask': 175000 });
+  const oppAsk = cellOf(oppSourced, 'seller-ask');
+  check('4A opportunity branch names the selected deal', oppAsk.provenance, 'Opportunity · Alpha Deal');
+  check('4A opportunity branch offers NO route', oppAsk.route, null);
+  check('4A opportunity branch says why there is no route',
+    oppAsk.authorityNote, 'Authoritative on the Opportunity — not editable from IAOS yet');
+  check('4A mao provenance also names the deal', cellOf(oppSourced, 'seller-mao').provenance, 'Opportunity · Alpha Deal');
+  check('4A mao offers no route either', cellOf(oppSourced, 'seller-mao').route, null);
+
+  const contactSourced = derive({}, { 'c-ask': 175000 });
+  const conAsk = cellOf(contactSourced, 'seller-ask');
+  check('4A contact branch states WHY the contact value governs',
+    conAsk.provenance, 'Contact fallback — no Opportunity Ask');
+  check('4A contact branch OFFERS the route', conAsk.route,
+    { kind: 'contact-record', label: 'Edit on the Contact in GHL' });
+  check('4A contact branch adds no authority note', conAsk.authorityNote, null);
+
+  // The two branches are mutually exclusive: a route never coexists with a note.
+  check('4A route and authorityNote are never both present',
+    [oppAsk, conAsk].some((c) => c.route !== null && c.authorityNote !== null), false);
+  // Waiting states disclose nothing and route nowhere.
+  const noOpp = deriveRailDeal({ opps: [], oppsError: null, detail: detail({}), detailLoading: false, ids: IDS });
+  check('4A waiting states carry no route', cellOf(noOpp, 'seller-ask').route, null);
+  check('4A waiting states carry no authority note', cellOf(noOpp, 'seller-ask').authorityNote, null);
+  check('4A carrier-less cells carry no route', cellOf(oppSourced, 'seller-position').route, null);
 }
 
 /* ================= CASE 3 -- Contact fallback, disclosed ================= */
@@ -196,12 +231,12 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
   const deal = derive({}, { 'c-ask': 175000 });
   const cell = cellOf(deal, 'seller-ask');
   check('case3 ask value is the CONTACT value', deal.ask, { value: 175000, source: 'contact' });
-  check('case3 provenance says Contact fallback', cell.provenance, 'Contact fallback');
+  check('case3 provenance says Contact fallback', cell.provenance, 'Contact fallback — no Opportunity Ask');
   check('case3 renders the contact figure', cell.primary, '$175,000');
   check('case3 tone is a value', cell.tone, 'value');
   // ⚠ The disclosure is the whole safety property. A contact value must never
   // be labelled Opportunity.
-  check('case3 provenance is NOT Opportunity', cell.provenance === 'Opportunity', false);
+  check('case3 provenance is NOT Opportunity', cell.provenance.startsWith('Opportunity'), false);
 }
 
 /* ================= CASE 4 -- both absent ================= */
@@ -227,7 +262,7 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
   const cell = cellOf(deal, 'seller-mao');
   check('case5 mao is the opportunity value', deal.mao, 165000);
   check('case5 renders the figure', cell.primary, '$165,000');
-  check('case5 provenance says Opportunity', cell.provenance, 'Opportunity');
+  check('case5 provenance says Opportunity', cell.provenance, 'Opportunity · Alpha Deal');
   check('case5 tone is a value', cell.tone, 'value');
 }
 
@@ -246,7 +281,7 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
   // Absence and a stored zero are different facts. 0 is a value.
   const zero = derive({ 'o-mao': 0 }, {});
   check('case6 a stored 0 is a VALUE, not absence', cellOf(zero, 'seller-mao').primary, '$0');
-  check('case6 a stored 0 carries Opportunity provenance', cellOf(zero, 'seller-mao').provenance, 'Opportunity');
+  check('case6 a stored 0 carries Opportunity provenance', cellOf(zero, 'seller-mao').provenance, 'Opportunity · Alpha Deal');
 }
 
 /* ================= CASE 7 -- the two carrier-less cells ================= */
