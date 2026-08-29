@@ -483,7 +483,50 @@ function ChoiceRow({ f, contactId }: { f: RecordField; contactId: string }) {
   /* Synchronous re-entrancy guard, checked BEFORE any await. Under `immediate`
      a double-click is two writes; this makes the second a no-op. */
   const inFlight = useRef(false);
+  const editRef = useRef<HTMLDivElement | null>(null);
   const current: OccupancyStatus | "" = saved == null ? wire : saved;
+
+  /* THE DECLINE PATH. Under `immediate` there is no provisional value awaiting
+     save or cancel, so both exits mean exactly one thing: leave edit mode
+     WITHOUT changing the persisted value and WITHOUT issuing a PUT. Opening the
+     editor must never force a write — the accepted risk assumes the operator
+     can decline, and before this there was no way to.
+
+     ⚠ DOCUMENT-LEVEL, NOT A CONTAINER onKeyDown, AND THAT IS THE POINT.
+     Activation is a click on a <span> that is not focusable and is removed on
+     the same render, so focus almost certainly sits on <body>. A handler on the
+     option container would never receive the key, and an Escape handler that
+     never fires is indistinguishable from one that does nothing. A document
+     listener makes no focus assumption at all.
+
+     ⚠ FOCUSING THE FIRST OPTION WAS REJECTED as the alternative mechanism: a
+     focused <button> turns Enter and Space into a click, and under `immediate` a
+     click is a WRITE. That would trade a dead Escape for a stray-keystroke
+     commit.
+
+     mousedown, NOT click, for the outside path. The activation handler runs on
+     `click`, which fires after that gesture's mousedown has already passed, so
+     the listener installed during activation cannot be triggered by the very
+     gesture that opened the editor. No timers, no flags, no re-entrancy hack.
+
+     Neither exit fires while a write is in flight, so the Saving / failed state
+     cannot be dismissed before the operator has seen it. */
+  useEffect(() => {
+    if (!editing) return;
+    const close = () => { if (!inFlight.current) setEditing(false); };
+    /* globalThis-qualified: this file imports React's KeyboardEvent type at the
+       top, which shadows the DOM one, and these are DOM listeners. */
+    const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === "Escape") close(); };
+    const onDown = (e: globalThis.MouseEvent) => {
+      if (editRef.current && !editRef.current.contains(e.target as Node)) close();
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, [editing]);
 
   /* PB-D21 — "Saved" means GHL was read back and confirmed, never that the PUT
      returned 2xx. Bounded poll of the SINGULAR contact read, never the PUT echo.
@@ -601,7 +644,7 @@ function ChoiceRow({ f, contactId }: { f: RecordField; contactId: string }) {
             {label(current)}
           </span>
         ) : (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+          <div ref={editRef} style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
             {OCCUPANCY_OPTIONS.map((opt, n) => {
               const isSel = current === opt;
               return (
