@@ -53,7 +53,20 @@
      4 choice-commit-surface        non-option controls are exactly {clear}
    The two decline-path proofs below the checks are HARD ABORTS, not check()
    sites -- harness preconditions, not field invariants. The floor stays 163.
-   Success ONLY when checksRun === 163 AND every check passed. Any throw exits nonzero.
+   Board #5 D1 return revalidation: + 4 = 167.
+     1 return-refetch-when-idle               idle return -> exactly one refresh
+     2 return-coalesces-focus-and-visibility  three clauses: both signals -> one
+                                              refresh; focus alone -> one;
+                                              visibilitychange alone -> one.
+                                              The last two are what stop the
+                                              first passing against a dead
+                                              listener on either side
+     3 return-defers-while-editing            open editor -> zero refresh
+     4 return-refetch-after-editor-exits      Escape -> exactly one deferred read
+   NOT A FIELD UNLOCK. N stays 4 and 4N stays 16 -- these price a BEHAVIOUR,
+   the same species as the rail's +14 above and expressly not the PB-D5/PB-D13
+   per-unlock term.
+   Success ONLY when checksRun === 167 AND every check passed. Any throw exits nonzero.
    The 101-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
@@ -784,7 +797,9 @@ async function clickControlByBody(page, mark) {
 
   /* ── DECLINE-PATH PROOFS — HARD ABORTS, NOT check() CALL SITES ─────────────
      Same shape as the bundle gate above: a precondition surrounding the four
-     checks, not a fifth field invariant. FLOOR STAYS 163.
+     checks, not a fifth field invariant. THIS BLOCK ADDS NOTHING TO THE
+     FLOOR -- stated as the invariant rather than a number, because the number
+     has already moved once since this comment was written.
 
      Under `immediate` the only exits that do not write are Escape and clicking
      outside. Both are proven here, INDEPENDENTLY, because they are separate
@@ -856,6 +871,157 @@ async function clickControlByBody(page, mark) {
   await settleFor((id) => document.querySelectorAll(`[data-testid="field-display-${id}"]`).length === 1);
   occSt = await occState();
   occAbortUnless(AT_REST(occSt), "click-outside exited the occupancy editor", occSt, "at-rest (display=1 options=0 clear=0)");
+
+  /* Board #5 D1 - RETURN REVALIDATION.
+     STRUCTURAL BEHAVIOUR, NOT A FIELD UNLOCK. N stays 4 and 4N stays 16; the
+     rail's "+14 ... NOT a per-unlock term" note at the top of this file is the
+     precedent. These four price a behaviour, not an editor.
+
+     The defect: the contact fetch is keyed on [id] and nothing revalidated, so
+     a tab-hop to GHL and back left PRE-CALL data on screen - including Seller
+     Ask and Seller MAO on a sticky bar whose whole justification is that a
+     guardrail you cannot see is not a guardrail.
+
+     READ-ONLY THROUGHOUT. These checks simulate returning to the tab. A return
+     must never write, and the editor used in checks 3-4 is closed with the
+     already-proven ESCAPE decline path - no option click, no Clear. Under
+     `immediate`, click count is write count. */
+  const CW_SEL = '[data-testid="contact-workspace"]';
+  const refreshState = () => page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    return {
+      count: el ? Number(el.getAttribute("data-refresh-count")) : -1,
+      openEditors: el ? Number(el.getAttribute("data-open-editors")) : -1,
+      deferred: el ? el.getAttribute("data-refresh-deferred") : null,
+    };
+  }, CW_SEL);
+
+  /* Simulate leaving the tab. visibilityState is not writable, so it is
+     redefined - the page reads document.visibilityState inside its handler, so
+     the redefinition is what the handler actually sees. */
+  const goHidden = () => page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  const signalVisible = () => page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  const signalFocus = () => page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    window.dispatchEvent(new Event("focus"));
+  });
+  /* Wait for the SPECIFIC state each check asserts, never a page milestone.
+     For "no refresh" there is nothing to wait FOR, so those settle on a bounded
+     idle - the only case in this block where elapsed time is the evidence. */
+  const settleRefresh = async (target) => {
+    try {
+      await page.waitForFunction((a) => {
+        const el = document.querySelector(a.sel);
+        return !!el && Number(el.getAttribute("data-refresh-count")) >= a.t;
+      }, { sel: CW_SEL, t: target }, { timeout: 15000 });
+    } catch (e) { /* the assertion reports the observed count */ }
+  };
+
+  // 1 - idle return refetches, exactly once.
+  const r0 = await refreshState();
+  await goHidden();
+  await signalVisible();
+  await settleRefresh(r0.count + 1);
+  await page.waitForTimeout(1500); // a SECOND refresh would land in this window
+  const r1 = await refreshState();
+  check("return-refetch-when-idle", r0.openEditors === 0 && r1.count === r0.count + 1,
+    `openEditors=${r0.openEditors} count ${r0.count} -> ${r1.count} (expect +1)`);
+
+  /* 2 - THE TWO RETURN SIGNALS COALESCE, AND BOTH ARE ALIVE.
+     A REFRESH COUNTER ALONE CANNOT PROVE THIS. "both fired, one refresh" and
+     "only one fired, one refresh" produce the same count, so a naive check
+     passes for the wrong reason - the same shape as the click-outside
+     fail-open hole. The dispatch has to be made observable, and it is made so
+     by CONJUNCTION rather than by instrumenting production code.
+
+     THREE CLAUSES, because two had a fail-open route that was the MIRROR of
+     the one they fixed. Walk a DEAD visibilitychange listener through the
+     original pair: both-dispatched handled only by focus gives +1 and passes,
+     focus-alone gives +1 and passes. A dead visibilitychange satisfied the
+     whole check - and visibilitychange is the MORE load-bearing signal here,
+     because returning to a tab in an already-focused window may produce no
+     useful focus transition at all. The check could have gone green while the
+     signal carrying Brad's actual return from GHL was dead.
+
+       A both        visibilitychange(visible) + focus -> exactly +1
+       B focus       focus alone                       -> exactly +1
+       C visibility  visibilitychange(visible) alone   -> exactly +1
+
+     A proves they coalesce; B proves the focus path works; C proves the
+     visibility path works. Each alternative explanation is excluded by a
+     different clause rather than by the expected number appearing.
+
+     EACH CLAUSE TAKES ITS OWN HIDE. The wasHidden latch is cleared by
+     whichever handler runs first, so B and C cannot inherit A's transition.
+     DELTAS, NEVER CUMULATIVE COUNTS: a cumulative assertion lets a missed
+     refresh in one clause shift every later one, collapsing three independent
+     clauses back into one.
+
+     THE SIGNALS ARE SYNTHETIC, AND THE CLAIM IS BOUNDED TO MATCH. Each helper
+     redefines document.visibilityState and dispatches a constructed event.
+     These clauses prove the IAOS listeners respond correctly when the browser
+     delivers the expected event. They do NOT prove that a real OS/browser
+     tab-return gesture generates that event -- the same evidence boundary as
+     the synthetic click-outside proof above: listener behaviour proven,
+     physical gesture delivery not proven. Do not write these up as proof of
+     the physical return.
+     Clause C does genuinely isolate visibilitychange: it dispatches no focus
+     event, and the only focus dispatch in this file is signalFocus.
+
+     A DEAD LISTENER IS AN EXPECTED NEGATIVE CONDITION HERE, so settleRefresh
+     SWALLOWS its timeout by design. The clause then resolves to a delta of 0
+     and check() owns the failure with its own diagnostic -- "focus-alone=0"
+     rather than an opaque HARNESS THREW. A negative-path test whose negative
+     path crashes the machinery is weaker than it claims to be. Cost of that
+     design: a genuinely dead listener spends the 15s settle before reporting. */
+  const returnDelta = async (fire) => {
+    const before = await refreshState();
+    await goHidden();
+    await fire();
+    await settleRefresh(before.count + 1);
+    await page.waitForTimeout(1500); // a SECOND refresh would land in this window
+    const after = await refreshState();
+    return after.count - before.count;
+  };
+
+  const dBoth  = await returnDelta(async () => { await signalVisible(); await signalFocus(); });
+  const dFocus = await returnDelta(async () => { await signalFocus(); });
+  const dVis   = await returnDelta(async () => { await signalVisible(); });
+  check("return-coalesces-focus-and-visibility",
+    dBoth === 1 && dFocus === 1 && dVis === 1,
+    `both=${dBoth} (expect 1, not 2) focus-alone=${dFocus} (expect 1, proves focus is live) visibility-alone=${dVis} (expect 1, proves visibilitychange is live)`);
+
+  // 3 - an open editor DEFERS the refresh.
+  await page.evaluate((id) => {
+    const el = document.querySelector(`[data-testid="field-display-${id}"]`);
+    if (el) el.click();
+  }, OCC_ID);
+  await settleFor((id) => document.querySelectorAll(`[data-testid^="field-option-${id}-"]`).length === 3);
+  const rOpen = await refreshState();
+  await goHidden();
+  await signalVisible();
+  await page.waitForTimeout(2500);           // a refresh, if it came, lands here
+  const rDeferred = await refreshState();
+  check("return-defers-while-editing",
+    rOpen.openEditors === 1 && rDeferred.count === rOpen.count && rDeferred.deferred === "true",
+    `openEditors=${rOpen.openEditors} count ${rOpen.count} -> ${rDeferred.count} (expect unchanged) deferred=${rDeferred.deferred}`);
+
+  /* 4 - exiting the editor releases exactly one deferred refresh.
+     Closed with ESCAPE, the proven non-writing decline path. */
+  await page.keyboard.press("Escape");
+  await settleFor((id) => document.querySelectorAll(`[data-testid="field-display-${id}"]`).length === 1);
+  await settleRefresh(rDeferred.count + 1);
+  await page.waitForTimeout(1500);
+  const rReleased = await refreshState();
+  check("return-refetch-after-editor-exits",
+    rReleased.count === rDeferred.count + 1 && rReleased.openEditors === 0 && rReleased.deferred === "false",
+    `count ${rDeferred.count} -> ${rReleased.count} (expect +1) openEditors=${rReleased.openEditors} deferred=${rReleased.deferred}`);
 
   // 115-118 — Phone 2-5 DNC each adjacent to its Phone N in Reachability (position order).
   const reach = (domAI && domAI.subgroups.find((s) => s.name === "Reachability")) || { fields: [] };
@@ -1137,9 +1303,9 @@ async function clickControlByBody(page, mark) {
 
   await browser.close();
 
-  // ── Self-check: exactly 163, all unique, all passed — else nonzero ──
+  // ── Self-check: exactly 167, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 163) { console.log(`ABORT — expected 163 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 167) { console.log(`ABORT — expected 167 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
