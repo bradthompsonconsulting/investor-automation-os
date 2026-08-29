@@ -280,7 +280,23 @@ Two reads: `GET /locations/jmHG4B8RdzwpfqruNf68/customFields` (HTTP 200) and a f
 
 **Canonical enumerated inventory:** the full 96-row field list (name/id/fieldKey/dataType/position/parentId/standard) lives in `docs/CONTACT_FIELD_REFERENCE.md` (Part 1 — OBSERVED, regenerable from the wire). The breakdown below is a summary; that file is the source of truth for the enumeration.
 
-- **CUSTOM fields — 96 definitions, ALL `model: contact`.** ZERO opportunity-scoped custom fields in this location → **no §2.4 opportunities/custom-field overlap to police.** The full enumerated list is in `docs/CONTACT_FIELD_REFERENCE.md`; dataType breakdown by count:
+- **CUSTOM fields — 96 CONTACT-scoped definitions at the time of this survey.** The full enumerated list is in `docs/CONTACT_FIELD_REFERENCE.md`; dataType breakdown by count:
+
+  > **⚠ AMENDED 2026-08-29 — THE ORIGINAL PREMISE AND ITS CONCLUSION ARE BOTH OBSOLETE.**
+  > This line read "ZERO opportunity-scoped custom fields in this location → no §2.4
+  > opportunities/custom-field overlap to police." **Both halves are now false.**
+  > Measured live via `GET /locations/{id}/customFields?model=opportunity`:
+  > **16 OPPORTUNITY-scoped custom fields exist in Production** (15 NUMERICAL, 1 DATE,
+  > 1 SINGLE_OPTIONS), created since this survey by PB-D56 §VI. The contact-scoped
+  > count has also moved 96 → 101 (Board #4 S0 added three carriers; two others
+  > predate this note).
+  >
+  > **THE OVERLAP IS THEREFORE LIVE AND MUST BE POLICED.** `asking_price` exists on
+  > BOTH models with DIFFERENT dataTypes — `contact.asking_price` is MONETORY,
+  > `opportunity.asking_price` is NUMERICAL — so the same business fact is held in
+  > two carriers whose write contracts are not the same document. `resolver.ts:329`
+  > already encodes a precedence between them. No policy is decided here; this
+  > amendment only withdraws a conclusion that a measured zero no longer supports.
   - **TEXT 45** — Phone Type, Mailing Address/City/State/Zip/County/Care-of-Name, Phone 2–5 + Phone 1–5 DNC, Email 2–4, Property Address/Type/Status/Notes, APN, County, Owner Occupied, condition fields (Interior/Exterior/Bathroom/Kitchen/Total), Owner 2 First/Last, Business Website, MLS Status, Litigator, Foreclosure Factor, Wholesaling Market, SMS Sender Name, Do Not Mail, Sending Domain, Booking Calendar Link, `last_call_attempt_precise`, `callback_datetime_precise`, Marketing Lists
   - **NUMERICAL 25** — the `offer_*` set (Offer ARV/MAO/Margin/Price/Repair Total/Wholesale Fee), scores (Motivation/Combined/Deal/Data Completeness), Est. Value/Equity/LTV/Remaining Loan Balance, Bedrooms, Total Bathrooms, Building/Lot Sqft, Total Assessed Value, MLS Amount, Last Sale Amount, Hold Months, Effective Year Built, Total Open Loans, Lien Amount
   - **MONETORY 5** — Loan Amount, Asking Price, Carrying Cost, Estimated Repairs, ARV
