@@ -3353,3 +3353,148 @@ readback parser built inert, the control shipped with its harness
 contract in the same commit, and the first production approval verified
 four ways. Twenty proof steps and ten restored mutations preceded the
 first write that was allowed to persist.
+
+
+### PB-D60 -- `opportunity.asking_price` field designation and designated test value
+
+**Decision.** `opportunity.asking_price` (`YxCDaX7dLhBJL9GLGFpJ` Production,
+`owIOWnJuIheiwJVdJWQ5` Test, NUMERICAL, both OBSERVED live 2026-08-29 via
+`GET /locations/{id}/customFields?model=opportunity`) is designated to enter
+its own Opportunity-side inert-proof sequence, following PB-D58's standalone
+architecture: five steps, one deliberate command each, capture -> write ->
+verify -> clear -> confirm, per PB-D58 section I. The contact-side runner is
+not involved and is not generalized. Per PB-D58's deferral -- "Whether to
+generalize the runner is a separate decision taken after this proof passes,
+never as a side effect of it" -- that decision is explicitly taken here as
+DO NOT GENERALIZE FOR THIS USE CASE, and remains open on its own merits for
+any future case, which would still owe PB-D28, PB-D30, PB-D31 and PB-D32 an
+answer.
+
+**Selection boundary.** This designation is BY REQUIREMENT, not by comparative
+selection: Board #5 section 4B needs this field and no other, so there is no
+candidate set and no selection to record. PB-D35 is the precedent for a
+designation with nothing to choose between -- it recorded itself as "designated
+by exhaustion rather than by rationale" -- and this one is by requirement
+rather than by exhaustion.
+
+PB-D33 and PB-D34 each passed over Asking Price, recording as inference from
+field purpose that it "sits closer to seller-facing offer logic and the
+existing `offer_` HARD-NO pathway" than the field then selected. PB-D35 met
+that history directly when the contact field's turn came and disposed of it:
+"That prior inference is not a safety finding and neither supports nor weighs
+against `asking_price`." **PB-D35's disposal does not transfer to this
+decision.** That disposal was about `contact.asking_price` -- a different
+field, on a different model, of a different dataType. What is reused here is
+the reasoning, never the conclusion. Per section 4.6 workflow triggers are not
+API-derivable, and `opportunity.asking_price` must prove its own field-specific
+write safety through the complete cycle.
+
+Serialization is not at issue and is not re-litigated. PB-D58 section VI
+OBSERVED that `field_value: ""` clears an opportunity NUMERICAL custom field to
+KEY_ABSENT, "reproduced independently on both fields," and that opportunity
+NUMERICAL round-trips two decimal places exactly. No third discovery cycle is
+run. What does not transfer is field safety, per PB-D58 section IV: "two proven
+opportunity fields would not prove a third... dataType proves serialization,
+not field safety."
+
+**Designated test value.** `642318.57` is approved before the write under the
+PB-D30 amendment dated 2026-08-03. It is DELIBERATELY SELECTED, NEVER described
+as observed. Against that amendment's four criteria:
+
+* *Valid for the field.* NUMERICAL with two decimal places, on the exact
+  round-trip PB-D58 section VI observed.
+* *Recognizable during verification.* Non-round and non-repeating; no figure
+  IAOS computes produces it.
+* *Unlikely to be confused with production data.* Distinct from all ten values
+  in use: `187500.25` arv (observed, not designated, per the PB-D30 amendment);
+  `4321.25` carrying cost; `8642.75` estimated repairs (PB-D33); `24680.25`
+  loan amount (PB-D34); `135790.25` `contact.asking_price` (PB-D35);
+  `8271.31` closing costs (PB-D58 section I); `313370.42`
+  `endbuyer_maximum_purchase_price` (PB-D58 section II); `486210.73`
+  `mao_max_allowable_offer`; and `571204.86` and `398715.29`, written together
+  in the payload-b step-2 body, which records no `testValue` key so those two
+  are recoverable only from `requestBody`.
+* *Restored immediately after the proof cycle.* Required, and reinforced by the
+  containment paragraph below.
+
+**On-screen appearance is NOT part of this value's justification.** An earlier
+draft argued the value was safe because it "carries cents no seller quotes."
+That is true on the wire and false on screen: `RAIL_MONEY` in
+`app/src/lib/rail.ts` formats with `maximumFractionDigits: 0`, so `642318.57`
+renders in the rail as `$642,319` -- a perfectly plausible ask. Almost any
+positive six-figure value is plausible as an asking price, so operator exposure
+cannot be solved by choosing a stranger number. The two concerns are separated:
+the value carries wire and evidence identification; the containment paragraph
+carries operator exposure.
+
+**Eligibility is not safety.** There is no runner registry here, so the
+PB-D33/D34/D35 formulation does not apply verbatim. The equivalent claim:
+writing the proof suite makes this field ELIGIBLE to enter the proof sequence
+and establishes nothing whatsoever about safety. Safety is earned only when
+capture, write, verify, clear and confirm all complete, the key is observed
+absent again on a bounded poll, and PB-D58 section II's four-item confirmation
+battery -- `othersUnchanged`, `offersUnchanged`, `stageUnchanged`,
+`statusUnchanged` -- passes on both the verify and restore reads. Anything less
+is recorded as what it is.
+
+**Live consumers, re-established from current source 2026-08-29.** Per PB-D58
+section I's standard, which re-established `closing_costs`'s consumer-free
+claim "from current source rather than inherited," a recursive read of
+`app/src`, `app/netlify`, `app/shared` and `netlify` finds:
+
+    app/src/pages/ContactWorkspace.tsx:71     RAIL_CONFIG.opportunityFacts.askingPrice
+                                              -> the call rail's Seller Ask cell
+    app/src/pages/UnderwritingWorkspace.tsx:53  CONFIG.opportunityFacts.askingPrice
+                                              -> the Underwriting screen
+
+No writer of this field exists anywhere in the tree; a search for both
+environment ids outside `app/shared/ghl-config.ts` returns nothing.
+
+**This field is therefore unlike PB-D58's discovery field, and the difference
+belongs in its designation boundary rather than in a footnote.**
+`closing_costs` was chosen precisely because it had NO live consumer, so its
+proof value could not be read by anything. `opportunity.asking_price` has two
+live IAOS consumers, and `resolver.ts` gives the Opportunity value precedence
+over the Contact value. So during the bounded proof window the designated value
+is not inert on the surfaces: it becomes OPERATOR-VISIBLE in the rail and
+COMPUTATIONALLY ACTIVE in Underwriting's acquisition-position comparison.
+
+**Proof-window containment.** Because of the paragraph above, the proof window
+is bounded by the following conditions, which are part of this designation and
+not execution detail:
+
+* The controlled fixture must not be treated as a real seller or a real deal
+  while the inert-proof value is present.
+* `write -> verify -> clear -> confirm` is ONE bounded proof operation.
+  Restoration to KEY_ABSENT is required before the proof is complete; a proof
+  that has written and not confirmed restoration is not a completed proof.
+* No screenshots and no UI observations of Seller Ask are required or wanted.
+  This is an API field-safety proof, not a UI proof. The UI write path is a
+  separate instrument with its own evidence.
+* IF THE CYCLE ABORTS AFTER THE WRITE AND BEFORE CONFIRMED RESTORATION, that is
+  an immediate STOP and restoration-required condition -- not an ordinary failed
+  test. Per PB-D24 a proof cycle that leaves residue is a failed inert proof by
+  definition, and per PB-D30 an unrecorded mutation outranks response
+  classification as the dangerous condition.
+* Brad must not be operating the Test Probe deal while the proof runs.
+
+**Evidence.** PB-D58 section III in both halves, unchanged and not reinvented:
+the existing flat directory with the `inert-proof-opp-<field>-step<N>.json`
+prefix, and the durable archive to `C:\Users\brad\Documents\IAOS Evidence\`
+with `cp -p` and SHA-256 verified on both sides, because "Temp is not an
+archive." The hardcoded Windows evidence path in the existing opportunity
+suites is RECORDED DEBT, deliberately inherited here rather than repaired:
+PB-D58 section III chose the existing convention on the stated ground that "no
+subdirectory convention exists in the current machinery, so one is not invented
+here," and introducing a portable path for one suite would create two
+conventions mid-implementation. Portability is revisited whenever the
+Opportunity proof architecture is deliberately revisited, not as a side effect
+of a field-safety proof.
+
+**Unchanged.** PB-D24 through PB-D32 in full: per PB-D58 section V they govern
+the contact-side runner and are neither amended nor extended here. PB-D58
+itself, including both its cycles and their results. `inert-proof-runner.cjs`,
+which is not generalized for this use case. CONTACTS_OPPORTUNITIES_SPEC section
+4.1's HARD NO on `offer_` fields, tags, pipeline stage and workflow triggers --
+this designation touches none of them. PB-D55, PB-D56, PB-D57 and PB-D59. Every
+existing proof record.
