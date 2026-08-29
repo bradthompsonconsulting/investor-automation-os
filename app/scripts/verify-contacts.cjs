@@ -40,7 +40,20 @@
    identity renders.
    REPLACES, does not extend, S1's proposed "rail carries no numeric content"
    check. That invariant expired when S2 gave the rail a legitimate figure.
-   Success ONLY when checksRun === 159 AND every check passed. Any throw exits nonzero.
+   Board #5 S3 occupancy unlock: + 4 = 163. THE FIRST GENUINE PB-D5/PB-D13
+   PER-UNLOCK TERM IN BOARD #5 -- occupancy is a real field unlock, so N goes
+   3 -> 4 and 4N goes 12 -> 16. Template choice-single + immediate (PB-D11
+   lists choice + immediate as the only permitted pair for this editor):
+     1 choice-display-present       at rest, one display, text = label or ---,
+                                    zero option controls
+     2 choice-edit-reveals-options  activation swaps the display out; exactly
+                                    the option set, GHL's order, all enabled
+     3 choice-exactly-one-selected  one selected matching the wire, or zero
+                                    when empty. Never two.
+     4 choice-commit-surface        non-option controls are exactly {clear}
+   The two decline-path proofs below the checks are HARD ABORTS, not check()
+   sites -- harness preconditions, not field invariants. The floor stays 163.
+   Success ONLY when checksRun === 163 AND every check passed. Any throw exits nonzero.
    The 101-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
@@ -650,6 +663,147 @@ async function clickControlByBody(page, mark) {
     railCellOf("investor-offer").primary === "WAITING on negotiation semantics / carrier contract",
     `dom="${railCellOf("investor-offer").primary}"`);
 
+  /* ═══ Board #5 S3 — OCCUPANCY, template choice-single + immediate ═══════════
+     The first `choice` unlock. PB-D11 lists choice + immediate as the ONLY
+     permitted pair for this editor, so the behaviour under test is the
+     taxonomy's, not a local invention.
+
+     ⚠ THESE FOUR ARE SCOPED TO THE RECOGNISED-OR-EMPTY STATE, which this
+     fixture supplies. ChoiceRow has a THIRD state: a stored value that is not
+     one of the field's options renders raw, marked read-only, with NO option
+     controls, NO clear control and no activation — an early return, so the
+     editing branch is structurally unreachable there. That branch renders
+     NEITHER a label NOR — and is NOT described by these checks. Do not read it
+     as a Check 1 violation, and do not "fix" it by loosening Check 1. It is
+     inspection-proven only: exercising it live would require manufacturing a
+     bad Production value, which is forbidden, and a seam would prove the
+     classifier while proving nothing about the read-only enforcement.
+
+     ⚠ PRE-RECORDED PREDICTION, measured before these assertions were written
+     and before any deploy. ONE read-only GET, 2026-08-29:
+
+       GET /contacts/FiIT0hUaxVCIuokQpZuc   (CONTACTS.neelima)
+       occupancy_status : FIELD ABSENT — the key is not present on the record
+
+     Bradt75's KEY_ABSENT was NOT reused: that measurement was taken for the S3c
+     write fixture and is a different contact. Neelima was read on her own.
+
+     Through the template those facts predict:
+       at rest      field-display-{OCC} renders exactly "—"; zero option controls
+       activated    display gone; exactly 3 options, GHL's own order
+                    ["Owner Occupied","Tenant Occupied","Vacant"], each enabled
+                    and not readonly
+       selection    ZERO options selected — the empty branch of Check 3, not the
+                    exactly-one branch
+       controls     no field-save-{OCC}, no field-cancel-{OCC},
+                    field-clear-{OCC} exactly once
+
+     ⚠ HARNESS WRITE-SAFETY, PB-D17, AND IT MATTERS MORE HERE THAN ANYWHERE.
+     Under `immediate` A CLICK IS A WRITE. This block activates the display,
+     inspects, and exits with Escape. It NEVER clicks an option and NEVER clicks
+     Clear. Check 3 reads selection state from the DOM rather than producing it.
+     Nobody adds a "does clicking commit" assertion here — that is S3c's
+     controlled write, and putting it in the harness would mutate a real contact
+     on every run. */
+  const OCC_ID = "op57wOVFSMRBFbHmD6ej"; // contact.occupancy_status — hardcoded per the verification-only rule
+  const OCC_OPTIONS = ["Owner Occupied", "Tenant Occupied", "Vacant"];
+
+  const occRest = await page.evaluate((id) => {
+    const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+    const d = document.querySelectorAll(`[data-testid="field-display-${id}"]`);
+    return {
+      displayCount: d.length,
+      displayText: d.length === 1 ? norm(d[0].textContent) : "",
+      unrecognised: d.length === 1 ? d[0].getAttribute("data-unrecognised") : null,
+      optionsAtRest: document.querySelectorAll(`[data-testid^="field-option-${id}-"]`).length,
+      clearAtRest: document.querySelectorAll(`[data-testid="field-clear-${id}"]`).length,
+    };
+  }, OCC_ID);
+  check("choice-display-present",
+    occRest.displayCount === 1 && occRest.displayText === "—" &&
+      occRest.optionsAtRest === 0 && occRest.clearAtRest === 0,
+    `displayCount=${occRest.displayCount} text="${occRest.displayText}" optionsAtRest=${occRest.optionsAtRest} clearAtRest=${occRest.clearAtRest} unrecognised=${occRest.unrecognised}`);
+
+  // ACTIVATE. Inspect. Escape. No option is ever clicked.
+  await page.click(`[data-testid="field-display-${OCC_ID}"]`);
+  const occEdit = await page.evaluate((id) => {
+    const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+    const opts = [...document.querySelectorAll(`[data-testid^="field-option-${id}-"]`)];
+    return {
+      displayGone: document.querySelectorAll(`[data-testid="field-display-${id}"]`).length === 0,
+      labels: opts.map((o) => norm(o.textContent)),
+      testids: opts.map((o) => o.getAttribute("data-testid")),
+      allEnabled: opts.every((o) => !o.disabled && o.getAttribute("aria-readonly") !== "true"),
+      selected: opts.filter((o) => o.getAttribute("data-selected") === "true").map((o) => norm(o.textContent)),
+      saveCount: document.querySelectorAll(`[data-testid="field-save-${id}"]`).length,
+      cancelCount: document.querySelectorAll(`[data-testid="field-cancel-${id}"]`).length,
+      clearCount: document.querySelectorAll(`[data-testid="field-clear-${id}"]`).length,
+    };
+  }, OCC_ID);
+
+  check("choice-edit-reveals-options",
+    occEdit.displayGone &&
+      JSON.stringify(occEdit.labels) === JSON.stringify(OCC_OPTIONS) &&
+      JSON.stringify(occEdit.testids) === JSON.stringify(OCC_OPTIONS.map((_, n) => `field-option-${OCC_ID}-${n}`)) &&
+      occEdit.allEnabled,
+    `displayGone=${occEdit.displayGone} labels=${JSON.stringify(occEdit.labels)} allEnabled=${occEdit.allEnabled}`);
+  // Neelima is EMPTY, so the predicted branch is ZERO selected. Never two.
+  check("choice-exactly-one-selected", occEdit.selected.length === 0,
+    `selected=${JSON.stringify(occEdit.selected)} expect=[] (wire is empty)`);
+  check("choice-commit-surface",
+    occEdit.saveCount === 0 && occEdit.cancelCount === 0 && occEdit.clearCount === 1,
+    `save=${occEdit.saveCount} cancel=${occEdit.cancelCount} clear=${occEdit.clearCount}`);
+
+  /* ── DECLINE-PATH PROOFS — HARD ABORTS, NOT check() CALL SITES ─────────────
+     Same shape as the bundle gate above: a precondition surrounding the four
+     checks, not a fifth field invariant. FLOOR STAYS 163.
+
+     Under `immediate` the only exits that do not write are Escape and clicking
+     outside. Both are proven here, INDEPENDENTLY, because they are separate
+     listeners and a working Escape says nothing about click-outside.
+
+     ⚠ EACH EXIT IS PROVEN, NEVER ASSUMED. Pressing a key and carrying on is
+     exactly the error this block exists to prevent: an Escape handler that
+     never fires is indistinguishable from one that does nothing. The condition
+     is identical for both paths — the at-rest display is back AND every option
+     control is gone.
+
+     PB-D17 holds throughout: NO option is ever chosen and Clear is never
+     clicked. Under `immediate`, click count is write count. */
+  const declineProof = async (label) => {
+    const st = await page.evaluate((id) => ({
+      display: document.querySelectorAll(`[data-testid="field-display-${id}"]`).length,
+      options: document.querySelectorAll(`[data-testid^="field-option-${id}-"]`).length,
+      clear: document.querySelectorAll(`[data-testid="field-clear-${id}"]`).length,
+    }), OCC_ID);
+    if (st.display !== 1 || st.options !== 0 || st.clear !== 0) {
+      console.log(`ABORT — ${label} did not exit the occupancy editor: display=${st.display} options=${st.options} clear=${st.clear}`);
+      process.exit(5);
+    }
+    console.log(`decline-path OK  ${label} exited  display=${st.display} options=${st.options}`);
+  };
+
+  // PATH 1 — Escape. The editor is already open from the four checks above.
+  await page.keyboard.press("Escape");
+  await declineProof("Escape");
+
+  /* PATH 2 — click outside. Re-open, then dispatch a bubbling mousedown on
+     document.body.
+
+     BODY IS INERT BY CONSTRUCTION, not by belief: no coordinates are involved
+     so nothing is hit-tested onto a control, no node is injected into the page
+     under test, and body is outside editRef by definition — which is the exact
+     condition the handler tests. Under `immediate` some clicks on this page
+     are writes, so "a control I believe is safe" is not the standard.
+
+     This exercises the LISTENER. The hit-testing path it skips was measured
+     separately at the ruling and is deliberately NOT restated here: that
+     measurement is point-in-time evidence at one SHA, not a product invariant,
+     and it would become false the day someone adds a mousedown handler. */
+  await page.click(`[data-testid="field-display-${OCC_ID}"]`);
+  await page.evaluate(() => document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+  await declineProof("click-outside");
+
   // 115-118 — Phone 2-5 DNC each adjacent to its Phone N in Reachability (position order).
   const reach = (domAI && domAI.subgroups.find((s) => s.name === "Reachability")) || { fields: [] };
   for (const n of [2, 3, 4, 5]) {
@@ -930,9 +1084,9 @@ async function clickControlByBody(page, mark) {
 
   await browser.close();
 
-  // ── Self-check: exactly 159, all unique, all passed — else nonzero ──
+  // ── Self-check: exactly 163, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 159) { console.log(`ABORT — expected 159 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 163) { console.log(`ABORT — expected 163 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
