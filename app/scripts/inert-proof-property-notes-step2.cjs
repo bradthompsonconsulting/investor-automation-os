@@ -8,6 +8,8 @@
    builder, and getJson helper verbatim. Fixture bradt75, per
    CONTACTS_OPPORTUNITIES_SPEC.md §4.2. */
 const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const ghlConfig = require("./ghl-config-loader.cjs");
 const fixtures  = require("../../scripts/harness-fixtures.json");
 const { stamp, assertEnvironment } = require("./evidence-provenance.cjs");
@@ -45,8 +47,17 @@ const CONTACT_ID = fixtureContacts.bradt75;     // bradt75 — inert-proof write
 const FIELD_ID   = config.fields.propertyNotes; // Property Notes (contact.property_notes)
 
 const TEMP_VALUE      = "IAOS INERT PROOF 2026-07-27 DO NOT USE";
-const STEP1_EVIDENCE  = "C:/Users/brad/AppData/Local/Temp/inert-proof-property-notes-step1.json";
-const STEP2_EVIDENCE  = "C:/Users/brad/AppData/Local/Temp/inert-proof-property-notes-step2.json";
+/* PORTABLE EVIDENCE PATH. These were hardcoded to a Windows Temp directory,
+   which does not resolve on a Linux runner, so this script bailed at the
+   existence check and CI stayed red from 2026-08-24. os.tmpdir() resolves to
+   that SAME directory on Brad's machine, so local behaviour is unchanged.
+   ⚠ THIS ALONE DOES NOT MAKE CI GREEN. It fixes WHERE to look, not whether
+   the artifact EXISTS on a clean runner. The runtime exit-contract test
+   constructs its own step-1 artifact; see scripts/test-exit-contract-runtime.cjs.
+   The other 35 scripts carrying this path stay as recorded debt -- no sweep. */
+const EVIDENCE_DIR    = os.tmpdir();
+const STEP1_EVIDENCE  = path.join(EVIDENCE_DIR, "inert-proof-property-notes-step1.json");
+const STEP2_EVIDENCE  = path.join(EVIDENCE_DIR, "inert-proof-property-notes-step2.json");
 
 // Literal /contacts path; encode only nested ? & = as %3F %26 %3D; NO --data-urlencode.
 const PROXY = (p) => `${ORIGIN}/.netlify/functions/ghl-proxy?path=${p}`;

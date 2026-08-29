@@ -68,6 +68,7 @@
 
 const { spawnSync } = require("node:child_process");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -117,10 +118,81 @@ const CORPUS = [
     args: ["--env=production"],
     anchor: null,
     expectExit: 6,
+    /* `anchor` cannot serve here: it resolves fail() call sites to derive a
+       declared code, and assertEnvironment calls process.exit(PROVENANCE_REFUSAL)
+       directly. So the INTENDED refusal is proven from the text
+       assertEnvironment emits, which no other exit-6 path in this corpus
+       produces. Without this, any unrelated exit 6 would satisfy the entry. */
+    refusalText: ["step-1 evidence", "carries no environment stamp"],
+    needsProvenanceFixture: true,
   },
 ];
 
-const FLOOR = 36;
+/* 36 -> 37: the provenance entry gains its refusal-text assertion. The fixture
+   construction and validation below are PRECONDITIONS with hard aborts, not
+   check() sites, so they do not move the floor. */
+const FLOOR = 37;
+
+/* ── THE PROVENANCE PRECONDITION — THE TEST OWNS IT ───────────────────────────
+   This corpus entry asserts that step2 refuses on provenance. Reaching that
+   refusal requires a step-1 artifact that EXISTS, PARSES, and carries no
+   usable environment stamp. Historically nothing created it: the Windows
+   green was AMBIENT-STATE DEPENDENT, satisfied by a leftover developer
+   artifact, and the Linux red was the same accident with the opposite sign.
+   Neither was evidence. A test owns its preconditions.
+
+   ⚠ THE FIXTURE IS INCAPABLE OF PASSING assertEnvironment, and that is the
+   safety property as much as the test property. If it could pass, step2 would
+   continue past the refusal toward a LIVE GHL READ and then a WRITE. An
+   artifact with NO `environment` key cannot proceed: the refusal is
+   unconditional on that branch. The property under test and the property that
+   makes it safe are the same property.
+
+   It is also non-destructive: a real developer artifact at this path is moved
+   aside and restored, so running the gate never destroys real evidence. */
+const PROV_ARTIFACT = path.join(os.tmpdir(), "inert-proof-property-notes-step1.json");
+let provSaved = null;
+
+function buildProvenanceFixture() {
+  if (fs.existsSync(PROV_ARTIFACT)) provSaved = fs.readFileSync(PROV_ARTIFACT);
+  fs.writeFileSync(PROV_ARTIFACT, JSON.stringify({
+    _fixture: "test-exit-contract-runtime provenance precondition",
+    _intent: "DELIBERATELY UNSTAMPED: no `environment` key, so assertEnvironment must refuse with PROVENANCE_REFUSAL (6)",
+  }, null, 2), "utf8");
+
+  /* VALIDATE BEFORE SPAWNING. We do not hope the setup produced the refusal
+     condition; we establish it. A failure here fails the test WITHOUT ever
+     spawning step2. */
+  if (!fs.existsSync(PROV_ARTIFACT)) {
+    console.error(`ABORT — provenance fixture was not created at ${PROV_ARTIFACT}`);
+    teardownProvenanceFixture();
+    process.exit(7);
+  }
+  let parsed;
+  try { parsed = JSON.parse(fs.readFileSync(PROV_ARTIFACT, "utf8")); }
+  catch (e) {
+    console.error(`ABORT — provenance fixture does not parse: ${e.message}`);
+    teardownProvenanceFixture();
+    process.exit(7);
+  }
+  const stampValue = parsed == null ? undefined : parsed.environment;
+  if (stampValue !== undefined && stampValue !== null) {
+    console.error(`ABORT — provenance fixture carries an environment stamp (${JSON.stringify(stampValue)}); it would NOT trigger the refusal and step2 could proceed toward a live read.`);
+    teardownProvenanceFixture();
+    process.exit(7);
+  }
+  console.log(`provenance-fixture OK  ${PROV_ARTIFACT}  parses, no environment stamp -> refusal is guaranteed`);
+}
+
+function teardownProvenanceFixture() {
+  try { fs.rmSync(PROV_ARTIFACT, { force: true }); } catch (e) {}
+  if (provSaved !== null) {
+    try { fs.writeFileSync(PROV_ARTIFACT, provSaved); } catch (e) {}
+    provSaved = null;
+  }
+}
+
+if (CORPUS.some((c) => c.needsProvenanceFixture)) buildProvenanceFixture();
 
 let checksRun = 0;
 let failures = 0;
@@ -163,6 +235,11 @@ for (const c of CORPUS) {
 
   if (c.anchor === null) {
     check(`${c.label} / observed matches expected`, observed === c.expectExit, `observed=${observed} expected=${c.expectExit}`);
+    if (c.refusalText) {
+      const missing = c.refusalText.filter((t) => !output.includes(t));
+      check(`${c.label} / reached the INTENDED provenance refusal`, missing.length === 0,
+        `missing=${JSON.stringify(missing)} first-line="${output.trim().split(/\r?\n/)[0].slice(0, 90)}"`);
+    }
     continue;
   }
 
@@ -223,6 +300,12 @@ check(
   sawNonTruncating,
   sawNonTruncating ? "declared<=255 observed — both sides of the boundary exercised" : "no non-truncating member",
 );
+
+/* CLEAN UP ON EVERY EXIT PATH, not just the abort paths. Leaving the fixture
+   behind would hand the next local run an ambient artifact -- the exact defect
+   this repair exists to remove -- and would strand a real developer artifact
+   that was moved aside. */
+teardownProvenanceFixture();
 
 console.log(`checksRun=${checksRun} failures=${failures} floor=${FLOOR}`);
 if (checksRun < FLOOR) {

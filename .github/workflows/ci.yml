@@ -212,5 +212,5 @@ jobs:
       # is reused across processes). Both truncating members live in getConfig
       # families — no carrier-only file declares a code above 86 — so that cost
       # is unavoidable if truncation is to be observed at all.
-      - name: Exit contract, runtime — 36 checks
+      - name: Exit contract, runtime — 37 checks
         run: node scripts/test-exit-contract-runtime.cjs
