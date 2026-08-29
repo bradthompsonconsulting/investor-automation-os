@@ -3498,3 +3498,87 @@ which is not generalized for this use case. CONTACTS_OPPORTUNITIES_SPEC section
 4.1's HARD NO on `offer_` fields, tags, pipeline stage and workflow triggers --
 this designation touches none of them. PB-D55, PB-D56, PB-D57 and PB-D59. Every
 existing proof record.
+
+**Results, 2026-08-29.** **The `opportunity.asking_price` field-specific
+Production inert proof PASSED.** Five steps, two mutations, both restored.
+Suite at `7814cb2`; capture, write, verify, clear and confirm each exited 0
+with no stop condition, no contingency taken and no step re-run.
+
+*Origin.* KEY_ABSENT at capture, as this designation's contract requires --
+`fieldPresent` false, the seven `offer_` fields all absent, the fixture trio
+recorded. Per PB-D30 the populated-origin mechanism stays behind its own
+specification and was not exercised.
+
+*Write and read-back.* One PUT carrying `{"customFields":[{"id":
+"YxCDaX7dLhBJL9GLGFpJ","field_value":642318.57}]}` and nothing else. Read-back
+equality observed on poll 1, `typeof` `number`, unrounded and unstringified.
+The designated value round-tripped exactly, which reproduces on a third field
+what PB-D58 section VI observed about opportunity NUMERICAL and two decimal
+places.
+
+*Clear and restoration.* One PUT issued `field_value: ""`. The key was observed
+absent on a bounded poll -- **structural absence, the id gone from
+`customFields`**, not an entry present carrying `""`, `0` or `null`, which
+PB-D24 makes a different state. `outcome` `CLEARED`, `restoredToOrigin` `true`,
+`fieldSafetyEstablished` `true` with all seven PB-D58 section IV conditions met:
+`absentAtCapture`, `onePutSetTestValue`, `readBackEquality`,
+`verifyBatteryGreen`, `clearPutIssued`, `keyAbsentOnBoundedPoll`,
+`restoreBatteryGreen`. PB-D58 section II's four-item battery passed on both the
+verify and restore reads. Pipeline stage, status, the seven `offer_` fields and
+the fixture trio were unmoved throughout, and an independent post-run read
+direct to GoHighLevel rather than through the proxy confirmed the record
+matches capture.
+
+*The read-shape hazard, reproduced with a positive control.* On poll 1 the
+singular `GET /opportunities/{id}` returned the value under **`fieldValue`**
+and carried no `fieldValueNumber`. The list-shaped reader -- `resolver.ts`'s
+`readNumberField` reduced to its key access, replicated in the suite for this
+purpose alone and never used to decide anything -- returned `undefined` against
+that same present entry. Persisted verbatim in the step-3 evidence:
+
+    "fieldValueGuard": {
+      "singularKeyUsed": "fieldValue",
+      "singularValue": 642318.57,
+      "listShapedReaderResult": "undefined",
+      "listShapedReaderWouldMisreadAsAbsent": true
+    }
+
+PB-D58 section VI recorded the two opportunity read paths as serializing custom
+fields differently, and warned that `readNumberField` "must NOT be reused
+against the singular GET shape without change: it would read every NUMERICAL
+field as absent, silently." That is no longer an observation carried forward.
+It is a demonstrated property of a live Production payload, on a second field,
+with the positive control on the record. A proof built on that reader would
+have reported this landed write as failed, and -- the sharper failure -- would
+have reported this restoration as successful whether or not the field had
+cleared, because a reader that calls everything absent cannot distinguish
+CLEARED from EMPTIED from UNCHANGED.
+
+*Evidence.* PB-D58 section III in both halves. All five artifacts written to
+the flat `inert-proof-opp-asking-price-step<N>.json` convention and copied to
+`C:\Users\brad\Documents\IAOS Evidence\` with `cp -p`, SHA-256 verified
+identical on both sides. The section I precondition was re-verified by
+recomputation immediately before step 1 rather than by restating an earlier
+result, because a prior incident in this repository turned on a check that
+passed on a leftover artifact in the same directory.
+
+**What this proves, at its actual width.** Field safety for
+`opportunity.asking_price` and nothing else.
+
+* It does **not** discharge PB-D56 prerequisite 5. PB-D58 section VI discharged
+  that, on `endbuyer_maximum_purchase_price`.
+* It does **not** authorize Approve. Per PB-D58 section IV a discharge does not
+  authorize Approve, and this is less than a discharge.
+* It does **not** generalize. Three opportunity fields are now proven --
+  `closing_costs`, `endbuyer_maximum_purchase_price` and `asking_price`. PB-D58
+  section IV holds that two proven opportunity fields would not prove a third;
+  by the same reasoning three do not prove a fourth. Each further field owes its
+  own complete cycle, and this one passing cleanly is not an argument that the
+  next will.
+* It does **not** trip PB-D16's promotion gate. That gate is revisited only
+  after a second **MONETORY** field passes its own inert-proof. All three proven
+  opportunity fields are NUMERICAL, so the count of proven MONETORY fields is
+  unchanged and the public surface question is untouched. "A second field has
+  now been proven" is not the condition PB-D16 states.
+* The round-trip evidence is one field, one value, two decimal places. It is not
+  a claim about arbitrary precision.
