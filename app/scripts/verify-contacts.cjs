@@ -59,7 +59,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-Dc60s2UT.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
+const EXPECTED = "index-3MwV8mHl.js"; // §9.2 — RE-PIN to the served bundle after every app-code deploy
 
 /* Environment + fixture carrier (Gate 4C C4a).
 
@@ -741,7 +741,18 @@ async function clickControlByBody(page, mark) {
      fail CLOSED if it raced -- checks 2-4 would see zero options and go red --
      but relying on that is relying on luck, and the decline block below has a
      failure mode where racing fails OPEN. Settle both. */
-  await page.click(`[data-testid="field-display-${OCC_ID}"]`);
+  /* IN-PAGE element.click(), NOT page.click(). The Occupancy row is MOUNTED but
+     HIDDEN by its collapsed Investor parent (display:none), so a
+     visibility-aware Playwright click times out -- observed on the first live
+     run, 30s at this line. Identical to the ARV activation below and adopted
+     from it.
+     It also happens to be the SAFER dispatch here: element.click() fires only a
+     `click`, never a `mousedown`, so it cannot trip this editor's
+     document-level click-outside listener the way a real pointer gesture could. */
+  await page.evaluate((id) => {
+    const el = document.querySelector(`[data-testid="field-display-${id}"]`);
+    if (el) el.click();
+  }, OCC_ID);
   await settleFor((id) => document.querySelectorAll(`[data-testid^="field-option-${id}-"]`).length === 3);
   const occEdit = await page.evaluate((id) => {
     const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
@@ -833,7 +844,10 @@ async function clickControlByBody(page, mark) {
      separately at the ruling and is deliberately NOT restated here: that is
      point-in-time evidence at one SHA, not a product invariant, and it would
      become false the day someone adds a mousedown handler. */
-  await page.click(`[data-testid="field-display-${OCC_ID}"]`);
+  await page.evaluate((id) => {
+    const el = document.querySelector(`[data-testid="field-display-${id}"]`);
+    if (el) el.click();
+  }, OCC_ID);
   await settleFor((id) => document.querySelectorAll(`[data-testid^="field-option-${id}-"]`).length === 3);
   occSt = await occState();
   occAbortUnless(IS_OPEN(occSt), "re-open before the outside dispatch", occSt, "editor open (display=0 options=3 clear=1)");
