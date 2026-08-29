@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2, BellOff,
@@ -84,6 +84,31 @@ const RAIL_IDS: RailIds = {
 
 const TIER_COLOR: Record<BucketTag, string> = { hot: "#EF4444", warm: "#F59E0B", low: "#64748B" };
 const TIER_ICON: Record<BucketTag, typeof Flame> = { hot: Flame, warm: Sun, low: Snowflake };
+
+/* ── Board #5 D1 — THE EDITOR GATE ─────────────────────────────────────────
+   Return revalidation must never redraw an editor underneath the operator,
+   but "is an editor open" is state each row owns privately. Rather than lift
+   every row's editing flag into the page, each row REPORTS while it is open
+   and the page keeps the set.
+
+   A context, not a module-level counter: two ContactWorkspace instances (a
+   remount mid-transition) would share a module counter and one unmounting
+   would clear the other's gate. The provider is per-page, so the set is too.
+
+   Registration is by FIELD ID, so a row that unmounts while open — a
+   navigation mid-edit — releases the gate through its effect cleanup rather
+   than stranding it. A stranded gate would defer a refresh forever. */
+type EditorGateApi = { open: (key: string) => void; close: (key: string) => void };
+const EditorGateContext = createContext<EditorGateApi | null>(null);
+
+function useEditorGate(key: string, editing: boolean) {
+  const gate = useContext(EditorGateContext);
+  useEffect(() => {
+    if (!gate || !editing) return;
+    gate.open(key);
+    return () => gate.close(key);
+  }, [gate, key, editing]);
+}
 
 
 function contactName(c: ContactRow): string {
@@ -279,6 +304,7 @@ function MonetaryRow({ f, contactId, save }: {
   const [status, setStatus] = useState<"idle" | "verifying" | "saved" | "unconfirmed" | "failed" | "unverified">("idle");
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const cancelRef = useRef(false);
+  useEditorGate(f.id, editing); // D1 — defer return revalidation while open
   const current: number | "" = saved == null ? wire : saved;
 
   const fmt = (v: number | "") =>
@@ -484,6 +510,7 @@ function ChoiceRow({ f, contactId }: { f: RecordField; contactId: string }) {
      a double-click is two writes; this makes the second a no-op. */
   const inFlight = useRef(false);
   const editRef = useRef<HTMLDivElement | null>(null);
+  useEditorGate(f.id, editing); // D1 — defer return revalidation while open
   const current: OccupancyStatus | "" = saved == null ? wire : saved;
 
   /* THE DECLINE PATH. Under `immediate` there is no provisional value awaiting
@@ -827,6 +854,24 @@ export default function ContactWorkspace() {
   const [opps, setOpps]           = useState<OpportunityRow[] | null>(null);
   const [oppsError, setOppsError] = useState<string | null>(null);
 
+  /* ── Board #5 D1 — RETURN REVALIDATION ───────────────────────────────────
+     The contact fetch is keyed on [id] and nothing revalidates, so a tab-hop
+     to GHL and back left the page showing PRE-CALL data with no mechanism to
+     notice. Measured, not inferred: 13 function calls at mount, 0 after a
+     hide/show + blur/focus cycle.
+
+     S2 made that materially worse. Seller Ask and Seller MAO now sit on a
+     STICKY bar, and the rail's own justification is that a guardrail which
+     scrolls out of view is not a guardrail. One that is silently stale fails
+     the same test.
+
+     READ-ONLY. Returning to the tab must never write. No autosave, no editor
+     reset, no server-wins-while-editing. */
+  const [openEditors, setOpenEditors]   = useState<Set<string>>(() => new Set());
+  const [refreshCount, setRefreshCount] = useState(0);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [refreshDeferred, setRefreshDeferred] = useState(false);
+
   const [defs, setDefs]               = useState<CustomFieldDef[] | null>(null);
   const [defsLoading, setDefsLoading] = useState(true);
   const [defsError, setDefsError]     = useState<string | null>(null);
@@ -944,6 +989,89 @@ export default function ContactWorkspace() {
       .finally(() => setDefsLoading(false));
   }
 
+  /* The gate api is stable, so the rows' registration effect does not re-run
+     on every page render. */
+  const editorGate = useMemo<EditorGateApi>(() => ({
+    open:  (k) => setOpenEditors((s) => (s.has(k) ? s : new Set(s).add(k))),
+    close: (k) => setOpenEditors((s) => { if (!s.has(k)) return s; const n = new Set(s); n.delete(k); return n; }),
+  }), []);
+
+  /* The CallbackPopover is page-level state rather than a registered row, so
+     it joins the gate here. An open popover is an active interaction surface
+     for the same reason a field editor is.
+     PropertyNotesRow is deliberately NOT gated: its textarea is rendered at
+     rest by the textarea+explicit template, so it has no open/closed
+     transition and would defer every refresh forever. Its draft is local
+     state that a refetch does not touch, so it needs no protection. */
+  const anyEditorOpen = openEditors.size > 0 || callbackOpen;
+  const anyEditorOpenRef = useRef(anyEditorOpen);
+  anyEditorOpenRef.current = anyEditorOpen;
+
+  /* COMMIT-ON-SUCCESS-ONLY. All three reads must resolve before anything is
+     replaced, so a failed refresh RETAINS THE SCREEN rather than blanking it.
+     That matters most for the rail: railDeal turns oppsError into an error
+     state, so routing a refresh failure through setOppsError would replace a
+     stale guardrail with no guardrail — and an empty guardrail is worse than
+     a stale one.
+     Field DEFINITIONS are not refetched: the 101-field schema does not change
+     between a tab-hop, and re-reading it would add six folder requests for
+     nothing. Notes and conversations refresh after the commit because a GHL
+     disposition writes a note. The in-session overrides are left alone; they
+     are newer-of by design and clearing them could revert a write GHL has
+     not yet surfaced. */
+  const refreshAll = useCallback(async () => {
+    setRefreshError(null);
+    try {
+      const [c, d, pipeline] = await Promise.all([
+        ghl.contacts.getOne(id),
+        ghl.contacts.getDetail(id),
+        ghl.opportunities.listPipeline(),
+      ]);
+      setContact(c);
+      setDetail(d);
+      setOpps(opportunitiesForContact(pipeline.opportunities, id));
+      loadNotes();
+      loadConversations();
+      setRefreshCount((n) => n + 1);
+    } catch (e) {
+      setRefreshError((e as Error).message);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  /* ONE RETURN, ONE REFRESH. focus and visibilitychange both fire coming back
+     from another tab. The `wasHidden` latch is what coalesces them: only a
+     transition through hidden counts as a return, and the first handler to
+     see it clears the latch, so the second is a no-op. */
+  useEffect(() => {
+    const wasHidden = { current: false };
+    const onReturn = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!wasHidden.current) return;
+      wasHidden.current = false;
+      if (anyEditorOpenRef.current) { setRefreshDeferred(true); return; }
+      void refreshAll();
+    };
+    const onVis = () => {
+      if (document.visibilityState === "hidden") { wasHidden.current = true; return; }
+      onReturn();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onReturn);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onReturn);
+    };
+  }, [refreshAll]);
+
+  /* The deferred half: the editor closed, so take the reading now. Exactly
+     one, because the flag is cleared before the fetch is issued. */
+  useEffect(() => {
+    if (!refreshDeferred || anyEditorOpen) return;
+    setRefreshDeferred(false);
+    void refreshAll();
+  }, [refreshDeferred, anyEditorOpen, refreshAll]);
+
   useEffect(() => {
     setLoading(true);
     setContact(null);
@@ -966,6 +1094,10 @@ export default function ContactWorkspace() {
     // prevent.
     setOpps(null);
     setOppsError(null);
+    setOpenEditors(new Set());
+    setRefreshDeferred(false);
+    setRefreshError(null);
+    setRefreshCount(0);
     loadContact();
     loadDetail();
     loadDefs();
@@ -1168,7 +1300,19 @@ export default function ContactWorkspace() {
   const tier: BucketTag = contact ? getBucketTag(contact) : "low";
 
   return (
-    <div style={{ maxWidth: CONTENT_MAX_WIDTH }}>
+    /* D1 — the provider is per-page, so the gate set cannot outlive or be
+       shared across a remount. data-* are the harness's only handles on
+       asynchronous refresh state: a counter it can compare across a return,
+       and the gate size it must see fall to zero before expecting the
+       deferred read. */
+    <EditorGateContext.Provider value={editorGate}>
+    <div
+      style={{ maxWidth: CONTENT_MAX_WIDTH }}
+      data-testid="contact-workspace"
+      data-refresh-count={refreshCount}
+      data-open-editors={openEditors.size + (callbackOpen ? 1 : 0)}
+      data-refresh-deferred={refreshDeferred ? "true" : "false"}
+    >
       {/* Back link */}
       <Link to="/contacts" style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "#64748B", marginBottom: "14px", textDecoration: "none" }}>
         <ArrowLeft size={13} /> Contacts
@@ -1321,6 +1465,20 @@ export default function ContactWorkspace() {
           </div>
         ))}
       </div>
+
+      {/* D1 — a FAILED return refresh reports itself here and changes nothing
+          above. The rail keeps its last good figures: railDeal turns oppsError
+          into an error state, so routing this through the section errors would
+          replace a stale guardrail with no guardrail. Stale-and-flagged beats
+          empty. */}
+      {refreshError !== null && (
+        <div
+          data-testid="refresh-error"
+          style={{ fontSize: "11px", color: "#F59E0B", marginTop: "-10px", marginBottom: "14px" }}
+        >
+          Couldn't refresh after returning — showing the last loaded values. {refreshError}
+        </div>
+      )}
 
       {/* Actions (§7). Call button (step 4) opens GHL's own dialer in a new tab —
           GHL's public API can't originate a call (§1). It writes NOTHING: no note,
@@ -1541,5 +1699,6 @@ export default function ContactWorkspace() {
         </div>
       </div>
     </div>
+    </EditorGateContext.Provider>
   );
 }
