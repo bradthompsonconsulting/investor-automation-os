@@ -1480,25 +1480,36 @@ export default function ContactWorkspace() {
         </div>
       )}
 
-      {/* Actions (§7). Call button (step 4) opens GHL's own dialer in a new tab —
-          GHL's public API can't originate a call (§1). It writes NOTHING: no note,
-          no last_call_attempt, no callback, so it NEVER greys a row (§6: "call +
-          no disposition (no note) = no grey"). tabIndex=-1 + mousedown-prevent keep
-          it from stealing focus from the note input (Dashboard parity). */}
+      {/* Actions (§7). The Call button opens this contact's GHL RECORD in a new
+          tab. NOT a dialer, and the label says so: Brad lands on the record and
+          still originates the call from there. That extra step is the platform's,
+          not a gap in this button.
+
+          The limitation behind it is real and now verified from primary source
+          rather than cited: GHL's Conversation Providers documentation states
+          call providers "cannot be used to place or receive calls within the CRM
+          and can only be used to log calls via inbound and outbound apis."
+          Corroborated independently by data IAOS already reads — calls arrive as
+          TYPE_CALL log entries, which Conversations filters out as non-messages.
+
+          It writes NOTHING: no note, no last_call_attempt, no callback, so it
+          NEVER greys a row (§6: "call + no disposition (no note) = no grey").
+          tabIndex=-1 + mousedown-prevent keep it from stealing focus from the
+          note input (Dashboard parity). */}
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px" }}>
         <button
           tabIndex={-1}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => window.open(ghlContactDetailUrl(id), "_blank", "noopener,noreferrer")}
           disabled={loading}
-          title="Open in GHL to call"
+          title="Opens this contact's record in GHL, where the call is placed"
           style={{
             display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", fontWeight: 600,
             padding: "8px 14px", borderRadius: "8px", border: "1px solid rgba(30,200,255,0.35)",
             background: "rgba(30,200,255,0.08)", color: "#1EC8FF", cursor: loading ? "not-allowed" : "pointer",
           }}
         >
-          <PhoneCall size={14} /> Call
+          <PhoneCall size={14} /> Open GHL to Call
         </button>
         {/* Board item #2A — the only entry point to /contacts/:id/underwriting.
             The route has existed since the Underwriting Workspace shipped and was
@@ -1506,9 +1517,9 @@ export default function ContactWorkspace() {
             unreachable from inside the product.
 
             <Link>, not window.open: this is an in-app route and the Call button
-            above is the exception, not the pattern — it opens GHL's own dialer
-            because GHL's API cannot originate a call. A new tab here would drop
-            the SPA's loaded state for no gain.
+            above is the exception, not the pattern — it hands off to GHL's
+            contact record because GHL's API cannot originate a call. A new tab
+            here would drop the SPA's loaded state for no gain.
 
             READ-ONLY. Navigation writes nothing: no note, no last_call_attempt,
             no callback. Same rule as the Call button and the step-7 name-click
