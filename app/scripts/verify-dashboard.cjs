@@ -47,7 +47,7 @@
 const { chromium } = require("playwright");
 
 const ORIGIN   = "https://app.investorautomationos.com";
-const EXPECTED = "index-3MwV8mHl.js"; // §9.2 — RE-PIN to the served bundle on every run
+const EXPECTED = "index-BwDRNnQc.js"; // §9.2 — RE-PIN to the served bundle on every run
 
 // ── Environment + fixture carrier (Gate 4C C4a) ──────────────────────────────
 // NO config loader here, deliberately. This harness resolves contact-record
