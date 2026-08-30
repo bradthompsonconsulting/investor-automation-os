@@ -68,6 +68,14 @@
    per-unlock term.
    Board #5 4A asymmetric disclosure: + 3 = 170. ALSO NOT A FIELD UNLOCK --
    N stays 4, 4N stays 16. This is rail behaviour, not another editor.
+     1 rail-ask-fallback-offers-route          the route EXISTS on the only
+                                               branch that can reach it
+     2 rail-ask-fallback-has-no-authority-note after §4B no rail state
+                                               produces one; dormant-field guard
+     3 harness-issued-no-writes                zero PUT/PATCH/DELETE across the
+                                               WHOLE run -- the read-only
+                                               contract made machine-readable,
+                                               and the route's safety claim
    Board #5 §4B Opportunity Ask editor: + 3 = 173. ALSO NOT A FIELD UNLOCK --
    §4B unlocks an OPPORTUNITY field and leaves the Contact row display-only,
    so N stays 4 and 4N stays 16. PB-D13's 119 + 4N does not apply.
@@ -79,14 +87,6 @@
      3 rail-ask-no-edit-control-in-fallback-branch the Opportunity Ask editor
                                                   does not render where no
                                                   Opportunity Ask governs
-     1 rail-ask-fallback-offers-route          the route EXISTS on the only
-                                               branch that can reach it
-     2 rail-ask-fallback-has-no-authority-note after §4B no rail state
-                                               produces one; dormant-field guard
-     3 harness-issued-no-writes                zero PUT/PATCH/DELETE across the
-                                               WHOLE run -- the read-only
-                                               contract made machine-readable,
-                                               and the route's safety claim
    ⚠ THE OPPORTUNITY BRANCH IS NOT HERE AND CANNOT BE. Measured 2026-08-29 by
    two independent readers: 0 of 43 Production opportunities carry
    opportunity.asking_price, so no fixture reaches that branch and
