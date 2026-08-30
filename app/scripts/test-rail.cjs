@@ -122,8 +122,20 @@ for (const [name, fn] of Object.entries({ deriveRailDeal, railCells })) {
 }
 
 /* FLOOR -- a literal count of the check() call sites in this file, taken from
-   the finished file and never back-filled from a passing run. */
-const FLOOR = 74;
+   the finished file and never back-filled from a passing run.
+
+   Board #5 §4B: 74 -> 77. Derived, not observed:
+     -1  RETIRED  the §4A mutual-exclusion invariant, whose predicate §4B made
+                  structurally unsatisfiable (see the note at its old site).
+     +4  NEW      opportunityId carried · multi-candidate exposes no id ·
+                  no cell value is a function · error state offers no edit route.
+      0  the §4A opportunity-branch route assertion was REPLACED and its
+         authority-note assertion INVERTED -- both remain one call each.
+   ⚠ PB-D13's 119 + 4N does not apply and was not used. The rail is a structural
+   render term, and 4N counts unlocked CONTACT fields against a CONTACT field
+   term; §4B unlocks an OPPORTUNITY field and leaves the record row
+   display-only, so N stays 4. */
+const FLOOR = 77;
 let checks = 0;
 let failures = 0;
 
@@ -202,9 +214,15 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
   const oppSourced = derive({ 'o-ask': 210000, 'o-mao': 165000 }, { 'c-ask': 175000 });
   const oppAsk = cellOf(oppSourced, 'seller-ask');
   check('4A opportunity branch names the selected deal', oppAsk.provenance, 'Opportunity · Alpha Deal');
-  check('4A opportunity branch offers NO route', oppAsk.route, null);
-  check('4A opportunity branch says why there is no route',
-    oppAsk.authorityNote, 'Authoritative on the Opportunity — not editable from IAOS yet');
+  /* §4B REPLACES §4A's "offers NO route". IAOS can now write the authoritative
+     field, so the branch offers the edit instead of explaining its absence. */
+  check('4B opportunity branch OFFERS the edit route', oppAsk.route,
+    { kind: 'edit-opportunity-ask', label: 'Edit the Opportunity Ask' });
+  /* §4B INVERTS §4A's "says why there is no route". The note existed because
+     there was nothing to offer; there now is, so it must be GONE rather than
+     left sitting beside the affordance it contradicts. */
+  check('4B opportunity branch no longer carries an authority note',
+    oppAsk.authorityNote, null);
   check('4A mao provenance also names the deal', cellOf(oppSourced, 'seller-mao').provenance, 'Opportunity · Alpha Deal');
   check('4A mao offers no route either', cellOf(oppSourced, 'seller-mao').route, null);
 
@@ -216,14 +234,64 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
     { kind: 'contact-record', label: 'Edit on the Contact in GHL' });
   check('4A contact branch adds no authority note', conAsk.authorityNote, null);
 
-  // The two branches are mutually exclusive: a route never coexists with a note.
-  check('4A route and authorityNote are never both present',
-    [oppAsk, conAsk].some((c) => c.route !== null && c.authorityNote !== null), false);
+  /* ⚠ §4A's mutual-exclusion invariant was RETIRED HERE by §4B, deliberately,
+     and is not to be reinstated. §4B removed the final authorityNote-producing
+     rail state, so the predicate "some cell has BOTH a route and a note" became
+     structurally unsatisfiable — no input could make it fail. Retaining it
+     would have left a vacuous gate incapable of changing the decision, and
+     keeping an artificial note alive merely to feed it would have been worse.
+     The FIELD survives in RailCellView as the mechanism for future no-route
+     explanatory states; only the assertion is gone. The dormant-field guards
+     at :217 and :225 below are NOT part of this retirement and stay. */
   // Waiting states disclose nothing and route nowhere.
   const noOpp = deriveRailDeal({ opps: [], oppsError: null, detail: detail({}), detailLoading: false, ids: IDS });
   check('4A waiting states carry no route', cellOf(noOpp, 'seller-ask').route, null);
   check('4A waiting states carry no authority note', cellOf(noOpp, 'seller-ask').authorityNote, null);
   check('4A carrier-less cells carry no route', cellOf(oppSourced, 'seller-position').route, null);
+
+  /* ── §4B — THE FOUR NEW GUARDS ─────────────────────────────────────────── */
+
+  /* The id the editor writes to. It rides on the deal read, not on a cell:
+     RailCellView stays free of ids and handles so railCells remains purely
+     derived and assertable. */
+  check('4B resolved deal carries the selected opportunityId',
+    oppSourced.state === 'resolved' ? oppSourced.opportunityId : null, 'opp-1');
+
+  /* ⚠ THE HIGHEST-CONSEQUENCE GUARD IN THIS TRANCHE. A wrong id here writes an
+     Ask onto somebody else's deal. PB-D55 forbids assuming the first candidate
+     is the deal, and deriveRailDeal calls selectOpportunity with a HARD null
+     choice — so with more than one candidate the rail does not resolve AT ALL
+     and therefore exposes NO id to write to. The protection is structural: the
+     editor cannot target an unchosen deal because no target exists. */
+  {
+    const many = deriveRailDeal({
+      opps: [opp({ 'o-ask': 210000 }), { ...opp({ 'o-ask': 999000 }), id: 'opp-2' }],
+      oppsError: null, detail: detail({}), detailLoading: false, ids: IDS,
+    });
+    check('4B multi-candidate exposes NO opportunityId to write to',
+      [many.state, 'opportunityId' in many], ['awaiting_selection', false]);
+  }
+
+  /* The purity constraint, machine-checked rather than trusted to review. A
+     function anywhere in a cell would make these structural assertions
+     meaningless and would take the offline seam with it — the save path lives
+     in the component, and this is what keeps it there. */
+  {
+    const everyCell = [oppSourced, contactSourced, noOpp,
+      deriveRailDeal({ opps: null, oppsError: 'boom', detail: null, detailLoading: false, ids: IDS }),
+    ].flatMap((d) => railCells(d));
+    const functionsFound = everyCell.flatMap((c) =>
+      Object.entries(c).filter(([, v]) => typeof v === 'function').map(([k]) => k));
+    check('4B no rail cell value is a function', functionsFound, []);
+  }
+
+  /* A failed read must not offer to edit. The error state already asserts its
+     own `state`; nothing asserted its route, and an error branch that handed
+     over an editor would be offering to write against a deal it could not read. */
+  {
+    const errored = deriveRailDeal({ opps: null, oppsError: 'boom', detail: null, detailLoading: false, ids: IDS });
+    check('4B error state offers no edit route', cellOf(errored, 'seller-ask').route, null);
+  }
 }
 
 /* ================= CASE 3 -- Contact fallback, disclosed ================= */

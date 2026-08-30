@@ -5,14 +5,14 @@ import {
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
   Calculator,
 } from "lucide-react";
-import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow } from "../lib/ghl";
+import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, CONTACT_ASKING_PRICE_ID, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow } from "../lib/ghl";
 /* Board #5 S2d — the rail's logic lives in ../lib/rail, a module with no React
    and no module-scope config read, so it is loadable by a .cjs runner and the
    Ask precedence can be proven offline. This page supplies the ids and renders
    what comes back; it decides nothing about the rail. Inside that module the
    ask precedence still mirrors resolver.ts:329 and still parses both sides
    through resolver.ts's own exported parsers. */
-import { deriveRailDeal, railCells, type RailDeal, type RailIds } from "../lib/rail";
+import { deriveRailDeal, railCells, RAIL_MONEY, type AskSource, type RailDeal, type RailIds } from "../lib/rail";
 import { opportunitiesForContact } from "../lib/underwriting/selectOpportunity";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { DispositionControl } from "../components/DispositionControl";
@@ -449,6 +449,126 @@ function MonetaryRow({ f, contactId, save }: {
   );
 }
 
+/* ═══ Board #5 §4B — THE OPPORTUNITY ASK EDITOR, ON THE RAIL ═══════════════
+   PB-D17 Model B display-to-edit swap, PB-D19 Escape semantics, PB-D20 syntax
+   gate, PB-D22 empty-draft rule. Behaviourally MonetaryRow's contract, applied
+   to the authoritative Opportunity value instead of the Contact fallback.
+
+   ⚠ IT DOES NOT REUSE MonetaryRow, AND THE REASON IS THE POINT. MonetaryRow's
+   verify() polls ghl.contacts.getDetail (CW:339) -- a CONTACT read. Pointing
+   that at an Opportunity field would be the right parser on the WRONG OBJECT:
+   it would look up an opportunity's field id in a contact's customFields, find
+   nothing, and report a landed write as unconfirmed. That is a DIFFERENT
+   failure from reading the singular GET with a list-shaped parser, and neither
+   guard catches the other.
+
+   So there is NO readback here at all. ghl.opportunities.setAskingPrice does
+   its own singular-GET readback via readSingularFieldValue and returns `ok`.
+   This component consumes that verdict and never reads GHL itself.
+
+   ⚠ NOTHING HERE WRITES contact.asking_price. The Contact value is a FALLBACK
+   with deliberate precedence (resolver.ts:329), not a mirror. Making them agree
+   would destroy the only signal that says which one governs.
+
+   PB-D22 — an empty draft is NOT a clear. It exits and issues no PUT. The
+   setter still performs a real clear on null for an explicit action (the wire
+   proof calls it directly); what is withheld is the KEYSTROKE that reaches it.
+   ⚠ This is the one place the editor is deliberately narrower than the setter. */
+function RailAskEditor({ open, onOpen, onClose, opportunityId, value, display }: {
+  open: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+  opportunityId: string;
+  value: number | null;
+  display: string;
+}) {
+  const [saved, setSaved] = useState<number | null>(null);
+  const [draft, setDraft] = useState("");
+  const [invalid, setInvalid] = useState(false);
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "unconfirmed" | "failed">("idle");
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+  const cancelRef = useRef(false);
+  useEditorGate(`rail-ask-${opportunityId}`, open); // D1 — defer return revalidation while open
+
+  const current: number | null = saved ?? value;
+  const shown = saved === null ? display : RAIL_MONEY(saved);
+
+  useEffect(() => {
+    if (!open) return;
+    setDraft(current === null ? "" : String(current));
+    setInvalid(false);
+    setErrMsg(null);
+    setStatus("idle");
+    // Only when the editor opens; re-seeding on every `current` change would
+    // overwrite what the operator is typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  function draftIsValid(): boolean {
+    const raw = draft.trim();
+    if (raw !== "" && !CURRENCY_RE.test(raw)) { setInvalid(true); return false; }
+    return true;
+  }
+
+  async function commit() {
+    const raw = draft.trim();
+    if (!draftIsValid()) return;          // PB-D20 — stays open, draft preserved
+    setInvalid(false);
+    if (raw === "") { onClose(); return; } // PB-D22 — empty is not a clear
+    const next = Number(raw.replace(/[$,]/g, ""));
+    if (next === current) { onClose(); return; } // PB-D10 — unchanged fires no PUT
+    onClose();
+    setStatus("saving");
+    setErrMsg(null);
+    try {
+      const res = await ghl.opportunities.setAskingPrice(opportunityId, next);
+      setSaved(next);
+      // A 200 is not success. `ok` is the singular readback's verdict.
+      setStatus(res.ok ? "saved" : "unconfirmed");
+    } catch (e) {
+      setErrMsg((e as Error).message);
+      setStatus("failed");
+    }
+  }
+
+  // PB-D19 — Escape sets a REF, not state. A state update is not visible to the
+  // blur handler in the same event sequence, and blur is what commits.
+  function handleBlur() {
+    if (cancelRef.current) { cancelRef.current = false; onClose(); setInvalid(false); return; }
+    void commit();
+  }
+
+  function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Escape") { cancelRef.current = true; e.currentTarget.blur(); return; }
+    if (e.key === "Enter") { e.preventDefault(); if (draftIsValid()) e.currentTarget.blur(); }
+  }
+
+  if (open) {
+    return (
+      <input
+        data-testid="rail-ask-input"
+        value={draft}
+        autoFocus
+        onChange={(e) => { setDraft(e.target.value); setInvalid(false); }}
+        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
+        style={{ width: "130px", background: "#0F172A", color: "#F1F5F9", border: `1px solid ${invalid ? "#F87171" : "#334155"}`, borderRadius: "4px", padding: "2px 6px", fontSize: "15px", fontWeight: 600, fontFamily: "inherit" }}
+      />
+    );
+  }
+
+  return (
+    <span style={{ display: "inline-flex", gap: "8px", alignItems: "baseline" }}>
+      <span data-testid="rail-ask-display" onClick={onOpen} style={{ cursor: "text" }}>{shown}</span>
+      {invalid && <span style={{ fontSize: "10px", color: "#F87171" }}>Not a valid amount</span>}
+      {status === "saving" && <span style={{ fontSize: "10px", color: "#94A3B8" }}>Saving…</span>}
+      {status === "saved" && <span style={{ fontSize: "10px", color: "#94A3B8" }}>Saved</span>}
+      {status === "unconfirmed" && <span style={{ fontSize: "10px", color: "#F59E0B" }}>Save accepted — not confirmed</span>}
+      {status === "failed" && <span style={{ fontSize: "10px", color: "#F87171" }}>Save failed{errMsg ? `: ${errMsg}` : ""}</span>}
+    </span>
+  );
+}
+
 /* ── Board #5 S3b — the occupancy editor. TEMPLATE: choice-single + immediate ──
    PB-D11 lists `choice + immediate` as the ONLY permitted pair for the choice
    editor, so the behaviour below is the taxonomy's, not a local invention.
@@ -724,8 +844,55 @@ function ChoiceRow({ f, contactId }: { f: RecordField; contactId: string }) {
   );
 }
 
-function FieldRow({ f, contactId }: { f: RecordField; contactId: string }) {
+/* §4B item 7 — `askAuthority` is threaded as a PROP, not a context.
+   EditorGateContext is genuinely ambient (any row may register). Authority is
+   consumed by exactly ONE row, so a prop keeps the dependency visible at the
+   call site; a context would hide which rows depend on it. It is the same
+   already-resolved state the rail renders -- one authority source, two
+   surfaces, no second read. */
+/* §4B item 7 — the Contact Asking Price row, DISPLAY-ONLY, never hidden.
+   It states its own authority in both states rather than leaving the operator
+   to infer it from a rail two sections away:
+     Opportunity Ask present -> it is a fallback and is NOT being obeyed
+     Opportunity Ask absent  -> it IS the governing value
+   ⚠ The note renders in BOTH states. A row that goes quiet when it stops being
+   authoritative is worse than one that never spoke: silence reads as
+   agreement. */
+function ContactAskRow({ f, askAuthority }: { f: RecordField; askAuthority: AskSource | null }) {
+  const note =
+    askAuthority === "opportunity"
+      ? "Contact Asking Price — fallback / not authoritative"
+      : "Contact Asking Price — governing fallback";
+  return (
+    <div style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
+      <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
+      <div style={{ display: "flex", gap: "8px", alignItems: "baseline", flex: 1, minWidth: 0 }}>
+        <span data-testid={`field-display-${f.id}`} style={{ color: "#E2E8F0" }}>
+          {f.value == null ? "—" : String(f.value)}
+        </span>
+        <span
+          data-testid="contact-ask-authority"
+          data-ask-authority={askAuthority ?? "unresolved"}
+          style={{ fontSize: "10px", fontStyle: "italic", color: askAuthority === "opportunity" ? "#F59E0B" : "#64748B" }}
+        >
+          {note}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function FieldRow({ f, contactId, askAuthority }: {
+  f: RecordField;
+  contactId: string;
+  askAuthority: AskSource | null;
+}) {
   if (f.id === PROPERTY_NOTES_ID) return <PropertyNotesRow f={f} contactId={contactId} />;
+  /* ⚠ DISPLAY-ONLY, AND DELIBERATELY SO. This row LABELS which carrier governs;
+     it never writes. §4B changes the authoritative Opportunity value and does
+     NOT mirror it here — the two carriers have precedence, and synchronizing
+     them would erase the only signal that says which one is being obeyed. */
+  if (f.id === CONTACT_ASKING_PRICE_ID) return <ContactAskRow f={f} askAuthority={askAuthority} />;
   // The two unlocked MONETORY fields. Same row, different named setter — the
   // dispatch is where each field's write decision is spent, and it is one line
   // per field so an unlock cannot happen by accident.
@@ -1117,6 +1284,27 @@ export default function ContactWorkspace() {
     [opps, oppsError, detail, detailLoading],
   );
 
+  /* §4B — the editor's activation flag and the two impure values it needs.
+     ⚠ THESE STAY OUT OF rail.ts DELIBERATELY. railCells is pure and its output
+     is asserted structurally by the offline harness; putting an id or a save
+     handle in a cell would end that. The cell declares a route KIND, the page
+     supplies the target. */
+  const [askEditorOpen, setAskEditorOpen] = useState(false);
+  const railAskEditable = useMemo<{ opportunityId: string; value: number } | null>(
+    () =>
+      railDeal.state === "resolved" && railDeal.ask !== null && railDeal.ask.source === "opportunity"
+        ? { opportunityId: railDeal.opportunityId, value: railDeal.ask.value }
+        : null,
+    [railDeal],
+  );
+
+  /* Authority for the record row (§4B item 7). ⚠ THE SAME ALREADY-RESOLVED
+     STATE THE RAIL RENDERS -- not a second read, not a second resolution. One
+     source feeds both surfaces, so the cockpit and the record cannot disagree
+     about which carrier governs. */
+  const askAuthority: AskSource | null =
+    railDeal.state === "resolved" && railDeal.ask !== null ? railDeal.ask.source : null;
+
   // Folder names (§5.4) — after defs resolve, fetch every distinct parentId in
   // parallel and build the display-ordered name map. ORDER is an IAOS
   // presentation decision (NOT GHL's): Offer first, then remaining folders
@@ -1446,7 +1634,24 @@ export default function ContactWorkspace() {
                 ? { fontSize: "15px", fontWeight: 600, color: "#F1F5F9" }
                 : { fontSize: "12px", fontStyle: "italic", color: "#475569" }}
             >
-              {cell.primary}
+              {/* §4B — ONLY the Opportunity-sourced Ask becomes editable. Every
+                  other cell, and the Contact-fallback Ask, render exactly as
+                  before: same element, same testid, same text. The fallback
+                  branch is deliberately untouched — it is the branch every
+                  Production contact reaches, and it still routes to the record
+                  that genuinely governs there. */}
+              {cell.route?.kind === "edit-opportunity-ask" && railAskEditable !== null ? (
+                <RailAskEditor
+                  open={askEditorOpen}
+                  onOpen={() => setAskEditorOpen(true)}
+                  onClose={() => setAskEditorOpen(false)}
+                  opportunityId={railAskEditable.opportunityId}
+                  value={railAskEditable.value}
+                  display={cell.primary}
+                />
+              ) : (
+                cell.primary
+              )}
             </div>
             {/* ⚠ PROVENANCE. Whenever a number is shown, the source that
                 supplied it is shown beside it. This is what makes the
@@ -1473,7 +1678,13 @@ export default function ContactWorkspace() {
               <button
                 data-testid={`rail-route-${cell.key}`}
                 data-rail-route={cell.route.kind}
-                onClick={() => window.open(ghlContactDetailUrl(id), "_blank", "noopener,noreferrer")}
+                /* §4B — the two kinds do different things and must not be
+                   collapsed. contact-record HOPS to GHL and writes nothing.
+                   edit-opportunity-ask ACTIVATES the in-place editor; it does
+                   not navigate, and it still writes nothing by itself. */
+                onClick={cell.route.kind === "edit-opportunity-ask"
+                  ? () => setAskEditorOpen(true)
+                  : () => window.open(ghlContactDetailUrl(id), "_blank", "noopener,noreferrer")}
                 style={{
                   marginTop: "3px", fontSize: "10px", fontWeight: 600, padding: "2px 7px",
                   borderRadius: "5px", border: "1px solid rgba(30,200,255,0.3)",
@@ -1650,12 +1861,12 @@ export default function ContactWorkspace() {
                           <div key={subgroup} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                             <div style={{ fontSize: "11px", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", color: "#64748B", marginTop: "4px" }}>{subgroup}</div>
                             {fields.map((f) => (
-                              <FieldRow key={f.id} f={f} contactId={id} />
+                              <FieldRow key={f.id} f={f} contactId={id} askAuthority={askAuthority} />
                             ))}
                           </div>
                         ))
                       : (folder?.fields ?? []).map((f) => (
-                          <FieldRow key={f.id} f={f} contactId={id} />
+                          <FieldRow key={f.id} f={f} contactId={id} askAuthority={askAuthority} />
                         ))}
                   </div>
                 </div>

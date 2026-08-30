@@ -74,7 +74,11 @@ import {
   selectOpportunity,
 } from "./underwriting/selectOpportunity";
 
-const RAIL_MONEY = (n: number): string =>
+/* Exported for §4B so the rail editor re-renders a saved value through THE SAME
+   formatter the cell uses. A second local formatter would drift silently, and
+   the first symptom would be the editor and the cell disagreeing about the
+   number they both claim to show. */
+export const RAIL_MONEY = (n: number): string =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
 /** Which source supplied the displayed Ask. Rendered, never inferred. */
@@ -89,6 +93,11 @@ export type RailDeal =
   | {
       state: "resolved";
       opportunityName: string;
+      /* Board #5 §4B. The id of the deal PB-D55 selected, carried so the
+         component can write to it. PLAIN DATA, never a handle: the editor's
+         save path lives in the component, not here, so railCells stays pure
+         and this module stays loadable by the offline runner. */
+      opportunityId: string;
       ask: { value: number; source: AskSource } | null;
       mao: number | null;
     };
@@ -116,9 +125,24 @@ export type RailCellView = {
 
      So: CONTACT-FALLBACK state offers the hop, because in that state there IS
      no Opportunity Ask and the contact value genuinely is authoritative.
-     OPPORTUNITY state offers NO route and says why. Honest until §4B. */
-  route: { kind: "contact-record"; label: string } | null;
-  /** Stated when there is no route, so its absence is explained, never silent. */
+
+     ⚠ §4B CHANGES THE OPPORTUNITY BRANCH ONLY. It now offers an in-place edit
+     instead of explaining why it cannot, because IAOS can finally write the
+     authoritative field. The contact-fallback hop is UNCHANGED and must stay
+     so: it still goes to the record that genuinely governs in that state.
+
+     ⚠ THE ROUTE IS A KIND, NEVER A CALLBACK. The component maps the kind to
+     behaviour. A function here would make RailCellView unassertable
+     structurally and would take the offline seam with it. */
+  route:
+    | { kind: "contact-record"; label: string }
+    | { kind: "edit-opportunity-ask"; label: string }
+    | null;
+  /* Stated when there is no route, so its absence is explained, never silent.
+     ⚠ RETAINED DELIBERATELY THOUGH NO STATE SETS IT AFTER §4B. It is the
+     mechanism for future no-route explanatory states. §4B retires the
+     ASSERTION that a note and a route are mutually exclusive (that predicate
+     became unsatisfiable); it does NOT retire the field. */
   authorityNote: string | null;
 };
 
@@ -191,7 +215,7 @@ export function deriveRailDeal(input: {
   // MAO — Opportunity ONLY. No fallback exists and none may be added.
   const mao = readOpportunityNumber(opp.customFields, ids.sellerMAO);
 
-  return { state: "resolved", opportunityName: selected.name, ask, mao };
+  return { state: "resolved", opportunityName: selected.name, opportunityId: selected.id, ask, mao };
 }
 
 /**
@@ -242,8 +266,10 @@ export function railCells(deal: RailDeal): RailCellView[] {
                  carry an Ask. */
               provenance: `Opportunity · ${deal.opportunityName}`,
               tone: "value",
-              route: null,
-              authorityNote: "Authoritative on the Opportunity — not editable from IAOS yet",
+              /* §4B. The authoritative value is now editable in place, so the
+                 branch offers the edit instead of explaining its absence. */
+              route: { kind: "edit-opportunity-ask", label: "Edit the Opportunity Ask" },
+              authorityNote: null,
             }
           : {
               primary: RAIL_MONEY(deal.ask.value),

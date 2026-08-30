@@ -69,6 +69,11 @@ export const DISPOSITION_AT_ID   = CONFIG.fields.dispositionAt;
 /* Board #5 S3 — contact.occupancy_status. MULTIPLE_OPTIONS, three options,
    RULED SINGLE-SELECT. Ids read back live from both locations 2026-08-28. */
 export const OCCUPANCY_STATUS_ID = CONFIG.fields.occupancyStatus;
+/* Board #5 §4B — the CONTACT-side Asking Price. ⚠ READ-ONLY IN THIS TRANCHE.
+   It is exported so the record row can LABEL its authority, never so it can be
+   written: contact.asking_price is the FALLBACK carrier and §4B writes only the
+   authoritative Opportunity value. No setter takes this id. */
+export const CONTACT_ASKING_PRICE_ID = CONFIG.fields.askingPrice;
 
 /**
  * The three options, as they exist on the field in BOTH locations (observed
@@ -828,6 +833,101 @@ export const ghl = {
     // stays tied to the deliberate Pipeline-page "Move to" action (V7 §14d).
     saveOfferFields: (opportunityId: string, customFields: { id: string; field_value: unknown }[]) =>
       request<any>(`/opportunities/${opportunityId}`, "PUT", { customFields }),
+    /**
+     * Board #5 §4B — the Opportunity Asking Price setter. ONE FIELD, NAMED.
+     *
+     * ⚠ NOT A GENERALIZED OPPORTUNITY SETTER. PB-D16 §4.4 forbids a PUBLIC
+     * setter parameterized over field id; this one names its field and cannot
+     * be pointed at another. A second field owes a second named setter and its
+     * own inert proof -- PB-D58 §IV, and PB-D60 restated it: three proven
+     * opportunity fields do not prove a fourth.
+     *
+     * ⚠ CUSTOM-FIELDS-ONLY BODY. No pipelineStageId, no status, no name, no
+     * monetaryValue, no tags. PB-D58 §II: "That is the mechanism the whole
+     * proof rests on, and a PUT body carrying anything else forfeits it."
+     *
+     * ⚠ READBACK IS THE SINGULAR GET, PARSED BY readSingularFieldValue -- AND
+     * THE RESOLVER'S READERS MAY NOT BE USED HERE. PB-D60 reproduced the
+     * hazard against a live payload with a positive control: the singular GET
+     * returned this very field under `fieldValue` with no `fieldValueNumber`,
+     * and resolver.ts's readNumberField returned undefined against that same
+     * PRESENT entry ("listShapedReaderWouldMisreadAsAbsent": true). A
+     * list-shaped reader here would report a landed write as failed and -- the
+     * sharper failure -- would report a failed restoration as cleared, because
+     * a reader that calls everything absent cannot tell CLEARED from UNCHANGED.
+     *
+     * ⚠ NOTHING CONTACT-SCOPED APPEARS IN THIS PATH. The write and the readback
+     * are both the opportunity object. Do NOT verify through
+     * ghl.contacts.getDetail the way MonetaryRow does -- that is the right
+     * parser on the wrong object, and it is a separate failure from the one
+     * above. Neither guard catches the other.
+     *
+     * ⚠ THIS WRITES THE AUTHORITATIVE VALUE AND NOTHING ELSE. It must never be
+     * paired with a write to contact.asking_price. The two carriers have
+     * precedence (resolver.ts:329), deliberately; synchronizing them would
+     * destroy the fallback's meaning and is forbidden in this tranche.
+     *
+     * `value === null` CLEARS, via `field_value: ""` -- the mechanism PB-D58
+     * §VI OBSERVED and PB-D60 reproduced on this field, clearing to KEY_ABSENT.
+     * Success is then the id being GONE from customFields, not an entry
+     * carrying "" or 0: PB-D24 makes those different states.
+     *
+     * VALIDATION IS FINITENESS ONLY, matching the existing precedent for
+     * monetary writes in this file. ⚠ No upper bound is imposed here. There is
+     * none anywhere in this codebase today, and §4B is not authorized to
+     * introduce one -- that is a product decision, and inventing a bound to
+     * suit a proof would be a guard bent for the test.
+     *
+     * A 200 IS NOT SUCCESS. The caller must check `ok`.
+     */
+    setAskingPrice: async (
+      opportunityId: string,
+      value: number | null,
+    ): Promise<{ ok: boolean; putStatus: number; sent: number | ""; observed: number | string | null }> => {
+      const fieldId = CONFIG.opportunityFacts.askingPrice;
+      if (!fieldId) throw new Error("setAskingPrice: no configured id for opportunityFacts.askingPrice");
+
+      if (value !== null && (typeof value !== "number" || !Number.isFinite(value))) {
+        throw new Error(
+          `setAskingPrice: ${JSON.stringify(value)} is not a finite number. ` +
+            "Refusing rather than writing a value the readback cannot compare.",
+        );
+      }
+
+      /* Rounded BEFORE the request, so the strict-equality readback below
+         compares the value that was actually sent. Comparing an unrounded
+         input against a rounded stored value would fail a write that landed. */
+      const sent: number | "" = value === null ? "" : roundCurrency(value);
+
+      const body = { customFields: [{ id: fieldId, field_value: sent }] };
+
+      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const putStatus = putRes.status;
+      if (!putRes.ok) {
+        const text = await putRes.text();
+        throw new Error(`setAskingPrice PUT → ${putStatus}: ${text}`);
+      }
+
+      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
+      if (!readRes.ok) {
+        const text = await readRes.text();
+        throw new Error(`setAskingPrice readback → ${readRes.status}: ${text}`);
+      }
+      const readBody = await readRes.json();
+      const opp = readBody.opportunity ?? readBody;
+      /* STRUCTURAL absence -- the id gone from the array -- never a parser
+         returning undefined. A mis-shaped parser cannot manufacture absence
+         out of a key that is present, which is the whole protection. */
+      const entry = (opp.customFields ?? []).find((f: any) => f.id === fieldId) ?? null;
+      const observed = entry === null ? null : readSingularFieldValue(entry);
+
+      const ok = sent === "" ? entry === null : observed === sent;
+      return { ok, putStatus, sent, observed };
+    },
   },
 
   conversations: {
@@ -1128,6 +1228,7 @@ export const ghl = {
 
       return { ok: observed === optionLabel, putStatus, sent: optionLabel, observed };
     },
+
   },
 };
 

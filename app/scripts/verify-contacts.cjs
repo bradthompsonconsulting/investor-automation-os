@@ -565,7 +565,30 @@ async function clickControlByBody(page, mark) {
         });
       }
     }
-    return { folders, identityName, identityPhone, identityAddress, identityInputs, strayInputs, allowlistedInputs, unlocked, unlockedId: UNLOCKED_ID, arv, arvId: ARV_ID_B, scopeMissing, folderCount: folders.length, rail };
+    /* ── Board #5 §4B ─────────────────────────────────────────────────────
+       The Contact Asking Price row's authority label, and whether that row is
+       display-only. The row is located from the label element itself rather
+       than from a field id, so the assertion needs no id plumbing and reads
+       the structure it actually cares about: this row, containing no input. */
+    const authEl = document.querySelector('[data-testid="contact-ask-authority"]');
+    const askAuthority = authEl
+      ? {
+          text: norm(authEl.textContent),
+          value: authEl.getAttribute("data-ask-authority"),
+          // ContactAskRow: outer row div > inner flex div > this span.
+          inputsInRow: authEl.parentElement && authEl.parentElement.parentElement
+            ? authEl.parentElement.parentElement.querySelectorAll("input").length
+            : -1,
+        }
+      : null;
+    /* The rail editor must not exist in the Contact-fallback branch. Either
+       testid appearing here means the editor rendered where no Opportunity Ask
+       governs -- offering to write a value this branch does not own. */
+    const railAskEditor = {
+      display: document.querySelectorAll('[data-testid="rail-ask-display"]').length,
+      input: document.querySelectorAll('[data-testid="rail-ask-input"]').length,
+    };
+    return { folders, identityName, identityPhone, identityAddress, identityInputs, strayInputs, allowlistedInputs, unlocked, unlockedId: UNLOCKED_ID, arv, arvId: ARV_ID_B, scopeMissing, folderCount: folders.length, rail, askAuthority, railAskEditor };
   });
 
   const byName = (n) => rec.folders.find((f) => f.name === n);
@@ -706,8 +729,37 @@ async function clickControlByBody(page, mark) {
   check("rail-ask-fallback-offers-route",
     railAsk.route === "Edit on the Contact in GHL" && railAsk.routeKind === "contact-record",
     `label="${railAsk.route}" kind="${railAsk.routeKind}"`);
+  /* ⚠ MESSAGE CORRECTED FOR §4B, CHECK UNCHANGED. It previously read "(a note
+     belongs to the Opportunity branch, which has no route)" — false as of §4B,
+     which gave that branch a route and removed its note. The assertion itself
+     was always about THIS branch and still is; only the explanation was wrong.
+     Kept as a dormant-field guard: authorityNote survives in RailCellView for
+     future no-route states, so the fallback branch must keep proving it does
+     not acquire one. */
   check("rail-ask-fallback-has-no-authority-note", railAsk.authorityNote === null,
-    `note=${JSON.stringify(railAsk.authorityNote)} (a note belongs to the Opportunity branch, which has no route)`);
+    `note=${JSON.stringify(railAsk.authorityNote)} (the contact-fallback branch explains itself with provenance and a route, never a note)`);
+
+  /* ── Board #5 §4B — three new checks ───────────────────────────────────────
+     ⚠ ALL THREE ASSERT THE CONTACT-FALLBACK BRANCH, which is the only branch
+     any Production contact reaches: 0 of 43 opportunities carry an Ask. The
+     rail EDITOR itself is unreachable here by construction and is proven
+     offline in test-rail plus, separately, by the Production wire proof. */
+  check("contact-ask-row-states-governing-fallback",
+    rec.askAuthority !== null
+      && rec.askAuthority.value === "contact"
+      && rec.askAuthority.text === "Contact Asking Price — governing fallback",
+    `authority=${JSON.stringify(rec.askAuthority)}`);
+
+  /* Item 7 is DISPLAY-ONLY. An input inside this row would mean §4B had made
+     the fallback carrier editable — the first step toward the shadow copy the
+     tranche exists to avoid. */
+  check("contact-ask-row-is-display-only",
+    rec.askAuthority !== null && rec.askAuthority.inputsInRow === 0,
+    `inputsInRow=${rec.askAuthority ? rec.askAuthority.inputsInRow : "row absent"}`);
+
+  check("rail-ask-no-edit-control-in-fallback-branch",
+    rec.railAskEditor.display === 0 && rec.railAskEditor.input === 0,
+    `display=${rec.railAskEditor.display} input=${rec.railAskEditor.input}`);
   check("rail-mao-not-yet-approved", railMao.primary === "not yet approved — run Underwriting",
     `dom="${railMao.primary}"`);
   check("rail-mao-tone-is-waiting", railMao.tone === "waiting", `tone="${railMao.tone}"`);
@@ -1354,6 +1406,6 @@ async function clickControlByBody(page, mark) {
   // ── Self-check: exactly 170, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 170) { console.log(`ABORT — expected 170 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 173) { console.log(`ABORT — expected 173 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });
