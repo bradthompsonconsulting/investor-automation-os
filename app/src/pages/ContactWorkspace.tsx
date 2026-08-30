@@ -610,9 +610,12 @@ function RailAskEditor({ open, onOpen, onClose, opportunityId, seed, label, disp
     );
     /* Edit mode swaps (same value). Origination keeps the governing fallback
        visible beside the input (different carriers). */
+    /* ⚠ ORIGINATION DOES NOT RENDER THE VALUE. rail-state already shows the
+       Contact ask, and duplicating it here is what made that element a mixed
+       container. Additive means "beside the value", not "a second copy of
+       it". Edit mode returns the bare input because it IS the swap. */
     return originating ? (
-      <span style={{ display: "inline-flex", gap: "8px", alignItems: "baseline", flexWrap: "wrap" }}>
-        <span data-testid="rail-ask-display">{shown}</span>
+      <span style={{ display: "inline-flex", gap: "8px", alignItems: "baseline", flexWrap: "wrap", marginTop: "3px" }}>
         {input}
         {warning}
       </span>
@@ -620,9 +623,13 @@ function RailAskEditor({ open, onOpen, onClose, opportunityId, seed, label, disp
   }
 
   return (
-    <span style={{ display: "inline-flex", gap: "8px", alignItems: "baseline", flexWrap: "wrap" }}>
-      <span data-testid="rail-ask-display" onClick={originating ? undefined : onOpen}
-            style={{ cursor: originating ? "default" : "text" }}>{shown}</span>
+    <span style={{ display: "inline-flex", gap: "8px", alignItems: "baseline", flexWrap: "wrap",
+                   marginTop: originating ? "3px" : undefined }}>
+      {/* Edit mode: the clickable number, in rail-state, which the input
+          replaces on open. Origination: no number here -- rail-state has it. */}
+      {!originating && (
+        <span data-testid="rail-ask-display" onClick={onOpen} style={{ cursor: "text" }}>{shown}</span>
+      )}
       {originating && (
         <button
           data-testid="rail-ask-originate"
@@ -1759,7 +1766,16 @@ export default function ContactWorkspace() {
                   branch is deliberately untouched — it is the branch every
                   Production contact reaches, and it still routes to the record
                   that genuinely governs there. */}
-              {cell.editor !== null && railAskOpportunityId !== null ? (
+              {/* ⚠ EDIT MODE ONLY LIVES HERE. PB-D17 Model B is a display-to-edit
+                  SWAP, so the input must REPLACE the number, in the element that
+                  IS the number. §4B put it here and that is correct.
+                  ⚠ ORIGINATION MUST NOT BE HERE. It is ADDITIVE -- the Contact
+                  ask stays on screen beside it -- so rendering it inside would
+                  turn this from a VALUE element into a value+action container.
+                  It did, and rail-ask-value caught it: the element read
+                  "$115,000Set Opportunity Ask". This div contains the value, or
+                  the thing that replaces the value. Nothing additive. */}
+              {cell.editor !== null && cell.editor.seed !== null && railAskOpportunityId !== null ? (
                 <RailAskEditor
                   open={askEditorOpen}
                   onOpen={() => setAskEditorOpen(true)}
@@ -1790,6 +1806,29 @@ export default function ContactWorkspace() {
               >
                 {cell.provenance}
               </div>
+            )}
+            {/* ⚠ ORIGINATION RENDERS HERE, OUTSIDE rail-state, as a sibling --
+                the same structural position every other rail action already
+                uses. Ordering is ruled: "Set Opportunity Ask" (primary) BEFORE
+                "Edit on the Contact in GHL" (secondary), with provenance still
+                sitting immediately under the value it labels.
+                ⚠ THE TWO MODES ARE MUTUALLY EXCLUSIVE (seed null XOR not null),
+                so this is ONE component in ONE position at a time -- never two
+                instances, never split state. */}
+            {cell.editor !== null && cell.editor.seed === null && railAskOpportunityId !== null && (
+              <RailAskEditor
+                open={askEditorOpen}
+                onOpen={() => setAskEditorOpen(true)}
+                onClose={() => setAskEditorOpen(false)}
+                opportunityId={railAskOpportunityId}
+                seed={cell.editor.seed}
+                label={cell.editor.label}
+                display={cell.primary}
+                confirmedWrite={confirmedWrite}
+                authorityReconciled={authorityReconciled}
+                onConfirmed={setConfirmedWrite}
+                onRefresh={refreshOpportunities}
+              />
             )}
             {/* §4A — THE ROUTE APPEARS ONLY WHERE IT REACHES THE AUTHORITATIVE
                 FIELD. Contact-fallback means the Opportunity carries no Ask, so

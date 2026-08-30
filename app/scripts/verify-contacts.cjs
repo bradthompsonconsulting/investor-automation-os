@@ -813,8 +813,13 @@ async function clickControlByBody(page, mark) {
      here, beside a truthfully-labelled Contact fallback. */
   check("rail-ask-fallback-offers-origination",
     rec.railAskEditor.originate === 1 && rec.railAskEditor.originateLabel === "Set Opportunity Ask"
-      && rec.railAskEditor.input === 0 && rec.railAskEditor.warning === 0,
-    `originate=${rec.railAskEditor.originate} label=${JSON.stringify(rec.railAskEditor.originateLabel)} inputAtRest=${rec.railAskEditor.input} warning=${rec.railAskEditor.warning}`);
+      && rec.railAskEditor.input === 0 && rec.railAskEditor.warning === 0
+      /* ⚠ AND THE VALUE IS NOT DUPLICATED. rail-ask-display is edit mode's
+         clickable number; origination must not render a second copy of a value
+         rail-state already shows. Additive means BESIDE the value, not a
+         duplicate of it. */
+      && rec.railAskEditor.display === 0,
+    `originate=${rec.railAskEditor.originate} label=${JSON.stringify(rec.railAskEditor.originateLabel)} inputAtRest=${rec.railAskEditor.input} warning=${rec.railAskEditor.warning} duplicateValue=${rec.railAskEditor.display}`);
 
   /* Both affordances, doing different things. The GHL hop stays because in
      THIS state the Contact value genuinely governs and IAOS cannot write it --
@@ -831,13 +836,18 @@ async function clickControlByBody(page, mark) {
   const askState = () => page.evaluate(() => {
     const q = (t) => document.querySelector(`[data-testid="${t}"]`);
     const input = q("rail-ask-input");
+    /* ⚠ THE VALUE ELEMENT, not rail-ask-display. In ORIGINATION the value lives
+       in rail-state-seller-ask and the affordance is a SIBLING outside it --
+       that separation is the fix this run exists to prove. rail-ask-display is
+       edit mode's clickable number and is deliberately absent here. */
+    const value = q("rail-state-seller-ask");
     const display = q("rail-ask-display");
     const prov = q("rail-provenance-seller-ask");
     return {
       input: input ? 1 : 0,
       draft: input ? input.value : null,
       display: display ? 1 : 0,
-      displayText: display ? (display.textContent || "").replace(/\s+/g, " ").trim() : null,
+      valueText: value ? (value.textContent || "").replace(/\s+/g, " ").trim() : null,
       provenance: prov ? (prov.textContent || "").replace(/\s+/g, " ").trim() : null,
       provenanceSource: prov ? prov.getAttribute("data-rail-source") : null,
       originate: q("rail-ask-originate") ? 1 : 0,
@@ -865,18 +875,18 @@ async function clickControlByBody(page, mark) {
      fallback and its provenance must stay on screen, or the UI would be
      telling Brad he is editing the number he can see. */
   check("rail-ask-origination-does-not-swap-the-display",
-    askOpen.display === 1 && askOpen.displayText === askBefore.displayText
+    askOpen.valueText === askBefore.valueText && askOpen.valueText === "$115,000"
       && askOpen.provenance === "Contact fallback — no Opportunity Ask"
       && askOpen.provenanceSource === "contact",
-    `display=${askOpen.display} text=${JSON.stringify(askOpen.displayText)} was=${JSON.stringify(askBefore.displayText)} prov=${JSON.stringify(askOpen.provenance)} src=${askOpen.provenanceSource}`);
+    `value=${JSON.stringify(askOpen.valueText)} was=${JSON.stringify(askBefore.valueText)} prov=${JSON.stringify(askOpen.provenance)} src=${askOpen.provenanceSource}`);
 
   await page.keyboard.press("Escape");
   await page.waitForTimeout(400);
   const askClosed = await askState();
   check("rail-ask-origination-escape-returns-to-display",
     askClosed.input === 0 && askClosed.originate === 1
-      && askClosed.displayText === askBefore.displayText,
-    `input=${askClosed.input} originate=${askClosed.originate} text=${JSON.stringify(askClosed.displayText)}`);
+      && askClosed.valueText === askBefore.valueText,
+    `input=${askClosed.input} originate=${askClosed.originate} value=${JSON.stringify(askClosed.valueText)}`);
   check("rail-mao-not-yet-approved", railMao.primary === "not yet approved — run Underwriting",
     `dom="${railMao.primary}"`);
   check("rail-mao-tone-is-waiting", railMao.tone === "waiting", `tone="${railMao.tone}"`);
