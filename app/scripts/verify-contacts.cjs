@@ -68,10 +68,21 @@
    per-unlock term.
    Board #5 4A asymmetric disclosure: + 3 = 170. ALSO NOT A FIELD UNLOCK --
    N stays 4, 4N stays 16. This is rail behaviour, not another editor.
+   Board #5 §4B Opportunity Ask editor: + 3 = 173. ALSO NOT A FIELD UNLOCK --
+   §4B unlocks an OPPORTUNITY field and leaves the Contact row display-only,
+   so N stays 4 and 4N stays 16. PB-D13's 119 + 4N does not apply.
+     1 contact-ask-row-states-governing-fallback  the Contact Ask row states
+                                                  which carrier governs
+     2 contact-ask-row-is-display-only            no input in that row --
+                                                  §4B writes the Opportunity
+                                                  value, never the fallback
+     3 rail-ask-no-edit-control-in-fallback-branch the Opportunity Ask editor
+                                                  does not render where no
+                                                  Opportunity Ask governs
      1 rail-ask-fallback-offers-route          the route EXISTS on the only
                                                branch that can reach it
-     2 rail-ask-fallback-has-no-authority-note the note belongs to the other
-                                               branch and must not appear here
+     2 rail-ask-fallback-has-no-authority-note after §4B no rail state
+                                               produces one; dormant-field guard
      3 harness-issued-no-writes                zero PUT/PATCH/DELETE across the
                                                WHOLE run -- the read-only
                                                contract made machine-readable,
@@ -79,10 +90,11 @@
    ⚠ THE OPPORTUNITY BRANCH IS NOT HERE AND CANNOT BE. Measured 2026-08-29 by
    two independent readers: 0 of 43 Production opportunities carry
    opportunity.asking_price, so no fixture reaches that branch and
-   manufacturing Production data to get one is forbidden. Route-absent and
-   note-present live in test-rail.cjs as offline assertions. Do not read a
-   green run here as covering both branches.
-   Success ONLY when checksRun === 170 AND every check passed. Any throw exits nonzero.
+   manufacturing Production data to get one is forbidden. Since §4B the offline
+   assertions in test-rail.cjs are the INVERSE of what they were: route-PRESENT
+   (the in-place editor) and note-ABSENT. Do not read a green run here as
+   covering both branches.
+   Success ONLY when checksRun === 173 AND every check passed. Any throw exits nonzero.
    The 101-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
@@ -723,9 +735,10 @@ async function clickControlByBody(page, mark) {
   /* §4A — THE ASYMMETRY, on the only branch Production can reach. In the
      contact-fallback state the Opportunity carries no Ask, so the contact
      record IS authoritative and the existing hop lands on the right field.
-     The Opportunity branch -- route absent, authority note present -- is
-     OFFLINE-ONLY: 0 of 43 Production opportunities carry an Ask, so no fixture
-     reaches it and manufacturing one is forbidden. test-rail.cjs holds those. */
+     The Opportunity branch -- since §4B, route PRESENT (the in-place editor)
+     and authority note ABSENT -- is OFFLINE-ONLY: 0 of 43 Production
+     opportunities carry an Ask, so no fixture reaches it and manufacturing one
+     is forbidden. test-rail.cjs holds those. */
   check("rail-ask-fallback-offers-route",
     railAsk.route === "Edit on the Contact in GHL" && railAsk.routeKind === "contact-record",
     `label="${railAsk.route}" kind="${railAsk.routeKind}"`);
@@ -1403,7 +1416,7 @@ async function clickControlByBody(page, mark) {
   check("harness-issued-no-writes", mutatingRequests.length === 0,
     `mutating requests observed=${mutatingRequests.length} ${JSON.stringify(mutatingRequests.slice(0, 4))}`);
 
-  // ── Self-check: exactly 170, all unique, all passed — else nonzero ──
+  // ── Self-check: exactly 173, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
   if (checksRun !== 173) { console.log(`ABORT — expected 173 checks, ran ${checksRun}`); process.exit(2); }
