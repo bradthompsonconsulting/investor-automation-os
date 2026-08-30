@@ -84,9 +84,37 @@
      2 contact-ask-row-is-display-only            no input in that row --
                                                   §4B writes the Opportunity
                                                   value, never the fallback
-     3 rail-ask-no-edit-control-in-fallback-branch the Opportunity Ask editor
-                                                  does not render where no
-                                                  Opportunity Ask governs
+     3 rail-ask-fallback-offers-origination       the origination affordance
+                                                  exists in the branch every
+                                                  Production contact reaches
+   Board #5 §4C origination: + 5 = 178. ALSO NOT A FIELD UNLOCK -- §4C still
+   unlocks an OPPORTUNITY field and leaves the Contact row display-only, so
+   N stays 4 and 4N stays 16. PB-D13's 119 + 4N does not apply.
+   ⚠ THE §4B ENTRY ABOVE WAS INVERTED, NOT ADDED TO. It asserted the fallback
+   branch carried NO edit control -- true then, false now. 0 of 43 Production
+   opportunities carry an Ask, so an editor reachable only from the
+   Opportunity branch was unreachable by the operator on every deal.
+     1 rail-ask-fallback-keeps-contact-route      the GHL hop survives beside
+                                                  origination: the Contact
+                                                  value still governs here and
+                                                  IAOS cannot write it
+     2 rail-ask-origination-draft-opens-empty     seed is null, so the draft
+                                                  NEVER starts from the Contact
+                                                  number -- the shadow-copy
+                                                  guard at render level
+     3 rail-ask-origination-does-not-swap-the-display
+                                                  additive, not Model B: the
+                                                  display is the CONTACT ask,
+                                                  the edit targets the
+                                                  OPPORTUNITY ask
+     4 rail-ask-origination-escape-returns-to-display
+                                                  decline path; PB-D22 makes an
+                                                  empty draft a no-op exit
+     5 d1-return-revalidation-does-not-increment-save-counter
+                                                  two causes, two counters.
+                                                  The converse needs a real
+                                                  write and belongs to the
+                                                  scripted proof
    ⚠ THE OPPORTUNITY BRANCH IS NOT HERE AND CANNOT BE. Measured 2026-08-29 by
    two independent readers: 0 of 43 Production opportunities carry
    opportunity.asking_price, so no fixture reaches that branch and
@@ -94,7 +122,7 @@
    assertions in test-rail.cjs are the INVERSE of what they were: route-PRESENT
    (the in-place editor) and note-ABSENT. Do not read a green run here as
    covering both branches.
-   Success ONLY when checksRun === 173 AND every check passed. Any throw exits nonzero.
+   Success ONLY when checksRun === 178 AND every check passed. Any throw exits nonzero.
    The 101-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
@@ -599,8 +627,15 @@ async function clickControlByBody(page, mark) {
     const railAskEditor = {
       display: document.querySelectorAll('[data-testid="rail-ask-display"]').length,
       input: document.querySelectorAll('[data-testid="rail-ask-input"]').length,
+      /* §4C — origination IS offered in this branch. That is the inversion of
+         the §4B check: the fallback branch now carries an edit control. */
+      originate: document.querySelectorAll('[data-testid="rail-ask-originate"]').length,
+      originateLabel: (() => { const e = document.querySelector('[data-testid="rail-ask-originate"]'); return e ? norm(e.textContent) : null; })(),
+      warning: document.querySelectorAll('[data-testid="rail-ask-authority-unrefreshed"]').length,
     };
-    return { folders, identityName, identityPhone, identityAddress, identityInputs, strayInputs, allowlistedInputs, unlocked, unlockedId: UNLOCKED_ID, arv, arvId: ARV_ID_B, scopeMissing, folderCount: folders.length, rail, askAuthority, railAskEditor };
+    const wsEl = document.querySelector('[data-testid="contact-workspace"]');
+    const saveRefreshCount = wsEl ? wsEl.getAttribute('data-save-refresh-count') : null;
+    return { folders, identityName, identityPhone, identityAddress, identityInputs, strayInputs, allowlistedInputs, unlocked, unlockedId: UNLOCKED_ID, arv, arvId: ARV_ID_B, scopeMissing, folderCount: folders.length, rail, askAuthority, railAskEditor, saveRefreshCount };
   });
 
   const byName = (n) => rec.folders.find((f) => f.name === n);
@@ -770,9 +805,78 @@ async function clickControlByBody(page, mark) {
     rec.askAuthority !== null && rec.askAuthority.inputsInRow === 0,
     `inputsInRow=${rec.askAuthority ? rec.askAuthority.inputsInRow : "row absent"}`);
 
-  check("rail-ask-no-edit-control-in-fallback-branch",
-    rec.railAskEditor.display === 0 && rec.railAskEditor.input === 0,
-    `display=${rec.railAskEditor.display} input=${rec.railAskEditor.input}`);
+  /* ⚠ §4C INVERTS THE §4B CHECK, DELIBERATELY. §4B asserted the fallback
+     branch carried NO edit control -- correct then, false now. Origination is
+     the whole point: 0 of 43 Production opportunities carry an Ask, so if the
+     editor were reachable only from the Opportunity branch the write authority
+     would be unreachable by the operator on every deal. The editor is offered
+     here, beside a truthfully-labelled Contact fallback. */
+  check("rail-ask-fallback-offers-origination",
+    rec.railAskEditor.originate === 1 && rec.railAskEditor.originateLabel === "Set Opportunity Ask"
+      && rec.railAskEditor.input === 0 && rec.railAskEditor.warning === 0,
+    `originate=${rec.railAskEditor.originate} label=${JSON.stringify(rec.railAskEditor.originateLabel)} inputAtRest=${rec.railAskEditor.input} warning=${rec.railAskEditor.warning}`);
+
+  /* Both affordances, doing different things. The GHL hop stays because in
+     THIS state the Contact value genuinely governs and IAOS cannot write it --
+     removing it would leave no path to correct the number being obeyed. */
+  check("rail-ask-fallback-keeps-contact-route",
+    railAsk.routeKind === "contact-record" && rec.railAskEditor.originate === 1,
+    `routeKind=${railAsk.routeKind} originate=${rec.railAskEditor.originate}`);
+
+  /* ── §4C ORIGINATION, ACTIVATED ────────────────────────────────────────
+     ⚠ PB-D17 STILL BINDS: THE HARNESS MODIFIES NOTHING. It opens the editor,
+     reads the draft, and Escapes. PB-D22 makes an empty draft a no-op exit, so
+     no PUT is issued -- harness-issued-no-writes remains the machine check on
+     that, across the whole run. Nothing is typed. */
+  const askState = () => page.evaluate(() => {
+    const q = (t) => document.querySelector(`[data-testid="${t}"]`);
+    const input = q("rail-ask-input");
+    const display = q("rail-ask-display");
+    const prov = q("rail-provenance-seller-ask");
+    return {
+      input: input ? 1 : 0,
+      draft: input ? input.value : null,
+      display: display ? 1 : 0,
+      displayText: display ? (display.textContent || "").replace(/\s+/g, " ").trim() : null,
+      provenance: prov ? (prov.textContent || "").replace(/\s+/g, " ").trim() : null,
+      provenanceSource: prov ? prov.getAttribute("data-rail-source") : null,
+      originate: q("rail-ask-originate") ? 1 : 0,
+    };
+  });
+  const askBefore = await askState();
+  await page.evaluate(() => {
+    const b = document.querySelector('[data-testid="rail-ask-originate"]');
+    if (b) b.click();
+  });
+  await page.waitForTimeout(400);
+  const askOpen = await askState();
+
+  /* ⚠ THE SHADOW-COPY GUARD, AT RENDER LEVEL. seed is null in origination, so
+     the draft MUST open EMPTY. If it opened on the Contact number, one Enter
+     would write an Opportunity Ask equal to the Contact Ask -- a synchronized
+     shadow copy created by the UI, which this tranche forbids outright. */
+  check("rail-ask-origination-draft-opens-empty",
+    askOpen.input === 1 && askOpen.draft === "",
+    `input=${askOpen.input} draft=${JSON.stringify(askOpen.draft)}`);
+
+  /* ⚠ ADDITIVE, NOT A SWAP. PB-D17 Model B swaps a display for an editor
+     because they are the SAME value. Here they are different carriers: the
+     display is the CONTACT ask, the edit targets the OPPORTUNITY ask. The
+     fallback and its provenance must stay on screen, or the UI would be
+     telling Brad he is editing the number he can see. */
+  check("rail-ask-origination-does-not-swap-the-display",
+    askOpen.display === 1 && askOpen.displayText === askBefore.displayText
+      && askOpen.provenance === "Contact fallback — no Opportunity Ask"
+      && askOpen.provenanceSource === "contact",
+    `display=${askOpen.display} text=${JSON.stringify(askOpen.displayText)} was=${JSON.stringify(askBefore.displayText)} prov=${JSON.stringify(askOpen.provenance)} src=${askOpen.provenanceSource}`);
+
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(400);
+  const askClosed = await askState();
+  check("rail-ask-origination-escape-returns-to-display",
+    askClosed.input === 0 && askClosed.originate === 1
+      && askClosed.displayText === askBefore.displayText,
+    `input=${askClosed.input} originate=${askClosed.originate} text=${JSON.stringify(askClosed.displayText)}`);
   check("rail-mao-not-yet-approved", railMao.primary === "not yet approved — run Underwriting",
     `dom="${railMao.primary}"`);
   check("rail-mao-tone-is-waiting", railMao.tone === "waiting", `tone="${railMao.tone}"`);
@@ -1003,6 +1107,9 @@ async function clickControlByBody(page, mark) {
       count: el ? Number(el.getAttribute("data-refresh-count")) : -1,
       openEditors: el ? Number(el.getAttribute("data-open-editors")) : -1,
       deferred: el ? el.getAttribute("data-refresh-deferred") : null,
+      /* §4C — the save-triggered read has its own cause and its own counter.
+         D1 must never satisfy it and it must never satisfy D1. */
+      saveCount: el ? Number(el.getAttribute("data-save-refresh-count")) : -1,
     };
   }, CW_SEL);
 
@@ -1042,6 +1149,16 @@ async function clickControlByBody(page, mark) {
   const r1 = await refreshState();
   check("return-refetch-when-idle", r0.openEditors === 0 && r1.count === r0.count + 1,
     `openEditors=${r0.openEditors} count ${r0.count} -> ${r1.count} (expect +1)`);
+
+  /* §4C — D1 ISOLATION. A return revalidation is not a save, and must not be
+     counted as one. The save path never touches refreshDeferred and never
+     calls refreshAll, so a full return must move data-refresh-count and leave
+     data-save-refresh-count exactly where it was. ⚠ The converse -- that a
+     save does not increment the D1 counter -- needs an actual write, so it
+     belongs to the scripted proof, not here. */
+  check("d1-return-revalidation-does-not-increment-save-counter",
+    r1.saveCount === r0.saveCount && r0.saveCount >= 0,
+    `saveCount ${r0.saveCount} -> ${r1.saveCount} (expect unchanged) while refresh ${r0.count} -> ${r1.count}`);
 
   /* 2 - THE TWO RETURN SIGNALS COALESCE, AND BOTH ARE ALIVE.
      A REFRESH COUNTER ALONE CANNOT PROVE THIS. "both fired, one refresh" and
@@ -1416,9 +1533,9 @@ async function clickControlByBody(page, mark) {
   check("harness-issued-no-writes", mutatingRequests.length === 0,
     `mutating requests observed=${mutatingRequests.length} ${JSON.stringify(mutatingRequests.slice(0, 4))}`);
 
-  // ── Self-check: exactly 173, all unique, all passed — else nonzero ──
+  // ── Self-check: exactly 178, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 173) { console.log(`ABORT — expected 173 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 178) { console.log(`ABORT — expected 178 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });

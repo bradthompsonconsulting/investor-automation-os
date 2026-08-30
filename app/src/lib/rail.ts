@@ -84,6 +84,43 @@ export const RAIL_MONEY = (n: number): string =>
 /** Which source supplied the displayed Ask. Rendered, never inferred. */
 export type AskSource = "opportunity" | "contact";
 
+/**
+ * Board #5 §4C — HAS RESOLVED AUTHORITY OBSERVED THE WRITE WE JUST MADE?
+ *
+ * ⚠ A PREDICATE OVER RESOLVED STATE, NOT A FLAG. There is deliberately nothing
+ * to latch and nothing to clear. It is NOT "the targeted refresh failed" -- it
+ * is "a confirmed write exists that the resolved state has not yet observed."
+ * Either legitimate read reconciles it, with no reconciliation logic and no
+ * "which request won" tracking, because either read replaces the RailDeal this
+ * is computed from. If the targeted refresh fails and a later refreshAll
+ * observes the value, this goes true on the next render -- not because anything
+ * cleared it, but because it was never a stored fact.
+ *
+ * ⚠ confirmedWrite MUST BE THE SETTER'S ROUNDED `sent`, NEVER THE RAW DRAFT.
+ * setAskingPrice applies roundCurrency before the PUT. Comparing against an
+ * unrounded draft would never match a value GHL rounded, and the warning would
+ * never clear. `ok === true` guarantees sent === observed.
+ *
+ * ⚠ THE THIRD-PARTY CASE FAILS SAFE, AND IT IS A KNOWN FALSE POSITIVE. If
+ * somebody else changes the Ask between our write and our read, the values
+ * differ and this stays false -- so the cockpit keeps warning. That is honest
+ * (our write is not what governs) but it reads as "not caught up" when the
+ * truth is "overtaken". Named deliberately rather than engineered around; the
+ * safe direction is to warn.
+ *
+ * Exact equality on a parsed number. The designated proof value round-trips
+ * exactly (PB-D60); that is a real limitation of the general case, stated.
+ */
+export function railAuthorityReconciled(deal: RailDeal, confirmedWrite: number | null): boolean {
+  if (confirmedWrite === null) return true;
+  return (
+    deal.state === "resolved" &&
+    deal.ask !== null &&
+    deal.ask.source === "opportunity" &&
+    deal.ask.value === confirmedWrite
+  );
+}
+
 /** The rail's read of the deal. Every state is explicit; none is a blank. */
 export type RailDeal =
   | { state: "loading" }
@@ -134,9 +171,29 @@ export type RailCellView = {
      ⚠ THE ROUTE IS A KIND, NEVER A CALLBACK. The component maps the kind to
      behaviour. A function here would make RailCellView unassertable
      structurally and would take the offline seam with it. */
-  route:
-    | { kind: "contact-record"; label: string }
-    | { kind: "edit-opportunity-ask"; label: string }
+  /* ⚠ §4C SPLITS BY VERB. `route` means NAVIGATE AWAY; `editor` means EDIT IN
+     PLACE. §4B put an in-place editor inside `route`, which is a navigation
+     concept by this comment's own words, and origination is where that stopped
+     being survivable: the contact-fallback cell needs the GHL hop AND an
+     origination affordance at the same time. One field cannot carry two verbs. */
+  route: { kind: "contact-record"; label: string } | null;
+  /* EDIT IN PLACE. `edit-opportunity-ask` changes an Opportunity Ask that
+     already exists; `set-opportunity-ask` ORIGINATES the first one while the
+     Contact fallback is still what governs.
+
+     ⚠ `seed` IS THE SHADOW-COPY GUARD, AND IT IS DATA SO IT CAN BE ASSERTED.
+     The editor prefills its draft from the value it is given. If origination
+     handed it the CONTACT ask, the draft would open on the fallback number and
+     one Enter would write an Opportunity Ask EQUAL TO the Contact Ask -- a
+     synchronized shadow copy, created by the UI, which is the one thing this
+     tranche is prohibited from doing. So `seed` is ALWAYS null for
+     `set-opportunity-ask`. PB-D22 then makes an empty draft a no-op exit, so an
+     operator who opens and closes it writes nothing.
+
+     ⚠ STILL FUNCTION-FREE. A kind, a label and a number. The save path lives in
+     the component; a handle here would end the offline seam. */
+  editor:
+    | { kind: "edit-opportunity-ask" | "set-opportunity-ask"; label: string; seed: number | null }
     | null;
   /* Stated when there is no route, so its absence is explained, never silent.
      ⚠ RETAINED DELIBERATELY THOUGH NO STATE SETS IT AFTER §4B. It is the
@@ -228,9 +285,18 @@ export function deriveRailDeal(input: {
  * two reasons into one is what S1's comment forbade.
  */
 export function railCells(deal: RailDeal): RailCellView[] {
-  type CellBody = Pick<RailCellView, "primary" | "provenance" | "tone" | "route" | "authorityNote">;
+  type CellBody = Pick<RailCellView, "primary" | "provenance" | "tone" | "route" | "editor" | "authorityNote">;
   const waiting = (primary: string): CellBody =>
-    ({ primary, provenance: null, tone: "waiting", route: null, authorityNote: null });
+    ({ primary, provenance: null, tone: "waiting", route: null, editor: null, authorityNote: null });
+
+  /* §4C — ORIGINATION. Offered only where a SINGLE Opportunity is resolved,
+     because that is the only state carrying an opportunityId to write to.
+     awaiting_selection deliberately never reaches here: deriveRailDeal calls
+     selectOpportunity with a HARD null choice, so more than one candidate
+     resolves to awaiting_selection and exposes NO id at all. The editor
+     cannot target an unchosen deal because no target exists -- structural,
+     not a condition that has to remember to check. */
+  const originate = { kind: "set-opportunity-ask" as const, label: "Set Opportunity Ask", seed: null };
 
   let ask: CellBody;
   let mao: CellBody;
@@ -254,7 +320,9 @@ export function railCells(deal: RailDeal): RailCellView[] {
       break;
     case "resolved":
       ask = deal.ask === null
-        ? waiting("no ask on Opportunity or Contact")
+        /* Nothing on either carrier -- but a deal IS resolved, so the first
+           Opportunity Ask can still be originated from here. */
+        ? { ...waiting("no ask on Opportunity or Contact"), editor: originate }
         : deal.ask.source === "opportunity"
           ? {
               primary: RAIL_MONEY(deal.ask.value),
@@ -266,9 +334,12 @@ export function railCells(deal: RailDeal): RailCellView[] {
                  carry an Ask. */
               provenance: `Opportunity · ${deal.opportunityName}`,
               tone: "value",
-              /* §4B. The authoritative value is now editable in place, so the
-                 branch offers the edit instead of explaining its absence. */
-              route: { kind: "edit-opportunity-ask", label: "Edit the Opportunity Ask" },
+              /* §4C. NO navigation route: the only hop IAOS has reaches the
+                 CONTACT record, which in this branch is NOT the authoritative
+                 field. The edit happens in place instead. */
+              route: null,
+              /* Seeded, because a value already exists to edit. */
+              editor: { kind: "edit-opportunity-ask", label: "Edit the Opportunity Ask", seed: deal.ask.value },
               authorityNote: null,
             }
           : {
@@ -277,12 +348,22 @@ export function railCells(deal: RailDeal): RailCellView[] {
                  label read "Contact fallback" and left the reason unstated. */
               provenance: "Contact fallback — no Opportunity Ask",
               tone: "value",
+              /* KEPT, and SECONDARY. In this state the Contact value genuinely
+                 governs and IAOS cannot write it, so removing the hop would
+                 leave no path at all to correct the number being obeyed.
+                 ⚠ It disappears the moment the Opportunity Ask is OBSERVED --
+                 the branch above carries route: null -- because a hop to a
+                 value that no longer governs is the §4A failure exactly. */
               route: { kind: "contact-record", label: "Edit on the Contact in GHL" },
+              /* PRIMARY. Sets the first Opportunity Ask. seed is null, so the
+                 draft opens EMPTY and the Contact number is never a starting
+                 point -- see the seed note on RailCellView. */
+              editor: originate,
               authorityNote: null,
             };
       mao = deal.mao === null
         ? waiting("not yet approved — run Underwriting")
-        : { primary: RAIL_MONEY(deal.mao), provenance: `Opportunity · ${deal.opportunityName}`, tone: "value", route: null, authorityNote: null };
+        : { primary: RAIL_MONEY(deal.mao), provenance: `Opportunity · ${deal.opportunityName}`, tone: "value", route: null, editor: null, authorityNote: null };
       break;
   }
 

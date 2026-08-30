@@ -112,8 +112,8 @@ try {
   process.exit(11);
 }
 
-const { deriveRailDeal, railCells } = rail;
-for (const [name, fn] of Object.entries({ deriveRailDeal, railCells })) {
+const { deriveRailDeal, railCells, railAuthorityReconciled } = rail;
+for (const [name, fn] of Object.entries({ deriveRailDeal, railCells, railAuthorityReconciled })) {
   if (typeof fn !== 'function') {
     console.error('ABORT: ' + name + ' is not exported. Nothing tested.');
     cleanup();
@@ -131,11 +131,27 @@ for (const [name, fn] of Object.entries({ deriveRailDeal, railCells })) {
                   no cell value is a function · error state offers no edit route.
       0  the §4A opportunity-branch route assertion was REPLACED and its
          authority-note assertion INVERTED -- both remain one call each.
+   Board #5 §4C: 77 -> 87. COUNTED FROM THIS FILE, not proposed and not
+   back-filled. The costing proposed 88; the eleventh candidate --
+   "origination keeps the contact route as secondary" -- was DROPPED during the
+   build as vacuous: the contact branch's route is already asserted by
+   '4A contact branch OFFERS the route' and its editor by
+   '4C contact-fallback branch offers origination with NO seed', so a third
+   check asserting both exist could not fail independently of them.
+      0  REPLACED  the §4B route assertion became the §4C `editor` assertion.
+     +5  origination shape: no navigation route on the Opportunity branch ·
+         contact-fallback offers origination with seed:null · resolved-with-no-
+         ask still offers it · only a resolved deal exposes an editor ·
+         the ask cell's field set is exactly these eight.
+     +5  the authority predicate: reconciled on exact match · not reconciled
+         while the Contact fallback governs · not reconciled on a DIFFERENT
+         value (third-party overtake, fails safe) · not reconciled in any
+         unresolved state · null confirmedWrite reconciles vacuously.
    ⚠ PB-D13's 119 + 4N does not apply and was not used. The rail is a structural
    render term, and 4N counts unlocked CONTACT fields against a CONTACT field
-   term; §4B unlocks an OPPORTUNITY field and leaves the record row
+   term; §4B/§4C unlock an OPPORTUNITY field and leave the record row
    display-only, so N stays 4. */
-const FLOOR = 77;
+const FLOOR = 87;
 let checks = 0;
 let failures = 0;
 
@@ -214,10 +230,11 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
   const oppSourced = derive({ 'o-ask': 210000, 'o-mao': 165000 }, { 'c-ask': 175000 });
   const oppAsk = cellOf(oppSourced, 'seller-ask');
   check('4A opportunity branch names the selected deal', oppAsk.provenance, 'Opportunity · Alpha Deal');
-  /* §4B REPLACES §4A's "offers NO route". IAOS can now write the authoritative
-     field, so the branch offers the edit instead of explaining its absence. */
-  check('4B opportunity branch OFFERS the edit route', oppAsk.route,
-    { kind: 'edit-opportunity-ask', label: 'Edit the Opportunity Ask' });
+  /* §4C — the edit affordance moved OUT of `route` and into `editor`. route
+     means navigate-away; editor means edit-in-place. §4B had one field
+     carrying both verbs, which origination made unsurvivable. */
+  check('4C opportunity branch offers the SEEDED in-place editor', oppAsk.editor,
+    { kind: 'edit-opportunity-ask', label: 'Edit the Opportunity Ask', seed: 210000 });
   /* §4B INVERTS §4A's "says why there is no route". The note existed because
      there was nothing to offer; there now is, so it must be GONE rather than
      left sitting beside the affordance it contradicts. */
@@ -291,6 +308,76 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
   {
     const errored = deriveRailDeal({ opps: null, oppsError: 'boom', detail: null, detailLoading: false, ids: IDS });
     check('4B error state offers no edit route', cellOf(errored, 'seller-ask').route, null);
+  }
+
+  /* ===== Board #5 §4C — ORIGINATION + THE AUTHORITY PREDICATE ========== */
+
+  /* The only hop IAOS has reaches the CONTACT record, which in this branch is
+     NOT the authoritative field. Offering it here would send Brad to edit a
+     value that is being ignored -- the §4A failure exactly. */
+  check('4C opportunity branch offers no NAVIGATION route', oppAsk.route, null);
+
+  /* ⚠ seed:null IS THE SHADOW-COPY GUARD. If origination seeded from the
+     CONTACT ask, the draft would open on the fallback number and one Enter
+     would write an Opportunity Ask EQUAL to the Contact Ask -- a synchronized
+     shadow copy made by the UI, the one prohibited outcome. */
+  check('4C contact-fallback branch offers origination with NO seed', conAsk.editor,
+    { kind: 'set-opportunity-ask', label: 'Set Opportunity Ask', seed: null });
+
+  {
+    const bare = derive({}, {});
+    check('4C resolved with no ask anywhere still offers origination',
+      cellOf(bare, 'seller-ask').editor,
+      { kind: 'set-opportunity-ask', label: 'Set Opportunity Ask', seed: null });
+  }
+
+  {
+    /* ⚠ THE NO-TARGET-GUESSING GUARD. awaiting_selection is the one that
+       matters: PB-D55 forbids assuming the first candidate is the deal, and an
+       editor offered there would write an Ask onto an unchosen Opportunity. */
+    const unresolved = {
+      loading:            deriveRailDeal({ opps: null, oppsError: null, detail: null, detailLoading: true, ids: IDS }),
+      error:              deriveRailDeal({ opps: null, oppsError: 'boom', detail: null, detailLoading: false, ids: IDS }),
+      no_opportunity:     deriveRailDeal({ opps: [], oppsError: null, detail: detail({}), detailLoading: false, ids: IDS }),
+      awaiting_selection: deriveRailDeal({ opps: [opp({}), { ...opp({}), id: 'opp-2' }], oppsError: null, detail: detail({}), detailLoading: false, ids: IDS }),
+    };
+    const offering = Object.entries(unresolved)
+      .filter(([, d]) => railCells(d).some((c) => c.editor !== null))
+      .map(([k]) => k);
+    check('4C only a resolved deal exposes an editor', offering, []);
+  }
+
+  /* Not an atomicity proof -- atomicity is structural: one switch arm emits
+     every field together. This catches a field being ADDED to RailCellView and
+     left unasserted, which no per-field check can see. */
+  check('4C the ask cell is exactly these fields, both branches',
+    [Object.keys(oppAsk).sort(), Object.keys(conAsk).sort()],
+    [['authorityNote','editor','key','label','primary','provenance','route','tone'],
+     ['authorityNote','editor','key','label','primary','provenance','route','tone']]);
+
+  /* ── §4C the authority predicate ──────────────────────────────────────── */
+  {
+    const oppDeal = derive({ 'o-ask': 987654.32 }, { 'c-ask': 175000 });
+    const conDeal = derive({}, { 'c-ask': 175000 });
+    const amb = deriveRailDeal({ opps: [opp({}), { ...opp({}), id: 'opp-2' }], oppsError: null, detail: detail({}), detailLoading: false, ids: IDS });
+    const errDeal = deriveRailDeal({ opps: null, oppsError: 'boom', detail: null, detailLoading: false, ids: IDS });
+
+    check('4C reconciled when the Opportunity carries exactly the confirmed write',
+      railAuthorityReconciled(oppDeal, 987654.32), true);
+    /* The warning-on case: the write landed but resolved state still shows the
+       Contact fallback governing. */
+    check('4C NOT reconciled while the Contact fallback still governs',
+      railAuthorityReconciled(conDeal, 987654.32), false);
+    /* ⚠ Third-party overtake. Fails SAFE -- keeps warning, because our write
+       is genuinely not what governs. A known false positive, named. */
+    check('4C NOT reconciled when the Opportunity carries a DIFFERENT value',
+      railAuthorityReconciled(derive({ 'o-ask': 111111.11 }, {}), 987654.32), false);
+    check('4C NOT reconciled in any unresolved state',
+      [railAuthorityReconciled(amb, 987654.32), railAuthorityReconciled(errDeal, 987654.32)],
+      [false, false]);
+    /* No write to reconcile means nothing to warn about. */
+    check('4C no confirmed write means nothing to reconcile',
+      [railAuthorityReconciled(conDeal, null), railAuthorityReconciled(amb, null)], [true, true]);
   }
 }
 

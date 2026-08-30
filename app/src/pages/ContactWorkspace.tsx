@@ -12,7 +12,7 @@ import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTI
    what comes back; it decides nothing about the rail. Inside that module the
    ask precedence still mirrors resolver.ts:329 and still parses both sides
    through resolver.ts's own exported parsers. */
-import { deriveRailDeal, railCells, RAIL_MONEY, type AskSource, type RailDeal, type RailIds } from "../lib/rail";
+import { deriveRailDeal, railCells, railAuthorityReconciled, RAIL_MONEY, type AskSource, type RailDeal, type RailIds } from "../lib/rail";
 import { opportunitiesForContact } from "../lib/underwriting/selectOpportunity";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { DispositionControl } from "../components/DispositionControl";
@@ -474,24 +474,38 @@ function MonetaryRow({ f, contactId, save }: {
    setter still performs a real clear on null for an explicit action (the wire
    proof calls it directly); what is withheld is the KEYSTROKE that reaches it.
    ⚠ This is the one place the editor is deliberately narrower than the setter. */
-function RailAskEditor({ open, onOpen, onClose, opportunityId, value, display }: {
+function RailAskEditor({ open, onOpen, onClose, opportunityId, seed, label, display,
+                        confirmedWrite, authorityReconciled, onConfirmed, onRefresh }: {
   open: boolean;
   onOpen: () => void;
   onClose: () => void;
   opportunityId: string;
-  value: number | null;
+  /** §4C — null in ORIGINATION mode. The draft then opens EMPTY. */
+  seed: number | null;
+  label: string;
   display: string;
+  confirmedWrite: number | null;
+  authorityReconciled: boolean;
+  onConfirmed: (sent: number) => void;
+  onRefresh: () => Promise<void>;
 }) {
-  const [saved, setSaved] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
   const [invalid, setInvalid] = useState(false);
-  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "unconfirmed" | "failed">("idle");
+  const [status, setStatus] = useState<"idle" | "saving" | "refreshing" | "saved" | "unconfirmed" | "failed">("idle");
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const cancelRef = useRef(false);
   useEditorGate(`rail-ask-${opportunityId}`, open); // D1 — defer return revalidation while open
 
-  const current: number | null = saved ?? value;
-  const shown = saved === null ? display : RAIL_MONEY(saved);
+  /* ⚠ §4C — NO LOCAL `saved`. The cell renders what RESOLVED STATE says, full
+     stop. A private post-save value here would show the new Opportunity
+     number beside the OLD Contact provenance -- the §4A mislabel, generated
+     by the editor itself. Between save and reconciliation the cell keeps the
+     old value AND the old provenance: internally consistent and truthful,
+     with the warning below saying why. */
+  const current: number | null = seed;
+  const shown = display;
+  /* Write confirmed, resolved authority has not observed it yet. */
+  const authorityUnrefreshed = !authorityReconciled;
 
   useEffect(() => {
     if (!open) return;
@@ -516,18 +530,40 @@ function RailAskEditor({ open, onOpen, onClose, opportunityId, value, display }:
     setInvalid(false);
     if (raw === "") { onClose(); return; } // PB-D22 — empty is not a clear
     const next = Number(raw.replace(/[$,]/g, ""));
-    if (next === current) { onClose(); return; } // PB-D10 — unchanged fires no PUT
+    /* PB-D10 — unchanged fires no PUT. ⚠ confirmedWrite FIRST: in the
+       post-save / pre-refetch window `current` is still the OLD value, so
+       without it a second Enter on the same number would issue a redundant
+       PUT. This is suppression only; it renders nothing. */
+    if (next === (confirmedWrite ?? current)) { onClose(); return; }
     onClose();
     setStatus("saving");
     setErrMsg(null);
+    let sent: number;
     try {
       const res = await ghl.opportunities.setAskingPrice(opportunityId, next);
-      setSaved(next);
       // A 200 is not success. `ok` is the singular readback's verdict.
-      setStatus(res.ok ? "saved" : "unconfirmed");
+      if (!res.ok) { setStatus("unconfirmed"); return; }
+      // The ROUNDED value that actually went on the wire. ok guarantees
+      // sent === observed, so this is what resolved state must come to hold.
+      sent = typeof res.sent === "number" ? res.sent : next;
+      onConfirmed(sent);
     } catch (e) {
       setErrMsg((e as Error).message);
       setStatus("failed");
+      return;
+    }
+    /* The write is confirmed. Now let RESOLVED STATE catch up -- the cockpit
+       never relabels authority from the PUT alone. */
+    setStatus("refreshing");
+    try {
+      await onRefresh();
+      setStatus("saved");
+    } catch (e) {
+      /* ⚠ NOT "the refresh failed" as a latched fact. The truthful state is
+         derived: a confirmed write exists that resolved authority has not
+         observed. Any later legitimate read clears it by itself. */
+      setErrMsg((e as Error).message);
+      setStatus("idle");
     }
   }
 
@@ -543,8 +579,25 @@ function RailAskEditor({ open, onOpen, onClose, opportunityId, value, display }:
     if (e.key === "Enter") { e.preventDefault(); if (draftIsValid()) e.currentTarget.blur(); }
   }
 
+  /* §4C — ORIGINATION IS ADDITIVE, NOT A SWAP. ⚠ PB-D17's Model B swaps a
+     display for an editor because they are the SAME value. In origination they
+     are not: the display is the CONTACT ask and the edit targets the
+     OPPORTUNITY ask. Swapping would tell Brad he is editing the number he can
+     see. He is not -- he is using a truthfully displayed fallback to set a new
+     Opportunity authority, so the fallback stays on screen beside the input. */
+  const originating = seed === null;
+
+  const warning = authorityUnrefreshed ? (
+    <span
+      data-testid="rail-ask-authority-unrefreshed"
+      style={{ fontSize: "10px", color: "#F59E0B", maxWidth: "230px", display: "inline-block" }}
+    >
+      Saved to the Opportunity. The source label beside it is out of date — reload to see which value governs.
+    </span>
+  ) : null;
+
   if (open) {
-    return (
+    const input = (
       <input
         data-testid="rail-ask-input"
         value={draft}
@@ -555,11 +608,31 @@ function RailAskEditor({ open, onOpen, onClose, opportunityId, value, display }:
         style={{ width: "130px", background: "#0F172A", color: "#F1F5F9", border: `1px solid ${invalid ? "#F87171" : "#334155"}`, borderRadius: "4px", padding: "2px 6px", fontSize: "15px", fontWeight: 600, fontFamily: "inherit" }}
       />
     );
+    /* Edit mode swaps (same value). Origination keeps the governing fallback
+       visible beside the input (different carriers). */
+    return originating ? (
+      <span style={{ display: "inline-flex", gap: "8px", alignItems: "baseline", flexWrap: "wrap" }}>
+        <span data-testid="rail-ask-display">{shown}</span>
+        {input}
+        {warning}
+      </span>
+    ) : input;
   }
 
   return (
-    <span style={{ display: "inline-flex", gap: "8px", alignItems: "baseline" }}>
-      <span data-testid="rail-ask-display" onClick={onOpen} style={{ cursor: "text" }}>{shown}</span>
+    <span style={{ display: "inline-flex", gap: "8px", alignItems: "baseline", flexWrap: "wrap" }}>
+      <span data-testid="rail-ask-display" onClick={originating ? undefined : onOpen}
+            style={{ cursor: originating ? "default" : "text" }}>{shown}</span>
+      {originating && (
+        <button
+          data-testid="rail-ask-originate"
+          onClick={onOpen}
+          style={{ fontSize: "10px", fontWeight: 600, padding: "2px 7px", borderRadius: "5px",
+                   border: "1px solid rgba(30,200,255,0.3)", background: "rgba(30,200,255,0.07)",
+                   color: "#1EC8FF", cursor: "pointer" }}
+        >{label}</button>
+      )}
+      {warning}
       {invalid && <span style={{ fontSize: "10px", color: "#F87171" }}>Not a valid amount</span>}
       {status === "saving" && <span style={{ fontSize: "10px", color: "#94A3B8" }}>Saving…</span>}
       {status === "saved" && <span style={{ fontSize: "10px", color: "#94A3B8" }}>Saved</span>}
@@ -1290,13 +1363,55 @@ export default function ContactWorkspace() {
      handle in a cell would end that. The cell declares a route KIND, the page
      supplies the target. */
   const [askEditorOpen, setAskEditorOpen] = useState(false);
-  const railAskEditable = useMemo<{ opportunityId: string; value: number } | null>(
-    () =>
-      railDeal.state === "resolved" && railDeal.ask !== null && railDeal.ask.source === "opportunity"
-        ? { opportunityId: railDeal.opportunityId, value: railDeal.ask.value }
-        : null,
-    [railDeal],
-  );
+  /* §4C — the target. ANY resolved deal, not just an Opportunity-sourced one:
+     origination is the whole point. Unresolved states carry no opportunityId at
+     all, so there is nothing to guess with. */
+  const railAskOpportunityId =
+    railDeal.state === "resolved" ? railDeal.opportunityId : null;
+
+  /* ⚠ §4C — THE ONLY NEW DATUM, AND ITS BOUNDARY IS THE WHOLE POINT.
+     confirmedWrite is what the setter told us it wrote (its ROUNDED `sent`,
+     never the raw draft -- roundCurrency runs before the PUT, so an unrounded
+     draft would never match and the warning would never clear).
+
+     It has exactly two READ-ONLY uses:
+       1. PB-D10 write suppression during the post-save / pre-refetch window,
+          where `current` is still the OLD prop and a second Enter on the same
+          number would otherwise issue a redundant PUT.
+       2. the left half of railAuthorityReconciled.
+
+     ⚠ IT DRIVES NOTHING RENDERED -- not the displayed value, not provenance,
+     not the source marker, not the route, not the Contact row's authority. Its
+     only render-adjacent effect is a boolean that shows a WARNING, which is the
+     opposite of asserting authority. Remembering what we just wrote is allowed;
+     pretending that memory is authoritative cockpit state is not. */
+  const [confirmedWrite, setConfirmedWrite] = useState<number | null>(null);
+  const authorityReconciled = railAuthorityReconciled(railDeal, confirmedWrite);
+
+  /* ⚠ CLEARING IS REQUIRED, NOT TIDINESS. A permanently retained confirmedWrite
+     would suppress a LEGITIMATE later write of the same number. Once resolved
+     authority has observed it, PB-D10 goes back to comparing the prop. */
+  useEffect(() => {
+    if (confirmedWrite !== null && authorityReconciled) setConfirmedWrite(null);
+  }, [confirmedWrite, authorityReconciled]);
+
+  /* ⚠ §4C — A SAVE-TRIGGERED READ IS A DIFFERENT CAUSE FROM A RETURN, AND IS
+     KEPT STRUCTURALLY SEPARATE FROM D1. It never touches refreshDeferred, never
+     calls refreshAll, and never runs through the focus/visibility listeners, so
+     it cannot increment or satisfy D1's return-refresh accounting. Targeted: it
+     re-reads the Opportunity list only, because that is the one thing the write
+     changed.
+
+     ⚠ ON FAILURE IT DOES NOT FABRICATE THE FLIP. The setter's readback proves
+     the write landed; it does not entitle the cockpit to relabel authority.
+     Authority comes from the same resolved state as everywhere else, or the
+     editor says it could not refresh. */
+  const [saveRefreshCount, setSaveRefreshCount] = useState(0);
+  const refreshOpportunities = useCallback(async () => {
+    const pipeline = await ghl.opportunities.listPipeline();
+    setOpps(opportunitiesForContact(pipeline.opportunities, id));
+    setSaveRefreshCount((n) => n + 1);
+  }, [id]);
 
   /* Authority for the record row (§4B item 7). ⚠ THE SAME ALREADY-RESOLVED
      STATE THE RAIL RENDERS -- not a second read, not a second resolution. One
@@ -1498,6 +1613,10 @@ export default function ContactWorkspace() {
       style={{ maxWidth: CONTENT_MAX_WIDTH }}
       data-testid="contact-workspace"
       data-refresh-count={refreshCount}
+      /* §4C — a SEPARATE counter for the save-triggered read. D1 accounting
+         must never be satisfied by a save, and a save must never be mistaken
+         for a return. Two causes, two counters, both visible. */
+      data-save-refresh-count={saveRefreshCount}
       data-open-editors={openEditors.size + (callbackOpen ? 1 : 0)}
       data-refresh-deferred={refreshDeferred ? "true" : "false"}
     >
@@ -1640,14 +1759,19 @@ export default function ContactWorkspace() {
                   branch is deliberately untouched — it is the branch every
                   Production contact reaches, and it still routes to the record
                   that genuinely governs there. */}
-              {cell.route?.kind === "edit-opportunity-ask" && railAskEditable !== null ? (
+              {cell.editor !== null && railAskOpportunityId !== null ? (
                 <RailAskEditor
                   open={askEditorOpen}
                   onOpen={() => setAskEditorOpen(true)}
                   onClose={() => setAskEditorOpen(false)}
-                  opportunityId={railAskEditable.opportunityId}
-                  value={railAskEditable.value}
+                  opportunityId={railAskOpportunityId}
+                  seed={cell.editor.seed}
+                  label={cell.editor.label}
                   display={cell.primary}
+                  confirmedWrite={confirmedWrite}
+                  authorityReconciled={authorityReconciled}
+                  onConfirmed={setConfirmedWrite}
+                  onRefresh={refreshOpportunities}
                 />
               ) : (
                 cell.primary
@@ -1678,13 +1802,10 @@ export default function ContactWorkspace() {
               <button
                 data-testid={`rail-route-${cell.key}`}
                 data-rail-route={cell.route.kind}
-                /* §4B — the two kinds do different things and must not be
-                   collapsed. contact-record HOPS to GHL and writes nothing.
-                   edit-opportunity-ask ACTIVATES the in-place editor; it does
-                   not navigate, and it still writes nothing by itself. */
-                onClick={cell.route.kind === "edit-opportunity-ask"
-                  ? () => setAskEditorOpen(true)
-                  : () => window.open(ghlContactDetailUrl(id), "_blank", "noopener,noreferrer")}
+                /* §4C — NAVIGATION ONLY again. The in-place editor moved to
+                   cell.editor, so this button has exactly one behaviour and
+                   window.open still writes nothing. */
+                onClick={() => window.open(ghlContactDetailUrl(id), "_blank", "noopener,noreferrer")}
                 style={{
                   marginTop: "3px", fontSize: "10px", fontWeight: 600, padding: "2px 7px",
                   borderRadius: "5px", border: "1px solid rgba(30,200,255,0.3)",
