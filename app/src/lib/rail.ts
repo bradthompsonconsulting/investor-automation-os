@@ -276,6 +276,62 @@ export function deriveRailDeal(input: {
 }
 
 /**
+ * Board #5 §4D — WHAT THE CONTACT ASKING PRICE ROW IS ENTITLED TO SAY.
+ *
+ * PURE, AND A PROJECTION — NOT A STATE MACHINE. It reads one RailDeal, the
+ * same one deriveRailDeal already returned, and decides nothing: no resolve,
+ * no fetch, no carrier choice, no write. One deal read, TWO projections
+ * (railCells and this), so the rail and the record row cannot disagree about
+ * which carrier governs. A second derivation here is exactly how the cockpit
+ * and the record would drift apart.
+ *
+ * ⚠ WHY THIS LIVES IN rail.ts AND NOT IN THE PAGE. RailDeal is a
+ * discriminated union, so an exhaustive switch makes totality a COMPILE-TIME
+ * property: the `never` assignment below stops building the moment a sixth
+ * rail state is added. In the page this was a two-branch ternary over a value
+ * carrying FIVE states, and it silently claimed authority on every contact
+ * that was not `resolved`-with-an-Ask -- measured at 47 of 47 in Production.
+ * The structural guard is the point of the move.
+ *
+ * ⚠ FIVE LABELS, SEVEN TOKENS, DELIBERATELY ASYMMETRIC. The three undetermined
+ * states share ONE label because the operator does not need them told apart;
+ * they keep DISTINCT tokens because the attribute is evidence, and evidence
+ * must not discard information we already hold. Do not "tidy" the tokens down
+ * to match the label count.
+ *
+ * ⚠ no_opportunity is "contact value only", NOT "governing fallback". There is
+ * nothing to fall back FROM when no Opportunity exists, and the label is
+ * correct whether or not the contact carrier holds a value.
+ */
+export type ContactAskAuthority = { token: string; label: string };
+
+export function contactAskAuthority(deal: RailDeal): ContactAskAuthority {
+  const UNDETERMINED = "Contact Asking Price — authority not determined";
+  switch (deal.state) {
+    case "loading":
+      return { token: "loading", label: UNDETERMINED };
+    case "error":
+      return { token: "error", label: UNDETERMINED };
+    case "awaiting_selection":
+      return { token: "awaiting_selection", label: UNDETERMINED };
+    case "no_opportunity":
+      return { token: "no_opportunity", label: "Contact Asking Price — contact value only" };
+    case "resolved":
+      if (deal.ask === null) {
+        return { token: "resolved_no_ask", label: "Contact Asking Price — no value" };
+      }
+      return deal.ask.source === "opportunity"
+        ? { token: "opportunity", label: "Contact Asking Price — fallback / not authoritative" }
+        : { token: "contact", label: "Contact Asking Price — governing fallback" };
+  }
+  /* THE STRUCTURAL GUARD. Unreachable while RailDeal has five states; a sixth
+     fails to assign to `never` and the build stops here rather than shipping a
+     row that quietly falls through to a default. */
+  const unhandled: never = deal;
+  throw new Error(`contactAskAuthority: unhandled rail state ${JSON.stringify(unhandled)}`);
+}
+
+/**
  * PURE. The whole rail as four ordered cells, derived from one deal read.
  *
  * Position and Investor Offer are NOT part of the deal read at all — no

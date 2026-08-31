@@ -189,6 +189,9 @@ jobs:
       - name: Resolver and view model — 169 checks
         run: node app/scripts/test-underwriting-resolver.cjs
 
+      - name: Rail — 94 offline checks
+        run: node app/scripts/test-rail.cjs
+
       - name: Netlify observer — 86 offline checks
         run: node scripts/netlify-status.test.cjs
 

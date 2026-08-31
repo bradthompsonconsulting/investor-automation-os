@@ -115,6 +115,22 @@
                                                   The converse needs a real
                                                   write and belongs to the
                                                   scripted proof
+   Board #5 §4D authority correction: + 2 = 180. ALSO NOT A FIELD UNLOCK --
+   §4D changes what the display-only row SAYS and unlocks nothing, so N stays 4
+   and 4N stays 16.
+     1 contact-ask-row-resolved-no-ask-states-no-value
+                                                  the 42-of-47 Production state
+     2 contact-ask-row-no-opportunity-states-contact-value-only
+                                                  the 4-of-47 Production state
+   ⚠ ONLY THREE OF THE SEVEN AUTHORITY SITUATIONS ARE REACHABLE HERE. A Step-0
+   Production sweep of all 47 contacts measured exactly three: `contact` (1,
+   Neelima, checks at :795-806), `resolved_no_ask` (42) and `no_opportunity`
+   (4). loading, error, awaiting_selection and resolved-with-an-Opportunity-Ask
+   have ZERO Production instances and are proven ONLY offline, in test-rail.cjs
+   CASE 8. A green run here is evidence about the three states that ran.
+   ⚠ The widened settle at :485 is a PRECONDITION FIX, not a check -- it adds
+   record-section to the wait because two of the assertions read inside it. The
+   floor does not move for it.
    ⚠ THE OPPORTUNITY BRANCH IS NOT HERE AND CANNOT BE. Measured 2026-08-29 by
    two independent readers: 0 of 43 Production opportunities carry
    opportunity.asking_price, so no fixture reaches that branch and
@@ -122,7 +138,7 @@
    assertions in test-rail.cjs are the INVERSE of what they were: route-PRESENT
    (the in-place editor) and note-ABSENT. Do not read a green run here as
    covering both branches.
-   Success ONLY when checksRun === 178 AND every check passed. Any throw exits nonzero.
+   Success ONLY when checksRun === 180 AND every check passed. Any throw exits nonzero.
    The 101-field list is STATIC + hardcoded here (verification-only) — never imported from
    app code, never derived from ADDITIONAL_INFO_SUBGROUPS. */
 const { chromium } = require("playwright");
@@ -481,10 +497,21 @@ async function clickControlByBody(page, mark) {
      Opportunity…". Wait for that state to clear before capturing, or the
      assertions race the fetch. This waits for the state to RESOLVE, not for a
      particular answer: an error or no_opportunity clears it too, and would be
-     caught by the assertions rather than hidden by a timeout. */
+     caught by the assertions rather than hidden by a timeout.
+
+     ⚠ §4D — record-section IS PART OF THIS PRECONDITION, A THIRD FETCH. The
+     settle above waits on the CONTACT read and this one on the OPPORTUNITIES
+     read, but the capture at :532 reads INSIDE record-section, and the
+     contact-ask-authority checks below assert on an element that lives there.
+     record-section is gated on the FIELD-DEFS + folder-names fetch, which is
+     neither of the two already waited on. It was green only because the defs
+     happened to land first on this fixture; a Step-0 measurement sweep with
+     exactly this gap captured "row absent" on 47 of 47 contacts and it was an
+     artifact of the race, not a fact. A test owns its preconditions. */
   await page.waitForFunction(() => {
     const s = document.querySelector('[data-testid="rail-state-seller-ask"]');
-    return s && (s.textContent || "").trim() !== "" && !/^reading Opportunity/.test((s.textContent || "").trim());
+    return s && (s.textContent || "").trim() !== "" && !/^reading Opportunity/.test((s.textContent || "").trim())
+      && !!document.querySelector('[data-testid="record-section"]');
   }, { timeout: 45000 });
 
   const rec = await page.evaluate(() => {
@@ -1538,14 +1565,84 @@ async function clickControlByBody(page, mark) {
     gorInEmail.control === "Expand" && gorInEmail.scrollHeight > gorInEmail.clientHeight + 1,
     `found=${!!gorInEmail} outbound=${gorInEmail && gorInEmail.outbound} alignSelf=${gorInEmail && gorInEmail.alignSelf} control=${JSON.stringify(gorInEmail && gorInEmail.control)} scrollH=${gorInEmail && gorInEmail.scrollHeight} clientH=${gorInEmail && gorInEmail.clientHeight}`);
 
+  /* ── 179-180 — Board #5 §4D, the two OTHER Production-reachable authority
+     states ───────────────────────────────────────────────────────────────────
+     Neelima above covers `contact` (checks at :795-806, UNCHANGED). The Step-0
+     Production sweep measured exactly three reachable states across all 47
+     contacts, so these two close the live set:
+       resolved_no_ask   42 of 47 contacts
+       no_opportunity     4 of 47 contacts
+     The other four situations -- loading, error, awaiting_selection, and
+     resolved-with-an-Opportunity-Ask -- have ZERO Production instances and
+     CANNOT be checked here. They are proven offline in test-rail.cjs CASE 8.
+     Do not read these two greens as covering the mapping; they cover the three
+     states Production can actually reach.
+
+     ⚠ THE railSellerAskText TERM IS NOT DECORATION. The rail cell comes from
+     railCells(deal) and the row from contactAskAuthority(deal) -- two
+     INDEPENDENT projections of one deal read. Asserting they agree is an
+     assertion about the state, not about a string existing somewhere. Without
+     it these would pass against a row that renders the right words for the
+     wrong reason. */
+  const readAskAuthority = async (contactId) => {
+    await page2.goto(`${ORIGIN}/contacts/${contactId}`, { waitUntil: "load" });
+    /* The SAME precondition as :485 -- rail settled AND record-section mounted.
+       ⚠ THREE-ARG FORM. waitForFunction(pageFunction, arg, options): passing
+       the options object in the ARG slot silently discards the timeout and
+       falls back to Playwright's 30s default. Do not author the 2-arg form. */
+    await page2.waitForFunction(() => {
+      const s = document.querySelector('[data-testid="rail-state-seller-ask"]');
+      return s && (s.textContent || "").trim() !== "" && !/^reading Opportunity/.test((s.textContent || "").trim())
+        && !!document.querySelector('[data-testid="record-section"]');
+    }, null, { timeout: 45000 });
+    return page2.evaluate(() => {
+      const nz = (s) => (s || "").replace(/\s+/g, " ").trim();
+      const authEl = document.querySelector('[data-testid="contact-ask-authority"]');
+      const stateEl = document.querySelector('[data-testid="rail-state-seller-ask"]');
+      // Located from the authority element and walked UP -- outer row div >
+      // inner flex div -- then the display span inside it. Same structural walk
+      // as the §4B capture at :613-620; no field id is plumbed in.
+      const outerRow = authEl && authEl.parentElement && authEl.parentElement.parentElement;
+      const disp = outerRow ? outerRow.querySelector('[data-testid^="field-display-"]') : null;
+      return {
+        value: authEl ? authEl.getAttribute("data-ask-authority") : null,
+        text: authEl ? nz(authEl.textContent) : null,
+        displayed: disp ? nz(disp.textContent) : null,
+        railSellerAskText: stateEl ? nz(stateEl.textContent) : null,
+      };
+    });
+  };
+
+  const probeAuth = await readAskAuthority(CONTACTS.iaosTestProbe);
+  check("contact-ask-row-resolved-no-ask-states-no-value",
+    probeAuth.value === "resolved_no_ask"
+      && probeAuth.text === "Contact Asking Price — no value"
+      && probeAuth.displayed === "—"
+      && probeAuth.railSellerAskText === "no ask on Opportunity or Contact",
+    `authority=${JSON.stringify(probeAuth)}`);
+
+  /* ⚠ THIS CHECK DELIBERATELY DOES NOT ASSERT `displayed`. All four
+     no_opportunity contacts show "—" today, but "contact value only" is correct
+     WHETHER OR NOT the contact carrier holds a value -- that independence is
+     the entire point of the label. Asserting today's emptiness would turn a
+     legitimate future state (an asking price on a contact with no Opportunity)
+     into a red. The value is carried in the failure detail, where it informs
+     without asserting. */
+  const noOppAuth = await readAskAuthority(CONTACTS.testPhoneStatusReset);
+  check("contact-ask-row-no-opportunity-states-contact-value-only",
+    noOppAuth.value === "no_opportunity"
+      && noOppAuth.text === "Contact Asking Price — contact value only"
+      && noOppAuth.railSellerAskText === "no Opportunity on this contact",
+    `authority=${JSON.stringify(noOppAuth)} (displayed is REPORTED, not asserted)`);
+
   await browser.close();
 
   check("harness-issued-no-writes", mutatingRequests.length === 0,
     `mutating requests observed=${mutatingRequests.length} ${JSON.stringify(mutatingRequests.slice(0, 4))}`);
 
-  // ── Self-check: exactly 178, all unique, all passed — else nonzero ──
+  // ── Self-check: exactly 180, all unique, all passed — else nonzero ──
   console.log(`\nchecksRun=${checksRun} uniqueNames=${names.size} failures=${failures.length} ${failures.length ? JSON.stringify(failures) : ""}`);
   if (names.size !== checksRun) { console.log("ABORT — name-collision detected"); process.exit(4); }
-  if (checksRun !== 178) { console.log(`ABORT — expected 178 checks, ran ${checksRun}`); process.exit(2); }
+  if (checksRun !== 180) { console.log(`ABORT — expected 180 checks, ran ${checksRun}`); process.exit(2); }
   process.exit(failures.length ? 1 : 0);
 })().catch((e) => { console.error("HARNESS THREW:", (e && e.stack) || e); process.exit(3); });

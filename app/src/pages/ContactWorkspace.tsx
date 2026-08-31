@@ -12,7 +12,7 @@ import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTI
    what comes back; it decides nothing about the rail. Inside that module the
    ask precedence still mirrors resolver.ts:329 and still parses both sides
    through resolver.ts's own exported parsers. */
-import { deriveRailDeal, railCells, railAuthorityReconciled, RAIL_MONEY, type AskSource, type RailDeal, type RailIds } from "../lib/rail";
+import { deriveRailDeal, railCells, railAuthorityReconciled, contactAskAuthority, RAIL_MONEY, type ContactAskAuthority, type RailDeal, type RailIds } from "../lib/rail";
 import { opportunitiesForContact } from "../lib/underwriting/selectOpportunity";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { DispositionControl } from "../components/DispositionControl";
@@ -930,19 +930,36 @@ function ChoiceRow({ f, contactId }: { f: RecordField; contactId: string }) {
    call site; a context would hide which rows depend on it. It is the same
    already-resolved state the rail renders -- one authority source, two
    surfaces, no second read. */
-/* §4B item 7 — the Contact Asking Price row, DISPLAY-ONLY, never hidden.
-   It states its own authority in both states rather than leaving the operator
-   to infer it from a rail two sections away:
-     Opportunity Ask present -> it is a fallback and is NOT being obeyed
-     Opportunity Ask absent  -> it IS the governing value
-   ⚠ The note renders in BOTH states. A row that goes quiet when it stops being
-   authoritative is worse than one that never spoke: silence reads as
-   agreement. */
-function ContactAskRow({ f, askAuthority }: { f: RecordField; askAuthority: AskSource | null }) {
-  const note =
-    askAuthority === "opportunity"
-      ? "Contact Asking Price — fallback / not authoritative"
-      : "Contact Asking Price — governing fallback";
+/* §4B item 7, CORRECTED IN §4D — the Contact Asking Price row, DISPLAY-ONLY,
+   never hidden. It states its own authority rather than leaving the operator to
+   infer it from a rail two sections away.
+
+   ⚠ FIVE STATES, NOT TWO. The original comment here enumerated two and the code
+   under it was a two-branch ternary; the underlying value carries FIVE rail
+   states, so everything that was not "Opportunity Ask present" fell into
+   "governing fallback" -- measured at 47 of 47 Production contacts, 46 of them
+   beside an empty value. A two-state comment above a five-state row IS the debt
+   that produced that defect. The mapping now lives in ONE place,
+   contactAskAuthority() in lib/rail.ts, where the discriminated union makes it
+   exhaustive at compile time. This component chooses PRESENTATION only:
+
+     opportunity          the Contact value is a fallback and is NOT being obeyed
+     contact              the Contact value IS what governs
+     resolved_no_ask      a deal resolved and neither carrier holds a value
+     no_opportunity       no Opportunity exists, so nothing to fall back FROM
+     loading/error/       authority genuinely unknown -- the row must not claim
+       awaiting_selection  it either way
+
+   ⚠ The note renders in EVERY state. A row that goes quiet when it stops being
+   authoritative is worse than one that never spoke: silence reads as agreement.
+
+   ⚠ COLOUR IS A CLAIM, SO THE UNDETERMINED STATES ARE AMBER, NOT SLATE. Slate
+   reads as "settled, nothing to see". Leaving loading/error/awaiting_selection
+   slate would preserve visually the exact lie §4D removes from the text. */
+const ASK_AUTHORITY_AMBER = new Set(["opportunity", "loading", "error", "awaiting_selection"]);
+
+function ContactAskRow({ f, askAuthority }: { f: RecordField; askAuthority: ContactAskAuthority }) {
+  const note = askAuthority.label;
   return (
     <div style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
       <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
@@ -952,8 +969,8 @@ function ContactAskRow({ f, askAuthority }: { f: RecordField; askAuthority: AskS
         </span>
         <span
           data-testid="contact-ask-authority"
-          data-ask-authority={askAuthority ?? "unresolved"}
-          style={{ fontSize: "10px", fontStyle: "italic", color: askAuthority === "opportunity" ? "#F59E0B" : "#64748B" }}
+          data-ask-authority={askAuthority.token}
+          style={{ fontSize: "10px", fontStyle: "italic", color: ASK_AUTHORITY_AMBER.has(askAuthority.token) ? "#F59E0B" : "#64748B" }}
         >
           {note}
         </span>
@@ -965,7 +982,7 @@ function ContactAskRow({ f, askAuthority }: { f: RecordField; askAuthority: AskS
 function FieldRow({ f, contactId, askAuthority }: {
   f: RecordField;
   contactId: string;
-  askAuthority: AskSource | null;
+  askAuthority: ContactAskAuthority;
 }) {
   if (f.id === PROPERTY_NOTES_ID) return <PropertyNotesRow f={f} contactId={contactId} />;
   /* ⚠ DISPLAY-ONLY, AND DELIBERATELY SO. This row LABELS which carrier governs;
@@ -1420,12 +1437,17 @@ export default function ContactWorkspace() {
     setSaveRefreshCount((n) => n + 1);
   }, [id]);
 
-  /* Authority for the record row (§4B item 7). ⚠ THE SAME ALREADY-RESOLVED
-     STATE THE RAIL RENDERS -- not a second read, not a second resolution. One
-     source feeds both surfaces, so the cockpit and the record cannot disagree
-     about which carrier governs. */
-  const askAuthority: AskSource | null =
-    railDeal.state === "resolved" && railDeal.ask !== null ? railDeal.ask.source : null;
+  /* Authority for the record row (§4B item 7, corrected in §4D). ⚠ THE SAME
+     ALREADY-RESOLVED STATE THE RAIL RENDERS -- not a second read, not a second
+     resolution. One source feeds both surfaces, so the cockpit and the record
+     cannot disagree about which carrier governs.
+     ⚠ THE PROJECTION MOVED INTO rail.ts AND MUST STAY THERE. This was a local
+     `state === "resolved" && ask !== null ? ask.source : null`, which collapsed
+     FIVE rail states into a single null and let the row below claim authority
+     on every contact that was not resolved-with-an-Ask. rail.ts owns the
+     mapping because only there does the discriminated union make totality a
+     compile-time property. */
+  const askAuthority: ContactAskAuthority = contactAskAuthority(railDeal);
 
   // Folder names (§5.4) — after defs resolve, fetch every distinct parentId in
   // parallel and build the display-ordered name map. ORDER is an IAOS

@@ -112,8 +112,8 @@ try {
   process.exit(11);
 }
 
-const { deriveRailDeal, railCells, railAuthorityReconciled } = rail;
-for (const [name, fn] of Object.entries({ deriveRailDeal, railCells, railAuthorityReconciled })) {
+const { deriveRailDeal, railCells, railAuthorityReconciled, contactAskAuthority } = rail;
+for (const [name, fn] of Object.entries({ deriveRailDeal, railCells, railAuthorityReconciled, contactAskAuthority })) {
   if (typeof fn !== 'function') {
     console.error('ABORT: ' + name + ' is not exported. Nothing tested.');
     cleanup();
@@ -150,8 +150,30 @@ for (const [name, fn] of Object.entries({ deriveRailDeal, railCells, railAuthori
    ⚠ PB-D13's 119 + 4N does not apply and was not used. The rail is a structural
    render term, and 4N counts unlocked CONTACT fields against a CONTACT field
    term; §4B/§4C unlock an OPPORTUNITY field and leave the record row
-   display-only, so N stays 4. */
-const FLOOR = 87;
+   display-only, so N stays 4.
+   Board #5 §4D: 87 -> 94. COUNTED FROM THIS FILE. The costing proposed +10;
+   THREE candidates were dropped during the build as vacuous, on the same rule
+   that dropped §4C's eleventh:
+     +7  CASE 8, the seven-way contactAskAuthority mapping -- one call site per
+         situation, each pinning the COMPLETE {token,label} pair:
+         resolved+Opportunity Ask · resolved+Contact Ask · resolved+no Ask ·
+         loading · error · awaiting_selection · no_opportunity.
+     -1  DROPPED  "the label set across all seven is exactly 5 distinct strings"
+     -1  DROPPED  "the token set across all seven is exactly 7 distinct strings"
+     -1  DROPPED  "every label begins 'Contact Asking Price — '"
+   ⚠ WHY ALL THREE WENT. The seven checks above pin the complete return value
+   for every one of the seven inputs -- that IS the function's entire tested
+   domain. Any mutation that changes a label, collapses two tokens, or renames
+   the prefix must break at least one of the seven, so none of the three could
+   fail INDEPENDENTLY of them. They were intent-documentation wearing a check()
+   call, and intent belongs in a comment; the asymmetry they were meant to
+   record is stated on contactAskAuthority itself and in CASE 8's header.
+   ⚠ NOT re-added, dropped earlier during costing: "the 'no value' label is
+   unreachable while the contact carrier holds a value" -- implied by the
+   resolved+Contact Ask check.
+   ⚠ The seven state PRECONDITIONS in CASE 8 are HARD ABORTS, not check() sites
+   -- harness preconditions, not mapping invariants. The floor stays 94. */
+const FLOOR = 94;
 let checks = 0;
 let failures = 0;
 
@@ -478,6 +500,71 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
   check('awaiting_selection did NOT pick the first opportunity', states.awaiting_selection.state, 'awaiting_selection');
   check('cells are always four, in order', railCells(states.resolved).map((c) => c.key),
     ['seller-ask', 'seller-mao', 'seller-position', 'investor-offer']);
+}
+
+/* ===== CASE 8 -- §4D contactAskAuthority: the SEVEN-way mapping, exhaustive =====
+
+   THIS IS WHERE THE MAPPING IS PROVEN. Four of the seven situations are
+   UNREACHABLE in Production -- loading, error, awaiting_selection, and
+   resolved-with-an-Opportunity-Ask (0 of 43 opportunities carry one, measured
+   twice). No live harness can exercise them, so an offline, table-driven proof
+   is the only proof they will ever get, and it has to be exhaustive here.
+
+   UNROLLED DELIBERATELY, per this file's rule at the CASE 7 note: one call site
+   per assertion, so FLOOR stays a literal count of call sites and a silently
+   deleted situation cannot still satisfy it.
+
+   Each check pins the COMPLETE {token,label} pair, which is why the three
+   set-shape candidates from the costing are not here -- see the FLOOR
+   derivation for which were dropped and why. */
+{
+  const askAuth = (deal) => contactAskAuthority(deal);
+  const UNDETERMINED = 'Contact Asking Price — authority not determined';
+
+  const s_loading            = deriveRailDeal({ opps: null, oppsError: null, detail: null, detailLoading: true, ids: IDS });
+  const s_error              = deriveRailDeal({ opps: null, oppsError: 'boom', detail: null, detailLoading: false, ids: IDS });
+  const s_no_opportunity     = deriveRailDeal({ opps: [], oppsError: null, detail: detail({}), detailLoading: false, ids: IDS });
+  const s_awaiting_selection = deriveRailDeal({ opps: [opp({}), { ...opp({}), id: 'opp-2' }], oppsError: null, detail: detail({}), detailLoading: false, ids: IDS });
+  const s_opp_ask            = derive({ 'o-ask': 210000 }, { 'c-ask': 175000 }); // Opportunity wins
+  const s_contact_ask        = derive({}, { 'c-ask': 175000 });                  // Contact fallback governs
+  const s_resolved_no_ask    = derive({}, {});                                   // resolved, neither carrier
+
+  // Preconditions, not assertions: if these five states are not what we think,
+  // the seven checks below would be asserting about the wrong inputs.
+  for (const [nm, d, want] of [
+    ['loading', s_loading, 'loading'],
+    ['error', s_error, 'error'],
+    ['no_opportunity', s_no_opportunity, 'no_opportunity'],
+    ['awaiting_selection', s_awaiting_selection, 'awaiting_selection'],
+    ['opp_ask', s_opp_ask, 'resolved'],
+    ['contact_ask', s_contact_ask, 'resolved'],
+    ['resolved_no_ask', s_resolved_no_ask, 'resolved'],
+  ]) {
+    if (d.state !== want) {
+      console.error('ABORT: case8 fixture ' + nm + ' is state ' + d.state + ', expected ' + want + '. Nothing proven.');
+      cleanup();
+      process.exit(11);
+    }
+  }
+
+  check('case8 resolved + Opportunity Ask -> not authoritative', askAuth(s_opp_ask),
+    { token: 'opportunity', label: 'Contact Asking Price — fallback / not authoritative' });
+  check('case8 resolved + Contact Ask -> governing fallback', askAuth(s_contact_ask),
+    { token: 'contact', label: 'Contact Asking Price — governing fallback' });
+  check('case8 resolved + no Ask on either carrier -> no value', askAuth(s_resolved_no_ask),
+    { token: 'resolved_no_ask', label: 'Contact Asking Price — no value' });
+  check('case8 loading -> authority not determined', askAuth(s_loading),
+    { token: 'loading', label: UNDETERMINED });
+  check('case8 error -> authority not determined', askAuth(s_error),
+    { token: 'error', label: UNDETERMINED });
+  check('case8 awaiting_selection -> authority not determined', askAuth(s_awaiting_selection),
+    { token: 'awaiting_selection', label: UNDETERMINED });
+  /* NOT "governing fallback". There is nothing to fall back FROM with no
+     Opportunity, and this label is correct whether or not the contact carrier
+     holds a value -- which is why the live check for this state deliberately
+     does not assert on the displayed value. */
+  check('case8 no_opportunity -> contact value only', askAuth(s_no_opportunity),
+    { token: 'no_opportunity', label: 'Contact Asking Price — contact value only' });
 }
 
 /* ================= MONEY FORMAT ================= */
