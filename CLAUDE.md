@@ -1,6 +1,8 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+**Read `AGENTS.md` first, before doing anything in this repository.** It is the shared entry point for every engineering agent — Claude Code and Codex alike — and carries the governing record, the resolution order, and the hard constraints. Nothing in this file supersedes it.
+
+The rest of this file is guidance for the **marketing site only**. The IAOS application under `app/` is governed by `docs/`, not by this file.
 
 ## Commands
 
@@ -16,11 +18,13 @@ pnpm format       # Prettier
 
 Run a single test file: `pnpm vitest run server/auth.logout.test.ts`
 
-## Architecture
+## Architecture — the marketing site
 
-This is a **public-facing marketing website** for Investor Automation OS (a real estate investor automation platform) built on the Manus web-app template: **React 19 + Wouter + Tailwind 4 + Express 4 + tRPC 11 + Drizzle ORM (MySQL)**.
+⚠ This section describes the **marketing site at the repository root, not the IAOS application.** The repository holds two deployed surfaces: this site, and the IAOS investor application under `app/`, which has its own Netlify functions, verification harnesses and `netlify.toml`. See `AGENTS.md`.
 
-The template ships with full-stack capabilities (auth, database, LLM, storage, maps), but this project uses them minimally — the site is primarily static marketing content. The backend only exposes the boilerplate `auth.me` and `auth.logout` procedures; no custom database tables have been added yet.
+The marketing site is a **public-facing website** for Investor Automation OS (a real estate investor automation platform) built on the Manus web-app template: **React 19 + Wouter + Tailwind 4 + Express 4 + tRPC 11 + Drizzle ORM (MySQL)**.
+
+The template ships with full-stack capabilities (auth, database, LLM, storage, maps), but this site uses them minimally — it is primarily static marketing content. The backend only exposes the boilerplate `auth.me` and `auth.logout` procedures; no custom database tables have been added yet.
 
 **Data flow:** All backend calls go through tRPC at `/api/trpc`. The tRPC client is configured in `client/src/lib/trpc.ts` and provided globally in `client/src/main.tsx`. Framework plumbing (OAuth, DB connection, Vite bridge, env) lives under `server/_core/` — treat this as read-only infrastructure.
 
