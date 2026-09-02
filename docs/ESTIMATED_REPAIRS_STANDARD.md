@@ -264,3 +264,137 @@ Coefficients then stop being assumptions and become measured acquisition
 data. This is the durable value of the architecture, and it is why band
 packages are authored carefully rather than quickly — everything calibrates
 against them afterwards.
+
+---
+
+## Governing V1 policy amendment — 2026-09-02
+
+This amendment is the current governing contract for Repair Estimation V1,
+identified neutrally as **IAOS Repair Policy — 2026 v1**. Under the PB-D43
+supersession convention, it supersedes every conflicting authoring-era status,
+open item, geographic assumption, and policy statement above. Historical text
+remains to preserve the decision record; this later amendment governs.
+
+### Seller-call outcome and provenance contract
+
+For each repair question or risk, the operator must reach one of exactly three
+visible pricing outcomes:
+
+1. **`$0`** — the assessed condition requires no repair allowance.
+2. **Authorized `$X`** — a known amount supported by `BOOK`, `IAOS POLICY`, or
+   `MANUAL` / operator-entered provenance.
+3. **`UNPRICED RISK`** — the risk is genuinely unresolved or there is
+   insufficient authorized pricing.
+
+These states must not collapse into one another. A blank or missing price must
+never silently become `$0`, and an `UNPRICED RISK` must never silently acquire
+an invented amount. Absence from the reference table does not prevent the
+operator from entering a known repair amount manually.
+
+Every priced amount remains visibly distinguishable by provenance:
+
+- **`BOOK`** — directly traceable to the accepted cost-book value;
+- **`IAOS POLICY`** — an approved Wholesaler Underwriting Reserve;
+- **`MANUAL`** — a known amount entered by the operator.
+
+The provenance distinction is required wherever amounts are shown, including
+the decomposed allowance. An amount declared by IAOS policy must not be
+presented as a cost-book fact, and a manual amount must not be presented as
+either one.
+
+### Small common-repair reference table
+
+V1 uses a **small common-repair reference table only**. A known/common issue
+with an approved value may prepopulate from this table:
+
+| Repair and matching condition | Amount | Provenance | Governing behavior |
+|---|---:|---|---|
+| Roof — `Replace` or `Unknown` | $15,000 | `IAOS POLICY` | Wholesaler Underwriting Reserve |
+| Electrical, whole-house — `Replace` or `Unknown` | $12,500 | `IAOS POLICY` | Wholesaler Underwriting Reserve |
+| Plumbing / Sewer — `Major` or `Unknown` | $12,500 | `IAOS POLICY` | Wholesaler Underwriting Reserve |
+| Foundation — `Material Issue` or `Unknown` | $15,000 | `IAOS POLICY` | Wholesaler Underwriting Reserve; operator may override |
+| HVAC — `Replace` or `Unknown` | $6,500 | `BOOK` | Accepted cost-book value |
+| Electrical panel replacement — when this is the actual scope | $2,500 | `BOOK` | Accepted cost-book value; not the whole-house reserve |
+
+There are **no square-footage bands** for these reserves. The `IAOS POLICY`
+amounts are conservative underwriting placeholders, not contractor bids.
+
+A known repair that does not match a row stays blank for operator entry. The
+operator may enter the known amount as `MANUAL`; IAOS must not invent or derive
+missing pricing. If the risk remains unresolved or lacks authorized pricing,
+it remains visibly `UNPRICED RISK`.
+
+The table grows only after a recurring real-world need is observed and a
+normal value is approved. Anticipated future needs do not authorize rows,
+coefficients, ranges, or derivation machinery in V1.
+
+### Package, quantity, and missing-input rules
+
+Kitchen and appliances remain independent `BOOK` selections. Selecting one
+must not select, pair, tier, multiply, or otherwise alter the other. V1 has no
+automatic package pairing and no hidden quality multiplier.
+
+Bathroom total count is property context, not repair quantity. Price only the
+bathrooms identified as needing work. The same rule applies to all other
+property attributes: they are evidence and context, and do not automatically
+become repair quantities unless an approved policy explicitly authorizes that
+behavior.
+
+Authoritative or imported square footage may prefill and may be corrected by
+the operator. If square footage is still unavailable, it is never invented
+and no size band is silently selected. Any calculation that genuinely requires
+square footage remains visibly `UNPRICED RISK` until the input is available or
+a known repair amount is entered manually.
+
+### Inherited allowance and contingency
+
+Preserve the inherited allowance under this exact label:
+
+> **FMTM 10% allowance — historical purpose unverified**
+
+Its historical purpose remains unverified. V1 adds no other blanket IAOS
+contingency or discovery reserve. The inherited allowance must not be renamed
+or used as authority to imply a newly interpreted purpose.
+
+### Geography is not a V1 pricing input
+
+For Repair Estimation V1, geography, ZIP, city, and market are **not repair-
+pricing inputs at all**. This fully supersedes the earlier governing effect of
+the geographic-factor `1.00` language and any proposed geographic modifier,
+`Market Factor`, `BASELINE_UNLOCALIZED`, or DFW-selected pricing semantics.
+
+Initial research may have used DFW evidence, but the approved policy values
+are neutral `IAOS POLICY` values and Wholesaler Underwriting Reserves. They are
+not geography-selected amounts.
+
+V1 includes no ZIP coefficients, Craftsman runtime or API, contractor-grade
+localization, or future-localization machinery. Future localization is outside
+V1 and does not justify present parameters, abstractions, configuration, API
+hooks, or scaffolding.
+
+### Calculation and disclosure
+
+The allowance remains transparent and decomposed. Each amount displays its
+`BOOK`, `IAOS POLICY`, or `MANUAL` provenance, and every unresolved risk remains
+visibly identified as `UNPRICED RISK` rather than being omitted or converted to
+zero.
+
+A numeric subtotal may be shown for resolved amounts, but while any
+`UNPRICED RISK` remains, that subtotal is **not a complete repair allowance**
+and must not be presented as one. The output remains an underwriting estimate,
+not a contractor bid or guaranteed repair cost.
+
+Inspection disclosure remains explicit: actual condition and repair scope are
+subject to inspection. This disclosure does not resolve, price, or hide an
+unpriced risk.
+
+### Status and implementation boundary
+
+The V1 policy questions addressed by this amendment are closed. No unresolved
+Product Owner decision capable of changing this contract is identified in the
+accepted INV-7, INV-8, INV-9, and INV-10 record.
+
+This documentation amendment does **not** authorize or implement the estimator,
+domain model, calculation engine, UI, persistence, Production writes, or any
+INV-11+ work. Those remain behind independent review and explicit implementation
+authorization.
