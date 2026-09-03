@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2, BellOff,
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
-  Calculator,
+  Calculator, Copy, ExternalLink,
 } from "lucide-react";
 import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, CONTACT_ASKING_PRICE_ID, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow } from "../lib/ghl";
 /* Board #5 S2d — the rail's logic lives in ../lib/rail, a module with no React
@@ -18,6 +18,16 @@ import { CallbackPopover } from "../components/CallbackPopover";
 import { DispositionControl } from "../components/DispositionControl";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
+/* B7-02 — the PropStream browser handoff lives in ../lib/propstream, which holds
+   no React and no config read, so a .cjs runner can drive the clipboard-denied
+   and popup-blocked branches a real browser will not produce on demand. This
+   page supplies the address and renders the outcome; it decides nothing about
+   the handoff, and it is the single call site the future authorized integration
+   would replace. */
+import {
+  subjectAddress, handoffToPropStream, copyAddressAgain, browserHandoffEnvironment,
+  PROPSTREAM_LOGIN_URL, type HandoffResult,
+} from "../lib/propstream";
 import { ADDITIONAL_INFO_SUBGROUPS, type AdditionalInfoSubgroup } from "../config/additionalInfoSubgroups";
 import { getRuntimeConfig } from "../../shared/ghl-config";
 
@@ -1171,6 +1181,14 @@ export default function ContactWorkspace() {
   const [callbackSaving, setCallbackSaving]     = useState(false);
   const [callbackError, setCallbackError]       = useState<string | null>(null);
 
+  /* B7-02 — Get Comps handoff state. SESSION-ONLY AND DELIBERATELY SO: this is
+     helper feedback for the click that just happened, not a record of anything.
+     Nothing about a comp handoff is persisted to GHL, or to sessionStorage —
+     there is no approved field for it, and inventing a persistence mechanism is
+     outside B7-02 (it is the B7-07 workspace's question, not this seam's). */
+  const [comps, setComps]         = useState<HandoffResult | null>(null);
+  const [compsBusy, setCompsBusy] = useState(false);
+
   function loadContact() {
     setError(null);
     // Single-record read (immediate, no list-index lag — §11). A 404 means the
@@ -1607,6 +1625,33 @@ export default function ContactWorkspace() {
     }
   }
 
+  /* B7-02 — the subject address, from the same four native fields the identity
+     header above already renders through formatAddress. null when the record
+     does not hold a complete one, which DISABLES Get Comps rather than handing
+     PropStream a street line that resolves to the wrong county. */
+  const compsAddress = contact ? subjectAddress(contact) : null;
+
+  async function handleGetComps() {
+    if (!compsAddress) return;
+    setCompsBusy(true);
+    try {
+      setComps(await handoffToPropStream(compsAddress, browserHandoffEnvironment()));
+    } finally {
+      setCompsBusy(false);
+    }
+  }
+
+  async function handleCopyAgain() {
+    if (!comps) return;
+    setCompsBusy(true);
+    try {
+      const clipboard = await copyAddressAgain(comps.address, browserHandoffEnvironment().clipboard);
+      setComps({ ...comps, clipboard });
+    } finally {
+      setCompsBusy(false);
+    }
+  }
+
   if (error) {
     return (
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "300px", gap: "12px" }}>
@@ -1958,6 +2003,47 @@ export default function ContactWorkspace() {
         >
           <Calculator size={14} /> Underwriting
         </Link>
+        {/* B7-02 — Get Comps. The approved V1 IAOS -> PropStream handoff: copy
+            the known full subject address, open PropStream in the investor's
+            NORMAL browser, and say what happened.
+
+            IT IS A HANDOFF, AND THE LABEL DOES NOT OVERSTATE IT — the same
+            honesty the Call button above practices. The investor lands on
+            PropStream's own sign-in and pastes the address into the search
+            PropStream documents. That paste is the platform's step, not a gap
+            in this button: no documented property-address deep link exists
+            (docs/PROPSTREAM_HANDOFF_V1.md records what was checked), and
+            guessing one would be a dependency on a private endpoint.
+
+            AUTHENTICATION IS BROWSER-OWNED. The investor's existing PropStream
+            session, or their browser's own password autofill, does it. IAOS
+            holds no PropStream credential and drives no PropStream field.
+
+            WRITES NOTHING — no note, no last_call_attempt, no callback, no
+            field. Like the two buttons beside it, it can never grey a row.
+
+            DISABLED WITHOUT A COMPLETE ADDRESS, with the reason in the title.
+            A comp search on a partial address returns the wrong parcel and
+            looks exactly like the right one. */}
+        <button
+          tabIndex={-1}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={handleGetComps}
+          disabled={loading || compsBusy || !compsAddress}
+          data-testid="get-comps"
+          title={compsAddress
+            ? `Copies ${compsAddress} and opens PropStream, where you paste it into the property search`
+            : "No complete subject-property address on this record (street, city and state are all required)"}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", fontWeight: 600,
+            padding: "8px 14px", borderRadius: "8px",
+            border: "1px solid rgba(30,200,255,0.35)", background: "rgba(30,200,255,0.08)",
+            color: "#1EC8FF", opacity: compsAddress ? 1 : 0.45,
+            cursor: loading || compsBusy || !compsAddress ? "not-allowed" : "pointer",
+          }}
+        >
+          <Copy size={14} /> Get Comps
+        </button>
         <div style={{ position: "relative" }}>
           <button
             onClick={() => { setCallbackOpen((v) => !v); setCallbackError(null); }}
@@ -1988,6 +2074,88 @@ export default function ContactWorkspace() {
           </span>
         )}
       </div>
+
+      {/* B7-02 — the handoff helper. SESSION-ONLY, appears on click, and is
+          never restored on a later mount.
+
+          BOTH BROWSER LIMITATIONS HAVE A FALLBACK HERE, which is the acceptance
+          condition for this issue:
+
+            clipboard denied → the copy state is REPORTED, and the address is
+              rendered SELECTABLE so it can be copied by hand, with Copy Again
+              to retry. The Clipboard API needs a secure context and a focused
+              document and can be denied outright; none of that is recoverable
+              from inside IAOS, so the honest move is to say so and show the
+              text. OBSERVED over plain http on a non-localhost origin:
+              navigator.clipboard is not exposed at all, and this is the state
+              that renders.
+
+            popup blocked → the Open PropStream ANCHOR below, offered
+              UNCONDITIONALLY. It is not gated on a blocked-popup check because
+              there is no honest one: with `noopener` set, window.open returns
+              a falsy value even when the tab opened fine (OBSERVED — see the
+              note on HandoffResult), so a gate would announce a block that did
+              not happen. An always-present link cannot be wrong about whether
+              it is needed, and a real link click is a fresh user gesture, so it
+              opens where a programmatic call was suppressed. It is <a>, not a
+              second window.open, deliberately: retrying the suppressed
+              mechanism is not a fallback.
+
+          Copy Again is always offered too, because the ordinary way to lose the
+          address is to copy something else while PropStream is loading. */}
+      {comps && (
+        <div
+          data-testid="comps-helper"
+          data-comps-clipboard={comps.clipboard}
+          style={{
+            display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap",
+            background: "#0D1B3E", border: "1px solid rgba(30,200,255,0.25)",
+            borderRadius: "8px", padding: "10px 14px", marginBottom: "18px",
+            fontSize: "12px", color: "#94A3B8",
+          }}
+        >
+          <span data-testid="comps-clipboard-message" style={{ color: comps.clipboard === "copied" ? "#1EC8FF" : "#F59E0B", fontWeight: 600 }}>
+            {comps.clipboard === "copied"
+              ? "Property address copied"
+              : "Couldn't copy automatically — copy it from here"}
+          </span>
+          <span
+            data-testid="comps-address"
+            style={{ color: "#F1F5F9", userSelect: "all" }}
+          >
+            {comps.address}
+          </span>
+          <button
+            onClick={handleCopyAgain}
+            disabled={compsBusy}
+            data-testid="comps-copy-again"
+            style={{
+              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
+              padding: "5px 10px", borderRadius: "6px", border: "1px solid rgba(30,200,255,0.35)",
+              background: "rgba(30,200,255,0.08)", color: "#1EC8FF",
+              cursor: compsBusy ? "not-allowed" : "pointer",
+            }}
+          >
+            <Copy size={12} /> Copy Again
+          </button>
+          <span data-testid="comps-popup-message" style={{ color: "#64748B" }}>
+            PropStream didn't open?
+          </span>
+          <a
+            href={PROPSTREAM_LOGIN_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="comps-open-propstream"
+            style={{
+              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
+              padding: "5px 10px", borderRadius: "6px", border: "1px solid rgba(30,200,255,0.35)",
+              background: "rgba(30,200,255,0.08)", color: "#1EC8FF", textDecoration: "none",
+            }}
+          >
+            <ExternalLink size={12} /> Open PropStream
+          </a>
+        </div>
+      )}
 
       {/* Board 4 Tranche A — native disposition capture (R1). Sits directly
           under Actions because it records the outcome of the call the Call
