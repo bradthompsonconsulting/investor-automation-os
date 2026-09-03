@@ -3582,3 +3582,146 @@ passed on a leftover artifact in the same directory.
   now been proven" is not the condition PB-D16 states.
 * The round-trip evidence is one field, one value, two decimal places. It is not
   a claim about arbitrary precision.
+
+
+### PB-D61 -- Board #7 ARV V1 evidence contract and named policy constants
+
+**Decision.** The V1 doctrine Brad and Jess already approved on Board #7 --
+PropStream comp evidence -> a simple defensible IAOS ARV -> Brad approval ->
+the existing underwriting/GHL flow -- is locked here as a single
+implementation-ready contract. Nothing below is decided by this entry; it
+canonicalizes a ruling that already exists on the Board so that B7-04
+(comp CSV import) and every later Board #7 item build against one written
+source rather than against conversation memory, per AGENTS.md's resolution
+order step 2.
+
+**Scope.** This decision governs how IAOS classifies PropStream comparable
+sales and aggregates them into a defensible ARV indication for the
+investor's review. It specifies the contract a future classification and
+expansion engine must satisfy; it does not implement that engine, import
+comp data, or persist anything, and it authorizes no code. Per AGENTS.md's
+revert-boundary rule this is doctrine, not execution -- B7-05 (INV-22) owes
+the engine its own decision and its own commit.
+
+**Comp states.** Every comparable a rep or IAOS considers resolves to
+exactly one of three states, and no fourth exists:
+
+    ACCEPTED     counted toward the ARV indication
+    SUPPORTING   corroborates the picture, not counted toward the indication
+    REJECTED     fails a primary requirement, excluded entirely
+
+**Primary comp requirements.** A comp cannot be ACCEPTED unless all four
+hold: a **closed sale** (not active, pending, withdrawn or expired); a
+**compatible fundamental property type** (the subject's structural class,
+not a cosmetic similarity); a **competitive/local buyer market** (the same
+pool of buyers would consider both properties); and a **credible transaction
+price** (not a distressed, related-party or otherwise non-market sale on its
+face). All four are gates, not scored factors -- a comp failing any one of
+them is REJECTED, never partially credited.
+
+**Evidence-strength factors, not price adjustments.** Recency, square
+footage, subdivision/location, beds/baths, age, and obvious physical
+differences all affect how strong a comp's evidence is once it has passed
+the primary requirements. **No unsupported dollar adjustment is ever applied
+to a comp's price.** IAOS classifies and aggregates; it does not build a
+feature-by-feature appraisal.
+
+**Renovated-condition verification is not a mandatory automated first-call
+V1 gate.** A comp is not held back from ACCEPTED pending manual condition
+verification. Condition remains an evidence-strength factor a rep can weigh,
+not a blocking precondition V1 enforces automatically.
+
+**Three expansion levels.** IAOS classifies comps in three successive
+levels, each with its own recency and size window, tried in order only when
+the prior level does not reach its comp target:
+
+    Level 1  STANDARD    <=6 months   +/-15% sqft   same property type,
+                                                     same subdivision or
+                                                     local competitive market
+                                                     target: >=3 accepted comps
+    Level 2  EXPANDED     <=12 months  +/-20% sqft   same property type,
+                                                     immediate competitive area
+                                                     target: >=3 accepted comps
+    Level 3  EXCEPTION    manual review -- IAOS may return INSUFFICIENT EVIDENCE
+                                                     rather than expand further
+
+Level 3 is not a wider automatic search. It is the boundary where IAOS stops
+proposing and hands the decision to a human, consistent with
+FOUNDATIONAL_PRINCIPLES section I's rule against manufacturing a
+recommendation the evidence does not support.
+
+**Primary valuation indication.** The median ACCEPTED sold price.
+
+**Cross-check.** The median ACCEPTED price-per-square-foot, multiplied by
+the subject property's square footage.
+
+**Reconciling the two indications.** If the primary indication and the
+cross-check are within **5%** of each other, IAOS recommends the **lower**
+of the two, conservatively rounded, constrained to the range actually
+supported by the accepted-sale set -- the recommendation is never a number
+outside what the accepted comps themselves establish. If the two indications
+are **more than 5%** apart, IAOS does not average them or split the
+difference: it returns **`ARV_EVIDENCE_CONFLICT`** and routes to manual
+review. Averaging two disagreeing indications would manufacture a number
+neither indication supports, which is the same failure Level 3 exists to
+avoid.
+
+**Evidence states.** Every ARV result IAOS returns carries exactly one of:
+
+    HIGH           MODERATE         LOW              INSUFFICIENT
+
+These are categorical, not numeric. This V1 doctrine deliberately excludes
+any 0-100 confidence score, per the HARD NO below.
+
+**Named V1 policy constants.** The following six figures are this
+decision's calibratable surface, not universal truths -- each is a V1
+starting point Brad may recalibrate later without reopening this contract:
+
+    6 months     Level 1 STANDARD recency window
+    15%          Level 1 STANDARD sqft tolerance
+    12 months    Level 2 EXPANDED recency window
+    20%          Level 2 EXPANDED sqft tolerance
+    3            target accepted-comp count, both levels
+    5%           primary/cross-check reconciliation threshold
+
+A future decision that changes one of these six values amends this entry
+under the PB-D43 supersession convention; it does not require rediscovering
+the doctrine these constants sit inside.
+
+**HARD NO.** Consistent with the Board's ruling and with
+FOUNDATIONAL_PRINCIPLES section I's prohibition on manufacturing precision
+the evidence does not support, V1 never becomes, and never grows toward:
+an appraisal engine; a feature-dollar adjustment matrix; a 100-point (or any
+other numeric) comp score; a numeric confidence score; regression of any
+kind; automated neighborhood intelligence; repair estimation; MAO or offer
+logic; or any Production mutation. A comp CSV import, a classification
+engine and a valuation calculation are the entire V1 surface. Anything on
+this list is a distinct future decision, never a side effect of implementing
+this one.
+
+**Brad's authority is unchanged by this contract.** Brad remains final
+approval and override authority over any ARV this doctrine produces, exactly
+as PB-D56 through PB-D60 leave override authority over underwriting facts
+with the investor. An override preserves provenance -- what IAOS computed,
+what evidence state it carried, and what Brad changed it to -- rather than
+silently replacing the computed value. This is the same principle
+SELLER_ACQUISITION_WORKFLOW.md's 2026-08-14 amendment already states for
+ARV generally: IAOS recalculates and does not editorialise, and the
+software is never the thing that suggested moving a number.
+
+**What this does not do.** This decision does not import a single comp, do
+not implement any classification or expansion logic, and does not create a
+carrier for ARV evidence or its provenance -- SELLER_ACQUISITION_WORKFLOW.md
+continues to record that no such mechanism exists until one is separately
+authorized. It does not resolve Offer Readiness's undecided criteria; it
+narrows what a future Offer Readiness decision could mean by "ARV
+confidence," but does not decide Offer Readiness itself. It does not
+authorize any Production write. Each remains its own decision.
+
+**Provenance.** This contract restates, without reinterpretation, the
+approved-contract terms recorded on Linear issue INV-18 (B7-01) and Board
+#7's prior discussion, which Brad and Jess had already substantively
+reviewed before this entry existed. No new policy question is introduced
+here; INV-18's own acceptance criterion is that no unresolved
+valuation-policy choice remains for Brad, and this entry is written to
+leave none.

@@ -234,6 +234,16 @@ confidence score to satisfy a UI would be exactly that. Offer Readiness
 becomes implementable when someone decides what evidence supports it,
 and not before.
 
+*Amendment 2026-09-03, PB-D61.* Board #7 locks the ARV evidence-classification
+contract a future comp-retrieval mechanism must implement -- comp states,
+primary-comp requirements, expansion levels, the valuation and
+conflict-handling arithmetic, and categorical evidence states (HIGH /
+MODERATE / LOW / INSUFFICIENT). PB-D61 narrows what "sufficient confidence
+in ARV" could eventually mean; it does not decide Offer Readiness's
+criteria, and it authorizes no comp-evidence carrier, importer, or
+classification engine. This gate remains CONCEPT ESTABLISHED, CRITERIA
+UNDECIDED until a future decision spends PB-D61's evidence states on it.
+
 **Contract Readiness -- DISTINCT, DETAIL DEFERRED.** Do we have what is
 needed to turn an agreement into an executable transaction? The source
 lists the items; the gate's precise definition belongs to contracting
@@ -311,7 +321,10 @@ nothing records the manual dollar figure.
 
 **No mechanism exists for:** transcription or AI extraction, a repair
 builder, comp retrieval or ARV sourcing, confidence scoring of any
-input, or contract generation.
+input, or contract generation. PB-D61 locks the evidence-classification
+contract Board #7's comp-retrieval mechanism must implement; locking the
+contract does not build the mechanism, and none of the items in this
+paragraph is any less absent for it.
 
 **Undecided and deliberately not decided here:** what evidence supports
 Offer Readiness; whether ARV source or provenance is captured at all,
