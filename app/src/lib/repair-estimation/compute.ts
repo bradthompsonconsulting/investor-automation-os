@@ -59,21 +59,6 @@ export const INSPECTION_DISCLOSURE =
   "This is an underwriting estimate, not a contractor bid or a " +
   "guaranteed repair cost.";
 
-/**
- * Why the inherited allowance is unresolved in V1.
- *
- * Stated in the result rather than resolved in code: FMTM applied its 10%
- * factor to cost-book category subtotals, and the inherited artifact
- * contained no IAOS POLICY reserve and no operator-entered amount. Which
- * resolved amounts the preserved allowance now multiplies is a Product
- * Owner decision the accepted record does not make.
- */
-export const FMTM_BASIS_UNRESOLVED_REASON =
-  "Allowance basis not authorized: the accepted record preserves the 10% " +
-  "allowance and its unverified purpose but does not state which resolved " +
-  "amounts it applies to now that IAOS POLICY reserves and operator-entered " +
-  "amounts exist. Awaiting Product Owner ruling; see byProvenance.";
-
 function guardFiniteMoney(field: string, v: number): void {
   if (typeof v !== "number" || !Number.isFinite(v)) {
     throw new RepairInputError(field, `${String(v)} is not a finite number`);
@@ -318,7 +303,11 @@ export function computeRepairEstimate(
   const fmtmAllowance: FmtmAllowance = {
     label: FMTM_ALLOWANCE_LABEL,
     ratePct: 10,
-    outcome: { kind: "unresolved", reason: FMTM_BASIS_UNRESOLVED_REASON },
+    outcome: {
+      kind: "priced",
+      basis: byProvenance.BOOK,
+      amount: byProvenance.BOOK * 0.1,
+    },
   };
 
   const components: ComponentSubtotals = {
@@ -339,8 +328,7 @@ export function computeRepairEstimate(
     indicatedSubtotal: resolvedSubtotal - unknownRiskReserves,
     resolvedSubtotal,
     unpricedRisks,
-    isCompleteAllowance:
-      unpricedRisks.length === 0 && fmtmAllowance.outcome.kind === "priced",
+    isCompleteAllowance: unpricedRisks.length === 0,
     disclosure: INSPECTION_DISCLOSURE,
   };
 }

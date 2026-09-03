@@ -58,7 +58,7 @@ const {
 const { REFERENCE_TABLE, findReferenceRow } = require(path.join(TMP, 'reference.js'));
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 111;
+const FLOOR = 117;
 let failures = 0;
 let checks = 0;
 
@@ -312,17 +312,35 @@ function ref(id, system, condition, extra) {
   check('MANUAL share', r.byProvenance.MANUAL, 0);
 }
 
-// ---- 13. The inherited allowance: exact label, and unresolved basis.
+// ---- 13. The inherited allowance: exact label and BOOK-only basis.
 {
-  const r = est([ref('r', 'roof', 'replace')]);
+  const r = est([
+    { id: 'b', label: 'Book repair', component: 'fixed_package', packageKey: 'kitchen', pricing: { kind: 'amount', amount: 12000, provenance: 'BOOK' } },
+    ref('r', 'roof', 'replace'),
+    { id: 'm', label: 'Manual repair', component: 'major_system', pricing: { kind: 'amount', amount: 8000, provenance: 'MANUAL' } },
+  ]);
   const a = r.components.fmtmAllowance;
   check('inherited allowance label is preserved exactly',
     a.label, 'FMTM 10% allowance — historical purpose unverified');
   check('exported label constant matches', FMTM_ALLOWANCE_LABEL, a.label);
   check('allowance rate is ten percent', a.ratePct, 10);
-  check('allowance basis is unresolved, not invented', a.outcome.kind, 'unresolved');
-  check('allowance states why it is unresolved', typeof a.outcome.reason === 'string' && a.outcome.reason.length > 0, true);
-  check('allowance is not silently zero', a.outcome.amount, undefined);
+  check('allowance is priced', a.outcome.kind, 'priced');
+  check('allowance basis is resolved BOOK amount only', a.outcome.basis, 12000);
+  check('allowance amount is ten percent of BOOK basis', a.outcome.amount, 1200);
+  check('IAOS POLICY amount is excluded from basis', a.outcome.basis < r.byProvenance.BOOK + r.byProvenance.IAOS_POLICY, true);
+  check('MANUAL amount is excluded from basis', a.outcome.basis < r.byProvenance.BOOK + r.byProvenance.MANUAL, true);
+  check('mixed-provenance resolved subtotal is unchanged', r.resolvedSubtotal, 35000);
+  check('no second blanket contingency component exists', Object.keys(r.components), [
+    'scalingRepairs', 'fixedPackageRepairs', 'majorSystemRepairs',
+    'unknownRiskReserves', 'fmtmAllowance',
+  ]);
+
+  const withoutBook = est([
+    ref('p', 'plumbing_sewer', 'major'),
+    { id: 'm', label: 'Manual repair', component: 'major_system', pricing: { kind: 'amount', amount: 8000, provenance: 'MANUAL' } },
+  ]).components.fmtmAllowance.outcome;
+  check('policy and manual amounts alone produce a zero BOOK basis', withoutBook.basis, 0);
+  check('policy and manual amounts alone produce a zero allowance', withoutBook.amount, 0);
 }
 
 // ---- 14. A subtotal carrying unresolved risk is not a complete allowance.
@@ -336,7 +354,7 @@ function ref(id, system, condition, extra) {
   check('risk does not reduce the resolved subtotal', withRisk.resolvedSubtotal, 15000);
 
   const noRisk = est([ref('r', 'roof', 'replace')]);
-  check('no risk but unresolved allowance is still incomplete', noRisk.isCompleteAllowance, false);
+  check('no risk with resolved allowance is complete', noRisk.isCompleteAllowance, true);
   check('no risk leaves an empty risk list', noRisk.unpricedRisks.length, 0);
 }
 

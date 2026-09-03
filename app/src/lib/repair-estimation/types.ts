@@ -201,21 +201,14 @@ export interface UnpricedRisk {
  * renaming it or using it as authority to imply a newly interpreted
  * purpose. Its historical purpose remains unverified.
  *
- * Its BASIS is unresolved. FMTM applied the 10% factor to cost-book
- * category subtotals, and the inherited artifact contained no IAOS POLICY
- * reserve and no operator-entered amount. Which of the resolved amounts
- * the preserved allowance now multiplies is a Product Owner decision that
- * the accepted INV-7/8/9/10 record does not make, so this engine states
- * the allowance as unresolved rather than inventing a base. The
- * provenance-decomposed subtotals are reported so a ruling applies
- * without reworking the model.
+ * The allowance is 10% of resolved BOOK-derived priced amounts only.
+ * IAOS POLICY reserves and MANUAL operator-entered amounts are excluded
+ * from its basis.
  */
 export interface FmtmAllowance {
   label: "FMTM 10% allowance — historical purpose unverified";
   ratePct: 10;
-  outcome:
-    | { kind: "unresolved"; reason: string }
-    | { kind: "priced"; amount: number; basis: number };
+  outcome: { kind: "priced"; amount: number; basis: number };
 }
 
 /** The five transparent calculation components, mutually exclusive. */
@@ -238,9 +231,8 @@ export interface RepairEstimate {
   resolvedSubtotal: number;
   unpricedRisks: UnpricedRisk[];
   /**
-   * True only when no unpriced risk remains AND the FMTM allowance is
-   * resolved. While false the subtotal must not be presented as a
-   * complete repair allowance.
+   * True only when no unpriced risk remains. While false the subtotal must
+   * not be presented as a complete repair allowance.
    */
   isCompleteAllowance: boolean;
   /** Explicit and always present. Resolves, prices and hides nothing. */
