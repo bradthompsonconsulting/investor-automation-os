@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, AlertCircle, Check, Loader2 } from "lucide-react";
-import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
+import { ghl, ESTIMATED_REPAIRS_ID, type ContactDetail, type OpportunityRow } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
 import {
   parsePolicy,
@@ -27,6 +27,11 @@ import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriti
 import { computeRepairEstimate, RepairInputError } from "../lib/repair-estimation/compute";
 import { findReferenceRow } from "../lib/repair-estimation/reference";
 import type { Condition, MajorSystem, RepairEstimate, RepairLineInput } from "../lib/repair-estimation/types";
+/* INV-13 — the persistence boundary. The gate and the write/readback live in
+   their own module so "unapproved cannot write" is a property of a pure
+   function a harness can exhaust, not a claim about this component. */
+import { persistApprovedRepairTotal, persistGate } from "../lib/repair-estimation/persist";
+import type { PersistResult, RepairApproval } from "../lib/repair-estimation/persist";
 
 /**
  * Underwriting Workspace — UNDERWRITING_WORKSPACE_SPEC.md.
@@ -594,28 +599,58 @@ function EstimatorRow({ row, answer, onChange }: {
 /**
  * Repair Estimation V1, in the underwriting workspace.
  *
- * READ ONLY, like the rest of this page. Approval here is session-only: it
- * marks the total authoritative for the conversation and writes nothing. The
- * approved total deliberately does NOT feed the underwriting figures above —
- * GHL is the sole system of record, so a session value standing in for
- * `estimated_repairs` would be exactly the app-side shadow copy the
- * constraints forbid. Persisting it is INV-13 and is not built here.
+ * Operator approval is the only authorization to persist, and INV-13 persists
+ * the TOTAL ONLY, through the existing `estimated_repairs` carrier. No
+ * itemization leaves the session and no new carrier exists.
+ *
+ * The approved total deliberately does NOT feed the underwriting figures above
+ * from session state. GHL is the sole system of record, so after a confirmed
+ * write the page RE-READS the contact rather than patching its own copy —
+ * patching would make the screen a claim about what we sent instead of a claim
+ * about what GHL holds, which is the shadow copy the constraints forbid.
  */
-function RepairEstimator() {
+function RepairEstimator({ contactId, onPersisted }: {
+  contactId: string;
+  onPersisted: () => void;
+}) {
   const [answers, setAnswers] = useState<Record<string, RepairAnswer>>({});
   const [acknowledged, setAcknowledged] = useState(false);
-  const [approvedTotal, setApprovedTotal] = useState<number | null>(null);
+  /* The estimator's edit counter. Approval carries the revision it was given
+     for, which is what makes a stale approval detectable rather than merely
+     unlikely — an approval authorizes one number the operator actually saw. */
+  const [revision, setRevision] = useState(0);
+  const [approval, setApproval] = useState<RepairApproval>({ kind: "none" });
+  const [persistState, setPersistState] = useState<
+    { status: "idle" } | { status: "saving" } | { status: "done"; result: PersistResult }
+  >({ status: "idle" });
 
-  /* Any edit invalidates both the acknowledgement and the approval. An
-     approval that survives a changed answer is a claim about a number the
-     operator never saw. */
+  /* Any edit invalidates the acknowledgement, the approval and any prior save
+     outcome. An approval that survives a changed answer is a claim about a
+     number the operator never saw, and a stale "Saved" is worse than none. */
   function edit(system: MajorSystem, next: Partial<RepairAnswer>) {
     setAnswers((prev) => {
       const current = prev[system] ?? { condition: "not_asked" as const, manual: "" };
       return { ...prev, [system]: { ...current, ...next } };
     });
     setAcknowledged(false);
-    setApprovedTotal(null);
+    setRevision((r) => r + 1);
+    setApproval({ kind: "none" });
+    setPersistState({ status: "idle" });
+  }
+
+  /* The single path to the carrier. Every caller goes through persistGate, so
+     there is no branch that reaches the setter without an approval decision.
+     The PUT is issued at most once per attempt and is never repeated. */
+  async function persistNow(current: RepairApproval, currentTotal: number) {
+    setPersistState({ status: "saving" });
+    const result = await persistApprovedRepairTotal(
+      ghl, contactId, ESTIMATED_REPAIRS_ID,
+      persistGate(current, revision, currentTotal),
+    );
+    setPersistState({ status: "done", result });
+    /* Only a confirmed write justifies re-reading. An unconfirmed or failed
+       attempt leaves the page showing what GHL last actually gave us. */
+    if (result.ok && result.confidence === "saved") onPersisted();
   }
 
   const computed = useMemo(() => {
@@ -650,9 +685,13 @@ function RepairEstimator() {
   ).length;
   const answered = REPAIR_SYSTEM_ROWS.length - unanswered;
   const complete = estimate.isCompleteAllowance && unanswered === 0;
-  const canApprove = answered > 0 && (complete || acknowledged);
   const total = conservativeAllowance(estimate);
-  const approvalStale = approvedTotal !== null && approvedTotal !== total;
+  const saving = persistState.status === "saving";
+  const canApprove = answered > 0 && (complete || acknowledged) && !saving;
+  /* Defence in depth: an edit already clears the approval, so this can only be
+     current or absent. The gate checks it anyway, and the harness proves it. */
+  const approvalCurrent =
+    approval.kind === "approved" && approval.revision === revision && approval.total === total;
 
   return (
     <div style={{ marginTop: "22px" }}>
@@ -750,7 +789,11 @@ function RepairEstimator() {
             <input
               type="checkbox"
               checked={acknowledged}
-              onChange={(e) => { setAcknowledged(e.target.checked); setApprovedTotal(null); }}
+              onChange={(e) => {
+                setAcknowledged(e.target.checked);
+                setApproval({ kind: "none" });
+                setPersistState({ status: "idle" });
+              }}
               style={{ marginTop: "2px" }}
             />
             <span>
@@ -763,7 +806,11 @@ function RepairEstimator() {
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "14px", flexWrap: "wrap" }}>
           <button
-            onClick={() => setApprovedTotal(total)}
+            onClick={() => {
+              const next: RepairApproval = { kind: "approved", total, revision };
+              setApproval(next);
+              void persistNow(next, total);
+            }}
             disabled={!canApprove}
             style={{
               padding: "8px 16px", borderRadius: "8px", fontSize: "12px", fontWeight: 600,
@@ -773,22 +820,64 @@ function RepairEstimator() {
               color: canApprove ? "#22C55E" : "#334155",
             }}
           >
-            Approve repair total for this call
+            {saving ? "Saving…" : "Approve and save repair total"}
           </button>
-          {approvedTotal !== null && !approvalStale ? (
-            <span style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#22C55E" }}>
-              <Check size={13} /> Approved for this call · {money(approvedTotal)}
+
+          {saving ? (
+            <span style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748B" }}>
+              <Loader2 size={13} className="animate-spin" /> Writing to estimated_repairs, then reading GHL back…
             </span>
           ) : null}
+
+          {/* PB-D21 vocabulary. "Saved" is a readback, never a 2xx. Each other
+              terminal state says plainly whether a write left. */}
+          {persistState.status === "done" && persistState.result.ok
+            && persistState.result.confidence === "saved" ? (
+            <span style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#22C55E" }}>
+              <Check size={13} /> Saved to estimated_repairs · {money(persistState.result.value)}
+            </span>
+          ) : null}
+
+          {persistState.status === "done" && persistState.result.ok
+            && persistState.result.confidence === "unconfirmed" ? (
+            <span style={{ fontSize: "12px", color: "#F59E0B" }}>
+              Sent {money(persistState.result.value)}, but GHL did not read back that value. Check the
+              contact before relying on it. The write was not repeated.
+            </span>
+          ) : null}
+
+          {persistState.status === "done" && !persistState.result.ok ? (
+            <span style={{ fontSize: "12px", color: "#EF4444" }}>
+              {persistState.result.error}
+              {persistState.result.written
+                ? " A write did leave; it was not repeated."
+                : " Nothing was written."}
+            </span>
+          ) : null}
+
+          {persistState.status === "done" && !persistState.result.ok
+            && persistState.result.stage !== "blocked" && approvalCurrent ? (
+            <button
+              onClick={() => void persistNow(approval, total)}
+              style={{
+                padding: "6px 12px", borderRadius: "6px", fontSize: "11px", cursor: "pointer",
+                border: "1px solid #1E293B", background: "transparent", color: "#94A3B8",
+              }}
+            >
+              Try saving again
+            </button>
+          ) : null}
+
           {answered === 0 ? (
             <span style={{ fontSize: "11px", color: "#475569" }}>Answer at least one system to approve.</span>
           ) : null}
         </div>
 
         <div style={{ marginTop: "12px", fontSize: "11px", color: "#475569", lineHeight: 1.5 }}>
-          {estimate.disclosure} Approval is session-only and authoritative for this conversation:
-          nothing is written to GHL here, and the underwriting figures above are unchanged until an
-          approved total is persisted to the existing carrier.
+          {estimate.disclosure} Approving writes the TOTAL ONLY to the existing{" "}
+          <span style={{ color: "#64748B" }}>estimated_repairs</span> field on this contact — no
+          itemization is stored and no other field is touched. Nothing is written without approval,
+          and the underwriting figures above update from GHL on the next read, not from this session.
         </div>
       </div>
     </div>
@@ -1159,7 +1248,10 @@ export default function UnderwritingWorkspace() {
           {/* INV-12. Repairs is a Gate 1 input, so an unresolved deal is
               frequently unresolved BECAUSE the repair number does not exist
               yet. This is the surface that produces one during the call. */}
-          <RepairEstimator />
+          <RepairEstimator
+            contactId={contactId}
+            onPersisted={() => setReloadTick((t) => t + 1)}
+          />
         </>
       ) : null}
 
@@ -1274,7 +1366,10 @@ export default function UnderwritingWorkspace() {
           {/* INV-12, resolved-state placement. Beside the mode selector, in
               the same revise-the-inputs zone: a resolved deal can still have
               its repair allowance worked during the call. */}
-          <RepairEstimator />
+          <RepairEstimator
+            contactId={contactId}
+            onPersisted={() => setReloadTick((t) => t + 1)}
+          />
         </>
       ) : null}
     </Shell>
