@@ -92,9 +92,12 @@ check('UI uses B7-02 handoff', ui.includes('handoffToPropStream(address, browser
 check('UI uses B7-04 importer', ui.includes('importPropStreamCompCsv(csv'), true);
 check('workspace model uses B7-05 engine', fs.readFileSync(MODEL, 'utf8').includes('evaluateCompSearch({'), true);
 check('workspace model uses B7-06 engine', fs.readFileSync(MODEL, 'utf8').includes('reconcileAcceptedCompArv({'), true);
-check('normal underwriting flow renders workspace', page.includes('<ArvCompsWorkspace contact={contact} />'), true);
-check('approval explicitly session-only', ui.includes('Approved ${money(approval.amount)} for this session.'), true);
-check('override preserves preliminary amount in session', ui.includes('preliminary ARV was ${money(approval.computed)}'), true);
+check('normal underwriting flow supplies selected opportunity',
+  page.includes('<ArvCompsWorkspace contact={contact} opportunityId={screen.opportunity.id} />'), true);
+check('approval uses explicit persistence boundary',
+  ui.includes('persist({ kind: "approved", amount: preliminaryArv, recommendedArv: preliminaryArv, revision })'), true);
+check('override preserves preliminary recommendation',
+  ui.includes('recommendedArv: preliminaryArv, amount, revision'), true);
 
 const executable = ui.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
 check('no ARV GHL setter', /setARV|saveUnderwritingFields|_putMonetaryField/.test(executable), false);

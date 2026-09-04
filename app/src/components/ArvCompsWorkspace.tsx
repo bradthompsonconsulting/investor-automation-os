@@ -1,9 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Check, ChevronDown, ChevronRight, Copy, ExternalLink, Upload } from "lucide-react";
 import { ghl, type ContactDetail, type CustomFieldDef } from "../lib/ghl";
 import { runArvWorkspace, subjectSeedFromContact } from "../lib/arv-workspace-model";
 import type { CompAssessment, MarketRelationship, SearchLevel, TransactionReliability } from "../lib/comp-classification";
 import { importPropStreamCompCsv } from "../lib/propstream-comp-csv";
+import {
+  arvPersistGate,
+  persistApprovedArv,
+  type ArvApproval,
+  type ArvPersistResult,
+} from "../lib/arv-persist";
 import {
   browserHandoffEnvironment,
   copyAddressAgain,
@@ -13,11 +19,7 @@ import {
   type HandoffResult,
 } from "../lib/propstream";
 
-type Props = { contact: ContactDetail };
-type Approval =
-  | { kind: "none" }
-  | { kind: "approved"; amount: number }
-  | { kind: "overridden"; computed: number | null; amount: number };
+type Props = { contact: ContactDetail; opportunityId: string };
 
 const card = { background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" } as const;
 const inputStyle = { background: "#0A0E1A", color: "#E2E8F0", border: "1px solid #334155", borderRadius: "6px", padding: "7px 9px", fontSize: "12px" } as const;
@@ -43,7 +45,7 @@ function defaultAssessment(evidenceId: string): CompAssessment {
   };
 }
 
-export default function ArvCompsWorkspace({ contact }: Props) {
+export default function ArvCompsWorkspace({ contact, opportunityId }: Props) {
   const [seedStatus, setSeedStatus] = useState<"loading" | "ready" | "unavailable">("loading");
   const [subject, setSubject] = useState({
     propertyType: "", squareFeet: "", subdivision: "", beds: "", baths: "", yearBuilt: "",
@@ -56,7 +58,10 @@ export default function ArvCompsWorkspace({ contact }: Props) {
   const [fileError, setFileError] = useState<string | null>(null);
   const [assessments, setAssessments] = useState<Record<string, CompAssessment>>({});
   const [showComps, setShowComps] = useState(false);
-  const [approval, setApproval] = useState<Approval>({ kind: "none" });
+  const [approval, setApproval] = useState<ArvApproval>({ kind: "none" });
+  const [revision, setRevision] = useState(0);
+  const revisionRef = useRef(0);
+  const [persistState, setPersistState] = useState<ArvPersistResult | { stage: "idle" | "saving" }>({ stage: "idle" });
   const [overrideDraft, setOverrideDraft] = useState("");
   const [overrideError, setOverrideError] = useState<string | null>(null);
   const [handoff, setHandoff] = useState<HandoffResult | null>(null);
@@ -107,7 +112,12 @@ export default function ArvCompsWorkspace({ contact }: Props) {
     });
   }, [asOfDate, assessments, csv, fileName, importedAt, level, subject, subjectSquareFeet]);
 
-  useEffect(() => { setApproval({ kind: "none" }); }, [run]);
+  useEffect(() => {
+    setApproval({ kind: "none" });
+    setPersistState({ stage: "idle" });
+    revisionRef.current += 1;
+    setRevision(revisionRef.current);
+  }, [contact.id, opportunityId, run]);
 
   const classificationById = useMemo(
     () => new Map((run?.search?.classifications ?? []).map((item) => [item.evidenceId, item])),
@@ -160,15 +170,39 @@ export default function ArvCompsWorkspace({ contact }: Props) {
     setHandoffBusy(false);
   }
 
+  async function persist(approved: Exclude<ArvApproval, { kind: "none" }>) {
+    if (!run?.reconciliation || !run.search) return;
+    setApproval(approved);
+    setPersistState({ stage: "saving" });
+    const result = await persistApprovedArv(
+      ghl,
+      contact.id,
+      arvPersistGate(approved, revision),
+      {
+        approvedAt: new Date().toISOString(),
+        operator: "Brad Thompson",
+        opportunityId,
+        evidenceState: run.reconciliation.evidenceState,
+        reconciliationOutcome: run.reconciliation.outcome,
+        acceptedCompCount: run.search.acceptedCount,
+        searchLevel: run.search.level,
+        source: run.imported.source,
+      },
+    );
+    if (revisionRef.current === approved.revision) setPersistState(result);
+  }
+
   function approveArv() {
-    if (preliminaryArv != null) setApproval({ kind: "approved", amount: preliminaryArv });
+    if (preliminaryArv != null) {
+      void persist({ kind: "approved", amount: preliminaryArv, recommendedArv: preliminaryArv, revision });
+    }
   }
 
   function overrideArv() {
     const amount = numeric(overrideDraft);
     if (amount == null) { setOverrideError("Enter a positive ARV amount."); return; }
     setOverrideError(null);
-    setApproval({ kind: "overridden", computed: preliminaryArv, amount });
+    void persist({ kind: "overridden", recommendedArv: preliminaryArv, amount, revision });
   }
 
   const reconciliation = run?.reconciliation;
@@ -205,8 +239,8 @@ export default function ArvCompsWorkspace({ contact }: Props) {
         </div>
       ) : null}
 
-      <div data-testid="arv-session-only" style={{ marginTop: "12px", color: "#F59E0B", fontSize: "11px" }}>
-        Session only: B7-07 writes nothing. Approval, override, CSV evidence, and assessments are not persisted until a separately gated persistence step.
+      <div data-testid="arv-persistence-boundary" style={{ marginTop: "12px", color: "#94A3B8", fontSize: "11px" }}>
+        Approved ARV saves to the selected Opportunity. Each confirmed approval appends one valuation-history note; detailed comps remain session-only.
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))", gap: "9px", marginTop: "14px" }}>
@@ -268,16 +302,19 @@ export default function ArvCompsWorkspace({ contact }: Props) {
         <button data-testid="arv-view-comps" disabled={!imported?.evidence.length} onClick={() => setShowComps((value) => !value)} style={inputStyle}>
           {showComps ? <ChevronDown size={12} /> : <ChevronRight size={12} />} View Comps
         </button>
-        <button data-testid="arv-approve" disabled={preliminaryArv == null} onClick={approveArv} style={{ ...inputStyle, background: preliminaryArv == null ? "#1E293B" : "#1EC8FF", color: preliminaryArv == null ? "#64748B" : "#0B1220", fontWeight: 700 }}>
+        <button data-testid="arv-approve" disabled={preliminaryArv == null || persistState.stage === "saving"} onClick={approveArv} style={{ ...inputStyle, background: preliminaryArv == null ? "#1E293B" : "#1EC8FF", color: preliminaryArv == null ? "#64748B" : "#0B1220", fontWeight: 700 }}>
           <Check size={12} /> Approve ARV
         </button>
         <input data-testid="arv-override-input" value={overrideDraft} onChange={(event) => setOverrideDraft(event.target.value)} placeholder="Override ARV" style={{ ...inputStyle, width: "120px" }} />
-        <button data-testid="arv-override" onClick={overrideArv} style={inputStyle}>Override</button>
+        <button data-testid="arv-override" disabled={persistState.stage === "saving"} onClick={overrideArv} style={inputStyle}>Override</button>
         {approval.kind !== "none" ? (
-          <span data-testid="arv-approval-state" style={{ color: "#22C55E", fontSize: "12px" }}>
-            {approval.kind === "approved" ? `Approved ${money(approval.amount)} for this session.` : `Override ${money(approval.amount)} selected for this session${approval.computed == null ? "" : `; preliminary ARV was ${money(approval.computed)}`}.`}
+          <span data-testid="arv-approval-state" style={{ color: "#94A3B8", fontSize: "12px" }}>
+            {approval.kind === "approved" ? `Approval selected: ${money(approval.amount)}.` : `Override selected: ${money(approval.amount)}; preliminary ARV was ${money(approval.recommendedArv)}.`}
           </span>
         ) : null}
+        {persistState.stage === "saving" ? <span data-testid="arv-persist-saving">Saving and verifying…</span> : null}
+        {"ok" in persistState && persistState.ok ? <span data-testid="arv-persist-success" style={{ color: "#22C55E" }}>ARV saved and valuation history appended.</span> : null}
+        {"ok" in persistState && !persistState.ok ? <span data-testid="arv-persist-failure" style={{ color: "#F87171" }}>{persistState.error}</span> : null}
         {overrideError ? <span style={{ color: "#F87171", fontSize: "11px" }}>{overrideError}</span> : null}
       </div>
 

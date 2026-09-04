@@ -24,16 +24,25 @@ imported raw evidence and shows each comp's disposition, reasons, and warnings.
    cannot establish. B7-05 produces the disposition, reasons, warnings, and
    controlled expansion outcome.
 5. B7-06 produces the preliminary ARV or an explicit manual-review result.
-6. `Approve ARV` or `Override` records Brad's explicit decision in component
-   memory for the current session only.
+6. `Approve ARV` or `Override` records Brad's explicit decision, writes and
+   confirms the current ARV on the selected Opportunity, then appends one
+   valuation-history note to the Contact.
 
-## No persistence in B7-07
+## Persistence added by B7-08
 
-The workspace deliberately writes nowhere. CSV evidence, assessment facts,
-preliminary calculation, approval, and override disappear when the page
-unmounts or reloads. The UI states this directly. Persisting approved ARV and
-provenance belongs to separately gated B7-08; B7-07 adds no GHL setter, field,
-carrier, browser storage, network write, or Production mutation.
+The B7-07 evidence workspace remains session-based: CSV rows, assessments and
+per-comp detail are not copied into GHL. B7-08 adds a narrow persistence
+boundary only after explicit approval. It writes the existing authoritative
+`opportunity.arv_after_repair_value` carrier, confirms it by singular GET, and
+then appends one Contact note containing the minimum valuation provenance.
+
+Re-approval replaces the single current Opportunity value and appends another
+note; earlier notes remain unchanged. If the ARV write fails or is not
+confirmed, no note is created. If the ARV is confirmed but the note fails, the
+workspace reports the partial state and does not attempt rollback.
+
+No new GHL field or carrier is added. `contact.arv` remains a seed and is never
+synchronized. PB-D59's three-field underwriting Approve payload is unchanged.
 
 PropStream authentication remains browser-owned. IAOS stores no PropStream
 username/password, drives no login DOM, and uses no bot or private API.
@@ -43,4 +52,6 @@ username/password, drives no login DOM, and uses no bot or private API.
 `node app/scripts/test-arv-workspace.cjs` compiles and exercises the pure
 workspace orchestration against the known B7-04 fixture, verifies carrier
 seeding and malformed/controlled-expansion paths, and statically verifies the
-operator actions and prohibited-surface absence.
+operator actions. `node app/scripts/test-arv-persist.cjs` exercises the pure
+approval gate, named writer boundary, note ordering, re-approval history,
+partial failure, and prohibited surfaces with injected mocks only.

@@ -3947,3 +3947,47 @@ location rather than on it.
 **Unchanged:** section 4.1's HARD NO on `offer_` fields, tags, pipeline stage
 and workflow triggers. PB-D55, PB-D56, PB-D57, PB-D58, PB-D59, PB-D60 and
 PB-D61 in full. Every existing proof record.
+
+### PB-D63 -- Approved ARV persistence and append-only valuation provenance
+
+**Decision.** INV-25 Tranche 2 implements the writer PB-D62 authorized and
+uses Brad's 2026-09-04 ruling that append-only GHL Contact notes are the
+authoritative V1 valuation-provenance ledger. This creates no carrier and
+changes no valuation arithmetic.
+
+The current approved amount is written only through
+`ghl.opportunities.setApprovedArv(opportunityId, value)`. The method resolves
+`CONFIG.opportunityFacts.arv`, sends a one-field custom-fields-only PUT, and
+uses the singular Opportunity GET's `fieldValue` shape for readback. It never
+writes `contact.arv`; that Contact field remains a seed only.
+
+**Approval boundary.** A recommendation writes nothing. A current explicit
+Brad approval or override authorizes exactly the amount approved. The pure
+gate rejects absent approval, a stale evidence revision, a non-positive or
+non-finite amount, and an APPROVED amount that no longer equals the
+recommendation. OVERRIDE retains the recommendation separately and may proceed
+when the recommendation is unavailable during manual review.
+
+**Order and partial failure.** The Opportunity ARV is written and confirmed
+first. Only then does IAOS append one new Contact note containing approval
+time, operator, Opportunity id, APPROVED/OVERRIDE, approved and recommended
+ARV, evidence state, reconciliation outcome, accepted count, search level,
+source/version, and available PropStream CSV identity/import time. Per-comp
+evidence is excluded. A failed or unconfirmed ARV write produces no note. If
+the ARV is confirmed and note creation fails, IAOS reports that partial state
+and performs no rollback.
+
+**Re-approval.** A later approval may replace the single current Opportunity
+ARV value. Every confirmed approval independently appends a new ledger note;
+no prior note is edited or overwritten. The carrier is current state and the
+ledger is history.
+
+**PB-D59 is unchanged.** `saveUnderwritingFields` still writes exactly its
+three approved underwriting-output carriers. ARV remains a separately written
+deal fact and is not added to that payload.
+
+**Production disposition.** Brad and Jess decided after Tranche 1 that a
+one-shot Production confirmation is not required before this implementation.
+PB-D62 section V's residual remains truthful: its Test proof does not establish
+Production-location workflow behavior. This decision authorizes no Production
+mutation, and Tranche 2 performed none.
