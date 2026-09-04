@@ -29,8 +29,9 @@ import { computeRepairEstimate, RepairInputError } from "../lib/repair-estimatio
    untouched fallback. The canonical reference table and the calculation core
    are untouched; this surface no longer reads the table directly. */
 import {
-  applyAmount, applyCondition, EMPTY_ANSWER, operatorEstimate,
-  OPERATOR_PROVENANCE_LABEL, OPERATOR_ROWS, parseKnownAmount,
+  applyAmount, applyCondition, applyQuantity, EMPTY_ANSWER, operatorEstimate,
+  OPERATOR_PROVENANCE_LABEL, OPERATOR_ROWS, parseKnownAmount, parseQuantity,
+  quantitySpecFor,
 } from "../lib/repair-estimation/operator-model";
 import type {
   Answers, OperatorCondition, OperatorRow, RowAnswer,
@@ -439,14 +440,28 @@ const PROVENANCE_COLOR: Record<"BOOK" | "IAOS_POLICY" | "MANUAL", string> = {
  * the number showing in it is the number the calculation uses. Selecting a
  * condition loads that condition's approved default into it and clears any
  * override; typing makes the amount the operator's own.
+ *
+ * A COUNTED row (B6-F1 / INV-43) carries a quantity field beside its
+ * conditions, labelled with what it counts. Typing a count loads the approved
+ * per-unit rate times that count into Known Amount, which stays editable
+ * exactly as it always was: the number in the field is still the number used.
+ *
+ * The quantity field is live only while a priced condition is selected. Under
+ * `Not asked` and `Good` there is no approved rate for it to multiply, so it
+ * is cleared and disabled rather than left to look as though it were doing
+ * something. Known Amount itself is never disabled on any row.
  */
-function EstimatorRow({ row, answer, onCondition, onAmount }: {
+function EstimatorRow({ row, answer, onCondition, onAmount, onQuantity }: {
   row: OperatorRow;
   answer: RowAnswer;
   onCondition: (c: OperatorCondition) => void;
   onAmount: (raw: string) => void;
+  onQuantity: (raw: string) => void;
 }) {
   const parsed = parseKnownAmount(answer.amount);
+  const quantity = quantitySpecFor(row);
+  const quantityParsed = parseQuantity(answer.quantity);
+  const quantityLive = answer.condition === "repair" || answer.condition === "severe";
   const options: { key: OperatorCondition; label: string }[] = [
     { key: "not_asked", label: "Not asked" },
     { key: "good", label: "Good" },
@@ -478,6 +493,28 @@ function EstimatorRow({ row, answer, onCondition, onAmount }: {
           );
         })}
       </div>
+      {quantity ? (
+        <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <span style={{
+            fontSize: "11px", color: quantityLive ? "#94A3B8" : "#475569", whiteSpace: "nowrap",
+          }}>
+            {quantity.label}
+          </span>
+          <input
+            value={answer.quantity}
+            onChange={(e) => onQuantity(e.target.value)}
+            disabled={!quantityLive}
+            inputMode="numeric"
+            placeholder="0"
+            style={{
+              width: "56px", padding: "5px 8px", fontSize: "12px", borderRadius: "6px",
+              background: quantityLive ? "#0A0E1A" : "#0B1120",
+              border: `1px solid ${quantityParsed.kind === "invalid" ? "rgba(239,68,68,0.5)" : "#1E293B"}`,
+              color: quantityLive ? "#E2E8F0" : "#475569",
+            }}
+          />
+        </label>
+      ) : null}
       <input
         value={answer.amount}
         onChange={(e) => onAmount(e.target.value)}
@@ -540,12 +577,21 @@ function RepairEstimator({ contactId, onPersisted }: {
   }
 
   function setCondition(row: OperatorRow, condition: OperatorCondition) {
-    commit({ ...answers, [row.system]: applyCondition(row, condition) });
+    const current = answers[row.system] ?? EMPTY_ANSWER;
+    commit({ ...answers, [row.system]: applyCondition(row, condition, current) });
   }
 
   function setAmount(row: OperatorRow, raw: string) {
     const current = answers[row.system] ?? EMPTY_ANSWER;
     commit({ ...answers, [row.system]: applyAmount(current, raw) });
+  }
+
+  /* A counted row's quantity. The Known Amount is recalculated from the
+     approved rate and any manual override is replaced, which is B6-F1's
+     stated rule and the reason this does not go through setAmount. */
+  function setQuantity(row: OperatorRow, raw: string) {
+    const current = answers[row.system] ?? EMPTY_ANSWER;
+    commit({ ...answers, [row.system]: applyQuantity(row, current, raw) });
   }
 
   /* The single path to the carrier. Every caller goes through persistGate, so
@@ -597,8 +643,9 @@ function RepairEstimator({ contactId, onPersisted }: {
 
       <div style={{ padding: "18px 20px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
         <div style={{ fontSize: "11px", color: "#475569", marginBottom: "6px" }}>
-          Selecting a condition loads its approved amount. The number in the field is the number used —
-          type over it whenever you know better.
+          Selecting a condition loads its approved amount. Where a row is counted, the count loads its
+          approved rate times that count. The number in the field is the number used — type over it
+          whenever you know better.
         </div>
 
         {OPERATOR_ROWS.map((row) => (
@@ -608,6 +655,7 @@ function RepairEstimator({ contactId, onPersisted }: {
             answer={answers[row.system] ?? EMPTY_ANSWER}
             onCondition={(c) => setCondition(row, c)}
             onAmount={(raw) => setAmount(row, raw)}
+            onQuantity={(raw) => setQuantity(row, raw)}
           />
         ))}
 
