@@ -21,6 +21,12 @@ import { opportunitiesForContact, opportunityCandidates, selectOpportunity } fro
 import { OPTION_BY_MODE, ASSIGNMENT_MODE_OPTIONS } from "../lib/underwriting/resolver-types";
 import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
 import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriting/types";
+/* INV-12 — Repair Estimation V1 enters the seller call here. The calculation
+   core is accepted and unchanged; this page asks the questions and renders
+   what the core returns. It decides no pricing of its own. */
+import { computeRepairEstimate, RepairInputError } from "../lib/repair-estimation/compute";
+import { findReferenceRow } from "../lib/repair-estimation/reference";
+import type { Condition, MajorSystem, RepairEstimate, RepairLineInput } from "../lib/repair-estimation/types";
 
 /**
  * Underwriting Workspace — UNDERWRITING_WORKSPACE_SPEC.md.
@@ -400,6 +406,395 @@ function AssignmentModeSelector({ currentLabel, absentReason, state, onSelect }:
   );
 }
 
+// ── INV-12 — Repair Estimation V1 in the seller call ─────────────────────────
+
+/**
+ * The systems the operator is asked about, and the answers each one accepts.
+ *
+ * Deliberately short. The acceptance criterion is a conservative transparent
+ * allowance reached during ONE normal seller call without line-item
+ * estimating, so the 122-item cost book stays behind this surface. Each row
+ * offers only the conditions its authorized reference row actually names —
+ * an option that cannot resolve to an authorized amount is not a question
+ * worth asking a seller.
+ *
+ * Windows carries no authorized row on purpose. It appears because it is a
+ * designated major system that must not be buried in an average, and it
+ * prices only from an operator-entered amount or stays an unpriced risk.
+ */
+const REPAIR_SYSTEM_ROWS: { system: MajorSystem; label: string; conditions: Condition[] }[] = [
+  { system: "roof", label: "Roof", conditions: ["good", "repair", "replace", "unknown"] },
+  { system: "hvac", label: "HVAC", conditions: ["good", "repair", "replace", "unknown"] },
+  { system: "electrical_whole_house", label: "Electrical — whole house", conditions: ["good", "repair", "replace", "unknown"] },
+  { system: "electrical_panel", label: "Electrical panel", conditions: ["good", "replace", "unknown"] },
+  { system: "plumbing_sewer", label: "Plumbing / sewer", conditions: ["good", "repair", "major", "unknown"] },
+  { system: "foundation", label: "Foundation", conditions: ["good", "material_issue", "unknown"] },
+  { system: "windows", label: "Windows", conditions: ["good", "repair", "replace", "unknown"] },
+];
+
+const CONDITION_LABEL: Record<Condition, string> = {
+  good: "Good",
+  repair: "Repair",
+  replace: "Replace",
+  major: "Major",
+  material_issue: "Material issue",
+  unknown: "Unknown",
+};
+
+/** Operator-facing provenance. The internal keys never reach the screen. */
+const PROVENANCE_LABEL: Record<"BOOK" | "IAOS_POLICY" | "MANUAL", string> = {
+  BOOK: "BOOK",
+  IAOS_POLICY: "IAOS POLICY",
+  MANUAL: "MANUAL",
+};
+
+const PROVENANCE_COLOR: Record<"BOOK" | "IAOS_POLICY" | "MANUAL", string> = {
+  BOOK: "#38BDF8",
+  IAOS_POLICY: "#A78BFA",
+  MANUAL: "#94A3B8",
+};
+
+type RepairAnswer = { condition: Condition | "not_asked"; manual: string };
+type ParsedAmount = { kind: "blank" } | { kind: "invalid" } | { kind: "value"; value: number };
+
+/**
+ * A typed known amount, or the reason it is not one. Blank and invalid are
+ * kept apart: blank means the operator has not answered, invalid means they
+ * answered with something that is not a dollar figure. Neither becomes zero.
+ */
+function parseKnownAmount(raw: string): ParsedAmount {
+  const t = raw.trim();
+  if (t === "") return { kind: "blank" };
+  const n = Number(t.replace(/[$,\s]/g, ""));
+  if (!Number.isFinite(n) || n < 0) return { kind: "invalid" };
+  return { kind: "value", value: n };
+}
+
+/**
+ * Whether a known amount may be typed for this answer.
+ *
+ * Enabled when the authorized table does not price the answer — the standard
+ * says the line stays blank for operator entry — and for the one row that
+ * permits an operator override. Disabled where an authorized reserve applies,
+ * because the core rejects an override there and a control that produces an
+ * error is worse than no control.
+ */
+function manualEntryAllowed(system: MajorSystem, condition: Condition | "not_asked"): boolean {
+  if (condition === "not_asked" || condition === "good") return false;
+  const row = findReferenceRow(system, condition);
+  return row === null || row.overrideAllowed;
+}
+
+/** The operator's answers as calculation-core input. Prices nothing itself. */
+function repairLines(answers: Record<string, RepairAnswer>): RepairLineInput[] {
+  const lines: RepairLineInput[] = [];
+  for (const row of REPAIR_SYSTEM_ROWS) {
+    const answer = answers[row.system];
+    if (answer === undefined || answer.condition === "not_asked") continue;
+    const condition = answer.condition;
+    const base = { id: row.system, label: row.label, component: "major_system" as const };
+
+    if (condition === "good") {
+      lines.push({ ...base, pricing: { kind: "no_repair" } });
+      continue;
+    }
+
+    const origin = condition === "unknown" ? ("unknown_condition" as const) : ("indicated" as const);
+    const parsed = parseKnownAmount(answer.manual);
+
+    /* An unreadable amount stays visibly unpriced. It is not discarded back to
+       the authorized reserve and it is not treated as zero. */
+    if (parsed.kind === "invalid") {
+      lines.push({
+        ...base, origin,
+        pricing: { kind: "unpriced_risk", reason: "the known amount entered is not a valid dollar figure" },
+      });
+      continue;
+    }
+
+    const referenceRow = findReferenceRow(row.system, condition);
+    if (referenceRow !== null) {
+      /* Origin is derived by the core from the condition, so it is not passed
+         here — passing it would only create a way to contradict the core. */
+      lines.push(referenceRow.overrideAllowed && parsed.kind === "value"
+        ? { ...base, pricing: { kind: "reference", system: row.system, condition, override: { amount: parsed.value } } }
+        : { ...base, pricing: { kind: "reference", system: row.system, condition } });
+      continue;
+    }
+
+    if (parsed.kind === "value") {
+      lines.push({ ...base, origin, pricing: { kind: "amount", amount: parsed.value, provenance: "MANUAL" } });
+      continue;
+    }
+
+    /* No authorized row and no known amount: the core returns the unpriced
+       risk with the reason, rather than this page inventing one. */
+    lines.push({ ...base, pricing: { kind: "reference", system: row.system, condition } });
+  }
+  return lines;
+}
+
+/**
+ * The conservative allowance = the four resolved components + the inherited
+ * FMTM allowance. Kept here rather than in the core because the core reports
+ * the decomposition and deliberately does not declare a headline number.
+ */
+function conservativeAllowance(estimate: RepairEstimate): number {
+  return estimate.resolvedSubtotal + estimate.components.fmtmAllowance.outcome.amount;
+}
+
+function EstimatorRow({ row, answer, onChange }: {
+  row: { system: MajorSystem; label: string; conditions: Condition[] };
+  answer: RepairAnswer;
+  onChange: (next: Partial<RepairAnswer>) => void;
+}) {
+  const manualOk = manualEntryAllowed(row.system, answer.condition);
+  const parsed = parseKnownAmount(answer.manual);
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap",
+      padding: "8px 0", borderTop: "1px solid #16202F",
+    }}>
+      <div style={{ width: "180px", fontSize: "13px", color: "#94A3B8" }}>{row.label}</div>
+      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+        {(["not_asked", ...row.conditions] as (Condition | "not_asked")[]).map((c) => {
+          const active = answer.condition === c;
+          return (
+            <button
+              key={c}
+              onClick={() => onChange({ condition: c })}
+              style={{
+                padding: "4px 10px", borderRadius: "6px", fontSize: "11px", cursor: "pointer",
+                border: `1px solid ${active ? "rgba(30,200,255,0.45)" : "#1E293B"}`,
+                background: active ? "rgba(30,200,255,0.12)" : "transparent",
+                color: active ? "#1EC8FF" : "#64748B",
+              }}
+            >
+              {c === "not_asked" ? "Not asked" : CONDITION_LABEL[c]}
+            </button>
+          );
+        })}
+      </div>
+      <input
+        value={answer.manual}
+        disabled={!manualOk}
+        onChange={(e) => onChange({ manual: e.target.value })}
+        placeholder={manualOk ? "Known amount" : "—"}
+        style={{
+          width: "130px", padding: "5px 8px", fontSize: "12px", borderRadius: "6px",
+          background: manualOk ? "#0A0E1A" : "transparent",
+          border: `1px solid ${parsed.kind === "invalid" ? "rgba(239,68,68,0.5)" : "#1E293B"}`,
+          color: manualOk ? "#E2E8F0" : "#334155",
+        }}
+      />
+    </div>
+  );
+}
+
+/**
+ * Repair Estimation V1, in the underwriting workspace.
+ *
+ * READ ONLY, like the rest of this page. Approval here is session-only: it
+ * marks the total authoritative for the conversation and writes nothing. The
+ * approved total deliberately does NOT feed the underwriting figures above —
+ * GHL is the sole system of record, so a session value standing in for
+ * `estimated_repairs` would be exactly the app-side shadow copy the
+ * constraints forbid. Persisting it is INV-13 and is not built here.
+ */
+function RepairEstimator() {
+  const [answers, setAnswers] = useState<Record<string, RepairAnswer>>({});
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [approvedTotal, setApprovedTotal] = useState<number | null>(null);
+
+  /* Any edit invalidates both the acknowledgement and the approval. An
+     approval that survives a changed answer is a claim about a number the
+     operator never saw. */
+  function edit(system: MajorSystem, next: Partial<RepairAnswer>) {
+    setAnswers((prev) => {
+      const current = prev[system] ?? { condition: "not_asked" as const, manual: "" };
+      return { ...prev, [system]: { ...current, ...next } };
+    });
+    setAcknowledged(false);
+    setApprovedTotal(null);
+  }
+
+  const computed = useMemo(() => {
+    try {
+      return {
+        ok: true as const,
+        estimate: computeRepairEstimate({
+          /* Property context is offered, never required. No dimension is
+             imported here: nothing on this surface prices from square footage,
+             so importing one would add a carrier for no calculation. */
+          lines: repairLines(answers),
+          property: { squareFeet: null, bathroomCount: null },
+        }),
+      };
+    } catch (e) {
+      return { ok: false as const, message: e instanceof RepairInputError ? e.message : String(e) };
+    }
+  }, [answers]);
+
+  if (!computed.ok) {
+    return (
+      <div style={{ marginTop: "22px" }}>
+        <Notice tone="error" title="Repair estimate could not be assembled" body={computed.message} />
+      </div>
+    );
+  }
+
+  const estimate = computed.estimate;
+  const allowance = estimate.components.fmtmAllowance;
+  const unanswered = REPAIR_SYSTEM_ROWS.filter(
+    (r) => (answers[r.system]?.condition ?? "not_asked") === "not_asked",
+  ).length;
+  const answered = REPAIR_SYSTEM_ROWS.length - unanswered;
+  const complete = estimate.isCompleteAllowance && unanswered === 0;
+  const canApprove = answered > 0 && (complete || acknowledged);
+  const total = conservativeAllowance(estimate);
+  const approvalStale = approvedTotal !== null && approvedTotal !== total;
+
+  return (
+    <div style={{ marginTop: "22px" }}>
+      <div style={{ fontSize: "11px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "10px" }}>
+        Repair estimate — seller call
+      </div>
+
+      <div style={{ padding: "18px 20px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
+        <div style={{ fontSize: "11px", color: "#475569", marginBottom: "6px" }}>
+          Ask only what the call allows. An unanswered system is not zero, and Unknown reserves the
+          authorized amount until a real answer reduces it.
+        </div>
+
+        {REPAIR_SYSTEM_ROWS.map((row) => (
+          <EstimatorRow
+            key={row.system}
+            row={row}
+            answer={answers[row.system] ?? { condition: "not_asked", manual: "" }}
+            onChange={(next) => edit(row.system, next)}
+          />
+        ))}
+
+        {/* Zone 4 discipline: indicated repairs and unknown-condition reserves
+            are economically identical in the total and informationally
+            completely different, so they never collapse into one figure. */}
+        <div style={{
+          marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #1E293B",
+          fontFamily: "Space Grotesk, monospace", fontSize: "13px",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#94A3B8" }}>
+            <span>Known / indicated repairs</span><span>{money(estimate.indicatedSubtotal)}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#94A3B8" }}>
+            <span>Unknown-condition reserves</span><span>{money(estimate.components.unknownRiskReserves)}</span>
+          </div>
+          {estimate.lines
+            .filter((l) => l.origin === "unknown_condition" && l.outcome.kind === "priced")
+            .map((l) => (
+              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", padding: "2px 0 2px 18px", color: "#475569", fontSize: "12px" }}>
+                <span>{l.label} — condition unknown</span>
+                <span>{money(l.outcome.kind === "priced" ? l.outcome.amount : null)}</span>
+              </div>
+            ))}
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#94A3B8" }}>
+            <span>{allowance.label}</span><span>{money(allowance.outcome.amount)}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "0 0 6px 18px", color: "#475569", fontSize: "11px" }}>
+            <span>10% of {money(allowance.outcome.basis)} in BOOK amounts</span><span />
+          </div>
+          <div style={{
+            display: "flex", justifyContent: "space-between", padding: "10px 0 0",
+            borderTop: "1px solid #1E293B", color: "#E2E8F0", fontWeight: 700,
+          }}>
+            <span>{complete ? "Conservative allowance" : "Incomplete subtotal"}</span>
+            <span>{money(total)}</span>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 18px", marginTop: "12px", fontSize: "11px" }}>
+          {(["BOOK", "IAOS_POLICY", "MANUAL"] as const).map((p) => (
+            <span key={p} style={{ color: "#475569" }}>
+              <span style={{ color: PROVENANCE_COLOR[p] }}>{PROVENANCE_LABEL[p]}</span>{" "}
+              {money(estimate.byProvenance[p])}
+            </span>
+          ))}
+        </div>
+
+        {estimate.unpricedRisks.length > 0 ? (
+          <div style={{
+            marginTop: "14px", padding: "12px 14px", borderRadius: "8px",
+            background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.35)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#F59E0B", fontSize: "12px", fontWeight: 700 }}>
+              <AlertCircle size={13} /> UNPRICED RISK · {estimate.unpricedRisks.length}
+            </div>
+            {estimate.unpricedRisks.map((r) => (
+              <div key={r.id} style={{ fontSize: "12px", color: "#94A3B8", marginTop: "6px" }}>
+                <span style={{ color: "#E2E8F0" }}>{r.label}</span> — {r.reason}
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {unanswered > 0 ? (
+          <div style={{ marginTop: "10px", fontSize: "12px", color: "#64748B" }}>
+            {unanswered} system{unanswered === 1 ? "" : "s"} not yet asked. Not asked is not $0.
+          </div>
+        ) : null}
+
+        {!complete && answered > 0 ? (
+          <label style={{
+            display: "flex", alignItems: "flex-start", gap: "8px", marginTop: "14px",
+            fontSize: "12px", color: "#94A3B8", cursor: "pointer",
+          }}>
+            <input
+              type="checkbox"
+              checked={acknowledged}
+              onChange={(e) => { setAcknowledged(e.target.checked); setApprovedTotal(null); }}
+              style={{ marginTop: "2px" }}
+            />
+            <span>
+              I acknowledge this subtotal is not a complete repair allowance. It excludes{" "}
+              {estimate.unpricedRisks.length} unpriced risk{estimate.unpricedRisks.length === 1 ? "" : "s"}
+              {unanswered > 0 ? ` and ${unanswered} system${unanswered === 1 ? "" : "s"} not yet asked` : ""}.
+            </span>
+          </label>
+        ) : null}
+
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "14px", flexWrap: "wrap" }}>
+          <button
+            onClick={() => setApprovedTotal(total)}
+            disabled={!canApprove}
+            style={{
+              padding: "8px 16px", borderRadius: "8px", fontSize: "12px", fontWeight: 600,
+              cursor: canApprove ? "pointer" : "not-allowed",
+              border: `1px solid ${canApprove ? "rgba(34,197,94,0.45)" : "#1E293B"}`,
+              background: canApprove ? "rgba(34,197,94,0.12)" : "transparent",
+              color: canApprove ? "#22C55E" : "#334155",
+            }}
+          >
+            Approve repair total for this call
+          </button>
+          {approvedTotal !== null && !approvalStale ? (
+            <span style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#22C55E" }}>
+              <Check size={13} /> Approved for this call · {money(approvedTotal)}
+            </span>
+          ) : null}
+          {answered === 0 ? (
+            <span style={{ fontSize: "11px", color: "#475569" }}>Answer at least one system to approve.</span>
+          ) : null}
+        </div>
+
+        <div style={{ marginTop: "12px", fontSize: "11px", color: "#475569", lineHeight: 1.5 }}>
+          {estimate.disclosure} Approval is session-only and authoritative for this conversation:
+          nothing is written to GHL here, and the underwriting figures above are unchanged until an
+          approved total is persisted to the existing carrier.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function UnderwritingWorkspace() {
   const { id } = useParams<{ id: string }>();
   const contactId = id ?? "";
@@ -761,6 +1156,10 @@ export default function UnderwritingWorkspace() {
             state={modeWrite}
             onSelect={onSelectMode}
           />
+          {/* INV-12. Repairs is a Gate 1 input, so an unresolved deal is
+              frequently unresolved BECAUSE the repair number does not exist
+              yet. This is the surface that produces one during the call. */}
+          <RepairEstimator />
         </>
       ) : null}
 
@@ -872,6 +1271,10 @@ export default function UnderwritingWorkspace() {
             state={modeWrite}
             onSelect={onSelectMode}
           />
+          {/* INV-12, resolved-state placement. Beside the mode selector, in
+              the same revise-the-inputs zone: a resolved deal can still have
+              its repair allowance worked during the call. */}
+          <RepairEstimator />
         </>
       ) : null}
     </Shell>
