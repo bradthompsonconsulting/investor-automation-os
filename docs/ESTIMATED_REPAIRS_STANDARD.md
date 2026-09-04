@@ -398,3 +398,121 @@ This documentation amendment does **not** authorize or implement the estimator,
 domain model, calculation engine, UI, persistence, Production writes, or any
 INV-11+ work. Those remain behind independent review and explicit implementation
 authorization.
+
+---
+
+## Governing operator-defaults amendment — 2026-09-04
+
+Brad completed the Repair Estimation V1 operator review and approved the
+defaults and behaviour below. Under the PB-D43 supersession convention this
+amendment governs the **operator-facing estimator** wherever it conflicts with
+the 2026-09-02 amendment above. The earlier text is preserved, not rewritten.
+
+Scope of supersession is deliberately narrow. This amendment changes what the
+estimator loads and how the operator interacts with it. It does not change the
+calculation architecture, the disclosure requirement, the no-persisted-
+itemization rule, or the geography exclusion.
+
+### Provenance — three classes, kept distinct
+
+Every amount remains traceable to one of exactly three classes, and no class
+may be presented as another:
+
+- **`BOOK`** — traceable to an accepted cost-book line.
+- **`IAOS DFW POLICY`** — a Brad-approved underwriting policy amount for the
+  initial operating market. Carried internally as the existing `IAOS_POLICY`
+  provenance; `IAOS DFW POLICY` is its operator-facing name.
+- **`MANUAL`** — a known amount entered by the operator, including an edit
+  that replaces a loaded default.
+
+**`IAOS DFW POLICY` is a NAME, not a pricing input.** The 2026-09-02 rule that
+geography, ZIP, city and market are not V1 repair-pricing inputs is
+**unchanged and still governs**. These amounts are applied unconditionally to
+every estimate. IAOS reads no location to select them, carries no ZIP
+coefficient, no market factor and no localization machinery, and the name
+grants no authority to add one.
+
+### Approved V1 operator defaults
+
+| System | Repair | Replace / Major / Material issue |
+|---|---:|---:|
+| Roof | $2,500 | $15,000 |
+| HVAC | $2,500 | $8,000 |
+| Electrical — whole house | $3,500 | $12,500 |
+| Electrical panel | $1,500 | $3,000 |
+| Plumbing / sewer | $3,500 | $12,500 |
+| Foundation | $5,000 | $15,000 |
+| Windows | $750 per window | $750 per window |
+
+All fourteen are `IAOS DFW POLICY`. None is a cost-book value.
+
+**The historical BOOK record is preserved and is NOT rewritten.** The
+2026-09-02 table recorded HVAC replacement at **$6,500 BOOK** and electrical
+panel replacement at **$2,500 BOOK**, and those were accepted cost-book values
+at that date. They remain the historical record. What this amendment changes is
+which amount the estimator LOADS and under which provenance — it does not
+assert that the cost book ever said $8,000 or $3,000, and no BOOK figure is
+restated as policy.
+
+Windows carried no row before this amendment. The approved value is stated per
+window, and V1 has no window-count input: the field loads one window's cost and
+the operator enters the real total through the ordinary manual path. No
+quantity input is authorized by this amendment.
+
+### Operator interaction contract
+
+- **Condition vocabulary is `Not asked | Good | Repair | <severe>`.** The
+  severe state is labelled per system — Replace, Major, or Material issue — and
+  no additional states exist.
+- **`Unknown` is REMOVED** as an operator condition. The 2026-09-02
+  unknown-major-system reserve rule is superseded for the operator surface:
+  there is no longer an operator answer that reaches it. `Not asked` is the
+  neutral unanswered state and is not an alarm.
+- **Known Amount is always visible and editable on every row**, whatever the
+  condition. The amount shown in the field is the amount the calculation uses.
+- **Selecting a condition loads that condition's approved default** into Known
+  Amount and clears any override. Selecting a different condition after a
+  manual override RESETS the field to the new condition's default; recovering
+  the previous figure is a deliberate re-entry.
+- **`Good` loads $0 and remains editable.** A $0 amount is the "no repair
+  allowance required" outcome, still distinct from an absent price.
+- **`UNPRICED RISK` applies only where a row has no usable amount** — not asked
+  with a blank field, or an entry that is not a dollar figure. It stays
+  visible, and it does NOT gate approval. The acknowledgement checkbox
+  introduced before this review is removed.
+
+### Untouched-estimator fallback
+
+Where the operator has not interacted with the estimator at all, the estimate
+is a **$20,000 `IAOS DFW POLICY` fallback**.
+
+The first intentional interaction — any condition selected or any amount typed
+— removes the fallback **completely**, and the row calculation governs from
+that point. The fallback is never added to row amounts. A fallback that
+survived alongside real answers would double-count the same repairs.
+
+### Consequence — the inherited FMTM allowance
+
+Recorded because it follows arithmetically and nobody chose it directly.
+
+The inherited `FMTM 10% allowance — historical purpose unverified` is 10% of
+resolved `BOOK` amounts only (the INV-30 BOOK-only ruling). Every approved
+operator default above is `IAOS DFW POLICY`, so no `BOOK` amount is reachable
+from the estimator and the allowance computes to **$0** on that surface. The
+label and the INV-30 rule are both unchanged; the allowance simply has an
+empty basis there. If the allowance is intended to apply to policy amounts,
+that is a new Product Owner decision and this amendment does not make it.
+
+### Persistence — unchanged
+
+Only the approved TOTAL persists, through the existing `estimated_repairs`
+carrier. Row-level Known Amounts are session state and are not persisted:
+carrying them would require a carrier V1 does not have, and locked principle 7
+("No persisted itemization in V1") is unchanged by this amendment.
+
+### Status
+
+These operator-review questions are closed. The estimator implementation
+matching this amendment is INV-14 remediation and remains behind the Jess gate;
+this document records the approved policy, and does not itself accept the
+implementation.

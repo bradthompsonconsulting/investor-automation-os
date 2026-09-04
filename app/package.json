@@ -11,7 +11,8 @@
     "test:comp-classification": "node scripts/test-comp-classification.cjs",
     "test:propstream-comp-csv": "node scripts/test-propstream-comp-csv.cjs",
     "test:repair-estimation": "node scripts/test-repair-estimation.cjs",
-    "test:repair-persist": "node scripts/test-repair-persist.cjs"
+    "test:repair-persist": "node scripts/test-repair-persist.cjs",
+    "test:repair-operator": "node scripts/test-repair-operator.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",
