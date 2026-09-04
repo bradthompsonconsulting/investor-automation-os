@@ -40,6 +40,7 @@ import type {
    function a harness can exhaust, not a claim about this component. */
 import { persistApprovedRepairTotal, persistGate } from "../lib/repair-estimation/persist";
 import type { PersistResult, RepairApproval } from "../lib/repair-estimation/persist";
+import ArvCompsWorkspace from "../components/ArvCompsWorkspace";
 
 /**
  * Underwriting Workspace — UNDERWRITING_WORKSPACE_SPEC.md.
@@ -1024,6 +1025,12 @@ export default function UnderwritingWorkspace() {
             : null}
         </div>
       </div>
+
+      {/* B7-07 — session-only ARV evidence workspace. It reuses the B7-02
+          handoff and B7-04/B7-05/B7-06 engines. Approval and override are
+          explicit operator decisions but persist nothing; B7-08 owns that
+          separate carrier/provenance boundary. */}
+      {contact ? <ArvCompsWorkspace contact={contact} /> : null}
 
       {screen.state === "loading" ? (
         <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#64748B", fontSize: "13px" }}>
