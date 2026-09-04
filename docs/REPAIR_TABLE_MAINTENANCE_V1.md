@@ -86,29 +86,43 @@ value and is reviewed on the same cycle as the rest.
 Unit-based values stay unit-based. Windows is `$750 per window`; the review
 proposes a new per-window rate, not a lump sum.
 
-## 3. Where the approved values live today — OBSERVED
+## 3. Where the approved values live — OBSERVED
 
-Established by inspection, and this is the part that matters for §4.
+**The approved table is a single data file:**
 
-**The calculator's actual source of truth is code:**
+    app/src/data/approved_repair_table.json
 
-- `app/src/lib/repair-estimation/operator-model.ts:58-70` — `OPERATOR_ROWS`,
-  holding `repairDefault` and `severeDefault` for all seven categories.
-- `app/src/lib/repair-estimation/operator-model.ts:84` —
-  `UNTOUCHED_FALLBACK_AMOUNT = 20000`.
+It holds all seven categories with their `repairDefault` and `severeDefault`,
+the per-window note, and `untouchedFallbackAmount`. Its `_meta` block names the
+canonical amendment as its authority, states the `IAOS DFW POLICY` provenance,
+and records that nothing edits the file automatically.
 
-That is what the screen reads: `UnderwritingWorkspace.tsx:603` maps
-`OPERATOR_ROWS`, and `defaultAmountFor()` returns `repairDefault` /
-`severeDefault`. There is no other input to a loaded default.
+**Everything downstream reads it and authors nothing:**
 
-**The same fourteen values are authored in two further places:**
+- `app/src/lib/repair-estimation/operator-model.ts` imports the file and
+  derives `OPERATOR_ROWS` and `UNTOUCHED_FALLBACK_AMOUNT` from it. The module
+  holds the behaviour and none of the numbers.
+- `UnderwritingWorkspace.tsx` maps `OPERATOR_ROWS`; `defaultAmountFor()`
+  returns the two fields. There is no other input to a loaded default.
 
-- `docs/ESTIMATED_REPAIRS_STANDARD.md:435-446` — the canonical amendment
-  table. This is the **policy authority**; the code is downstream of it.
-- `app/scripts/test-repair-operator.cjs:94-103` — the harness transcribes all
-  fourteen as expected constants. This duplication is **deliberate**: the
-  harness is transcribed from the document, not read from the code, so it fails
-  if code drifts from approved policy. It is a guard, not an accident.
+**The policy authority is still the document**, and the chain is asserted:
+
+- `docs/ESTIMATED_REPAIRS_STANDARD.md` — the "Approved V1 operator defaults"
+  table in the 2026-09-04 amendment. The data file is downstream of it.
+- `app/scripts/test-repair-operator.cjs` **parses that markdown table** and
+  compares it to the loaded module, then asserts the module's rows are byte-
+  identical to the data file. So the guard is `policy document → data file →
+  module`, each link checked. A value edited in the JSON without a
+  corresponding canonical amendment fails the harness.
+
+That guard is live, not decorative: changing HVAC severe from `$8,000` to
+`$9,999` in the data file fails with
+`FAIL approved severe default: hvac — expected "8000", actual "9999"`.
+
+**Changing an approved value is now a one-line edit to the data file**, plus
+the canonical amendment that authorizes it. No code change, no third
+transcription to keep in step. It still requires a commit, a build and a
+deploy — see §8.
 
 **Two other value sets exist and are NOT the approved table:**
 
@@ -120,31 +134,33 @@ That is what the screen reads: `UnderwritingWorkspace.tsx:603` maps
   `BOOK` provenance. Consumed only by the superseded MAO calculator, never by
   the estimator. **Not part of the approved table and not reviewed here.**
 
-**Consequence, stated plainly:** changing one approved value today requires
-three coordinated edits — the code, the canonical amendment, and the harness
-constant — followed by a build and a deploy. It is safe and it is auditable,
-but it is a developer operation, not something Brad can do.
+## 4. The source-of-truth mechanism — BUILT
 
-## 4. The smallest practical source-of-truth mechanism
+Delivered, not proposed. `app/src/data/approved_repair_table.json` is the
+single authored copy of the approved values, and it collapsed the previous
+three (code literals, canonical table, harness constants) to one plus the
+policy document that authorizes it.
 
-Not built here. Recorded so the decision is ready when it is wanted.
+Shape:
 
-The smallest change that makes one table the source is a **single committed
-data file** — for example `app/src/data/approved_repair_table.json` — which:
+```json
+{
+  "_meta": { "authority": "…ESTIMATED_REPAIRS_STANDARD.md — 2026-09-04",
+             "provenance": "IAOS DFW POLICY…", "lastApproved": "2026-09-04" },
+  "untouchedFallbackAmount": 20000,
+  "rows": [ { "system": "roof", "label": "Roof",
+              "repairDefault": 2500, "severeDefault": 15000,
+              "severeLabel": "Replace" } ]
+}
+```
 
-- `operator-model.ts` imports instead of holding literals (the repo already
-  imports JSON this way: `MaoCalculator.tsx` imports `repair_bid_sheet.json`,
-  and `resolveJsonModule` is already enabled);
-- `test-repair-operator.cjs` reads directly, keeping the drift guard by
-  comparing the file against the canonical amendment rather than against code;
-- the canonical amendment points at as the machine-readable form of its table.
+To change an approved value: edit the number, record the dated amendment that
+authorizes it, run `pnpm test:repair-operator`. The harness will refuse the
+change if the amendment does not match.
 
-That collapses three authored copies to one plus a documentation pointer, and
-makes a value change a one-line edit to a data file.
-
-**What it still would not do:** the file is in git, so changing it remains a
-commit, a build and a deploy. It does not make the table editable by Brad on
-demand. That is §8.
+**What it deliberately does not do:** the file is in git, so a change is still
+a commit, a build and a deploy. It does not make the table editable by Brad on
+demand. That remains §8.
 
 ## 5. The semiannual review
 
@@ -219,9 +235,11 @@ preserving provenance must not smuggle it back in.
 
 ## 8. Implementation boundary — STOPPED HERE, deliberately
 
-**What this tranche delivered:** the architecture and process above, plus the
-inventory in §3 and the mechanism proposal in §4. Documentation only. No code
-changed, no storage added, no carrier created, no job scheduled, no UI built.
+**What this tranche delivered:** the architecture and process above, the
+inventory in §3, and the source-of-truth file in §4 — the approved table is now
+one authored artifact that the calculator reads and the harness checks against
+canon. No storage added, no carrier created, no job scheduled, no UI built, and
+no runtime behaviour changed: the values the estimator loads are identical.
 
 **What an actually-editable approved table would require** — a follow-on
 tranche, not INV-15:
@@ -244,11 +262,11 @@ than a calendar reminder: external market-research access, and somewhere to
 stage a proposed table beside the approved one. That is external infrastructure
 and is likewise a follow-on.
 
-**Recommended sequence when Brad wants it built:** §4's committed data file
-first — it is small, needs no new carrier, and makes the table a single
-authored artifact. Only then decide whether editability justifies the carrier
-and UI work. The research pass can run as a human task against the current
-table today, with no mechanism at all.
+**Recommended sequence:** §4's data file is done. What remains is deciding
+whether operator-editability justifies the carrier, read-path and UI work
+above — a Product Owner call, not an engineering one. The six-month research
+pass can run as a human task against the current table today, with no mechanism
+at all.
 
 ## 9. Out of scope
 
@@ -264,8 +282,14 @@ table today, with no mechanism at all.
 The process is defined and repeatable as written, and can run today as a human
 task against the values in §2.
 
-One thing is open and named rather than assumed: **the approved table is not
-yet a single editable artifact.** It is code, mirrored in canon and in a test
-guard (§3). Making it one is §4; making it editable without a deploy is §8. Both
-are follow-on decisions, and neither blocks the six-month review or a manual
-value change from happening now.
+**The approved table is now a single authored artifact** — one data file,
+checked against the canonical amendment by the harness (§3, §4). That part is
+done, and changing an approved value is a one-line edit.
+
+One thing remains open and named rather than assumed: **the table is not
+editable without a deploy.** A value change is still a commit and a release, so
+it is a developer operation. Making it operator-editable needs the storage,
+read path, edit surface and authorization set out in §8 — including new GHL
+carriers, which is a Product Owner decision not taken here. Neither that nor
+the research mechanism blocks the six-month review or a manual value change
+from happening now.

@@ -29,11 +29,17 @@ cleanup();
 fs.mkdirSync(TMP, { recursive: true });
 fs.writeFileSync(path.join(TMP, 'package.json'), JSON.stringify({ type: 'commonjs' }), 'utf8');
 
+/* operator-model.ts imports the approved table as JSON, so the compile needs
+   --resolveJsonModule. --rootDir is pinned to src/ so the emitted layout is
+   predictable: without it tsc infers a common root from the input files and
+   the output paths move when the input list changes. */
+const SRC_ROOT = path.join(APP, 'src');
 try {
   execSync(
     'npx tsc "' + path.join(SRC, 'types.ts') + '" "' + path.join(SRC, 'reference.ts') +
     '" "' + path.join(SRC, 'compute.ts') + '" "' + path.join(SRC, 'operator-model.ts') +
-    '" --outDir "' + TMP + '" --module commonjs --target es2020 --strict',
+    '" --outDir "' + TMP + '" --rootDir "' + SRC_ROOT +
+    '" --module commonjs --target es2020 --strict --resolveJsonModule --esModuleInterop',
     { cwd: APP, stdio: 'inherit' }
   );
 } catch (e) {
@@ -42,20 +48,25 @@ try {
   process.exit(10);
 }
 
-const M = require(path.join(TMP, 'operator-model.js'));
-const { computeRepairEstimate } = require(path.join(TMP, 'compute.js'));
+const OUT_LIB = path.join(TMP, 'lib', 'repair-estimation');
+const M = require(path.join(OUT_LIB, 'operator-model.js'));
+const { computeRepairEstimate } = require(path.join(OUT_LIB, 'compute.js'));
+/* The shipped data file, read directly — the same bytes the module imports. */
+const TABLE_PATH = path.join(APP, 'src', 'data', 'approved_repair_table.json');
+const TABLE = JSON.parse(fs.readFileSync(TABLE_PATH, 'utf8'));
 
 /**
  * Derived from the finished file, never back-filled from a passing run.
  * Keep the formula next to the number; a floor without its derivation is how
  * the next case gets it wrong.
  *
- *   99  check() call sites outside any loop
- * + 14  the two call sites inside section 1's default tables, 7 rows each
+ *  105  check() call sites outside any loop
+ * + 14  the two call sites inside section 1's per-row loop, 7 rows each
+ * +  7  section 1's per-row "canonical row exists" counter, counted by hand
  * +  9  section 16's amendment-value loop, which counts by hand
- * = 122
+ * = 135
  */
-const FLOOR = 122;
+const FLOOR = 135;
 let failures = 0;
 let checks = 0;
 
@@ -89,24 +100,59 @@ function answers(pairs) {
 }
 const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
 
-// ---- 1. Every approved default, transcribed from the 2026-09-04 table.
+// ---- 1. Every approved default, checked against the CANONICAL AMENDMENT.
+//
+// The expected values are parsed out of the "Approved V1 operator defaults"
+// table in docs/ESTIMATED_REPAIRS_STANDARD.md rather than transcribed here.
+// That keeps the drift guard meaningful now that the data file is the source
+// of truth: policy document -> data file -> module, each link asserted. A
+// value edited in the JSON without a canonical amendment fails this section.
 {
-  const REPAIR = [
-    ['roof', 2500], ['hvac', 2500], ['electrical_whole_house', 3500],
-    ['electrical_panel', 1500], ['plumbing_sewer', 3500], ['foundation', 5000],
-    ['windows', 750],
-  ];
-  const SEVERE = [
-    ['roof', 15000], ['hvac', 8000], ['electrical_whole_house', 12500],
-    ['electrical_panel', 3000], ['plumbing_sewer', 12500], ['foundation', 15000],
-    ['windows', 750],
-  ];
-  for (const [system, amount] of REPAIR) {
-    check('approved Repair default: ' + system, M.defaultAmountFor(rowOf(system), 'repair'), String(amount));
+  const DOC_PATH = path.resolve(APP, '..', 'docs', 'ESTIMATED_REPAIRS_STANDARD.md');
+  const doc = fs.readFileSync(DOC_PATH, 'utf8');
+  const section = doc.split('### Approved V1 operator defaults')[1];
+  if (section === undefined) {
+    console.error('ABORT: the canonical amendment table was not found. Nothing tested.');
+    cleanup();
+    process.exit(13);
   }
-  for (const [system, amount] of SEVERE) {
-    check('approved severe default: ' + system, M.defaultAmountFor(rowOf(system), 'severe'), String(amount));
+  /** label -> { repair, severe }, straight out of the markdown table. */
+  const canon = {};
+  for (const line of section.split(/\r?\n/)) {
+    const m = line.match(/^\|\s*([^|]+?)\s*\|\s*\$([\d,]+)[^|]*\|\s*\$([\d,]+)[^|]*\|\s*$/);
+    if (!m) continue;
+    canon[m[1]] = { repair: Number(m[2].replace(/,/g, '')), severe: Number(m[3].replace(/,/g, '')) };
   }
+  check('the canonical table lists seven systems', Object.keys(canon).length, 7);
+
+  for (const row of M.OPERATOR_ROWS) {
+    const expected = canon[row.label];
+    checks++;
+    if (expected === undefined) {
+      failures++;
+      console.error('FAIL  canonical row exists for ' + row.label);
+      continue;
+    }
+    console.log('PASS  canonical row exists for ' + row.label);
+    check('approved Repair default: ' + row.system,
+      M.defaultAmountFor(row, 'repair'), String(expected.repair));
+    check('approved severe default: ' + row.system,
+      M.defaultAmountFor(row, 'severe'), String(expected.severe));
+  }
+
+  /* The data file is what the module loaded — not a second transcription. */
+  check('the module rows come from the approved table file',
+    JSON.stringify(M.OPERATOR_ROWS), JSON.stringify(TABLE.rows));
+  check('the fallback comes from the approved table file',
+    M.UNTOUCHED_FALLBACK_AMOUNT, TABLE.untouchedFallbackAmount);
+  check('the approved table names its authority',
+    TABLE._meta.authority.indexOf('ESTIMATED_REPAIRS_STANDARD.md') !== -1, true);
+  check('the approved table declares policy provenance',
+    TABLE._meta.provenance.indexOf('IAOS DFW POLICY') === 0, true);
+  check('the approved table carries exactly the seven systems',
+    TABLE.rows.map(function (r) { return r.system; }),
+    ['roof', 'hvac', 'electrical_whole_house', 'electrical_panel',
+      'plumbing_sewer', 'foundation', 'windows']);
   check('seven systems, no more', M.OPERATOR_ROWS.length, 7);
   check('plumbing severe is labelled Major', rowOf('plumbing_sewer').severeLabel, 'Major');
   check('foundation severe is labelled Material issue', rowOf('foundation').severeLabel, 'Material issue');

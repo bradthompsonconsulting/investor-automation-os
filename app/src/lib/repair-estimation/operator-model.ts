@@ -25,6 +25,7 @@
  * offer or MAO economics.
  */
 
+import approvedTable from "../../data/approved_repair_table.json";
 import type {
   MajorSystem,
   Provenance,
@@ -54,24 +55,29 @@ export interface OperatorRow {
   readonly note?: string;
 }
 
-/** BRAD-APPROVED IAOS POLICY defaults, 2026-09-04. Not cost-book values. */
-export const OPERATOR_ROWS: readonly OperatorRow[] = [
-  { system: "roof", label: "Roof", repairDefault: 2500, severeDefault: 15000, severeLabel: "Replace" },
-  { system: "hvac", label: "HVAC", repairDefault: 2500, severeDefault: 8000, severeLabel: "Replace" },
-  { system: "electrical_whole_house", label: "Electrical — whole house", repairDefault: 3500, severeDefault: 12500, severeLabel: "Replace" },
-  { system: "electrical_panel", label: "Electrical panel", repairDefault: 1500, severeDefault: 3000, severeLabel: "Replace" },
-  { system: "plumbing_sewer", label: "Plumbing / sewer", repairDefault: 3500, severeDefault: 12500, severeLabel: "Major" },
-  { system: "foundation", label: "Foundation", repairDefault: 5000, severeDefault: 15000, severeLabel: "Material issue" },
-  {
-    system: "windows", label: "Windows", repairDefault: 750, severeDefault: 750,
-    severeLabel: "Replace",
-    /* The approved value is per window, and V1 has no window-count input. The
-       field loads one window's cost and the operator enters the real total —
-       the same manual-override path every other row uses. No quantity field
-       is invented to carry it. */
-    note: "$750 per window — enter the total",
-  },
-];
+/**
+ * BRAD-APPROVED IAOS DFW POLICY defaults. Not cost-book values.
+ *
+ * ⚠ THE VALUES ARE NOT AUTHORED HERE. They are read from the approved repair
+ * table at `app/src/data/approved_repair_table.json`, which is the single
+ * source of truth for what the calculator loads
+ * (`docs/REPAIR_TABLE_MAINTENANCE_V1.md`). This module holds the behaviour and
+ * none of the numbers, so changing an approved value is a one-line edit to a
+ * data file rather than a code change in three places.
+ *
+ * The windows row's `note` carries its per-window unit: the approved value is
+ * per window, V1 has no window-count input, so the field loads one window's
+ * cost and the operator enters the real total through the ordinary manual
+ * path. No quantity field is invented to carry it.
+ *
+ * The cast is required because JSON import widens `system` and `severeLabel`
+ * to `string`. It is not taken on trust: the harness asserts the file's seven
+ * systems, their labels and all fourteen values against the canonical
+ * amendment, so a typo here fails the build's tests rather than reaching an
+ * operator.
+ */
+export const OPERATOR_ROWS: readonly OperatorRow[] =
+  approvedTable.rows as readonly OperatorRow[];
 
 /**
  * The untouched-estimator fallback.
@@ -81,7 +87,7 @@ export const OPERATOR_ROWS: readonly OperatorRow[] = [
  * is never added to row amounts, because a fallback that survives alongside
  * real answers double-counts the same repairs.
  */
-export const UNTOUCHED_FALLBACK_AMOUNT = 20000;
+export const UNTOUCHED_FALLBACK_AMOUNT: number = approvedTable.untouchedFallbackAmount;
 export const UNTOUCHED_FALLBACK_LABEL =
   "IAOS DFW policy fallback — estimator not used";
 

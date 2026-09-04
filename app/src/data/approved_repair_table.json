@@ -1,0 +1,63 @@
+{
+  "_meta": {
+    "name": "IAOS approved repair table",
+    "authority": "docs/ESTIMATED_REPAIRS_STANDARD.md — Governing operator-defaults amendment, 2026-09-04",
+    "process": "docs/REPAIR_TABLE_MAINTENANCE_V1.md",
+    "provenance": "IAOS DFW POLICY. Brad-approved underwriting policy amounts, not cost-book values. Applied unconditionally; no location is read to select them.",
+    "note": "THIS FILE IS THE SOURCE OF TRUTH FOR THE REPAIR CALCULATOR'S DEFAULTS. Changing a value here changes what the estimator loads. Every change is a Brad decision, recorded as a dated amendment to the authority above. Nothing edits this file automatically.",
+    "lastApproved": "2026-09-04"
+  },
+  "untouchedFallbackAmount": 20000,
+  "rows": [
+    {
+      "system": "roof",
+      "label": "Roof",
+      "repairDefault": 2500,
+      "severeDefault": 15000,
+      "severeLabel": "Replace"
+    },
+    {
+      "system": "hvac",
+      "label": "HVAC",
+      "repairDefault": 2500,
+      "severeDefault": 8000,
+      "severeLabel": "Replace"
+    },
+    {
+      "system": "electrical_whole_house",
+      "label": "Electrical — whole house",
+      "repairDefault": 3500,
+      "severeDefault": 12500,
+      "severeLabel": "Replace"
+    },
+    {
+      "system": "electrical_panel",
+      "label": "Electrical panel",
+      "repairDefault": 1500,
+      "severeDefault": 3000,
+      "severeLabel": "Replace"
+    },
+    {
+      "system": "plumbing_sewer",
+      "label": "Plumbing / sewer",
+      "repairDefault": 3500,
+      "severeDefault": 12500,
+      "severeLabel": "Major"
+    },
+    {
+      "system": "foundation",
+      "label": "Foundation",
+      "repairDefault": 5000,
+      "severeDefault": 15000,
+      "severeLabel": "Material issue"
+    },
+    {
+      "system": "windows",
+      "label": "Windows",
+      "repairDefault": 750,
+      "severeDefault": 750,
+      "severeLabel": "Replace",
+      "note": "$750 per window — enter the total"
+    }
+  ]
+}
