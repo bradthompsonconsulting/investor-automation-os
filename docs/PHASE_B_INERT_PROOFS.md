@@ -521,3 +521,82 @@ PASS. PB-D22 covers the complete post-invalid recovery path. The field was not c
 PASS. Fixture restored to `250000.5`.
 
 **Not exercised in Part 7:** PB-D21 retry-on-thrown-read. Each successful PUT was followed by exactly one successful verification GET; no retry condition occurred. "Save accepted — not yet confirmed" was likewise not reached and remains UNVERIFIED.
+
+---
+
+## opportunity.arv_after_repair_value — IAOS TEST location
+
+### Five-step absent-origin cycle (2026-09-04) — PASS
+
+PB-D62 / INV-25 Tranche 1, Route A. **The first inert proof in this record
+executed outside the Production location**, and the first to run against a
+fixture bound for the purpose rather than one carved out of live data.
+
+**Transport.** Direct to `https://services.leadconnectorhq.com`, NOT through
+`ghl-proxy` — the deployed proxy resolves its location at module scope and can
+only reach Production. Credential from `--credential-file .env.test`, parsed
+with `dotenv.parse()` and never read from `process.env`.
+
+**Production refusal exercised, not assumed.** Both guards were run and both
+refused before any credential was read and before any request was issued:
+`--env production` → `REFUSED: --env "production" is not permitted by this
+tool`, exit 4. `--env test --location jmHG4B8RdzwpfqruNf68` → `REFUSED:
+--location jmHG4B8RdzwpfqruNf68 is the PRODUCTION location`, exit 4.
+
+**Fixture.** Location `SoTgVoaFGHtBdRFvXWQV`. Contact `NAGtUZ9aOE5C1GatJzpT`
+("IAOS Test Probe", `iaos-underwriting-fixture@example.com`, **no phone**),
+opportunity `MAl1FWHEsK0QqsXt4v6f` ("IAOS Underwriting Test", Seller Leads
+Pipeline, stage `1228a837-09b1-4ce5-8821-cfd98a6d9367`, status `open`). Created
+by `scripts/create-test-fixture.ts`, which is idempotent by identity: a second
+run reported `bound` for both records, exit 0.
+
+**Target.** `ppe2ZTO7DJTMao74xvYI`, fieldKey `opportunity.arv_after_repair_value`,
+name "ARV (After Repair Value)", dataType NUMERICAL — read live from
+`GET /locations/{id}/customFields?model=opportunity`, not transcribed.
+
+**Before-state.** Target ABSENT. `customFields: []` — the opportunity carried no
+custom field of any kind. Absent origin, so PB-D58's proven contract applies and
+PB-D59 Proof A's populated-origin restore contract is not the execution path.
+
+| step | command | observation |
+|---|---|---|
+| 1 capture | GET only | target ABSENT; `customFields []`; stage/status recorded |
+| 2 write | one custom-fields-only PUT, `field_value: 417529.63` | `200`. No re-read, no poll |
+| 3 verify | GET, bounded poll | `observed=417529.63 sent=417529.63 landed=true attempts=1` |
+| 4 clear | one custom-fields-only PUT, `field_value: ""` | `200`. No re-read, no poll |
+| 5 confirm | GET, bounded poll | id STRUCTURALLY absent on poll 1; `restoredToOrigin=true` |
+
+**Confirmation battery, PB-D58 section II, on BOTH the verify and restore
+reads.** `othersUnchanged=true offersUnchanged=true stageUnchanged=true
+statusUnchanged=true`, zero detail entries on either. `othersUnchanged` runs
+over the UNION of captured and live custom-field ids excluding the target, so a
+field that APPEARED during the window would be caught, not only one that
+changed. `offersUnchanged` covers all seven Test-location opportunity `offer_`
+ids.
+
+**Designated test value.** `417529.63`, approved before the write under the
+PB-D30 amendment dated 2026-08-03. DELIBERATELY SELECTED, never observed.
+Distinct from all eleven values previously in use and from the Production
+fixture's `250000`/`25000`.
+
+**Fixture restored.** `clearedToAbsent=true`, `restoredToOrigin=true` — the
+whole capture compared, not just the target. An independent read afterwards
+showed the Test location holding two contacts and two opportunities: this
+fixture, and the pre-existing `S7 Routing Proof - IAOS Sandbox` records, which
+were not touched.
+
+**Scope, and what is NOT established.** This establishes that a
+custom-fields-only PUT carrying only this field moves nothing else on the
+record, and that the value round-trips exactly and clears to KEY_ABSENT. It does
+NOT establish Production-location workflow behaviour: workflow configuration is
+per-location and not API-derivable, and the Test credential cannot read the
+workflow inventory at all (`GET /workflows/?locationId` → **401**, OBSERVED
+2026-09-04). No opportunity proof in this record has ever established that —
+PB-D58 section II says so directly. See PB-D62 section V.
+
+**Scripts.** `scripts/create-test-fixture.ts`, `scripts/inert-proof-opp-test.ts`
+(`--field arv --step 1..5`), `scripts/lib/ghl-test-proof.ts`. Evidence artifacts
+`inert-proof-opp-arv-test-step1..5.json` in the OS temp directory.
+
+**Production was not touched at any point.** No request in this cycle named the
+Production location, and the tooling refuses it structurally.

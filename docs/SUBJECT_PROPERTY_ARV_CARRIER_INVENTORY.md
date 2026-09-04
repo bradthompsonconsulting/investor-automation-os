@@ -147,3 +147,35 @@ new approved-ARV amount carrier are justified for the next Board #7 step. The
 genuine gaps are evidence/provenance gaps around a future comp workflow, and
 they remain unimplemented until a separately authorized decision defines
 their persistence contract.
+
+---
+
+## Amendment — ARV write disposition, 2026-09-04 (PB-D62 / INV-25)
+
+This inventory's B7-03 disposition said no new approved-ARV amount carrier is
+justified. **That conclusion is unchanged and is now acted on rather than only
+recorded.** No carrier was created in either location.
+
+**What changed.** `opportunity.arv_after_repair_value` — which this inventory
+already identified as the authoritative amount carrier — completed its own
+five-step inert proof in the IAOS Test location and is authorized ONE named
+writer under PB-D16. The inventory's "NO CHANGE — approved ARV amount" finding
+is what made a writer rather than a field the correct answer.
+
+**The five genuine gaps are dispositioned, still without carriers.** Brad ruled
+2026-09-04 that append-only GHL Contact notes are authoritative V1 valuation
+provenance. Recommended ARV, evidence state, accepted comp count, search level,
+and approval-versus-override provenance are therefore recorded in an append-only
+note ledger written through the already-sanctioned `ghl.notes.create()`, not in
+new GHL fields. Gaps 1 and 2 — the per-comp evidence set and per-comp
+classification — remain deliberately unpersisted; detailed comp evidence stays
+in IAOS, which is INV-25's HARD NO.
+
+**Still true, and unchanged by this amendment.** `contact.arv` remains the seed
+and is never synchronized from the Opportunity. `contact.offer_arv` and the
+Opportunity `offer_arv` remain protected snapshots in the section 4.1 HARD NO
+set and are not reused. `contact.est_value` and `contact.total_assessed_value`
+are not ARV. No subject-property carrier is created.
+
+**Not done here.** The writer, the note ledger and the persistence UI are a
+later tranche and are not implemented by this amendment.

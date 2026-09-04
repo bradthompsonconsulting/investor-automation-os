@@ -47,5 +47,34 @@
         "iaosUnderwritingTest": "OcGWOP9n666i4Q1MLd31"
       }
     }
+  },
+  "test": {
+    "_scope": [
+      "Bound 2026-09-04 by PB-D62 / INV-25 Tranche 1, Route A. Captured LIVE from the Test location via GET /locations/{id}/customFields?model=opportunity and the fixture creation run -- never transcribed from the production block, which carries different ids for the same handles.",
+      "DELIBERATELY PARTIAL. It carries exactly what an Opportunity-side proof reads: the seven opportunity offer_ pins, the closing_costs discovery pin, and the two fixture records. It does NOT carry contactOfferFields, runnerRegistryFields, or the contact fixtures (bradt75, neelima, ...) -- those would need more Test records than any authorized proof needs, and the existing harnesses already refuse by name for anything absent here rather than inventing it.",
+      "The fixture contact has a reserved-domain (RFC 2606) email and NO PHONE NUMBER, so it carries no address by which it could receive a call, an SMS or a mailer."
+    ],
+    "untouchedPins": {
+      "opportunityOfferFields": {
+        "offer_price": "xjPRKyyzKvPibg9iutmQ",
+        "offer_date": "Gle5K6Um2FYw1TZZ0Art",
+        "offer_mao": "0Q31sQlUhWxbhGEtFdQ3",
+        "offer_wholesale_fee": "gHrAmtFAOag95Zvay3Wa",
+        "offer_arv": "2zjZh6Ma4DQX77UBWgCN",
+        "offer_repair_total": "5mmCNT6zM5tGNeAQutbW",
+        "offer_margin": "v5Cfdz3odamvyKA3Udpn"
+      },
+      "opportunityFields": {
+        "closing_costs": "qRfhbMv9wBXmE2o1wbnD"
+      }
+    },
+    "fixtureRecords": {
+      "contacts": {
+        "iaosTestProbe": "NAGtUZ9aOE5C1GatJzpT"
+      },
+      "opportunities": {
+        "iaosUnderwritingTest": "MAl1FWHEsK0QqsXt4v6f"
+      }
+    }
   }
 }

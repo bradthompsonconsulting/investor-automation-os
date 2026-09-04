@@ -72,6 +72,18 @@ authority belongs to the Opportunity; these are its carriers.
 | Assignment Mode | `TpLo0WRc303TXAaBUbBf` | `opportunity.assignment_mode` | SINGLE_OPTIONS | which of PB-D56's three spread modes governs |
 | MAO (Max Allowable Offer) | `Atu5XCjpFElY8H64VG4h` | `opportunity.mao_max_allowable_offer` | NUMERICAL | Seller MAO |
 
+### Opportunity deal facts — write status
+
+Deal facts are what the operator supplies; the three carriers above are what
+underwriting produces. PB-D59 section I keeps them apart and excludes the deal
+facts from Approve. That separation is unchanged.
+
+| Field | Field ID (Production / Test) | dataType | Inert proof | Named writer |
+|---|---|---|---|---|
+| `opportunity.arv_after_repair_value` | `cBkygqcHRseZUGCYYeba` / `ppe2ZTO7DJTMao74xvYI` | NUMERICAL | **Proven inert in the IAOS TEST location, 2026-09-04** — five-step absent-origin cycle on Test fixture `MAl1FWHEsK0QqsXt4v6f`, PB-D62, recorded in `PHASE_B_INERT_PROOFS.md`. Production-location workflow behaviour is NOT established by it; see PB-D62 section V | **Authorized, not yet implemented** — `setApprovedArv`, one field, named, per PB-D16. A later tranche |
+| `opportunity.repair_estimate` | `hId4Yog6u5GP1Iwz1aNx` / `lSWxFUmWksfrViePG4UC` | NUMERICAL | none | none |
+| `opportunity.asking_price` | `YxCDaX7dLhBJL9GLGFpJ` / `owIOWnJuIheiwJVdJWQ5` | NUMERICAL | Proven inert 2026-08-29, PB-D60, Production fixture | `setAskingPrice` |
+
 Both new fields were created 2026-08-13 in folder
 `FQJ2zGEAIJu0JA9NubCL`, alongside the existing underwriting fields.
 
