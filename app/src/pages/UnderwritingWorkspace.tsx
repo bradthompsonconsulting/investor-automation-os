@@ -1074,11 +1074,12 @@ export default function UnderwritingWorkspace() {
         </div>
       </div>
 
-      {/* B7-07 — session-only ARV evidence workspace. It reuses the B7-02
-          handoff and B7-04/B7-05/B7-06 engines. Approval and override are
-          explicit operator decisions but persist nothing; B7-08 owns that
-          separate carrier/provenance boundary. */}
-      {contact ? <ArvCompsWorkspace contact={contact} /> : null}
+      {/* B7-07 evidence workspace plus INV-25's bounded persistence boundary.
+          Comp detail stays session-only; explicit approval writes the selected
+          Opportunity ARV, then appends its Contact-note ledger. */}
+      {contact && (screen.state === "resolved" || screen.state === "unresolved" || screen.state === "configuration_error") ? (
+        <ArvCompsWorkspace contact={contact} opportunityId={screen.opportunity.id} />
+      ) : null}
 
       {screen.state === "loading" ? (
         <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#64748B", fontSize: "13px" }}>

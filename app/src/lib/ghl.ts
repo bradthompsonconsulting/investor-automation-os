@@ -928,6 +928,43 @@ export const ghl = {
       const ok = sent === "" ? entry === null : observed === sent;
       return { ok, putStatus, sent, observed };
     },
+
+    /** PB-D62 / INV-25 — one named writer for the authoritative deal ARV. */
+    setApprovedArv: async (
+      opportunityId: string,
+      value: number,
+    ): Promise<{ ok: boolean; putStatus: number; sent: number; observed: number | string | null }> => {
+      const fieldId = CONFIG.opportunityFacts.arv;
+      if (!fieldId) throw new Error("setApprovedArv: no configured id for opportunityFacts.arv");
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+        throw new Error("setApprovedArv: value must be a positive finite number");
+      }
+
+      const sent = roundCurrency(value);
+      const body = { customFields: [{ id: fieldId, field_value: sent }] };
+      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const putStatus = putRes.status;
+      if (!putRes.ok) {
+        const text = await putRes.text();
+        throw new Error(`setApprovedArv PUT → ${putStatus}: ${text}`);
+      }
+
+      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
+      if (!readRes.ok) {
+        const text = await readRes.text();
+        throw new Error(`setApprovedArv readback → ${readRes.status}: ${text}`);
+      }
+      const readBody = await readRes.json();
+      const opportunity = readBody.opportunity ?? readBody;
+      const entry = (opportunity.customFields ?? [])
+        .find((field: any) => field.id === fieldId) ?? null;
+      const observed = entry === null ? null : readSingularFieldValue(entry);
+      return { ok: entry !== null && observed === sent, putStatus, sent, observed };
+    },
   },
 
   conversations: {

@@ -177,5 +177,10 @@ Opportunity `offer_arv` remain protected snapshots in the section 4.1 HARD NO
 set and are not reused. `contact.est_value` and `contact.total_assessed_value`
 are not ARV. No subject-property carrier is created.
 
-**Not done here.** The writer, the note ledger and the persistence UI are a
-later tranche and are not implemented by this amendment.
+**Amendment — INV-25 Tranche 2.** The authorized writer, append-only valuation
+note ledger, and B7-07 persistence UI are now implemented. The amount still
+uses only `opportunity.arv_after_repair_value`; the ledger uses the existing
+sanctioned Contact-note mechanism. No new carrier was created. The five gaps
+remain correctly inventoried historically: gaps 3 through 5 now have an
+approved V1 disposition in the note ledger, while per-comp gaps 1 and 2 remain
+deliberately session-only.

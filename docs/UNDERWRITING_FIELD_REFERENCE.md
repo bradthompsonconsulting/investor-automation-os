@@ -80,7 +80,7 @@ facts from Approve. That separation is unchanged.
 
 | Field | Field ID (Production / Test) | dataType | Inert proof | Named writer |
 |---|---|---|---|---|
-| `opportunity.arv_after_repair_value` | `cBkygqcHRseZUGCYYeba` / `ppe2ZTO7DJTMao74xvYI` | NUMERICAL | **Proven inert in the IAOS TEST location, 2026-09-04** — five-step absent-origin cycle on Test fixture `MAl1FWHEsK0QqsXt4v6f`, PB-D62, recorded in `PHASE_B_INERT_PROOFS.md`. Production-location workflow behaviour is NOT established by it; see PB-D62 section V | **Authorized, not yet implemented** — `setApprovedArv`, one field, named, per PB-D16. A later tranche |
+| `opportunity.arv_after_repair_value` | `cBkygqcHRseZUGCYYeba` / `ppe2ZTO7DJTMao74xvYI` | NUMERICAL | **Proven inert in the IAOS TEST location, 2026-09-04** — five-step absent-origin cycle on Test fixture `MAl1FWHEsK0QqsXt4v6f`, PB-D62, recorded in `PHASE_B_INERT_PROOFS.md`. Production-location workflow behaviour is NOT established by it; see PB-D62 section V | **Implemented, PB-D63 / INV-25 Tranche 2** — `ghl.opportunities.setApprovedArv`, one field, named, config-resolved, singular-GET-confirmed |
 | `opportunity.repair_estimate` | `hId4Yog6u5GP1Iwz1aNx` / `lSWxFUmWksfrViePG4UC` | NUMERICAL | none | none |
 | `opportunity.asking_price` | `YxCDaX7dLhBJL9GLGFpJ` / `owIOWnJuIheiwJVdJWQ5` | NUMERICAL | Proven inert 2026-08-29, PB-D60, Production fixture | `setAskingPrice` |
 
