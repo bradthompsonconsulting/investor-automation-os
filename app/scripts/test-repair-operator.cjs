@@ -60,13 +60,14 @@ const TABLE = JSON.parse(fs.readFileSync(TABLE_PATH, 'utf8'));
  * Keep the formula next to the number; a floor without its derivation is how
  * the next case gets it wrong.
  *
- *  105  check() call sites outside any loop
+ *  105  check() call sites outside any loop, sections 1-16
  * + 14  the two call sites inside section 1's per-row loop, 7 rows each
  * +  7  section 1's per-row "canonical row exists" counter, counted by hand
  * +  9  section 16's amendment-value loop, which counts by hand
- * = 135
+ * + 93  section 17's check() call sites, B6-F1 -- none inside a loop
+ * = 228
  */
-const FLOOR = 135;
+const FLOOR = 228;
 let failures = 0;
 let checks = 0;
 
@@ -257,7 +258,7 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   check('the fallback names itself', e.label, M.UNTOUCHED_FALLBACK_LABEL);
   check('the fallback carries no rows', e.estimate, undefined);
   check('explicitly empty answers are still untouched', est({
-    roof: { condition: 'not_asked', amount: '', dirty: false },
+    roof: { condition: 'not_asked', amount: '', quantity: '', dirty: false },
   }).mode, 'fallback');
   check('isUntouched agrees', M.isUntouched({}), true);
 }
@@ -394,6 +395,241 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   check('the amendment does not restate a BOOK figure as policy',
     docFlat.indexOf('does not assert that the cost book ever said') !== -1, true);
   check('the FMTM consequence is recorded', docFlat.indexOf('empty basis there') !== -1, true);
+}
+
+// ---- 17. B6-F1 (INV-43): the Windows quantity input.
+//
+// Every expected amount here is derived from the approved table's own windows
+// rate, never from a literal typed into this file. If the approved rate moves,
+// these cases move with it -- which is the point: the row must multiply the
+// SELECTED CONDITION'S approved value and nothing else.
+{
+  const win = rowOf('windows');
+  const winRow = TABLE.rows.filter(function (r) { return r.system === 'windows'; })[0];
+  const RATE_REPAIR = winRow.repairDefault;
+  const RATE_SEVERE = winRow.severeDefault;
+  const roof = rowOf('roof');
+  const setQty = (row, a, raw) => M.applyQuantity(row, a, raw);
+
+  // --- 17a. Windows is the counted row, and the rate is the approved one.
+  check('windows is the only counted row', Object.keys(M.QUANTITY_ROWS), ['windows']);
+  check('the count is labelled # windows', M.QUANTITY_ROWS.windows.label, '# windows');
+  check('quantitySpecFor finds exactly one counted row',
+    M.OPERATOR_ROWS.filter((r) => M.quantitySpecFor(r) !== undefined).map((r) => r.system),
+    ['windows']);
+  check('the Repair rate is the approved Repair value', M.unitRateFor(win, 'repair'), RATE_REPAIR);
+  check('the severe rate is the approved severe value', M.unitRateFor(win, 'severe'), RATE_SEVERE);
+  check('Good declares a zero rate', M.unitRateFor(win, 'good'), 0);
+  check('Not asked declares no rate at all', M.unitRateFor(win, 'not_asked'), null);
+  /* The contract's own words: no second hard-coded $750 anywhere. Comments
+     are stripped first, so the module's prose about the rule does not pass
+     the check on the rule's behalf. */
+  {
+    const strip = (f) => fs.readFileSync(f, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+    check('the module hard-codes no window rate',
+      new RegExp('\\b' + RATE_REPAIR + '\\b').test(strip(path.join(SRC, 'operator-model.ts'))), false);
+    check('the page hard-codes no window rate',
+      new RegExp('\\b' + RATE_REPAIR + '\\b').test(strip(PAGE)), false);
+  }
+
+  // --- 17b. Repair x quantity.
+  {
+    const a = setQty(win, M.applyCondition(win, 'repair'), '3');
+    check('Repair x 3 loads three windows', a.amount, String(3 * RATE_REPAIR));
+    const e = est({ windows: a });
+    check('Repair x 3 prices the row', lineFor(e, 'windows').outcome.amount, 3 * RATE_REPAIR);
+    check('a count-derived amount is IAOS policy',
+      lineFor(e, 'windows').outcome.provenance, 'IAOS_POLICY');
+    check('a count-derived amount is never MANUAL', e.estimate.byProvenance.MANUAL, 0);
+    check('a count-derived amount is never BOOK', e.estimate.byProvenance.BOOK, 0);
+  }
+
+  // --- 17c. Replace x quantity -- the reviewed example, 6 x $750 = $4,500.
+  {
+    const a = setQty(win, M.applyCondition(win, 'severe'), '6');
+    check('the severe state is labelled Replace', win.severeLabel, 'Replace');
+    check('Replace + 6 windows loads 6 x the approved severe rate',
+      a.amount, String(6 * RATE_SEVERE));
+    check('and that is $4,500 on the approved table', a.amount, '4500');
+    const e = est({ windows: a });
+    check('Replace + 6 windows totals $4,500', e.estimate.resolvedSubtotal, 4500);
+    check('the count itself is remembered', a.quantity, '6');
+    check('a loaded count is not an operator override', a.dirty, false);
+  }
+
+  // --- 17d. Known Amount stays editable, and a manual figure governs.
+  {
+    let a = setQty(win, M.applyCondition(win, 'severe'), '6');
+    a = M.applyAmount(a, '5200');
+    check('a manual Known Amount overrides the calculated one', a.amount, '5200');
+    check('the override is marked as the operator amount', a.dirty, true);
+    check('the count survives the override', a.quantity, '6');
+    const e = est({ windows: a });
+    check('the override is the amount used', lineFor(e, 'windows').outcome.amount, 5200);
+    check('the override is MANUAL', lineFor(e, 'windows').outcome.provenance, 'MANUAL');
+    check('the override is not policy', e.estimate.byProvenance.IAOS_POLICY, 0);
+  }
+
+  // --- 17e. A count changed AFTER a manual override recalculates over it.
+  {
+    let a = setQty(win, M.applyCondition(win, 'severe'), '6');
+    a = M.applyAmount(a, '5200');
+    a = setQty(win, a, '8');
+    check('changing the count replaces the manual amount', a.amount, String(8 * RATE_SEVERE));
+    check('the manual figure does not survive', a.amount === '5200', false);
+    check('the recalculated amount is policy again', a.dirty, false);
+    check('the new count stands', a.quantity, '8');
+    check('the recalculated amount is what prices the row',
+      lineFor(est({ windows: a }), 'windows').outcome.provenance, 'IAOS_POLICY');
+  }
+
+  // --- 17f. Condition change recalculates at the SELECTED condition's rate.
+  {
+    let a = setQty(win, M.applyCondition(win, 'repair'), '6');
+    check('Repair + 6 uses the Repair rate', a.amount, String(6 * RATE_REPAIR));
+    a = M.applyCondition(win, 'severe', a);
+    check('the count survives a Repair -> Replace change', a.quantity, '6');
+    check('the amount is recalculated at the severe rate', a.amount, String(6 * RATE_SEVERE));
+    a = M.applyAmount(a, '9999');
+    a = M.applyCondition(win, 'repair', a);
+    check('a condition change clears a manual override', a.dirty, false);
+    check('and recalculates at the newly selected rate', a.amount, String(6 * RATE_REPAIR));
+    check('the count is still not lost', a.quantity, '6');
+    /* The rates are equal in DFW V1. The IMPLEMENTATION must still read the
+       selected condition's own value, so this asserts the source rather than
+       the coincidence. */
+    check('the two rates are read separately, whatever they happen to be',
+      M.unitRateFor(win, 'repair') === winRow.repairDefault
+        && M.unitRateFor(win, 'severe') === winRow.severeDefault, true);
+  }
+
+  // --- 17g. Good clears the count and loads $0.
+  {
+    let a = setQty(win, M.applyCondition(win, 'severe'), '6');
+    a = M.applyCondition(win, 'good', a);
+    check('Good clears the count', a.quantity, '');
+    check('Good loads $0', a.amount, '0');
+    check('Good is not an override', a.dirty, false);
+    const line = lineFor(est({ windows: a }), 'windows');
+    check('Good is a real zero, not an absent price', line.outcome.kind, 'no_repair');
+    check('Good creates no repair charge', est({ windows: a }).estimate.resolvedSubtotal, 0);
+    check('Good remains editable', M.applyAmount(a, '400').amount, '400');
+  }
+
+  // --- 17h. Not Asked is neutral: no count, no amount, no charge.
+  {
+    let a = setQty(win, M.applyCondition(win, 'severe'), '6');
+    a = M.applyCondition(win, 'not_asked', a);
+    check('Not asked clears the count', a.quantity, '');
+    check('Not asked loads no amount', a.amount, '');
+    const e = est(Object.assign(answers([['roof', 'good']]), { windows: a }));
+    check('Not asked creates no repair charge', e.estimate.resolvedSubtotal, 0);
+    check('Not asked is an unpriced risk, not a zero',
+      lineFor(e, 'windows').outcome.kind, 'unpriced_risk');
+    check('and it says it was not asked',
+      lineFor(e, 'windows').outcome.reason.indexOf('not asked') === 0, true);
+  }
+
+  // --- 17i. A count is an intentional interaction: the fallback is removed.
+  {
+    const a = setQty(win, M.applyCondition(win, 'severe'), '6');
+    const e = est({ windows: a });
+    check('a Windows interaction ends the untouched fallback', e.mode, 'rows');
+    check('the $20,000 fallback is not the total', e.total === M.UNTOUCHED_FALLBACK_AMOUNT, false);
+    check('the fallback is not added to the count calculation', e.total, 4500);
+    check('isUntouched disagrees once a count exists', M.isUntouched({ windows: a }), false);
+    /* A count alone, with no condition ever selected, is still an interaction.
+       It prices nothing -- there is no approved rate under Not asked -- but it
+       must not leave the estimator looking untouched. */
+    const bare = M.applyQuantity(win, M.EMPTY_ANSWER, '6');
+    check('a bare count is still an interaction', M.isUntouched({ windows: bare }), false);
+    check('a bare count prices nothing on its own', bare.amount, '');
+  }
+
+  // --- 17j. Blank, zero and unreadable counts.
+  {
+    check('a blank count parses as blank', M.parseQuantity('').kind, 'blank');
+    check('a whole number parses as a value', M.parseQuantity('6').value, 6);
+    check('a fractional count is invalid', M.parseQuantity('1.5').kind, 'invalid');
+    check('a negative count is invalid', M.parseQuantity('-2').kind, 'invalid');
+    check('an unreadable count is invalid', M.parseQuantity('six').kind, 'invalid');
+
+    const blank = M.applyCondition(win, 'severe');
+    check('a blank count loads one window, the pre-B6-F1 behaviour',
+      blank.amount, String(RATE_SEVERE));
+    check('a blank count is not read as zero', blank.amount === '0', false);
+    check('and it prices one window', lineFor(est({ windows: blank }), 'windows').outcome.amount, RATE_SEVERE);
+
+    const zero = setQty(win, M.applyCondition(win, 'severe'), '0');
+    check('a stated zero count is a real zero', zero.amount, '0');
+    check('a stated zero count is no repair', lineFor(est({ windows: zero }), 'windows').outcome.kind, 'no_repair');
+
+    const bad = setQty(win, M.applyCondition(win, 'severe'), '1.5');
+    check('an unreadable count loads nothing', bad.amount, '');
+    check('an unreadable count keeps what was typed', bad.quantity, '1.5');
+    check('an unreadable count leaves the row visibly unpriced',
+      lineFor(est({ windows: bad }), 'windows').outcome.kind, 'unpriced_risk');
+    check('an unreadable count invents no amount', est({ windows: bad }).estimate.resolvedSubtotal, 0);
+  }
+
+  // --- 17k. Every other repair row is untouched by any of this.
+  {
+    check('an uncounted row has no quantity spec', M.quantitySpecFor(roof), undefined);
+    let a = M.applyCondition(roof, 'repair');
+    check('an uncounted row carries a blank quantity', a.quantity, '');
+    check('an uncounted row still loads its approved default', a.amount, '2500');
+    a = M.applyAmount(a, '6000');
+    check('an uncounted row still takes a manual override', a.amount, '6000');
+    check('and that override is still the operator amount', a.dirty, true);
+    a = M.applyCondition(roof, 'severe', a);
+    check('an uncounted row still resets on a condition change', a.amount, '15000');
+    check('an uncounted row gains no count from the reset', a.quantity, '');
+    /* The whole-estimate shape is unchanged for the other six rows. */
+    const e = est(answers([['roof', 'severe'], ['hvac', 'repair']]));
+    check('the other rows total exactly as before', e.estimate.resolvedSubtotal, 17500);
+    check('and leave the same five unpriced risks', e.estimate.unpricedRisks.length, 5);
+  }
+
+  // --- 17l. The surface actually wires it.
+  {
+    const pageCode = fs.readFileSync(PAGE, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+    check('the page renders the counted row label', /quantity\.label/.test(pageCode), true);
+    check('the page routes a count through applyQuantity',
+      /applyQuantity\(row, current, raw\)/.test(pageCode), true);
+    check('the page asks the model which rows are counted',
+      /quantitySpecFor\(row\)/.test(pageCode), true);
+    check('the page hands the previous answer to applyCondition',
+      /applyCondition\(row, condition, current\)/.test(pageCode), true);
+    check('the count never reaches the amount handler',
+      /onQuantity=\{\(raw\) => setAmount/.test(pageCode), false);
+    check('no acknowledgement gate crept back in', /type="checkbox"/.test(pageCode), false);
+  }
+
+  // --- 17m. The canonical amendment that authorizes all of the above.
+  {
+    const DOC = path.resolve(APP, '..', 'docs', 'ESTIMATED_REPAIRS_STANDARD.md');
+    const docFlat = fs.readFileSync(DOC, 'utf8').replace(/\s+/g, ' ');
+    check('the document carries the dated B6-F1 amendment',
+      docFlat.indexOf('## Windows quantity input amendment — 2026-09-04') !== -1, true);
+    check('the amendment names the field', docFlat.indexOf('`# windows`') !== -1, true);
+    check('the amendment states the reviewed example',
+      docFlat.indexOf('Six windows at `Replace` therefore loads **$4,500**') !== -1, true);
+    check('the amendment forbids assuming the two rates stay equal',
+      docFlat.indexOf('never assumed shared') !== -1, true);
+    check('the amendment forbids a second copy of the rate',
+      docFlat.indexOf('A second hard-coded `$750` anywhere is a defect') !== -1, true);
+    check('the amendment keeps persistence unchanged',
+      docFlat.indexOf('The count is session state and is not persisted') !== -1, true);
+    check('the amendment creates no carrier',
+      docFlat.indexOf('no carrier was created for this') !== -1, true);
+    check('the superseded sentence is marked, not deleted',
+      docFlat.indexOf('No quantity input is authorized by this amendment.') !== -1
+        && docFlat.indexOf('SUPERSEDED, in that last sentence only') !== -1, true);
+    check('the approved per-window value is unchanged by it',
+      docFlat.indexOf('The approved per-window rate stays `$750 per window` in both states') !== -1, true);
+  }
 }
 
 cleanup();

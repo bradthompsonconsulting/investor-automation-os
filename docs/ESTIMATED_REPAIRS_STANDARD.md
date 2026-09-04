@@ -459,6 +459,12 @@ window, and V1 has no window-count input: the field loads one window's cost and
 the operator enters the real total through the ordinary manual path. No
 quantity input is authorized by this amendment.
 
+> **SUPERSEDED, in that last sentence only, by the `Windows quantity input`
+> amendment dated 2026-09-04 below (B6-F1 / INV-43).** A window-count input now
+> exists. The approved per-window VALUES in the table above are unchanged by
+> that amendment, and everything else in this section still stands. Per PB-D43
+> the later statement governs.
+
 ### Operator interaction contract
 
 - **Condition vocabulary is `Not asked | Good | Repair | <severe>`.** The
@@ -516,3 +522,85 @@ These operator-review questions are closed. The estimator implementation
 matching this amendment is INV-14 remediation and remains behind the Jess gate;
 this document records the approved policy, and does not itself accept the
 implementation.
+
+---
+
+## Windows quantity input amendment — 2026-09-04
+
+Brad identified a usability defect in the Windows row during Board #6
+follow-up. Raised and approved as **B6-F1 / INV-43**.
+
+**What it changes.** The Windows row gains a quantity input labelled
+`# windows`. **It supersedes exactly one sentence** of the governing
+operator-defaults amendment above: "No quantity input is authorized by this
+amendment."
+
+**What it does NOT change.** No approved value moves. The approved per-window
+rate stays `$750 per window` in both states, and every other row in the
+`Approved V1 operator defaults` table is untouched. No new provenance class, no
+new condition, no new carrier, no persistence change.
+
+### The rule
+
+The Known Amount a counted row loads is **the SELECTED CONDITION'S approved
+rate, multiplied by the stated count.**
+
+- **Repair** loads the count times the approved Repair rate.
+- **The severe state** loads the count times the approved severe rate.
+- Six windows at `Replace` therefore loads **$4,500**.
+
+**The rate is read per condition, never assumed shared.** Repair and Replace
+are both `$750 per window` in DFW V1 today, and they are two separately
+approved values that a future review may move independently. An implementation
+that multiplied by one rate for both states would be wrong the day they
+diverge, and is forbidden.
+
+**There is one authored copy of that rate.** It is the approved table's
+existing `repairDefault` and `severeDefault` for the Windows row. A second
+hard-coded `$750` anywhere is a defect.
+
+### Interaction contract for a counted row
+
+- **Known Amount stays editable, and a typed figure still governs.** The rule
+  that the number in the field is the number used is unchanged, and a typed
+  figure is `MANUAL` exactly as before.
+- **Changing the count RECALCULATES from approved policy and REPLACES a manual
+  figure.** This is deliberate and matches the existing condition-change rule:
+  restating the count is a statement about the property, and the amount that
+  follows from it is policy again, not the operator's earlier override.
+- **Changing the condition recalculates at the newly selected condition's
+  rate.** The stated count SURVIVES a Repair/severe change, because how many
+  windows there are does not depend on which was selected.
+- **`Good` clears the count and loads $0.** A real zero, still editable, still
+  distinct from an absent price.
+- **`Not asked` clears the count and loads nothing.** Neutral: neither the
+  count nor the amount creates a repair charge, and the row remains an unpriced
+  risk until something is entered. The quantity field is inert under `Not
+  asked` and `Good` because there is no approved rate for it to multiply.
+- **A blank count on a priced condition loads ONE unit's approved amount** —
+  the pre-B6-F1 behaviour of the row, unchanged. A blank count is not read as
+  zero: "how many" being unanswered is not the claim that there are none.
+- **A count that is not a whole number of windows loads nothing**, and the row
+  is a visible unpriced risk. No count is rounded into a number nobody typed.
+- **Every other repair row is unchanged.** Windows is the only counted row, and
+  the ordinary manual Known Amount behaviour of the other six is preserved
+  exactly.
+
+### Fallback, persistence and provenance — unchanged
+
+- **An intentional Windows interaction removes the $20,000 fallback**, on the
+  same terms as any other interaction: a condition, an amount, or now a count.
+  The fallback is still never added to row amounts.
+- **A count-derived amount is `IAOS DFW POLICY`**, because the rate is policy
+  and the count is a property fact rather than a pricing judgment. Typing over
+  it makes it `MANUAL`, as it always did.
+- **Persistence is untouched.** Only the approved TOTAL persists, through the
+  existing `estimated_repairs` carrier. The count is session state and is not
+  persisted; locked principle 7 ("No persisted itemization in V1") stands, and
+  no carrier was created for this.
+
+### Status
+
+The policy is approved. The implementation is B6-F1 / INV-43 and remains behind
+the Jess gate; this document records the approved policy and does not itself
+accept the implementation.

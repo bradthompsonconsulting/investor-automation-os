@@ -57,7 +57,7 @@
       "repairDefault": 750,
       "severeDefault": 750,
       "severeLabel": "Replace",
-      "note": "$750 per window — enter the total"
+      "note": "$750 per window — enter the count"
     }
   ]
 }
