@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "test:arv-reconciliation": "node scripts/test-arv-reconciliation.cjs",
     "test:comp-classification": "node scripts/test-comp-classification.cjs",
     "test:propstream-comp-csv": "node scripts/test-propstream-comp-csv.cjs",
     "test:repair-estimation": "node scripts/test-repair-estimation.cjs",
