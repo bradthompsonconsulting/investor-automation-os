@@ -3725,3 +3725,225 @@ reviewed before this entry existed. No new policy question is introduced
 here; INV-18's own acceptance criterion is that no unresolved
 valuation-policy choice remains for Brad, and this entry is written to
 leave none.
+
+---
+
+### PB-D62 -- `opportunity.arv_after_repair_value` designation, the IAOS Test proof location, and the ARV writer authorization
+
+**Decision.** `opportunity.arv_after_repair_value` (`cBkygqcHRseZUGCYYeba`
+Production, `ppe2ZTO7DJTMao74xvYI` Test, NUMERICAL) is designated for its own
+Opportunity-side inert proof on PB-D58 section I's five-step architecture, and
+that proof is executed in the **IAOS TEST location**, on a fixture bound for the
+purpose, under the ABSENT-ORIGIN contract.
+
+It further authorizes ONE named writer for the field under PB-D16, to be
+implemented separately, and records what the Test-location proof does and does
+not establish.
+
+Brad approved all four of the Product Owner decisions this rests on, 2026-09-04,
+on the INV-25 blocker-resolution report: authorize the proof; take Route A (bind
+a Test fixture) and not the Production-fixture route; accept append-only GHL
+Contact notes as authoritative V1 valuation provenance; and accept that the
+single-valued ARV carrier is overwritten on re-approval while the note ledger
+preserves prior approval history.
+
+---
+
+## I. Why the Test location, and what changed to allow it
+
+PB-D58 section II excluded this field from its proof on two independently
+sufficient grounds: the fixture's `arv_after_repair_value` carries a value, so
+proving against it needs the unspecified populated-origin mechanism; and the
+same value is an input the resolved-branch production harness depends on, so
+writing it would contaminate a working fixture.
+
+**Neither ground is answered here. Both are made irrelevant.** The proof does
+not run on that fixture and does not run in that location.
+
+The reason it could not before was mechanical and is recorded rather than
+inferred: `scripts/harness-fixtures.json` carried a `production` block and
+nothing else, and every proof suite resolves
+`fixtures[ENV].fixtureRecords.opportunities.iaosUnderwritingTest` and REFUSES
+when it is absent. The Test location has had complete identifiers in
+`app/shared/ghl-config.ts` since Gate 4C; what it lacked was bound fixture
+records. That is now supplied, and it is supplied as a REUSABLE mechanism:
+`scripts/create-test-fixture.ts` binds the fixture idempotently, and
+`scripts/inert-proof-opp-test.ts` carries a FIELDS registry so the next
+authorized Opportunity field is a registry entry plus its own designation
+decision, not a sixth copied suite.
+
+**Absent origin, not populated.** A freshly bound Test opportunity carries no
+custom fields at all. OBSERVED 2026-09-04: `customFields: []`. So this is
+PB-D58's proven absent-origin contract -- write, verify, clear to KEY_ABSENT,
+confirm -- and PB-D59 Proof A's populated-origin restore contract is explicitly
+NOT the execution path. Route A is what makes the simpler and better-proven
+contract available.
+
+## II. Transport, and why it is not the proxy
+
+The existing suites reach GHL through the deployed
+`ghl-proxy`, which resolves its location once at module scope from
+`getConfig(process.env.IAOS_ENV)` and refuses any request naming another
+location. **The deployed proxy can only ever reach Production.** Reaching the
+Test location requires talking to GHL directly with a Test credential.
+
+That transport follows the credential doctrine already established by
+`scripts/capture-ghl-identifiers.ts` and is not a second one:
+`--credential-file` is required with no default and no fallback; the token is
+read only from that file via `dotenv.parse()` and never from `process.env`; and
+which file was named is recorded in every evidence artifact.
+
+**The tool structurally cannot reach Production.** Three gates run BEFORE the
+credential is read and before any request is issued: `--env` must be `test`;
+`--location` must not be the Production location id; and `--location` must be
+the location the shared config names as Test. Both refusals were exercised and
+recorded rather than assumed.
+
+## III. Designated test value
+
+`417529.63` is approved before the write under the PB-D30 amendment dated
+2026-08-03. It is DELIBERATELY SELECTED and is never described as observed.
+
+* *Valid for the field.* NUMERICAL, two decimal places, on the round trip
+  PB-D58 section VI observed.
+* *Recognizable during verification.* Non-round, non-repeating; no figure IAOS
+  computes produces it.
+* *Unlikely to be confused with production data.* Distinct from all eleven
+  values previously in use -- `187500.25`, `4321.25`, `8642.75`, `24680.25`,
+  `135790.25`, `8271.31`, `313370.42`, `486210.73`, `642318.57`, `571204.86`,
+  `398715.29` -- and from the `250000` and `25000` PB-D59 Proof B recorded on
+  the Production fixture, and from the `100000` and `10000` that fixture
+  carries today (see section VII).
+* *Restored immediately after the proof cycle.* Required, and confirmed.
+
+**Operator exposure is structurally nil, and that is the second dividend of
+Route A.** PB-D60 had to reason carefully about a designated value being
+visible in the rail and computationally active in Underwriting, because its
+proof ran in Production. This value never entered any surface an operator uses:
+the deployed application is Production-pinned, so no IAOS screen reads the Test
+location at all. The containment PB-D60 had to argue for is here a property of
+where the proof ran.
+
+## IV. Results -- OBSERVED 2026-09-04
+
+Fixture bound in the IAOS Test location `SoTgVoaFGHtBdRFvXWQV`:
+
+    contact       NAGtUZ9aOE5C1GatJzpT   "IAOS Test Probe"
+                  iaos-underwriting-fixture@example.com, NO PHONE
+    opportunity   MAl1FWHEsK0QqsXt4v6f   "IAOS Underwriting Test"
+                  Seller Leads Pipeline, stage New Lead - Seller, status open
+
+The contact's email is on `example.com`, reserved by RFC 2606 and undeliverable
+by construction, and no phone number is set at all. The fixture carries no
+address by which it could receive a call, an SMS or a mailer -- a stronger
+guarantee than an intention not to contact it.
+
+Five steps, five deliberate commands, two mutations, both restored:
+
+    step 1  capture   target ABSENT at origin; customFields []
+                      stage 1228a837-...-cfd98a6d9367, status open
+    step 2  write     one custom-fields-only PUT, field_value 417529.63, 200
+    step 3  verify    observed 417529.63 === sent, landed on poll 1
+                      battery: others/offers/stage/status ALL unchanged
+    step 4  clear     one custom-fields-only PUT, field_value "", 200
+    step 5  confirm   id STRUCTURALLY absent from customFields on poll 1
+                      battery ALL unchanged; restoredToOrigin true
+
+`restoredToOrigin` compares the whole capture, not just the target, and returned
+true: the fixture is byte-identical to its pre-proof state.
+
+**Field-safety result: `opportunity.arv_after_repair_value` is PROVEN INERT in
+the IAOS Test location**, to the same evidentiary standard PB-D58, PB-D59 and
+PB-D60 produced for their fields.
+
+## V. What this proof does NOT establish -- stated here, not in a footnote
+
+**It does not establish Production-location workflow behaviour.** Workflow
+configuration is per-location, and per section 4.6 it is not API-derivable at
+all. The Test credential cannot even read the workflow inventory:
+`GET /workflows/?locationId` returned **401** OBSERVED 2026-09-04, the scope
+being absent from that token.
+
+This is a real residual and it is NOT closed by anything above. It is also not
+a regression: **no opportunity proof in this repository has ever established
+it.** PB-D58 section II said so in terms -- "no workflow watches an opportunity
+custom field remains unproven rather than disproven. The proof proceeds on a
+disposable fixture for that reason, not despite it." What the Production proofs
+had that this one does not is co-location of the observation with the location
+the write will eventually target.
+
+What IS established, and is what the whole family rests on, is that a
+custom-fields-only PUT carrying only this field moves nothing else on the
+record -- not another custom field, not one of the seven `offer_` fields, not
+the stage, not the status -- and that the value round-trips exactly and clears
+to KEY_ABSENT.
+
+**Whether that residual requires a one-shot Production confirmation before the
+writer goes live is a Product Owner decision and is NOT taken here.** It is
+recorded so that it is decided deliberately rather than discovered later.
+
+## VI. The writer this authorizes
+
+ONE named method, implemented in a later tranche and not by this decision:
+
+    ghl.opportunities.setApprovedArv(opportunityId, value)
+
+* **Named, one field, per PB-D16.** It resolves its id from
+  `opportunityFacts.arv` and takes no field-id parameter. It is not a
+  generalized opportunity setter and cannot be pointed at another field. A
+  second field owes a second named setter and its own inert proof; PB-D58
+  section IV and PB-D60 both say three proven opportunity fields do not prove a
+  fourth, and four do not prove a fifth.
+* **Custom-fields-only PUT body.** No `pipelineStageId`, no `status`, no `name`,
+  no `monetaryValue`, no tags. That is the mechanism the proof rests on and a
+  body carrying anything else forfeits it.
+* **Readback is the singular GET parsed by `readSingularFieldValue`**, never
+  the resolver's list-shaped readers -- PB-D60 reproduced that hazard live.
+* **It must never be paired with a write to `contact.arv`.** The two carriers
+  have precedence in `resolver.ts` deliberately; synchronizing them destroys the
+  seed's meaning. This is the rule `setAskingPrice` already carries for the
+  identical Contact/Opportunity pair.
+* **A 200 is not success.** The caller checks the readback.
+
+**PB-D59 is UNCHANGED and is not reopened.** Approve still persists exactly
+three carriers -- `endbuyer_maximum_purchase_price`, `mao_max_allowable_offer`,
+`assignment_mode` -- in one PUT through `saveUnderwritingFields`, and its
+three-way distinctness guard stands. ARV is **a deal fact, separately
+persisted**, not an underwriting output; PB-D59 section I's exclusion of it from
+Approve is correct and stays. The two writes are different methods, different
+decisions and different tranches.
+
+## VII. Scope
+
+This decision creates NO GHL custom field or carrier in either location: the
+ARV carrier already existed in both, and the Test fixture is a contact and an
+opportunity, not a field. It authorizes NO Production mutation and none
+occurred. It does not implement the writer, the note ledger, or any UI. It does
+not alter the Production fixture `OcGWOP9n666i4Q1MLd31`: no request in this
+tranche named the Production location, and the tooling refuses it structurally.
+It does not generalize the contact-side runner. It does not amend PB-D58,
+PB-D59, PB-D60 or PB-D61, all of which stand as written.
+
+**OBSERVED while confirming that, and recorded rather than acted on.** A
+read-only GET of the Production fixture on 2026-09-04 returned
+`arv_after_repair_value` `100000`, `repair_estimate` `10000`, `assignment_mode`
+"25% of Buyer Profit", `mao_max_allowable_offer` `52197.33` and
+`endbuyer_maximum_purchase_price` `57197.33`. PB-D59 Proof B recorded `250000`,
+`25000`, "Standard Minimum", `145142.99` and `150142.99` on 2026-08-17. **That
+fixture has moved since that proof.** By what, and when, is UNKNOWN and is not
+determined here. The five values are mutually consistent with a later
+legitimate Approve run rather than with corruption, but that is an inference
+and it is not established.
+
+Two things follow, neither a defect. `verify-underwriting.cjs` is unaffected BY
+DESIGN: it refuses to pin those figures -- "those exist because someone typed
+them into a GHL dialog, and asserting them would fail as a regression" -- and
+recomputes PB-D56's waterfall from the rail instead. And PB-D58's second
+exclusion ground, that proving against this record would contaminate a working
+harness fixture, is REINFORCED rather than weakened: the record's state is
+demonstrably not stable, which is a further argument for proving in the Test
+location rather than on it.
+
+**Unchanged:** section 4.1's HARD NO on `offer_` fields, tags, pipeline stage
+and workflow triggers. PB-D55, PB-D56, PB-D57, PB-D58, PB-D59, PB-D60 and
+PB-D61 in full. Every existing proof record.
