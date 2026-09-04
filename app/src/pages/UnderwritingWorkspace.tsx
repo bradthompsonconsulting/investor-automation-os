@@ -25,12 +25,12 @@ import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriti
    core is accepted and unchanged; this page asks the questions and renders
    what the core returns. It decides no pricing of its own. */
 import { computeRepairEstimate, RepairInputError } from "../lib/repair-estimation/compute";
-import { findReferenceRow } from "../lib/repair-estimation/reference";
-/* INV-14 — the approved question set, defaults and untouched fallback. The
-   canonical reference table and the calculation core are untouched. */
+/* INV-14 — the approved question set, defaults, provenance names and
+   untouched fallback. The canonical reference table and the calculation core
+   are untouched; this surface no longer reads the table directly. */
 import {
   applyAmount, applyCondition, EMPTY_ANSWER, operatorEstimate,
-  OPERATOR_ROWS, parseKnownAmount,
+  OPERATOR_PROVENANCE_LABEL, OPERATOR_ROWS, parseKnownAmount,
 } from "../lib/repair-estimation/operator-model";
 import type {
   Answers, OperatorCondition, OperatorRow, RowAnswer,
@@ -425,13 +425,6 @@ function AssignmentModeSelector({ currentLabel, absentReason, state, onSelect }:
 // lib/repair-estimation/operator-model.ts. This file asks and renders; it
 // decides no pricing of its own.
 
-/** Operator-facing provenance. The internal keys never reach the screen. */
-const PROVENANCE_LABEL: Record<"BOOK" | "IAOS_POLICY" | "MANUAL", string> = {
-  BOOK: "BOOK",
-  IAOS_POLICY: "IAOS POLICY",
-  MANUAL: "MANUAL",
-};
-
 const PROVENANCE_COLOR: Record<"BOOK" | "IAOS_POLICY" | "MANUAL", string> = {
   BOOK: "#38BDF8",
   IAOS_POLICY: "#A78BFA",
@@ -670,7 +663,7 @@ function RepairEstimator({ contactId, onPersisted }: {
             <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 18px", marginTop: "12px", fontSize: "11px" }}>
               {(["BOOK", "IAOS_POLICY", "MANUAL"] as const).map((p) => (
                 <span key={p} style={{ color: "#475569" }}>
-                  <span style={{ color: PROVENANCE_COLOR[p] }}>{PROVENANCE_LABEL[p]}</span>{" "}
+                  <span style={{ color: PROVENANCE_COLOR[p] }}>{OPERATOR_PROVENANCE_LABEL[p]}</span>{" "}
                   {money(result.estimate.byProvenance[p])}
                 </span>
               ))}

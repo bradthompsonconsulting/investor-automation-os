@@ -83,7 +83,24 @@ export const OPERATOR_ROWS: readonly OperatorRow[] = [
  */
 export const UNTOUCHED_FALLBACK_AMOUNT = 20000;
 export const UNTOUCHED_FALLBACK_LABEL =
-  "IAOS policy fallback — estimator not used";
+  "IAOS DFW policy fallback — estimator not used";
+
+/**
+ * Operator-facing provenance names, per the 2026-09-04 amendment.
+ *
+ * `IAOS DFW POLICY` is the operator-facing NAME of the approved policy class,
+ * carried internally as the existing `IAOS_POLICY` provenance so the type
+ * contract and the calculation core are unchanged. It is a name, not a pricing
+ * input: no location is read to select these amounts and none may be added.
+ *
+ * BOOK keeps its own name. A policy amount must never read as a cost-book
+ * fact, and a manual amount must never read as either.
+ */
+export const OPERATOR_PROVENANCE_LABEL: Record<Provenance, string> = {
+  BOOK: "BOOK",
+  IAOS_POLICY: "IAOS DFW POLICY",
+  MANUAL: "MANUAL",
+};
 
 /** One row's operator state. `dirty` means the amount was typed, not loaded. */
 export interface RowAnswer {

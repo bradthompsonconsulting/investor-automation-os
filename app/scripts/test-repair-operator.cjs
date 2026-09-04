@@ -50,11 +50,12 @@ const { computeRepairEstimate } = require(path.join(TMP, 'compute.js'));
  * Keep the formula next to the number; a floor without its derivation is how
  * the next case gets it wrong.
  *
- *   80  check() call sites outside any loop
+ *   99  check() call sites outside any loop
  * + 14  the two call sites inside section 1's default tables, 7 rows each
- * = 94
+ * +  9  section 16's amendment-value loop, which counts by hand
+ * = 122
  */
-const FLOOR = 94;
+const FLOOR = 122;
 let failures = 0;
 let checks = 0;
 
@@ -293,9 +294,60 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
     .replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
   check('the operator model imports no reference row', /findReferenceRow|REFERENCE_TABLE/.test(codeOnly), false);
   check('the operator model writes nothing', /ghl|setEstimatedRepairs|fetch\(/i.test(codeOnly), false);
-  check('the operator model reads no geography',
-    ['zip', 'geograph', 'market', 'localiz', 'craftsman', 'dfw'].filter((t) => codeOnly.toLowerCase().indexOf(t) !== -1), []);
+  /* No geographic SELECTOR. "DFW" is authorized by the 2026-09-04 amendment
+     as the display name of the policy class, and appears only in the two
+     label literals -- never as an input that chooses an amount. */
+  check('the operator model reads no geographic selector',
+    ['zip', 'geograph', 'market', 'localiz', 'craftsman'].filter((t) => codeOnly.toLowerCase().indexOf(t) !== -1), []);
+  check('DFW appears only as an authorized display name',
+    (codeOnly.match(/DFW/g) || []).length, 2);
   check('no offer or MAO economics', /offer_|\bmao\b/i.test(codeOnly), false);
+}
+
+// ---- 16. Provenance names, and the canonical amendment that authorizes them.
+{
+  check('BOOK keeps its own name', M.OPERATOR_PROVENANCE_LABEL.BOOK, 'BOOK');
+  check('policy amounts are named IAOS DFW POLICY', M.OPERATOR_PROVENANCE_LABEL.IAOS_POLICY, 'IAOS DFW POLICY');
+  check('manual amounts are named MANUAL', M.OPERATOR_PROVENANCE_LABEL.MANUAL, 'MANUAL');
+  check('a policy amount is never named BOOK',
+    M.OPERATOR_PROVENANCE_LABEL.IAOS_POLICY === M.OPERATOR_PROVENANCE_LABEL.BOOK, false);
+  check('the fallback is named DFW policy too',
+    M.UNTOUCHED_FALLBACK_LABEL.indexOf('IAOS DFW policy') === 0, true);
+
+  const pageCode = fs.readFileSync(PAGE, 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+  check('the page renders the shared provenance names', /OPERATOR_PROVENANCE_LABEL\[p\]/.test(pageCode), true);
+  check('the page keeps no second provenance label map', /const PROVENANCE_LABEL\b/.test(pageCode), false);
+
+  const DOC = path.resolve(APP, '..', 'docs', 'ESTIMATED_REPAIRS_STANDARD.md');
+  const doc = fs.readFileSync(DOC, 'utf8');
+  /* Whitespace-flattened so a phrase check cannot fail on a line wrap. */
+  const docFlat = doc.replace(/\s+/g, ' ');
+  check('the canonical standard carries the dated amendment',
+    docFlat.indexOf('## Governing operator-defaults amendment — 2026-09-04') !== -1, true);
+  /* Every approved value is stated in the document, not only in code. */
+  for (const v of ['$2,500', '$15,000', '$8,000', '$3,500', '$12,500', '$1,500', '$3,000', '$5,000', '$750 per window']) {
+    checks++;
+    if (docFlat.indexOf(v) !== -1) console.log('PASS  amendment states ' + v);
+    else { failures++; console.error('FAIL  amendment states ' + v); }
+  }
+  check('the amendment names the policy class', docFlat.indexOf('`IAOS DFW POLICY`') !== -1, true);
+  check('the amendment keeps geography out of pricing',
+    docFlat.indexOf('is a NAME, not a pricing input') !== -1, true);
+  check('the amendment removes Unknown', /`Unknown` is REMOVED/.test(docFlat), true);
+  check('the amendment records the $20,000 fallback', docFlat.indexOf('$20,000 `IAOS DFW POLICY` fallback') !== -1, true);
+  check('the amendment forbids adding the fallback to rows',
+    docFlat.indexOf('never added to row amounts') !== -1, true);
+  check('the amendment leaves persistence unchanged',
+    docFlat.indexOf('No persisted itemization in V1') !== -1, true);
+
+  /* Historical BOOK provenance is preserved, not rewritten. */
+  check('the historical $6,500 BOOK hvac row still stands in the document',
+    /HVAC — `Replace` or `Unknown` \| \$6,500 \| `BOOK`/.test(docFlat), true);
+  check('the amendment says so explicitly',
+    docFlat.indexOf('historical BOOK record is preserved and is NOT rewritten') !== -1, true);
+  check('the amendment does not restate a BOOK figure as policy',
+    docFlat.indexOf('does not assert that the cost book ever said') !== -1, true);
+  check('the FMTM consequence is recorded', docFlat.indexOf('empty basis there') !== -1, true);
 }
 
 cleanup();
