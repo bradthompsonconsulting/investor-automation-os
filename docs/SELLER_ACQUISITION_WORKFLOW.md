@@ -244,6 +244,19 @@ criteria, and it authorizes no comp-evidence carrier, importer, or
 classification engine. This gate remains CONCEPT ESTABLISHED, CRITERIA
 UNDECIDED until a future decision spends PB-D61's evidence states on it.
 
+*Amendment 2026-09-04, B8-01 / INV-44.* Board #8's first RESET issue names
+Offer Readiness's criteria at the category level -- supported knowledge of
+property, repairs/condition, ARV, deal economics, transaction/deal-structure
+assumptions, and seller price position, with no unresolved material unknown
+that could significantly change the supported offer -- and locks a
+UNKNOWN -> PRELIMINARY -> SUPPORTED evidence ladder per category, distinct
+from PB-D61's ARV-specific HIGH/MODERATE/LOW/INSUFFICIENT states above.
+`docs/DEAL_ECONOMICS_OFFER_READINESS_V1.md` is the full contract. This gate
+is therefore no longer CRITERIA UNDECIDED at the category level, but the
+mechanism that assigns any fact's evidence level -- rep judgment, derived
+completeness, or a hybrid -- remains undecided there, named as a B8-02
+reconciliation item rather than invented.
+
 **Contract Readiness -- DISTINCT, DETAIL DEFERRED.** Do we have what is
 needed to turn an agreement into an executable transaction? The source
 lists the items; the gate's precise definition belongs to contracting
