@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2, BellOff,
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
-  Calculator, Copy, ExternalLink,
+  Calculator, Copy, ExternalLink, Headphones,
 } from "lucide-react";
 import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, CONTACT_ASKING_PRICE_ID, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow } from "../lib/ghl";
 /* Board #5 S2d — the rail's logic lives in ../lib/rail, a module with no React
@@ -2002,6 +2002,22 @@ export default function ContactWorkspace() {
           }}
         >
           <Calculator size={14} /> Underwriting
+        </Link>
+        {/* B8-05 / INV-48 — the Contact Workspace entry point to the Seller
+            Call Workspace. Same pattern as the Underwriting link immediately
+            above: a plain in-app <Link>, read-only, writes nothing. Labelled
+            Start/Resume because the route itself does not distinguish the
+            two — see SellerCallWorkspace.tsx's own header comment. */}
+        <Link
+          to={`/contacts/${id}/seller-call`}
+          data-testid="contact-seller-call-link"
+          style={{
+            display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", fontWeight: 600,
+            padding: "8px 14px", borderRadius: "8px", border: "1px solid rgba(30,200,255,0.35)",
+            background: "rgba(30,200,255,0.08)", color: "#1EC8FF", textDecoration: "none",
+          }}
+        >
+          <Headphones size={14} /> Start / Resume Seller Call
         </Link>
         {/* B7-02 — Get Comps. The approved V1 IAOS -> PropStream handoff: copy
             the known full subject address, open PropStream in the investor's
