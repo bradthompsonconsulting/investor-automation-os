@@ -166,10 +166,18 @@ even the architectural path for contracting to read Opportunity fields is
 Documents/Contracts feature can merge per-deal opportunity custom fields
 in this location is explicitly UNKNOWN there.
 
-**Classification: REAL CARRIER GAP — and out of Board 8's engine scope.**
-Both governing documents already place Accepted Price under contracting,
-not underwriting/offer economics. B8-03 should not treat this as a gap it
-is scoped to close.
+**Classification: REAL CARRIER GAP for the value itself — but not out of
+Board #8 overall.** `SELLER_ACQUISITION_WORKFLOW.md` and `UNDERWRITING_
+WORKSPACE_SPEC.md` place the adjacent underwriting-workspace display
+concept (Actual Contract Price) under contracting, but Board #8's own
+later scope already assigns Accepted Price a home: INV-53 (B8-10)
+requires preserving the negotiated result when price is accepted, and
+INV-54 (B8-11) explicitly scopes persisting accepted price and
+negotiation provenance from this inventory. Accepted Price is outside
+**B8-03's immediate implementation scope** — B8-03 should not treat
+closing this gap as its own job — but it is not outside Board #8, and
+this document does not classify it as a permanent contracting-only
+concern.
 
 ### Approval/override provenance
 
@@ -200,15 +208,20 @@ Offer Ready mechanism:
 - Underwriting-figures approval (End-Buyer Max / Seller MAO / Assignment
   Mode): **REUSE**, but **REAL LOGIC GAP** for attaching an override
   concept to it — PB-D59's Approve has no "proceed anyway" path today.
-- A general Offer Ready approval/override mechanism: **REAL CARRIER GAP**
-  — nothing persists an Offer Ready decision at all.
-- The *pattern* a future Offer Ready mechanism would follow: **REUSE**
-  is the right word for the pattern only. `arv-persist.ts` is proven,
-  shipped, and structurally exactly what B8-01 already cited as
+- A general Offer Ready approval/override mechanism: **no current
+  persistence mechanism exists — verified absent**, not classified as a
+  gap. B8-01 (`DEAL_ECONOMICS_OFFER_READINESS_V1.md:220-227,279-285`)
+  leaves whether Offer Ready needs a carrier at all as an **UNRESOLVED
+  PRODUCT DECISION**; this document does not convert that open question
+  into a gap B8-03 is scoped to close.
+- The *pattern* a future Offer Ready mechanism would follow, if one is
+  ever authorized: **REUSE, as precedent only.** `arv-persist.ts` is
+  proven, shipped, and structurally exactly what B8-01 already cited as
   precedent. Reusing its shape (gate function, append-only note,
   recommended-vs-actual capture) is not the same as reusing its carrier,
   which remains ARV-specific and does not extend to Offer Ready without
-  its own decision.
+  its own decision — including the decision of whether to make one at
+  all.
 
 ### All existing Investor Policy values
 
@@ -321,19 +334,24 @@ no negotiation-state model of any kind exists.
 
 ### Accepted price
 
-**REAL CARRIER GAP, and out of B8-03's scope.** Confirmed in Part A.
-Both `SELLER_ACQUISITION_WORKFLOW.md` and `UNDERWRITING_WORKSPACE_SPEC.md`
-already place this under contracting rather than underwriting/offer
-economics, and contracting work has not begun. B8-03 building the shared
-deal/offer engine does not need to, and should not, close this gap.
+**REAL CARRIER GAP — outside B8-03's immediate scope, not outside Board
+#8.** Confirmed in Part A. No persistence mechanism exists today, and
+B8-03's shared deal/offer engine does not need to, and should not, close
+this gap itself. But INV-53 (B8-10) requires preserving the negotiated
+result on acceptance and INV-54 (B8-11) explicitly scopes accepted-price
+and negotiation-provenance persistence from this inventory — the gap is
+Board #8's to close on its own later schedule, not a permanent
+contracting-only concern.
 
 ### Approval/override provenance
 
-**Mixed — REUSE of pattern, REAL CARRIER GAP for Offer Ready itself, REAL
-LOGIC GAP for attaching override to the existing Approve write.** Detailed
-in Part A. The three sub-findings do not collapse into one label without
-losing information INV-45's acceptance criterion asks this document to
-preserve.
+**Mixed — REUSE of pattern (as precedent only), REAL LOGIC GAP for
+attaching override to the existing Approve write, and an UNRESOLVED
+PRODUCT DECISION whether Offer Ready needs any persistence mechanism at
+all — not a REAL CARRIER GAP, since B8-01 leaves that question open
+rather than requiring an answer.** Detailed in Part A. These sub-findings
+do not collapse into one label without losing information INV-45's
+acceptance criterion asks this document to preserve.
 
 ---
 
@@ -384,11 +402,14 @@ not.
    enumeration outside the two documents that name it. **UNRESOLVED
    PRODUCT DECISION**, unchanged.
 
-8. **Offer Ready's approval/override carrier — clarified, not resolved.**
-   Part A now names the specific existing pattern (`arv-persist.ts`) a
-   future carrier could follow structurally, which B8-01 could only cite
-   in the abstract. Whether to build one, and on what shape, remains
-   **UNRESOLVED**.
+8. **Offer Ready's approval/override persistence — clarified, not
+   resolved.** No current persistence mechanism exists (verified
+   absent). Part A now names the specific existing pattern
+   (`arv-persist.ts`) a future carrier could follow structurally, as
+   precedent only, which B8-01 could only cite in the abstract. Whether
+   Offer Ready needs a carrier at all, and on what shape, remains an
+   **UNRESOLVED PRODUCT DECISION** — not a gap this document asserts
+   must be closed.
 
 9. **Revocation's retroactive effect — unchanged, no code addresses it.**
    No approval/override mechanism in the repository — not PB-D59's
@@ -411,8 +432,6 @@ cannot make for itself:
 
 **Blocked on a carrier decision, not a formula:**
 - Current Offer / Opening Offer negotiation-state carrier (item 4).
-- Any Offer Ready approval/override carrier (item 8), if one is
-  authorized.
 
 **Blocked on a product/policy decision this document does not make:**
 - Target Acquisition Price's formula and supporting policy value
@@ -421,10 +440,13 @@ cannot make for itself:
   (item 1), which also blocks Expected Spread there (item 5).
 - The evidence-ladder mapping and determination mechanism (items 6, 7).
 - Revocation's retroactive treatment (item 9).
+- Whether Offer Ready needs any approval/override persistence mechanism
+  at all, and if so its shape (item 8) — UNRESOLVED, not a carrier gap.
 
-**Out of B8-03's scope entirely:**
-- Accepted Price — contracting's concern per two independent existing
-  documents, not Board 8's engine.
+**Out of B8-03's immediate scope, not out of Board #8 overall:**
+- Accepted Price — its carrier is currently absent, but INV-53 (B8-10)
+  and INV-54 (B8-11) already scope preserving and persisting it. B8-03
+  need not, and should not, build this itself.
 
 ---
 
