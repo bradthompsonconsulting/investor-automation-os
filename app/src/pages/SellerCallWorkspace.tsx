@@ -18,20 +18,27 @@ import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-t
 import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriting/types";
 import { computeBoard8Economics, computeExpectedSpread, type Board8Economics, type ExpectedSpread } from "../lib/underwriting/board8-economics";
 import { computeOfferReadiness, type OfferReadinessInputs, type ReadinessResult } from "../lib/underwriting/offer-readiness";
+import { computeNextBestQuestion, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
 
 /**
- * Seller Call Workspace -- B8-05 / INV-48.
+ * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49.
  *
  * Route: /contacts/:id/seller-call. Same Contact-context sub-route
  * pattern UNDERWRITING_WORKSPACE_SPEC.md chose for /contacts/:id/underwriting
  * (decided 2026-08-14) and for the same reason: the deal bar is a
  * guardrail during a live call, and a guardrail that scrolls away is not
  * one. SELLER_ACQUISITION_WORKFLOW.md names this workspace as the surface
- * underwriting is one section of; this issue builds the foundation and
- * the bar, not the six-section conversation flow or adaptive questions
- * (B8-06 / INV-49) or negotiation (INV-51) or the standalone calculator
- * (INV-52).
+ * underwriting is one section of; B8-05 built the foundation and the
+ * bar, B8-06 adds the single adaptive Next Best Question in its place.
+ * Negotiation (INV-51) and the standalone calculator (INV-52) remain out
+ * of scope here.
+ *
+ * NEXT BEST QUESTION (B8-06). `computeNextBestQuestion` (imported, never
+ * reimplemented) picks ONE of B8-04's own readiness reasons to surface,
+ * deterministically, from current facts alone -- no history, no script
+ * pointer, no assumption about call order. See that module's own header
+ * for the exact priority rule.
  *
  * READ ONLY. This page performs no writes of any kind -- not a note, not
  * last_call_attempt, not a callback, not an underwriting approval. It
@@ -330,6 +337,21 @@ export default function SellerCallWorkspace() {
   const hasKnownFacts = (screen.state === "resolved" || screen.state === "unresolved")
     && (screen.known.arv !== null || screen.known.repairs !== null || screen.known.askingPrice !== null);
 
+  /* B8-06, consumed. computeNextBestQuestion reads the SAME readiness
+     result rendered above (ReadinessBadge) and the same known facts
+     rendered in the Known Facts panel -- one computation, shared, so the
+     question can never name a category the badge itself calls SUPPORTED
+     or ask for a number the Known Facts panel already shows. */
+  const nextBestQuestion: NextBestQuestion | null = useMemo(() => {
+    if (!readiness) return null;
+    const known = {
+      arv: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.arv : null,
+      repairs: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.repairs : null,
+      askingPrice: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.askingPrice : null,
+    };
+    return computeNextBestQuestion(readiness, known);
+  }, [readiness, screen]);
+
   return (
     <Shell contactId={contactId}>
       <div style={{ marginBottom: "6px" }}>
@@ -447,10 +469,11 @@ export default function SellerCallWorkspace() {
             />
           ) : null}
 
-          {/* Known facts / unresolved knowledge -- the conversation-first
-              content this route exists to show. No adaptive questioning
-              (B8-06 / INV-49): this is a static read of what is and is
-              not known today. */}
+          {/* Known facts / Next Best Question -- the conversation-first
+              content this route exists to show. B8-06 / INV-49: the
+              objective panel is now ONE deterministic, prioritized
+              question from computeNextBestQuestion, not a script and not
+              a dump of every open reason. */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginTop: "8px" }}>
             <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Known facts</div>
@@ -460,17 +483,28 @@ export default function SellerCallWorkspace() {
                 <div>Seller Ask: {screen.known.askingPrice !== null ? screen.known.askingPrice.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }) : "Not yet established"}</div>
               </div>
             </div>
-            <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
+            <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="next-best-question-panel">
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>
-                Current call objective
+                Next Best Question
               </div>
-              <div style={{ fontSize: "13px", color: "#E2E8F0", lineHeight: 1.6 }}>
-                {readiness && readiness.effectiveStatus === "OFFER_READY"
-                  ? "Present the offer."
-                  : readiness && readiness.reasons.length > 0
-                    ? "Resolve before an offer is actionable: " + readiness.reasons.map((r) => r.message).join(" ")
-                    : "Underwriting must resolve before an objective can be set."}
-              </div>
+              {nextBestQuestion === null ? (
+                <div style={{ fontSize: "13px", color: "#64748B", lineHeight: 1.6 }}>
+                  Underwriting must resolve before a question can be set.
+                </div>
+              ) : nextBestQuestion.kind === "offer_ready" ? (
+                <div style={{ fontSize: "13px", color: "#22C55E", fontWeight: 600, lineHeight: 1.6 }}>
+                  {nextBestQuestion.message}
+                </div>
+              ) : (
+                <div>
+                  <div style={{ fontSize: "14px", color: "#E2E8F0", fontWeight: 600, lineHeight: 1.5 }}>
+                    {nextBestQuestion.question}
+                  </div>
+                  <div style={{ fontSize: "12px", color: "#94A3B8", lineHeight: 1.5, marginTop: "8px" }}>
+                    Why it matters: {nextBestQuestion.whyItMatters}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </>
