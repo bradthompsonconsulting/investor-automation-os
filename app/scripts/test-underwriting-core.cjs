@@ -48,7 +48,7 @@ if (!fs.existsSync(compiled)) {
 const { computeUnderwriting, computeAcquisitionPosition, UnitsError } = require(compiled);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 53;
+const FLOOR = 63;
 let failures = 0;
 let checks = 0;
 
@@ -252,6 +252,38 @@ function starter(over) {
     { position: 'above_range', gapToUnderwriting: 3637 });
   check('position boundary equal is within', computeAcquisitionPosition({ sellerMAO: 176363, askingPrice: 176363 }),
     { position: 'within_range', acquisitionCushion: 0 });
+}
+
+// ---- 18. B8-03/INV-46: new Figures fields on the golden path. Additive
+// only -- proves extending Figures did not disturb the proven numbers
+// above (checks 1-17 are byte-identical to before this issue).
+{
+  const r = computeUnderwriting(starter());
+  check('golden requiredBuyerProfit', r.figures.requiredBuyerProfit, 47250, 0.5);
+  check('golden standardMinimumAssignmentSpread', r.figures.standardMinimumAssignmentSpread, 5000);
+  check('golden standardMinimumLevel', r.figures.standardMinimumLevel, 'iaos_starter');
+  check('golden buyerProfitSharePct', r.figures.buyerProfitSharePct, 0.25);
+  check('golden buyerProfitSharePctLevel', r.figures.buyerProfitSharePctLevel, 'iaos_starter');
+}
+
+// ---- 19. B8-03/INV-46: figures.buyerProfitSharePct resolves even in
+// standard mode, where it was previously never read at all. provenance.
+// profitSharePct is a DIFFERENT field and stays null exactly as case 12
+// already proves -- this case does not weaken that one.
+{
+  const r = computeUnderwriting(starter({ assignment: { kind: 'standard' } }));
+  check('standard mode figures.buyerProfitSharePct resolves', r.figures.buyerProfitSharePct, 0.25);
+  check('standard mode provenance.profitSharePct stays null', r.provenance.profitSharePct, null);
+}
+
+// ---- 20. B8-03/INV-46: figures.buyerProfitSharePct is null only for the
+// synthetic construction of an unresolved profitSharePct outside
+// profit_share mode -- overall status is unaffected, matching case 12.
+{
+  const r = computeUnderwriting(starter({ assignment: { kind: 'standard' }, profitSharePct: U() }));
+  check('synthetic unresolved profitSharePct status stays resolved', r.status, 'resolved');
+  check('synthetic unresolved figures.buyerProfitSharePct is null', r.figures.buyerProfitSharePct, null);
+  check('synthetic unresolved figures.buyerProfitSharePctLevel is null', r.figures.buyerProfitSharePctLevel, null);
 }
 
 cleanup();

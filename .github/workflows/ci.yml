@@ -183,7 +183,7 @@ jobs:
       - name: Typecheck and build
         run: pnpm --dir app build
 
-      - name: Calculation core — 53 checks
+      - name: Calculation core — 63 checks
         run: node app/scripts/test-underwriting-core.cjs
 
       - name: Resolver and view model — 169 checks

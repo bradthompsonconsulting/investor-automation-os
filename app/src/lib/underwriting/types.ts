@@ -145,6 +145,43 @@ export type Figures = {
   endBuyerMaxPrice: number;
   assignmentSpread: number;
   sellerMAO: number;
+  /**
+   * B8-03 / INV-46. PB-D56 section II.5's Required Buyer Profit, already
+   * computed internally -- exposed rather than recomputed, so Board 8's
+   * Target Wholesale Profit reuses this engine's own arithmetic instead of
+   * duplicating it. Present whenever `status` is "resolved" -- it shares
+   * ARV and buyerProfitPct's existing gate.
+   */
+  requiredBuyerProfit: number;
+  /**
+   * B8-03 / INV-46. PB-D56 section IV's Standard Minimum Assignment
+   * Spread, resolved -- independent of which assignment mode governs this
+   * deal's own `assignmentSpread` above. Board 8's Target and Max both
+   * reuse this specific value, per Brad's 2026-09-05 governing amendment:
+   * Max Supported Offer = End-Buyer Maximum Purchase Price minus THIS
+   * value, never the deal's effective assignmentSpread, which differs
+   * under Manual or 25%-of-Buyer-Profit mode. Present whenever `status`
+   * is "resolved" -- it shares the existing standardMinimum gate.
+   */
+  standardMinimumAssignmentSpread: number;
+  standardMinimumLevel: Level;
+  /**
+   * B8-03 / INV-46. PB-D56 section IV's Buyer Profit Share Percentage
+   * (decimal fraction), resolved regardless of assignment mode. Target
+   * Wholesale Profit needs it even when the active assignment mode is
+   * Standard or Manual, where PB-D56 itself never required it to
+   * resolve. Null only for a synthetic `UnderwritingInputs` constructed
+   * directly with an unresolved profitSharePct outside profit_share mode
+   * (see compute.ts) -- every real caller reaches this through
+   * `resolveInputs`'s hierarchy, whose IAOS Starter level (0.25)
+   * guarantees resolution. Deliberately independent of
+   * `Provenance.profitSharePct` below, which reports whether the ACTIVE
+   * assignment spread consumed it, not whether it resolved at all --
+   * changing that field's existing null-outside-profit_share-mode
+   * meaning would break `test-underwriting-core.cjs` case 12.
+   */
+  buyerProfitSharePct: number | null;
+  buyerProfitSharePctLevel: Level | null;
 };
 
 /**

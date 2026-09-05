@@ -60,6 +60,21 @@ function readResolved(
   return { value: r.value, level: r.level };
 }
 
+/**
+ * Reads a resolved fraction WITHOUT recording it as missing.
+ *
+ * B8-03 / INV-46's own helper: Board 8 needs profitSharePct's resolution
+ * independent of `readResolved`'s `acc.missing` side effect, so peeking at
+ * it cannot alter which assignment modes PB-D56 section II.6 requires it
+ * to resolve, and cannot double-report a field `readResolved` already
+ * tracked at its one existing call site above.
+ */
+function peekResolvedFraction(r: Resolved<number>): { value: number; level: Level } | null {
+  if (r.kind === "unresolved") return null;
+  guardFraction("profitSharePct", r.value);
+  return { value: r.value, level: r.level };
+}
+
 /** Reads a deal fact, recording its name when unresolved. */
 function readDeal(
   acc: Acc,
@@ -121,6 +136,16 @@ export function computeUnderwriting(
   if (inputs.assignment.kind === "profit_share") {
     sharePct = readResolved(acc, "profitSharePct", inputs.profitSharePct, true);
   }
+
+  // B8-03 / INV-46: Board 8's Target Wholesale Profit needs
+  // profitSharePct's resolution regardless of assignment mode. Read
+  // independently of `sharePct` above, and WITHOUT touching `acc` -- this
+  // must not add a new way for the deal to become "unresolved" outside
+  // profit_share mode, and must not double-report a missing field `acc`
+  // already tracked above. Reuses `sharePct` when profit_share mode
+  // already resolved it, so the same field is never read twice.
+  const board8SharePct: { value: number; level: Level } | null =
+    sharePct ?? peekResolvedFraction(inputs.profitSharePct);
 
   if (inputs.assignment.kind === "unresolved") {
     acc.missing.push("assignmentMode");
@@ -217,6 +242,11 @@ export function computeUnderwriting(
     endBuyerMaxPrice,
     assignmentSpread,
     sellerMAO,
+    requiredBuyerProfit: requiredProfit,
+    standardMinimumAssignmentSpread: stdMin.value,
+    standardMinimumLevel: stdMin.level,
+    buyerProfitSharePct: board8SharePct ? board8SharePct.value : null,
+    buyerProfitSharePctLevel: board8SharePct ? board8SharePct.level : null,
   };
 
   return { status: "resolved", figures, breakdown, provenance, warnings };
