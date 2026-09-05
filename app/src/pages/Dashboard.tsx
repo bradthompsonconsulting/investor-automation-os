@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertCircle, Clock, FileCheck, Mail as MailIcon, Inbox, CalendarClock,
-  ChevronDown, Flame, Sun, Snowflake, PhoneCall, StickyNote, ExternalLink, PartyPopper,
+  ChevronDown, Flame, Sun, Snowflake, PhoneCall, StickyNote, ExternalLink, PartyPopper, Headphones,
 } from "lucide-react";
 import {
   ghl, getBucketTag, ghlContactDetailUrl,
@@ -1045,6 +1045,21 @@ export default function Dashboard() {
                   >
                     <PhoneCall size={12} /> Call
                   </button>
+                  {/* B8-05 / INV-48 — Follow Up is the dashboard's own
+                      call-oriented queue, so it is the appropriate existing
+                      entry point for the Seller Call Workspace. Read-only
+                      Link, same pattern as Open workspace beside it. */}
+                  <Link
+                    to={`/contacts/${c.id}/seller-call`}
+                    title="Start or resume the seller call"
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
+                      padding: "5px 9px", borderRadius: "7px", border: "1px solid rgba(30,200,255,0.25)",
+                      background: "rgba(30,200,255,0.06)", color: "#1EC8FF", textDecoration: "none",
+                    }}
+                  >
+                    <Headphones size={12} /> Seller Call
+                  </Link>
                   <Link
                     to={`/contacts/${c.id}`}
                     title="Open workspace"
