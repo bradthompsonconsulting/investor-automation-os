@@ -3,11 +3,14 @@
  * B8-06 / INV-49.
  *
  * Pure. No I/O, no React, no GHL, no AI call, no persistence. CONSUMES
- * `ReadinessResult` (B8-04's `computeOfferReadiness`); it never
- * recomputes a category's evidence level, never re-derives `status` or
- * `effectiveStatus`, and creates no second readiness engine. Its entire
- * job is to pick ONE of B8-04's own reasons to surface next and phrase it
- * as a question, not to decide what counts as supported.
+ * `ReadinessResult` (B8-04's `computeOfferReadiness`) and the
+ * `Board8Economics` object (B8-03's `computeBoard8Economics`) the page
+ * already computed; it never recomputes a category's evidence level,
+ * never re-derives `status`/`effectiveStatus`, never recomputes
+ * underwriting, and creates no second readiness or economics engine.
+ * Its entire job is to pick ONE of B8-04's own reasons to surface next
+ * and phrase it as a genuine question, not to decide what counts as
+ * supported or why the math did or didn't resolve.
  *
  * STATELESS AND ORDER-INDEPENDENT, BY CONSTRUCTION. This function takes
  * no history, no "current step," and no memory of what was asked before.
@@ -33,18 +36,32 @@
  *      `DEAL_ECONOMICS_OFFER_READINESS_V1.md` (property, repairs/
  *      condition, ARV, deal economics, transaction/deal-structure
  *      assumptions, seller price position) -- copied verbatim as
- *      `CATEGORY_PRIORITY` below, not re-derived or re-ordered. This
- *      also happens to match the underwriting waterfall's own
- *      dependency order: deal economics (Gate 1: ARV + Repairs as raw
- *      facts) cannot resolve before ARV and repairs condition are known,
- *      so asking about the earlier categories first naturally clears the
- *      later ones' blocking cause too.
+ *      `CATEGORY_PRIORITY` below, not re-derived or re-ordered.
  *
  * This is a V1 default order, not a claim that these six categories are
  * universally ranked this way for every deal -- if Brad wants a
  * different order, `CATEGORY_PRIORITY` is the one line that changes,
  * exactly the same calibratable-surface pattern PB-D61 already uses for
  * its own named V1 constants.
+ *
+ * EVERY `question` IS A QUESTION. Jess Gate on this issue's first PASS
+ * caught two emitted `question` strings that were commands
+ * ("Get ARV and repairs on file...", "Resolve before continuing: ...").
+ * Every question this module can emit is audited below to end in "?" and
+ * read as something an operator could actually ask -- see
+ * test-next-best-question.cjs's exhaustive interrogative-form check.
+ *
+ * DEAL ECONOMICS NEVER GUESSES ITS OWN DIAGNOSIS. The same Jess Gate
+ * caught this module ASSUMING deal-economics UNKNOWN always means ARV
+ * and repairs are missing. `Board8Economics.status === "unavailable"`
+ * can happen for ANY of compute.ts's required inputs -- selling cost
+ * percentage, closing cost, financing terms, assignment mode, and more,
+ * per PB-D56 section III -- not only Gate 1. `dealEconomicsDiagnosis`
+ * below reads B8-03's own `missing` list (when UNKNOWN) or `target.reason`
+ * (when PRELIMINARY) and phrases the question from what B8-03 actually
+ * reports, naming ARV/repairs specifically ONLY when they are the true
+ * cause, and falling back to neutral, still-truthful wording naming
+ * whatever else is actually unresolved otherwise.
  *
  * MOTIVATION AND TIMELINE ARE NOT HERE. Neither appears as a category,
  * a question, or a priority signal -- INV-49 is explicit that they may
@@ -74,6 +91,7 @@ import type {
   MaterialUnknownReason,
   ReadinessResult,
 } from "./offer-readiness";
+import type { Board8Economics } from "./board8-economics";
 
 /** Raw facts already on file, so a question can acknowledge them instead of re-asking from zero. */
 export type KnownFactsSnapshot = {
@@ -107,11 +125,11 @@ export const CATEGORY_PRIORITY: readonly MaterialCategory[] = [
   "seller_price_position",
 ];
 
-const WHY_IT_MATTERS: Record<MaterialCategory, string> = {
+/** Every category except deal_economics, whose whyItMatters depends on B8-03's own reported cause -- see dealEconomicsDiagnosis. */
+const WHY_IT_MATTERS: Omit<Record<MaterialCategory, string>, "deal_economics"> = {
   property_identity: "Every other number on this deal is meaningless if it is attached to the wrong property.",
   repairs_condition: "Repairs subtract directly from the offer; an unsupported number is not a supported offer.",
   arv: "ARV sets the ceiling every dollar of this deal is measured against.",
-  deal_economics: "PB-D56 Gate 1: without ARV and repairs on file, no economics exist yet to negotiate from at all.",
   transaction_assumptions: "How the deal is structured can change what a supported offer actually requires.",
   seller_price_position: "There is nothing to compare the supported offer against without knowing where the seller stands.",
 };
@@ -123,55 +141,160 @@ function money(n: number): string {
   });
 }
 
-function categoryQuestionText(category: MaterialCategory, level: "UNKNOWN" | "PRELIMINARY", known: KnownFactsSnapshot): string {
+/**
+ * Every question below is a genuine interrogative sentence -- see the
+ * module header. `property_identity`/`repairs_condition`/`arv`/
+ * `transaction_assumptions`/`seller_price_position` only; `deal_economics`
+ * is handled separately by `dealEconomicsDiagnosis` because it needs
+ * B8-03's own reported cause, not just the level.
+ */
+function categoryQuestionText(
+  category: Exclude<MaterialCategory, "deal_economics">,
+  level: "UNKNOWN" | "PRELIMINARY",
+  known: KnownFactsSnapshot,
+): string {
   switch (category) {
     case "property_identity":
       return level === "UNKNOWN"
-        ? "Confirm exactly which property this is — full address, parcel, and structure type."
-        : "Double-check the property identity already on file — has anything about the address or structure changed?";
+        ? "What is the exact property here — full address, parcel, and structure type?"
+        : "Has anything about the property's address or structure changed since it was recorded?";
     case "repairs_condition":
       if (level === "UNKNOWN") {
         return known.repairs !== null
-          ? `Walk the property's condition to confirm the ${money(known.repairs)} repair estimate on file is defensible.`
-          : "Walk through the property's condition — roof, HVAC, foundation, recent updates.";
+          ? `Is the ${money(known.repairs)} repair estimate already on file still accurate for this property's condition?`
+          : "What is the property's condition — roof, HVAC, foundation, recent updates?";
       }
-      return "The repair picture is preliminary — is there anything about the condition still worth confirming?";
+      return "Is there anything about the property's condition still worth confirming?";
     case "arv":
       if (level === "UNKNOWN") {
         return known.arv !== null
-          ? `Confirm the ${money(known.arv)} ARV on file is still current and comp-supported.`
+          ? `Is the ${money(known.arv)} ARV on file still current and comp-supported?`
           : "Has a valuation (ARV) been run for this property yet?";
       }
-      return "The ARV's comp support is thin — are there stronger, more recent nearby sales to check?";
-    case "deal_economics":
-      return level === "UNKNOWN"
-        ? "Get ARV and repairs on file — underwriting cannot calculate anything until both are present."
-        : "Max Supported Offer calculated, but Target Acquisition Price could not — check the Buyer Profit Share Percentage policy value.";
+      return "Are there stronger, more recent nearby sales that could better support the ARV?";
     case "transaction_assumptions":
       return level === "UNKNOWN"
-        ? "Confirm the deal-structure basics — closing and possession expectations, any known title complications."
-        : "The deal-structure assumptions are preliminary — anything about closing or possession still unclear?";
+        ? "What are the deal-structure basics — closing and possession expectations, any known title complications?"
+        : "Is there anything about closing or possession still unclear?";
     case "seller_price_position":
       return level === "UNKNOWN"
-        ? "Ask what the seller is hoping to get for the property."
-        : "The seller's price position is only a preliminary read — worth confirming how firm it is?";
+        ? "What is the seller hoping to get for the property?"
+        : "How firm is the seller's stated price position?";
   }
+}
+
+function stripTrailingPeriod(s: string): string {
+  return s.endsWith(".") ? s.slice(0, -1) : s;
 }
 
 function materialUnknownQuestionText(r: MaterialUnknownReason): string {
   const match = /^Unresolved material unknown \([^)]*\):\s*(.*)$/.exec(r.message);
   const description = match ? match[1] : r.message;
-  return `Resolve before continuing: ${description}`;
+  return `What's the current status of this — ${stripTrailingPeriod(description)}?`;
+}
+
+/**
+ * Operator-facing labels for the raw keys `compute.ts` can push into
+ * `UnderwritingResult.missing` (see compute.ts and view-model.ts's own
+ * MISSING_LABELS, which this mirrors for the same reason: internal
+ * identifiers must never reach the operator). Kept local rather than
+ * importing view-model.ts's private constant, per this correction's
+ * "no other scope changes" -- duplicating thirteen labels is a smaller,
+ * more contained change than exporting a symbol from an unrelated,
+ * already-proven file during a bounded gate-fix cycle.
+ */
+const MISSING_INPUT_LABEL: Record<string, string> = {
+  arv: "ARV",
+  repairs: "the repair estimate",
+  sellingCostPct: "the selling cost percentage",
+  closingCost: "the closing cost estimate",
+  monthlyCarry: "the monthly holding cost",
+  holdMonths: "the hold period",
+  buyerProfitPct: "the buyer profit percentage",
+  standardMinimum: "the standard minimum assignment spread",
+  profitSharePct: "the buyer profit share percentage",
+  financing: "the financing assumptions",
+  "financing.ltv": "the financing LTV",
+  "financing.rate": "the financing interest rate",
+  "financing.points": "the financing points",
+  assignmentMode: "the assignment mode",
+};
+
+const DEAL_ECONOMICS_NEUTRAL_FALLBACK = {
+  question: "Is there anything still missing before underwriting can calculate this deal?",
+  whyItMatters: "Underwriting cannot produce a supported offer until every required input resolves.",
+};
+
+/**
+ * Diagnoses the deal_economics category from B8-03's OWN reported cause
+ * -- never a guess. Three cases, in order of how much B8-03 lets us say
+ * safely:
+ *
+ *   1. UNKNOWN, and `missing` is ONLY arv and/or repairs: Gate 1 really
+ *      is the cause, so the question names them specifically.
+ *   2. UNKNOWN, and `missing` names anything else (alone or mixed with
+ *      arv/repairs): named precisely from `missing` via
+ *      MISSING_INPUT_LABEL, and the question never claims ARV/repairs
+ *      ARE on file -- a mixed case could still be missing one of them.
+ *   3. PRELIMINARY (Max calculated, Target not): quotes B8-03's own
+ *      `target.reason` string directly rather than hardcoding the one
+ *      cause that happens to be the only one today.
+ */
+function dealEconomicsDiagnosis(dealEconomics: Board8Economics): { question: string; whyItMatters: string } {
+  if (dealEconomics.status === "unavailable") {
+    const missing = dealEconomics.missing;
+    if (missing.length === 0) return DEAL_ECONOMICS_NEUTRAL_FALLBACK;
+
+    const onlyGate1 = missing.every((m) => m === "arv" || m === "repairs");
+    if (onlyGate1) {
+      const hasArv = missing.includes("arv");
+      const hasRepairs = missing.includes("repairs");
+      return {
+        question:
+          hasArv && hasRepairs
+            ? "Has a current ARV and repair estimate been established for this property yet?"
+            : hasArv
+              ? "Has a current ARV been established for this property yet?"
+              : "Has a repair estimate been established for this property yet?",
+        whyItMatters: "PB-D56 Gate 1: without ARV and repairs on file, no economics exist yet to negotiate from at all.",
+      };
+    }
+
+    // At least one non-Gate-1 input is unresolved. Named truthfully from
+    // `missing` itself; never asserts ARV/repairs status either way.
+    const labels = missing.map((m) => MISSING_INPUT_LABEL[m] ?? m);
+    return {
+      question: `Underwriting is still missing ${labels.join(", ")} — is that information available?`,
+      whyItMatters: "Underwriting cannot calculate Target Acquisition Price or Max Supported Offer until every required assumption resolves, not only ARV and repairs.",
+    };
+  }
+
+  if (dealEconomics.status === "calculated" && dealEconomics.target.status === "unavailable") {
+    const reason = dealEconomics.target.reason;
+    return {
+      question: `Max Supported Offer is calculated, but Target Acquisition Price is not (${reason}) — is that information available?`,
+      whyItMatters: `Target Acquisition Price is not yet calculable: ${reason}.`,
+    };
+  }
+
+  // Structurally unreachable when the deal_economics category itself is
+  // UNKNOWN or PRELIMINARY (see dealEconomicsCategoryLevel in
+  // offer-readiness.ts) -- kept explicit rather than assumed, so a
+  // future change to that derivation fails loudly here instead of
+  // silently returning a stale diagnosis.
+  return DEAL_ECONOMICS_NEUTRAL_FALLBACK;
 }
 
 /**
  * Selects the single Next Best Question from a `ReadinessResult` B8-04
- * already computed, plus the raw facts already on file so the question
- * can acknowledge them instead of re-asking from zero.
+ * already computed and the `Board8Economics` B8-03 already computed,
+ * plus the raw facts already on file so the question can acknowledge
+ * them instead of re-asking from zero.
  */
 export function computeNextBestQuestion(
   readiness: ReadinessResult,
   known: KnownFactsSnapshot,
+  dealEconomics: Board8Economics,
 ): NextBestQuestion {
   if (readiness.effectiveStatus === "OFFER_READY") {
     return {
@@ -197,6 +320,10 @@ export function computeNextBestQuestion(
   // Tier 1b: UNKNOWN categories, in CATEGORY_PRIORITY order.
   for (const category of CATEGORY_PRIORITY) {
     if (readiness.categories[category] === "UNKNOWN") {
+      if (category === "deal_economics") {
+        const diagnosis = dealEconomicsDiagnosis(dealEconomics);
+        return { kind: "question", source: { kind: "category", category, level: "UNKNOWN" }, ...diagnosis };
+      }
       return {
         kind: "question",
         source: { kind: "category", category, level: "UNKNOWN" },
@@ -209,6 +336,10 @@ export function computeNextBestQuestion(
   // Tier 2: PRELIMINARY categories, same order.
   for (const category of CATEGORY_PRIORITY) {
     if (readiness.categories[category] === "PRELIMINARY") {
+      if (category === "deal_economics") {
+        const diagnosis = dealEconomicsDiagnosis(dealEconomics);
+        return { kind: "question", source: { kind: "category", category, level: "PRELIMINARY" }, ...diagnosis };
+      }
       return {
         kind: "question",
         source: { kind: "category", category, level: "PRELIMINARY" },

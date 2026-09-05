@@ -338,19 +338,23 @@ export default function SellerCallWorkspace() {
     && (screen.known.arv !== null || screen.known.repairs !== null || screen.known.askingPrice !== null);
 
   /* B8-06, consumed. computeNextBestQuestion reads the SAME readiness
-     result rendered above (ReadinessBadge) and the same known facts
-     rendered in the Known Facts panel -- one computation, shared, so the
-     question can never name a category the badge itself calls SUPPORTED
-     or ask for a number the Known Facts panel already shows. */
+     result rendered above (ReadinessBadge), the SAME board8 object the
+     deal bar reads Target/Max from, and the same known facts rendered in
+     the Known Facts panel -- one set of computations, shared, so the
+     question can never name a category the badge itself calls SUPPORTED,
+     ask for a number the Known Facts panel already shows, or diagnose a
+     deal-economics cause the deal bar's own figures contradict. `board8`
+     is guaranteed non-null here: `readiness` above is only ever set from
+     a non-null `board8` (see the readiness useMemo). */
   const nextBestQuestion: NextBestQuestion | null = useMemo(() => {
-    if (!readiness) return null;
+    if (!readiness || !board8) return null;
     const known = {
       arv: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.arv : null,
       repairs: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.repairs : null,
       askingPrice: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.askingPrice : null,
     };
-    return computeNextBestQuestion(readiness, known);
-  }, [readiness, screen]);
+    return computeNextBestQuestion(readiness, known, board8);
+  }, [readiness, board8, screen]);
 
   return (
     <Shell contactId={contactId}>
