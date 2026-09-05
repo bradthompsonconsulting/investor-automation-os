@@ -20,7 +20,8 @@
     "test:seller-call-deal-bar": "node scripts/test-seller-call-deal-bar.cjs",
     "test:seller-call-workspace-wiring": "node scripts/test-seller-call-workspace-wiring.cjs",
     "test:next-best-question": "node scripts/test-next-best-question.cjs",
-    "test:seller-call-readiness-inputs": "node scripts/test-seller-call-readiness-inputs.cjs"
+    "test:seller-call-readiness-inputs": "node scripts/test-seller-call-readiness-inputs.cjs",
+    "test:arv-approval-note": "node scripts/test-arv-approval-note.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",

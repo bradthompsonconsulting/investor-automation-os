@@ -10,28 +10,37 @@
  * FEEDS EXISTING EVIDENCE; MANUFACTURES NONE. Per-category, stated
  * because the honest answer differs by category:
  *
- *   - repairsCondition: SUPPORTED when an approved repair total is on
- *     file (`known.repairs !== null`), UNKNOWN otherwise. This is a real
- *     signal, not a guess -- `docs/ESTIMATED_REPAIRS_STANDARD.md`'s own
- *     locked principle 9 says "Only operator approval makes the total
- *     authoritative," and the ONLY value that ever reaches
- *     `contact.estimated_repairs` is that approved total (row-level
- *     amounts are session-only and never leave the estimator). Presence
- *     on file therefore already means a human approved it -- this is not
- *     inferring quality from a number that could be a placeholder.
+ *   - repairsCondition: SUPPORTED only when BOTH an approved-looking
+ *     total is on file (`known.repairs !== null`) AND the caller proves
+ *     that total actually passed IAOS's approval gate
+ *     (`repairsApprovalProven`). This split exists because of a Jess Gate
+ *     finding on this issue's first PASS: `known.repairs` is resolved by
+ *     `resolveDealFacts`'s seed-then-supersede across BOTH
+ *     `contact.estimated_repairs` (the ONLY value Board 6's
+ *     `persistGate` ever writes -- provably operator-approved, per
+ *     `docs/ESTIMATED_REPAIRS_STANDARD.md` principle 9) AND
+ *     `opportunity.repair_estimate` (which B8-02's own inventory already
+ *     found has NO WRITER anywhere in `ghl.ts` -- meaning any value
+ *     sitting there did not pass through the approval gate and could be
+ *     stale, manual, or entered outside IAOS entirely). A non-null
+ *     `known.repairs` therefore does NOT by itself prove approval; the
+ *     caller must additionally prove which side of seed-then-supersede
+ *     actually won. See `SellerCallWorkspace.tsx`'s `pipeline` useMemo,
+ *     which derives this from `oppValues.repairs.kind` (computed before
+ *     seed-then-supersede resolves) and passes it through as
+ *     `repairsApprovalProven`.
  *
- *   - arv: always null (never established), UNCHANGED from B8-05/B8-06.
- *     Unlike repairs, an approved ARV DOLLAR AMOUNT does not tell us the
- *     ArvEvidenceState (HIGH/MODERATE/LOW/INSUFFICIENT) that supported
- *     it -- that classification is B7-09's own ledger, and B7-09's own
- *     documentation states it is session-only within the ARV comps
- *     workspace and "not wired into the workspace" for persistence. No
- *     structured evidence-state signal exists anywhere this module could
- *     honestly read, on this route or any other -- B8-02 already found
- *     this gap, and this issue does not invent a carrier to close it
- *     (HARD NO: no new persistence architecture). Mapping "a dollar
- *     amount exists" to any specific evidence state would be exactly the
- *     fabrication `offer-readiness.ts`'s own header forbids.
+ *   - arv: passed through directly from `arvEvidenceState`. This is
+ *     Board #7's OWN evidence-state classification (HIGH/MODERATE/LOW/
+ *     INSUFFICIENT from `arv-reconciliation.ts`), read back from the
+ *     EXISTING append-only ARV approval ledger note that
+ *     `arv-persist.ts`'s `formatArvApprovalNote` already writes on every
+ *     approval/override -- parsed by the new, strict, fail-closed
+ *     `arv-approval-note.ts` (see that module's header for why this is
+ *     not a new carrier). This module never inspects the ARV dollar
+ *     amount and never invents an evidence state: `null` in means `null`
+ *     out, mapped to UNKNOWN by `offer-readiness.ts`'s own
+ *     `arvCategoryLevel`.
  *
  *   - propertyIdentity, transactionAssumptions, sellerPricePosition:
  *     UNKNOWN, unchanged. No determination mechanism exists for these
@@ -44,6 +53,7 @@
 
 import type { Board8Economics, Board8EvidenceLevel } from "./underwriting/board8-economics";
 import type { OfferReadinessInputs } from "./underwriting/offer-readiness";
+import type { ArvEvidenceState } from "./arv-reconciliation";
 
 export type SellerCallKnownFacts = {
   arv: number | null;
@@ -54,12 +64,15 @@ export type SellerCallKnownFacts = {
 export function buildOfferReadinessInputs(args: {
   known: SellerCallKnownFacts;
   dealEconomics: Board8Economics;
+  repairsApprovalProven: boolean;
+  arvEvidenceState: ArvEvidenceState | null;
 }): OfferReadinessInputs {
-  const repairsCondition: Board8EvidenceLevel = args.known.repairs !== null ? "SUPPORTED" : "UNKNOWN";
+  const repairsCondition: Board8EvidenceLevel =
+    args.known.repairs !== null && args.repairsApprovalProven ? "SUPPORTED" : "UNKNOWN";
   return {
     propertyIdentity: "UNKNOWN",
     repairsCondition,
-    arv: null,
+    arv: args.arvEvidenceState,
     transactionAssumptions: "UNKNOWN",
     sellerPricePosition: "UNKNOWN",
     dealEconomics: args.dealEconomics,

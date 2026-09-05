@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 48;
+const FLOOR = 58;
 let failures = 0;
 let checks = 0;
 
@@ -172,11 +172,12 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   const forbidden = ['.notes.create', 'setApprovedArv', 'setEstimatedRepairs', 'saveUnderwritingFields', 'setAskingPrice', 'setLastCallAttempt', 'setCallbackDatetime'];
   const found = forbidden.filter((t) => sellerCallTsx.indexOf(t) !== -1);
   check('page contains no write-capable GHL call of any kind', found, []);
-  check('page reads only getDetail, listPipeline, and underwriting.policy', {
+  check('page reads only getDetail, listPipeline, underwriting.policy, and notes.list (all pre-existing read calls)', {
     getDetail: sellerCallTsx.indexOf('ghl.contacts.getDetail') !== -1,
     listPipeline: sellerCallTsx.indexOf('ghl.opportunities.listPipeline') !== -1,
     policy: sellerCallTsx.indexOf('ghl.underwriting.policy') !== -1,
-  }, { getDetail: true, listPipeline: true, policy: true });
+    notesList: sellerCallTsx.indexOf('ghl.notes.list') !== -1,
+  }, { getDetail: true, listPipeline: true, policy: true, notesList: true });
   check('page defines no local editable state for Current Offer or Seller Position', /useState[^;]*[Cc]urrentOffer|useState[^;]*[Ss]ellerPosition/.test(sellerCallTsx), false);
 }
 
@@ -221,6 +222,36 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   // buildOfferReadinessInputs), not the old hardcoded "UNKNOWN" literal
   // for that specific field -- the page must not assign it directly.
   check('page does not hardcode repairsCondition itself (delegates to buildOfferReadinessInputs)', /repairsCondition:\s*"UNKNOWN"/.test(sellerCallTsx), false);
+}
+
+// ============================================================
+// Jess Gate correction, 2026-09-05: ARV evidence must reach Offer
+// Readiness via the EXISTING Board #7 approval ledger (arv-persist.ts),
+// read through the strict arv-approval-note.ts parser -- not a new
+// carrier, not an inference from the ARV dollar amount, and not a second
+// note-parsing implementation on the page itself.
+// ============================================================
+{
+  check('page imports latestArvApprovalForOpportunity from arv-approval-note', /import \{ latestArvApprovalForOpportunity \} from "\.\.\/lib\/arv-approval-note"/.test(sellerCallTsx), true);
+  check('page does not declare its own latestArvApprovalForOpportunity', /\b(function|const)\s+latestArvApprovalForOpportunity\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
+  check('page does not reimplement note parsing (no local parseArvApprovalNote function)', /\b(function|const)\s+parseArvApprovalNote\s*[=(]/.test(sellerCallTsx), false);
+  check('page never hardcodes arv to null in the readiness call (the exact regression Jess Gate found)', /arv:\s*null,?\s*\n/.test(sellerCallTsx), false);
+  check('page passes arvEvidenceState through to buildOfferReadinessInputs', /arvEvidenceState:\s*arvApproval\?\.evidenceState/.test(sellerCallTsx), true);
+  check('page reads the ledger note\'s evidenceState field, never an ARV dollar amount, to set it', /arvApproval\.evidenceState/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// Jess Gate correction, 2026-09-05: repairsCondition must be SUPPORTED
+// only when the resolved value provably passed IAOS's approval gate
+// (Contact-side `estimated_repairs`), not merely because a number is
+// present on file (which could be the un-gated Opportunity-side
+// `repair_estimate`, B8-02's own finding that it has no writer).
+// ============================================================
+{
+  check('page derives repairsSourceIsApprovalGated from oppValues.repairs.kind, not from known.repairs presence', /repairsSourceIsApprovalGated\s*=\s*oppValues\.repairs\.kind\s*!==\s*"value"/.test(sellerCallTsx), true);
+  check('page passes repairsApprovalProven through to buildOfferReadinessInputs', /repairsApprovalProven:\s*pipeline\.repairsSourceIsApprovalGated/.test(sellerCallTsx), true);
+  check('page no longer derives repairsCondition from known.repairs !== null alone (that logic now lives only in seller-call-readiness-inputs.ts)', /repairsCondition\s*:\s*Board8EvidenceLevel\s*=\s*args\.known\.repairs\s*!==\s*null\s*\?\s*"SUPPORTED"/.test(sellerCallTsx), false);
+  check('Repairs panel text distinguishes an approval-gated total from an unverified one', /repairsSourceIsApprovalGated\s*\?\s*`Approved:/.test(sellerCallTsx), true);
 }
 
 console.log('');

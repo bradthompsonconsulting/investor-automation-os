@@ -21,6 +21,7 @@ import { computeOfferReadiness, type ReadinessResult } from "../lib/underwriting
 import { computeNextBestQuestion, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
 import { buildOfferReadinessInputs } from "../lib/seller-call-readiness-inputs";
+import { latestArvApprovalForOpportunity } from "../lib/arv-approval-note";
 import {
   subjectAddress, handoffToPropStream, copyAddressAgain, browserHandoffEnvironment,
   PROPSTREAM_LOGIN_URL, type HandoffResult,
@@ -47,7 +48,11 @@ import {
  *
  * READ ONLY. This page performs no writes of any kind -- not a note, not
  * last_call_attempt, not a callback, not an underwriting approval. It
- * fetches, resolves, computes, and renders.
+ * fetches, resolves, computes, and renders. `ghl.notes.list` (B8-07 /
+ * INV-50) is a read of the contact's existing note history -- the same
+ * already-approved, already-used call `ContactWorkspace.tsx` and
+ * `Conversations.tsx` already make -- to recover Board #7's own ARV
+ * approval ledger entries via `arv-approval-note.ts`'s strict parser.
  *
  * CONSUME, DO NOT RECOMPUTE. The fetch-resolve-compute pipeline below
  * (contact + opportunities + policy -> parse -> resolve -> compute) is
@@ -227,6 +232,7 @@ export default function SellerCallWorkspace() {
   const [contact, setContact] = useState<ContactDetail | null>(null);
   const [opps, setOpps] = useState<import("../lib/ghl").OpportunityRow[] | null>(null);
   const [policyValues, setPolicyValues] = useState<{ id: string; value: string }[] | null>(null);
+  const [notes, setNotes] = useState<{ id: string; body: string; dateAdded: string }[] | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [chosenId, setChosenId] = useState<string | null>(null);
 
@@ -245,18 +251,20 @@ export default function SellerCallWorkspace() {
       ghl.contacts.getDetail(contactId),
       ghl.opportunities.listPipeline(),
       ghl.underwriting.policy(),
+      ghl.notes.list(contactId),
     ])
-      .then(([c, pipeline, policy]) => {
+      .then(([c, pipeline, policy, notesResult]) => {
         if (cancelled) return;
         setContact(c);
         setOpps(opportunitiesForContact(pipeline.opportunities, contactId));
         setPolicyValues(policy.values);
+        setNotes(notesResult.notes ?? []);
       })
       .catch((e: Error) => { if (!cancelled) setFetchError(e.message); });
     return () => { cancelled = true; };
   }, [contactId]);
 
-  const loading = fetchError === null && (contact === null || opps === null || policyValues === null);
+  const loading = fetchError === null && (contact === null || opps === null || policyValues === null || notes === null);
 
   const candidates: SelectedOpportunity[] = useMemo(() => opportunityCandidates(opps), [opps]);
   const selected: SelectedOpportunity | null = useMemo(
@@ -268,13 +276,15 @@ export default function SellerCallWorkspace() {
     if (!contact || !opps || !policyValues || !selected) {
       return { result: null as UnderwritingResult | null, facts: null as DealFacts | null,
                assignment: null as AssignmentResolution | null,
-               issues: [] as PolicyParseIssue[], computeError: null as { field: string | null; message: string } | null };
+               issues: [] as PolicyParseIssue[], computeError: null as { field: string | null; message: string } | null,
+               repairsSourceIsApprovalGated: false };
     }
     const opp = opps.find((o) => o.id === selected.id);
     if (!opp) {
       return { result: null, facts: null as DealFacts | null,
                assignment: null as AssignmentResolution | null, issues: [],
-               computeError: null as { field: string | null; message: string } | null };
+               computeError: null as { field: string | null; message: string } | null,
+               repairsSourceIsApprovalGated: false };
     }
     try {
       const { policy, issues } = parsePolicy(policyValues, CV_IDS);
@@ -283,12 +293,25 @@ export default function SellerCallWorkspace() {
       const overrides = parseDealOverrides(opp.customFields);
       const facts = resolveDealFacts(oppValues, seeds);
       const inputs = resolveInputs(facts, overrides, policy);
-      return { result: computeUnderwriting(inputs), facts, assignment: inputs.assignment, issues, computeError: null };
+      // Jess Gate, 2026-09-05: `facts.repairs` (seed-then-supersede, PB-D55)
+      // resolves from the Opportunity side when present, the Contact-side
+      // `estimated_repairs` seed otherwise. Only the Contact-side seed is
+      // provably operator-approved -- Board 6's `persistGate` is the ONLY
+      // writer of `contact.estimated_repairs`, whereas B8-02's own
+      // inventory already found `opportunity.repair_estimate` has NO
+      // writer anywhere in `ghl.ts`. Checking `oppValues.repairs.kind`
+      // (computed above, BEFORE seed-then-supersede) rather than
+      // `facts.repairs` itself is what lets this tell the two sources
+      // apart: if the Opportunity side is absent, any non-null resolved
+      // value necessarily came from the approval-gated Contact seed.
+      const repairsSourceIsApprovalGated = oppValues.repairs.kind !== "value";
+      return { result: computeUnderwriting(inputs), facts, assignment: inputs.assignment, issues, computeError: null, repairsSourceIsApprovalGated };
     } catch (e: any) {
       return {
         result: null, facts: null as DealFacts | null,
         assignment: null as AssignmentResolution | null, issues: [],
         computeError: { field: null, message: e?.message ?? "A configured value could not be interpreted." },
+        repairsSourceIsApprovalGated: false,
       };
     }
   }, [contact, opps, policyValues, selected]);
@@ -324,13 +347,31 @@ export default function SellerCallWorkspace() {
     [board8],
   );
 
+  /* B8-07 / INV-50, Jess Gate correction 2026-09-05. Reads Board #7's
+     EXISTING append-only ARV approval ledger note (arv-persist.ts's
+     `formatArvApprovalNote`) back via the strict, fail-closed
+     `arv-approval-note.ts` parser -- not a new carrier, a read of an
+     already-approved, already-written record through the already-used
+     `ghl.notes.list` capability. Scoped to THIS opportunity
+     (`screen.opportunity.id`): a contact holding more than one deal's
+     history must never have one deal's evidence attributed to another
+     (PB-D55). Guarded on `screen.state` being resolved/unresolved so
+     `screen.opportunity` exists; `notes` is never null here since
+     `loading` already gates rendering on it. */
+  const arvApproval = useMemo(() => {
+    if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    return latestArvApprovalForOpportunity(notes, screen.opportunity.id);
+  }, [notes, screen]);
+
   /* B8-04, consumed, via buildOfferReadinessInputs (B8-07 / INV-50) --
      that module's own header states exactly which categories now reflect
-     real evidence (repairsCondition, from Board 6's approved-total rule)
-     and which still cannot (arv, property_identity, transaction
-     assumptions, seller price position -- no determination mechanism or
-     no persisted evidence-state carrier exists for any of them yet). No
-     human action control exists in this build. */
+     real evidence (repairsCondition, gated on `repairsSourceIsApprovalGated`
+     proving the value passed IAOS's approval gate rather than merely
+     being present; arv, from the same ledger note `arvApproval` above
+     already parsed) and which still cannot (property_identity,
+     transaction assumptions, seller price position -- no determination
+     mechanism exists for any of them yet). No human action control
+     exists in this build. */
   const readiness: ReadinessResult | null = useMemo(() => {
     if (!board8) return null;
     const known = {
@@ -338,8 +379,13 @@ export default function SellerCallWorkspace() {
       repairs: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.repairs : null,
       askingPrice: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.askingPrice : null,
     };
-    return computeOfferReadiness(buildOfferReadinessInputs({ known, dealEconomics: board8 }));
-  }, [board8, screen]);
+    return computeOfferReadiness(buildOfferReadinessInputs({
+      known,
+      dealEconomics: board8,
+      repairsApprovalProven: pipeline.repairsSourceIsApprovalGated,
+      arvEvidenceState: arvApproval?.evidenceState ?? null,
+    }));
+  }, [board8, screen, pipeline.repairsSourceIsApprovalGated, arvApproval]);
 
   const dealBarCells = useMemo(
     () => buildDealBarCells({
@@ -569,8 +615,12 @@ export default function SellerCallWorkspace() {
                 on this page. */}
             <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="repairs-entry-panel">
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Repairs</div>
-              <div style={{ fontSize: "13px", color: "#E2E8F0", marginBottom: "12px" }}>
-                {screen.known.repairs !== null ? `Approved: ${money(screen.known.repairs)}` : "Not yet estimated."}
+              <div style={{ fontSize: "13px", color: "#E2E8F0", marginBottom: "12px" }} data-testid="repairs-provenance">
+                {screen.known.repairs === null
+                  ? "Not yet estimated."
+                  : pipeline.repairsSourceIsApprovalGated
+                  ? `Approved: ${money(screen.known.repairs)}`
+                  : `${money(screen.known.repairs)} on file, not verified as operator-approved.`}
               </div>
               <Link
                 to={`/contacts/${contactId}/underwriting`}
@@ -591,8 +641,12 @@ export default function SellerCallWorkspace() {
                 any kind exists on this page. */}
             <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="arv-comps-entry-panel">
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>ARV &amp; Comps</div>
-              <div style={{ fontSize: "13px", color: "#E2E8F0", marginBottom: "12px" }}>
-                {screen.known.arv !== null ? `Approved: ${money(screen.known.arv)}` : "Not yet established."}
+              <div style={{ fontSize: "13px", color: "#E2E8F0", marginBottom: "12px" }} data-testid="arv-provenance">
+                {screen.known.arv === null
+                  ? "Not yet established."
+                  : arvApproval
+                  ? `Approved: ${money(screen.known.arv)} (evidence: ${arvApproval.evidenceState})`
+                  : `${money(screen.known.arv)} on file, no approval ledger entry found.`}
               </div>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                 <button

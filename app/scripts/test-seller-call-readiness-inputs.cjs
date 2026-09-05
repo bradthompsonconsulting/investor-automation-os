@@ -1,6 +1,7 @@
 /**
  * Seller Call Workspace -- Offer Readiness input assembly test runner.
- * B8-07 / INV-50.
+ * B8-07 / INV-50, including the Jess Gate correction (2026-09-05) that
+ * added `repairsApprovalProven` and `arvEvidenceState`.
  *
  * Compiles the pure input-assembly module and its dependencies to a temp
  * directory, loads the emitted JavaScript, and runs deterministic
@@ -65,7 +66,7 @@ const { computeOfferReadiness } = require(readinessPath);
 const { buildOfferReadinessInputs } = require(inputsPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 16;
+const FLOOR = 27;
 let failures = 0;
 let checks = 0;
 
@@ -103,32 +104,52 @@ function underwritingInputs(over) {
 
 const GOLDEN_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwritingInputs()));
 
-// ============================================================
-// repairsCondition: SUPPORTED when an approved total is on file, UNKNOWN
-// otherwise -- a real signal, not a guess.
-// ============================================================
-{
-  const withRepairs = buildOfferReadinessInputs({ known: { arv: null, repairs: 41000, askingPrice: null }, dealEconomics: GOLDEN_ECONOMICS });
-  check('approved repairs on file -> repairsCondition SUPPORTED', withRepairs.repairsCondition, 'SUPPORTED');
-
-  const withoutRepairs = buildOfferReadinessInputs({ known: { arv: null, repairs: null, askingPrice: null }, dealEconomics: GOLDEN_ECONOMICS });
-  check('no repairs on file -> repairsCondition UNKNOWN', withoutRepairs.repairsCondition, 'UNKNOWN');
-
-  const zeroRepairs = buildOfferReadinessInputs({ known: { arv: null, repairs: 0, askingPrice: null }, dealEconomics: GOLDEN_ECONOMICS });
-  check('an approved $0 repairs total is still SUPPORTED (a real approved value, not absence)', zeroRepairs.repairsCondition, 'SUPPORTED');
+function build(known, overrides) {
+  return buildOfferReadinessInputs(Object.assign({
+    known,
+    dealEconomics: GOLDEN_ECONOMICS,
+    repairsApprovalProven: false,
+    arvEvidenceState: null,
+  }, overrides || {}));
 }
 
 // ============================================================
-// arv: ALWAYS null -- never fabricated from a raw dollar amount, even
-// when one is present. This is the core "do not manufacture ARV
-// evidence" proof.
+// repairsCondition: SUPPORTED only when BOTH an approved-looking total is
+// on file AND the caller proves it actually passed the approval gate.
+// This is the Jess Gate correction's core repairs proof.
 // ============================================================
 {
-  const withArv = buildOfferReadinessInputs({ known: { arv: 250000, repairs: null, askingPrice: null }, dealEconomics: GOLDEN_ECONOMICS });
-  check('ARV dollar amount present -> arv category input still null (no fabricated evidence state)', withArv.arv, null);
+  const proven = build({ arv: null, repairs: 41000, askingPrice: null }, { repairsApprovalProven: true });
+  check('repairs on file + approval proven -> repairsCondition SUPPORTED', proven.repairsCondition, 'SUPPORTED');
 
-  const withoutArv = buildOfferReadinessInputs({ known: { arv: null, repairs: null, askingPrice: null }, dealEconomics: GOLDEN_ECONOMICS });
-  check('no ARV on file -> arv category input null', withoutArv.arv, null);
+  const unproven = build({ arv: null, repairs: 41000, askingPrice: null }, { repairsApprovalProven: false });
+  check('repairs on file but approval NOT proven -> repairsCondition UNKNOWN (do not trust an unverified total)', unproven.repairsCondition, 'UNKNOWN');
+
+  const noRepairs = build({ arv: null, repairs: null, askingPrice: null }, { repairsApprovalProven: true });
+  check('no repairs on file, even if the flag claims proven -> repairsCondition UNKNOWN (nothing to approve)', noRepairs.repairsCondition, 'UNKNOWN');
+
+  const zeroRepairsProven = build({ arv: null, repairs: 0, askingPrice: null }, { repairsApprovalProven: true });
+  check('an approved $0 repairs total is still SUPPORTED when proven (a real approved value, not absence)', zeroRepairsProven.repairsCondition, 'SUPPORTED');
+
+  const zeroRepairsUnproven = build({ arv: null, repairs: 0, askingPrice: null }, { repairsApprovalProven: false });
+  check('an unproven $0 repairs total is UNKNOWN, same rule as any other unproven total', zeroRepairsUnproven.repairsCondition, 'UNKNOWN');
+}
+
+// ============================================================
+// arv: passed through directly from arvEvidenceState -- Board #7's own
+// classification, never derived from the dollar amount.
+// ============================================================
+{
+  for (const state of ['HIGH', 'MODERATE', 'LOW', 'INSUFFICIENT']) {
+    const inputs = build({ arv: 250000, repairs: null, askingPrice: null }, { arvEvidenceState: state });
+    check('arvEvidenceState ' + state + ' passes through unchanged', inputs.arv, state);
+  }
+
+  const noEvidence = build({ arv: 250000, repairs: null, askingPrice: null }, { arvEvidenceState: null });
+  check('ARV dollar amount present but no evidence state -> arv category input null (no fabricated evidence)', noEvidence.arv, null);
+
+  const noArvAtAll = build({ arv: null, repairs: null, askingPrice: null }, { arvEvidenceState: null });
+  check('no ARV on file -> arv category input null', noArvAtAll.arv, null);
 }
 
 // ============================================================
@@ -136,7 +157,7 @@ const GOLDEN_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwriting
 // issue's scope.
 // ============================================================
 {
-  const inputs = buildOfferReadinessInputs({ known: { arv: 250000, repairs: 41000, askingPrice: 260000 }, dealEconomics: GOLDEN_ECONOMICS });
+  const inputs = build({ arv: 250000, repairs: 41000, askingPrice: 260000 }, { repairsApprovalProven: true, arvEvidenceState: 'HIGH' });
   check('propertyIdentity stays UNKNOWN (out of scope for this issue)', inputs.propertyIdentity, 'UNKNOWN');
   check('transactionAssumptions stays UNKNOWN (out of scope for this issue)', inputs.transactionAssumptions, 'UNKNOWN');
   check('sellerPricePosition stays UNKNOWN (out of scope for this issue)', inputs.sellerPricePosition, 'UNKNOWN');
@@ -148,33 +169,51 @@ const GOLDEN_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwriting
 // dealEconomics is consumed verbatim, never recomputed.
 // ============================================================
 {
-  const inputs = buildOfferReadinessInputs({ known: { arv: null, repairs: null, askingPrice: null }, dealEconomics: GOLDEN_ECONOMICS });
+  const inputs = build({ arv: null, repairs: null, askingPrice: null });
   check('dealEconomics object is passed through unchanged (same reference-equal shape)', inputs.dealEconomics, GOLDEN_ECONOMICS);
 }
 
 // ============================================================
 // End-to-end: the assembled inputs actually change Offer Readiness's
-// deal_economics-adjacent behavior correctly through computeOfferReadiness
-// -- proves the wiring, not just the shape.
+// category outcomes correctly through computeOfferReadiness -- proves the
+// wiring, not just the shape.
 // ============================================================
 {
-  const inputsWithRepairs = buildOfferReadinessInputs({ known: { arv: null, repairs: 41000, askingPrice: null }, dealEconomics: GOLDEN_ECONOMICS });
-  const readinessWithRepairs = computeOfferReadiness(inputsWithRepairs);
-  check('repairs approved -> readiness.categories.repairs_condition is SUPPORTED end-to-end', readinessWithRepairs.categories.repairs_condition, 'SUPPORTED');
+  const inputsRepairsProven = build({ arv: null, repairs: 41000, askingPrice: null }, { repairsApprovalProven: true });
+  const readinessRepairsProven = computeOfferReadiness(inputsRepairsProven);
+  check('repairs approved (proven) -> readiness.categories.repairs_condition SUPPORTED end-to-end', readinessRepairsProven.categories.repairs_condition, 'SUPPORTED');
 
-  const inputsNoRepairs = buildOfferReadinessInputs({ known: { arv: null, repairs: null, askingPrice: null }, dealEconomics: GOLDEN_ECONOMICS });
-  const readinessNoRepairs = computeOfferReadiness(inputsNoRepairs);
-  check('repairs not approved -> readiness.categories.repairs_condition is UNKNOWN end-to-end', readinessNoRepairs.categories.repairs_condition, 'UNKNOWN');
+  const inputsRepairsUnproven = build({ arv: null, repairs: 41000, askingPrice: null }, { repairsApprovalProven: false });
+  const readinessRepairsUnproven = computeOfferReadiness(inputsRepairsUnproven);
+  check('repairs on file but unproven -> readiness.categories.repairs_condition UNKNOWN end-to-end', readinessRepairsUnproven.categories.repairs_condition, 'UNKNOWN');
+
+  const inputsArvHigh = build({ arv: 250000, repairs: null, askingPrice: null }, { arvEvidenceState: 'HIGH' });
+  const readinessArvHigh = computeOfferReadiness(inputsArvHigh);
+  check('ARV evidence HIGH -> readiness.categories.arv SUPPORTED end-to-end', readinessArvHigh.categories.arv, 'SUPPORTED');
+
+  const inputsArvLow = build({ arv: 250000, repairs: null, askingPrice: null }, { arvEvidenceState: 'LOW' });
+  const readinessArvLow = computeOfferReadiness(inputsArvLow);
+  check('ARV evidence LOW -> readiness.categories.arv PRELIMINARY end-to-end', readinessArvLow.categories.arv, 'PRELIMINARY');
+
+  const inputsArvInsufficient = build({ arv: 250000, repairs: null, askingPrice: null }, { arvEvidenceState: 'INSUFFICIENT' });
+  const readinessArvInsufficient = computeOfferReadiness(inputsArvInsufficient);
+  check('ARV evidence INSUFFICIENT -> readiness.categories.arv UNKNOWN end-to-end', readinessArvInsufficient.categories.arv, 'UNKNOWN');
+
+  const inputsNoArv = build({ arv: null, repairs: null, askingPrice: null }, { arvEvidenceState: null });
+  const readinessNoArv = computeOfferReadiness(inputsNoArv);
+  check('no ARV evidence at all -> readiness.categories.arv UNKNOWN end-to-end', readinessNoArv.categories.arv, 'UNKNOWN');
 }
 
 // ============================================================
-// Structural proof: no second economics/underwriting engine.
+// Structural proof: no second economics/underwriting engine, no second
+// ARV evidence classifier.
 // ============================================================
 {
   const src = fs.readFileSync(path.join(LIB, 'seller-call-readiness-inputs.ts'), 'utf8');
   check('source does not import compute.ts', src.indexOf('"./underwriting/compute"') === -1, true);
   check('source does not call computeUnderwriting', src.indexOf('computeUnderwriting') === -1, true);
   check('source does not call computeBoard8Economics', src.indexOf('computeBoard8Economics') === -1, true);
+  check('source does not reimplement ARV evidence-state classification (imports the type only)', src.indexOf('function') === -1 || src.indexOf('baseEvidenceState') === -1, true);
 }
 
 cleanup();
