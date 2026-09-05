@@ -82,9 +82,10 @@ const SRC_CODE = SRC_TEXT
   .replace(/(^|[^:])\/\/.*$/gm, '$1');
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run.
- *  29 = url(3) + subjectAddress(9) + handoff(10) + copyAgain(3) + boundary(4).
+ *  31 = url(3) + subjectAddress(9) + handoff(10) + copyAgain(3) + boundary(4)
+ *     + B8-07/INV-50's two Seller Call reuse checks.
  *  Counted by enumerating the check( sites in this file, not from a run's output. */
-const FLOOR = 29;
+const FLOOR = 31;
 
 let checksRun = 0;
 let failures = 0;
@@ -282,6 +283,20 @@ check('address-ignores-unrelated-contact-fields',
   check('page-holds-exactly-one-handoff-call-site',
     (PAGE_TEXT.match(/handoffToPropStream\(/g) || []).length === 1,
     'invocations in ContactWorkspace.tsx: ' + (PAGE_TEXT.match(/handoffToPropStream\(/g) || []).length);
+
+  /* B8-07 / INV-50 -- Seller Call reuses the SAME seam, not a second one.
+     SellerCallWorkspace.tsx is a SECOND caller of the module (Get Comps is
+     now reachable from two pages), so it gets its own one-call-site check
+     rather than silently going unverified, and it must import the SAME
+     module rather than reimplementing the handoff. */
+  const SELLER_CALL_PAGE = path.join(APP, 'src', 'pages', 'SellerCallWorkspace.tsx');
+  const SELLER_CALL_TEXT = fs.readFileSync(SELLER_CALL_PAGE, 'utf8');
+  check('seller-call-workspace-holds-exactly-one-handoff-call-site',
+    (SELLER_CALL_TEXT.match(/handoffToPropStream\(/g) || []).length === 1,
+    'invocations in SellerCallWorkspace.tsx: ' + (SELLER_CALL_TEXT.match(/handoffToPropStream\(/g) || []).length);
+  check('seller-call-workspace-imports-handoffToPropStream-from-the-same-module',
+    /from\s+"\.\.\/lib\/propstream"/.test(SELLER_CALL_TEXT) && SELLER_CALL_TEXT.indexOf('handoffToPropStream,') !== -1,
+    'imports from ../lib/propstream, not a local reimplementation');
 
   console.log('');
   console.log('checksRun=' + checksRun + ' uniqueNames=' + names.size + ' failures=' + failures + ' floor=' + FLOOR);

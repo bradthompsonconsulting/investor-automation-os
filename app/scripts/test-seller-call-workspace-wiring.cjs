@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 37;
+const FLOOR = 48;
 let failures = 0;
 let checks = 0;
 
@@ -123,7 +123,11 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('page imports computeBoard8Economics from board8-economics', /import \{ computeBoard8Economics, computeExpectedSpread,[\s\S]*\} from "\.\.\/lib\/underwriting\/board8-economics"/.test(sellerCallTsx), true);
   check('page imports computeOfferReadiness from offer-readiness', /import \{ computeOfferReadiness,[\s\S]*\} from "\.\.\/lib\/underwriting\/offer-readiness"/.test(sellerCallTsx), true);
   check('page imports buildDealBarCells from the pure deal-bar module', /import \{ buildDealBarCells,[\s\S]*\} from "\.\.\/lib\/seller-call-deal-bar"/.test(sellerCallTsx), true);
-  check('page never reimplements the 25%/$5,000 Target formula', sellerCallTsx.indexOf('0.25') === -1, true);
+  // Precise multiplication-context check, not a bare substring match: B8-07
+  // legitimately uses "0.25" as a CSS rgba() opacity value (copied verbatim
+  // from ContactWorkspace.tsx's own comps-helper styling), which a bare
+  // substring check would misreport as formula reimplementation.
+  check('page never reimplements the 25%/$5,000 Target formula', /[*]\s*0\.25|0\.25\s*[*]/.test(sellerCallTsx), false);
   // The page legitimately references the three status literals for DISPLAY
   // (READINESS_STYLE's lookup keys, and equality checks against
   // readiness.effectiveStatus) -- that is reading B8-04's output, not
@@ -184,6 +188,39 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 {
   check('page computes Expected Spread with referenceKind "current_offer"', /referenceKind:\s*"current_offer"/.test(sellerCallTsx), true);
   check('page never supplies a non-null referencePrice (no invented Current Offer value)', /referencePrice:\s*null/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// B8-07 / INV-50: Repairs and ARV/Comps compact entry points reuse
+// Board #6/#7's existing systems, never a second engine.
+// ============================================================
+{
+  check('page imports buildOfferReadinessInputs from seller-call-readiness-inputs', /import \{ buildOfferReadinessInputs \} from "\.\.\/lib\/seller-call-readiness-inputs"/.test(sellerCallTsx), true);
+  check('page does not declare its own buildOfferReadinessInputs', /\b(function|const)\s+buildOfferReadinessInputs\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
+
+  check('page renders a dedicated Repairs entry panel', /data-testid="repairs-entry-panel"/.test(sellerCallTsx), true);
+  check('Repairs panel links to the existing Underwriting surface (Estimate Repairs)', /data-testid="seller-call-estimate-repairs-link"[\s\S]{0,40}to=\{`\/contacts\/\$\{contactId\}\/underwriting`\}|to=\{`\/contacts\/\$\{contactId\}\/underwriting`\}[\s\S]{0,120}data-testid="seller-call-estimate-repairs-link"/.test(sellerCallTsx), true);
+
+  check('page renders a dedicated ARV & Comps entry panel', /data-testid="arv-comps-entry-panel"/.test(sellerCallTsx), true);
+  check('ARV panel offers Get Comps, reusing handoffToPropStream directly', /data-testid="seller-call-get-comps"[\s\S]{0,120}onClick=\{handleGetComps\}|onClick=\{handleGetComps\}[\s\S]{0,120}data-testid="seller-call-get-comps"/.test(sellerCallTsx), true);
+  check('ARV panel offers a View / Import Comps link to the existing Underwriting surface', /data-testid="seller-call-view-import-comps"/.test(sellerCallTsx), true);
+
+  check('page imports the PropStream handoff from the existing propstream module', /from "\.\.\/lib\/propstream"/.test(sellerCallTsx), true);
+  check('page does not store any PropStream credential (no password/username field)', !/password|username/i.test(sellerCallTsx), true);
+
+  // No second repair or ARV/comp engine: none of Board #6/#7's actual
+  // calculation/classification function names appear anywhere on this page.
+  const forbiddenEngineCalls = [
+    'computeRepairEstimate', 'operatorEstimate', 'classifyComp',
+    'reconcileAcceptedCompArv', 'BOARD_7_ARV_POLICY',
+  ];
+  const foundEngineCalls = forbiddenEngineCalls.filter((t) => sellerCallTsx.indexOf(t) !== -1);
+  check('page contains no Board #6 repair-calculation or Board #7 comp/ARV-engine call', foundEngineCalls, []);
+
+  // repairsCondition is now derived from real evidence (via
+  // buildOfferReadinessInputs), not the old hardcoded "UNKNOWN" literal
+  // for that specific field -- the page must not assign it directly.
+  check('page does not hardcode repairsCondition itself (delegates to buildOfferReadinessInputs)', /repairsCondition:\s*"UNKNOWN"/.test(sellerCallTsx), false);
 }
 
 console.log('');

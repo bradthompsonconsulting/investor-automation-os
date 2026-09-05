@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion } from "lucide-react";
+import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home } from "lucide-react";
 import { ghl, type ContactDetail } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
 import {
@@ -17,9 +17,14 @@ import { opportunitiesForContact, opportunityCandidates, selectOpportunity } fro
 import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
 import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriting/types";
 import { computeBoard8Economics, computeExpectedSpread, type Board8Economics, type ExpectedSpread } from "../lib/underwriting/board8-economics";
-import { computeOfferReadiness, type OfferReadinessInputs, type ReadinessResult } from "../lib/underwriting/offer-readiness";
+import { computeOfferReadiness, type ReadinessResult } from "../lib/underwriting/offer-readiness";
 import { computeNextBestQuestion, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
+import { buildOfferReadinessInputs } from "../lib/seller-call-readiness-inputs";
+import {
+  subjectAddress, handoffToPropStream, copyAddressAgain, browserHandoffEnvironment,
+  PROPSTREAM_LOGIN_URL, type HandoffResult,
+} from "../lib/propstream";
 
 /**
  * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49.
@@ -88,6 +93,14 @@ const CONTACT_IDS = {
   askingPrice: CONFIG.fields.askingPrice,
 };
 
+/** Shared small-button style for the B8-07 compact entry points, matching ContactWorkspace.tsx's own Underwriting/Get Comps button styling. */
+const COMPACT_LINK_STYLE: React.CSSProperties = {
+  display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
+  padding: "6px 10px", borderRadius: "7px", border: "1px solid rgba(30,200,255,0.35)",
+  background: "rgba(30,200,255,0.08)", color: "#1EC8FF", textDecoration: "none",
+};
+const COMPACT_BUTTON_STYLE: React.CSSProperties = { ...COMPACT_LINK_STYLE };
+
 /** Page-local, one consumer -- same convention Dashboard.tsx and UnderwritingWorkspace.tsx each already follow for their own copies. */
 function contactName(c: ContactDetail | null): string {
   if (!c) return "—";
@@ -98,6 +111,10 @@ function formatAddress(c: ContactDetail | null): string {
   if (!c) return "—";
   const cityStateZip = [c.city, [c.state, c.postalCode].filter(Boolean).join(", ")].filter(Boolean).join(", ");
   return [c.address1, cityStateZip].filter(Boolean).join(", ") || "—";
+}
+
+function money(n: number): string {
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 }
 
 function Shell({ contactId, children }: { contactId: string; children: React.ReactNode }) {
@@ -213,6 +230,13 @@ export default function SellerCallWorkspace() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [chosenId, setChosenId] = useState<string | null>(null);
 
+  /* B7-02 — Get Comps handoff state. SESSION-ONLY, same as
+     ContactWorkspace.tsx's own copy: no note, no field, nothing persisted.
+     This is the SAME `propstream.ts` module and the SAME functions that
+     surface calls, reused verbatim -- not a second handoff implementation. */
+  const [comps, setComps] = useState<HandoffResult | null>(null);
+  const [compsBusy, setCompsBusy] = useState(false);
+
   useEffect(() => {
     if (!contactId) return;
     let cancelled = false;
@@ -300,29 +324,22 @@ export default function SellerCallWorkspace() {
     [board8],
   );
 
-  /* B8-04, consumed. Four of six categories have no determination
-     mechanism yet (B8-02 item 7, still an open product decision) --
-     UNKNOWN here is the honest, correct value, not a placeholder bug.
-     ARV likewise has no persisted evidence-state carrier this page can
-     read, so it is honestly null (never established) rather than
-     guessed from the raw approved dollar amount. Deal economics is the
-     one category this build can assess for real, because board8 above
-     is a genuine computation. No human action control exists in this
-     foundation build. */
+  /* B8-04, consumed, via buildOfferReadinessInputs (B8-07 / INV-50) --
+     that module's own header states exactly which categories now reflect
+     real evidence (repairsCondition, from Board 6's approved-total rule)
+     and which still cannot (arv, property_identity, transaction
+     assumptions, seller price position -- no determination mechanism or
+     no persisted evidence-state carrier exists for any of them yet). No
+     human action control exists in this build. */
   const readiness: ReadinessResult | null = useMemo(() => {
     if (!board8) return null;
-    const inputs: OfferReadinessInputs = {
-      propertyIdentity: "UNKNOWN",
-      repairsCondition: "UNKNOWN",
-      arv: null,
-      transactionAssumptions: "UNKNOWN",
-      sellerPricePosition: "UNKNOWN",
-      dealEconomics: board8,
-      materialUnknowns: [],
-      humanAction: { kind: "none" },
+    const known = {
+      arv: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.arv : null,
+      repairs: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.repairs : null,
+      askingPrice: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.askingPrice : null,
     };
-    return computeOfferReadiness(inputs);
-  }, [board8]);
+    return computeOfferReadiness(buildOfferReadinessInputs({ known, dealEconomics: board8 }));
+  }, [board8, screen]);
 
   const dealBarCells = useMemo(
     () => buildDealBarCells({
@@ -355,6 +372,35 @@ export default function SellerCallWorkspace() {
     };
     return computeNextBestQuestion(readiness, known, board8);
   }, [readiness, board8, screen]);
+
+  /* B7-02 — the subject address, from the SAME four native fields the
+     identity header above already renders through formatAddress. null
+     when incomplete, which disables Get Comps rather than handing
+     PropStream a street line that resolves to the wrong county. Verbatim
+     copy of ContactWorkspace.tsx's own derivation -- same fields, same
+     function, same rule. */
+  const compsAddress = contact ? subjectAddress(contact) : null;
+
+  async function handleGetComps() {
+    if (!compsAddress) return;
+    setCompsBusy(true);
+    try {
+      setComps(await handoffToPropStream(compsAddress, browserHandoffEnvironment()));
+    } finally {
+      setCompsBusy(false);
+    }
+  }
+
+  async function handleCopyAgain() {
+    if (!comps) return;
+    setCompsBusy(true);
+    try {
+      const clipboard = await copyAddressAgain(comps.address, browserHandoffEnvironment().clipboard);
+      setComps({ ...comps, clipboard });
+    } finally {
+      setCompsBusy(false);
+    }
+  }
 
   return (
     <Shell contactId={contactId}>
@@ -507,6 +553,83 @@ export default function SellerCallWorkspace() {
                   <div style={{ fontSize: "12px", color: "#94A3B8", lineHeight: 1.5, marginTop: "8px" }}>
                     Why it matters: {nextBestQuestion.whyItMatters}
                   </div>
+                </div>
+              )}
+            </div>
+
+            {/* B8-07 / INV-50 — compact Estimate Repairs entry/resume.
+                REUSES Board #6's approved-total carrier and estimator:
+                this card shows the SAME `screen.known.repairs` value
+                already read above (no second read, no recomputation) and
+                links to /contacts/:id/underwriting, the existing
+                dedicated surface where the full repair estimator (Not
+                Asked/Good/Repair/Replace, category Major/Material,
+                session-only row amounts, approved-total persistence)
+                already lives. No repair calculation of any kind happens
+                on this page. */}
+            <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="repairs-entry-panel">
+              <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Repairs</div>
+              <div style={{ fontSize: "13px", color: "#E2E8F0", marginBottom: "12px" }}>
+                {screen.known.repairs !== null ? `Approved: ${money(screen.known.repairs)}` : "Not yet estimated."}
+              </div>
+              <Link
+                to={`/contacts/${contactId}/underwriting`}
+                data-testid="seller-call-estimate-repairs-link"
+                style={COMPACT_LINK_STYLE}
+              >
+                <Home size={12} /> {screen.known.repairs !== null ? "Re-estimate Repairs" : "Estimate Repairs"}
+              </Link>
+            </div>
+
+            {/* B8-07 / INV-50 — compact Get/View/Import Comps entry
+                points. REUSES B7-02's browser-based PropStream handoff
+                verbatim (same module, same functions, same session-only
+                helper pattern as ContactWorkspace.tsx's own Get Comps) and
+                links to /contacts/:id/underwriting for the full ARV comps
+                workspace (CSV import, classification, reconciliation,
+                Approve/Override) -- no comp engine or appraisal logic of
+                any kind exists on this page. */}
+            <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="arv-comps-entry-panel">
+              <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>ARV &amp; Comps</div>
+              <div style={{ fontSize: "13px", color: "#E2E8F0", marginBottom: "12px" }}>
+                {screen.known.arv !== null ? `Approved: ${money(screen.known.arv)}` : "Not yet established."}
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <button
+                  onClick={handleGetComps}
+                  disabled={compsBusy || !compsAddress}
+                  data-testid="seller-call-get-comps"
+                  title={compsAddress
+                    ? `Copies ${compsAddress} and opens PropStream, where you paste it into the property search`
+                    : "No complete subject-property address on this record (street, city and state are all required)"}
+                  style={{ ...COMPACT_BUTTON_STYLE, opacity: compsAddress ? 1 : 0.45, cursor: compsBusy || !compsAddress ? "not-allowed" : "pointer" }}
+                >
+                  <Copy size={12} /> Get Comps
+                </button>
+                <Link to={`/contacts/${contactId}/underwriting`} data-testid="seller-call-view-import-comps" style={COMPACT_LINK_STYLE}>
+                  <ExternalLink size={12} /> View / Import Comps
+                </Link>
+              </div>
+              {comps && (
+                <div
+                  data-testid="seller-call-comps-helper"
+                  data-comps-clipboard={comps.clipboard}
+                  style={{
+                    display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap",
+                    background: "#0D1B3E", border: "1px solid rgba(30,200,255,0.25)",
+                    borderRadius: "8px", padding: "8px 12px", marginTop: "10px", fontSize: "11px", color: "#94A3B8",
+                  }}
+                >
+                  <span style={{ color: comps.clipboard === "copied" ? "#1EC8FF" : "#F59E0B", fontWeight: 600 }}>
+                    {comps.clipboard === "copied" ? "Address copied" : "Couldn't copy — copy it here"}
+                  </span>
+                  <span style={{ color: "#F1F5F9", userSelect: "all" }}>{comps.address}</span>
+                  <button onClick={handleCopyAgain} disabled={compsBusy} style={{ ...COMPACT_LINK_STYLE, cursor: compsBusy ? "not-allowed" : "pointer", border: "1px solid rgba(30,200,255,0.35)" }}>
+                    <Copy size={11} /> Copy Again
+                  </button>
+                  <a href={PROPSTREAM_LOGIN_URL} target="_blank" rel="noopener noreferrer" style={COMPACT_LINK_STYLE}>
+                    <ExternalLink size={11} /> Open PropStream
+                  </a>
                 </div>
               )}
             </div>
