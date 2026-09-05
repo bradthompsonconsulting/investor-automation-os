@@ -415,8 +415,29 @@ export default function SellerCallWorkspace() {
 
       {(screen.state === "resolved" || screen.state === "unresolved") ? (
         <>
-          <DealBar cells={dealBarCells} />
-          {readiness ? <ReadinessBadge readiness={readiness} /> : null}
+          {/* Jess Gate, 2026-09-05: the deal bar and its adjacent Offer Ready
+              guardrail must stay visible while the workspace scrolls -- the
+              page's own header comment already calls this a guardrail, and
+              a guardrail that scrolls away is not one (the same argument
+              UNDERWRITING_WORKSPACE_SPEC.md makes for the call rail).
+              `position: sticky` against `<main>` (Layout.tsx), the nearest
+              scrolling ancestor, with an opaque background matching
+              `<main>`'s own (#0A0E1A) so scrolled content never shows
+              through, and a border to separate it from what scrolls
+              beneath. DealBar's cell order/labels and ReadinessBadge's
+              "adjacent, not an eighth tile" placement are UNCHANGED --
+              this wraps them, it does not alter what either renders. */}
+          <div
+            data-testid="seller-call-sticky-bar"
+            style={{
+              position: "sticky", top: 0, zIndex: 10,
+              background: "#0A0E1A", paddingTop: "6px", paddingBottom: "2px",
+              borderBottom: "1px solid rgba(255,255,255,0.06)",
+            }}
+          >
+            <DealBar cells={dealBarCells} />
+            {readiness ? <ReadinessBadge readiness={readiness} /> : null}
+          </div>
 
           {screen.state === "unresolved" ? (
             <Notice

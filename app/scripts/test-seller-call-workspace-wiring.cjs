@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 23;
+const FLOOR = 31;
 let failures = 0;
 let checks = 0;
 
@@ -79,6 +79,40 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 {
   check('Dashboard links to the seller-call route', /to=\{`\/contacts\/\$\{c\.id\}\/seller-call`\}/.test(dashboardTsx), true);
   check('Dashboard entry sits in a queue with a Call button (call-oriented section)', /PhoneCall size=\{12\} \/> Call[\s\S]{0,400}\/seller-call/.test(dashboardTsx), true);
+}
+
+// ============================================================
+// Jess Gate, 2026-09-05: the deal bar and its adjacent Offer Ready
+// guardrail must stay visible while the workspace scrolls. Structural
+// proof that a sticky wrapper exists, wraps BOTH <DealBar> and
+// <ReadinessBadge> in that order (so Offer Ready still renders adjacent
+// to the bar, not folded into it as an eighth cell), sets an explicit
+// top offset and stacking order, and gives the wrapper an opaque
+// background so scrolled content cannot show through.
+// ============================================================
+{
+  const stickyMarker = 'data-testid="seller-call-sticky-bar"';
+  check('page declares a dedicated sticky wrapper for the deal bar', sellerCallTsx.indexOf(stickyMarker) !== -1, true);
+
+  const stickyBlockMatch = sellerCallTsx.match(/data-testid="seller-call-sticky-bar"[\s\S]{0,400}/);
+  const stickyBlock = stickyBlockMatch ? stickyBlockMatch[0] : '';
+  check('sticky wrapper uses position: sticky', /position:\s*"sticky"/.test(stickyBlock), true);
+  check('sticky wrapper pins to the top of its scroll container', /top:\s*0/.test(stickyBlock), true);
+  check('sticky wrapper sets an explicit stacking order (zIndex)', /zIndex:/.test(stickyBlock), true);
+  check('sticky wrapper has an opaque background matching <main> (#0A0E1A), not transparent', /background:\s*"#0A0E1A"/.test(stickyBlock), true);
+
+  const stickyWrapperFull = sellerCallTsx.slice(
+    sellerCallTsx.indexOf(stickyMarker),
+    sellerCallTsx.indexOf('</div>', sellerCallTsx.indexOf('<ReadinessBadge')) + '</div>'.length,
+  );
+  check('sticky wrapper contains <DealBar', stickyWrapperFull.indexOf('<DealBar') !== -1, true);
+  check('sticky wrapper contains <ReadinessBadge AFTER <DealBar (adjacent, not an eighth cell)',
+    stickyWrapperFull.indexOf('<DealBar') !== -1
+    && stickyWrapperFull.indexOf('<ReadinessBadge') !== -1
+    && stickyWrapperFull.indexOf('<DealBar') < stickyWrapperFull.indexOf('<ReadinessBadge'),
+    true);
+  check('ReadinessBadge is a sibling element, not a prop of DealBar (still adjacent, not folded in)',
+    /<DealBar cells=\{dealBarCells\} \/>/.test(stickyWrapperFull), true);
 }
 
 // ============================================================
