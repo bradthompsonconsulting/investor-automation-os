@@ -429,3 +429,12 @@ principle 19 forbids manufacturing a recommendation from insufficient
 information; a confidence score invented to satisfy a readiness
 indicator would be exactly that. Naming the gate is progress. Filling
 it in is a separate decision with its own evidence.
+
+*Amendment 2026-09-04, B8-01 / INV-44.* The separate decision above has
+been made at the category level: `docs/DEAL_ECONOMICS_OFFER_READINESS_V1.md`
+names the six categories Offer Ready requires supported knowledge of, and
+locks the UNKNOWN -> PRELIMINARY -> SUPPORTED evidence ladder each resolves
+through. It does not decide how a category's evidence level is assigned,
+does not create a carrier, and does not decide whether approval requires
+more than Gate 1 in any numeric sense -- that remains open exactly as
+before, now narrowed rather than unnamed.
