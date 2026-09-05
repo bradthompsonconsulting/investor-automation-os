@@ -50,12 +50,27 @@
  * blocks Offer Ready when a caller explicitly names it as material.
  *
  * APPROVED and OVERRIDDEN are human actions, not evidence levels
- * (`DEAL_ECONOMICS_OFFER_READINESS_V1.md` lines 266-285). `HumanAction`
- * is a separate field on the result, never folded into `status` or the
- * category evidence levels -- `effectiveStatus` is the one place the two
- * axes combine, and `status`/`reasons` remain visible and unchanged
- * alongside it so a human override is always shown next to what it
- * overrode, never in place of it. THIS MODULE PERSISTS NOTHING: no
+ * (`DEAL_ECONOMICS_OFFER_READINESS_V1.md` lines 266-285), and they are NOT
+ * interchangeable -- collapsing them was an error caught at Jess Gate on
+ * this issue's first PASS and corrected here:
+ *
+ *   - APPROVED means the human accepts that CURRENT EVIDENCE, as it
+ *     stands, is sufficient. It can only ever agree with an already-
+ *     objective OFFER_READY result -- it never elevates REVIEW_NEEDED or
+ *     NOT_READY. An APPROVED action attached to a non-ready deal changes
+ *     nothing observable: `effectiveStatus` stays exactly what `status`
+ *     already was.
+ *
+ *   - OVERRIDDEN means the human proceeds DESPITE evidence not reaching
+ *     SUPPORTED. This is the only action that may elevate a non-ready
+ *     objective status to an effective OFFER_READY -- a deliberate,
+ *     visible exception, never a silent one.
+ *
+ * `HumanAction` is a separate field on the result, never folded into
+ * `status` or the category evidence levels -- `effectiveStatus` is the
+ * one place the two axes combine, and `status`/`reasons` remain visible
+ * and unchanged alongside it so an override is always shown next to what
+ * it overrode, never in place of it. THIS MODULE PERSISTS NOTHING: no
  * Offer Ready carrier is authorized (B8-02's finding on Part A/B
  * "Approval/override provenance" leaves this an unresolved product
  * decision), so `HumanAction` is an in-memory input this module reads,
@@ -112,11 +127,18 @@ export type ReadinessReason = CategoryReason | MaterialUnknownReason;
 /* ------------------------------------------------------------------ */
 
 /**
- * APPROVED: a human accepts the evidence, as it stands, is sufficient to
- * act on. OVERRIDDEN: a human proceeds despite the evidence not reaching
- * SUPPORTED. Both are permitted from any computed `status` -- consistent
- * with PB-D56's established "flagged, never blocked" pattern for
- * out-of-parameters decisions. Neither is persisted by this module.
+ * APPROVED: a human accepts that CURRENT EVIDENCE, as it stands, is
+ * sufficient to act on -- it can only ever agree with an already-objective
+ * OFFER_READY `status`, and NEVER elevates REVIEW_NEEDED or NOT_READY.
+ * OVERRIDDEN: a human proceeds DESPITE the evidence not reaching
+ * SUPPORTED -- this is the only action that may elevate a non-ready
+ * `status` to an effective OFFER_READY, consistent with PB-D56's
+ * established "flagged, never blocked" pattern for out-of-parameters
+ * decisions. The two are not interchangeable: see `computeOfferReadiness`
+ * for the exact rule. Either kind may be ATTACHED regardless of the
+ * computed `status` -- attaching one is never blocked -- but only
+ * OVERRIDDEN changes what `effectiveStatus` reports. Neither is
+ * persisted by this module.
  */
 export type HumanAction =
   | { kind: "none" }
@@ -159,10 +181,13 @@ export type ReadinessResult = {
   /** The human action supplied, carried through unchanged. */
   humanAction: HumanAction;
   /**
-   * `status`, unless a human APPROVED or OVERRIDDEN action is present, in
-   * which case OFFER_READY. This is the ONLY field a downstream "can I
-   * negotiate now" check should read; `status` and `reasons` stay visible
-   * beside it so an override is always shown next to what it overrode.
+   * `status`, unless a human OVERRIDDEN action is present, in which case
+   * OFFER_READY. An APPROVED action NEVER changes this value -- it can
+   * only ever agree with a `status` that is already OFFER_READY, so
+   * `effectiveStatus` equals `status` in every APPROVED case. This is the
+   * ONLY field a downstream "can I negotiate now" check should read;
+   * `status` and `reasons` stay visible beside it so an override is
+   * always shown next to what it overrode.
    */
   effectiveStatus: ReadinessStatus;
 };
@@ -273,10 +298,15 @@ export function computeOfferReadiness(inputs: OfferReadinessInputs): ReadinessRe
     status = "OFFER_READY";
   }
 
+  // ONLY OVERRIDDEN may elevate a non-ready objective status. APPROVED is
+  // deliberately absent from this condition: it means the human accepts
+  // CURRENT evidence as sufficient, so it can only ever agree with a
+  // `status` that is already OFFER_READY, never manufacture one. Jess
+  // Gate caught this collapsed on this issue's first PASS -- see the
+  // module header and the HumanAction type comment for the corrected
+  // distinction.
   const effectiveStatus: ReadinessStatus =
-    inputs.humanAction.kind === "approved" || inputs.humanAction.kind === "overridden"
-      ? "OFFER_READY"
-      : status;
+    inputs.humanAction.kind === "overridden" ? "OFFER_READY" : status;
 
   return {
     status,

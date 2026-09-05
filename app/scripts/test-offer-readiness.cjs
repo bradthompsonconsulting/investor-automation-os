@@ -67,7 +67,7 @@ const { computeBoard8Economics } = require(board8Path);
 const { computeOfferReadiness } = require(readinessPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 50;
+const FLOOR = 65;
 let failures = 0;
 let checks = 0;
 
@@ -205,9 +205,11 @@ function fullySupportedInputs(over) {
 }
 
 // ============================================================
-// Validation item 7: human APPROVED/OVERRIDDEN actions are
-// distinguishable from evidence quality -- status and reasons stay what
-// they objectively are; only effectiveStatus reflects the human action.
+// Validation item 7 (corrected per Jess Gate, 2026-09-05): human
+// APPROVED/OVERRIDDEN actions are distinguishable from evidence quality
+// AND from each other. status/reasons stay what they objectively are.
+// Only OVERRIDDEN may elevate effectiveStatus; APPROVED never does --
+// it can only ever agree with an already-OFFER_READY status.
 // ============================================================
 {
   const notReadyInputs = fullySupportedInputs({ sellerPricePosition: 'UNKNOWN' });
@@ -225,11 +227,15 @@ function fullySupportedInputs(over) {
   check('overridden: humanAction carried through', overridden.humanAction.kind, 'overridden');
   check('overridden: status and effectiveStatus differ', overridden.status !== overridden.effectiveStatus, true);
 
-  const approved = computeOfferReadiness(Object.assign({}, notReadyInputs, {
+  // APPROVED must NEVER elevate a non-ready objective status -- this is
+  // the exact distinction Jess Gate found collapsed and required fixed.
+  const approvedOnNotReady = computeOfferReadiness(Object.assign({}, notReadyInputs, {
     humanAction: { kind: 'approved', at: '2026-09-05T12:00:00.000Z', operator: 'Brad Thompson' },
   }));
-  check('approved: raw status UNCHANGED (still NOT_READY)', approved.status, 'NOT_READY');
-  check('approved: effectiveStatus is OFFER_READY', approved.effectiveStatus, 'OFFER_READY');
+  check('APPROVED cannot bypass UNKNOWN: raw status stays NOT_READY', approvedOnNotReady.status, 'NOT_READY');
+  check('APPROVED cannot bypass UNKNOWN: effectiveStatus stays NOT_READY, NOT elevated', approvedOnNotReady.effectiveStatus, 'NOT_READY');
+  check('APPROVED cannot bypass UNKNOWN: status equals effectiveStatus (no silent elevation)', approvedOnNotReady.status, approvedOnNotReady.effectiveStatus);
+  check('APPROVED cannot bypass UNKNOWN: reasons still present', approvedOnNotReady.reasons.length > 0, true);
 
   // A human action attached to an ALREADY offer-ready result changes nothing observable.
   const alreadyReady = computeOfferReadiness(fullySupportedInputs({
@@ -237,6 +243,51 @@ function fullySupportedInputs(over) {
   }));
   check('approved on already-ready deal: status still OFFER_READY', alreadyReady.status, 'OFFER_READY');
   check('approved on already-ready deal: effectiveStatus still OFFER_READY', alreadyReady.effectiveStatus, 'OFFER_READY');
+}
+
+// ============================================================
+// Jess Gate correction, explicit proof set: APPROVED cannot bypass
+// PRELIMINARY evidence, UNKNOWN evidence, or unresolved material
+// unknowns -- each tested individually so no single case could pass by
+// accident of the others.
+// ============================================================
+{
+  const approvedAction = { kind: 'approved', at: '2026-09-05T18:00:00.000Z', operator: 'Brad Thompson' };
+
+  // (a) PRELIMINARY evidence.
+  const preliminaryInputs = fullySupportedInputs({ transactionAssumptions: 'PRELIMINARY' });
+  const preliminaryNoAction = computeOfferReadiness(preliminaryInputs);
+  check('setup: PRELIMINARY evidence alone -> REVIEW_NEEDED', preliminaryNoAction.status, 'REVIEW_NEEDED');
+  const preliminaryApproved = computeOfferReadiness(Object.assign({}, preliminaryInputs, { humanAction: approvedAction }));
+  check('APPROVED cannot bypass PRELIMINARY: status stays REVIEW_NEEDED', preliminaryApproved.status, 'REVIEW_NEEDED');
+  check('APPROVED cannot bypass PRELIMINARY: effectiveStatus stays REVIEW_NEEDED', preliminaryApproved.effectiveStatus, 'REVIEW_NEEDED');
+
+  // (b) UNKNOWN evidence.
+  const unknownInputs = fullySupportedInputs({ repairsCondition: 'UNKNOWN' });
+  const unknownNoAction = computeOfferReadiness(unknownInputs);
+  check('setup: UNKNOWN evidence alone -> NOT_READY', unknownNoAction.status, 'NOT_READY');
+  const unknownApproved = computeOfferReadiness(Object.assign({}, unknownInputs, { humanAction: approvedAction }));
+  check('APPROVED cannot bypass UNKNOWN evidence: status stays NOT_READY', unknownApproved.status, 'NOT_READY');
+  check('APPROVED cannot bypass UNKNOWN evidence: effectiveStatus stays NOT_READY', unknownApproved.effectiveStatus, 'NOT_READY');
+
+  // (c) Unresolved material unknowns.
+  const materialUnknownInputs = fullySupportedInputs({
+    materialUnknowns: [{ code: 'TITLE_CLOUD', description: 'Possible unreleased lien found in a title search mentioned by the seller.' }],
+  });
+  const materialUnknownNoAction = computeOfferReadiness(materialUnknownInputs);
+  check('setup: material unknown alone -> NOT_READY', materialUnknownNoAction.status, 'NOT_READY');
+  const materialUnknownApproved = computeOfferReadiness(Object.assign({}, materialUnknownInputs, { humanAction: approvedAction }));
+  check('APPROVED cannot bypass a material unknown: status stays NOT_READY', materialUnknownApproved.status, 'NOT_READY');
+  check('APPROVED cannot bypass a material unknown: effectiveStatus stays NOT_READY', materialUnknownApproved.effectiveStatus, 'NOT_READY');
+  check('APPROVED cannot bypass a material unknown: reason still names it', materialUnknownApproved.reasons.some((x) => x.kind === 'material_unknown' && x.unknownCode === 'TITLE_CLOUD'), true);
+
+  // Contrast: OVERRIDDEN legitimately elevates all three of the above,
+  // proving the distinction is in the action kind, not in some other
+  // hidden condition.
+  const overriddenAction = { kind: 'overridden', at: '2026-09-05T18:00:00.000Z', operator: 'Brad Thompson', reason: 'Proceeding at investor discretion.' };
+  check('OVERRIDDEN elevates PRELIMINARY case', computeOfferReadiness(Object.assign({}, preliminaryInputs, { humanAction: overriddenAction })).effectiveStatus, 'OFFER_READY');
+  check('OVERRIDDEN elevates UNKNOWN case', computeOfferReadiness(Object.assign({}, unknownInputs, { humanAction: overriddenAction })).effectiveStatus, 'OFFER_READY');
+  check('OVERRIDDEN elevates material-unknown case', computeOfferReadiness(Object.assign({}, materialUnknownInputs, { humanAction: overriddenAction })).effectiveStatus, 'OFFER_READY');
 }
 
 // ============================================================
