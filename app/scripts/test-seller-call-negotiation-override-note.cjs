@@ -54,7 +54,7 @@ const compiledNoComments = execSync(
 fs.rmSync(TMP + '-nocomments', { recursive: true, force: true });
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 29;
+const FLOOR = 41;
 let failures = 0;
 let checks = 0;
 
@@ -134,6 +134,87 @@ function fullOverride(over) {
 
   const emptyReason = base.replace('Reason: Seller price position confirmed verbally; proceeding above Max.', 'Reason: ');
   check('an override note with an empty Reason is refused (a real reason is required, per attemptOverride\'s own precondition)', parseNegotiationOverrideNote(emptyReason), null);
+}
+
+// ============================================================
+// Jess Gate correction, 2026-09-07: positional, exact-schema parsing --
+// an extra line, a duplicate field, or a reordered field must ALL be
+// refused, not silently tolerated by a `find()`-style lookup that only
+// cares whether a label appears SOMEWHERE.
+// ============================================================
+{
+  const base = formatNegotiationOverrideNote(fullOverride());
+  const baseLines = base.split('\n');
+
+  const extraLineAtEnd = base + '\nUnexpected: this line should not exist';
+  check('an extra/unknown line appended after the canonical eight refuses the whole note (wrong line count)', parseNegotiationOverrideNote(extraLineAtEnd), null);
+
+  const extraLineInMiddle = [...baseLines.slice(0, 4), 'Unexpected: inserted mid-note', ...baseLines.slice(4)].join('\n');
+  check('an extra/unknown line inserted BETWEEN two canonical fields refuses the whole note (wrong line count, not merely wrong order)', parseNegotiationOverrideNote(extraLineInMiddle), null);
+
+  // Duplicate field line: the Opportunity label appears twice (occupying
+  // BOTH its own position and the Operator position), so Operator's own
+  // label never appears at all -- the exact "first match wins" hazard
+  // Jess Gate named. Line count stays at eight.
+  const duplicateField = [...baseLines];
+  duplicateField[2] = 'Opportunity: opp-1'; // was "Operator: UNAVAILABLE"
+  check('a duplicate field line (Opportunity appears twice, Operator never appears) is refused -- the old find()-based parser would have silently accepted this', parseNegotiationOverrideNote(duplicateField.join('\n')), null);
+
+  // Reordered fields: Operator and Opportunity swapped. Both lines are
+  // individually well-formed "label: value" pairs -- only their POSITION
+  // is wrong, which only a positional parser can catch.
+  const reorderedFields = [...baseLines];
+  [reorderedFields[2], reorderedFields[3]] = [reorderedFields[3], reorderedFields[2]];
+  check('reordered fields (Operator and Opportunity swapped) are refused even though every line is individually well-formed', parseNegotiationOverrideNote(reorderedFields.join('\n')), null);
+}
+
+// ============================================================
+// Jess Gate correction, 2026-09-07: a canonical ISO timestamp is
+// required, not merely a JavaScript-parseable one.
+// ============================================================
+{
+  const base = formatNegotiationOverrideNote(fullOverride());
+
+  const missingMilliseconds = base.replace('Override timestamp: 2026-09-07T15:00:00.000Z', 'Override timestamp: 2026-09-07T15:00:00Z');
+  check('a timestamp missing the canonical .000 milliseconds is refused even though `new Date(...)` would parse it fine', parseNegotiationOverrideNote(missingMilliseconds), null);
+
+  const offsetNotation = base.replace('Override timestamp: 2026-09-07T15:00:00.000Z', 'Override timestamp: 2026-09-07T15:00:00.000+00:00');
+  check('a timestamp using +00:00 offset notation instead of canonical Z is refused (non-canonical but JavaScript-parseable)', parseNegotiationOverrideNote(offsetNotation), null);
+
+  const spaceInsteadOfT = base.replace('Override timestamp: 2026-09-07T15:00:00.000Z', 'Override timestamp: 2026-09-07 15:00:00.000Z');
+  check('a timestamp using a space instead of the canonical T separator is refused', parseNegotiationOverrideNote(spaceInsteadOfT), null);
+
+  // Sanity: the canonical form this module itself produces always
+  // round-trips -- proves the round-trip check is not simply always false.
+  const canonicalRoundTrips = parseNegotiationOverrideNote(base) !== null;
+  check('the canonical timestamp format this module itself emits always round-trips successfully', canonicalRoundTrips, true);
+}
+
+// ============================================================
+// Jess Gate correction, 2026-09-07: the economics invariant is
+// VALIDATED, not trusted -- Current Offer must exceed Max, and Amount
+// above Max must exactly equal their difference.
+// ============================================================
+{
+  const belowMax = formatNegotiationOverrideNote(fullOverride({
+    currentOfferAtOverride: 150000, maxSupportedOfferAtOverride: 176363, amountAboveMaxAtOverride: 13637,
+  }));
+  check('Current Offer BELOW Max Supported Offer is refused (an above-Max override cannot exist for a below-Max price)', parseNegotiationOverrideNote(belowMax), null);
+
+  const equalToMax = formatNegotiationOverrideNote(fullOverride({
+    currentOfferAtOverride: 176363, maxSupportedOfferAtOverride: 176363, amountAboveMaxAtOverride: 13637,
+  }));
+  check('Current Offer EQUAL TO Max Supported Offer is refused (attemptOverride requires strictly above_max, never at-Max)', parseNegotiationOverrideNote(equalToMax), null);
+
+  const mismatchedAmount = formatNegotiationOverrideNote(fullOverride({
+    currentOfferAtOverride: 190000, maxSupportedOfferAtOverride: 176363, amountAboveMaxAtOverride: 5000,
+  }));
+  check('Amount above Max not equal to Current Offer minus Max is refused (the arithmetic was never independently chosen by attemptOverride, so a mismatch means tampering)', parseNegotiationOverrideNote(mismatchedAmount), null);
+
+  const correctAmount = formatNegotiationOverrideNote(fullOverride({
+    currentOfferAtOverride: 200000, maxSupportedOfferAtOverride: 176363, amountAboveMaxAtOverride: 23637,
+  }));
+  check('a genuinely consistent record (Amount above Max exactly equals Current Offer minus Max, Current Offer strictly above Max) still parses successfully', parseNegotiationOverrideNote(correctAmount) !== null, true);
 }
 
 // ============================================================

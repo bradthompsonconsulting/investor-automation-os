@@ -25,15 +25,48 @@
  *
  * SAME PROVEN PATTERN AS `arv-approval-note.ts` / `seller-call-outcome.ts`,
  * REUSED, NOT REINVENTED. Versioned header, one fact per line, no per-
- * counter/per-keystroke detail, fails closed on ANY deviation from the
- * exact format, scoped to ONE Opportunity (PB-D55), and the "current
- * standing" reader picks the latest entry by the note's OWN embedded
- * timestamp -- never by list order or GHL's `dateAdded` -- so a later
- * override can never be shadowed by an earlier one still sitting elsewhere
- * in the raw note list. Every grant is a NEW append-only note; nothing here
- * ever overwrites a prior entry, so full history remains recoverable by
- * reading a contact's notes directly even though only the latest is used
- * for resume.
+ * counter/per-keystroke detail, scoped to ONE Opportunity (PB-D55), and
+ * the "current standing" reader picks the latest entry by the note's OWN
+ * embedded timestamp -- never by list order or GHL's `dateAdded` -- so a
+ * later override can never be shadowed by an earlier one still sitting
+ * elsewhere in the raw note list. Every grant is a NEW append-only note;
+ * nothing here ever overwrites a prior entry, so full history remains
+ * recoverable by reading a contact's notes directly even though only the
+ * latest is used for resume.
+ *
+ * Jess Gate correction, 2026-09-07: FAILS CLOSED ON ANY DEVIATION MEANS
+ * POSITIONAL, NOT `find()`. This is an authoritative provenance/readback
+ * carrier -- an earlier version of this parser located each field with
+ * `lines.find((l) => l.startsWith(label + ": "))`, which is order-blind
+ * and duplicate-blind: it silently accepted extra/unknown lines, a
+ * duplicate field line (the first match wins), and fields in any order,
+ * as long as every required label appeared SOMEWHERE. A malformed or
+ * tampered record could therefore be accepted and restored as a
+ * legitimate prior override. `parseNegotiationOverrideNote` now requires
+ * the EXACT eight-line canonical schema `formatNegotiationOverrideNote`
+ * emits -- the header plus `FIELD_LABELS`' seven fields, in that exact
+ * order, each appearing exactly once, with no extra line before or after
+ * -- checked positionally (`lines.length !== 8` and `lines[i + 1]` must
+ * start with `FIELD_LABELS[i] + ": "`, never a search). `FIELD_LABELS` is
+ * the ONE place the schema's order is declared; both the formatter and
+ * the parser read from it, so the two can never drift out of agreement
+ * the way two independently hardcoded lists could.
+ *
+ * A CANONICAL TIMESTAMP, NOT MERELY A PARSEABLE ONE. `new Date(at)`
+ * accepts many non-canonical strings `Date#toISOString()` (what
+ * `attemptOverride` actually produces) never would -- this parser
+ * additionally requires `new Date(at).toISOString() === at`, so only the
+ * exact canonical form round-trips.
+ *
+ * THE ECONOMICS INVARIANT IS VALIDATED, NOT TRUSTED. An above-Max
+ * override is, by `attemptOverride`'s own precondition, ONLY ever granted
+ * when `currentOfferAtOverride > maxSupportedOfferAtOverride` (strictly
+ * -- `computeNegotiationPosition`'s own `above_max` branch), and
+ * `amountAboveMaxAtOverride` is ALWAYS exactly their difference (also
+ * `computeNegotiationPosition`'s own arithmetic, never independently
+ * chosen). A record failing either check did not come from
+ * `attemptOverride` as this codebase actually calls it -- tampered or
+ * corrupt -- and is refused, not resurrected.
  *
  * WRITTEN THROUGH THE EXISTING SANCTIONED WRITE ONLY. This module builds
  * and parses the note string; it performs no write itself. The caller
@@ -50,6 +83,22 @@
 
 export const NEGOTIATION_OVERRIDE_LEDGER_VERSION = "iaos-negotiation-override-v1" as const;
 const EXPECTED_HEADER = `IAOS NEGOTIATION OVERRIDE LEDGER — ${NEGOTIATION_OVERRIDE_LEDGER_VERSION}`;
+
+/**
+ * The canonical eight-line schema (this header plus these seven fields,
+ * in this exact order) -- the ONE declaration both `formatNegotiationOverrideNote`
+ * and `parseNegotiationOverrideNote` read from, so format and parse can
+ * never drift into disagreement about order, count, or labels.
+ */
+const FIELD_LABELS = [
+  "Override timestamp",
+  "Operator",
+  "Opportunity",
+  "Current Offer at override",
+  "Max Supported Offer at override",
+  "Amount above Max at override",
+  "Reason",
+] as const;
 
 function ledgerValue(value: string | number | null | undefined): string {
   return value === null || value === undefined || value === "" ? "UNAVAILABLE" : String(value);
@@ -84,46 +133,57 @@ export function formatNegotiationOverrideNote(args: {
 }): string {
   return [
     EXPECTED_HEADER,
-    `Override timestamp: ${args.at}`,
-    `Operator: ${ledgerValue(args.operator)}`,
-    `Opportunity: ${args.opportunityId}`,
-    `Current Offer at override: ${args.currentOfferAtOverride}`,
-    `Max Supported Offer at override: ${args.maxSupportedOfferAtOverride}`,
-    `Amount above Max at override: ${args.amountAboveMaxAtOverride}`,
-    `Reason: ${args.reason}`,
+    `${FIELD_LABELS[0]}: ${args.at}`,
+    `${FIELD_LABELS[1]}: ${ledgerValue(args.operator)}`,
+    `${FIELD_LABELS[2]}: ${args.opportunityId}`,
+    `${FIELD_LABELS[3]}: ${args.currentOfferAtOverride}`,
+    `${FIELD_LABELS[4]}: ${args.maxSupportedOfferAtOverride}`,
+    `${FIELD_LABELS[5]}: ${args.amountAboveMaxAtOverride}`,
+    `${FIELD_LABELS[6]}: ${args.reason}`,
   ].join("\n");
 }
 
 /**
  * Parses one note body. Returns `null` on ANY deviation from the exact
- * format `formatNegotiationOverrideNote` produces -- fails closed, never
- * guesses, exactly like `arv-approval-note.ts`'s `parseArvApprovalNote`
- * and `seller-call-outcome.ts`'s `parseOutcomeNote`.
+ * canonical eight-line schema `formatNegotiationOverrideNote` produces --
+ * fails closed, never guesses. See the module header (Jess Gate
+ * correction, 2026-09-07) for exactly what "any deviation" now covers:
+ * wrong line count, wrong order, a duplicate or missing field, a
+ * non-canonical timestamp, or an economics invariant that does not hold.
  */
 export function parseNegotiationOverrideNote(body: string): ParsedNegotiationOverrideNote | null {
   if (typeof body !== "string") return null;
   const lines = body.split("\n");
+
+  // Positional, not `find()`: exactly the header plus FIELD_LABELS.length
+  // fields, no more, no fewer -- an extra/unknown line (before, between,
+  // or after) fails this length check outright.
+  if (lines.length !== 1 + FIELD_LABELS.length) return null;
   if (lines[0] !== EXPECTED_HEADER) return null;
 
-  function field(label: string): string | null {
-    const line = lines.find((l) => l.startsWith(label + ": "));
-    return line ? line.slice(label.length + 2) : null;
+  const values: string[] = [];
+  for (let i = 0; i < FIELD_LABELS.length; i++) {
+    const line = lines[i + 1];
+    const prefix = FIELD_LABELS[i] + ": ";
+    // The field at THIS position must be THIS label -- a reordered field,
+    // or a duplicate of another field occupying this slot instead, fails
+    // here rather than being silently found elsewhere in the note.
+    if (!line.startsWith(prefix)) return null;
+    values.push(line.slice(prefix.length));
   }
+  const [at, operatorRaw, opportunityId, currentOfferRaw, maxSupportedOfferRaw, amountAboveMaxRaw, reasonRaw] = values;
 
-  const at = field("Override timestamp");
-  const operatorRaw = field("Operator");
-  const opportunityId = field("Opportunity");
-  const currentOfferRaw = field("Current Offer at override");
-  const maxSupportedOfferRaw = field("Max Supported Offer at override");
-  const amountAboveMaxRaw = field("Amount above Max at override");
-  const reasonRaw = field("Reason");
+  if (opportunityId === "") return null;
+  if (reasonRaw.trim() === "") return null;
 
-  if (!at || !opportunityId || !currentOfferRaw || !maxSupportedOfferRaw || !amountAboveMaxRaw || !reasonRaw) {
-    return null;
-  }
-
+  // Canonical ISO timestamp: must round-trip through Date#toISOString()
+  // exactly, the same form `attemptOverride`'s own `at` is always
+  // produced with -- a JavaScript-parseable but non-canonical string
+  // (a different precision, offset notation, or format entirely) fails
+  // here even though `new Date(...)` itself would accept it.
   const atMs = new Date(at).getTime();
   if (!Number.isFinite(atMs)) return null;
+  if (new Date(atMs).toISOString() !== at) return null;
 
   const currentOfferAtOverride = Number(currentOfferRaw);
   const maxSupportedOfferAtOverride = Number(maxSupportedOfferRaw);
@@ -132,8 +192,16 @@ export function parseNegotiationOverrideNote(body: string): ParsedNegotiationOve
   if (!Number.isFinite(maxSupportedOfferAtOverride) || maxSupportedOfferAtOverride <= 0) return null;
   if (!Number.isFinite(amountAboveMaxAtOverride) || amountAboveMaxAtOverride <= 0) return null;
 
-  const operator = operatorRaw === null || operatorRaw === "UNAVAILABLE" || operatorRaw === "" ? null : operatorRaw;
-  if (reasonRaw.trim() === "") return null;
+  // The economics invariant: an above-Max override is only ever granted
+  // when Current Offer STRICTLY exceeds Max (computeNegotiationPosition's
+  // own "above_max" branch), and Amount above Max is always exactly their
+  // difference (that same function's own arithmetic) -- never
+  // independently chosen. Either failing means this record did not come
+  // from `attemptOverride` as this codebase actually calls it.
+  if (currentOfferAtOverride <= maxSupportedOfferAtOverride) return null;
+  if (amountAboveMaxAtOverride !== currentOfferAtOverride - maxSupportedOfferAtOverride) return null;
+
+  const operator = operatorRaw === "UNAVAILABLE" || operatorRaw === "" ? null : operatorRaw;
 
   return {
     opportunityId,
