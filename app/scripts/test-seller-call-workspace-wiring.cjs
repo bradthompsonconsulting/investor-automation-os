@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 58;
+const FLOOR = 64;
 let failures = 0;
 let checks = 0;
 
@@ -232,12 +232,29 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 // note-parsing implementation on the page itself.
 // ============================================================
 {
-  check('page imports latestArvApprovalForOpportunity from arv-approval-note', /import \{ latestArvApprovalForOpportunity \} from "\.\.\/lib\/arv-approval-note"/.test(sellerCallTsx), true);
+  check('page imports latestArvApprovalForOpportunity from arv-approval-note', /import \{ latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity \} from "\.\.\/lib\/arv-approval-note"/.test(sellerCallTsx), true);
+  check('page imports matchingArvApprovalForOpportunity from arv-approval-note (the amount-matched, usable-for-readiness read)', /matchingArvApprovalForOpportunity/.test(sellerCallTsx), true);
   check('page does not declare its own latestArvApprovalForOpportunity', /\b(function|const)\s+latestArvApprovalForOpportunity\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
+  check('page does not declare its own matchingArvApprovalForOpportunity', /\b(function|const)\s+matchingArvApprovalForOpportunity\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
   check('page does not reimplement note parsing (no local parseArvApprovalNote function)', /\b(function|const)\s+parseArvApprovalNote\s*[=(]/.test(sellerCallTsx), false);
   check('page never hardcodes arv to null in the readiness call (the exact regression Jess Gate found)', /arv:\s*null,?\s*\n/.test(sellerCallTsx), false);
-  check('page passes arvEvidenceState through to buildOfferReadinessInputs', /arvEvidenceState:\s*arvApproval\?\.evidenceState/.test(sellerCallTsx), true);
-  check('page reads the ledger note\'s evidenceState field, never an ARV dollar amount, to set it', /arvApproval\.evidenceState/.test(sellerCallTsx), true);
+  check('page passes arvEvidenceState through to buildOfferReadinessInputs using the AMOUNT-MATCHED approval, not the unmatched latest one', /arvEvidenceState:\s*matchedArvApproval\?\.evidenceState/.test(sellerCallTsx), true);
+  check('page reads the ledger note\'s evidenceState field, never an ARV dollar amount, to set it', /matchedArvApproval\.evidenceState/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// Jess Re-Gate correction, 2026-09-05 (2nd round): the latest ledger
+// entry must additionally match the CURRENT authoritative ARV amount
+// before its evidence is usable -- a stale entry must never lend
+// evidence to a different, later ARV amount. The page must call the
+// amount-matching function with `screen.known.arv` as the current
+// amount, not merely the recency-only lookup.
+// ============================================================
+{
+  check('page derives a separate matchedArvApproval from matchingArvApprovalForOpportunity, passed the CURRENT known ARV amount', /matchingArvApprovalForOpportunity\(notes,\s*screen\.opportunity\.id,\s*screen\.known\.arv\)/.test(sellerCallTsx), true);
+  check('page also derives latestArvLedgerEntry (recency-only, no amount check) for truthful UI text, kept separate from the amount-matched one used for readiness', /latestArvApprovalForOpportunity\(notes,\s*screen\.opportunity\.id\)/.test(sellerCallTsx), true);
+  check('page does not pass the unmatched latestArvLedgerEntry into buildOfferReadinessInputs (only the amount-matched one is usable evidence)', /arvEvidenceState:\s*latestArvLedgerEntry/.test(sellerCallTsx), false);
+  check('ARV panel text distinguishes "no ledger entry" from "entry exists but does not match this amount" (truthful provenance, not a blanket message)', /does not match this amount; evidence withheld/.test(sellerCallTsx), true);
 }
 
 // ============================================================

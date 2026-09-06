@@ -21,7 +21,7 @@ import { computeOfferReadiness, type ReadinessResult } from "../lib/underwriting
 import { computeNextBestQuestion, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
 import { buildOfferReadinessInputs } from "../lib/seller-call-readiness-inputs";
-import { latestArvApprovalForOpportunity } from "../lib/arv-approval-note";
+import { latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
 import {
   subjectAddress, handoffToPropStream, copyAddressAgain, browserHandoffEnvironment,
   PROPSTREAM_LOGIN_URL, type HandoffResult,
@@ -347,8 +347,9 @@ export default function SellerCallWorkspace() {
     [board8],
   );
 
-  /* B8-07 / INV-50, Jess Gate correction 2026-09-05. Reads Board #7's
-     EXISTING append-only ARV approval ledger note (arv-persist.ts's
+  /* B8-07 / INV-50, Jess Gate correction 2026-09-05, Jess Re-Gate
+     correction 2026-09-05 (2nd round). Reads Board #7's EXISTING
+     append-only ARV approval ledger note (arv-persist.ts's
      `formatArvApprovalNote`) back via the strict, fail-closed
      `arv-approval-note.ts` parser -- not a new carrier, a read of an
      already-approved, already-written record through the already-used
@@ -357,18 +358,33 @@ export default function SellerCallWorkspace() {
      history must never have one deal's evidence attributed to another
      (PB-D55). Guarded on `screen.state` being resolved/unresolved so
      `screen.opportunity` exists; `notes` is never null here since
-     `loading` already gates rendering on it. */
-  const arvApproval = useMemo(() => {
+     `loading` already gates rendering on it.
+
+     TWO separate reads, for two separate purposes:
+       - `latestArvLedgerEntry`: the latest valid entry regardless of
+         amount, used ONLY for truthful UI text (distinguishing "no
+         ledger entry" from "an entry exists but doesn't match" below).
+       - `matchedArvApproval`: the latest valid entry ONLY when its
+         `Approved ARV` matches `screen.known.arv` exactly -- the ONLY
+         one Offer Readiness is allowed to treat as usable evidence (Jess
+         Re-Gate: a stale entry must never lend evidence to an amount it
+         was not actually approved for). */
+  const latestArvLedgerEntry = useMemo(() => {
     if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
     return latestArvApprovalForOpportunity(notes, screen.opportunity.id);
+  }, [notes, screen]);
+
+  const matchedArvApproval = useMemo(() => {
+    if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    return matchingArvApprovalForOpportunity(notes, screen.opportunity.id, screen.known.arv);
   }, [notes, screen]);
 
   /* B8-04, consumed, via buildOfferReadinessInputs (B8-07 / INV-50) --
      that module's own header states exactly which categories now reflect
      real evidence (repairsCondition, gated on `repairsSourceIsApprovalGated`
      proving the value passed IAOS's approval gate rather than merely
-     being present; arv, from the same ledger note `arvApproval` above
-     already parsed) and which still cannot (property_identity,
+     being present; arv, from `matchedArvApproval` above -- amount-matched,
+     never a stale entry) and which still cannot (property_identity,
      transaction assumptions, seller price position -- no determination
      mechanism exists for any of them yet). No human action control
      exists in this build. */
@@ -383,9 +399,9 @@ export default function SellerCallWorkspace() {
       known,
       dealEconomics: board8,
       repairsApprovalProven: pipeline.repairsSourceIsApprovalGated,
-      arvEvidenceState: arvApproval?.evidenceState ?? null,
+      arvEvidenceState: matchedArvApproval?.evidenceState ?? null,
     }));
-  }, [board8, screen, pipeline.repairsSourceIsApprovalGated, arvApproval]);
+  }, [board8, screen, pipeline.repairsSourceIsApprovalGated, matchedArvApproval]);
 
   const dealBarCells = useMemo(
     () => buildDealBarCells({
@@ -644,8 +660,10 @@ export default function SellerCallWorkspace() {
               <div style={{ fontSize: "13px", color: "#E2E8F0", marginBottom: "12px" }} data-testid="arv-provenance">
                 {screen.known.arv === null
                   ? "Not yet established."
-                  : arvApproval
-                  ? `Approved: ${money(screen.known.arv)} (evidence: ${arvApproval.evidenceState})`
+                  : matchedArvApproval
+                  ? `Approved: ${money(screen.known.arv)} (evidence: ${matchedArvApproval.evidenceState})`
+                  : latestArvLedgerEntry
+                  ? `${money(screen.known.arv)} on file — ledger entry found but does not match this amount; evidence withheld.`
                   : `${money(screen.known.arv)} on file, no approval ledger entry found.`}
               </div>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>

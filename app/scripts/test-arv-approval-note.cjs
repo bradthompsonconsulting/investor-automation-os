@@ -1,6 +1,7 @@
 /**
  * ARV approval ledger note parser -- test runner. B8-07 / INV-50, Jess
- * Gate correction.
+ * Gate correction; Jess Re-Gate correction 2026-09-05 (2nd round,
+ * amount-matching + timestamp validation).
  *
  * Compiles arv-approval-note.ts alongside the REAL arv-persist.ts (the
  * writer this module is the strict inverse of) and its dependencies, so
@@ -55,10 +56,10 @@ for (const p of [persistPath, parserPath]) {
 }
 
 const { formatArvApprovalNote, ARV_APPROVAL_LEDGER_VERSION } = require(persistPath);
-const { parseArvApprovalNote, latestArvApprovalForOpportunity } = require(parserPath);
+const { parseArvApprovalNote, latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity } = require(parserPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 25;
+const FLOOR = 43;
 let failures = 0;
 let checks = 0;
 
@@ -92,7 +93,7 @@ function realApprovedNote(over) {
 
 // ============================================================
 // Round-trip fidelity: a note produced by the REAL writer parses back to
-// exactly what was written.
+// exactly what was written, INCLUDING the approved ARV amount.
 // ============================================================
 {
   const note = realApprovedNote();
@@ -102,11 +103,13 @@ function realApprovedNote(over) {
   check('round-trip: evidenceState matches', parsed.evidenceState, 'HIGH');
   check('round-trip: decision APPROVED matches', parsed.decision, 'APPROVED');
   check('round-trip: approvedAt matches', parsed.approvedAt, '2026-09-04T20:00:00.000Z');
+  check('round-trip: approvedArv matches the amount actually approved', parsed.approvedArv, 250000);
 }
 
 // ============================================================
-// OVERRIDE decision still yields its evidence state -- the human action
-// is separate from the evidence classification (B8-04's own principle).
+// OVERRIDE decision still yields its evidence state and amount -- the
+// human action is separate from the evidence classification (B8-04's
+// own principle).
 // ============================================================
 {
   const note = realApprovedNote({ approval: { kind: 'overridden', amount: 260000, recommendedArv: 250000, revision: 2 }, provenance: { evidenceState: 'LOW' } });
@@ -114,6 +117,7 @@ function realApprovedNote(over) {
   check('override note parses', parsed !== null, true);
   check('override note decision is OVERRIDE', parsed.decision, 'OVERRIDE');
   check('override note still carries its evidence state (LOW)', parsed.evidenceState, 'LOW');
+  check('override note carries the OVERRIDDEN amount, not the original recommendation', parsed.approvedArv, 260000);
 }
 
 // ============================================================
@@ -146,9 +150,44 @@ function realApprovedNote(over) {
 }
 
 // ============================================================
+// Jess Re-Gate, round 2, item 1 + 3: Approved ARV must be a positive
+// finite amount; malformed/missing/non-positive values fail the WHOLE
+// note closed, not just the amount field.
+// ============================================================
+{
+  const nonNumeric = realApprovedNote().replace('Approved ARV: 250000', 'Approved ARV: not-a-number');
+  check('a non-numeric Approved ARV fails the whole note closed', parseArvApprovalNote(nonNumeric), null);
+
+  const zeroAmount = realApprovedNote().replace('Approved ARV: 250000', 'Approved ARV: 0');
+  check('a zero Approved ARV fails closed (not a positive amount)', parseArvApprovalNote(zeroAmount), null);
+
+  const negativeAmount = realApprovedNote().replace('Approved ARV: 250000', 'Approved ARV: -50000');
+  check('a negative Approved ARV fails closed', parseArvApprovalNote(negativeAmount), null);
+
+  const infiniteAmount = realApprovedNote().replace('Approved ARV: 250000', 'Approved ARV: Infinity');
+  check('a non-finite Approved ARV fails closed', parseArvApprovalNote(infiniteAmount), null);
+
+  const missingAmount = realApprovedNote().split('\n').filter((l) => !l.startsWith('Approved ARV: ')).join('\n');
+  check('a missing Approved ARV line fails the whole note closed', parseArvApprovalNote(missingAmount), null);
+}
+
+// ============================================================
+// Jess Re-Gate, round 2, item 5: Approval timestamp must be a real,
+// finite instant; a malformed timestamp fails the whole note closed.
+// ============================================================
+{
+  const malformedTimestamp = realApprovedNote().replace('Approval timestamp: 2026-09-04T20:00:00.000Z', 'Approval timestamp: not-a-real-date');
+  check('a malformed Approval timestamp fails the whole note closed', parseArvApprovalNote(malformedTimestamp), null);
+
+  const emptyTimestamp = realApprovedNote().replace('Approval timestamp: 2026-09-04T20:00:00.000Z', 'Approval timestamp: ');
+  check('an empty Approval timestamp fails closed (treated as missing)', parseArvApprovalNote(emptyTimestamp), null);
+}
+
+// ============================================================
 // latestArvApprovalForOpportunity: picks the CURRENT standing entry by
 // the note's OWN embedded timestamp, matches only the given opportunity,
-// and silently skips unrelated notes.
+// and silently skips unrelated notes. Does NOT check the amount -- that
+// is matchingArvApprovalForOpportunity's job, tested separately below.
 // ============================================================
 {
   const older = realApprovedNote({ provenance: { approvedAt: '2026-09-01T10:00:00.000Z', evidenceState: 'LOW' } });
@@ -172,12 +211,75 @@ function realApprovedNote(over) {
 }
 
 // ============================================================
+// Jess Re-Gate, round 2, item 2 + 3: matchingArvApprovalForOpportunity
+// is the ONLY function allowed to say evidence is usable -- it must
+// require the LATEST valid entry to match the CURRENT authoritative ARV
+// amount exactly, and fail closed on no entry, no current amount, or a
+// mismatch.
+// ============================================================
+{
+  const matchingNote = { body: realApprovedNote({ provenance: { evidenceState: 'HIGH' } }) };
+
+  const exactMatch = matchingArvApprovalForOpportunity([matchingNote], 'opp-test-1', 250000);
+  check('exact amount match -> evidence usable, evidenceState returned', exactMatch && exactMatch.evidenceState, 'HIGH');
+
+  const mismatch = matchingArvApprovalForOpportunity([matchingNote], 'opp-test-1', 275000);
+  check('amount mismatch -> evidence withheld entirely (fail closed), not "close enough"', mismatch, null);
+
+  const noCurrentArv = matchingArvApprovalForOpportunity([matchingNote], 'opp-test-1', null);
+  check('no current ARV to compare against -> evidence withheld (nothing to match)', noCurrentArv, null);
+
+  const noEntryAtAll = matchingArvApprovalForOpportunity([], 'opp-test-1', 250000);
+  check('no ledger entry at all -> evidence withheld', noEntryAtAll, null);
+
+  const malformedEntryOnly = { body: realApprovedNote().replace('Approved ARV: 250000', 'Approved ARV: not-a-number') };
+  const malformedAmount = matchingArvApprovalForOpportunity([malformedEntryOnly], 'opp-test-1', 250000);
+  check('a malformed Approved ARV in the only entry -> evidence withheld (the malformed note never parses at all)', malformedAmount, null);
+}
+
+// ============================================================
+// Jess Re-Gate, round 2, item 4 (the core regression this correction
+// exists to close): a STALE entry that happens to match current ARV must
+// NOT be used when a NEWER entry exists for a DIFFERENT amount. The
+// latest entry governs usability; an older match is never resurrected.
+// ============================================================
+{
+  const staleMatchingEntry = { body: realApprovedNote({ provenance: { approvedAt: '2026-09-01T10:00:00.000Z', evidenceState: 'HIGH' } }) };
+  const newerDifferentEntry = { body: realApprovedNote({ approval: { kind: 'overridden', amount: 300000, recommendedArv: 250000, revision: 2 }, provenance: { approvedAt: '2026-09-04T20:00:00.000Z', evidenceState: 'LOW' } }) };
+
+  const staleFirstThenNewer = matchingArvApprovalForOpportunity([staleMatchingEntry, newerDifferentEntry], 'opp-test-1', 250000);
+  check('a newer entry for a DIFFERENT amount blocks evidence, even though an older entry would have matched', staleFirstThenNewer, null);
+
+  // Sanity: reversing list order changes nothing -- selection is by the
+  // note's own embedded timestamp, never list position.
+  const newerFirstThenStale = matchingArvApprovalForOpportunity([newerDifferentEntry, staleMatchingEntry], 'opp-test-1', 250000);
+  check('list order does not change the outcome (still governed by the latest embedded timestamp)', newerFirstThenStale, null);
+
+  // Once the newer entry ALSO matches, evidence becomes usable again --
+  // proving this is a live "latest matches current" rule, not a
+  // permanent lockout once any mismatch has ever occurred.
+  const bothMatchCurrentOfNewer = matchingArvApprovalForOpportunity([staleMatchingEntry, newerDifferentEntry], 'opp-test-1', 300000);
+  check('once the LATEST entry matches current ARV, evidence is usable again (LOW, the newer entry\'s own state)', bothMatchCurrentOfNewer && bothMatchCurrentOfNewer.evidenceState, 'LOW');
+}
+
+// ============================================================
 // Structural proof: no second economics/ARV engine, no GHL call, no
-// duplicated ARV_APPROVAL_LEDGER_VERSION constant.
+// duplicated ARV_APPROVAL_LEDGER_VERSION constant, and no magnitude-based
+// inference from the ARV amount (only exact-match identity comparison is
+// permitted -- Jess's "do not infer evidence quality from the dollar
+// amount" instruction, still in force after adding amount-matching).
 // ============================================================
 {
   const src = fs.readFileSync(path.join(LIB, 'arv-approval-note.ts'), 'utf8');
   check('source imports ARV_APPROVAL_LEDGER_VERSION from arv-persist.ts rather than duplicating it', /import\s*\{\s*ARV_APPROVAL_LEDGER_VERSION\s*\}\s*from\s*"\.\/arv-persist"/.test(src), true);
+  check('evidenceState is assigned only from the note\'s own field, never derived from the amount', /evidenceState:\s*evidenceStateRaw as ArvEvidenceState/.test(src), true);
+  // approvedArv <= 0 (positivity validation, unrelated to currentArv) is
+  // legitimate and expected; the forbidden pattern is specifically a
+  // relational (< or >) comparison INVOLVING currentArv, which would be
+  // magnitude-based inference rather than the required exact-match
+  // identity check.
+  check('the only comparison against currentArv is exact-match equality (identity, not magnitude inference)', /latest\.approvedArv === currentArv/.test(src) && !/currentArv\s*[<>]/.test(src) && !/[<>]\s*currentArv/.test(src), true);
+
   // Checked against compiled output (comments stripped) rather than source
   // text: the module's OWN header comment discusses `ghl.notes.list` as
   // context for why this module is safe, which would false-positive a
@@ -190,7 +292,6 @@ function realApprovedNote(over) {
   ) && fs.readFileSync(path.join(TMP + '-nocomments', 'arv-approval-note.js'), 'utf8');
   fs.rmSync(TMP + '-nocomments', { recursive: true, force: true });
   check('compiled output (comments stripped) makes no GHL/network call', !/fetch\(|ghl\.|XMLHttpRequest/.test(compiledNoComments), true);
-  check('compiled output never derives evidence from an ARV dollar amount', !/arv_after_repair_value|approvedArv|\.amount\b/.test(compiledNoComments), true);
 }
 
 cleanup();
