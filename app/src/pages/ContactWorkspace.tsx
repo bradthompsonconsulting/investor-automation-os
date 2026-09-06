@@ -2019,6 +2019,24 @@ export default function ContactWorkspace() {
         >
           <Headphones size={14} /> Start / Resume Seller Call
         </Link>
+        {/* B8-09 / INV-52 — optional entry point into the standalone Deal
+            Calculator, pre-linked to this contact via the `contactId` query
+            param. A plain in-app <Link>, read-only, writes nothing -- the
+            calculator itself performs the one prepopulation read on mount.
+            The calculator remains fully usable with no contact at all;
+            this is a convenience, never a requirement (INV-52's own "no
+            CRM/contact/opportunity required" rule). */}
+        <Link
+          to={`/deal-calculator?contactId=${id}`}
+          data-testid="contact-deal-calculator-link"
+          style={{
+            display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", fontWeight: 600,
+            padding: "8px 14px", borderRadius: "8px", border: "1px solid rgba(30,200,255,0.35)",
+            background: "rgba(30,200,255,0.08)", color: "#1EC8FF", textDecoration: "none",
+          }}
+        >
+          <Calculator size={14} /> Open in Deal Calculator
+        </Link>
         {/* B7-02 — Get Comps. The approved V1 IAOS -> PropStream handoff: copy
             the known full subject address, open PropStream in the investor's
             NORMAL browser, and say what happened.
