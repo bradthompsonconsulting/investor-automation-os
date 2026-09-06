@@ -34,6 +34,9 @@ import {
   latestOutcomeNoteForOpportunity, attemptRecordOutcome,
   type CallOutcomeKind, type OutcomeSnapshot,
 } from "../lib/seller-call-outcome";
+import {
+  formatNegotiationOverrideNote, latestNegotiationOverrideNoteForOpportunity,
+} from "../lib/seller-call-negotiation-override-note";
 import { resolveResumeHydration, type DealHydrationRef } from "../lib/seller-call-resume";
 import { scheduleCallbackGated } from "../lib/callbackWrite";
 
@@ -375,11 +378,24 @@ export default function SellerCallWorkspace() {
      negotiation.ts's own header for why this is a DIFFERENT concept from
      `readiness.humanAction`. Never mutated in place: a new grant replaces
      it outright (`attemptOverride` always returns a fresh record), and
-     staleness is DETECTED (`isOverrideCurrent`) rather than patched. */
+     staleness is DETECTED (`isOverrideCurrent`) rather than patched.
+
+     B8-11 / INV-54: this is no longer session-only. `handleOverrideAndContinue`
+     below now WRITES a durable `seller-call-negotiation-override-note.ts`
+     ledger entry before setting this state (never after -- see that
+     handler), and the resume effect further down restores it from that
+     same durable record via `resolveResumeHydration`'s `restoreOverride`.
+     The state setter, its shape, and every read of it below are otherwise
+     UNCHANGED from B8-08 / INV-51. */
   const [negotiationOverride, setNegotiationOverride] = useState<NegotiationOverride | null>(null);
   const [overrideReasonDraft, setOverrideReasonDraft] = useState("");
   const [overrideAcknowledged, setOverrideAcknowledged] = useState(false);
   const [overrideActionError, setOverrideActionError] = useState<string | null>(null);
+  /* B8-11 / INV-54 -- the override ledger write in flight, mirroring
+     B8-10's `recordingOutcome` busy-state pattern: disables the confirm
+     button and prevents a double-submit while `ghl.notes.create` is
+     outstanding. Session-only UI state, like `recordingOutcome`. */
+  const [overrideWriteBusy, setOverrideWriteBusy] = useState(false);
   /* Collapses the bounded-action prompt to a slim persistent line without
      ever fully hiding that Current Offer is above Max -- "Keep
      Negotiating" sets this; any edit to Current Offer resets it, so a
@@ -587,9 +603,30 @@ export default function SellerCallWorkspace() {
      record does not actually have, and building real authentication is
      explicitly out of this issue's scope. `null` is preserved through to
      the rendered acknowledgement banner honestly, rather than papered
-     over with a name nobody confirmed. */
-  function handleOverrideAndContinue() {
+     over with a name nobody confirmed.
+
+     B8-11 / INV-54: this is now this page's SECOND write path (the first
+     being `handleRecordOutcome`'s call-outcome ledger) -- still exactly
+     `ghl.notes.create()`, one of AGENTS.md's three sanctioned writes,
+     never a fourth. WRITE-THEN-SET, never the reverse: `attemptOverride`
+     validates (unchanged, synchronous, against the CURRENT
+     `negotiationPosition` at click time) before anything is written, and
+     `setNegotiationOverride` is called ONLY after the durable ledger
+     write succeeds -- an override is never shown as granted in the UI
+     while GHL holds no record of it. On a write failure, the error is
+     surfaced verbatim via `overrideActionError` (the SAME error surface
+     the validation-failure path already used) and `negotiationOverride`
+     is left exactly as it was (`null`, or whatever the last successful
+     grant set) -- the above-Max warning stays up, requiring the operator
+     to retry, rather than silently trusting an unconfirmed write.
+     `screen.opportunity.id` scopes the note to THIS deal, the same
+     PB-D55 rule every other note-ledger write on this page follows. A
+     successful write is appended to local `notes` state immediately,
+     mirroring `handleRecordOutcome`'s own convention, so
+     `latestNegotiationOverrideNote` reflects it without a refetch. */
+  async function handleOverrideAndContinue() {
     if (!negotiationPosition) return;
+    if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
     const result = attemptOverride({
       position: negotiationPosition,
       acknowledged: overrideAcknowledged,
@@ -602,8 +639,26 @@ export default function SellerCallWorkspace() {
       return;
     }
     setOverrideActionError(null);
-    setNegotiationOverride(result.override);
-    setWarningDismissed(false);
+    setOverrideWriteBusy(true);
+    const note = formatNegotiationOverrideNote({
+      opportunityId: screen.opportunity.id,
+      at: result.override.at,
+      operator: result.override.operator,
+      reason: result.override.reason,
+      currentOfferAtOverride: result.override.currentOfferAtOverride,
+      maxSupportedOfferAtOverride: result.override.maxSupportedOfferAtOverride,
+      amountAboveMaxAtOverride: result.override.amountAboveMaxAtOverride,
+    });
+    try {
+      await ghl.notes.create(contactId, note);
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: result.override.at }]);
+      setNegotiationOverride(result.override);
+      setWarningDismissed(false);
+    } catch (e: any) {
+      setOverrideActionError(e?.message ?? "Couldn't record this override -- it is not yet in effect. Try again.");
+    } finally {
+      setOverrideWriteBusy(false);
+    }
   }
 
   /* B8-07 / INV-50, Jess Gate correction 2026-09-05, Jess Re-Gate
@@ -706,6 +761,19 @@ export default function SellerCallWorkspace() {
     return latestOutcomeNoteForOpportunity(notes, screen.opportunity.id);
   }, [notes, screen]);
 
+  /* B8-11 / INV-54 -- the most recent durable above-Max override grant for
+     THIS opportunity, read back through seller-call-negotiation-override-
+     note.ts's strict parser from the SAME notes already fetched above.
+     Scoped to `screen.opportunity.id` for the same PB-D55 reason
+     `latestOutcome`/`latestArvLedgerEntry` are. Independent of
+     `latestOutcome`: an override can exist with no outcome ever recorded
+     (still negotiating) and an outcome can exist with no override ever
+     granted (never went above Max) -- neither implies the other. */
+  const latestNegotiationOverrideNote = useMemo(() => {
+    if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    return latestNegotiationOverrideNoteForOpportunity(notes, screen.opportunity.id);
+  }, [notes, screen]);
+
   /* Jess Re-Gate correction, 2026-09-06 -- RESUME MUST BE SCOPED TO THE
      OPPORTUNITY, NOT THE CONTACT. The prior `contactId`-keyed guard had
      two defects Jess Re-Gate found: (1) it could be marked "done" while
@@ -738,8 +806,10 @@ export default function SellerCallWorkspace() {
       latestOutcome: latestOutcome
         ? { sellerPosition: latestOutcome.snapshot.sellerPosition, currentOffer: latestOutcome.snapshot.currentOffer }
         : null,
+      latestOverrideNote: latestNegotiationOverrideNote,
       sellerPositionInput,
       currentOfferInput,
+      currentOverride: negotiationOverride,
     });
     dealHydrationRef.current = decision.nextRef;
 
@@ -767,7 +837,23 @@ export default function SellerCallWorkspace() {
     if (decision.restoreCurrentOffer !== null) {
       setCurrentOfferInput(decision.restoreCurrentOffer);
     }
-  }, [loading, currentDealId, latestOutcome]);
+    /* B8-11 / INV-54 -- restoring the durable override record. Whether it
+       still APPLIES to the (also just-restored) Current Offer is
+       deliberately not decided here: `isOverrideCurrent` (unchanged,
+       B8-08 / INV-51) already compares this record's own
+       `currentOfferAtOverride`/`maxSupportedOfferAtOverride` against the
+       live `negotiationPosition` on every render, so a restored-but-now-
+       stale override simply renders as "not yet acknowledged" for the
+       current number -- the existing, already-proven safety net, not new
+       code. `acknowledgedAboveMax: true` is added back here because the
+       durable record (like the ledger note itself) carries only the
+       fields that vary; the literal is `NegotiationOverride`'s own
+       constant discriminant, unchanged from what `attemptOverride` always
+       produces. */
+    if (decision.restoreOverride !== null) {
+      setNegotiationOverride({ acknowledgedAboveMax: true, ...decision.restoreOverride });
+    }
+  }, [loading, currentDealId, latestOutcome, latestNegotiationOverrideNote]);
 
   /* The facts a recorded outcome captures, taken verbatim from what this
      page has already computed -- no recomputation, no second source. */
@@ -1211,16 +1297,16 @@ export default function SellerCallWorkspace() {
                         ) : null}
                         <button
                           data-testid="negotiation-action-override-continue"
-                          onClick={handleOverrideAndContinue}
-                          disabled={!overrideAcknowledged || overrideReasonDraft.trim() === ""}
+                          onClick={() => void handleOverrideAndContinue()}
+                          disabled={!overrideAcknowledged || overrideReasonDraft.trim() === "" || overrideWriteBusy}
                           style={{
                             ...COMPACT_BUTTON_STYLE, alignSelf: "flex-start",
-                            cursor: !overrideAcknowledged || overrideReasonDraft.trim() === "" ? "not-allowed" : "pointer",
-                            opacity: !overrideAcknowledged || overrideReasonDraft.trim() === "" ? 0.45 : 1,
+                            cursor: !overrideAcknowledged || overrideReasonDraft.trim() === "" || overrideWriteBusy ? "not-allowed" : "pointer",
+                            opacity: !overrideAcknowledged || overrideReasonDraft.trim() === "" || overrideWriteBusy ? 0.45 : 1,
                             borderColor: "rgba(239,68,68,0.45)", color: "#EF4444", background: "rgba(239,68,68,0.1)",
                           }}
                         >
-                          Override &amp; Continue
+                          {overrideWriteBusy ? <Loader2 size={12} className="animate-spin" /> : null} Override &amp; Continue
                         </button>
                       </div>
                     </>

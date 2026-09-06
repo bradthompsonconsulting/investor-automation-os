@@ -63,6 +63,24 @@
  * identical to `sellerPositionParsed`/`currentOfferParsed` on the page). An
  * operator's own typed value in either field is therefore never replaced,
  * on any pass, for any reason.
+ *
+ * B8-11 / INV-54 -- THE ABOVE-MAX OVERRIDE RESUMES THE SAME WAY. Once
+ * `seller-call-negotiation-override-note.ts` gave `NegotiationOverride` a
+ * durable carrier, an operator's override grant needed the EXACT SAME
+ * per-opportunity clear/restore treatment Seller Position and Current
+ * Offer already had -- Deal A's override must never be visible on Deal B
+ * either. `restoreOverride` follows the identical rule: cleared to `null`
+ * on any identity change (bundled into the SAME `clear` flag -- ONE
+ * decision, not a second parallel state machine), then restored only when
+ * `currentOverride` is still `null` (untouched) and a durable override
+ * record exists for this opportunity. Whether a restored override still
+ * APPLIES to the live negotiation position is deliberately NOT this
+ * module's question -- `seller-call-negotiation.ts`'s own `isOverrideCurrent`
+ * already answers that by comparing the restored record's
+ * `currentOfferAtOverride`/`maxSupportedOfferAtOverride` against the live
+ * position, unchanged; restoring a now-stale override is therefore safe
+ * because the existing staleness check downstream simply will not treat it
+ * as current.
  */
 
 export type DealHydrationRef = {
@@ -75,21 +93,37 @@ export type DealHydrationRef = {
 /** Only the two fields this module ever restores -- copied verbatim from the caller's own outcome snapshot, never recomputed. */
 export type ResumeSnapshot = { sellerPosition: number | null; currentOffer: number | null };
 
+/**
+ * Exactly the fields `seller-call-negotiation-override-note.ts`'s reader
+ * returns, minus the ledger-only `opportunityId` (already the identity
+ * this whole decision is scoped by) -- never a second override shape.
+ */
+export type ResumeOverrideSnapshot = {
+  reason: string;
+  operator: string | null;
+  at: string;
+  currentOfferAtOverride: number;
+  maxSupportedOfferAtOverride: number;
+  amountAboveMaxAtOverride: number;
+};
+
 export type ResumeHydrationResult = {
   /** The caller must store this as the new ref value for the next render. */
   nextRef: DealHydrationRef;
-  /** `true` exactly on the pass the identity changed -- the caller must clear every deal-specific negotiation value BEFORE applying either `restore*` field below. */
+  /** `true` exactly on the pass the identity changed -- the caller must clear every deal-specific negotiation value (Seller Position, Current Offer, AND the override) BEFORE applying any `restore*` field below. */
   clear: boolean;
   /** Non-null exactly when the caller must set Seller Position to this string this pass; `null` means "make no change to it." */
   restoreSellerPosition: string | null;
   /** Same convention as `restoreSellerPosition`, for Current Offer. */
   restoreCurrentOffer: string | null;
+  /** Non-null exactly when the caller must set its NegotiationOverride state to this record this pass (with `acknowledgedAboveMax: true` added back by the caller, per `NegotiationOverride`'s own shape); `null` means "make no change to it." */
+  restoreOverride: ResumeOverrideSnapshot | null;
 };
 
 /**
  * The ONLY place this decision is made. Called once per render from
  * `SellerCallWorkspace.tsx`'s resume-hydration `useEffect`; performs no
- * `setState` itself -- the caller applies exactly what `clear` and the two
+ * `setState` itself -- the caller applies exactly what `clear` and the
  * `restore*` fields name, in that order (clear, then restore).
  */
 export function resolveResumeHydration(args: {
@@ -99,9 +133,13 @@ export function resolveResumeHydration(args: {
   loading: boolean;
   /** The current deal's latest recorded outcome snapshot, or `null` when none exists (or the deal isn't resolved yet). */
   latestOutcome: ResumeSnapshot | null;
+  /** The current deal's latest durable override grant, or `null` when none is on record (or the deal isn't resolved yet). */
+  latestOverrideNote: ResumeOverrideSnapshot | null;
   /** The LIVE input values, read this same render -- used only to detect "still untouched" on a non-`justCleared` pass. */
   sellerPositionInput: string;
   currentOfferInput: string;
+  /** The LIVE override state, read this same render -- `null` means untouched, exactly like the two string inputs' `""`. */
+  currentOverride: unknown | null;
 }): ResumeHydrationResult {
   const justCleared = args.prevRef.dealId !== args.currentDealId;
   let nextRef: DealHydrationRef = justCleared
@@ -111,28 +149,26 @@ export function resolveResumeHydration(args: {
   const notEligibleYet = args.loading || args.currentDealId === null;
 
   if (nextRef.hydrated || notEligibleYet) {
-    return { nextRef, clear: justCleared, restoreSellerPosition: null, restoreCurrentOffer: null };
+    return { nextRef, clear: justCleared, restoreSellerPosition: null, restoreCurrentOffer: null, restoreOverride: null };
   }
 
   nextRef = { dealId: nextRef.dealId, hydrated: true };
 
-  if (!args.latestOutcome) {
-    return { nextRef, clear: justCleared, restoreSellerPosition: null, restoreCurrentOffer: null };
-  }
-
   const sellerPositionUntouched = justCleared || args.sellerPositionInput === "";
   const currentOfferUntouched = justCleared || args.currentOfferInput === "";
+  const overrideUntouched = justCleared || args.currentOverride === null;
 
   return {
     nextRef,
     clear: justCleared,
     restoreSellerPosition:
-      sellerPositionUntouched && args.latestOutcome.sellerPosition !== null
+      sellerPositionUntouched && args.latestOutcome && args.latestOutcome.sellerPosition !== null
         ? String(args.latestOutcome.sellerPosition)
         : null,
     restoreCurrentOffer:
-      currentOfferUntouched && args.latestOutcome.currentOffer !== null
+      currentOfferUntouched && args.latestOutcome && args.latestOutcome.currentOffer !== null
         ? String(args.latestOutcome.currentOffer)
         : null,
+    restoreOverride: overrideUntouched && args.latestOverrideNote ? args.latestOverrideNote : null,
   };
 }
