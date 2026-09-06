@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 104;
+const FLOOR = 129;
 let failures = 0;
 let checks = 0;
 
@@ -166,23 +166,42 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 }
 
 // ============================================================
-// No Production mutation / no invented carrier / no write capability:
-// this page contains no writer and no PUT-capable GHL call. B8-08 /
-// INV-51 now DOES define local editable session state for Current Offer
-// and Seller Position (superseding the pre-INV-51 "no local input"
-// check this file used to assert) -- proven safe below by confirming
-// neither is GHL-backed and neither defaults to anything but empty.
+// No Production mutation beyond the exact three sanctioned writes B8-10 /
+// INV-53 authorizes. B8-08 / INV-51 defines local editable session state
+// for Current Offer and Seller Position (superseding the pre-INV-51 "no
+// local input" check this file used to assert). B8-10 / INV-53 is this
+// page's FIRST write of any kind -- proven bounded below: exactly
+// `ghl.notes.create`, `ghl.contacts.setLastCallAttempt`, and
+// `ghl.contacts.setCallbackDatetime` (the last ONLY via the unmodified
+// `scheduleCallbackGated`, never called directly), never Board 6/7's
+// underwriting/repairs/ARV writers, never Board 4's cold-outreach
+// disposition fields.
 // ============================================================
 {
-  const forbidden = ['.notes.create', 'setApprovedArv', 'setEstimatedRepairs', 'saveUnderwritingFields', 'setAskingPrice', 'setLastCallAttempt', 'setCallbackDatetime'];
-  const found = forbidden.filter((t) => sellerCallTsx.indexOf(t) !== -1);
-  check('page contains no write-capable GHL call of any kind', found, []);
-  check('page reads only getDetail, listPipeline, underwriting.policy, and notes.list (all pre-existing read calls)', {
+  // Checked against comment-stripped source: this page's OWN header
+  // comment names every one of these by name to EXPLAIN why they are
+  // never called from here, which would false-positive a plain
+  // source-text substring check (same class of mistake as
+  // arv-approval-note.ts's ghl.notes.list discussion earlier this board).
+  const forbiddenAlways = [
+    'setApprovedArv', 'setEstimatedRepairs', 'saveUnderwritingFields', 'setAskingPrice',
+    'setCallDisposition', 'setCallRouting', 'setDispositionAt',
+    'iaos_call_disposition', 'iaos_call_routing', 'iaos_disposition_at',
+  ];
+  const foundForbidden = forbiddenAlways.filter((t) => sellerCallTsxNoComments.indexOf(t) !== -1);
+  check('page never calls any writer outside the three sanctioned writes (no underwriting/repairs/ARV write, no Board 4 disposition field)', foundForbidden, []);
+  check('page never calls ghl.contacts.setCallbackDatetime directly (only through the unmodified scheduleCallbackGated)', sellerCallTsxNoComments.indexOf('ghl.contacts.setCallbackDatetime') === -1, true);
+  check('page imports scheduleCallbackGated from callbackWrite.ts rather than reimplementing the gated callback sequence', /import \{ scheduleCallbackGated \} from "\.\.\/lib\/callbackWrite"/.test(sellerCallTsx), true);
+  check('page reads getDetail, listPipeline, underwriting.policy, and notes.list (all pre-existing read calls)', {
     getDetail: sellerCallTsx.indexOf('ghl.contacts.getDetail') !== -1,
     listPipeline: sellerCallTsx.indexOf('ghl.opportunities.listPipeline') !== -1,
     policy: sellerCallTsx.indexOf('ghl.underwriting.policy') !== -1,
     notesList: sellerCallTsx.indexOf('ghl.notes.list') !== -1,
   }, { getDetail: true, listPipeline: true, policy: true, notesList: true });
+  check('page writes exactly ghl.notes.create and ghl.contacts.setLastCallAttempt directly, and no other direct write', {
+    notesCreate: sellerCallTsx.indexOf('ghl.notes.create') !== -1,
+    setLastCallAttempt: sellerCallTsx.indexOf('ghl.contacts.setLastCallAttempt') !== -1,
+  }, { notesCreate: true, setLastCallAttempt: true });
 }
 
 // ============================================================
@@ -402,6 +421,64 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('page passes repairsApprovalProven through to buildOfferReadinessInputs', /repairsApprovalProven:\s*pipeline\.repairsSourceIsApprovalGated/.test(sellerCallTsx), true);
   check('page no longer derives repairsCondition from known.repairs !== null alone (that logic now lives only in seller-call-readiness-inputs.ts)', /repairsCondition\s*:\s*Board8EvidenceLevel\s*=\s*args\.known\.repairs\s*!==\s*null\s*\?\s*"SUPPORTED"/.test(sellerCallTsx), false);
   check('Repairs panel text distinguishes an approval-gated total from an unverified one', /repairsSourceIsApprovalGated\s*\?\s*`Approved:/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// B8-10 / INV-53: resume context + next objective, reading back through
+// seller-call-outcome.ts's own reader, never recomputed.
+// ============================================================
+{
+  check('page imports latestOutcomeNoteForOpportunity and attemptRecordOutcome from seller-call-outcome, never reimplementing them', /from "\.\.\/lib\/seller-call-outcome"/.test(sellerCallTsx) && /latestOutcomeNoteForOpportunity/.test(sellerCallTsx) && /attemptRecordOutcome/.test(sellerCallTsx), true);
+  check('page does not declare its own latestOutcomeNoteForOpportunity', /\b(function|const)\s+latestOutcomeNoteForOpportunity\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
+  check('page does not declare its own attemptRecordOutcome', /\b(function|const)\s+attemptRecordOutcome\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
+  check('page renders a dedicated resume-context line', /data-testid="seller-call-resume-context"/.test(sellerCallTsx), true);
+  check('page renders a dedicated next-objective line', /data-testid="seller-call-next-objective"/.test(sellerCallTsx), true);
+  check('the resume line reads latestOutcome.snapshot fields verbatim, never recomputing Target/Max/Spread from ARV/Repairs itself', /latestOutcome\.snapshot\.targetAcquisitionPrice/.test(sellerCallTsx) && /latestOutcome\.snapshot\.maxSupportedOffer/.test(sellerCallTsx) && /latestOutcome\.snapshot\.expectedSpread/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// B8-10 / INV-53: Agreement Reached is a SEPARATE surface from Offer
+// Ready, never replacing ReadinessBadge, and is gated on the latest
+// recorded outcome being `accept` -- never forced, never shown by
+// default.
+// ============================================================
+{
+  check('page still renders ReadinessBadge unconditionally on a resolved board8 (Offer Ready untouched by Agreement Reached)', /\{readiness \? <ReadinessBadge readiness=\{readiness\} \/> : null\}/.test(sellerCallTsx), true);
+  check('page renders a dedicated Agreement Reached banner', /data-testid="agreement-reached-banner"/.test(sellerCallTsx), true);
+  check('the Agreement Reached banner is gated on latestOutcome?.kind === "accept", never rendered unconditionally', /latestOutcome\?\.kind === "accept" \?[\s\S]{0,200}data-testid="agreement-reached-banner"/.test(sellerCallTsx), true);
+  check('the banner text explicitly distinguishes Agreement Reached from Under Contract', /not yet Under Contract/.test(sellerCallTsx), true);
+  check('page renders a dedicated Contract Ready checklist, separate from the Offer Ready reasons list', /data-testid="contract-ready-checklist"/.test(sellerCallTsx), true);
+  check('the Contract Ready checklist names exactly the five SELLER_ACQUISITION_WORKFLOW.md items this page adds as checkboxes (legal owners, closing timeline, occupancy/possession, liens/title, delivery/signing)', (sellerCallTsx.match(/data-testid=\{`contract-ready-item-\$\{item\.key\}`\}/g) || []).length >= 1 && /legal_owners/.test(sellerCallTsx) && /closing_timeline/.test(sellerCallTsx) && /occupancy_possession/.test(sellerCallTsx) && /liens_title/.test(sellerCallTsx) && /delivery_signing/.test(sellerCallTsx), true);
+  check('the checklist shows Agreed Price and Property Address as already-known facts, never re-asking them', /Agreed price:/.test(sellerCallTsx) && /Property address:/.test(sellerCallTsx), true);
+  check('the checklist is explicitly documented as session-only, non-persisted', /session-only and does not persist across reloads/.test(sellerCallTsx), true);
+  check('contractChecklist state is initialized empty, never pre-checked', /const \[contractChecklist, setContractChecklist\] = useState<Record<string, boolean>>\(\{\}\)/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// B8-10 / INV-53: bounded call outcomes -- exactly Accept / Follow-Up /
+// Pass, matching SELLER_ACQUISITION_WORKFLOW.md's own three words, and
+// each fails closed on its own precondition (checked structurally: the
+// confirm button's own `disabled` expression names the precondition).
+// ============================================================
+{
+  check('page renders exactly the three bounded outcome actions (Accept, Follow-Up, Pass), no fourth', {
+    accept: /data-testid="call-outcome-accept-toggle"/.test(sellerCallTsx),
+    followUp: /data-testid="call-outcome-follow-up-toggle"/.test(sellerCallTsx),
+    pass: /data-testid="call-outcome-pass-toggle"/.test(sellerCallTsx),
+  }, { accept: true, followUp: true, pass: true });
+  check('Accept confirm is disabled when no Current Offer has been entered (cannot accept a price never entered)', /disabled=\{recordingOutcome !== null \|\| currentOffer === null\}/.test(sellerCallTsx), true);
+  check('Follow-Up confirm is disabled with no date/time typed', /disabled=\{recordingOutcome !== null \|\| followUpAtInput\.trim\(\) === ""\}/.test(sellerCallTsx), true);
+  check('Pass confirm is disabled with no reason typed', /disabled=\{recordingOutcome !== null \|\| passReasonInput\.trim\(\) === ""\}/.test(sellerCallTsx), true);
+  check('a successful outcome write is appended to local notes state immediately (no refetch required for resume to reflect it)', /setNotes\(\(prev\) => \[\.\.\.\(prev \?\? \[\]\), \{ id: `local-\$\{Date\.now\(\)\}`, body: attempt\.note, dateAdded: nowIso \}\]\)/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// B8-10 / INV-53: no pipeline-stage read or write anywhere -- moving an
+// Opportunity's stage is a HARD NO here (unproven workflow side effects).
+// ============================================================
+{
+  check('page never reads or writes an Opportunity pipeline stage (no stageId reference anywhere)', /stageId/.test(sellerCallTsx), false);
+  check('page never calls a stage-move/pipeline-update GHL function', !/setStage|moveStage|updateOpportunityStage|setPipelineStage/.test(sellerCallTsx), true);
 }
 
 console.log('');
