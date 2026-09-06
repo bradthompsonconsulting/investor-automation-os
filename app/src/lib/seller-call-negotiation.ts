@@ -46,9 +46,16 @@
  * record from the CURRENT position, and a stale one is detected
  * (`isOverrideCurrent` returns false) rather than silently patched to
  * match new numbers. What happened at a given moment is not altered after
- * the fact; the caller decides how much history, if any, to keep in
- * session state, and this module makes no persistence decision at all --
- * that is explicitly B8-11's (INV-54).
+ * the fact. This module ITSELF still makes no persistence decision -- it
+ * remains pure, unchanged by B8-11 -- but B8-11 / INV-54 has now given the
+ * `NegotiationOverride` this module produces a durable carrier:
+ * `seller-call-negotiation-override-note.ts` formats/parses an append-only
+ * GHL note ledger entry for it, and `SellerCallWorkspace.tsx`'s
+ * `handleOverrideAndContinue` writes one (via the existing sanctioned
+ * note-creation call) only after `attemptOverride` (this function,
+ * unchanged) validates. This module's own exports and behavior are
+ * untouched by that; it answers the same classification/validation
+ * questions it always did.
  *
  * NO FABRICATED OPERATOR IDENTITY. Jess Gate, 2026-09-06: an earlier
  * version of the caller hardcoded `operator: "Brad Thompson"` on every
@@ -167,16 +174,19 @@ export const NEGOTIATION_ACTIONS: readonly NegotiationAction[] = [
 ];
 
 /* ------------------------------------------------------------------ */
-/* Override -- explicit acknowledgement + reason, session-only            */
+/* Override -- explicit acknowledgement + reason, now durable (B8-11)     */
 /* ------------------------------------------------------------------ */
 
 /**
- * The explicit action/provenance record INV-51 requires this experience
- * preserve for B8-11 (INV-54) to persist later. Nothing here writes it
- * anywhere -- it is an in-memory value the page holds and, per INV-51's
- * own scope boundary, B8-11 is the issue authorized to give it a carrier.
- * Every field is EITHER a caller-supplied fact (reason, operator, at) OR
- * copied verbatim from the `NegotiationPosition` that justified it
+ * The explicit action/provenance record INV-51 required this experience
+ * preserve, and B8-11 (INV-54) has since given a durable carrier:
+ * `seller-call-negotiation-override-note.ts` persists exactly this shape
+ * via an append-only GHL note, and `SellerCallWorkspace.tsx` resumes it
+ * across reloads. This constructor itself is UNCHANGED -- it still only
+ * returns an in-memory value; the write and the resume-read both live in
+ * the caller and the new note module, never here. Every field is EITHER
+ * a caller-supplied fact (reason, operator, at) OR copied verbatim from
+ * the `NegotiationPosition` that justified it
  * (currentOfferAtOverride, maxSupportedOfferAtOverride,
  * amountAboveMaxAtOverride) -- never recomputed, never inferred.
  */

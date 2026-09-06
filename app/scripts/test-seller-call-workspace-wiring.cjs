@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 148;
+const FLOOR = 171;
 let failures = 0;
 let checks = 0;
 
@@ -249,7 +249,6 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('the page applies decision.restoreSellerPosition only when non-null, verbatim -- never re-deciding whether to restore', /if \(decision\.restoreSellerPosition !== null\) \{\s*setSellerPositionInput\(decision\.restoreSellerPosition\);\s*\}/.test(sellerCallTsxNoComments), true);
   check('the page applies decision.restoreCurrentOffer only when non-null, verbatim -- never re-deciding whether to restore', /if \(decision\.restoreCurrentOffer !== null\) \{\s*setCurrentOfferInput\(decision\.restoreCurrentOffer\);\s*\}/.test(sellerCallTsxNoComments), true);
   check('the restore calls are positioned AFTER the clear block in source order (clear, then restore, never the reverse)', sellerCallTsxNoComments.indexOf('if (decision.clear)') !== -1 && sellerCallTsxNoComments.indexOf('if (decision.clear)') < sellerCallTsxNoComments.indexOf('if (decision.restoreSellerPosition'), true);
-  check('hydration effect depends on loading/currentDealId/latestOutcome (the opportunity identity, not contactId)', /\}, \[loading, currentDealId, latestOutcome\]\);/.test(sellerCallTsx), true);
   check('page imports useRef from react (required for the per-deal hydration guard)', /import \{ useEffect, useMemo, useRef, useState \} from "react"/.test(sellerCallTsx), true);
   check('restored Current Offer needs no separate Expected Spread wiring -- it flows through the SAME computeExpectedSpread useMemo already keyed on currentOffer', /computeExpectedSpread\(\{ endBuyerMaxPrice: board8\.endBuyerMaxPrice, referenceKind: "current_offer", referencePrice: currentOffer \}\)/.test(sellerCallTsx), true);
   check('Target and Max remain sourced from board8 alone -- resume hydration adds no second Target/Max path', /[*]\s*0\.25|0\.25\s*[*]/.test(sellerCallTsx), false);
@@ -346,11 +345,80 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('page renders the Review Assumptions action, linking to the existing Underwriting surface', /data-testid="negotiation-action-review-assumptions"[\s\S]{0,120}to=\{`\/contacts\/\$\{contactId\}\/underwriting`\}|to=\{`\/contacts\/\$\{contactId\}\/underwriting`\}[\s\S]{0,200}data-testid="negotiation-action-review-assumptions"/.test(sellerCallTsx), true);
   check('page renders the Cancel action', /data-testid="negotiation-action-cancel"/.test(sellerCallTsx), true);
   check('page renders the Override & Continue action', /data-testid="negotiation-action-override-continue"/.test(sellerCallTsx), true);
-  check('Override & Continue is disabled unless BOTH acknowledged AND a non-empty reason are present', /disabled=\{!overrideAcknowledged \|\| overrideReasonDraft\.trim\(\) === ""\}/.test(sellerCallTsx), true);
+  // B8-11 / INV-54 added `overrideWriteBusy` to the disabled condition --
+  // the confirm button must also disable while the durable ledger write
+  // is outstanding, preventing a double-submit.
+  check('Override & Continue is disabled unless BOTH acknowledged AND a non-empty reason are present, AND no write is already in flight', /disabled=\{!overrideAcknowledged \|\| overrideReasonDraft\.trim\(\) === "" \|\| overrideWriteBusy\}/.test(sellerCallTsx), true);
   check('page renders an explicit acknowledgement checkbox before Override & Continue can be used', /data-testid="negotiation-override-acknowledge-checkbox"/.test(sellerCallTsx), true);
   check('page renders a reason input required before Override & Continue can be used', /data-testid="negotiation-override-reason-input"/.test(sellerCallTsx), true);
   check('handleKeepNegotiating only sets warningDismissed -- touches no board8/readiness/expectedSpread state (none exists to touch: all three are useMemo, not useState)', /function handleKeepNegotiating\(\) \{\s*setWarningDismissed\(true\);\s*\}/.test(sellerCallTsx), true);
   check('handleCancelAboveMax touches no economics figure -- only clears negotiation input/draft/override state', /function handleCancelAboveMax\(\) \{[\s\S]{0,400}\n  \}/.test(sellerCallTsx) && !/function handleCancelAboveMax\(\)[\s\S]{0,400}set(Board8|Readiness|ExpectedSpread)/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// B8-11 / INV-54: the above-Max override is now DURABLE -- an append-only
+// GHL note, written through the same sanctioned `ghl.notes.create()` this
+// page already uses for the call-outcome ledger, never a fourth write
+// class, and never confused with Offer Readiness's DIFFERENT (and
+// unauthorized-to-persist) humanAction/APPROVED/OVERRIDDEN concept.
+// ============================================================
+{
+  check('page imports formatNegotiationOverrideNote and latestNegotiationOverrideNoteForOpportunity from the dedicated override-ledger module, never reimplementing them', /from "\.\.\/lib\/seller-call-negotiation-override-note"/.test(sellerCallTsx) && /formatNegotiationOverrideNote/.test(sellerCallTsx) && /latestNegotiationOverrideNoteForOpportunity/.test(sellerCallTsx), true);
+  check('page does not declare its own formatNegotiationOverrideNote', /\b(function|const)\s+formatNegotiationOverrideNote\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
+  check('page does not declare its own latestNegotiationOverrideNoteForOpportunity', /\b(function|const)\s+latestNegotiationOverrideNoteForOpportunity\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
+  check('page derives latestNegotiationOverrideNote scoped to screen.opportunity.id, the SAME PB-D55 identity every other note-ledger read on this page uses', /latestNegotiationOverrideNoteForOpportunity\(notes,\s*screen\.opportunity\.id\)/.test(sellerCallTsx), true);
+
+  check('handleOverrideAndContinue is async (a write now happens before state is set)', /async function handleOverrideAndContinue\(\)/.test(sellerCallTsx), true);
+  check('the override confirm button awaits handleOverrideAndContinue rather than firing it synchronously', /onClick=\{\(\) => void handleOverrideAndContinue\(\)\}/.test(sellerCallTsx), true);
+  // WRITE-THEN-SET ordering: attemptOverride validates first (unchanged),
+  // then ghl.notes.create is awaited, and setNegotiationOverride appears
+  // ONLY after that await -- never before it, and never on the catch path.
+  const handleOverrideBody = sellerCallTsxNoComments.slice(
+    sellerCallTsxNoComments.indexOf('async function handleOverrideAndContinue'),
+    sellerCallTsxNoComments.indexOf('async function handleOverrideAndContinue') + 1800,
+  );
+  check('handleOverrideAndContinue validates via the UNCHANGED attemptOverride before writing anything', /attemptOverride\(\{/.test(handleOverrideBody), true);
+  check('handleOverrideAndContinue writes through ghl.notes.create (the same sanctioned write the outcome ledger uses, never a fourth write class)', /await ghl\.notes\.create\(contactId,\s*note\)/.test(handleOverrideBody), true);
+  check('setNegotiationOverride is called AFTER the ghl.notes.create await, never before it (durable-then-visible, never the reverse)', handleOverrideBody.indexOf('await ghl.notes.create(contactId, note)') < handleOverrideBody.indexOf('setNegotiationOverride(result.override)'), true);
+  check('a successful override write is appended to local notes state immediately (no refetch required for resume to reflect it), mirroring handleRecordOutcome\'s own convention', /setNotes\(\(prev\) => \[\.\.\.\(prev \?\? \[\]\), \{ id: `local-\$\{Date\.now\(\)\}`, body: note, dateAdded: result\.override\.at \}\]\)/.test(sellerCallTsx), true);
+  check('a failed override write surfaces a truthful, explicit error via overrideActionError and does NOT set negotiationOverride (no unapproved state shown as granted)', /catch \(e: any\) \{\s*setOverrideActionError\(e\?\.message \?\? "Couldn't record this override/.test(sellerCallTsxNoComments), true);
+  check('overrideWriteBusy is set true before the write and cleared in a finally block (cleared on both success and failure)', /setOverrideWriteBusy\(true\)/.test(sellerCallTsx) && /finally \{\s*setOverrideWriteBusy\(false\);\s*\}/.test(sellerCallTsxNoComments), true);
+
+  check('the override note is scoped to screen.opportunity.id (PB-D55), the same identity every other write on this page is scoped to', /formatNegotiationOverrideNote\(\{\s*opportunityId:\s*screen\.opportunity\.id,/.test(sellerCallTsx), true);
+  check('the override note carries operator/reason/at verbatim from attemptOverride\'s own result -- no fabricated identity, no recomputed reason', /operator:\s*result\.override\.operator,\s*reason:\s*result\.override\.reason,/.test(sellerCallTsx), true);
+
+  // No new write class: still exactly ghl.notes.create + ghl.contacts.setLastCallAttempt
+  // directly (plus scheduleCallbackGated's own unmodified setCallbackDatetime),
+  // and ghl.notes.create now has TWO call sites (outcome + override).
+  check('page still writes exactly ghl.notes.create and ghl.contacts.setLastCallAttempt directly -- the override write reuses the SAME sanctioned call, not a new one', {
+    notesCreate: sellerCallTsx.indexOf('ghl.notes.create') !== -1,
+    setLastCallAttempt: sellerCallTsx.indexOf('ghl.contacts.setLastCallAttempt') !== -1,
+  }, { notesCreate: true, setLastCallAttempt: true });
+  check('ghl.notes.create now has exactly three call sites in the actual code (two in the outcome ledger\'s follow_up/else branches, one in the override ledger), never a fourth', (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 3);
+  const forbiddenAlwaysForOverride = [
+    'setApprovedArv', 'setEstimatedRepairs', 'saveUnderwritingFields', 'setAskingPrice',
+    'setCallDisposition', 'setCallRouting', 'setDispositionAt',
+    'iaos_call_disposition', 'iaos_call_routing', 'iaos_disposition_at',
+  ];
+  check('the override write introduces none of the forbidden writers/fields (same list the outcome ledger is already proven against)', forbiddenAlwaysForOverride.filter((t) => sellerCallTsxNoComments.indexOf(t) !== -1), []);
+
+  // Never confused with Offer Readiness's DIFFERENT override concept --
+  // this is the single most important boundary for this issue.
+  check('the override-ledger write path never touches readiness.humanAction or ReadinessResult.effectiveStatus -- Offer Ready\'s own APPROVED/OVERRIDDEN axis remains untouched and unauthorized to persist', !/humanAction/.test(handleOverrideBody) && !/effectiveStatus/.test(handleOverrideBody), true);
+}
+
+// ============================================================
+// B8-11 / INV-54: the durable override RESUMES the same way Seller
+// Position/Current Offer already do -- one shared decision
+// (`resolveResumeHydration`), never a second parallel state machine.
+// ============================================================
+{
+  check('page derives latestNegotiationOverrideNote via useMemo, scoped and gated exactly like latestOutcome (notes loaded, screen resolved/unresolved)', /const latestNegotiationOverrideNote = useMemo\(\(\) => \{\s*if \(!notes \|\| !\(screen\.state === "resolved" \|\| screen\.state === "unresolved"\)\) return null;\s*return latestNegotiationOverrideNoteForOpportunity\(notes, screen\.opportunity\.id\);\s*\}, \[notes, screen\]\);/.test(sellerCallTsx), true);
+  check('the resume effect passes latestOverrideNote and the LIVE currentOverride into resolveResumeHydration -- the SAME decision that already restores Seller Position/Current Offer, not a second effect', /latestOverrideNote:\s*latestNegotiationOverrideNote,[\s\S]{0,200}currentOverride:\s*negotiationOverride,/.test(sellerCallTsx), true);
+  check('the resume effect depends on latestNegotiationOverrideNote (in addition to loading/currentDealId/latestOutcome)', /\}, \[loading, currentDealId, latestOutcome, latestNegotiationOverrideNote\]\);/.test(sellerCallTsx), true);
+  check('a restored override is applied via setNegotiationOverride, reconstructing the acknowledgedAboveMax: true literal NegotiationOverride requires -- never persisted redundantly, never a second shape', /setNegotiationOverride\(\{ acknowledgedAboveMax: true, \.\.\.decision\.restoreOverride \}\)/.test(sellerCallTsx), true);
+  check('restoring the override is gated on decision.restoreOverride !== null, the SAME non-null convention restoreSellerPosition/restoreCurrentOffer already use', /if \(decision\.restoreOverride !== null\) \{\s*setNegotiationOverride/.test(sellerCallTsxNoComments), true);
+  check('the clear-on-identity-change block still resets negotiationOverride to null (unchanged from the Jess Re-Gate correction) -- B8-11 restores it AFTER that clear, in the same order clear-then-restore already established', sellerCallTsxNoComments.indexOf('if (decision.clear)') < sellerCallTsxNoComments.indexOf('if (decision.restoreOverride'), true);
 }
 
 // ============================================================
