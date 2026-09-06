@@ -61,7 +61,7 @@ const { computeBoard8Economics, computeExpectedSpread } = require(board8Path);
 const { buildDealBarCells, DEAL_BAR_LABELS } = require(dealBarPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 30;
+const FLOOR = 34;
 let failures = 0;
 let checks = 0;
 
@@ -105,7 +105,7 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
 // Exact order and labels.
 // ============================================================
 {
-  const cells = buildDealBarCells({ arv: 315000, repairs: 41000, board8: GOLDEN_ECONOMICS, expectedSpread: null });
+  const cells = buildDealBarCells({ arv: 315000, repairs: 41000, sellerPosition: null, currentOffer: null, board8: GOLDEN_ECONOMICS, expectedSpread: null });
   check('exactly seven cells', cells.length, 7);
   check('cell keys in exact order', cells.map((c) => c.key), ['arv', 'repairs', 'seller_position', 'current_offer', 'target', 'max', 'spread']);
   check('cell labels in exact order', cells.map((c) => c.label), DEAL_BAR_LABELS.slice());
@@ -116,33 +116,44 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
 // ARV / Repairs -- honest known-vs-waiting.
 // ============================================================
 {
-  const known = buildDealBarCells({ arv: 315000, repairs: 41000, board8: null, expectedSpread: null });
+  const known = buildDealBarCells({ arv: 315000, repairs: 41000, sellerPosition: null, currentOffer: null, board8: null, expectedSpread: null });
   check('ARV known renders as a value', known[0].value.kind, 'value');
   check('ARV known renders the exact formatted amount', known[0].value.text, '$315,000');
   check('Repairs known renders as a value', known[1].value.kind, 'value');
   check('Repairs known renders the exact formatted amount', known[1].value.text, '$41,000');
 
-  const missing = buildDealBarCells({ arv: null, repairs: null, board8: null, expectedSpread: null });
+  const missing = buildDealBarCells({ arv: null, repairs: null, sellerPosition: null, currentOffer: null, board8: null, expectedSpread: null });
   check('ARV missing renders as waiting, never a fabricated number', missing[0].value.kind, 'waiting');
   check('Repairs missing renders as waiting, never a fabricated number', missing[1].value.kind, 'waiting');
 }
 
 // ============================================================
-// Seller Position / Current Offer -- ALWAYS waiting, regardless of every
-// other input, because no carrier is authorized. This is the core proof
-// that this module never invents a value for either.
+// Seller Position / Current Offer -- B8-08 / INV-51. Wait honestly when
+// null (IAOS invents neither), render as a real value the moment the
+// operator has entered one -- the SAME rule ARV/Repairs already follow.
 // ============================================================
 {
-  const withEverythingSupported = buildDealBarCells({
-    arv: 315000, repairs: 41000, board8: GOLDEN_ECONOMICS,
+  const waiting = buildDealBarCells({
+    arv: 315000, repairs: 41000, sellerPosition: null, currentOffer: null, board8: GOLDEN_ECONOMICS,
+    expectedSpread: computeExpectedSpread({ endBuyerMaxPrice: 181363, referenceKind: 'current_offer', referencePrice: null }),
+  });
+  const waitingSellerPosition = waiting.find((c) => c.key === 'seller_position');
+  const waitingCurrentOffer = waiting.find((c) => c.key === 'current_offer');
+  check('Seller Position waits when the operator has not entered one, even with full economics available', waitingSellerPosition.value.kind, 'waiting');
+  check('Seller Position waiting text matches rail.ts verbatim', waitingSellerPosition.value.text, 'WAITING on negotiation carrier');
+  check('Current Offer waits when the operator has not entered one, even with full economics available', waitingCurrentOffer.value.kind, 'waiting');
+  check('Current Offer waiting text matches rail.ts verbatim', waitingCurrentOffer.value.text, 'WAITING on negotiation semantics / carrier contract');
+
+  const entered = buildDealBarCells({
+    arv: 315000, repairs: 41000, sellerPosition: 210000, currentOffer: 150000, board8: GOLDEN_ECONOMICS,
     expectedSpread: computeExpectedSpread({ endBuyerMaxPrice: 181363, referenceKind: 'current_offer', referencePrice: 150000 }),
   });
-  const sellerPosition = withEverythingSupported.find((c) => c.key === 'seller_position');
-  const currentOffer = withEverythingSupported.find((c) => c.key === 'current_offer');
-  check('Seller Position always waits, even with full economics available', sellerPosition.value.kind, 'waiting');
-  check('Seller Position waiting text matches rail.ts verbatim', sellerPosition.value.text, 'WAITING on negotiation carrier');
-  check('Current Offer always waits, even with full economics available', currentOffer.value.kind, 'waiting');
-  check('Current Offer waiting text matches rail.ts verbatim', currentOffer.value.text, 'WAITING on negotiation semantics / carrier contract');
+  const enteredSellerPosition = entered.find((c) => c.key === 'seller_position');
+  const enteredCurrentOffer = entered.find((c) => c.key === 'current_offer');
+  check('Seller Position renders as a real value the moment the operator enters one', enteredSellerPosition.value.kind, 'value');
+  check('Seller Position renders the exact operator-entered amount', enteredSellerPosition.value.text, '$210,000');
+  check('Current Offer renders as a real value the moment the operator enters one', enteredCurrentOffer.value.kind, 'value');
+  check('Current Offer renders the exact operator-entered amount', enteredCurrentOffer.value.text, '$150,000');
 }
 
 // ============================================================
@@ -152,7 +163,7 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
 // ============================================================
 {
   check('setup: golden economics is calculated', GOLDEN_ECONOMICS.status, 'calculated');
-  const cells = buildDealBarCells({ arv: 315000, repairs: 41000, board8: GOLDEN_ECONOMICS, expectedSpread: null });
+  const cells = buildDealBarCells({ arv: 315000, repairs: 41000, sellerPosition: null, currentOffer: null, board8: GOLDEN_ECONOMICS, expectedSpread: null });
   const target = cells.find((c) => c.key === 'target');
   const max = cells.find((c) => c.key === 'max');
   check('Target renders as a value from B8-03 output', target.value.kind, 'value');
@@ -160,7 +171,7 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
   check('Max renders as a value from B8-03 output', max.value.kind, 'value');
   check('Max renders the exact B8-03 figure', max.value.text, '$176,363');
 
-  const unavailableCells = buildDealBarCells({ arv: null, repairs: null, board8: UNAVAILABLE_ECONOMICS, expectedSpread: null });
+  const unavailableCells = buildDealBarCells({ arv: null, repairs: null, sellerPosition: null, currentOffer: null, board8: UNAVAILABLE_ECONOMICS, expectedSpread: null });
   check('Target waits honestly when B8-03 is unavailable', unavailableCells.find((c) => c.key === 'target').value.kind, 'waiting');
   check('Max waits honestly when B8-03 is unavailable', unavailableCells.find((c) => c.key === 'max').value.kind, 'waiting');
 }
@@ -169,20 +180,23 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
 // Spread -- Expected Spread @ Current Offer. Calculated only when B8-03's
 // ExpectedSpread is itself calculated; honest waiting otherwise, naming
 // the reason (which always references Current Offer when that is why).
+// B8-08 / INV-51: now proven with a REAL Current Offer flowing all the
+// way from operator input through computeExpectedSpread to this cell --
+// not only the pre-INV-51 always-null case.
 // ============================================================
 {
   const calculatedSpread = computeExpectedSpread({ endBuyerMaxPrice: 181363, referenceKind: 'current_offer', referencePrice: 150000 });
-  const cellsCalculated = buildDealBarCells({ arv: 315000, repairs: 41000, board8: GOLDEN_ECONOMICS, expectedSpread: calculatedSpread });
+  const cellsCalculated = buildDealBarCells({ arv: 315000, repairs: 41000, sellerPosition: null, currentOffer: 150000, board8: GOLDEN_ECONOMICS, expectedSpread: calculatedSpread });
   check('Spread renders as a value when B8-03 Expected Spread calculated', cellsCalculated.find((c) => c.key === 'spread').value.kind, 'value');
   check('Spread renders the exact B8-03 figure', cellsCalculated.find((c) => c.key === 'spread').value.text, '$31,363');
 
   const unavailableSpread = computeExpectedSpread({ endBuyerMaxPrice: 181363, referenceKind: 'current_offer', referencePrice: null });
-  const cellsUnavailable = buildDealBarCells({ arv: 315000, repairs: 41000, board8: GOLDEN_ECONOMICS, expectedSpread: unavailableSpread });
+  const cellsUnavailable = buildDealBarCells({ arv: 315000, repairs: 41000, sellerPosition: null, currentOffer: null, board8: GOLDEN_ECONOMICS, expectedSpread: unavailableSpread });
   const spreadCell = cellsUnavailable.find((c) => c.key === 'spread');
   check('Spread waits honestly with no Current Offer', spreadCell.value.kind, 'waiting');
   check('Spread reason names Current Offer, matching B8-03s own reason text', spreadCell.value.text.toLowerCase().indexOf('current offer') >= 0, true);
 
-  const noSpreadComputedYet = buildDealBarCells({ arv: 315000, repairs: 41000, board8: GOLDEN_ECONOMICS, expectedSpread: null });
+  const noSpreadComputedYet = buildDealBarCells({ arv: 315000, repairs: 41000, sellerPosition: null, currentOffer: null, board8: GOLDEN_ECONOMICS, expectedSpread: null });
   check('Spread waits before any ExpectedSpread has been computed at all', noSpreadComputedYet.find((c) => c.key === 'spread').value.kind, 'waiting');
 }
 

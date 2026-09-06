@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home } from "lucide-react";
+import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home, AlertTriangle } from "lucide-react";
 import { ghl, type ContactDetail } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
 import {
@@ -26,6 +26,10 @@ import {
   subjectAddress, handoffToPropStream, copyAddressAgain, browserHandoffEnvironment,
   PROPSTREAM_LOGIN_URL, type HandoffResult,
 } from "../lib/propstream";
+import {
+  computeNegotiationPosition, attemptOverride, isOverrideCurrent, requiresOverrideDecision,
+  type NegotiationPosition, type NegotiationOverride,
+} from "../lib/seller-call-negotiation";
 
 /**
  * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49.
@@ -74,12 +78,33 @@ import {
  * "Start / Resume Seller Call" for the operator's benefit; this page
  * itself does not distinguish the two.
  *
- * SELLER POSITION AND CURRENT OFFER. Per B8-02's inventory, neither has
- * an authoritative carrier. This page does not invent one -- not even an
- * ephemeral, unpersisted local input -- because INV-48 is explicit:
- * preserve honest waiting/unknown behavior until their later authorized
- * implementation. `seller-call-deal-bar.ts` hardcodes both cells to a
- * waiting state for exactly this reason; see its own header comment.
+ * SELLER POSITION AND CURRENT OFFER, B8-08 / INV-51. INV-48 (above)
+ * described a state that no longer holds: this issue is the "later
+ * authorized implementation" that comment named. Both are now
+ * OPERATOR-ENTERED SESSION STATE -- plain React state, initialized to
+ * `null`/empty, changed ONLY by a human typing into the two negotiation
+ * inputs below. IAOS assigns neither a default, a derived, or a
+ * calculated value at any point; there is no code path that sets
+ * `currentOffer` except the input's own `onChange`. This is still not a
+ * GHL carrier of any kind -- it does not survive a page reload, and
+ * `B8-11` (INV-54) remains the issue authorized to persist it durably.
+ *
+ * LIVE RECALCULATION, NO NEW ECONOMICS. Changing Current Offer only ever
+ * changes what is fed into `computeExpectedSpread`'s existing
+ * `referencePrice` parameter (B8-03, unchanged) -- Target Acquisition
+ * Price and Max Supported Offer are read verbatim from `board8` and never
+ * vary with negotiation strategy, exactly as `DEAL_ECONOMICS_OFFER_
+ * READINESS_V1.md`'s "Opening offer... recalculates nothing upstream"
+ * and `SELLER_ACQUISITION_WORKFLOW.md`'s "Negotiation pressure never
+ * changes underwriting facts" both require.
+ *
+ * ABOVE-MAX OVERRIDE IS NOT OFFER READINESS'S HumanAction. This page's
+ * `readiness` above stays wired exactly as B8-04 built it (`humanAction:
+ * { kind: "none" }`, unchanged) -- it answers "is the evidence good
+ * enough." The NEW `NegotiationOverride` (`seller-call-negotiation.ts`)
+ * answers a different question, "does the operator want to proceed at a
+ * PRICE above Max," and is tracked entirely separately. See that
+ * module's own header for why the two must never merge.
  */
 
 const CONTENT_MAX_WIDTH = "1200px";
@@ -120,6 +145,22 @@ function formatAddress(c: ContactDetail | null): string {
 
 function money(n: number): string {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+}
+
+/**
+ * Parses a negotiation input field. Empty/whitespace and anything that
+ * does not resolve to a finite number both return `null` -- an invalid
+ * or not-yet-typed value is treated as "not entered," never coerced to
+ * zero (PB-D56 section III's own rule: unknown is never a favorable
+ * default) and never silently rounded to something the operator did not
+ * type.
+ */
+function parseMoneyInput(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const cleaned = trimmed.replace(/[$,]/g, "");
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
 }
 
 function Shell({ contactId, children }: { contactId: string; children: React.ReactNode }) {
@@ -243,6 +284,34 @@ export default function SellerCallWorkspace() {
   const [comps, setComps] = useState<HandoffResult | null>(null);
   const [compsBusy, setCompsBusy] = useState(false);
 
+  /* B8-08 / INV-51 — live negotiation. SESSION-ONLY, operator-entered,
+     cleared on reload. Raw string state (not `number | null` directly) so
+     the input reflects exactly what was typed, including a mid-edit
+     partial value; `parseMoneyInput` is the one place either becomes a
+     number or `null`. IAOS sets neither field except through these two
+     inputs' own `onChange` -- there is no other assignment to either
+     state setter anywhere in this component. */
+  const [sellerPositionInput, setSellerPositionInput] = useState("");
+  const [currentOfferInput, setCurrentOfferInput] = useState("");
+  const sellerPosition = useMemo(() => parseMoneyInput(sellerPositionInput), [sellerPositionInput]);
+  const currentOffer = useMemo(() => parseMoneyInput(currentOfferInput), [currentOfferInput]);
+
+  /* The one already-granted override, if any -- see seller-call-
+     negotiation.ts's own header for why this is a DIFFERENT concept from
+     `readiness.humanAction`. Never mutated in place: a new grant replaces
+     it outright (`attemptOverride` always returns a fresh record), and
+     staleness is DETECTED (`isOverrideCurrent`) rather than patched. */
+  const [negotiationOverride, setNegotiationOverride] = useState<NegotiationOverride | null>(null);
+  const [overrideReasonDraft, setOverrideReasonDraft] = useState("");
+  const [overrideAcknowledged, setOverrideAcknowledged] = useState(false);
+  const [overrideActionError, setOverrideActionError] = useState<string | null>(null);
+  /* Collapses the bounded-action prompt to a slim persistent line without
+     ever fully hiding that Current Offer is above Max -- "Keep
+     Negotiating" sets this; any edit to Current Offer resets it, so a
+     NEW above-Max value always re-prompts rather than inheriting a
+     dismissal that applied to a different number. */
+  const [warningDismissed, setWarningDismissed] = useState(false);
+
   useEffect(() => {
     if (!contactId) return;
     let cancelled = false;
@@ -337,15 +406,88 @@ export default function SellerCallWorkspace() {
     [pipeline.result],
   );
 
-  /* Current Offer has no carrier (see module header). referencePrice is
-     always null here; the moment a carrier is authorized, this is the
-     one line that changes. */
+  /* B8-08 / INV-51: `referencePrice` is now the REAL operator-entered
+     Current Offer -- the exact line the pre-INV-51 comment here predicted
+     would change once a carrier (session state, in this case) existed.
+     `computeExpectedSpread` itself is untouched, imported, never
+     reimplemented; this only supplies its input. */
   const expectedSpread: ExpectedSpread | null = useMemo(
     () => board8 && board8.status === "calculated"
-      ? computeExpectedSpread({ endBuyerMaxPrice: board8.endBuyerMaxPrice, referenceKind: "current_offer", referencePrice: null })
+      ? computeExpectedSpread({ endBuyerMaxPrice: board8.endBuyerMaxPrice, referenceKind: "current_offer", referencePrice: currentOffer })
       : null,
-    [board8],
+    [board8, currentOffer],
   );
+
+  /* B8-08 / INV-51. Classifies Current Offer against board8's OWN
+     `maxSupportedOffer` -- never a second Max calculation. `null` before
+     an opportunity resolves, matching every other board8-derived useMemo
+     on this page. */
+  const negotiationPosition: NegotiationPosition | null = useMemo(
+    () => (board8 ? computeNegotiationPosition({ currentOffer, board8 }) : null),
+    [currentOffer, board8],
+  );
+
+  const negotiationOverrideIsCurrent = negotiationPosition
+    ? isOverrideCurrent(negotiationOverride, negotiationPosition)
+    : false;
+  const negotiationNeedsDecision = negotiationPosition
+    ? requiresOverrideDecision(negotiationPosition, negotiationOverride)
+    : false;
+
+  function handleSellerPositionChange(raw: string) {
+    setSellerPositionInput(raw);
+  }
+
+  /* Every edit resets the override draft AND un-dismisses the warning --
+     an acknowledgement or a dismissal made for one Current Offer value
+     must never silently carry forward onto a different one typed next. */
+  function handleCurrentOfferChange(raw: string) {
+    setCurrentOfferInput(raw);
+    setOverrideAcknowledged(false);
+    setOverrideReasonDraft("");
+    setOverrideActionError(null);
+    setWarningDismissed(false);
+  }
+
+  function handleKeepNegotiating() {
+    setWarningDismissed(true);
+  }
+
+  /* Abandons this above-Max entry outright -- clears Current Offer back
+     to not-yet-entered, along with any override and draft state. This
+     does not "rewrite" the negotiation position that existed: it is the
+     same as the operator never having typed this number, one of the four
+     bounded actions INV-51 names, not an edit to a recorded decision. */
+  function handleCancelAboveMax() {
+    setCurrentOfferInput("");
+    setOverrideAcknowledged(false);
+    setOverrideReasonDraft("");
+    setOverrideActionError(null);
+    setWarningDismissed(false);
+    setNegotiationOverride(null);
+  }
+
+  /* The ONLY path that produces a NegotiationOverride -- `attemptOverride`
+     itself enforces above-Max, acknowledgement, and a non-empty reason;
+     this only supplies what the operator has entered and surfaces
+     `ok: false` honestly rather than assuming success. */
+  function handleOverrideAndContinue() {
+    if (!negotiationPosition) return;
+    const result = attemptOverride({
+      position: negotiationPosition,
+      acknowledged: overrideAcknowledged,
+      reason: overrideReasonDraft,
+      operator: "Brad Thompson",
+      at: new Date().toISOString(),
+    });
+    if (!result.ok) {
+      setOverrideActionError(result.error);
+      return;
+    }
+    setOverrideActionError(null);
+    setNegotiationOverride(result.override);
+    setWarningDismissed(false);
+  }
 
   /* B8-07 / INV-50, Jess Gate correction 2026-09-05, Jess Re-Gate
      correction 2026-09-05 (2nd round). Reads Board #7's EXISTING
@@ -407,10 +549,12 @@ export default function SellerCallWorkspace() {
     () => buildDealBarCells({
       arv: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.arv : null,
       repairs: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.repairs : null,
+      sellerPosition,
+      currentOffer,
       board8,
       expectedSpread,
     }),
-    [screen, board8, expectedSpread],
+    [screen, sellerPosition, currentOffer, board8, expectedSpread],
   );
 
   const hasKnownFacts = (screen.state === "resolved" || screen.state === "unresolved")
@@ -580,6 +724,170 @@ export default function SellerCallWorkspace() {
               body={"Waiting for " + screen.missingLabels.join(", ") + ". Known facts above are shown regardless."}
             />
           ) : null}
+
+          {/* B8-08 / INV-51 — live negotiation. Two operator inputs
+              (Seller Position, Current Offer); Target/Max/Spread are
+              rendered above in the sticky DealBar from the SAME board8/
+              expectedSpread objects computed once for this page -- no
+              second display of the same figures, no recomputation of any
+              of them here. This panel's only job is the inputs and the
+              above-Max warning/bounded-action flow. */}
+          <div
+            data-testid="negotiation-panel"
+            style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px", marginTop: "8px" }}
+          >
+            <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Negotiation</div>
+            <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", marginBottom: negotiationPosition ? "14px" : 0 }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "11px", color: "#64748B" }}>
+                Seller Position
+                <input
+                  data-testid="negotiation-seller-position-input"
+                  value={sellerPositionInput}
+                  onChange={(e) => handleSellerPositionChange(e.target.value)}
+                  placeholder="Not yet entered"
+                  style={{
+                    background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px",
+                    padding: "8px 10px", color: "#E2E8F0", fontSize: "13px", width: "150px",
+                  }}
+                />
+              </label>
+              <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "11px", color: "#64748B" }}>
+                Current Offer
+                <input
+                  data-testid="negotiation-current-offer-input"
+                  value={currentOfferInput}
+                  onChange={(e) => handleCurrentOfferChange(e.target.value)}
+                  placeholder="Not yet entered — IAOS never sets this"
+                  style={{
+                    background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px",
+                    padding: "8px 10px", color: "#E2E8F0", fontSize: "13px", width: "220px",
+                  }}
+                />
+              </label>
+            </div>
+
+            {/* Ordinary within-Max negotiation renders NOTHING further here
+                -- no warning, no bounded actions, no override control. */}
+            {negotiationPosition && negotiationPosition.status === "above_max" ? (
+              negotiationOverrideIsCurrent ? (
+                <div
+                  data-testid="negotiation-override-acknowledged"
+                  style={{
+                    display: "flex", gap: "10px", alignItems: "flex-start", padding: "12px 14px",
+                    background: "#F59E0B0F", border: "1px solid #F59E0B33", borderRadius: "8px",
+                  }}
+                >
+                  <AlertTriangle size={16} style={{ color: "#F59E0B", flexShrink: 0, marginTop: "1px" }} />
+                  <div style={{ fontSize: "12px", color: "#E2E8F0", lineHeight: 1.6 }}>
+                    <strong style={{ color: "#F59E0B" }}>Overridden — proceeding {money(negotiationOverride!.amountAboveMaxAtOverride)} above Max.</strong>
+                    <div style={{ color: "#94A3B8", marginTop: "3px" }}>Reason: {negotiationOverride!.reason}</div>
+                    <div style={{ color: "#64748B", marginTop: "2px", fontSize: "11px" }}>
+                      Acknowledged by {negotiationOverride!.operator} at {negotiationOverride!.at}.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  data-testid="negotiation-above-max-warning"
+                  style={{
+                    display: "flex", flexDirection: "column", gap: "10px", padding: "12px 14px",
+                    background: "#EF44440F", border: "1px solid #EF444444", borderRadius: "8px",
+                  }}
+                >
+                  <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                    <AlertTriangle size={16} style={{ color: "#EF4444", flexShrink: 0, marginTop: "1px" }} />
+                    <div style={{ fontSize: "13px", color: "#E2E8F0", lineHeight: 1.6 }}>
+                      <strong style={{ color: "#EF4444" }}>
+                        Current Offer is {money(negotiationPosition.amountAboveMax)} above Max Supported Offer.
+                      </strong>
+                      <div style={{ color: "#94A3B8", marginTop: "3px", fontSize: "12px" }}>
+                        Proceeding at this price gives up {money(negotiationPosition.amountAboveMax)} of the
+                        wholesaler's minimum acceptable economics under current assumptions.
+                      </div>
+                    </div>
+                  </div>
+
+                  {!warningDismissed ? (
+                    <>
+                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                        <button
+                          data-testid="negotiation-action-keep-negotiating"
+                          onClick={handleKeepNegotiating}
+                          style={{ ...COMPACT_BUTTON_STYLE, cursor: "pointer" }}
+                        >
+                          Keep Negotiating
+                        </button>
+                        <Link
+                          to={`/contacts/${contactId}/underwriting`}
+                          data-testid="negotiation-action-review-assumptions"
+                          style={COMPACT_LINK_STYLE}
+                        >
+                          Review Assumptions
+                        </Link>
+                        <button
+                          data-testid="negotiation-action-cancel"
+                          onClick={handleCancelAboveMax}
+                          style={{ ...COMPACT_BUTTON_STYLE, cursor: "pointer", borderColor: "rgba(239,68,68,0.35)", color: "#EF4444", background: "rgba(239,68,68,0.08)" }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+
+                      <div style={{ display: "flex", flexDirection: "column", gap: "8px", paddingTop: "6px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "#94A3B8" }}>
+                          <input
+                            type="checkbox"
+                            data-testid="negotiation-override-acknowledge-checkbox"
+                            checked={overrideAcknowledged}
+                            onChange={(e) => setOverrideAcknowledged(e.target.checked)}
+                          />
+                          I acknowledge this offer exceeds Max Supported Offer and intend to proceed anyway.
+                        </label>
+                        <textarea
+                          data-testid="negotiation-override-reason-input"
+                          value={overrideReasonDraft}
+                          onChange={(e) => setOverrideReasonDraft(e.target.value)}
+                          placeholder="Reason for proceeding above Max (required)"
+                          rows={2}
+                          style={{
+                            background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px",
+                            padding: "8px 10px", color: "#E2E8F0", fontSize: "12px", resize: "vertical",
+                          }}
+                        />
+                        {overrideActionError ? (
+                          <div style={{ fontSize: "11px", color: "#EF4444" }}>{overrideActionError}</div>
+                        ) : null}
+                        <button
+                          data-testid="negotiation-action-override-continue"
+                          onClick={handleOverrideAndContinue}
+                          disabled={!overrideAcknowledged || overrideReasonDraft.trim() === ""}
+                          style={{
+                            ...COMPACT_BUTTON_STYLE, alignSelf: "flex-start",
+                            cursor: !overrideAcknowledged || overrideReasonDraft.trim() === "" ? "not-allowed" : "pointer",
+                            opacity: !overrideAcknowledged || overrideReasonDraft.trim() === "" ? 0.45 : 1,
+                            borderColor: "rgba(239,68,68,0.45)", color: "#EF4444", background: "rgba(239,68,68,0.1)",
+                          }}
+                        >
+                          Override &amp; Continue
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div data-testid="negotiation-warning-dismissed" style={{ fontSize: "11px", color: "#F59E0B" }}>
+                      Still {money(negotiationPosition.amountAboveMax)} above Max — not yet acknowledged.{" "}
+                      <button
+                        data-testid="negotiation-action-reopen"
+                        onClick={() => setWarningDismissed(false)}
+                        style={{ background: "none", border: "none", color: "#1EC8FF", cursor: "pointer", fontSize: "11px", padding: 0, textDecoration: "underline" }}
+                      >
+                        Decide now
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+            ) : null}
+          </div>
 
           {/* Known facts / Next Best Question -- the conversation-first
               content this route exists to show. B8-06 / INV-49: the
