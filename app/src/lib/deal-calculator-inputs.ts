@@ -28,17 +28,32 @@
  * which mathematically do not depend on assignment mode at all, per
  * `board8-economics.ts`'s own header -- until assignment mode resolves, a
  * calculator with no Opportunity could never show a single number without
- * an explicit selection existing SOMEWHERE. `DEFAULT_ASSIGNMENT_MODE`
- * below defaults the SELECTOR -- never a dollar amount, never a policy
- * value, never a formula -- to `"standard"`, the one mode requiring no
- * further input, so a cold-opened calculator can satisfy INV-52's own
- * "immediately see the six decision numbers" acceptance bar without first
- * making the operator configure something nobody asked about. It remains
- * visible and changeable under More Detail at all times. This is a UI
- * default for a required enum choice with no real-world value to honestly
+ * an explicit selection existing SOMEWHERE.
+ *
+ * `DEFAULT_ASSIGNMENT_MODE` below defaults the SELECTOR -- never a dollar
+ * amount, never a formula -- to `"profit_share"`, per Brad's Jess Gate
+ * correction (2026-09-06): the governing decision is that Target Wholesale
+ * Profit uses the EXISTING 25% Buyer Profit Share as the default target,
+ * with the EXISTING $5,000 Standard Minimum as its floor -- not $5,000 as
+ * the default target itself. `board8-economics.ts`'s own Target/Max
+ * formulas already implement exactly this, verbatim and unchanged:
+ * `targetWholesaleProfit = max(25% of Required Buyer Profit,
+ * $5,000 Standard Minimum)`. Defaulting the assignment-mode SELECTOR to
+ * `profit_share` makes this calculator's Seller MAO (an internal
+ * `compute.ts` figure, not shown on the primary bar) consistent with that
+ * same governing default, using the SAME `max(requiredProfit * 25%,
+ * $5,000)` branch `compute.ts` already implements for profit_share mode --
+ * this module adds no new formula and duplicates none. Standard and
+ * Manual remain fully selectable under More Detail. Reaching
+ * `profit_share` requires no additional operator input either (only
+ * Manual needs a typed amount), so the "cold open, immediately see the
+ * six decision numbers" acceptance bar still holds. This is a UI default
+ * for a required enum choice with no real-world value to honestly
  * preserve (there is no "the operator's actual assignment mode" fact this
  * could get wrong, unlike Test Price) -- HARD NO's "no invented policy"
- * governs dollar figures and formulas, and this default supplies neither.
+ * governs dollar figures and formulas, and this default supplies neither:
+ * both 25% and $5,000 are the EXISTING Investor Policy values, read the
+ * same way every other caller already reads them.
  *
  * MANUAL MODE'S AMOUNT is operator-typed scratchpad input, exactly like
  * ARV/Repairs/Test Price -- never defaulted, never invented. Selecting
@@ -51,8 +66,12 @@ import type { DealFacts, AssignmentModeName, CustomValueIds, PolicyValue } from 
 import { parseDealOverrides, parsePolicy, resolveInputs } from "./underwriting/resolver";
 import type { UnderwritingInputs, Resolved } from "./underwriting/types";
 
-/** The one mode requiring no further operator input -- see the module header. */
-export const DEFAULT_ASSIGNMENT_MODE: AssignmentModeName = "standard";
+/**
+ * Brad's governing default (Jess Gate correction, 2026-09-06): 25% Buyer
+ * Profit Share is the default target, $5,000 Standard Minimum is its
+ * floor -- see the module header for the full reasoning.
+ */
+export const DEFAULT_ASSIGNMENT_MODE: AssignmentModeName = "profit_share";
 
 export type DealCalculatorAssignment =
   | { mode: "standard" }

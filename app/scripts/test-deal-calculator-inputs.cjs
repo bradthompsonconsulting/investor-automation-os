@@ -67,7 +67,7 @@ const { computeBoard8Economics } = require(board8Path);
 const { buildDealCalculatorInputs, parseNonNegativeAmountInput, DEFAULT_ASSIGNMENT_MODE } = require(inputsPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 34;
+const FLOOR = 36;
 let failures = 0;
 let checks = 0;
 
@@ -108,26 +108,54 @@ const POLICY_VALUES = [
 ];
 
 // ============================================================
-// Basic construction: ARV + Repairs present, default (Standard) mode,
-// full policy -> resolves, matching the golden fixture already
+// Basic construction: ARV + Repairs present, DEFAULT mode (now
+// profit_share, per Brad's Jess Gate correction 2026-09-06 -- 25% Buyer
+// Profit Share is the default target, $5,000 Standard Minimum is its
+// floor), full policy -> resolves, matching the golden fixture already
 // cross-checked elsewhere (test-board8-economics.cjs,
 // test-seller-call-deal-bar.cjs): endBuyerMaxPrice/maxSupportedOffer
 // ~176363.20305052432.
 // ============================================================
 {
-  check('DEFAULT_ASSIGNMENT_MODE is Standard -- the one mode requiring no further input', DEFAULT_ASSIGNMENT_MODE, 'standard');
+  check('DEFAULT_ASSIGNMENT_MODE is profit_share -- Brad\'s governing default (25% target, $5,000 floor)', DEFAULT_ASSIGNMENT_MODE, 'profit_share');
 
   const inputs = buildDealCalculatorInputs({
-    arv: 315000, repairs: 41000, assignment: { mode: 'standard' },
+    arv: 315000, repairs: 41000, assignment: { mode: DEFAULT_ASSIGNMENT_MODE },
     policyValues: POLICY_VALUES, policyIds: POLICY_IDS,
   });
   const result = computeUnderwriting(inputs);
-  check('ARV + Repairs + full policy + Standard mode -> resolved', result.status, 'resolved');
+  check('ARV + Repairs + full policy + default (profit_share) mode -> resolved', result.status, 'resolved');
 
   const board8 = computeBoard8Economics(result);
   check('board8 status is calculated', board8.status, 'calculated');
   check('endBuyerMaxPrice matches the cross-checked golden fixture', Math.round(board8.endBuyerMaxPrice), 181363);
   check('maxSupportedOffer matches the cross-checked golden fixture', Math.round(board8.maxSupportedOffer), 176363);
+}
+
+// ============================================================
+// PROOF THE B8-03 TARGET/MAX FORMULAS ARE NEITHER ALTERED NOR DUPLICATED
+// BY THIS DEFAULT CHANGE. board8-economics.ts's own header states Target
+// and Max always use the STANDARD MINIMUM specifically, never the deal's
+// active assignmentSpread -- so switching the assignment-mode default
+// from standard to profit_share must NOT change Target or Max at all.
+// Asserting bit-for-bit equality between the two modes' Board8Economics
+// output is the strongest available proof this correction touched no
+// formula in board8-economics.ts.
+// ============================================================
+{
+  const standardResult = computeUnderwriting(buildDealCalculatorInputs({
+    arv: 315000, repairs: 41000, assignment: { mode: 'standard' },
+    policyValues: POLICY_VALUES, policyIds: POLICY_IDS,
+  }));
+  const profitShareResult = computeUnderwriting(buildDealCalculatorInputs({
+    arv: 315000, repairs: 41000, assignment: { mode: 'profit_share' },
+    policyValues: POLICY_VALUES, policyIds: POLICY_IDS,
+  }));
+  const standardBoard8 = computeBoard8Economics(standardResult);
+  const profitShareBoard8 = computeBoard8Economics(profitShareResult);
+
+  check('Target/Max are IDENTICAL between Standard and profit_share assignment modes -- B8-03\'s own formulas never varied by this default change', profitShareBoard8, standardBoard8);
+  check('the underlying Seller MAO DOES differ between modes (proving profit_share is really wired through compute.ts, not a no-op)', profitShareResult.figures.sellerMAO === standardResult.figures.sellerMAO, false);
 }
 
 // ============================================================

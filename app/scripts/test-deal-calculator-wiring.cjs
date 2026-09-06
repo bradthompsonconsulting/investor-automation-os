@@ -16,7 +16,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 61;
+const FLOOR = 63;
 let failures = 0;
 let checks = 0;
 
@@ -194,7 +194,23 @@ const barTs = readSrc('src/lib/deal-calculator-bar.ts');
   check('More Detail is collapsed by default (moreDetailOpen initializes false)', /const \[moreDetailOpen, setMoreDetailOpen\] = useState\(false\)/.test(calcTsx), true);
   check('page renders all eleven Investor Policy values under More Detail', /data-testid="deal-calc-investor-policy"/.test(calcTsx), true);
   check('page imports parsePolicy (reused, not reimplemented) to display Investor Policy', /parsePolicy/.test(calcTsx), true);
-  check('Investor Policy values are rendered read-only text, never an editable <input>/<select> bound to a policy field', !/parsedPolicy\.\w+\.value\}\s*\)/.test(calcTsx) || true, true);
+  // A real, bounded assertion: extract exactly the Investor Policy display
+  // block (from its own data-testid to its matching closing </div>, at
+  // its own 12-space indent -- verified against the actual source, not
+  // guessed) and prove it contains no <input>/<select>/<textarea> at all,
+  // while also proving the extracted slice is non-trivial (it actually
+  // references parsedPolicy) so this cannot pass on an empty or
+  // mismatched slice. The Manual-mode amount <input> sits OUTSIDE this
+  // block (a sibling, for a legitimately editable field that is NOT an
+  // Investor Policy value), so scoping tightly to this one div is what
+  // makes the assertion meaningful rather than incidentally true of the
+  // whole More Detail panel.
+  const policyBlockStart = calcTsx.indexOf('data-testid="deal-calc-investor-policy"');
+  const policyBlockEnd = calcTsx.indexOf('\n            </div>', policyBlockStart);
+  check('the Investor Policy display block was found and bounded correctly', policyBlockStart !== -1 && policyBlockEnd !== -1 && policyBlockEnd > policyBlockStart, true);
+  const policyBlock = calcTsx.slice(policyBlockStart, policyBlockEnd);
+  check('the extracted Investor Policy block actually renders policy values (non-trivial slice, not a vacuous match)', /parsedPolicy\./.test(policyBlock) && (policyBlock.match(/policyRow\(/g) || []).length, 10);
+  check('the Investor Policy display block contains NO editable form control at all (<input>, <select>, or <textarea>)', /<input\b|<select\b|<textarea\b/.test(policyBlock), false);
 }
 
 // ============================================================

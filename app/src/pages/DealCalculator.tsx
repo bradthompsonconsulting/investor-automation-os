@@ -60,10 +60,13 @@ import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
  * `deal-calculator-inputs.ts`'s header for the full reasoning: Target and
  * Max do not mathematically depend on assignment mode, but
  * `computeUnderwriting`'s own gate will not resolve ANY figure without
- * one, and no Investor Policy or IAOS Starter level exists for it. The
- * selector defaults to Standard (no dollar amount, no formula, no policy
- * value) and lives under More Detail alongside the eleven read-only
- * Investor Policy figures.
+ * one, and no Investor Policy or IAOS Starter level exists for it. Per
+ * Brad's Jess Gate correction (2026-09-06), the selector defaults to
+ * `profit_share` -- the existing 25% Buyer Profit Share target with the
+ * existing $5,000 Standard Minimum as its floor, both EXISTING Investor
+ * Policy values, no new dollar amount or formula -- and lives under More
+ * Detail alongside the eleven read-only Investor Policy figures, with
+ * Standard and Manual fully selectable there too.
  *
  * QUICK REPAIRS, OPTIONAL DEEPER ESTIMATOR -- NO SECOND REPAIR ENGINE.
  * "Quick" is a single operator-typed number. "Detailed" reuses Board 6's
@@ -229,9 +232,11 @@ export default function DealCalculator() {
     bumpRepairRevision();
   }
 
-  /* Assignment mode. Defaults to Standard -- see deal-calculator-inputs.ts's
-     header for why this default is a UI convenience over an enum with no
-     real-world value to preserve, not an invented policy figure. */
+  /* Assignment mode. Defaults to profit_share (25% Buyer Profit Share,
+     floored at the existing $5,000 Standard Minimum) per Brad's Jess Gate
+     correction -- see deal-calculator-inputs.ts's header for why this
+     default is a UI convenience over an enum with no real-world value to
+     preserve, not an invented policy figure. */
   const [assignmentMode, setAssignmentMode] = useState<AssignmentModeName>(DEFAULT_ASSIGNMENT_MODE);
   const [manualAmountInput, setManualAmountInput] = useState("");
   const manualAmountParsed = useMemo(() => parseNonNegativeAmountInput(manualAmountInput), [manualAmountInput]);
