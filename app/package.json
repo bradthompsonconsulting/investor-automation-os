@@ -26,7 +26,8 @@
     "test:deal-calculator-inputs": "node scripts/test-deal-calculator-inputs.cjs",
     "test:deal-calculator-bar": "node scripts/test-deal-calculator-bar.cjs",
     "test:deal-calculator-wiring": "node scripts/test-deal-calculator-wiring.cjs",
-    "test:seller-call-outcome": "node scripts/test-seller-call-outcome.cjs"
+    "test:seller-call-outcome": "node scripts/test-seller-call-outcome.cjs",
+    "test:seller-call-resume": "node scripts/test-seller-call-resume.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",

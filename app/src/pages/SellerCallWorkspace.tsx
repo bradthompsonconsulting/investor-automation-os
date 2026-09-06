@@ -34,6 +34,7 @@ import {
   latestOutcomeNoteForOpportunity, attemptRecordOutcome,
   type CallOutcomeKind, type OutcomeSnapshot,
 } from "../lib/seller-call-outcome";
+import { resolveResumeHydration, type DealHydrationRef } from "../lib/seller-call-resume";
 import { scheduleCallbackGated } from "../lib/callbackWrite";
 
 /**
@@ -705,42 +706,68 @@ export default function SellerCallWorkspace() {
     return latestOutcomeNoteForOpportunity(notes, screen.opportunity.id);
   }, [notes, screen]);
 
-  /* Jess Gate correction, 2026-09-06 -- RESUME MUST HYDRATE LIVE
-     NEGOTIATION, NOT ONLY DISPLAY IT. The resume-context line above
-     already showed the latest outcome's recorded Seller Position/Current
-     Offer as TEXT, but the live inputs (and therefore the sticky deal
-     bar's live Expected Spread) stayed blank after a reload -- exactly
-     the gap this closes. Runs at most once per contact (guarded by
-     `resumeHydratedForRef`, keyed on `contactId` rather than a bare
-     boolean, so navigating to a DIFFERENT contact without a full remount
-     still hydrates that contact's own resume state): the moment this
-     contact's data has loaded, an EMPTY (untouched) input is filled from
-     the latest outcome's own recorded snapshot -- never a zero, never
-     invented, and the `=== ""` check is the exact same "untouched"
-     convention this page already uses to treat empty as absent
-     (`sellerPositionParsed`/`currentOfferParsed` above). Because the ref
-     guard flips BEFORE this effect ever re-reads `sellerPositionInput`/
-     `currentOfferInput` as a dependency, it fires exactly once per
-     contact and can never re-fire merely because the operator typed
-     something -- an operator's current edit is never overwritten.
-     Recalculating live Expected Spread needs no new wiring at all:
-     hydrating `currentOfferInput` flows through the SAME `currentOffer`
-     derivation and the SAME `computeExpectedSpread` useMemo already
-     above, unchanged; Target and Max remain sourced from `board8`,
-     equally unchanged. */
-  const resumeHydratedForRef = useRef<string | null>(null);
+  /* Jess Re-Gate correction, 2026-09-06 -- RESUME MUST BE SCOPED TO THE
+     OPPORTUNITY, NOT THE CONTACT. The prior `contactId`-keyed guard had
+     two defects Jess Re-Gate found: (1) it could be marked "done" while
+     this contact's `screen.state` was still `awaiting_selection` (no
+     opportunity chosen yet on a multi-opportunity contact) -- once
+     marked, hydration was PERMANENTLY skipped for whatever opportunity
+     the operator picked afterward; (2) it never cleared Seller
+     Position/Current Offer on a genuine deal switch, so Deal A's
+     negotiation values could remain visible on Deal B. `currentDealId`
+     below is `screen.opportunity.id` when resolved, `null` while no
+     opportunity is selected yet -- the EXACT SAME identity `latestOutcome`
+     itself is already scoped to just above (PB-D55), so "the deal
+     showing on screen" and "the deal this hydration restores" can never
+     drift apart. `resolveResumeHydration` (imported, never reimplemented
+     here) is the ONE place the clear/restore decision is made -- pure,
+     independently unit-tested (`seller-call-resume.ts` /
+     `test-seller-call-resume.cjs`), because this decision spans multiple
+     renders and a source-text check alone cannot prove a multi-render
+     state machine behaves correctly. This effect only applies exactly
+     what that function's result names, in the order it names: clear,
+     then restore. */
+  const dealHydrationRef = useRef<DealHydrationRef>({ dealId: null, hydrated: false });
+  const currentDealId = (screen.state === "resolved" || screen.state === "unresolved") ? screen.opportunity.id : null;
+
   useEffect(() => {
-    if (loading) return;
-    if (resumeHydratedForRef.current === contactId) return;
-    resumeHydratedForRef.current = contactId;
-    if (!latestOutcome) return;
-    if (sellerPositionInput === "" && latestOutcome.snapshot.sellerPosition !== null) {
-      setSellerPositionInput(String(latestOutcome.snapshot.sellerPosition));
+    const decision = resolveResumeHydration({
+      prevRef: dealHydrationRef.current,
+      currentDealId,
+      loading,
+      latestOutcome: latestOutcome
+        ? { sellerPosition: latestOutcome.snapshot.sellerPosition, currentOffer: latestOutcome.snapshot.currentOffer }
+        : null,
+      sellerPositionInput,
+      currentOfferInput,
+    });
+    dealHydrationRef.current = decision.nextRef;
+
+    /* CLEAR before restoring -- every deal-specific negotiation value
+       reset together (the same atomic group `handleCancelAboveMax`
+       already clears for the same reason) BEFORE either `restore*`
+       field below is applied, so Deal A's Current Offer, Seller
+       Position, or above-Max override can never be read while Deal B is
+       what's on screen. `decision.clear` is `true` ONLY on the pass the
+       selected opportunity identity actually changed -- never on an
+       ordinary rerender of the SAME opportunity, so an operator's edit
+       to the CURRENT deal is never touched by it. */
+    if (decision.clear) {
+      setSellerPositionInput("");
+      setCurrentOfferInput("");
+      setNegotiationOverride(null);
+      setOverrideReasonDraft("");
+      setOverrideAcknowledged(false);
+      setOverrideActionError(null);
+      setWarningDismissed(false);
     }
-    if (currentOfferInput === "" && latestOutcome.snapshot.currentOffer !== null) {
-      setCurrentOfferInput(String(latestOutcome.snapshot.currentOffer));
+    if (decision.restoreSellerPosition !== null) {
+      setSellerPositionInput(decision.restoreSellerPosition);
     }
-  }, [loading, contactId, latestOutcome]);
+    if (decision.restoreCurrentOffer !== null) {
+      setCurrentOfferInput(decision.restoreCurrentOffer);
+    }
+  }, [loading, currentDealId, latestOutcome]);
 
   /* The facts a recorded outcome captures, taken verbatim from what this
      page has already computed -- no recomputation, no second source. */

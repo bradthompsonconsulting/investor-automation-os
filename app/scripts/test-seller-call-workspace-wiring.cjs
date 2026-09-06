@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 146;
+const FLOOR = 148;
 let failures = 0;
 let checks = 0;
 
@@ -212,37 +212,45 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 {
   check('sellerPositionInput state is initialized empty, never from a GHL/derived value', /const \[sellerPositionInput, setSellerPositionInput\] = useState\(""\)/.test(sellerCallTsx), true);
   check('currentOfferInput state is initialized empty, never from a GHL/derived value -- IAOS invents no opening offer', /const \[currentOfferInput, setCurrentOfferInput\] = useState\(""\)/.test(sellerCallTsx), true);
-  // Jess Gate correction, 2026-09-06 added a SECOND legitimate call site to
-  // each setter -- the resume-hydration effect below, which restores a
-  // PREVIOUSLY RECORDED operator value from the outcome note, never an
-  // invented or computed one. The exact call-site counts and the
+  // Jess Gate/Re-Gate corrections, 2026-09-06 added THREE further legitimate
+  // call sites to each setter -- the deal-scoped resume-hydration effect
+  // below CLEARS both on every genuine opportunity switch, then RESTORES
+  // whichever the current deal's own outcome snapshot names. Both are
+  // PREVIOUSLY RECORDED operator values (or an explicit empty reset),
+  // never an invented or computed one. The exact call-site counts and the
   // no-derived-expression check that follows are what still distinguish
-  // "restore what a human already entered" from "IAOS computed a value."
-  check('setSellerPositionInput is called from exactly two sites: its own input onChange, and resume hydration', (sellerCallTsx.match(/setSellerPositionInput\(/g) || []).length, 2);
-  check('setCurrentOfferInput is called from exactly three sites: its own input onChange, Cancel, and resume hydration (never a derived/computed economics value)', (sellerCallTsx.match(/setCurrentOfferInput\(/g) || []).length, 3);
-  check('every setCurrentOfferInput call site sets it from the raw input event, "" (Cancel), or the resume snapshot\'s own recorded value -- never a number literal or board8/expectedSpread-derived expression', !/setCurrentOfferInput\([^)"]*\.(target|value)[^)]*\+|setCurrentOfferInput\(\s*\d|setCurrentOfferInput\([^)]*board8|setCurrentOfferInput\([^)]*expectedSpread/.test(sellerCallTsx), true);
+  // "restore what a human already entered for THIS deal" from "IAOS
+  // computed a value, or carried another deal's value forward."
+  check('setSellerPositionInput is called from exactly three sites: its own input onChange, resume-clear, and resume-restore', (sellerCallTsx.match(/setSellerPositionInput\(/g) || []).length, 3);
+  check('setCurrentOfferInput is called from exactly four sites: its own input onChange, Cancel, resume-clear, and resume-restore (never a derived/computed economics value)', (sellerCallTsx.match(/setCurrentOfferInput\(/g) || []).length, 4);
+  check('every setCurrentOfferInput call site sets it from the raw input event, "" (Cancel/resume-clear), or the resume decision\'s own restored value -- never a number literal or board8/expectedSpread-derived expression', !/setCurrentOfferInput\([^)"]*\.(target|value)[^)]*\+|setCurrentOfferInput\(\s*\d|setCurrentOfferInput\([^)]*board8|setCurrentOfferInput\([^)]*expectedSpread/.test(sellerCallTsx), true);
   check('Seller Position input carries the negotiation-panel testid', /data-testid="negotiation-seller-position-input"/.test(sellerCallTsx), true);
   check('Current Offer input carries the negotiation-panel testid', /data-testid="negotiation-current-offer-input"/.test(sellerCallTsx), true);
 }
 
 // ============================================================
-// Jess Gate correction, 2026-09-06, item 1: resume must HYDRATE the live
-// negotiation inputs (and therefore the live deal bar), not merely
-// display the latest outcome as text. Never overwrite an operator's
-// current edit, never invent a value, and never touch Target/Max (both
-// remain board8-sourced, unchanged).
+// Jess Re-Gate correction, 2026-09-06: resume hydration/clearing is
+// SCOPED TO THE SELECTED OPPORTUNITY, never merely the contact. The
+// actual clear/restore DECISION (delayed selection, switching deals,
+// rerender-safety, null-stays-empty) is proven deterministically in
+// test-seller-call-resume.cjs against the extracted pure function -- this
+// section only proves the PAGE actually wires that function in, applies
+// its result in the right order (clear, then restore), and touches no
+// second Target/Max path.
 // ============================================================
 {
-  check('page hydrates sellerPositionInput from the latest outcome\'s OWN recorded snapshot field, never a literal/default', /setSellerPositionInput\(String\(latestOutcome\.snapshot\.sellerPosition\)\)/.test(sellerCallTsx), true);
-  check('page hydrates currentOfferInput from the latest outcome\'s OWN recorded snapshot field, never a literal/default', /setCurrentOfferInput\(String\(latestOutcome\.snapshot\.currentOffer\)\)/.test(sellerCallTsx), true);
-  check('Seller Position hydration is gated on the snapshot field being non-null (never restores a fabricated zero for an unavailable figure)', /latestOutcome\.snapshot\.sellerPosition !== null\)\s*\{\s*setSellerPositionInput/.test(sellerCallTsxNoComments), true);
-  check('Current Offer hydration is gated on the snapshot field being non-null (never restores a fabricated zero for an unavailable figure)', /latestOutcome\.snapshot\.currentOffer !== null\)\s*\{\s*setCurrentOfferInput/.test(sellerCallTsxNoComments), true);
-  check('Seller Position hydration additionally requires the LIVE input to still be empty -- an operator\'s own edit is never overwritten', /sellerPositionInput === ""\s*&&\s*latestOutcome\.snapshot\.sellerPosition !== null/.test(sellerCallTsx), true);
-  check('Current Offer hydration additionally requires the LIVE input to still be empty -- an operator\'s own edit is never overwritten', /currentOfferInput === ""\s*&&\s*latestOutcome\.snapshot\.currentOffer !== null/.test(sellerCallTsx), true);
-  check('hydration is guarded by a ref (fires at most once per contact), so it cannot re-fire and clobber a later operator edit merely because input state changed', /const resumeHydratedForRef = useRef<string \| null>\(null\)/.test(sellerCallTsx), true);
-  check('the hydration ref guard is keyed on contactId, not a bare boolean, so a different contact still gets hydrated', /resumeHydratedForRef\.current === contactId/.test(sellerCallTsx) && /resumeHydratedForRef\.current = contactId/.test(sellerCallTsx), true);
-  check('hydration effect depends on loading/contactId/latestOutcome, never on the input state itself (which would let it re-fire on every keystroke)', /\}, \[loading, contactId, latestOutcome\]\);/.test(sellerCallTsx), true);
-  check('page imports useRef from react (required for the per-contact hydration guard)', /import \{ useEffect, useMemo, useRef, useState \} from "react"/.test(sellerCallTsx), true);
+  check('page imports resolveResumeHydration from the extracted, independently-tested resume module, never reimplementing the decision inline', /import \{ resolveResumeHydration, type DealHydrationRef \} from "\.\.\/lib\/seller-call-resume"/.test(sellerCallTsx), true);
+  check('page does not declare its own resolveResumeHydration', /\b(function|const)\s+resolveResumeHydration\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
+  check('the deal identity fed to the resume decision is screen.opportunity.id when resolved, null otherwise -- the SAME identity latestOutcome itself is scoped to (PB-D55), never merely contactId', /const currentDealId = \(screen\.state === "resolved" \|\| screen\.state === "unresolved"\) \? screen\.opportunity\.id : null/.test(sellerCallTsx), true);
+  check('the resume ref is keyed by opportunity identity (dealId), not contactId', /const dealHydrationRef = useRef<DealHydrationRef>\(\{ dealId: null, hydrated: false \}\)/.test(sellerCallTsx), true);
+  check('the resume effect passes the CURRENT live inputs and the CURRENT ref into resolveResumeHydration every render (the pure function, not the page, decides what changes)', /resolveResumeHydration\(\{[\s\S]{0,300}prevRef: dealHydrationRef\.current,[\s\S]{0,300}currentDealId,[\s\S]{0,300}loading,[\s\S]{0,300}sellerPositionInput,[\s\S]{0,300}currentOfferInput,/.test(sellerCallTsx), true);
+  check('the page stores the decision\'s nextRef back onto the ref every render (so the NEXT render sees this render\'s outcome)', /dealHydrationRef\.current = decision\.nextRef/.test(sellerCallTsx), true);
+  check('the page clears every deal-specific negotiation value (Seller Position, Current Offer, and the above-Max override/draft/warning state) when decision.clear is true, BEFORE either restore field is applied', /if \(decision\.clear\) \{\s*setSellerPositionInput\(""\);\s*setCurrentOfferInput\(""\);\s*setNegotiationOverride\(null\);\s*setOverrideReasonDraft\(""\);\s*setOverrideAcknowledged\(false\);\s*setOverrideActionError\(null\);\s*setWarningDismissed\(false\);\s*\}/.test(sellerCallTsxNoComments), true);
+  check('the page applies decision.restoreSellerPosition only when non-null, verbatim -- never re-deciding whether to restore', /if \(decision\.restoreSellerPosition !== null\) \{\s*setSellerPositionInput\(decision\.restoreSellerPosition\);\s*\}/.test(sellerCallTsxNoComments), true);
+  check('the page applies decision.restoreCurrentOffer only when non-null, verbatim -- never re-deciding whether to restore', /if \(decision\.restoreCurrentOffer !== null\) \{\s*setCurrentOfferInput\(decision\.restoreCurrentOffer\);\s*\}/.test(sellerCallTsxNoComments), true);
+  check('the restore calls are positioned AFTER the clear block in source order (clear, then restore, never the reverse)', sellerCallTsxNoComments.indexOf('if (decision.clear)') !== -1 && sellerCallTsxNoComments.indexOf('if (decision.clear)') < sellerCallTsxNoComments.indexOf('if (decision.restoreSellerPosition'), true);
+  check('hydration effect depends on loading/currentDealId/latestOutcome (the opportunity identity, not contactId)', /\}, \[loading, currentDealId, latestOutcome\]\);/.test(sellerCallTsx), true);
+  check('page imports useRef from react (required for the per-deal hydration guard)', /import \{ useEffect, useMemo, useRef, useState \} from "react"/.test(sellerCallTsx), true);
   check('restored Current Offer needs no separate Expected Spread wiring -- it flows through the SAME computeExpectedSpread useMemo already keyed on currentOffer', /computeExpectedSpread\(\{ endBuyerMaxPrice: board8\.endBuyerMaxPrice, referenceKind: "current_offer", referencePrice: currentOffer \}\)/.test(sellerCallTsx), true);
   check('Target and Max remain sourced from board8 alone -- resume hydration adds no second Target/Max path', /[*]\s*0\.25|0\.25\s*[*]/.test(sellerCallTsx), false);
 }
