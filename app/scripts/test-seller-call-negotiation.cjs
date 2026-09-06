@@ -64,10 +64,25 @@ const {
   isOverrideCurrent,
   requiresOverrideDecision,
   NEGOTIATION_ACTIONS,
+  parseAcquisitionPriceInput,
 } = require(negotiationPath);
 
+/**
+ * Compiled output, comments stripped -- used wherever a check must not
+ * false-positive on this module's OWN doc comments discussing the exact
+ * strings/types they check for (e.g. the header's account of the earlier
+ * hardcoded "Brad Thompson" identity, or its discussion of
+ * offer-readiness.ts's HumanAction). Computed once, reused by every such
+ * check below.
+ */
+const compiledNoComments = execSync(
+  'npx tsc "' + path.join(LIB, 'seller-call-negotiation.ts') + '" --outDir "' + TMP + '-nocomments" --module commonjs --target es2020 --removeComments',
+  { cwd: APP }
+) && fs.readFileSync(path.join(TMP + '-nocomments', 'seller-call-negotiation.js'), 'utf8');
+fs.rmSync(TMP + '-nocomments', { recursive: true, force: true });
+
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 49;
+const FLOOR = 69;
 let failures = 0;
 let checks = 0;
 
@@ -172,24 +187,24 @@ const GOLDEN_MAX = GOLDEN_ECONOMICS.status === 'calculated' ? GOLDEN_ECONOMICS.m
 // ============================================================
 {
   const within = computeNegotiationPosition({ currentOffer: 150000, board8: GOLDEN_ECONOMICS });
-  const notAboveMax = attemptOverride({ position: within, acknowledged: true, reason: 'seller is motivated', operator: 'Brad Thompson', at: '2026-09-06T12:00:00.000Z' });
+  const notAboveMax = attemptOverride({ position: within, acknowledged: true, reason: 'seller is motivated', operator: null, at: '2026-09-06T12:00:00.000Z' });
   check('cannot override a within_max position -- nothing to override', notAboveMax.ok, false);
   check('the not-above-Max rejection names the actual reason', notAboveMax.error.toLowerCase().indexOf('not above max') >= 0, true);
 
   const unavailablePos = computeNegotiationPosition({ currentOffer: null, board8: GOLDEN_ECONOMICS });
-  const notAvailable = attemptOverride({ position: unavailablePos, acknowledged: true, reason: 'x', operator: 'Brad Thompson', at: '2026-09-06T12:00:00.000Z' });
+  const notAvailable = attemptOverride({ position: unavailablePos, acknowledged: true, reason: 'x', operator: null, at: '2026-09-06T12:00:00.000Z' });
   check('cannot override an unavailable position', notAvailable.ok, false);
 
   const above = computeNegotiationPosition({ currentOffer: 190000, board8: GOLDEN_ECONOMICS });
 
-  const notAcknowledged = attemptOverride({ position: above, acknowledged: false, reason: 'seller is motivated, needs to close in 10 days', operator: 'Brad Thompson', at: '2026-09-06T12:00:00.000Z' });
+  const notAcknowledged = attemptOverride({ position: above, acknowledged: false, reason: 'seller is motivated, needs to close in 10 days', operator: null, at: '2026-09-06T12:00:00.000Z' });
   check('cannot override above Max without explicit acknowledgement, even with a reason typed', notAcknowledged.ok, false);
   check('the not-acknowledged rejection names acknowledgement specifically', notAcknowledged.error.toLowerCase().indexOf('acknowledg') >= 0, true);
 
-  const emptyReason = attemptOverride({ position: above, acknowledged: true, reason: '', operator: 'Brad Thompson', at: '2026-09-06T12:00:00.000Z' });
+  const emptyReason = attemptOverride({ position: above, acknowledged: true, reason: '', operator: null, at: '2026-09-06T12:00:00.000Z' });
   check('cannot override above Max with an empty reason, even when acknowledged', emptyReason.ok, false);
 
-  const whitespaceReason = attemptOverride({ position: above, acknowledged: true, reason: '   ', operator: 'Brad Thompson', at: '2026-09-06T12:00:00.000Z' });
+  const whitespaceReason = attemptOverride({ position: above, acknowledged: true, reason: '   ', operator: null, at: '2026-09-06T12:00:00.000Z' });
   check('a whitespace-only reason is treated the same as empty -- rejected', whitespaceReason.ok, false);
 }
 
@@ -202,12 +217,12 @@ const GOLDEN_MAX = GOLDEN_ECONOMICS.status === 'calculated' ? GOLDEN_ECONOMICS.m
   const result = attemptOverride({
     position: above, acknowledged: true,
     reason: 'Seller needs to close within 10 days; carrying costs justify the premium.',
-    operator: 'Brad Thompson', at: '2026-09-06T12:00:00.000Z',
+    operator: null, at: '2026-09-06T12:00:00.000Z',
   });
   check('override succeeds when above Max, acknowledged, and reasoned', result.ok, true);
   check('override.acknowledgedAboveMax is true', result.override.acknowledgedAboveMax, true);
   check('override.reason is carried through verbatim', result.override.reason, 'Seller needs to close within 10 days; carrying costs justify the premium.');
-  check('override.operator is carried through verbatim', result.override.operator, 'Brad Thompson');
+  check('override.operator is null when no authenticated identity is supplied -- never a fabricated name', result.override.operator, null);
   check('override.at is carried through verbatim', result.override.at, '2026-09-06T12:00:00.000Z');
   check('override.currentOfferAtOverride matches the position exactly', result.override.currentOfferAtOverride, 190000);
   check('override.maxSupportedOfferAtOverride matches board8 exactly, never recomputed', result.override.maxSupportedOfferAtOverride, GOLDEN_ECONOMICS.maxSupportedOffer);
@@ -221,7 +236,7 @@ const GOLDEN_MAX = GOLDEN_ECONOMICS.status === 'calculated' ? GOLDEN_ECONOMICS.m
 // ============================================================
 {
   const above190 = computeNegotiationPosition({ currentOffer: 190000, board8: GOLDEN_ECONOMICS });
-  const grant190 = attemptOverride({ position: above190, acknowledged: true, reason: 'agreed premium', operator: 'Brad Thompson', at: '2026-09-06T12:00:00.000Z' });
+  const grant190 = attemptOverride({ position: above190, acknowledged: true, reason: 'agreed premium', operator: null, at: '2026-09-06T12:00:00.000Z' });
 
   check('a fresh override IS current for the exact position it was granted for', isOverrideCurrent(grant190.override, above190), true);
   check('with a current override, no further decision is required', requiresOverrideDecision(above190, grant190.override), false);
@@ -249,6 +264,89 @@ const GOLDEN_MAX = GOLDEN_ECONOMICS.status === 'calculated' ? GOLDEN_ECONOMICS.m
 }
 
 // ============================================================
+// Jess Gate, 2026-09-06, item 1: no fabricated operator identity. The
+// module carries `operator` through verbatim -- both `null` (no
+// authenticated identity available, the ONLY value this codebase can
+// honestly supply today) and a real string (if a caller ever has one)
+// round-trip unchanged; the module itself never substitutes a name.
+// ============================================================
+{
+  const above = computeNegotiationPosition({ currentOffer: 190000, board8: GOLDEN_ECONOMICS });
+
+  const withNullOperator = attemptOverride({ position: above, acknowledged: true, reason: 'buyer walked, needs fast close', operator: null, at: '2026-09-06T12:00:00.000Z' });
+  check('attemptOverride succeeds with operator: null (no authenticated identity available)', withNullOperator.ok, true);
+  check('a null operator is carried through as null, never defaulted to a name', withNullOperator.override.operator, null);
+
+  const withRealOperator = attemptOverride({ position: above, acknowledged: true, reason: 'buyer walked, needs fast close', operator: 'jess@example.com', at: '2026-09-06T12:00:00.000Z' });
+  check('attemptOverride carries a real caller-supplied operator identity through verbatim when one exists', withRealOperator.override.operator, 'jess@example.com');
+
+  check('compiled output never hardcodes a specific person\'s name as the operator (no fabricated identity of any kind)', /Brad Thompson/.test(compiledNoComments), false);
+}
+
+// ============================================================
+// Jess Gate, 2026-09-06, item 2: parseAcquisitionPriceInput rejects
+// negative, zero, malformed, NaN, and infinite values BEFORE they could
+// reach computeNegotiationPosition or computeExpectedSpread -- while
+// preserving normal formatted positive entry.
+// ============================================================
+{
+  check('empty string -> empty (nothing typed, not an error)', parseAcquisitionPriceInput(''), { kind: 'empty' });
+  check('whitespace-only -> empty', parseAcquisitionPriceInput('   '), { kind: 'empty' });
+
+  const negative = parseAcquisitionPriceInput('-50000');
+  check('a negative amount -> invalid, never reaches a number', negative.kind, 'invalid');
+  check('the negative-amount raw text is preserved for an honest echo', negative.raw, '-50000');
+
+  const zero = parseAcquisitionPriceInput('0');
+  check('zero -> invalid (not a usable acquisition price)', zero.kind, 'invalid');
+
+  const malformed = parseAcquisitionPriceInput('not a number');
+  check('malformed text -> invalid', malformed.kind, 'invalid');
+  check('malformed text gets the not-a-number reason', malformed.reason, 'That is not a number.');
+
+  const nanLiteral = parseAcquisitionPriceInput('NaN');
+  check('the literal text "NaN" -> invalid', nanLiteral.kind, 'invalid');
+
+  const infinite = parseAcquisitionPriceInput('Infinity');
+  check('Infinity -> invalid, never a finite economics input', infinite.kind, 'invalid');
+
+  const negativeInfinite = parseAcquisitionPriceInput('-Infinity');
+  check('-Infinity -> invalid', negativeInfinite.kind, 'invalid');
+
+  const plainPositive = parseAcquisitionPriceInput('125000');
+  check('a plain positive number -> value, with the exact amount', plainPositive, { kind: 'value', value: 125000 });
+
+  const formattedPositive = parseAcquisitionPriceInput('$125,000');
+  check('a formatted positive amount ($125,000) is PRESERVED, not rejected', formattedPositive, { kind: 'value', value: 125000 });
+
+  const decimalPositive = parseAcquisitionPriceInput('125000.50');
+  check('a decimal positive amount parses to its exact value', decimalPositive, { kind: 'value', value: 125000.5 });
+
+  const everyInvalidValueIsNonNumeric = ['-50000', '0', 'not a number', 'NaN', 'Infinity', '-Infinity']
+    .every((raw) => parseAcquisitionPriceInput(raw).kind === 'invalid' && typeof parseAcquisitionPriceInput(raw).value === 'undefined');
+  check('every invalid case carries NO numeric value at all (nothing partially usable leaks through)', everyInvalidValueIsNonNumeric, true);
+}
+
+// ============================================================
+// Jess Gate, 2026-09-06, item 2 (end-to-end): a value rejected by
+// parseAcquisitionPriceInput, if a caller mistakenly forwarded its
+// rejected raw text as a number, would never have reached
+// computeNegotiationPosition as a usable price -- proven here by
+// confirming computeNegotiationPosition itself also refuses zero/negative
+// (defense in depth, not reachable through the parser's own "value" path).
+// ============================================================
+{
+  check('computeNegotiationPosition throws on a zero currentOffer (defense in depth against a caller bypassing the parser)', (() => {
+    try { computeNegotiationPosition({ currentOffer: 0, board8: GOLDEN_ECONOMICS }); return 'no-throw'; }
+    catch (e) { return e instanceof RangeError; }
+  })(), true);
+  check('computeNegotiationPosition throws on a negative currentOffer (defense in depth against a caller bypassing the parser)', (() => {
+    try { computeNegotiationPosition({ currentOffer: -1000, board8: GOLDEN_ECONOMICS }); return 'no-throw'; }
+    catch (e) { return e instanceof RangeError; }
+  })(), true);
+}
+
+// ============================================================
 // Structural proof: this module consumes B8-03 (Max Supported Offer),
 // never recomputes it, and touches nothing of offer-readiness.ts's
 // evidence-based HumanAction.
@@ -260,17 +358,12 @@ const GOLDEN_MAX = GOLDEN_ECONOMICS.status === 'calculated' ? GOLDEN_ECONOMICS.m
   check('source does not reimplement the 25%/$5,000 Target/Max formula', src.indexOf('0.25') === -1 && src.indexOf('Math.max') === -1, true);
   check('source contains no network/GHL surface', ['fetch(', 'ghl.', 'PROXY', 'customFields', '.notes.'].every((t) => src.indexOf(t) === -1), true);
 
-  // Checked against compiled output (comments stripped), not source text:
-  // the module's OWN header comment discusses offer-readiness.ts's
-  // HumanAction at length to EXPLAIN why this is a different concept,
-  // which would false-positive a plain source-text substring check (same
-  // class of mistake as arv-approval-note.ts's ghl.notes.list discussion
-  // earlier this board).
-  const compiledNoComments = execSync(
-    'npx tsc "' + path.join(LIB, 'seller-call-negotiation.ts') + '" --outDir "' + TMP + '-nocomments" --module commonjs --target es2020 --removeComments',
-    { cwd: APP }
-  ) && fs.readFileSync(path.join(TMP + '-nocomments', 'seller-call-negotiation.js'), 'utf8');
-  fs.rmSync(TMP + '-nocomments', { recursive: true, force: true });
+  // Checked against compiled output (comments stripped, computed once
+  // near the top of this file), not source text: the module's OWN header
+  // comment discusses offer-readiness.ts's HumanAction at length to
+  // EXPLAIN why this is a different concept, which would false-positive a
+  // plain source-text substring check (same class of mistake as
+  // arv-approval-note.ts's ghl.notes.list discussion earlier this board).
   check('compiled output never imports offer-readiness.ts or uses its HumanAction type (a distinct override concept)', /offer-readiness|HumanAction/.test(compiledNoComments), false);
 }
 

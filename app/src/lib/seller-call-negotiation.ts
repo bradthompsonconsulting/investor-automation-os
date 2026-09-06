@@ -49,6 +49,31 @@
  * the fact; the caller decides how much history, if any, to keep in
  * session state, and this module makes no persistence decision at all --
  * that is explicitly B8-11's (INV-54).
+ *
+ * NO FABRICATED OPERATOR IDENTITY. Jess Gate, 2026-09-06: an earlier
+ * version of the caller hardcoded `operator: "Brad Thompson"` on every
+ * override -- a false identity, since no authenticated-operator concept
+ * exists anywhere in this codebase (confirmed absent: no `currentUser`,
+ * `useAuth`, or session-actor mechanism of any kind). `operator` is
+ * therefore typed `string | null` and this module makes no attempt to
+ * supply, default, or validate it beyond carrying whatever the caller
+ * passes through verbatim -- `null` when no authenticated identity is
+ * available, exactly as it is today. Building an authentication system
+ * to fill this field is explicitly out of this issue's scope; the
+ * honest, unresolved gap is preserved rather than papered over.
+ *
+ * ACQUISITION-PRICE INPUT VALIDATION. Jess Gate, 2026-09-06: Seller
+ * Position and Current Offer are acquisition-price inputs, and a
+ * negative, zero, malformed, NaN, or infinite value must never reach
+ * `computeNegotiationPosition`, `computeExpectedSpread`, or any dependent
+ * display. `parseAcquisitionPriceInput` below is the ONE place that
+ * decision is made, returning a three-way result (`empty` / `invalid` /
+ * `value`) so a caller can show truthful, DISTINCT feedback for "nothing
+ * typed yet" versus "that is not a usable price" rather than collapsing
+ * both into the same silent `null`. Only the `value` variant's payload is
+ * ever a strictly positive, finite number -- fit to hand directly to
+ * `computeNegotiationPosition`'s `currentOffer` or any other consumer
+ * expecting an acquisition price.
  */
 
 import type { Board8Economics } from "./underwriting/board8-economics";
@@ -89,6 +114,15 @@ export function computeNegotiationPosition(args: {
   }
   if (!Number.isFinite(args.currentOffer)) {
     throw new RangeError(`currentOffer: ${args.currentOffer} is not a finite number`);
+  }
+  // Jess Gate, 2026-09-06: a non-positive Current Offer must never reach
+  // classification either -- callers are expected to have already
+  // filtered through `parseAcquisitionPriceInput`, so reaching here with
+  // zero or a negative amount is a caller contract violation, not a
+  // negotiation state this function can honestly classify as
+  // "within_max" or "above_max."
+  if (args.currentOffer <= 0) {
+    throw new RangeError(`currentOffer: ${args.currentOffer} is not a positive amount`);
   }
   if (args.board8.status !== "calculated") {
     return { status: "unavailable", reason: "Max Supported Offer has not been calculated yet" };
@@ -149,7 +183,8 @@ export const NEGOTIATION_ACTIONS: readonly NegotiationAction[] = [
 export type NegotiationOverride = {
   acknowledgedAboveMax: true;
   reason: string;
-  operator: string;
+  /** `null` when no authenticated operator identity is available -- never a fabricated name. See the module header. */
+  operator: string | null;
   at: string;
   currentOfferAtOverride: number;
   maxSupportedOfferAtOverride: number;
@@ -173,7 +208,8 @@ export function attemptOverride(args: {
   position: NegotiationPosition;
   acknowledged: boolean;
   reason: string;
-  operator: string;
+  /** `null` when no authenticated operator identity is available. This function neither requires nor fabricates one -- see the module header. */
+  operator: string | null;
   at: string;
 }): AttemptOverrideResult {
   if (args.position.status !== "above_max") {
@@ -233,4 +269,55 @@ export function requiresOverrideDecision(
   override: NegotiationOverride | null,
 ): boolean {
   return position.status === "above_max" && !isOverrideCurrent(override, position);
+}
+
+/* ------------------------------------------------------------------ */
+/* Acquisition-price input validation                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `empty`: nothing typed (or whitespace only) -- not an error, just
+ * absent, matching every other "not yet established" fact on this page.
+ *
+ * `invalid`: something was typed but it is not a usable acquisition
+ * price -- malformed text, NaN, non-finite (`Infinity`/`-Infinity`), zero,
+ * or negative. `reason` names which, so a caller can show truthful
+ * feedback rather than a generic error. The raw text is preserved
+ * unmodified (`raw`) so a caller can echo back exactly what was typed.
+ *
+ * `value`: a strictly positive, finite number, safe to hand directly to
+ * `computeNegotiationPosition`, `computeExpectedSpread`, or any other
+ * consumer expecting an acquisition price. This is the ONLY variant that
+ * carries a number.
+ */
+export type AcquisitionPriceInput =
+  | { kind: "empty" }
+  | { kind: "invalid"; raw: string; reason: string }
+  | { kind: "value"; value: number };
+
+/**
+ * Accepts plain digits and the same `$`/`,` formatting every other money
+ * display on this page already produces (e.g. `$125,000`) -- stripping
+ * those two characters before parsing is what "preserve normal formatted
+ * positive entry" means; it is not a second money-formatting engine, it
+ * is the minimum needed to accept what `money()` itself would have
+ * printed back at the operator.
+ */
+export function parseAcquisitionPriceInput(raw: string): AcquisitionPriceInput {
+  const trimmed = raw.trim();
+  if (trimmed === "") return { kind: "empty" };
+
+  const cleaned = trimmed.replace(/[$,]/g, "");
+  const n = Number(cleaned);
+
+  if (Number.isNaN(n)) {
+    return { kind: "invalid", raw, reason: "That is not a number." };
+  }
+  if (!Number.isFinite(n)) {
+    return { kind: "invalid", raw, reason: "That amount is not a finite number." };
+  }
+  if (n <= 0) {
+    return { kind: "invalid", raw, reason: "Enter a positive amount, for example $125,000." };
+  }
+  return { kind: "value", value: n };
 }

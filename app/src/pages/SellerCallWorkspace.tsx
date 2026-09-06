@@ -28,11 +28,12 @@ import {
 } from "../lib/propstream";
 import {
   computeNegotiationPosition, attemptOverride, isOverrideCurrent, requiresOverrideDecision,
-  type NegotiationPosition, type NegotiationOverride,
+  parseAcquisitionPriceInput, type NegotiationPosition, type NegotiationOverride,
 } from "../lib/seller-call-negotiation";
 
 /**
- * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49.
+ * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49,
+ * B8-07 / INV-50, and B8-08 / INV-51.
  *
  * Route: /contacts/:id/seller-call. Same Contact-context sub-route
  * pattern UNDERWRITING_WORKSPACE_SPEC.md chose for /contacts/:id/underwriting
@@ -40,9 +41,11 @@ import {
  * guardrail during a live call, and a guardrail that scrolls away is not
  * one. SELLER_ACQUISITION_WORKFLOW.md names this workspace as the surface
  * underwriting is one section of; B8-05 built the foundation and the
- * bar, B8-06 adds the single adaptive Next Best Question in its place.
- * Negotiation (INV-51) and the standalone calculator (INV-52) remain out
- * of scope here.
+ * bar, B8-06 added the single adaptive Next Best Question, B8-07 added
+ * the Repairs/ARV entry points, and B8-08 (below) adds the live
+ * negotiation experience -- Current Offer, Seller Position, and the
+ * above-Max bounded-action flow. Only the standalone calculator (INV-52)
+ * remains out of scope here.
  *
  * NEXT BEST QUESTION (B8-06). `computeNextBestQuestion` (imported, never
  * reimplemented) picks ONE of B8-04's own readiness reasons to surface,
@@ -145,22 +148,6 @@ function formatAddress(c: ContactDetail | null): string {
 
 function money(n: number): string {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-}
-
-/**
- * Parses a negotiation input field. Empty/whitespace and anything that
- * does not resolve to a finite number both return `null` -- an invalid
- * or not-yet-typed value is treated as "not entered," never coerced to
- * zero (PB-D56 section III's own rule: unknown is never a favorable
- * default) and never silently rounded to something the operator did not
- * type.
- */
-function parseMoneyInput(raw: string): number | null {
-  const trimmed = raw.trim();
-  if (trimmed === "") return null;
-  const cleaned = trimmed.replace(/[$,]/g, "");
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
 }
 
 function Shell({ contactId, children }: { contactId: string; children: React.ReactNode }) {
@@ -287,14 +274,28 @@ export default function SellerCallWorkspace() {
   /* B8-08 / INV-51 — live negotiation. SESSION-ONLY, operator-entered,
      cleared on reload. Raw string state (not `number | null` directly) so
      the input reflects exactly what was typed, including a mid-edit
-     partial value; `parseMoneyInput` is the one place either becomes a
-     number or `null`. IAOS sets neither field except through these two
+     partial value. IAOS sets neither field except through these two
      inputs' own `onChange` -- there is no other assignment to either
-     state setter anywhere in this component. */
+     state setter anywhere in this component.
+
+     Jess Gate, 2026-09-06: `parseAcquisitionPriceInput` (imported, never
+     reimplemented) is the ONE place either raw string becomes a
+     classified result -- `empty` (nothing typed), `invalid` (malformed,
+     NaN, non-finite, zero, or negative -- never reaches economics), or
+     `value` (a strictly positive, finite number). `sellerPosition`/
+     `currentOffer` below collapse `empty` and `invalid` to `null` for
+     every economics-consuming callsite (buildDealBarCells,
+     computeNegotiationPosition, computeExpectedSpread) -- an invalid
+     value is withheld from all of them exactly like an absent one -- while
+     the parsed result itself is kept separately so the UI can show
+     truthful, DISTINCT feedback for the two cases rather than one silent
+     `null`. */
   const [sellerPositionInput, setSellerPositionInput] = useState("");
   const [currentOfferInput, setCurrentOfferInput] = useState("");
-  const sellerPosition = useMemo(() => parseMoneyInput(sellerPositionInput), [sellerPositionInput]);
-  const currentOffer = useMemo(() => parseMoneyInput(currentOfferInput), [currentOfferInput]);
+  const sellerPositionParsed = useMemo(() => parseAcquisitionPriceInput(sellerPositionInput), [sellerPositionInput]);
+  const currentOfferParsed = useMemo(() => parseAcquisitionPriceInput(currentOfferInput), [currentOfferInput]);
+  const sellerPosition = sellerPositionParsed.kind === "value" ? sellerPositionParsed.value : null;
+  const currentOffer = currentOfferParsed.kind === "value" ? currentOfferParsed.value : null;
 
   /* The one already-granted override, if any -- see seller-call-
      negotiation.ts's own header for why this is a DIFFERENT concept from
@@ -470,14 +471,23 @@ export default function SellerCallWorkspace() {
   /* The ONLY path that produces a NegotiationOverride -- `attemptOverride`
      itself enforces above-Max, acknowledgement, and a non-empty reason;
      this only supplies what the operator has entered and surfaces
-     `ok: false` honestly rather than assuming success. */
+     `ok: false` honestly rather than assuming success.
+
+     Jess Gate, 2026-09-06: `operator` is `null`, not a hardcoded name.
+     This app has no authenticated-operator concept anywhere (confirmed
+     absent: no `currentUser`, `useAuth`, or session-actor mechanism of
+     any kind) -- inventing one here would fabricate provenance this
+     record does not actually have, and building real authentication is
+     explicitly out of this issue's scope. `null` is preserved through to
+     the rendered acknowledgement banner honestly, rather than papered
+     over with a name nobody confirmed. */
   function handleOverrideAndContinue() {
     if (!negotiationPosition) return;
     const result = attemptOverride({
       position: negotiationPosition,
       acknowledged: overrideAcknowledged,
       reason: overrideReasonDraft,
-      operator: "Brad Thompson",
+      operator: null,
       at: new Date().toISOString(),
     });
     if (!result.ok) {
@@ -750,6 +760,18 @@ export default function SellerCallWorkspace() {
                     padding: "8px 10px", color: "#E2E8F0", fontSize: "13px", width: "150px",
                   }}
                 />
+                {/* Jess Gate, 2026-09-06: truthful feedback for an INVALID
+                    entry, distinct from an EMPTY one -- empty renders no
+                    message at all (the placeholder already says "Not yet
+                    entered"); only a typed-but-unusable value gets this
+                    line, and the value withheld from every downstream
+                    calculation is proven by `sellerPosition` above being
+                    `null` for both cases. */}
+                {sellerPositionParsed.kind === "invalid" ? (
+                  <span data-testid="negotiation-seller-position-error" style={{ color: "#EF4444", fontSize: "10px" }}>
+                    {sellerPositionParsed.reason}
+                  </span>
+                ) : null}
               </label>
               <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "11px", color: "#64748B" }}>
                 Current Offer
@@ -763,6 +785,11 @@ export default function SellerCallWorkspace() {
                     padding: "8px 10px", color: "#E2E8F0", fontSize: "13px", width: "220px",
                   }}
                 />
+                {currentOfferParsed.kind === "invalid" ? (
+                  <span data-testid="negotiation-current-offer-error" style={{ color: "#EF4444", fontSize: "10px" }}>
+                    {currentOfferParsed.reason}
+                  </span>
+                ) : null}
               </label>
             </div>
 
@@ -782,7 +809,7 @@ export default function SellerCallWorkspace() {
                     <strong style={{ color: "#F59E0B" }}>Overridden — proceeding {money(negotiationOverride!.amountAboveMaxAtOverride)} above Max.</strong>
                     <div style={{ color: "#94A3B8", marginTop: "3px" }}>Reason: {negotiationOverride!.reason}</div>
                     <div style={{ color: "#64748B", marginTop: "2px", fontSize: "11px" }}>
-                      Acknowledged by {negotiationOverride!.operator} at {negotiationOverride!.at}.
+                      Acknowledged by {negotiationOverride!.operator ?? "an unidentified session actor (no authenticated operator identity in this build)"} at {negotiationOverride!.at}.
                     </div>
                   </div>
                 </div>

@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 91;
+const FLOOR = 104;
 let failures = 0;
 let checks = 0;
 
@@ -198,6 +198,44 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('every setCurrentOfferInput call site sets it from the raw input event or to "" (Cancel), never a number expression', !/setCurrentOfferInput\([^)"]*\.(target|value)[^)]*\+|setCurrentOfferInput\(\s*\d/.test(sellerCallTsx), true);
   check('Seller Position input carries the negotiation-panel testid', /data-testid="negotiation-seller-position-input"/.test(sellerCallTsx), true);
   check('Current Offer input carries the negotiation-panel testid', /data-testid="negotiation-current-offer-input"/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// Jess Gate, 2026-09-06, item 1: no fabricated operator identity anywhere
+// on this page. `attemptOverride` must be called with `operator: null`
+// (this codebase has no authenticated-operator concept at all), never a
+// hardcoded person's name.
+// ============================================================
+{
+  check('page never hardcodes "Brad Thompson" (or any other specific name) as the negotiation override operator', /Brad Thompson/.test(sellerCallTsx), false);
+  check('page passes operator: null to attemptOverride -- no fabricated identity', /attemptOverride\(\{[\s\S]{0,200}operator:\s*null/.test(sellerCallTsx), true);
+  check('the acknowledged-override banner renders a truthful fallback when operator is null, never blank or a guessed name', /negotiationOverride!\.operator\s*\?\?\s*"an unidentified session actor/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// Jess Gate, 2026-09-06, item 2: Seller Position and Current Offer reject
+// negative/zero/malformed/NaN/infinite values before they reach
+// economics, distinguish empty from invalid with truthful feedback, and
+// preserve formatted positive entry.
+// ============================================================
+{
+  check('page imports parseAcquisitionPriceInput from seller-call-negotiation (validation is not reimplemented on the page)', /parseAcquisitionPriceInput/.test(sellerCallTsx) && /from "\.\.\/lib\/seller-call-negotiation"/.test(sellerCallTsx), true);
+  check('page no longer defines its own parseMoneyInput (the pre-Jess-Gate parser that let zero/negative through)', /function parseMoneyInput/.test(sellerCallTsx), false);
+  check('sellerPosition is null for both empty AND invalid input -- never a non-positive/NaN/infinite value reaches buildDealBarCells', /const sellerPosition = sellerPositionParsed\.kind === "value" \? sellerPositionParsed\.value : null/.test(sellerCallTsx), true);
+  check('currentOffer is null for both empty AND invalid input -- never a non-positive/NaN/infinite value reaches computeNegotiationPosition or computeExpectedSpread', /const currentOffer = currentOfferParsed\.kind === "value" \? currentOfferParsed\.value : null/.test(sellerCallTsx), true);
+  check('page renders DISTINCT truthful feedback for an invalid Seller Position (not merely "not yet entered")', /data-testid="negotiation-seller-position-error"[\s\S]{0,80}sellerPositionParsed\.reason|sellerPositionParsed\.reason[\s\S]{0,80}data-testid="negotiation-seller-position-error"/.test(sellerCallTsx), true);
+  check('page renders DISTINCT truthful feedback for an invalid Current Offer (not merely "not yet entered")', /data-testid="negotiation-current-offer-error"[\s\S]{0,80}currentOfferParsed\.reason|currentOfferParsed\.reason[\s\S]{0,80}data-testid="negotiation-current-offer-error"/.test(sellerCallTsx), true);
+  check('the invalid-feedback message renders ONLY when kind is "invalid", never for "empty" (the two are visibly distinguished)', /sellerPositionParsed\.kind === "invalid"/.test(sellerCallTsx) && /currentOfferParsed\.kind === "invalid"/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// Jess Gate, 2026-09-06, item 3: the stale header claiming INV-51
+// negotiation remains out of scope must be corrected.
+// ============================================================
+{
+  check('page header no longer claims Negotiation (INV-51) remains out of scope (that work is THIS page)', /Negotiation \(INV-51\)[\s\S]{0,40}remain out\s*\n?\s*\* of scope/.test(sellerCallTsx), false);
+  check('page header now describes B8-08 / INV-51 as implemented on this page, not deferred', /B8-08.{0,40}INV-51/.test(sellerCallTsx), true);
+  check('page header still correctly names the standalone calculator (INV-52) as the one remaining out-of-scope item', /standalone calculator \(INV-52\)/.test(sellerCallTsx), true);
 }
 
 // ============================================================
