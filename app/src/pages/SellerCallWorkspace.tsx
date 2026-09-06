@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home, AlertTriangle } from "lucide-react";
 import { ghl, type ContactDetail } from "../lib/ghl";
@@ -30,10 +30,16 @@ import {
   computeNegotiationPosition, attemptOverride, isOverrideCurrent, requiresOverrideDecision,
   parseAcquisitionPriceInput, type NegotiationPosition, type NegotiationOverride,
 } from "../lib/seller-call-negotiation";
+import {
+  latestOutcomeNoteForOpportunity, attemptRecordOutcome,
+  type CallOutcomeKind, type OutcomeSnapshot,
+} from "../lib/seller-call-outcome";
+import { resolveResumeHydration, type DealHydrationRef } from "../lib/seller-call-resume";
+import { scheduleCallbackGated } from "../lib/callbackWrite";
 
 /**
  * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49,
- * B8-07 / INV-50, and B8-08 / INV-51.
+ * B8-07 / INV-50, B8-08 / INV-51, and B8-10 / INV-53.
  *
  * Route: /contacts/:id/seller-call. Same Contact-context sub-route
  * pattern UNDERWRITING_WORKSPACE_SPEC.md chose for /contacts/:id/underwriting
@@ -42,10 +48,12 @@ import {
  * one. SELLER_ACQUISITION_WORKFLOW.md names this workspace as the surface
  * underwriting is one section of; B8-05 built the foundation and the
  * bar, B8-06 added the single adaptive Next Best Question, B8-07 added
- * the Repairs/ARV entry points, and B8-08 (below) adds the live
- * negotiation experience -- Current Offer, Seller Position, and the
- * above-Max bounded-action flow. Only the standalone calculator (INV-52)
- * remains out of scope here.
+ * the Repairs/ARV entry points, B8-08 added the live negotiation
+ * experience, and B8-10 (below) adds resume context and the three
+ * bounded call outcomes (Accept / Follow-Up / Pass) plus the Contract
+ * Ready handoff. The standalone calculator (INV-52) is its own separate
+ * page and remains out of scope here, as does durable negotiation-state
+ * persistence (INV-54).
  *
  * NEXT BEST QUESTION (B8-06). `computeNextBestQuestion` (imported, never
  * reimplemented) picks ONE of B8-04's own readiness reasons to surface,
@@ -53,13 +61,23 @@ import {
  * pointer, no assumption about call order. See that module's own header
  * for the exact priority rule.
  *
- * READ ONLY. This page performs no writes of any kind -- not a note, not
- * last_call_attempt, not a callback, not an underwriting approval. It
- * fetches, resolves, computes, and renders. `ghl.notes.list` (B8-07 /
- * INV-50) is a read of the contact's existing note history -- the same
- * already-approved, already-used call `ContactWorkspace.tsx` and
- * `Conversations.tsx` already make -- to recover Board #7's own ARV
- * approval ledger entries via `arv-approval-note.ts`'s strict parser.
+ * NO LONGER READ-ONLY, AS OF B8-10 / INV-53. Every prior board on this
+ * page (B8-05 through B8-08) was correctly read-only; recording a bounded
+ * call outcome is this page's first write of any kind. It performs
+ * EXACTLY the three sanctioned writes AGENTS.md names, through EXISTING,
+ * unmodified helpers -- `ghl.notes.create` (directly, and via the
+ * unmodified `scheduleCallbackGated` for Follow-Up), `ghl.contacts.
+ * setLastCallAttempt`, and `ghl.contacts.setCallbackDatetime` (via
+ * `scheduleCallbackGated` only) -- never a fourth, and never
+ * `iaos_call_disposition`/`iaos_call_routing`/`iaos_disposition_at`
+ * (Board 4's cold-outreach fields; see `seller-call-outcome.ts`'s own
+ * header for why those are never touched from here). `ghl.notes.list`
+ * (B8-07 / INV-50) is a read of the contact's existing note history --
+ * the same already-approved, already-used call `ContactWorkspace.tsx`
+ * and `Conversations.tsx` already make -- to recover Board #7's own ARV
+ * approval ledger entries via `arv-approval-note.ts`'s strict parser, and
+ * now also this page's own outcome ledger entries via
+ * `seller-call-outcome.ts`'s equally strict parser.
  *
  * CONSUME, DO NOT RECOMPUTE. The fetch-resolve-compute pipeline below
  * (contact + opportunities + policy -> parse -> resolve -> compute) is
@@ -108,6 +126,51 @@ import {
  * answers a different question, "does the operator want to proceed at a
  * PRICE above Max," and is tracked entirely separately. See that
  * module's own header for why the two must never merge.
+ *
+ * RESUME, B8-10 / INV-53. Opening this page always performs the full
+ * fetch-resolve-compute pipeline above -- there is nothing additional to
+ * "resume" for Known Facts, Offer Readiness, or Next Best Question, all
+ * three already live-derived from current GHL state on every load. What
+ * B8-10 adds is `latestOutcome` below: the most recent bounded call
+ * outcome (Accept / Follow-Up / Pass), read back through
+ * `seller-call-outcome.ts`'s strict parser from the SAME notes this page
+ * already fetches. This is what lets "what was last discussed" resume
+ * durably -- Seller Position and Current Offer at the moment of that
+ * outcome are part of its recorded snapshot, even though the LIVE
+ * negotiation inputs above them remain B8-08's session-only state and do
+ * not themselves survive a reload (a real, already-documented gap; see
+ * `seller-call-outcome.ts`'s header for exactly what is and is not
+ * durable, and why closing the rest is INV-54's scope, not invented here).
+ *
+ * BOUNDED CALL OUTCOMES ARE NOT A NEW CALL-STATUS UNIVERSE. Accept,
+ * Follow-Up, and Pass are `docs/SELLER_ACQUISITION_WORKFLOW.md`'s own
+ * three words from its master flow, recorded through the three EXISTING
+ * sanctioned writes only (see the module's write-boundary note above).
+ * No pipeline stage is read or written by any of the three -- moving an
+ * Opportunity's stage has unproven workflow side effects (AGENTS.md: "no
+ * field is written before its own inert-proof") and is not attempted.
+ *
+ * ACCEPTED PRICE IS THE EXISTING CURRENT OFFER. Accept records whatever
+ * `currentOffer` already holds at the moment it is clicked -- there is no
+ * second "accepted price" input, and this page invents no new field for
+ * it. The write is a durable, resumable NOTE (an authoritative existing
+ * mechanism, per `seller-call-outcome.ts`'s own header), not a new
+ * carrier; a pipeline-level, bulk-queryable "Agreement Reached" field
+ * does not exist and is not created here -- that gap is named explicitly
+ * for INV-54 rather than closed by inventing one.
+ *
+ * AGREEMENT REACHED IS NOT UNDER CONTRACT, AND OFFER READY IS NOT
+ * CONTRACT READY. `ReadinessBadge` above continues to render B8-04's
+ * OFFER_READY/REVIEW_NEEDED/NOT_READY exactly as before -- Accept does
+ * not change it, hide it, or fold into it. `AgreementBanner` and the
+ * Contract Ready checklist below are a SEPARATE, ADDITIONAL surface,
+ * shown only once the latest outcome is `accept`, and both remain purely
+ * informational: no checklist item is required before anything else on
+ * this page works, and Contract Readiness's own detailed definition
+ * remains "distinct, detail deferred" to Board #9, unimplemented here.
+ * The checklist's own check-state is session-only (never persisted) --
+ * only the fact that agreement was reached, and the price it was reached
+ * at, durably resume via the outcome note itself.
  */
 
 const CONTENT_MAX_WIDTH = "1200px";
@@ -149,6 +212,17 @@ function formatAddress(c: ContactDetail | null): string {
 function money(n: number): string {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 }
+
+/** `null`-safe money, for a snapshot field that may have been unavailable at the moment of the outcome. */
+function moneyOrUnknown(n: number | null): string {
+  return n === null ? "unknown" : money(n);
+}
+
+const OUTCOME_LABEL: Record<CallOutcomeKind, string> = {
+  accept: "Accepted",
+  follow_up: "Follow-Up scheduled",
+  pass: "Passed",
+};
 
 function Shell({ contactId, children }: { contactId: string; children: React.ReactNode }) {
   return (
@@ -312,6 +386,39 @@ export default function SellerCallWorkspace() {
      NEW above-Max value always re-prompts rather than inheriting a
      dismissal that applied to a different number. */
   const [warningDismissed, setWarningDismissed] = useState(false);
+
+  /* B8-10 / INV-53 — bounded call outcomes (Accept / Follow-Up / Pass).
+     `showOutcomeForm` is which action's confirm form is expanded, or
+     `null` for none -- only one at a time, never a hard block on
+     switching. `recordingOutcome` mirrors B8-08's `saveBusy`-style
+     pattern: the one action in flight, disabling the others while a
+     write is outstanding. Neither is persisted -- both reset on reload,
+     which is correct: they are draft/UI state for an action not yet
+     taken, not the outcome itself (the note is). */
+  const [showOutcomeForm, setShowOutcomeForm] = useState<CallOutcomeKind | null>(null);
+  const [recordingOutcome, setRecordingOutcome] = useState<CallOutcomeKind | null>(null);
+  const [outcomeActionError, setOutcomeActionError] = useState<string | null>(null);
+  const [followUpAtInput, setFollowUpAtInput] = useState("");
+  const [passReasonInput, setPassReasonInput] = useState("");
+
+  /* Contract Ready checklist, B8-10 / INV-53. SESSION-ONLY -- see the
+     module header's "Agreement Reached is not Under Contract" note.
+     Address and Agreed Price are not checkboxes here: both are already
+     known facts (the Contact's own address; the accepted price from the
+     outcome note itself) and are rendered as such, never re-asked. The
+     five items below are exactly `SELLER_ACQUISITION_WORKFLOW.md`'s own
+     remaining Contract Readiness list ("correct legal owners... closing
+     timeline, occupancy and possession, known liens and title
+     complications, delivery and signing information") -- nothing added,
+     nothing invented. */
+  const [contractChecklist, setContractChecklist] = useState<Record<string, boolean>>({});
+  const CONTRACT_CHECKLIST_ITEMS = [
+    { key: "legal_owners", label: "Correct legal owners confirmed" },
+    { key: "closing_timeline", label: "Closing timeline set" },
+    { key: "occupancy_possession", label: "Occupancy and possession confirmed" },
+    { key: "liens_title", label: "Known liens and title complications reviewed" },
+    { key: "delivery_signing", label: "Delivery and signing information collected" },
+  ] as const;
 
   useEffect(() => {
     if (!contactId) return;
@@ -589,6 +696,145 @@ export default function SellerCallWorkspace() {
     return computeNextBestQuestion(readiness, known, board8);
   }, [readiness, board8, screen]);
 
+  /* B8-10 / INV-53 — the most recent bounded call outcome for THIS
+     opportunity, read back through seller-call-outcome.ts's strict
+     parser from the SAME notes already fetched for the ARV ledger above.
+     Scoped to `screen.opportunity.id` for the same PB-D55 reason
+     `latestArvLedgerEntry` is. */
+  const latestOutcome = useMemo(() => {
+    if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    return latestOutcomeNoteForOpportunity(notes, screen.opportunity.id);
+  }, [notes, screen]);
+
+  /* Jess Re-Gate correction, 2026-09-06 -- RESUME MUST BE SCOPED TO THE
+     OPPORTUNITY, NOT THE CONTACT. The prior `contactId`-keyed guard had
+     two defects Jess Re-Gate found: (1) it could be marked "done" while
+     this contact's `screen.state` was still `awaiting_selection` (no
+     opportunity chosen yet on a multi-opportunity contact) -- once
+     marked, hydration was PERMANENTLY skipped for whatever opportunity
+     the operator picked afterward; (2) it never cleared Seller
+     Position/Current Offer on a genuine deal switch, so Deal A's
+     negotiation values could remain visible on Deal B. `currentDealId`
+     below is `screen.opportunity.id` when resolved, `null` while no
+     opportunity is selected yet -- the EXACT SAME identity `latestOutcome`
+     itself is already scoped to just above (PB-D55), so "the deal
+     showing on screen" and "the deal this hydration restores" can never
+     drift apart. `resolveResumeHydration` (imported, never reimplemented
+     here) is the ONE place the clear/restore decision is made -- pure,
+     independently unit-tested (`seller-call-resume.ts` /
+     `test-seller-call-resume.cjs`), because this decision spans multiple
+     renders and a source-text check alone cannot prove a multi-render
+     state machine behaves correctly. This effect only applies exactly
+     what that function's result names, in the order it names: clear,
+     then restore. */
+  const dealHydrationRef = useRef<DealHydrationRef>({ dealId: null, hydrated: false });
+  const currentDealId = (screen.state === "resolved" || screen.state === "unresolved") ? screen.opportunity.id : null;
+
+  useEffect(() => {
+    const decision = resolveResumeHydration({
+      prevRef: dealHydrationRef.current,
+      currentDealId,
+      loading,
+      latestOutcome: latestOutcome
+        ? { sellerPosition: latestOutcome.snapshot.sellerPosition, currentOffer: latestOutcome.snapshot.currentOffer }
+        : null,
+      sellerPositionInput,
+      currentOfferInput,
+    });
+    dealHydrationRef.current = decision.nextRef;
+
+    /* CLEAR before restoring -- every deal-specific negotiation value
+       reset together (the same atomic group `handleCancelAboveMax`
+       already clears for the same reason) BEFORE either `restore*`
+       field below is applied, so Deal A's Current Offer, Seller
+       Position, or above-Max override can never be read while Deal B is
+       what's on screen. `decision.clear` is `true` ONLY on the pass the
+       selected opportunity identity actually changed -- never on an
+       ordinary rerender of the SAME opportunity, so an operator's edit
+       to the CURRENT deal is never touched by it. */
+    if (decision.clear) {
+      setSellerPositionInput("");
+      setCurrentOfferInput("");
+      setNegotiationOverride(null);
+      setOverrideReasonDraft("");
+      setOverrideAcknowledged(false);
+      setOverrideActionError(null);
+      setWarningDismissed(false);
+    }
+    if (decision.restoreSellerPosition !== null) {
+      setSellerPositionInput(decision.restoreSellerPosition);
+    }
+    if (decision.restoreCurrentOffer !== null) {
+      setCurrentOfferInput(decision.restoreCurrentOffer);
+    }
+  }, [loading, currentDealId, latestOutcome]);
+
+  /* The facts a recorded outcome captures, taken verbatim from what this
+     page has already computed -- no recomputation, no second source. */
+  function buildOutcomeSnapshot(): OutcomeSnapshot {
+    return {
+      sellerPosition,
+      currentOffer,
+      targetAcquisitionPrice: board8 && board8.status === "calculated" && board8.target.status === "calculated" ? board8.target.targetAcquisitionPrice : null,
+      maxSupportedOffer: board8 && board8.status === "calculated" ? board8.maxSupportedOffer : null,
+      expectedSpread: expectedSpread && expectedSpread.status === "calculated" ? expectedSpread.expectedSpread : null,
+      arv: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.arv : null,
+      repairs: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.repairs : null,
+      readinessStatus: readiness ? readiness.effectiveStatus : "NOT_READY",
+    };
+  }
+
+  /* The ONLY write path on this page. `attemptRecordOutcome` (imported,
+     never reimplemented) validates and formats; this function performs
+     the write(s) -- `scheduleCallbackGated` (imported, unmodified) for
+     Follow-Up's callback+generic-note+attempt trio, plus this page's own
+     structured outcome note in every case, then `setLastCallAttempt`
+     directly for Accept/Pass (no callback to schedule). A successful
+     write is appended to local `notes` state immediately so
+     `latestOutcome` reflects it without a refetch -- safe because
+     `latestOutcomeNoteForOpportunity` sorts by the note's OWN embedded
+     timestamp, never by list position or `dateAdded`. */
+  async function handleRecordOutcome(kind: CallOutcomeKind) {
+    if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
+    const nowIso = new Date().toISOString();
+    const attempt = attemptRecordOutcome({
+      kind,
+      opportunityId: screen.opportunity.id,
+      operator: null,
+      at: nowIso,
+      snapshot: buildOutcomeSnapshot(),
+      reason: passReasonInput,
+      followUpAt: followUpAtInput,
+    });
+    if (!attempt.ok) {
+      setOutcomeActionError(attempt.error);
+      return;
+    }
+    setOutcomeActionError(null);
+    setRecordingOutcome(kind);
+    try {
+      if (kind === "follow_up") {
+        const cb = await scheduleCallbackGated(ghl, contactId, new Date(followUpAtInput).toISOString());
+        if (!cb.ok) {
+          setOutcomeActionError(cb.error);
+          return;
+        }
+        await ghl.notes.create(contactId, attempt.note);
+      } else {
+        await ghl.notes.create(contactId, attempt.note);
+        await ghl.contacts.setLastCallAttempt(contactId, nowIso);
+      }
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attempt.note, dateAdded: nowIso }]);
+      setShowOutcomeForm(null);
+      setFollowUpAtInput("");
+      setPassReasonInput("");
+    } catch (e: any) {
+      setOutcomeActionError(e?.message ?? "Couldn't record this outcome.");
+    } finally {
+      setRecordingOutcome(null);
+    }
+  }
+
   /* B7-02 — the subject address, from the SAME four native fields the
      identity header above already renders through formatAddress. null
      when incomplete, which disables Get Comps rather than handing
@@ -637,12 +883,42 @@ export default function SellerCallWorkspace() {
 
       {/* Call context. No call-session carrier exists (see module header):
           this is a one-line framing derived from what is already known,
-          not a persisted "call state." */}
+          not a persisted "call state." B8-10 / INV-53: when a prior
+          bounded outcome exists, "what was last discussed" resumes from
+          it directly -- the note's own recorded snapshot, never
+          recomputed. */}
       {!loading && fetchError === null ? (
-        <div style={{ fontSize: "12px", color: "#64748B", margin: "10px 0 18px" }}>
-          {hasKnownFacts
-            ? "Resuming — deal facts already on file for this contact."
-            : "Starting fresh — no deal facts on file for this contact yet."}
+        <div style={{ fontSize: "12px", color: "#64748B", margin: "10px 0 4px" }} data-testid="seller-call-resume-context">
+          {latestOutcome
+            ? `Resuming — last discussed: ${OUTCOME_LABEL[latestOutcome.kind]} on ${new Date(latestOutcome.at).toLocaleString()}. `
+              + `At that time — Seller Position: ${moneyOrUnknown(latestOutcome.snapshot.sellerPosition)}, `
+              + `Current Offer: ${moneyOrUnknown(latestOutcome.snapshot.currentOffer)}, `
+              + `Target: ${moneyOrUnknown(latestOutcome.snapshot.targetAcquisitionPrice)}, `
+              + `Max: ${moneyOrUnknown(latestOutcome.snapshot.maxSupportedOffer)}, `
+              + `Spread: ${moneyOrUnknown(latestOutcome.snapshot.expectedSpread)}, `
+              + `Offer Readiness: ${latestOutcome.snapshot.readinessStatus.replace("_", " ")}.`
+              + (latestOutcome.kind === "follow_up" && latestOutcome.followUpAt ? ` Follow-up set for ${new Date(latestOutcome.followUpAt).toLocaleString()}.` : "")
+              + (latestOutcome.kind === "pass" && latestOutcome.reason ? ` Reason: ${latestOutcome.reason}` : "")
+            : hasKnownFacts
+              ? "Resuming — deal facts already on file for this contact."
+              : "Starting fresh — no deal facts on file for this contact yet."}
+        </div>
+      ) : null}
+
+      {!loading && fetchError === null ? (
+        <div style={{ fontSize: "12px", color: "#94A3B8", margin: "0 0 18px" }} data-testid="seller-call-next-objective">
+          <strong>Next objective:</strong>{" "}
+          {latestOutcome?.kind === "accept"
+            ? "Move this deal to Contract Ready — see the checklist below."
+            : latestOutcome?.kind === "follow_up" && latestOutcome.followUpAt
+              ? `Follow up by ${new Date(latestOutcome.followUpAt).toLocaleString()}.`
+              : latestOutcome?.kind === "pass"
+                ? "Reconsider on new information, or close out."
+                : nextBestQuestion === null
+                  ? "Underwriting must resolve before an objective can be set."
+                  : nextBestQuestion.kind === "offer_ready"
+                    ? "Offer Ready — move to presenting the offer."
+                    : nextBestQuestion.question}
         </div>
       ) : null}
 
@@ -726,6 +1002,55 @@ export default function SellerCallWorkspace() {
             <DealBar cells={dealBarCells} />
             {readiness ? <ReadinessBadge readiness={readiness} /> : null}
           </div>
+
+          {/* B8-10 / INV-53 — Agreement Reached + Contract Ready handoff.
+              A SEPARATE surface from ReadinessBadge above, never replacing
+              it -- Offer Ready and Contract Ready are two different
+              gates, and Agreement Reached is not Under Contract (that
+              verification belongs to Board #9). Shown only when the
+              latest recorded outcome is `accept`; the checklist itself
+              blocks nothing and is session-only (see module header). */}
+          {latestOutcome?.kind === "accept" ? (
+            <div
+              data-testid="agreement-reached-banner"
+              style={{
+                marginBottom: "16px", padding: "16px 18px", borderRadius: "10px",
+                background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.35)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+                <ShieldCheck size={16} style={{ color: "#22C55E" }} />
+                <span style={{ fontSize: "13px", fontWeight: 700, color: "#22C55E", letterSpacing: "0.02em" }}>
+                  AGREEMENT REACHED
+                </span>
+                <span style={{ fontSize: "11px", color: "#94A3B8" }}>
+                  at {moneyOrUnknown(latestOutcome.snapshot.currentOffer)}, {new Date(latestOutcome.at).toLocaleString()} — not yet Under Contract
+                </span>
+              </div>
+
+              <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "8px" }}>
+                Contract Ready checklist (Board #9 completes the transaction; this is a handoff, not contract software)
+              </div>
+              <div style={{ fontSize: "12px", color: "#E2E8F0", lineHeight: 1.9 }} data-testid="contract-ready-checklist">
+                <div>✓ Agreed price: {moneyOrUnknown(latestOutcome.snapshot.currentOffer)} (from the Agreement Reached record)</div>
+                <div>✓ Property address: {formatAddress(contact)}</div>
+                {CONTRACT_CHECKLIST_ITEMS.map((item) => (
+                  <label key={item.key} style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      data-testid={`contract-ready-item-${item.key}`}
+                      checked={contractChecklist[item.key] ?? false}
+                      onChange={(e) => setContractChecklist((prev) => ({ ...prev, [item.key]: e.target.checked }))}
+                    />
+                    {item.label}
+                  </label>
+                ))}
+              </div>
+              <div style={{ fontSize: "10px", color: "#475569", marginTop: "8px" }}>
+                Checklist progress is session-only and does not persist across reloads; the agreement itself (price, timestamp) resumes durably via the note above.
+              </div>
+            </div>
+          ) : null}
 
           {screen.state === "unresolved" ? (
             <Notice
@@ -913,6 +1238,148 @@ export default function SellerCallWorkspace() {
                   )}
                 </div>
               )
+            ) : null}
+          </div>
+
+          {/* B8-10 / INV-53 — bounded call outcomes. Accept, Follow-Up,
+              and Pass are docs/SELLER_ACQUISITION_WORKFLOW.md's own three
+              words, never a new call-status universe -- see the module
+              header for the exact write boundary (notes.create,
+              scheduleCallbackGated, setLastCallAttempt only; never a
+              Board 4 disposition field). */}
+          <div
+            data-testid="call-outcome-panel"
+            style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px", marginTop: "8px" }}
+          >
+            <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Record Call Outcome</div>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button
+                data-testid="call-outcome-accept-toggle"
+                onClick={() => setShowOutcomeForm(showOutcomeForm === "accept" ? null : "accept")}
+                disabled={recordingOutcome !== null}
+                title={
+                  currentOffer === null
+                    ? "Enter a Current Offer above before recording acceptance"
+                    : readiness?.effectiveStatus !== "OFFER_READY"
+                      ? "This deal is not yet Offer Ready"
+                      : undefined
+                }
+                style={{ ...COMPACT_BUTTON_STYLE, borderColor: "rgba(34,197,94,0.4)", color: "#22C55E", background: "rgba(34,197,94,0.08)" }}
+              >
+                Accept
+              </button>
+              <button
+                data-testid="call-outcome-follow-up-toggle"
+                onClick={() => setShowOutcomeForm(showOutcomeForm === "follow_up" ? null : "follow_up")}
+                disabled={recordingOutcome !== null}
+                style={COMPACT_BUTTON_STYLE}
+              >
+                Follow-Up
+              </button>
+              <button
+                data-testid="call-outcome-pass-toggle"
+                onClick={() => setShowOutcomeForm(showOutcomeForm === "pass" ? null : "pass")}
+                disabled={recordingOutcome !== null}
+                style={{ ...COMPACT_BUTTON_STYLE, borderColor: "rgba(239,68,68,0.35)", color: "#EF4444", background: "rgba(239,68,68,0.08)" }}
+              >
+                Pass
+              </button>
+            </div>
+
+            {showOutcomeForm === "accept" ? (
+              <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+                {currentOffer === null ? (
+                  <div style={{ fontSize: "12px", color: "#F59E0B" }}>
+                    Enter a Current Offer in the Negotiation panel above before recording acceptance.
+                  </div>
+                ) : readiness?.effectiveStatus !== "OFFER_READY" ? (
+                  /* Jess Gate correction, 2026-09-06 -- ACCEPT MUST NOT BYPASS
+                     OFFER READINESS. A Current Offer alone used to be
+                     sufficient here, which let NOT_READY/REVIEW_NEEDED
+                     economics become "Agreement Reached" and expose
+                     Contract Ready. `readiness.effectiveStatus` (never the
+                     raw `readiness.status`) is the one gate: it stays
+                     exactly `status` unless a legitimate human OVERRIDDEN
+                     action elevated it (offer-readiness.ts's own rule),
+                     so a real override still unlocks Accept -- this only
+                     blocks NOT_READY/REVIEW_NEEDED that were never
+                     overridden. Follow-Up and Pass are UNCHANGED by this
+                     gate -- neither reads `readiness` at all. */
+                  <div data-testid="call-outcome-accept-not-ready" style={{ fontSize: "12px", color: "#F59E0B" }}>
+                    This deal is not yet Offer Ready -- acceptance is unavailable until Offer Readiness reaches OFFER_READY.
+                  </div>
+                ) : (
+                  <div style={{ fontSize: "12px", color: "#94A3B8", marginBottom: "8px" }}>
+                    Records the seller's acceptance of the current Current Offer ({money(currentOffer)}).
+                  </div>
+                )}
+                <button
+                  data-testid="call-outcome-accept-confirm"
+                  onClick={() => void handleRecordOutcome("accept")}
+                  disabled={recordingOutcome !== null || currentOffer === null || readiness?.effectiveStatus !== "OFFER_READY"}
+                  style={{
+                    ...COMPACT_BUTTON_STYLE, borderColor: "rgba(34,197,94,0.4)", color: "#22C55E", background: "rgba(34,197,94,0.08)",
+                    opacity: currentOffer === null || readiness?.effectiveStatus !== "OFFER_READY" ? 0.45 : 1,
+                    cursor: recordingOutcome !== null || currentOffer === null || readiness?.effectiveStatus !== "OFFER_READY" ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {recordingOutcome === "accept" ? <Loader2 size={12} className="animate-spin" /> : null} Confirm Accept
+                </button>
+              </div>
+            ) : null}
+
+            {showOutcomeForm === "follow_up" ? (
+              <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", flexDirection: "column", gap: "8px", maxWidth: "320px" }}>
+                <label style={{ fontSize: "12px", color: "#94A3B8" }}>
+                  Follow-up date/time
+                  <input
+                    type="datetime-local"
+                    data-testid="call-outcome-follow-up-at"
+                    value={followUpAtInput}
+                    onChange={(e) => setFollowUpAtInput(e.target.value)}
+                    style={{ display: "block", marginTop: "4px", background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px", padding: "8px 10px", color: "#E2E8F0", fontSize: "13px" }}
+                  />
+                </label>
+                <button
+                  data-testid="call-outcome-follow-up-confirm"
+                  onClick={() => void handleRecordOutcome("follow_up")}
+                  disabled={recordingOutcome !== null || followUpAtInput.trim() === ""}
+                  style={{
+                    ...COMPACT_BUTTON_STYLE, alignSelf: "flex-start",
+                    opacity: followUpAtInput.trim() === "" ? 0.45 : 1, cursor: recordingOutcome !== null || followUpAtInput.trim() === "" ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {recordingOutcome === "follow_up" ? <Loader2 size={12} className="animate-spin" /> : null} Confirm Follow-Up
+                </button>
+              </div>
+            ) : null}
+
+            {showOutcomeForm === "pass" ? (
+              <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", flexDirection: "column", gap: "8px" }}>
+                <textarea
+                  data-testid="call-outcome-pass-reason"
+                  value={passReasonInput}
+                  onChange={(e) => setPassReasonInput(e.target.value)}
+                  placeholder="Reason for passing (required)"
+                  rows={2}
+                  style={{ background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px", padding: "8px 10px", color: "#E2E8F0", fontSize: "12px", resize: "vertical" }}
+                />
+                <button
+                  data-testid="call-outcome-pass-confirm"
+                  onClick={() => void handleRecordOutcome("pass")}
+                  disabled={recordingOutcome !== null || passReasonInput.trim() === ""}
+                  style={{
+                    ...COMPACT_BUTTON_STYLE, alignSelf: "flex-start", borderColor: "rgba(239,68,68,0.45)", color: "#EF4444", background: "rgba(239,68,68,0.1)",
+                    opacity: passReasonInput.trim() === "" ? 0.45 : 1, cursor: recordingOutcome !== null || passReasonInput.trim() === "" ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {recordingOutcome === "pass" ? <Loader2 size={12} className="animate-spin" /> : null} Confirm Pass
+                </button>
+              </div>
+            ) : null}
+
+            {outcomeActionError ? (
+              <div data-testid="call-outcome-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{outcomeActionError}</div>
             ) : null}
           </div>
 
