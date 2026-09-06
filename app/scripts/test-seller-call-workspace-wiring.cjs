@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 64;
+const FLOOR = 104;
 let failures = 0;
 let checks = 0;
 
@@ -42,6 +42,8 @@ const appTsx = readSrc('src/App.tsx');
 const contactWorkspaceTsx = readSrc('src/pages/ContactWorkspace.tsx');
 const dashboardTsx = readSrc('src/pages/Dashboard.tsx');
 const sellerCallTsx = readSrc('src/pages/SellerCallWorkspace.tsx');
+/** Block comments stripped -- for checks that must not false-positive on this page's own extensive doc comments discussing the very code patterns they check for (e.g. `humanAction:` appearing in prose). */
+const sellerCallTsxNoComments = sellerCallTsx.replace(/\/\*[\s\S]*?\*\//g, '');
 const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 
 // ============================================================
@@ -165,8 +167,11 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 
 // ============================================================
 // No Production mutation / no invented carrier / no write capability:
-// this page contains no writer, no PUT-capable GHL call, and no local
-// input for Current Offer or Seller Position.
+// this page contains no writer and no PUT-capable GHL call. B8-08 /
+// INV-51 now DOES define local editable session state for Current Offer
+// and Seller Position (superseding the pre-INV-51 "no local input"
+// check this file used to assert) -- proven safe below by confirming
+// neither is GHL-backed and neither defaults to anything but empty.
 // ============================================================
 {
   const forbidden = ['.notes.create', 'setApprovedArv', 'setEstimatedRepairs', 'saveUnderwritingFields', 'setAskingPrice', 'setLastCallAttempt', 'setCallbackDatetime'];
@@ -178,17 +183,145 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
     policy: sellerCallTsx.indexOf('ghl.underwriting.policy') !== -1,
     notesList: sellerCallTsx.indexOf('ghl.notes.list') !== -1,
   }, { getDetail: true, listPipeline: true, policy: true, notesList: true });
-  check('page defines no local editable state for Current Offer or Seller Position', /useState[^;]*[Cc]urrentOffer|useState[^;]*[Ss]ellerPosition/.test(sellerCallTsx), false);
+}
+
+// ============================================================
+// B8-08 / INV-51: Current Offer and Seller Position are operator-entered
+// session state -- IAOS invents/defaults neither, and neither is a GHL
+// carrier.
+// ============================================================
+{
+  check('sellerPositionInput state is initialized empty, never from a GHL/derived value', /const \[sellerPositionInput, setSellerPositionInput\] = useState\(""\)/.test(sellerCallTsx), true);
+  check('currentOfferInput state is initialized empty, never from a GHL/derived value -- IAOS invents no opening offer', /const \[currentOfferInput, setCurrentOfferInput\] = useState\(""\)/.test(sellerCallTsx), true);
+  check('setSellerPositionInput is called ONLY from its own input onChange (exactly one call site)', (sellerCallTsx.match(/setSellerPositionInput\(/g) || []).length, 1);
+  check('setCurrentOfferInput is called ONLY from its own input onChange and Cancel (never a derived/computed value)', (sellerCallTsx.match(/setCurrentOfferInput\(/g) || []).length, 2);
+  check('every setCurrentOfferInput call site sets it from the raw input event or to "" (Cancel), never a number expression', !/setCurrentOfferInput\([^)"]*\.(target|value)[^)]*\+|setCurrentOfferInput\(\s*\d/.test(sellerCallTsx), true);
+  check('Seller Position input carries the negotiation-panel testid', /data-testid="negotiation-seller-position-input"/.test(sellerCallTsx), true);
+  check('Current Offer input carries the negotiation-panel testid', /data-testid="negotiation-current-offer-input"/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// Jess Gate, 2026-09-06, item 1: no fabricated operator identity anywhere
+// on this page. `attemptOverride` must be called with `operator: null`
+// (this codebase has no authenticated-operator concept at all), never a
+// hardcoded person's name.
+// ============================================================
+{
+  check('page never hardcodes "Brad Thompson" (or any other specific name) as the negotiation override operator', /Brad Thompson/.test(sellerCallTsx), false);
+  check('page passes operator: null to attemptOverride -- no fabricated identity', /attemptOverride\(\{[\s\S]{0,200}operator:\s*null/.test(sellerCallTsx), true);
+  check('the acknowledged-override banner renders a truthful fallback when operator is null, never blank or a guessed name', /negotiationOverride!\.operator\s*\?\?\s*"an unidentified session actor/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// Jess Gate, 2026-09-06, item 2: Seller Position and Current Offer reject
+// negative/zero/malformed/NaN/infinite values before they reach
+// economics, distinguish empty from invalid with truthful feedback, and
+// preserve formatted positive entry.
+// ============================================================
+{
+  check('page imports parseAcquisitionPriceInput from seller-call-negotiation (validation is not reimplemented on the page)', /parseAcquisitionPriceInput/.test(sellerCallTsx) && /from "\.\.\/lib\/seller-call-negotiation"/.test(sellerCallTsx), true);
+  check('page no longer defines its own parseMoneyInput (the pre-Jess-Gate parser that let zero/negative through)', /function parseMoneyInput/.test(sellerCallTsx), false);
+  check('sellerPosition is null for both empty AND invalid input -- never a non-positive/NaN/infinite value reaches buildDealBarCells', /const sellerPosition = sellerPositionParsed\.kind === "value" \? sellerPositionParsed\.value : null/.test(sellerCallTsx), true);
+  check('currentOffer is null for both empty AND invalid input -- never a non-positive/NaN/infinite value reaches computeNegotiationPosition or computeExpectedSpread', /const currentOffer = currentOfferParsed\.kind === "value" \? currentOfferParsed\.value : null/.test(sellerCallTsx), true);
+  check('page renders DISTINCT truthful feedback for an invalid Seller Position (not merely "not yet entered")', /data-testid="negotiation-seller-position-error"[\s\S]{0,80}sellerPositionParsed\.reason|sellerPositionParsed\.reason[\s\S]{0,80}data-testid="negotiation-seller-position-error"/.test(sellerCallTsx), true);
+  check('page renders DISTINCT truthful feedback for an invalid Current Offer (not merely "not yet entered")', /data-testid="negotiation-current-offer-error"[\s\S]{0,80}currentOfferParsed\.reason|currentOfferParsed\.reason[\s\S]{0,80}data-testid="negotiation-current-offer-error"/.test(sellerCallTsx), true);
+  check('the invalid-feedback message renders ONLY when kind is "invalid", never for "empty" (the two are visibly distinguished)', /sellerPositionParsed\.kind === "invalid"/.test(sellerCallTsx) && /currentOfferParsed\.kind === "invalid"/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// Jess Gate, 2026-09-06, item 3: the stale header claiming INV-51
+// negotiation remains out of scope must be corrected.
+// ============================================================
+{
+  check('page header no longer claims Negotiation (INV-51) remains out of scope (that work is THIS page)', /Negotiation \(INV-51\)[\s\S]{0,40}remain out\s*\n?\s*\* of scope/.test(sellerCallTsx), false);
+  check('page header now describes B8-08 / INV-51 as implemented on this page, not deferred', /B8-08.{0,40}INV-51/.test(sellerCallTsx), true);
+  check('page header still correctly names the standalone calculator (INV-52) as the one remaining out-of-scope item', /standalone calculator \(INV-52\)/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// B8-08 / INV-51: Expected Spread now receives the REAL Current Offer,
+// not a hardcoded null -- the exact line the pre-INV-51 comment predicted
+// would change.
+// ============================================================
+{
+  check('page passes the real currentOffer into computeExpectedSpread\'s referencePrice', /referencePrice:\s*currentOffer\s*\}/.test(sellerCallTsx), true);
+  check('page never hardcodes referencePrice to null anymore (that was the pre-INV-51 waiting state)', /referencePrice:\s*null\s*\}/.test(sellerCallTsx), false);
+}
+
+// ============================================================
+// B8-08 / INV-51: Target/Max/Spread are consumed from board8, never
+// recomputed by the negotiation feature. No second Max Supported Offer
+// or Target Acquisition Price formula anywhere on this page.
+// ============================================================
+{
+  check('page imports computeNegotiationPosition/attemptOverride/isOverrideCurrent/requiresOverrideDecision from seller-call-negotiation', /from "\.\.\/lib\/seller-call-negotiation"/.test(sellerCallTsx), true);
+  check('page does not declare its own computeNegotiationPosition', /\b(function|const)\s+computeNegotiationPosition\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
+  check('page does not declare its own attemptOverride', /\b(function|const)\s+attemptOverride\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
+  check('page still never reimplements the 25%/$5,000 Target/Max formula (negotiation feature added no new occurrence)', /[*]\s*0\.25|0\.25\s*[*]/.test(sellerCallTsx), false);
+  check('negotiation position is derived from board8.maxSupportedOffer via computeNegotiationPosition, not a second Max calculation', /computeNegotiationPosition\(\{\s*currentOffer,\s*board8\s*\}\)/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// B8-08 / INV-51: the above-Max override is a DIFFERENT concept from
+// offer-readiness.ts's HumanAction -- `readiness`'s own humanAction must
+// remain exactly `{ kind: "none" }`, unchanged, and the negotiation
+// override must never be threaded into buildOfferReadinessInputs.
+// ============================================================
+{
+  // humanAction is hardcoded inside seller-call-readiness-inputs.ts
+  // itself (not the page) -- the correct proof is that the PAGE never
+  // overrides it with a competing assignment of its own.
+  check('page never assigns readiness.humanAction itself (stays whatever buildOfferReadinessInputs already hardcodes)', /humanAction:/.test(sellerCallTsxNoComments), false);
+  const readinessInputsSrc = fs.readFileSync(path.join(APP, 'src/lib/seller-call-readiness-inputs.ts'), 'utf8');
+  check('seller-call-readiness-inputs.ts still hardcodes humanAction to none, unchanged by the negotiation feature', /humanAction:\s*\{\s*kind:\s*"none"\s*\}/.test(readinessInputsSrc), true);
+  check('NegotiationOverride is never passed into buildOfferReadinessInputs (a distinct concept from Offer Readiness evidence)', /buildOfferReadinessInputs\(\{[\s\S]{0,400}negotiationOverride/.test(sellerCallTsx), false);
+}
+
+// ============================================================
+// B8-08 / INV-51: the four bounded actions exist, are correctly gated,
+// and Keep Negotiating / Review Assumptions / Cancel touch no economics
+// state (board8, readiness, expectedSpread setters do not exist to call --
+// proven structurally by confirming none of the three handlers calls any
+// board8/readiness-mutating function, since none exists on this page at
+// all: board8/readiness/expectedSpread are useMemo-derived, never
+// setState-backed).
+// ============================================================
+{
+  check('page renders the Keep Negotiating action', /data-testid="negotiation-action-keep-negotiating"/.test(sellerCallTsx), true);
+  check('page renders the Review Assumptions action, linking to the existing Underwriting surface', /data-testid="negotiation-action-review-assumptions"[\s\S]{0,120}to=\{`\/contacts\/\$\{contactId\}\/underwriting`\}|to=\{`\/contacts\/\$\{contactId\}\/underwriting`\}[\s\S]{0,200}data-testid="negotiation-action-review-assumptions"/.test(sellerCallTsx), true);
+  check('page renders the Cancel action', /data-testid="negotiation-action-cancel"/.test(sellerCallTsx), true);
+  check('page renders the Override & Continue action', /data-testid="negotiation-action-override-continue"/.test(sellerCallTsx), true);
+  check('Override & Continue is disabled unless BOTH acknowledged AND a non-empty reason are present', /disabled=\{!overrideAcknowledged \|\| overrideReasonDraft\.trim\(\) === ""\}/.test(sellerCallTsx), true);
+  check('page renders an explicit acknowledgement checkbox before Override & Continue can be used', /data-testid="negotiation-override-acknowledge-checkbox"/.test(sellerCallTsx), true);
+  check('page renders a reason input required before Override & Continue can be used', /data-testid="negotiation-override-reason-input"/.test(sellerCallTsx), true);
+  check('handleKeepNegotiating only sets warningDismissed -- touches no board8/readiness/expectedSpread state (none exists to touch: all three are useMemo, not useState)', /function handleKeepNegotiating\(\) \{\s*setWarningDismissed\(true\);\s*\}/.test(sellerCallTsx), true);
+  check('handleCancelAboveMax touches no economics figure -- only clears negotiation input/draft/override state', /function handleCancelAboveMax\(\) \{[\s\S]{0,400}\n  \}/.test(sellerCallTsx) && !/function handleCancelAboveMax\(\)[\s\S]{0,400}set(Board8|Readiness|ExpectedSpread)/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// B8-08 / INV-51: no hard block on entering an above-Max Current Offer
+// (the input is never disabled), and no autonomous/hidden progression
+// (an above-Max position always renders SOME visible state -- warning,
+// dismissed-but-named, or acknowledged -- never nothing).
+// ============================================================
+{
+  const negotiationInputBlock = sellerCallTsx.slice(sellerCallTsx.indexOf('data-testid="negotiation-current-offer-input"'), sellerCallTsx.indexOf('data-testid="negotiation-current-offer-input"') + 400);
+  check('the Current Offer input itself is never disabled (no hard block on typing an above-Max value)', /disabled/.test(negotiationInputBlock), false);
+  check('a dismissed above-Max warning still names the exact amount above Max (never fully silent)', /Still \{money\(negotiationPosition\.amountAboveMax\)\} above Max/.test(sellerCallTsx), true);
+  check('an acknowledged override still names the amount that was above Max (never silently hidden once granted)', /Overridden — proceeding \{money\(negotiationOverride!\.amountAboveMaxAtOverride\)\} above Max/.test(sellerCallTsx), true);
 }
 
 // ============================================================
 // Validation item 6/7 wiring: Expected Spread is computed with the
-// explicit "current_offer" reference kind, and its reference price is
-// never defaulted to anything but null (no invented carrier/value).
+// explicit "current_offer" reference kind. B8-08 / INV-51 superseded the
+// pre-INV-51 "referencePrice is always null" behavior this block used to
+// assert -- that proof now lives in the dedicated INV-51 checks above
+// ("page passes the real currentOffer..." / "page never hardcodes
+// referencePrice to null anymore"), which also confirm no invented value
+// (referencePrice is fed from operator-entered state, not a literal).
 // ============================================================
 {
   check('page computes Expected Spread with referenceKind "current_offer"', /referenceKind:\s*"current_offer"/.test(sellerCallTsx), true);
-  check('page never supplies a non-null referencePrice (no invented Current Offer value)', /referencePrice:\s*null/.test(sellerCallTsx), true);
 }
 
 // ============================================================

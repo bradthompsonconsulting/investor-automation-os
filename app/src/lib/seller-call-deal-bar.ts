@@ -1,5 +1,6 @@
 /**
- * Seller Call Workspace -- persistent deal bar. B8-05 / INV-48.
+ * Seller Call Workspace -- persistent deal bar. B8-05 / INV-48, extended
+ * by B8-08 / INV-51.
  *
  * Pure. No I/O, no React, no GHL, no fetch. Extracted from the page
  * component for the same reason `rail.ts` and `view-model.ts` were: a
@@ -16,24 +17,34 @@
  *
  *     ARV | Repairs | Seller Position | Current Offer | Target | Max | Spread
  *
- * SELLER POSITION AND CURRENT OFFER ALWAYS WAIT. Per B8-02's inventory,
- * neither has an authoritative carrier, and INV-48 is explicit: do not
- * invent one, and do not invent a fake or ephemeral stand-in value either
- * -- "preserve honest waiting/unknown behavior until their later
- * authorized implementation." These two cells are therefore hardcoded to
- * a waiting state regardless of any other input. When a future issue
- * authorizes a carrier for either, this is the one place that changes.
+ * SELLER POSITION AND CURRENT OFFER, B8-08 / INV-51. B8-02's inventory
+ * found neither had an authoritative GHL carrier, and INV-48 built this
+ * bar before either was authorized -- both cells were hardcoded to a
+ * waiting state regardless of input, per that issue's own explicit
+ * "preserve honest waiting/unknown behavior until their later authorized
+ * implementation." INV-51 is that later authorization: it names
+ * operator-controlled Current Offer and Seller Position as required
+ * experience, as OPERATOR-ENTERED SESSION STATE, never a GHL carrier
+ * (B8-11/INV-54 owns durable persistence; this module still creates
+ * none). `input.sellerPosition` and `input.currentOffer` are therefore
+ * `number | null` exactly like `input.arv`/`input.repairs` above --
+ * `null` renders the SAME waiting text as before (still copied VERBATIM
+ * from `rail.ts`'s own waiting-state strings, so an operator who has seen
+ * the Contact Workspace rail before either was wired recognizes it was
+ * the same wait, not a paraphrase), and a non-null value renders exactly
+ * like any other known fact cell -- no new formatting rule, reusing
+ * `factCell` verbatim.
  *
- * The waiting text for both is copied VERBATIM from `rail.ts`'s own
- * waiting-state strings for the same two negotiation-state concepts
- * (`Current Seller Position` and `Current Investor Offer`), so an
- * operator who has seen the Contact Workspace rail recognizes the same
- * words here rather than a paraphrase that might imply a different cause.
- *
- * SPREAD IS Expected Spread @ Current Offer, EXPLICITLY. Because Current
- * Offer always waits in this build, Spread always waits too -- but the
+ * SPREAD IS Expected Spread @ Current Offer, EXPLICITLY. This module
+ * still performs no spread arithmetic of its own -- it renders whatever
+ * `ExpectedSpread` the caller computed via `computeExpectedSpread`. Before
+ * INV-51, the caller always passed `referencePrice: null` (Current Offer
+ * had no carrier), so Spread always waited; now that Current Offer is
+ * real operator input, the caller passes it through and Spread resolves
+ * automatically, exactly as this module's prior header predicted: "the
  * label always names its reference price by name, so the moment Current
- * Offer resolves, Spread resolves with it without this module changing.
+ * Offer resolves, Spread resolves with it without this module changing."
+ * Confirmed true -- this module's Spread-rendering code is unchanged.
  */
 
 import type { Board8Economics, ExpectedSpread } from "./underwriting/board8-economics";
@@ -48,7 +59,11 @@ export type DealBarCell = {
   value: DealBarCellValue;
 };
 
-/** Verbatim from `rail.ts`'s existing waiting strings for the same concepts. */
+/**
+ * Verbatim from `rail.ts`'s existing waiting strings for the same
+ * concepts. Still used, now conditionally: only when the caller has not
+ * yet entered a value (see the module header's B8-08/INV-51 note).
+ */
 const SELLER_POSITION_WAITING = "WAITING on negotiation carrier";
 const CURRENT_OFFER_WAITING = "WAITING on negotiation semantics / carrier contract";
 
@@ -70,6 +85,10 @@ function factCell(key: string, label: string, value: number | null, waitingText:
 export type DealBarInput = {
   arv: number | null;
   repairs: number | null;
+  /** B8-08 / INV-51: operator-entered session state, never a GHL carrier. `null` until a human types a value -- IAOS invents neither. */
+  sellerPosition: number | null;
+  /** B8-08 / INV-51: operator-entered session state, never a GHL carrier. `null` until a human types a value -- IAOS invents no opening offer. */
+  currentOffer: number | null;
   /** B8-03's own output. Null only before an opportunity is selected. */
   board8: Board8Economics | null;
   /** B8-03's own output, computed with referenceKind "current_offer". Null only before an opportunity is selected. */
@@ -113,8 +132,8 @@ export function buildDealBarCells(input: DealBarInput): DealBarCell[] {
   return [
     factCell("arv", "ARV", input.arv, "Not yet established"),
     factCell("repairs", "Repairs", input.repairs, "Not yet established"),
-    { key: "seller_position", label: "Seller Position", value: { kind: "waiting", text: SELLER_POSITION_WAITING } },
-    { key: "current_offer", label: "Current Offer", value: { kind: "waiting", text: CURRENT_OFFER_WAITING } },
+    factCell("seller_position", "Seller Position", input.sellerPosition, SELLER_POSITION_WAITING),
+    factCell("current_offer", "Current Offer", input.currentOffer, CURRENT_OFFER_WAITING),
     { key: "target", label: "Target", value: target },
     { key: "max", label: "Max", value: max },
     { key: "spread", label: "Spread", value: spread },
