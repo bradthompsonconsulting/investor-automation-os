@@ -22,7 +22,10 @@
     "test:next-best-question": "node scripts/test-next-best-question.cjs",
     "test:seller-call-readiness-inputs": "node scripts/test-seller-call-readiness-inputs.cjs",
     "test:arv-approval-note": "node scripts/test-arv-approval-note.cjs",
-    "test:seller-call-negotiation": "node scripts/test-seller-call-negotiation.cjs"
+    "test:seller-call-negotiation": "node scripts/test-seller-call-negotiation.cjs",
+    "test:deal-calculator-inputs": "node scripts/test-deal-calculator-inputs.cjs",
+    "test:deal-calculator-bar": "node scripts/test-deal-calculator-bar.cjs",
+    "test:deal-calculator-wiring": "node scripts/test-deal-calculator-wiring.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",

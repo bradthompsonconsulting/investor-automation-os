@@ -15,6 +15,7 @@ import {
 
 const NAV = [
   { label: "Dashboard",     to: "/dashboard",     icon: LayoutDashboard },
+  { label: "Deal Calculator", to: "/deal-calculator", icon: Calculator  },
   { label: "Contacts",      to: "/contacts",       icon: Users           },
   { label: "Conversations", to: "/conversations",  icon: MessageSquare   },
   { label: "Calendars",     to: "/calendars",      icon: CalendarDays    },
