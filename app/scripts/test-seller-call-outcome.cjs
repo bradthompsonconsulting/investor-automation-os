@@ -61,7 +61,7 @@ const compiledNoComments = execSync(
 fs.rmSync(TMP + '-nocomments', { recursive: true, force: true });
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 51;
+const FLOOR = 54;
 let failures = 0;
 let checks = 0;
 
@@ -206,22 +206,48 @@ function fullSnapshot(over) {
 
 // ============================================================
 // attemptRecordOutcome: fails closed on every precondition per outcome
-// kind -- accept needs a Current Offer, follow_up needs a valid
-// date/time, pass needs a non-empty reason.
+// kind -- accept needs a Current Offer AND Offer Readiness at
+// OFFER_READY, follow_up needs a valid date/time, pass needs a
+// non-empty reason.
 // ============================================================
 {
   const acceptNoOffer = attemptRecordOutcome({
     kind: 'accept', opportunityId: 'opp-1', operator: null, at: '2026-09-06T15:00:00.000Z',
-    snapshot: fullSnapshot({ currentOffer: null }), reason: '', followUpAt: '',
+    snapshot: fullSnapshot({ currentOffer: null, readinessStatus: 'OFFER_READY' }), reason: '', followUpAt: '',
   });
   check('accept fails closed with no Current Offer entered', acceptNoOffer.ok, false);
   check('the accept-no-offer rejection names Current Offer specifically', acceptNoOffer.error.toLowerCase().indexOf('current offer') >= 0, true);
 
+  // Jess Gate correction, 2026-09-06: Accept must never let NOT_READY or
+  // REVIEW_NEEDED economics become "Agreement Reached" on a Current Offer
+  // alone -- `readinessStatus` here stands in for the caller's own
+  // resolved `ReadinessResult.effectiveStatus` (see
+  // SellerCallWorkspace.tsx's `buildOutcomeSnapshot`); this module trusts
+  // it verbatim rather than recomputing readiness itself.
+  const acceptNotReady = attemptRecordOutcome({
+    kind: 'accept', opportunityId: 'opp-1', operator: null, at: '2026-09-06T15:00:00.000Z',
+    snapshot: fullSnapshot({ readinessStatus: 'NOT_READY' }), reason: '', followUpAt: '',
+  });
+  check('accept fails closed when Offer Readiness is NOT_READY, even with a Current Offer entered', acceptNotReady.ok, false);
+  check('the not-ready rejection names Offer Ready specifically', acceptNotReady.error.toLowerCase().indexOf('offer ready') >= 0, true);
+
+  const acceptReviewNeeded = attemptRecordOutcome({
+    kind: 'accept', opportunityId: 'opp-1', operator: null, at: '2026-09-06T15:00:00.000Z',
+    snapshot: fullSnapshot({ readinessStatus: 'REVIEW_NEEDED' }), reason: '', followUpAt: '',
+  });
+  check('accept fails closed when Offer Readiness is REVIEW_NEEDED, even with a Current Offer entered', acceptReviewNeeded.ok, false);
+
+  // OFFER_READY is what unlocks acceptance -- whether that status was
+  // reached organically (evidence SUPPORTED) or via a legitimate human
+  // OVERRIDDEN readiness result makes no difference here: both resolve to
+  // the SAME `effectiveStatus` the caller passes in as `readinessStatus`,
+  // and offer-readiness.ts's own suite (test-offer-readiness.cjs) is what
+  // proves OVERRIDDEN legitimately reaches OFFER_READY in the first place.
   const acceptWithOffer = attemptRecordOutcome({
     kind: 'accept', opportunityId: 'opp-1', operator: null, at: '2026-09-06T15:00:00.000Z',
-    snapshot: fullSnapshot(), reason: '', followUpAt: '',
+    snapshot: fullSnapshot({ readinessStatus: 'OFFER_READY' }), reason: '', followUpAt: '',
   });
-  check('accept succeeds with a Current Offer entered', acceptWithOffer.ok, true);
+  check('accept succeeds with a Current Offer entered and Offer Readiness at OFFER_READY (organic or override-derived)', acceptWithOffer.ok, true);
 
   const followUpNoDate = attemptRecordOutcome({
     kind: 'follow_up', opportunityId: 'opp-1', operator: null, at: '2026-09-06T15:00:00.000Z',

@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 129;
+const FLOOR = 146;
 let failures = 0;
 let checks = 0;
 
@@ -212,11 +212,39 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 {
   check('sellerPositionInput state is initialized empty, never from a GHL/derived value', /const \[sellerPositionInput, setSellerPositionInput\] = useState\(""\)/.test(sellerCallTsx), true);
   check('currentOfferInput state is initialized empty, never from a GHL/derived value -- IAOS invents no opening offer', /const \[currentOfferInput, setCurrentOfferInput\] = useState\(""\)/.test(sellerCallTsx), true);
-  check('setSellerPositionInput is called ONLY from its own input onChange (exactly one call site)', (sellerCallTsx.match(/setSellerPositionInput\(/g) || []).length, 1);
-  check('setCurrentOfferInput is called ONLY from its own input onChange and Cancel (never a derived/computed value)', (sellerCallTsx.match(/setCurrentOfferInput\(/g) || []).length, 2);
-  check('every setCurrentOfferInput call site sets it from the raw input event or to "" (Cancel), never a number expression', !/setCurrentOfferInput\([^)"]*\.(target|value)[^)]*\+|setCurrentOfferInput\(\s*\d/.test(sellerCallTsx), true);
+  // Jess Gate correction, 2026-09-06 added a SECOND legitimate call site to
+  // each setter -- the resume-hydration effect below, which restores a
+  // PREVIOUSLY RECORDED operator value from the outcome note, never an
+  // invented or computed one. The exact call-site counts and the
+  // no-derived-expression check that follows are what still distinguish
+  // "restore what a human already entered" from "IAOS computed a value."
+  check('setSellerPositionInput is called from exactly two sites: its own input onChange, and resume hydration', (sellerCallTsx.match(/setSellerPositionInput\(/g) || []).length, 2);
+  check('setCurrentOfferInput is called from exactly three sites: its own input onChange, Cancel, and resume hydration (never a derived/computed economics value)', (sellerCallTsx.match(/setCurrentOfferInput\(/g) || []).length, 3);
+  check('every setCurrentOfferInput call site sets it from the raw input event, "" (Cancel), or the resume snapshot\'s own recorded value -- never a number literal or board8/expectedSpread-derived expression', !/setCurrentOfferInput\([^)"]*\.(target|value)[^)]*\+|setCurrentOfferInput\(\s*\d|setCurrentOfferInput\([^)]*board8|setCurrentOfferInput\([^)]*expectedSpread/.test(sellerCallTsx), true);
   check('Seller Position input carries the negotiation-panel testid', /data-testid="negotiation-seller-position-input"/.test(sellerCallTsx), true);
   check('Current Offer input carries the negotiation-panel testid', /data-testid="negotiation-current-offer-input"/.test(sellerCallTsx), true);
+}
+
+// ============================================================
+// Jess Gate correction, 2026-09-06, item 1: resume must HYDRATE the live
+// negotiation inputs (and therefore the live deal bar), not merely
+// display the latest outcome as text. Never overwrite an operator's
+// current edit, never invent a value, and never touch Target/Max (both
+// remain board8-sourced, unchanged).
+// ============================================================
+{
+  check('page hydrates sellerPositionInput from the latest outcome\'s OWN recorded snapshot field, never a literal/default', /setSellerPositionInput\(String\(latestOutcome\.snapshot\.sellerPosition\)\)/.test(sellerCallTsx), true);
+  check('page hydrates currentOfferInput from the latest outcome\'s OWN recorded snapshot field, never a literal/default', /setCurrentOfferInput\(String\(latestOutcome\.snapshot\.currentOffer\)\)/.test(sellerCallTsx), true);
+  check('Seller Position hydration is gated on the snapshot field being non-null (never restores a fabricated zero for an unavailable figure)', /latestOutcome\.snapshot\.sellerPosition !== null\)\s*\{\s*setSellerPositionInput/.test(sellerCallTsxNoComments), true);
+  check('Current Offer hydration is gated on the snapshot field being non-null (never restores a fabricated zero for an unavailable figure)', /latestOutcome\.snapshot\.currentOffer !== null\)\s*\{\s*setCurrentOfferInput/.test(sellerCallTsxNoComments), true);
+  check('Seller Position hydration additionally requires the LIVE input to still be empty -- an operator\'s own edit is never overwritten', /sellerPositionInput === ""\s*&&\s*latestOutcome\.snapshot\.sellerPosition !== null/.test(sellerCallTsx), true);
+  check('Current Offer hydration additionally requires the LIVE input to still be empty -- an operator\'s own edit is never overwritten', /currentOfferInput === ""\s*&&\s*latestOutcome\.snapshot\.currentOffer !== null/.test(sellerCallTsx), true);
+  check('hydration is guarded by a ref (fires at most once per contact), so it cannot re-fire and clobber a later operator edit merely because input state changed', /const resumeHydratedForRef = useRef<string \| null>\(null\)/.test(sellerCallTsx), true);
+  check('the hydration ref guard is keyed on contactId, not a bare boolean, so a different contact still gets hydrated', /resumeHydratedForRef\.current === contactId/.test(sellerCallTsx) && /resumeHydratedForRef\.current = contactId/.test(sellerCallTsx), true);
+  check('hydration effect depends on loading/contactId/latestOutcome, never on the input state itself (which would let it re-fire on every keystroke)', /\}, \[loading, contactId, latestOutcome\]\);/.test(sellerCallTsx), true);
+  check('page imports useRef from react (required for the per-contact hydration guard)', /import \{ useEffect, useMemo, useRef, useState \} from "react"/.test(sellerCallTsx), true);
+  check('restored Current Offer needs no separate Expected Spread wiring -- it flows through the SAME computeExpectedSpread useMemo already keyed on currentOffer', /computeExpectedSpread\(\{ endBuyerMaxPrice: board8\.endBuyerMaxPrice, referenceKind: "current_offer", referencePrice: currentOffer \}\)/.test(sellerCallTsx), true);
+  check('Target and Max remain sourced from board8 alone -- resume hydration adds no second Target/Max path', /[*]\s*0\.25|0\.25\s*[*]/.test(sellerCallTsx), false);
 }
 
 // ============================================================
@@ -466,9 +494,16 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
     followUp: /data-testid="call-outcome-follow-up-toggle"/.test(sellerCallTsx),
     pass: /data-testid="call-outcome-pass-toggle"/.test(sellerCallTsx),
   }, { accept: true, followUp: true, pass: true });
-  check('Accept confirm is disabled when no Current Offer has been entered (cannot accept a price never entered)', /disabled=\{recordingOutcome !== null \|\| currentOffer === null\}/.test(sellerCallTsx), true);
+  // Jess Gate correction, 2026-09-06: Accept must not become available on
+  // a Current Offer alone -- Offer Readiness must ALSO be OFFER_READY.
+  check('Accept confirm is disabled when no Current Offer has been entered OR Offer Readiness is not OFFER_READY', /disabled=\{recordingOutcome !== null \|\| currentOffer === null \|\| readiness\?\.effectiveStatus !== "OFFER_READY"\}/.test(sellerCallTsx), true);
+  check('the Accept gate reads readiness.effectiveStatus, never the raw readiness.status -- a legitimate human OVERRIDDEN result still resolves effectiveStatus to OFFER_READY and must still unlock Accept', /readiness\?\.effectiveStatus !== "OFFER_READY"/.test(sellerCallTsx) && !/readiness\?\.status !== "OFFER_READY"/.test(sellerCallTsx), true);
+  check('page renders a truthful not-yet-Offer-Ready explanation distinct from the missing-Current-Offer message', /data-testid="call-outcome-accept-not-ready"/.test(sellerCallTsx), true);
+  check('the not-ready explanation only renders when a Current Offer IS present but readiness is not OFFER_READY (never masking the missing-offer message)', /currentOffer === null[\s\S]{0,400}readiness\?\.effectiveStatus !== "OFFER_READY"[\s\S]{0,120}data-testid="call-outcome-accept-not-ready"/.test(sellerCallTsxNoComments), true);
   check('Follow-Up confirm is disabled with no date/time typed', /disabled=\{recordingOutcome !== null \|\| followUpAtInput\.trim\(\) === ""\}/.test(sellerCallTsx), true);
   check('Pass confirm is disabled with no reason typed', /disabled=\{recordingOutcome !== null \|\| passReasonInput\.trim\(\) === ""\}/.test(sellerCallTsx), true);
+  check('Follow-Up confirm never reads readiness -- it remains available regardless of Offer Readiness', !/disabled=\{recordingOutcome !== null \|\| followUpAtInput\.trim\(\) === ""[^}]*readiness/.test(sellerCallTsx), true);
+  check('Pass confirm never reads readiness -- it remains available regardless of Offer Readiness', !/disabled=\{recordingOutcome !== null \|\| passReasonInput\.trim\(\) === ""[^}]*readiness/.test(sellerCallTsx), true);
   check('a successful outcome write is appended to local notes state immediately (no refetch required for resume to reflect it)', /setNotes\(\(prev\) => \[\.\.\.\(prev \?\? \[\]\), \{ id: `local-\$\{Date\.now\(\)\}`, body: attempt\.note, dateAdded: nowIso \}\]\)/.test(sellerCallTsx), true);
 }
 

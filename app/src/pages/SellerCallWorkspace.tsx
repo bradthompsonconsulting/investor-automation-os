@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home, AlertTriangle } from "lucide-react";
 import { ghl, type ContactDetail } from "../lib/ghl";
@@ -705,6 +705,43 @@ export default function SellerCallWorkspace() {
     return latestOutcomeNoteForOpportunity(notes, screen.opportunity.id);
   }, [notes, screen]);
 
+  /* Jess Gate correction, 2026-09-06 -- RESUME MUST HYDRATE LIVE
+     NEGOTIATION, NOT ONLY DISPLAY IT. The resume-context line above
+     already showed the latest outcome's recorded Seller Position/Current
+     Offer as TEXT, but the live inputs (and therefore the sticky deal
+     bar's live Expected Spread) stayed blank after a reload -- exactly
+     the gap this closes. Runs at most once per contact (guarded by
+     `resumeHydratedForRef`, keyed on `contactId` rather than a bare
+     boolean, so navigating to a DIFFERENT contact without a full remount
+     still hydrates that contact's own resume state): the moment this
+     contact's data has loaded, an EMPTY (untouched) input is filled from
+     the latest outcome's own recorded snapshot -- never a zero, never
+     invented, and the `=== ""` check is the exact same "untouched"
+     convention this page already uses to treat empty as absent
+     (`sellerPositionParsed`/`currentOfferParsed` above). Because the ref
+     guard flips BEFORE this effect ever re-reads `sellerPositionInput`/
+     `currentOfferInput` as a dependency, it fires exactly once per
+     contact and can never re-fire merely because the operator typed
+     something -- an operator's current edit is never overwritten.
+     Recalculating live Expected Spread needs no new wiring at all:
+     hydrating `currentOfferInput` flows through the SAME `currentOffer`
+     derivation and the SAME `computeExpectedSpread` useMemo already
+     above, unchanged; Target and Max remain sourced from `board8`,
+     equally unchanged. */
+  const resumeHydratedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (loading) return;
+    if (resumeHydratedForRef.current === contactId) return;
+    resumeHydratedForRef.current = contactId;
+    if (!latestOutcome) return;
+    if (sellerPositionInput === "" && latestOutcome.snapshot.sellerPosition !== null) {
+      setSellerPositionInput(String(latestOutcome.snapshot.sellerPosition));
+    }
+    if (currentOfferInput === "" && latestOutcome.snapshot.currentOffer !== null) {
+      setCurrentOfferInput(String(latestOutcome.snapshot.currentOffer));
+    }
+  }, [loading, contactId, latestOutcome]);
+
   /* The facts a recorded outcome captures, taken verbatim from what this
      page has already computed -- no recomputation, no second source. */
   function buildOutcomeSnapshot(): OutcomeSnapshot {
@@ -1193,7 +1230,13 @@ export default function SellerCallWorkspace() {
                 data-testid="call-outcome-accept-toggle"
                 onClick={() => setShowOutcomeForm(showOutcomeForm === "accept" ? null : "accept")}
                 disabled={recordingOutcome !== null}
-                title={currentOffer === null ? "Enter a Current Offer above before recording acceptance" : undefined}
+                title={
+                  currentOffer === null
+                    ? "Enter a Current Offer above before recording acceptance"
+                    : readiness?.effectiveStatus !== "OFFER_READY"
+                      ? "This deal is not yet Offer Ready"
+                      : undefined
+                }
                 style={{ ...COMPACT_BUTTON_STYLE, borderColor: "rgba(34,197,94,0.4)", color: "#22C55E", background: "rgba(34,197,94,0.08)" }}
               >
                 Accept
@@ -1222,6 +1265,22 @@ export default function SellerCallWorkspace() {
                   <div style={{ fontSize: "12px", color: "#F59E0B" }}>
                     Enter a Current Offer in the Negotiation panel above before recording acceptance.
                   </div>
+                ) : readiness?.effectiveStatus !== "OFFER_READY" ? (
+                  /* Jess Gate correction, 2026-09-06 -- ACCEPT MUST NOT BYPASS
+                     OFFER READINESS. A Current Offer alone used to be
+                     sufficient here, which let NOT_READY/REVIEW_NEEDED
+                     economics become "Agreement Reached" and expose
+                     Contract Ready. `readiness.effectiveStatus` (never the
+                     raw `readiness.status`) is the one gate: it stays
+                     exactly `status` unless a legitimate human OVERRIDDEN
+                     action elevated it (offer-readiness.ts's own rule),
+                     so a real override still unlocks Accept -- this only
+                     blocks NOT_READY/REVIEW_NEEDED that were never
+                     overridden. Follow-Up and Pass are UNCHANGED by this
+                     gate -- neither reads `readiness` at all. */
+                  <div data-testid="call-outcome-accept-not-ready" style={{ fontSize: "12px", color: "#F59E0B" }}>
+                    This deal is not yet Offer Ready -- acceptance is unavailable until Offer Readiness reaches OFFER_READY.
+                  </div>
                 ) : (
                   <div style={{ fontSize: "12px", color: "#94A3B8", marginBottom: "8px" }}>
                     Records the seller's acceptance of the current Current Offer ({money(currentOffer)}).
@@ -1230,10 +1289,11 @@ export default function SellerCallWorkspace() {
                 <button
                   data-testid="call-outcome-accept-confirm"
                   onClick={() => void handleRecordOutcome("accept")}
-                  disabled={recordingOutcome !== null || currentOffer === null}
+                  disabled={recordingOutcome !== null || currentOffer === null || readiness?.effectiveStatus !== "OFFER_READY"}
                   style={{
                     ...COMPACT_BUTTON_STYLE, borderColor: "rgba(34,197,94,0.4)", color: "#22C55E", background: "rgba(34,197,94,0.08)",
-                    opacity: currentOffer === null ? 0.45 : 1, cursor: recordingOutcome !== null || currentOffer === null ? "not-allowed" : "pointer",
+                    opacity: currentOffer === null || readiness?.effectiveStatus !== "OFFER_READY" ? 0.45 : 1,
+                    cursor: recordingOutcome !== null || currentOffer === null || readiness?.effectiveStatus !== "OFFER_READY" ? "not-allowed" : "pointer",
                   }}
                 >
                   {recordingOutcome === "accept" ? <Loader2 size={12} className="animate-spin" /> : null} Confirm Accept

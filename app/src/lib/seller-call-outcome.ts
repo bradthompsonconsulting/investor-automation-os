@@ -241,12 +241,26 @@ export type AttemptOutcomeResult =
 /**
  * The ONLY way to produce a formatted outcome note. Fails closed per
  * outcome kind -- an operator cannot record acceptance of a price that
- * was never entered, a follow-up with no valid callback time, or a pass
- * with no stated reason ("diagnose rather than manipulate":
+ * was never entered, acceptance of a deal that has not reached Offer
+ * Ready, a follow-up with no valid callback time, or a pass with no
+ * stated reason ("diagnose rather than manipulate":
  * `SELLER_ACQUISITION_WORKFLOW.md`'s own rule that an out-of-parameters
  * or negative outcome is stated, not silently recorded). Performs no
  * write itself -- the caller is responsible for `ghl.notes.create` (and,
  * for `follow_up`, the existing `scheduleCallbackGated`).
+ *
+ * Jess Gate correction, 2026-09-06: a Current Offer alone is NOT
+ * sufficient to record acceptance -- without this, NOT_READY or
+ * REVIEW_NEEDED economics could become "Agreement Reached" and expose
+ * Contract Ready on evidence that never earned it. `args.snapshot.
+ * readinessStatus` is the caller's OWN already-resolved `ReadinessResult.
+ * effectiveStatus` (see SellerCallWorkspace.tsx's `buildOutcomeSnapshot`),
+ * never recomputed here -- this module has no second readiness engine.
+ * Because `effectiveStatus` (not the raw `status`) is what flows through,
+ * a legitimate human OVERRIDDEN readiness result -- which
+ * `offer-readiness.ts`'s own rule already resolves to OFFER_READY --
+ * is accepted on the same terms as organically SUPPORTED evidence; this
+ * function has no way to, and need not, tell the two apart.
  */
 export function attemptRecordOutcome(args: {
   kind: CallOutcomeKind;
@@ -259,6 +273,9 @@ export function attemptRecordOutcome(args: {
 }): AttemptOutcomeResult {
   if (args.kind === "accept" && args.snapshot.currentOffer === null) {
     return { ok: false, error: "Cannot record acceptance -- no Current Offer has been entered for this negotiation." };
+  }
+  if (args.kind === "accept" && args.snapshot.readinessStatus !== "OFFER_READY") {
+    return { ok: false, error: "Cannot record acceptance -- this deal is not yet Offer Ready." };
   }
   if (args.kind === "follow_up") {
     if (args.followUpAt.trim() === "") {
