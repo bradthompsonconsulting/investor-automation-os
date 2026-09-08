@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 230;
+const FLOOR = 231;
 let failures = 0;
 let checks = 0;
 
@@ -149,7 +149,12 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 {
   check('page imports computeNextBestQuestion from next-best-question', /import \{ computeNextBestQuestion,[\s\S]*\} from "\.\.\/lib\/underwriting\/next-best-question"/.test(sellerCallTsx), true);
   check('page does not declare its own computeNextBestQuestion function', /\b(function|const)\s+computeNextBestQuestion\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
-  check('page renders a dedicated Next Best Question panel', /data-testid="next-best-question-panel"/.test(sellerCallTsx), true);
+  check('page renders a dedicated Suggested Next Question panel (data-testid unchanged, internal name only)', /data-testid="next-best-question-panel"/.test(sellerCallTsx), true);
+  // Jess Gate correction, INV-69 (2026-09-08) -- label-only: the visible
+  // heading is "Suggested Next Question" (was "Next Best Question"); the
+  // data-testid above and every symbol below (nextBestQuestion.*,
+  // computeNextBestQuestion) are unchanged.
+  check('the operator-visible label is "Suggested Next Question"', /Suggested Next Question/.test(sellerCallTsx), true);
   check('page reads nextBestQuestion.question (not a re-derived string)', /nextBestQuestion\.question/.test(sellerCallTsx), true);
   check('page reads nextBestQuestion.whyItMatters (not a re-derived string)', /nextBestQuestion\.whyItMatters/.test(sellerCallTsx), true);
   check('page no longer joins every reason into one ad hoc objective string (superseded by NBQ)', /readiness\.reasons\.map\(\(r\) => r\.message\)\.join/.test(sellerCallTsx), false);

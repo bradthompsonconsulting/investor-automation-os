@@ -2335,15 +2335,25 @@ export default function SellerCallWorkspace() {
 
           {/* Conversation-first hierarchy -- B8-12 / INV-55, Brad-approved
               usability correction (locked 2026-09-07). "The script guides
-              the conversation. MSK governs readiness." Next Best Question
-              is the ONE visually primary element on this route; everything
-              else here (Other Useful Questions, the Offer Readiness
-              checklist, Known Facts) is deliberately smaller and quieter
-              so the two never compete for attention during a live call.
-              computeNextBestQuestion / computeQuestionQueue (imported,
-              never reimplemented) are the SAME B8-06 engine as before --
-              this section changes presentation, not what question gets
-              picked or why. */}
+              the conversation. MSK governs readiness." Suggested Next
+              Question is the ONE visually primary element on this route;
+              everything else here (Other Useful Questions, the Offer
+              Readiness checklist, Known Facts) is deliberately smaller and
+              quieter so the two never compete for attention during a live
+              call. computeNextBestQuestion / computeQuestionQueue
+              (imported, never reimplemented) are the SAME B8-06 engine as
+              before -- this section changes presentation, not what
+              question gets picked or why.
+
+              Jess Gate correction, INV-69 (2026-09-08): the operator-
+              visible label changes from "Next Best Question" to
+              "Suggested Next Question", per INV-69's locked content
+              framework -- "Use 'Suggested Next Question' for the future
+              mapping; do not imply live-conversation AI analysis." This
+              is a label-only change: the data-testid, the underlying
+              engine (computeNextBestQuestion/computeQuestionQueue), the
+              selection logic, and every internal symbol name are
+              unchanged. */}
           <div
             data-testid="next-best-question-panel"
             style={{
@@ -2354,7 +2364,7 @@ export default function SellerCallWorkspace() {
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#1EC8FF", letterSpacing: "0.04em", textTransform: "uppercase" }}>
-                Next Best Question
+                Suggested Next Question
               </div>
               <button
                 onClick={() => setFullScriptOpen(true)}

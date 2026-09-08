@@ -13,11 +13,20 @@
  *
  *   2. STATIC: source-text checks over SellerCallWorkspace.tsx and
  *      FullScriptDrawer.tsx -- proves the required hierarchy is actually
- *      WIRED (one prominent Next Best Question, Other Useful Questions as
- *      a list, the compact Offer Readiness checklist, the Full Script
- *      drawer, and "Suggested — say it your way" labeling), the same
- *      honest limit test-seller-call-workspace-wiring.cjs already states:
- *      this proves wiring, not rendered pixels.
+ *      WIRED (one prominent Suggested Next Question, Other Useful
+ *      Questions as a list, the compact Offer Readiness checklist, the
+ *      Full Script drawer, and "Suggested — say it your way" labeling),
+ *      the same honest limit test-seller-call-workspace-wiring.cjs already
+ *      states: this proves wiring, not rendered pixels.
+ *
+ *      Jess Gate correction, INV-69 (2026-09-08): the operator-visible
+ *      label is "Suggested Next Question" (was "Next Best Question"),
+ *      per INV-69's locked content framework. The data-testid
+ *      (`next-best-question-panel`) and every internal symbol
+ *      (`nextBestQuestion`, `computeNextBestQuestion`,
+ *      `computeQuestionQueue`) are unchanged -- this is a label-only
+ *      correction, and this file's own checks below assert that split
+ *      directly.
  */
 
 const { execSync } = require('child_process');
@@ -231,8 +240,8 @@ function readiness(overrides) {
 }
 
 {
-  // Exactly one open category -> Next Best Question exists but the queue
-  // has nothing left over for "Other Useful Questions".
+  // Exactly one open category -> Suggested Next Question exists but the
+  // queue has nothing left over for "Other Useful Questions".
   const rOne = readiness({ sellerPricePosition: 'UNKNOWN' });
   const econOne = SUPPORTED_ECONOMICS;
   const queueOne = computeQuestionQueue(rOne, NO_FACTS, econOne);
@@ -261,11 +270,22 @@ const sellerCallTsxNoComments = sellerCallTsx.replace(/\/\*[\s\S]*?\*\//g, '');
 const fullScriptTsx = readSrc('src/components/FullScriptDrawer.tsx');
 
 {
-  check('page still renders the dedicated Next Best Question panel (data-testid preserved)',
+  check('page still renders the dedicated Suggested Next Question panel (data-testid preserved, internal name unchanged)',
     /data-testid="next-best-question-panel"/.test(sellerCallTsx), true);
 
-  check('Next Best Question question text renders at 19px (visually primary, not equal-weight with the rest)',
+  check('Suggested Next Question question text renders at 19px (visually primary, not equal-weight with the rest)',
     /fontSize: "19px"[\s\S]{0,150}nextBestQuestion\.question/.test(sellerCallTsxNoComments), true);
+
+  // Jess Gate correction, INV-69 (2026-09-08) -- the visible label itself.
+  check('the operator-visible panel label reads "Suggested Next Question"', /Suggested Next Question/.test(sellerCallTsxNoComments), true);
+  check('the superseded label "Next Best Question" no longer appears anywhere in the rendered source (comments excluded)',
+    /Next Best Question/.test(sellerCallTsxNoComments), false);
+  check('the rendered heading is exactly "Suggested Next Question" immediately inside the panel header div (not merely present somewhere on the page)',
+    /textTransform: "uppercase" \}\}>\s*Suggested Next Question\s*<\/div>/.test(sellerCallTsxNoComments), true);
+  check('the underlying engine symbol names are unchanged by the label correction (computeNextBestQuestion still imported/used)',
+    /computeNextBestQuestion/.test(sellerCallTsxNoComments), true);
+  check('the panel data-testid is unchanged by the label correction (next-best-question-panel, not renamed)',
+    /data-testid="next-best-question-panel"/.test(sellerCallTsxNoComments), true);
 
   check('page renders "Other Useful Questions" as a real list (data-testid + <ul>)',
     /data-testid="other-useful-questions"/.test(sellerCallTsx), true);
@@ -294,7 +314,7 @@ const fullScriptTsx = readSrc('src/components/FullScriptDrawer.tsx');
     /<FullScriptDrawer open=\{fullScriptOpen\} onClose=\{\(\) => setFullScriptOpen\(false\)\}/.test(sellerCallTsx), true);
 
   const suggestedCount = (sellerCallTsx.match(/Suggested — say it your way\./g) || []).length;
-  check('page labels script-sourced content "Suggested — say it your way" at least twice (Next Best Question + Other Useful Questions)',
+  check('page labels script-sourced content "Suggested — say it your way" at least twice (Suggested Next Question + Other Useful Questions)',
     suggestedCount >= 2, true);
 }
 
