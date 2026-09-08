@@ -15,7 +15,7 @@ import { computeUnderwriting } from "../lib/underwriting/compute";
 import { toViewModel, type ScreenState, type SelectedOpportunity } from "../lib/underwriting/view-model";
 import { opportunitiesForContact, opportunityCandidates, selectOpportunity } from "../lib/underwriting/selectOpportunity";
 import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
-import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriting/types";
+import type { AssignmentResolution, UnderwritingResult, UnderwritingInputs } from "../lib/underwriting/types";
 import { computeBoard8Economics, computeExpectedSpread, type Board8Economics, type ExpectedSpread } from "../lib/underwriting/board8-economics";
 import { computeOfferReadiness, CATEGORY_LABEL, type ReadinessResult, type MaterialCategory, type HumanAction } from "../lib/underwriting/offer-readiness";
 import { computeNextBestQuestion, computeQuestionQueue, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
@@ -45,7 +45,9 @@ import {
   formatTransactionAssumptionsNote, latestTransactionAssumptionsForOpportunity, type TransactionAssumptionField,
   formatSellerPricePositionNote, latestSellerPricePositionForOpportunity,
   formatReadinessHumanActionNote, latestReadinessHumanActionForOpportunity, isReadinessDecisionCurrent,
-  type ReadinessEvidenceSnapshot,
+  type ReadinessEvidenceSnapshot, type DealEconomicsInputsSnapshot, type ResolvedInputSnapshot,
+  formatReadinessDecisionInvalidationNote, isReadinessDecisionInvalidated,
+  latestLegacyReadinessHumanActionV1ForOpportunity,
   formatContractReadyChecklistNote, currentContractReadyChecklistForOpportunity,
   CONTRACT_READY_ITEM_KEYS, type ContractReadyItemKey, type ContractReadyItems,
 } from "../lib/seller-call-readiness-carriers";
@@ -247,6 +249,46 @@ function money(n: number): string {
 /** `null`-safe money, for a snapshot field that may have been unavailable at the moment of the outcome. */
 function moneyOrUnknown(n: number | null): string {
   return n === null ? "unknown" : money(n);
+}
+
+/**
+ * Jess Gate correction, 2026-09-08 -- adapts B8-03's `UnderwritingInputs`
+ * (the RESOLVED policy assumptions `pipeline` already computed via
+ * `resolveInputs`, imported, never reimplemented) into the plain,
+ * JSON-serializable shape `seller-call-readiness-carriers.ts`'s
+ * `DealEconomicsInputsSnapshot` expects. "Include the material economics
+ * inputs AND outputs" -- this is the inputs half; `board8` supplies the
+ * outputs half in `liveReadinessEvidenceSnapshot` below. Pure adaptation
+ * only: no value here is computed, only read and reshaped.
+ */
+function resolvedInputSnapshot(r: { kind: "value"; value: number; level: string } | { kind: "unresolved"; reason: string } | undefined): ResolvedInputSnapshot {
+  if (!r || r.kind !== "value") return null;
+  return { value: r.value, level: r.level };
+}
+
+function buildDealEconomicsInputsSnapshot(inputs: UnderwritingInputs | null): DealEconomicsInputsSnapshot {
+  if (!inputs) {
+    return {
+      sellingCostPct: null, closingCost: null, monthlyCarry: null, holdMonths: null, buyerProfitPct: null,
+      standardMinimum: null, profitSharePct: null, assignmentMode: "unresolved", assignmentAmount: null,
+      financingKind: "unresolved", financingLtv: null, financingRate: null, financingPoints: null,
+    };
+  }
+  return {
+    sellingCostPct: resolvedInputSnapshot(inputs.sellingCostPct),
+    closingCost: resolvedInputSnapshot(inputs.closingCost),
+    monthlyCarry: resolvedInputSnapshot(inputs.monthlyCarry),
+    holdMonths: resolvedInputSnapshot(inputs.holdMonths),
+    buyerProfitPct: resolvedInputSnapshot(inputs.buyerProfitPct),
+    standardMinimum: resolvedInputSnapshot(inputs.standardMinimum),
+    profitSharePct: resolvedInputSnapshot(inputs.profitSharePct),
+    assignmentMode: inputs.assignment.kind,
+    assignmentAmount: inputs.assignment.kind === "manual" ? inputs.assignment.amount : null,
+    financingKind: inputs.financing.kind,
+    financingLtv: inputs.financing.kind === "on" ? resolvedInputSnapshot(inputs.financing.ltv) : null,
+    financingRate: inputs.financing.kind === "on" ? resolvedInputSnapshot(inputs.financing.rate) : null,
+    financingPoints: inputs.financing.kind === "on" ? resolvedInputSnapshot(inputs.financing.points) : null,
+  };
 }
 
 const OUTCOME_LABEL: Record<CallOutcomeKind, string> = {
@@ -586,14 +628,14 @@ export default function SellerCallWorkspace() {
   const pipeline = useMemo(() => {
     if (!contact || !opps || !policyValues || !selected) {
       return { result: null as UnderwritingResult | null, facts: null as DealFacts | null,
-               assignment: null as AssignmentResolution | null,
+               assignment: null as AssignmentResolution | null, inputs: null as UnderwritingInputs | null,
                issues: [] as PolicyParseIssue[], computeError: null as { field: string | null; message: string } | null,
                repairsSourceIsApprovalGated: false };
     }
     const opp = opps.find((o) => o.id === selected.id);
     if (!opp) {
       return { result: null, facts: null as DealFacts | null,
-               assignment: null as AssignmentResolution | null, issues: [],
+               assignment: null as AssignmentResolution | null, inputs: null as UnderwritingInputs | null, issues: [],
                computeError: null as { field: string | null; message: string } | null,
                repairsSourceIsApprovalGated: false };
     }
@@ -616,11 +658,16 @@ export default function SellerCallWorkspace() {
       // apart: if the Opportunity side is absent, any non-null resolved
       // value necessarily came from the approval-gated Contact seed.
       const repairsSourceIsApprovalGated = oppValues.repairs.kind !== "value";
-      return { result: computeUnderwriting(inputs), facts, assignment: inputs.assignment, issues, computeError: null, repairsSourceIsApprovalGated };
+      // Jess Gate correction, 2026-09-08 -- `inputs` (the resolved
+      // UnderwritingInputs, previously local to this closure) is now
+      // returned too: `liveReadinessEvidenceSnapshot` below needs the
+      // RAW policy assumption inputs, not only board8's computed outputs,
+      // to bind an Offer Readiness decision to inputs as well as outputs.
+      return { result: computeUnderwriting(inputs), facts, assignment: inputs.assignment, inputs, issues, computeError: null, repairsSourceIsApprovalGated };
     } catch (e: any) {
       return {
         result: null, facts: null as DealFacts | null,
-        assignment: null as AssignmentResolution | null, issues: [],
+        assignment: null as AssignmentResolution | null, inputs: null as UnderwritingInputs | null, issues: [],
         computeError: { field: null, message: e?.message ?? "A configured value could not be interpreted." },
         repairsSourceIsApprovalGated: false,
       };
@@ -993,8 +1040,15 @@ export default function SellerCallWorkspace() {
       legal_owners: false, closing_timeline: false, occupancy_possession: false, liens_title: false, delivery_signing: false,
     };
     const items: ContractReadyItems = { ...currentItems, [key]: checked };
+    // Jess Gate correction, 2026-09-08 -- `agreementAt` is the accepted
+    // outcome's OWN durable timestamp (`latestOutcome.at`,
+    // `seller-call-outcome.ts`'s existing carrier identity), the primary
+    // scope key. Price/address are still recorded too (defense in depth),
+    // but a DIFFERENT agreement -- even at the identical price and
+    // address -- never reads back this progress, because its `at` differs.
     const note = formatContractReadyChecklistNote({
       opportunityId: screen.opportunity.id, at, operator: null,
+      agreementAt: latestOutcome.at,
       agreedPrice: latestOutcome.snapshot.currentOffer, propertyAddress: formatAddress(contact),
       items,
     });
@@ -1111,8 +1165,9 @@ export default function SellerCallWorkspace() {
             maxSupportedOffer: board8.maxSupportedOffer,
             targetStatus: board8.target.status,
             targetValue: board8.target.status === "calculated" ? board8.target.targetAcquisitionPrice : null,
+            inputs: buildDealEconomicsInputsSnapshot(pipeline.inputs),
           }
-        : { status: "unavailable", maxSupportedOffer: null, targetStatus: null, targetValue: null },
+        : { status: "unavailable", maxSupportedOffer: null, targetStatus: null, targetValue: null, inputs: buildDealEconomicsInputsSnapshot(pipeline.inputs) },
       transactionAssumptions: transactionAssumptionsRecord
         ? {
             structure: transactionAssumptionsRecord.transactionStructure,
@@ -1126,7 +1181,17 @@ export default function SellerCallWorkspace() {
             : { kind: "refused" })
         : null,
     };
-  }, [screen, pipeline.repairsSourceIsApprovalGated, matchedArvApproval, board8, propertyIdentityConfirmation, transactionAssumptionsRecord, sellerPricePositionRecord]);
+  }, [screen, pipeline.repairsSourceIsApprovalGated, pipeline.inputs, matchedArvApproval, board8, propertyIdentityConfirmation, transactionAssumptionsRecord, sellerPricePositionRecord]);
+
+  /* Jess Gate correction, 2026-09-08 (second round) -- whether the latest
+     recorded Offer Readiness decision has EVER been durably invalidated
+     (see `formatReadinessDecisionInvalidationNote`'s own header). Checked
+     BEFORE any live comparison, and unconditionally: once true, always
+     true, regardless of what the live facts say on this particular load. */
+  const readinessDecisionInvalidatedDurably = useMemo(() => {
+    if (!readinessHumanActionRecord || !notes || !(screen.state === "resolved" || screen.state === "unresolved")) return false;
+    return isReadinessDecisionInvalidated(notes, screen.opportunity.id, readinessHumanActionRecord.at);
+  }, [readinessHumanActionRecord, notes, screen]);
 
   /* Jess Gate correction, 2026-09-08 -- whether the latest recorded Offer
      Readiness decision (if any) still applies. `isReadinessDecisionCurrent`
@@ -1137,14 +1202,26 @@ export default function SellerCallWorkspace() {
   const readinessDecisionCurrency = useMemo(() => {
     if (!readinessHumanActionRecord) return null;
     return isReadinessDecisionCurrent(readinessHumanActionRecord, {
+      snapshot: liveReadinessEvidenceSnapshot,
       newestPropertyIdentityNoteAt: newestPropertyIdentityNote?.at ?? null,
       newestTransactionAssumptionsNoteAt: transactionAssumptionsRecord?.at ?? null,
       newestSellerPricePositionNoteAt: sellerPricePositionRecord?.at ?? null,
       newestArvApprovalNoteAt: latestArvLedgerEntry?.approvedAt ?? null,
-      repairsCondition: liveReadinessEvidenceSnapshot.repairsCondition,
-      dealEconomics: liveReadinessEvidenceSnapshot.dealEconomics,
+      durablyInvalidated: readinessDecisionInvalidatedDurably,
     });
-  }, [readinessHumanActionRecord, newestPropertyIdentityNote, transactionAssumptionsRecord, sellerPricePositionRecord, latestArvLedgerEntry, liveReadinessEvidenceSnapshot]);
+  }, [readinessHumanActionRecord, liveReadinessEvidenceSnapshot, newestPropertyIdentityNote, transactionAssumptionsRecord, sellerPricePositionRecord, latestArvLedgerEntry, readinessDecisionInvalidatedDurably]);
+
+  /* Jess Gate correction, 2026-09-08 -- the latest LEGACY v1 decision (no
+     evidence snapshot at all), for DISPLAY ONLY. Never feeds
+     `readinessHumanAction` below or `buildOfferReadinessInputs` -- see
+     `parseLegacyReadinessHumanActionV1Note`'s own header. Shown whenever
+     one exists, independent of whether a current v2/v3 decision is also
+     present, so a genuine legacy record can never become silently
+     invisible. */
+  const legacyReadinessDecision = useMemo(() => {
+    if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    return latestLegacyReadinessHumanActionV1ForOpportunity(notes, screen.opportunity.id);
+  }, [notes, screen]);
 
   /* `HumanAction.operator` (offer-readiness.ts, unchanged, locked) requires
      a `string` -- unlike this carrier's own honest `string | null` (this
@@ -1173,6 +1250,63 @@ export default function SellerCallWorkspace() {
           operator: readinessHumanActionRecord.operator ?? "UNAVAILABLE",
           reason: readinessHumanActionRecord.reason,
         };
+
+  /* Jess Gate correction, 2026-09-08 (second round) -- "When IAOS observes
+     a material mismatch, durably invalidate that specific readiness
+     decision." A live comparison alone (`readinessDecisionCurrency`
+     above) cannot guarantee PERMANENCE -- if the value moves away and
+     back with no page load in between, nothing remembers it moved. The
+     FIRST time this page observes `current === false` for a decision that
+     has not yet been durably invalidated, it writes ONE invalidation note
+     naming that decision's own timestamp. Once written, `notes` updates,
+     `readinessDecisionInvalidatedDurably` becomes `true` on the next
+     render, and this effect's own guard (`if (readinessDecisionInvalidatedDurably) return`)
+     stops it from writing again -- self-terminating, no loop.
+
+     GATING NEVER WAITS ON THIS WRITE. `readinessHumanAction` above is
+     already `{ kind: "none" }` the instant `readinessDecisionCurrency.
+     current` is `false`, regardless of whether this effect's write has
+     started, is in flight, or has failed. "If saving invalidation fails,
+     do not let the stale decision authorize readiness" is satisfied by
+     construction -- the write below only affects PERMANENCE across a
+     future reload, never THIS render's gate. A failure is surfaced
+     (`invalidationWriteError`), never silently retried in a tight loop:
+     the effect re-attempts only on the NEXT genuine change to its
+     dependencies (e.g. the operator reloading), not automatically. */
+  const [invalidationWriteError, setInvalidationWriteError] = useState<string | null>(null);
+  const [invalidationWriteBusyForAt, setInvalidationWriteBusyForAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!readinessHumanActionRecord || !readinessDecisionCurrency) return;
+    if (readinessDecisionCurrency.current) return;
+    if (readinessDecisionInvalidatedDurably) return;
+    if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
+    if (invalidationWriteBusyForAt === readinessHumanActionRecord.at) return;
+
+    let cancelled = false;
+    setInvalidationWriteBusyForAt(readinessHumanActionRecord.at);
+    const at = new Date().toISOString();
+    const note = formatReadinessDecisionInvalidationNote({
+      opportunityId: screen.opportunity.id, at, operator: null,
+      decisionAt: readinessHumanActionRecord.at, reasons: readinessDecisionCurrency.staleBecause,
+    });
+    ghl.notes.create(contactId, note)
+      .then(() => {
+        if (cancelled) return;
+        setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
+        setInvalidationWriteError(null);
+      })
+      .catch((e: any) => {
+        if (cancelled) return;
+        setInvalidationWriteError(
+          e?.message ?? "Couldn't durably record this staleness. It is still treated as not-authorizing right now, but if the value reverts before this succeeds, a future reload could miss it. Reload to retry.",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setInvalidationWriteBusyForAt(null);
+      });
+    return () => { cancelled = true; };
+  }, [readinessHumanActionRecord, readinessDecisionCurrency, readinessDecisionInvalidatedDurably, screen, contactId, invalidationWriteBusyForAt]);
 
   /* B8-04, consumed, via buildOfferReadinessInputs (B8-07 / INV-50,
      extended B8-13 / INV-68) -- that module's own header states exactly
@@ -1265,12 +1399,15 @@ export default function SellerCallWorkspace() {
   }, [notes, screen]);
 
   /* Jess Gate correction, 2026-09-08 -- Contract Ready checklist progress,
-     made durable. Scoped to the CURRENT agreed price (`latestOutcome.
-     snapshot.currentOffer`) and CURRENT property address exactly, per
-     `currentContractReadyChecklistForOpportunity`'s own rule -- a
-     different Accept or a different address reads back as no progress,
-     never a carry-over from a different deal. `null` whenever there is no
-     accepted outcome at all (nothing to scope the checklist to). */
+     made durable. Scoped to `latestOutcome.at` -- the accepted outcome's
+     OWN durable timestamp, an identity that ALREADY exists
+     (`seller-call-outcome.ts`'s carrier), used here as the PRIMARY scope
+     key rather than inventing a new one -- plus agreed price and property
+     address as defense in depth (`currentContractReadyChecklistForOpportunity`'s
+     own rule). A DIFFERENT agreement, even at the identical price and
+     address, has a different `at` and never reads back this progress; the
+     SAME agreement (same `at`) does, across any number of reloads. `null`
+     whenever there is no accepted outcome at all. */
   const contractReadyChecklistRecord = useMemo(() => {
     if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
     if (latestOutcome?.kind !== "accept") return null;
@@ -1279,7 +1416,7 @@ export default function SellerCallWorkspace() {
     // record, not a real state to scope a checklist to.
     if (latestOutcome.snapshot.currentOffer === null) return null;
     return currentContractReadyChecklistForOpportunity(
-      notes, screen.opportunity.id, latestOutcome.snapshot.currentOffer, formatAddress(contact),
+      notes, screen.opportunity.id, latestOutcome.at, latestOutcome.snapshot.currentOffer, formatAddress(contact),
     );
   }, [notes, screen, latestOutcome, contact]);
 
@@ -1645,6 +1782,27 @@ export default function SellerCallWorkspace() {
                       STALE — no longer authorizes readiness ({readinessDecisionCurrency.staleBecause.join("; ")}). A fresh decision is required.
                     </div>
                   ) : null}
+                </div>
+              ) : null}
+              {/* Jess Gate correction, 2026-09-08: surfaces a failed
+                  durable-invalidation write. The live gate above is
+                  already correctly non-authorizing regardless -- this is
+                  purely an honesty signal that PERMANENCE across a future
+                  reload is not yet guaranteed for this specific staleness. */}
+              {invalidationWriteError ? (
+                <div data-testid="readiness-invalidation-write-error" style={{ fontSize: "11px", color: "#EF4444", marginBottom: "10px" }}>
+                  {invalidationWriteError}
+                </div>
+              ) : null}
+              {/* Jess Gate correction, 2026-09-08: a genuine v1 legacy
+                  decision (no evidence snapshot at all) stays visible as
+                  history, explicitly labeled, and NEVER authorizes
+                  readiness -- it is not read into `readinessHumanAction`
+                  anywhere in this file. */}
+              {legacyReadinessDecision ? (
+                <div data-testid="readiness-human-action-legacy" style={{ fontSize: "12px", color: "#475569", fontStyle: "italic", marginBottom: "10px", paddingTop: "8px", borderTop: "1px solid rgba(148,163,184,0.1)" }}>
+                  Legacy decision on record: {legacyReadinessDecision.kind.toUpperCase()} at {new Date(legacyReadinessDecision.at).toLocaleString()}
+                  {legacyReadinessDecision.reason ? ` — "${legacyReadinessDecision.reason}"` : ""}. This predates the current evidence-snapshot system and cannot authorize readiness; a fresh decision is required.
                 </div>
               ) : null}
               {readiness.status === "OFFER_READY" ? (

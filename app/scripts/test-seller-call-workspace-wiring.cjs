@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 205;
+const FLOOR = 218;
 let failures = 0;
 let checks = 0;
 
@@ -433,8 +433,11 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
     setLastCallAttempt: sellerCallTsx.indexOf('ghl.contacts.setLastCallAttempt') !== -1,
   }, { notesCreate: true, setLastCallAttempt: true });
   check(
-    'ghl.notes.create now has exactly nine call sites in the actual code, never a tenth',
-    (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 9,
+    // Jess Gate correction, second round, 2026-09-08: a tenth call site --
+    // the durable-invalidation write inside the write-on-detect effect --
+    // is a real, deliberate addition, still exactly ghl.notes.create.
+    'ghl.notes.create now has exactly ten call sites in the actual code, never an eleventh',
+    (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 10,
   );
   const forbiddenAlwaysForOverride = [
     'setApprovedArv', 'setEstimatedRepairs', 'saveUnderwritingFields', 'setAskingPrice',
@@ -633,7 +636,42 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('a stale Offer Readiness decision is marked in the UI, never silently hidden', /data-testid="readiness-human-action-stale"/.test(sellerCallTsx), true);
   check('the stale marker states it no longer authorizes readiness', /no longer authorizes readiness/.test(sellerCallTsx), true);
   check('readinessHumanAction resolves to none when the decision is stale, not just when absent', /readinessHumanActionRecord === null \|\| readinessDecisionCurrency\?\.current === false/.test(sellerCallTsxNoComments), true);
-  check('every decision write binds the live evidence snapshot, both approved and overridden branches', (sellerCallTsxNoComments.match(/snapshot: liveReadinessEvidenceSnapshot/g) || []).length, 2);
+  // Jess Gate correction, second round: 3 occurrences now -- the two
+  // decision-write branches (approved/overridden) PLUS the currency-check
+  // read (isReadinessDecisionCurrent's own `snapshot:` field), all reading
+  // the SAME memoized value, never a second computation of it.
+  check('every decision write binds the live evidence snapshot, both approved and overridden branches, and the currency check reads the same value', (sellerCallTsxNoComments.match(/snapshot: liveReadinessEvidenceSnapshot/g) || []).length, 3);
+}
+
+// ============================================================
+// Jess Gate correction, second round, 2026-09-08 -- the exact gaps named
+// in that review: economics inputs in the snapshot, permanent durable
+// invalidation with a write-on-detect effect that never gates on its own
+// success, direct fact comparison (not existence alone), agreement-scoped
+// checklist identity, and legacy v1 display.
+// ============================================================
+{
+  check('pipeline now exposes the resolved UnderwritingInputs (needed for the deal-economics inputs snapshot)', /return \{ result: computeUnderwriting\(inputs\), facts, assignment: inputs\.assignment, inputs, issues, computeError: null, repairsSourceIsApprovalGated \}/.test(sellerCallTsxNoComments), true);
+  check('liveReadinessEvidenceSnapshot.dealEconomics includes inputs via buildDealEconomicsInputsSnapshot, in BOTH the calculated and unavailable branches', (sellerCallTsxNoComments.match(/inputs: buildDealEconomicsInputsSnapshot\(pipeline\.inputs\)/g) || []).length, 2);
+
+  check('a durable invalidation-write effect exists', /useEffect\(\(\) => \{[\s\S]{0,700}formatReadinessDecisionInvalidationNote/.test(sellerCallTsxNoComments), true);
+  check('the invalidation effect only fires when NOT current and NOT already durably invalidated', /if \(readinessDecisionCurrency\.current\) return;[\s\S]{0,100}if \(readinessDecisionInvalidatedDurably\) return;/.test(sellerCallTsxNoComments), true);
+  check('the invalidation write is scoped to the specific decision it invalidates (decisionAt: readinessHumanActionRecord.at)', /decisionAt: readinessHumanActionRecord\.at, reasons: readinessDecisionCurrency\.staleBecause/.test(sellerCallTsxNoComments), true);
+  check('a failed invalidation write is surfaced to the operator', /data-testid="readiness-invalidation-write-error"/.test(sellerCallTsx), true);
+  check('readinessHumanAction (the live gate) does NOT reference the invalidation write\'s busy/error state -- gating never waits on the write succeeding', /const readinessHumanAction: HumanAction = readinessHumanActionRecord === null \|\| readinessDecisionCurrency\?\.current === false/.test(sellerCallTsxNoComments) && !/invalidationWriteBusyForAt/.test(sellerCallTsxNoComments.slice(sellerCallTsxNoComments.indexOf('const readinessHumanAction: HumanAction'), sellerCallTsxNoComments.indexOf('const readinessHumanAction: HumanAction') + 50)), true);
+
+  check('readinessDecisionInvalidatedDurably is checked FIRST/unconditionally in isReadinessDecisionCurrent\'s call, via the durablyInvalidated field', /durablyInvalidated: readinessDecisionInvalidatedDurably/.test(sellerCallTsxNoComments), true);
+
+  check('legacy v1 decisions are read via the DISPLAY-ONLY reader', /latestLegacyReadinessHumanActionV1ForOpportunity/.test(sellerCallTsxNoComments), true);
+  check('legacy v1 decisions are rendered with an explicit "cannot authorize readiness" explanation', /predates the current evidence-snapshot system and cannot authorize readiness/.test(sellerCallTsx), true);
+  check('legacyReadinessDecision is NEVER referenced inside the readinessHumanAction computation (cannot authorize readiness)', (() => {
+    const start = sellerCallTsxNoComments.indexOf('const readinessHumanAction: HumanAction');
+    const end = sellerCallTsxNoComments.indexOf(';', start);
+    return start >= 0 && end > start ? /legacyReadinessDecision/.test(sellerCallTsxNoComments.slice(start, end)) : 'RANGE_NOT_FOUND';
+  })(), false);
+
+  check('the Contract Ready checklist is scoped by the agreement\'s OWN durable identity (latestOutcome.at), not price/address alone', /agreementAt: latestOutcome\.at/.test(sellerCallTsxNoComments), true);
+  check('the checklist read passes agreementAt as the primary scope argument', /currentContractReadyChecklistForOpportunity\(\s*notes, screen\.opportunity\.id, latestOutcome\.at, latestOutcome\.snapshot\.currentOffer, formatAddress\(contact\),/.test(sellerCallTsxNoComments), true);
 }
 
 // ============================================================
