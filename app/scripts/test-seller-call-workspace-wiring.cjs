@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 218;
+const FLOOR = 230;
 let failures = 0;
 let checks = 0;
 
@@ -635,7 +635,7 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 
   check('a stale Offer Readiness decision is marked in the UI, never silently hidden', /data-testid="readiness-human-action-stale"/.test(sellerCallTsx), true);
   check('the stale marker states it no longer authorizes readiness', /no longer authorizes readiness/.test(sellerCallTsx), true);
-  check('readinessHumanAction resolves to none when the decision is stale, not just when absent', /readinessHumanActionRecord === null \|\| readinessDecisionCurrency\?\.current === false/.test(sellerCallTsxNoComments), true);
+  check('readinessHumanAction resolves to none when the decision is stale, not just when absent', /readinessHumanActionRecord === null\s*\|\|\s*readinessDecisionCurrency\?\.current === false/.test(sellerCallTsxNoComments), true);
   // Jess Gate correction, second round: 3 occurrences now -- the two
   // decision-write branches (approved/overridden) PLUS the currency-check
   // read (isReadinessDecisionCurrent's own `snapshot:` field), all reading
@@ -654,11 +654,38 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('pipeline now exposes the resolved UnderwritingInputs (needed for the deal-economics inputs snapshot)', /return \{ result: computeUnderwriting\(inputs\), facts, assignment: inputs\.assignment, inputs, issues, computeError: null, repairsSourceIsApprovalGated \}/.test(sellerCallTsxNoComments), true);
   check('liveReadinessEvidenceSnapshot.dealEconomics includes inputs via buildDealEconomicsInputsSnapshot, in BOTH the calculated and unavailable branches', (sellerCallTsxNoComments.match(/inputs: buildDealEconomicsInputsSnapshot\(pipeline\.inputs\)/g) || []).length, 2);
 
-  check('a durable invalidation-write effect exists', /useEffect\(\(\) => \{[\s\S]{0,700}formatReadinessDecisionInvalidationNote/.test(sellerCallTsxNoComments), true);
-  check('the invalidation effect only fires when NOT current and NOT already durably invalidated', /if \(readinessDecisionCurrency\.current\) return;[\s\S]{0,100}if \(readinessDecisionInvalidatedDurably\) return;/.test(sellerCallTsxNoComments), true);
-  check('the invalidation write is scoped to the specific decision it invalidates (decisionAt: readinessHumanActionRecord.at)', /decisionAt: readinessHumanActionRecord\.at, reasons: readinessDecisionCurrency\.staleBecause/.test(sellerCallTsxNoComments), true);
+  check('a durable invalidation-write effect exists', /useEffect\(\(\) => \{[\s\S]{0,2200}formatReadinessDecisionInvalidationNote/.test(sellerCallTsxNoComments), true);
+  check('the invalidation effect skips only when already durably invalidated OR nothing needs persisting', /if \(readinessDecisionInvalidatedDurably\) return;[\s\S]{0,900}if \(!mustPersistInvalidation\) return;/.test(sellerCallTsxNoComments), true);
+  check('the invalidation write is scoped to the specific decision it invalidates (decisionAt: readinessHumanActionRecord.at)', /decisionAt: readinessHumanActionRecord\.at, reasons,?\s*\}\)/.test(sellerCallTsxNoComments), true);
   check('a failed invalidation write is surfaced to the operator', /data-testid="readiness-invalidation-write-error"/.test(sellerCallTsx), true);
-  check('readinessHumanAction (the live gate) does NOT reference the invalidation write\'s busy/error state -- gating never waits on the write succeeding', /const readinessHumanAction: HumanAction = readinessHumanActionRecord === null \|\| readinessDecisionCurrency\?\.current === false/.test(sellerCallTsxNoComments) && !/invalidationWriteBusyForAt/.test(sellerCallTsxNoComments.slice(sellerCallTsxNoComments.indexOf('const readinessHumanAction: HumanAction'), sellerCallTsxNoComments.indexOf('const readinessHumanAction: HumanAction') + 50)), true);
+  check('readinessHumanAction (the live gate) does NOT reference the invalidation write\'s busy/error state -- gating never waits on the write succeeding', /const readinessHumanAction: HumanAction = readinessHumanActionRecord === null[\s\S]{0,200}\? \{ kind: "none" \}/.test(sellerCallTsxNoComments) && !/invalidationWriteBusyForAt/.test(sellerCallTsxNoComments.slice(sellerCallTsxNoComments.indexOf('const readinessHumanAction: HumanAction'), sellerCallTsxNoComments.indexOf('const readinessHumanAction: HumanAction') + 200)), true);
+
+  // Jess Gate correction, third round (2026-09-08) -- SESSION-STICKY
+  // observed-stale memory, closing a defect found live in Test: without it,
+  // a durable-write failure combined with the underlying fact reverting
+  // BEFORE that write ever succeeds would silently un-observe the mismatch
+  // (readinessDecisionCurrency alone recomputes back to current:true, and
+  // nothing durable had landed yet to stop it).
+  check('a session-sticky observedStaleForAt flag exists, keyed by decision at', /const \[observedStaleForAt, setObservedStaleForAt\] = useState<Record<string, true>>\(\{\}\);/.test(sellerCallTsxNoComments), true);
+  check('the sticky flag is set by its own effect whenever a live mismatch is observed, and only then', /useEffect\(\(\) => \{\s*if \(!readinessHumanActionRecord \|\| !readinessDecisionCurrency\) return;\s*if \(readinessDecisionCurrency\.current === false\) \{\s*setObservedStaleForAt/.test(sellerCallTsxNoComments), true);
+  check('readinessHumanAction (the live gate) ALSO goes to none when observedStaleThisSession is true, not only on a live mismatch', /readinessDecisionCurrency\?\.current === false\s*\|\| observedStaleThisSession\s*\?\s*\{ kind: "none" \}/.test(sellerCallTsxNoComments), true);
+  check('the invalidation-write effect RETRIES using the sticky flag, not only a live mismatch (mustPersistInvalidation reads observedStaleForAt)', /const mustPersistInvalidation = readinessDecisionCurrency\.current === false\s*\|\| !!observedStaleForAt\[readinessHumanActionRecord\.at\];/.test(sellerCallTsxNoComments), true);
+  check('the retry effect depends on observedStaleForAt (re-fires when the sticky flag changes, not only when readinessDecisionCurrency changes)', /\}, \[readinessHumanActionRecord, readinessDecisionCurrency, readinessDecisionInvalidatedDurably, observedStaleForAt, screen, contactId\]\);/.test(sellerCallTsxNoComments), true);
+
+  // Jess Gate correction, third round, fault-injection follow-up
+  // (2026-09-08) -- a self-cancellation race found live: the busy guard was
+  // `useState` AND its own effect dependency, so setting it re-triggered
+  // the effect, whose cleanup cancelled the closure that had JUST started
+  // the write, before that write's own promise ever settled -- silently
+  // skipping both the success and failure handlers, including the error
+  // banner on a genuinely failed write. Fixed by moving the guard to a ref.
+  check('the write-busy guard is a ref, not state (does not re-render or re-trigger the effect on its own)', /const invalidationWriteBusyRef = useRef<string \| null>\(null\);/.test(sellerCallTsxNoComments), true);
+  check('the busy guard is no longer a dependency of the retry effect (this is what caused the self-cancellation race)', !/\}, \[readinessHumanActionRecord, readinessDecisionCurrency, readinessDecisionInvalidatedDurably, observedStaleForAt, screen, contactId, invalidationWriteBusyForAt\]\);/.test(sellerCallTsxNoComments), true);
+  check('no invalidationWriteBusyForAt state remains anywhere in the file', !/invalidationWriteBusyForAt/.test(sellerCallTsxNoComments), true);
+  check('no leftover debug console.log instrumentation remains in the invalidation-write effect', !/DEBUG_EFFECT|DEBUG_CALLING_CREATE|DEBUG_THEN|DEBUG_CATCH|DEBUG_FINALLY/.test(sellerCallTsx), true);
+  check('when the live facts have already reverted (current !== false) but the sticky flag is set, the write uses a fallback reason naming the earlier-session observation, never an empty reasons array', /reasons = readinessDecisionCurrency\.current === false\s*\? readinessDecisionCurrency\.staleBecause\s*: \["previously observed as a live mismatch earlier this session/.test(sellerCallTsxNoComments), true);
+  check('the DISPLAYED stale banner tracks the same two sources as the live gate (current === false OR observedStaleThisSession), not the live comparison alone -- so a reverted-but-not-yet-persisted mismatch still reads STALE on screen', /\(readinessDecisionCurrency\?\.current === false \|\| observedStaleThisSession\) \? \(\s*<div data-testid="readiness-human-action-stale"/.test(sellerCallTsxNoComments), true);
+  check('the stale banner names the earlier-session-observation case explicitly (never falls back to an empty staleBecause join) when live currently matches but the sticky flag is still what is holding it stale', /observed as a live mismatch earlier this session; the underlying value matches again/.test(sellerCallTsx), true);
 
   check('readinessDecisionInvalidatedDurably is checked FIRST/unconditionally in isReadinessDecisionCurrent\'s call, via the durablyInvalidated field', /durablyInvalidated: readinessDecisionInvalidatedDurably/.test(sellerCallTsxNoComments), true);
 

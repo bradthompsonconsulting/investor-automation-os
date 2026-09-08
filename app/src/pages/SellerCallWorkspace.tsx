@@ -1237,7 +1237,36 @@ export default function SellerCallWorkspace() {
      record itself (`readinessHumanActionRecord`) remains completely
      unedited and is still rendered, marked stale, in the UI below. A
      fresh decision is the only thing that can produce a new, current one. */
-  const readinessHumanAction: HumanAction = readinessHumanActionRecord === null || readinessDecisionCurrency?.current === false
+  /* Jess Gate correction, 2026-09-08 (third round) -- SESSION-STICKY memory
+     of "this decision has been observed live-stale at least once," keyed by
+     the decision's own `at`. Closes a real gap found live in Test: without
+     this, if the durable invalidation write below is still in flight or has
+     failed at the moment the underlying fact REVERTS, `readinessDecisionCurrency`
+     recomputes back to `current: true` on the very next render (nothing
+     durable landed yet, and the live snapshot matches the record again) --
+     silently un-observing a mismatch this page ITSELF already saw, and
+     reactivating a decision the operator watched go stale moments earlier.
+     Once set for a given `at`, this flag stays true for the rest of THIS
+     session regardless of what the live comparison says afterward -- cleared
+     only by an actual reload, which is symmetric with this file's own
+     documented "a change-and-revert entirely within one unobserved window"
+     limitation: nothing survives a reload unless a durable write actually
+     landed. This is a session-only backstop for the WITHIN-SESSION gap; it
+     does not (and cannot) promise permanence across a reload when the
+     durable write never once succeeded before that reload -- that remains
+     the accepted limitation, now stated precisely. */
+  const [observedStaleForAt, setObservedStaleForAt] = useState<Record<string, true>>({});
+  useEffect(() => {
+    if (!readinessHumanActionRecord || !readinessDecisionCurrency) return;
+    if (readinessDecisionCurrency.current === false) {
+      setObservedStaleForAt((prev) => (prev[readinessHumanActionRecord.at] ? prev : { ...prev, [readinessHumanActionRecord.at]: true }));
+    }
+  }, [readinessHumanActionRecord, readinessDecisionCurrency]);
+
+  const observedStaleThisSession = readinessHumanActionRecord !== null && !!observedStaleForAt[readinessHumanActionRecord.at];
+  const readinessHumanAction: HumanAction = readinessHumanActionRecord === null
+    || readinessDecisionCurrency?.current === false
+    || observedStaleThisSession
     ? { kind: "none" }
     : readinessHumanActionRecord.kind === "approved"
       ? {
@@ -1274,39 +1303,90 @@ export default function SellerCallWorkspace() {
      the effect re-attempts only on the NEXT genuine change to its
      dependencies (e.g. the operator reloading), not automatically. */
   const [invalidationWriteError, setInvalidationWriteError] = useState<string | null>(null);
-  const [invalidationWriteBusyForAt, setInvalidationWriteBusyForAt] = useState<string | null>(null);
+  /* Jess Gate correction, 2026-09-08 (third round, fault-injection follow-up)
+     -- TWO layered defects found live under controlled fault injection, both
+     now fixed:
+
+     (1) The busy guard was originally `useState`, with itself listed as the
+     effect's own dependency. Setting it re-rendered, the changed dependency
+     made React run this effect's OWN cleanup against the closure that had
+     JUST started the write, before that write's promise ever settled. Fixed
+     by moving the guard to a ref (`invalidationWriteBusyRef`) -- writing to
+     a ref does not re-render and is not a dependency, so setting it can no
+     longer retrigger this same effect.
+
+     (2) That alone was NOT sufficient. `readinessDecisionCurrency` (a
+     genuine, external dependency -- it recomputes from `notes`, which the
+     withdraw/confirm click handlers update independently) can legitimately
+     change WHILE a write is still in flight. The effect then correctly
+     re-runs and correctly does NOT start a second write (the ref guard
+     blocks that) -- but the OLD per-invocation `cancelled` + cleanup
+     pattern treated that mere re-run as "supersede the closure that's still
+     waiting," setting `cancelled = true` on it before its `ghl.notes.
+     create` promise ever resolved. Confirmed live: the write's own
+     `.catch()` DID run (proving the fault injection and the fetch's
+     rejection both worked correctly) but its `if (cancelled) return;` guard
+     skipped `setInvalidationWriteError` every time, so a genuinely failed
+     write NEVER surfaced its error banner. `cancelled`-via-cleanup is the
+     wrong tool here: the ref already prevents any second write from ever
+     starting for the same decision, so there is no "superseding attempt" to
+     protect against -- the only real hazard left is calling setState after
+     unmount, which a single mount-scoped ref (not a per-invocation
+     variable) already covers below. */
+  const invalidationWriteBusyRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     if (!readinessHumanActionRecord || !readinessDecisionCurrency) return;
-    if (readinessDecisionCurrency.current) return;
     if (readinessDecisionInvalidatedDurably) return;
+    // Jess Gate correction, 2026-09-08 (third round) -- RETRY even after the
+    // live facts revert, as long as this decision was observed stale at
+    // SOME point this session and durability never landed. Previously this
+    // guard was `if (readinessDecisionCurrency.current) return;` alone,
+    // which stopped retrying the instant the fact reverted -- if the write
+    // had failed while the mismatch was live, it was NEVER retried, and the
+    // observation was lost the moment `notes`/`screen` triggered a reload.
+    const mustPersistInvalidation = readinessDecisionCurrency.current === false
+      || !!observedStaleForAt[readinessHumanActionRecord.at];
+    if (!mustPersistInvalidation) return;
     if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
-    if (invalidationWriteBusyForAt === readinessHumanActionRecord.at) return;
+    if (invalidationWriteBusyRef.current === readinessHumanActionRecord.at) return;
 
-    let cancelled = false;
-    setInvalidationWriteBusyForAt(readinessHumanActionRecord.at);
+    invalidationWriteBusyRef.current = readinessHumanActionRecord.at;
     const at = new Date().toISOString();
+    // The live facts may have already reverted by the time this attempt (or
+    // a retry of it) runs -- `staleBecause` would then be empty even though
+    // a real mismatch WAS observed earlier this session. Fall back to a
+    // reason naming that origin rather than writing a note with an empty
+    // reasons array (which `parseReadinessDecisionInvalidationNote` itself
+    // refuses -- see "invalidation: empty reasons array refused").
+    const reasons = readinessDecisionCurrency.current === false
+      ? readinessDecisionCurrency.staleBecause
+      : ["previously observed as a live mismatch earlier this session; the durable invalidation record for that observation had not yet been saved when the underlying value reverted"];
     const note = formatReadinessDecisionInvalidationNote({
       opportunityId: screen.opportunity.id, at, operator: null,
-      decisionAt: readinessHumanActionRecord.at, reasons: readinessDecisionCurrency.staleBecause,
+      decisionAt: readinessHumanActionRecord.at, reasons,
     });
     ghl.notes.create(contactId, note)
       .then(() => {
-        if (cancelled) return;
+        if (!mountedRef.current) return;
         setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
         setInvalidationWriteError(null);
       })
       .catch((e: any) => {
-        if (cancelled) return;
+        if (!mountedRef.current) return;
         setInvalidationWriteError(
-          e?.message ?? "Couldn't durably record this staleness. It is still treated as not-authorizing right now, but if the value reverts before this succeeds, a future reload could miss it. Reload to retry.",
+          e?.message ?? "Couldn't durably record this staleness. It is still treated as not-authorizing right now, and will keep retrying while this session stays open -- but if you reload before it succeeds, a future load could miss it. Reload to retry immediately.",
         );
       })
       .finally(() => {
-        if (!cancelled) setInvalidationWriteBusyForAt(null);
+        if (invalidationWriteBusyRef.current === readinessHumanActionRecord.at) invalidationWriteBusyRef.current = null;
       });
-    return () => { cancelled = true; };
-  }, [readinessHumanActionRecord, readinessDecisionCurrency, readinessDecisionInvalidatedDurably, screen, contactId, invalidationWriteBusyForAt]);
+  }, [readinessHumanActionRecord, readinessDecisionCurrency, readinessDecisionInvalidatedDurably, observedStaleForAt, screen, contactId]);
 
   /* B8-04, consumed, via buildOfferReadinessInputs (B8-07 / INV-50,
      extended B8-13 / INV-68) -- that module's own header states exactly
@@ -1769,17 +1849,28 @@ export default function SellerCallWorkspace() {
               </div>
               {readinessHumanActionRecord ? (
                 <div data-testid="readiness-human-action-current" style={{ fontSize: "12px", color: "#94A3B8", marginBottom: "10px" }}>
-                  Last recorded: <strong style={{ color: readinessDecisionCurrency?.current === false ? "#64748B" : readinessHumanActionRecord.kind === "overridden" ? "#F59E0B" : "#22C55E" }}>
+                  Last recorded: <strong style={{ color: (readinessDecisionCurrency?.current === false || observedStaleThisSession) ? "#64748B" : readinessHumanActionRecord.kind === "overridden" ? "#F59E0B" : "#22C55E" }}>
                     {readinessHumanActionRecord.kind.toUpperCase()}
                   </strong> at {new Date(readinessHumanActionRecord.at).toLocaleString()}
                   {readinessHumanActionRecord.reason ? ` — "${readinessHumanActionRecord.reason}"` : ""}
-                  {/* Jess Gate correction, 2026-09-08: a stale decision stays
-                      visible as history -- it is never hidden or edited --
-                      but is explicitly marked as no longer authorizing
-                      readiness, with the durable reason(s) it went stale. */}
-                  {readinessDecisionCurrency?.current === false ? (
+                  {/* Jess Gate correction, 2026-09-08 (third round): the
+                      DISPLAY must track the same two sources as the live
+                      GATE above (`readinessDecisionCurrency.current === false`
+                      OR `observedStaleThisSession`) -- not the live
+                      comparison alone. Without this, once a reverted value
+                      makes the live comparison match again, this banner
+                      would silently stop reading "STALE" even though gating
+                      correctly still refuses to authorize -- a misleading
+                      display of an otherwise-correct decision. When the
+                      live facts currently match but the sticky flag is
+                      still what is holding this stale, that is said
+                      explicitly rather than reusing `staleBecause` (which
+                      would be empty in that case). */}
+                  {(readinessDecisionCurrency?.current === false || observedStaleThisSession) ? (
                     <div data-testid="readiness-human-action-stale" style={{ color: "#64748B", fontStyle: "italic", marginTop: "4px" }}>
-                      STALE — no longer authorizes readiness ({readinessDecisionCurrency.staleBecause.join("; ")}). A fresh decision is required.
+                      STALE — no longer authorizes readiness ({readinessDecisionCurrency?.current === false
+                        ? readinessDecisionCurrency.staleBecause.join("; ")
+                        : "observed as a live mismatch earlier this session; the underlying value matches again, but the durable invalidation record for that observation has not yet been saved"}). A fresh decision is required.
                     </div>
                   ) : null}
                 </div>
