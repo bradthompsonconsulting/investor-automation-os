@@ -477,14 +477,40 @@ DIFFERENT, already-separate concept from this one, and this addendum does
 not merge them. Both APPROVED and OVERRIDDEN remain exactly as defined
 above: APPROVED never elevates a non-ready `status`; only OVERRIDDEN may.
 
-**Not decided by this addendum, and deliberately left open:** whether a
-recorded human action should be invalidated if the specific evidence it
-was recorded against later changes (distinct from item 9's already-open
-revocation-retroactivity question, and not required by B8-13's acceptance
-criteria). The carrier records "what a human decided, and when"; it does
-not attempt a more elaborate staleness rule than every other note-ledger
-carrier in this codebase already applies (latest entry, scoped to the
-Opportunity).
+**Superseded 2026-09-08 (Jess Gate correction, INV-68/B8-13, PR #36) —
+resolved, and now implemented and live-proven in Test:** whether a recorded
+human action should be invalidated if the specific evidence it was recorded
+against later changes was left open by this addendum's original text above.
+It is now decided:
+
+* A recorded readiness decision is bound to its complete evidence snapshot
+  across **all six** Offer Ready categories, including material deal
+  economics **inputs** (not outputs alone) — a changed input invalidates
+  the decision even when every calculated output is numerically identical.
+* An observed material mismatch between the live snapshot and the
+  decision's recorded snapshot invalidates that specific decision
+  **permanently**, durably recorded (`seller-call-readiness-carriers.ts`
+  Section 5, the readiness-decision-invalidation ledger), checked before
+  any live value comparison.
+* Because that invalidation is durable, the underlying facts returning to
+  their prior values does **not** reactivate the decision — a fresh
+  decision is required. The one accepted limitation: a change-and-revert
+  occurring **entirely between two page reads**, with no page load during
+  the mismatch window, is unobservable by design (inherent to a
+  snapshot-on-read architecture) and is the sole case a reverted value
+  could escape detection.
+* If the durable invalidation write itself fails to persist, the stale
+  decision must not authorize readiness regardless, and the failure is
+  surfaced to the operator rather than silently retried or swallowed.
+* A decision recorded under the prior (pre-invalidation) carrier schema
+  remains visible as historical, is explicitly marked inactive, and cannot
+  authorize readiness — only a fresh decision under the current schema can.
+
+This resolves this addendum's own open question above. It is a distinct
+question from item 9's revocation-retroactivity question, which remains
+open: whether invalidating a decision has any retroactive legal or business
+effect on an offer already presented to a seller under the prior evidence
+state is still undecided, unchanged by this correction.
 
 ### Hard boundary, restated
 
