@@ -66,7 +66,7 @@ const { computeOfferReadiness } = require(readinessPath);
 const { buildOfferReadinessInputs } = require(inputsPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 27;
+const FLOOR = 36;
 let failures = 0;
 let checks = 0;
 
@@ -110,6 +110,10 @@ function build(known, overrides) {
     dealEconomics: GOLDEN_ECONOMICS,
     repairsApprovalProven: false,
     arvEvidenceState: null,
+    propertyIdentityConfirmed: false,
+    transactionAssumptionsRecorded: false,
+    sellerPricePositionRecorded: false,
+    humanAction: { kind: 'none' },
   }, overrides || {}));
 }
 
@@ -153,16 +157,33 @@ function build(known, overrides) {
 }
 
 // ============================================================
-// The other three categories stay UNKNOWN, unchanged -- out of this
-// issue's scope.
+// B8-13 / INV-68: propertyIdentity / transactionAssumptions /
+// sellerPricePosition are each a plain boolean the caller has already
+// derived from a durable carrier -- SUPPORTED once true, UNKNOWN
+// otherwise, no PRELIMINARY tier, same binary shape as repairsCondition.
 // ============================================================
 {
-  const inputs = build({ arv: 250000, repairs: 41000, askingPrice: 260000 }, { repairsApprovalProven: true, arvEvidenceState: 'HIGH' });
-  check('propertyIdentity stays UNKNOWN (out of scope for this issue)', inputs.propertyIdentity, 'UNKNOWN');
-  check('transactionAssumptions stays UNKNOWN (out of scope for this issue)', inputs.transactionAssumptions, 'UNKNOWN');
-  check('sellerPricePosition stays UNKNOWN (out of scope for this issue)', inputs.sellerPricePosition, 'UNKNOWN');
-  check('materialUnknowns is empty (never invented)', inputs.materialUnknowns, []);
-  check('humanAction defaults to none (no approve/override control here)', inputs.humanAction, { kind: 'none' });
+  const allFalse = build({ arv: 250000, repairs: 41000, askingPrice: 260000 }, { repairsApprovalProven: true, arvEvidenceState: 'HIGH' });
+  check('propertyIdentityConfirmed false -> propertyIdentity UNKNOWN', allFalse.propertyIdentity, 'UNKNOWN');
+  check('transactionAssumptionsRecorded false -> transactionAssumptions UNKNOWN', allFalse.transactionAssumptions, 'UNKNOWN');
+  check('sellerPricePositionRecorded false -> sellerPricePosition UNKNOWN', allFalse.sellerPricePosition, 'UNKNOWN');
+  check('materialUnknowns is empty (never invented)', allFalse.materialUnknowns, []);
+  check('humanAction defaults to none when caller supplies none', allFalse.humanAction, { kind: 'none' });
+
+  const allTrue = build({ arv: 250000, repairs: 41000, askingPrice: 260000 }, {
+    propertyIdentityConfirmed: true, transactionAssumptionsRecorded: true, sellerPricePositionRecorded: true,
+  });
+  check('propertyIdentityConfirmed true -> propertyIdentity SUPPORTED', allTrue.propertyIdentity, 'SUPPORTED');
+  check('transactionAssumptionsRecorded true -> transactionAssumptions SUPPORTED', allTrue.transactionAssumptions, 'SUPPORTED');
+  check('sellerPricePositionRecorded true -> sellerPricePosition SUPPORTED', allTrue.sellerPricePosition, 'SUPPORTED');
+
+  const approved = { kind: 'approved', at: '2026-09-08T00:00:00.000Z', operator: null, reason: 'looks fine' };
+  const withApproved = build({ arv: null, repairs: null, askingPrice: null }, { humanAction: approved });
+  check('humanAction (approved) passes through verbatim, never recomputed', withApproved.humanAction, approved);
+
+  const overridden = { kind: 'overridden', at: '2026-09-08T00:00:00.000Z', operator: null, reason: 'proceeding anyway' };
+  const withOverridden = build({ arv: null, repairs: null, askingPrice: null }, { humanAction: overridden });
+  check('humanAction (overridden) passes through verbatim, never recomputed', withOverridden.humanAction, overridden);
 }
 
 // ============================================================
@@ -202,6 +223,28 @@ function build(known, overrides) {
   const inputsNoArv = build({ arv: null, repairs: null, askingPrice: null }, { arvEvidenceState: null });
   const readinessNoArv = computeOfferReadiness(inputsNoArv);
   check('no ARV evidence at all -> readiness.categories.arv UNKNOWN end-to-end', readinessNoArv.categories.arv, 'UNKNOWN');
+
+  // B8-13 / INV-68 end-to-end: all six categories genuinely SUPPORTED (no
+  // override involved) actually reaches OFFER_READY through the unchanged
+  // computeOfferReadiness aggregation rule -- proves the new carriers wire
+  // all the way through, not just that the three booleans map correctly.
+  const allSix = build({ arv: 250000, repairs: 41000, askingPrice: 260000 }, {
+    repairsApprovalProven: true, arvEvidenceState: 'HIGH',
+    propertyIdentityConfirmed: true, transactionAssumptionsRecorded: true, sellerPricePositionRecorded: true,
+  });
+  const readinessAllSix = computeOfferReadiness(allSix);
+  check('all six categories SUPPORTED -> effectiveStatus OFFER_READY end-to-end, humanAction none', readinessAllSix.effectiveStatus, 'OFFER_READY');
+  check('genuinely OFFER_READY -> zero reasons', readinessAllSix.reasons, []);
+
+  // A real OVERRIDDEN human action, read back from the new carrier and
+  // passed through, elevates an objectively NOT_READY status -- proves the
+  // carrier's `humanAction` actually reaches the unchanged override rule.
+  const notReadyButOverridden = build({ arv: null, repairs: null, askingPrice: null }, {
+    humanAction: { kind: 'overridden', at: '2026-09-08T00:00:00.000Z', operator: null, reason: 'proceeding anyway' },
+  });
+  const readinessOverridden = computeOfferReadiness(notReadyButOverridden);
+  check('NOT_READY evidence + overridden humanAction -> effectiveStatus OFFER_READY end-to-end', readinessOverridden.effectiveStatus, 'OFFER_READY');
+  check('...but raw status still reports NOT_READY (override never hides the underlying evidence)', readinessOverridden.status, 'NOT_READY');
 }
 
 // ============================================================

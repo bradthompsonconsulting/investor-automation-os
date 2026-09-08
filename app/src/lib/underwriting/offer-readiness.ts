@@ -214,7 +214,13 @@ function dealEconomicsCategoryLevel(econ: Board8Economics): Board8EvidenceLevel 
   return "SUPPORTED";
 }
 
-const CATEGORY_LABEL: Record<MaterialCategory, string> = {
+/**
+ * Exported for B8-12 / INV-55's compact "What We Still Need / Offer
+ * Readiness" checklist, which needs the same operator-facing label this
+ * module already uses for its own reason messages -- never a second set
+ * of category labels invented at the UI layer.
+ */
+export const CATEGORY_LABEL: Record<MaterialCategory, string> = {
   property_identity: "Property identity",
   repairs_condition: "Repairs/condition",
   arv: "ARV",

@@ -388,6 +388,137 @@ Ready. Each remains its own decision, most of them B8-02's or later.
 9. **Revocation's retroactive effect on an already-approved or
    already-presented offer is undecided.**
 
+   Items 7 (for `property_identity`, `transaction_assumptions`, and
+   `seller_price_position`; `arv` and `repairs_condition` were already
+   resolved by B8-04/B8-07) and 8 are resolved by the addendum below.
+   Items 1-6 and 9 remain open, unstarted B8-02 reconciliation items.
+
+---
+
+## Addendum — B8-13 / INV-68: determination mechanisms for the three
+## remaining categories, and the Offer Ready human-action carrier
+## (Brad/Jess ruling, locked 2026-09-08)
+
+This addendum resolves B8-02 reconciliation items 7 (for the three
+categories named below) and 8. It amends nothing above; per AGENTS.md, "a
+decision's amendments govern, not its original text" (PB-D43) — this is
+the current, binding word on these two items, read together with the
+unchanged sections above.
+
+**Governing constraint, unchanged by this addendum:** the evidence ladder
+(UNKNOWN → PRELIMINARY → SUPPORTED), the six-category list, the
+NOT_READY/REVIEW_NEEDED/OFFER_READY aggregation rule, and the
+APPROVED-never-elevates / only-OVERRIDDEN-elevates rule are exactly as
+locked above and in `offer-readiness.ts`. This addendum supplies REAL
+inputs to that unchanged engine; it does not touch the engine itself, and
+it does not touch the already-resolved `arv` or `repairs_condition`
+mechanisms (B8-04/B8-07).
+
+### Property identity
+
+**Determination mechanism: explicit operator confirmation, tied to the
+address on file at the moment of confirmation.** `property_identity`
+becomes SUPPORTED only once the operator has affirmatively confirmed that
+the seller/contact is connected to the property address currently
+displayed for this deal. This is rep judgment, not a derived completeness
+check — INV-44/INV-47 leave that choice open per category, and confirming
+a fact from a human who is on the actual call is the more defensible
+default absent a reason to prefer a derived check.
+
+**The confirmation must persist** (Brad's ruling, verbatim) — it is a
+durable record, not session-only React state, so it survives a reload and
+a stop/resume cycle exactly like the ARV and repairs approval carriers
+already do.
+
+**The confirmation is tied to the address it was given for.** If the
+address on file changes after confirmation, the category reverts to
+UNKNOWN rather than silently continuing to apply to a property the
+operator never actually confirmed — the same "a stale entry must never
+lend evidence to a fact it was not actually approved for" principle
+`matchedArvApproval` already enforces for ARV.
+
+### Transaction / deal-structure assumptions
+
+**Determination mechanism: explicit operator recording of three named
+sub-facts, each either filled in or explicitly marked none.** The category
+becomes SUPPORTED once all three are recorded for this deal:
+
+1. the required transaction structure,
+2. closing / possession expectations, and
+3. known title complications,
+
+each EITHER a real value the operator entered OR an explicit "none"
+marking — never left simply blank. A blank, never-visited field is not
+evidence of "nothing to report"; an explicit "none" is. This durably
+persists, for the same stop/resume and auditability reasons as property
+identity above.
+
+### Seller price position
+
+**Determination mechanism: explicit operator recording of a price, a
+counterposition, or an explicit documented refusal.** The category becomes
+SUPPORTED once one of these is recorded for this deal: a stated asking
+price or counterposition (a number), or a documented refusal to provide
+one. **A documented refusal is valid evidence and must not remain UNKNOWN**
+(Brad's ruling, verbatim) — this is deliberately NOT the same input as the
+live negotiation `Seller Position`/`Current Offer` session state B8-08
+built, which carries no "refused" case and is not itself durable; this is
+a separate, durable record of the underlying fact.
+
+### Offer Ready's human approval/override carrier
+
+**Resolved: yes, a durable GHL carrier, for V1.** Session-only state is
+rejected — stop/resume and auditability must be preserved (Brad's ruling,
+verbatim). This is `HumanAction` (already defined, unchanged, in
+`offer-readiness.ts`) given a durable carrier for the first time, mirroring
+the shape `ARV_EVIDENCE_SNAPSHOT_V1.md`'s decisions ledger already proved
+and B8-11 (INV-54) already extended to the negotiation override — a
+DIFFERENT, already-separate concept from this one, and this addendum does
+not merge them. Both APPROVED and OVERRIDDEN remain exactly as defined
+above: APPROVED never elevates a non-ready `status`; only OVERRIDDEN may.
+
+**Superseded 2026-09-08 (Jess Gate correction, INV-68/B8-13, PR #36) —
+resolved, and now implemented and live-proven in Test:** whether a recorded
+human action should be invalidated if the specific evidence it was recorded
+against later changes was left open by this addendum's original text above.
+It is now decided:
+
+* A recorded readiness decision is bound to its complete evidence snapshot
+  across **all six** Offer Ready categories, including material deal
+  economics **inputs** (not outputs alone) — a changed input invalidates
+  the decision even when every calculated output is numerically identical.
+* An observed material mismatch between the live snapshot and the
+  decision's recorded snapshot invalidates that specific decision
+  **permanently**, durably recorded (`seller-call-readiness-carriers.ts`
+  Section 5, the readiness-decision-invalidation ledger), checked before
+  any live value comparison.
+* Because that invalidation is durable, the underlying facts returning to
+  their prior values does **not** reactivate the decision — a fresh
+  decision is required. The one accepted limitation: a change-and-revert
+  occurring **entirely between two page reads**, with no page load during
+  the mismatch window, is unobservable by design (inherent to a
+  snapshot-on-read architecture) and is the sole case a reverted value
+  could escape detection.
+* If the durable invalidation write itself fails to persist, the stale
+  decision must not authorize readiness regardless, and the failure is
+  surfaced to the operator rather than silently retried or swallowed.
+* A decision recorded under the prior (pre-invalidation) carrier schema
+  remains visible as historical, is explicitly marked inactive, and cannot
+  authorize readiness — only a fresh decision under the current schema can.
+
+This resolves this addendum's own open question above. It is a distinct
+question from item 9's revocation-retroactivity question, which remains
+open: whether invalidating a decision has any retroactive legal or business
+effect on an offer already presented to a seller under the prior evidence
+state is still undecided, unchanged by this correction.
+
+### Hard boundary, restated
+
+No change to `ReadinessStatus`, the evidence ladder, `computeOfferReadiness`'s
+aggregation rule, or the `arv`/`repairs_condition` mechanisms. No merge with
+the separate `NegotiationOverride` above-Max concept. No Production
+mutation. No Board #9 work.
+
 ---
 
 ## Provenance

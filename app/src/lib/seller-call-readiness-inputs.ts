@@ -1,5 +1,6 @@
 /**
- * Seller Call Workspace -- Offer Readiness input assembly. B8-07 / INV-50.
+ * Seller Call Workspace -- Offer Readiness input assembly. B8-07 / INV-50,
+ * extended by B8-13 / INV-68.
  *
  * Pure. No I/O, no React, no GHL. Extracted from the page for the same
  * reason `seller-call-deal-bar.ts` and `next-best-question.ts` were: the
@@ -43,16 +44,29 @@
  *     `arvCategoryLevel`.
  *
  *   - propertyIdentity, transactionAssumptions, sellerPricePosition:
- *     UNKNOWN, unchanged. No determination mechanism exists for these
- *     three either (B8-02 item 7), and INV-50 is scoped to repairs and
- *     ARV/PropStream only -- it does not extend to these.
+ *     B8-13 / INV-68, per the locked addendum
+ *     (`docs/DEAL_ECONOMICS_OFFER_READINESS_V1.md`, "Addendum -- B8-13 /
+ *     INV-68"). Each is a plain boolean the caller has ALREADY derived
+ *     from `seller-call-readiness-carriers.ts`'s durable, strict-parsed
+ *     carriers (mirroring exactly how `repairsApprovalProven` above is a
+ *     pre-derived boolean, never a raw note this module parses itself) --
+ *     SUPPORTED once true, UNKNOWN otherwise. No PRELIMINARY tier for any
+ *     of the three: the addendum states a single confirmed/not-confirmed
+ *     threshold for each, the same binary shape `repairsCondition` above
+ *     already uses.
+ *
+ *   - humanAction: passed through verbatim from the caller, who derives it
+ *     from `seller-call-readiness-carriers.ts`'s
+ *     `latestReadinessHumanActionForOpportunity` (B8-13 / INV-68's durable
+ *     carrier) or supplies `{ kind: "none" }` when no action is on record.
+ *     This module makes no approval/override decision of any kind.
  *
  * dealEconomics is consumed verbatim from the caller's own B8-03
  * computation; this module never recomputes it.
  */
 
 import type { Board8Economics, Board8EvidenceLevel } from "./underwriting/board8-economics";
-import type { OfferReadinessInputs } from "./underwriting/offer-readiness";
+import type { HumanAction, OfferReadinessInputs } from "./underwriting/offer-readiness";
 import type { ArvEvidenceState } from "./arv-reconciliation";
 
 export type SellerCallKnownFacts = {
@@ -66,17 +80,24 @@ export function buildOfferReadinessInputs(args: {
   dealEconomics: Board8Economics;
   repairsApprovalProven: boolean;
   arvEvidenceState: ArvEvidenceState | null;
+  propertyIdentityConfirmed: boolean;
+  transactionAssumptionsRecorded: boolean;
+  sellerPricePositionRecorded: boolean;
+  humanAction: HumanAction;
 }): OfferReadinessInputs {
   const repairsCondition: Board8EvidenceLevel =
     args.known.repairs !== null && args.repairsApprovalProven ? "SUPPORTED" : "UNKNOWN";
+  const propertyIdentity: Board8EvidenceLevel = args.propertyIdentityConfirmed ? "SUPPORTED" : "UNKNOWN";
+  const transactionAssumptions: Board8EvidenceLevel = args.transactionAssumptionsRecorded ? "SUPPORTED" : "UNKNOWN";
+  const sellerPricePosition: Board8EvidenceLevel = args.sellerPricePositionRecorded ? "SUPPORTED" : "UNKNOWN";
   return {
-    propertyIdentity: "UNKNOWN",
+    propertyIdentity,
     repairsCondition,
     arv: args.arvEvidenceState,
-    transactionAssumptions: "UNKNOWN",
-    sellerPricePosition: "UNKNOWN",
+    transactionAssumptions,
+    sellerPricePosition,
     dealEconomics: args.dealEconomics,
     materialUnknowns: [],
-    humanAction: { kind: "none" },
+    humanAction: args.humanAction,
   };
 }

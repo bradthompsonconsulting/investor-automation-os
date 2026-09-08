@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 171;
+const FLOOR = 230;
 let failures = 0;
 let checks = 0;
 
@@ -316,19 +316,49 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 }
 
 // ============================================================
-// B8-08 / INV-51: the above-Max override is a DIFFERENT concept from
-// offer-readiness.ts's HumanAction -- `readiness`'s own humanAction must
-// remain exactly `{ kind: "none" }`, unchanged, and the negotiation
-// override must never be threaded into buildOfferReadinessInputs.
+// B8-08 / INV-51, corrected B8-13 / INV-68: the above-Max negotiation
+// override is a DIFFERENT concept from offer-readiness.ts's HumanAction,
+// and the two must never merge -- the negotiation override must never be
+// threaded into buildOfferReadinessInputs. B8-13 gives Offer Ready its OWN
+// real humanAction (durable carrier, `readinessHumanAction`); it is
+// `negotiationOverride` specifically that stays excluded, not `humanAction`
+// itself.
 // ============================================================
 {
-  // humanAction is hardcoded inside seller-call-readiness-inputs.ts
-  // itself (not the page) -- the correct proof is that the PAGE never
-  // overrides it with a competing assignment of its own.
-  check('page never assigns readiness.humanAction itself (stays whatever buildOfferReadinessInputs already hardcodes)', /humanAction:/.test(sellerCallTsxNoComments), false);
+  check('page DOES assign a real readiness.humanAction, from its own B8-13 durable carrier, never from negotiationOverride', /humanAction:\s*readinessHumanAction/.test(sellerCallTsxNoComments), true);
   const readinessInputsSrc = fs.readFileSync(path.join(APP, 'src/lib/seller-call-readiness-inputs.ts'), 'utf8');
-  check('seller-call-readiness-inputs.ts still hardcodes humanAction to none, unchanged by the negotiation feature', /humanAction:\s*\{\s*kind:\s*"none"\s*\}/.test(readinessInputsSrc), true);
+  check('seller-call-readiness-inputs.ts no longer hardcodes humanAction to none (B8-13 threads a real caller-supplied value)', /humanAction:\s*\{\s*kind:\s*"none"\s*\}/.test(readinessInputsSrc), false);
   check('NegotiationOverride is never passed into buildOfferReadinessInputs (a distinct concept from Offer Readiness evidence)', /buildOfferReadinessInputs\(\{[\s\S]{0,400}negotiationOverride/.test(sellerCallTsx), false);
+}
+
+// ============================================================
+// B8-13 / INV-68 — the four Offer Readiness determination carriers are
+// actually wired: imported from the new module (never reimplemented),
+// fed into buildOfferReadinessInputs as real booleans/humanAction, and
+// each has a real UI control writing through ghl.notes.create.
+// ============================================================
+{
+  check('page imports the B8-13 carriers module, never reimplementing its parsing', /from "\.\.\/lib\/seller-call-readiness-carriers"/.test(sellerCallTsx), true);
+  check('propertyIdentityConfirmed is derived from currentPropertyIdentityConfirmationForOpportunity, not a second confirmation state', /propertyIdentityConfirmed:\s*propertyIdentityConfirmation !== null/.test(sellerCallTsxNoComments), true);
+  check('transactionAssumptionsRecorded is derived from latestTransactionAssumptionsForOpportunity, not a second record', /transactionAssumptionsRecorded:\s*transactionAssumptionsRecord !== null/.test(sellerCallTsxNoComments), true);
+  check('sellerPricePositionRecorded is derived from latestSellerPricePositionForOpportunity, not a second record', /sellerPricePositionRecorded:\s*sellerPricePositionRecord !== null/.test(sellerCallTsxNoComments), true);
+  check('property identity confirmation is stale-checked against the CURRENT displayed address (formatAddress(contact)), never a stored address', /currentPropertyIdentityConfirmationForOpportunity\(notes, screen\.opportunity\.id, formatAddress\(contact\)\)/.test(sellerCallTsxNoComments), true);
+
+  check('page renders the property identity panel', /data-testid="property-identity-panel"/.test(sellerCallTsx), true);
+  check('page renders the transaction assumptions panel', /data-testid="transaction-assumptions-panel"/.test(sellerCallTsx), true);
+  check('page renders the seller price position panel', /data-testid="seller-price-position-panel"/.test(sellerCallTsx), true);
+  check('page renders the Offer Readiness human-action panel', /data-testid="readiness-human-action-panel"/.test(sellerCallTsx), true);
+
+  check('handleConfirmPropertyIdentity writes through ghl.notes.create using formatPropertyIdentityConfirmationNote', /formatPropertyIdentityConfirmationNote\(\{[\s\S]{0,200}await ghl\.notes\.create/.test(sellerCallTsxNoComments), true);
+  check('handleSaveTransactionAssumptions refuses a genuinely blank field rather than silently allowing it', /Each item needs a value, or must be explicitly marked None/.test(sellerCallTsx), true);
+  check('handleRecordSellerPricePosition reuses parseAcquisitionPriceInput for the price path, never a second parser', /parseAcquisitionPriceInput\(sellerPricePositionInput\)/.test(sellerCallTsxNoComments), true);
+  check('a documented refusal is a first-class recording path, not merely an empty price', /handleRecordSellerPricePosition\("refused"\)/.test(sellerCallTsx), true);
+
+  check('handleReadinessDecision refuses an empty override reason before any write is attempted', /kind === "overridden" && reason === ""/.test(sellerCallTsxNoComments), true);
+  check('Approve is only ever attempted when readiness.status is already OFFER_READY (never elevates)', /kind === "approved" && readiness\.status !== "OFFER_READY"/.test(sellerCallTsxNoComments), true);
+  check('handleReadinessDecision writes through formatReadinessHumanActionNote, the same carrier as everywhere else', /formatReadinessHumanActionNote\(/.test(sellerCallTsxNoComments), true);
+
+  check('readiness now threads propertyIdentityConfirmed/transactionAssumptionsRecorded/sellerPricePositionRecorded/humanAction into buildOfferReadinessInputs together', /propertyIdentityConfirmed:[\s\S]{0,400}humanAction:\s*readinessHumanAction/.test(sellerCallTsxNoComments), true);
 }
 
 // ============================================================
@@ -388,13 +418,27 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('the override note carries operator/reason/at verbatim from attemptOverride\'s own result -- no fabricated identity, no recomputed reason', /operator:\s*result\.override\.operator,\s*reason:\s*result\.override\.reason,/.test(sellerCallTsx), true);
 
   // No new write class: still exactly ghl.notes.create + ghl.contacts.setLastCallAttempt
-  // directly (plus scheduleCallbackGated's own unmodified setCallbackDatetime),
-  // and ghl.notes.create now has TWO call sites (outcome + override).
-  check('page still writes exactly ghl.notes.create and ghl.contacts.setLastCallAttempt directly -- the override write reuses the SAME sanctioned call, not a new one', {
+  // directly (plus scheduleCallbackGated's own unmodified setCallbackDatetime).
+  // B8-13 / INV-68 adds four MORE call sites of this SAME sanctioned write
+  // (property identity, transaction assumptions, seller price position,
+  // the readiness human-action decision) -- more call sites, never a
+  // fourth WRITE CLASS: nine total (two outcome-ledger + one negotiation
+  // override + six B8-13 readiness carrier call sites -- confirm, withdraw,
+  // save transaction assumptions, record seller price, the human-action
+  // decision, and the Contract Ready checklist toggle -- Jess Gate,
+  // 2026-09-08, added withdraw and the checklist toggle on top of B8-13's
+  // original four), all still exactly ghl.notes.create.
+  check('page still writes exactly ghl.notes.create and ghl.contacts.setLastCallAttempt directly -- every new B8-13/Jess-Gate write reuses the SAME sanctioned call, not a new one', {
     notesCreate: sellerCallTsx.indexOf('ghl.notes.create') !== -1,
     setLastCallAttempt: sellerCallTsx.indexOf('ghl.contacts.setLastCallAttempt') !== -1,
   }, { notesCreate: true, setLastCallAttempt: true });
-  check('ghl.notes.create now has exactly three call sites in the actual code (two in the outcome ledger\'s follow_up/else branches, one in the override ledger), never a fourth', (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 3);
+  check(
+    // Jess Gate correction, second round, 2026-09-08: a tenth call site --
+    // the durable-invalidation write inside the write-on-detect effect --
+    // is a real, deliberate addition, still exactly ghl.notes.create.
+    'ghl.notes.create now has exactly ten call sites in the actual code, never an eleventh',
+    (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 10,
+  );
   const forbiddenAlwaysForOverride = [
     'setApprovedArv', 'setEstimatedRepairs', 'saveUnderwritingFields', 'setAskingPrice',
     'setCallDisposition', 'setCallRouting', 'setDispositionAt',
@@ -554,8 +598,107 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('page renders a dedicated Contract Ready checklist, separate from the Offer Ready reasons list', /data-testid="contract-ready-checklist"/.test(sellerCallTsx), true);
   check('the Contract Ready checklist names exactly the five SELLER_ACQUISITION_WORKFLOW.md items this page adds as checkboxes (legal owners, closing timeline, occupancy/possession, liens/title, delivery/signing)', (sellerCallTsx.match(/data-testid=\{`contract-ready-item-\$\{item\.key\}`\}/g) || []).length >= 1 && /legal_owners/.test(sellerCallTsx) && /closing_timeline/.test(sellerCallTsx) && /occupancy_possession/.test(sellerCallTsx) && /liens_title/.test(sellerCallTsx) && /delivery_signing/.test(sellerCallTsx), true);
   check('the checklist shows Agreed Price and Property Address as already-known facts, never re-asking them', /Agreed price:/.test(sellerCallTsx) && /Property address:/.test(sellerCallTsx), true);
-  check('the checklist is explicitly documented as session-only, non-persisted', /session-only and does not persist across reloads/.test(sellerCallTsx), true);
-  check('contractChecklist state is initialized empty, never pre-checked', /const \[contractChecklist, setContractChecklist\] = useState<Record<string, boolean>>\(\{\}\)/.test(sellerCallTsx), true);
+  // Jess Gate correction, 2026-09-08: the checklist is no longer
+  // session-only -- it is durable, scoped to the current agreed price and
+  // property address (currentContractReadyChecklistForOpportunity's own
+  // exact-match rule).
+  check('the checklist is explicitly documented as durable and scoped, not session-only', /durable and scoped to this agreed price and property address/.test(sellerCallTsx), true);
+  check('the old session-only claim is gone', /Checklist progress is session-only and does not persist/.test(sellerCallTsx), false);
+  check('checklist reads/writes go through the durable carrier, not local useState', /const \[contractChecklist, setContractChecklist\]/.test(sellerCallTsx), false);
+  check('checklist checked-state reads contractReadyChecklistRecord, not a local mirror', /checked=\{contractReadyChecklistRecord\?\.items\[item\.key\] \?\? false\}/.test(sellerCallTsxNoComments), true);
+  check('checklist onChange writes through handleToggleContractReadyItem (a real ghl.notes.create write), not setContractChecklist', /onChange=\{\(e\) => handleToggleContractReadyItem\(item\.key, e\.target\.checked\)\}/.test(sellerCallTsxNoComments), true);
+}
+
+// ============================================================
+// Jess Gate correction, 2026-09-08 — the correction-flow wiring itself:
+// withdraw, edit/save/cancel, and the stale-decision marker.
+// ============================================================
+{
+  check('property identity has a Withdraw control, shown only when a confirmation exists', /data-testid="withdraw-property-identity"/.test(sellerCallTsx), true);
+  check('Withdraw calls handleWithdrawPropertyIdentity, a real write, not a local toggle', /onClick=\{handleWithdrawPropertyIdentity\}/.test(sellerCallTsxNoComments), true);
+  check('handleWithdrawPropertyIdentity writes Status: withdrawn at the CURRENT confirmed address, never a different one', /status: "withdrawn", address: propertyIdentityConfirmation\.address/.test(sellerCallTsxNoComments), true);
+
+  check('transaction assumptions has an Edit control, shown only when a record exists', /data-testid="edit-transaction-assumptions"/.test(sellerCallTsx), true);
+  check('transaction assumptions has a Cancel control in the form', /data-testid="cancel-transaction-assumptions"/.test(sellerCallTsx), true);
+  check('handleEditTransactionAssumptions prefills every field from the current record', /setTransactionStructureInput\(toInput\(transactionAssumptionsRecord\.transactionStructure\)\)/.test(sellerCallTsxNoComments), true);
+  check('Cancel writes nothing (no ghl.notes.create in handleCancelEditTransactionAssumptions)', (() => {
+    const m = /function handleCancelEditTransactionAssumptions\(\)[\s\S]*?\r?\n  \}\r?\n/.exec(sellerCallTsxNoComments);
+    return m ? /ghl\.notes\.create/.test(m[0]) : 'FUNCTION_NOT_FOUND';
+  })(), false);
+
+  check('seller price position has an Edit control, shown only when a record exists', /data-testid="edit-seller-price-position"/.test(sellerCallTsx), true);
+  check('seller price position has a Cancel control in the form', /data-testid="cancel-seller-price-position"/.test(sellerCallTsx), true);
+  check('Cancel writes nothing (no ghl.notes.create in handleCancelEditSellerPricePosition)', (() => {
+    const m = /function handleCancelEditSellerPricePosition\(\)[\s\S]*?\r?\n  \}\r?\n/.exec(sellerCallTsxNoComments);
+    return m ? /ghl\.notes\.create/.test(m[0]) : 'FUNCTION_NOT_FOUND';
+  })(), false);
+
+  check('a stale Offer Readiness decision is marked in the UI, never silently hidden', /data-testid="readiness-human-action-stale"/.test(sellerCallTsx), true);
+  check('the stale marker states it no longer authorizes readiness', /no longer authorizes readiness/.test(sellerCallTsx), true);
+  check('readinessHumanAction resolves to none when the decision is stale, not just when absent', /readinessHumanActionRecord === null\s*\|\|\s*readinessDecisionCurrency\?\.current === false/.test(sellerCallTsxNoComments), true);
+  // Jess Gate correction, second round: 3 occurrences now -- the two
+  // decision-write branches (approved/overridden) PLUS the currency-check
+  // read (isReadinessDecisionCurrent's own `snapshot:` field), all reading
+  // the SAME memoized value, never a second computation of it.
+  check('every decision write binds the live evidence snapshot, both approved and overridden branches, and the currency check reads the same value', (sellerCallTsxNoComments.match(/snapshot: liveReadinessEvidenceSnapshot/g) || []).length, 3);
+}
+
+// ============================================================
+// Jess Gate correction, second round, 2026-09-08 -- the exact gaps named
+// in that review: economics inputs in the snapshot, permanent durable
+// invalidation with a write-on-detect effect that never gates on its own
+// success, direct fact comparison (not existence alone), agreement-scoped
+// checklist identity, and legacy v1 display.
+// ============================================================
+{
+  check('pipeline now exposes the resolved UnderwritingInputs (needed for the deal-economics inputs snapshot)', /return \{ result: computeUnderwriting\(inputs\), facts, assignment: inputs\.assignment, inputs, issues, computeError: null, repairsSourceIsApprovalGated \}/.test(sellerCallTsxNoComments), true);
+  check('liveReadinessEvidenceSnapshot.dealEconomics includes inputs via buildDealEconomicsInputsSnapshot, in BOTH the calculated and unavailable branches', (sellerCallTsxNoComments.match(/inputs: buildDealEconomicsInputsSnapshot\(pipeline\.inputs\)/g) || []).length, 2);
+
+  check('a durable invalidation-write effect exists', /useEffect\(\(\) => \{[\s\S]{0,2200}formatReadinessDecisionInvalidationNote/.test(sellerCallTsxNoComments), true);
+  check('the invalidation effect skips only when already durably invalidated OR nothing needs persisting', /if \(readinessDecisionInvalidatedDurably\) return;[\s\S]{0,900}if \(!mustPersistInvalidation\) return;/.test(sellerCallTsxNoComments), true);
+  check('the invalidation write is scoped to the specific decision it invalidates (decisionAt: readinessHumanActionRecord.at)', /decisionAt: readinessHumanActionRecord\.at, reasons,?\s*\}\)/.test(sellerCallTsxNoComments), true);
+  check('a failed invalidation write is surfaced to the operator', /data-testid="readiness-invalidation-write-error"/.test(sellerCallTsx), true);
+  check('readinessHumanAction (the live gate) does NOT reference the invalidation write\'s busy/error state -- gating never waits on the write succeeding', /const readinessHumanAction: HumanAction = readinessHumanActionRecord === null[\s\S]{0,200}\? \{ kind: "none" \}/.test(sellerCallTsxNoComments) && !/invalidationWriteBusyForAt/.test(sellerCallTsxNoComments.slice(sellerCallTsxNoComments.indexOf('const readinessHumanAction: HumanAction'), sellerCallTsxNoComments.indexOf('const readinessHumanAction: HumanAction') + 200)), true);
+
+  // Jess Gate correction, third round (2026-09-08) -- SESSION-STICKY
+  // observed-stale memory, closing a defect found live in Test: without it,
+  // a durable-write failure combined with the underlying fact reverting
+  // BEFORE that write ever succeeds would silently un-observe the mismatch
+  // (readinessDecisionCurrency alone recomputes back to current:true, and
+  // nothing durable had landed yet to stop it).
+  check('a session-sticky observedStaleForAt flag exists, keyed by decision at', /const \[observedStaleForAt, setObservedStaleForAt\] = useState<Record<string, true>>\(\{\}\);/.test(sellerCallTsxNoComments), true);
+  check('the sticky flag is set by its own effect whenever a live mismatch is observed, and only then', /useEffect\(\(\) => \{\s*if \(!readinessHumanActionRecord \|\| !readinessDecisionCurrency\) return;\s*if \(readinessDecisionCurrency\.current === false\) \{\s*setObservedStaleForAt/.test(sellerCallTsxNoComments), true);
+  check('readinessHumanAction (the live gate) ALSO goes to none when observedStaleThisSession is true, not only on a live mismatch', /readinessDecisionCurrency\?\.current === false\s*\|\| observedStaleThisSession\s*\?\s*\{ kind: "none" \}/.test(sellerCallTsxNoComments), true);
+  check('the invalidation-write effect RETRIES using the sticky flag, not only a live mismatch (mustPersistInvalidation reads observedStaleForAt)', /const mustPersistInvalidation = readinessDecisionCurrency\.current === false\s*\|\| !!observedStaleForAt\[readinessHumanActionRecord\.at\];/.test(sellerCallTsxNoComments), true);
+  check('the retry effect depends on observedStaleForAt (re-fires when the sticky flag changes, not only when readinessDecisionCurrency changes)', /\}, \[readinessHumanActionRecord, readinessDecisionCurrency, readinessDecisionInvalidatedDurably, observedStaleForAt, screen, contactId\]\);/.test(sellerCallTsxNoComments), true);
+
+  // Jess Gate correction, third round, fault-injection follow-up
+  // (2026-09-08) -- a self-cancellation race found live: the busy guard was
+  // `useState` AND its own effect dependency, so setting it re-triggered
+  // the effect, whose cleanup cancelled the closure that had JUST started
+  // the write, before that write's own promise ever settled -- silently
+  // skipping both the success and failure handlers, including the error
+  // banner on a genuinely failed write. Fixed by moving the guard to a ref.
+  check('the write-busy guard is a ref, not state (does not re-render or re-trigger the effect on its own)', /const invalidationWriteBusyRef = useRef<string \| null>\(null\);/.test(sellerCallTsxNoComments), true);
+  check('the busy guard is no longer a dependency of the retry effect (this is what caused the self-cancellation race)', !/\}, \[readinessHumanActionRecord, readinessDecisionCurrency, readinessDecisionInvalidatedDurably, observedStaleForAt, screen, contactId, invalidationWriteBusyForAt\]\);/.test(sellerCallTsxNoComments), true);
+  check('no invalidationWriteBusyForAt state remains anywhere in the file', !/invalidationWriteBusyForAt/.test(sellerCallTsxNoComments), true);
+  check('no leftover debug console.log instrumentation remains in the invalidation-write effect', !/DEBUG_EFFECT|DEBUG_CALLING_CREATE|DEBUG_THEN|DEBUG_CATCH|DEBUG_FINALLY/.test(sellerCallTsx), true);
+  check('when the live facts have already reverted (current !== false) but the sticky flag is set, the write uses a fallback reason naming the earlier-session observation, never an empty reasons array', /reasons = readinessDecisionCurrency\.current === false\s*\? readinessDecisionCurrency\.staleBecause\s*: \["previously observed as a live mismatch earlier this session/.test(sellerCallTsxNoComments), true);
+  check('the DISPLAYED stale banner tracks the same two sources as the live gate (current === false OR observedStaleThisSession), not the live comparison alone -- so a reverted-but-not-yet-persisted mismatch still reads STALE on screen', /\(readinessDecisionCurrency\?\.current === false \|\| observedStaleThisSession\) \? \(\s*<div data-testid="readiness-human-action-stale"/.test(sellerCallTsxNoComments), true);
+  check('the stale banner names the earlier-session-observation case explicitly (never falls back to an empty staleBecause join) when live currently matches but the sticky flag is still what is holding it stale', /observed as a live mismatch earlier this session; the underlying value matches again/.test(sellerCallTsx), true);
+
+  check('readinessDecisionInvalidatedDurably is checked FIRST/unconditionally in isReadinessDecisionCurrent\'s call, via the durablyInvalidated field', /durablyInvalidated: readinessDecisionInvalidatedDurably/.test(sellerCallTsxNoComments), true);
+
+  check('legacy v1 decisions are read via the DISPLAY-ONLY reader', /latestLegacyReadinessHumanActionV1ForOpportunity/.test(sellerCallTsxNoComments), true);
+  check('legacy v1 decisions are rendered with an explicit "cannot authorize readiness" explanation', /predates the current evidence-snapshot system and cannot authorize readiness/.test(sellerCallTsx), true);
+  check('legacyReadinessDecision is NEVER referenced inside the readinessHumanAction computation (cannot authorize readiness)', (() => {
+    const start = sellerCallTsxNoComments.indexOf('const readinessHumanAction: HumanAction');
+    const end = sellerCallTsxNoComments.indexOf(';', start);
+    return start >= 0 && end > start ? /legacyReadinessDecision/.test(sellerCallTsxNoComments.slice(start, end)) : 'RANGE_NOT_FOUND';
+  })(), false);
+
+  check('the Contract Ready checklist is scoped by the agreement\'s OWN durable identity (latestOutcome.at), not price/address alone', /agreementAt: latestOutcome\.at/.test(sellerCallTsxNoComments), true);
+  check('the checklist read passes agreementAt as the primary scope argument', /currentContractReadyChecklistForOpportunity\(\s*notes, screen\.opportunity\.id, latestOutcome\.at, latestOutcome\.snapshot\.currentOffer, formatAddress\(contact\),/.test(sellerCallTsxNoComments), true);
 }
 
 // ============================================================

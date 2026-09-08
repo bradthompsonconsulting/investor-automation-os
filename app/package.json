@@ -28,7 +28,9 @@
     "test:deal-calculator-wiring": "node scripts/test-deal-calculator-wiring.cjs",
     "test:seller-call-outcome": "node scripts/test-seller-call-outcome.cjs",
     "test:seller-call-resume": "node scripts/test-seller-call-resume.cjs",
-    "test:seller-call-negotiation-override-note": "node scripts/test-seller-call-negotiation-override-note.cjs"
+    "test:seller-call-negotiation-override-note": "node scripts/test-seller-call-negotiation-override-note.cjs",
+    "test:seller-call-conversation-first": "node scripts/test-seller-call-conversation-first.cjs",
+    "test:seller-call-readiness-carriers": "node scripts/test-seller-call-readiness-carriers.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",
