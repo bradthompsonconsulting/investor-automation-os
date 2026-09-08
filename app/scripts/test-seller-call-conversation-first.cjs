@@ -13,11 +13,20 @@
  *
  *   2. STATIC: source-text checks over SellerCallWorkspace.tsx and
  *      FullScriptDrawer.tsx -- proves the required hierarchy is actually
- *      WIRED (one prominent Next Best Question, Other Useful Questions as
- *      a list, the compact Offer Readiness checklist, the Full Script
- *      drawer, and "Suggested — say it your way" labeling), the same
- *      honest limit test-seller-call-workspace-wiring.cjs already states:
- *      this proves wiring, not rendered pixels.
+ *      WIRED (one prominent Suggested Next Question, Other Useful
+ *      Questions as a list, the compact Offer Readiness checklist, the
+ *      Full Script drawer, and "Suggested — say it your way" labeling),
+ *      the same honest limit test-seller-call-workspace-wiring.cjs already
+ *      states: this proves wiring, not rendered pixels.
+ *
+ *      Jess Gate correction, INV-69 (2026-09-08): the operator-visible
+ *      label is "Suggested Next Question" (was "Next Best Question"),
+ *      per INV-69's locked content framework. The data-testid
+ *      (`next-best-question-panel`) and every internal symbol
+ *      (`nextBestQuestion`, `computeNextBestQuestion`,
+ *      `computeQuestionQueue`) are unchanged -- this is a label-only
+ *      correction, and this file's own checks below assert that split
+ *      directly.
  */
 
 const { execSync } = require('child_process');
@@ -98,6 +107,7 @@ const { computeNextBestQuestion, computeQuestionQueue, CATEGORY_PRIORITY } = req
 const {
   APPROVED_SCRIPT_LINES, APPROVED_SCRIPT_FOR_COLD_CATEGORY,
   SCRIPT_STAGE_ORDER, scriptLinesByStage,
+  NEGOTIATION_LINES, GLOBAL_CONVERSATION_TOOLS, FINAL_PRINCIPLES,
 } = require(scriptPath);
 
 const NO_FACTS = { arv: null, repairs: null, askingPrice: null };
@@ -149,6 +159,45 @@ function readiness(overrides) {
 }
 
 // ------------------------------------------------------------
+// INV-69: negotiation wording, Conversation Tools, and Final Principles
+// are copied verbatim, and NEGOTIATION_LINES is the ONLY "If Seller
+// Says..." content -- no other stage's wording is invented.
+// ------------------------------------------------------------
+{
+  const EXPECTED_NEGOTIATION = [
+    {
+      stage: 'offer', sellerSays: 'Seller asks us to come up',
+      say: 'Before I revisit the numbers, where would we need to land for you to feel comfortable moving forward?',
+    },
+    {
+      stage: 'offer', sellerSays: 'Seller gives a counter',
+      say: 'So [counteroffer] is the price you’d feel comfortable moving forward at, assuming we agree on the other terms?',
+    },
+  ];
+  check('NEGOTIATION_LINES: exactly 2 lines, verbatim from INV-69, both scoped to offer', NEGOTIATION_LINES, EXPECTED_NEGOTIATION);
+  check('NEGOTIATION_LINES: every entry is scoped to the offer stage (negotiation belongs inside Offer)',
+    NEGOTIATION_LINES.every((n) => n.stage === 'offer'), true);
+
+  const EXPECTED_TOOLS = [
+    'Tell me a little more about that.',
+    'What do you mean by that?',
+    'How long has that been going on?',
+    'What would that look like for you?',
+    'What makes that important?',
+    'Help me understand that.',
+    'What else should I know?',
+    'Okay, that makes sense.',
+  ];
+  check('GLOBAL_CONVERSATION_TOOLS: exactly 8 lines, verbatim from INV-69', GLOBAL_CONVERSATION_TOOLS, EXPECTED_TOOLS);
+
+  check('FINAL_PRINCIPLES: exactly 8 principles, verbatim from INV-69', FINAL_PRINCIPLES.length, 8);
+  check('FINAL_PRINCIPLES: includes the script-guides/MSK-governs principle verbatim',
+    FINAL_PRINCIPLES.includes('The script guides the conversation. MSK determines what information matters.'), true);
+  check('FINAL_PRINCIPLES: includes the Target/Max internal-numbers principle verbatim',
+    FINAL_PRINCIPLES.includes('Only actual proposed offers and confirmed terms may appear in seller-facing language. Target and Max are internal numbers.'), true);
+}
+
+// ------------------------------------------------------------
 // The cold-category overlay never drifts from the approved lines it
 // claims to be quoting.
 // ------------------------------------------------------------
@@ -191,8 +240,8 @@ function readiness(overrides) {
 }
 
 {
-  // Exactly one open category -> Next Best Question exists but the queue
-  // has nothing left over for "Other Useful Questions".
+  // Exactly one open category -> Suggested Next Question exists but the
+  // queue has nothing left over for "Other Useful Questions".
   const rOne = readiness({ sellerPricePosition: 'UNKNOWN' });
   const econOne = SUPPORTED_ECONOMICS;
   const queueOne = computeQuestionQueue(rOne, NO_FACTS, econOne);
@@ -221,11 +270,22 @@ const sellerCallTsxNoComments = sellerCallTsx.replace(/\/\*[\s\S]*?\*\//g, '');
 const fullScriptTsx = readSrc('src/components/FullScriptDrawer.tsx');
 
 {
-  check('page still renders the dedicated Next Best Question panel (data-testid preserved)',
+  check('page still renders the dedicated Suggested Next Question panel (data-testid preserved, internal name unchanged)',
     /data-testid="next-best-question-panel"/.test(sellerCallTsx), true);
 
-  check('Next Best Question question text renders at 19px (visually primary, not equal-weight with the rest)',
+  check('Suggested Next Question question text renders at 19px (visually primary, not equal-weight with the rest)',
     /fontSize: "19px"[\s\S]{0,150}nextBestQuestion\.question/.test(sellerCallTsxNoComments), true);
+
+  // Jess Gate correction, INV-69 (2026-09-08) -- the visible label itself.
+  check('the operator-visible panel label reads "Suggested Next Question"', /Suggested Next Question/.test(sellerCallTsxNoComments), true);
+  check('the superseded label "Next Best Question" no longer appears anywhere in the rendered source (comments excluded)',
+    /Next Best Question/.test(sellerCallTsxNoComments), false);
+  check('the rendered heading is exactly "Suggested Next Question" immediately inside the panel header div (not merely present somewhere on the page)',
+    /textTransform: "uppercase" \}\}>\s*Suggested Next Question\s*<\/div>/.test(sellerCallTsxNoComments), true);
+  check('the underlying engine symbol names are unchanged by the label correction (computeNextBestQuestion still imported/used)',
+    /computeNextBestQuestion/.test(sellerCallTsxNoComments), true);
+  check('the panel data-testid is unchanged by the label correction (next-best-question-panel, not renamed)',
+    /data-testid="next-best-question-panel"/.test(sellerCallTsxNoComments), true);
 
   check('page renders "Other Useful Questions" as a real list (data-testid + <ul>)',
     /data-testid="other-useful-questions"/.test(sellerCallTsx), true);
@@ -254,7 +314,7 @@ const fullScriptTsx = readSrc('src/components/FullScriptDrawer.tsx');
     /<FullScriptDrawer open=\{fullScriptOpen\} onClose=\{\(\) => setFullScriptOpen\(false\)\}/.test(sellerCallTsx), true);
 
   const suggestedCount = (sellerCallTsx.match(/Suggested — say it your way\./g) || []).length;
-  check('page labels script-sourced content "Suggested — say it your way" at least twice (Next Best Question + Other Useful Questions)',
+  check('page labels script-sourced content "Suggested — say it your way" at least twice (Suggested Next Question + Other Useful Questions)',
     suggestedCount >= 2, true);
 }
 
@@ -266,6 +326,39 @@ const fullScriptTsx = readSrc('src/components/FullScriptDrawer.tsx');
   check('FullScriptDrawer states MSK, not script completion, remains the Offer Ready authority', /MSK still decides Offer Ready/.test(fullScriptTsx), true);
   check('FullScriptDrawer closes on Escape (optional, never trapping the operator)', /"Escape"/.test(fullScriptTsx), true);
   check('FullScriptDrawer has an explicit close control', /data-testid="full-script-close"/.test(fullScriptTsx), true);
+}
+
+// ------------------------------------------------------------
+// INV-69: the drawer renders the new content groups, and only where
+// approved -- "If Seller Says..." appears solely for the Offer stage.
+// ------------------------------------------------------------
+{
+  check('FullScriptDrawer imports NEGOTIATION_LINES, GLOBAL_CONVERSATION_TOOLS, FINAL_PRINCIPLES from the one content source',
+    /NEGOTIATION_LINES, GLOBAL_CONVERSATION_TOOLS, FINAL_PRINCIPLES/.test(fullScriptTsx), true);
+
+  check('the "If Seller Says..." section is gated to stage === "offer"',
+    /stage === "offer" && NEGOTIATION_LINES\.length > 0/.test(fullScriptTsx), true);
+  check('"If Seller Says..." has a stable data-testid', /data-testid="if-seller-says"/.test(fullScriptTsx), true);
+  check('"If Seller Says..." renders NEGOTIATION_LINES.map, never a second/hand-picked list', /NEGOTIATION_LINES\.map/.test(fullScriptTsx), true);
+  check('the negotiation block restates the counter-response guardrail (no acceptance implied by naming a price)',
+    /No acceptance, implied acceptance, or movement occurs simply because the seller named a price\./.test(fullScriptTsx), true);
+
+  check('Conversation Tools renders exactly once (global, not re-rendered per stage -- 7 stages would mean it drifted inside the .map loop)',
+    (fullScriptTsx.match(/data-testid="conversation-tools"/g) || []).length, 1);
+  check('Conversation Tools appears strictly after "If Seller Says..." in source order (outside, following, the per-stage loop)',
+    fullScriptTsx.indexOf('data-testid="conversation-tools"') > fullScriptTsx.indexOf('data-testid="if-seller-says"'), true);
+  check('Conversation Tools has a stable data-testid', /data-testid="conversation-tools"/.test(fullScriptTsx), true);
+  check('Conversation Tools renders GLOBAL_CONVERSATION_TOOLS.map, never a second/hand-picked list', /GLOBAL_CONVERSATION_TOOLS\.map/.test(fullScriptTsx), true);
+
+  check('Principles has a stable data-testid', /data-testid="script-final-principles"/.test(fullScriptTsx), true);
+  check('Principles renders FINAL_PRINCIPLES.map, never a second/hand-picked list', /FINAL_PRINCIPLES\.map/.test(fullScriptTsx), true);
+
+  check('FullScriptDrawer still contains no fetch/GHL/network surface after the INV-69 additions',
+    !/fetch\(|ghl\.|XMLHttpRequest|axios/.test(fullScriptTsx), true);
+  check('FullScriptDrawer still has no useState anywhere (fully controlled via open/onClose props, no new local state introduced)',
+    /useState/.test(fullScriptTsx), false);
+  check('FullScriptDrawer has exactly one useEffect (the pre-existing Escape-key listener; the INV-69 additions are pure render, no new effect)',
+    (fullScriptTsx.match(/useEffect\(/g) || []).length, 1);
 }
 
 console.log('');
