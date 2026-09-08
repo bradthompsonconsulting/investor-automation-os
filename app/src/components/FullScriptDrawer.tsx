@@ -1,9 +1,11 @@
 import { useEffect } from "react";
 import { X } from "lucide-react";
-import { scriptLinesByStage } from "../lib/seller-call-script";
+import {
+  scriptLinesByStage, NEGOTIATION_LINES, GLOBAL_CONVERSATION_TOOLS, FINAL_PRINCIPLES,
+} from "../lib/seller-call-script";
 
 /**
- * Full Script drawer — B8-12 / INV-55.
+ * Full Script drawer — B8-12 / INV-55, extended by INV-69.
  *
  * "an optional drawer within the Seller Call workspace, not a separate
  * page" (INV-55, required information hierarchy, item 4). Opens over the
@@ -14,6 +16,14 @@ import { scriptLinesByStage } from "../lib/seller-call-script";
  * reference" exactly as the ticket allows. Every line is labeled
  * "Suggested — say it your way" (item 5): this is Brad's approved
  * language as a starting point, never mandatory wording.
+ *
+ * INV-69 addition, same invariants (pure render, no I/O, no GHL, no
+ * write): within the Offer stage, `NEGOTIATION_LINES` renders as
+ * "If Seller Says..." content, distinct from Suggested Questions per
+ * INV-69's own structural requirement; `GLOBAL_CONVERSATION_TOOLS` renders
+ * once, not scoped to any stage ("available globally in the reference
+ * library"); `FINAL_PRINCIPLES` renders as reference text. No other stage
+ * has "If Seller Says..." content approved, so none is invented or shown.
  */
 export function FullScriptDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   useEffect(() => {
@@ -82,8 +92,58 @@ export function FullScriptDrawer({ open, onClose }: { open: boolean; onClose: ()
                 ))}
               </ul>
             )}
+
+            {/* INV-69 -- "If Seller Says..." content, distinct from Suggested
+                Questions above, per stage. Only Offer has approved content;
+                no other stage's negotiation wording is invented. */}
+            {stage === "offer" && NEGOTIATION_LINES.length > 0 ? (
+              <div data-testid="if-seller-says" style={{ marginTop: "10px" }}>
+                <div style={{ fontSize: "10px", fontWeight: 700, color: "#94A3B8", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: "6px" }}>
+                  If Seller Says…
+                </div>
+                <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
+                  {NEGOTIATION_LINES.map((n, i) => (
+                    <li key={i} style={{ fontSize: "13px", color: "#E2E8F0", lineHeight: 1.5, padding: "6px 0", borderBottom: "1px solid rgba(148,163,184,0.08)" }}>
+                      <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "2px" }}>{n.sellerSays}:</div>
+                      {n.say}
+                    </li>
+                  ))}
+                </ul>
+                <div style={{ fontSize: "11px", color: "#64748B", marginTop: "6px" }}>
+                  Brad checks IAOS before responding to a counter. No acceptance, implied acceptance, or movement occurs simply because the seller named a price.
+                </div>
+              </div>
+            ) : null}
           </div>
         ))}
+
+        {/* INV-69 -- Global Conversation Tools, not scoped to any stage. */}
+        <div data-testid="conversation-tools" style={{ marginBottom: "18px" }}>
+          <div style={{ fontSize: "11px", fontWeight: 700, color: "#1EC8FF", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: "8px" }}>
+            Conversation Tools
+          </div>
+          <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
+            {GLOBAL_CONVERSATION_TOOLS.map((line, i) => (
+              <li key={i} style={{ fontSize: "13px", color: "#E2E8F0", lineHeight: 1.5, padding: "6px 0", borderBottom: "1px solid rgba(148,163,184,0.08)" }}>
+                {line}
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {/* INV-69 -- Final principles, reference only. */}
+        <div data-testid="script-final-principles" style={{ marginBottom: "4px" }}>
+          <div style={{ fontSize: "11px", fontWeight: 700, color: "#1EC8FF", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: "8px" }}>
+            Principles
+          </div>
+          <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
+            {FINAL_PRINCIPLES.map((line, i) => (
+              <li key={i} style={{ fontSize: "12px", color: "#94A3B8", lineHeight: 1.5, padding: "6px 0", borderBottom: "1px solid rgba(148,163,184,0.08)" }}>
+                {line}
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
     </div>
   );

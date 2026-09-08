@@ -98,6 +98,7 @@ const { computeNextBestQuestion, computeQuestionQueue, CATEGORY_PRIORITY } = req
 const {
   APPROVED_SCRIPT_LINES, APPROVED_SCRIPT_FOR_COLD_CATEGORY,
   SCRIPT_STAGE_ORDER, scriptLinesByStage,
+  NEGOTIATION_LINES, GLOBAL_CONVERSATION_TOOLS, FINAL_PRINCIPLES,
 } = require(scriptPath);
 
 const NO_FACTS = { arv: null, repairs: null, askingPrice: null };
@@ -146,6 +147,45 @@ function readiness(overrides) {
   check('scriptLinesByStage: offer has no approved line yet', grouped.find((g) => g.stage === 'offer').lines.length, 0);
   check('scriptLinesByStage: outcome has 1 approved line', grouped.find((g) => g.stage === 'outcome').lines.length, 1);
   check('every grouped line is accounted for (sums to 8)', grouped.reduce((n, g) => n + g.lines.length, 0), 8);
+}
+
+// ------------------------------------------------------------
+// INV-69: negotiation wording, Conversation Tools, and Final Principles
+// are copied verbatim, and NEGOTIATION_LINES is the ONLY "If Seller
+// Says..." content -- no other stage's wording is invented.
+// ------------------------------------------------------------
+{
+  const EXPECTED_NEGOTIATION = [
+    {
+      stage: 'offer', sellerSays: 'Seller asks us to come up',
+      say: 'Before I revisit the numbers, where would we need to land for you to feel comfortable moving forward?',
+    },
+    {
+      stage: 'offer', sellerSays: 'Seller gives a counter',
+      say: 'So [counteroffer] is the price you’d feel comfortable moving forward at, assuming we agree on the other terms?',
+    },
+  ];
+  check('NEGOTIATION_LINES: exactly 2 lines, verbatim from INV-69, both scoped to offer', NEGOTIATION_LINES, EXPECTED_NEGOTIATION);
+  check('NEGOTIATION_LINES: every entry is scoped to the offer stage (negotiation belongs inside Offer)',
+    NEGOTIATION_LINES.every((n) => n.stage === 'offer'), true);
+
+  const EXPECTED_TOOLS = [
+    'Tell me a little more about that.',
+    'What do you mean by that?',
+    'How long has that been going on?',
+    'What would that look like for you?',
+    'What makes that important?',
+    'Help me understand that.',
+    'What else should I know?',
+    'Okay, that makes sense.',
+  ];
+  check('GLOBAL_CONVERSATION_TOOLS: exactly 8 lines, verbatim from INV-69', GLOBAL_CONVERSATION_TOOLS, EXPECTED_TOOLS);
+
+  check('FINAL_PRINCIPLES: exactly 8 principles, verbatim from INV-69', FINAL_PRINCIPLES.length, 8);
+  check('FINAL_PRINCIPLES: includes the script-guides/MSK-governs principle verbatim',
+    FINAL_PRINCIPLES.includes('The script guides the conversation. MSK determines what information matters.'), true);
+  check('FINAL_PRINCIPLES: includes the Target/Max internal-numbers principle verbatim',
+    FINAL_PRINCIPLES.includes('Only actual proposed offers and confirmed terms may appear in seller-facing language. Target and Max are internal numbers.'), true);
 }
 
 // ------------------------------------------------------------
@@ -266,6 +306,39 @@ const fullScriptTsx = readSrc('src/components/FullScriptDrawer.tsx');
   check('FullScriptDrawer states MSK, not script completion, remains the Offer Ready authority', /MSK still decides Offer Ready/.test(fullScriptTsx), true);
   check('FullScriptDrawer closes on Escape (optional, never trapping the operator)', /"Escape"/.test(fullScriptTsx), true);
   check('FullScriptDrawer has an explicit close control', /data-testid="full-script-close"/.test(fullScriptTsx), true);
+}
+
+// ------------------------------------------------------------
+// INV-69: the drawer renders the new content groups, and only where
+// approved -- "If Seller Says..." appears solely for the Offer stage.
+// ------------------------------------------------------------
+{
+  check('FullScriptDrawer imports NEGOTIATION_LINES, GLOBAL_CONVERSATION_TOOLS, FINAL_PRINCIPLES from the one content source',
+    /NEGOTIATION_LINES, GLOBAL_CONVERSATION_TOOLS, FINAL_PRINCIPLES/.test(fullScriptTsx), true);
+
+  check('the "If Seller Says..." section is gated to stage === "offer"',
+    /stage === "offer" && NEGOTIATION_LINES\.length > 0/.test(fullScriptTsx), true);
+  check('"If Seller Says..." has a stable data-testid', /data-testid="if-seller-says"/.test(fullScriptTsx), true);
+  check('"If Seller Says..." renders NEGOTIATION_LINES.map, never a second/hand-picked list', /NEGOTIATION_LINES\.map/.test(fullScriptTsx), true);
+  check('the negotiation block restates the counter-response guardrail (no acceptance implied by naming a price)',
+    /No acceptance, implied acceptance, or movement occurs simply because the seller named a price\./.test(fullScriptTsx), true);
+
+  check('Conversation Tools renders exactly once (global, not re-rendered per stage -- 7 stages would mean it drifted inside the .map loop)',
+    (fullScriptTsx.match(/data-testid="conversation-tools"/g) || []).length, 1);
+  check('Conversation Tools appears strictly after "If Seller Says..." in source order (outside, following, the per-stage loop)',
+    fullScriptTsx.indexOf('data-testid="conversation-tools"') > fullScriptTsx.indexOf('data-testid="if-seller-says"'), true);
+  check('Conversation Tools has a stable data-testid', /data-testid="conversation-tools"/.test(fullScriptTsx), true);
+  check('Conversation Tools renders GLOBAL_CONVERSATION_TOOLS.map, never a second/hand-picked list', /GLOBAL_CONVERSATION_TOOLS\.map/.test(fullScriptTsx), true);
+
+  check('Principles has a stable data-testid', /data-testid="script-final-principles"/.test(fullScriptTsx), true);
+  check('Principles renders FINAL_PRINCIPLES.map, never a second/hand-picked list', /FINAL_PRINCIPLES\.map/.test(fullScriptTsx), true);
+
+  check('FullScriptDrawer still contains no fetch/GHL/network surface after the INV-69 additions',
+    !/fetch\(|ghl\.|XMLHttpRequest|axios/.test(fullScriptTsx), true);
+  check('FullScriptDrawer still has no useState anywhere (fully controlled via open/onClose props, no new local state introduced)',
+    /useState/.test(fullScriptTsx), false);
+  check('FullScriptDrawer has exactly one useEffect (the pre-existing Escape-key listener; the INV-69 additions are pure render, no new effect)',
+    (fullScriptTsx.match(/useEffect\(/g) || []).length, 1);
 }
 
 console.log('');
