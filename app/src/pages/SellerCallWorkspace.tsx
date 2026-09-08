@@ -41,9 +41,13 @@ import {
 import { resolveResumeHydration, type DealHydrationRef } from "../lib/seller-call-resume";
 import {
   formatPropertyIdentityConfirmationNote, currentPropertyIdentityConfirmationForOpportunity,
+  latestPropertyIdentityNoteForOpportunity,
   formatTransactionAssumptionsNote, latestTransactionAssumptionsForOpportunity, type TransactionAssumptionField,
   formatSellerPricePositionNote, latestSellerPricePositionForOpportunity,
-  formatReadinessHumanActionNote, latestReadinessHumanActionForOpportunity,
+  formatReadinessHumanActionNote, latestReadinessHumanActionForOpportunity, isReadinessDecisionCurrent,
+  type ReadinessEvidenceSnapshot,
+  formatContractReadyChecklistNote, currentContractReadyChecklistForOpportunity,
+  CONTRACT_READY_ITEM_KEYS, type ContractReadyItemKey, type ContractReadyItems,
 } from "../lib/seller-call-readiness-carriers";
 import { scheduleCallbackGated } from "../lib/callbackWrite";
 
@@ -510,17 +514,38 @@ export default function SellerCallWorkspace() {
   const [readinessDecisionBusy, setReadinessDecisionBusy] = useState(false);
   const [readinessDecisionError, setReadinessDecisionError] = useState<string | null>(null);
 
-  /* Contract Ready checklist, B8-10 / INV-53. SESSION-ONLY -- see the
-     module header's "Agreement Reached is not Under Contract" note.
-     Address and Agreed Price are not checkboxes here: both are already
-     known facts (the Contact's own address; the accepted price from the
-     outcome note itself) and are rendered as such, never re-asked. The
-     five items below are exactly `SELLER_ACQUISITION_WORKFLOW.md`'s own
-     remaining Contract Readiness list ("correct legal owners... closing
-     timeline, occupancy and possession, known liens and title
-     complications, delivery and signing information") -- nothing added,
-     nothing invented. */
-  const [contractChecklist, setContractChecklist] = useState<Record<string, boolean>>({});
+  /* Jess Gate correction, 2026-09-08 -- Edit/Save/Cancel for the two
+     record-once carriers, and Withdraw for property identity. Editing is
+     UI-only draft state; Cancel discards it and writes nothing. Save/
+     Confirm/Withdraw all still go through the SAME format functions and
+     `ghl.notes.create` call as the original write -- a correction is
+     simply another append-only entry, per the carriers' own "latest wins"
+     reader. */
+  const [propertyIdentityWithdrawBusy, setPropertyIdentityWithdrawBusy] = useState(false);
+  const [transactionAssumptionsEditing, setTransactionAssumptionsEditing] = useState(false);
+  const [sellerPricePositionEditing, setSellerPricePositionEditing] = useState(false);
+
+  /* Contract Ready checklist, B8-10 / INV-53, made durable by the Jess Gate
+     correction, 2026-09-08. Address and Agreed Price are not checkboxes
+     here: both are already known facts (the Contact's own address; the
+     accepted price from the outcome note itself) and are rendered as
+     such, never re-asked. The five items below are exactly
+     `SELLER_ACQUISITION_WORKFLOW.md`'s own remaining Contract Readiness
+     list ("correct legal owners... closing timeline, occupancy and
+     possession, known liens and title complications, delivery and
+     signing information") -- nothing added, nothing invented.
+
+     NO LONGER SESSION-ONLY. Progress is now read fresh from `notes` via
+     `currentContractReadyChecklistForOpportunity` below -- the SAME
+     "stateless-fresh read" pattern every other B8-13 carrier already
+     uses, never a local mirror. It is SCOPED to the CURRENT agreed price
+     and property address (the carrier's own exact-match rule): a
+     different Accept (a renegotiated price) or a different address reads
+     back as no progress at all, never as a false start carried over from
+     a different deal. `contractChecklistBusy` names which item's write is
+     in flight, mirroring every other carrier's busy/error pair. */
+  const [contractChecklistBusy, setContractChecklistBusy] = useState<ContractReadyItemKey | null>(null);
+  const [contractChecklistError, setContractChecklistError] = useState<string | null>(null);
   const CONTRACT_CHECKLIST_ITEMS = [
     { key: "legal_owners", label: "Correct legal owners confirmed" },
     { key: "closing_timeline", label: "Closing timeline set" },
@@ -767,7 +792,7 @@ export default function SellerCallWorkspace() {
     setPropertyIdentityBusy(true);
     const at = new Date().toISOString();
     const note = formatPropertyIdentityConfirmationNote({
-      opportunityId: screen.opportunity.id, at, operator: null, confirmedAddress: address,
+      opportunityId: screen.opportunity.id, at, operator: null, status: "confirmed", address,
     });
     try {
       await ghl.notes.create(contactId, note);
@@ -776,6 +801,32 @@ export default function SellerCallWorkspace() {
       setPropertyIdentityError(e?.message ?? "Couldn't record this confirmation -- it is not yet in effect. Try again.");
     } finally {
       setPropertyIdentityBusy(false);
+    }
+  }
+
+  /* Jess Gate correction, 2026-09-08 -- withdraw an incorrect property
+     confirmation WITHOUT requiring the address itself to change. Writes a
+     NEW `Status: withdrawn` note for the address currently on file; per
+     `currentPropertyIdentityConfirmationForOpportunity`'s "latest wins"
+     rule this immediately blocks every older `confirmed` entry (this one
+     included) from applying, and stays blocking no matter what a later
+     confirmation attempt records, until a FRESH confirmation is made. */
+  async function handleWithdrawPropertyIdentity() {
+    if (!(screen.state === "resolved" || screen.state === "unresolved") || !propertyIdentityConfirmation) return;
+    setPropertyIdentityError(null);
+    setPropertyIdentityWithdrawBusy(true);
+    const at = new Date().toISOString();
+    const note = formatPropertyIdentityConfirmationNote({
+      opportunityId: screen.opportunity.id, at, operator: null,
+      status: "withdrawn", address: propertyIdentityConfirmation.address,
+    });
+    try {
+      await ghl.notes.create(contactId, note);
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
+    } catch (e: any) {
+      setPropertyIdentityError(e?.message ?? "Couldn't withdraw this confirmation -- it is still in effect. Try again.");
+    } finally {
+      setPropertyIdentityWithdrawBusy(false);
     }
   }
 
@@ -808,11 +859,36 @@ export default function SellerCallWorkspace() {
     try {
       await ghl.notes.create(contactId, note);
       setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
+      // Save appends a new record (Jess Gate, 2026-09-08) -- history is
+      // preserved automatically (nothing here is ever overwritten); only
+      // the editing UI itself closes.
+      setTransactionAssumptionsEditing(false);
     } catch (e: any) {
       setTransactionAssumptionsError(e?.message ?? "Couldn't record this -- it is not yet in effect. Try again.");
     } finally {
       setTransactionAssumptionsBusy(false);
     }
+  }
+
+  /** Jess Gate correction, 2026-09-08 -- opens the form prefilled from the current record. Writes nothing. */
+  function handleEditTransactionAssumptions() {
+    if (!transactionAssumptionsRecord) return;
+    const toInput = (f: TransactionAssumptionField) => (f.kind === "value" ? f.value : "");
+    const toNone = (f: TransactionAssumptionField) => f.kind === "none";
+    setTransactionStructureInput(toInput(transactionAssumptionsRecord.transactionStructure));
+    setTransactionStructureNone(toNone(transactionAssumptionsRecord.transactionStructure));
+    setClosingPossessionInput(toInput(transactionAssumptionsRecord.closingPossession));
+    setClosingPossessionNone(toNone(transactionAssumptionsRecord.closingPossession));
+    setTitleComplicationsInput(toInput(transactionAssumptionsRecord.titleComplications));
+    setTitleComplicationsNone(toNone(transactionAssumptionsRecord.titleComplications));
+    setTransactionAssumptionsError(null);
+    setTransactionAssumptionsEditing(true);
+  }
+
+  /** Jess Gate correction, 2026-09-08 -- discards the draft. Writes nothing, per the requirement. */
+  function handleCancelEditTransactionAssumptions() {
+    setTransactionAssumptionsError(null);
+    setTransactionAssumptionsEditing(false);
   }
 
   /* B8-13 / INV-68 -- Seller price position. Reuses `parseAcquisitionPriceInput`
@@ -839,11 +915,26 @@ export default function SellerCallWorkspace() {
     try {
       await ghl.notes.create(contactId, note);
       setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
+      setSellerPricePositionEditing(false);
     } catch (e: any) {
       setSellerPricePositionError(e?.message ?? "Couldn't record this -- it is not yet in effect. Try again.");
     } finally {
       setSellerPricePositionBusy(false);
     }
+  }
+
+  /** Jess Gate correction, 2026-09-08 -- opens the form prefilled from the current record. Writes nothing. */
+  function handleEditSellerPricePosition() {
+    if (!sellerPricePositionRecord) return;
+    setSellerPricePositionInput(sellerPricePositionRecord.kind === "price" ? String(sellerPricePositionRecord.price) : "");
+    setSellerPricePositionError(null);
+    setSellerPricePositionEditing(true);
+  }
+
+  /** Jess Gate correction, 2026-09-08 -- discards the draft. Writes nothing. */
+  function handleCancelEditSellerPricePosition() {
+    setSellerPricePositionError(null);
+    setSellerPricePositionEditing(false);
   }
 
   /* B8-13 / INV-68 -- Offer Ready's OWN human approval/override, DISTINCT
@@ -865,10 +956,14 @@ export default function SellerCallWorkspace() {
     setReadinessDecisionError(null);
     setReadinessDecisionBusy(true);
     const at = new Date().toISOString();
+    // Jess Gate correction, 2026-09-08: every decision binds to
+    // `liveReadinessEvidenceSnapshot` -- the SAME raw-facts object
+    // `readinessDecisionCurrency` later compares against, taken at the
+    // exact moment of this write.
     const note = formatReadinessHumanActionNote(
       kind === "approved"
-        ? { opportunityId: screen.opportunity.id, at, operator: null, kind: "approved", reason: reason || null }
-        : { opportunityId: screen.opportunity.id, at, operator: null, kind: "overridden", reason },
+        ? { opportunityId: screen.opportunity.id, at, operator: null, kind: "approved", reason: reason || null, snapshot: liveReadinessEvidenceSnapshot }
+        : { opportunityId: screen.opportunity.id, at, operator: null, kind: "overridden", reason, snapshot: liveReadinessEvidenceSnapshot },
     );
     try {
       await ghl.notes.create(contactId, note);
@@ -878,6 +973,38 @@ export default function SellerCallWorkspace() {
       setReadinessDecisionError(e?.message ?? "Couldn't record this decision -- it is not yet in effect. Try again.");
     } finally {
       setReadinessDecisionBusy(false);
+    }
+  }
+
+  /* Jess Gate correction, 2026-09-08 -- Contract Ready checklist, made
+     durable. Writes the FULL current item set (all five, with the toggled
+     one flipped) as one new note on every toggle -- "latest wins" then
+     always holds the complete, current state, never a delta someone has
+     to replay. Scoped to the CURRENT agreed price and address (read back
+     by `contractReadyChecklistRecord` above); this handler does not
+     itself decide scope, it only records against whatever is current. */
+  async function handleToggleContractReadyItem(key: ContractReadyItemKey, checked: boolean) {
+    if (!(screen.state === "resolved" || screen.state === "unresolved") || latestOutcome?.kind !== "accept") return;
+    if (latestOutcome.snapshot.currentOffer === null) return;
+    setContractChecklistError(null);
+    setContractChecklistBusy(key);
+    const at = new Date().toISOString();
+    const currentItems: ContractReadyItems = contractReadyChecklistRecord?.items ?? {
+      legal_owners: false, closing_timeline: false, occupancy_possession: false, liens_title: false, delivery_signing: false,
+    };
+    const items: ContractReadyItems = { ...currentItems, [key]: checked };
+    const note = formatContractReadyChecklistNote({
+      opportunityId: screen.opportunity.id, at, operator: null,
+      agreedPrice: latestOutcome.snapshot.currentOffer, propertyAddress: formatAddress(contact),
+      items,
+    });
+    try {
+      await ghl.notes.create(contactId, note);
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
+    } catch (e: any) {
+      setContractChecklistError(e?.message ?? "Couldn't save this checklist item -- it is not yet in effect. Try again.");
+    } finally {
+      setContractChecklistBusy(null);
     }
   }
 
@@ -942,14 +1069,98 @@ export default function SellerCallWorkspace() {
     return latestReadinessHumanActionForOpportunity(notes, screen.opportunity.id);
   }, [notes, screen]);
 
+  /* Jess Gate correction, 2026-09-08 -- the latest note of ANY kind
+     (confirmed or withdrawn) for property identity, used ONLY as durable
+     invalidation evidence below (`isReadinessDecisionCurrent`). Distinct
+     from `propertyIdentityConfirmation` above, which is address-matched
+     AND status-filtered for DISPLAY/readiness purposes; this one is
+     neither -- its only job is "does a property-identity note exist after
+     this decision's timestamp," regardless of what that note says. */
+  const newestPropertyIdentityNote = useMemo(() => {
+    if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    return latestPropertyIdentityNoteForOpportunity(notes, screen.opportunity.id);
+  }, [notes, screen]);
+
+  /* Jess Gate correction, 2026-09-08 -- the raw facts and evidence states
+     an Offer Readiness decision is bound to, for ALL SIX categories, built
+     ONCE and shared by both the WRITE path (`handleReadinessDecision`
+     snapshots exactly this) and the CHECK path (`readinessDecisionCurrency`
+     compares the two field-backed categories against exactly this) -- so
+     the two can never disagree about what "live" means. Mirrors the
+     `known` object `readiness` below already builds, plus the two
+     additional carrier reads (`matchedArvApproval`, `transactionAssumptionsRecord`,
+     `sellerPricePositionRecord`) already available above. */
+  const liveReadinessEvidenceSnapshot: ReadinessEvidenceSnapshot = useMemo(() => {
+    const known = screen.state === "resolved" || screen.state === "unresolved" ? screen.known : null;
+    return {
+      propertyIdentity: {
+        confirmed: propertyIdentityConfirmation !== null,
+        address: propertyIdentityConfirmation?.address ?? null,
+      },
+      repairsCondition: {
+        amount: known?.repairs ?? null,
+        approved: pipeline.repairsSourceIsApprovalGated,
+      },
+      arv: {
+        amount: known?.arv ?? null,
+        evidenceState: matchedArvApproval?.evidenceState ?? null,
+      },
+      dealEconomics: board8 && board8.status === "calculated"
+        ? {
+            status: "calculated",
+            maxSupportedOffer: board8.maxSupportedOffer,
+            targetStatus: board8.target.status,
+            targetValue: board8.target.status === "calculated" ? board8.target.targetAcquisitionPrice : null,
+          }
+        : { status: "unavailable", maxSupportedOffer: null, targetStatus: null, targetValue: null },
+      transactionAssumptions: transactionAssumptionsRecord
+        ? {
+            structure: transactionAssumptionsRecord.transactionStructure,
+            closing: transactionAssumptionsRecord.closingPossession,
+            title: transactionAssumptionsRecord.titleComplications,
+          }
+        : null,
+      sellerPricePosition: sellerPricePositionRecord
+        ? (sellerPricePositionRecord.kind === "price"
+            ? { kind: "price", price: sellerPricePositionRecord.price }
+            : { kind: "refused" })
+        : null,
+    };
+  }, [screen, pipeline.repairsSourceIsApprovalGated, matchedArvApproval, board8, propertyIdentityConfirmation, transactionAssumptionsRecord, sellerPricePositionRecord]);
+
+  /* Jess Gate correction, 2026-09-08 -- whether the latest recorded Offer
+     Readiness decision (if any) still applies. `isReadinessDecisionCurrent`
+     (imported, never reimplemented) does the actual comparison; this memo
+     only assembles the "live" side of it from what this page already
+     reads. `null` when there is no decision on record at all (nothing to
+     be current or stale). */
+  const readinessDecisionCurrency = useMemo(() => {
+    if (!readinessHumanActionRecord) return null;
+    return isReadinessDecisionCurrent(readinessHumanActionRecord, {
+      newestPropertyIdentityNoteAt: newestPropertyIdentityNote?.at ?? null,
+      newestTransactionAssumptionsNoteAt: transactionAssumptionsRecord?.at ?? null,
+      newestSellerPricePositionNoteAt: sellerPricePositionRecord?.at ?? null,
+      newestArvApprovalNoteAt: latestArvLedgerEntry?.approvedAt ?? null,
+      repairsCondition: liveReadinessEvidenceSnapshot.repairsCondition,
+      dealEconomics: liveReadinessEvidenceSnapshot.dealEconomics,
+    });
+  }, [readinessHumanActionRecord, newestPropertyIdentityNote, transactionAssumptionsRecord, sellerPricePositionRecord, latestArvLedgerEntry, liveReadinessEvidenceSnapshot]);
+
   /* `HumanAction.operator` (offer-readiness.ts, unchanged, locked) requires
      a `string` -- unlike this carrier's own honest `string | null` (this
      app has no authenticated-operator concept, per every sibling carrier's
      header). "UNAVAILABLE" is the SAME literal every carrier's own note
      serialization already uses for exactly this meaning (see `ledgerValue`
      in `seller-call-readiness-carriers.ts`) -- a truthful placeholder, not
-     a fabricated name, bridging into a type this issue does not change. */
-  const readinessHumanAction: HumanAction = readinessHumanActionRecord === null
+     a fabricated name, bridging into a type this issue does not change.
+
+     Jess Gate correction, 2026-09-08: a STALE decision (per
+     `readinessDecisionCurrency` above) resolves to `{ kind: "none" }` for
+     THIS live computation -- it stops elevating readiness -- while the
+     record itself (`readinessHumanActionRecord`) remains completely
+     unedited and is still rendered, marked stale, in the UI below. A
+     fresh decision is the only thing that can produce a new, current one. */
+  const readinessHumanAction: HumanAction = readinessHumanActionRecord === null || readinessDecisionCurrency?.current === false
     ? { kind: "none" }
     : readinessHumanActionRecord.kind === "approved"
       ? {
@@ -1052,6 +1263,25 @@ export default function SellerCallWorkspace() {
     if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
     return latestOutcomeNoteForOpportunity(notes, screen.opportunity.id);
   }, [notes, screen]);
+
+  /* Jess Gate correction, 2026-09-08 -- Contract Ready checklist progress,
+     made durable. Scoped to the CURRENT agreed price (`latestOutcome.
+     snapshot.currentOffer`) and CURRENT property address exactly, per
+     `currentContractReadyChecklistForOpportunity`'s own rule -- a
+     different Accept or a different address reads back as no progress,
+     never a carry-over from a different deal. `null` whenever there is no
+     accepted outcome at all (nothing to scope the checklist to). */
+  const contractReadyChecklistRecord = useMemo(() => {
+    if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    if (latestOutcome?.kind !== "accept") return null;
+    // An Accept is only ever recorded with a real Current Offer (B8-10's
+    // own Accept-button gate); null here would mean a corrupt/foreign
+    // record, not a real state to scope a checklist to.
+    if (latestOutcome.snapshot.currentOffer === null) return null;
+    return currentContractReadyChecklistForOpportunity(
+      notes, screen.opportunity.id, latestOutcome.snapshot.currentOffer, formatAddress(contact),
+    );
+  }, [notes, screen, latestOutcome, contact]);
 
   /* B8-11 / INV-54 -- the most recent durable above-Max override grant for
      THIS opportunity, read back through seller-call-negotiation-override-
@@ -1402,10 +1632,19 @@ export default function SellerCallWorkspace() {
               </div>
               {readinessHumanActionRecord ? (
                 <div data-testid="readiness-human-action-current" style={{ fontSize: "12px", color: "#94A3B8", marginBottom: "10px" }}>
-                  Last recorded: <strong style={{ color: readinessHumanActionRecord.kind === "overridden" ? "#F59E0B" : "#22C55E" }}>
+                  Last recorded: <strong style={{ color: readinessDecisionCurrency?.current === false ? "#64748B" : readinessHumanActionRecord.kind === "overridden" ? "#F59E0B" : "#22C55E" }}>
                     {readinessHumanActionRecord.kind.toUpperCase()}
                   </strong> at {new Date(readinessHumanActionRecord.at).toLocaleString()}
                   {readinessHumanActionRecord.reason ? ` — "${readinessHumanActionRecord.reason}"` : ""}
+                  {/* Jess Gate correction, 2026-09-08: a stale decision stays
+                      visible as history -- it is never hidden or edited --
+                      but is explicitly marked as no longer authorizing
+                      readiness, with the durable reason(s) it went stale. */}
+                  {readinessDecisionCurrency?.current === false ? (
+                    <div data-testid="readiness-human-action-stale" style={{ color: "#64748B", fontStyle: "italic", marginTop: "4px" }}>
+                      STALE — no longer authorizes readiness ({readinessDecisionCurrency.staleBecause.join("; ")}). A fresh decision is required.
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               {readiness.status === "OFFER_READY" ? (
@@ -1460,8 +1699,13 @@ export default function SellerCallWorkspace() {
               it -- Offer Ready and Contract Ready are two different
               gates, and Agreement Reached is not Under Contract (that
               verification belongs to Board #9). Shown only when the
-              latest recorded outcome is `accept`; the checklist itself
-              blocks nothing and is session-only (see module header). */}
+              latest recorded outcome is `accept`.
+
+              Jess Gate correction, 2026-09-08: checklist progress is now
+              DURABLE, via `contractReadyChecklistRecord` (read above,
+              scoped to this exact agreed price + address) -- the
+              `checked`/`onChange` below read/write that record instead of
+              local state; nothing else in this banner changes. */}
           {latestOutcome?.kind === "accept" ? (
             <div
               data-testid="agreement-reached-banner"
@@ -1487,19 +1731,24 @@ export default function SellerCallWorkspace() {
                 <div>✓ Agreed price: {moneyOrUnknown(latestOutcome.snapshot.currentOffer)} (from the Agreement Reached record)</div>
                 <div>✓ Property address: {formatAddress(contact)}</div>
                 {CONTRACT_CHECKLIST_ITEMS.map((item) => (
-                  <label key={item.key} style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+                  <label key={item.key} style={{ display: "flex", alignItems: "center", gap: "8px", cursor: contractChecklistBusy ? "not-allowed" : "pointer" }}>
                     <input
                       type="checkbox"
                       data-testid={`contract-ready-item-${item.key}`}
-                      checked={contractChecklist[item.key] ?? false}
-                      onChange={(e) => setContractChecklist((prev) => ({ ...prev, [item.key]: e.target.checked }))}
+                      checked={contractReadyChecklistRecord?.items[item.key] ?? false}
+                      disabled={contractChecklistBusy !== null}
+                      onChange={(e) => handleToggleContractReadyItem(item.key, e.target.checked)}
                     />
                     {item.label}
+                    {contractChecklistBusy === item.key ? <Loader2 size={11} className="animate-spin" /> : null}
                   </label>
                 ))}
               </div>
+              {contractChecklistError ? (
+                <div data-testid="contract-ready-checklist-error" style={{ fontSize: "11px", color: "#EF4444", marginTop: "8px" }}>{contractChecklistError}</div>
+              ) : null}
               <div style={{ fontSize: "10px", color: "#475569", marginTop: "8px" }}>
-                Checklist progress is session-only and does not persist across reloads; the agreement itself (price, timestamp) resumes durably via the note above.
+                Checklist progress is durable and scoped to this agreed price and property address — it does not carry over to a different agreement or property. Board #9 completes the actual transaction; this checklist is a handoff aid only.
               </div>
             </div>
           ) : null}
@@ -1965,7 +2214,18 @@ export default function SellerCallWorkspace() {
                 >
                   {propertyIdentityBusy ? <Loader2 size={12} className="animate-spin" /> : null} Confirm this is the right property
                 </button>
-              ) : null}
+              ) : (
+                // Jess Gate correction, 2026-09-08: withdraw an incorrect
+                // confirmation without needing the address to change.
+                <button
+                  onClick={handleWithdrawPropertyIdentity}
+                  disabled={propertyIdentityWithdrawBusy}
+                  data-testid="withdraw-property-identity"
+                  style={{ ...COMPACT_LINK_STYLE, opacity: propertyIdentityWithdrawBusy ? 0.6 : 1, cursor: propertyIdentityWithdrawBusy ? "not-allowed" : "pointer" }}
+                >
+                  {propertyIdentityWithdrawBusy ? <Loader2 size={12} className="animate-spin" /> : null} Withdraw confirmation
+                </button>
+              )}
               {propertyIdentityError ? (
                 <div data-testid="property-identity-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{propertyIdentityError}</div>
               ) : null}
@@ -1977,12 +2237,20 @@ export default function SellerCallWorkspace() {
                 blank. */}
             <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="transaction-assumptions-panel">
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Transaction assumptions</div>
-              {transactionAssumptionsRecord ? (
+              {transactionAssumptionsRecord && !transactionAssumptionsEditing ? (
                 <div style={{ fontSize: "12px", color: "#94A3B8" }} data-testid="transaction-assumptions-status">
                   <div style={{ color: "#22C55E", marginBottom: "6px" }}>✓ Recorded {new Date(transactionAssumptionsRecord.at).toLocaleDateString()}</div>
                   <div>Structure: {transactionAssumptionsRecord.transactionStructure.kind === "none" ? "None" : transactionAssumptionsRecord.transactionStructure.value}</div>
                   <div>Closing/possession: {transactionAssumptionsRecord.closingPossession.kind === "none" ? "None" : transactionAssumptionsRecord.closingPossession.value}</div>
                   <div>Title complications: {transactionAssumptionsRecord.titleComplications.kind === "none" ? "None" : transactionAssumptionsRecord.titleComplications.value}</div>
+                  {/* Jess Gate correction, 2026-09-08: correction entry point -- opens the SAME form below, prefilled. */}
+                  <button
+                    onClick={handleEditTransactionAssumptions}
+                    data-testid="edit-transaction-assumptions"
+                    style={{ ...COMPACT_LINK_STYLE, marginTop: "8px" }}
+                  >
+                    Edit
+                  </button>
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
@@ -2022,14 +2290,27 @@ export default function SellerCallWorkspace() {
                       <input type="checkbox" checked={titleComplicationsNone} onChange={(e) => setTitleComplicationsNone(e.target.checked)} /> None
                     </label>
                   </div>
-                  <button
-                    onClick={handleSaveTransactionAssumptions}
-                    disabled={transactionAssumptionsBusy}
-                    data-testid="save-transaction-assumptions"
-                    style={{ ...COMPACT_BUTTON_STYLE, alignSelf: "flex-start", opacity: transactionAssumptionsBusy ? 0.6 : 1, cursor: transactionAssumptionsBusy ? "not-allowed" : "pointer" }}
-                  >
-                    {transactionAssumptionsBusy ? <Loader2 size={12} className="animate-spin" /> : null} Save
-                  </button>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      onClick={handleSaveTransactionAssumptions}
+                      disabled={transactionAssumptionsBusy}
+                      data-testid="save-transaction-assumptions"
+                      style={{ ...COMPACT_BUTTON_STYLE, opacity: transactionAssumptionsBusy ? 0.6 : 1, cursor: transactionAssumptionsBusy ? "not-allowed" : "pointer" }}
+                    >
+                      {transactionAssumptionsBusy ? <Loader2 size={12} className="animate-spin" /> : null} Save
+                    </button>
+                    {/* Jess Gate correction, 2026-09-08: Cancel discards the draft and writes nothing -- only shown when there's an existing record to fall back to. */}
+                    {transactionAssumptionsRecord ? (
+                      <button
+                        onClick={handleCancelEditTransactionAssumptions}
+                        disabled={transactionAssumptionsBusy}
+                        data-testid="cancel-transaction-assumptions"
+                        style={{ ...COMPACT_LINK_STYLE, opacity: transactionAssumptionsBusy ? 0.6 : 1, cursor: transactionAssumptionsBusy ? "not-allowed" : "pointer" }}
+                      >
+                        Cancel
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               )}
               {transactionAssumptionsError ? (
@@ -2043,11 +2324,19 @@ export default function SellerCallWorkspace() {
                 refusal is valid evidence and must not remain UNKNOWN. */}
             <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="seller-price-position-panel">
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Seller price position</div>
-              {sellerPricePositionRecord ? (
+              {sellerPricePositionRecord && !sellerPricePositionEditing ? (
                 <div style={{ fontSize: "12px", color: "#22C55E" }} data-testid="seller-price-position-status">
                   ✓ {sellerPricePositionRecord.kind === "price"
                     ? `${money(sellerPricePositionRecord.price)} recorded ${new Date(sellerPricePositionRecord.at).toLocaleDateString()}`
                     : `Documented refusal recorded ${new Date(sellerPricePositionRecord.at).toLocaleDateString()}`}
+                  {/* Jess Gate correction, 2026-09-08: correction entry point. */}
+                  <button
+                    onClick={handleEditSellerPricePosition}
+                    data-testid="edit-seller-price-position"
+                    style={{ ...COMPACT_LINK_STYLE, marginLeft: "10px" }}
+                  >
+                    Edit
+                  </button>
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
@@ -2068,14 +2357,27 @@ export default function SellerCallWorkspace() {
                       Record
                     </button>
                   </div>
-                  <button
-                    onClick={() => handleRecordSellerPricePosition("refused")}
-                    disabled={sellerPricePositionBusy}
-                    data-testid="record-seller-price-refused"
-                    style={{ ...COMPACT_LINK_STYLE, alignSelf: "flex-start", opacity: sellerPricePositionBusy ? 0.6 : 1, cursor: sellerPricePositionBusy ? "not-allowed" : "pointer" }}
-                  >
-                    {sellerPricePositionBusy ? <Loader2 size={12} className="animate-spin" /> : null} Seller declined to give a price
-                  </button>
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                    <button
+                      onClick={() => handleRecordSellerPricePosition("refused")}
+                      disabled={sellerPricePositionBusy}
+                      data-testid="record-seller-price-refused"
+                      style={{ ...COMPACT_LINK_STYLE, opacity: sellerPricePositionBusy ? 0.6 : 1, cursor: sellerPricePositionBusy ? "not-allowed" : "pointer" }}
+                    >
+                      {sellerPricePositionBusy ? <Loader2 size={12} className="animate-spin" /> : null} Seller declined to give a price
+                    </button>
+                    {/* Jess Gate correction, 2026-09-08: Cancel discards the draft and writes nothing -- only shown when there's an existing record to fall back to. */}
+                    {sellerPricePositionRecord ? (
+                      <button
+                        onClick={handleCancelEditSellerPricePosition}
+                        disabled={sellerPricePositionBusy}
+                        data-testid="cancel-seller-price-position"
+                        style={{ ...COMPACT_LINK_STYLE, opacity: sellerPricePositionBusy ? 0.6 : 1, cursor: sellerPricePositionBusy ? "not-allowed" : "pointer" }}
+                      >
+                        Cancel
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               )}
               {sellerPricePositionError ? (

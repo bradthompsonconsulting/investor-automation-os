@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 188;
+const FLOOR = 205;
 let failures = 0;
 let checks = 0;
 
@@ -422,15 +422,19 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   // B8-13 / INV-68 adds four MORE call sites of this SAME sanctioned write
   // (property identity, transaction assumptions, seller price position,
   // the readiness human-action decision) -- more call sites, never a
-  // fourth WRITE CLASS: seven total (two outcome-ledger + one negotiation
-  // override + four B8-13 carriers), all still exactly ghl.notes.create.
-  check('page still writes exactly ghl.notes.create and ghl.contacts.setLastCallAttempt directly -- every new B8-13 write reuses the SAME sanctioned call, not a new one', {
+  // fourth WRITE CLASS: nine total (two outcome-ledger + one negotiation
+  // override + six B8-13 readiness carrier call sites -- confirm, withdraw,
+  // save transaction assumptions, record seller price, the human-action
+  // decision, and the Contract Ready checklist toggle -- Jess Gate,
+  // 2026-09-08, added withdraw and the checklist toggle on top of B8-13's
+  // original four), all still exactly ghl.notes.create.
+  check('page still writes exactly ghl.notes.create and ghl.contacts.setLastCallAttempt directly -- every new B8-13/Jess-Gate write reuses the SAME sanctioned call, not a new one', {
     notesCreate: sellerCallTsx.indexOf('ghl.notes.create') !== -1,
     setLastCallAttempt: sellerCallTsx.indexOf('ghl.contacts.setLastCallAttempt') !== -1,
   }, { notesCreate: true, setLastCallAttempt: true });
   check(
-    'ghl.notes.create now has exactly seven call sites in the actual code (two outcome ledger, one negotiation override, four B8-13 readiness carriers), never an eighth',
-    (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 7,
+    'ghl.notes.create now has exactly nine call sites in the actual code, never a tenth',
+    (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 9,
   );
   const forbiddenAlwaysForOverride = [
     'setApprovedArv', 'setEstimatedRepairs', 'saveUnderwritingFields', 'setAskingPrice',
@@ -591,8 +595,45 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('page renders a dedicated Contract Ready checklist, separate from the Offer Ready reasons list', /data-testid="contract-ready-checklist"/.test(sellerCallTsx), true);
   check('the Contract Ready checklist names exactly the five SELLER_ACQUISITION_WORKFLOW.md items this page adds as checkboxes (legal owners, closing timeline, occupancy/possession, liens/title, delivery/signing)', (sellerCallTsx.match(/data-testid=\{`contract-ready-item-\$\{item\.key\}`\}/g) || []).length >= 1 && /legal_owners/.test(sellerCallTsx) && /closing_timeline/.test(sellerCallTsx) && /occupancy_possession/.test(sellerCallTsx) && /liens_title/.test(sellerCallTsx) && /delivery_signing/.test(sellerCallTsx), true);
   check('the checklist shows Agreed Price and Property Address as already-known facts, never re-asking them', /Agreed price:/.test(sellerCallTsx) && /Property address:/.test(sellerCallTsx), true);
-  check('the checklist is explicitly documented as session-only, non-persisted', /session-only and does not persist across reloads/.test(sellerCallTsx), true);
-  check('contractChecklist state is initialized empty, never pre-checked', /const \[contractChecklist, setContractChecklist\] = useState<Record<string, boolean>>\(\{\}\)/.test(sellerCallTsx), true);
+  // Jess Gate correction, 2026-09-08: the checklist is no longer
+  // session-only -- it is durable, scoped to the current agreed price and
+  // property address (currentContractReadyChecklistForOpportunity's own
+  // exact-match rule).
+  check('the checklist is explicitly documented as durable and scoped, not session-only', /durable and scoped to this agreed price and property address/.test(sellerCallTsx), true);
+  check('the old session-only claim is gone', /Checklist progress is session-only and does not persist/.test(sellerCallTsx), false);
+  check('checklist reads/writes go through the durable carrier, not local useState', /const \[contractChecklist, setContractChecklist\]/.test(sellerCallTsx), false);
+  check('checklist checked-state reads contractReadyChecklistRecord, not a local mirror', /checked=\{contractReadyChecklistRecord\?\.items\[item\.key\] \?\? false\}/.test(sellerCallTsxNoComments), true);
+  check('checklist onChange writes through handleToggleContractReadyItem (a real ghl.notes.create write), not setContractChecklist', /onChange=\{\(e\) => handleToggleContractReadyItem\(item\.key, e\.target\.checked\)\}/.test(sellerCallTsxNoComments), true);
+}
+
+// ============================================================
+// Jess Gate correction, 2026-09-08 — the correction-flow wiring itself:
+// withdraw, edit/save/cancel, and the stale-decision marker.
+// ============================================================
+{
+  check('property identity has a Withdraw control, shown only when a confirmation exists', /data-testid="withdraw-property-identity"/.test(sellerCallTsx), true);
+  check('Withdraw calls handleWithdrawPropertyIdentity, a real write, not a local toggle', /onClick=\{handleWithdrawPropertyIdentity\}/.test(sellerCallTsxNoComments), true);
+  check('handleWithdrawPropertyIdentity writes Status: withdrawn at the CURRENT confirmed address, never a different one', /status: "withdrawn", address: propertyIdentityConfirmation\.address/.test(sellerCallTsxNoComments), true);
+
+  check('transaction assumptions has an Edit control, shown only when a record exists', /data-testid="edit-transaction-assumptions"/.test(sellerCallTsx), true);
+  check('transaction assumptions has a Cancel control in the form', /data-testid="cancel-transaction-assumptions"/.test(sellerCallTsx), true);
+  check('handleEditTransactionAssumptions prefills every field from the current record', /setTransactionStructureInput\(toInput\(transactionAssumptionsRecord\.transactionStructure\)\)/.test(sellerCallTsxNoComments), true);
+  check('Cancel writes nothing (no ghl.notes.create in handleCancelEditTransactionAssumptions)', (() => {
+    const m = /function handleCancelEditTransactionAssumptions\(\)[\s\S]*?\r?\n  \}\r?\n/.exec(sellerCallTsxNoComments);
+    return m ? /ghl\.notes\.create/.test(m[0]) : 'FUNCTION_NOT_FOUND';
+  })(), false);
+
+  check('seller price position has an Edit control, shown only when a record exists', /data-testid="edit-seller-price-position"/.test(sellerCallTsx), true);
+  check('seller price position has a Cancel control in the form', /data-testid="cancel-seller-price-position"/.test(sellerCallTsx), true);
+  check('Cancel writes nothing (no ghl.notes.create in handleCancelEditSellerPricePosition)', (() => {
+    const m = /function handleCancelEditSellerPricePosition\(\)[\s\S]*?\r?\n  \}\r?\n/.exec(sellerCallTsxNoComments);
+    return m ? /ghl\.notes\.create/.test(m[0]) : 'FUNCTION_NOT_FOUND';
+  })(), false);
+
+  check('a stale Offer Readiness decision is marked in the UI, never silently hidden', /data-testid="readiness-human-action-stale"/.test(sellerCallTsx), true);
+  check('the stale marker states it no longer authorizes readiness', /no longer authorizes readiness/.test(sellerCallTsx), true);
+  check('readinessHumanAction resolves to none when the decision is stale, not just when absent', /readinessHumanActionRecord === null \|\| readinessDecisionCurrency\?\.current === false/.test(sellerCallTsxNoComments), true);
+  check('every decision write binds the live evidence snapshot, both approved and overridden branches', (sellerCallTsxNoComments.match(/snapshot: liveReadinessEvidenceSnapshot/g) || []).length, 2);
 }
 
 // ============================================================
