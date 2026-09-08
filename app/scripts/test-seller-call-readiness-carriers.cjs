@@ -64,7 +64,7 @@ const {
 } = require(modulePath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 126;
+const FLOOR = 128;
 let failures = 0;
 let checks = 0;
 
@@ -170,6 +170,13 @@ function check(name, actual, expected) {
   const refusedNote = formatSellerPricePositionNote(refusedArgs);
   check('seller price position: a documented refusal round-trips exactly', parseSellerPricePositionNote(refusedNote), refusedArgs);
   check('seller price position: a refusal note carrying a stray number is refused', parseSellerPricePositionNote(refusedNote.replace('Price: UNAVAILABLE', 'Price: 999')), null);
+  // Restored per Jess Gate accounting correction, 2026-09-08 (round 3,
+  // pass 2) -- dropped during the round's mid-flight rewrite with no
+  // replacement. Asserts the WRITE side: the formatter itself never
+  // serializes a numeric price for a refusal, distinct from the read-side
+  // "tampered" check above, which only proves parsing REJECTS a stray
+  // number if one is somehow present.
+  check('seller price position: refusal serializes with no stray price value', refusedNote.includes('Price: UNAVAILABLE') && !/Price: \d/.test(refusedNote), true);
 
   // Restored per Jess Gate coverage audit, 2026-09-08 (third round).
   check('seller price position: a zero price is refused (not a real price)', parseSellerPricePositionNote(formatSellerPricePositionNote(Object.assign({}, priceArgs, { price: 0 }))), null);
@@ -398,6 +405,16 @@ const CONFIRMED_SNAPSHOT = {
   check('currency: a seller-price-position note AFTER the decision -> stale (existence, value unchanged)', staleBySellerPriceExistence.current, false);
   const staleByArvExistence = isReadinessDecisionCurrent(record, Object.assign({}, liveMatching, { newestArvApprovalNoteAt: '2026-09-08T00:03:00.000Z' }));
   check('currency: an ARV approval note AFTER the decision -> stale (existence, value unchanged)', staleByArvExistence.current, false);
+  // Restored per Jess Gate accounting correction, 2026-09-08 (round 3, pass
+  // 2) -- dropped during the round's mid-flight rewrite with no
+  // replacement. The generic `liveUnchangedButNewerNote` case above (line
+  // ~385) already exercises this mechanically via transaction assumptions,
+  // but named no category-specific check for it, leaving transaction
+  // assumptions the only one of the four note-backed categories without
+  // its own explicit AFTER-the-decision existence check alongside property
+  // identity, seller price position, and ARV directly above.
+  const staleByTransactionAssumptionsExistence = isReadinessDecisionCurrent(record, Object.assign({}, liveMatching, { newestTransactionAssumptionsNoteAt: '2026-09-08T00:03:00.000Z' }));
+  check('currency: a transaction-assumptions note AFTER the decision -> stale (existence, value unchanged)', staleByTransactionAssumptionsExistence.current, false);
 
   // Direct value-comparison for repairsCondition specifically (property
   // identity and deal economics already exercise this above; repairs is
