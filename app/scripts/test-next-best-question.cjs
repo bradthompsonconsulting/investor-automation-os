@@ -182,7 +182,11 @@ function readinessAndEconomics(over) {
   const nbq = computeNextBestQuestion(readiness, NO_FACTS, dealEconomics);
   check('single UNKNOWN category -> question kind', nbq.kind, 'question');
   check('single UNKNOWN category -> correct category selected', nbq.source, { kind: 'category', category: 'seller_price_position', level: 'UNKNOWN' });
-  check('question text asks about seller price position', nbq.question.toLowerCase().indexOf('seller') >= 0, true);
+  // B8-12 / INV-55: this UNKNOWN, truly-cold case now prefers Brad's
+  // approved script line verbatim, which addresses the seller directly
+  // ("you") rather than naming them in the third person -- the category
+  // check above already confirms this is genuinely seller_price_position.
+  check('question text is Brad-approved script wording, not the old third-person phrasing', nbq.question, 'What price were you hoping to receive?');
   check('whyItMatters is a non-empty plain-English explanation', typeof nbq.whyItMatters === 'string' && nbq.whyItMatters.length > 20, true);
 }
 
@@ -247,7 +251,10 @@ function readinessAndEconomics(over) {
 
   const { readiness: readinessRepairs, dealEconomics: dealEconomicsRepairs } = readinessAndEconomics({ repairsCondition: 'UNKNOWN' });
   const nbqRepairsNoFact = computeNextBestQuestion(readinessRepairs, NO_FACTS, dealEconomicsRepairs);
-  check('repairs UNKNOWN, no raw repairs on file -> generic condition question', nbqRepairsNoFact.question, "What is the property's condition — roof, HVAC, foundation, recent updates?");
+  // B8-12 / INV-55: the truly-cold branch now prefers Brad's approved
+  // script wording verbatim (seller-call-script.ts), not the engine's own
+  // prior invented phrasing.
+  check('repairs UNKNOWN, no raw repairs on file -> Brad-approved script question', nbqRepairsNoFact.question, "Can you walk me through what you think the property needs?");
   const nbqRepairsWithFact = computeNextBestQuestion(readinessRepairs, { arv: null, repairs: 41000, askingPrice: null }, dealEconomicsRepairs);
   check('repairs UNKNOWN, raw repairs already on file -> confirms the number instead of re-asking', nbqRepairsWithFact.question, "Is the $41,000 repair estimate already on file still accurate for this property's condition?");
 }

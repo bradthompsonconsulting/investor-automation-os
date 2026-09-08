@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 171;
+const FLOOR = 188;
 let failures = 0;
 let checks = 0;
 
@@ -316,19 +316,49 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 }
 
 // ============================================================
-// B8-08 / INV-51: the above-Max override is a DIFFERENT concept from
-// offer-readiness.ts's HumanAction -- `readiness`'s own humanAction must
-// remain exactly `{ kind: "none" }`, unchanged, and the negotiation
-// override must never be threaded into buildOfferReadinessInputs.
+// B8-08 / INV-51, corrected B8-13 / INV-68: the above-Max negotiation
+// override is a DIFFERENT concept from offer-readiness.ts's HumanAction,
+// and the two must never merge -- the negotiation override must never be
+// threaded into buildOfferReadinessInputs. B8-13 gives Offer Ready its OWN
+// real humanAction (durable carrier, `readinessHumanAction`); it is
+// `negotiationOverride` specifically that stays excluded, not `humanAction`
+// itself.
 // ============================================================
 {
-  // humanAction is hardcoded inside seller-call-readiness-inputs.ts
-  // itself (not the page) -- the correct proof is that the PAGE never
-  // overrides it with a competing assignment of its own.
-  check('page never assigns readiness.humanAction itself (stays whatever buildOfferReadinessInputs already hardcodes)', /humanAction:/.test(sellerCallTsxNoComments), false);
+  check('page DOES assign a real readiness.humanAction, from its own B8-13 durable carrier, never from negotiationOverride', /humanAction:\s*readinessHumanAction/.test(sellerCallTsxNoComments), true);
   const readinessInputsSrc = fs.readFileSync(path.join(APP, 'src/lib/seller-call-readiness-inputs.ts'), 'utf8');
-  check('seller-call-readiness-inputs.ts still hardcodes humanAction to none, unchanged by the negotiation feature', /humanAction:\s*\{\s*kind:\s*"none"\s*\}/.test(readinessInputsSrc), true);
+  check('seller-call-readiness-inputs.ts no longer hardcodes humanAction to none (B8-13 threads a real caller-supplied value)', /humanAction:\s*\{\s*kind:\s*"none"\s*\}/.test(readinessInputsSrc), false);
   check('NegotiationOverride is never passed into buildOfferReadinessInputs (a distinct concept from Offer Readiness evidence)', /buildOfferReadinessInputs\(\{[\s\S]{0,400}negotiationOverride/.test(sellerCallTsx), false);
+}
+
+// ============================================================
+// B8-13 / INV-68 — the four Offer Readiness determination carriers are
+// actually wired: imported from the new module (never reimplemented),
+// fed into buildOfferReadinessInputs as real booleans/humanAction, and
+// each has a real UI control writing through ghl.notes.create.
+// ============================================================
+{
+  check('page imports the B8-13 carriers module, never reimplementing its parsing', /from "\.\.\/lib\/seller-call-readiness-carriers"/.test(sellerCallTsx), true);
+  check('propertyIdentityConfirmed is derived from currentPropertyIdentityConfirmationForOpportunity, not a second confirmation state', /propertyIdentityConfirmed:\s*propertyIdentityConfirmation !== null/.test(sellerCallTsxNoComments), true);
+  check('transactionAssumptionsRecorded is derived from latestTransactionAssumptionsForOpportunity, not a second record', /transactionAssumptionsRecorded:\s*transactionAssumptionsRecord !== null/.test(sellerCallTsxNoComments), true);
+  check('sellerPricePositionRecorded is derived from latestSellerPricePositionForOpportunity, not a second record', /sellerPricePositionRecorded:\s*sellerPricePositionRecord !== null/.test(sellerCallTsxNoComments), true);
+  check('property identity confirmation is stale-checked against the CURRENT displayed address (formatAddress(contact)), never a stored address', /currentPropertyIdentityConfirmationForOpportunity\(notes, screen\.opportunity\.id, formatAddress\(contact\)\)/.test(sellerCallTsxNoComments), true);
+
+  check('page renders the property identity panel', /data-testid="property-identity-panel"/.test(sellerCallTsx), true);
+  check('page renders the transaction assumptions panel', /data-testid="transaction-assumptions-panel"/.test(sellerCallTsx), true);
+  check('page renders the seller price position panel', /data-testid="seller-price-position-panel"/.test(sellerCallTsx), true);
+  check('page renders the Offer Readiness human-action panel', /data-testid="readiness-human-action-panel"/.test(sellerCallTsx), true);
+
+  check('handleConfirmPropertyIdentity writes through ghl.notes.create using formatPropertyIdentityConfirmationNote', /formatPropertyIdentityConfirmationNote\(\{[\s\S]{0,200}await ghl\.notes\.create/.test(sellerCallTsxNoComments), true);
+  check('handleSaveTransactionAssumptions refuses a genuinely blank field rather than silently allowing it', /Each item needs a value, or must be explicitly marked None/.test(sellerCallTsx), true);
+  check('handleRecordSellerPricePosition reuses parseAcquisitionPriceInput for the price path, never a second parser', /parseAcquisitionPriceInput\(sellerPricePositionInput\)/.test(sellerCallTsxNoComments), true);
+  check('a documented refusal is a first-class recording path, not merely an empty price', /handleRecordSellerPricePosition\("refused"\)/.test(sellerCallTsx), true);
+
+  check('handleReadinessDecision refuses an empty override reason before any write is attempted', /kind === "overridden" && reason === ""/.test(sellerCallTsxNoComments), true);
+  check('Approve is only ever attempted when readiness.status is already OFFER_READY (never elevates)', /kind === "approved" && readiness\.status !== "OFFER_READY"/.test(sellerCallTsxNoComments), true);
+  check('handleReadinessDecision writes through formatReadinessHumanActionNote, the same carrier as everywhere else', /formatReadinessHumanActionNote\(/.test(sellerCallTsxNoComments), true);
+
+  check('readiness now threads propertyIdentityConfirmed/transactionAssumptionsRecorded/sellerPricePositionRecorded/humanAction into buildOfferReadinessInputs together', /propertyIdentityConfirmed:[\s\S]{0,400}humanAction:\s*readinessHumanAction/.test(sellerCallTsxNoComments), true);
 }
 
 // ============================================================
@@ -388,13 +418,20 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('the override note carries operator/reason/at verbatim from attemptOverride\'s own result -- no fabricated identity, no recomputed reason', /operator:\s*result\.override\.operator,\s*reason:\s*result\.override\.reason,/.test(sellerCallTsx), true);
 
   // No new write class: still exactly ghl.notes.create + ghl.contacts.setLastCallAttempt
-  // directly (plus scheduleCallbackGated's own unmodified setCallbackDatetime),
-  // and ghl.notes.create now has TWO call sites (outcome + override).
-  check('page still writes exactly ghl.notes.create and ghl.contacts.setLastCallAttempt directly -- the override write reuses the SAME sanctioned call, not a new one', {
+  // directly (plus scheduleCallbackGated's own unmodified setCallbackDatetime).
+  // B8-13 / INV-68 adds four MORE call sites of this SAME sanctioned write
+  // (property identity, transaction assumptions, seller price position,
+  // the readiness human-action decision) -- more call sites, never a
+  // fourth WRITE CLASS: seven total (two outcome-ledger + one negotiation
+  // override + four B8-13 carriers), all still exactly ghl.notes.create.
+  check('page still writes exactly ghl.notes.create and ghl.contacts.setLastCallAttempt directly -- every new B8-13 write reuses the SAME sanctioned call, not a new one', {
     notesCreate: sellerCallTsx.indexOf('ghl.notes.create') !== -1,
     setLastCallAttempt: sellerCallTsx.indexOf('ghl.contacts.setLastCallAttempt') !== -1,
   }, { notesCreate: true, setLastCallAttempt: true });
-  check('ghl.notes.create now has exactly three call sites in the actual code (two in the outcome ledger\'s follow_up/else branches, one in the override ledger), never a fourth', (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 3);
+  check(
+    'ghl.notes.create now has exactly seven call sites in the actual code (two outcome ledger, one negotiation override, four B8-13 readiness carriers), never an eighth',
+    (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 7,
+  );
   const forbiddenAlwaysForOverride = [
     'setApprovedArv', 'setEstimatedRepairs', 'saveUnderwritingFields', 'setAskingPrice',
     'setCallDisposition', 'setCallRouting', 'setDispositionAt',

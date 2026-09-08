@@ -17,8 +17,9 @@ import { opportunitiesForContact, opportunityCandidates, selectOpportunity } fro
 import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
 import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriting/types";
 import { computeBoard8Economics, computeExpectedSpread, type Board8Economics, type ExpectedSpread } from "../lib/underwriting/board8-economics";
-import { computeOfferReadiness, type ReadinessResult } from "../lib/underwriting/offer-readiness";
-import { computeNextBestQuestion, type NextBestQuestion } from "../lib/underwriting/next-best-question";
+import { computeOfferReadiness, CATEGORY_LABEL, type ReadinessResult, type MaterialCategory, type HumanAction } from "../lib/underwriting/offer-readiness";
+import { computeNextBestQuestion, computeQuestionQueue, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
+import { FullScriptDrawer } from "../components/FullScriptDrawer";
 import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
 import { buildOfferReadinessInputs } from "../lib/seller-call-readiness-inputs";
 import { latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
@@ -38,11 +39,17 @@ import {
   formatNegotiationOverrideNote, latestNegotiationOverrideNoteForOpportunity,
 } from "../lib/seller-call-negotiation-override-note";
 import { resolveResumeHydration, type DealHydrationRef } from "../lib/seller-call-resume";
+import {
+  formatPropertyIdentityConfirmationNote, currentPropertyIdentityConfirmationForOpportunity,
+  formatTransactionAssumptionsNote, latestTransactionAssumptionsForOpportunity, type TransactionAssumptionField,
+  formatSellerPricePositionNote, latestSellerPricePositionForOpportunity,
+  formatReadinessHumanActionNote, latestReadinessHumanActionForOpportunity,
+} from "../lib/seller-call-readiness-carriers";
 import { scheduleCallbackGated } from "../lib/callbackWrite";
 
 /**
  * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49,
- * B8-07 / INV-50, B8-08 / INV-51, and B8-10 / INV-53.
+ * B8-07 / INV-50, B8-08 / INV-51, B8-10 / INV-53, and B8-12 / INV-55.
  *
  * Route: /contacts/:id/seller-call. Same Contact-context sub-route
  * pattern UNDERWRITING_WORKSPACE_SPEC.md chose for /contacts/:id/underwriting
@@ -63,6 +70,23 @@ import { scheduleCallbackGated } from "../lib/callbackWrite";
  * deterministically, from current facts alone -- no history, no script
  * pointer, no assumption about call order. See that module's own header
  * for the exact priority rule.
+ *
+ * CONVERSATION-FIRST HIERARCHY (B8-12 / INV-55, Brad-approved usability
+ * correction locked 2026-09-07). "The script guides the conversation. MSK
+ * governs readiness." This board changes PRESENTATION only, never the
+ * engine: `computeQuestionQueue` (`next-best-question.ts`, same module,
+ * same priority rule as `computeNextBestQuestion`) supplies "Other Useful
+ * Questions" as everything past index 0 of the identical ordered list;
+ * `OfferReadinessChecklist` renders the SAME `readiness.categories`
+ * ReadinessBadge already reads, just as a compact six-item checklist
+ * (satisfied categories checkmarked rather than omitted) instead of
+ * paragraph text; and `FullScriptDrawer` renders Brad's approved script
+ * verbatim from the new, pure `seller-call-script.ts` data module. No new
+ * tracked fact, no new readiness input, no new write: `readiness.
+ * effectiveStatus` remains the only Offer Ready authority, exactly as
+ * B8-04 built it. See `seller-call-script.ts`'s own header for why most of
+ * Brad's approved lines live ONLY in the Full Script drawer and are not
+ * wired into live MSK-driven question selection.
  *
  * NO LONGER READ-ONLY, AS OF B8-10 / INV-53. Every prior board on this
  * page (B8-05 through B8-08) was correctly read-only; recording a bounded
@@ -328,6 +352,45 @@ function ReadinessBadge({ readiness }: { readiness: ReadinessResult }) {
   );
 }
 
+/**
+ * B8-12 / INV-55 — "What We Still Need / Offer Readiness", as a compact
+ * list rather than paragraph text. Renders ALL SIX `MaterialCategory`
+ * keys (unlike `ReadinessBadge.reasons`, which omits a category the
+ * moment it reaches SUPPORTED) so a satisfied objective is shown
+ * checkmarked rather than disappearing — the ticket's own "showing
+ * satisfied and unresolved objectives" wording. Reads `readiness.
+ * categories` verbatim; computes no evidence level of its own.
+ */
+function OfferReadinessChecklist({ readiness }: { readiness: ReadinessResult }) {
+  return (
+    <ul data-testid="offer-readiness-checklist" style={{ margin: 0, padding: 0, listStyle: "none" }}>
+      {CATEGORY_PRIORITY.map((category: MaterialCategory) => {
+        const level = readiness.categories[category];
+        const satisfied = level === "SUPPORTED";
+        return (
+          <li
+            key={category}
+            data-testid={`offer-readiness-item-${category}`}
+            style={{
+              display: "flex", alignItems: "center", gap: "8px", padding: "4px 0",
+              fontSize: "12px", color: satisfied ? "#64748B" : "#E2E8F0",
+              textDecoration: satisfied ? "line-through" : "none",
+            }}
+          >
+            <span aria-hidden="true" style={{ color: satisfied ? "#22C55E" : "#475569", fontWeight: 700, width: "14px" }}>
+              {satisfied ? "✓" : "○"}
+            </span>
+            <span>
+              {CATEGORY_LABEL[category]}
+              {!satisfied ? ` — ${level === "UNKNOWN" ? "not yet established" : "preliminary, not yet defensible"}` : null}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function SellerCallWorkspace() {
@@ -416,6 +479,36 @@ export default function SellerCallWorkspace() {
   const [outcomeActionError, setOutcomeActionError] = useState<string | null>(null);
   const [followUpAtInput, setFollowUpAtInput] = useState("");
   const [passReasonInput, setPassReasonInput] = useState("");
+
+  /* B8-13 / INV-68 -- the four Offer Readiness determination carriers'
+     write-in-flight/error state, one pair per carrier, mirroring
+     `overrideWriteBusy`/`overrideActionError`'s established pattern
+     exactly: write-then-set (never the reverse), disable the control
+     while busy, surface a failure verbatim rather than assuming success.
+     None of the four durable values themselves live in useState -- each
+     is read fresh from `notes` via useMemo below, the SAME "stateless-
+     fresh read of current GHL state" pattern `matchedArvApproval` already
+     uses, never a session-only mirror that could drift from what GHL
+     actually holds. */
+  const [propertyIdentityBusy, setPropertyIdentityBusy] = useState(false);
+  const [propertyIdentityError, setPropertyIdentityError] = useState<string | null>(null);
+
+  const [transactionStructureInput, setTransactionStructureInput] = useState("");
+  const [transactionStructureNone, setTransactionStructureNone] = useState(false);
+  const [closingPossessionInput, setClosingPossessionInput] = useState("");
+  const [closingPossessionNone, setClosingPossessionNone] = useState(false);
+  const [titleComplicationsInput, setTitleComplicationsInput] = useState("");
+  const [titleComplicationsNone, setTitleComplicationsNone] = useState(false);
+  const [transactionAssumptionsBusy, setTransactionAssumptionsBusy] = useState(false);
+  const [transactionAssumptionsError, setTransactionAssumptionsError] = useState<string | null>(null);
+
+  const [sellerPricePositionInput, setSellerPricePositionInput] = useState("");
+  const [sellerPricePositionBusy, setSellerPricePositionBusy] = useState(false);
+  const [sellerPricePositionError, setSellerPricePositionError] = useState<string | null>(null);
+
+  const [readinessDecisionReasonInput, setReadinessDecisionReasonInput] = useState("");
+  const [readinessDecisionBusy, setReadinessDecisionBusy] = useState(false);
+  const [readinessDecisionError, setReadinessDecisionError] = useState<string | null>(null);
 
   /* Contract Ready checklist, B8-10 / INV-53. SESSION-ONLY -- see the
      module header's "Agreement Reached is not Under Contract" note.
@@ -661,6 +754,133 @@ export default function SellerCallWorkspace() {
     }
   }
 
+  /* B8-13 / INV-68 -- Property identity. WRITE-THEN-SET is moot here (there
+     is no separate React state to set on success -- `propertyIdentityConfirmation`
+     above is read fresh from `notes`), but the append-to-`notes` convention
+     is identical to every other write on this page: the write must succeed
+     before the UI can show it as confirmed. */
+  async function handleConfirmPropertyIdentity() {
+    if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
+    const address = formatAddress(contact);
+    if (address === "—") return;
+    setPropertyIdentityError(null);
+    setPropertyIdentityBusy(true);
+    const at = new Date().toISOString();
+    const note = formatPropertyIdentityConfirmationNote({
+      opportunityId: screen.opportunity.id, at, operator: null, confirmedAddress: address,
+    });
+    try {
+      await ghl.notes.create(contactId, note);
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
+    } catch (e: any) {
+      setPropertyIdentityError(e?.message ?? "Couldn't record this confirmation -- it is not yet in effect. Try again.");
+    } finally {
+      setPropertyIdentityBusy(false);
+    }
+  }
+
+  /* B8-13 / INV-68 -- Transaction assumptions. Each of the three sub-facts
+     must be either a real typed value or explicitly marked None -- a
+     genuinely blank field refuses the save outright, per the locked
+     addendum's "never left simply blank" rule. */
+  function transactionFieldFromInput(text: string, markedNone: boolean): TransactionAssumptionField | null {
+    if (markedNone) return { kind: "none" };
+    if (text.trim() === "") return null;
+    return { kind: "value", value: text.trim() };
+  }
+
+  async function handleSaveTransactionAssumptions() {
+    if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
+    const transactionStructure = transactionFieldFromInput(transactionStructureInput, transactionStructureNone);
+    const closingPossession = transactionFieldFromInput(closingPossessionInput, closingPossessionNone);
+    const titleComplications = transactionFieldFromInput(titleComplicationsInput, titleComplicationsNone);
+    if (!transactionStructure || !closingPossession || !titleComplications) {
+      setTransactionAssumptionsError("Each item needs a value, or must be explicitly marked None -- it cannot be left blank.");
+      return;
+    }
+    setTransactionAssumptionsError(null);
+    setTransactionAssumptionsBusy(true);
+    const at = new Date().toISOString();
+    const note = formatTransactionAssumptionsNote({
+      opportunityId: screen.opportunity.id, at, operator: null,
+      transactionStructure, closingPossession, titleComplications,
+    });
+    try {
+      await ghl.notes.create(contactId, note);
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
+    } catch (e: any) {
+      setTransactionAssumptionsError(e?.message ?? "Couldn't record this -- it is not yet in effect. Try again.");
+    } finally {
+      setTransactionAssumptionsBusy(false);
+    }
+  }
+
+  /* B8-13 / INV-68 -- Seller price position. Reuses `parseAcquisitionPriceInput`
+     (imported, never reimplemented) for the price path -- the SAME
+     strictly-positive-finite-number classification the negotiation inputs
+     already use, not a second parser. The refusal path carries no number
+     at all, per `seller-call-readiness-carriers.ts`'s own schema. */
+  async function handleRecordSellerPricePosition(kind: "price" | "refused") {
+    if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
+    const at = new Date().toISOString();
+    let note: string;
+    if (kind === "price") {
+      const parsed = parseAcquisitionPriceInput(sellerPricePositionInput);
+      if (parsed.kind !== "value") {
+        setSellerPricePositionError("Enter a valid price, or record a documented refusal instead.");
+        return;
+      }
+      note = formatSellerPricePositionNote({ opportunityId: screen.opportunity.id, at, operator: null, kind: "price", price: parsed.value });
+    } else {
+      note = formatSellerPricePositionNote({ opportunityId: screen.opportunity.id, at, operator: null, kind: "refused" });
+    }
+    setSellerPricePositionError(null);
+    setSellerPricePositionBusy(true);
+    try {
+      await ghl.notes.create(contactId, note);
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
+    } catch (e: any) {
+      setSellerPricePositionError(e?.message ?? "Couldn't record this -- it is not yet in effect. Try again.");
+    } finally {
+      setSellerPricePositionBusy(false);
+    }
+  }
+
+  /* B8-13 / INV-68 -- Offer Ready's OWN human approval/override, DISTINCT
+     from `handleOverrideAndContinue` above (that is negotiation's
+     above-Max override; this is an evidence-quality decision -- see
+     `offer-readiness.ts`'s header for why the two must never merge).
+     APPROVED can only ever be attempted when `readiness.status` is
+     already OFFER_READY -- mirrors `HumanAction`'s own rule that it never
+     elevates a non-ready status; OVERRIDDEN requires a non-empty reason,
+     enforced before any write is attempted. */
+  async function handleReadinessDecision(kind: "approved" | "overridden") {
+    if (!(screen.state === "resolved" || screen.state === "unresolved") || !readiness) return;
+    if (kind === "approved" && readiness.status !== "OFFER_READY") return;
+    const reason = readinessDecisionReasonInput.trim();
+    if (kind === "overridden" && reason === "") {
+      setReadinessDecisionError("A reason is required to override.");
+      return;
+    }
+    setReadinessDecisionError(null);
+    setReadinessDecisionBusy(true);
+    const at = new Date().toISOString();
+    const note = formatReadinessHumanActionNote(
+      kind === "approved"
+        ? { opportunityId: screen.opportunity.id, at, operator: null, kind: "approved", reason: reason || null }
+        : { opportunityId: screen.opportunity.id, at, operator: null, kind: "overridden", reason },
+    );
+    try {
+      await ghl.notes.create(contactId, note);
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
+      setReadinessDecisionReasonInput("");
+    } catch (e: any) {
+      setReadinessDecisionError(e?.message ?? "Couldn't record this decision -- it is not yet in effect. Try again.");
+    } finally {
+      setReadinessDecisionBusy(false);
+    }
+  }
+
   /* B8-07 / INV-50, Jess Gate correction 2026-09-05, Jess Re-Gate
      correction 2026-09-05 (2nd round). Reads Board #7's EXISTING
      append-only ARV approval ledger note (arv-persist.ts's
@@ -693,15 +913,65 @@ export default function SellerCallWorkspace() {
     return matchingArvApprovalForOpportunity(notes, screen.opportunity.id, screen.known.arv);
   }, [notes, screen]);
 
-  /* B8-04, consumed, via buildOfferReadinessInputs (B8-07 / INV-50) --
-     that module's own header states exactly which categories now reflect
-     real evidence (repairsCondition, gated on `repairsSourceIsApprovalGated`
-     proving the value passed IAOS's approval gate rather than merely
-     being present; arv, from `matchedArvApproval` above -- amount-matched,
-     never a stale entry) and which still cannot (property_identity,
-     transaction assumptions, seller price position -- no determination
-     mechanism exists for any of them yet). No human action control
-     exists in this build. */
+  /* B8-13 / INV-68 -- the four new Offer Readiness determination carriers.
+     Same "stateless-fresh read of current GHL state" pattern as
+     `matchedArvApproval` above: read fresh from `notes` on every render,
+     never mirrored into useState, so a durable record can never drift
+     from what GHL actually holds. `propertyIdentityConfirmation` is
+     additionally STALE-CHECKED against the CURRENT displayed address (the
+     locked addendum's own rule) -- `formatAddress(contact)` is the exact
+     same string the page header already renders, so "current" here means
+     literally what the operator sees, not a second address computation. */
+  const propertyIdentityConfirmation = useMemo(() => {
+    if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    return currentPropertyIdentityConfirmationForOpportunity(notes, screen.opportunity.id, formatAddress(contact));
+  }, [notes, screen, contact]);
+
+  const transactionAssumptionsRecord = useMemo(() => {
+    if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    return latestTransactionAssumptionsForOpportunity(notes, screen.opportunity.id);
+  }, [notes, screen]);
+
+  const sellerPricePositionRecord = useMemo(() => {
+    if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    return latestSellerPricePositionForOpportunity(notes, screen.opportunity.id);
+  }, [notes, screen]);
+
+  const readinessHumanActionRecord = useMemo(() => {
+    if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    return latestReadinessHumanActionForOpportunity(notes, screen.opportunity.id);
+  }, [notes, screen]);
+
+  /* `HumanAction.operator` (offer-readiness.ts, unchanged, locked) requires
+     a `string` -- unlike this carrier's own honest `string | null` (this
+     app has no authenticated-operator concept, per every sibling carrier's
+     header). "UNAVAILABLE" is the SAME literal every carrier's own note
+     serialization already uses for exactly this meaning (see `ledgerValue`
+     in `seller-call-readiness-carriers.ts`) -- a truthful placeholder, not
+     a fabricated name, bridging into a type this issue does not change. */
+  const readinessHumanAction: HumanAction = readinessHumanActionRecord === null
+    ? { kind: "none" }
+    : readinessHumanActionRecord.kind === "approved"
+      ? {
+          kind: "approved", at: readinessHumanActionRecord.at,
+          operator: readinessHumanActionRecord.operator ?? "UNAVAILABLE",
+          reason: readinessHumanActionRecord.reason ?? undefined,
+        }
+      : {
+          kind: "overridden", at: readinessHumanActionRecord.at,
+          operator: readinessHumanActionRecord.operator ?? "UNAVAILABLE",
+          reason: readinessHumanActionRecord.reason,
+        };
+
+  /* B8-04, consumed, via buildOfferReadinessInputs (B8-07 / INV-50,
+     extended B8-13 / INV-68) -- that module's own header states exactly
+     which categories now reflect real evidence: repairsCondition, gated on
+     `repairsSourceIsApprovalGated` proving the value passed IAOS's
+     approval gate rather than merely being present; arv, from
+     `matchedArvApproval` above -- amount-matched, never a stale entry; and
+     now propertyIdentity/transactionAssumptions/sellerPricePosition, each
+     from its own durable carrier above. `humanAction` is the durable
+     carrier's latest entry, or `{ kind: "none" }` when none is on record. */
   const readiness: ReadinessResult | null = useMemo(() => {
     if (!board8) return null;
     const known = {
@@ -714,8 +984,15 @@ export default function SellerCallWorkspace() {
       dealEconomics: board8,
       repairsApprovalProven: pipeline.repairsSourceIsApprovalGated,
       arvEvidenceState: matchedArvApproval?.evidenceState ?? null,
+      propertyIdentityConfirmed: propertyIdentityConfirmation !== null,
+      transactionAssumptionsRecorded: transactionAssumptionsRecord !== null,
+      sellerPricePositionRecorded: sellerPricePositionRecord !== null,
+      humanAction: readinessHumanAction,
     }));
-  }, [board8, screen, pipeline.repairsSourceIsApprovalGated, matchedArvApproval]);
+  }, [
+    board8, screen, pipeline.repairsSourceIsApprovalGated, matchedArvApproval,
+    propertyIdentityConfirmation, transactionAssumptionsRecord, sellerPricePositionRecord, readinessHumanAction,
+  ]);
 
   const dealBarCells = useMemo(
     () => buildDealBarCells({
@@ -750,6 +1027,21 @@ export default function SellerCallWorkspace() {
     };
     return computeNextBestQuestion(readiness, known, board8);
   }, [readiness, board8, screen]);
+
+  /* B8-12 / INV-55 — "Other Useful Questions": everything else still open,
+     same priority order, same inputs as nextBestQuestion above (never a
+     second readiness/economics read) — just the rest of the same queue. */
+  const otherUsefulQuestions = useMemo(() => {
+    if (!readiness || !board8) return [];
+    const known = {
+      arv: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.arv : null,
+      repairs: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.repairs : null,
+      askingPrice: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.askingPrice : null,
+    };
+    return computeQuestionQueue(readiness, known, board8).slice(1);
+  }, [readiness, board8, screen]);
+
+  const [fullScriptOpen, setFullScriptOpen] = useState(false);
 
   /* B8-10 / INV-53 — the most recent bounded call outcome for THIS
      opportunity, read back through seller-call-outcome.ts's strict
@@ -1088,6 +1380,80 @@ export default function SellerCallWorkspace() {
             <DealBar cells={dealBarCells} />
             {readiness ? <ReadinessBadge readiness={readiness} /> : null}
           </div>
+
+          {/* B8-13 / INV-68 — Offer Ready's OWN human approval/override,
+              distinct from the negotiation above-Max override further
+              below. Durable via `formatReadinessHumanActionNote`
+              (`handleReadinessDecision`); the addendum's own rule: APPROVED
+              only ever attempted when evidence is already OFFER_READY,
+              OVERRIDDEN requires a non-empty reason and may elevate a
+              non-ready status (visible in ReadinessBadge above as "raw
+              evidence: ... -- overridden"). */}
+          {readiness ? (
+            <div
+              data-testid="readiness-human-action-panel"
+              style={{
+                marginBottom: "16px", padding: "14px 16px", borderRadius: "10px",
+                background: "#0F172A", border: "1px solid #1E293B",
+              }}
+            >
+              <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "8px" }}>
+                Offer Readiness decision
+              </div>
+              {readinessHumanActionRecord ? (
+                <div data-testid="readiness-human-action-current" style={{ fontSize: "12px", color: "#94A3B8", marginBottom: "10px" }}>
+                  Last recorded: <strong style={{ color: readinessHumanActionRecord.kind === "overridden" ? "#F59E0B" : "#22C55E" }}>
+                    {readinessHumanActionRecord.kind.toUpperCase()}
+                  </strong> at {new Date(readinessHumanActionRecord.at).toLocaleString()}
+                  {readinessHumanActionRecord.reason ? ` — "${readinessHumanActionRecord.reason}"` : ""}
+                </div>
+              ) : null}
+              {readiness.status === "OFFER_READY" ? (
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <input
+                    value={readinessDecisionReasonInput}
+                    onChange={(e) => setReadinessDecisionReasonInput(e.target.value)}
+                    placeholder="Optional note"
+                    disabled={readinessDecisionBusy}
+                    style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
+                  />
+                  <button
+                    onClick={() => handleReadinessDecision("approved")}
+                    disabled={readinessDecisionBusy}
+                    data-testid="readiness-approve-button"
+                    style={{ ...COMPACT_BUTTON_STYLE, opacity: readinessDecisionBusy ? 0.6 : 1, cursor: readinessDecisionBusy ? "not-allowed" : "pointer" }}
+                  >
+                    {readinessDecisionBusy ? <Loader2 size={12} className="animate-spin" /> : null} Approve
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <input
+                    value={readinessDecisionReasonInput}
+                    onChange={(e) => setReadinessDecisionReasonInput(e.target.value)}
+                    placeholder="Reason for overriding (required)"
+                    disabled={readinessDecisionBusy}
+                    style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
+                  />
+                  <button
+                    onClick={() => handleReadinessDecision("overridden")}
+                    disabled={readinessDecisionBusy || readinessDecisionReasonInput.trim() === ""}
+                    data-testid="readiness-override-button"
+                    style={{
+                      ...COMPACT_BUTTON_STYLE,
+                      opacity: readinessDecisionBusy || readinessDecisionReasonInput.trim() === "" ? 0.45 : 1,
+                      cursor: readinessDecisionBusy || readinessDecisionReasonInput.trim() === "" ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {readinessDecisionBusy ? <Loader2 size={12} className="animate-spin" /> : null} Override anyway
+                  </button>
+                </div>
+              )}
+              {readinessDecisionError ? (
+                <div data-testid="readiness-decision-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{readinessDecisionError}</div>
+              ) : null}
+            </div>
+          ) : null}
 
           {/* B8-10 / INV-53 — Agreement Reached + Contract Ready handoff.
               A SEPARATE surface from ReadinessBadge above, never replacing
@@ -1469,12 +1835,88 @@ export default function SellerCallWorkspace() {
             ) : null}
           </div>
 
-          {/* Known facts / Next Best Question -- the conversation-first
-              content this route exists to show. B8-06 / INV-49: the
-              objective panel is now ONE deterministic, prioritized
-              question from computeNextBestQuestion, not a script and not
-              a dump of every open reason. */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginTop: "8px" }}>
+          {/* Conversation-first hierarchy -- B8-12 / INV-55, Brad-approved
+              usability correction (locked 2026-09-07). "The script guides
+              the conversation. MSK governs readiness." Next Best Question
+              is the ONE visually primary element on this route; everything
+              else here (Other Useful Questions, the Offer Readiness
+              checklist, Known Facts) is deliberately smaller and quieter
+              so the two never compete for attention during a live call.
+              computeNextBestQuestion / computeQuestionQueue (imported,
+              never reimplemented) are the SAME B8-06 engine as before --
+              this section changes presentation, not what question gets
+              picked or why. */}
+          <div
+            data-testid="next-best-question-panel"
+            style={{
+              marginTop: "8px", padding: "20px 22px", borderRadius: "12px",
+              background: "linear-gradient(180deg, rgba(30,200,255,0.10), rgba(15,23,42,1))",
+              border: "1px solid rgba(30,200,255,0.35)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+              <div style={{ fontSize: "12px", fontWeight: 700, color: "#1EC8FF", letterSpacing: "0.04em", textTransform: "uppercase" }}>
+                Next Best Question
+              </div>
+              <button
+                onClick={() => setFullScriptOpen(true)}
+                data-testid="view-full-script"
+                style={{
+                  fontSize: "11px", fontWeight: 600, color: "#94A3B8", background: "transparent",
+                  border: "1px solid #334155", borderRadius: "6px", padding: "5px 10px", cursor: "pointer",
+                }}
+              >
+                View Full Script
+              </button>
+            </div>
+
+            {nextBestQuestion === null ? (
+              <div style={{ fontSize: "14px", color: "#64748B", lineHeight: 1.6 }}>
+                Underwriting must resolve before a question can be set.
+              </div>
+            ) : nextBestQuestion.kind === "offer_ready" ? (
+              <div style={{ fontSize: "16px", color: "#22C55E", fontWeight: 700, lineHeight: 1.6 }}>
+                {nextBestQuestion.message}
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: "19px", color: "#F8FAFC", fontWeight: 700, lineHeight: 1.4 }}>
+                  {nextBestQuestion.question}
+                </div>
+                <div style={{ fontSize: "12px", color: "#94A3B8", lineHeight: 1.5, marginTop: "8px" }}>
+                  Why it matters: {nextBestQuestion.whyItMatters}
+                </div>
+                <div style={{ fontSize: "11px", color: "#64748B", fontStyle: "italic", marginTop: "10px" }}>
+                  Suggested — say it your way.
+                </div>
+              </div>
+            )}
+
+            {/* Other Useful Questions -- item 2 of the required hierarchy.
+                Deliberately smaller and lower-contrast than the question
+                above: relevant alternatives and follow-ups, never
+                competing for primary attention. Same queue, everything
+                after index 0. */}
+            {otherUsefulQuestions.length > 0 ? (
+              <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid rgba(148,163,184,0.15)" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748B", marginBottom: "8px" }}>
+                  Other Useful Questions
+                </div>
+                <ul data-testid="other-useful-questions" style={{ margin: 0, padding: 0, listStyle: "none" }}>
+                  {otherUsefulQuestions.map((q, i) => (
+                    <li key={i} style={{ fontSize: "12px", color: "#94A3B8", lineHeight: 1.5, padding: "4px 0" }}>
+                      • {q.question}
+                    </li>
+                  ))}
+                </ul>
+                <div style={{ fontSize: "11px", color: "#475569", fontStyle: "italic", marginTop: "6px" }}>
+                  Suggested — say it your way.
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginTop: "16px" }}>
             <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Known facts</div>
               <div style={{ fontSize: "13px", color: "#E2E8F0", lineHeight: 1.8 }}>
@@ -1483,28 +1925,162 @@ export default function SellerCallWorkspace() {
                 <div>Seller Ask: {screen.known.askingPrice !== null ? screen.known.askingPrice.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }) : "Not yet established"}</div>
               </div>
             </div>
-            <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="next-best-question-panel">
-              <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>
-                Next Best Question
-              </div>
-              {nextBestQuestion === null ? (
-                <div style={{ fontSize: "13px", color: "#64748B", lineHeight: 1.6 }}>
-                  Underwriting must resolve before a question can be set.
+
+            {/* What We Still Need / Offer Readiness -- item 3 of the
+                required hierarchy. Compact list, not paragraph text; all
+                six categories shown, satisfied ones checkmarked rather
+                than disappearing. Reads the SAME `readiness` ReadinessBadge
+                above renders -- no second computation. */}
+            {readiness ? (
+              <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
+                <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>
+                  What We Still Need / Offer Readiness
                 </div>
-              ) : nextBestQuestion.kind === "offer_ready" ? (
-                <div style={{ fontSize: "13px", color: "#22C55E", fontWeight: 600, lineHeight: 1.6 }}>
-                  {nextBestQuestion.message}
+                <OfferReadinessChecklist readiness={readiness} />
+              </div>
+            ) : null}
+
+            {/* B8-13 / INV-68 — Property identity. Determination mechanism
+                per the locked addendum: explicit operator confirmation,
+                tied to the address on file at confirmation time. Reads
+                `propertyIdentityConfirmation` (stale-checked against the
+                CURRENT `formatAddress(contact)`, above) -- never a second
+                confirmation state. */}
+            <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="property-identity-panel">
+              <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Property identity</div>
+              <div style={{ fontSize: "13px", color: "#E2E8F0", marginBottom: "12px" }} data-testid="property-identity-status">
+                {formatAddress(contact)}
+                {propertyIdentityConfirmation ? (
+                  <span style={{ color: "#22C55E", marginLeft: "8px" }}>✓ Confirmed {new Date(propertyIdentityConfirmation.at).toLocaleDateString()}</span>
+                ) : (
+                  <span style={{ color: "#94A3B8", marginLeft: "8px" }}>— not yet confirmed</span>
+                )}
+              </div>
+              {!propertyIdentityConfirmation ? (
+                <button
+                  onClick={handleConfirmPropertyIdentity}
+                  disabled={propertyIdentityBusy || formatAddress(contact) === "—"}
+                  data-testid="confirm-property-identity"
+                  style={{ ...COMPACT_BUTTON_STYLE, opacity: propertyIdentityBusy || formatAddress(contact) === "—" ? 0.45 : 1, cursor: propertyIdentityBusy ? "not-allowed" : "pointer" }}
+                >
+                  {propertyIdentityBusy ? <Loader2 size={12} className="animate-spin" /> : null} Confirm this is the right property
+                </button>
+              ) : null}
+              {propertyIdentityError ? (
+                <div data-testid="property-identity-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{propertyIdentityError}</div>
+              ) : null}
+            </div>
+
+            {/* B8-13 / INV-68 — Transaction assumptions. Determination
+                mechanism per the locked addendum: three named sub-facts,
+                each recorded or explicitly marked None -- never left
+                blank. */}
+            <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="transaction-assumptions-panel">
+              <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Transaction assumptions</div>
+              {transactionAssumptionsRecord ? (
+                <div style={{ fontSize: "12px", color: "#94A3B8" }} data-testid="transaction-assumptions-status">
+                  <div style={{ color: "#22C55E", marginBottom: "6px" }}>✓ Recorded {new Date(transactionAssumptionsRecord.at).toLocaleDateString()}</div>
+                  <div>Structure: {transactionAssumptionsRecord.transactionStructure.kind === "none" ? "None" : transactionAssumptionsRecord.transactionStructure.value}</div>
+                  <div>Closing/possession: {transactionAssumptionsRecord.closingPossession.kind === "none" ? "None" : transactionAssumptionsRecord.closingPossession.value}</div>
+                  <div>Title complications: {transactionAssumptionsRecord.titleComplications.kind === "none" ? "None" : transactionAssumptionsRecord.titleComplications.value}</div>
                 </div>
               ) : (
-                <div>
-                  <div style={{ fontSize: "14px", color: "#E2E8F0", fontWeight: 600, lineHeight: 1.5 }}>
-                    {nextBestQuestion.question}
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                    <input
+                      value={transactionStructureInput}
+                      onChange={(e) => setTransactionStructureInput(e.target.value)}
+                      disabled={transactionStructureNone || transactionAssumptionsBusy}
+                      placeholder="Transaction structure"
+                      style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
+                    />
+                    <label style={{ fontSize: "11px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <input type="checkbox" checked={transactionStructureNone} onChange={(e) => setTransactionStructureNone(e.target.checked)} /> None
+                    </label>
                   </div>
-                  <div style={{ fontSize: "12px", color: "#94A3B8", lineHeight: 1.5, marginTop: "8px" }}>
-                    Why it matters: {nextBestQuestion.whyItMatters}
+                  <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                    <input
+                      value={closingPossessionInput}
+                      onChange={(e) => setClosingPossessionInput(e.target.value)}
+                      disabled={closingPossessionNone || transactionAssumptionsBusy}
+                      placeholder="Closing/possession expectations"
+                      style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
+                    />
+                    <label style={{ fontSize: "11px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <input type="checkbox" checked={closingPossessionNone} onChange={(e) => setClosingPossessionNone(e.target.checked)} /> None
+                    </label>
                   </div>
+                  <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                    <input
+                      value={titleComplicationsInput}
+                      onChange={(e) => setTitleComplicationsInput(e.target.value)}
+                      disabled={titleComplicationsNone || transactionAssumptionsBusy}
+                      placeholder="Known title complications"
+                      style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
+                    />
+                    <label style={{ fontSize: "11px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <input type="checkbox" checked={titleComplicationsNone} onChange={(e) => setTitleComplicationsNone(e.target.checked)} /> None
+                    </label>
+                  </div>
+                  <button
+                    onClick={handleSaveTransactionAssumptions}
+                    disabled={transactionAssumptionsBusy}
+                    data-testid="save-transaction-assumptions"
+                    style={{ ...COMPACT_BUTTON_STYLE, alignSelf: "flex-start", opacity: transactionAssumptionsBusy ? 0.6 : 1, cursor: transactionAssumptionsBusy ? "not-allowed" : "pointer" }}
+                  >
+                    {transactionAssumptionsBusy ? <Loader2 size={12} className="animate-spin" /> : null} Save
+                  </button>
                 </div>
               )}
+              {transactionAssumptionsError ? (
+                <div data-testid="transaction-assumptions-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{transactionAssumptionsError}</div>
+              ) : null}
+            </div>
+
+            {/* B8-13 / INV-68 — Seller price position. Determination
+                mechanism per the locked addendum: a price, a
+                counterposition, or an explicit documented refusal -- a
+                refusal is valid evidence and must not remain UNKNOWN. */}
+            <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="seller-price-position-panel">
+              <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Seller price position</div>
+              {sellerPricePositionRecord ? (
+                <div style={{ fontSize: "12px", color: "#22C55E" }} data-testid="seller-price-position-status">
+                  ✓ {sellerPricePositionRecord.kind === "price"
+                    ? `${money(sellerPricePositionRecord.price)} recorded ${new Date(sellerPricePositionRecord.at).toLocaleDateString()}`
+                    : `Documented refusal recorded ${new Date(sellerPricePositionRecord.at).toLocaleDateString()}`}
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <input
+                      value={sellerPricePositionInput}
+                      onChange={(e) => setSellerPricePositionInput(e.target.value)}
+                      disabled={sellerPricePositionBusy}
+                      placeholder="Seller's price"
+                      style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
+                    />
+                    <button
+                      onClick={() => handleRecordSellerPricePosition("price")}
+                      disabled={sellerPricePositionBusy || sellerPricePositionInput.trim() === ""}
+                      data-testid="record-seller-price"
+                      style={{ ...COMPACT_BUTTON_STYLE, opacity: sellerPricePositionBusy || sellerPricePositionInput.trim() === "" ? 0.45 : 1, cursor: sellerPricePositionBusy ? "not-allowed" : "pointer" }}
+                    >
+                      Record
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => handleRecordSellerPricePosition("refused")}
+                    disabled={sellerPricePositionBusy}
+                    data-testid="record-seller-price-refused"
+                    style={{ ...COMPACT_LINK_STYLE, alignSelf: "flex-start", opacity: sellerPricePositionBusy ? 0.6 : 1, cursor: sellerPricePositionBusy ? "not-allowed" : "pointer" }}
+                  >
+                    {sellerPricePositionBusy ? <Loader2 size={12} className="animate-spin" /> : null} Seller declined to give a price
+                  </button>
+                </div>
+              )}
+              {sellerPricePositionError ? (
+                <div data-testid="seller-price-position-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{sellerPricePositionError}</div>
+              ) : null}
             </div>
 
             {/* B8-07 / INV-50 — compact Estimate Repairs entry/resume.
@@ -1596,6 +2172,7 @@ export default function SellerCallWorkspace() {
           </div>
         </>
       ) : null}
+      <FullScriptDrawer open={fullScriptOpen} onClose={() => setFullScriptOpen(false)} />
     </Shell>
   );
 }

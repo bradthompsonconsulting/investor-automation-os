@@ -92,6 +92,7 @@ import type {
   ReadinessResult,
 } from "./offer-readiness";
 import type { Board8Economics } from "./board8-economics";
+import { APPROVED_SCRIPT_FOR_COLD_CATEGORY } from "../seller-call-script";
 
 /** Raw facts already on file, so a question can acknowledge them instead of re-asking from zero. */
 export type KnownFactsSnapshot = {
@@ -155,14 +156,17 @@ function categoryQuestionText(
 ): string {
   switch (category) {
     case "property_identity":
+      // UNKNOWN is always the truly-cold case for this category -- there is
+      // no known-address branch to distinguish first-ask from recheck (see
+      // KnownFactsSnapshot), so Brad's approved line is preferred outright.
       return level === "UNKNOWN"
-        ? "What is the exact property here — full address, parcel, and structure type?"
+        ? APPROVED_SCRIPT_FOR_COLD_CATEGORY.property_identity
         : "Has anything about the property's address or structure changed since it was recorded?";
     case "repairs_condition":
       if (level === "UNKNOWN") {
         return known.repairs !== null
           ? `Is the ${money(known.repairs)} repair estimate already on file still accurate for this property's condition?`
-          : "What is the property's condition — roof, HVAC, foundation, recent updates?";
+          : APPROVED_SCRIPT_FOR_COLD_CATEGORY.repairs_condition;
       }
       return "Is there anything about the property's condition still worth confirming?";
     case "arv":
@@ -178,7 +182,7 @@ function categoryQuestionText(
         : "Is there anything about closing or possession still unclear?";
     case "seller_price_position":
       return level === "UNKNOWN"
-        ? "What is the seller hoping to get for the property?"
+        ? APPROVED_SCRIPT_FOR_COLD_CATEGORY.seller_price_position
         : "How firm is the seller's stated price position?";
   }
 }
@@ -285,6 +289,76 @@ function dealEconomicsDiagnosis(dealEconomics: Board8Economics): { question: str
   return DEAL_ECONOMICS_NEUTRAL_FALLBACK;
 }
 
+/** One resolved question, as `enumerateQuestions` produces it -- the "question" variant of `NextBestQuestion`, never "offer_ready". */
+type QuestionEntry = Extract<NextBestQuestion, { kind: "question" }>;
+
+/**
+ * Enumerates EVERY still-open question, in the exact priority order the
+ * module header describes -- material unknowns (caller-supplied order),
+ * then UNKNOWN categories (`CATEGORY_PRIORITY` order), then PRELIMINARY
+ * categories (same order). This is the ONE place that priority is decided;
+ * `computeNextBestQuestion` (its first entry) and `computeQuestionQueue`
+ * (B8-12 / INV-55 -- the full list, for "Other Useful Questions") both read
+ * it rather than each re-deriving their own ordering, so the two can never
+ * disagree about which question is "next."
+ */
+function enumerateQuestions(
+  readiness: ReadinessResult,
+  known: KnownFactsSnapshot,
+  dealEconomics: Board8Economics,
+): QuestionEntry[] {
+  const out: QuestionEntry[] = [];
+
+  // Tier 1a: material unknowns, in the order they were supplied.
+  for (const r of readiness.reasons) {
+    if (r.kind !== "material_unknown") continue;
+    out.push({
+      kind: "question",
+      source: { kind: "material_unknown", unknownCode: r.unknownCode },
+      question: materialUnknownQuestionText(r),
+      whyItMatters:
+        "This is exactly the kind of fact the Offer Ready contract names as able to significantly change the supported offer — it comes before any other underwriting question.",
+    });
+  }
+
+  // Tier 1b: UNKNOWN categories, in CATEGORY_PRIORITY order.
+  for (const category of CATEGORY_PRIORITY) {
+    if (readiness.categories[category] !== "UNKNOWN") continue;
+    if (category === "deal_economics") {
+      out.push({ kind: "question", source: { kind: "category", category, level: "UNKNOWN" }, ...dealEconomicsDiagnosis(dealEconomics) });
+    } else {
+      out.push({
+        kind: "question",
+        source: { kind: "category", category, level: "UNKNOWN" },
+        question: categoryQuestionText(category, "UNKNOWN", known),
+        whyItMatters: WHY_IT_MATTERS[category],
+      });
+    }
+  }
+
+  // Tier 2: PRELIMINARY categories, same order.
+  for (const category of CATEGORY_PRIORITY) {
+    if (readiness.categories[category] !== "PRELIMINARY") continue;
+    if (category === "deal_economics") {
+      out.push({ kind: "question", source: { kind: "category", category, level: "PRELIMINARY" }, ...dealEconomicsDiagnosis(dealEconomics) });
+    } else {
+      out.push({
+        kind: "question",
+        source: { kind: "category", category, level: "PRELIMINARY" },
+        question: categoryQuestionText(category, "PRELIMINARY", known),
+        whyItMatters: WHY_IT_MATTERS[category],
+      });
+    }
+  }
+
+  return out;
+}
+
+const OFFER_READY: NextBestQuestion = {
+  kind: "offer_ready",
+  message: "Offer Ready — no further underwriting question. Move to presenting the offer.",
+};
+
 /**
  * Selects the single Next Best Question from a `ReadinessResult` B8-04
  * already computed and the `Board8Economics` B8-03 already computed,
@@ -296,67 +370,30 @@ export function computeNextBestQuestion(
   known: KnownFactsSnapshot,
   dealEconomics: Board8Economics,
 ): NextBestQuestion {
-  if (readiness.effectiveStatus === "OFFER_READY") {
-    return {
-      kind: "offer_ready",
-      message: "Offer Ready — no further underwriting question. Move to presenting the offer.",
-    };
-  }
+  if (readiness.effectiveStatus === "OFFER_READY") return OFFER_READY;
 
-  // Tier 1a: material unknowns, in the order they were supplied.
-  const materialUnknown = readiness.reasons.find(
-    (r): r is MaterialUnknownReason => r.kind === "material_unknown",
-  );
-  if (materialUnknown) {
-    return {
-      kind: "question",
-      source: { kind: "material_unknown", unknownCode: materialUnknown.unknownCode },
-      question: materialUnknownQuestionText(materialUnknown),
-      whyItMatters:
-        "This is exactly the kind of fact the Offer Ready contract names as able to significantly change the supported offer — it comes before any other underwriting question.",
-    };
-  }
-
-  // Tier 1b: UNKNOWN categories, in CATEGORY_PRIORITY order.
-  for (const category of CATEGORY_PRIORITY) {
-    if (readiness.categories[category] === "UNKNOWN") {
-      if (category === "deal_economics") {
-        const diagnosis = dealEconomicsDiagnosis(dealEconomics);
-        return { kind: "question", source: { kind: "category", category, level: "UNKNOWN" }, ...diagnosis };
-      }
-      return {
-        kind: "question",
-        source: { kind: "category", category, level: "UNKNOWN" },
-        question: categoryQuestionText(category, "UNKNOWN", known),
-        whyItMatters: WHY_IT_MATTERS[category],
-      };
-    }
-  }
-
-  // Tier 2: PRELIMINARY categories, same order.
-  for (const category of CATEGORY_PRIORITY) {
-    if (readiness.categories[category] === "PRELIMINARY") {
-      if (category === "deal_economics") {
-        const diagnosis = dealEconomicsDiagnosis(dealEconomics);
-        return { kind: "question", source: { kind: "category", category, level: "PRELIMINARY" }, ...diagnosis };
-      }
-      return {
-        kind: "question",
-        source: { kind: "category", category, level: "PRELIMINARY" },
-        question: categoryQuestionText(category, "PRELIMINARY", known),
-        whyItMatters: WHY_IT_MATTERS[category],
-      };
-    }
-  }
-
+  const queue = enumerateQuestions(readiness, known, dealEconomics);
   // Structurally unreachable while effectiveStatus and status share
   // computeOfferReadiness's own aggregation rule: no material unknown, no
   // UNKNOWN category and no PRELIMINARY category means every category is
   // SUPPORTED, which is exactly OFFER_READY and already returned above.
   // Kept explicit rather than a non-null assertion, so a future change to
   // that aggregation rule fails loudly here instead of throwing.
-  return {
-    kind: "offer_ready",
-    message: "Offer Ready — no further underwriting question. Move to presenting the offer.",
-  };
+  return queue[0] ?? OFFER_READY;
+}
+
+/**
+ * B8-12 / INV-55 -- every OTHER open question beyond the Next Best
+ * Question, in the same priority order, for the "Other Useful Questions"
+ * list. Empty exactly when `computeNextBestQuestion` returns "offer_ready"
+ * or there was only ever one open question; never recomputes readiness or
+ * reorders anything `enumerateQuestions` did not already decide.
+ */
+export function computeQuestionQueue(
+  readiness: ReadinessResult,
+  known: KnownFactsSnapshot,
+  dealEconomics: Board8Economics,
+): QuestionEntry[] {
+  if (readiness.effectiveStatus === "OFFER_READY") return [];
+  return enumerateQuestions(readiness, known, dealEconomics);
 }
