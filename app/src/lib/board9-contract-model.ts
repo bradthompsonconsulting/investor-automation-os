@@ -199,7 +199,9 @@ export type TransitionReasonCode =
   | "EXPIRED_REQUIRES_NO_VERIFIED_EXECUTION"
   | "EXPIRATION_HAS_NOT_OCCURRED"
   | "DECLINED_TIMESTAMP_INVALID"
-  | "DECLINED_NOT_OPERATOR_RECORDED";
+  | "DECLINED_NOT_OPERATOR_RECORDED"
+  | "HANDOFF_AGREEMENT_VERSION_MISMATCH"
+  | "HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION";
 
 export type TransitionReason = { code: TransitionReasonCode; message: string };
 
@@ -1016,16 +1018,69 @@ export type BuildHandoffArgs =
     };
 
 /**
+ * Every terminal handoff carries BOTH a bare `agreementAt` and a full
+ * `version` -- two separate arguments that must never be allowed to name
+ * different agreements. Without this guard, execution evidence could be
+ * validated against one version while the emitted payload is labeled with
+ * another (Jess Gate correction, this issue): `args.agreementAt` and
+ * `args.version.agreementAt` are compared directly, independent of which
+ * terminal state is being built.
+ */
+function isHandoffAgreementConsistent(agreementAt: string, version: ContractVersionIdentity): boolean {
+  return agreementAt === version.agreementAt;
+}
+
+/**
  * Builds the handoff payload ONLY when the named terminal state's own
  * entry evidence is genuinely satisfied -- never emits a payload for a
  * state that has not actually been reached. This is what makes the
  * handoff "stable": every payload this function ever returns is one whose
  * terminal condition was actually checked, not merely asserted by a caller.
+ *
+ * Jess Gate correction, this issue: before any terminal-state-specific
+ * logic runs, `args.agreementAt` and `args.version.agreementAt` must
+ * agree -- applied uniformly to all four terminal states, never only to
+ * Under Contract. For Under Contract specifically, `args.version` -- the
+ * identity that will actually be EMITTED in the payload -- must also
+ * exactly match `underContractEvidence.currentVersion` -- the identity
+ * execution evidence was VALIDATED against (`isSameContractVersion`,
+ * already proven for Contract Sent's own version binding above). Together
+ * with the preserved document's own `boundVersion` check inside
+ * `evaluateUnderContractEligibility`, this closes the loop: the preserved
+ * document's bound version, the validated current version, and the
+ * version the handoff is actually labeled with must all identify the
+ * exact same contract version -- never three independently-trusted values
+ * that happen to be passed together.
  */
 export function buildDispositionHandoffPayload(
   args: BuildHandoffArgs,
 ): { ok: true; value: DispositionHandoffPayload } | { ok: false; reasons: TransitionReason[] } {
+  if (!isHandoffAgreementConsistent(args.agreementAt, args.version)) {
+    return {
+      ok: false,
+      reasons: [
+        {
+          code: "HANDOFF_AGREEMENT_VERSION_MISMATCH",
+          message:
+            "This handoff's own agreementAt does not match its own version.agreementAt -- the two must identify the same agreement lineage before any terminal state can be evaluated.",
+        },
+      ],
+    };
+  }
+
   if (args.terminalState === "under_contract") {
+    if (!isSameContractVersion(args.version, args.underContractEvidence.currentVersion)) {
+      return {
+        ok: false,
+        reasons: [
+          {
+            code: "HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION",
+            message:
+              "The contract version this handoff would be labeled with does not match the version the execution evidence was actually validated against -- refusing to emit a handoff for a different version than the one just verified.",
+          },
+        ],
+      };
+    }
     const eligibility = evaluateUnderContractEligibility(args.underContractEvidence);
     if (!eligibility.eligible) return { ok: false, reasons: eligibility.reasons };
     return {

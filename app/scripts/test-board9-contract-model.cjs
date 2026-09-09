@@ -65,7 +65,7 @@ const compiledNoComments = execSync(
 fs.rmSync(TMP + '-nocomments', { recursive: true, force: true });
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 149;
+const FLOOR = 163;
 let failures = 0;
 let checks = 0;
 
@@ -614,6 +614,77 @@ const fullChecklist = {
   const declinedNoOperatorResult = M.buildDispositionHandoffPayload(declinedNoOperator);
   check('a blank/whitespace-only recordedBy refuses the declined handoff -- "operator-recorded" per B9-01 requires a real operator identity', declinedNoOperatorResult.ok, false);
   check('the no-operator refusal names DECLINED_NOT_OPERATOR_RECORDED', declinedNoOperatorResult.reasons.some((r) => r.code === 'DECLINED_NOT_OPERATOR_RECORDED'), true);
+
+  // -- Jess Gate correction, this issue: the handoff's own agreementAt and
+  // version.agreementAt must never be allowed to disagree -- applied
+  // uniformly to ALL FOUR terminal states, not only Under Contract.
+  const mismatchedAgreementAt = '1999-01-01T00:00:00.000Z';
+
+  const ucAgreementVersionMismatch = M.buildDispositionHandoffPayload({
+    terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: mismatchedAgreementAt, version,
+    underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: version, executedTermsMatchAgreement: true },
+  });
+  check('required test 1a: an Under Contract handoff is refused when args.agreementAt differs from args.version.agreementAt', ucAgreementVersionMismatch.ok, false);
+  check('the Under Contract agreementAt/version mismatch names HANDOFF_AGREEMENT_VERSION_MISMATCH', ucAgreementVersionMismatch.reasons[0].code, 'HANDOFF_AGREEMENT_VERSION_MISMATCH');
+
+  const rescindedAgreementVersionMismatch = M.buildDispositionHandoffPayload({
+    terminalState: 'rescinded', opportunityId: 'opp-1', agreementAt: mismatchedAgreementAt, version,
+    rescission: { authorizedBy: 'brad', at: '2026-09-10T00:00:00.000Z', reason: 'Seller withdrew.' },
+  });
+  check('required test 1b: a Rescinded handoff is refused when args.agreementAt differs from args.version.agreementAt', rescindedAgreementVersionMismatch.ok, false);
+  check('the Rescinded agreementAt/version mismatch names HANDOFF_AGREEMENT_VERSION_MISMATCH', rescindedAgreementVersionMismatch.reasons[0].code, 'HANDOFF_AGREEMENT_VERSION_MISMATCH');
+
+  const expiredAgreementVersionMismatch = M.buildDispositionHandoffPayload({ ...expiredBase, agreementAt: mismatchedAgreementAt });
+  check('required test 1c: an Expired handoff is refused when args.agreementAt differs from args.version.agreementAt', expiredAgreementVersionMismatch.ok, false);
+  check('the Expired agreementAt/version mismatch names HANDOFF_AGREEMENT_VERSION_MISMATCH', expiredAgreementVersionMismatch.reasons[0].code, 'HANDOFF_AGREEMENT_VERSION_MISMATCH');
+
+  const declinedAgreementVersionMismatch = M.buildDispositionHandoffPayload({ ...declinedBase, agreementAt: mismatchedAgreementAt });
+  check('required test 1d: a Declined handoff is refused when args.agreementAt differs from args.version.agreementAt', declinedAgreementVersionMismatch.ok, false);
+  check('the Declined agreementAt/version mismatch names HANDOFF_AGREEMENT_VERSION_MISMATCH', declinedAgreementVersionMismatch.reasons[0].code, 'HANDOFF_AGREEMENT_VERSION_MISMATCH');
+
+  // -- Required test 2: Under Contract refused when args.version and
+  // underContractEvidence.currentVersion have DIFFERENT agreementAt values
+  // (args.agreementAt kept internally consistent with args.version, so
+  // ONLY the version-vs-currentVersion guard is exercised here).
+  const ucVersionCurrentVersionDifferentAgreement = M.buildDispositionHandoffPayload({
+    terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: otherVersion.agreementAt, version: otherVersion,
+    underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: version, executedTermsMatchAgreement: true },
+  });
+  check('required test 2: an Under Contract handoff is refused when args.version and currentVersion have different agreementAt values', ucVersionCurrentVersionDifferentAgreement.ok, false);
+  check('the version-vs-currentVersion agreementAt mismatch names HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION', ucVersionCurrentVersionDifferentAgreement.reasons[0].code, 'HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION');
+
+  // -- Required test 3: Under Contract refused when args.version and
+  // currentVersion have different versionSeq values (SAME agreementAt).
+  const versionSeq2SameAgreement = { ...version, versionSeq: 2, supersedesVersionSeq: 1 };
+  const ucVersionCurrentVersionDifferentSeq = M.buildDispositionHandoffPayload({
+    terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: versionSeq2SameAgreement.agreementAt, version: versionSeq2SameAgreement,
+    underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: version, executedTermsMatchAgreement: true },
+  });
+  check('required test 3: an Under Contract handoff is refused when args.version and currentVersion have different versionSeq values (same agreementAt)', ucVersionCurrentVersionDifferentSeq.ok, false);
+  check('the version-vs-currentVersion versionSeq mismatch also names HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION', ucVersionCurrentVersionDifferentSeq.reasons[0].code, 'HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION');
+
+  // -- Required test 4: the SAME otherwise-fully-valid execution evidence
+  // (preservedDocument.boundVersion === currentVersion === version, which
+  // on its own is genuinely eligible) still cannot produce a payload
+  // mislabeled with a different contract version -- the only variable
+  // between this call and the correctly-aligned one directly below is
+  // args.version/agreementAt.
+  const ucMislabeledDespiteValidExecution = M.buildDispositionHandoffPayload({
+    terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: versionSeq2SameAgreement.agreementAt, version: versionSeq2SameAgreement,
+    underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: version, executedTermsMatchAgreement: true },
+  });
+  check('required test 4: otherwise-valid, genuinely-eligible execution evidence still cannot produce a payload labeled with a different contract version', ucMislabeledDespiteValidExecution.ok, false);
+
+  // -- Required test 5: the identical execution evidence, correctly
+  // aligned (args.version === currentVersion === preservedDocument.
+  // boundVersion, and args.agreementAt === args.version.agreementAt),
+  // still produces the expected successful handoff -- this correction
+  // does not overcorrect into refusing a genuinely valid case.
+  const ucCorrectlyAligned = M.buildDispositionHandoffPayload({
+    terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
+    underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: version, executedTermsMatchAgreement: true },
+  });
+  check('required test 5: a correctly aligned agreementAt/version/currentVersion identity still produces the expected successful handoff', ucCorrectlyAligned, { ok: true, value: { opportunityId: 'opp-1', agreementAt: version.agreementAt, version, noReentry: true, terminalState: 'under_contract', execution: verifiedExecution } });
 }
 
 // ============================================================
