@@ -93,15 +93,21 @@ use of this reference:**
 - **(b) Not approved for live use.** No purchase agreement — TREC 20-19
   or any other — is approved for any live seller transaction under this
   document.
-- **(c) Texas real-estate attorney review and approval is required**
-  before any live use of any purchase agreement, TREC 20-19 or otherwise.
-  This document does not substitute for, shortcut, or presume that
-  review.
-- **(d) IAOS does not and cannot determine legal sufficiency of any
+- **(c) IAOS does not and cannot determine legal sufficiency of any
   agreement.** Nothing in this document, or in any future carrier/UI work
   built from it, may assert that a document is legally sufficient,
   complete, or enforceable. That determination belongs exclusively to
   qualified legal counsel.
+
+**Correction (Jess Gate, 2026-09-09).** An earlier pass of this
+disclaimer block stated that Texas real-estate attorney review and
+approval "is required" before any live use of any agreement. That was
+never established as Brad's governing product ruling and is withdrawn.
+The accurate, standing limitation is disclaimers (b) and (c) above: no
+agreement is approved for live use, and IAOS cannot determine legal
+sufficiency. Whether, or through what process, legal review is required
+before live use is undecided and not asserted by this document either
+way.
 
 This document quotes and cites only what TREC's own published page
 actually says, above. Nothing is drafted, paraphrased as if official, or
@@ -617,27 +623,37 @@ evidence item 8 was BLOCKED on -- GHL's own provider-side completion
 signal is now confirmed distinguishable from a manual override, at
 least in this observed instance.
 
-**Item 9, ACCOUNT-VERIFIED for identifier/completion-time/version
-framing, and CLARIFIED (not merely BLOCKED) for the integrity-identifier
-sub-point.** The executed two-page PDF was retrievable and includes both
-signatures plus GHL's own Signature Certificate. Its SHA-256, computed
-and preserved outside GHL:
+**Item 9, ACCOUNT-VERIFIED for identifier and completion time. Contract
+version and the integrity-identifier question stay BLOCKED/UNVERIFIED —
+corrected, Jess Gate 2026-09-09.** The executed two-page PDF was
+retrievable and includes both signatures plus GHL's own Signature
+Certificate and the GHL document reference. Its SHA-256, computed and
+preserved outside GHL:
 
     e3331f06f1e8be9414d3807c707f83af49d881e5851b0949554da3f67b67c3f6
 
-**The PDF contains no embedded cryptographic PDF signature.** This
-settles the open question this document's own carrier correction above
-("Second correction") left open: GHL does **not** supply a native,
-discrete integrity identifier distinct from the certificate concept, and
-the fallback that correction anticipated -- IAOS computing and
-preserving its own hash of the retrieved bytes -- is now confirmed as
-the actual required mechanism, not a hypothesis. **Per Brad's
-instruction: IAOS must preserve, for every executed document, the
+**What this proves, precisely:** this downloaded PDF carries no
+embedded cryptographic PDF signature; it does carry a GHL Signature
+Certificate and a document reference; and IAOS must compute and
+preserve its own SHA-256 as a consequence. **What it does not prove:**
+that GHL supplies no native integrity/hash field anywhere in its own
+system. No `GET /proposals/document` read-back or other API surface was
+checked for one, so the earlier version of this subsection concluding
+that GHL "does not supply a native, discrete integrity identifier" is
+**withdrawn as overreach**. Whether such a field exists elsewhere in
+GHL's API remains genuinely UNVERIFIED, not settled either way. **A
+distinct provider contract-version field was not observed on this
+document** (no `documentRevision`-equivalent was read back) and that
+sub-point stays BLOCKED, not ACCOUNT-VERIFIED — only the document
+reference, provider completion time, executed-PDF retrieval, the
+certificate, and the IAOS-computed hash were actually proven. **Per
+Brad's instruction, independent of how that further verification
+resolves: IAOS must preserve, for every executed document, the
 downloaded PDF itself, its SHA-256, the GHL document reference, the
-contract version, and the provider-reported completion time.** None of
-this is implemented by this document; it is recorded here as a
-requirement for whichever future work (INV-58 or later) builds the
-durable carrier.
+contract version (once a source for it is confirmed), and the
+provider-reported completion time.** None of this is implemented by
+this document; it is recorded here as a requirement for whichever
+future work (INV-58 or later) builds the durable carrier.
 
 **Item 10, partially ACCOUNT-VERIFIED for the specific case observed.**
 A single missing signature did not create Completed status -- the
@@ -1016,7 +1032,7 @@ provider on every deal, not hardcode or default to one.
 | 5 | GHL stages/fields/documents/notes/workflows/API | Mixed: REUSE (stages/fields as read targets, occupancy), REAL CARRIER GAP (lien amount unused, no contract-state stage), EXTERNAL/OPERATIONAL GAP (workflows and IAOS-proxy documents-path unreachable via sanctioned proxy), UNKNOWN (opportunity-model field catalog). GHL native e-sign capability itself is superseded by item 8's DOCUMENTED/BLOCKED findings, no longer wholly UNKNOWN |
 | 6 | Board #8 economics provenance/handoff | REUSE (fully covered, no gap) |
 | 7 | Property/ARV/repairs/access/photo/closing-date/earnest-money/possession/contingency/owner/signer-delivery data | Mixed: REUSE (property, ARV, repairs, transaction-assumptions prose, occupancy), RENAME/PRESENTATION-ONLY (confirmation-act framing), REAL CARRIER GAP (access, photo/document, closing date, earnest money, contingencies, owner signing-authority, signer delivery — the majority of this row) |
-| 8 | E-sign providers, GHL-first | GHL-native Documents & Contracts is the preferred V1 candidate per Brad's direction. **Updated 2026-09-09 by a live Test transaction proof (see "Live Test transaction proof" subsection):** items 7, 8 and 9 are now ACCOUNT-VERIFIED at the capability level (9's integrity-identifier sub-point CLARIFIED as an IAOS-side requirement, not a GHL-native field); items 1, 2 and 6 are ACCOUNT-VERIFIED for access/capability, still BLOCKED for their specific documentation-level sub-points; item 10 is partially ACCOUNT-VERIFIED for the single-missing-signature case only. **Items 3, 4 and 5 remain BLOCKED, explicitly not represented as passed** — Opportunity/deal binding and all API-mediated automation are unproven; this transaction was operated directly in GHL's UI, not through IAOS. Zero items UNSUPPORTED. External providers retained as unranked fallback-tier findings only; no provider selected |
+| 8 | E-sign providers, GHL-first | GHL-native Documents & Contracts is the preferred V1 candidate per Brad's direction. **Updated 2026-09-09 by a live Test transaction proof (see "Live Test transaction proof" subsection), corrected at Jess Gate the same day:** items 7 and 8 are now ACCOUNT-VERIFIED. Item 9 is ACCOUNT-VERIFIED for identifier and completion time only — the downloaded PDF has no embedded cryptographic signature, carries a GHL Signature Certificate and document reference, and IAOS must compute/preserve its own SHA-256, but whether GHL exposes a native integrity field elsewhere remains UNVERIFIED (not concluded absent), and contract version stays BLOCKED (no distinct provider version field was observed). Items 1, 2 and 6 are ACCOUNT-VERIFIED for access/capability, still BLOCKED for their specific documentation-level sub-points; item 10 is partially ACCOUNT-VERIFIED for the single-missing-signature case only. **Items 3, 4 and 5 remain BLOCKED, explicitly not represented as passed** — Opportunity/deal binding and all API-mediated automation are unproven; this transaction was operated directly in GHL's UI (which did create a real GHL Test template, contact, and document — no Opportunity binding, IAOS carrier/code, proxy extension, or Production record), not through IAOS. Zero items UNSUPPORTED. External providers retained as unranked fallback-tier findings only; no provider selected |
 | 9 | First-market title/closing handoff expectations | Settled fact: no fixed provider required, may vary by deal (Brad's ruling, 2026-09-09). EXTERNAL/OPERATIONAL GAP |
 
 ---
@@ -1027,8 +1043,11 @@ provider on every deal, not hardcode or default to one.
    real, publicly verifiable reference baseline — TREC Form 20-19, "One
    to Four Family Residential Contract (Resale)" — is cited for
    architecture purposes only; it is explicitly not approved for live
-   use, and Texas attorney review is required before any live use of any
-   agreement.
+   use, and IAOS cannot determine legal sufficiency of any agreement.
+   **Corrected, Jess Gate 2026-09-09:** an earlier pass stated Texas
+   attorney review "is required" before live use — withdrawn, never a
+   Brad ruling. Whether or through what process legal review is
+   required is undecided and not asserted here.
 2. **No current contracting workflow exists yet** (item 3). Designing the
    future workflow remains out of scope for INV-57.
 3. **No fixed title company or closing process is required** (item 9);
@@ -1060,14 +1079,20 @@ provider on every deal, not hardcode or default to one.
 - **GHL Documents & Contracts account-level verification (item 8) —
   UPDATED 2026-09-09 by a live Test transaction Brad ran directly in
   GHL's own web interface (see the "Live Test transaction proof"
-  subsection in item 8).** That proof resolved points 7, 8 and 9 to
-  ACCOUNT-VERIFIED, and points 1, 2 and 6 to ACCOUNT-VERIFIED at the
-  access/capability level (their narrower documentation-level
-  sub-points stay BLOCKED as before). **Points 3, 4, 5, 3's read-back
-  sub-point, 4's `sendDocument` semantics, 6's settability sub-point,
-  9's integrity-identifier sub-point (now CLARIFIED rather than
-  BLOCKED — see the proof), and 10's non-partial-signature cases remain
-  BLOCKED, precisely, not UNKNOWN and not UNSUPPORTED:** the live proof
+  subsection in item 8), corrected at Jess Gate the same day.** That
+  proof resolved points 7 and 8 to ACCOUNT-VERIFIED, point 9 to
+  ACCOUNT-VERIFIED for identifier and completion time only, and points
+  1, 2 and 6 to ACCOUNT-VERIFIED at the access/capability level (their
+  narrower documentation-level sub-points stay BLOCKED as before).
+  **Points 3, 4, 5, 3's read-back sub-point, 4's `sendDocument`
+  semantics, 6's settability sub-point, 9's contract-version sub-point,
+  and 10's non-partial-signature cases remain BLOCKED, precisely, not
+  UNKNOWN and not UNSUPPORTED. 9's integrity-identifier sub-point stays
+  genuinely UNVERIFIED, not concluded either way** — the proof shows
+  this specific downloaded PDF has no embedded cryptographic signature
+  and does carry a GHL Signature Certificate and document reference,
+  but no GHL/API surface was checked for a separate native integrity
+  field, so its absence is not established. The live proof
   did not go through IAOS at all — no GHL direct-login credential
   exists anywhere in this session's memory (confirmed by an explicit
   grep across every memory file), so no IAOS-mediated account-level
@@ -1143,12 +1168,13 @@ selected or ranked.
 
 ## Scope confirmation
 
-**No template edited or drafted.** Item 1 cites TREC Form 20-19 as a real,
-externally published reference baseline — quoted from what TREC's own
-page actually says, never paraphrased as if official, never declared
-legally sufficient, and explicitly marked not approved for live use
-pending Texas attorney review. **No legal language invented anywhere in
-this document.** Items 1, 3, and 9's absences are now settled facts per
+**No TREC 20-19 language edited or drafted by this document.** Item 1
+cites TREC Form 20-19 as a real, externally published reference
+baseline — quoted from what TREC's own page actually says, never
+paraphrased as if official, never declared legally sufficient, and
+explicitly marked not approved for live use; IAOS cannot determine
+legal sufficiency of any agreement. **No legal language invented
+anywhere in this document.** Items 1, 3, and 9's absences are now settled facts per
 Brad's ruling rather than open questions this document guesses at; the
 one remaining genuinely open item (the carrier-vs-template question,
 "Unresolved Product/Legal decisions" above) is reported as open, never
@@ -1167,8 +1193,12 @@ Contracts cycle in GHL's own web interface — outside this document,
 outside any IAOS code path, and without the proxy/API extension this
 document's own minimal proof plan proposed. That evidence is recorded
 in item 8's "Live Test transaction proof" subsection and resolves
-several BLOCKED points to ACCOUNT-VERIFIED; it created no IAOS
-template, contact, opportunity, carrier, or code, and it is exactly the
+several BLOCKED points to ACCOUNT-VERIFIED. **Correction, Jess Gate
+2026-09-09: this proof did create GHL Test-location state** — a GHL
+Test template, a controlled GHL Test contact, and the resulting Test
+document all exist in GHL as a direct result of it. What it did **not**
+create: any Opportunity binding, any IAOS carrier or code, any proxy
+extension, and no Production record of any kind. It is exactly the
 kind of directly-operated, non-IAOS-mediated transaction this document
 did not itself execute. The proxy/API extension proposal remains
 unimplemented and unauthorized. **INV-58 (B9-03) is not begun**; this
