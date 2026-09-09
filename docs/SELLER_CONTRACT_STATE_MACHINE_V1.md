@@ -9,7 +9,11 @@ no UI, no Production access. It follows the same pattern INV-44 set for
 `DEAL_ECONOMICS_OFFER_READINESS_V1.md`: name the state machine precisely,
 cite what already exists rather than re-describe it, and name every
 remaining Product Owner decision explicitly rather than resolve it by
-assumption (FOUNDATIONAL_PRINCIPLES principle 19).
+assumption (FOUNDATIONAL_PRINCIPLES principle 19). This revision
+incorporates Brad's rulings on all six decisions the first version of
+this document left open (2026-09-08) — each is now locked at the state it
+governs, and the "Product Owner decisions" section below records them as
+resolved rather than open.
 
 This document **narrows** the deferral `SELLER_ACQUISITION_WORKFLOW.md`
 already named — "Contract Readiness — DISTINCT, DETAIL DEFERRED... the
@@ -132,47 +136,60 @@ prepared agreement to the seller for execution, and the agreement has
 been transmitted. The agreement is **not yet** executed — Contract Sent
 and Under Contract are distinct, per this issue's own locked invariant.
 
-**Entry evidence.** Two facts, both required:
+**Entry evidence — locked (Brad ruling, 2026-09-08).** Three facts, all
+required:
 1. **Brad's explicit send authorization** — a durable record of who
    authorized the send and when. Verbal or in-app acceptance earlier in
    the flow (Agreement Reached) is never sufficient; this is a
    *separate*, explicit act specific to authorizing transmission of the
    actual contract document, per this issue's locked invariant ("Brad
    explicitly authorizes sending the agreement").
-2. **Confirmed transmission** — evidence the document was actually sent,
-   distinct from authorization to send. A failure between authorization
-   and confirmed transmission must not read as Contract Sent (see
-   Failure behavior).
+2. **A confirmed provider transmission identifier and timestamp** — the
+   specific evidence transmission requires, locked here: an identifier
+   the provider itself assigns to the sent envelope/document, and the
+   timestamp the provider reports it was sent. Authorization alone,
+   without this identifier and timestamp, never reads as Contract Sent
+   (see Failure behavior).
+3. **An explicit expiration date/time**, established at or before send —
+   the entry point for Expired's own automatic derivation below.
 
-**What this document does not decide:** the transmission mechanism
-itself (which provider, which document template, how "confirmed
-transmission" evidence is obtained) — see Product Owner decisions below.
-`UNDERWRITING_WORKSPACE_SPEC.md` already flags that whether this GHL
-location's Documents & Contracts capability can merge per-deal
-Opportunity fields is **unverified**, not merely undecided — a factual
-gap, not a policy one, and one this issue does not close.
+**What this document does not decide, and does not need to:** which
+provider is used, and whether this GHL location's Documents & Contracts
+capability can merge the specific per-deal Opportunity fields Board #9
+needs. `UNDERWRITING_WORKSPACE_SPEC.md` already flags the latter as
+**unverified**, not merely undecided — a factual/technical gap, not a
+product-policy one. **Provider selection and capability verification are
+INV-57's job**, not a remaining Product Owner decision — the evidence
+*shape* (identifier + timestamp) this document locks is provider-agnostic
+and constrains whichever provider INV-57 selects.
 
 **Authority.** Brad, explicitly, per the locked invariant. Never
-automatic, never inferred from Contract Ready alone, regardless of how
-the future carrier records it.
+automatic, never inferred from Contract Ready alone, regardless of which
+provider the future carrier uses.
 
-**Transition trigger IN.** Brad's send authorization plus confirmed
-transmission (mechanism undecided — INV-57).
+**Transition trigger IN.** Brad's send authorization, plus the provider
+transmission identifier and timestamp, plus the expiration date/time —
+all three, together. Which provider supplies the identifier/timestamp is
+INV-57's determination, not this document's.
 
 **Transition trigger OUT.** To Under Contract (verified full execution,
-below), or to Rescinded/Expired/Declined (below). No path back to
-Contract Ready or Agreement Reached for the *same* agreement — see
-No-reentry below.
+below), or to Rescinded/Expired/Declined (below), or superseded by a new
+cycle if a material correction is found before full execution (see
+Corrected below — correction is not limited to after Under Contract). No
+path back to Contract Ready or Agreement Reached for the *same*
+agreement — see No-reentry below.
 
-**Failure behavior.** If authorization is recorded but transmission
-cannot be confirmed, the state must read as "send authorized, not yet
-confirmed sent" — never silently promoted to Contract Sent. This is a
-distinct, visible state from both Contract Ready (transmission never
-attempted) and Contract Sent (transmission confirmed), so an operator can
-tell "needs retry" from "awaiting signature."
+**Failure behavior.** If authorization is recorded but no provider
+transmission identifier/timestamp is obtained, the state must read as
+"send authorized, not yet confirmed sent" — never silently promoted to
+Contract Sent. This is a distinct, visible state from both Contract Ready
+(transmission never attempted) and Contract Sent (transmission
+confirmed), so an operator can tell "needs retry" from "awaiting
+signature."
 
-**Audit.** Who authorized the send, when, and (once the mechanism is
-decided) which document/version was transmitted — append-only.
+**Audit.** Who authorized the send and when; the provider transmission
+identifier and timestamp; the expiration date/time established — all
+append-only.
 
 ### Under Contract
 
@@ -182,43 +199,54 @@ contract. Per this issue's own locked invariant: **verbal or text
 acceptance never means Under Contract** — only verified full execution
 does, and **only verified full execution can create Under Contract.**
 
-**Entry evidence.** Two facts, both required jointly — neither alone is
-sufficient, per this issue's own locked invariant ("Under Contract
-requires verified execution and preserved executed document"):
-1. **Verified full execution** — confirmation, from an authoritative
-   source, that every required signature/party has executed the
-   document. "Sent" or "appears signed" is not "verified." The
-   authoritative source (an e-sign provider's completion status, a
-   manually confirmed and witnessed signature, or something else) is
-   undecided here — see Product Owner decisions below.
-2. **The executed document is preserved** — durably stored and
-   retrievable, tied to this specific agreement. If verification succeeds
-   but the document fails to preserve, Under Contract must not be
-   asserted; the two facts are jointly necessary, not independently
-   sufficient.
+**Entry evidence — locked (Brad ruling, 2026-09-08).** Three facts, all
+required jointly — no single one, nor any two, is sufficient:
+1. **Every required signer has completed execution.** Not "sent," not
+   "some signatures received" — every party the agreement requires.
+2. **The provider reports completion.** The provider's own completion
+   signal is required in addition to (1) — per-signer completion and the
+   provider's own completion report are two distinct facts, both
+   required; neither substitutes for the other. Which provider, and the
+   exact technical form its completion report takes, is INV-57's
+   determination, not this document's.
+3. **The executed document is successfully preserved** — per the
+   preservation requirement locked below ("GHL as the sole system of
+   record"): the document itself (or a verified GHL-native authoritative
+   reference to it), together with the provider/envelope identifier,
+   completion time, contract version, and an integrity identifier.
 
-**Authority.** System-observed (the verification signal), not a human
-"mark as complete" action alone — though depending on the undecided
-mechanism, a human confirmation step may still be required to receive or
-acknowledge that signal. Undecided which — see Product Owner decisions.
+**No single signal alone creates Under Contract.** All three are
+required together; any one or two present without the third means Under
+Contract has not been reached.
 
-**Transition trigger IN.** Verified full execution plus preserved
-document, together.
+**Authority.** System-observed — the joint signal of (1), (2), and (3)
+together, never a human "mark as complete" action standing in for any of
+the three. A human may still need to initiate or acknowledge receipt of
+the provider's report, depending on the provider INV-57 selects, but that
+acknowledgment cannot substitute for any of the three required facts.
+
+**Transition trigger IN.** All three facts above, together.
 
 **Transition trigger OUT.** None, in the successful case — Under
-Contract with a preserved document is this document's terminal success
-state. **Corrected** (below) is the one controlled exception: it amends
-the same underlying deal without un-reaching Under Contract.
+Contract with all three facts preserved is this document's terminal
+success state for the executed version. **Corrected** (below) supersedes
+it with a new version when a material correction is found — see
+Corrected for what that means for the prior version's status.
 
-**Failure behavior.** Ambiguous or unconfirmed verification must never
-read as Under Contract — fail closed, exactly as this codebase already
-does everywhere a durable state gates downstream authority (the
-Offer-Ready-decision-invalidation pattern is the direct precedent, not a
-new one invented here).
+**Failure behavior.** Any of the three facts missing, ambiguous, or
+unconfirmed must never read as Under Contract — fail closed, exactly as
+this codebase already does everywhere a durable state gates downstream
+authority (the Offer-Ready-decision-invalidation pattern is the direct
+precedent, not a new one invented here). Per-signer completion without a
+provider completion report, or a provider report without confirmed
+preservation, are both explicitly insufficient — this is the locked
+answer to what was previously an open question here.
 
-**Audit.** The preserved executed document is the primary audit
-artifact — durably retrievable, immutably tied to this specific
-agreement, with an append-only record of any later Corrected amendments.
+**Audit.** The preserved executed document (or verified GHL-native
+authoritative reference) together with the provider/envelope identifier,
+completion time, contract version, and integrity identifier — durably
+retrievable, immutably tied to this specific agreement, with an
+append-only record of any later Corrected supersession.
 
 ---
 
@@ -226,23 +254,31 @@ agreement, with an append-only record of any later Corrected amendments.
 
 ### Corrected
 
-**Meaning.** An executed (Under Contract) agreement is amended after the
-fact — a correction to a term, without renegotiating or reopening the
-underlying deal.
+**Meaning.** A material correction to the agreement is found after it was
+sent — a "post-send correction," which may be discovered whether or not
+the prior version has already reached Under Contract.
 
-**Locked here:** a correction is an **append**, never an overwrite,
-mirroring the append-only decisions-ledger pattern already proven
-throughout this codebase (`ARV_EVIDENCE_SNAPSHOT_V1.md`,
-`seller-call-outcome.ts`, INV-68's invalidation ledger) — the original
-executed document and its preserved record are never destroyed or
-replaced, only superseded by a new, linked record naming what changed and
-why.
+**Locked here (Brad ruling, 2026-09-08): no addendum shortcut in V1.**
+Any material post-send correction **voids or supersedes the prior
+contract version** and **requires a complete new execution cycle** — a
+fresh pass through Contract Sent and Under Contract for the corrected
+version, with its own send authorization, its own provider transmission
+identifier/timestamp, its own expiration date/time, and its own
+three-fact verified-execution requirement. There is no lighter
+addendum path that patches a term without a full new cycle. If the
+prior version had already reached Under Contract, that version's
+executed-document record is preserved (never destroyed or replaced) but
+is superseded — the corrected version is now the operative one, and the
+prior version's history remains part of the permanent, append-only
+record, mirroring the pattern already proven throughout this codebase
+(`ARV_EVIDENCE_SNAPSHOT_V1.md`, `seller-call-outcome.ts`, INV-68's
+invalidation ledger).
 
-**Not decided here:** whether a correction requires its own
-send-and-verify cycle (a new Contract Sent → Under Contract pass for the
-amendment specifically) or a lighter addendum process, and what changes
-qualify as "correctable" versus requiring an entirely new agreement. See
-Product Owner decisions below.
+**Not decided here:** which categories of change are material enough to
+require this process versus genuinely immaterial (a typo with no effect
+on any term) — this document locks the *consequence* of a material
+correction, not the threshold for what counts as one. A narrow,
+implementation-facing question for INV-57, not a state-machine ambiguity.
 
 ### Rescinded
 
@@ -250,25 +286,37 @@ Product Owner decisions below.
 is withdrawn or cancelled before or after execution, by mutual agreement
 or a party's unilateral action.
 
-**Not decided here:** who may record a rescission and what evidence is
-required (a verbal report, written confirmation, or something else). See
-Product Owner decisions below.
+**Authority — locked (Brad ruling, 2026-09-08): Brad-only in V1.** No
+other operator or role may record a Rescission for V1.
+
+**Entry evidence / Audit — locked.** The complete history is preserved
+(append-only, nothing overwritten or destroyed), recording: the
+timestamp of the rescission, the reason, the operator (Brad, per the
+authority rule above), and the affected contract and version
+(`agreementAt` plus the specific contract version if a Corrected
+supersession has already occurred).
 
 **No-reentry.** Once Rescinded, this specific agreement (`agreementAt`)
 is terminal. See No-reentry disposition handoff below.
 
 ### Expired
 
-**Meaning.** A Contract Sent agreement exceeds some time boundary without
-reaching verified full execution.
+**Meaning.** A Contract Sent agreement's established expiration date/time
+passes without verified full execution.
 
-**Not decided here:** the expiration window itself, and whether
-expiration is a derived, automatic state (consistent with Offer Ready's
-own automatic revocation, FOUNDATIONAL_PRINCIPLES principle 14) or
-requires an explicit operator action. Manufacturing a specific window
-without a real basis is exactly what principle 19 forbids — this is a
-genuine Product Owner decision, not a default this document assumes. See
-Product Owner decisions below.
+**Entry evidence / mechanism — locked (Brad ruling, 2026-09-08).** Contract
+Sent's own entry evidence now locks an explicit expiration date/time,
+established at or before send (see Contract Sent above) — not a fixed
+global window. **Expired is derived automatically**: the moment that
+established timestamp passes without the three-fact verified-execution
+requirement (above) having been met, the agreement reads as Expired, with
+no explicit operator action required to assert it — consistent with
+Offer Ready's own automatic revocation (FOUNDATIONAL_PRINCIPLES principle
+14). This is the same principle applied to a per-agreement timestamp
+that is itself an explicit, recorded fact (never a manufactured default
+window), so FOUNDATIONAL_PRINCIPLES principle 19 is satisfied: the
+derivation rule is precise, and the input it derives from is always an
+explicit, operator-established fact, never an invented constant.
 
 **No-reentry.** Once Expired, this specific agreement is terminal. See
 below.
@@ -288,17 +336,25 @@ below.
 ### No-reentry disposition handoff
 
 Once any terminal state is reached for a given agreement
-(`agreementAt`) — Under Contract with a preserved document, Rescinded,
-Expired, or Declined — the Seller Call negotiation surface (Board #8)
-must not reopen or renegotiate *that specific agreement*. This is a
-direct, consistent extension of INV-68's already-proven rule that a new
-agreement at the same price and property does not inherit a prior
-agreement's progress: pursuing this seller again after a terminal
-non-Under-Contract state requires a genuinely new Agreement Reached (a
-new `agreementAt`), never a reopening of the terminal one. Corrected is
-the sole controlled exception, and only for an agreement that reached
-Under Contract — it amends the same deal without reopening negotiation,
-per its own (partially undecided) process above.
+(`agreementAt`) — Under Contract with all three verified-execution facts
+preserved, Rescinded, Expired, or Declined — the Seller Call negotiation
+surface (Board #8) must not reopen or renegotiate *that specific
+agreement*. This is a direct, consistent extension of INV-68's
+already-proven rule that a new agreement at the same price and property
+does not inherit a prior agreement's progress: pursuing this seller again
+after a terminal non-Under-Contract state requires a genuinely new
+Agreement Reached (a new `agreementAt`), never a reopening of the
+terminal one.
+
+**Corrected is the sole controlled exception to "terminal," and it is
+not itself a reopening of Board #8 negotiation.** A material post-send
+correction — locked above to void/supersede the prior version and require
+a complete new execution cycle — creates a *new version* of the same
+underlying agreement, never a return to Seller Call negotiation. This
+applies whether the correction is found while still in Contract Sent
+(not yet Under Contract) or after Under Contract was reached; either way,
+the new cycle starts from a fresh Contract Sent, never from Agreement
+Reached or Contract Ready.
 
 ---
 
@@ -335,79 +391,79 @@ this can legitimately diverge: **Actual Contract Price**, "a fact about
 an executed agreement... contracting is authoritative for it" — relevant
 only once Under Contract, and only if the executed terms differ from
 what was accepted (e.g., a last-minute change during signing). Any such
-divergence is exactly what the Corrected state (above) exists to record;
-this document does not invent a new pre-execution price field.
+divergence is a material post-send correction — exactly what the
+Corrected state (above) now locks as voiding/superseding the prior
+version and requiring a complete new execution cycle, never a soft
+addendum; this document does not invent a new pre-execution price field.
 
 ## GHL as the sole system of record
 
 No new IAOS-side database or shadow copy of contract state is authorized
-here (FOUNDATIONAL_PRINCIPLES principle 15). Every state's evidence must
-ultimately be derivable from data GHL actually holds — the existing
-notes-ledger pattern, and/or GHL's native Documents & Contracts objects
-if a future issue determines this location supports the fields Board #9
-needs (unverified per `UNDERWRITING_WORKSPACE_SPEC.md` — see Product
-Owner decisions). This document authorizes no carrier; it defines what a
-future carrier (INV-57's scope) must satisfy.
+here (FOUNDATIONAL_PRINCIPLES principle 15). **Locked here (Brad ruling,
+2026-09-08): GHL remains authoritative for executed-document
+preservation.** The preserved record for Under Contract (and for each
+Corrected version) must be the executed document itself — or a verified
+GHL-native authoritative reference to it — together with the
+provider/envelope identifier, completion time, contract version, and an
+integrity identifier, exactly as Under Contract's own entry evidence
+above requires. **INV-57 must verify and select the supported
+mechanism** for satisfying this requirement (a GHL-native Documents &
+Contracts object, a GHL file/attachment holding a verified reference, or
+another mechanism GHL actually supports for this location) — this
+document locks *what* must be preserved and alongside *which* fields,
+not *how* GHL stores it. This document authorizes no carrier; it defines
+what a future carrier (INV-57's scope) must satisfy.
 
 ---
 
-## Explicit Product Owner decisions still required
+## Product Owner decisions — resolved (Brad ruling, 2026-09-08)
 
-Per ALIGNMENT_PROCESS.md's format, each ending **Decide** — none are
-resolved here, none are assumed, none are defaulted:
+The six decisions this document originally left open are now locked, and
+are incorporated at each state above rather than repeated here in full:
 
-**Claim:** The mechanism for transmitting the agreement to the seller
-(Contract Sent's entry evidence) is undecided, and whether this GHL
-location's Documents & Contracts capability can merge the specific
-per-deal Opportunity fields Board #9 needs is unverified.
-**What this claim is based on:** `UNDERWRITING_WORKSPACE_SPEC.md`'s own
-"Contracting reading Opportunity fields is the architectural direction,
-not an observed capability" — a repository read.
-**Recommendation:** Decide the mechanism (and separately verify the GHL
-capability) before INV-57 begins.
+1. **Contract Sent's entry evidence** is Brad's explicit authorization
+   plus a confirmed provider transmission identifier and timestamp.
+   Provider selection and capability verification belong to INV-57.
+2. **Verified full execution** requires all three of: every required
+   signer completed execution, the provider reports completion, and the
+   executed document is successfully preserved. No single signal alone
+   creates Under Contract.
+3. **Rescission** is Brad-only authority in V1; the complete history is
+   preserved, recording timestamp, reason, operator, and the affected
+   contract/version.
+4. **Expiration** uses an explicit expiration date/time established at or
+   before send; Expired is derived automatically once that timestamp
+   passes without verified full execution.
+5. **Correction** after send is locked to void/supersede the prior
+   contract version and require a complete new execution cycle — no
+   addendum shortcut in V1.
+6. **Document preservation** remains GHL-authoritative: the executed
+   document, or a verified GHL-native authoritative reference, must be
+   preserved together with the provider/envelope identifier, completion
+   time, contract version, and an integrity identifier. INV-57 must
+   verify and select the supported mechanism.
 
-**Claim:** What counts as "verified full execution" for Under Contract —
-whose signal is authoritative (an e-sign provider's completion status, a
-manually witnessed and confirmed signature, or another mechanism) — is
-undecided.
-**What this claim is based on:** this document's own state definition
-above; no existing code or prior decision names a mechanism.
-**Recommendation:** Decide before INV-57 begins — this gates whether
-Under Contract can ever be reached at all.
+**No product-policy decision remains open in this document.** What
+remains is exclusively implementation-level determination for INV-57 —
+narrower, technical, and already correctly scoped to that future issue
+rather than to this contract:
 
-**Claim:** Who may record a Rescission, and what evidence is required
-(verbal report, written confirmation, or otherwise), is undecided.
-**What this claim is based on:** this document's own state definition
-above.
-**Recommendation:** Decide before INV-57 begins.
+- Which e-sign (or equivalent) provider to use, and verifying its
+  capability against this GHL location (`UNDERWRITING_WORKSPACE_SPEC.md`'s
+  already-flagged, unverified Documents & Contracts capability gap).
+- The exact technical form of "the provider reports completion" for
+  whichever provider is selected.
+- Which GHL-native mechanism satisfies the document-preservation
+  requirement locked above.
+- Where the line sits between an immaterial correction (no new cycle
+  needed) and a material one (Corrected's full new-cycle process) —
+  this document locks the *consequence* of a material correction, not
+  the classification threshold itself.
 
-**Claim:** The Expired window (how long a Contract Sent agreement may sit
-unexecuted before it expires) and whether expiration is derived
-(automatic) or requires an explicit operator action are both undecided.
-**What this claim is based on:** this document's own state definition
-above; FOUNDATIONAL_PRINCIPLES principle 19 forbids manufacturing a
-specific window without a real basis.
-**Recommendation:** Decide before INV-57 begins.
-
-**Claim:** Whether a Corrected amendment requires its own full
-Contract-Sent-to-Under-Contract cycle, or a lighter addendum process, and
-which categories of change are "correctable" versus requiring an entirely
-new agreement, is undecided.
-**What this claim is based on:** this document's own state definition
-above.
-**Recommendation:** Decide before INV-57 needs to implement correction
-handling — not necessarily before INV-57 begins, if V1 can defer
-Corrected entirely.
-
-**Claim:** Where the preserved executed document is stored (a GHL
-Documents/file object, an external document-storage integration, or
-something else) is undecided, and depends on the same unverified GHL
-capability named above.
-**What this claim is based on:** this document's own "preserved executed
-document" requirement for Under Contract; `UNDERWRITING_WORKSPACE_SPEC.md`'s
-capability gap.
-**Recommendation:** Decide (and verify the underlying GHL capability)
-before INV-57 begins.
+None of these are ambiguous state transitions or authority boundaries —
+every transition trigger, every authority, and every failure behavior
+above is fully specified regardless of which provider or GHL mechanism
+INV-57 ultimately selects.
 
 ---
 
