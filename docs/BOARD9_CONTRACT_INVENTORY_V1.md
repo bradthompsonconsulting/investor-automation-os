@@ -571,6 +571,125 @@ unverified whether GHL enforces this internally, and unnecessary to
 verify for B9-01's own guarantee to hold, since that guarantee is
 IAOS-side by design regardless of provider.
 
+#### Live Test transaction proof — executed and reported by Brad, 2026-09-09
+
+**Provenance.** This is a real send-to-completion Documents & Contracts
+cycle Brad ran directly in the GHL Test location's own web interface --
+**not** through IAOS's proxy, which was not extended, and **not** an API
+call this session captured live. It is recorded here as OBSERVED,
+reported by Brad, a distinct provenance from the live-API-capture this
+document otherwise uses throughout. It resolves several of the ten
+points above from BLOCKED to ACCOUNT-VERIFIED at the capability level;
+it does **not** prove IAOS can drive or read this flow itself -- see the
+correction at the end of this subsection, which Brad gave explicitly
+alongside the evidence.
+
+**Evidence, as reported:**
+
+    GHL-native document ID       6aa17c1a122ddff22b62fe82
+    GHL document reference       24015F7F-1E61-41A1-9BD3-3FC7D8BBEE10
+                                  (a second, distinct identifier; this
+                                  document does not assert which of the
+                                  two maps to the `documentId` field named
+                                  in item 9 above versus some other GHL
+                                  field -- neither has been cross-checked
+                                  against a live `GET /proposals/document`
+                                  read)
+    Sent                          2026-09-09 15:43 UTC
+    Seller signed                 2026-09-09 19:23 UTC
+    Buyer signed                  2026-09-09 19:35 UTC
+    Provider-reported completion  2026-09-09 19:35 UTC (coincides with
+                                  the buyer's signature; not independently
+                                  distinguished as a separate event)
+    Expiration                    preserved unchanged through the cycle
+                                  at 2026-09-11 10:43 (AM; timezone not
+                                  restated by Brad for this figure,
+                                  recorded exactly as reported rather than
+                                  assumed UTC)
+
+**Items 7 and 8, ACCOUNT-VERIFIED.** With only the seller signed, GHL
+kept the document under **Waiting for others** -- the buyer's
+per-recipient completion state stayed false, matching the documented
+`recipients[].hasCompleted` model exactly (item 7). The second, buyer
+signature **automatically** moved the document to **Completed**; no
+human used "Mark as Completed." This is the direct, account-level
+evidence item 8 was BLOCKED on -- GHL's own provider-side completion
+signal is now confirmed distinguishable from a manual override, at
+least in this observed instance.
+
+**Item 9, ACCOUNT-VERIFIED for identifier/completion-time/version
+framing, and CLARIFIED (not merely BLOCKED) for the integrity-identifier
+sub-point.** The executed two-page PDF was retrievable and includes both
+signatures plus GHL's own Signature Certificate. Its SHA-256, computed
+and preserved outside GHL:
+
+    e3331f06f1e8be9414d3807c707f83af49d881e5851b0949554da3f67b67c3f6
+
+**The PDF contains no embedded cryptographic PDF signature.** This
+settles the open question this document's own carrier correction above
+("Second correction") left open: GHL does **not** supply a native,
+discrete integrity identifier distinct from the certificate concept, and
+the fallback that correction anticipated -- IAOS computing and
+preserving its own hash of the retrieved bytes -- is now confirmed as
+the actual required mechanism, not a hypothesis. **Per Brad's
+instruction: IAOS must preserve, for every executed document, the
+downloaded PDF itself, its SHA-256, the GHL document reference, the
+contract version, and the provider-reported completion time.** None of
+this is implemented by this document; it is recorded here as a
+requirement for whichever future work (INV-58 or later) builds the
+durable carrier.
+
+**Item 10, partially ACCOUNT-VERIFIED for the specific case observed.**
+A single missing signature did not create Completed status -- the
+partial-signature fail-closed case held in this instance. The other
+cases item 10 names (missing preservation, duplicate events, a
+stale/superseded version) remain unproven by this transaction and, per
+this document's existing position, are IAOS's own responsibility to
+enforce regardless of what GHL guarantees internally.
+
+**Items 1, 2 and 6, ACCOUNT-VERIFIED at the access/capability level,
+still BLOCKED for the specific documentation-level sub-points named in
+the original ten-point pass.** Brad both has and used Documents &
+Contracts access on this Test location (item 1's access question,
+though plan tier and cost remain undocumented). Real, distinguishable
+seller and buyer signer roles were used (item 2's signer-role model),
+though template *discovery* (browsing the library) is still
+unconfirmed. A two-day expiration was set, tracked, and preserved
+unchanged across the whole cycle (item 6), though whether it is
+settable via the Send Template API's own documented request body --
+which names no expiry parameter -- remains unconfirmed; this send did
+not go through that endpoint.
+
+**A new, previously unrecorded finding: both delivery emails were
+classified as spam.** Gmail and Yahoo both routed the signer
+notification emails to spam, though both were ultimately delivered. Not
+addressed by anything in this document or in `SELLER_CONTRACT_STATE_
+MACHINE_V1.md` today -- a real deliverability risk to a live signer
+flow, recorded here rather than left to be rediscovered.
+
+**What this proof does NOT establish -- per Brad's own instruction, not
+represented as passed:**
+
+- **Opportunity/deal binding (item 3) stays BLOCKED.** This transaction
+  was not confirmed bound to a specific IAOS Opportunity via the
+  documented `opportunityId` parameter or any equivalent, and whether
+  the List Documents read-back actually echoes an `opportunityId`/
+  `contactId` for per-deal filtering remains unconfirmed.
+- **API automation stays entirely unproven.** This cycle was operated
+  directly in GHL's own web interface, not through IAOS's proxy or any
+  `/proposals/...` API call -- no allowlist entry was added, and none is
+  added by this document. Item 4's `sendDocument` draft/send semantics
+  and item 5's document/version-binding question (whether a second call
+  against the same template regenerates rather than transmits the
+  reviewed draft) are unaffected by this proof and remain exactly as
+  BLOCKED as before.
+
+This proof demonstrates the underlying GHL capability works and behaves
+the way B9-01 requires **when operated directly by a human with account
+access.** It does not demonstrate that IAOS itself can trigger, bind, or
+read this flow programmatically -- that remains INV-58's open question,
+not this document's to close.
+
 #### Recommended integration split — Jess's recommendation, NOT YET ACCOUNT-PROVEN
 
 Recorded here as a recommendation under active consideration, explicitly
@@ -595,6 +714,16 @@ should treat it as a starting hypothesis to validate against the
 BLOCKED items above, not as a locked design.
 
 #### Minimal Test-setup/proof plan — a PROPOSAL only, not executed this round
+
+**Superseded in part, 2026-09-09.** The Live Test transaction proof
+above resolves items 7, 8 and 9's core BLOCKED status -- and the
+access-level parts of items 1, 2 and 6 -- without executing any part of
+the plan below. This plan remains relevant only if and when INV-58
+needs IAOS itself to drive or read this flow via API; it is not
+required merely to establish that GHL's capability works, which the
+proof above already does. Nothing below this note has changed: still
+not implemented, still requires its own separate authorization if
+pursued.
 
 If genuinely resolving the BLOCKED items above requires creating
 something in Test GHL, this is the smallest plan that would do it —
@@ -887,7 +1016,7 @@ provider on every deal, not hardcode or default to one.
 | 5 | GHL stages/fields/documents/notes/workflows/API | Mixed: REUSE (stages/fields as read targets, occupancy), REAL CARRIER GAP (lien amount unused, no contract-state stage), EXTERNAL/OPERATIONAL GAP (workflows and IAOS-proxy documents-path unreachable via sanctioned proxy), UNKNOWN (opportunity-model field catalog). GHL native e-sign capability itself is superseded by item 8's DOCUMENTED/BLOCKED findings, no longer wholly UNKNOWN |
 | 6 | Board #8 economics provenance/handoff | REUSE (fully covered, no gap) |
 | 7 | Property/ARV/repairs/access/photo/closing-date/earnest-money/possession/contingency/owner/signer-delivery data | Mixed: REUSE (property, ARV, repairs, transaction-assumptions prose, occupancy), RENAME/PRESENTATION-ONLY (confirmation-act framing), REAL CARRIER GAP (access, photo/document, closing date, earnest money, contingencies, owner signing-authority, signer delivery — the majority of this row) |
-| 8 | E-sign providers, GHL-first | GHL-native Documents & Contracts is the preferred V1 candidate per Brad's direction (not yet ACCOUNT-VERIFIED). Ten-point verification: DOCUMENTED (2, 3 partial, 4 partial, 6 partial, 7, 9 partial), BLOCKED (1, 3's read-back sub-point, 4's `sendDocument` semantics, 5, 6's settability sub-point, 8, 9's integrity-identifier sub-point, 10). Zero items UNSUPPORTED. External providers retained as unranked fallback-tier findings only; no provider selected |
+| 8 | E-sign providers, GHL-first | GHL-native Documents & Contracts is the preferred V1 candidate per Brad's direction. **Updated 2026-09-09 by a live Test transaction proof (see "Live Test transaction proof" subsection):** items 7, 8 and 9 are now ACCOUNT-VERIFIED at the capability level (9's integrity-identifier sub-point CLARIFIED as an IAOS-side requirement, not a GHL-native field); items 1, 2 and 6 are ACCOUNT-VERIFIED for access/capability, still BLOCKED for their specific documentation-level sub-points; item 10 is partially ACCOUNT-VERIFIED for the single-missing-signature case only. **Items 3, 4 and 5 remain BLOCKED, explicitly not represented as passed** — Opportunity/deal binding and all API-mediated automation are unproven; this transaction was operated directly in GHL's UI, not through IAOS. Zero items UNSUPPORTED. External providers retained as unranked fallback-tier findings only; no provider selected |
 | 9 | First-market title/closing handoff expectations | Settled fact: no fixed provider required, may vary by deal (Brad's ruling, 2026-09-09). EXTERNAL/OPERATIONAL GAP |
 
 ---
@@ -928,23 +1057,32 @@ provider on every deal, not hardcode or default to one.
 - **Workflow inventory for the Test location** is unreachable through
   IAOS's sanctioned proxy (no allowlist entry); Production's own
   inventory is out of scope this round.
-- **GHL Documents & Contracts account-level verification (item 8,
-  points 1, 3's read-back sub-point, 4's `sendDocument` semantics, 5, 6's
-  settability sub-point, 8, 9's integrity-identifier sub-point, and 10)
-  is BLOCKED, precisely, not UNKNOWN and not UNSUPPORTED:** no GHL
-  direct-login credential exists anywhere in this session's memory
-  (confirmed by an explicit grep across every memory file), so no
-  account-level UI check was attempted; and `app/netlify/functions/
-  ghl-proxy.ts`'s allowlist has zero entries for any `/proposals/...`
-  path, so even a fully permission-confirmed API-level test cannot run
+- **GHL Documents & Contracts account-level verification (item 8) —
+  UPDATED 2026-09-09 by a live Test transaction Brad ran directly in
+  GHL's own web interface (see the "Live Test transaction proof"
+  subsection in item 8).** That proof resolved points 7, 8 and 9 to
+  ACCOUNT-VERIFIED, and points 1, 2 and 6 to ACCOUNT-VERIFIED at the
+  access/capability level (their narrower documentation-level
+  sub-points stay BLOCKED as before). **Points 3, 4, 5, 3's read-back
+  sub-point, 4's `sendDocument` semantics, 6's settability sub-point,
+  9's integrity-identifier sub-point (now CLARIFIED rather than
+  BLOCKED — see the proof), and 10's non-partial-signature cases remain
+  BLOCKED, precisely, not UNKNOWN and not UNSUPPORTED:** the live proof
+  did not go through IAOS at all — no GHL direct-login credential
+  exists anywhere in this session's memory (confirmed by an explicit
+  grep across every memory file), so no IAOS-mediated account-level
+  check was attempted; and `app/netlify/functions/ghl-proxy.ts`'s
+  allowlist still has zero entries for any `/proposals/...` path, so
+  even a fully permission-confirmed API-level test still cannot run
   through IAOS's own sanctioned proxy without a separately authorized
-  allowlist change (implementation, out of scope this round). GHL's own
-  official documentation itself, by contrast, **was** successfully
-  fetched this round (item 8) and yielded substantial DOCUMENTED
+  allowlist change (implementation, out of scope this round and not
+  made by this document). GHL's own official documentation itself was
+  separately fetched (item 8) and yielded substantial DOCUMENTED
   findings — the capability is not "unverified because unreachable
-  documentation," as an earlier pass reported; it is specifically
-  account-access and proxy-allowlist BLOCKED for the items documentation
-  alone cannot settle.
+  documentation," as an earlier pass reported; the remaining gaps are
+  specifically account-access, proxy-allowlist, and API-binding BLOCKED
+  for what neither documentation nor a directly-operated UI transaction
+  can settle.
 - **The e-sign provider comparison is now fallback-tier only** (item 8) —
   GHL-native is the preferred subject per Brad's direction. The fallback
   grid's remaining UNKNOWN cells (several DocuSign dimensions, most
@@ -1020,13 +1158,20 @@ retrievable, let alone touched. **No new GHL field, carrier, or
 Production record created.** **No e-sign provider selected** — Part A
 item 8 presents findings only, several explicitly incomplete, with no
 ranking or recommendation; GHL-native is named *preferred* per Brad's own
-direction, not selected by developer preference. **No GHL account login
-was attempted** — memory was checked for credentials and none exist for
-a Test-scoped web login, so account-level items are reported BLOCKED
-rather than guessed. **No test template, contact, opportunity, or
-send/recipient action was created or executed** — item 8's minimal
-Test-setup/proof plan is a proposal only, awaiting separate approval.
-**INV-58 (B9-03) is not begun**; this document is its prerequisite input
-only. **No PR opened, no push performed** — this commit sits on the
-local branch pending Jess Gate and Brad's explicit authorization to
-proceed.
+direction, not selected by developer preference. **No GHL account login was attempted by this session** — memory was
+checked for credentials and none exist for a Test-scoped web login, so
+account-level items this session itself tried to verify are reported
+BLOCKED rather than guessed. **Correction, 2026-09-09.** Brad
+separately, and directly, ran one real send/sign/complete Documents &
+Contracts cycle in GHL's own web interface — outside this document,
+outside any IAOS code path, and without the proxy/API extension this
+document's own minimal proof plan proposed. That evidence is recorded
+in item 8's "Live Test transaction proof" subsection and resolves
+several BLOCKED points to ACCOUNT-VERIFIED; it created no IAOS
+template, contact, opportunity, carrier, or code, and it is exactly the
+kind of directly-operated, non-IAOS-mediated transaction this document
+did not itself execute. The proxy/API extension proposal remains
+unimplemented and unauthorized. **INV-58 (B9-03) is not begun**; this
+document is its prerequisite input only. **This commit is pushed and a
+PR is opened, per Brad's explicit authorization** — Jess Gate review is
+still the next step before B9-03 may begin.
