@@ -173,11 +173,14 @@ all three, together. Which provider supplies the identifier/timestamp is
 INV-57's determination, not this document's.
 
 **Transition trigger OUT.** To Under Contract (verified full execution,
-below), or to Rescinded/Expired/Declined (below), or superseded by a new
-cycle if a material correction is found before full execution (see
-Corrected below — correction is not limited to after Under Contract). No
-path back to Contract Ready or Agreement Reached for the *same*
-agreement — see No-reentry below.
+below), or to Rescinded/Expired/Declined (below). If a seller-facing
+content change is needed before full execution, this version's own
+record is unchanged and preserved; the correction proceeds as its own
+new version starting at Contract Ready, per Corrected below — a
+correction is not this version transitioning anywhere, but a distinct
+version beginning its own pass through the sequence. No path back to
+Contract Ready or Agreement Reached for *this* version's own record —
+see No-reentry below.
 
 **Failure behavior.** If authorization is recorded but no provider
 transmission identifier/timestamp is obtained, the state must read as
@@ -227,11 +230,13 @@ acknowledgment cannot substitute for any of the three required facts.
 
 **Transition trigger IN.** All three facts above, together.
 
-**Transition trigger OUT.** None, in the successful case — Under
-Contract with all three facts preserved is this document's terminal
-success state for the executed version. **Corrected** (below) supersedes
-it with a new version when a material correction is found — see
-Corrected for what that means for the prior version's status.
+**Transition trigger OUT.** None — this version's own record does not
+transition anywhere once Under Contract is reached; it is preserved
+exactly as reached. If a seller-facing content change is later needed,
+that is a distinct new version beginning its own pass through the
+sequence from Contract Ready, per Corrected below — not a transition of
+*this* version's record, and not, by itself, a determination that this
+version is legally void.
 
 **Failure behavior.** Any of the three facts missing, ambiguous, or
 unconfirmed must never read as Under Contract — fail closed, exactly as
@@ -246,7 +251,9 @@ answer to what was previously an open question here.
 authoritative reference) together with the provider/envelope identifier,
 completion time, contract version, and integrity identifier — durably
 retrievable, immutably tied to this specific agreement, with an
-append-only record of any later Corrected supersession.
+append-only record identifying any later replacement version created
+under Corrected below (a relationship record, never an edit to this
+version's own preserved facts).
 
 ---
 
@@ -254,31 +261,61 @@ append-only record of any later Corrected supersession.
 
 ### Corrected
 
-**Meaning.** A material correction to the agreement is found after it was
-sent — a "post-send correction," which may be discovered whether or not
-the prior version has already reached Under Contract.
+**Meaning.** A change to the agreement is needed after it was sent — a
+"post-send correction," which may be needed whether or not the prior
+version has already reached Under Contract.
 
-**Locked here (Brad ruling, 2026-09-08): no addendum shortcut in V1.**
-Any material post-send correction **voids or supersedes the prior
-contract version** and **requires a complete new execution cycle** — a
-fresh pass through Contract Sent and Under Contract for the corrected
-version, with its own send authorization, its own provider transmission
-identifier/timestamp, its own expiration date/time, and its own
-three-fact verified-execution requirement. There is no lighter
-addendum path that patches a term without a full new cycle. If the
-prior version had already reached Under Contract, that version's
-executed-document record is preserved (never destroyed or replaced) but
-is superseded — the corrected version is now the operative one, and the
-prior version's history remains part of the permanent, append-only
-record, mirroring the pattern already proven throughout this codebase
-(`ARV_EVIDENCE_SNAPSHOT_V1.md`, `seller-call-outcome.ts`, INV-68's
-invalidation ledger).
+**What counts as a correction — locked (Brad ruling, 2026-09-08), no
+Product Owner ambiguity remains.** Any post-send change to **seller-facing
+contract content** — including parties, property, price, dates,
+obligations, or any other agreement text — creates a new contract version
+and requires the complete replacement-version lifecycle below. This is
+true regardless of how small the change reads; there is no separate
+"immaterial content change" path in V1. A change confined to **IAOS/GHL
+metadata that does not alter the seller-facing agreement document itself**
+(for example, an internal note, tag, or record-keeping field with no
+seller-facing effect) is **not** a contract correction at all, under this
+document's definition, and does not create a new contract version or
+execution cycle. The line is drawn by *whether the seller-facing document
+changes*, not by how significant IAOS or an operator judges the change to
+be — a bright-line test, not a judgment call, so no further Product Owner
+decision or INV-57 discretion is needed to apply it.
 
-**Not decided here:** which categories of change are material enough to
-require this process versus genuinely immaterial (a typo with no effect
-on any term) — this document locks the *consequence* of a material
-correction, not the threshold for what counts as one. A narrow,
-implementation-facing question for INV-57, not a state-machine ambiguity.
+**The replacement-version lifecycle — locked (Brad ruling, 2026-09-08):
+a corrected version does not begin directly at Contract Sent.** It re-enters
+the state machine at **Contract Ready**, and proceeds through the same
+sequence any agreement does:
+
+    Contract Ready
+      → Brad explicitly authorizes sending that exact corrected version
+      → Contract Sent
+      → verified full execution (all three facts, per Under Contract above)
+      → Under Contract
+
+The corrected version is a distinct pass through this sequence with its
+own send authorization, its own provider transmission identifier/
+timestamp, its own expiration date/time, and its own three-fact
+verified-execution requirement — never a shortcut that starts at Contract
+Sent or skips any state.
+
+**This is product-state behavior, not a claim about legal effect — IAOS
+makes no determination of legal voiding or supersession.** The prior
+version and its complete history are always preserved, never erased,
+overwritten, or destroyed — the same append-only pattern already proven
+throughout this codebase (`ARV_EVIDENCE_SNAPSHOT_V1.md`,
+`seller-call-outcome.ts`, INV-68's invalidation ledger). Creating or
+sending a replacement version does not, by itself, deem an already
+executed prior agreement legally void or superseded — that is a legal
+question this document does not answer and IAOS does not decide. What
+this document locks is only which record IAOS treats as *authoritative
+for its own downstream state* (readiness, checklists, the no-reentry
+rule): the state record may identify the replacement relationship between
+versions, but **the prior executed version remains the authoritative one
+in IAOS until either the replacement itself reaches verified full
+execution, or Brad records a separate, authorized Rescission supported by
+the required evidence** (per Rescinded above). Until one of those two
+things happens, a prior Under Contract version stands, in IAOS's own
+state, exactly as it did before the replacement was created.
 
 ### Rescinded
 
@@ -293,8 +330,8 @@ other operator or role may record a Rescission for V1.
 (append-only, nothing overwritten or destroyed), recording: the
 timestamp of the rescission, the reason, the operator (Brad, per the
 authority rule above), and the affected contract and version
-(`agreementAt` plus the specific contract version if a Corrected
-supersession has already occurred).
+(`agreementAt` plus the specific contract version, if a Corrected
+replacement version already exists).
 
 **No-reentry.** Once Rescinded, this specific agreement (`agreementAt`)
 is terminal. See No-reentry disposition handoff below.
@@ -347,14 +384,17 @@ Agreement Reached (a new `agreementAt`), never a reopening of the
 terminal one.
 
 **Corrected is the sole controlled exception to "terminal," and it is
-not itself a reopening of Board #8 negotiation.** A material post-send
-correction — locked above to void/supersede the prior version and require
-a complete new execution cycle — creates a *new version* of the same
-underlying agreement, never a return to Seller Call negotiation. This
-applies whether the correction is found while still in Contract Sent
+not itself a reopening of Board #8 negotiation.** A post-send seller-facing
+content change — locked above to require a new contract version through
+the full replacement-version lifecycle — creates a *new version* of the
+same underlying agreement, never a return to Seller Call negotiation.
+This applies whether the change is needed while still in Contract Sent
 (not yet Under Contract) or after Under Contract was reached; either way,
-the new cycle starts from a fresh Contract Sent, never from Agreement
-Reached or Contract Ready.
+the new version re-enters at **Contract Ready** and proceeds through
+Contract Sent to Under Contract again, per Corrected above — it never
+starts directly at Contract Sent, and it never returns to Agreement
+Reached (the underlying negotiated acceptance is not being redone, only
+the paperwork that followed it).
 
 ---
 
@@ -390,11 +430,11 @@ Sent. `UNDERWRITING_WORKSPACE_SPEC.md` already names the one point where
 this can legitimately diverge: **Actual Contract Price**, "a fact about
 an executed agreement... contracting is authoritative for it" — relevant
 only once Under Contract, and only if the executed terms differ from
-what was accepted (e.g., a last-minute change during signing). Any such
-divergence is a material post-send correction — exactly what the
-Corrected state (above) now locks as voiding/superseding the prior
-version and requiring a complete new execution cycle, never a soft
-addendum; this document does not invent a new pre-execution price field.
+what was accepted (e.g., a last-minute change during signing). A price
+difference is seller-facing contract content, so any such divergence is
+exactly what Corrected (above) locks as requiring a new contract version
+through the full replacement-version lifecycle, never a soft addendum;
+this document does not invent a new pre-execution price field.
 
 ## GHL as the sole system of record
 
@@ -434,9 +474,20 @@ are incorporated at each state above rather than repeated here in full:
 4. **Expiration** uses an explicit expiration date/time established at or
    before send; Expired is derived automatically once that timestamp
    passes without verified full execution.
-5. **Correction** after send is locked to void/supersede the prior
-   contract version and require a complete new execution cycle — no
-   addendum shortcut in V1.
+5. **Correction** — any post-send change to seller-facing contract
+   content (parties, property, price, dates, obligations, or other
+   agreement text) creates a new contract version, which re-enters the
+   sequence at Contract Ready and proceeds through Brad's explicit send
+   authorization, Contract Sent, and verified full execution to Under
+   Contract — never starting directly at Contract Sent, and never a
+   lighter addendum path. A change confined to IAOS/GHL metadata that
+   does not alter the seller-facing document is not a contract correction
+   and creates no new version. The prior version and its complete history
+   are always preserved; a replacement does not itself determine that the
+   prior version is legally void or superseded — the prior executed
+   version remains authoritative in IAOS until the replacement reaches
+   verified full execution or Brad records a separately authorized
+   Rescission.
 6. **Document preservation** remains GHL-authoritative: the executed
    document, or a verified GHL-native authoritative reference, must be
    preserved together with the provider/envelope identifier, completion
@@ -455,15 +506,12 @@ rather than to this contract:
   whichever provider is selected.
 - Which GHL-native mechanism satisfies the document-preservation
   requirement locked above.
-- Where the line sits between an immaterial correction (no new cycle
-  needed) and a material one (Corrected's full new-cycle process) —
-  this document locks the *consequence* of a material correction, not
-  the classification threshold itself.
 
-None of these are ambiguous state transitions or authority boundaries —
-every transition trigger, every authority, and every failure behavior
-above is fully specified regardless of which provider or GHL mechanism
-INV-57 ultimately selects.
+INV-57 implements the locked correction/metadata distinction above; it
+does not decide it. None of these are ambiguous state transitions or
+authority boundaries — every transition trigger, every authority, and
+every failure behavior above is fully specified regardless of which
+provider or GHL mechanism INV-57 ultimately selects.
 
 ---
 
