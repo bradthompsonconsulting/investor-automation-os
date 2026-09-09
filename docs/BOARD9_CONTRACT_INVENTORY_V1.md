@@ -377,12 +377,27 @@ note, or as a field of GHL's own Documents & Contracts record itself
 (`documentId`, `documentRevision`, `updatedAt`, `isExpired`, per the List
 Documents response fields below) — **not** at the third-party e-sign
 provider's own separate servers as the authoritative copy, and **not**
-at a new IAOS-side carrier, which remains unauthorized by this document
-exactly as before. This is a genuine fit with GHL-native Documents &
-Contracts specifically: its own List Documents response already carries
-several of the required fields natively (see item 9 below), which a
-third-party provider integration would not automatically place inside
-GHL's own system of record without IAOS building an explicit copy step.
+at a new IAOS-side (non-GHL) carrier, which remains unauthorized by this
+document exactly as before. This is a genuine fit with GHL-native
+Documents & Contracts specifically: its own List Documents response
+already carries several of the required fields natively (see item 9
+below), which a third-party provider integration would not automatically
+place inside GHL's own system of record without IAOS building an
+explicit copy step.
+
+**Second correction, do not over-read the first one (Brad, 2026-09-09):**
+this document does not conclude that GHL-native fields are *sufficient*
+on their own. Item 9 below already finds three of four required fields
+DOCUMENTED but the fourth — a discrete integrity identifier — BLOCKED,
+not confirmed to exist natively. **If native fields prove insufficient,
+a future GHL-facing carrier may still be required** — meaning IAOS
+writing additional evidence INTO GHL (for example, a structured GHL note
+recording a computed integrity hash, mirroring the existing note-ledger
+pattern this codebase already uses for other durable facts), not a
+carrier that stores the authoritative copy outside GHL. That possibility
+is not ruled out here. **No such carrier is authorized during this
+inventory** — this correction only prevents the document from
+prematurely closing the question in either direction.
 
 #### Ten-point verification
 
@@ -583,58 +598,142 @@ BLOCKED items above, not as a locked design.
 
 If genuinely resolving the BLOCKED items above requires creating
 something in Test GHL, this is the smallest plan that would do it —
-**proposed for separate approval, no part executed this round:**
+**proposed for separate approval, no part executed this round.**
+
+**Sanctioned access methods actually checked, for the record (no
+password searched for or exposed):** two, and only two, were checked.
+(1) IAOS's own app-level GHL proxy (`app/netlify/functions/ghl-proxy.ts`,
+using the Test API token already configured in `.env.test`) — this is
+the same sanctioned path the application itself uses, and it is what
+every live finding elsewhere in this document was read through. (2) A
+search of this session's memory files
+(`C:\Users\brad\.claude\projects\C--Users-brad-investor-automation-os\
+memory\`) for whether a *separate* GHL direct-web-login credential is
+recorded there at all — a check for the **existence of a credential
+reference**, not a search for or display of any password value. None
+was found. **No GHL web UI login was attempted.** Neither method reaches
+account-level facts like plan tier, billing, or the template library —
+that gap is why item 1 and several others below are BLOCKED, not
+ACCOUNT-VERIFIED.
 
 - **Exact Test location:** `SoTgVoaFGHtBdRFvXWQV` (already the location
-  used throughout this document's live GHL calls).
-- **Template:** prefer a GHL built-in sample/demo template if this Test
-  account has one — **unknown without account access whether it does.**
-  Creating a new template may itself be a write this round does not
-  authorize; if no sample template exists, that determination (and any
-  template creation) requires separate authorization, not assumed here.
-- **Synthetic contact/opportunity:** reuse the already-existing "IAOS
-  Underwriting Test" contact/opportunity already present in Test
-  (contact `NAGtUZ9aOE5C1GatJzpT`, already used throughout this session's
-  prior live proofs) rather than creating new records, to minimize new
-  writes.
-- **Controlled test recipient:** a throwaway or Brad-controlled email
-  address, **never a real seller's contact information.**
+  used throughout this document's live GHL calls). **Confirmed.**
+- **Template ID:** **unconfirmed.** No template ID is named because none
+  is known — whether this Test account has a built-in sample/demo
+  template at all is unverified (item 1/2 above; no account access).
+  Creating a new template is itself a write this round does not
+  authorize. A real template ID must come from Brad's own account check
+  before any send-template call could even be attempted.
+- **Contact ID:** `NAGtUZ9aOE5C1GatJzpT` ("IAOS Underwriting Test") —
+  **confirmed**, reused from prior live proofs this session rather than
+  creating a new record.
+- **Opportunity ID:** **unconfirmed in this document.** The contact above
+  has an associated Opportunity from prior session work, but this
+  document does not state its ID from memory or assumption — confirming
+  it would require one additional read-only `GET /opportunities/search`
+  call (already an allowlisted path, no proxy change needed) at
+  execution time, not a new write.
+- **Controlled test recipient:** **unconfirmed — no exact address
+  named.** Proposed only as "a throwaway or Brad-controlled email
+  address, never a real seller's contact information." Brad must supply
+  or approve the specific address before any send.
 - **Permissions needed:** whatever GHL plan/scope gates Documents &
-  Contracts for this location — unverified (item 1 above), so unknown
-  until Brad's own account access confirms it.
-- **Exact writes this would require:** (1) confirming/enabling Documents
-  & Contracts access if not already available (plan/billing-level,
-  Brad-only); (2) selecting or creating a template (creating is a write
-  requiring separate authorization, per above); (3) one `POST /proposals/
-  templates/send` call, with `contactId` and `opportunityId` both passed
-  explicitly (to test item 3's binding directly) and `sendDocument`
-  toggled both `false` then `true` in two separate controlled attempts
-  (to resolve item 4's draft-vs-send semantics), targeting the controlled
-  test recipient only; (4) one `GET /proposals/document` call to read
-  back the resulting record and inspect its actual field set against
-  items 3, 6, 7, and 9 above; (5) for full end-to-end proof of items 7,
-  8, and 10, the controlled test recipient actually completing the
-  signature (a real action within Brad's or Jeff's own control, since
-  the recipient is controlled) to observe `hasCompleted`, `status`, and
-  `updatedAt` transition live.
-- **You-vs-Brad split:** **Brad-only** — verifying/granting Documents &
-  Contracts plan access, any billing implication, and his own GHL web
-  login for any account-level UI check (Settings, template library).
-  **Executable once separately authorized** — the API calls in steps
-  (3)-(5) above, once a template exists and access is confirmed.
-- **The precise, current blocking dependency for the API-level steps,
-  independent of Brad's own account access:** `app/netlify/functions/
-  ghl-proxy.ts`'s GET/POST allowlist (lines 59-77, already cited in item
-  5) has **zero entries** for any `/proposals/...` path. Extending that
-  allowlist is an implementation change this round's HARD NO forbids —
-  so even a fully authorized, permission-confirmed test cannot run
-  through IAOS's own sanctioned proxy today. Running it would require
-  either a separately authorized allowlist change (implementation,
-  future issue) or a separately authorized one-off script using the Test
-  token directly outside the app's sanctioned path (which AGENTS.md's
-  secrets/configuration boundary treats as requiring its own explicit
-  authorization, not a "read-only Test check" this document performs on
-  its own initiative).
+  Contracts for this location — unverified (item 1 above), unknown until
+  Brad's own account access confirms it.
+
+**Draft creation and sending are two distinct, sequential steps — neither
+executed by this document, and step B is never taken without step A's
+result reviewed first:**
+
+- **Step A — draft only, no transmission.** One `POST /proposals/
+  templates/send` call with `sendDocument: false`, `contactId` and
+  `opportunityId` both passed explicitly (to test item 3's binding),
+  targeting the controlled test recipient only. Purpose: resolve item
+  4's draft-vs-send semantics without transmitting anything to the
+  recipient.
+- **Step B — actual send, only after Step A is reviewed and separately
+  approved.** The same call with `sendDocument: true`. Purpose: resolve
+  items 3 (Opportunity attribution on read-back) and 6 (transmission
+  evidence, below).
+- Both steps use the exact same documented endpoint: **`POST /proposals/
+  templates/send`** (confirmed directly from the endpoint reference this
+  session: required body — `templateId`, `userId`, `locationId`,
+  `contactId`; optional — `opportunityId`, `sendDocument`).
+
+**Exact evidence proposed for each remaining BLOCKED item — `updatedAt`
+is not proposed as a substitute for transmission or completion time
+anywhere below:**
+
+- **Transmission time.** GHL's own List Documents response does not name
+  a distinct "sent at" field — only the generic `updatedAt`. Proposed
+  evidence instead: **the wall-clock timestamp IAOS itself records at
+  the moment Step B's `POST /proposals/templates/send` call returns
+  successfully** — a fact IAOS directly observes and controls, not one
+  read back from GHL after the fact. This is the same pattern already
+  locked in `docs/SELLER_CONTRACT_STATE_MACHINE_V1.md` for Contract
+  Sent's own "confirmed provider transmission identifier and timestamp"
+  — the identifier comes from GHL (`documentId`), the timestamp is
+  IAOS's own observation of the send, not a GHL-reported field.
+- **Completion time.** Same reasoning: proposed evidence is **the
+  timestamp IAOS itself records the moment a `GET /proposals/document`
+  read-back first observes every required recipient's `hasCompleted`
+  true**, not `updatedAt` (confirmed generic, not completion-specific,
+  per item 6/9 above). Whether GHL additionally exposes a webhook or a
+  per-signer completion timestamp of its own is **unconfirmed** — the
+  four fetched docs did not cover a webhook/event mechanism for
+  Documents & Contracts at all; this is a real gap in what was fetched,
+  not assumed absent.
+- **All required signatures.** Already DOCUMENTED (item 7): the
+  `recipients[].hasCompleted` per-recipient boolean, read via `GET
+  /proposals/document`. Proposed evidence: the full `recipients` array
+  from that read-back, not a single aggregate flag.
+- **Executed PDF retrieval.** **Unconfirmed — a real gap.** None of the
+  four fetched official docs names a specific document-download/export
+  endpoint for Documents & Contracts (unlike, for example, Dropbox
+  Sign's named file-retrieval endpoints in the fallback-tier findings
+  below). Proposed evidence: whatever `GET /proposals/document` itself
+  returns for a completed document (it may embed a file URL or require a
+  separate call not yet identified) — this specific sub-question is
+  exactly what Step B plus a completed signature would resolve, and this
+  document does not assume a mechanism that hasn't been confirmed to
+  exist.
+- **Integrity.** Already found BLOCKED at item 9: no discrete
+  hash/checksum-shaped field was named in what was fetched. Proposed
+  evidence, in order of preference: (1) if the account-level check
+  surfaces a GHL-native integrity field not visible in the four fetched
+  docs, use it; (2) failing that, **IAOS computes its own integrity
+  identifier** (a hash of the retrieved executed-document bytes) at the
+  moment of retrieval and records it alongside the other evidence — per
+  the correction above, this may mean writing that computed value into a
+  GHL-native record (a structured note), not a non-GHL carrier, and no
+  such write is authorized by this document.
+
+**You-vs-Brad split:** **Brad-only** — verifying/granting Documents &
+Contracts plan access, any billing implication, and his own GHL web
+login for any account-level UI check (Settings, template library, exact
+template ID). **Executable once separately authorized** — the
+Opportunity-ID lookup, and Steps A and B above, once a template ID and
+confirmed access exist.
+
+**The smallest proposed Test-only proxy change, if this plan is
+approved — not implemented, not bypassed, this round:**
+
+Exactly two new allowlist entries in `app/netlify/functions/
+ghl-proxy.ts`'s existing `ALLOW` object (lines 59-77), confirmed against
+the actual endpoint references fetched this session:
+- `POST`: `^/proposals/templates/send$`
+- `GET`: `^/proposals/document$` (this endpoint's own documented required
+  query parameter is `locationId`; it also requires a `Version: v3`
+  request header, confirmed directly from its reference page this
+  session — narrower than most other entries in the existing GET list,
+  which do not carry a version-header requirement, so the proxy's
+  request-building code would need to attach that header specifically
+  for this path, not just the path pattern).
+
+No third path is proposed — the Opportunity-ID lookup step above reuses
+the already-allowlisted `GET /opportunities/search`. This is the entire
+proxy change this plan would need; nothing else in `ghl-proxy.ts` is
+touched, and this document does not implement it.
 
 #### Fallback-tier findings — external providers, kept for reference only
 
