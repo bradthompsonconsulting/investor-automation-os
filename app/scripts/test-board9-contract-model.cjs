@@ -65,7 +65,7 @@ const compiledNoComments = execSync(
 fs.rmSync(TMP + '-nocomments', { recursive: true, force: true });
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 127;
+const FLOOR = 149;
 let failures = 0;
 let checks = 0;
 
@@ -367,20 +367,37 @@ const fullChecklist = {
 // ============================================================
 // 10. Under Contract eligibility -- the three jointly-required facts
 //     (per-signer completion, provider completion, preserved document),
-//     none sufficient alone, PLUS the executed-terms safeguard.
+//     none sufficient alone, PLUS the executed-terms safeguard, PLUS
+//     (Jess Gate correction, this issue) real CONTENT validation of every
+//     fact -- not merely presence -- and mandatory binding of the
+//     preserved document to the exact current IAOS ContractVersionIdentity
+//     (never an unavailable provider documentRevision).
 // ============================================================
 {
   const requirements = [
     { role: 'seller_1', displayName: 'Jane Seller', signingAuthorityNote: null },
     { role: 'buyer', displayName: 'IAOS Buyer', signingAuthorityNote: null },
   ];
+  const ucVersionA = { agreementAt: '2026-09-06T15:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: null };
+  const ucVersionB_differentSeq = { ...ucVersionA, versionSeq: 2, supersedesVersionSeq: 1 };
+  const ucVersionC_differentAgreement = { agreementAt: '2026-09-10T09:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: ucVersionA.agreementAt };
+  const validSha256 = 'e3'.repeat(32); // 64 hex chars, a real well-formed digest shape
+
   const fullExecution = {
     signers: [{ role: 'seller_1', hasCompleted: true }, { role: 'buyer', hasCompleted: true }],
     providerReportedCompletionAt: '2026-09-09T19:35:00.000Z',
-    preservedDocument: { sha256: 'e3331f06', providerReference: '24015F7F-1E61-41A1-9BD3-3FC7D8BBEE10', completionTime: '2026-09-09T19:35:00.000Z', contractVersion: null },
+    preservedDocument: {
+      sha256: validSha256,
+      providerReference: '24015F7F-1E61-41A1-9BD3-3FC7D8BBEE10',
+      completionTime: '2026-09-09T19:35:00.000Z',
+      boundVersion: ucVersionA,
+      providerDocumentRevision: null,
+    },
   };
-  const fullyEligible = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: fullExecution, executedTermsMatchAgreement: true });
-  check('Under Contract is eligible when all three facts hold, terms match, and Contract Sent was reached', fullyEligible, { eligible: true, reasons: [] });
+  const fullyEligible = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: fullExecution, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
+  check('Under Contract is eligible when all three facts hold with real content, the preserved document is bound to the exact current IAOS version, and terms match', fullyEligible, { eligible: true, reasons: [] });
+
+  check('an absent provider documentRevision on the preserved document does NOT block Under Contract -- GHL BLOCKED fields never gate V1', M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: { ...fullExecution, preservedDocument: { ...fullExecution.preservedDocument, providerDocumentRevision: null } }, currentVersion: ucVersionA, executedTermsMatchAgreement: true }), { eligible: true, reasons: [] });
 
   // Only the seller signed -- "Waiting for others," per the live Test
   // transaction proof (BOARD9_CONTRACT_INVENTORY_V1.md item 8).
@@ -388,29 +405,86 @@ const fullChecklist = {
     ...fullExecution,
     signers: [{ role: 'seller_1', hasCompleted: true }, { role: 'buyer', hasCompleted: false }],
   };
-  const partialSignatures = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: onlySellerSigned, executedTermsMatchAgreement: true });
+  const partialSignatures = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: onlySellerSigned, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
   check('a single missing signature alone blocks Under Contract -- fail closed, matches the live Test proof', partialSignatures.eligible, false);
   check('the partial-signature case names SIGNERS_INCOMPLETE', partialSignatures.reasons.some((r) => r.code === 'SIGNERS_INCOMPLETE'), true);
 
   const noProviderReport = { ...fullExecution, providerReportedCompletionAt: null };
-  const noProviderResult = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: noProviderReport, executedTermsMatchAgreement: true });
+  const noProviderResult = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: noProviderReport, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
   check('all signers complete but NO provider completion report is still NOT Under Contract (no human mark-as-complete substitute)', noProviderResult.eligible, false);
   check('the no-provider-report case names PROVIDER_COMPLETION_NOT_REPORTED', noProviderResult.reasons.some((r) => r.code === 'PROVIDER_COMPLETION_NOT_REPORTED'), true);
 
+  // Required: invalid provider completion timestamp (present but malformed).
+  const invalidProviderCompletionTimestamp = { ...fullExecution, providerReportedCompletionAt: 'not-a-real-date' };
+  const invalidProviderCompletionResult = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: invalidProviderCompletionTimestamp, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
+  check('a present but invalid provider completion timestamp blocks Under Contract -- content is validated, not just presence', invalidProviderCompletionResult.eligible, false);
+  check('the invalid-provider-completion-timestamp case names PROVIDER_COMPLETION_TIMESTAMP_INVALID', invalidProviderCompletionResult.reasons.some((r) => r.code === 'PROVIDER_COMPLETION_TIMESTAMP_INVALID'), true);
+
   const noPreservation = { ...fullExecution, preservedDocument: null };
-  const noPreservationResult = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: noPreservation, executedTermsMatchAgreement: true });
+  const noPreservationResult = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: noPreservation, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
   check('signers complete and provider reports completion, but NO preserved document, is still NOT Under Contract', noPreservationResult.eligible, false);
   check('the no-preservation case names DOCUMENT_NOT_PRESERVED', noPreservationResult.reasons.some((r) => r.code === 'DOCUMENT_NOT_PRESERVED'), true);
 
-  const notSent = M.evaluateUnderContractEligibility({ contractSent: false, requirements, execution: fullExecution, executedTermsMatchAgreement: true });
+  // Required: blank provider reference.
+  const blankProviderReference = { ...fullExecution, preservedDocument: { ...fullExecution.preservedDocument, providerReference: '   ' } };
+  const blankProviderReferenceResult = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: blankProviderReference, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
+  check('a blank preserved-document provider reference blocks Under Contract', blankProviderReferenceResult.eligible, false);
+  check('the blank-provider-reference case names PRESERVED_DOCUMENT_REFERENCE_BLANK', blankProviderReferenceResult.reasons.some((r) => r.code === 'PRESERVED_DOCUMENT_REFERENCE_BLANK'), true);
+
+  // Required: invalid preserved-document completion timestamp.
+  const invalidDocCompletionTime = { ...fullExecution, preservedDocument: { ...fullExecution.preservedDocument, completionTime: 'not-a-real-date' } };
+  const invalidDocCompletionTimeResult = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: invalidDocCompletionTime, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
+  check('an invalid preserved-document completion timestamp blocks Under Contract', invalidDocCompletionTimeResult.eligible, false);
+  check('the invalid-doc-completion-time case names PRESERVED_DOCUMENT_COMPLETION_TIME_INVALID', invalidDocCompletionTimeResult.reasons.some((r) => r.code === 'PRESERVED_DOCUMENT_COMPLETION_TIME_INVALID'), true);
+
+  // Required: blank OR malformed SHA-256, both cases.
+  const blankSha256 = { ...fullExecution, preservedDocument: { ...fullExecution.preservedDocument, sha256: '   ' } };
+  const blankSha256Result = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: blankSha256, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
+  check('a blank SHA-256 blocks Under Contract', blankSha256Result.eligible, false);
+  check('the blank-SHA-256 case names PRESERVED_DOCUMENT_SHA256_INVALID', blankSha256Result.reasons.some((r) => r.code === 'PRESERVED_DOCUMENT_SHA256_INVALID'), true);
+
+  const malformedSha256Result = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: { ...fullExecution, preservedDocument: { ...fullExecution.preservedDocument, sha256: 'not-a-real-hash-abc123' } }, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
+  check('a malformed (non-hex, wrong-length) SHA-256 blocks Under Contract -- present is not the same as well-formed', malformedSha256Result.eligible, false);
+  check('the malformed-SHA-256 case also names PRESERVED_DOCUMENT_SHA256_INVALID', malformedSha256Result.reasons.some((r) => r.code === 'PRESERVED_DOCUMENT_SHA256_INVALID'), true);
+
+  // Required: missing preserved-document IAOS version.
+  const missingBoundVersion = { ...fullExecution, preservedDocument: { ...fullExecution.preservedDocument, boundVersion: null } };
+  const missingBoundVersionResult = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: missingBoundVersion, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
+  check('a preserved document with NO recorded IAOS version binding blocks Under Contract', missingBoundVersionResult.eligible, false);
+  check('the missing-bound-version case names PRESERVED_DOCUMENT_NOT_BOUND_TO_EXACT_VERSION', missingBoundVersionResult.reasons.some((r) => r.code === 'PRESERVED_DOCUMENT_NOT_BOUND_TO_EXACT_VERSION'), true);
+
+  // Required: different agreementAt between the preserved document's bound version and the current version being evaluated.
+  const differentAgreementBound = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: fullExecution, currentVersion: ucVersionC_differentAgreement, executedTermsMatchAgreement: true });
+  check('a preserved document bound to a DIFFERENT agreementAt than the one being evaluated blocks Under Contract', differentAgreementBound.eligible, false);
+  check('the different-agreementAt-binding case names PRESERVED_DOCUMENT_NOT_BOUND_TO_EXACT_VERSION', differentAgreementBound.reasons.some((r) => r.code === 'PRESERVED_DOCUMENT_NOT_BOUND_TO_EXACT_VERSION'), true);
+
+  // Required: different versionSeq (same agreementAt).
+  const differentSeqBound = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: fullExecution, currentVersion: ucVersionB_differentSeq, executedTermsMatchAgreement: true });
+  check('a preserved document bound to a DIFFERENT versionSeq (same agreementAt) than the one being evaluated blocks Under Contract', differentSeqBound.eligible, false);
+  check('the different-versionSeq-binding case also names PRESERVED_DOCUMENT_NOT_BOUND_TO_EXACT_VERSION', differentSeqBound.reasons.some((r) => r.code === 'PRESERVED_DOCUMENT_NOT_BOUND_TO_EXACT_VERSION'), true);
+
+  const notSent = M.evaluateUnderContractEligibility({ contractSent: false, requirements, execution: fullExecution, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
   check('Under Contract is never eligible without Contract Sent, even with full execution evidence', notSent.eligible, false);
 
-  const termsDiverged = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: fullExecution, executedTermsMatchAgreement: false });
+  const termsDiverged = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: fullExecution, currentVersion: ucVersionA, executedTermsMatchAgreement: false });
   check('fully executed evidence with a DIVERGED price/term from the agreement still does not reach Under Contract -- NO SILENT TERM CHANGE', termsDiverged.eligible, false);
   check('the diverged-terms case names EXECUTED_TERMS_REQUIRE_NEW_AGREEMENT', termsDiverged.reasons.some((r) => r.code === 'EXECUTED_TERMS_REQUIRE_NEW_AGREEMENT'), true);
 
-  const zeroSigners = M.evaluateUnderContractEligibility({ contractSent: true, requirements: [], execution: fullExecution, executedTermsMatchAgreement: true });
+  const zeroSigners = M.evaluateUnderContractEligibility({ contractSent: true, requirements: [], execution: fullExecution, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
   check('zero signer requirements can never vacuously satisfy Under Contract', zeroSigners.eligible, false);
+
+  // Required: any ONE of the three jointly-required execution facts
+  // missing still blocks, even when the other two are fully valid --
+  // proven pairwise across all three (signers-only-missing already
+  // proven above via partialSignatures; the remaining two pairs below).
+  const onlyProviderAndDocMissingSigners = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: { ...fullExecution, signers: [] }, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
+  check('provider completion and preserved document both valid, but ZERO signers recorded, still blocks (paired with the zero-signer-requirements case above, this is zero signer COMPLETIONS)', onlyProviderAndDocMissingSigners.eligible, false);
+
+  const onlySignersAndDocValid = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: { ...fullExecution, providerReportedCompletionAt: null }, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
+  check('signers and preserved document both valid, but provider completion missing, still blocks (re-confirms no two-of-three is sufficient)', onlySignersAndDocValid.eligible, false);
+
+  const onlySignersAndProviderValid = M.evaluateUnderContractEligibility({ contractSent: true, requirements, execution: { ...fullExecution, preservedDocument: null }, currentVersion: ucVersionA, executedTermsMatchAgreement: true });
+  check('signers and provider completion both valid, but preserved document missing, still blocks (re-confirms no two-of-three is sufficient)', onlySignersAndProviderValid.eligible, false);
 }
 
 // ============================================================
@@ -423,12 +497,18 @@ const fullChecklist = {
   const verifiedExecution = {
     signers: [{ role: 'seller_1', hasCompleted: true }],
     providerReportedCompletionAt: '2026-09-09T19:35:00.000Z',
-    preservedDocument: { sha256: 'abc123', providerReference: 'ref-1', completionTime: '2026-09-09T19:35:00.000Z', contractVersion: null },
+    preservedDocument: {
+      sha256: 'ab'.repeat(32),
+      providerReference: 'ref-1',
+      completionTime: '2026-09-09T19:35:00.000Z',
+      boundVersion: version,
+      providerDocumentRevision: null,
+    },
   };
 
   const ucPayload = M.buildDispositionHandoffPayload({
     terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
-    underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, executedTermsMatchAgreement: true },
+    underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: version, executedTermsMatchAgreement: true },
   });
   check('an actually-verified Under Contract handoff builds successfully', ucPayload.ok, true);
   check('the handoff payload always carries the literal noReentry: true', ucPayload.value.noReentry, true);
@@ -436,9 +516,22 @@ const fullChecklist = {
 
   const ucNotYetVerified = M.buildDispositionHandoffPayload({
     terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
-    underContractEvidence: { contractSent: true, requirements, execution: { ...verifiedExecution, providerReportedCompletionAt: null }, executedTermsMatchAgreement: true },
+    underContractEvidence: { contractSent: true, requirements, execution: { ...verifiedExecution, providerReportedCompletionAt: null }, currentVersion: version, executedTermsMatchAgreement: true },
   });
   check('an Under Contract handoff is REFUSED when the state was not actually verified -- never emits a payload for an unreached state', ucNotYetVerified.ok, false);
+
+  const ucBadSha256 = M.buildDispositionHandoffPayload({
+    terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
+    underContractEvidence: { contractSent: true, requirements, execution: { ...verifiedExecution, preservedDocument: { ...verifiedExecution.preservedDocument, sha256: 'bad' } }, currentVersion: version, executedTermsMatchAgreement: true },
+  });
+  check('an Under Contract handoff is REFUSED when the preserved document carries a malformed SHA-256 -- the new content validation blocks the handoff, not just the eligibility check', ucBadSha256.ok, false);
+
+  const otherVersion = { agreementAt: '2026-09-10T09:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: version.agreementAt };
+  const ucWrongBoundVersion = M.buildDispositionHandoffPayload({
+    terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
+    underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: otherVersion, executedTermsMatchAgreement: true },
+  });
+  check('an Under Contract handoff is REFUSED when the preserved document is bound to a DIFFERENT IAOS version than the one being evaluated', ucWrongBoundVersion.ok, false);
 
   const goodRescission = M.buildDispositionHandoffPayload({
     terminalState: 'rescinded', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,

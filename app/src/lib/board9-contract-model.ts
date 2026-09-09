@@ -185,7 +185,12 @@ export type TransitionReasonCode =
   | "DUPLICATE_SIGNER_ROLE"
   | "SIGNERS_INCOMPLETE"
   | "PROVIDER_COMPLETION_NOT_REPORTED"
+  | "PROVIDER_COMPLETION_TIMESTAMP_INVALID"
   | "DOCUMENT_NOT_PRESERVED"
+  | "PRESERVED_DOCUMENT_REFERENCE_BLANK"
+  | "PRESERVED_DOCUMENT_COMPLETION_TIME_INVALID"
+  | "PRESERVED_DOCUMENT_SHA256_INVALID"
+  | "PRESERVED_DOCUMENT_NOT_BOUND_TO_EXACT_VERSION"
   | "EXECUTED_TERMS_REQUIRE_NEW_AGREEMENT"
   | "RESCISSION_NOT_BRAD_AUTHORIZED"
   | "RESCISSION_REASON_REQUIRED"
@@ -782,16 +787,36 @@ export type EnvelopeIdentifiers = {
 export type SignerCompletion = { role: string; hasCompleted: boolean };
 
 /**
- * `contractVersion` stays nullable: the live Test transaction proof found
- * "no distinct provider version field... observed on this document," per
- * `BOARD9_CONTRACT_INVENTORY_V1.md` item 9's correction. This model does
- * not invent a value where the evidence does not supply one.
+ * A real, well-formed SHA-256 hex digest -- exactly 64 hexadecimal
+ * characters once surrounding whitespace is trimmed. A blank string, a
+ * truncated hash, or a non-hex value all fail this check exactly alike;
+ * none reads as "present, so it counts."
+ */
+function isValidSha256(value: string): boolean {
+  return /^[0-9a-fA-F]{64}$/.test(value.trim());
+}
+
+/**
+ * `boundVersion` is IAOS's OWN `ContractVersionIdentity` this preserved
+ * document is bound to -- the MANDATORY contract-version evidence (Jess
+ * Gate correction, this issue), validated against `UnderContractEvidence.
+ * currentVersion` via `isSameContractVersion`, exactly mirroring Contract
+ * Sent's `authorizedVersion`/`currentVersion` binding in section 5.
+ *
+ * `providerDocumentRevision` stays nullable and is carried for audit only
+ * -- NEVER gated on. `BOARD9_CONTRACT_INVENTORY_V1.md` item 9's live Test
+ * transaction proof found "no distinct provider version field... observed
+ * on this document," so requiring it would make the only verified V1 path
+ * incapable of ever reaching Under Contract, exactly the failure mode
+ * Contract Sent's own correction already fixed for `documentRevision`
+ * there.
  */
 export type PreservedDocumentEvidence = {
   sha256: string;
   providerReference: string;
   completionTime: string;
-  contractVersion: string | null;
+  boundVersion: ContractVersionIdentity | null;
+  providerDocumentRevision: string | null;
 };
 
 export type ExecutionEvidence = {
@@ -804,6 +829,8 @@ export type UnderContractEvidence = {
   contractSent: boolean;
   requirements: SignerRequirement[];
   execution: ExecutionEvidence;
+  /** The exact current IAOS contract version being evaluated -- compared against `execution.preservedDocument.boundVersion`. */
+  currentVersion: ContractVersionIdentity;
   /**
    * `detectMaterialConflicts(agreement, executedTerms).length === 0`,
    * computed by the caller. `SELLER_CONTRACT_STATE_MACHINE_V1.md`:
@@ -822,7 +849,11 @@ export type UnderContractEvidence = {
  * required jointly -- no single one, nor any two, is sufficient." This
  * function checks all three independently (plus the executed-terms
  * safeguard above) and reports every one that is missing -- never treats
- * two-of-three as "close enough."
+ * two-of-three as "close enough." Jess Gate correction, this issue: each
+ * fact's real CONTENT is validated, not merely its presence -- a present
+ * but blank, malformed, or unparseable value is treated exactly as a
+ * missing one, and the preserved document must be demonstrably bound to
+ * the exact IAOS contract version under evaluation, never merely present.
  */
 export function evaluateUnderContractEligibility(
   evidence: UnderContractEvidence,
@@ -852,13 +883,47 @@ export function evaluateUnderContractEligibility(
       code: "PROVIDER_COMPLETION_NOT_REPORTED",
       message: "The provider has not reported completion -- per-signer completion alone is not Under Contract.",
     });
+  } else if (!isValidIsoInstant(evidence.execution.providerReportedCompletionAt)) {
+    reasons.push({
+      code: "PROVIDER_COMPLETION_TIMESTAMP_INVALID",
+      message: "The provider-reported completion timestamp is not a valid instant.",
+    });
   }
-  if (evidence.execution.preservedDocument === null) {
+
+  const doc = evidence.execution.preservedDocument;
+  if (doc === null) {
     reasons.push({
       code: "DOCUMENT_NOT_PRESERVED",
       message: "The executed document has not been preserved.",
     });
+  } else {
+    if (doc.providerReference.trim() === "") {
+      reasons.push({
+        code: "PRESERVED_DOCUMENT_REFERENCE_BLANK",
+        message: "The preserved document's provider reference is blank.",
+      });
+    }
+    if (!isValidIsoInstant(doc.completionTime)) {
+      reasons.push({
+        code: "PRESERVED_DOCUMENT_COMPLETION_TIME_INVALID",
+        message: "The preserved document's completion time is not a valid instant.",
+      });
+    }
+    if (!isValidSha256(doc.sha256)) {
+      reasons.push({
+        code: "PRESERVED_DOCUMENT_SHA256_INVALID",
+        message: "The preserved document's SHA-256 integrity identifier is missing or malformed.",
+      });
+    }
+    if (doc.boundVersion === null || !isSameContractVersion(doc.boundVersion, evidence.currentVersion)) {
+      reasons.push({
+        code: "PRESERVED_DOCUMENT_NOT_BOUND_TO_EXACT_VERSION",
+        message:
+          "The preserved document is not bound to the exact IAOS contract version (agreementAt/versionSeq) being evaluated.",
+      });
+    }
   }
+
   if (!evidence.executedTermsMatchAgreement) {
     reasons.push({
       code: "EXECUTED_TERMS_REQUIRE_NEW_AGREEMENT",
