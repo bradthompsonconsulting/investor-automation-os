@@ -36,6 +36,45 @@ regardless of whether the receiving workflow enrolls or unenrolls. The
 receiving workflow's Enrollment history and Execution logs are
 authoritative.
 
+**Transient empty endpoint responses are a class, not incidents.**
+OBSERVED 2026-08-14, twice, on two different endpoints: the `/contacts`
+list, and the per-contact conversations read. Both returned an empty
+payload where data existed and both recovered on an immediate re-run
+with no code change. The verification harnesses have no retry, so a
+transient produces a red run that looks like a regression. A single
+harness failure warrants a re-run before it is believed. Collateral
+figures moving in lockstep -- body length, scroll height -- distinguish
+an empty read from a real data change. Related but distinct from the
+list-endpoint eventual-consistency and record-drop finding at
+`CONTACT_WORKSPACE_SPEC_v2.md` §11, which is a different mechanism on
+the same endpoint family.
+
+## Verification harness maintenance
+
+**Re-pin all verification harnesses to the served bundle after EVERY
+app-code deploy, regardless of what kind of file changed or what you
+expect.** `app/scripts/repin-harnesses.cjs` does this in one command; run
+it, then run the harnesses. The bundle-hash pin lives in multiple files
+and drifted three times when edited by hand -- each time a deploy
+re-pinned the harness under test and left the others behind, so the next
+run aborted at its gate against a bundle nobody had verified.
+
+**Bundle-hash behaviour is unstable. Do not predict it from a rule;
+measure it.** An earlier version of this guidance recorded a mechanism --
+pure types erase, unimported modules never reach the entry chunk -- and
+that mechanism produced a wrong prediction the same day it was written.
+The evidence, all OBSERVED 2026-08-14: `f64e37b`, unimported TypeScript
+plus a `.cjs` runner -- hash HELD. `d2a6522`, imported config -- hash
+MOVED, expected. `0be60c2`, `.cjs` only -- HELD. `a3e4dcf`, unimported
+TypeScript plus two edited-but-still-unimported core files -- hash
+MOVED, contradicting `f64e37b`. `b357dc1`, `.cjs` only -- HELD. So
+`.cjs`-only commits have held twice, and unimported TypeScript both held
+and moved. Vite emits content-addressed names and anything altering
+build inputs or module ordering can shift one. The operational rule
+above is the only durable part -- do not record a live hash literal
+anywhere as a substitute for re-pinning; `repin-harnesses.cjs` reading
+the served bundle is the source of truth.
+
 ## Test construction
 
 **A negative result proves nothing without its precondition.** A test

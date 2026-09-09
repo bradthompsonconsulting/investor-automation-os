@@ -313,6 +313,10 @@ engineering one.
 | Amend provenance markers for direct reads | IAOS | P4 | Medium | S | Jeff | Done |
 | Record transport findings in JEFF_OUTPUT_RULES | IAOS | P4 | Medium | S | Jeff | Done |
 | Retention decision on the apply-*.cjs scripts | IAOS | P4 | Low | S | Brad | Open |
+| `.gitattributes` missing / `core.autocrlf=true` -- line-ending convention depends on when Git last touched a file, not how it was authored | IAOS | P4 | Medium | S | Jeff | Open |
+| Duplicate ARV/repair field families (Contact vs. Opportunity) -- demonstrated operator-confusion hazard under PB-D55 seed-then-supersede; UI does not show which copy is in effect | IAOS | P4 | Medium | S | Brad | Open |
+| Retire dormant `ghl.contacts.saveOfferFields` / `ghl.opportunities.saveOfferFields` -- zero callers since the MAO Calculator's retirement | IAOS | P4 | Low | S | Jeff | Open |
+| Verify and, if still present, clean stray `offer_*` values left on the IAOS Test Probe contact from 2026-08-14 fixture work | IAOS | P4 | Low | S | Jeff | Open |
 | Backlog grooming | IAOS | P4 | Medium | S | Brad | Ongoing |
 
 The Phase B label denotes multi-tenancy in the master architecture

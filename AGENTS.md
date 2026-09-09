@@ -112,6 +112,36 @@ surface it rather than doing it.
 **Production writes, real-contact effects, secrets and configuration, and
 irreversible actions require Brad's explicit authorization.**
 
+## Editing technique
+
+**Check line endings on the target file before scripting an exact-text
+edit.** OBSERVED 2026-08-14: the working tree contains both LF and CRLF
+documents (`UNDERWRITING_WORKSPACE_SPEC.md` was pure CRLF while
+`SESSION_HANDOFF.md` was pure LF). Match the file's observed line
+endings; never assume them from another file. A pattern joined on the
+wrong terminator matches zero times and a shape guard reports success.
+`tr -cd '\r' | wc -c` against `tr -cd '\n' | wc -c` is the reliable
+check; `file` and `cat -A` have both misreported this repo at least
+once.
+
+**Guarded scripts over hand edits.** Any multi-file or exact-text edit
+goes through a validate-all-then-write script that aborts on a count
+mismatch rather than through find-and-replace in the editor. A partial
+write that leaves files disagreeing is worse than none, and can look
+like a completed edit.
+
+**Open infrastructure gap: `.gitattributes` is missing and
+`core.autocrlf` is true.** OBSERVED 2026-08-17: Git normalizes to LF in
+the object store and writes CRLF to the working tree, so a file's
+line-ending convention reflects how recently Git touched it rather than
+how it was authored -- `resolver.ts` was LF in the morning and CRLF by
+afternoon, converted by a stash cycle. The guarded-scripts rule above
+asserts uniformity and derives the newline from what it finds, which is
+correct regardless, but the underlying gap is real. Tracked as technical
+debt at `PRODUCT_BACKLOG.md` P4. `git add --renormalize .` would rewrite
+the entire repository and must not land anywhere near a write path --
+design the fix first, as its own isolated commit.
+
 ## `pnpm check` does not pass, and must not be "fixed"
 
 `pnpm check` fails today with two pre-existing `TS2339` errors in
@@ -151,7 +181,15 @@ become canonical through this file:
     Authorization rule      the practice is evidenced (SESSION_HANDOFF,
                             FUNCTION_SURFACE_AUDIT) but no general rule
                             was previously stated.
+    Editing technique       the line-endings-before-edit and
+                            guarded-scripts rules, and the .gitattributes
+                            open item. Rescued 2026-09-09 from
+                            SESSION_HANDOFF git history (OBSERVED
+                            2026-08-14 and 2026-08-17 respectively) during
+                            that file's wholesale replacement, per Brad's
+                            ruling that standing rules living only in a
+                            rolling handoff are functionally lost.
 
 Everything else cites a document that can be read: FOUNDATIONAL_PRINCIPLES.md,
 CONTACTS_OPPORTUNITIES_SPEC.md §4.0 and §4.1, PHASE_B_SPEC.md,
-JEFF_OUTPUT_RULES.md and .github/workflows/ci.yml.
+JEFF_OUTPUT_RULES.md, PRODUCT_BACKLOG.md and .github/workflows/ci.yml.

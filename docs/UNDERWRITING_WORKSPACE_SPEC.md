@@ -352,6 +352,42 @@ evidence to make a deal viable. Evidence changes on evidence.
 
 ## Open questions
 
+**`UnitsError` throws rather than resolving to unresolved.** A
+percentage arriving in human units, or a non-finite number, throws out
+of `computeUnderwriting` rather than returning `status: "unresolved"`.
+Deliberate: a malformed value is an adapter bug, not a missing input,
+and reporting it as missing would send the operator to populate a field
+that is already populated. Consequence: whatever renders the workspace
+must catch it, or one bad Custom Value takes the zone down instead of
+showing a missing-input state. Not yet built.
+
+**The economic lifecycle's listed order is imperfect, deliberately left
+uncorrected.** "The economic lifecycle" above claims five quantities in
+the order they come to exist and lists Assignment Spread first, but
+under profit-share mode the spread is computed from Required Buyer
+Profit, which the ordering does not name until later. Excluded from the
+2026-08-14 correction to that section to keep that diff reviewable;
+fixing the ordering is a separate judgment about this document's own
+logic.
+
+**Profit-share below the configured minimum is floored silently; Manual
+below the minimum warns.** PB-D56 specifies `max(share, minimum)` for
+profit-share, so a profit-share spread under the floor is lifted with no
+warning, while a Manual spread in the identical position emits
+`MANUAL_SPREAD_BELOW_STANDARD_MINIMUM`. Both behaviors are pinned by
+tests, so a future change to either breaks a check rather than passing
+unnoticed. Whether the asymmetry is intended is undecided.
+
+**The OFF representation of Purchase Financing Enabled is UNKNOWN.**
+OBSERVED: "On" is what the Custom Value holds when financing is
+enabled; what it holds when disabled has never been read. `parsePolicy`
+therefore resolves only "On" and treats every other token -- including
+"Off", "false", "0" and blank -- as unresolved, never as false.
+Consequence: `Financing.kind === "off"` has no production route today;
+the core's financing-off path is exercised only by hand-built test
+inputs. Add the observed token and its test when the GHL builder pass
+reads it; do not infer it.
+
 **The acquisition-strategy policy.** If a Proposed Opening Offer is ever
 built, its method and starter value are undecided, and it is acquisition
 strategy rather than underwriting policy -- it does not join PB-D56's
