@@ -275,18 +275,28 @@ capability verification requires either a change to the proxy's own
 allowlist (implementation, out of scope) or a direct, separately-
 authorized check outside IAOS's app code.
 
-**Documents & Contracts — external provider evidence, none obtained.**
-GHL's own public Stoplight-hosted API reference
-(`highlevel.stoplight.io/docs/integrations/`) and a specific help-center
-URL guessed for its Documents & Contracts article both failed to return
-retrievable content this session (the Stoplight page is a JavaScript
-single-page app that returned no server-rendered content to this
-session's fetch tool; the guessed help-center URL 404'd). **Classification:
-UNKNOWN** — GHL's own native e-signature capability, its template
-merge-field support, and its webhook/completion-signal shape remain
-unverified by this document, for a tooling reason (the fetch method
-available this session could not render the source), not because no
-attempt was made.
+**Documents & Contracts — official documentation, superseded finding.**
+An earlier pass this session guessed at GHL's own documentation URLs:
+the general Stoplight-hosted API reference
+(`highlevel.stoplight.io/docs/integrations/`) and a guessed help-center
+URL both failed to return retrievable content (the Stoplight page is a
+JavaScript single-page app that returned no server-rendered content to
+this session's fetch tool; the guessed help-center URL 404'd) — that
+attempt's negative result is preserved here as an honest record of what
+was tried and failed, **not** as this document's current position.
+**Superseded, this correction:** Brad supplied the correct official
+documentation URLs directly (item 8 below), which were fetched
+successfully and yielded substantial DOCUMENTED evidence for the
+feature's actual API and data model. Item 8's ten-point verification is
+the current, authoritative treatment of this capability; this paragraph
+and the allowlist finding above it remain accurate for what they
+specifically describe (the app's own proxy, and the earlier failed
+guesses), but should not be read as GHL's capability remaining wholly
+UNKNOWN. **Classification: superseded by item 8's ten-point
+verification** — this document's current position on GHL's native
+e-signature capability, template merge-field support, and completion-
+signal shape is DOCUMENTED for several dimensions and BLOCKED (not
+UNKNOWN, not UNSUPPORTED) for the remainder, per item 8's tags.
 
 ### 6. Existing Board #8 accepted-price/economics provenance and handoff
 
@@ -331,40 +341,330 @@ findings in this document.**
 
 ### 8. E-sign providers realistically usable for V1
 
-**No selection made. Findings only, each cited to what was actually
-fetched this session.** Evaluated: DocuSign, Dropbox Sign (formerly
-HelloSign), PandaDoc, Adobe Acrobat Sign, and GHL's own native capability.
+**GHL-first reframing, per Brad's direction (INV-57 Linear comment,
+2026-09-09, "Brad's GHL-first direction"). This supersedes the broad
+external-provider-comparison framing of the prior two passes.** HighLevel's
+own native "Documents & Contracts" feature is now the **preferred V1
+candidate**. External providers (DocuSign, PandaDoc, Adobe Acrobat Sign,
+Dropbox Sign) are retained below as **fallback-tier findings only** — kept
+for reference, not the comparison's center of gravity, and not resumed as
+a broad multi-provider grid by default. A fetch failure, a proxy 403, or
+this session's tooling limitation is **never** reported as evidence GHL
+lacks a capability; where GHL genuinely can't do something, that is
+stated precisely as UNSUPPORTED, distinct from BLOCKED (a real,
+named restriction prevented verification) and from a bare fetch failure.
+
+**Official sources fetched and cited directly, per Brad's provided
+list:**
+- `marketplace.gohighlevel.com/docs/ghl/proposals/send-documents-contracts-template/` — the Send Template API reference.
+- `marketplace.gohighlevel.com/docs/ghl/proposals/list-documents-contracts/` — the List Documents API reference.
+- `help.gohighlevel.com/support/solutions/articles/155000004039-documents-contracts-templates-with-opportunity-custom-values` — the Opportunity-merge help article.
+- `help.gohighlevel.com/support/solutions/articles/155000000594` — the general Documents & Contracts feature guide.
+
+#### Correction to log explicitly: provider/envelope metadata preservation
+
+An earlier Jess carrier recommendation (surfaced only in this session's
+working discussion, not committed to this document before now) suggested
+provider/envelope metadata could be left provider-owned. **Brad's
+correction: it must not be.** `docs/SELLER_CONTRACT_STATE_MACHINE_V1.md`'s
+Under Contract entry evidence already locks a requirement for the
+provider/envelope identifier, completion time, contract version, and
+integrity identifier to be preserved as part of "GHL as the sole system
+of record" (that document, "GHL as the sole system of record" section).
+**What this correction changes:** that requirement now points
+specifically at **GHL-native storage of this metadata** — e.g., as a GHL
+note, or as a field of GHL's own Documents & Contracts record itself
+(`documentId`, `documentRevision`, `updatedAt`, `isExpired`, per the List
+Documents response fields below) — **not** at the third-party e-sign
+provider's own separate servers as the authoritative copy, and **not**
+at a new IAOS-side carrier, which remains unauthorized by this document
+exactly as before. This is a genuine fit with GHL-native Documents &
+Contracts specifically: its own List Documents response already carries
+several of the required fields natively (see item 9 below), which a
+third-party provider integration would not automatically place inside
+GHL's own system of record without IAOS building an explicit copy step.
+
+#### Ten-point verification
+
+Each tagged **DOCUMENTED** (found in the official docs above),
+**ACCOUNT-VERIFIED** (checked against this Test account directly),
+**BLOCKED** (a specific, named restriction prevented verification), or
+**UNSUPPORTED** (GHL itself, per its own docs or a verified account
+check, does not offer this) — never blurred.
+
+**1. Account access, permissions, entitlements, and any additional cost
+for Documents & Contracts on this GHL plan/location.**
+**BLOCKED.** No GHL direct-login credential exists anywhere in this
+session's available memory (`grep -rli` across every memory file for
+login/password/username/web-UI references found only an unrelated deep-
+link URL pattern in `project_dashboard_build_status.md`, not a
+credential) — per this correction's own instruction, no login was
+attempted without confidence it is Test-scoped. None of the four fetched
+official docs states a plan tier, permission level, or cost either (each
+explicitly: send-template doc "contains no mention of plan requirements
+or specific permissions needed"; the general feature guide "does not
+address feature availability by plan tier... or cost information").
+BLOCKED, not UNSUPPORTED — this is an access limitation, not a documented
+or verified absence of the feature.
+
+**2. Template discovery and required signer roles as GHL's own feature
+models them.**
+**DOCUMENTED.** The general feature guide (155000000594) states Documents
+& Contracts "supports multiple recipients with configurable signing
+order (sequential or simultaneous)" and lets an operator assign "specific
+fields (e.g., signature, initials)" to each signer. The Opportunity
+custom-values article (155000004039) separately documents **multi-role
+templates**: "Assign at least one fillable element to Contact before
+using the template in a workflow. Role details entered in the workflow
+override the corresponding template defaults." Template *discovery*
+(browsing/listing available templates) itself is not covered by any of
+the four fetched pages — this narrower sub-point is **BLOCKED** (no
+account access to the template library), while signer-role modeling
+itself is DOCUMENTED.
+
+**3. Exact Opportunity binding — including whether two separate deals
+for the same contact are each bound to their own distinct document.**
+**DOCUMENTED, partially, with the gap named precisely.** The Send
+Template API (`POST /proposals/templates/send`) takes `contactId` as
+**required** and `opportunityId` as **optional, not required**. This is
+the API-level binding mechanism, documented directly from the endpoint's
+own parameter list — distinct from, and not to be conflated with, the
+Opportunity custom-values *workflow* action (item below), which is a
+separate mechanism. Because `opportunityId` is optional rather than
+required, nothing in the documented API itself *enforces* that two
+distinct deals for the same contact each produce a distinct, correctly-
+attributed document — that enforcement, if needed, would be IAOS's own
+responsibility to apply (always pass `opportunityId`) rather than a GHL
+guarantee. Whether the List Documents response actually echoes back an
+`opportunityId` field for a sent document (needed to filter/attribute
+documents per deal on read-back) was **not confirmed** in the fetched
+List Documents excerpt, which named `documentId`, `_id`, `locationId`,
+`status`, `paymentStatus`, `documentRevision`, `recipients`, `updatedAt`,
+`grandTotal`, `type`, `name`, `deleted`, `isExpired`, `locale` — no
+`opportunityId` or `contactId` among them. **BLOCKED** for confirming
+this specific read-back field without an account-level test (item 4 of
+the minimal proof plan below would resolve it directly).
+
+**4. Draft generation without sending — API support distinguished from
+workflow-only support.**
+**DOCUMENTED, partially, with the two mechanisms kept separate as
+directed.** The List Documents response's own `status` field includes
+`"draft"` as one of its documented values (alongside `"sent"`,
+`"viewed"`, `"completed"`, `"accepted"`) — confirming a draft *concept*
+exists natively in GHL's data model. The Send Template API's own
+documented request body includes a `sendDocument` boolean parameter,
+but "its specific behavior isn't detailed in this excerpt" — so whether
+`sendDocument: false` is the mechanism that produces a `"draft"`-status
+document without transmitting it is **not confirmed** from what was
+fetched; the endpoint's own description reads "Send template to a
+client," and the fetched excerpt states "no draft mode is documented" at
+the description level even though the `draft` status value and the
+`sendDocument` parameter both exist. **Kept explicitly separate, per this
+correction's own instruction:** the Opportunity custom-values article
+describes only the **workflow action** ("Send Documents & Contracts")
+merging Opportunity fields — "the feature operates exclusively through
+the ... workflow action" per that article — which is a different claim
+from the API's own `opportunityId` parameter above and does not, by
+itself, prove the API endpoint shares the same Opportunity-merge
+capability. **BLOCKED** for confirming `sendDocument`'s exact semantics
+without an account-level test call.
+
+**5. Review and authorization bound to the exact document version.**
+**BLOCKED — not addressed in any fetched document, and no account access
+to test it.** The Opportunity custom-values article's silence on what
+happens if underlying Opportunity data changes after generation is the
+closest available signal, and it is silence, not a stated guarantee —
+this document does not infer a "static snapshot" behavior from that
+silence as a documented fact. Per `docs/SELLER_CONTRACT_STATE_MACHINE_
+V1.md`'s own already-locked design, this is exactly the kind of
+guarantee IAOS's own verification logic (INV-58's job) should enforce
+regardless of what GHL does internally — this document does not treat a
+future GHL behavior as a substitute for that enforcement.
+
+**6. A confirmed transmission identifier and timestamp, and an explicit,
+settable expiration.**
+**DOCUMENTED, partially.** `documentId` (identifier) and `updatedAt`
+(timestamp) are both real, named fields in the List Documents response —
+though `updatedAt` is a generic last-modified timestamp, not explicitly
+labeled a "sent at" timestamp in the fetched excerpt. An `isExpired`
+boolean is also a documented **read** field, confirming expiration is
+tracked as a concept — but the Send Template API's own documented
+request body, per the same fetch, contains **no expiration/expiry
+parameter**: "No expiration or expiry parameters are mentioned in the
+documented request body." So expiration is DOCUMENTED as a tracked
+*read-side* concept, and **BLOCKED** (not UNSUPPORTED — the docs simply
+don't cover it in this excerpt) for whether it is settable at send time
+via this specific endpoint, versus configured elsewhere (a template
+default, an account setting) not visible in what was fetched.
+
+**7. Every required signer's own execution evidence, not just an
+aggregate flag.**
+**DOCUMENTED.** The List Documents response's `recipients` array carries
+a **per-recipient** `hasCompleted` boolean, `signingOrder`, `role`,
+`email`, and `contactName` — not a single aggregate flag. The general
+feature guide corroborates this independently: a document stays in
+"Waiting for others" status until "every required signer finishes," and
+e-signature certificates record "signer details, IP address, and
+timestamps" per signer.
+
+**8. GHL's own provider-side completion signal distinguishable from a
+human manually clicking "Mark as Completed."**
+**BLOCKED for a direct guarantee; DOCUMENTED for corroborating design
+intent.** No fetched page states outright that "Completed" status cannot
+be manually set by an operator independent of actual signer completion.
+The general feature guide's own framing — a document remains "Waiting
+for others" until every required signer finishes, with completion status
+appearing to be a consequence of per-signer `hasCompleted` flags rather
+than a described manual toggle — is corroborating design intent, not a
+verified guarantee. Per B9-01's own locked requirement ("the provider
+reports completion" as one of three jointly-required facts, never a
+human "mark as complete" substitute), this document does not accept
+design-intent inference as proof; **BLOCKED**, pending either further
+official documentation stating this explicitly or an account-level test.
+
+**9. Durable executed-document/audit preservation, or a verified
+GHL-native authoritative reference, carrying an identifier, completion
+time, contract version, and integrity identifier.**
+**DOCUMENTED, partially.** Identifier: `documentId` / `_id` (List
+Documents). Completion time: `updatedAt` (generic, not completion-
+specific — see item 6's same caveat). Contract version: `documentRevision`
+is a real, named field. Integrity identifier: the general feature guide
+documents "e-signature certificates with audit trails recording signer
+details, IP address, and timestamps" — a real audit-trail mechanism
+exists, but no fetched page names a specific hash/checksum-shaped
+"integrity identifier" field distinct from the certificate concept
+itself. **DOCUMENTED** for three of the four required fields
+(identifier, version, an audit-trail mechanism); **BLOCKED** for
+confirming whether that audit trail exposes a discrete integrity
+identifier in the shape B9-01 requires, versus needing IAOS to derive
+one (e.g., hashing the retrieved document) itself.
+
+**10. Fail-closed behavior: partial signatures, missing preservation,
+duplicate events, and a stale/superseded version cannot create Under
+Contract, even in principle.**
+**BLOCKED for what GHL itself guarantees internally — and, per B9-01's
+own already-locked architecture, this is not solely GHL's guarantee to
+make.** No fetched page addresses GHL's own internal fail-closed
+behavior. `docs/SELLER_CONTRACT_STATE_MACHINE_V1.md`'s own design already
+places this requirement on **IAOS's own read/verification logic**
+(Under Contract's "Failure behavior": "Any of the three facts missing,
+ambiguous, or unconfirmed must never read as Under Contract — fail
+closed... exactly as this codebase already does everywhere a durable
+state gates downstream authority") — not on trusting any provider,
+GHL included, to enforce it unassisted. This document states plainly:
+unverified whether GHL enforces this internally, and unnecessary to
+verify for B9-01's own guarantee to hold, since that guarantee is
+IAOS-side by design regardless of provider.
+
+#### Recommended integration split — Jess's recommendation, NOT YET ACCOUNT-PROVEN
+
+Recorded here as a recommendation under active consideration, explicitly
+**not settled, not decided, and not proven against this or any real GHL
+account** — none of the ten items above reaches ACCOUNT-VERIFIED, and
+this split is not implemented by this document:
+
+- **IAOS handles:** readiness, agreement/version identity, Brad's
+  explicit authorization, signing-progress tracking, execution
+  verification.
+- **GHL handles:** templates, document rendering, signing, native
+  document management.
+- **Prefer opening the exact GHL draft/document for human review via a
+  verified link** over IAOS building its own editor.
+- **Avoid duplicate entry and competing sources of deal data** — GHL
+  should be the one place data lives; IAOS reads and verifies, it does
+  not re-enter or shadow-copy (consistent with FOUNDATIONAL_PRINCIPLES
+  principle 15, already cited throughout this document).
+
+This recommendation does not authorize any implementation, and INV-58
+should treat it as a starting hypothesis to validate against the
+BLOCKED items above, not as a locked design.
+
+#### Minimal Test-setup/proof plan — a PROPOSAL only, not executed this round
+
+If genuinely resolving the BLOCKED items above requires creating
+something in Test GHL, this is the smallest plan that would do it —
+**proposed for separate approval, no part executed this round:**
+
+- **Exact Test location:** `SoTgVoaFGHtBdRFvXWQV` (already the location
+  used throughout this document's live GHL calls).
+- **Template:** prefer a GHL built-in sample/demo template if this Test
+  account has one — **unknown without account access whether it does.**
+  Creating a new template may itself be a write this round does not
+  authorize; if no sample template exists, that determination (and any
+  template creation) requires separate authorization, not assumed here.
+- **Synthetic contact/opportunity:** reuse the already-existing "IAOS
+  Underwriting Test" contact/opportunity already present in Test
+  (contact `NAGtUZ9aOE5C1GatJzpT`, already used throughout this session's
+  prior live proofs) rather than creating new records, to minimize new
+  writes.
+- **Controlled test recipient:** a throwaway or Brad-controlled email
+  address, **never a real seller's contact information.**
+- **Permissions needed:** whatever GHL plan/scope gates Documents &
+  Contracts for this location — unverified (item 1 above), so unknown
+  until Brad's own account access confirms it.
+- **Exact writes this would require:** (1) confirming/enabling Documents
+  & Contracts access if not already available (plan/billing-level,
+  Brad-only); (2) selecting or creating a template (creating is a write
+  requiring separate authorization, per above); (3) one `POST /proposals/
+  templates/send` call, with `contactId` and `opportunityId` both passed
+  explicitly (to test item 3's binding directly) and `sendDocument`
+  toggled both `false` then `true` in two separate controlled attempts
+  (to resolve item 4's draft-vs-send semantics), targeting the controlled
+  test recipient only; (4) one `GET /proposals/document` call to read
+  back the resulting record and inspect its actual field set against
+  items 3, 6, 7, and 9 above; (5) for full end-to-end proof of items 7,
+  8, and 10, the controlled test recipient actually completing the
+  signature (a real action within Brad's or Jeff's own control, since
+  the recipient is controlled) to observe `hasCompleted`, `status`, and
+  `updatedAt` transition live.
+- **You-vs-Brad split:** **Brad-only** — verifying/granting Documents &
+  Contracts plan access, any billing implication, and his own GHL web
+  login for any account-level UI check (Settings, template library).
+  **Executable once separately authorized** — the API calls in steps
+  (3)-(5) above, once a template exists and access is confirmed.
+- **The precise, current blocking dependency for the API-level steps,
+  independent of Brad's own account access:** `app/netlify/functions/
+  ghl-proxy.ts`'s GET/POST allowlist (lines 59-77, already cited in item
+  5) has **zero entries** for any `/proposals/...` path. Extending that
+  allowlist is an implementation change this round's HARD NO forbids —
+  so even a fully authorized, permission-confirmed test cannot run
+  through IAOS's own sanctioned proxy today. Running it would require
+  either a separately authorized allowlist change (implementation,
+  future issue) or a separately authorized one-off script using the Test
+  token directly outside the app's sanctioned path (which AGENTS.md's
+  secrets/configuration boundary treats as requiring its own explicit
+  authorization, not a "read-only Test check" this document performs on
+  its own initiative).
+
+#### Fallback-tier findings — external providers, kept for reference only
+
+**Not the comparison's center of gravity. Retained, not removed, exactly
+as directed.** These are the real, cited findings already established in
+prior passes, unchanged, presented now explicitly as fallback evidence
+should GHL-native prove insufficient on a specific, *proven* (not merely
+unreached) capability:
 
 | Provider | Templates | API/integration | Signer experience | Completion signal | Executed-document retrieval | Correction/void | Cost | GHL compatibility |
 |---|---|---|---|---|---|---|---|---|
-| **DocuSign** | OBSERVED referenced ("Request Signatures & Automate Forms") but the fetched overview page carried only a title, no body detail this session | UNKNOWN in detail this session — the Connect/webhooks doc page and the envelope-void reference page both returned HTTP 404 on retry this session | UNKNOWN — not reached this session | UNKNOWN — both retry attempts (Connect/webhooks concepts page, envelope-void reference page) returned HTTP 404 this session, not merely title-only | UNKNOWN — not reached this session | UNKNOWN — the envelope-void reference URL fetched this session returned HTTP 404; whether/how void applies to completed vs. in-progress envelopes remains unretrieved | **OBSERVED** (`ecom.docusign.com/plans-and-pricing/esignature`, fetched this session): Personal $11/mo, Standard $30/user/mo, Business Pro $45/user/mo, Enhanced = custom pricing; the page states API access ("Industry-leading APIs") and a developer account are included on every tier, Personal through Enhanced | UNKNOWN — GHL's own marketplace listing page for DocuSign returned only a page-title shell to this session's fetch tool (see GHL row below); not retrieved |
+| **DocuSign** | OBSERVED referenced ("Request Signatures & Automate Forms") but the fetched overview page carried only a title, no body detail this session | UNKNOWN in detail this session — the Connect/webhooks doc page and the envelope-void reference page both returned HTTP 404 on retry this session | UNKNOWN — not reached this session | UNKNOWN — both retry attempts (Connect/webhooks concepts page, envelope-void reference page) returned HTTP 404 this session, not merely title-only | UNKNOWN — not reached this session | UNKNOWN — the envelope-void reference URL fetched this session returned HTTP 404; whether/how void applies to completed vs. in-progress envelopes remains unretrieved | **OBSERVED** (`ecom.docusign.com/plans-and-pricing/esignature`, fetched this session): Personal $11/mo, Standard $30/user/mo, Business Pro $45/user/mo, Enhanced = custom pricing; the page states API access ("Industry-leading APIs") and a developer account are included on every tier, Personal through Enhanced | UNKNOWN — not retrieved this session |
 | **Dropbox Sign (HelloSign)** | OBSERVED (`developers.hellosign.com/docs/overview`, fetched): "use templates created on Dropbox Sign website" on the Essentials plan, with "premium template endpoints" referenced for higher tiers — no further detail retrieved | OBSERVED partially: file-retrieval endpoints named (`signature_request/files`, `signature_request/files_as_data_uri`, `signature_request/files_as_file_url`) at different subscription levels, but their exact behavior was not in the fetched content | UNKNOWN — not addressed in fetched content | UNKNOWN — the fetched overview page did not discuss webhook event types; a follow-up fetch of the cancellation-endpoint reference page also did not surface event-type documentation | **OBSERVED, partial**: the three file-retrieval endpoint names above exist, per the same overview page; their response shape was not retrieved | **OBSERVED** (`developers.hellosign.com/api/reference/.../signatureRequestCancel`, fetched): a `/signature_request/cancel/{signature_request_id}` endpoint exists; the docs state it "cancels an incomplete signature request. This action is not reversible," and explicitly only works on **incomplete** requests — a completed request cannot be canceled through this endpoint | UNKNOWN — pricing page not reached this session | UNKNOWN — not retrieved this session |
 | **PandaDoc** | OBSERVED (`developers.pandadoc.com/reference/about`, fetched): "Create from template" is listed as a core getting-started capability | OBSERVED, minimal: a guide titled "Listening for changes in document status" is referenced, plus a full webhook event list obtained separately below | UNKNOWN — not addressed in fetched content | **OBSERVED** (`developers.pandadoc.com/reference/webhooks-overview`, fetched this session): the full event list includes `document_state_changed`, `document_completed_pdf_ready` (explicitly "when document completes and PDF is ready"), `recipient_completed`, `document_updated`, `document_creation_failed`, `document_deleted`, `document_section_added`, `quote_updated`, `template_created`, `template_updated`, `template_deleted`. Payloads are de-duplicated via an `X-PandaDoc-Webhook-Event-Id` header, per the page; the exact payload body schema was not retrieved (the page points to a separate full guide at `developers.pandadoc.com/docs/webhooks` for that, not fetched this session) | UNKNOWN — not addressed in fetched content | UNKNOWN — not addressed in fetched content | Attempted **four times** this session across three URLs (`pandadoc.com/pricing/`, `pandadoc.com/pricing`, `support.pandadoc.com/.../pandadoc-pricing-plans`); the first two returned HTTP 429 (rate-limited) and the third returned HTTP 404 — **not obtained**, a persistent tooling/rate-limit issue this session, not evidence of absence | UNKNOWN — not retrieved this session |
 | **Adobe Acrobat Sign** | UNKNOWN — the specific overview URL fetched returned HTTP 404 this session | UNKNOWN, same reason | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN — not reached | UNKNOWN — not retrieved this session |
-| **GHL native (Documents & Contracts)** | UNKNOWN — see item 5; both the Stoplight API reference and a guessed help-center article failed to return retrievable content this session (SPA with no server-rendered body; 404 respectively) | UNKNOWN, same reason, compounded by IAOS's own proxy allowlist not permitting any documents-shaped path today (item 5) | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | N/A — this row is itself the "native" GHL capability, not a third-party integration into GHL |
-| **GHL-compatibility, other providers** | — | — | — | — | — | — | — | **OBSERVED, negative on this session's tooling, not on the marketplace itself**: `marketplace.gohighlevel.com/` and two more specific guessed URLs (`/marketplace-app/docusign`, `/?category=e-signature`) were each fetched three separate times this session; every attempt returned only the page-title shell ("App Marketplace \| CRM Apps & Integrations") with no listing content — a client-rendered single-page app this session's fetch tool cannot execute JavaScript for. Whether GHL has a documented native integration for DocuSign, PandaDoc, or Dropbox Sign, versus requiring IAOS's own webhook receiver for any of them, is **UNKNOWN**, consistently, across every provider row above, for this specific tooling reason |
 
-**Honest summary of this section: real, cited findings exist for three
-providers on select dimensions (DocuSign's pricing/API-inclusion;
-Dropbox Sign's template existence, partial file-retrieval, and
-cancel-when-incomplete behavior; PandaDoc's actual webhook event list,
-including its completion event) — most remaining cells, and the entire
-new GHL-compatibility dimension, are genuinely UNKNOWN this session, not
-filled in with general knowledge.** The tool available this session (a
-fetch-and-summarize pass over rendered HTML) repeatedly failed to surface
-documentation-page bodies (title-only pages, 404s — including on retry
-for DocuSign's Connect/webhooks and void-envelope pages specifically — a
-JS single-page app for GHL's marketplace across three separate attempts,
-and persistent rate-limiting for PandaDoc's pricing across four attempts
-on three different URLs). This is a tooling limitation of this session,
-not evidence that the underlying capabilities don't exist.
-**Classification: EXTERNAL/OPERATIONAL GAP** for completing this
-comparison — a future pass with a JavaScript-capable fetch method,
-direct account creation/sandbox access with each provider, or asking
-each provider's support channel directly would be needed to fill the
-UNKNOWNs above. No provider is recommended or ranked; this issue's HARD
-NO on provider selection by developer preference is honored by the fact
-that no dimension favors one provider over another with confidence.
+**GHL-marketplace compatibility with these providers remains UNKNOWN,
+for a stated tooling reason, not a documented absence:**
+`marketplace.gohighlevel.com/` and two more specific guessed URLs were
+each fetched three separate times this session; every attempt returned
+only the page-title shell ("App Marketplace \| CRM Apps & Integrations")
+with no listing content — a client-rendered single-page app this
+session's fetch tool cannot execute JavaScript for. This is explicitly
+**not** reported as GHL lacking third-party integrations — it is
+UNKNOWN, tooling-blocked, exactly as directed.
+
+**No provider is recommended, ranked, or selected.** This issue's HARD NO
+on provider selection by developer preference is honored: GHL-native is
+named *preferred* per Brad's own direction, not selected by developer
+preference, and the fallback tier above remains unranked among itself.
 
 ### 9. Actual first-market title/closing handoff expectations
 
@@ -401,10 +701,10 @@ provider on every deal, not hardcode or default to one.
 | 2 | Template fields / signer roles | REAL LOGIC GAP (mapping exercise with no template yet to map against — no product/legal decision blocks it directly) |
 | 3 | Brad's current contracting workflow | Settled fact: none exists yet (Brad's ruling, 2026-09-09). EXTERNAL/OPERATIONAL GAP |
 | 4 | Disclosures vs. title/closing verification | REUSE (already locked, no gap) |
-| 5 | GHL stages/fields/documents/notes/workflows/API | Mixed: REUSE (stages/fields as read targets, occupancy), REAL CARRIER GAP (lien amount unused, no contract-state stage), EXTERNAL/OPERATIONAL GAP (workflows and documents-capability unreachable via sanctioned proxy), UNKNOWN (opportunity-model field catalog; GHL native e-sign capability) |
+| 5 | GHL stages/fields/documents/notes/workflows/API | Mixed: REUSE (stages/fields as read targets, occupancy), REAL CARRIER GAP (lien amount unused, no contract-state stage), EXTERNAL/OPERATIONAL GAP (workflows and IAOS-proxy documents-path unreachable via sanctioned proxy), UNKNOWN (opportunity-model field catalog). GHL native e-sign capability itself is superseded by item 8's DOCUMENTED/BLOCKED findings, no longer wholly UNKNOWN |
 | 6 | Board #8 economics provenance/handoff | REUSE (fully covered, no gap) |
 | 7 | Property/ARV/repairs/access/photo/closing-date/earnest-money/possession/contingency/owner/signer-delivery data | Mixed: REUSE (property, ARV, repairs, transaction-assumptions prose, occupancy), RENAME/PRESENTATION-ONLY (confirmation-act framing), REAL CARRIER GAP (access, photo/document, closing date, earnest money, contingencies, owner signing-authority, signer delivery — the majority of this row) |
-| 8 | E-sign providers | EXTERNAL/OPERATIONAL GAP (comparison incomplete — tooling limitation this session, now including a GHL-compatibility dimension), no provider selected |
+| 8 | E-sign providers, GHL-first | GHL-native Documents & Contracts is the preferred V1 candidate per Brad's direction (not yet ACCOUNT-VERIFIED). Ten-point verification: DOCUMENTED (2, 3 partial, 4 partial, 6 partial, 7, 9 partial), BLOCKED (1, 3's read-back sub-point, 4's `sendDocument` semantics, 5, 6's settability sub-point, 8, 9's integrity-identifier sub-point, 10). Zero items UNSUPPORTED. External providers retained as unranked fallback-tier findings only; no provider selected |
 | 9 | First-market title/closing handoff expectations | Settled fact: no fixed provider required, may vary by deal (Brad's ruling, 2026-09-09). EXTERNAL/OPERATIONAL GAP |
 
 ---
@@ -445,16 +745,34 @@ provider on every deal, not hardcode or default to one.
 - **Workflow inventory for the Test location** is unreachable through
   IAOS's sanctioned proxy (no allowlist entry); Production's own
   inventory is out of scope this round.
-- **GHL's Documents & Contracts capability** (existence, template
-  merge-field support, plan-tier gating) is unverified both because
-  IAOS's proxy blocks any candidate path and because this session's fetch
-  tooling could not render GHL's own public documentation.
-- **The e-sign provider comparison** (item 8) is incomplete — several
-  cells, and the entire GHL-compatibility dimension, are UNKNOWN due to
-  fetch failures (title-only pages, 404s on retry, a client-rendered SPA
-  across three separate attempts, and persistent rate-limiting on
-  PandaDoc's pricing across four attempts), not due to absence of public
-  documentation.
+- **GHL Documents & Contracts account-level verification (item 8,
+  points 1, 3's read-back sub-point, 4's `sendDocument` semantics, 5, 6's
+  settability sub-point, 8, 9's integrity-identifier sub-point, and 10)
+  is BLOCKED, precisely, not UNKNOWN and not UNSUPPORTED:** no GHL
+  direct-login credential exists anywhere in this session's memory
+  (confirmed by an explicit grep across every memory file), so no
+  account-level UI check was attempted; and `app/netlify/functions/
+  ghl-proxy.ts`'s allowlist has zero entries for any `/proposals/...`
+  path, so even a fully permission-confirmed API-level test cannot run
+  through IAOS's own sanctioned proxy without a separately authorized
+  allowlist change (implementation, out of scope this round). GHL's own
+  official documentation itself, by contrast, **was** successfully
+  fetched this round (item 8) and yielded substantial DOCUMENTED
+  findings — the capability is not "unverified because unreachable
+  documentation," as an earlier pass reported; it is specifically
+  account-access and proxy-allowlist BLOCKED for the items documentation
+  alone cannot settle.
+- **The e-sign provider comparison is now fallback-tier only** (item 8) —
+  GHL-native is the preferred subject per Brad's direction. The fallback
+  grid's remaining UNKNOWN cells (several DocuSign dimensions, most
+  Adobe Acrobat Sign dimensions, PandaDoc's cost) are due to fetch
+  failures (title-only pages, 404s on retry, persistent rate-limiting on
+  PandaDoc's pricing across four attempts on three URLs), not due to
+  absence of public documentation. GHL-marketplace compatibility with
+  these fallback providers remains UNKNOWN for a distinct, stated tooling
+  reason (a client-rendered SPA this session's fetch tool cannot execute
+  JavaScript for, confirmed across three separate attempts) — never
+  reported as GHL lacking such integrations.
 - **Opportunity-model custom field catalog** cannot be enumerated the way
   the contact-model catalog was — only currently-populated fields are
   visible via a live Opportunity read.
@@ -518,7 +836,14 @@ edited, or activated** — the Test location's workflow list was not even
 retrievable, let alone touched. **No new GHL field, carrier, or
 Production record created.** **No e-sign provider selected** — Part A
 item 8 presents findings only, several explicitly incomplete, with no
-ranking or recommendation. **INV-58 (B9-03) is not begun**; this document
-is its prerequisite input only. **No PR opened, no push performed** —
-this commit sits on the local branch pending Jess Gate and Brad's
-explicit authorization to proceed.
+ranking or recommendation; GHL-native is named *preferred* per Brad's own
+direction, not selected by developer preference. **No GHL account login
+was attempted** — memory was checked for credentials and none exist for
+a Test-scoped web login, so account-level items are reported BLOCKED
+rather than guessed. **No test template, contact, opportunity, or
+send/recipient action was created or executed** — item 8's minimal
+Test-setup/proof plan is a proposal only, awaiting separate approval.
+**INV-58 (B9-03) is not begun**; this document is its prerequisite input
+only. **No PR opened, no push performed** — this commit sits on the
+local branch pending Jess Gate and Brad's explicit authorization to
+proceed.
