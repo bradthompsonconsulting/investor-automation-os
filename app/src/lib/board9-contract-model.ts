@@ -172,8 +172,14 @@ export type TransitionReasonCode =
   | "CHECKLIST_ITEM_INCOMPLETE"
   | "NOT_CONTRACT_READY"
   | "SEND_NOT_AUTHORIZED"
+  | "AUTHORIZATION_TIMESTAMP_INVALID"
+  | "AUTHORIZATION_NOT_BOUND_TO_EXACT_VERSION"
+  | "PROVIDER_DOCUMENT_REVISION_MISMATCH"
   | "TRANSMISSION_NOT_CONFIRMED"
+  | "TRANSMISSION_IDENTIFIER_BLANK"
+  | "TRANSMISSION_TIMESTAMP_INVALID"
   | "EXPIRATION_NOT_SET"
+  | "EXPIRATION_TIMESTAMP_INVALID"
   | "NOT_CONTRACT_SENT"
   | "NO_SIGNER_REQUIREMENTS"
   | "DUPLICATE_SIGNER_ROLE"
@@ -183,9 +189,23 @@ export type TransitionReasonCode =
   | "EXECUTED_TERMS_REQUIRE_NEW_AGREEMENT"
   | "RESCISSION_NOT_BRAD_AUTHORIZED"
   | "RESCISSION_REASON_REQUIRED"
-  | "RESCISSION_TIMESTAMP_INVALID";
+  | "RESCISSION_TIMESTAMP_INVALID"
+  | "EXPIRED_NOW_TIMESTAMP_INVALID"
+  | "EXPIRED_REQUIRES_NO_VERIFIED_EXECUTION"
+  | "EXPIRATION_HAS_NOT_OCCURRED"
+  | "DECLINED_TIMESTAMP_INVALID"
+  | "DECLINED_NOT_OPERATOR_RECORDED";
 
 export type TransitionReason = { code: TransitionReasonCode; message: string };
+
+/**
+ * Shared by Contract Sent authorization/transmission/expiration validation
+ * and by the terminal-handoff builders below -- one canonical "is this a
+ * real instant" check, never reimplemented per call site.
+ */
+function isValidIsoInstant(at: string): boolean {
+  return Number.isFinite(new Date(at).getTime());
+}
 
 /* ==================================================================== */
 /* 2. Immutable inherited Board #8 accepted economics + provenance      */
@@ -433,8 +453,46 @@ export function evaluateContractReady(
 
 export type ContractSentEvidence = {
   contractReady: boolean;
-  /** Fact 1 of Contract Sent's three locked, jointly-required facts. */
-  bradSendAuthorization: { authorizedBy: string; at: string } | null;
+  /**
+   * Fact 1 of Contract Sent's three locked, jointly-required facts.
+   * `authorizedVersion` is IAOS's own `ContractVersionIdentity` (section 6
+   * below) Brad actually reviewed and authorized -- REQUIRED, never
+   * optional, because `SELLER_CONTRACT_STATE_MACHINE_V1.md` item 5's own
+   * words ("Review and authorization bound to the exact document version")
+   * name exact-version binding as part of what authorization IS, not a
+   * separate add-on check.
+   *
+   * Jess Gate correction, this issue: the PRIMARY, mandatory binding is to
+   * IAOS's own version identity (`agreementAt` + `versionSeq`, the two
+   * fields that together uniquely name an exact version), not to a
+   * provider-supplied `documentRevision`. `BOARD9_CONTRACT_INVENTORY_V1.md`
+   * item 9 established that a distinct provider document-revision value is
+   * currently BLOCKED for GHL's native Documents & Contracts -- requiring
+   * it unconditionally would make the verified V1 path incapable of ever
+   * reaching Contract Sent. `authorizedDocumentRevision` is preserved and
+   * compared when available (see `providerDocumentRevisionsConflict`
+   * below), but stays optional and non-blocking on its own.
+   */
+  bradSendAuthorization: {
+    authorizedBy: string;
+    at: string;
+    authorizedVersion: ContractVersionIdentity | null;
+    authorizedDocumentRevision: string | null;
+  } | null;
+  /**
+   * The exact current IAOS contract version at the moment eligibility is
+   * evaluated -- compared unconditionally against `bradSendAuthorization.
+   * authorizedVersion` inside this function itself. Not exposed as a
+   * separate function a caller could choose to skip.
+   */
+  currentVersion: ContractVersionIdentity;
+  /**
+   * The document revision GHL (or whichever provider is eventually
+   * selected) reports as CURRENT, when available. Compared against
+   * `authorizedDocumentRevision` ONLY when both are present -- absence on
+   * either side is never treated as a mismatch, per the correction above.
+   */
+  currentDocumentRevision: string | null;
   /** Fact 2. Provider-agnostic: identifier/timestamp shape only, no provider named. */
   providerTransmission: { identifier: string; at: string } | null;
   /** Fact 3. */
@@ -442,12 +500,48 @@ export type ContractSentEvidence = {
 };
 
 /**
+ * Exact-version equality across every identity component
+ * `ContractVersionIdentity` carries -- `agreementAt` and `versionSeq`
+ * alone already uniquely name a version (per section 6's own doc comment:
+ * `versionSeq` is monotonic and unique WITHIN one `agreementAt` lineage,
+ * and `agreementAt` uniquely names the lineage), but `supersedesVersionSeq`
+ * and `replacesAgreementAt` are compared too as a defense-in-depth
+ * consistency check: if either differs while `agreementAt`/`versionSeq`
+ * happen to match, the two version records disagree about their own
+ * provenance and cannot be treated as the same authorized version.
+ */
+function isSameContractVersion(a: ContractVersionIdentity, b: ContractVersionIdentity): boolean {
+  return (
+    a.agreementAt === b.agreementAt &&
+    a.versionSeq === b.versionSeq &&
+    a.supersedesVersionSeq === b.supersedesVersionSeq &&
+    a.replacesAgreementAt === b.replacesAgreementAt
+  );
+}
+
+/**
+ * The SECONDARY, optional provider-revision check: a conflict is reported
+ * ONLY when BOTH sides carry a real value and they differ. Absence on
+ * either side is never a conflict -- this is what keeps `documentRevision`
+ * non-blocking for a provider (GHL, today) that does not expose it, per
+ * this correction's own instruction. Never conflated with
+ * `isSameContractVersion` above, which is the mandatory, IAOS-side gate.
+ */
+function providerDocumentRevisionsConflict(authorized: string | null, current: string | null): boolean {
+  return authorized !== null && current !== null && authorized !== current;
+}
+
+/**
  * `SELLER_CONTRACT_STATE_MACHINE_V1.md`, Contract Sent "Failure behavior":
  * "If authorization is recorded but no provider transmission identifier/
  * timestamp is obtained, the state must read as 'send authorized, not yet
  * confirmed sent' -- never silently promoted to Contract Sent." All three
  * facts are independently checked and independently reported; none
- * substitutes for another.
+ * substitutes for another. Every sub-fact (authorization timestamp, exact-
+ * IAOS-version binding, transmission identifier/timestamp, expiration
+ * timestamp) is validated for real, well-formed content -- a present but
+ * blank or unparseable value is treated exactly as a missing one, never as
+ * "present, so it counts."
  */
 export function evaluateContractSentEligibility(
   evidence: ContractSentEvidence,
@@ -456,24 +550,74 @@ export function evaluateContractSentEligibility(
   if (!evidence.contractReady) {
     reasons.push({ code: "NOT_CONTRACT_READY", message: "Contract Ready has not been reached." });
   }
+
   if (evidence.bradSendAuthorization === null || evidence.bradSendAuthorization.authorizedBy !== "brad") {
     reasons.push({
       code: "SEND_NOT_AUTHORIZED",
       message: "Brad has not explicitly authorized sending this agreement.",
     });
+  } else {
+    if (!isValidIsoInstant(evidence.bradSendAuthorization.at)) {
+      reasons.push({
+        code: "AUTHORIZATION_TIMESTAMP_INVALID",
+        message: "Brad's send authorization does not carry a valid timestamp.",
+      });
+    }
+    if (
+      evidence.bradSendAuthorization.authorizedVersion === null ||
+      !isSameContractVersion(evidence.bradSendAuthorization.authorizedVersion, evidence.currentVersion)
+    ) {
+      reasons.push({
+        code: "AUTHORIZATION_NOT_BOUND_TO_EXACT_VERSION",
+        message:
+          "Brad's send authorization is not bound to the exact current IAOS contract version (agreementAt/versionSeq) -- authorization does not carry forward across a version change.",
+      });
+    } else if (
+      providerDocumentRevisionsConflict(
+        evidence.bradSendAuthorization.authorizedDocumentRevision,
+        evidence.currentDocumentRevision,
+      )
+    ) {
+      reasons.push({
+        code: "PROVIDER_DOCUMENT_REVISION_MISMATCH",
+        message:
+          "The provider-reported document revision has changed since Brad's authorization, even though the underlying IAOS contract version still matches -- this must be re-authorized before Contract Sent.",
+      });
+    }
   }
+
   if (evidence.providerTransmission === null) {
     reasons.push({
       code: "TRANSMISSION_NOT_CONFIRMED",
       message: "No confirmed provider transmission identifier and timestamp exists -- authorization alone is not Contract Sent.",
     });
+  } else {
+    if (evidence.providerTransmission.identifier.trim() === "") {
+      reasons.push({
+        code: "TRANSMISSION_IDENTIFIER_BLANK",
+        message: "The provider transmission identifier is blank.",
+      });
+    }
+    if (!isValidIsoInstant(evidence.providerTransmission.at)) {
+      reasons.push({
+        code: "TRANSMISSION_TIMESTAMP_INVALID",
+        message: "The provider transmission timestamp is not a valid instant.",
+      });
+    }
   }
+
   if (evidence.expiration === null) {
     reasons.push({
       code: "EXPIRATION_NOT_SET",
       message: "No explicit expiration date/time has been established.",
     });
+  } else if (!isValidIsoInstant(evidence.expiration.at)) {
+    reasons.push({
+      code: "EXPIRATION_TIMESTAMP_INVALID",
+      message: "The established expiration timestamp is not a valid instant.",
+    });
   }
+
   return { eligible: reasons.length === 0, reasons };
 }
 
@@ -733,10 +877,6 @@ export function evaluateUnderContractEligibility(
 /** "Rescission is Brad-only authority in V1" (`SELLER_CONTRACT_STATE_MACHINE_V1.md`, resolved decision 3) -- enforced as a runtime literal check, never assumed from context, exactly as this codebase never fabricates an operator identity. */
 export type RescissionRecord = { authorizedBy: string; at: string; reason: string };
 
-function isValidIsoInstant(at: string): boolean {
-  return Number.isFinite(new Date(at).getTime());
-}
-
 /**
  * The stable payload a downstream consumer (closing/title handoff, a
  * future disposition surface) reads once a terminal outcome is reached.
@@ -755,7 +895,7 @@ export type DispositionHandoffPayload = {
   | { terminalState: "under_contract"; execution: ExecutionEvidence }
   | { terminalState: "rescinded"; rescission: RescissionRecord }
   | { terminalState: "expired"; expirationAt: string }
-  | { terminalState: "declined"; declinedAt: string }
+  | { terminalState: "declined"; declinedAt: string; recordedBy: string }
 );
 
 export type BuildHandoffArgs =
@@ -778,14 +918,36 @@ export type BuildHandoffArgs =
       opportunityId: string;
       agreementAt: string;
       version: ContractVersionIdentity;
+      /** Expired's own "Meaning" is "A CONTRACT SENT agreement's established expiration..." -- there is no expiration for an agreement never sent. */
+      contractSent: boolean;
       expirationAt: string;
+      /** The reference instant to evaluate expiration against -- passed explicitly rather than read from the system clock, so this stays a pure, deterministic function. */
+      now: string;
+      /** A verified-executed agreement can never expire, regardless of the clock -- required explicitly so this fact is never left to the caller's discretion. */
+      verifiedExecuted: boolean;
     }
   | {
       terminalState: "declined";
       opportunityId: string;
       agreementAt: string;
       version: ContractVersionIdentity;
+      /** Declined's own "Meaning" is "the seller explicitly declines to execute the SENT agreement" -- there is nothing to decline before Contract Sent. */
+      contractSent: boolean;
       declinedAt: string;
+      /**
+       * `SELLER_CONTRACT_STATE_MACHINE_V1.md`, Declined "Entry evidence":
+       * "An explicit, operator-recorded fact that the seller declined --
+       * never inferred from silence or elapsed time." That document names
+       * the qualitative requirement (explicit, operator-recorded) but,
+       * unlike Rescinded (which locks an exact field list: timestamp,
+       * reason, operator) or Contract Sent/Under Contract (numbered
+       * facts), does not enumerate a Declined field schema or restrict
+       * who may record it. `recordedBy` is the minimal, direct
+       * implementation of the word "operator-recorded" itself -- it does
+       * NOT invent a reason-text requirement or an authority restriction
+       * B9-01 never states for this state.
+       */
+      recordedBy: string;
     };
 
 /**
@@ -843,6 +1005,38 @@ export function buildDispositionHandoffPayload(
   }
 
   if (args.terminalState === "expired") {
+    const reasons: TransitionReason[] = [];
+    if (!args.contractSent) {
+      reasons.push({
+        code: "NOT_CONTRACT_SENT",
+        message: "Expired requires the agreement to have reached Contract Sent -- there is no expiration for an agreement that was never sent.",
+      });
+    }
+    const expirationValid = isValidIsoInstant(args.expirationAt);
+    if (!expirationValid) {
+      reasons.push({ code: "EXPIRATION_TIMESTAMP_INVALID", message: "The expiration timestamp is not a valid instant." });
+    }
+    const nowValid = isValidIsoInstant(args.now);
+    if (!nowValid) {
+      reasons.push({
+        code: "EXPIRED_NOW_TIMESTAMP_INVALID",
+        message: "The reference 'now' timestamp used to evaluate expiration is not a valid instant.",
+      });
+    }
+    if (expirationValid && nowValid) {
+      if (args.verifiedExecuted) {
+        reasons.push({
+          code: "EXPIRED_REQUIRES_NO_VERIFIED_EXECUTION",
+          message: "A verified-executed agreement can never expire, regardless of the clock.",
+        });
+      } else if (!isExpired({ expirationAt: args.expirationAt, now: args.now, verifiedExecuted: false })) {
+        reasons.push({
+          code: "EXPIRATION_HAS_NOT_OCCURRED",
+          message: "The established expiration timestamp has not yet passed -- Expired cannot be asserted before it actually occurs.",
+        });
+      }
+    }
+    if (reasons.length > 0) return { ok: false, reasons };
     return {
       ok: true,
       value: Object.freeze({
@@ -856,15 +1050,35 @@ export function buildDispositionHandoffPayload(
     };
   }
 
-  return {
-    ok: true,
-    value: Object.freeze({
-      opportunityId: args.opportunityId,
-      agreementAt: args.agreementAt,
-      version: args.version,
-      noReentry: true as const,
-      terminalState: "declined" as const,
-      declinedAt: args.declinedAt,
-    }),
-  };
+  {
+    const reasons: TransitionReason[] = [];
+    if (!args.contractSent) {
+      reasons.push({
+        code: "NOT_CONTRACT_SENT",
+        message: "Declined requires the agreement to have reached Contract Sent -- the seller can only decline to execute an agreement that was actually sent.",
+      });
+    }
+    if (!isValidIsoInstant(args.declinedAt)) {
+      reasons.push({ code: "DECLINED_TIMESTAMP_INVALID", message: "The decline timestamp is not a valid instant." });
+    }
+    if (args.recordedBy.trim() === "") {
+      reasons.push({
+        code: "DECLINED_NOT_OPERATOR_RECORDED",
+        message: "Declined requires an explicit, operator-recorded fact, per SELLER_CONTRACT_STATE_MACHINE_V1.md -- no operator identity was supplied.",
+      });
+    }
+    if (reasons.length > 0) return { ok: false, reasons };
+    return {
+      ok: true,
+      value: Object.freeze({
+        opportunityId: args.opportunityId,
+        agreementAt: args.agreementAt,
+        version: args.version,
+        noReentry: true as const,
+        terminalState: "declined" as const,
+        declinedAt: args.declinedAt,
+        recordedBy: args.recordedBy,
+      }),
+    };
+  }
 }

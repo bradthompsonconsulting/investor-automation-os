@@ -65,7 +65,7 @@ const compiledNoComments = execSync(
 fs.rmSync(TMP + '-nocomments', { recursive: true, force: true });
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 92;
+const FLOOR = 127;
 let failures = 0;
 let checks = 0;
 
@@ -209,23 +209,37 @@ const fullChecklist = {
 // ============================================================
 // 6. Contract Sent eligibility -- three jointly-required facts, each
 //    independently reported, per the locked "authorized-not-yet-sent"
-//    failure-behavior distinction.
+//    failure-behavior distinction, PLUS mandatory exact-IAOS-version
+//    binding and well-formedness checks on every sub-fact (Jess Gate
+//    corrections 1 and 3). Correction 3: the MANDATORY binding is to
+//    IAOS's own ContractVersionIdentity (agreementAt/versionSeq), never
+//    to a provider documentRevision -- BLOCKED per B9-02 item 9 and must
+//    never gate V1's only verified path. documentRevision stays optional,
+//    compared only when both sides are actually present.
 // ============================================================
 {
+  const versionA = { agreementAt: '2026-09-06T15:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: null };
+  const versionB_differentSeq = { ...versionA, versionSeq: 2, supersedesVersionSeq: 1 };
+  const versionC_differentAgreement = { agreementAt: '2026-09-10T09:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: versionA.agreementAt };
+
   const fullSent = {
     contractReady: true,
-    bradSendAuthorization: { authorizedBy: 'brad', at: '2026-09-09T10:00:00.000Z' },
+    bradSendAuthorization: { authorizedBy: 'brad', at: '2026-09-09T10:00:00.000Z', authorizedVersion: versionA, authorizedDocumentRevision: 'rev-1' },
+    currentVersion: versionA,
+    currentDocumentRevision: 'rev-1',
     providerTransmission: { identifier: 'doc-123', at: '2026-09-09T10:05:00.000Z' },
     expiration: { at: '2026-09-11T10:00:00.000Z' },
   };
-  check('Contract Sent is eligible with all three facts present plus Contract Ready', M.evaluateContractSentEligibility(fullSent), { eligible: true, reasons: [] });
+  // Required test 1: matching IAOS contract identity permits eligibility
+  // when all other evidence is valid.
+  check('Contract Sent is eligible when the authorized and current IAOS contract version match exactly, plus all other evidence is valid', M.evaluateContractSentEligibility(fullSent), { eligible: true, reasons: [] });
 
   const authOnly = { ...fullSent, providerTransmission: null };
   const authOnlyResult = M.evaluateContractSentEligibility(authOnly);
   check('authorization alone (no confirmed transmission) is NOT Contract Sent -- fails closed', authOnlyResult.eligible, false);
   check('the authorized-not-sent case names TRANSMISSION_NOT_CONFIRMED specifically', authOnlyResult.reasons.some((r) => r.code === 'TRANSMISSION_NOT_CONFIRMED'), true);
 
-  const notBrad = { ...fullSent, bradSendAuthorization: { authorizedBy: 'some-rep', at: '2026-09-09T10:00:00.000Z' } };
+  const notBrad = { ...fullSent, bradSendAuthorization: { ...fullSent.bradSendAuthorization, authorizedBy: 'some-rep' } };
   check('send authorization from anyone other than Brad does not count', M.evaluateContractSentEligibility(notBrad).eligible, false);
 
   const noExpiration = { ...fullSent, expiration: null };
@@ -233,6 +247,65 @@ const fullChecklist = {
 
   const notReady = { ...fullSent, contractReady: false };
   check('Contract Sent is never eligible without Contract Ready, even with all three send-specific facts present', M.evaluateContractSentEligibility(notReady).eligible, false);
+
+  // Required test 2: a different agreementAt blocks eligibility.
+  const differentAgreement = { ...fullSent, currentVersion: versionC_differentAgreement };
+  const differentAgreementResult = M.evaluateContractSentEligibility(differentAgreement);
+  check('a CURRENT version with a different agreementAt than what Brad authorized blocks Contract Sent', differentAgreementResult.eligible, false);
+  check('the different-agreementAt case names AUTHORIZATION_NOT_BOUND_TO_EXACT_VERSION', differentAgreementResult.reasons.some((r) => r.code === 'AUTHORIZATION_NOT_BOUND_TO_EXACT_VERSION'), true);
+
+  // Required test 3: a different versionSeq blocks eligibility.
+  const differentSeq = { ...fullSent, currentVersion: versionB_differentSeq };
+  const differentSeqResult = M.evaluateContractSentEligibility(differentSeq);
+  check('a CURRENT version with a different versionSeq (same agreementAt) than what Brad authorized blocks Contract Sent', differentSeqResult.eligible, false);
+  check('the different-versionSeq case names AUTHORIZATION_NOT_BOUND_TO_EXACT_VERSION', differentSeqResult.reasons.some((r) => r.code === 'AUTHORIZATION_NOT_BOUND_TO_EXACT_VERSION'), true);
+
+  // Required test 4: missing authorization-bound IAOS identity blocks eligibility.
+  const missingAuthorizedVersion = { ...fullSent, bradSendAuthorization: { ...fullSent.bradSendAuthorization, authorizedVersion: null } };
+  const missingAuthorizedVersionResult = M.evaluateContractSentEligibility(missingAuthorizedVersion);
+  check('an authorization that never recorded WHICH IAOS contract version it covers cannot bind to the current one -- fails closed', missingAuthorizedVersionResult.eligible, false);
+  check('the missing-authorized-identity case names AUTHORIZATION_NOT_BOUND_TO_EXACT_VERSION', missingAuthorizedVersionResult.reasons.some((r) => r.code === 'AUTHORIZATION_NOT_BOUND_TO_EXACT_VERSION'), true);
+
+  // Required test 5: absent provider documentRevision does NOT block when
+  // the exact IAOS contract identity matches -- this is the correction's
+  // whole point: GHL's BLOCKED documentRevision must never gate V1.
+  const noProviderRevisionEitherSide = {
+    ...fullSent,
+    bradSendAuthorization: { ...fullSent.bradSendAuthorization, authorizedDocumentRevision: null },
+    currentDocumentRevision: null,
+  };
+  check('Contract Sent is eligible with NO provider documentRevision on either side, as long as the exact IAOS version matches -- GHL BLOCKED fields never gate V1', M.evaluateContractSentEligibility(noProviderRevisionEitherSide), { eligible: true, reasons: [] });
+
+  const onlyOneSideHasRevision = { ...fullSent, currentDocumentRevision: null };
+  check('a provider revision present on only ONE side (the other absent) still does not block -- comparison requires BOTH sides present', M.evaluateContractSentEligibility(onlyOneSideHasRevision), { eligible: true, reasons: [] });
+
+  // Required test 6: differing provider revisions block when BOTH are
+  // present and comparable.
+  const differingProviderRevisions = { ...fullSent, currentDocumentRevision: 'rev-2' };
+  const differingProviderRevisionsResult = M.evaluateContractSentEligibility(differingProviderRevisions);
+  check('differing provider documentRevisions block Contract Sent when both sides actually carry a value, even though the IAOS version itself still matches', differingProviderRevisionsResult.eligible, false);
+  check('the differing-provider-revision case names PROVIDER_DOCUMENT_REVISION_MISMATCH, distinct from the IAOS-version code', differingProviderRevisionsResult.reasons.some((r) => r.code === 'PROVIDER_DOCUMENT_REVISION_MISMATCH'), true);
+  check('the differing-provider-revision case does NOT also claim the IAOS version itself is unbound', differingProviderRevisionsResult.reasons.some((r) => r.code === 'AUTHORIZATION_NOT_BOUND_TO_EXACT_VERSION'), false);
+
+  const authTimestampInvalid = { ...fullSent, bradSendAuthorization: { ...fullSent.bradSendAuthorization, at: 'not-a-real-date' } };
+  const authTimestampInvalidResult = M.evaluateContractSentEligibility(authTimestampInvalid);
+  check('an invalid authorization timestamp blocks Contract Sent -- fails closed', authTimestampInvalidResult.eligible, false);
+  check('the invalid-authorization-timestamp case names AUTHORIZATION_TIMESTAMP_INVALID', authTimestampInvalidResult.reasons.some((r) => r.code === 'AUTHORIZATION_TIMESTAMP_INVALID'), true);
+
+  const transmissionIdBlank = { ...fullSent, providerTransmission: { identifier: '   ', at: fullSent.providerTransmission.at } };
+  const transmissionIdBlankResult = M.evaluateContractSentEligibility(transmissionIdBlank);
+  check('a blank provider transmission identifier blocks Contract Sent -- present-but-blank is not present', transmissionIdBlankResult.eligible, false);
+  check('the blank-transmission-identifier case names TRANSMISSION_IDENTIFIER_BLANK', transmissionIdBlankResult.reasons.some((r) => r.code === 'TRANSMISSION_IDENTIFIER_BLANK'), true);
+
+  const transmissionTimestampInvalid = { ...fullSent, providerTransmission: { identifier: 'doc-123', at: 'not-a-real-date' } };
+  const transmissionTimestampInvalidResult = M.evaluateContractSentEligibility(transmissionTimestampInvalid);
+  check('an invalid provider transmission timestamp blocks Contract Sent -- fails closed', transmissionTimestampInvalidResult.eligible, false);
+  check('the invalid-transmission-timestamp case names TRANSMISSION_TIMESTAMP_INVALID', transmissionTimestampInvalidResult.reasons.some((r) => r.code === 'TRANSMISSION_TIMESTAMP_INVALID'), true);
+
+  const expirationTimestampInvalid = { ...fullSent, expiration: { at: 'not-a-real-date' } };
+  const expirationTimestampInvalidResult = M.evaluateContractSentEligibility(expirationTimestampInvalid);
+  check('an invalid expiration timestamp blocks Contract Sent -- fails closed', expirationTimestampInvalidResult.eligible, false);
+  check('the invalid-expiration-timestamp case names EXPIRATION_TIMESTAMP_INVALID', expirationTimestampInvalidResult.reasons.some((r) => r.code === 'EXPIRATION_TIMESTAMP_INVALID'), true);
 }
 
 // ============================================================
@@ -386,15 +459,68 @@ const fullChecklist = {
   });
   check('a Brad-authorized rescission with a blank/whitespace-only reason is refused', noReasonRescission.ok, false);
 
-  const expiredPayload = M.buildDispositionHandoffPayload({
-    terminalState: 'expired', opportunityId: 'opp-1', agreementAt: version.agreementAt, version, expirationAt: '2026-09-11T10:00:00.000Z',
-  });
-  check('an expired handoff builds successfully and carries its expiration timestamp', expiredPayload, { ok: true, value: { opportunityId: 'opp-1', agreementAt: version.agreementAt, version, noReentry: true, terminalState: 'expired', expirationAt: '2026-09-11T10:00:00.000Z' } });
+  // -- Jess Gate correction 2: Expired must never emit merely because the
+  // caller names that terminal state -- valid timestamps, Contract Sent,
+  // expiration having actually occurred, and no verified execution are
+  // all independently required.
+  const expiredBase = {
+    terminalState: 'expired', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
+    contractSent: true, expirationAt: '2026-09-11T10:00:00.000Z', now: '2026-09-12T00:00:00.000Z', verifiedExecuted: false,
+  };
+  const expiredPayload = M.buildDispositionHandoffPayload(expiredBase);
+  check('an expired handoff builds successfully once expiration has actually occurred, Sent, and not verified-executed', expiredPayload, { ok: true, value: { opportunityId: 'opp-1', agreementAt: version.agreementAt, version, noReentry: true, terminalState: 'expired', expirationAt: '2026-09-11T10:00:00.000Z' } });
 
-  const declinedPayload = M.buildDispositionHandoffPayload({
-    terminalState: 'declined', opportunityId: 'opp-1', agreementAt: version.agreementAt, version, declinedAt: '2026-09-11T10:00:00.000Z',
-  });
-  check('a declined handoff builds successfully and carries its declined timestamp', declinedPayload, { ok: true, value: { opportunityId: 'opp-1', agreementAt: version.agreementAt, version, noReentry: true, terminalState: 'declined', declinedAt: '2026-09-11T10:00:00.000Z' } });
+  const expiredNotYet = { ...expiredBase, now: '2026-09-10T00:00:00.000Z' };
+  const expiredNotYetResult = M.buildDispositionHandoffPayload(expiredNotYet);
+  check('naming "expired" BEFORE the expiration timestamp has passed is refused -- never emitted merely because the caller asked', expiredNotYetResult.ok, false);
+  check('the not-yet-expired refusal names EXPIRATION_HAS_NOT_OCCURRED', expiredNotYetResult.reasons.some((r) => r.code === 'EXPIRATION_HAS_NOT_OCCURRED'), true);
+
+  const expiredButVerified = { ...expiredBase, verifiedExecuted: true };
+  const expiredButVerifiedResult = M.buildDispositionHandoffPayload(expiredButVerified);
+  check('naming "expired" for an agreement that WAS verified-executed is refused', expiredButVerifiedResult.ok, false);
+  check('the verified-execution refusal names EXPIRED_REQUIRES_NO_VERIFIED_EXECUTION', expiredButVerifiedResult.reasons.some((r) => r.code === 'EXPIRED_REQUIRES_NO_VERIFIED_EXECUTION'), true);
+
+  const expiredNotSent = { ...expiredBase, contractSent: false };
+  check('naming "expired" for an agreement never Contract Sent is refused', M.buildDispositionHandoffPayload(expiredNotSent).ok, false);
+
+  const expiredBadExpirationTimestamp = { ...expiredBase, expirationAt: 'not-a-real-date' };
+  const expiredBadExpirationResult = M.buildDispositionHandoffPayload(expiredBadExpirationTimestamp);
+  check('an invalid expiration timestamp refuses the expired handoff -- unsupported terminal evidence, never guessed', expiredBadExpirationResult.ok, false);
+  check('the invalid-expiration-timestamp refusal names EXPIRATION_TIMESTAMP_INVALID', expiredBadExpirationResult.reasons.some((r) => r.code === 'EXPIRATION_TIMESTAMP_INVALID'), true);
+
+  const expiredBadNowTimestamp = { ...expiredBase, now: 'not-a-real-date' };
+  const expiredBadNowResult = M.buildDispositionHandoffPayload(expiredBadNowTimestamp);
+  check('an invalid reference "now" timestamp refuses the expired handoff', expiredBadNowResult.ok, false);
+  check('the invalid-now-timestamp refusal names EXPIRED_NOW_TIMESTAMP_INVALID', expiredBadNowResult.reasons.some((r) => r.code === 'EXPIRED_NOW_TIMESTAMP_INVALID'), true);
+
+  const expiredFutureNow = { ...expiredBase, expirationAt: '2099-01-01T00:00:00.000Z' };
+  check('a far-future, unsupported expiration timestamp (has not occurred) is refused, not guessed as expired', M.buildDispositionHandoffPayload(expiredFutureNow).ok, false);
+
+  // -- Jess Gate correction 2: Declined must never emit merely because the
+  // caller names that terminal state -- Contract Sent, a valid timestamp,
+  // and an explicit operator-recorded fact (B9-01's own words) are all
+  // independently required.
+  const declinedBase = {
+    terminalState: 'declined', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
+    contractSent: true, declinedAt: '2026-09-11T10:00:00.000Z', recordedBy: 'brad',
+  };
+  const declinedPayload = M.buildDispositionHandoffPayload(declinedBase);
+  check('a declined handoff builds successfully once Sent, timestamped, and operator-recorded', declinedPayload, { ok: true, value: { opportunityId: 'opp-1', agreementAt: version.agreementAt, version, noReentry: true, terminalState: 'declined', declinedAt: '2026-09-11T10:00:00.000Z', recordedBy: 'brad' } });
+
+  const declinedNotSent = { ...declinedBase, contractSent: false };
+  const declinedNotSentResult = M.buildDispositionHandoffPayload(declinedNotSent);
+  check('naming "declined" for an agreement never Contract Sent is refused -- nothing was sent to decline', declinedNotSentResult.ok, false);
+  check('the not-sent refusal names NOT_CONTRACT_SENT', declinedNotSentResult.reasons.some((r) => r.code === 'NOT_CONTRACT_SENT'), true);
+
+  const declinedBadTimestamp = { ...declinedBase, declinedAt: 'not-a-real-date' };
+  const declinedBadTimestampResult = M.buildDispositionHandoffPayload(declinedBadTimestamp);
+  check('an invalid decline timestamp refuses the declined handoff -- unsupported terminal evidence, never guessed', declinedBadTimestampResult.ok, false);
+  check('the invalid-timestamp refusal names DECLINED_TIMESTAMP_INVALID', declinedBadTimestampResult.reasons.some((r) => r.code === 'DECLINED_TIMESTAMP_INVALID'), true);
+
+  const declinedNoOperator = { ...declinedBase, recordedBy: '   ' };
+  const declinedNoOperatorResult = M.buildDispositionHandoffPayload(declinedNoOperator);
+  check('a blank/whitespace-only recordedBy refuses the declined handoff -- "operator-recorded" per B9-01 requires a real operator identity', declinedNoOperatorResult.ok, false);
+  check('the no-operator refusal names DECLINED_NOT_OPERATOR_RECORDED', declinedNoOperatorResult.reasons.some((r) => r.code === 'DECLINED_NOT_OPERATOR_RECORDED'), true);
 }
 
 // ============================================================
