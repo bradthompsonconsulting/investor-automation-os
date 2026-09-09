@@ -624,103 +624,186 @@ ACCOUNT-VERIFIED.
   Creating a new template is itself a write this round does not
   authorize. A real template ID must come from Brad's own account check
   before any send-template call could even be attempted.
+- **Sender `userId`** (required by the Send Template endpoint's own
+  documented request body): **unconfirmed.** No GHL user id is named —
+  this must be a real user id on this Test location (most plausibly
+  Brad's own), obtained the same way the template ID is: Brad's own
+  account check, not assumed here.
 - **Contact ID:** `NAGtUZ9aOE5C1GatJzpT` ("IAOS Underwriting Test") —
   **confirmed**, reused from prior live proofs this session rather than
   creating a new record.
-- **Opportunity ID:** **unconfirmed in this document.** The contact above
-  has an associated Opportunity from prior session work, but this
-  document does not state its ID from memory or assumption — confirming
-  it would require one additional read-only `GET /opportunities/search`
-  call (already an allowlisted path, no proxy change needed) at
-  execution time, not a new write.
-- **Controlled test recipient:** **unconfirmed — no exact address
-  named.** Proposed only as "a throwaway or Brad-controlled email
-  address, never a real seller's contact information." Brad must supply
-  or approve the specific address before any send.
+- **Opportunity ID:** `MAl1FWHEsK0QqsXt4v6f` — **confirmed live this
+  session**, via `GET /opportunities/search` (already allowlisted,
+  read-only, no proxy change needed): the single opportunity returned
+  for this contact, named "IAOS Underwriting Test," `pipelineId
+  wdvKMdPMxs38qoA6lkUa` (the Test location's own Seller Leads Pipeline,
+  confirming this read ran against Test — matching `TEST.pipelines.
+  sellerLeads` in `app/shared/ghl-config.ts`, not `PRODUCTION`'s
+  differently-valued pipeline id).
+- **Every signer/CC recipient — controlled and confirmed before any
+  eventual transmission, not just a single "the recipient":** the Send
+  Template endpoint's own documented model supports multiple recipients
+  with roles and signing order (item 2 above). This plan does not name a
+  fixed count or exact addresses — every recipient/role passed in Step B
+  must be an explicit, Brad-approved, non-real address, confirmed
+  individually before that call, not assumed to be "one recipient" by
+  default. **Unconfirmed — no exact address(es) named.**
 - **Permissions needed:** whatever GHL plan/scope gates Documents &
   Contracts for this location — unverified (item 1 above), unknown until
   Brad's own account access confirms it.
 
 **Draft creation and sending are two distinct, sequential steps — neither
-executed by this document, and step B is never taken without step A's
-result reviewed first:**
+executed by this document. Step B does not assume it transmits the exact
+document reviewed in Step A; that binding is itself unverified, per the
+correction below, and must be resolved before Step B is treated as safe
+to run at all:**
 
 - **Step A — draft only, no transmission.** One `POST /proposals/
-  templates/send` call with `sendDocument: false`, `contactId` and
-  `opportunityId` both passed explicitly (to test item 3's binding),
-  targeting the controlled test recipient only. Purpose: resolve item
-  4's draft-vs-send semantics without transmitting anything to the
-  recipient.
-- **Step B — actual send, only after Step A is reviewed and separately
-  approved.** The same call with `sendDocument: true`. Purpose: resolve
-  items 3 (Opportunity attribution on read-back) and 6 (transmission
-  evidence, below).
-- Both steps use the exact same documented endpoint: **`POST /proposals/
-  templates/send`** (confirmed directly from the endpoint reference this
-  session: required body — `templateId`, `userId`, `locationId`,
-  `contactId`; optional — `opportunityId`, `sendDocument`).
+  templates/send` call with `sendDocument: false`, `templateId`,
+  `userId`, `locationId`, `contactId`, and `opportunityId` all passed
+  explicitly. Purpose: resolve item 4's draft-vs-send semantics without
+  transmitting anything to any recipient.
+- **Existing-document send mechanism and document/version binding —
+  UNVERIFIED, and this is a real, load-bearing gap, not a formality.**
+  The Send Template endpoint's own documented request body (confirmed
+  this session) takes `templateId`, not `documentId` — there is no
+  documented parameter for referencing an already-created document by
+  its own id. This means it is **not confirmed** that calling this same
+  endpoint again (with `sendDocument: true`) would transmit *the specific
+  draft created in Step A* — the documented shape is at least equally
+  consistent with each call **generating a fresh document/version from
+  the template**, independent of any prior call. No endpoint for
+  finalizing/transmitting a pre-existing document by id was found in
+  what this session could fetch (a targeted attempt to enumerate the
+  full proposals endpoint list returned only a page-title shell, the
+  same SPA-rendering limitation encountered elsewhere in this document —
+  a tooling gap, not evidence such an endpoint doesn't exist).
+- **If Step B in fact generates a replacement document/version rather
+  than sending Step A's exact draft, that replacement requires its own
+  fresh review before any authorization is treated as covering it** —
+  per `docs/SELLER_CONTRACT_STATE_MACHINE_V1.md`'s own already-locked
+  principle that a subsequent seller-facing change invalidates a prior
+  authorization, extended here to document/version regeneration, not
+  only content edits. **Step B is therefore not proposed as an automatic
+  next action after Step A.** The correct sequence, if this plan is
+  approved, is: run Step A; read back its result via `GET /proposals/
+  document` and confirm from the live response (not assumed) whether the
+  draft and any subsequent send would in fact share one document
+  identity; only then decide whether Step B as designed is safe, or
+  whether a different mechanism is required to send the exact reviewed
+  draft.
 
-**Exact evidence proposed for each remaining BLOCKED item — `updatedAt`
-is not proposed as a substitute for transmission or completion time
-anywhere below:**
+**Provider-side event timestamps are not proposed as available, and
+IAOS's own observation times are not proposed as a substitute for
+them — this corrects the prior version of this plan, which claimed a
+timestamp-substitution consistent with B9-01. That claim is withdrawn:**
 
-- **Transmission time.** GHL's own List Documents response does not name
-  a distinct "sent at" field — only the generic `updatedAt`. Proposed
-  evidence instead: **the wall-clock timestamp IAOS itself records at
-  the moment Step B's `POST /proposals/templates/send` call returns
-  successfully** — a fact IAOS directly observes and controls, not one
-  read back from GHL after the fact. This is the same pattern already
-  locked in `docs/SELLER_CONTRACT_STATE_MACHINE_V1.md` for Contract
-  Sent's own "confirmed provider transmission identifier and timestamp"
-  — the identifier comes from GHL (`documentId`), the timestamp is
-  IAOS's own observation of the send, not a GHL-reported field.
-- **Completion time.** Same reasoning: proposed evidence is **the
-  timestamp IAOS itself records the moment a `GET /proposals/document`
-  read-back first observes every required recipient's `hasCompleted`
-  true**, not `updatedAt` (confirmed generic, not completion-specific,
-  per item 6/9 above). Whether GHL additionally exposes a webhook or a
-  per-signer completion timestamp of its own is **unconfirmed** — the
-  four fetched docs did not cover a webhook/event mechanism for
-  Documents & Contracts at all; this is a real gap in what was fetched,
-  not assumed absent.
-- **All required signatures.** Already DOCUMENTED (item 7): the
-  `recipients[].hasCompleted` per-recipient boolean, read via `GET
-  /proposals/document`. Proposed evidence: the full `recipients` array
-  from that read-back, not a single aggregate flag.
-- **Executed PDF retrieval.** **Unconfirmed — a real gap.** None of the
-  four fetched official docs names a specific document-download/export
-  endpoint for Documents & Contracts (unlike, for example, Dropbox
-  Sign's named file-retrieval endpoints in the fallback-tier findings
-  below). Proposed evidence: whatever `GET /proposals/document` itself
-  returns for a completed document (it may embed a file URL or require a
-  separate call not yet identified) — this specific sub-question is
-  exactly what Step B plus a completed signature would resolve, and this
-  document does not assume a mechanism that hasn't been confirmed to
-  exist.
-- **Integrity.** Already found BLOCKED at item 9: no discrete
-  hash/checksum-shaped field was named in what was fetched. Proposed
-  evidence, in order of preference: (1) if the account-level check
-  surfaces a GHL-native integrity field not visible in the four fetched
-  docs, use it; (2) failing that, **IAOS computes its own integrity
-  identifier** (a hash of the retrieved executed-document bytes) at the
-  moment of retrieval and records it alongside the other evidence — per
-  the correction above, this may mean writing that computed value into a
-  GHL-native record (a structured note), not a non-GHL carrier, and no
-  such write is authorized by this document.
+- **Transmission time.** GHL's own List Documents response names no
+  distinct "sent at" field — only the generic `updatedAt`. The prior
+  version of this plan proposed IAOS's own API-response-receipt
+  timestamp as standing in for the provider's transmission time and
+  asserted this matched `docs/SELLER_CONTRACT_STATE_MACHINE_V1.md`'s
+  design. **Both claims are withdrawn.** An HTTP response returning to
+  IAOS is not the same fact as when GHL itself dispatched the document
+  to the recipient — those can differ (queueing, retries, async
+  processing), and nothing fetched this session establishes they
+  coincide. **The provider's own transmission time is left explicitly
+  unverified** until a supporting field or account-level check
+  establishes one; this plan does not propose IAOS's receipt time as a
+  filled-in substitute.
+- **Completion time.** Same correction. The prior version proposed "the
+  timestamp IAOS itself records the moment a read-back first observes
+  `hasCompleted` true" as completion-time evidence. **Withdrawn as a
+  substitute for the provider's own completion time** — a first-observed
+  polling result reflects when IAOS happened to look, not when the
+  provider recorded execution; those can differ by however long the
+  interval between IAOS's calls was. Whether GHL exposes a webhook or a
+  per-signer completion timestamp of its own remains **unconfirmed** —
+  the four fetched docs did not cover a webhook/event mechanism for
+  Documents & Contracts at all, a real gap in what was fetched, not
+  assumed absent. **The provider's own completion time is left
+  explicitly unverified** until such evidence is found.
+- **All required signatures.** Unaffected by the correction above —
+  already DOCUMENTED (item 7): the `recipients[].hasCompleted` per-
+  recipient boolean, read via `GET /proposals/document`. Proposed
+  evidence: the full `recipients` array from that read-back, not a
+  single aggregate flag, and not a timestamp claim.
+- **Executed PDF retrieval — explicitly unverified, unchanged.** No
+  document-download/export endpoint was named in what was fetched. Not
+  assumed to exist; would need to be identified during any approved
+  test, not designed around here.
+- **Integrity — explicitly unverified, unchanged.** No discrete
+  hash/checksum-shaped field was named in what was fetched (item 9).
+  If an approved test does not surface one natively, IAOS computing its
+  own hash of the retrieved bytes remains the only proposed fallback —
+  itself unverified until attempted, and, per the carrier correction
+  above, written into GHL-native storage if pursued at all, never a
+  non-GHL carrier, and no such write is authorized by this document.
+- **Manual-completion detection — explicitly unverified, unchanged.**
+  Item 8 remains BLOCKED: no fetched page states that "Completed" status
+  cannot be manually set independent of actual signer completion.
 
 **You-vs-Brad split:** **Brad-only** — verifying/granting Documents &
-Contracts plan access, any billing implication, and his own GHL web
-login for any account-level UI check (Settings, template library, exact
-template ID). **Executable once separately authorized** — the
-Opportunity-ID lookup, and Steps A and B above, once a template ID and
-confirmed access exist.
+Contracts plan access, any billing implication, his own GHL web login
+for any account-level UI check (Settings, template library, exact
+template ID, sender `userId`), and approving every specific recipient
+address. **Already executed, read-only, no proxy change needed** — the
+Opportunity-ID lookup above. **Executable once separately authorized —
+Step A only**, pending resolution of the document/version-binding
+question before Step B is even proposed as safe.
+
+**Test isolation and safeguards for any proxy extension — a path
+allowlist entry alone does not provide this, per the correction below:**
+
+Reading `app/netlify/functions/ghl-proxy.ts` and `app/shared/ghl-
+config.ts` directly (not assumed): this proxy's Test/Production
+separation is enforced by the `IAOS_ENV` selector resolved once at
+module load (`getConfig(process.env.IAOS_ENV)`), which picks one of two
+hardcoded `GhlConfig` objects and fixes `LOCATION_ID` for every
+outbound call the running function makes — **the allowlist governs which
+paths are permitted, not which location they target.** Two new path
+entries, by themselves, say nothing about environment; they would
+inherit whatever `IAOS_ENV` the function happens to be running under.
+**This is exactly why two shared allowlist entries are not, by
+themselves, Test isolation**, and this plan does not claim otherwise.
+
+The Test/Production selector mechanism is already independently
+corroborated live this session: the `/opportunities/search` call above
+returned `pipelineId wdvKMdPMxs38qoA6lkUa`, matching `TEST.pipelines.
+sellerLeads` in `ghl-config.ts` exactly, and distinct from `PRODUCTION`'s
+different value for the same key — confirming the currently-running dev
+instance is in fact resolved to `IAOS_ENV=test` right now, not merely
+assumed to be.
+
+If this plan is approved, the following safeguards are proposed for the
+two new paths specifically, beyond the existing selector mechanism —
+**none implemented, none bypassed, this round:**
+- **Explicit location assertion at the point of use**, not reliance on
+  the module-scope selector alone: before permitting either new path,
+  assert `LOCATION_ID === "SoTgVoaFGHtBdRFvXWQV"` and refuse (fail
+  closed) if it does not match — a defense-in-depth check specific to
+  these two write-capable/document-creating paths, given their higher
+  consequence than the existing read-only entries.
+- **Recipient controls**: the request body for `POST /proposals/
+  templates/send` is validated against a pre-approved allowlist before
+  the outbound call is made — `contactId` restricted to the single
+  pre-approved Test contact (`NAGtUZ9aOE5C1GatJzpT`) and every
+  recipient/email field restricted to Brad-approved test addresses only,
+  refusing the call otherwise.
+- **No secret logging**: consistent with this file's own existing
+  doctrine ("the key is NEVER sent to the client"), any test script or
+  log output for these two paths must not print the `Authorization`
+  header, the raw GHL token, or any other secret value — request/response
+  logging, if used for the proof, is restricted to non-secret fields.
 
 **The smallest proposed Test-only proxy change, if this plan is
 approved — not implemented, not bypassed, this round:**
 
 Exactly two new allowlist entries in `app/netlify/functions/
 ghl-proxy.ts`'s existing `ALLOW` object (lines 59-77), confirmed against
-the actual endpoint references fetched this session:
+the actual endpoint references fetched this session, **plus the location
+assertion and recipient-allowlist safeguards above, not the path entries
+alone**:
 - `POST`: `^/proposals/templates/send$`
 - `GET`: `^/proposals/document$` (this endpoint's own documented required
   query parameter is `locationId`; it also requires a `Version: v3`
@@ -730,10 +813,11 @@ the actual endpoint references fetched this session:
   request-building code would need to attach that header specifically
   for this path, not just the path pattern).
 
-No third path is proposed — the Opportunity-ID lookup step above reuses
-the already-allowlisted `GET /opportunities/search`. This is the entire
-proxy change this plan would need; nothing else in `ghl-proxy.ts` is
-touched, and this document does not implement it.
+No third path is proposed — the Opportunity-ID lookup already ran
+against the already-allowlisted `GET /opportunities/search`, live, this
+session, needing no proxy change. This is the entire proxy change this
+plan would need; nothing else in `ghl-proxy.ts` is touched, and this
+document does not implement it.
 
 #### Fallback-tier findings — external providers, kept for reference only
 
