@@ -22,25 +22,27 @@
  * B9-07's exclusive job, entirely downstream of and untouched by this
  * module.
  *
- * THE APPROVED V1 TEMPLATE. Per Brad's Product Owner ruling recorded on the
- * INV-57 Linear issue (2026-09-09) and `docs/BOARD9_CONTRACT_INVENTORY_V1.md`
- * Part A item 1, no attorney-approved Production purchase agreement exists;
- * TREC NO. 20-19, "ONE TO FOUR FAMILY RESIDENTIAL CONTRACT (RESALE)," was
- * named a *working V1 template candidate* "suitable for architecture, field
- * mapping, and e-sign evaluation" -- explicitly not yet the final
- * attorney-approved Production agreement. B9-05/INV-60 (merged, `docs/TREC
- * Resale Home Contract.pdf`, the exact source PDF committed to this repo)
- * went further and built its entire per-field capture model against this
- * same template's own paragraph numbers (¶1 through ¶23) -- this module
- * continues that same, single, already-adopted V1 template rather than
- * re-opening a question B9-05 already answered by its own committed work.
- * Every paragraph/field citation below (`paragraph`, `templateHeading`) is
- * read directly from that PDF (extracted this session) -- nothing is
- * invented, paraphrased as official, or presented as legally sufficient.
- * Attorney review and final Production template approval remain undecided
- * and unaffected by this module, per that same governing document's own
- * standing disclaimers (b) and (c): no agreement is approved for live use,
- * and IAOS cannot determine legal sufficiency of any agreement.
+ * THE APPROVED V1 TEMPLATE. Per Brad's Product Owner ruling: **TREC 20-19
+ * dated 05-04-2026 is IAOS's authoritative V1 seller purchase agreement
+ * until Brad directs otherwise.** This is not a candidate, a placeholder,
+ * or a reference baseline pending a later decision -- it is the standing,
+ * locked V1 template. (Superseded framing, kept only as history: an
+ * earlier pass of this document, and `docs/BOARD9_CONTRACT_INVENTORY_V1.md`
+ * Part A item 1 predating this ruling, described TREC 20-19 as a "working
+ * V1 template candidate... not yet the final attorney-approved Production
+ * agreement." That framing is corrected by this Jess Gate ruling and must
+ * not be relitigated.) `docs/TREC Resale Home Contract.pdf` -- committed
+ * d7a2b18, INV-60/B9-05 -- is the exact, unmodified source PDF this
+ * authoritative template names; B9-05 built its entire per-field capture
+ * model against this same template's own paragraph numbers (¶1 through
+ * ¶23), and this module continues that same template. Every paragraph/
+ * field citation below (`paragraph`, `templateHeading`) is read directly
+ * from that PDF (extracted this session) -- nothing is invented,
+ * paraphrased, or presented as legally sufficient. IAOS still cannot
+ * determine legal sufficiency of any agreement -- that determination
+ * belongs exclusively to qualified legal counsel, per
+ * `docs/BOARD9_CONTRACT_INVENTORY_V1.md`'s own standing disclaimer (c),
+ * unaffected by this ruling.
  *
  * FIELD LABELS mirror `ContractWorkspace.tsx`'s own `FIELD_LABELS` and
  * `SELLER_CONTRACT_FACT_GROUPS` (B9-05/INV-60, already shipped) verbatim,
@@ -98,35 +100,38 @@
  * "Other:").
  *
  * ATTORNEY/MANUAL FIELDS -- LOCKED FIELD-STATE RULES (Jess Gate correction,
- * this issue). `contract-facts-model.ts`'s own `AttorneyManualFieldsReport`
- * is deliberately opaque -- it carries disposition and provenance ONLY, and
- * for a `provided_verbatim` disposition its `FieldDisposition` VALUE is the
- * literal string `"provided_verbatim"`, never the attorney-supplied text
- * itself (see that module's own header: "this module never reads,
- * evaluates, or forms an opinion about the correctness of any text a
- * `provided_verbatim` disposition carries -- it is opaque here"). A document
- * preview, unlike a checklist, must actually reproduce that text -- so
- * `buildAttorneyManualFieldsLines` below reads the raw carrier record
- * directly via `seller-contract-facts-carriers.ts`'s own already-shipped
- * `latestAttorneyManualFieldDispositionForOpportunity` (same `notes`/
- * `opportunityId` `contract-facts-model.ts` was given -- no new carrier, no
- * reparsing, no second source of truth) rather than through the opaque
- * report field. The rules this enforces, exactly as locked:
+ * SOURCE-OF-TRUTH ROUND). ONE authoritative input, `SellerContractFactsReport`
+ * -- never a second, independently-read carrier record. An earlier pass of
+ * this module read `seller-contract-facts-carriers.ts`'s
+ * `latestAttorneyManualFieldDispositionForOpportunity` a second time,
+ * directly, alongside `report`, on the unenforceable assumption that the
+ * caller's `notes` argument matched the exact notes `report` was already
+ * built from -- a real risk of the preview's text disagreeing with its own
+ * readiness rollup. **Corrected**: `contract-facts-model.ts`'s own
+ * `AttorneyManualFieldsReport` now CARRIES the exact `provided_verbatim`
+ * text and its real provenance itself (`ProvidedVerbatimText`, that
+ * module's own correction) -- transported opaquely there, never
+ * interpreted -- so this module reads it from `report` alone, exactly like
+ * every other field group. No second carrier read exists anywhere in this
+ * file. The rules this enforces, exactly as locked:
  *   - `attorney_will_draft` is UNRESOLVED for preview completeness until
  *     actual text exists -- "will draft" is never treated as completed.
  *   - `provided_verbatim` is resolved ONLY when actual text exists; the
  *     EXACT supplied text is reproduced opaquely (never rewritten,
  *     summarized, interpreted, approved, or judged) together with its own
- *     recorded provenance. A blank/whitespace-only text is UNRESOLVED, not
- *     silently accepted -- defense in depth on top of the carrier's own
- *     parser, which already refuses to round-trip an empty `text` at all.
+ *     recorded provenance, read verbatim from the disposition's own
+ *     `authority`/`recordedAt` -- never a value this module invents or
+ *     hardcodes. A blank/whitespace-only text is UNRESOLVED, enforced at
+ *     `contract-facts-model.ts`'s own single authoritative layer (never
+ *     silently accepted), on top of the carrier's own parser, which already
+ *     refuses to round-trip an empty `text` at all.
  *   - `not_applicable` resolves correctly -- the one approved disposition
  *     this shipped carrier's own schema defines for these two fields.
  *     ("intentionally_blank" is not a distinct kind
  *     `seller-contract-facts-carriers.ts`'s `AttorneyManualFieldDisposition`
  *     defines; introducing one would edit that already-shipped B9-05 file,
- *     outside this issue's accepted four-file scope. `not_applicable` is
- *     the approved disposition for this specific field per that carrier.)
+ *     outside this issue's accepted scope. `not_applicable` is the approved
+ *     disposition for this specific field per that carrier.)
  * None of these three states creates, implies, or is read anywhere as send
  * authorization -- see the module-level note above.
  */
@@ -140,26 +145,25 @@ import {
 import {
   type SellerContractFactsReport,
   type FieldDisposition,
+  type ProvidedVerbatimText,
   computeSellerContractFactsReadiness,
 } from "./contract-facts-model";
-import {
-  type ValueOrNone,
-  type ReservationsFact,
-  type NaturalResourceLeaseFact,
-  type AdditionalEarnestMoneyFact,
-  type ExpenseParty,
-  type ShortageAmendmentElection,
-  type SurveyElection,
-  type SellerDisclosureNoticeFact,
-  type AsIsElectionFact,
-  type WaterDisclosureFact,
-  type BrokerageContribution,
-  type RepresentationFact,
-  type BrokerInfo,
-  type AddendaApplicabilityItems,
-  type EquitableInterestDisposition,
-  type AttorneyManualFieldSlot,
-  latestAttorneyManualFieldDispositionForOpportunity,
+import type {
+  ValueOrNone,
+  ReservationsFact,
+  NaturalResourceLeaseFact,
+  AdditionalEarnestMoneyFact,
+  ExpenseParty,
+  ShortageAmendmentElection,
+  SurveyElection,
+  SellerDisclosureNoticeFact,
+  AsIsElectionFact,
+  WaterDisclosureFact,
+  BrokerageContribution,
+  RepresentationFact,
+  BrokerInfo,
+  AddendaApplicabilityItems,
+  EquitableInterestDisposition,
 } from "./seller-contract-facts-carriers";
 
 /* ==================================================================== */
@@ -172,12 +176,9 @@ export const CONTRACT_DOCUMENT_TEMPLATE_NAME =
 /**
  * The exact, committed source this module's `paragraph`/`templateHeading`
  * citations were read from -- OBSERVED this session by direct extraction,
- * not asserted from memory. Whether this specific printed revision is
- * TREC's currently-effective promulgated form or an interim redline remains
- * exactly as unresolved as `BOARD9_CONTRACT_INVENTORY_V1.md` Part A item 1
- * already states; this module does not adjudicate that and does not need
- * to for a reference/architecture mapping against B9-05's own already-built
- * per-paragraph fact model.
+ * not asserted from memory. Per the module header's "THE APPROVED V1
+ * TEMPLATE" ruling, this PDF is IAOS's authoritative V1 seller purchase
+ * agreement, not merely a reference/architecture candidate.
  */
 export const CONTRACT_DOCUMENT_TEMPLATE_SOURCE =
   'docs/TREC Resale Home Contract.pdf (committed d7a2b18, INV-60/B9-05)' as const;
@@ -581,68 +582,20 @@ export function buildNoticeContactLines(r: SellerContractFactsReport["noticeCont
 }
 
 /**
- * Reads the raw carrier record directly (never the opaque report field) so
- * a `provided_verbatim` disposition's EXACT text can be reproduced -- see
- * the module header's "ATTORNEY/MANUAL FIELDS -- LOCKED FIELD-STATE RULES"
- * note. `notes` must be the SAME array the caller passed to
- * `computeSellerContractFactsReport` -- this reads through the identical
- * already-shipped `latestAttorneyManualFieldDispositionForOpportunity`
- * function that report computation itself uses, so the two can never
- * disagree about which record is latest.
+ * Reads ONLY the authoritative `report.attorneyManualFields` -- no second
+ * carrier read (see module header's "ATTORNEY/MANUAL FIELDS -- LOCKED
+ * FIELD-STATE RULES" note). `renderValue` extracts the exact opaque
+ * `provided_verbatim` text `contract-facts-model.ts` now carries; `toLine`
+ * itself supplies the disposition's own real `authority`/`recordedAt` --
+ * nothing here hardcodes provenance.
  */
-function attorneyManualFieldLine(
-  paragraph: string,
-  field: "specialProvisions" | "otherAddendaText",
-  notes: { body: string }[],
-  opportunityId: string,
-  slot: AttorneyManualFieldSlot,
-): ContractDocumentLine {
-  const label = CONTRACT_DOCUMENT_FIELD_LABEL[`attorneyManualFields.${field}`] ?? field;
-  const base = { paragraph, group: "attorneyManualFields", field, label };
-  const rec = latestAttorneyManualFieldDispositionForOpportunity(notes, opportunityId, slot);
-
-  if (!rec) {
-    return { ...base, status: "unresolved", text: null, authority: null, recordedAt: null };
-  }
-  if (rec.disposition.kind === "attorney_will_draft") {
-    // Locked rule: "will draft" is never treated as resolved/completed.
-    return { ...base, status: "unresolved", text: null, authority: null, recordedAt: null };
-  }
-  if (rec.disposition.kind === "not_applicable") {
-    // The one approved disposition this shipped carrier's own schema
-    // defines for this field -- see module header.
-    return {
-      ...base,
-      status: "not_applicable",
-      text: "Not applicable (approved disposition for this field).",
-      authority: "operator_attested",
-      recordedAt: rec.at,
-    };
-  }
-  // provided_verbatim -- reproduce the EXACT supplied text, opaquely, never
-  // rewritten/summarized/interpreted/approved/judged. Defense in depth: the
-  // carrier's own parser already refuses to round-trip a blank/whitespace-
-  // only text, but this never trusts that blindly -- an empty value here
-  // still fails closed to unresolved, exactly as the locked rule requires.
-  if (rec.disposition.text.trim() === "") {
-    return { ...base, status: "unresolved", text: null, authority: null, recordedAt: null };
-  }
-  return {
-    ...base,
-    status: "populated",
-    text: rec.disposition.text,
-    authority: "operator_attested",
-    recordedAt: rec.at,
-  };
-}
-
 export function buildAttorneyManualFieldsLines(
-  notes: { body: string }[],
-  opportunityId: string,
+  r: SellerContractFactsReport["attorneyManualFields"],
 ): ContractDocumentLine[] {
+  const renderProvidedVerbatim = (v: ProvidedVerbatimText) => v.text;
   return [
-    attorneyManualFieldLine("11", "specialProvisions", notes, opportunityId, "special_provisions"),
-    attorneyManualFieldLine('22 "Other:"', "otherAddendaText", notes, opportunityId, "other_addenda_text"),
+    toLine("11", "attorneyManualFields", "specialProvisions", r.specialProvisions, renderProvidedVerbatim),
+    toLine('22 "Other:"', "attorneyManualFields", "otherAddendaText", r.otherAddendaText, renderProvidedVerbatim),
   ];
 }
 
@@ -686,22 +639,14 @@ export type ContractDocumentPreview = {
 export type BuildContractDocumentPreviewArgs = {
   opportunityId: string;
   version: ContractVersionIdentity;
+  /** The ONE authoritative input for every field this module maps, attorney/manual fields included -- no raw notes array, no second carrier read. See module header. */
   report: SellerContractFactsReport;
   /** Sourced elsewhere (`PropertyIdentityConfirmation`) and supplied already-resolved -- this module performs no carrier read. See module header. */
   propertyStreetAddress: FieldDisposition<string>;
-  /**
-   * The SAME notes array already passed to `computeSellerContractFactsReport`
-   * to build `report` -- needed ONLY so `buildAttorneyManualFieldsLines` can
-   * read the raw attorney/manual-field carrier record directly (see module
-   * header). This module still performs no fetch/GHL call itself; the
-   * caller supplies already-fetched notes, exactly as `contract-facts-
-   * model.ts` itself requires of its own callers.
-   */
-  notes: { body: string }[];
 };
 
 export function buildContractDocumentPreview(args: BuildContractDocumentPreviewArgs): ContractDocumentPreview {
-  const { opportunityId, version, report, propertyStreetAddress, notes } = args;
+  const { opportunityId, version, report, propertyStreetAddress } = args;
 
   const documentLines: ContractDocumentLine[] = [
     ...buildIdentityLines(propertyStreetAddress),
@@ -717,7 +662,7 @@ export function buildContractDocumentPreview(args: BuildContractDocumentPreviewA
     ...buildRepresentationLines(report.representation),
     ...buildAddendaApplicabilityLines(report.addendaApplicability),
     ...buildNoticeContactLines(report.noticeContact),
-    ...buildAttorneyManualFieldsLines(notes, opportunityId),
+    ...buildAttorneyManualFieldsLines(report.attorneyManualFields),
   ];
 
   const additionalRequiredFacts = buildAdditionalRequiredFacts(report.sellerEquitableInterest);
