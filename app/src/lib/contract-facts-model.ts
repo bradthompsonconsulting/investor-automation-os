@@ -30,11 +30,19 @@
  * Subject-To, and other financed/creative structures are UNSUPPORTED in
  * Dollar #1 V1 -- not offered as a choice anywhere in this model.
  *
- * ATTORNEY/MANUAL FIELDS (¶11, ¶22 "Other:") carry disposition and
- * provenance ONLY. This module never reads, evaluates, or forms an
- * opinion about the correctness of any text a `provided_verbatim`
- * disposition carries -- it is opaque here, exactly as
- * `seller-contract-facts-carriers.ts`'s own header states.
+ * ATTORNEY/MANUAL FIELDS (¶11, ¶22 "Other:") carry disposition, provenance,
+ * and -- for `provided_verbatim` -- the exact supplied text itself
+ * (`ProvidedVerbatimText`, Jess Gate correction: previously discarded here,
+ * forcing a downstream consumer to re-read the raw carrier a second time,
+ * which this codebase's own architecture forbids -- ONE authoritative
+ * report, never two independently-read copies of the same fact). This
+ * module TRANSPORTS that text; it never reads, evaluates, rewrites,
+ * approves, or forms an opinion about its content -- it is opaque here,
+ * exactly as `seller-contract-facts-carriers.ts`'s own header states. A
+ * blank/whitespace-only `provided_verbatim` text fails closed to
+ * `unresolved` at this single authoritative layer (never silently treated
+ * as resolved), matching the carrier's own parser, which already refuses
+ * to round-trip a blank text.
  *
  * ASSIGNEE-SIDE equitable-interest disclosure and the Assignment
  * Agreement itself are Board #11 -- not modeled here. FIRPTA/foreign-
@@ -236,9 +244,12 @@ export type SellerEquitableInterestReport = {
   disposition: FieldDisposition<EquitableInterestDisposition>;
 };
 
+/** The ONLY value shape a `populated` attorney/manual-field disposition ever carries -- `not_applicable`/`attorney_will_draft` resolve to `FieldDisposition`'s own `not_applicable`/`unresolved` states instead, never to a populated value. */
+export type ProvidedVerbatimText = { kind: "provided_verbatim"; text: string };
+
 export type AttorneyManualFieldsReport = {
-  specialProvisions: FieldDisposition<"not_applicable" | "attorney_will_draft" | "provided_verbatim">;
-  otherAddendaText: FieldDisposition<"not_applicable" | "attorney_will_draft" | "provided_verbatim">;
+  specialProvisions: FieldDisposition<ProvidedVerbatimText>;
+  otherAddendaText: FieldDisposition<ProvidedVerbatimText>;
 };
 
 export type SellerContractFactsReport = {
@@ -448,8 +459,10 @@ export function computeSellerContractFactsReport(args: {
     disposition: equitable ? populated(equitable.disposition, "operator_attested", equitable.at) : unresolved(),
   };
 
-  // ---- Attorney/manual fields (¶11, ¶22 "Other:") -- disposition/provenance only ----
-  function attorneyFieldDisposition(slot: "special_provisions" | "other_addenda_text"): FieldDisposition<"not_applicable" | "attorney_will_draft" | "provided_verbatim"> {
+  // ---- Attorney/manual fields (¶11, ¶22 "Other:") -- disposition, provenance,
+  // and (Jess Gate correction) the exact opaque `provided_verbatim` text
+  // itself, transported never interpreted. See module header.
+  function attorneyFieldDisposition(slot: "special_provisions" | "other_addenda_text"): FieldDisposition<ProvidedVerbatimText> {
     const rec = latestAttorneyManualFieldDispositionForOpportunity(notes, opportunityId, slot);
     if (!rec) return unresolved();
     if (rec.disposition.kind === "not_applicable") {
@@ -459,7 +472,12 @@ export function computeSellerContractFactsReport(args: {
       // Explicitly still UNRESOLVED for Send-for-Signature purposes -- "will draft" is not "drafted."
       return unresolved();
     }
-    return populated("provided_verbatim", "operator_attested", rec.at);
+    // provided_verbatim -- carry the EXACT supplied text forward, opaquely.
+    // A blank/whitespace-only text fails closed to unresolved, never
+    // silently treated as resolved -- defense in depth on top of the
+    // carrier's own parser, which already refuses to round-trip one.
+    if (rec.disposition.text.trim() === "") return unresolved();
+    return populated({ kind: "provided_verbatim", text: rec.disposition.text }, "operator_attested", rec.at);
   }
   const attorneyManualFields: AttorneyManualFieldsReport = {
     specialProvisions: attorneyFieldDisposition("special_provisions"),

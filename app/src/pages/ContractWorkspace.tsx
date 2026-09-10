@@ -304,7 +304,7 @@ function renderFieldValue(group: string, field: string, d: FieldDisposition<unkn
     }
     case "attorneyManualFields.specialProvisions":
     case "attorneyManualFields.otherAddendaText":
-      return { text: v === "provided_verbatim" ? "Provided verbatim (see text below)" : humanizeKey(String(v)), color: "#22C55E" };
+      return { text: (v as { kind: string }).kind === "provided_verbatim" ? "Provided verbatim (see text below)" : humanizeKey(String((v as { kind: string }).kind)), color: "#22C55E" };
     default:
       if (typeof v === "string" || typeof v === "number") return { text: String(v), color: "#22C55E" };
       if (typeof v === "boolean") return { text: v ? "Yes" : "No", color: "#22C55E" };

@@ -517,7 +517,7 @@ export type ContractSentEvidence = {
  * happen to match, the two version records disagree about their own
  * provenance and cannot be treated as the same authorized version.
  */
-function isSameContractVersion(a: ContractVersionIdentity, b: ContractVersionIdentity): boolean {
+export function isSameContractVersion(a: ContractVersionIdentity, b: ContractVersionIdentity): boolean {
   return (
     a.agreementAt === b.agreementAt &&
     a.versionSeq === b.versionSeq &&

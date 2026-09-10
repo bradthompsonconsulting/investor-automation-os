@@ -47,7 +47,7 @@ try {
 const M = require(path.join(TMP, 'contract-facts-model.js'));
 const C = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
 
-const FLOOR = 47;
+const FLOOR = 52;
 let failures = 0;
 let checks = 0;
 
@@ -221,6 +221,25 @@ function baseArgs(over) {
   const verbatimNote = C.formatAttorneyManualFieldDispositionNote({ opportunityId: OPP, at: AGREEMENT_AT, operator: 'brad', slot: 'special_provisions', disposition: { kind: 'provided_verbatim', text: 'Attorney-drafted text.' } });
   const withVerbatim = M.computeSellerContractFactsReport(baseArgs({ notes: [{ body: verbatimNote }] }));
   check('"provided_verbatim" is populated once real text is supplied', withVerbatim.attorneyManualFields.specialProvisions.kind, 'populated');
+
+  // Jess Gate correction (source-of-truth round): the authoritative report
+  // now CARRIES the exact opaque text and its real provenance itself --
+  // a downstream consumer (contract-document-model.ts) must never need a
+  // second, independently-read carrier record to get the real content.
+  check('the report carries the EXACT supplied text verbatim, not a placeholder kind string', withVerbatim.attorneyManualFields.specialProvisions.value, { kind: 'provided_verbatim', text: 'Attorney-drafted text.' });
+  check('the report carries this fact\'s real authority classification', withVerbatim.attorneyManualFields.specialProvisions.authority, 'operator_attested');
+  check('the report carries this fact\'s real recordedAt timestamp, not null or invented', withVerbatim.attorneyManualFields.specialProvisions.recordedAt, AGREEMENT_AT);
+
+  // An empty/blank provided_verbatim text fails closed to unresolved at
+  // THIS single authoritative layer -- never silently treated as resolved,
+  // and never left for a downstream consumer to separately re-guard.
+  const emptyVerbatimNote = C.formatAttorneyManualFieldDispositionNote({ opportunityId: OPP, at: AGREEMENT_AT, operator: 'brad', slot: 'special_provisions', disposition: { kind: 'provided_verbatim', text: '' } });
+  const withEmptyVerbatim = M.computeSellerContractFactsReport(baseArgs({ notes: [{ body: emptyVerbatimNote }] }));
+  check('an empty provided_verbatim text is UNRESOLVED, never silently treated as resolved', withEmptyVerbatim.attorneyManualFields.specialProvisions, { kind: 'unresolved' });
+
+  const whitespaceVerbatimNote = C.formatAttorneyManualFieldDispositionNote({ opportunityId: OPP, at: AGREEMENT_AT, operator: 'brad', slot: 'special_provisions', disposition: { kind: 'provided_verbatim', text: '   ' } });
+  const withWhitespaceVerbatim = M.computeSellerContractFactsReport(baseArgs({ notes: [{ body: whitespaceVerbatimNote }] }));
+  check('a whitespace-only provided_verbatim text is also UNRESOLVED', withWhitespaceVerbatim.attorneyManualFields.specialProvisions, { kind: 'unresolved' });
 }
 
 // ============================================================

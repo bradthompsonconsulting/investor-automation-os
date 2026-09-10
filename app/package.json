@@ -35,7 +35,8 @@
     "test:contract-workspace-view": "node scripts/test-contract-workspace-view.cjs",
     "test:contract-workspace-wiring": "node scripts/test-contract-workspace-wiring.cjs",
     "test:seller-contract-facts-carriers": "node scripts/test-seller-contract-facts-carriers.cjs",
-    "test:contract-facts-model": "node scripts/test-contract-facts-model.cjs"
+    "test:contract-facts-model": "node scripts/test-contract-facts-model.cjs",
+    "test:contract-document-model": "node scripts/test-contract-document-model.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",
