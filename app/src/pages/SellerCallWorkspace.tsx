@@ -1999,6 +1999,18 @@ export default function SellerCallWorkspace() {
               <div style={{ fontSize: "10px", color: "#475569", marginTop: "8px" }}>
                 Checklist progress is durable and scoped to this agreed price and property address — it does not carry over to a different agreement or property. Board #9 completes the actual transaction; this checklist is a handoff aid only.
               </div>
+              {/* B9-04 / INV-59 -- ADDITIVE ONLY. A single link to the new,
+                  dedicated Contract Workspace; nothing above this line in
+                  the existing banner is changed, removed, or recomputed. */}
+              <div style={{ marginTop: "10px" }}>
+                <Link
+                  to={`/contacts/${contactId}/contract`}
+                  data-testid="open-contract-workspace-link"
+                  style={{ fontSize: "11px", color: "#22C55E", textDecoration: "none", fontWeight: 600 }}
+                >
+                  Open Contract Ready workspace →
+                </Link>
+              </div>
             </div>
           ) : null}
 

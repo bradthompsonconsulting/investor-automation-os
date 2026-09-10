@@ -31,7 +31,9 @@
     "test:seller-call-negotiation-override-note": "node scripts/test-seller-call-negotiation-override-note.cjs",
     "test:seller-call-conversation-first": "node scripts/test-seller-call-conversation-first.cjs",
     "test:seller-call-readiness-carriers": "node scripts/test-seller-call-readiness-carriers.cjs",
-    "test:board9-contract-model": "node scripts/test-board9-contract-model.cjs"
+    "test:board9-contract-model": "node scripts/test-board9-contract-model.cjs",
+    "test:contract-workspace-view": "node scripts/test-contract-workspace-view.cjs",
+    "test:contract-workspace-wiring": "node scripts/test-contract-workspace-wiring.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",
