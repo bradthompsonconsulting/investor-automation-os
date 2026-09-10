@@ -33,7 +33,9 @@
     "test:seller-call-readiness-carriers": "node scripts/test-seller-call-readiness-carriers.cjs",
     "test:board9-contract-model": "node scripts/test-board9-contract-model.cjs",
     "test:contract-workspace-view": "node scripts/test-contract-workspace-view.cjs",
-    "test:contract-workspace-wiring": "node scripts/test-contract-workspace-wiring.cjs"
+    "test:contract-workspace-wiring": "node scripts/test-contract-workspace-wiring.cjs",
+    "test:seller-contract-facts-carriers": "node scripts/test-seller-contract-facts-carriers.cjs",
+    "test:contract-facts-model": "node scripts/test-contract-facts-model.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",
