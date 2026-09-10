@@ -200,7 +200,7 @@ jobs:
       - name: Typecheck root Netlify functions
         run: ./app/node_modules/.bin/tsc -p netlify/functions/tsconfig.json
 
-      - name: Identifier boundary — 9 offline checks
+      - name: Identifier boundary — 10 offline checks
         run: node scripts/test-identifier-boundary.cjs
 
       # Two steps, not one. The failure meanings differ and an operator reading
