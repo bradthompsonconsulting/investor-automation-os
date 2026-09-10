@@ -40,30 +40,38 @@
  * length removing at the identifier level. If you can break the pattern and
  * only Check 9 or 10 fails, this file is wrong.
  *
- * SHAPE ALONE OVERREACHES INTO ORDINARY PROPERTY NAMES. INV-60 (2026-09-10)
- * introduced three domain keys — addendaApplicability, attorneyManualFields,
- * signingAuthorityNote — that are coincidentally exactly 20 alphanumeric
- * characters and tripped this check, though none of them is a GHL identifier,
- * a GHL config key, or environment-bound in any way. A GHL id is an opaque
- * random token: real production/test values in ghl-config.ts mix case
- * irregularly and are frequently interspersed with digits. An ordinary
- * TypeScript property name, discriminant, report key or test-id suffix, by
- * contrast, reads as genuine English word segments — a lowercase run
- * followed by one or more Capitalized-word segments, never touching a digit.
- * ORDINARY_CAMEL_CASE_WORD below types out that shape structurally, not by
- * naming the three keys: it exempts anything that reads as ordinary camelCase
- * English, which is a property no random 20-character token plausibly has by
- * chance (verified against every literal presently in ghl-config.ts — see
- * Check 10). This is a matcher-precision fix, not a weakening of scope: no
- * SCAN_DIRS entry, EXCLUSIONS entry, or APPROVED_HOME changed.
+ * A NARROW, ENUMERATED, EXACT-LITERAL EXEMPTION — NOT A SHAPE EXEMPTION. INV-60
+ * (2026-09-10) introduced three domain keys — addendaApplicability,
+ * attorneyManualFields, signingAuthorityNote — that are coincidentally exactly
+ * 20 alphanumeric characters and tripped this check, though none of them is a
+ * GHL identifier, a GHL config key, or environment-bound in any way.
+ *
+ * A first attempt exempted anything SHAPED like ordinary camelCase English
+ * (lowercase run, then Capitalized-word segments, no digits). REJECTED at
+ * Jess Gate 2026-09-10: no id currently in ghl-config.ts happens to fall into
+ * that shape, but GHL generates ids, not English words, so nothing about the
+ * generator rules a future one out. A shape-based exemption would make that
+ * future id permanently invisible to the boundary check the day it landed,
+ * silently, with no diff to review — which is non-deterministic against this
+ * check's whole purpose: catching every otherwise-matching token.
+ *
+ * EXEMPT_LITERALS below instead lists the three offending strings BY EXACT
+ * VALUE. It exempts nothing else, however camelCase-shaped: an unknown
+ * 20-character token — including one that looks just like one of the three
+ * with a single character changed — is still caught (Check 9's
+ * "attorneyManualFieldz" fixture, and Check 10's mixed-context proof). Adding
+ * a fourth literal here is deliberately a one-line, reviewable, named edit —
+ * never a shape or pattern change. This is a matcher-precision fix, not a
+ * weakening of scope: no SCAN_DIRS entry, EXCLUSIONS entry, or APPROVED_HOME
+ * changed.
  *
  * FLOOR = 10 IS AUTHORED, not observed. It moves only by deliberate addition
  * or removal with a stated reason, never by back-filling from a run. It is
  * deliberately NOT one-check-per-file: that floor would drift every time anyone
  * added a file and would stop meaning anything. Raised from 9 to 10 at the
- * same time as the camelCase exemption above, by Check 10, which proves the
- * exemption does not swallow a real id sitting beside an exempted word in the
- * same source text.
+ * same time as the exact-literal exemption above, by Check 10, which proves
+ * the exemption does not swallow a real id sitting beside an exempted literal
+ * in the same source text.
  *
  * Run:  node scripts/test-identifier-boundary.cjs
  * Exit: 0 green · 1 failures · 2 floor mismatch
@@ -104,18 +112,24 @@ const IDENTIFIER_PATTERN =
   /"[A-Za-z0-9]{20}"|"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/g;
 
 /**
- * An ordinary camelCase property name: a lowercase word, then one or more
- * Capitalized-word segments, letters only. No random 20-character token is
- * expected to have this shape by chance — it is how humans name things, not
- * how tokens are generated. Applies to the quoted literal's inner text, so a
- * hyphenated UUID never matches this branch regardless of its letters.
+ * The ONLY exemption from the matcher: three exact, named strings, and
+ * nothing else. Each is an INV-60 domain key (a report-group/field name
+ * internal to the contract-facts model), verified NOT to be a GHL identifier,
+ * a GHL config key, or environment-bound in any way, and coincidentally 20
+ * alphanumeric characters. This is enumeration, not a pattern: a fourth
+ * literal requires a fourth named entry here, visible in a diff, never a
+ * broadened shape.
  */
-const ORDINARY_CAMEL_CASE_WORD = /^[a-z]+(?:[A-Z][a-z]+)+$/;
+const EXEMPT_LITERALS = new Set([
+  "addendaApplicability",
+  "attorneyManualFields",
+  "signingAuthorityNote",
+]);
 
 /** @param {string} source @returns {string[]} every identifier literal found */
 function findIdentifiers(source) {
   const found = source.match(IDENTIFIER_PATTERN) || [];
-  return found.filter((literal) => !ORDINARY_CAMEL_CASE_WORD.test(literal.slice(1, -1)));
+  return found.filter((literal) => !EXEMPT_LITERALS.has(literal.slice(1, -1)));
 }
 
 // ── Harness plumbing ────────────────────────────────────────────────────────
@@ -223,6 +237,11 @@ const MUST_MATCH = [
   ['"jmHG4B8RdzwpfqruNf68"', "production locationId"],
   ['"0f0511af-2e59-49c9-a141-12a7f1c78914"', "a stage UUID"],
   ['"cfkm0kb9CLvjZgyrcIFz"', "a field id"],
+  // Same visual shape as an exempted literal with ONE character changed (the
+  // trailing "s" -> "z"): proves EXEMPT_LITERALS is an exact-value match, not
+  // a camelCase pattern -- an unknown 20-character token is still caught even
+  // when it looks just like a known-exempt one.
+  ['"attorneyManualFieldz"', "unknown 20-char camelCase token, not in EXEMPT_LITERALS"],
 ];
 const MUST_REJECT = [
   ['"jmHG4B8RdzwpfqruNf6"', "19 chars"],
@@ -232,9 +251,9 @@ const MUST_REJECT = [
   ['"0f0511zz-2e59-49c9-a141-12a7f1c78914"', "UUID shape, non-hex"],
   ['"0f0511af-2e59-49c9-a141-12a7f1c7891"', "UUID shape, short final group"],
   ["jmHG4B8RdzwpfqruNf68", "unquoted"],
-  ['"addendaApplicability"', "INV-60 domain key, ordinary camelCase"],
-  ['"attorneyManualFields"', "INV-60 domain key, ordinary camelCase"],
-  ['"signingAuthorityNote"', "INV-60 domain key, ordinary camelCase"],
+  ['"addendaApplicability"', "INV-60 domain key, exact-literal exemption"],
+  ['"attorneyManualFields"', "INV-60 domain key, exact-literal exemption"],
+  ['"signingAuthorityNote"', "INV-60 domain key, exact-literal exemption"],
 ];
 
 const missed = MUST_MATCH.filter(([s]) => findIdentifiers(s).length === 0);
@@ -248,25 +267,29 @@ check(
     : `${MUST_MATCH.length} positives detected, ${MUST_REJECT.length} near-misses rejected`,
 );
 
-// ── Check 10: the camelCase exemption does not swallow a real id sitting
-// beside it — proven within ONE source text, not just in isolated fixtures.
-// Check 9 shows each fixture matches or rejects on its own; this shows the
-// exemption keeps its precision when a real id and exempted words appear
-// together, which is the shape an actual violation would take. The real-id
-// fixture is the production locationId already committed in ghl-config.ts and
-// already reused as a Check 9 fixture — no new value is introduced.
+// ── Check 10: the exact-literal exemption does not swallow anything beside
+// it — proven within ONE source text, not just in isolated fixtures. Check 9
+// shows each fixture matches or rejects on its own; this shows the exemption
+// keeps its precision when a real id, an unknown near-lookalike token, and
+// the three exempted literals all appear together, which is the shape an
+// actual violation would take. The real-id fixture is the production
+// locationId already committed in ghl-config.ts and already reused as a
+// Check 9 fixture — no new value is introduced.
 // ────────────────────────────────────────────────────────────────────────────
 
 const MIXED_FIXTURE =
   'const groupKey = "addendaApplicability";\n' +
   'const other = "attorneyManualFields";\n' +
   'const note = "signingAuthorityNote";\n' +
+  'const unknown = "attorneyManualFieldz";\n' +
   'const leaked = "jmHG4B8RdzwpfqruNf68";\n';
 const mixedFound = findIdentifiers(MIXED_FIXTURE);
+const mixedWant = ['"attorneyManualFieldz"', '"jmHG4B8RdzwpfqruNf68"'];
 check(
-  "domain-keys-exempt-real-id-still-caught",
-  mixedFound.length === 1 && mixedFound[0] === '"jmHG4B8RdzwpfqruNf68"',
-  `found [${mixedFound.join(", ")}] — want exactly ["jmHG4B8RdzwpfqruNf68"]`,
+  "exempt-literals-precise-real-id-and-unknown-token-still-caught",
+  mixedFound.length === mixedWant.length &&
+    mixedWant.every((w) => mixedFound.includes(w)),
+  `found [${mixedFound.join(", ")}] — want exactly [${mixedWant.join(", ")}]`,
 );
 
 // ── Floor ───────────────────────────────────────────────────────────────────
