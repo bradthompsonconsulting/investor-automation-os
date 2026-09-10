@@ -19,8 +19,10 @@ the Board #9 docs named below, in the order named.
 
 Board #8 (MAO / Offer / Negotiation V1) is complete and merged. Board #9
 (Seller Contract / Under Contract V1): B9-01 through B9-03 are Done and
-merged. B9-04 (INV-59) is in progress — implementation complete and
-locally verified, held for pre-commit sign-off before it is committed.
+merged. B9-04 (INV-59) is in progress — committed and pushed, PR #41
+open against main at reviewed head
+`fe9c5c5a621aba1270cd6103bc1c2dfdc6387808`, awaiting final Jess PR gate
+and Brad's merge approval.
 
 ### What was completed and merged, with exact SHAs
 
@@ -40,12 +42,12 @@ Linear: INV-55, INV-68, INV-69, INV-56, INV-57, INV-58 are all **Done**. Each ha
 
 **INV-59 (B9-04) — the Agreement Reached workspace and Contract Ready checklist.** Status in Linear: **In Progress**, not Done.
 
-- **Branch:** `brad/inv-59-b9-04-build-agreement-reached-workspace-and-contract-ready`, created from `4adeada9c6608c8a08559e64e10f05ecc447b363` (current main tip).
-- **Not committed, not pushed.** Implementation is complete in the local working tree; nothing has been committed yet — it is being held for pre-commit sign-off.
+- **Branch:** `brad/inv-59-b9-04-build-agreement-reached-workspace-and-contract-ready`, created from `4adeada9c6608c8a08559e64e10f05ecc447b363` (main tip at branch creation).
+- **Committed and pushed.** [PR #41](https://github.com/bradthompsonconsulting/investor-automation-os/pull/41) open against `main`, reviewed head `fe9c5c5a621aba1270cd6103bc1c2dfdc6387808` — awaiting final Jess PR gate and Brad's merge approval.
 - **Changed/new files vs. main:** `app/src/pages/ContractWorkspace.tsx` (new — the dedicated `/contacts/:id/contract` workspace), `app/src/lib/contract-workspace-view.ts` (new — pure page-state module, calls `deriveInheritedEconomics`/`evaluateContractReady` from B9-03's model directly, recreates no readiness logic), `app/scripts/test-contract-workspace-view.cjs` and `app/scripts/test-contract-workspace-wiring.cjs` (new, 37 + 41 deterministic checks), `app/src/App.tsx` (new route), `app/src/pages/SellerCallWorkspace.tsx` (one additive CTA link into the existing Agreement Reached banner — nothing existing there removed or changed), `app/package.json` (two new test script entries).
-- **Verified this session:** `npx tsc -b` and `npm run build` both clean; the two new test suites plus the full existing 24-script regression battery all pass (the one standing `test:arv-persist` failure is pre-existing/unrelated, confirmed present on a clean `origin/main` checkout back in the INV-58 work). Visually verified via a mocked-fixture Playwright check (no `netlify dev`, no `.env` change, no GHL credential — every `.netlify/functions/*` call intercepted in-browser) across all five required states (complete, incomplete, conflicting history, revised/stale, authoritative-data-unavailable) at both desktop and narrow/mobile viewports, plus the SellerCallWorkspace CTA click-through to `/contacts/:id/contract`. Screenshots are session-local (`scratchpad/screenshots/`), not part of the commit.
+- **Verified this session:** `npx tsc -b` and `npm run build` both clean; the two new test suites (both passing in full — 37/37 and 41/41) plus the full existing 24-script regression battery, which completed: every INV-59-affected test passed, and `test:arv-persist` retains its one confirmed pre-existing, unrelated failure (present on a clean `origin/main` checkout back in the INV-58 work — not introduced or touched here). Visually verified via a mocked-fixture Playwright check (no `netlify dev`, no `.env` change, no GHL credential — every `.netlify/functions/*` call intercepted in-browser) across all five required states (complete, incomplete, conflicting history, revised/stale, authoritative-data-unavailable) at both desktop and narrow/mobile viewports, plus the SellerCallWorkspace CTA click-through to `/contacts/:id/contract`. Screenshots are session-local (`scratchpad/screenshots/`), not part of the commit.
 - **Observed, not a defect of this page:** at a 390px viewport, `src/components/Layout.tsx`'s sidebar (`w-60 shrink-0`, no `@media` query anywhere in that file) does not collapse and visibly squeezes page content on every route in this app, ContractWorkspace included — confirmed pre-existing and app-wide, not something this issue introduced or is in scope to fix.
-- **Not yet done:** commit, push, PR, Linear Done, INV-60.
+- **Not yet done:** merge, Linear Done, INV-60.
 
 ### What is blocked, and on whom
 
@@ -66,4 +68,4 @@ One operational note, not a project finding: this session's own mocked-visual-ch
 3. `docs/SELLER_CONTRACT_STATE_MACHINE_V1.md` — the locked Board #9 state machine (INV-56).
 4. `docs/BOARD9_CONTRACT_INVENTORY_V1.md` — the Board #9 inventory (INV-57, Done).
 5. `docs/SELLER_ACQUISITION_WORKFLOW.md` and `docs/DEAL_ECONOMICS_OFFER_READINESS_V1.md` for the Board #8 foundation both of the above build on.
-6. `app/src/lib/board9-contract-model.ts` (INV-58) for the authoritative Board #9 domain model, and `app/src/lib/contract-workspace-view.ts` + `app/src/pages/ContractWorkspace.tsx` (INV-59, not yet committed) for its first consumer.
+6. `app/src/lib/board9-contract-model.ts` (INV-58) for the authoritative Board #9 domain model, and `app/src/lib/contract-workspace-view.ts` + `app/src/pages/ContractWorkspace.tsx` (INV-59, PR #41 open) for its first consumer.
