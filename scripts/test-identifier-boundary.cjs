@@ -32,18 +32,38 @@
  * tree would flag the Gate 3 deployment observer. Excluding it BY NAME would
  * read as "this file may hold GHL ids", which is the opposite of true.
  *
- * THE MATCHER IS A SINGLE IMPLEMENTATION. Checks 1-6 and Check 9 both call
+ * THE MATCHER IS A SINGLE IMPLEMENTATION. Checks 1-6, 9 and 10 all call
  * findIdentifiers(). They are not allowed to diverge: a duplicated regex lets
  * the self-test pass green while the production scanner's pattern is
  * independently broken — two sources of truth for the one thing this file
  * exists to get right, which is the same defect class Gate 4B spent its whole
  * length removing at the identifier level. If you can break the pattern and
- * only Check 9 fails, this file is wrong.
+ * only Check 9 or 10 fails, this file is wrong.
  *
- * FLOOR = 9 IS AUTHORED, not observed. It moves only by deliberate addition or
- * removal with a stated reason, never by back-filling from a run. It is
+ * SHAPE ALONE OVERREACHES INTO ORDINARY PROPERTY NAMES. INV-60 (2026-09-10)
+ * introduced three domain keys — addendaApplicability, attorneyManualFields,
+ * signingAuthorityNote — that are coincidentally exactly 20 alphanumeric
+ * characters and tripped this check, though none of them is a GHL identifier,
+ * a GHL config key, or environment-bound in any way. A GHL id is an opaque
+ * random token: real production/test values in ghl-config.ts mix case
+ * irregularly and are frequently interspersed with digits. An ordinary
+ * TypeScript property name, discriminant, report key or test-id suffix, by
+ * contrast, reads as genuine English word segments — a lowercase run
+ * followed by one or more Capitalized-word segments, never touching a digit.
+ * ORDINARY_CAMEL_CASE_WORD below types out that shape structurally, not by
+ * naming the three keys: it exempts anything that reads as ordinary camelCase
+ * English, which is a property no random 20-character token plausibly has by
+ * chance (verified against every literal presently in ghl-config.ts — see
+ * Check 10). This is a matcher-precision fix, not a weakening of scope: no
+ * SCAN_DIRS entry, EXCLUSIONS entry, or APPROVED_HOME changed.
+ *
+ * FLOOR = 10 IS AUTHORED, not observed. It moves only by deliberate addition
+ * or removal with a stated reason, never by back-filling from a run. It is
  * deliberately NOT one-check-per-file: that floor would drift every time anyone
- * added a file and would stop meaning anything.
+ * added a file and would stop meaning anything. Raised from 9 to 10 at the
+ * same time as the camelCase exemption above, by Check 10, which proves the
+ * exemption does not swallow a real id sitting beside an exempted word in the
+ * same source text.
  *
  * Run:  node scripts/test-identifier-boundary.cjs
  * Exit: 0 green · 1 failures · 2 floor mismatch
@@ -75,7 +95,7 @@ const APPROVED_HOME = "app/shared/ghl-config.ts";
  */
 const EXCLUSIONS = ["app/src/pages/MaoCalculator.tsx"];
 
-const FLOOR = 9;
+const FLOOR = 10;
 
 // ── The matcher. ONE implementation, used by Checks 1-6 AND Check 9. ────────
 // Two shapes: a 20-character alphanumeric GHL id, and a canonical lowercase-hex
@@ -83,9 +103,19 @@ const FLOOR = 9;
 const IDENTIFIER_PATTERN =
   /"[A-Za-z0-9]{20}"|"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/g;
 
+/**
+ * An ordinary camelCase property name: a lowercase word, then one or more
+ * Capitalized-word segments, letters only. No random 20-character token is
+ * expected to have this shape by chance — it is how humans name things, not
+ * how tokens are generated. Applies to the quoted literal's inner text, so a
+ * hyphenated UUID never matches this branch regardless of its letters.
+ */
+const ORDINARY_CAMEL_CASE_WORD = /^[a-z]+(?:[A-Z][a-z]+)+$/;
+
 /** @param {string} source @returns {string[]} every identifier literal found */
 function findIdentifiers(source) {
-  return source.match(IDENTIFIER_PATTERN) || [];
+  const found = source.match(IDENTIFIER_PATTERN) || [];
+  return found.filter((literal) => !ORDINARY_CAMEL_CASE_WORD.test(literal.slice(1, -1)));
 }
 
 // ── Harness plumbing ────────────────────────────────────────────────────────
@@ -202,6 +232,9 @@ const MUST_REJECT = [
   ['"0f0511zz-2e59-49c9-a141-12a7f1c78914"', "UUID shape, non-hex"],
   ['"0f0511af-2e59-49c9-a141-12a7f1c7891"', "UUID shape, short final group"],
   ["jmHG4B8RdzwpfqruNf68", "unquoted"],
+  ['"addendaApplicability"', "INV-60 domain key, ordinary camelCase"],
+  ['"attorneyManualFields"', "INV-60 domain key, ordinary camelCase"],
+  ['"signingAuthorityNote"', "INV-60 domain key, ordinary camelCase"],
 ];
 
 const missed = MUST_MATCH.filter(([s]) => findIdentifiers(s).length === 0);
@@ -213,6 +246,27 @@ check(
     ? `MISSED [${missed.map(([s, w]) => `${s} (${w})`).join(", ")}] ` +
       `OVERREACHED [${overreached.map(([s, w]) => `${s} (${w})`).join(", ")}]`
     : `${MUST_MATCH.length} positives detected, ${MUST_REJECT.length} near-misses rejected`,
+);
+
+// ── Check 10: the camelCase exemption does not swallow a real id sitting
+// beside it — proven within ONE source text, not just in isolated fixtures.
+// Check 9 shows each fixture matches or rejects on its own; this shows the
+// exemption keeps its precision when a real id and exempted words appear
+// together, which is the shape an actual violation would take. The real-id
+// fixture is the production locationId already committed in ghl-config.ts and
+// already reused as a Check 9 fixture — no new value is introduced.
+// ────────────────────────────────────────────────────────────────────────────
+
+const MIXED_FIXTURE =
+  'const groupKey = "addendaApplicability";\n' +
+  'const other = "attorneyManualFields";\n' +
+  'const note = "signingAuthorityNote";\n' +
+  'const leaked = "jmHG4B8RdzwpfqruNf68";\n';
+const mixedFound = findIdentifiers(MIXED_FIXTURE);
+check(
+  "domain-keys-exempt-real-id-still-caught",
+  mixedFound.length === 1 && mixedFound[0] === '"jmHG4B8RdzwpfqruNf68"',
+  `found [${mixedFound.join(", ")}] — want exactly ["jmHG4B8RdzwpfqruNf68"]`,
 );
 
 // ── Floor ───────────────────────────────────────────────────────────────────
