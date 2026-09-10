@@ -8,7 +8,19 @@
  * (B9-03/INV-58, already shipped) directly -- REUSED, never reimplemented or
  * recomputed. This module answers one question: for the exact Brad-approved
  * V1 template, what does each blank read, is that reading traceable to an
- * authoritative fact, and is the document as a whole sendable.
+ * authoritative fact, and is the POPULATED PREVIEW as a whole complete.
+ *
+ * PREVIEW COMPLETENESS IS NOT SEND AUTHORIZATION (Jess Gate correction,
+ * this issue). `previewComplete` means only: every required template blank
+ * is resolved (populated or an approved not-applicable disposition), the
+ * additional required facts are resolved, and no material-term conflict
+ * exists. It carries no judgment about whether Brad has reviewed the
+ * preview, whether the agreement should be sent, or whether it is safe or
+ * authorized to send. This module exposes no send/authorize concept at
+ * all -- no field, type, or function here represents or grants send
+ * authorization. Explicit Brad review and send authorization are INV-62 /
+ * B9-07's exclusive job, entirely downstream of and untouched by this
+ * module.
  *
  * THE APPROVED V1 TEMPLATE. Per Brad's Product Owner ruling recorded on the
  * INV-57 Linear issue (2026-09-09) and `docs/BOARD9_CONTRACT_INVENTORY_V1.md`
@@ -78,17 +90,45 @@
  * argument, exactly the same "pure function, caller does the carrier read"
  * convention `contract-facts-model.ts` itself uses for `propertyAddress`.
  *
- * `sellerEquitableInterest` and `attorneyManualFields` are NOT TREC 20-19
- * blanks (the former is a pre-contract compliance fact,
- * `seller-contract-facts-carriers.ts` Section 12; the latter is
- * attorney/manual-controlled free text this module never interprets) and so
- * are never given a `paragraph` citation in `CONTRACT_DOCUMENT_FIELD_MAP` --
- * `attorneyManualFields` fields ARE template blanks (¶11, ¶22 "Other:") and
- * so appear in the map for their disposition/provenance ONLY, exactly as
- * `contract-facts-model.ts` already treats them (opaque, never evaluated);
- * `sellerEquitableInterest` gates `documentSendable` from
- * `additionalRequiredFacts` instead, since it is not a document blank at
- * all.
+ * `sellerEquitableInterest` is NOT a TREC 20-19 blank (a pre-contract
+ * compliance fact, `seller-contract-facts-carriers.ts` Section 12) and so
+ * carries no `paragraph` citation -- it gates `previewComplete` from its
+ * own `additionalRequiredFacts` list instead, since it is not a document
+ * blank at all. `attorneyManualFields` fields ARE template blanks (¶11, ¶22
+ * "Other:").
+ *
+ * ATTORNEY/MANUAL FIELDS -- LOCKED FIELD-STATE RULES (Jess Gate correction,
+ * this issue). `contract-facts-model.ts`'s own `AttorneyManualFieldsReport`
+ * is deliberately opaque -- it carries disposition and provenance ONLY, and
+ * for a `provided_verbatim` disposition its `FieldDisposition` VALUE is the
+ * literal string `"provided_verbatim"`, never the attorney-supplied text
+ * itself (see that module's own header: "this module never reads,
+ * evaluates, or forms an opinion about the correctness of any text a
+ * `provided_verbatim` disposition carries -- it is opaque here"). A document
+ * preview, unlike a checklist, must actually reproduce that text -- so
+ * `buildAttorneyManualFieldsLines` below reads the raw carrier record
+ * directly via `seller-contract-facts-carriers.ts`'s own already-shipped
+ * `latestAttorneyManualFieldDispositionForOpportunity` (same `notes`/
+ * `opportunityId` `contract-facts-model.ts` was given -- no new carrier, no
+ * reparsing, no second source of truth) rather than through the opaque
+ * report field. The rules this enforces, exactly as locked:
+ *   - `attorney_will_draft` is UNRESOLVED for preview completeness until
+ *     actual text exists -- "will draft" is never treated as completed.
+ *   - `provided_verbatim` is resolved ONLY when actual text exists; the
+ *     EXACT supplied text is reproduced opaquely (never rewritten,
+ *     summarized, interpreted, approved, or judged) together with its own
+ *     recorded provenance. A blank/whitespace-only text is UNRESOLVED, not
+ *     silently accepted -- defense in depth on top of the carrier's own
+ *     parser, which already refuses to round-trip an empty `text` at all.
+ *   - `not_applicable` resolves correctly -- the one approved disposition
+ *     this shipped carrier's own schema defines for these two fields.
+ *     ("intentionally_blank" is not a distinct kind
+ *     `seller-contract-facts-carriers.ts`'s `AttorneyManualFieldDisposition`
+ *     defines; introducing one would edit that already-shipped B9-05 file,
+ *     outside this issue's accepted four-file scope. `not_applicable` is
+ *     the approved disposition for this specific field per that carrier.)
+ * None of these three states creates, implies, or is read anywhere as send
+ * authorization -- see the module-level note above.
  */
 
 import {
@@ -102,22 +142,24 @@ import {
   type FieldDisposition,
   computeSellerContractFactsReadiness,
 } from "./contract-facts-model";
-import type {
-  ValueOrNone,
-  ReservationsFact,
-  NaturalResourceLeaseFact,
-  AdditionalEarnestMoneyFact,
-  ExpenseParty,
-  ShortageAmendmentElection,
-  SurveyElection,
-  SellerDisclosureNoticeFact,
-  AsIsElectionFact,
-  WaterDisclosureFact,
-  BrokerageContribution,
-  RepresentationFact,
-  BrokerInfo,
-  AddendaApplicabilityItems,
-  EquitableInterestDisposition,
+import {
+  type ValueOrNone,
+  type ReservationsFact,
+  type NaturalResourceLeaseFact,
+  type AdditionalEarnestMoneyFact,
+  type ExpenseParty,
+  type ShortageAmendmentElection,
+  type SurveyElection,
+  type SellerDisclosureNoticeFact,
+  type AsIsElectionFact,
+  type WaterDisclosureFact,
+  type BrokerageContribution,
+  type RepresentationFact,
+  type BrokerInfo,
+  type AddendaApplicabilityItems,
+  type EquitableInterestDisposition,
+  type AttorneyManualFieldSlot,
+  latestAttorneyManualFieldDispositionForOpportunity,
 } from "./seller-contract-facts-carriers";
 
 /* ==================================================================== */
@@ -538,20 +580,73 @@ export function buildNoticeContactLines(r: SellerContractFactsReport["noticeCont
   ];
 }
 
+/**
+ * Reads the raw carrier record directly (never the opaque report field) so
+ * a `provided_verbatim` disposition's EXACT text can be reproduced -- see
+ * the module header's "ATTORNEY/MANUAL FIELDS -- LOCKED FIELD-STATE RULES"
+ * note. `notes` must be the SAME array the caller passed to
+ * `computeSellerContractFactsReport` -- this reads through the identical
+ * already-shipped `latestAttorneyManualFieldDispositionForOpportunity`
+ * function that report computation itself uses, so the two can never
+ * disagree about which record is latest.
+ */
+function attorneyManualFieldLine(
+  paragraph: string,
+  field: "specialProvisions" | "otherAddendaText",
+  notes: { body: string }[],
+  opportunityId: string,
+  slot: AttorneyManualFieldSlot,
+): ContractDocumentLine {
+  const label = CONTRACT_DOCUMENT_FIELD_LABEL[`attorneyManualFields.${field}`] ?? field;
+  const base = { paragraph, group: "attorneyManualFields", field, label };
+  const rec = latestAttorneyManualFieldDispositionForOpportunity(notes, opportunityId, slot);
+
+  if (!rec) {
+    return { ...base, status: "unresolved", text: null, authority: null, recordedAt: null };
+  }
+  if (rec.disposition.kind === "attorney_will_draft") {
+    // Locked rule: "will draft" is never treated as resolved/completed.
+    return { ...base, status: "unresolved", text: null, authority: null, recordedAt: null };
+  }
+  if (rec.disposition.kind === "not_applicable") {
+    // The one approved disposition this shipped carrier's own schema
+    // defines for this field -- see module header.
+    return {
+      ...base,
+      status: "not_applicable",
+      text: "Not applicable (approved disposition for this field).",
+      authority: "operator_attested",
+      recordedAt: rec.at,
+    };
+  }
+  // provided_verbatim -- reproduce the EXACT supplied text, opaquely, never
+  // rewritten/summarized/interpreted/approved/judged. Defense in depth: the
+  // carrier's own parser already refuses to round-trip a blank/whitespace-
+  // only text, but this never trusts that blindly -- an empty value here
+  // still fails closed to unresolved, exactly as the locked rule requires.
+  if (rec.disposition.text.trim() === "") {
+    return { ...base, status: "unresolved", text: null, authority: null, recordedAt: null };
+  }
+  return {
+    ...base,
+    status: "populated",
+    text: rec.disposition.text,
+    authority: "operator_attested",
+    recordedAt: rec.at,
+  };
+}
+
 export function buildAttorneyManualFieldsLines(
-  r: SellerContractFactsReport["attorneyManualFields"],
+  notes: { body: string }[],
+  opportunityId: string,
 ): ContractDocumentLine[] {
-  const render = (v: "not_applicable" | "attorney_will_draft" | "provided_verbatim") =>
-    v === "provided_verbatim"
-      ? "Provided verbatim by attorney/operator -- this module does not evaluate its content."
-      : "Not applicable.";
   return [
-    toLine("11", "attorneyManualFields", "specialProvisions", r.specialProvisions, render),
-    toLine('22 "Other:"', "attorneyManualFields", "otherAddendaText", r.otherAddendaText, render),
+    attorneyManualFieldLine("11", "specialProvisions", notes, opportunityId, "special_provisions"),
+    attorneyManualFieldLine('22 "Other:"', "otherAddendaText", notes, opportunityId, "other_addenda_text"),
   ];
 }
 
-/** NOT a template blank -- see module header. No `paragraph` citation; gates `documentSendable` from its own `additionalRequiredFacts` list instead. */
+/** NOT a template blank -- see module header. No `paragraph` citation; gates `previewComplete` from its own `additionalRequiredFacts` list instead. */
 export function buildAdditionalRequiredFacts(
   r: SellerContractFactsReport["sellerEquitableInterest"],
 ): ContractDocumentLine[] {
@@ -569,13 +664,21 @@ export type ContractDocumentPreview = {
   version: ContractVersionIdentity;
   /** Every TREC 20-19 blank this V1 path maps, in template paragraph order. */
   documentLines: ContractDocumentLine[];
-  /** Facts required before Send but NOT a template blank (`sellerEquitableInterest`) -- see module header. */
+  /** Facts required for preview completeness but NOT a template blank (`sellerEquitableInterest`) -- see module header. */
   additionalRequiredFacts: ContractDocumentLine[];
   /** Verbatim from `contract-facts-model.ts` -- never re-derived. */
   unresolvedFieldCount: number;
   priceConflictCount: number;
-  /** `false` when any template-blank field, any additional required fact, the property street address, or a price conflict is not resolved -- "missing or conflicting facts prevent a sendable document." */
-  documentSendable: boolean;
+  /**
+   * `false` when any template-blank field, any additional required fact, the
+   * property street address, or a price conflict is not resolved --
+   * "missing or conflicting facts prevent preview completion." This is
+   * POPULATION/PREVIEW COMPLETENESS ONLY -- it carries no send authorization
+   * and must never be read as one. See the module header's "PREVIEW
+   * COMPLETENESS IS NOT SEND AUTHORIZATION" note; Brad's explicit review and
+   * send authorization are INV-62/B9-07's job, not this field's.
+   */
+  previewComplete: boolean;
   /** Operator-readable, one entry per blocking condition -- never a bare boolean. */
   blockingReasons: string[];
 };
@@ -586,10 +689,19 @@ export type BuildContractDocumentPreviewArgs = {
   report: SellerContractFactsReport;
   /** Sourced elsewhere (`PropertyIdentityConfirmation`) and supplied already-resolved -- this module performs no carrier read. See module header. */
   propertyStreetAddress: FieldDisposition<string>;
+  /**
+   * The SAME notes array already passed to `computeSellerContractFactsReport`
+   * to build `report` -- needed ONLY so `buildAttorneyManualFieldsLines` can
+   * read the raw attorney/manual-field carrier record directly (see module
+   * header). This module still performs no fetch/GHL call itself; the
+   * caller supplies already-fetched notes, exactly as `contract-facts-
+   * model.ts` itself requires of its own callers.
+   */
+  notes: { body: string }[];
 };
 
 export function buildContractDocumentPreview(args: BuildContractDocumentPreviewArgs): ContractDocumentPreview {
-  const { opportunityId, version, report, propertyStreetAddress } = args;
+  const { opportunityId, version, report, propertyStreetAddress, notes } = args;
 
   const documentLines: ContractDocumentLine[] = [
     ...buildIdentityLines(propertyStreetAddress),
@@ -605,7 +717,7 @@ export function buildContractDocumentPreview(args: BuildContractDocumentPreviewA
     ...buildRepresentationLines(report.representation),
     ...buildAddendaApplicabilityLines(report.addendaApplicability),
     ...buildNoticeContactLines(report.noticeContact),
-    ...buildAttorneyManualFieldsLines(report.attorneyManualFields),
+    ...buildAttorneyManualFieldsLines(notes, opportunityId),
   ];
 
   const additionalRequiredFacts = buildAdditionalRequiredFacts(report.sellerEquitableInterest);
@@ -638,7 +750,7 @@ export function buildContractDocumentPreview(args: BuildContractDocumentPreviewA
     additionalRequiredFacts,
     unresolvedFieldCount: readiness.unresolvedFields.length,
     priceConflictCount: report.priceConflicts.length,
-    documentSendable: blockingReasons.length === 0,
+    previewComplete: blockingReasons.length === 0,
     blockingReasons,
   };
 }
