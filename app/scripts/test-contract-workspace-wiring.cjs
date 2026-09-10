@@ -1,5 +1,7 @@
 /**
- * Contract Workspace -- wiring/boundary test runner. B9-04 / INV-59.
+ * Contract Workspace -- wiring/boundary test runner. B9-04 / INV-59,
+ * extended B9-05 / INV-60 for the TREC 20-19 seller contract facts
+ * section (contract-facts-model.ts / seller-contract-facts-carriers.ts).
  *
  * This repository has no browser-rendering test harness (confirmed by
  * `test-seller-call-workspace-wiring.cjs`'s own header, still true here)
@@ -13,11 +15,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const APP = path.resolve(__dirname, '..');
+const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 41;
+const FLOOR = 70;
 let failures = 0;
 let checks = 0;
 
@@ -132,8 +136,8 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('the data-fetching useEffect contains no ghl.notes.create call', /ghl\.notes\.create/.test(effectBody), false);
   check('the data-fetching useEffect contains no write of any kind (create/update/set)', /\.(create|update|set[A-Z])\(/.test(effectBody), false);
 
-  check('ghl.notes.create is called exactly once in the whole page (the one checklist write)', (contractTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 1);
-  check('the one write lives inside handleToggleChecklistItem', /async function handleToggleChecklistItem[\s\S]*?ghl\.notes\.create\(/.test(contractTsxNoComments), true);
+  check('ghl.notes.create is called exactly twice in the whole page (the checklist write, plus the ONE shared commitNote choke point every B9-05 group form routes through)', (contractTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 2);
+  check('the checklist write lives inside handleToggleChecklistItem', /async function handleToggleChecklistItem[\s\S]*?ghl\.notes\.create\(/.test(contractTsxNoComments), true);
   check('handleToggleChecklistItem is wired ONLY to a checkbox onChange, never called from the fetch effect or on mount', (() => {
     const onChangeWiring = /onChange=\{\(e\) => handleToggleChecklistItem\(item\.key, e\.target\.checked\)\}/.test(contractTsx);
     const totalOccurrences = (contractTsxNoComments.match(/handleToggleChecklistItem\(/g) || []).length;
@@ -144,7 +148,87 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     return onChangeWiring && totalOccurrences === 2;
   })(), true);
   check('reuses the EXISTING sanctioned checklist carrier (formatContractReadyChecklistNote), never a new formatXxxNote function', /formatContractReadyChecklistNote/.test(contractTsx), true);
-  check('ContractWorkspace.tsx defines no new formatXxxNote-shaped carrier-write function of its own', /function format[A-Za-z]*Note/.test(contractTsxNoComments), false);
+  check('ContractWorkspace.tsx defines no new formatXxxNote-shaped carrier-write function of its own (every formatXNote is imported from the carriers module)', /function format[A-Za-z]*Note/.test(contractTsxNoComments), false);
+
+  // ----------------------------------------------------------------
+  // B9-05 / INV-60 Jess Gate correction round: EVERY B/C/D/E field group
+  // gets its own explicit operator control + Save button, not a read-only
+  // report plus one form. All fifteen group handlers route through the
+  // SAME single write choke point (commitNote), which is the only place
+  // ghl.notes.create is called for any of them.
+  // ----------------------------------------------------------------
+  const GROUP_SAVE_HANDLERS = [
+    'handleSaveSigner', 'handleSaveBuyerOverride', 'handleSaveLegalDesc', 'handleSaveLease', 'handleSaveEarnest',
+    'handleSaveTitleSurvey', 'handleSavePropertyCondition', 'handleSaveClosingPossession', 'handleSaveSettlement',
+    'handleSaveRepresentation', 'handleSaveAddenda', 'handleSaveSellerEquitable', 'handleSaveAttorneyField',
+    'handleSaveBuyerBusinessConfig', 'handleSaveSellerNotice',
+  ];
+  check(`all ${GROUP_SAVE_HANDLERS.length} group-form Save handlers are declared as their own async function`, GROUP_SAVE_HANDLERS.every((name) => new RegExp(`async function ${name}\\(`).test(contractTsxNoComments)), true);
+  check('commitNote is the single shared write helper, declared once, and is the only place inside it that ghl.notes.create is called', /async function commitNote\([\s\S]*?ghl\.notes\.create\(/.test(contractTsxNoComments) && (contractTsxNoComments.match(/async function commitNote\(/g) || []).length === 1, true);
+  check('every one of the fifteen group Save handlers itself calls commitNote (not ghl.notes.create directly)', GROUP_SAVE_HANDLERS.every((name) => {
+    const re = new RegExp(`async function ${name}\\([\\s\\S]*?\\n  \\}`, 'm');
+    const m = contractTsxNoComments.match(re);
+    return m && /await commitNote\(/.test(m[0]) && !/ghl\.notes\.create\(/.test(m[0]);
+  }), true);
+  check('every group Save button is wired to an onClick (14 one-to-one, plus handleSaveAttorneyField wired to its own two buttons for its two slots)', (() => {
+    const oneToOne = ['handleSaveSigner', 'handleSaveBuyerOverride', 'handleSaveLegalDesc', 'handleSaveLease', 'handleSaveEarnest', 'handleSaveTitleSurvey', 'handleSavePropertyCondition', 'handleSaveClosingPossession', 'handleSaveSettlement', 'handleSaveRepresentation', 'handleSaveAddenda', 'handleSaveSellerEquitable', 'handleSaveBuyerBusinessConfig', 'handleSaveSellerNotice'];
+    const allWired = oneToOne.every((name) => new RegExp(`onClick=\\{${name}\\}`).test(contractTsx));
+    const attorneyWiredTwice = (contractTsx.match(/onClick=\{\(\) => handleSaveAttorneyField\(/g) || []).length === 2;
+    return allWired && attorneyWiredTwice;
+  })(), true);
+  check('none of the fifteen group Save handlers is referenced from the data-fetching useEffect (writes stay explicit-action-only)', GROUP_SAVE_HANDLERS.every((name) => !effectBody.includes(name)), true);
+  check('¶5 additional earnest money requires an explicit unset/none/value choice in the draft -- never silently defaulted before Save', /additionalKind === "unset"/.test(contractTsxNoComments) && /additionalKind: "unset" \| "none" \| "value"/.test(contractTsxNoComments), true);
+  check('ContractWorkspace.tsx never constructs a bare `{ kind: "none" }` as an additionalEarnestMoney argument (the old silent-default bug) -- Save always uses the validated local variable', !/additionalEarnestMoney:\s*\{\s*kind:\s*"none"\s*\}/.test(contractTsxNoComments), true);
+  check('reuses the EXISTING sanctioned earnest-money carrier (formatEarnestMoneyOptionFactsNote), never a competing write', /formatEarnestMoneyOptionFactsNote/.test(contractTsx), true);
+}
+
+// ============================================================
+// B9-05 / INV-60 -- consumes contract-facts-model.ts directly, recreates
+// no disposition logic in the interface.
+// ============================================================
+{
+  const modelTs = readSrc('src/lib/contract-facts-model.ts');
+  const carriersTs = readSrc('src/lib/seller-contract-facts-carriers.ts');
+  const modelTsNoComments = modelTs.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  check('ContractWorkspace.tsx imports computeSellerContractFactsReport from the pure model', /import \{[\s\S]*computeSellerContractFactsReport[\s\S]*\} from "\.\.\/lib\/contract-facts-model"/.test(contractTsx), true);
+  check('ContractWorkspace.tsx imports computeSellerContractFactsReadiness from the pure model', /computeSellerContractFactsReadiness/.test(contractTsx), true);
+  check('ContractWorkspace.tsx does not declare its own competing computeSellerContractFactsReport function', /\b(function|const)\s+computeSellerContractFactsReport\s*[=(]/.test(contractTsxNoComments.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
+  check('ContractWorkspace.tsx renders every field disposition through the ONE shared renderFieldValue helper, never a per-field ad hoc string', (contractTsxNoComments.match(/renderFieldValue\(/g) || []).length >= 1, true);
+  check('ContractWorkspace.tsx renders human labels (FIELD_LABELS) instead of a raw camelCase field key', /FIELD_LABELS\[`\$\{String\(group\.key\)\}\.\$\{field\}`\]/.test(contractTsx), true);
+  check('contract-facts-model.ts imports and reuses board9-contract-model.ts\'s ContractFactAuthority (no competing authority vocabulary)', /import \{[\s\S]*ContractFactAuthority[\s\S]*\} from "\.\/board9-contract-model"/.test(modelTs), true);
+  check('contract-facts-model.ts imports and reuses detectMaterialConflicts from board9-contract-model.ts, never reimplements it', /detectMaterialConflicts/.test(modelTs) && !/function detectMaterialConflicts/.test(modelTsNoComments), true);
+  check('the Buyer entity default is the exact fixed name Brad supplied', /BUYER_ENTITY_DEFAULT_NAME = "Brad Thompson Consulting LLC"/.test(modelTs), true);
+
+  // Jess Gate correction: BuyerBusinessConfig is no longer threaded in by
+  // the caller as a hardcoded `null` -- it is sourced the same way every
+  // other carrier-backed fact is, inside computeSellerContractFactsReport.
+  check('computeSellerContractFactsReport no longer accepts a buyerBusinessConfig argument from its caller', !/buyerBusinessConfig:\s*BuyerBusinessConfig;/.test(modelTs), true);
+  check('computeSellerContractFactsReport sources BuyerBusinessConfig from its OWN carrier internally', /const buyerBusinessConfig = latestBuyerBusinessConfigFactsForOpportunity\(notes, opportunityId\);/.test(modelTs), true);
+  check('computeSellerContractFactsReport no longer accepts a sellerContact argument (property address is renamed and used ONLY for conflict detection)', !/sellerContact:\s*\{/.test(modelTs), true);
+  check('the seller\'s ¶21 notice info is sourced from its OWN explicit-confirmation carrier, not from propertyAddress', /const sellerNotice = latestSellerNoticeConfirmationFactsForOpportunity\(notes, opportunityId\);/.test(modelTs), true);
+  check('ContractWorkspace.tsx no longer declares a page-level buyerBusinessConfig constant of its own (removed along with the hardcoded null)', !/const buyerBusinessConfig: BuyerBusinessConfig = null;/.test(contractTsx), true);
+  check('ContractWorkspace.tsx gives the operator a real capture form for BTC LLC\'s business config (Save button + carrier write), not a hardcoded value', /handleSaveBuyerBusinessConfig/.test(contractTsx) && /formatBuyerBusinessConfigFactsNote/.test(contractTsx), true);
+  check('ContractWorkspace.tsx gives the operator a real, separate confirmation form for the seller\'s ¶21 notice info, distinct from the property address', /handleSaveSellerNotice/.test(contractTsx) && /formatSellerNoticeConfirmationFactsNote/.test(contractTsx), true);
+  check('the seller-notice form shows the contact/property candidate data as read-only reference text, never writes it automatically', /sellerNoticeCandidate/.test(contractTsxNoComments) && !/noticeAddress: propertyAddress/.test(contractTsxNoComments), true);
+  check('¶5\'s earnest money/option fee/option period are each an explicit amount-or-none / days-or-none choice, never forced positive', /AmountOrNoneField/.test(contractTsx) && /DaysOrNoneField/.test(contractTsx), true);
+  check('financing addenda (Third Party/Seller/Loan Assumption) are excluded from the addenda item-key schema entirely, not merely defaulted off', (() => {
+    const flat = carriersTs.replace(/\s+/g, ' ');
+    return flat.includes('Third Party Financing') && flat.includes('Seller Financing') && flat.includes('Loan Assumption');
+  })(), true);
+  check('attorney/manual field carrier never exports a function that drafts or validates legal text content', /function (draft|generate|suggest|approve)[A-Za-z]*/.test(carriersTs.replace(/\/\*[\s\S]*?\*\//g, '')), false);
+}
+
+// ============================================================
+// Jess Gate correction item 6 -- the exact approved source PDF is present,
+// unchanged, and its SHA-256 still matches the hash Brad supplied.
+// ============================================================
+{
+  const pdfPath = path.join(REPO_ROOT, 'docs', 'TREC Resale Home Contract.pdf');
+  const EXPECTED_SHA256 = '3f458518e9e01fc9c84cab420dcd0ce9793113c4b356ed5caf7a2fb1bdef2ca5';
+  check('the approved TREC 20-19 source PDF exists at its documented path', fs.existsSync(pdfPath), true);
+  const actualSha256 = fs.existsSync(pdfPath) ? crypto.createHash('sha256').update(fs.readFileSync(pdfPath)).digest('hex') : null;
+  check('the PDF\'s SHA-256 still matches the hash Brad supplied -- unchanged, never flattened or substituted', actualSha256, EXPECTED_SHA256);
 }
 
 // ============================================================
