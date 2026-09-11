@@ -13,10 +13,22 @@
  * Per this phase's authorization ("Perform GHL mutations in TEST only
  * during this phase" / "Produce a dry-run Production migration/backfill
  * report only; no Production writes"), Production can never apply through
- * this script, structurally, not by operator discipline. Even against
- * Test, this session did not exercise --apply -- see the Phase 2 return
- * report for why (dry-run evidence was the explicit deliverable; a live
- * bulk write was judged separately-authorizable, not assumed).
+ * this script, structurally, not by operator discipline.
+ *
+ * INV-70 / B9-07A PHASE 3. --apply now actually writes, for `test` only,
+ * and only for rows classified `backfill_candidate` AND explicitly
+ * excluded from `--exclude-opportunity` (a repeatable-by-comma list of
+ * opportunity ids never to write, regardless of classification -- the
+ * mechanism this phase uses to keep a known stale/non-representative
+ * record out of a bulk backfill without hand-editing the script). Every
+ * write PUTs `opportunity.repair_estimate` (never Contact -- PB-D55, the
+ * Opportunity field is the one being backfilled INTO) and reads it back,
+ * mirroring `ghl.ts`'s own `setRepairEstimate` shape exactly (same body:
+ * `{customFields:[{id, field_value}]}`, same singular-GET readback). A
+ * row already `already_authoritative` (a non-empty Opportunity value) is
+ * NEVER written to, structurally -- only `backfill_candidate` rows reach
+ * the write loop at all; this is not merely a runtime check, it is which
+ * array the loop iterates.
  *
  * THE CLASSIFICATION LOGIC IS A DELIBERATE MIRROR, NOT A REQUIRE. This
  * script is plain JS so it can run standalone without a TypeScript
@@ -52,7 +64,9 @@ function parseArgs(argv) {
   const limit = get('--limit') ? Number(get('--limit')) : null;
   const apply = argv.includes('--apply');
   if (apply && selector !== 'test') die('--apply refuses for any selector other than "test". Production can never apply through this script.');
-  return { selector, credentialFile, out, limit, apply };
+  const excludeOpportunityRaw = get('--exclude-opportunity');
+  const excludeOpportunity = new Set(excludeOpportunityRaw ? excludeOpportunityRaw.split(',').map((s) => s.trim()).filter(Boolean) : []);
+  return { selector, credentialFile, out, limit, apply, excludeOpportunity };
 }
 
 function parseEnvFile(text) {
@@ -170,15 +184,52 @@ async function main() {
     return acc;
   }, { total: 0, backfillCandidates: 0, alreadyAuthoritative: 0, alreadyAuthoritativeMismatched: 0, nothingToDo: 0 });
 
+  const backfillCandidates = rows.filter((r) => r.classification.kind === 'backfill_candidate');
+  const writeResults = [];
+  if (args.apply) {
+    async function put(url, body) {
+      const res = await fetch(url, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, Version: API_VERSION, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      return { status: res.status, ok: res.ok, body: text };
+    }
+    function roundCurrency(n) { return Math.round(n * 100) / 100; }
+
+    for (const row of backfillCandidates) {
+      if (args.excludeOpportunity.has(row.opportunityId)) {
+        writeResults.push({ opportunityId: row.opportunityId, skipped: true, reason: 'excluded via --exclude-opportunity' });
+        continue;
+      }
+      const sent = roundCurrency(row.classification.value);
+      const putRes = await put(`${BASE}/opportunities/${row.opportunityId}`, {
+        customFields: [{ id: opportunityRepairsFieldId, field_value: sent }],
+      });
+      if (!putRes.ok) {
+        writeResults.push({ opportunityId: row.opportunityId, sent, ok: false, putStatus: putRes.status, error: putRes.body.slice(0, 300) });
+        continue;
+      }
+      const readback = await get(`${BASE}/opportunities/${row.opportunityId}`);
+      const opp = readback.opportunity ?? readback;
+      const entry = (opp.customFields ?? []).find((f) => f.id === opportunityRepairsFieldId);
+      const observed = entry ? (entry.fieldValueNumber !== undefined ? entry.fieldValueNumber : entry.fieldValue) : null;
+      writeResults.push({ opportunityId: row.opportunityId, sent, ok: entry !== undefined && Number(observed) === sent, putStatus: putRes.status, observed });
+    }
+  }
+
   const report = {
     selector: args.selector,
     locationId,
     fetchedAt: new Date().toISOString(),
     applyRequested: args.apply,
-    applyExecuted: false, // this session never executes a write -- see the header note
+    applyExecuted: args.apply && writeResults.some((w) => !w.skipped),
+    excludeOpportunity: [...args.excludeOpportunity],
     summary,
-    backfillCandidates: rows.filter((r) => r.classification.kind === 'backfill_candidate'),
+    backfillCandidates,
     conflicts: rows.filter((r) => r.classification.kind === 'already_authoritative' && !r.classification.matchesContact),
+    writeResults,
   };
 
   const json = JSON.stringify(report, null, 2);
@@ -195,8 +246,10 @@ async function main() {
 
   if (args.apply) {
     console.error('');
-    console.error('--apply was requested but this session does not execute it. ' +
-      'No write was issued. Re-run with explicit further authorization if a live backfill is wanted.');
+    console.error(`--apply: ${writeResults.length} backfill row(s) processed, ` +
+      `${writeResults.filter((w) => w.ok).length} confirmed written, ` +
+      `${writeResults.filter((w) => w.skipped).length} skipped (excluded), ` +
+      `${writeResults.filter((w) => !w.ok && !w.skipped).length} failed.`);
   }
 }
 
