@@ -628,7 +628,6 @@ export default function ContractWorkspace() {
     const built = buildAuthorizationRecordArgs({
       opportunityId: screen.opportunity.id,
       at: new Date().toISOString(),
-      operator: null,
       preview: contractDocumentPreview,
       currentVersion: documentVersion,
     });

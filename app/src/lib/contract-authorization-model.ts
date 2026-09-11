@@ -39,15 +39,42 @@
  * revoke prior authorization too ("any material fact, contract term,
  * signer, delivery detail... change revokes prior authorization"). This
  * module therefore ALSO snapshots and compares the full populated content
- * -- every `ContractDocumentLine`'s `group`/`field`/`status`/`text`, plus
- * template identity -- at authorization time against the live current
- * preview. A version match is necessary but not sufficient.
+ * -- every `ContractDocumentLine`'s `group`/`field`/`status`/`text` -- at
+ * authorization time against the live current preview. A version match is
+ * necessary but not sufficient.
+ *
+ * TEMPLATE IDENTITY PARTICIPATES IN CURRENCY (Jess Gate correction, this
+ * issue). `templateName`/`templateSource` are compared independently of
+ * version and content -- a mismatch on either revokes authorization with
+ * its own explicit `TEMPLATE_CHANGED` reason, never silently folded into
+ * `CONTENT_CHANGED` or left uncompared. Today `contract-document-model.ts`
+ * emits these as fixed constants (`CONTRACT_DOCUMENT_TEMPLATE_NAME`/
+ * `_SOURCE`), so this check cannot currently fire in practice -- it exists
+ * so a future change to which template is authoritative can never silently
+ * carry forward an authorization recorded against a different one.
+ *
+ * BRAD RECORDED CONSISTENTLY AS BOTH FIELDS (Jess Gate correction, this
+ * issue). Every carrier note in this codebase already carries a generic
+ * `operator` provenance field, distinct from any domain-specific actor
+ * field -- previously `operator` was a caller-supplied, nullable value
+ * even for a Brad-only action, which could produce a record claiming
+ * `authorizedBy: "brad"` while `operator` was `null` or someone else.
+ * `buildAuthorizationRecordArgs` no longer accepts `operator` from the
+ * caller at all -- it is hardcoded to the literal `"brad"` internally,
+ * exactly like `authorizedBy` already was, so the two fields can never
+ * disagree in anything this module itself produces. `evaluateBrad
+ * AuthorizationCurrency` ALSO fails closed on any record -- however it
+ * was produced, including a hand-crafted or historical one -- whose
+ * `operator` is not exactly `"brad"`, independently of the existing
+ * `authorizedBy` check, so a record that identifies Brad inconsistently
+ * across the two fields is never treated as current.
  *
  * FAIL CLOSED, EVERYWHERE. No authorization record, an unrecognized
- * authorizer, a changed revision, changed content, or an incomplete
- * current preview -- each independently and explicitly named, never
- * collapsed into a bare boolean, exactly mirroring every other B9
- * `evaluate*` function's own `TransitionReason`-shaped discipline.
+ * authorizer (in either field), a changed template, a changed revision,
+ * changed content, or an incomplete current preview -- each independently
+ * and explicitly named, never collapsed into a bare boolean, exactly
+ * mirroring every other B9 `evaluate*` function's own
+ * `TransitionReason`-shaped discipline.
  */
 
 import {
@@ -147,7 +174,9 @@ export function computeDifferencesFromLastAuthorized(
 export type BradAuthorizationReasonCode =
   | "NO_AUTHORIZATION_RECORDED"
   | "NOT_BRAD"
+  | "OPERATOR_NOT_BRAD"
   | "AUTHORIZATION_TIMESTAMP_INVALID"
+  | "TEMPLATE_CHANGED"
   | "REVISION_CHANGED"
   | "CONTENT_CHANGED"
   | "PREVIEW_NOT_COMPLETE"
@@ -182,8 +211,17 @@ export function evaluateBradAuthorizationCurrency(
   if (record.authorizedBy !== "brad") {
     reasons.push({ code: "NOT_BRAD", message: "The recorded authorization was not made by Brad -- V1 permits no other authorizer." });
   }
+  if (record.operator !== "brad") {
+    reasons.push({ code: "OPERATOR_NOT_BRAD", message: "The recorded operator does not identify Brad consistently with the authorization -- V1 requires both fields to agree." });
+  }
   if (!isValidIsoInstant(record.at)) {
     reasons.push({ code: "AUTHORIZATION_TIMESTAMP_INVALID", message: "The recorded authorization does not carry a valid timestamp." });
+  }
+  if (record.templateName !== currentPreview.templateName || record.templateSource !== currentPreview.templateSource) {
+    reasons.push({
+      code: "TEMPLATE_CHANGED",
+      message: "The authoritative template has changed since this authorization was recorded -- it no longer covers the current template.",
+    });
   }
 
   if (!isSameContractVersion(record.version as ContractVersionIdentity, currentPreview.version)) {
@@ -248,7 +286,6 @@ export function evaluateAuthorizationEligibility(
 export type BuildAuthorizationRecordArgs = {
   opportunityId: string;
   at: string;
-  operator: string | null;
   preview: ContractDocumentPreview;
   /** The caller's own freshest known revision identity -- see `evaluateAuthorizationEligibility`'s own doc comment. */
   currentVersion: ContractVersionIdentity;
@@ -257,7 +294,7 @@ export type BuildAuthorizationRecordArgs = {
 export type AuthorizationRecordToPersist = {
   opportunityId: string;
   at: string;
-  operator: string | null;
+  operator: "brad";
   authorizedBy: "brad";
   version: ContractVersionIdentity;
   templateName: string;
@@ -269,11 +306,14 @@ export type AuthorizationRecordToPersist = {
 /**
  * Builds the exact args a caller passes to
  * `formatBradContractAuthorizationNote` -- the ONLY place `authorizedBy`
- * is asserted as the literal `"brad"` (never assumed from context, never
- * a caller-supplied value, matching every other Brad-only action in this
- * codebase, e.g. Rescission). Re-checks eligibility itself rather than
- * trusting a caller who might have skipped `evaluateAuthorizationEligibility`
- * -- fails closed either way.
+ * AND `operator` are asserted as the literal `"brad"` (Jess Gate
+ * correction: `operator` is no longer a caller-supplied field at all --
+ * there is no parameter through which a caller could ever produce a
+ * record claiming Brad authorized it while `operator` is `null` or
+ * anyone else). Never assumed from context, matching every other
+ * Brad-only action in this codebase, e.g. Rescission. Re-checks
+ * eligibility itself rather than trusting a caller who might have skipped
+ * `evaluateAuthorizationEligibility` -- fails closed either way.
  */
 export function buildAuthorizationRecordArgs(
   args: BuildAuthorizationRecordArgs,
@@ -286,7 +326,7 @@ export function buildAuthorizationRecordArgs(
     value: {
       opportunityId: args.opportunityId,
       at: args.at,
-      operator: args.operator,
+      operator: "brad",
       authorizedBy: "brad",
       version: args.preview.version,
       templateName: args.preview.templateName,
