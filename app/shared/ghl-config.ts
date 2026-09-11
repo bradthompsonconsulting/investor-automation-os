@@ -76,15 +76,16 @@ export interface GhlConfig {
    * negotiated offer; at Agreement Reached it freezes at the accepted
    * price (`current-offer-carrier.ts`'s `currentOfferWriteGate` is the
    * pure freeze logic; `ghl.opportunities.setCurrentOffer` is the writer).
-   * NEITHER environment has this field provisioned yet as of this phase
-   * -- both carry `CURRENT_OFFER_NOT_PROVISIONED` below. Test creation was
-   * ATTEMPTED this session and BLOCKED: the configured Test credential
-   * (`.env.test`) returned `HTTP 401 "The token is not authorized for
-   * this scope"` on `POST /locations/{id}/customFields` (Custom Fields
-   * write/create scope is not granted to that Private Integration token,
-   * distinct from the Contacts/Opportunities write scope every existing
-   * writer in this file already uses successfully). This is an external
-   * credential-scope gap, not a code gap; see the Phase 2 return report.
+   * Created live in TEST 2026-09-11 (`opportunity.current_offer`, id
+   * `7pmvwi6vlu74f5rLOp9M`, NUMERICAL, Opportunity Details folder),
+   * inert-proofed the same session. An EARLIER attempt that same session
+   * was refused (`HTTP 401 "The token is not authorized for this
+   * scope"` — Custom Fields write/create scope was not yet granted to
+   * the Test Private Integration token); once that scope was added, the
+   * identical script created the field on the first retry. PRODUCTION
+   * still carries `CURRENT_OFFER_NOT_PROVISIONED` below — provisioning it
+   * there was never in this phase's scope (GHL mutations are Test-only
+   * this phase) and remains a separate, later decision.
    */
   opportunityFacts: {
     arv: string;
@@ -119,17 +120,17 @@ export interface GhlConfig {
 
 /**
  * INV-70 / B9-07A Phase 2 — the literal placeholder value for the
- * not-yet-provisioned Current Offer field. Carried by BOTH `PRODUCTION`
- * and `TEST` below: Production because provisioning a new Opportunity
- * field there was never in this phase's scope (GHL mutations are
- * Test-only this phase), and Test because creation was attempted and
- * blocked on credential scope (see the `opportunityFacts` interface doc
- * comment). `ghl.opportunities.setCurrentOffer` refuses immediately,
+ * not-yet-provisioned Current Offer field. Carried by `PRODUCTION` only
+ * as of this revision (`TEST` now has a real id — see the
+ * `opportunityFacts` interface doc comment): provisioning a new
+ * Opportunity field in Production was never in this phase's scope (GHL
+ * mutations are Test-only this phase) and remains a separate, later
+ * decision. `ghl.opportunities.setCurrentOffer` refuses immediately,
  * before any network call, whenever the configured id equals this
  * sentinel -- the same fail-closed pattern `SENDER_USER_ID_NOT_CONFIGURED`
  * already established for B9-08's Documents & Contracts send gate.
- * Exported so a real field id, once created, replaces this in exactly one
- * place per environment -- never toggled, always a reviewed commit.
+ * Exported so a real Production id, once created, replaces this in
+ * exactly one place -- never toggled, always a reviewed commit.
  */
 export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVISIONED" as const;
 
@@ -272,14 +273,13 @@ const TEST: GhlConfig = {
     arv:                "ppe2ZTO7DJTMao74xvYI",
     repairs:            "lSWxFUmWksfrViePG4UC",
     askingPrice:        "owIOWnJuIheiwJVdJWQ5",
-    // BLOCKED this session: creation attempted (POST /locations/{id}/
-    // customFields, model opportunity, name "Current Offer", NUMERICAL,
-    // parentId sGP3pbDQFN7fXS62MAgA "Opportunity Details" -- confirmed no
-    // name/fieldKey clash first) and refused, HTTP 401 "The token is not
-    // authorized for this scope," by the configured Test credential
-    // (.env.test). Replace with the real Test id the moment a
-    // sufficiently-scoped credential creates the field -- never hand-typed.
-    currentOffer:       CURRENT_OFFER_NOT_PROVISIONED,
+    // Created live in Test 2026-09-11 via
+    // scripts/inv70-create-current-offer-field.cjs --apply, once the
+    // Test Private Integration was granted Custom Fields write/create
+    // scope. fieldKey opportunity.current_offer, NUMERICAL, folder
+    // Opportunity Details (sGP3pbDQFN7fXS62MAgA). Inert-proofed the same
+    // session -- see docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md.
+    currentOffer:       "7pmvwi6vlu74f5rLOp9M",
   },
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",

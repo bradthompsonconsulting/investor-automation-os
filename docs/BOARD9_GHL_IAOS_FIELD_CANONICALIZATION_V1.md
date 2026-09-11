@@ -36,17 +36,24 @@ addressed below, each in its own section, without altering the nine
 families' underlying findings except where the new Production evidence
 resolves a question the original pass had left open (Family 6).
 
-**Phase 2 (this revision).** Brad approved both Jess Gate rulings the
-Phase 1 blocking section named — Family 3 (Repairs) and Family 5
-(Presented/Current Offer) — and this revision records what was built.
-**"Update the canonicalization contract with the approved rulings" below
-is the implementation record; the Family 3 / Family 5 sections further
-down are left as the historical Phase 1 analysis that led to each
-decision, not rewritten.** GHL mutations this round were Test-only
-(one new Opportunity custom field, "Current Offer" — attempted and
-BLOCKED on credential scope, see below); Production remained read-only
-throughout, dry-run only. See "Phase 2 — approved rulings and
-implementation" for the full record.
+**Phase 2.** Brad approved both Jess Gate rulings the Phase 1 blocking
+section named — Family 3 (Repairs) and Family 5 (Presented/Current
+Offer) — and that pass recorded what was built. **"Update the
+canonicalization contract with the approved rulings" below is the
+implementation record; the Family 3 / Family 5 sections further down are
+left as the historical Phase 1 analysis that led to each decision, not
+rewritten.**
+
+**Phase 2, correction round 2 (this revision).** The one incomplete piece
+from Phase 2 — the new "Current Offer" GHL Test field, originally BLOCKED
+on Custom Fields write/create scope — is now closed: Brad granted that
+scope, and this revision records the field's creation and live
+inert-proof in Test. See "What Phase 2 could not complete (RESOLVED,
+correction round 2)" and Ruling 2's updated bullets. GHL mutations this
+round were Test-only (one new Opportunity custom field, created and then
+written/restored once for the inert-proof); Production remained
+untouched. See "Phase 2 — approved rulings and implementation" for the
+full record.
 
 ---
 
@@ -177,24 +184,46 @@ writes.
   whether a given read is hitting the retired snapshot or the new
   carrier. `ghl.opportunities.setCurrentOffer(opportunityId, value)`
   mirrors `setApprovedArv` exactly.
-- **BLOCKED this session: the new GHL Test field was never created.**
-  A dry run confirmed no name/fieldKey clash, then `POST /locations/{id}/
-  customFields` (Test, `.env.test` credential) returned `HTTP 401 "The
-  token is not authorized for this scope"` — that credential has
-  Contacts/Opportunities write scope (proven by every existing writer in
-  this codebase) but not Custom Fields write/create scope. A second
-  attempt with a different credential file was stopped by this session's
-  own tooling as credential exploration before a result was obtained —
-  see "What Phase 2 could not complete" below. **Both `PRODUCTION` and
-  `TEST` in `ghl-config.ts` therefore carry the same explicit sentinel,
+- **Created live in GHL Test, this correction round.** The original Phase
+  2 pass was BLOCKED here: a dry run confirmed no name/fieldKey clash,
+  then `POST /locations/{id}/customFields` (Test, `.env.test` credential)
+  returned `HTTP 401 "The token is not authorized for this scope"` — that
+  credential had Contacts/Opportunities write scope (proven by every
+  existing writer in this codebase) but not Custom Fields write/create
+  scope. **Brad's correction: the Test Private Integration was granted
+  Custom Fields write/create scope.** The identical, previously-committed
+  script (`app/scripts/inv70-create-current-offer-field.cjs --apply`)
+  succeeded on the first retry, no changes needed: `opportunity.
+  current_offer`, id `7pmvwi6vlu74f5rLOp9M`, NUMERICAL, Opportunity
+  Details folder (`sGP3pbDQFN7fXS62MAgA`), Test only. `app/shared/ghl-
+  config.ts`'s `TEST.opportunityFacts.currentOffer` now carries this real
+  id. **`PRODUCTION` still carries the explicit sentinel,
   `CURRENT_OFFER_NOT_PROVISIONED`** (`"CURRENT_OFFER_FIELD_NOT_YET_
-  PROVISIONED"`), and `setCurrentOffer` refuses immediately — before any
-  network call — whenever the configured id equals that sentinel,
-  mirroring the fail-closed pattern `SENDER_USER_ID_NOT_CONFIGURED`
-  already established for B9-08's Documents & Contracts gate. **No live
-  write to this carrier has been exercised end-to-end against real GHL
-  this session** — only the pure gate/freeze logic and the writer's own
-  refusal-before-network-call path are proven (below).
+  PROVISIONED"`) — provisioning Production was never in this phase's
+  scope and remains a separate, later decision. `setCurrentOffer` still
+  refuses immediately, before any network call, whenever the configured
+  id equals that sentinel (so calling it against `getConfig("production")`
+  today fails closed rather than reaching the network), mirroring the
+  fail-closed pattern `SENDER_USER_ID_NOT_CONFIGURED` already established
+  for B9-08's Documents & Contracts gate.
+- **Inert-proofed live against the new field, this correction round.**
+  Absent-origin cycle on the approved fixture opportunity
+  (`MAl1FWHEsK0QqsXt4v6f`, "IAOS Underwriting Test"), identical shape to
+  the Repairs inert-proof below:
+
+      STEP 1  origin read           → null (a brand-new field; confirmed empty)
+      STEP 2  PUT field_value=275000 → HTTP 200
+      STEP 3  readback              → 275000 (exact match)
+      STEP 4  PUT field_value=""    → HTTP 200 (restore)
+      STEP 5  readback              → null (confirmed restored, no residual data)
+
+  This exercises the identical field id and PUT/readback shape
+  `ghl.opportunities.setCurrentOffer` uses. No workflow-side-effect probe
+  was run beyond this — per PB-D58's own finding (cited elsewhere in this
+  document), a custom-fields-only PUT cannot fire a stage trigger, and a
+  field created ten minutes before this cycle (`"scopes": []` on
+  creation) carries no pre-existing workflow reference to begin with. No
+  residual test data was left in Test.
 - **The pure freeze logic** lives in its own module,
   `app/src/lib/current-offer-carrier.ts`
   (`currentOfferWriteGate`, `acceptedPriceFreezeValue`) — provable without
@@ -247,26 +276,19 @@ fieldKey anywhere in the writer's own module or the wider tree.
 checks, unchanged count target other than the one updated invariant) —
 the deal-switch reset now also clears the Current Offer write bookkeeping.
 
-### What Phase 2 could not complete
+### What Phase 2 could not complete (RESOLVED, correction round 2)
 
-**The Current Offer GHL field does not exist in either environment yet.**
-This is the one incomplete piece: everything downstream (the writer, the
-UI wiring, the freeze logic, the tests) is built and proven at the code
-level, but has never executed a real write against a real field, because
-no sufficiently-scoped credential was available this session to create
-one. This is a credential-provisioning gap, not a design or code gap.
-**Recommendation, not a decision:** either (a) grant a Test-location
-Private Integration token Custom Fields write/create scope and run
-`node app/scripts/inv70-create-current-offer-field.cjs --location
-SoTgVoaFGHtBdRFvXWQV --credential-file <path> --apply` (committed this
-session, dry-run-verified — resolves the correct Opportunity Details-
-shaped folder live rather than hardcoding it, confirms no name/fieldKey
-clash first, and prints the exact next step), or (b) create the field
-manually in the GHL Test builder (name "Current Offer", NUMERICAL, on the
-Opportunity model, in the "Opportunity Details" folder to match its
-underwriting-adjacent siblings) and hand the resulting field id back for
-a one-line `ghl-config.ts` update. Production provisioning is a separate,
-later decision — out of this phase's authorized scope regardless.
+**Originally:** the Current Offer GHL field did not exist in either
+environment — a credential-provisioning gap, not a design or code gap.
+**Now closed:** Brad granted the Test Private Integration token Custom
+Fields write/create scope; the field was created and inert-proofed live
+in Test this correction round (see Ruling 2 above for the full record).
+`setCurrentOffer` has now been exercised end-to-end against real GHL, not
+only at the pure-logic level. **Production provisioning remains a
+separate, later decision** — out of this phase's authorized scope
+regardless of the Test credential change, and `PRODUCTION.opportunityFacts
+.currentOffer` still correctly refuses via `CURRENT_OFFER_NOT_PROVISIONED`
+until that decision is made.
 
 ---
 

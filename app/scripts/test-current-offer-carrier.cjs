@@ -50,7 +50,7 @@ try {
 const { currentOfferWriteGate, acceptedPriceFreezeValue } = require(path.join(TMP, 'current-offer-carrier.js'));
 const { formatOutcomeNote, parseOutcomeNote } = require(path.join(TMP, 'seller-call-outcome.js'));
 
-const FLOOR = 27;
+const FLOOR = 29;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -198,8 +198,18 @@ function check(name, actual, expected) {
   const configSrc = fs.readFileSync(CONFIG, 'utf8');
   check('opportunityFacts.currentOffer is a distinct key from every legacy offer_ id',
     /currentOffer: string;/.test(configSrc), true);
-  check('CURRENT_OFFER_NOT_PROVISIONED sentinel is exported for both environments to share',
+  check('CURRENT_OFFER_NOT_PROVISIONED sentinel is still exported (Production has not been provisioned)',
     /export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVISIONED"/.test(configSrc), true);
+  // INV-70 correction round 2 -- the field was created live in Test once
+  // Custom Fields write/create scope was granted. Test must carry the
+  // real id, not the sentinel; Production must still carry the sentinel,
+  // since provisioning it was never in this phase's scope.
+  const productionBlock = configSrc.slice(configSrc.indexOf('const PRODUCTION'), configSrc.indexOf('const TEST'));
+  const testBlock = configSrc.slice(configSrc.indexOf('const TEST'));
+  check('TEST.opportunityFacts.currentOffer is a real id, not the sentinel',
+    /currentOffer:\s*"7pmvwi6vlu74f5rLOp9M"/.test(testBlock), true);
+  check('PRODUCTION.opportunityFacts.currentOffer is still the sentinel',
+    /currentOffer:\s*CURRENT_OFFER_NOT_PROVISIONED/.test(productionBlock), true);
 }
 
 cleanup();
