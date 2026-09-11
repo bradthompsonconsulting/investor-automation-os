@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 70;
+const FLOOR = 74;
 let failures = 0;
 let checks = 0;
 
@@ -136,8 +136,19 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('the data-fetching useEffect contains no ghl.notes.create call', /ghl\.notes\.create/.test(effectBody), false);
   check('the data-fetching useEffect contains no write of any kind (create/update/set)', /\.(create|update|set[A-Z])\(/.test(effectBody), false);
 
-  check('ghl.notes.create is called exactly twice in the whole page (the checklist write, plus the ONE shared commitNote choke point every B9-05 group form routes through)', (contractTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 2);
+  check('ghl.notes.create is called exactly three times in the whole page (the checklist write, the ONE shared commitNote choke point every B9-05 group form routes through, and B9-07/INV-62\'s own handleAuthorize)', (contractTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 3);
   check('the checklist write lives inside handleToggleChecklistItem', /async function handleToggleChecklistItem[\s\S]*?ghl\.notes\.create\(/.test(contractTsxNoComments), true);
+  check('the B9-07/INV-62 authorization write lives inside its own handleAuthorize, never routed through commitNote', (() => {
+    const m = contractTsxNoComments.match(/async function handleAuthorize\([\s\S]*?\n  \}/m);
+    return !!m && /ghl\.notes\.create\(/.test(m[0]) && !/commitNote\(/.test(m[0]);
+  })(), true);
+  check('handleAuthorize is wired to the Authorize button\'s onClick (same one-to-one style as the 14 group Save handlers), and declared exactly once', (() => {
+    const onClickWiring = /onClick=\{handleAuthorize\}/.test(contractTsx);
+    const declarations = (contractTsxNoComments.match(/async function handleAuthorize\(/g) || []).length;
+    return onClickWiring && declarations === 1;
+  })(), true);
+  check('handleAuthorize is never invoked from the data-fetching effect or on mount', /ghl\.contacts\.getDetail[\s\S]*?handleAuthorize\(\)/.test(effectBody) === false, true);
+  check('handleAuthorize reuses buildAuthorizationRecordArgs/formatBradContractAuthorizationNote, never composes an authorization note body inline', /const built = buildAuthorizationRecordArgs\(/.test(contractTsxNoComments) && /formatBradContractAuthorizationNote\(built\.value\)/.test(contractTsxNoComments), true);
   check('handleToggleChecklistItem is wired ONLY to a checkbox onChange, never called from the fetch effect or on mount', (() => {
     const onChangeWiring = /onChange=\{\(e\) => handleToggleChecklistItem\(item\.key, e\.target\.checked\)\}/.test(contractTsx);
     const totalOccurrences = (contractTsxNoComments.match(/handleToggleChecklistItem\(/g) || []).length;
