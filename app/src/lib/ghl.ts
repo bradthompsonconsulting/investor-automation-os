@@ -1267,5 +1267,71 @@ export const ghl = {
     },
 
   },
+
+  /**
+   * GHL Documents & Contracts -- B9-08 / INV-63. The selected V1 e-sign
+   * provider (Product Owner ruling, reaffirmed; not reopened here).
+   * IAOS-Test-only: `ghl-proxy.ts`'s GATE 2 refuses every one of these
+   * three paths unless the running deployment's own `LOCATION_ID` equals
+   * the TEST location, independent of anything this client sends.
+   *
+   * Shapes below are the DOCUMENTED request/response contracts, verified
+   * directly from GHL's own reference pages (2026-09-11) -- never
+   * live-called against a real GHL environment this session (see
+   * INV-63's Jess Gate report for why). Treat a live response's exact
+   * shape as unconfirmed until a real Test send has been observed once.
+   */
+  proposals: {
+    // GET /proposals/templates -- read-only discovery, used to resolve a
+    // GHL templateId from the fixed CONTRACT_DOCUMENT_TEMPLATE_NAME
+    // constant at send time. This client never stores or hardcodes a
+    // templateId itself (none has been verified to exist in IAOS Test).
+    listTemplates: (params: { name?: string } = {}) => {
+      const qs = new URLSearchParams({ locationId: LOCATION_ID, ...params }).toString();
+      return request<{ data: { id: string; name: string; type: string; deleted: boolean }[]; total: number }>(
+        `/proposals/templates?${qs}`,
+      );
+    },
+
+    // POST /proposals/templates/send -- the one send-capable path. Deliberately
+    // takes NO contactId and NO userId: ghl-proxy.ts's GATE 2 unconditionally
+    // overwrites both server-side (the pre-approved Test contact, and the
+    // configured sender user id), so this client can never name either.
+    // Callers pass the raw HTTP outcome to contract-send-model.ts's
+    // `classifyProviderSendResponse` -- this method never classifies its own
+    // response, matching "no invented GHL behavior" for the success/failure
+    // boundary.
+    send: async (args: {
+      templateId: string;
+      opportunityId?: string;
+    }): Promise<
+      | { kind: "network_error"; message: string }
+      | { kind: "http_response"; status: number; body: unknown }
+    > => {
+      const body: Record<string, unknown> = {
+        templateId: args.templateId,
+        locationId: LOCATION_ID,
+        sendDocument: true,
+      };
+      if (args.opportunityId) body.opportunityId = args.opportunityId;
+      try {
+        const res = await fetch(`${PROXY}?path=${encodeURIComponent("/proposals/templates/send")}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const text = await res.text();
+        let parsed: unknown = null;
+        try {
+          parsed = text ? JSON.parse(text) : null;
+        } catch {
+          parsed = text;
+        }
+        return { kind: "http_response", status: res.status, body: parsed };
+      } catch (e: any) {
+        return { kind: "network_error", message: e?.message ?? "Network error calling GHL Documents & Contracts" };
+      }
+    },
+  },
 };
 

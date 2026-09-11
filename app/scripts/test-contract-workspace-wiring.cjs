@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 74;
+const FLOOR = 79;
 let failures = 0;
 let checks = 0;
 
@@ -118,9 +118,9 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('ContractWorkspace reads via ghl.opportunities.listPipeline (existing read)', /ghl\.opportunities\.listPipeline\(\)/.test(contractTsx), true);
   check('ContractWorkspace reads via ghl.notes.list (existing read)', /ghl\.notes\.list\(contactId\)/.test(contractTsx), true);
   check('ContractWorkspace selects the opportunity via the SAME shared helpers as the other workspaces', /import \{ opportunitiesForContact, opportunityCandidates, selectOpportunity \} from "\.\.\/lib\/underwriting\/selectOpportunity"/.test(contractTsx), true);
-  check('ContractWorkspace does not call any other ghl.* namespace than contacts/opportunities/notes', (() => {
+  check('ContractWorkspace does not call any other ghl.* namespace than contacts/opportunities/notes/proposals (B9-08/INV-63 adds the sole sanctioned e-sign-provider namespace)', (() => {
     const calls = contractTsxNoComments.match(/ghl\.[a-zA-Z]+\./g) || [];
-    return calls.every((c) => c === 'ghl.contacts.' || c === 'ghl.opportunities.' || c === 'ghl.notes.');
+    return calls.every((c) => c === 'ghl.contacts.' || c === 'ghl.opportunities.' || c === 'ghl.notes.' || c === 'ghl.proposals.');
   })(), true);
 }
 
@@ -136,7 +136,19 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('the data-fetching useEffect contains no ghl.notes.create call', /ghl\.notes\.create/.test(effectBody), false);
   check('the data-fetching useEffect contains no write of any kind (create/update/set)', /\.(create|update|set[A-Z])\(/.test(effectBody), false);
 
-  check('ghl.notes.create is called exactly three times in the whole page (the checklist write, the ONE shared commitNote choke point every B9-05 group form routes through, and B9-07/INV-62\'s own handleAuthorize)', (contractTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 3);
+  check('ghl.notes.create is called exactly five times in the whole page (the checklist write, the ONE shared commitNote choke point every B9-05 group form routes through, B9-07/INV-62\'s own handleAuthorize, and B9-08/INV-63\'s own handleSend -- which writes TWO notes, the in_progress attempt and its resolution, for the same attemptId)', (contractTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 5);
+  check('the B9-08/INV-63 send write lives inside its own handleSend, never routed through commitNote', (() => {
+    const m = contractTsxNoComments.match(/async function handleSend\([\s\S]*?\n  \}/m);
+    return !!m && (m[0].match(/ghl\.notes\.create\(/g) || []).length === 2 && !/commitNote\(/.test(m[0]);
+  })(), true);
+  check('handleSend is wired to the Send button\'s onClick, and declared exactly once', (() => {
+    const onClickWiring = /onClick=\{handleSend\}/.test(contractTsx);
+    const declarations = (contractTsxNoComments.match(/async function handleSend\(/g) || []).length;
+    return onClickWiring && declarations === 1;
+  })(), true);
+  check('handleSend is never invoked from the data-fetching effect or on mount', /handleSend\(\)/.test(effectBody) === false, true);
+  check('handleSend reuses buildSendAttemptArgs/formatContractSendNote/classifyProviderSendResponse/buildSendResultArgs, never composes a send note body or a provider-response verdict inline', /const built = buildSendAttemptArgs\(/.test(contractTsxNoComments) && /classifyProviderSendResponse\(outcome\)/.test(contractTsxNoComments) && /buildSendResultArgs\(/.test(contractTsxNoComments), true);
+  check('handleSend never sets contactId/userId on the outbound send call -- ghl-proxy.ts GATE 2 overrides both server-side', /ghl\.proposals\.send\(\{ templateId, opportunityId: screen\.opportunity\.id \}\)/.test(contractTsxNoComments), true);
   check('the checklist write lives inside handleToggleChecklistItem', /async function handleToggleChecklistItem[\s\S]*?ghl\.notes\.create\(/.test(contractTsxNoComments), true);
   check('the B9-07/INV-62 authorization write lives inside its own handleAuthorize, never routed through commitNote', (() => {
     const m = contractTsxNoComments.match(/async function handleAuthorize\([\s\S]*?\n  \}/m);

@@ -98,7 +98,46 @@ export interface GhlConfig {
     longTermNurture: string;
     lostNotInterested: string;
   };
+  /**
+   * B9-08 / INV-63. SERVER-SIDE ONLY -- never added to RUNTIME_GROUPS /
+   * RuntimeConfig below, and never sent to the browser. `ghl-proxy.ts`
+   * reads this and UNCONDITIONALLY OVERWRITES the `contactId` field of any
+   * `POST /proposals/templates/send` request body with it, ignoring
+   * whatever the browser supplied -- the browser is never trusted to name
+   * the recipient of an actual e-sign send, per
+   * `docs/BOARD9_CONTRACT_INVENTORY_V1.md`'s own proposed recipient-
+   * allowlist safeguard for this exact endpoint. `approvedTestContactId`
+   * is the ONE pre-approved GHL Test contact ("IAOS Underwriting Test",
+   * `NAGtUZ9aOE5C1GatJzpT`) Brad's own live Test transaction already used
+   * (that document, 2026-09-09). PRODUCTION's value is a deliberately
+   * fake, obviously-invalid sentinel -- non-empty (so `getConfig`'s own
+   * completeness check still passes) but never a real GHL id, so this
+   * capability is structurally inert if this selector is ever
+   * (mis)configured to "production": the outbound call would carry an
+   * invalid contactId and GHL itself would reject it.
+   *
+   * `senderUserId` -- the documented `POST /proposals/templates/send`
+   * request body requires `userId` (the GHL user the send is attributed
+   * to) as a REQUIRED field, verified directly from that endpoint's own
+   * reference page (2026-09-11). No GHL user id has been supplied or
+   * verified for the IAOS Test location as of this build -- this is an
+   * open, honestly-reported blocker (see the INV-63 Jess Gate report),
+   * NOT a value this build is authorized to invent or guess. The TEST
+   * sentinel below is deliberately non-empty (completeness-valid) but
+   * obviously not a real GHL id; `ghl-proxy.ts`'s GATE 2 refuses any
+   * `/proposals/templates/send` request while this sentinel is in effect,
+   * failing closed before any outbound call, exactly like the
+   * `GHL_PRIVATE_API_KEY not configured` guard already does for a missing
+   * credential.
+   */
+  documentsContracts: {
+    approvedTestContactId: string;
+    senderUserId: string;
+  };
 }
+
+/** GATE 2 / B9-08 -- the literal placeholder value for an unconfigured `senderUserId`. Exported so ghl-proxy.ts can refuse a send while it is in effect, without hardcoding the sentinel a second time. */
+export const SENDER_USER_ID_NOT_CONFIGURED = "GHL_SENDER_USER_ID_NOT_YET_PROVIDED" as const;
 
 const PRODUCTION: GhlConfig = {
   locationId: "jmHG4B8RdzwpfqruNf68",
@@ -173,6 +212,14 @@ const PRODUCTION: GhlConfig = {
     sellerClosedWon:     "0c45ee3d-7be7-4651-97a4-6df53f53481b",
     longTermNurture:     "a7436df7-e05a-4bf0-bd29-70f7066ec0bd",
     lostNotInterested:   "f1960b50-8aa2-4a69-ba58-a7a0dc66ce82",
+  },
+  // B9-08 / INV-63. Deliberately fake and obviously invalid -- see the
+  // interface doc comment above. This is NOT a real GHL id and must never
+  // become one; Production e-sign sending is out of scope for V1 and this
+  // value exists only so getConfig("production") stays completeness-valid.
+  documentsContracts: {
+    approvedTestContactId: "PRODUCTION_SEND_NOT_AUTHORIZED_NO_CONTACT_CONFIGURED",
+    senderUserId: "PRODUCTION_SEND_NOT_AUTHORIZED_NO_USER_CONFIGURED",
   },
 };
 
@@ -252,6 +299,17 @@ const TEST: GhlConfig = {
     longTermNurture:     "c44d504e-cb1b-4a7f-b077-74117e92d91a",
     lostNotInterested:   "08b4d86d-7cdb-48fa-b195-a72b52d0ab8c",
   },
+  // B9-08 / INV-63. The ONE pre-approved GHL Test contact ("IAOS
+  // Underwriting Test") -- the same contact Brad's own live Documents &
+  // Contracts Test transaction used directly in GHL's UI, 2026-09-09
+  // (docs/BOARD9_CONTRACT_INVENTORY_V1.md item 8). SERVER-SIDE ONLY -- see
+  // the interface doc comment; never added to RUNTIME_GROUPS.
+  documentsContracts: {
+    approvedTestContactId: "NAGtUZ9aOE5C1GatJzpT",
+    // Not yet provided/verified -- see the interface doc comment. Sending
+    // is refused (GATE 2, ghl-proxy.ts) while this sentinel is in effect.
+    senderUserId: SENDER_USER_ID_NOT_CONFIGURED,
+  },
 };
 
 export function getConfig(selector: string | undefined): GhlConfig {
@@ -296,6 +354,9 @@ export function getConfig(selector: string | undefined): GhlConfig {
     ),
     ...Object.entries(config.stages).map(
       ([k, v]): [string, string] => [`stages.${k}`, v],
+    ),
+    ...Object.entries(config.documentsContracts).map(
+      ([k, v]): [string, string] => [`documentsContracts.${k}`, v],
     ),
   ];
 
