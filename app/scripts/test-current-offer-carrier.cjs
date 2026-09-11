@@ -47,10 +47,10 @@ try {
   process.exit(10);
 }
 
-const { currentOfferWriteGate, acceptedPriceFreezeValue, readCurrentOfferFromOpportunity } = require(path.join(TMP, 'current-offer-carrier.js'));
+const { currentOfferWriteGate, acceptedPriceFreezeValue, readCurrentOfferFromOpportunity, checkCurrentOfferIntegrity } = require(path.join(TMP, 'current-offer-carrier.js'));
 const { formatOutcomeNote, parseOutcomeNote } = require(path.join(TMP, 'seller-call-outcome.js'));
 
-const FLOOR = 42;
+const FLOOR = 55;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -141,6 +141,50 @@ const FIELD_ID = 'opp-field-under-test';
 {
   const v = readCurrentOfferFromOpportunity([{ id: FIELD_ID, fieldValueNumber: 'not-a-number' }], FIELD_ID);
   check('a non-numeric string never produces NaN -- reads absent instead', v, null);
+}
+
+/* -------------------------------------------------------------- */
+/* 1c. checkCurrentOfferIntegrity -- standing reconciliation warning */
+/*     (Jess Gate clarification, INV-70 / B9-07A Phase 2 round 3     */
+/*     follow-up: hydration stays no-fallback; a disagreement        */
+/*     between the frozen accepted price and the live Opportunity    */
+/*     field must be surfaced explicitly, never silently absorbed.)  */
+/* -------------------------------------------------------------- */
+
+{
+  const s = checkCurrentOfferIntegrity({ agreementReached: false, acceptedValue: null, opportunityValue: null });
+  check('no Accept outcome yet: ok, silent (a merely-negotiating deal is never flagged)', s, { ok: true });
+}
+{
+  const s = checkCurrentOfferIntegrity({ agreementReached: false, acceptedValue: null, opportunityValue: 275000 });
+  check('not agreement-reached: ok regardless of the live field value', s, { ok: true });
+}
+{
+  const s = checkCurrentOfferIntegrity({ agreementReached: true, acceptedValue: 275000, opportunityValue: 275000 });
+  check('agreement reached, field matches the accepted price: ok', s, { ok: true });
+}
+{
+  const s = checkCurrentOfferIntegrity({ agreementReached: true, acceptedValue: 275000, opportunityValue: null });
+  check('agreement reached, field empty: flagged as opportunity_field_empty', s,
+    { ok: false, reason: 'opportunity_field_empty', acceptedValue: 275000 });
+}
+{
+  const s = checkCurrentOfferIntegrity({ agreementReached: true, acceptedValue: 275000, opportunityValue: 260000 });
+  check('agreement reached, field disagrees: flagged as value_mismatch with both values named', s,
+    { ok: false, reason: 'value_mismatch', acceptedValue: 275000, opportunityValue: 260000 });
+}
+{
+  // agreementReached true but acceptedValue null is a malformed/impossible
+  // caller state (an Accept outcome always has a real snapshot.currentOffer
+  // -- B8-10's own Accept-button gate) -- proven silent (ok:true) rather
+  // than fabricating a warning about a value that was never accepted.
+  const s = checkCurrentOfferIntegrity({ agreementReached: true, acceptedValue: null, opportunityValue: 260000 });
+  check('agreement reached but no accepted value on record (malformed caller state): silent, not fabricated', s, { ok: true });
+}
+{
+  const s = checkCurrentOfferIntegrity({ agreementReached: true, acceptedValue: 275000, opportunityValue: 0 });
+  check('zero is a real, distinct value from the accepted price -- flagged as value_mismatch, not treated as empty', s,
+    { ok: false, reason: 'value_mismatch', acceptedValue: 275000, opportunityValue: 0 });
 }
 
 /* -------------------------------------------------------------- */
@@ -242,6 +286,33 @@ const FIELD_ID = 'opp-field-under-test';
     false);
   check('a Note failure (thrown after the Current Offer already succeeded) is surfaced via the SAME outcomeActionError path every other outcome failure already uses -- no special-cased swallow',
     /\} catch \(e: any\) \{\s*setOutcomeActionError\(e\?\.message \?\? "Couldn't record this outcome\."\);\s*\} finally \{/.test(pageSrc),
+    true);
+}
+{
+  // Jess Gate clarification follow-up -- the standing reconciliation
+  // warning. Not part of the hydration effect (no-fallback rule
+  // unchanged): a separate memo, recomputed whenever the accepted
+  // outcome or the live Opportunity value changes, rendered wherever the
+  // accepted price is already shown.
+  const pageSrc = fs.readFileSync(PAGE, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  check('the page imports checkCurrentOfferIntegrity from current-offer-carrier',
+    /import \{[^}]*checkCurrentOfferIntegrity[^}]*\} from "\.\.\/lib\/current-offer-carrier"/.test(pageSrc), true);
+  check('currentOfferIntegrity is derived from latestOutcome and currentOfferFromOpportunity, not re-fetched',
+    /const currentOfferIntegrity = useMemo\(\(\) => \{\s*return checkCurrentOfferIntegrity\(\{\s*agreementReached: latestOutcome\?\.kind === "accept",\s*acceptedValue: latestOutcome\?\.kind === "accept" \? latestOutcome\.snapshot\.currentOffer : null,\s*opportunityValue: currentOfferFromOpportunity,\s*\}\);\s*\}, \[latestOutcome, currentOfferFromOpportunity\]\);/.test(pageSrc),
+    true);
+  check('a mismatch renders a dedicated warning inside the Agreement Reached banner, gated on !currentOfferIntegrity.ok',
+    /\{!currentOfferIntegrity\.ok \? \(\s*<div\s*data-testid="current-offer-integrity-warning"/.test(pageSrc),
+    true);
+  check('the warning names the opportunity_field_empty case explicitly',
+    /currentOfferIntegrity\.reason === "opportunity_field_empty"/.test(pageSrc), true);
+  check('the warning states the accepted price still governs -- not a request to re-confirm the agreement',
+    /this is a reconciliation flag on the queryable field, not a request to re-confirm the agreement/.test(pageSrc), true);
+  check('no ok:true integrity status ever renders the warning div (gated strictly on the negative branch)',
+    (() => {
+      const idx = pageSrc.indexOf('data-testid="current-offer-integrity-warning"');
+      const gateIdx = pageSrc.lastIndexOf('{!currentOfferIntegrity.ok ? (', idx);
+      return idx !== -1 && gateIdx !== -1 && idx - gateIdx < 80;
+    })(),
     true);
 }
 

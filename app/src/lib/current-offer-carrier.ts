@@ -37,6 +37,20 @@
  * resolver already receives — never Contact, never a legacy `offer_*`
  * id — so `SellerCallWorkspace.tsx` can hydrate the live negotiation
  * input from GHL on selection/resume instead of only ever writing to it.
+ *
+ * Jess Gate clarification, same round. Hydration reads ONLY the
+ * Opportunity field, never `latestOutcome` — approved. But an Accept
+ * outcome Note existing while `opportunity.current_offer` is empty or
+ * disagrees with the Note's frozen price is a genuine data-integrity
+ * problem (the freeze write from `acceptedPriceFreezeValue` should make
+ * this impossible going forward, but a pre-existing deal, a manual GHL
+ * edit after freeze, or an old bug could still produce it) — the operator
+ * must be told, not left to infer it from silence. `checkCurrentOfferIntegrity`
+ * is the read-only detector; it makes no restore/write decision of its
+ * own and changes nothing about `resolveResumeHydration`'s no-fallback
+ * rule above. The caller renders its result as a standing warning
+ * wherever the accepted price is already shown, for as long as the
+ * disagreement persists — not just on the one hydration pass.
  */
 
 import type { RawField } from "./underwriting/resolver-types";
@@ -117,4 +131,36 @@ export function acceptedPriceFreezeValue(acceptedPrice: number | null): CurrentO
     return { kind: "blocked", reason: "accepted price must be a positive finite number" };
   }
   return { kind: "allowed", value: acceptedPrice };
+}
+
+export type CurrentOfferIntegrityStatus =
+  | { ok: true }
+  | { ok: false; reason: "opportunity_field_empty"; acceptedValue: number }
+  | { ok: false; reason: "value_mismatch"; acceptedValue: number; opportunityValue: number };
+
+/**
+ * Detects, never resolves, a disagreement between the frozen accepted
+ * price (the Accept outcome Note's own snapshot — immutable evidence,
+ * `seller-call-outcome.ts`) and the live authoritative Opportunity field.
+ * Not gated on anything hydration-related — `agreementReached` is the
+ * caller's own already-resolved `latestOutcome?.kind === "accept"` fact,
+ * identical to `currentOfferWriteGate`'s `agreementAlreadyReached`.
+ *
+ * Silent when no Accept outcome exists yet (`ok: true`) — this is a
+ * post-acceptance integrity check, not a pre-acceptance validation; a
+ * merely-negotiating deal disagreeing with nothing is not a defect.
+ */
+export function checkCurrentOfferIntegrity(args: {
+  agreementReached: boolean;
+  acceptedValue: number | null;
+  opportunityValue: number | null;
+}): CurrentOfferIntegrityStatus {
+  if (!args.agreementReached || args.acceptedValue === null) return { ok: true };
+  if (args.opportunityValue === null) {
+    return { ok: false, reason: "opportunity_field_empty", acceptedValue: args.acceptedValue };
+  }
+  if (args.opportunityValue !== args.acceptedValue) {
+    return { ok: false, reason: "value_mismatch", acceptedValue: args.acceptedValue, opportunityValue: args.opportunityValue };
+  }
+  return { ok: true };
 }

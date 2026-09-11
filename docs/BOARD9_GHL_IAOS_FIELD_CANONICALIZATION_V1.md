@@ -444,6 +444,42 @@ audit, neither previously closed:
   "save-back reuses Board 6's persist gate" to "save-back is absent,
   proven the same way ARV's absence already is" — 66 checks, up from 63.
 
+### Correction round 3 follow-up — Jess Gate confirmation and the standing integrity warning
+
+Both judgment calls above were confirmed by Jess Gate: (1) the
+`ContactWorkspace.tsx` closure is correct and stays; (2) the no-fallback
+hydration rule is correct and stays — the Opportunity field is
+authoritative, full stop, with **one narrowly scoped addition**: if an
+Accept outcome Note exists while `opportunity.current_offer` is empty or
+disagrees with the Note's frozen accepted price, the operator must see an
+explicit integrity/reconciliation warning, not silence. Hydration itself
+is unchanged by this — this is a detection-and-display addition, not a
+third source of truth.
+
+- `current-offer-carrier.ts` gained `checkCurrentOfferIntegrity`, a pure
+  read-only detector: silent (`{ok: true}`) whenever no Accept outcome
+  exists yet (a merely-negotiating deal disagreeing with nothing is not a
+  defect); once one exists, flags `opportunity_field_empty` when the live
+  field is empty, or `value_mismatch` (naming both values) when it
+  disagrees with the accepted price. Makes no restore/write decision of
+  its own and does not touch `resolveResumeHydration`.
+- `SellerCallWorkspace.tsx` computes `currentOfferIntegrity` in its own
+  memo, keyed on `latestOutcome` and `currentOfferFromOpportunity` — it
+  recomputes on every render either changes, so the warning stays current
+  for as long as the disagreement persists, not just at the moment of
+  hydration. Rendered as a dedicated `current-offer-integrity-warning`
+  block inside the existing "AGREEMENT REACHED" banner (the same place
+  the accepted price is already shown), stating plainly that the
+  Agreement Reached record governs and this is a reconciliation flag on
+  the queryable field, not a request to re-confirm the agreement.
+- **Tests:** `test-current-offer-carrier.cjs` gained 7 direct unit checks
+  for `checkCurrentOfferIntegrity` (silent pre-acceptance, match, empty,
+  mismatch, malformed-caller-state silence, zero-is-a-real-mismatch) and 6
+  static wiring checks on the page (import, memo derivation, the gated
+  render, both named cases, the governs-the-record language, and that the
+  warning div never renders outside the `!ok` branch) — 55 checks, up
+  from 42.
+
 ### What Phase 2 could not complete (RESOLVED, correction round 2)
 
 **Originally:** the Current Offer GHL field did not exist in either

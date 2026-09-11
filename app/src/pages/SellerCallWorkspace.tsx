@@ -56,7 +56,7 @@ import { scheduleCallbackGated } from "../lib/callbackWrite";
    freeze logic lives in its own module so "frozen after Agreement
    Reached" is provable without a network call, mirroring how
    `seller-call-negotiation.ts`'s pure functions already work. */
-import { currentOfferWriteGate, acceptedPriceFreezeValue, readCurrentOfferFromOpportunity } from "../lib/current-offer-carrier";
+import { currentOfferWriteGate, acceptedPriceFreezeValue, readCurrentOfferFromOpportunity, checkCurrentOfferIntegrity } from "../lib/current-offer-carrier";
 
 /**
  * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49,
@@ -1557,6 +1557,24 @@ export default function SellerCallWorkspace() {
     return latestOutcomeNoteForOpportunity(notes, screen.opportunity.id);
   }, [notes, screen]);
 
+  /* Jess Gate clarification, INV-70 / B9-07A Phase 2 correction round 3
+     follow-up. Hydration reads ONLY `opportunity.current_offer`, never
+     `latestOutcome` (approved, unchanged by this memo). But an Accept
+     outcome existing while that field is empty or disagrees with the
+     Note's frozen accepted price is a standing data-integrity problem the
+     operator must be told about, not left to infer from an unexplained
+     blank -- see `current-offer-carrier.ts`'s `checkCurrentOfferIntegrity`
+     header. Recomputed every render `currentOfferFromOpportunity` or
+     `latestOutcome` changes, so it stays current for as long as the
+     disagreement persists -- not just on the one hydration pass. */
+  const currentOfferIntegrity = useMemo(() => {
+    return checkCurrentOfferIntegrity({
+      agreementReached: latestOutcome?.kind === "accept",
+      acceptedValue: latestOutcome?.kind === "accept" ? latestOutcome.snapshot.currentOffer : null,
+      opportunityValue: currentOfferFromOpportunity,
+    });
+  }, [latestOutcome, currentOfferFromOpportunity]);
+
   /* Jess Gate correction, 2026-09-08 -- Contract Ready checklist progress,
      made durable. Scoped to `latestOutcome.at` -- the accepted outcome's
      OWN durable timestamp, an identity that ALREADY exists
@@ -2138,6 +2156,23 @@ export default function SellerCallWorkspace() {
                   at {moneyOrUnknown(latestOutcome.snapshot.currentOffer)}, {new Date(latestOutcome.at).toLocaleString()} — not yet Under Contract
                 </span>
               </div>
+
+              {!currentOfferIntegrity.ok ? (
+                <div
+                  data-testid="current-offer-integrity-warning"
+                  style={{
+                    marginBottom: "10px", padding: "8px 10px", borderRadius: "6px",
+                    background: "rgba(239,68,68,0.10)", border: "1px solid rgba(239,68,68,0.4)",
+                    fontSize: "11px", color: "#FCA5A5",
+                  }}
+                >
+                  ⚠ Current Offer carrier mismatch —{" "}
+                  {currentOfferIntegrity.reason === "opportunity_field_empty"
+                    ? `the Opportunity's Current Offer field is empty, but this deal has an accepted price of ${moneyOrUnknown(currentOfferIntegrity.acceptedValue)} on record.`
+                    : `the Opportunity's Current Offer field reads ${moneyOrUnknown(currentOfferIntegrity.opportunityValue)}, which disagrees with the accepted price of ${moneyOrUnknown(currentOfferIntegrity.acceptedValue)} on record.`}
+                  {" "}The accepted price above is the immutable Agreement Reached record and governs; this is a reconciliation flag on the queryable field, not a request to re-confirm the agreement.
+                </div>
+              ) : null}
 
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "8px" }}>
                 Contract Ready checklist (Board #9 completes the transaction; this is a handoff, not contract software)
