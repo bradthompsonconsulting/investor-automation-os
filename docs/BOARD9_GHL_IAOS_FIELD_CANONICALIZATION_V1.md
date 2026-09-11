@@ -537,6 +537,28 @@ or retired.**
 
 ## Cross-cutting findings
 
+**The Accepted Purchase Price — the fact Board 9's contract work actually
+needs — is not any field in this document, and is not a `offer_price`.**
+Recorded here because it bears directly on why INV-63 (contract sending)
+was paused and gated on this document. `docs/BOARD9_CONTRACT_INVENTORY_
+V1.md` item 6 and `docs/BOARD8_ECONOMICS_INVENTORY_V1.md`'s "Accepted
+price" row both establish that the price actually consumed downstream is
+`OutcomeSnapshot.currentOffer`, captured verbatim at seller-call
+acceptance and persisted as a **GHL Note** through the sanctioned
+`ghl.notes.create()` — never a custom field. `app/src/lib/seller-call-
+outcome.ts:40-45` states this as a module-level design invariant, in these
+words: **"ACCEPTED PRICE IS THE EXISTING CURRENT OFFER, NEVER A NEW
+FIELD."** The same header (lines 47-54) documents a known, accepted,
+NOT-closed gap: a GHL note is durable and re-readable but not queryable or
+pipeline-reportable, unlike a custom field — recorded there for INV-54,
+not solved by anything in this document. **Neither `contact.offer_price`
+nor `opportunity.offer_price` (Family 5) is this value.** A future
+TREC/contract field-mapping pass that reaches for either `offer_price`
+field expecting the accepted price would be reading the wrong carrier
+entirely — the real value lives in note text, keyed by `agreementAt`, and
+is invisible to a grep across custom-field ids. Stated plainly so it is
+not rediscovered as a bug during Board 9's next attempt at INV-63.
+
 **Property Address ownership is a deliberate, already-ruled exception to
 the general ownership rule, not a gap.** `contact.property_address`
 (`tG4gGFI8JB2VjWeuqYMx` / `1B6u7F1MipquMxVWnAD9`) is READ-ONLY in the
