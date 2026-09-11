@@ -8,11 +8,22 @@ import {
   CONTRACT_READY_ITEM_KEYS, type ContractReadyItemKey, type ContractReadyItems,
 } from "../lib/seller-call-readiness-carriers";
 import { computeContractScreenState, type ContractScreenState } from "../lib/contract-workspace-view";
-import { CONTRACT_STATE_MEANING } from "../lib/board9-contract-model";
+import { CONTRACT_STATE_MEANING, initialVersionIdentity } from "../lib/board9-contract-model";
 import {
   computeSellerContractFactsReport, computeSellerContractFactsReadiness,
   type SellerContractFactsReport, type FieldDisposition,
 } from "../lib/contract-facts-model";
+import {
+  buildContractDocumentPreview, type ContractDocumentPreview,
+  CONTRACT_DOCUMENT_GROUP_LABEL,
+} from "../lib/contract-document-model";
+import {
+  evaluateBradAuthorizationCurrency, evaluateAuthorizationEligibility,
+  buildAuthorizationRecordArgs, computeDifferencesFromLastAuthorized,
+} from "../lib/contract-authorization-model";
+import {
+  formatBradContractAuthorizationNote, latestBradContractAuthorizationForOpportunity,
+} from "../lib/contract-authorization-carriers";
 import {
   formatBuyerEntityOverrideNote,
   formatPartySignerFactsNote, type SellerSignerFact,
@@ -119,9 +130,10 @@ function SelectField<K extends string>({ testId, value, onChange, options }: { t
   );
 }
 
-function Btn({ testId, onClick, busy, children }: { testId: string; onClick: () => void; busy: boolean; children: string }) {
+function Btn({ testId, onClick, busy, disabled, children }: { testId: string; onClick: () => void; busy: boolean; disabled?: boolean; children: string }) {
+  const isDisabled = busy || (disabled ?? false);
   return (
-    <button data-testid={testId} onClick={onClick} disabled={busy} style={{ ...saveButtonStyle, cursor: busy ? "not-allowed" : "pointer" }}>
+    <button data-testid={testId} onClick={onClick} disabled={isDisabled} style={{ ...saveButtonStyle, cursor: isDisabled ? "not-allowed" : "pointer", opacity: isDisabled && !busy ? 0.5 : 1 }}>
       {busy ? <Loader2 size={12} className="animate-spin" /> : children}
     </button>
   );
@@ -547,6 +559,93 @@ export default function ContractWorkspace() {
     () => (sellerContractFactsReport ? computeSellerContractFactsReadiness(sellerContractFactsReport) : null),
     [sellerContractFactsReport],
   );
+
+  /**
+   * B9-07 / INV-62 -- Contract Review & Send-Authorization Gate.
+   *
+   * `documentVersion` is `initialVersionIdentity(agreementAt)` -- no
+   * Correction-tracking carrier/UI exists yet anywhere in this codebase
+   * (B9-03 defined `ContractVersionIdentity`/`nextVersionIdentity` for a
+   * future Correction issue to use; none has), so `versionSeq` is always
+   * 1 today. Deriving it this way, rather than inventing a placeholder,
+   * means this section is already correct the day a Correction issue
+   * starts actually bumping it.
+   */
+  const documentVersion = useMemo(
+    () => (screen.state === "ready" ? initialVersionIdentity(screen.economics.agreementAt) : null),
+    [screen],
+  );
+
+  const propertyStreetAddressDisposition: FieldDisposition<string> = useMemo(() => {
+    if (propertyAddress === "—" || propertyAddress === "") return { kind: "unresolved" };
+    return { kind: "populated", value: propertyAddress, authority: "operator_attested", recordedAt: null };
+  }, [propertyAddress]);
+
+  const contractDocumentPreview: ContractDocumentPreview | null = useMemo(() => {
+    if (!sellerContractFactsReport || !documentVersion || screen.state !== "ready") return null;
+    return buildContractDocumentPreview({
+      opportunityId: screen.opportunity.id,
+      version: documentVersion,
+      report: sellerContractFactsReport,
+      propertyStreetAddress: propertyStreetAddressDisposition,
+    });
+  }, [sellerContractFactsReport, documentVersion, screen, propertyStreetAddressDisposition]);
+
+  const bradAuthorizationRecord = useMemo(() => {
+    if (screen.state !== "ready" || !notes) return null;
+    return latestBradContractAuthorizationForOpportunity(notes, screen.opportunity.id);
+  }, [screen, notes]);
+
+  const bradAuthorizationStatus = useMemo(() => {
+    if (!contractDocumentPreview) return null;
+    return evaluateBradAuthorizationCurrency(bradAuthorizationRecord, contractDocumentPreview);
+  }, [bradAuthorizationRecord, contractDocumentPreview]);
+
+  const authorizationEligibility = useMemo(() => {
+    if (!contractDocumentPreview || !documentVersion) return null;
+    return evaluateAuthorizationEligibility(contractDocumentPreview, documentVersion);
+  }, [contractDocumentPreview, documentVersion]);
+
+  const differencesFromLastAuthorized = useMemo(() => {
+    if (!contractDocumentPreview) return null;
+    return computeDifferencesFromLastAuthorized(bradAuthorizationRecord, contractDocumentPreview);
+  }, [bradAuthorizationRecord, contractDocumentPreview]);
+
+  const [authorizeBusy, setAuthorizeBusy] = useState(false);
+  const [authorizeError, setAuthorizeError] = useState<string | null>(null);
+
+  /**
+   * The ONLY write in this section, gated on `evaluateAuthorizationEligibility`
+   * both here (before attempting) and again inside
+   * `buildAuthorizationRecordArgs` itself (never trusts a single check).
+   * Records a fact only -- no e-sign send, no pipeline-stage write, no
+   * Contract Sent/Under Contract transition. Uses the SAME sanctioned
+   * `ghl.notes.create()` write every other group on this page already uses.
+   */
+  async function handleAuthorize() {
+    if (screen.state !== "ready" || !contractDocumentPreview || !documentVersion) return;
+    setAuthorizeError(null);
+    const built = buildAuthorizationRecordArgs({
+      opportunityId: screen.opportunity.id,
+      at: new Date().toISOString(),
+      preview: contractDocumentPreview,
+      currentVersion: documentVersion,
+    });
+    if (!built.ok) {
+      setAuthorizeError(built.reasons.map((r) => r.message).join(" "));
+      return;
+    }
+    setAuthorizeBusy(true);
+    const note = formatBradContractAuthorizationNote(built.value);
+    try {
+      await ghl.notes.create(contactId, note);
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: built.value.at }]);
+    } catch (e: any) {
+      setAuthorizeError(e?.message ?? "Couldn't save the authorization -- it is not yet in effect. Try again.");
+    } finally {
+      setAuthorizeBusy(false);
+    }
+  }
 
   // Read-only display of the operator's own verbatim attorney/manual text
   // -- shown back exactly as supplied, never interpreted, never drafted.
@@ -1468,6 +1567,152 @@ export default function ContractWorkspace() {
                     </div>
                   );
                 })}
+              </div>
+            </div>
+          ) : null}
+
+          {/* ================================================================ */}
+          {/* Contract Review & Send-Authorization Gate -- B9-07 / INV-62       */}
+          {/* ================================================================ */}
+          {contractDocumentPreview && bradAuthorizationStatus && authorizationEligibility ? (
+            <div data-testid="contract-authorization-section" style={{ marginTop: "24px" }}>
+              <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
+                Contract Review &amp; Send-Authorization
+              </div>
+              <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
+                No agreement becomes eligible for delivery merely because IAOS generated, populated, or displayed it. Only Brad's own explicit action, for this exact document revision, can authorize it -- and any material change since revokes that authorization.
+              </div>
+
+              <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Template &amp; document revision identity</div>
+                <div style={{ fontSize: "12px", color: "#E2E8F0", lineHeight: 1.8 }}>
+                  <div data-testid="contract-authorization-template-name">Template: {contractDocumentPreview.templateName}</div>
+                  <div data-testid="contract-authorization-template-source" style={{ color: "#64748B" }}>{contractDocumentPreview.templateSource}</div>
+                  <div data-testid="contract-authorization-revision">
+                    Revision: agreement {new Date(contractDocumentPreview.version.agreementAt).toLocaleString()}, version {contractDocumentPreview.version.versionSeq}
+                    {contractDocumentPreview.version.supersedesVersionSeq !== null ? ` (supersedes version ${contractDocumentPreview.version.supersedesVersionSeq})` : ""}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginBottom: "12px" }}>
+                <div data-testid="contract-authorization-preview-complete" style={{
+                  ...groupCardStyle, flex: "1 1 220px",
+                  borderColor: contractDocumentPreview.previewComplete ? "rgba(34,197,94,0.35)" : "rgba(245,158,11,0.35)",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: contractDocumentPreview.previewComplete ? "#22C55E" : "#F59E0B" }}>
+                    {contractDocumentPreview.previewComplete ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />}
+                    Preview {contractDocumentPreview.previewComplete ? "complete" : "incomplete"}
+                  </div>
+                  <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>
+                    Population/preview completeness only -- never authorization to send.
+                  </div>
+                </div>
+                <div data-testid="contract-authorization-brad-authorized" style={{
+                  ...groupCardStyle, flex: "1 1 220px",
+                  borderColor: bradAuthorizationStatus.authorized ? "rgba(34,197,94,0.35)" : "rgba(148,163,184,0.35)",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: bradAuthorizationStatus.authorized ? "#22C55E" : "#94A3B8" }}>
+                    {bradAuthorizationStatus.authorized ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />}
+                    {bradAuthorizationStatus.authorized ? "Brad-authorized" : "Not Brad-authorized"}
+                  </div>
+                  <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>
+                    {bradAuthorizationStatus.authorized
+                      ? `Authorized ${new Date(bradAuthorizationStatus.record.at).toLocaleString()} for this exact revision.`
+                      : "Requires Brad's explicit action for this exact revision -- never assumed, never a side effect of saving a fact."}
+                  </div>
+                </div>
+              </div>
+
+              {!bradAuthorizationStatus.authorized ? (
+                <ul data-testid="contract-authorization-reasons" style={{ margin: "0 0 12px", padding: "0 0 0 18px", fontSize: "12px", color: "#94A3B8", lineHeight: 1.8 }}>
+                  {bradAuthorizationStatus.reasons.map((r) => (
+                    <li key={r.code} data-testid={`contract-authorization-reason-${r.code}`}>{r.message}</li>
+                  ))}
+                </ul>
+              ) : null}
+
+              {contractDocumentPreview.blockingReasons.length > 0 ? (
+                <div style={{ marginBottom: "12px" }}>
+                  <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "4px" }}>Unresolved / conflicting</div>
+                  <ul data-testid="contract-authorization-blocking-reasons" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "12px", color: "#F59E0B", lineHeight: 1.8 }}>
+                    {contractDocumentPreview.blockingReasons.map((r, i) => <li key={i}>{r}</li>)}
+                  </ul>
+                </div>
+              ) : null}
+
+              <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Seller signer &amp; delivery information</div>
+                <div style={{ fontSize: "12px", color: "#E2E8F0", lineHeight: 1.8 }}>
+                  {contractDocumentPreview.documentLines
+                    .filter((l) => l.group === "parties" || l.group === "noticeContact")
+                    .map((l) => (
+                      <div key={`${l.group}.${l.field}`} data-testid={`contract-authorization-signer-${l.field}`}>
+                        <span style={{ color: "#64748B" }}>{l.label}:</span>{" "}
+                        <span style={{ color: l.status === "populated" ? "#22C55E" : l.status === "not_applicable" ? "#64748B" : "#F59E0B" }}>
+                          {l.text ?? "Unresolved"}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Material contract terms (populated preview)</div>
+                <div data-testid="contract-authorization-preview-lines" style={{ fontSize: "11px", lineHeight: 1.7, display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {Object.entries(
+                    contractDocumentPreview.documentLines.reduce((acc: Record<string, typeof contractDocumentPreview.documentLines>, l) => {
+                      (acc[l.group] ??= []).push(l);
+                      return acc;
+                    }, {}),
+                  ).map(([groupKey, lines]) => (
+                    <div key={groupKey}>
+                      <div style={{ color: "#64748B", fontWeight: 700, marginBottom: "3px" }}>{CONTRACT_DOCUMENT_GROUP_LABEL[groupKey] ?? groupKey}</div>
+                      {lines.map((l) => (
+                        <div key={`${l.group}.${l.field}`}>
+                          <span style={{ color: "#475569" }}>¶{l.paragraph || "—"} {l.label}:</span>{" "}
+                          <span style={{ color: l.status === "populated" ? "#E2E8F0" : l.status === "not_applicable" ? "#64748B" : "#F59E0B" }}>
+                            {l.text ?? "Unresolved"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Differences from the last Brad-reviewed revision</div>
+                {differencesFromLastAuthorized === null ? (
+                  <div data-testid="contract-authorization-diff-none-recorded" style={{ fontSize: "11px", color: "#64748B" }}>No prior authorization exists to compare against.</div>
+                ) : differencesFromLastAuthorized.length === 0 ? (
+                  <div data-testid="contract-authorization-diff-unchanged" style={{ fontSize: "11px", color: "#22C55E" }}>No differences -- this is exactly the revision Brad last authorized.</div>
+                ) : (
+                  <ul data-testid="contract-authorization-diff-list" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#F59E0B", lineHeight: 1.8 }}>
+                    {differencesFromLastAuthorized.map((d) => (
+                      <li key={`${d.group}.${d.field}`}>
+                        {d.group}.{d.field}: {d.previous ? `"${d.previous.text ?? d.previous.status}"` : "(none)"} → {d.current ? `"${d.current.text ?? d.current.status}"` : "(removed)"}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div>
+                <Btn
+                  testId="contract-authorization-authorize-button"
+                  onClick={handleAuthorize}
+                  busy={authorizeBusy}
+                  disabled={!authorizationEligibility.eligible}
+                >
+                  Authorize this exact revision
+                </Btn>
+                {!authorizationEligibility.eligible ? (
+                  <div data-testid="contract-authorization-ineligible-reasons" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "8px" }}>
+                    {authorizationEligibility.reasons.map((r) => <div key={r.code}>{r.message}</div>)}
+                  </div>
+                ) : null}
+                <ErrorText testId="contract-authorization-error">{authorizeError}</ErrorText>
               </div>
             </div>
           ) : null}

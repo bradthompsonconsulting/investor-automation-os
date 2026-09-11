@@ -44,7 +44,12 @@
  * (2026-09-10) introduced three domain keys — addendaApplicability,
  * attorneyManualFields, signingAuthorityNote — that are coincidentally exactly
  * 20 alphanumeric characters and tripped this check, though none of them is a
- * GHL identifier, a GHL config key, or environment-bound in any way.
+ * GHL identifier, a GHL config key, or environment-bound in any way. INV-62
+ * (2026-09-11) added a fourth: supersedesVersionSeq, a field name of
+ * board9-contract-model.ts's own ContractVersionIdentity, serialized as a
+ * JSON object key inside app/src/lib/contract-authorization-carriers.ts —
+ * same false-positive class, same coincidental 20-character length, equally
+ * not a GHL identifier, config key, or environment-bound value.
  *
  * A first attempt exempted anything SHAPED like ordinary camelCase English
  * (lowercase run, then Capitalized-word segments, no digits). REJECTED at
@@ -55,15 +60,15 @@
  * silently, with no diff to review — which is non-deterministic against this
  * check's whole purpose: catching every otherwise-matching token.
  *
- * EXEMPT_LITERALS below instead lists the three offending strings BY EXACT
+ * EXEMPT_LITERALS below instead lists the four offending strings BY EXACT
  * VALUE. It exempts nothing else, however camelCase-shaped: an unknown
- * 20-character token — including one that looks just like one of the three
+ * 20-character token — including one that looks just like one of the four
  * with a single character changed — is still caught (Check 9's
- * "attorneyManualFieldz" fixture, and Check 10's mixed-context proof). Adding
- * a fourth literal here is deliberately a one-line, reviewable, named edit —
- * never a shape or pattern change. This is a matcher-precision fix, not a
- * weakening of scope: no SCAN_DIRS entry, EXCLUSIONS entry, or APPROVED_HOME
- * changed.
+ * "attorneyManualFieldz" and "supersedesVersionSez" fixtures, and Check 10's
+ * mixed-context proof). Adding a literal here is deliberately a one-line,
+ * reviewable, named edit — never a shape or pattern change. This is a
+ * matcher-precision fix, not a weakening of scope: no SCAN_DIRS entry,
+ * EXCLUSIONS entry, or APPROVED_HOME changed.
  *
  * FLOOR = 10 IS AUTHORED, not observed. It moves only by deliberate addition
  * or removal with a stated reason, never by back-filling from a run. It is
@@ -112,18 +117,22 @@ const IDENTIFIER_PATTERN =
   /"[A-Za-z0-9]{20}"|"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/g;
 
 /**
- * The ONLY exemption from the matcher: three exact, named strings, and
- * nothing else. Each is an INV-60 domain key (a report-group/field name
- * internal to the contract-facts model), verified NOT to be a GHL identifier,
- * a GHL config key, or environment-bound in any way, and coincidentally 20
- * alphanumeric characters. This is enumeration, not a pattern: a fourth
- * literal requires a fourth named entry here, visible in a diff, never a
- * broadened shape.
+ * The ONLY exemption from the matcher: four exact, named strings, and
+ * nothing else. The first three are INV-60 domain keys (report-group/field
+ * names internal to the contract-facts model); the fourth,
+ * supersedesVersionSeq, is INV-62's own ContractVersionIdentity field name
+ * (board9-contract-model.ts), serialized as a JSON object key in
+ * app/src/lib/contract-authorization-carriers.ts. Each is verified NOT to be
+ * a GHL identifier, a GHL config key, or environment-bound in any way, and
+ * coincidentally 20 alphanumeric characters. This is enumeration, not a
+ * pattern: a fifth literal requires a fifth named entry here, visible in a
+ * diff, never a broadened shape.
  */
 const EXEMPT_LITERALS = new Set([
   "addendaApplicability",
   "attorneyManualFields",
   "signingAuthorityNote",
+  "supersedesVersionSeq",
 ]);
 
 /** @param {string} source @returns {string[]} every identifier literal found */
@@ -242,6 +251,8 @@ const MUST_MATCH = [
   // a camelCase pattern -- an unknown 20-character token is still caught even
   // when it looks just like a known-exempt one.
   ['"attorneyManualFieldz"', "unknown 20-char camelCase token, not in EXEMPT_LITERALS"],
+  // Same proof for the INV-62 exemption specifically (trailing "q" -> "z").
+  ['"supersedesVersionSez"', "unknown 20-char camelCase token, not in EXEMPT_LITERALS"],
 ];
 const MUST_REJECT = [
   ['"jmHG4B8RdzwpfqruNf6"', "19 chars"],
@@ -254,6 +265,7 @@ const MUST_REJECT = [
   ['"addendaApplicability"', "INV-60 domain key, exact-literal exemption"],
   ['"attorneyManualFields"', "INV-60 domain key, exact-literal exemption"],
   ['"signingAuthorityNote"', "INV-60 domain key, exact-literal exemption"],
+  ['"supersedesVersionSeq"', "INV-62 domain key, exact-literal exemption"],
 ];
 
 const missed = MUST_MATCH.filter(([s]) => findIdentifiers(s).length === 0);
@@ -270,21 +282,23 @@ check(
 // ── Check 10: the exact-literal exemption does not swallow anything beside
 // it — proven within ONE source text, not just in isolated fixtures. Check 9
 // shows each fixture matches or rejects on its own; this shows the exemption
-// keeps its precision when a real id, an unknown near-lookalike token, and
-// the three exempted literals all appear together, which is the shape an
-// actual violation would take. The real-id fixture is the production
-// locationId already committed in ghl-config.ts and already reused as a
-// Check 9 fixture — no new value is introduced.
+// keeps its precision when a real id, unknown near-lookalike tokens, and all
+// four exempted literals appear together, which is the shape an actual
+// violation would take. The real-id fixture is the production locationId
+// already committed in ghl-config.ts and already reused as a Check 9
+// fixture — no new value is introduced.
 // ────────────────────────────────────────────────────────────────────────────
 
 const MIXED_FIXTURE =
   'const groupKey = "addendaApplicability";\n' +
   'const other = "attorneyManualFields";\n' +
   'const note = "signingAuthorityNote";\n' +
+  'const version = "supersedesVersionSeq";\n' +
   'const unknown = "attorneyManualFieldz";\n' +
+  'const unknown2 = "supersedesVersionSez";\n' +
   'const leaked = "jmHG4B8RdzwpfqruNf68";\n';
 const mixedFound = findIdentifiers(MIXED_FIXTURE);
-const mixedWant = ['"attorneyManualFieldz"', '"jmHG4B8RdzwpfqruNf68"'];
+const mixedWant = ['"attorneyManualFieldz"', '"supersedesVersionSez"', '"jmHG4B8RdzwpfqruNf68"'];
 check(
   "exempt-literals-precise-real-id-and-unknown-token-still-caught",
   mixedFound.length === mixedWant.length &&
