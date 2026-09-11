@@ -1,5 +1,19 @@
 # IAOS Build Spec — MAO Deal Calculator (FINAL)
 
+**RETIRED — INV-70 / B9-07A Phase 2 (2026-09-11).** `MaoCalculator.tsx`
+was already unrouted dead code (confirmed: no import or route anywhere in
+`app/src`, retired from navigation 2026-08-16 per `docs/PHASE_B_SPEC.md:
+2593-2595`) and has now been deleted, per
+`docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md` Family 5's approved
+ruling. Its `offer_*` dual-write (`ghl.contacts.saveOfferFields` /
+`ghl.opportunities.saveOfferFields`) is also removed — the fourteen
+legacy `offer_*` fields (seven keys × two models) this spec's Phase 1
+created receive no further writes from any IAOS code path. They remain
+in GHL, untouched, exactly as `docs/BOARD9_GHL_IAOS_FIELD_
+CANONICALIZATION_V1.md` requires (no field deletion). This document is
+kept as the historical record of what was built and why; nothing below
+describes current or planned behavior.
+
 **Target:** `app/src/pages/MaoCalculator.tsx` + supporting Netlify functions
 **Route:** app.investorautomationos.com/mao-calculator (nav slot "MAO Calculator" already exists in the shell)
 **Prereq reading:** `docs/IAOS_Master_Architecture_Reference_V7.txt` — this build is the V7 "MAO in interface" item.

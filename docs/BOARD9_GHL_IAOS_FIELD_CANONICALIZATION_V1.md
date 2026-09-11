@@ -1,4 +1,4 @@
-# Board #9 GHL/IAOS field canonicalization — B9-07A / INV-70, Phase 1
+# Board #9 GHL/IAOS field canonicalization — B9-07A / INV-70, Phase 1 + Phase 2
 
 ## What this is
 
@@ -26,15 +26,249 @@ decision about what should be built. Where evidence does not reach an
 answer, that is recorded as an open question or a conflict for Brad/Jess
 to resolve — **never silently resolved here.**
 
-**Correction round 1 (this revision).** Jess Gate held the original pass
-pending three corrections: (1) reconcile a reported 124 Contact / 26
-Opportunity field count against this document's 109/16, with reproducible
-evidence; (2) a read-only Production/Test comparison for every candidate
-field in the nine families; (3) tighten the blocking-decision section so
-only the genuinely execution-blocking questions are marked as such. All
-three are addressed below, each in its own section, without altering the
-nine families' underlying findings except where the new Production
-evidence resolves a question the original pass had left open (Family 6).
+**Correction round 1.** Jess Gate held the original pass pending three
+corrections: (1) reconcile a reported 124 Contact / 26 Opportunity field
+count against this document's 109/16, with reproducible evidence; (2) a
+read-only Production/Test comparison for every candidate field in the
+nine families; (3) tighten the blocking-decision section so only the
+genuinely execution-blocking questions are marked as such. All three are
+addressed below, each in its own section, without altering the nine
+families' underlying findings except where the new Production evidence
+resolves a question the original pass had left open (Family 6).
+
+**Phase 2 (this revision).** Brad approved both Jess Gate rulings the
+Phase 1 blocking section named — Family 3 (Repairs) and Family 5
+(Presented/Current Offer) — and this revision records what was built.
+**"Update the canonicalization contract with the approved rulings" below
+is the implementation record; the Family 3 / Family 5 sections further
+down are left as the historical Phase 1 analysis that led to each
+decision, not rewritten.** GHL mutations this round were Test-only
+(one new Opportunity custom field, "Current Offer" — attempted and
+BLOCKED on credential scope, see below); Production remained read-only
+throughout, dry-run only. See "Phase 2 — approved rulings and
+implementation" for the full record.
+
+---
+
+## Phase 2 — approved rulings and implementation
+
+### Ruling 1 — Repairs (Family 3)
+
+**Approved:** `opportunity.repair_estimate` becomes the authoritative
+carrier. Build the missing named writer. Change IAOS repair
+approval/persistence to write the linked Opportunity. `contact.
+estimated_repairs` becomes a temporary legacy fallback only. Never
+overwrite a non-empty authoritative Opportunity value from Contact.
+Include a safe migration/backfill strategy with conflict detection.
+
+**Implemented:**
+- `ghl.opportunities.setRepairEstimate(opportunityId, value)`
+  (`app/src/lib/ghl.ts`) — a new named writer, structurally identical to
+  the already-proven `setApprovedArv`/`setAskingPrice` pattern: one PUT,
+  one singular-GET readback via `readSingularFieldValue`, strict
+  equality confirms the write. Resolves `CONFIG.opportunityFacts.repairs`
+  — the SAME field id Family 3's Phase 1 analysis already identified as
+  the correct, previously-writer-less carrier. No new GHL field was
+  needed; this field has existed since PB-D56.
+- `persistApprovedRepairTotalToOpportunity` (`app/src/lib/repair-
+  estimation/persist.ts`) — a new function alongside the original
+  `persistApprovedRepairTotal`, not a replacement for it (see the file's
+  own header comment for why a parameterized single function was
+  rejected — PB-D16's named-wrapper rule, and the two carriers' genuinely
+  different wire/readback shapes).
+- `UnderwritingWorkspace.tsx`'s `RepairEstimator` — the real,
+  Opportunity-bound repair-approval flow — now takes an `opportunityId`
+  prop (`screen.opportunity.id`, always available per PB-D55) and calls
+  the new Opportunity-targeted persistence function. Its `contactId` prop
+  was removed entirely (unused once the target changed).
+- `DealCalculator.tsx`'s standalone scratchpad — explicitly, by its own
+  pre-existing header comment, "CONTACT-LEVEL, NOT OPPORTUNITY-LEVEL...
+  no Opportunity resolution at all," the same scope boundary ARV already
+  has there — is **unchanged**, and keeps writing `contact.
+  estimated_repairs` via the original function. This is exactly the
+  "temporary legacy fallback" role the approved ruling assigns to that
+  carrier: it stays live, populated only from this legitimate
+  no-Opportunity context, never as a competing authoritative write.
+- **"Never overwrite a non-empty authoritative Opportunity value from
+  Contact"** is upheld structurally, not by a runtime check:
+  `persistApprovedRepairTotalToOpportunity` never reads or touches
+  `contact.estimated_repairs` at all, so there is no code path by which a
+  Contact value could reach the Opportunity carrier.
+- **Migration/backfill with conflict detection:**
+  `app/src/lib/repair-estimation/migration.ts`
+  (`classifyRepairsMigrationCandidate`, `summarizeRepairsMigration`) —
+  pure, tested functions implementing exactly the rule above: a
+  non-empty Opportunity value is never touched regardless of what Contact
+  holds, a mismatch is reported (`matchesContact: false`) never resolved,
+  and only an empty-Opportunity/populated-Contact pair is proposed as a
+  backfill candidate. `app/scripts/inv70-repairs-migration.cjs` is the
+  runnable dry-run tool (mirrors the TypeScript logic in plain JS with a
+  static drift guard against the source module — see its own header) —
+  its live dry-run output against both environments is recorded below.
+
+**Inert-proof, live Test, this session.** `opportunity.repair_estimate`
+(id `lSWxFUmWksfrViePG4UC`, Test) on the approved fixture opportunity
+`MAl1FWHEsK0QqsXt4v6f` ("IAOS Underwriting Test"), absent-origin cycle,
+mirroring the PB-D62 ARV pattern exactly:
+
+    STEP 1  origin read           → null (confirmed empty before touching it)
+    STEP 2  PUT field_value=12345 → HTTP 200
+    STEP 3  readback              → 12345 (exact match)
+    STEP 4  PUT field_value=""    → HTTP 200 (restore)
+    STEP 5  readback              → null (confirmed restored, no residual data)
+
+This exercises the identical field id and PUT/readback shape
+`ghl.opportunities.setRepairEstimate` uses (proxy path substituted for a
+direct call — no `netlify dev` instance was running this session; the
+mechanism proven is the same GHL-side behavior the real writer depends
+on). No residual test data was left in Test.
+
+**Migration dry-run evidence, read-only, both environments, captured this
+session:**
+
+| | Total opportunities | Backfill candidates | Already authoritative | — mismatched (conflict) | Nothing to do |
+|---|---|---|---|---|---|
+| Test (`SoTgVoaFGHtBdRFvXWQV`) | 2 | 1 | 0 | 0 | 1 |
+| Production (`jmHG4B8RdzwpfqruNf68`) | 43 | 1 | 1 | **1** | 41 |
+
+The one Production conflict: opportunity `OcGWOP9n666i4Q1MLd31` holds
+`opportunity.repair_estimate = 10000` while its linked Contact's
+`estimated_repairs = 30000`. Per the approved ruling, the Opportunity
+value is already authoritative and is never touched — this is reported
+for human review, not resolved by the tool or by this document. The one
+Production backfill candidate, opportunity `1AP9BfFPJ2xYZ0RPTm9U`
+(Contact repairs `15000`, Opportunity empty), is — independently
+cross-referenced — the SAME opportunity PB-D55 already flagged as
+stale calculator-test data (see Ruling 2's legacy-usage evidence below);
+a human reviewing this candidate should know that context before
+deciding whether to backfill it. **No write was issued for either
+environment** — `--apply` exists in the tool and is explicitly refused
+for any selector other than `test`, and was not invoked even for Test
+this session (dry-run evidence was the deliverable; a live bulk write
+was judged separately-authorizable).
+
+**Tests:** `app/scripts/test-repairs-canonicalization.cjs` (22 checks) —
+Opportunity-first resolution, Contact fallback, zero-is-not-absent for
+both, and every migration classification branch including the conflict
+case. `app/scripts/test-repair-persist.cjs` (extended from 60 to 63
+checks) — the Opportunity boundary's own isolation (reaches no other
+carrier) and the page's call-site shape.
+
+### Ruling 2 — Presented/Current Offer (Family 5)
+
+**Approved:** Eliminate the Contact/Opportunity mirrored 14-field
+architecture. Establish one Opportunity-owned Current Offer carrier.
+Before Agreement Reached, it represents the latest negotiated offer. At
+Agreement Reached, that value becomes the accepted purchase price
+consumed by Board #9. Preserve the timestamped GHL Note as immutable
+acceptance evidence. Do not treat either legacy `contact.offer_price` or
+`opportunity.offer_price` as authoritative unless explicitly mapped and
+normalized. Formally retire the unrouted `MaoCalculator.tsx` path and its
+hardcoded field identifiers. Legacy `offer_*` fields must not receive new
+writes.
+
+**Implemented:**
+- **A genuinely new carrier, not a repurposed legacy field.**
+  `opportunityFacts.currentOffer` (`app/shared/ghl-config.ts`) is a
+  distinct config key from every one of the fourteen legacy `offer_*`
+  ids — the "unless explicitly mapped and normalized" escape hatch in the
+  approved ruling was deliberately NOT exercised, precisely because
+  reusing `opportunity.offer_price` would make it permanently ambiguous
+  whether a given read is hitting the retired snapshot or the new
+  carrier. `ghl.opportunities.setCurrentOffer(opportunityId, value)`
+  mirrors `setApprovedArv` exactly.
+- **BLOCKED this session: the new GHL Test field was never created.**
+  A dry run confirmed no name/fieldKey clash, then `POST /locations/{id}/
+  customFields` (Test, `.env.test` credential) returned `HTTP 401 "The
+  token is not authorized for this scope"` — that credential has
+  Contacts/Opportunities write scope (proven by every existing writer in
+  this codebase) but not Custom Fields write/create scope. A second
+  attempt with a different credential file was stopped by this session's
+  own tooling as credential exploration before a result was obtained —
+  see "What Phase 2 could not complete" below. **Both `PRODUCTION` and
+  `TEST` in `ghl-config.ts` therefore carry the same explicit sentinel,
+  `CURRENT_OFFER_NOT_PROVISIONED`** (`"CURRENT_OFFER_FIELD_NOT_YET_
+  PROVISIONED"`), and `setCurrentOffer` refuses immediately — before any
+  network call — whenever the configured id equals that sentinel,
+  mirroring the fail-closed pattern `SENDER_USER_ID_NOT_CONFIGURED`
+  already established for B9-08's Documents & Contracts gate. **No live
+  write to this carrier has been exercised end-to-end against real GHL
+  this session** — only the pure gate/freeze logic and the writer's own
+  refusal-before-network-call path are proven (below).
+- **The pure freeze logic** lives in its own module,
+  `app/src/lib/current-offer-carrier.ts`
+  (`currentOfferWriteGate`, `acceptedPriceFreezeValue`) — provable without
+  a network call, mirroring `persist.ts`'s `persistGate` shape.
+  `currentOfferWriteGate` allows a write for any positive, finite value
+  while no `accept` outcome exists for the opportunity, and refuses
+  EVERY write once one does, regardless of the new value typed —
+  the freeze has no override, matching how an approved Opportunity ARV
+  is already permanent once written (PB-D55).
+- **UI wiring**, `SellerCallWorkspace.tsx`: the Current Offer input
+  commits on **blur**, not on every keystroke — an explicit
+  implementation-timing decision (this codebase's every other GHL write
+  is deliberate and gated, never a continuous sync), flagged here for
+  Jess Gate review since the approved ruling did not itself specify a
+  commit granularity. At `accept`, the SAME snapshot value already used
+  for the outcome note (`snapshot.currentOffer`, never a second read or
+  recomputation) is written as the freeze value, **after** the note
+  write succeeds and treated as non-blocking: a freeze-write failure
+  surfaces as a soft warning rather than unwinding an acceptance the
+  Note already durably recorded. **The GHL Note ledger
+  (`seller-call-outcome.ts`'s `formatOutcomeNote`/`parseOutcomeNote`) is
+  completely unchanged this phase** — same ledger version string, same
+  `OutcomeSnapshot` shape, proven by direct source comparison in the new
+  test suite, not merely by absence of a diff.
+- **Legacy `offer_*` fields receive no new writes.** `ghl.contacts.
+  saveOfferFields` and `ghl.opportunities.saveOfferFields` — the only
+  writers that ever touched any of the fourteen fields — are deleted
+  entirely, not redirected. `MaoCalculator.tsx` (their sole caller,
+  already confirmed unrouted dead code — no import or route anywhere in
+  `app/src`) is deleted. `docs/specs/mao_calculator_spec.md` is marked
+  retired, kept only as historical record.
+- **Legacy field usage, read-only evidence this session:** across both
+  environments, exactly ONE record anywhere holds any populated legacy
+  `offer_*` value — Production opportunity `1AP9BfFPJ2xYZ0RPTm9U`
+  (`offer_price` 245001, `offer_mao` 245000.5, `offer_margin` -0.5,
+  etc.) — which is the SAME record PB-D55 already named and disclaimed:
+  *"a calculator test that persisted, not a real deal."* Test holds zero
+  populated legacy fields. Retiring the writer therefore orphans no live
+  data anywhere; the fields themselves are left in place in GHL,
+  untouched, per the "no field deletion" constraint.
+
+**Tests:** `app/scripts/test-current-offer-carrier.cjs` (27 checks) —
+pre-agreement updates, the freeze with no exceptions, GHL Note format/
+version unchanged, the freeze value sourced from the note's own snapshot
+field, and the carrier's genuine distinctness from every legacy id.
+`app/scripts/test-legacy-offer-fields-retired.cjs` (10 checks) — the
+retired writer, the deleted page, no route, no stray literal offer_*
+fieldKey anywhere in the writer's own module or the wider tree.
+`app/scripts/test-seller-call-workspace-wiring.cjs` (extended, 231
+checks, unchanged count target other than the one updated invariant) —
+the deal-switch reset now also clears the Current Offer write bookkeeping.
+
+### What Phase 2 could not complete
+
+**The Current Offer GHL field does not exist in either environment yet.**
+This is the one incomplete piece: everything downstream (the writer, the
+UI wiring, the freeze logic, the tests) is built and proven at the code
+level, but has never executed a real write against a real field, because
+no sufficiently-scoped credential was available this session to create
+one. This is a credential-provisioning gap, not a design or code gap.
+**Recommendation, not a decision:** either (a) grant a Test-location
+Private Integration token Custom Fields write/create scope and run
+`node app/scripts/inv70-create-current-offer-field.cjs --location
+SoTgVoaFGHtBdRFvXWQV --credential-file <path> --apply` (committed this
+session, dry-run-verified — resolves the correct Opportunity Details-
+shaped folder live rather than hardcoding it, confirms no name/fieldKey
+clash first, and prints the exact next step), or (b) create the field
+manually in the GHL Test builder (name "Current Offer", NUMERICAL, on the
+Opportunity model, in the "Opportunity Details" folder to match its
+underwriting-adjacent siblings) and hand the resulting field id back for
+a one-line `ghl-config.ts` update. Production provisioning is a separate,
+later decision — out of this phase's authorized scope regardless.
+
+---
 
 **Method**, mirroring the established precedent in
 `docs/BOARD8_ECONOMICS_INVENTORY_V1.md` (B8-02) and

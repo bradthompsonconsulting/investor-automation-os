@@ -56,7 +56,7 @@ if (!fs.existsSync(compiled)) {
 const { persistGate, persistApprovedRepairTotal } = require(compiled);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 60;
+const FLOOR = 63;
 let failures = 0;
 let checks = 0;
 
@@ -241,16 +241,51 @@ function mockClient(opts) {
   const pageCode = stripComments(fs.readFileSync(PAGE, 'utf8'));
   const ghlCode = stripComments(fs.readFileSync(GHL, 'utf8'));
 
-  /* No other write is reachable from the boundary, and no carrier id is
-     hardcoded in it -- the id it uses for the readback arrives as a parameter. */
-  const forbidden = [
+  /* INV-70 / B9-07A Phase 2 -- persist.ts now carries TWO named boundaries
+     by deliberate design (Family 3's approved ruling): the original
+     Contact-only path (persistApprovedRepairTotal) and a new Opportunity-
+     only path (persistApprovedRepairTotalToOpportunity). "No other carrier
+     reachable" is still the right invariant, but it must now be checked
+     PER BOUNDARY, not against the whole file -- a whole-file check cannot
+     tell "the Contact boundary reaches Opportunity" (a real defect) apart
+     from "the file also contains a legitimate, separate Opportunity
+     boundary" (the approved architecture). Split the source at the new
+     interface's own declaration -- CODE, not a comment, so it survives
+     stripComments() (a comment-text marker would not: it would be
+     stripped along with every other comment before this split ever runs). */
+  const OPPORTUNITY_BOUNDARY_MARKER = 'export interface RepairPersistGhlOpportunity';
+  const splitAt = persistCode.indexOf(OPPORTUNITY_BOUNDARY_MARKER);
+  check('the Opportunity boundary interface exists exactly once',
+    (persistCode.match(/export interface RepairPersistGhlOpportunity/g) || []).length, 1);
+  const contactBoundaryCode = splitAt === -1 ? persistCode : persistCode.slice(0, splitAt);
+  const opportunityBoundaryCode = splitAt === -1 ? '' : persistCode.slice(splitAt);
+
+  /* No other write is reachable from the CONTACT boundary, and no carrier
+     id is hardcoded in it -- the id it uses for the readback arrives as a
+     parameter. `opportunities` stays forbidden HERE: this specific
+     function must still never reach the Opportunity model. */
+  const forbiddenInContactBoundary = [
     'setARV', 'setCallDisposition', 'setCallRouting', 'setDispositionAt',
     'setLastCallAttempt', 'setCallbackDatetime', 'setPropertyNotes',
     '_putMonetaryField', '_putStringField', 'notes', 'opportunities',
     'offer_', 'workflow', 'OQnud97MfdxMcTgMVTgf', 'SU4n8ylrXnUm8xDi729R',
   ];
-  const hits = forbidden.filter(function (t) { return persistCode.indexOf(t) !== -1; });
-  check('the boundary reaches no other carrier or write', hits, []);
+  const contactHits = forbiddenInContactBoundary.filter(function (t) { return contactBoundaryCode.indexOf(t) !== -1; });
+  check('the Contact boundary reaches no other carrier or write', contactHits, []);
+
+  /* The mirror check for the NEW Opportunity boundary: it must never reach
+     Contact, notes, offer_ fields, or a workflow -- exactly the same
+     discipline, applied to the other carrier. It is EXPECTED to mention
+     "opportunities" (that is its whole job), so that token is not in this
+     forbidden list. */
+  const forbiddenInOpportunityBoundary = [
+    'setEstimatedRepairs', 'setCallDisposition', 'setCallRouting', 'setDispositionAt',
+    'setLastCallAttempt', 'setCallbackDatetime', 'setPropertyNotes', 'getDetail',
+    '_putMonetaryField', '_putStringField', 'notes.create', 'contacts.',
+    'offer_', 'workflow', 'OQnud97MfdxMcTgMVTgf', 'SU4n8ylrXnUm8xDi729R',
+  ];
+  const opportunityHits = forbiddenInOpportunityBoundary.filter(function (t) { return opportunityBoundaryCode.indexOf(t) !== -1; });
+  check('the Opportunity boundary reaches no other carrier or write', opportunityHits, []);
 
   check('the boundary names exactly one setter',
     (persistCode.match(/setEstimatedRepairs/g) || []).length, 2);
@@ -264,8 +299,19 @@ function mockClient(opts) {
     /setEstimatedRepairs:\s*\(contactId: string, value: number \| ""\) =>\s*ghl\.contacts\._putMonetaryField\(contactId, ESTIMATED_REPAIRS_ID, value\)/.test(ghlCode), true);
   check('ESTIMATED_REPAIRS_ID is the configured carrier, not a literal',
     /export const ESTIMATED_REPAIRS_ID = CONFIG\.fields\.estimatedRepairs/.test(ghlCode), true);
-  check('the page hands the same carrier id to the readback',
-    pageCode.indexOf('ghl, contactId, ESTIMATED_REPAIRS_ID,') !== -1, true);
+  /* INV-70 / B9-07A Phase 2 -- the page now calls the Opportunity boundary,
+     which resolves its own field id internally (matching setApprovedArv /
+     setAskingPrice) rather than taking one as a parameter. The invariant
+     this check always protected -- "the page cannot hand a WRONG carrier
+     id, because it never invents one" -- is now satisfied more strongly
+     than before: there is no id parameter for the page to get wrong at
+     all. Confirmed two ways: the call site's exact shape, and that the
+     Contact-only ESTIMATED_REPAIRS_ID constant is no longer imported or
+     referenced by this page at all. */
+  check('the page calls the Opportunity boundary with no field id of its own',
+    pageCode.indexOf('ghl, opportunityId,') !== -1, true);
+  check('the page no longer references the Contact repairs carrier id',
+    pageCode.indexOf('ESTIMATED_REPAIRS_ID') !== -1, false);
 
   /* INV-13 added no new direct client call to the page: the persist path goes
      through the boundary module. These five are the pre-existing set. */

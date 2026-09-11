@@ -153,3 +153,89 @@ export async function persistApprovedRepairTotal(
   }
   return { ok: true, value, confidence: "unconfirmed" };
 }
+
+/**
+ * INV-70 / B9-07A Phase 2 — Opportunity-targeted persistence, added
+ * alongside the Contact-targeted path above rather than replacing it.
+ *
+ * WHY A SEPARATE FUNCTION, NOT A PARAMETER ON THE EXISTING ONE. The two
+ * targets have genuinely different wire shapes (Contact reads back via
+ * `getDetail`'s `{id, value}` array; Opportunity reads back via a singular
+ * `GET /opportunities/{id}` parsed by `readSingularFieldValue`) and
+ * different named writers (`setEstimatedRepairs` vs. `setRepairEstimate`).
+ * PB-D16's named-wrapper rule already forbids one setter parameterized
+ * over a target; this module extends that discipline to the persistence
+ * boundary itself. `persistGate` above is reused UNCHANGED — approval
+ * validation does not depend on which carrier the approved value lands in.
+ *
+ * WHICH CALL SITE USES WHICH. `UnderwritingWorkspace.tsx`'s
+ * `RepairEstimator` — the real, Opportunity-bound approval flow — now
+ * calls `persistApprovedRepairTotalToOpportunity` (this function), per
+ * `docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md` Family 3's approved
+ * ruling: "opportunity.repair_estimate becomes the authoritative carrier
+ * ... Change IAOS repair approval/persistence to write the linked
+ * Opportunity." `DealCalculator.tsx`'s standalone scratchpad — which is
+ * explicitly, by its own header comment, "CONTACT-LEVEL, NOT
+ * OPPORTUNITY-LEVEL... needs only a Contact ID, no Opportunity resolution
+ * at all" — is UNCHANGED and keeps calling the original
+ * `persistApprovedRepairTotal` above, exactly mirroring how that same page
+ * already treats ARV ("ARV IS NEVER SAVED BACK FROM HERE... a deliberate,
+ * documented scope boundary"). `contact.estimated_repairs` therefore keeps
+ * exactly the seed/fallback role Family 3's ruling assigns it — populated
+ * only from this legitimate no-Opportunity scratchpad context, never as a
+ * competing authoritative write.
+ */
+export interface RepairPersistGhlOpportunity {
+  opportunities: {
+    setRepairEstimate: (opportunityId: string, value: number) => Promise<{ ok: boolean }>;
+  };
+}
+
+/**
+ * Persist the approved total to the linked Opportunity. The write's own
+ * readback (inside `setRepairEstimate`) already confirms the value landed
+ * — this function's job is translating that `{ok}` into the same
+ * `PersistResult` vocabulary `persistApprovedRepairTotal` already uses, so
+ * both call sites report to the operator identically regardless of target.
+ *
+ * NEVER OVERWRITES A NON-EMPTY AUTHORITATIVE OPPORTUNITY VALUE FROM
+ * CONTACT. This function does not read or touch `contact.estimated_
+ * repairs` at all — the write goes to the Opportunity and nothing else,
+ * so there is no path by which a Contact value could clobber it. Family
+ * 3's "never overwrite" rule is upheld structurally, not by a runtime
+ * check this function would otherwise need.
+ */
+export async function persistApprovedRepairTotalToOpportunity(
+  client: RepairPersistGhlOpportunity,
+  opportunityId: string,
+  gate: PersistGate,
+): Promise<PersistResult> {
+  if (gate.kind === "blocked") {
+    return { ok: false, stage: "blocked", error: gate.reason, written: false };
+  }
+
+  const value = gate.value;
+
+  let result: { ok: boolean };
+  try {
+    result = await client.opportunities.setRepairEstimate(opportunityId, value);
+  } catch (e) {
+    return {
+      ok: false, stage: "write", written: false,
+      error: `Couldn't save the repair total to the opportunity: ${(e as Error).message}`,
+    };
+  }
+
+  // setRepairEstimate performs its own PUT-then-readback cycle (matching
+  // setApprovedArv/setAskingPrice), so by the time it resolves the value
+  // has already been confirmed on the wire or the promise would have
+  // rejected above. There is no separate poll loop here the way the
+  // Contact path needs one -- the write call IS the verification.
+  if (!result.ok) {
+    return {
+      ok: false, stage: "unverified", written: true,
+      error: "The repair total was sent but the opportunity readback did not confirm it.",
+    };
+  }
+  return { ok: true, value, confidence: "saved" };
+}

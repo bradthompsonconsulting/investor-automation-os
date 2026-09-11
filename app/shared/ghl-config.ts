@@ -69,11 +69,28 @@ export interface GhlConfig {
    * Existing Opportunity deal inputs, read by PB-D55 seed-then-supersede.
    * Distinct from opportunityFields, which holds underwriting outputs and
    * mode. These are facts about the deal; those are state IAOS produces.
+   *
+   * `currentOffer` — INV-70 / B9-07A Phase 2 approved ruling (Family 5).
+   * ONE Opportunity-owned carrier replacing the fourteen-field mirrored
+   * `offer_*` architecture. Before Agreement Reached it holds the latest
+   * negotiated offer; at Agreement Reached it freezes at the accepted
+   * price (`current-offer-carrier.ts`'s `currentOfferWriteGate` is the
+   * pure freeze logic; `ghl.opportunities.setCurrentOffer` is the writer).
+   * NEITHER environment has this field provisioned yet as of this phase
+   * -- both carry `CURRENT_OFFER_NOT_PROVISIONED` below. Test creation was
+   * ATTEMPTED this session and BLOCKED: the configured Test credential
+   * (`.env.test`) returned `HTTP 401 "The token is not authorized for
+   * this scope"` on `POST /locations/{id}/customFields` (Custom Fields
+   * write/create scope is not granted to that Private Integration token,
+   * distinct from the Contacts/Opportunities write scope every existing
+   * writer in this file already uses successfully). This is an external
+   * credential-scope gap, not a code gap; see the Phase 2 return report.
    */
   opportunityFacts: {
     arv: string;
     repairs: string;
     askingPrice: string;
+    currentOffer: string;
   };
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
@@ -99,6 +116,22 @@ export interface GhlConfig {
     lostNotInterested: string;
   };
 }
+
+/**
+ * INV-70 / B9-07A Phase 2 — the literal placeholder value for the
+ * not-yet-provisioned Current Offer field. Carried by BOTH `PRODUCTION`
+ * and `TEST` below: Production because provisioning a new Opportunity
+ * field there was never in this phase's scope (GHL mutations are
+ * Test-only this phase), and Test because creation was attempted and
+ * blocked on credential scope (see the `opportunityFacts` interface doc
+ * comment). `ghl.opportunities.setCurrentOffer` refuses immediately,
+ * before any network call, whenever the configured id equals this
+ * sentinel -- the same fail-closed pattern `SENDER_USER_ID_NOT_CONFIGURED`
+ * already established for B9-08's Documents & Contracts send gate.
+ * Exported so a real field id, once created, replaces this in exactly one
+ * place per environment -- never toggled, always a reviewed commit.
+ */
+export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVISIONED" as const;
 
 const PRODUCTION: GhlConfig = {
   locationId: "jmHG4B8RdzwpfqruNf68",
@@ -158,6 +191,9 @@ const PRODUCTION: GhlConfig = {
     arv:                "cBkygqcHRseZUGCYYeba",
     repairs:            "hId4Yog6u5GP1Iwz1aNx",
     askingPrice:        "YxCDaX7dLhBJL9GLGFpJ",
+    // Not provisioned this phase -- see the opportunityFacts interface
+    // doc comment above and CURRENT_OFFER_NOT_PROVISIONED's own comment.
+    currentOffer:       CURRENT_OFFER_NOT_PROVISIONED,
   },
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
@@ -236,6 +272,14 @@ const TEST: GhlConfig = {
     arv:                "ppe2ZTO7DJTMao74xvYI",
     repairs:            "lSWxFUmWksfrViePG4UC",
     askingPrice:        "owIOWnJuIheiwJVdJWQ5",
+    // BLOCKED this session: creation attempted (POST /locations/{id}/
+    // customFields, model opportunity, name "Current Offer", NUMERICAL,
+    // parentId sGP3pbDQFN7fXS62MAgA "Opportunity Details" -- confirmed no
+    // name/fieldKey clash first) and refused, HTTP 401 "The token is not
+    // authorized for this scope," by the configured Test credential
+    // (.env.test). Replace with the real Test id the moment a
+    // sufficiently-scoped credential creates the field -- never hand-typed.
+    currentOffer:       CURRENT_OFFER_NOT_PROVISIONED,
   },
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
@@ -380,7 +424,7 @@ const RUNTIME_GROUPS = {
     "profitSharePct",
   ],
   opportunityFields: ["endBuyerMaxPrice", "assignmentMode", "sellerMAO"],
-  opportunityFacts: ["arv", "repairs", "askingPrice"],
+  opportunityFacts: ["arv", "repairs", "askingPrice", "currentOffer"],
   stages: ["sellerClosedWon", "lostNotInterested", "sellerFollowUp"],
 } as const;
 

@@ -134,7 +134,13 @@ function mock(options) {
   check('boundary touches no offer carrier', persistCode.includes('offer_'), false);
   check('boundary touches no repair carrier', /repair/i.test(persistCode), false);
   check('writer resolves configured opportunity ARV', ghlCode.includes('const fieldId = CONFIG.opportunityFacts.arv;'), true);
-  check('writer accepts no field id', ghlCode.includes('setApprovedArv: async (\n      opportunityId: string,\n      value: number,'), true);
+  // EOL-agnostic: this needle spans a line break, and core.autocrlf can
+  // legitimately check this file out as CRLF -- normalize before matching
+  // rather than asserting a specific line-ending convention (AGENTS.md's
+  // editing-technique guidance: match the file's observed endings, never
+  // assume them).
+  const ghlCodeLfNormalized = ghlCode.replace(/\r\n/g, '\n');
+  check('writer accepts no field id', ghlCodeLfNormalized.includes('setApprovedArv: async (\n      opportunityId: string,\n      value: number,'), true);
   check('PB-D59 plan remains three fields', (ghlCode.match(/key: "endBuyerMaxPrice"|key: "sellerMAO"|key: "assignmentMode"/g) || []).length, 3);
   check('UI calls dedicated boundary', uiCode.includes('persistApprovedArv('), true);
   check('selected opportunity passed to workspace', pageCode.includes('opportunityId={screen.opportunity.id}'), true);
