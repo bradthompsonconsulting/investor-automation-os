@@ -47,10 +47,10 @@ try {
   process.exit(10);
 }
 
-const { currentOfferWriteGate, acceptedPriceFreezeValue } = require(path.join(TMP, 'current-offer-carrier.js'));
+const { currentOfferWriteGate, acceptedPriceFreezeValue, readCurrentOfferFromOpportunity } = require(path.join(TMP, 'current-offer-carrier.js'));
 const { formatOutcomeNote, parseOutcomeNote } = require(path.join(TMP, 'seller-call-outcome.js'));
 
-const FLOOR = 29;
+const FLOOR = 42;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -93,6 +93,54 @@ function check(name, actual, expected) {
 {
   const d = currentOfferWriteGate({ value: Infinity, agreementAlreadyReached: false });
   check('blocked: non-finite is not a usable acquisition price', d.kind, 'blocked');
+}
+
+/* -------------------------------------------------------------- */
+/* 1b. readCurrentOfferFromOpportunity -- hydration read side        */
+/*     (INV-70 / B9-07A Phase 2 correction round 3)                  */
+/* -------------------------------------------------------------- */
+
+const FIELD_ID = 'opp-field-under-test';
+
+{
+  const v = readCurrentOfferFromOpportunity([{ id: FIELD_ID, type: 'currency', fieldValueNumber: 275000 }], FIELD_ID);
+  check('reads a populated NUMERICAL field at fieldValueNumber (list-endpoint shape)', v, 275000);
+}
+{
+  const v = readCurrentOfferFromOpportunity([], FIELD_ID);
+  check('absent field (not in the array at all) reads as null, never zero', v, null);
+}
+{
+  const v = readCurrentOfferFromOpportunity([{ id: 'a-different-field', fieldValueNumber: 999 }], FIELD_ID);
+  check('a DIFFERENT field id present in the array is never mistaken for the one being read', v, null);
+}
+{
+  const v = readCurrentOfferFromOpportunity([{ id: FIELD_ID, fieldValueNumber: null }], FIELD_ID);
+  check('an explicit null fieldValueNumber reads as null', v, null);
+}
+{
+  const v = readCurrentOfferFromOpportunity([{ id: FIELD_ID, fieldValueNumber: '' }], FIELD_ID);
+  check('an empty-string fieldValueNumber reads as null', v, null);
+}
+{
+  const v = readCurrentOfferFromOpportunity([{ id: FIELD_ID, fieldValueNumber: '275000' }], FIELD_ID);
+  check('a numeric STRING at fieldValueNumber still parses (not strict about JS type at that key)', v, 275000);
+}
+{
+  // Strict about WHICH KEY, deliberately mirroring resolver.ts's own
+  // readNumberField discipline -- a value sitting under the SINGULAR-GET
+  // shape's `fieldValue` key (rather than the list shape's
+  // `fieldValueNumber`) must read as absent, not be coalesced.
+  const v = readCurrentOfferFromOpportunity([{ id: FIELD_ID, fieldValue: 275000 }], FIELD_ID);
+  check('a value under the WRONG key (fieldValue, the singular-GET shape) is never coalesced -- reads absent', v, null);
+}
+{
+  const v = readCurrentOfferFromOpportunity([{ id: FIELD_ID, fieldValueNumber: 0 }], FIELD_ID);
+  check('zero is a real value, not treated as absent', v, 0);
+}
+{
+  const v = readCurrentOfferFromOpportunity([{ id: FIELD_ID, fieldValueNumber: 'not-a-number' }], FIELD_ID);
+  check('a non-numeric string never produces NaN -- reads absent instead', v, null);
 }
 
 /* -------------------------------------------------------------- */
@@ -165,22 +213,36 @@ function check(name, actual, expected) {
     true);
 }
 {
-  // The page writes the freeze value ONLY after the note write succeeds,
-  // and only derives it from the snapshot already passed to
-  // attemptRecordOutcome -- never a second read, never a second
-  // computation. Static check against the shipped page source.
+  // INV-70 / B9-07A Phase 2 correction round 3 -- Agreement Reached now
+  // FAILS CLOSED across both required records, in a FIXED ORDER: the
+  // Current Offer write/readback must succeed BEFORE the Note is ever
+  // attempted. The prior "non-blocking, freeze-happens-after-the-note"
+  // design is gone -- these checks prove the reversal, not the old order.
   const pageSrc = fs.readFileSync(PAGE, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
   check('the page calls acceptedPriceFreezeValue with the snapshot used for the note, not a fresh read',
     /acceptedPriceFreezeValue\(snapshot\.currentOffer\)/.test(pageSrc), true);
-  check('the freeze write happens after ghl.notes.create, never before',
+  check('the Current Offer write happens BEFORE ghl.notes.create, never after (reversed from the prior design)',
     (() => {
       const noteIdx = pageSrc.indexOf('await ghl.notes.create(contactId, attempt.note)');
-      const freezeIdx = pageSrc.indexOf('acceptedPriceFreezeValue(snapshot.currentOffer)');
-      return noteIdx !== -1 && freezeIdx !== -1 && noteIdx < freezeIdx;
+      const freezeWriteIdx = pageSrc.indexOf('await ghl.opportunities.setCurrentOffer(screen.opportunity.id, freeze.value)');
+      return noteIdx !== -1 && freezeWriteIdx !== -1 && freezeWriteIdx < noteIdx;
     })(),
     true);
-  check('a failed freeze write does not roll back or re-throw past the accept flow (non-blocking by design)',
-    /catch \(e: any\) \{\s*setCurrentOfferWriteState\(\{\s*status: "error"/.test(pageSrc), true);
+  check('a BLOCKED freeze value (acceptedPriceFreezeValue) returns before any write is attempted, never reaching the Note',
+    /if \(freeze\.kind === "blocked"\) \{\s*setOutcomeActionError\(`Cannot record acceptance -- \$\{freeze\.reason\}\.`\);\s*return;\s*\}/.test(pageSrc),
+    true);
+  check('a THROWN error from the Current Offer write returns before the Note is ever attempted',
+    /catch \(e: any\) \{\s*setOutcomeActionError\(\s*`Cannot record acceptance -- the accepted price could not be saved[\s\S]{0,120}\);\s*return;\s*\}/.test(pageSrc),
+    true);
+  check('a result.ok === false from the Current Offer write ALSO returns before the Note is ever attempted (checked identically to a thrown error)',
+    /if \(!freezeResult\.ok\) \{\s*setOutcomeActionError\(\s*"Cannot record acceptance -- the accepted price was sent but could not be confirmed[\s\S]{0,80}"\s*,?\s*\);\s*return;\s*\}/.test(pageSrc),
+    true);
+  check('the soft-warning, non-blocking freeze-write-failure path is REMOVED (no currentOfferWriteState "error" write inside the accept branch\'s old catch)',
+    /Agreement Reached was recorded, but freezing Current Offer failed/.test(pageSrc),
+    false);
+  check('a Note failure (thrown after the Current Offer already succeeded) is surfaced via the SAME outcomeActionError path every other outcome failure already uses -- no special-cased swallow',
+    /\} catch \(e: any\) \{\s*setOutcomeActionError\(e\?\.message \?\? "Couldn't record this outcome\."\);\s*\} finally \{/.test(pageSrc),
+    true);
 }
 
 /* -------------------------------------------------------------- */

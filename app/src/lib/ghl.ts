@@ -663,31 +663,17 @@ export const ghl = {
     setARV: (contactId: string, value: number | "") =>
       ghl.contacts._putMonetaryField(contactId, ARV_ID, value),
 
-    // Board item #2B — sixth named write. estimated_repairs only.
-    //
-    // A NAMED METHOD, NOT A PARAMETERIZED SETTER. PB-D16 §4.4 forbids a public
-    // setter that takes a field id from the caller, because dataType proves
-    // SERIALIZATION and not FIELD SAFETY (§4.6: workflow triggers are per-field
-    // and are not API-derivable). So each unlocked MONETORY field earns its own
-    // method by its own decision, and this is that decision for repairs. The UI
-    // row component is shared with ARV — two consumers is the threshold — but
-    // the setter is deliberately not.
-    //
-    // WRITE-SAFETY, PROVEN 2026-08-27 and narrow. GHL Advanced Filters with
-    // Trigger Type = Contact Changed returned exactly one published workflow in
-    // Production, `Seller - Reset Phone Status on Phone Change`, whose filter is
-    // specifically "Phone has changed". No generic contact-field-change workflow
-    // exists in the location, so writing this field enrols no contact in any
-    // workflow by virtue of the field changing. THAT CLEARANCE COVERS THE
-    // Contact Changed TRIGGER TYPE ONLY. It does not extend to DATE fields under
-    // Custom Date Reminder. Irrelevant here — this field is MONETORY — but do
-    // not generalise it to the next unlock.
-    //
-    // MONETORY contract is ARV's, unchanged: an unquoted JS number round-trips
-    // exactly and "" clears to KEY_ABSENT. Do NOT copy setCallbackDatetime's
-    // null-to-clear — that is DATE behavior and does not apply here.
-    setEstimatedRepairs: (contactId: string, value: number | "") =>
-      ghl.contacts._putMonetaryField(contactId, ESTIMATED_REPAIRS_ID, value),
+    // INV-70 / B9-07A Phase 2 correction round 3 -- REMOVED
+    // setEstimatedRepairs (Board item #2B's sixth named write). Family 3's
+    // approved ruling makes contact.estimated_repairs a read-only legacy
+    // fallback/migration input; a repository-wide audit found and closed
+    // its last two callers (UnderwritingWorkspace.tsx, already switched to
+    // setRepairEstimate below in the earlier Phase 2 pass, and
+    // DealCalculator.tsx's own save-back action, removed this round, and
+    // ContactWorkspace.tsx's general field-edit row, also converted to
+    // read-only this round). ESTIMATED_REPAIRS_ID (below) remains -- it is
+    // still needed to IDENTIFY the field for display/dispatch, just no
+    // longer to write it. _putMonetaryField stays, still used by setARV.
 
     // Board 4 — PRIVATE string transport, the exact counterpart to
     // _putMonetaryField above and permitted by the same §4.4 sentence: "a

@@ -48,13 +48,28 @@
  * that SAME identity, which is what makes "never overwrite an operator's
  * edit on an ordinary rerender" hold: there is nothing left for it to do.
  *
- * NEVER A FABRICATED VALUE. `restoreSellerPosition`/`restoreCurrentOffer`
- * are non-null ONLY when the caller's own `latestOutcome` snapshot field is
- * non-null -- an absent figure at the moment of the outcome (or no outcome
- * at all) restores nothing, leaving the field however the clear step (or
- * the operator) left it. Never a zero, never a derived/computed economics
- * value -- this module reads the snapshot's own recorded number verbatim,
- * via `String()`, and nothing else.
+ * NEVER A FABRICATED VALUE. `restoreSellerPosition` is non-null ONLY when
+ * the caller's own `latestOutcome` snapshot field is non-null -- an absent
+ * figure at the moment of the outcome (or no outcome at all) restores
+ * nothing, leaving the field however the clear step (or the operator) left
+ * it. Never a zero, never a derived/computed economics value -- this
+ * module reads the snapshot's own recorded number verbatim, via
+ * `String()`, and nothing else.
+ *
+ * `restoreCurrentOffer` IS DIFFERENT, INV-70 / B9-07A PHASE 2 CORRECTION
+ * ROUND 3. It no longer reads `latestOutcome.currentOffer` (a point-in-
+ * time Note snapshot from the last recorded outcome) at all.
+ * `docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md` Family 5's approved
+ * ruling makes `opportunity.current_offer` THE authoritative carrier for
+ * the live negotiation value, so hydration reads THAT -- via the caller's
+ * `currentOfferFromOpportunity` argument, sourced from the SAME raw
+ * Opportunity `customFields` the underwriting resolver already receives
+ * (`current-offer-carrier.ts`'s `readCurrentOfferFromOpportunity`), never
+ * from Contact and never from a legacy `offer_*` field. This is a
+ * genuinely different fact than the Note's snapshot -- the Note freezes a
+ * value at one past moment (an outcome being recorded); the Opportunity
+ * field is live, updated on every committed edit, and is exactly what
+ * "the authoritative Opportunity field" in the approved ruling means.
  *
  * NEVER OVERWRITING A LIVE EDIT. Restoration additionally requires either
  * `justCleared` (the field is KNOWN empty -- this module told the caller
@@ -114,7 +129,17 @@ export type ResumeHydrationResult = {
   clear: boolean;
   /** Non-null exactly when the caller must set Seller Position to this string this pass; `null` means "make no change to it." */
   restoreSellerPosition: string | null;
-  /** Same convention as `restoreSellerPosition`, for Current Offer. */
+  /**
+   * Non-null exactly when the caller must set Current Offer to this
+   * string this pass; `null` means "make no change to it." Sourced from
+   * `opportunity.current_offer` (the caller's `currentOfferFromOpportunity`
+   * argument), NEVER from `latestOutcome` -- see the module header,
+   * "`restoreCurrentOffer` IS DIFFERENT." Because this value is already
+   * the authoritative Opportunity field's own content, the caller should
+   * also record it as already-written (its own write-dedup bookkeeping,
+   * outside this module's concern) so an unchanged blur issues no
+   * redundant PUT.
+   */
   restoreCurrentOffer: string | null;
   /** Non-null exactly when the caller must set its NegotiationOverride state to this record this pass (with `acknowledgedAboveMax: true` added back by the caller, per `NegotiationOverride`'s own shape); `null` means "make no change to it." */
   restoreOverride: ResumeOverrideSnapshot | null;
@@ -131,10 +156,19 @@ export function resolveResumeHydration(args: {
   /** `screen.opportunity.id` when an opportunity is resolved, `null` otherwise (loading, awaiting_selection, or any error/unresolved-config state). */
   currentDealId: string | null;
   loading: boolean;
-  /** The current deal's latest recorded outcome snapshot, or `null` when none exists (or the deal isn't resolved yet). */
+  /** The current deal's latest recorded outcome snapshot, or `null` when none exists (or the deal isn't resolved yet). Still used for `restoreSellerPosition`, which has no Opportunity-field carrier of its own -- NOT used for `restoreCurrentOffer` (see the module header). */
   latestOutcome: ResumeSnapshot | null;
   /** The current deal's latest durable override grant, or `null` when none is on record (or the deal isn't resolved yet). */
   latestOverrideNote: ResumeOverrideSnapshot | null;
+  /**
+   * INV-70 / B9-07A Phase 2 correction round 3. The LIVE value of
+   * `opportunity.current_offer` for `currentDealId`, read fresh by the
+   * caller from the SAME Opportunity data this render already has (via
+   * `current-offer-carrier.ts`'s `readCurrentOfferFromOpportunity`) --
+   * `null` when empty or when the deal isn't resolved yet. THE source for
+   * `restoreCurrentOffer`. Never Contact, never a legacy `offer_*` field.
+   */
+  currentOfferFromOpportunity: number | null;
   /** The LIVE input values, read this same render -- used only to detect "still untouched" on a non-`justCleared` pass. */
   sellerPositionInput: string;
   currentOfferInput: string;
@@ -166,8 +200,8 @@ export function resolveResumeHydration(args: {
         ? String(args.latestOutcome.sellerPosition)
         : null,
     restoreCurrentOffer:
-      currentOfferUntouched && args.latestOutcome && args.latestOutcome.currentOffer !== null
-        ? String(args.latestOutcome.currentOffer)
+      currentOfferUntouched && args.currentOfferFromOpportunity !== null
+        ? String(args.currentOfferFromOpportunity)
         : null,
     restoreOverride: overrideUntouched && args.latestOverrideNote ? args.latestOverrideNote : null,
   };

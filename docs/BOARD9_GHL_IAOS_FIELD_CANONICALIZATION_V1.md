@@ -55,6 +55,22 @@ written/restored once for the inert-proof); Production remained
 untouched. See "Phase 2 — approved rulings and implementation" for the
 full record.
 
+**Phase 2, correction round 3 (this revision).** Three further
+corrections, none of them new rulings: (1) Current Offer now hydrates
+from the authoritative Opportunity field on selection/resume, replacing
+the old Note-based restore; (2) Agreement Reached now fails closed, in a
+fixed order, across both the Current Offer write and the acceptance
+Note, with the prior non-blocking soft-warning removed; (3) the last two
+live writers of `contact.estimated_repairs` (`DealCalculator.tsx` and,
+found this round, `ContactWorkspace.tsx`'s general field-edit surface)
+are eliminated, and the now-callerless Contact-targeted writer/function
+are deleted. See "Correction round 3 — hydration, fail-closed ordering,
+and the last Contact repairs writer." GHL access this round: read-only
+only where GHL was touched at all (this round required no new GHL
+mutation — no field creation, no data write beyond what the existing,
+already-inert-proofed writers do in normal operation). No Production
+mutation. INV-63 untouched.
+
 ---
 
 ## Phase 2 — approved rulings and implementation
@@ -275,6 +291,158 @@ fieldKey anywhere in the writer's own module or the wider tree.
 `app/scripts/test-seller-call-workspace-wiring.cjs` (extended, 231
 checks, unchanged count target other than the one updated invariant) —
 the deal-switch reset now also clears the Current Offer write bookkeeping.
+
+### Correction round 3 — hydration, fail-closed ordering, and the last Contact repairs writer
+
+Three further Jess Gate corrections, none of them new rulings — each
+tightens an already-approved ruling's implementation.
+
+**1. Hydrate Current Offer from the selected Opportunity (Family 5).**
+Before this round, the live negotiation input was written to
+`opportunity.current_offer` but never READ from it — resume/reload and
+switching opportunities restored Current Offer from the OLD Note-snapshot
+mechanism (`latestOutcome.currentOffer`), which the field this document's
+own Family 5 ruling exists to replace. Fixed:
+- `current-offer-carrier.ts` gained `readCurrentOfferFromOpportunity`, a
+  pure reader mirroring `underwriting/resolver.ts`'s private
+  `readNumberField` exactly (list-endpoint shape, strict about
+  `fieldValueNumber`), applied to the SAME raw Opportunity `customFields`
+  the underwriting resolver already receives — no second network call.
+- `seller-call-resume.ts`'s `resolveResumeHydration` no longer sources
+  `restoreCurrentOffer` from `latestOutcome.currentOffer` AT ALL — it
+  takes a new required `currentOfferFromOpportunity` argument and
+  restores from THAT exclusively. **Deliberately no fallback to the Note**
+  when the Opportunity field is empty: an authoritative-but-empty field
+  means the fact is genuinely unknown today, and a stale Note value from
+  a past outcome must not paper over that. This is an explicit
+  implementation decision, stated here for Jess Gate review.
+- `SellerCallWorkspace.tsx` computes `currentOfferFromOpportunity` in its
+  own memo (scoped to the selected deal, re-derived on every deal switch)
+  and sets `lastWrittenCurrentOfferRef` to the hydrated value the moment
+  it restores it — an unchanged blur immediately after hydration issues
+  no redundant PUT, since the restored value already IS the field's own
+  content.
+- **Tests:** `test-seller-call-resume.cjs` rewritten — every existing case
+  now supplies `currentOfferFromOpportunity` explicitly (the compiled JS
+  does not type-check a missing field the way the TS source does), and
+  every case where a Note value was previously asserted now carries a
+  DIFFERENT decoy Note value in the same case, proving the restored value
+  comes from the Opportunity field, not the Note. A new dedicated section
+  proves the full truth table (Opportunity wins over a differing Note;
+  an empty Opportunity field restores nothing despite a populated Note;
+  equal values; both empty) — 50 checks, up from 45.
+  `test-current-offer-carrier.cjs` gained 9 direct unit checks for
+  `readCurrentOfferFromOpportunity` (wrong key, wrong id, zero-is-real,
+  non-numeric-string) and 2 checks confirming `TEST.opportunityFacts.
+  currentOffer` carries the real id while `PRODUCTION` still carries the
+  sentinel — 38 checks, up from 27.
+  `test-seller-call-workspace-wiring.cjs`'s dependency-array and
+  restore-application checks were updated for the new argument and the
+  ref-setting side effect — 231 checks, unchanged count (1-for-1 updates).
+
+**2. Agreement Reached now fails closed across both required records
+(Family 5).** The ordering this document's own Ruling 2 originally
+recorded — Note first, Current Offer freeze as a non-blocking afterthought
+— is REVERSED, not merely adjusted. `SellerCallWorkspace.tsx`'s
+`handleRecordOutcome`, for `kind === "accept"`, now:
+1. Computes `acceptedPriceFreezeValue(snapshot.currentOffer)`; a blocked
+   result returns immediately, before any write.
+2. Calls `ghl.opportunities.setCurrentOffer` and checks BOTH a thrown
+   error AND a resolved `result.ok === false` identically — either one
+   returns immediately, **before the Note is ever attempted**. Nothing is
+   recorded; the value stays an ordinary, unfrozen negotiation figure
+   (`currentOfferWriteGate`'s freeze check reads `agreementAlreadyReached`
+   from whether an accept Note exists, and none does); the operator may
+   retry.
+3. Only once that succeeds does execution reach the SAME note-writing
+   code path Follow-Up/Pass already share. A Note failure at this point
+   (Current Offer already durably saved) surfaces via the SAME
+   `outcomeActionError` catch every other outcome failure already uses —
+   no special-cased swallow, and no rollback of the already-confirmed
+   Current Offer write (rolling it back would itself be a mutation with
+   no corresponding GHL transaction to undo it against).
+4. Freezing itself is not a step this function performs — it is a
+   property of the NEXT render observing the just-written Note, exactly
+   as `currentOfferWriteGate` already specifies. Once the Note exists,
+   the field is frozen; until it does, it is not.
+
+The prior non-blocking soft-warning path (`currentOfferWriteState` set to
+`"error"` from inside the OLD post-note try/catch) is REMOVED, not
+adjusted — there is no longer any path that records an accepted Note
+while the authoritative field is unconfirmed.
+
+- **Tests:** `test-current-offer-carrier.cjs` gained static source-order
+  proofs (the write happens before `ghl.notes.create`, a blocked freeze
+  value returns before any write, a thrown error returns before the Note,
+  a `result.ok === false` returns before the Note identically, the old
+  soft-warning text is confirmed absent, and a genuine Note failure still
+  reaches the shared catch) — folded into the 38-check total above.
+
+**3. The last active Contact repairs writer is eliminated (Family 3).**
+The Phase 2 pass fixed `UnderwritingWorkspace.tsx`; two more live writers
+of `contact.estimated_repairs` were found this round by a repository-wide
+audit, neither previously closed:
+- **`DealCalculator.tsx`'s "Save Repairs to {contact}" action** — this
+  standalone scratchpad has no Opportunity context by design (its own
+  pre-existing header already states ARV is never saved back from here
+  for exactly this reason); the SAME reasoning now extends to Repairs.
+  The button, its handler (`handleSaveRepairs`), its state
+  (`repairApproval`, `saveBusy`, `saveResult`), and its imports
+  (`persistGate`, `persistApprovedRepairTotal`) are all removed. The
+  calculation capability itself (quick or detailed repair estimation) is
+  UNCHANGED and remains fully session-only, per this correction's own
+  instruction ("keep the standalone calculation capability session-only
+  unless redesigned with an explicit Opportunity context") — nothing
+  about *computing* a repairs figure on this page was touched, only
+  *saving* it. The page's existing link to the real Underwriting workspace
+  now covers both ARV and Repairs approval.
+- **`ContactWorkspace.tsx`'s general Contact field-edit surface** — found
+  during the audit, NOT explicitly named in the correction text (which
+  named `/deal-calculator` as "the remaining" writer). This page's
+  `FieldRow` dispatcher wired `contact.estimated_repairs` to the same
+  editable `MonetaryRow` component ARV uses (`ghl.contacts.
+  setEstimatedRepairs`), independent of Board 6's repair-estimation flow
+  entirely — a general Class-1 field-edit capability
+  (`CONTACTS_OPPORTUNITIES_SPEC.md` §4.4), separately inert-proofed, that
+  the correction's own text did not mention. **Flagged explicitly for
+  Jess/Brad confirmation:** this document closed it anyway, because the
+  correction's own success criterion — "a repository-wide test proving no
+  application writer targets `contact.estimated_repairs`" — is
+  unambiguous and would not pass otherwise. Converted to a new read-only
+  `ContactRepairsRow` component, modeled directly on this same page's
+  existing `ContactAskRow` (which already solves the identical "two
+  carriers, one authoritative" problem for Asking Price). **ARV's own
+  Contact-side editability is UNCHANGED** — Contact ARV remains a
+  deliberate PB-D55 seed input, and nothing in this correction touches it;
+  the asymmetry (Contact ARV stays editable, Contact Repairs does not) is
+  a direct, intended consequence of this correction being scoped to
+  Repairs only.
+- With both closed, `ghl.contacts.setEstimatedRepairs` and `persist.ts`'s
+  `persistApprovedRepairTotal`/`RepairPersistGhl` have zero remaining
+  callers and are DELETED entirely, per the correction's own "if no other
+  authorized callers remain" instruction. `ESTIMATED_REPAIRS_ID` remains
+  (still needed to identify the field for read/display/dispatch — reading
+  it is not what changed). **No GHL field was deleted or archived** — the
+  Contact field itself remains exactly where it was, now read-only from
+  every application code path.
+- **Tests:** `test-legacy-repairs-writer-removed.cjs` (new, 16 checks) —
+  its master proof is a comment-stripped scan of the ENTIRE `app/src` tree
+  for the literal identifier `setEstimatedRepairs`: it appears nowhere
+  outside historical prose in comments, which is the strongest available
+  repository-wide guarantee (the method does not exist, so nothing can
+  call it, not merely "nothing currently does"). Defense-in-depth checks
+  name exactly where each removal landed. `test-repair-persist.cjs`
+  REWRITTEN — its Contact-boundary dynamic mock tests are deleted along
+  with the code they tested; the Opportunity boundary
+  (`persistApprovedRepairTotalToOpportunity`) receives the SAME dynamic
+  mock-based rigor the deleted Contact tests had (gate interaction,
+  exactly-once write, member isolation, both failure modes) for the first
+  time — previously it had only static shape checks and the live
+  inert-proof, never a mocked failure-path proof — 51 checks, down from
+  63 (fewer checks testing more, now that only one boundary exists).
+  `test-deal-calculator-wiring.cjs`'s Repairs section rewritten from
+  "save-back reuses Board 6's persist gate" to "save-back is absent,
+  proven the same way ARV's absence already is" — 66 checks, up from 63.
 
 ### What Phase 2 could not complete (RESOLVED, correction round 2)
 

@@ -1,19 +1,25 @@
 /**
- * Repair Estimation V1 persistence boundary -- test runner. INV-13.
+ * Repair Estimation persistence boundary -- test runner. INV-13, extended
+ * INV-70 / B9-07A Phase 2, and rewritten Phase 2 correction round 3.
  *
  * Compiles the boundary module to a temp directory, loads the emitted
  * JavaScript, and runs deterministic table-driven cases against an injected
- * mock client. NO GHL, no network, no fixture, no Production mutation: the
- * real `ghl` client is never imported here, and the mock's contacts object is
- * a Proxy that records EVERY property touched, so "no prohibited side effect"
- * is measured rather than asserted.
+ * mock client. NO GHL, no network, no fixture, no Production mutation.
  *
- * app/package.json sets "type": "module", so the temp directory is given its
- * own package.json declaring commonjs.
- *
- * The readback field id under test is deliberately opaque. That the real
- * wiring addresses `estimated_repairs` and nothing else is proved by the
- * static checks in section 8, against the shipped source.
+ * CORRECTION ROUND 3 REWRITE. This file previously tested TWO boundaries
+ * (Contact via `persistApprovedRepairTotal`, and Opportunity via
+ * `persistApprovedRepairTotalToOpportunity`). The Contact boundary --
+ * function, interface, and its dynamic mock tests -- is DELETED, not
+ * merely untested: `contact.estimated_repairs` is now Family 3's
+ * read-only legacy fallback/migration input, and no application code may
+ * write it (see `test-legacy-repairs-writer-removed.cjs` for the
+ * repository-wide proof). This file now tests the ONE remaining boundary,
+ * `persistApprovedRepairTotalToOpportunity`, with the SAME dynamic
+ * mock-based rigor the deleted Contact tests had -- gate interaction,
+ * exactly-once write, member isolation, and both failure modes (a thrown
+ * error and a resolved `{ok: false}`) -- which the Opportunity path had
+ * NOT previously received (only static source-shape checks and the live
+ * inert-proof cycle, recorded in the canonicalization document).
  */
 
 const { execSync } = require('child_process');
@@ -24,6 +30,7 @@ const APP = path.resolve(__dirname, '..');
 const TMP = path.join(APP, '.tmp-repair-persist-test');
 const SRC = path.join(APP, 'src', 'lib', 'repair-estimation');
 const PAGE = path.join(APP, 'src', 'pages', 'UnderwritingWorkspace.tsx');
+const DEAL_CALC = path.join(APP, 'src', 'pages', 'DealCalculator.tsx');
 const GHL = path.join(APP, 'src', 'lib', 'ghl.ts');
 
 function cleanup() {
@@ -53,10 +60,10 @@ if (!fs.existsSync(compiled)) {
   process.exit(11);
 }
 
-const { persistGate, persistApprovedRepairTotal } = require(compiled);
+const { persistGate, persistApprovedRepairTotalToOpportunity } = require(compiled);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 63;
+const FLOOR = 51;
 let failures = 0;
 let checks = 0;
 
@@ -75,52 +82,39 @@ function check(name, actual, expected, tol) {
   }
 }
 
-const CONTACT = 'contact_under_test';
-const FIELD = 'field_under_test';
-const NO_SLEEP = () => Promise.resolve();
+const OPPORTUNITY = 'opportunity_under_test';
 
 const APPROVED = (total, revision) => ({ kind: 'approved', total: total, revision: revision });
 const NOT_APPROVED = { kind: 'none' };
 
 /**
- * A client exposing exactly the two members the boundary is allowed to use.
- * The Proxy records every property read, so a reach for any other setter --
- * setARV, notes.create, an opportunity method, anything offer_-shaped --
- * shows up as a touched key even if the call itself would have thrown.
+ * A client exposing exactly the one member the Opportunity boundary is
+ * allowed to use. The Proxy records every property read, so a reach for
+ * any other setter -- setEstimatedRepairs, notes.create, a Contact
+ * method, anything offer_-shaped -- shows up as a touched key even if the
+ * call itself would have thrown.
  */
-function mockClient(opts) {
+function mockOpportunityClient(opts) {
   const options = opts || {};
   const touched = [];
-  const puts = [];
-  let reads = 0;
+  const calls = [];
   const target = {
-    setEstimatedRepairs: function (id, value) {
-      puts.push({ id: id, value: value });
-      return options.putThrows
-        ? Promise.reject(new Error('PUT 500'))
-        : Promise.resolve({});
-    },
-    getDetail: function (id) {
-      reads++;
-      if (options.readback === 'throw') return Promise.reject(new Error('GET 502'));
-      if (options.readback === 'absent') return Promise.resolve({ customFields: [] });
-      if (options.readback === 'mismatch') {
-        return Promise.resolve({ customFields: [{ id: FIELD, value: 999 }] });
-      }
-      return Promise.resolve({ customFields: [{ id: id === CONTACT ? FIELD : FIELD, value: options.stored }] });
+    setRepairEstimate: function (id, value) {
+      calls.push({ id: id, value: value });
+      if (options.throws) return Promise.reject(new Error('PUT 500'));
+      return Promise.resolve({ ok: options.ok === undefined ? true : options.ok });
     },
   };
-  const contacts = new Proxy(target, {
+  const opportunities = new Proxy(target, {
     get: function (t, prop) {
       if (typeof prop === 'string') touched.push(prop);
       return t[prop];
     },
   });
   return {
-    client: { contacts: contacts },
+    client: { opportunities: opportunities },
     touched: touched,
-    puts: puts,
-    readCount: function () { return reads; },
+    calls: calls,
   };
 }
 
@@ -159,79 +153,64 @@ function mockClient(opts) {
   check('zero allowed value', persistGate(APPROVED(0, 0), 0, 0).value, 0);
 }
 
-// ---- 5. Unapproved -> NO WRITE. Nothing reaches the carrier at all.
 (async function () {
-  const m = mockClient({ stored: 41000 });
-  const r = await persistApprovedRepairTotal(
-    m.client, CONTACT, FIELD, persistGate(NOT_APPROVED, 0, 41000), NO_SLEEP);
-  check('unapproved result is not ok', r.ok, false);
-  check('unapproved stage is blocked', r.stage, 'blocked');
-  check('unapproved reports nothing written', r.written, false);
-  check('unapproved issued no PUT', m.puts.length, 0);
-  check('unapproved issued no read', m.readCount(), 0);
-  check('unapproved touched no client member', m.touched, []);
-
-  const stale = mockClient({ stored: 41000 });
-  const r2 = await persistApprovedRepairTotal(
-    stale.client, CONTACT, FIELD, persistGate(APPROVED(41000, 1), 2, 41000), NO_SLEEP);
-  check('stale approval issued no PUT', stale.puts.length, 0);
-  check('stale approval stage is blocked', r2.stage, 'blocked');
-
-  const drift = mockClient({ stored: 41000 });
-  await persistApprovedRepairTotal(
-    drift.client, CONTACT, FIELD, persistGate(APPROVED(41000, 1), 1, 46000), NO_SLEEP);
-  check('drifted approval issued no PUT', drift.puts.length, 0);
+  // ---- 5. Unapproved -> NO WRITE. Nothing reaches the carrier at all.
+  {
+    const m = mockOpportunityClient({});
+    const r = await persistApprovedRepairTotalToOpportunity(
+      m.client, OPPORTUNITY, persistGate(NOT_APPROVED, 0, 41000));
+    check('unapproved result is not ok', r.ok, false);
+    check('unapproved stage is blocked', r.stage, 'blocked');
+    check('unapproved reports nothing written', r.written, false);
+    check('unapproved issued no write call', m.calls.length, 0);
+    check('unapproved touched no client member', m.touched, []);
+  }
+  {
+    const stale = mockOpportunityClient({});
+    const r2 = await persistApprovedRepairTotalToOpportunity(
+      stale.client, OPPORTUNITY, persistGate(APPROVED(41000, 1), 2, 41000));
+    check('stale approval issued no write call', stale.calls.length, 0);
+    check('stale approval stage is blocked', r2.stage, 'blocked');
+  }
 
   // ---- 6. Approved -> WRITE ALLOWED, once, with exactly the approved value.
-  const w = mockClient({ stored: 41000 });
-  const ok = await persistApprovedRepairTotal(
-    w.client, CONTACT, FIELD, persistGate(APPROVED(41000, 1), 1, 41000), NO_SLEEP);
-  check('approved write succeeds', ok.ok, true);
-  check('approved write is confirmed by readback', ok.confidence, 'saved');
-  check('approved write reports the value', ok.value, 41000);
-  check('exactly one PUT was issued', w.puts.length, 1);
-  check('the PUT carried the approved contact', w.puts[0].id, CONTACT);
-  check('the PUT carried the approved total', w.puts[0].value, 41000);
-  check('the PUT carried a number, not a string', typeof w.puts[0].value, 'number');
-  check('readback ran once when it matched immediately', w.readCount(), 1);
+  {
+    const w = mockOpportunityClient({ ok: true });
+    const ok = await persistApprovedRepairTotalToOpportunity(
+      w.client, OPPORTUNITY, persistGate(APPROVED(41000, 1), 1, 41000));
+    check('approved write succeeds', ok.ok, true);
+    check('approved write is confirmed (setRepairEstimate already verified the readback internally)', ok.confidence, 'saved');
+    check('approved write reports the value', ok.value, 41000);
+    check('exactly one write call was issued', w.calls.length, 1);
+    check('the write carried the approved opportunity id', w.calls[0].id, OPPORTUNITY);
+    check('the write carried the approved total', w.calls[0].value, 41000);
+    check('the write carried a number, not a string', typeof w.calls[0].value, 'number');
 
-  // ---- 7. Only the two permitted members are ever touched.
-  const unique = w.touched.filter(function (v, i, a) { return a.indexOf(v) === i; }).sort();
-  check('only setEstimatedRepairs and getDetail were touched', unique, ['getDetail', 'setEstimatedRepairs']);
+    // ---- 7. Only the one permitted member is ever touched.
+    const unique = w.touched.filter(function (v, i, a) { return a.indexOf(v) === i; }).sort();
+    check('only setRepairEstimate was touched', unique, ['setRepairEstimate']);
+  }
 
-  // ---- 8. Failure behaviour is explicit, and says whether a write left.
-  const putFail = mockClient({ putThrows: true });
-  const pf = await persistApprovedRepairTotal(
-    putFail.client, CONTACT, FIELD, persistGate(APPROVED(41000, 1), 1, 41000), NO_SLEEP);
-  check('PUT failure is not ok', pf.ok, false);
-  check('PUT failure stage is write', pf.stage, 'write');
-  check('PUT failure reports nothing written', pf.written, false);
-  check('PUT failure surfaces the transport error', pf.error.indexOf('PUT 500') !== -1, true);
-  check('PUT failure attempted no readback', putFail.readCount(), 0);
-
-  const readFail = mockClient({ readback: 'throw' });
-  const rf = await persistApprovedRepairTotal(
-    readFail.client, CONTACT, FIELD, persistGate(APPROVED(41000, 1), 1, 41000), NO_SLEEP);
-  check('unreadable GHL is not ok', rf.ok, false);
-  check('unreadable GHL stage is unverified', rf.stage, 'unverified');
-  check('unverified admits a write did leave', rf.written, true);
-  check('unverified surfaces the read error', rf.error.indexOf('GET 502') !== -1, true);
-  check('unverified bounded the poll at three', readFail.readCount(), 3);
-  check('unverified never repeated the PUT', readFail.puts.length, 1);
-
-  const mismatch = mockClient({ readback: 'mismatch' });
-  const mm = await persistApprovedRepairTotal(
-    mismatch.client, CONTACT, FIELD, persistGate(APPROVED(41000, 1), 1, 41000), NO_SLEEP);
-  check('a completed read that never matched is ok-but-unconfirmed', mm.ok, true);
-  check('mismatch confidence is unconfirmed', mm.confidence, 'unconfirmed');
-  check('mismatch bounded the poll at three', mismatch.readCount(), 3);
-  check('mismatch never repeated the PUT', mismatch.puts.length, 1);
-
-  const absent = mockClient({ readback: 'absent' });
-  const ab = await persistApprovedRepairTotal(
-    absent.client, CONTACT, FIELD, persistGate(APPROVED(41000, 1), 1, 41000), NO_SLEEP);
-  check('a missing field is not treated as saved', ab.confidence, 'unconfirmed');
-  check('missing field never repeated the PUT', absent.puts.length, 1);
+  // ---- 8. Failure behaviour is explicit, and says whether a write left --
+  // BOTH failure modes: a thrown error, and a resolved {ok: false}.
+  {
+    const putFail = mockOpportunityClient({ throws: true });
+    const pf = await persistApprovedRepairTotalToOpportunity(
+      putFail.client, OPPORTUNITY, persistGate(APPROVED(41000, 1), 1, 41000));
+    check('a thrown write error is not ok', pf.ok, false);
+    check('a thrown write error stage is write', pf.stage, 'write');
+    check('a thrown write error reports nothing written', pf.written, false);
+    check('a thrown write error surfaces the transport error', pf.error.indexOf('PUT 500') !== -1, true);
+  }
+  {
+    const unconfirmed = mockOpportunityClient({ ok: false });
+    const uc = await persistApprovedRepairTotalToOpportunity(
+      unconfirmed.client, OPPORTUNITY, persistGate(APPROVED(41000, 1), 1, 41000));
+    check('a resolved {ok: false} is not ok', uc.ok, false);
+    check('a resolved {ok: false} stage is unverified', uc.stage, 'unverified');
+    check('a resolved {ok: false} admits a write DID leave (the PUT itself succeeded; only readback confirmation failed)', uc.written, true);
+    check('a resolved {ok: false} names the opportunity readback specifically', /opportunity readback/.test(uc.error), true);
+  }
 
   // ---- 9. Static contract checks against the shipped source.
   const stripComments = function (s) {
@@ -239,93 +218,43 @@ function mockClient(opts) {
   };
   const persistCode = stripComments(fs.readFileSync(path.join(SRC, 'persist.ts'), 'utf8'));
   const pageCode = stripComments(fs.readFileSync(PAGE, 'utf8'));
+  const dealCalcCode = stripComments(fs.readFileSync(DEAL_CALC, 'utf8'));
   const ghlCode = stripComments(fs.readFileSync(GHL, 'utf8'));
 
-  /* INV-70 / B9-07A Phase 2 -- persist.ts now carries TWO named boundaries
-     by deliberate design (Family 3's approved ruling): the original
-     Contact-only path (persistApprovedRepairTotal) and a new Opportunity-
-     only path (persistApprovedRepairTotalToOpportunity). "No other carrier
-     reachable" is still the right invariant, but it must now be checked
-     PER BOUNDARY, not against the whole file -- a whole-file check cannot
-     tell "the Contact boundary reaches Opportunity" (a real defect) apart
-     from "the file also contains a legitimate, separate Opportunity
-     boundary" (the approved architecture). Split the source at the new
-     interface's own declaration -- CODE, not a comment, so it survives
-     stripComments() (a comment-text marker would not: it would be
-     stripped along with every other comment before this split ever runs). */
-  const OPPORTUNITY_BOUNDARY_MARKER = 'export interface RepairPersistGhlOpportunity';
-  const splitAt = persistCode.indexOf(OPPORTUNITY_BOUNDARY_MARKER);
-  check('the Opportunity boundary interface exists exactly once',
-    (persistCode.match(/export interface RepairPersistGhlOpportunity/g) || []).length, 1);
-  const contactBoundaryCode = splitAt === -1 ? persistCode : persistCode.slice(0, splitAt);
-  const opportunityBoundaryCode = splitAt === -1 ? '' : persistCode.slice(splitAt);
-
-  /* No other write is reachable from the CONTACT boundary, and no carrier
-     id is hardcoded in it -- the id it uses for the readback arrives as a
-     parameter. `opportunities` stays forbidden HERE: this specific
-     function must still never reach the Opportunity model. */
-  const forbiddenInContactBoundary = [
-    'setARV', 'setCallDisposition', 'setCallRouting', 'setDispositionAt',
-    'setLastCallAttempt', 'setCallbackDatetime', 'setPropertyNotes',
-    '_putMonetaryField', '_putStringField', 'notes', 'opportunities',
-    'offer_', 'workflow', 'OQnud97MfdxMcTgMVTgf', 'SU4n8ylrXnUm8xDi729R',
-  ];
-  const contactHits = forbiddenInContactBoundary.filter(function (t) { return contactBoundaryCode.indexOf(t) !== -1; });
-  check('the Contact boundary reaches no other carrier or write', contactHits, []);
-
-  /* The mirror check for the NEW Opportunity boundary: it must never reach
-     Contact, notes, offer_ fields, or a workflow -- exactly the same
-     discipline, applied to the other carrier. It is EXPECTED to mention
-     "opportunities" (that is its whole job), so that token is not in this
-     forbidden list. */
-  const forbiddenInOpportunityBoundary = [
-    'setEstimatedRepairs', 'setCallDisposition', 'setCallRouting', 'setDispositionAt',
+  check('the Contact boundary function no longer exists in persist.ts', /persistApprovedRepairTotal\(/.test(persistCode.replace(/persistApprovedRepairTotalToOpportunity/g, '')), false);
+  check('the Contact boundary interface no longer exists in persist.ts', /RepairPersistGhl\b/.test(persistCode.replace(/RepairPersistGhlOpportunity/g, '')), false);
+  check('the ONE remaining boundary reaches no other carrier or write', [
+    'setARV', 'setEstimatedRepairs', 'setCallDisposition', 'setCallRouting', 'setDispositionAt',
     'setLastCallAttempt', 'setCallbackDatetime', 'setPropertyNotes', 'getDetail',
-    '_putMonetaryField', '_putStringField', 'notes.create', 'contacts.',
-    'offer_', 'workflow', 'OQnud97MfdxMcTgMVTgf', 'SU4n8ylrXnUm8xDi729R',
-  ];
-  const opportunityHits = forbiddenInOpportunityBoundary.filter(function (t) { return opportunityBoundaryCode.indexOf(t) !== -1; });
-  check('the Opportunity boundary reaches no other carrier or write', opportunityHits, []);
-
+    '_putMonetaryField', '_putStringField', 'notes.create', 'offer_', 'workflow',
+    'OQnud97MfdxMcTgMVTgf', 'SU4n8ylrXnUm8xDi729R',
+  ].filter(function (t) { return persistCode.indexOf(t) !== -1; }), []);
   check('the boundary names exactly one setter',
-    (persistCode.match(/setEstimatedRepairs/g) || []).length, 2);
-  check('the boundary issues exactly one PUT call site',
-    (persistCode.match(/client\.contacts\.setEstimatedRepairs\(/g) || []).length, 1);
+    (persistCode.match(/setRepairEstimate/g) || []).length, 2);
+  check('the boundary issues exactly one write call site',
+    (persistCode.match(/client\.opportunities\.setRepairEstimate\(/g) || []).length, 1);
 
-  /* The destination is the existing estimated_repairs carrier: the named
-     setter resolves its own id, and the page hands that same id to the
-     readback rather than inventing one. */
-  check('the named setter resolves the estimated_repairs id itself',
-    /setEstimatedRepairs:\s*\(contactId: string, value: number \| ""\) =>\s*ghl\.contacts\._putMonetaryField\(contactId, ESTIMATED_REPAIRS_ID, value\)/.test(ghlCode), true);
-  check('ESTIMATED_REPAIRS_ID is the configured carrier, not a literal',
-    /export const ESTIMATED_REPAIRS_ID = CONFIG\.fields\.estimatedRepairs/.test(ghlCode), true);
-  /* INV-70 / B9-07A Phase 2 -- the page now calls the Opportunity boundary,
-     which resolves its own field id internally (matching setApprovedArv /
-     setAskingPrice) rather than taking one as a parameter. The invariant
-     this check always protected -- "the page cannot hand a WRONG carrier
-     id, because it never invents one" -- is now satisfied more strongly
-     than before: there is no id parameter for the page to get wrong at
-     all. Confirmed two ways: the call site's exact shape, and that the
-     Contact-only ESTIMATED_REPAIRS_ID constant is no longer imported or
-     referenced by this page at all. */
-  check('the page calls the Opportunity boundary with no field id of its own',
+  check('the named setter resolves the opportunity repairs id itself, in ghl.ts',
+    /setRepairEstimate:\s*async[\s\S]{0,200}CONFIG\.opportunityFacts\.repairs/.test(ghlCode), true);
+
+  check('UnderwritingWorkspace.tsx (the real, Opportunity-bound flow) calls the Opportunity boundary with no field id of its own',
     pageCode.indexOf('ghl, opportunityId,') !== -1, true);
-  check('the page no longer references the Contact repairs carrier id',
+  check('UnderwritingWorkspace.tsx no longer references the Contact repairs carrier id',
     pageCode.indexOf('ESTIMATED_REPAIRS_ID') !== -1, false);
+  check('UnderwritingWorkspace.tsx still makes only its expected client calls',
+    (pageCode.match(/ghl\.(contacts|opportunities|notes|underwriting)\.[a-zA-Z_]+/g) || [])
+      .filter(function (v, i, a) { return a.indexOf(v) === i; }).sort(),
+    [
+      'ghl.contacts.getDetail',
+      'ghl.opportunities.listPipeline',
+      'ghl.underwriting.policy',
+      'ghl.underwriting.saveUnderwritingFields',
+      'ghl.underwriting.setAssignmentMode',
+    ]);
 
-  /* INV-13 added no new direct client call to the page: the persist path goes
-     through the boundary module. These five are the pre-existing set. */
-  const ghlCalls = (pageCode.match(/ghl\.(contacts|opportunities|notes|underwriting)\.[a-zA-Z_]+/g) || [])
-    .filter(function (v, i, a) { return a.indexOf(v) === i; }).sort();
-  check('the page still makes only its pre-existing client calls', ghlCalls, [
-    'ghl.contacts.getDetail',
-    'ghl.opportunities.listPipeline',
-    'ghl.underwriting.policy',
-    'ghl.underwriting.saveUnderwritingFields',
-    'ghl.underwriting.setAssignmentMode',
-  ]);
+  check('DealCalculator.tsx (the standalone scratchpad, no Opportunity context) makes NO repair-persistence call of any kind',
+    /persistApprovedRepairTotal|persistGate|setEstimatedRepairs|setRepairEstimate/.test(dealCalcCode), false);
 
-  /* Total only. No itemization is handed to the boundary or the carrier. */
   check('the boundary carries no line, risk or itemization',
     /\blines\b|unpricedRisks|byProvenance|components/.test(persistCode), false);
   check('the approved value is a single number',
@@ -335,8 +264,6 @@ function mockClient(opts) {
   const selfCode = fs.readFileSync(__filename, 'utf8');
   check('this harness never imports the real ghl client',
     /require\([^)]*lib[\/\\]ghl/.test(selfCode), false);
-  /* Needles are split so this check cannot match its own source and report a
-     false positive, which is exactly what a single regex literal did here. */
   const netNeedles = ['ht' + 'tp://', 'ht' + 'tps://', 'fet' + 'ch(', 'ax' + 'ios', 'node-' + 'fetch'];
   const selfStripped = stripComments(selfCode);
   check('this harness opens no network client',

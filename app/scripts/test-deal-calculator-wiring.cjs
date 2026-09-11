@@ -16,7 +16,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 63;
+const FLOOR = 66;
 let failures = 0;
 let checks = 0;
 
@@ -164,15 +164,23 @@ const barTs = readSrc('src/lib/deal-calculator-bar.ts');
 }
 
 // ============================================================
-// Repairs save-back reuses Board 6's OWN persist gate verbatim, and is
-// the ONLY write this page performs.
+// INV-70 / B9-07A Phase 2 correction round 3 -- Repairs save-back is
+// REMOVED, not merely gated. Family 3's approved ruling makes
+// contact.estimated_repairs a read-only legacy fallback/migration input;
+// this page has no Opportunity context, so it has nowhere authorized to
+// save Repairs to at all -- the SAME reasoning ARV's save-back already
+// didn't have (§ above). This section now proves the ABSENCE of the old
+// write path, mirroring how the ARV section above proves ARV's absence.
 // ============================================================
 {
-  check('page imports persistGate/persistApprovedRepairTotal from repair-estimation/persist', /from "\.\.\/lib\/repair-estimation\/persist"/.test(calcTsx) && /persistGate/.test(calcTsx) && /persistApprovedRepairTotal/.test(calcTsx), true);
-  check('page does not declare its own persistGate', /\b(function|const)\s+persistGate\s*[=(]/.test(calcTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
-  check('page calls setEstimatedRepairs only via persistApprovedRepairTotal, never directly', !/ghl\.contacts\.setEstimatedRepairs\(/.test(calcTsx), true);
-  check('save-back button is disabled with no repairs value', /disabled=\{saveBusy \|\| repairs === null\}/.test(calcTsx), true);
-  check('page contains no OTHER write-capable GHL call (notes.create, setApprovedArv, setLastCallAttempt, setCallbackDatetime, saveUnderwritingFields)', ['.notes.create', 'setApprovedArv', 'setLastCallAttempt', 'setCallbackDatetime', 'saveUnderwritingFields'].every((t) => calcTsx.indexOf(t) === -1), true);
+  check('page no longer imports persistGate or persistApprovedRepairTotal from repair-estimation/persist', /persistGate|persistApprovedRepairTotal/.test(calcTsx.split('\n').slice(0, 40).join('\n')), false);
+  check('page never calls setEstimatedRepairs, directly or otherwise -- this identifier does not appear anywhere in the page', !/setEstimatedRepairs/.test(calcTsx), true);
+  check('page no longer renders a "Save Repairs" action', !/deal-calc-save-repairs/.test(calcTsx), true);
+  check('page no longer declares handleSaveRepairs', !/function handleSaveRepairs/.test(calcTsx), true);
+  check('page no longer renders a save-result status block', !/deal-calc-save-result/.test(calcTsx), true);
+  check('page links to the Underwriting workspace for BOTH ARV and Repairs now (updated link text)', /Underwriting workspace/.test(calcTsx), true);
+  check('page states plainly that NEITHER ARV nor Repairs saves from here', /Neither ARV nor Repairs is saved from here/.test(calcTsx), true);
+  check('page contains no write-capable GHL call of any kind (notes.create, setApprovedArv, setEstimatedRepairs, setLastCallAttempt, setCallbackDatetime, saveUnderwritingFields)', ['.notes.create', 'setApprovedArv', 'setEstimatedRepairs', 'setLastCallAttempt', 'setCallbackDatetime', 'saveUnderwritingFields'].every((t) => calcTsx.indexOf(t) === -1), true);
 }
 
 // ============================================================

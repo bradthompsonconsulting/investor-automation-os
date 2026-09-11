@@ -30,7 +30,36 @@
  * nothing about them and produces no value for them — `ghl.contacts.
  * saveOfferFields` / `ghl.opportunities.saveOfferFields` (the dual-write
  * MaoCalculator.tsx used) are removed entirely, not redirected here.
+ *
+ * INV-70 / B9-07A Phase 2, correction round 3. Adds the read side:
+ * `readCurrentOfferFromOpportunity` parses the authoritative field back
+ * out of the SAME raw Opportunity `customFields` list the underwriting
+ * resolver already receives — never Contact, never a legacy `offer_*`
+ * id — so `SellerCallWorkspace.tsx` can hydrate the live negotiation
+ * input from GHL on selection/resume instead of only ever writing to it.
  */
+
+import type { RawField } from "./underwriting/resolver-types";
+
+/**
+ * Reads `opportunity.current_offer` at the key its NUMERICAL dataType
+ * dictates, mirroring `underwriting/resolver.ts`'s private
+ * `readNumberField` exactly (list-endpoint shape: `fieldValueNumber`,
+ * strict about which key, never coalescing across representations).
+ * Deliberately re-implemented here rather than importing that private
+ * function: this module answers a negotiation question, not an
+ * underwriting one, and the two must not become coupled through a shared
+ * internal reader either could change independently.
+ */
+export function readCurrentOfferFromOpportunity(fields: RawField[], fieldId: string): number | null {
+  const f = fields.find((x) => x.id === fieldId);
+  if (!f) return null;
+  const raw = f.fieldValueNumber;
+  if (raw === null || raw === undefined || raw === "") return null;
+  if (typeof raw !== "number" && typeof raw !== "string") return null;
+  const n = typeof raw === "number" ? raw : Number(raw.trim());
+  return Number.isFinite(n) ? n : null;
+}
 
 export type CurrentOfferWriteDecision =
   | { kind: "blocked"; reason: string }
