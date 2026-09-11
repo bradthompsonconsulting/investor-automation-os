@@ -17,11 +17,24 @@ execution and closing facts.
 GHL field creation, edit, rename, migration, archival or deletion; no
 application code change; no workflow or configuration change; no PR. GHL
 access used to produce this document was strictly read-only (`GET`
-requests only, IAOS Test location `SoTgVoaFGHtBdRFvXWQV`). Every
-classification below is a finding about what exists, not a decision about
-what should be built. Where evidence does not reach an answer, that is
-recorded as an open question or a conflict for Brad/Jess to resolve —
-**never silently resolved here.**
+requests only). The original pass read IAOS Test (`SoTgVoaFGHtBdRFvXWQV`)
+only; **this correction round additionally reads IAOS Production
+(`jmHG4B8RdzwpfqruNf68`), read-only, GET only, per Jess Gate's explicit
+authorization for this round** — see "Production vs. Test comparison"
+below. Every classification below is a finding about what exists, not a
+decision about what should be built. Where evidence does not reach an
+answer, that is recorded as an open question or a conflict for Brad/Jess
+to resolve — **never silently resolved here.**
+
+**Correction round 1 (this revision).** Jess Gate held the original pass
+pending three corrections: (1) reconcile a reported 124 Contact / 26
+Opportunity field count against this document's 109/16, with reproducible
+evidence; (2) a read-only Production/Test comparison for every candidate
+field in the nine families; (3) tighten the blocking-decision section so
+only the genuinely execution-blocking questions are marked as such. All
+three are addressed below, each in its own section, without altering the
+nine families' underlying findings except where the new Production
+evidence resolves a question the original pass had left open (Family 6).
 
 **Method**, mirroring the established precedent in
 `docs/BOARD8_ECONOMICS_INVENTORY_V1.md` (B8-02) and
@@ -29,10 +42,10 @@ recorded as an open question or a conflict for Brad/Jess to resolve —
 and line number (code, read directly from the working tree on
 `inv-70-b9-07a-canonicalize-fields`, branched from authoritative
 `origin/main` at `26a3a3352734e71ddbd710c509f085b4838eea9b`), a document and
-section (a locked decision), a live read-only GET actually issued this
-session against IAOS Test, or an explicit grep with a stated "no matches"
-result (verified absence). OBSERVED / INFERRED / UNKNOWN is used
-throughout per `docs/FOUNDATIONAL_PRINCIPLES.md`.
+section (a locked decision), a live read-only GET actually issued against
+IAOS Test or (this correction round) IAOS Production, or an explicit grep
+with a stated "no matches" result (verified absence). OBSERVED / INFERRED
+/ UNKNOWN is used throughout per `docs/FOUNDATIONAL_PRINCIPLES.md`.
 
 A great deal of this canonicalization work already happened, correctly,
 under Board #8 and Board #9's own inventories (`BOARD8_ECONOMICS_
@@ -48,15 +61,136 @@ ruled distinction into "duplication" would be its own error.
 
 ## Inventory summary
 
-**Live GHL Test location (`SoTgVoaFGHtBdRFvXWQV`) read-only GET, this
-session:**
+**Live GHL Test location (`SoTgVoaFGHtBdRFvXWQV`) read-only GET:**
 
 - `GET /locations/{id}/customFields` → **109 Contact custom fields**
 - `GET /locations/{id}/customFields?model=opportunity` → **16 Opportunity
   custom fields**
+- Cross-checked via `GET /locations/{id}/customFields?model=all` →
+  **125 total**, exactly 109 + 16 — confirming the two narrower calls are
+  neither double-counting nor dropping anything between them
+- Every returned object carries `documentType: "field"` on all three
+  calls (109/16/125 of 109/16/125, respectively) — **folders are never
+  mixed into these arrays**; a folder's name is resolved separately, by a
+  singular `GET /locations/{id}/customFields/{parentId}` per distinct
+  `parentId`, which is exactly how this document's folder list was built
+- No pagination metadata (`nextPage`, cursor, `meta`) appears in any of
+  the three responses — each returned exactly `{customFields: [...],
+  traceId}`, so the full set was captured in one call each, not a first
+  page of more
 - 8 folders resolved by parentId (6 Contact-model: Additional Info, IAOS
   Onboarding, General Info, Offer, Contact, Form | IAOS Client Intake
   Form; 2 Opportunity-model: Offer, Opportunity Details)
+
+---
+
+### Field-count reconciliation (correction round 1)
+
+**The reported discrepancy — 124 Contact / 26 Opportunity vs. this
+document's 109 / 16 — is not a defect in this document's method. It is a
+comparison between two different things: CUSTOM fields (what this
+document counts) against a CUSTOM-plus-NATIVE mixture using a stale
+snapshot, with one figure mislabeled to the wrong GHL object.**
+
+**Where 124 comes from, reproduced exactly:**
+
+    98  (custom Contact fields, Production, dated 2026-08-12)
+  + 26  (native/top-level Contact record keys, dated 2026-07-22/07-24)
+  ------
+  124
+
+- **98** is a real, dated figure — `docs/CONTACT_FIELD_REFERENCE.md:16-17`:
+  *"Date observed: 2026-07-22; re-observed live 2026-08-12 (PB-D53 step
+  5) — Previous Phone and Phone Status added, total 96 → 98... Total
+  custom fields: 98."* This is Production (`jmHG4B8RdzwpfqruNf68`, same
+  file line 15), and it is now **stale by this document's own live
+  re-read**: Production custom Contact fields have since grown 98 → 101
+  (confirmed live this correction round, below) — a real field count at
+  the time it was written, superseded twice since (98 → 101, and Test
+  separately now carries 109).
+- **26** is a real, correctly-documented figure too — but it is the count
+  of **native, top-level keys on a CONTACT record** (`id`, `dateAdded`,
+  `firstName`, `tags`, `customFields`, etc.), **not** a custom-field count
+  and **not** an Opportunity figure at all. Two independent citations
+  agree on it exactly: `docs/CONTACTS_DETAIL_SPEC.md:108` ("26 top-level
+  keys: id, dateAdded, type, locationId, lastName...") and
+  `docs/CONTACTS_OPPORTUNITIES_SPEC.md:308` ("NATIVE fields — 26
+  top-level keys present on the bradt75 record").
+- **Reconciliation:** `98 + 26 = 124` exactly. The "124 Contact" figure in
+  the earlier inspection appears to be a custom-plus-native total built
+  from a since-superseded custom-field snapshot. **The "26 Opportunity"
+  figure is the same native-Contact-key count (26), applied to the wrong
+  GHL object** — nothing in this session's live Production or Test read,
+  and nothing in any document searched (`grep -rn "124" docs/*.md` — no
+  match for the figure 124 anywhere in the documentation set), supports
+  26 as an Opportunity-model quantity of any kind. Opportunity custom
+  fields are independently confirmed at **16 in both Production and Test**
+  (below) — the same number this document originally reported, unchanged.
+- **This document's own count method, restated for clarity:** it counts
+  only objects with `documentType: "field"` returned by the two
+  model-scoped custom-field endpoints — never native record keys, never
+  folders, never Custom Values (a distinct GHL object type, covered
+  separately in Family 8). That is the correct scope for "GHL Contact and
+  Opportunity custom field" inventory as the rollover brief defines it,
+  and it is the scope this correction round preserves.
+
+---
+
+### Production vs. Test comparison (correction round 1)
+
+**Read-only GET, IAOS Production (`jmHG4B8RdzwpfqruNf68`), this
+correction round**, using the credential in the repository root's `.env`
+(confirmed by a single read-only probe call to return HTTP 200 against
+Production, distinct from `app/.env`'s credential, which returned
+`HTTP 403 "The token does not have access to this location"` against
+Production — recorded so a future session does not assume `app/.env`'s
+key is Production-scoped merely because `IAOS_ENV=production` is set
+there; the runtime selector and the credential's own GHL-side scope are
+two independent facts).
+
+- `GET /locations/jmHG4B8RdzwpfqruNf68/customFields` → **101 Contact
+  custom fields** (up from the 98 recorded 2026-08-12, confirming organic
+  growth, not a discrepancy in method)
+- `GET /locations/jmHG4B8RdzwpfqruNf68/customFields?model=opportunity` →
+  **16 Opportunity custom fields** — identical count to Test
+- 8 folders resolved, same 6 Contact-model / 2 Opportunity-model split as
+  Test
+
+**Full cross-environment diff, by `fieldKey` (the only stable identifier
+across environments — numeric ids are location-specific by design):**
+
+| | Count |
+|---|---|
+| Distinct `fieldKey`s across both environments | 125 |
+| Present in **both** Production and Test | **117** |
+| Present in Test **only** | 8 |
+| Present in Production **only** | 0 |
+| Of the 117 shared keys, with a `dataType` or folder mismatch between environments | **0** |
+
+**The 8 Test-only fields, none relevant to any of the nine families:**
+`contact.appointment_scheduled` (CHECKBOX), `contact.business_name`
+(TEXT), `contact.contact_source` (TEXT), `contact.how_often_do_you_
+normally_workout` (RADIO), `contact.interested_service`
+(SINGLE_OPTIONS), `contact.optinlead` (TEXT), `contact.video_1_watched`
+(CHECKBOX), `contact.video_2_watched` (CHECKBOX) — onboarding/intake-form
+and miscellaneous fields, several bearing no relation to real estate
+wholesaling at all (the workout question), consistent with Test carrying
+extra template/demo fields Production does not. **This fully accounts for
+the raw-count difference**: Production 101 + 16 = 117 total custom
+fields; Test 117 (matching) + 8 (Test-only) = 125 total — arithmetic
+closes exactly, with zero unexplained remainder.
+
+**Every one of the 30 fields named across this document's nine families
+was checked individually. All 30 exist in both environments, under the
+identical `fieldKey`, `dataType`, and folder name — only the numeric GHL
+id differs per environment, which is expected and by design.** No
+semantic (type or folder) drift exists between Production and Test for
+any field this document discusses. The full id pairs are already recorded
+in each family's table below (Prod / Test), each entry independently
+re-verified against this correction round's live Production pull.
+
+**One material finding from this comparison: Family 6's open question is
+now resolved** — see the updated Family 6 section below.
 
 **Duplicate/near-duplicate families identified: 9** (named families 1–7
 below, matching the rollover's list, plus 2 additional families this
@@ -64,13 +198,19 @@ document adds per its "do not assume the list is complete" instruction:
 Closing Costs field-vs-value naming collision, and Contact-side deal-
 economics fields sitting outside the stated ownership rule).
 
-**Already fully resolved by existing locked decisions (no further Phase-1
-finding needed, restated only): 0 of the 9** — every family below carries
-at least one open question, a live conflict, or a confirmed dead-writer
-condition that INV-70's gate exists to catch. Two families (ARV, Asking
-Price) have a **clean, working canonical/seed pattern already in
-production use** — their "finding" is that the pattern is healthy, not
-that it needs to change.
+**Already fully resolved, no blocking decision remaining (updated this
+correction round): 5 of the 9** — ARV (1), Asking Price (2), Seller MAO
+(4), Assignment Fee Target (7), and — newly resolved this correction
+round — Wholesale Fee Percent (6). Two of these (ARV, Asking Price) have
+a **clean, working canonical/seed pattern already in production use**;
+the other three had an apparent duplicate or open question that this
+document's own evidence (and, for Family 6, this correction round's
+Production read) closes outright. **2 of the 9 remain genuinely
+blocking** (Repairs, Family 3; the presented-offer family, Family 5) —
+see "Blocking vs. non-blocking decisions" below. **The remaining 2 of the
+9** (Closing Costs naming collision, Family 8; the legacy Contact
+economics fields, Family 9) are non-blocking, no-conflict follow-up
+items, not open duplicates.
 
 **Fields requiring migration or a backfill decision: 1 confirmed
 (Repairs)**, with a second (the "presented offer" family, 14 fields)
@@ -359,16 +499,16 @@ reachable-if-re-routed dead code carrying 14 ungoverned field ids.
 
 ---
 
-## Family 6 — Offer Wholesale Fee vs. Wholesale Fee Percent (two different facts, one orphaned, one historically mis-recorded)
+## Family 6 — Offer Wholesale Fee vs. Wholesale Fee Percent (two different facts, one orphaned; the historical-memory discrepancy is now RESOLVED)
 
-**Status: mostly resolved as non-duplicative; one historical-memory
-discrepancy flagged for verification.**
+**Status: fully resolved as non-duplicative. Correction round 1 closes
+the one open question the original pass left here.**
 
 | Candidate | Object | Key | ID (Prod / Test) | Type | Folder |
 |---|---|---|---|---|---|
 | Offer Wholesale Fee (presented offer, a dollar amount) | Contact | `contact.offer_wholesale_fee` | `qYzkp66x87rG7Pbs36GP` / `XEGpmThEZVCZ0Zo8v5iW` | NUMERICAL | Offer |
 | Offer Wholesale Fee (presented offer, a dollar amount) | Opportunity | `opportunity.offer_wholesale_fee` | `GxChepYArmgPllhKPq0R` / `gHrAmtFAOag95Zvay3Wa` | NUMERICAL | Offer |
-| Wholesale Fee Percent (a rate, not a dollar amount) | Opportunity | `opportunity.wholesale_fee_` | UNKNOWN (Prod, not read this session) / `kRGt4FKC3bW2Kvgsyshw` | NUMERICAL | Opportunity Details |
+| Wholesale Fee Percent (a rate, not a dollar amount) | Opportunity | `opportunity.wholesale_fee_` | `RS2trZUHrZwaGxadLvHB` / `kRGt4FKC3bW2Kvgsyshw` | NUMERICAL | Opportunity Details |
 
 **`offer_wholesale_fee` is part of Family 5** (presented offer) — same
 writer, same dead-code status, same open question. Listed again here only
@@ -383,24 +523,23 @@ archaeology." `docs/UNDERWRITING_FIELD_REFERENCE.md:132-135` corroborates:
 listed under "What is not here" (deal-override fields), a "candidate"
 with no current reader.
 
-**Historical-memory discrepancy, flagged for verification, not asserted as
-fact:** a prior session's memory record (`reference_ghl_mao_fields.md`,
-~87 days old) described a **Contact-model** field `contact.wholesale_fee_`
-(id `RS2trZUHrZwaGxadLvHB`, part of the old deal-submit function's field
-set). **No field with fieldKey `contact.wholesale_fee_` or a "Wholesale
-Fee Percent" name appears in this session's live 109-field Test Contact
-inventory.** Two explanations are equally consistent with current
-evidence and this document does not choose between them: (a) the field
-was deleted or renamed in GHL since that memory was recorded (unverified,
-GHL field deletion is not something the read-only tooling used this
-session could confirm one way or the other for a field no longer present
-to inspect), or (b) the memory record was simply inaccurate at the time
-(the same era's `deal-submit` Netlify function, retired 2026-08-13 per
-`docs/PHASE_B_SPEC.md:2261`, is the kind of thing that could produce a
-stale/incorrect field record). **Unresolved question: confirm in
-Production (out of scope for this Test-only Phase 1 read) whether a
-Contact-side `wholesale_fee_`/`RS2trZUHrZwaGxadLvHB` field still exists,
-before assuming it is gone.**
+**RESOLVED, correction round 1: the historical-memory discrepancy was a
+model-label error, exactly parallel to Family 7's Assignment Fee Target
+finding — not a deleted/renamed field, and not an inaccurate memory
+about the id itself.** The original pass found no `contact.wholesale_
+fee_`/`RS2trZUHrZwaGxadLvHB` in the live Test Contact inventory and left
+open whether the field was gone or the memory was wrong, pending a
+Production check that Test-only Phase 1 scope did not permit. **This
+correction round's read-only Production pull (`GET /locations/
+jmHG4B8RdzwpfqruNf68/customFields?model=opportunity`) finds id
+`RS2trZUHrZwaGxadLvHB` live, today, in Production — as `opportunity.
+wholesale_fee_`, on the Opportunity model, in the Opportunity Details
+folder.** The id was never wrong and the field was never deleted; the
+~87-day-old memory record's **Contact-model label** was the error, the
+same class of mistake Family 7 already identified for Assignment Fee
+Target. There is one field, on Opportunity, in both environments, not a
+Contact/Opportunity pair and not a vanished field. **Unresolved question
+3 from the original pass is closed by this finding.**
 
 **Proposed canonical carrier:** none needed — `opportunity.wholesale_fee_`
 has no current consumer and is not in conflict with anything live.
@@ -408,7 +547,11 @@ has no current consumer and is not in conflict with anything live.
 either formal retirement or deliberate reassignment, per PHASE_B_SPEC's
 own framing — a decision for whoever designs the eventual deal-override
 carrier set, not this document. **Compatibility/rollback risk:** none —
-no consumer to break.
+no consumer to break. **Memory correction (not a repository change):**
+`reference_ghl_mao_fields.md`'s `contact.wholesale_fee_` entry should be
+corrected to `opportunity.wholesale_fee_` — noted for whoever next
+touches that memory file, alongside the identical correction Family 7
+already names for Assignment Fee Target.
 
 ---
 
@@ -598,46 +741,130 @@ checks the shared config module.
 
 ## What this document does not do
 
-No GHL field was created, edited, renamed, migrated, archived or deleted.
-No application code, configuration, workflow, or test file was changed.
-No canonical carrier is finally chosen for Family 3 (Repairs) or Family 5
-(presented offer) — both are surfaced as open, decision-requiring
-conflicts, per the explicit instruction never to silently choose between
-conflicting non-empty values or an unresolved architecture question. No
-Production location was queried — every live read this session was
-`GET`-only against IAOS Test (`SoTgVoaFGHtBdRFvXWQV`). No Linear issue is
-marked Done. No PR is opened.
+No GHL field was created, edited, renamed, migrated, archived or deleted,
+in either Production or Test. No application code, configuration,
+workflow, or test file was changed. No canonical carrier is finally
+chosen for Family 3 (Repairs) or Family 5 (presented offer) — both are
+surfaced as open, decision-requiring conflicts, per the explicit
+instruction never to silently choose between conflicting non-empty values
+or an unresolved architecture question — and this document does not
+choose between them either. **Every GHL call across both the original
+pass and this correction round was `GET`-only** — the original pass
+against IAOS Test (`SoTgVoaFGHtBdRFvXWQV`) alone; this correction round
+additionally against IAOS Production (`jmHG4B8RdzwpfqruNf68`), per Jess
+Gate's explicit authorization for this round, still GET-only throughout.
+No Linear issue is marked Done. No PR is opened.
+
+---
+
+## Blocking vs. non-blocking decisions (correction round 1)
+
+Jess Gate's third correction asked this document to say plainly which
+open questions actually block INV-70 execution planning, and which are
+follow-up items that do not need to hold up the rest of Board #9. This
+section makes that separation explicit. **Neither architectural decision
+below is made by this document** — both are named as decisions Brad/Jess
+must make, not decisions this document takes a position on.
+
+### Blocking — must be decided before INV-70 execution planning proceeds
+
+**1. Family 3 — Repairs.** The only field family where PB-D55's own
+stated design (Opportunity owns underwriting, Contact seeds it once) is
+**currently false in production code** — the named Opportunity carrier
+(`opportunity.repair_estimate`) has no writer, so Contact
+(`contact.estimated_repairs`) is what every deal actually resolves from
+today, silently, including into Board 9's own `OutcomeSnapshot`. This
+blocks execution planning because any Board 9 work that reads "the
+repairs figure" (a contract field mapping, an underwriting report) needs
+to know NOW which carrier it is reading, and the two live options carry
+different costs and different conformance to the stated ownership rule.
+**Decision needed:** re-designate `contact.estimated_repairs` as the
+permanent canonical carrier for this one fact, or build the missing
+`opportunity.repair_estimate` writer and migrate. Not decided here.
+
+**2. Family 5 — the Presented/Current Offer family (14 fields).** Blocks
+execution planning for a distinct reason: this family's disposition
+depends on a prior, already-named Board 8 gap (the "Current Offer" /
+negotiation-state carrier, `docs/BOARD8_ECONOMICS_INVENTORY_V1.md`,
+"Opening Offer / Current Offer / negotiation fields," classified REAL
+CARRIER GAP) that has to be decided first — building or reviving anything
+against either the Contact or Opportunity copy of `offer_price` /
+`offer_mao` / etc. before that decision is made risks creating a second,
+competing negotiation-state mechanism. **Decision needed:** does resolving
+the Current-Offer carrier gap retire, reuse, or replace this 14-field
+family; if reused, which model governs between the Contact and
+Opportunity copies; and is `MaoCalculator.tsx` (confirmed unrouted dead
+code this session — no import or route anywhere in `app/src`) formally
+retired or left in place. Not decided here.
+
+**Nothing else in this document blocks INV-70 execution planning.** Every
+other family below is either already fully resolved (ARV, Asking Price,
+Seller MAO, Assignment Fee Target, and — as of this correction round —
+Wholesale Fee Percent) or a non-blocking follow-up item that can be
+tracked and closed independently, on its own timeline, without holding up
+Board #9 coding that does not touch the specific fields involved.
+
+### Non-blocking follow-up items
+
+- **Family 6/8 — retirement or reassignment of `opportunity.wholesale_
+  fee_` and `opportunity.closing_costs`.** Both orphaned, zero current
+  consumer, not in conflict with anything live. Whoever eventually
+  designs the deal-override carrier set can decide this on its own
+  schedule.
+- **Family 9 — the four legacy Contact-side deal-economics fields**
+  (Carrying Cost, Loan Amount, Interest Rate, Hold Months). No writer
+  exists for any of them today; not duplicated (no Opportunity twin);
+  purely a standing-tension flag for whenever a future financing feature
+  is designed.
+- **Cross-cutting — `contact.mao_viability_flag`.** Likely-orphaned,
+  unconfirmed as read or written by any live path; a retirement candidate
+  for its own future review, not urgent.
+- **Two memory-file corrections** (not repository changes): Family 7's
+  Assignment Fee Target and Family 6's Wholesale Fee Percent entries in
+  `reference_ghl_mao_fields.md` both mislabeled an Opportunity-model field
+  as Contact-model. Cosmetic, does not affect any live decision.
+- **`MaoCalculator.tsx`'s hardcoded, ungoverned 14 Offer-family ids
+  outside `app/shared/ghl-config.ts`.** An integrity/hygiene gap, already
+  de-risked by the page being unrouted dead code; folded into whatever
+  Family 5's blocking decision produces, not separately urgent.
 
 ---
 
 ## Unresolved questions, collected
 
-1. **Family 3 (Repairs):** re-designate `contact.estimated_repairs` as
-   canonical (low cost, breaks the stated ownership rule for this one
-   fact), or build the missing `opportunity.repair_estimate` writer and
-   migrate (higher cost, matches ARV/Asking-Price precedent)?
-2. **Family 5 (presented offer, 14 fields):** does resolving Board 8's
-   named "Current Offer" carrier gap retire, reuse, or replace this
-   family? If reused, which model (Contact or Opportunity) governs
+1. **BLOCKING — Family 3 (Repairs):** re-designate
+   `contact.estimated_repairs` as canonical (low cost, breaks the stated
+   ownership rule for this one fact), or build the missing `opportunity.
+   repair_estimate` writer and migrate (higher cost, matches
+   ARV/Asking-Price precedent)?
+2. **BLOCKING — Family 5 (presented offer, 14 fields):** does resolving
+   Board 8's named "Current Offer" carrier gap retire, reuse, or replace
+   this family? If reused, which model (Contact or Opportunity) governs
    between the two copies? Should `MaoCalculator.tsx` be formally retired
    rather than left as re-routable dead code?
-3. **Family 6:** does a Contact-side `wholesale_fee_`
-   (`RS2trZUHrZwaGxadLvHB`) still exist in Production? (Out of scope for
-   this Test-only read; flagged for a future check before assuming it
-   gone.)
-4. **Family 6/8:** should `opportunity.wholesale_fee_` and
+3. **Non-blocking — Family 6/8:** should `opportunity.wholesale_fee_` and
    `opportunity.closing_costs` be formally retired or reserved for a
    future per-deal override role?
-5. **Family 9:** are Carrying Cost / Loan Amount / Interest Rate / Hold
-   Months intended to become genuine per-deal Opportunity inputs
-   eventually, or remain permanently Contact-side historical fields?
-6. **Cross-cutting:** is `contact.mao_viability_flag` fully dead, and if
-   so, is it a retirement candidate?
-7. **Memory correction (not a repository change):** the session memory
-   file recording GHL MAO field ids should be corrected — its
-   `contact.assignment_fee_target` entry names an id that this
-   document confirms is actually `opportunity.assignment_fee_target`.
+4. **Non-blocking — Family 9:** are Carrying Cost / Loan Amount /
+   Interest Rate / Hold Months intended to become genuine per-deal
+   Opportunity inputs eventually, or remain permanently Contact-side
+   historical fields?
+5. **Non-blocking — Cross-cutting:** is `contact.mao_viability_flag`
+   fully dead, and if so, is it a retirement candidate?
+6. **Non-blocking, memory correction (not a repository change):** the
+   session memory file recording GHL MAO field ids should be corrected —
+   its `contact.assignment_fee_target` entry names an id that this
+   document confirms is actually `opportunity.assignment_fee_target`, and
+   (new this correction round) its absence of any `wholesale_fee_` entry
+   should gain one, correctly labeled `opportunity.wholesale_fee_`
+   (`RS2trZUHrZwaGxadLvHB` Prod / `kRGt4FKC3bW2Kvgsyshw` Test), not
+   Contact-model.
 
-None of these is decided by this document. Each requires a Product Owner
-and/or Chief Architect ruling before any Board #9 coding that touches the
-affected fields resumes.
+**Resolved this correction round, removed from the open list:** whether a
+Contact-side `wholesale_fee_` still exists in Production — it never
+existed on Contact; see the updated Family 6 section.
+
+Only items 1 and 2 block INV-70 execution planning (see "Blocking vs.
+non-blocking decisions" above). None of the six is decided by this
+document. Each requires a Product Owner and/or Chief Architect ruling
+before the fields it names are touched by any Board #9 coding.
