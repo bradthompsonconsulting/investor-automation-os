@@ -15,7 +15,7 @@ import {
 } from "../lib/contract-facts-model";
 import {
   buildContractDocumentPreview, type ContractDocumentPreview,
-  CONTRACT_DOCUMENT_GROUP_LABEL, CONTRACT_DOCUMENT_TEMPLATE_NAME,
+  CONTRACT_DOCUMENT_GROUP_LABEL,
 } from "../lib/contract-document-model";
 import {
   evaluateBradAuthorizationCurrency, evaluateAuthorizationEligibility,
@@ -26,11 +26,12 @@ import {
 } from "../lib/contract-authorization-carriers";
 import {
   evaluateSendEligibility, buildSendAttemptArgs, buildSendResultArgs,
-  classifyProviderSendResponse, buildContractSentEvidence,
+  buildReadbackResultArgs, classifyProviderSendResponse, buildContractSentEvidence,
 } from "../lib/contract-send-model";
 import {
   formatContractSendNote, latestContractSendForOpportunity,
 } from "../lib/contract-send-carriers";
+import { getRuntimeConfig } from "../../shared/ghl-config";
 import {
   formatBuyerEntityOverrideNote,
   formatPartySignerFactsNote, type SellerSignerFact,
@@ -671,8 +672,53 @@ export default function ContractWorkspace() {
 
   const sendEligibility = useMemo(() => {
     if (!contractDocumentPreview) return null;
-    return evaluateSendEligibility({ authRecord: bradAuthorizationRecord, preview: contractDocumentPreview, existingSend });
+    return evaluateSendEligibility({
+      authRecord: bradAuthorizationRecord,
+      preview: contractDocumentPreview,
+      existingSend,
+      populationVerification: getRuntimeConfig().documentsContracts.populationVerification,
+    });
   }, [contractDocumentPreview, bradAuthorizationRecord, existingSend]);
+
+  /**
+   * INV-63 correction round -- item 2 pre-flight drift check. Compares the
+   * locked, config-projected `templateId`/`expectedTemplateName` (never
+   * client-chosen; `ghl-proxy.ts`'s GATE 2 enforces the same id server-side
+   * regardless) against a live `listTemplates()` lookup, so a renamed,
+   * deleted, or missing GHL template surfaces BEFORE Send is offered,
+   * instead of only as an opaque provider failure. Runs once per mount
+   * (and again if the opportunity changes) -- a live template rename
+   * between this check and an actual click is still possible and is not
+   * claimed to be closed; the readback stage (`classifyDocumentReadback`)
+   * is the actual authoritative, send-time check.
+   */
+  const [templateDriftCheck, setTemplateDriftCheck] = useState<
+    { kind: "checking" } | { kind: "ok" } | { kind: "problem"; message: string }
+  >({ kind: "checking" });
+  useEffect(() => {
+    let cancelled = false;
+    setTemplateDriftCheck({ kind: "checking" });
+    const { templateId, expectedTemplateName } = getRuntimeConfig().documentsContracts;
+    ghl.proposals
+      .listTemplates({ name: expectedTemplateName })
+      .then((found) => {
+        if (cancelled) return;
+        const match = (found.data ?? []).find((t) => t.id === templateId);
+        if (!match) {
+          setTemplateDriftCheck({ kind: "problem", message: `The locked GHL template id (${templateId}) was not found in IAOS Test -- it may have been deleted or the Test location has changed. Sending is refused until this is resolved.` });
+        } else if (match.deleted) {
+          setTemplateDriftCheck({ kind: "problem", message: `The locked GHL template has been deleted in GHL. Sending is refused until a template is restored or the configuration is updated.` });
+        } else if (match.name !== expectedTemplateName) {
+          setTemplateDriftCheck({ kind: "problem", message: `The locked GHL template's name is now "${match.name}", not the expected "${expectedTemplateName}" -- this could mean the wrong template is configured. Verify in GHL before sending.` });
+        } else {
+          setTemplateDriftCheck({ kind: "ok" });
+        }
+      })
+      .catch((e: any) => {
+        if (!cancelled) setTemplateDriftCheck({ kind: "problem", message: e?.message ?? "Could not verify the GHL template's identity before offering Send." });
+      });
+    return () => { cancelled = true; };
+  }, [screen.state === "ready" ? screen.opportunity.id : null]);
 
   const contractSentEvidence = useMemo(() => {
     if (!contractDocumentPreview || screen.state !== "ready") return null;
@@ -694,20 +740,33 @@ export default function ContractWorkspace() {
   const [sendError, setSendError] = useState<string | null>(null);
 
   /**
-   * The ONLY write path that reaches GHL Documents & Contracts. Two
-   * durable `ghl.notes.create()` writes bracket the ONE outbound provider
-   * call: an "in_progress" note first (so a concurrent/retried attempt
-   * against this exact revision fails closed via `existingSend` even if
-   * this tab crashes before the provider responds), then a resolution
-   * note built from `classifyProviderSendResponse`'s conservative
-   * classification of whatever the provider actually returned -- never
-   * from this function's own optimism about the call it just made.
+   * The ONLY write path that reaches GHL Documents & Contracts. Correction
+   * round, 2026-09-11 -- now THREE stages instead of two:
    *
-   * `templateId` is resolved live, by exact name match against the fixed
-   * `CONTRACT_DOCUMENT_TEMPLATE_NAME` constant, because no GHL
-   * templateId has been verified to exist for IAOS Test -- this function
-   * refuses to guess one. `contactId`/`userId` are never set here at all;
-   * `ghl-proxy.ts`'s GATE 2 unconditionally overwrites both server-side.
+   * (1) RESERVE. The "in_progress" note is written via
+   *     `ghl.proposals.reserveSend()` -- a dedicated server-side function
+   *     that re-checks for a conflicting pending/accepted send against
+   *     FRESH notes before writing, closing (narrowing -- GHL's Notes API
+   *     has no compare-and-swap primitive) the two-tabs-both-send race a
+   *     purely client-side check could not (item 7). `ghl.notes.create()`
+   *     is never called directly for this note.
+   * (2) SEND. The provider POST. `templateId` is the LOCKED, config-
+   *     verified id (item 2 -- never a live name search); `contactId`/
+   *     `userId`/`templateId` are all still unconditionally overwritten
+   *     server-side by `ghl-proxy.ts`'s GATE 2 regardless of what is sent
+   *     here, and that same GATE refuses the call outright while template
+   *     population is unverified (see `sendEligibility`'s own
+   *     `TEMPLATE_POPULATION_NOT_VERIFIED` check, which mirrors it
+   *     client-side for an honest UI, but the server enforces it
+   *     independently). `classifyProviderSendResponse` can only ever
+   *     yield `"provider_accepted_pending_readback"`, never `"accepted"`
+   *     (item 5 -- "a successful POST response is not sufficient").
+   * (3) READBACK. Only reached if (2) provisionally succeeded: an
+   *     independent `GET /proposals/document` confirms the actual
+   *     created document -- its recipient, its sender, its environment,
+   *     and whether it carries any real fillable field at all
+   *     (`classifyDocumentReadback`). Contract Sent can only ever be
+   *     recorded from THIS stage's own "accepted" verdict.
    */
   async function handleSend() {
     if (screen.state !== "ready" || !contractDocumentPreview || !sellerContractFactsReport) return;
@@ -719,6 +778,7 @@ export default function ContractWorkspace() {
       return;
     }
 
+    const { templateId: requestedTemplateId } = getRuntimeConfig().documentsContracts;
     const requestAt = new Date().toISOString();
     const built = buildSendAttemptArgs({
       opportunityId: screen.opportunity.id,
@@ -728,10 +788,9 @@ export default function ContractWorkspace() {
       preview: contractDocumentPreview,
       authRecord: bradAuthorizationRecord,
       existingSend,
-      // Never trusted as sent: ghl-proxy.ts's GATE 2 unconditionally
-      // overwrites this server-side with the pre-approved Test contact.
-      providerContactId: "server-overridden-by-gate-2",
+      requestedTemplateId,
       expirationAt: expirationAtIso,
+      populationVerification: getRuntimeConfig().documentsContracts.populationVerification,
     });
     if (!built.ok) {
       setSendError(built.reasons.map((r) => r.message).join(" "));
@@ -741,51 +800,76 @@ export default function ContractWorkspace() {
     setSendBusy(true);
     const attempt = built.value;
     const attemptNote = formatContractSendNote(attempt);
+
+    // Stage 1: RESERVE, server-side, atomic-boundary check-then-write.
+    const reservation = await ghl.proposals.reserveSend({
+      contactId,
+      opportunityId: screen.opportunity.id,
+      versionRaw: JSON.stringify(attempt.version),
+      noteBody: attemptNote,
+    });
+    if (!reservation.ok) {
+      setSendError(
+        reservation.status === 409
+          ? "A pending or accepted send already exists for this exact revision (confirmed server-side just now) -- refusing to start a second one."
+          : `Couldn't reserve the send attempt (HTTP ${reservation.status}): ${reservation.reason} -- refusing to call the provider without a durable, server-confirmed in-progress record.`,
+      );
+      setSendBusy(false);
+      return;
+    }
+    setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attemptNote, dateAdded: attempt.at }]);
+
+    // Stage 2: SEND.
+    const sendOutcome = await ghl.proposals.send({ templateId: requestedTemplateId, opportunityId: screen.opportunity.id });
+    const postObservedAt = new Date().toISOString();
+    const postClassification = classifyProviderSendResponse(sendOutcome);
+    const provisionalArgs = buildSendResultArgs({ attempt, operator: null, observedAt: postObservedAt, classification: postClassification });
+    const provisionalNote = formatContractSendNote(provisionalArgs);
     try {
-      await ghl.notes.create(contactId, attemptNote);
-      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attemptNote, dateAdded: attempt.at }]);
+      await ghl.notes.create(contactId, provisionalNote);
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: provisionalNote, dateAdded: provisionalArgs.at }]);
     } catch (e: any) {
-      setSendError(e?.message ?? "Couldn't record the send attempt -- refusing to call the provider without a durable in-progress record.");
+      setSendError(
+        `The provider call resolved (${postClassification.status}) but recording the result failed: ${e?.message ?? "unknown error"} -- reload and check GHL notes directly before retrying.`,
+      );
       setSendBusy(false);
       return;
     }
 
-    let templateId: string | null = null;
-    let templateLookupFailureMessage: string | null = null;
-    try {
-      const found = await ghl.proposals.listTemplates({ name: CONTRACT_DOCUMENT_TEMPLATE_NAME });
-      const matches = (found.data ?? []).filter((t) => t.name === CONTRACT_DOCUMENT_TEMPLATE_NAME && !t.deleted);
-      if (matches.length === 1) {
-        templateId = matches[0].id;
-      } else {
-        templateLookupFailureMessage =
-          matches.length === 0
-            ? `No GHL Documents & Contracts template named "${CONTRACT_DOCUMENT_TEMPLATE_NAME}" was found in IAOS Test -- create it in GHL before sending.`
-            : `${matches.length} GHL templates are named "${CONTRACT_DOCUMENT_TEMPLATE_NAME}" -- refusing to guess which one to send.`;
-      }
-    } catch (e: any) {
-      templateLookupFailureMessage = e?.message ?? "Couldn't look up GHL Documents & Contracts templates.";
+    if (postClassification.status !== "provider_accepted_pending_readback") {
+      setSendError(postClassification.failureReason ?? "The provider did not accept this send.");
+      setSendBusy(false);
+      return;
     }
 
-    const outcome = templateId
-      ? await ghl.proposals.send({ templateId, opportunityId: screen.opportunity.id })
-      : ({ kind: "network_error" as const, message: templateLookupFailureMessage ?? "Template not resolved" });
-
-    const observedAt = new Date().toISOString();
-    const classification = classifyProviderSendResponse(outcome);
-    const resultArgs = buildSendResultArgs({ attempt, operator: null, observedAt, classification });
-    const resultNote = formatContractSendNote(resultArgs);
+    // Stage 3: READBACK -- the only path to "accepted" (item 5). Server-side
+    // (`ghl-contract-send-readback.ts`): the cross-checks against the TRUE
+    // expected sender/recipient require secrets this browser is never
+    // given, so classification happens there, never here.
+    const documentId = postClassification.summary?.documentId ?? "";
+    const readbackObservedAt = new Date().toISOString();
+    const readbackClassification = documentId
+      ? await ghl.proposals.readback({ documentId })
+      : { status: "ambiguous" as const, summary: null, failureReason: "The provider response carried no documentId to read back." };
+    const finalArgs = buildReadbackResultArgs({
+      attempt,
+      provisional: provisionalArgs,
+      operator: null,
+      observedAt: readbackObservedAt,
+      classification: readbackClassification,
+    });
+    const finalNote = formatContractSendNote(finalArgs);
     try {
-      await ghl.notes.create(contactId, resultNote);
-      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: resultNote, dateAdded: resultArgs.at }]);
-      if (classification.status !== "accepted") {
-        setSendError(classification.failureReason ?? "The provider did not confirm acceptance.");
+      await ghl.notes.create(contactId, finalNote);
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: finalNote, dateAdded: finalArgs.at }]);
+      if (readbackClassification.status !== "accepted") {
+        setSendError(readbackClassification.failureReason ?? "Readback did not confirm acceptance.");
       } else {
         setSendExpirationDraft("");
       }
     } catch (e: any) {
       setSendError(
-        `The provider call resolved (${classification.status}) but recording the result failed: ${e?.message ?? "unknown error"} -- reload and check GHL notes directly before retrying.`,
+        `Readback resolved (${readbackClassification.status}) but recording the final result failed: ${e?.message ?? "unknown error"} -- reload and check GHL notes directly before retrying.`,
       );
     } finally {
       setSendBusy(false);
@@ -1875,6 +1959,12 @@ export default function ContractWorkspace() {
                 Sends the exact Brad-authorized agreement through GHL Documents &amp; Contracts (IAOS Test only). Contract Sent is recorded only after the provider affirmatively confirms acceptance -- never on request alone.
               </div>
 
+              {templateDriftCheck.kind === "problem" ? (
+                <div data-testid="contract-send-template-drift-problem" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(239,68,68,0.35)", fontSize: "12px", color: "#EF4444" }}>
+                  {templateDriftCheck.message}
+                </div>
+              ) : null}
+
               {(() => {
                 const status: string | null = existingSend && existingSend.status !== "in_progress"
                   ? existingSend.status
@@ -1883,6 +1973,18 @@ export default function ContractWorkspace() {
                   return (
                     <div data-testid="contract-send-state-sending" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(148,163,184,0.35)", color: "#94A3B8", fontSize: "12px", fontWeight: 700 }}>
                       Sending...
+                    </div>
+                  );
+                }
+                if (status === "provider_accepted_pending_readback") {
+                  return (
+                    <div data-testid="contract-send-state-pending-readback" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(245,158,11,0.35)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: "#F59E0B" }}>
+                        <ShieldAlert size={14} /> Provider responded -- readback verification incomplete
+                      </div>
+                      <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>
+                        The provider accepted the POST, but IAOS's own readback confirmation did not complete (e.g. this tab closed mid-flow). A real document may already exist at GHL -- verify directly in GHL before retrying.
+                      </div>
                     </div>
                   );
                 }
@@ -1942,9 +2044,12 @@ export default function ContractWorkspace() {
                     style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: "6px", color: "#E2E8F0", fontSize: "12px", padding: "6px 8px", marginBottom: "10px" }}
                   />
                   <div>
-                    <Btn testId="contract-send-button" onClick={handleSend} busy={sendBusy} disabled={sendExpirationDraft === ""}>
+                    <Btn testId="contract-send-button" onClick={handleSend} busy={sendBusy} disabled={sendExpirationDraft === "" || templateDriftCheck.kind !== "ok"}>
                       Send via GHL Documents &amp; Contracts
                     </Btn>
+                    {templateDriftCheck.kind === "checking" ? (
+                      <div style={{ fontSize: "10px", color: "#64748B", marginTop: "6px" }}>Verifying the GHL template's identity...</div>
+                    ) : null}
                   </div>
                 </div>
               )}

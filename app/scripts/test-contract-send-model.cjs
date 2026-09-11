@@ -38,12 +38,21 @@ const SOURCES = [
   path.join(LIB, 'board9-contract-model.ts'),
   path.join(LIB, 'seller-call-outcome.ts'),
   path.join(LIB, 'seller-call-readiness-carriers.ts'),
+  // INV-63 correction round, 2026-09-11: contract-send-model.ts now
+  // imports POPULATION_VERIFIED from shared/ghl-config.ts, which pulls
+  // that file (and its own dependency-free contents) into the
+  // compilation graph regardless of whether it is listed here.
+  // Listing it explicitly, and pinning --rootDir to APP below, makes the
+  // emitted output structure deterministic (src/lib/*.js, shared/*.js)
+  // instead of silently shifting whenever a new cross-directory import
+  // is added -- exactly the failure mode that broke this harness once.
+  path.join(APP, 'shared', 'ghl-config.ts'),
 ];
 
 try {
   execSync(
     'npx tsc ' + SOURCES.map((s) => '"' + s + '"').join(' ') +
-    ' --outDir "' + TMP + '" --module commonjs --target es2020 --strict',
+    ' --outDir "' + TMP + '" --rootDir "' + APP + '" --module commonjs --target es2020 --strict',
     { cwd: APP, stdio: 'inherit' }
   );
 } catch (e) {
@@ -52,16 +61,18 @@ try {
   process.exit(10);
 }
 
-const S = require(path.join(TMP, 'contract-send-model.js'));
-const K = require(path.join(TMP, 'contract-send-carriers.js'));
-const A = require(path.join(TMP, 'contract-authorization-model.js'));
-const AC = require(path.join(TMP, 'contract-authorization-carriers.js'));
-const D = require(path.join(TMP, 'contract-document-model.js'));
-const M = require(path.join(TMP, 'contract-facts-model.js'));
-const C = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
-const B = require(path.join(TMP, 'board9-contract-model.js'));
+const LIB_OUT = path.join(TMP, 'src', 'lib');
+const S = require(path.join(LIB_OUT, 'contract-send-model.js'));
+const K = require(path.join(LIB_OUT, 'contract-send-carriers.js'));
+const A = require(path.join(LIB_OUT, 'contract-authorization-model.js'));
+const AC = require(path.join(LIB_OUT, 'contract-authorization-carriers.js'));
+const D = require(path.join(LIB_OUT, 'contract-document-model.js'));
+const M = require(path.join(LIB_OUT, 'contract-facts-model.js'));
+const C = require(path.join(LIB_OUT, 'seller-contract-facts-carriers.js'));
+const B = require(path.join(LIB_OUT, 'board9-contract-model.js'));
+const G = require(path.join(TMP, 'shared', 'ghl-config.js'));
 
-const FLOOR = 75;
+const FLOOR = 114;
 let failures = 0;
 let checks = 0;
 
@@ -86,8 +97,15 @@ const AGREEMENT_AT = '2026-09-06T15:00:00.000Z';
 const AUTH_AT = '2026-09-11T10:00:00.000Z';
 const SEND_AT = '2026-09-11T11:00:00.000Z';
 const EXPIRATION_AT = '2026-09-18T23:59:59.000Z';
-const PROVIDER_CONTACT_ID = 'NAGtUZ9aOE5C1GatJzpT';
+const READBACK_AT = '2026-09-11T11:00:05.000Z';
+const REQUESTED_TEMPLATE_ID = 'fixture-template-id-1';
+const RECIPIENT_ID = 'fixture-recipient-1';
+const SENDER_USER_ID = 'fixture-sender-1';
+const TEST_LOCATION_ID = 'fixture-location-test';
 const VERSION = B.initialVersionIdentity(AGREEMENT_AT);
+function sendArgs(over) {
+  return Object.assign({ requestedTemplateId: REQUESTED_TEMPLATE_ID, populationVerification: G.POPULATION_VERIFIED }, over || {});
+}
 const POPULATED_ADDRESS = { kind: 'populated', value: '123 Main St, Austin, TX, 78701', authority: 'operator_attested', recordedAt: AGREEMENT_AT };
 
 function baseFactsArgs(over) {
@@ -139,11 +157,11 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
 // 1. An unauthorized document cannot send.
 // ============================================================
 {
-  const eligibility = S.evaluateSendEligibility({ authRecord: null, preview: completePreview, existingSend: null });
+  const eligibility = S.evaluateSendEligibility({ authRecord: null, preview: completePreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('an unauthorized (never-authorized) preview cannot send', eligibility.eligible === false);
   check('the refusal names NO_AUTHORIZATION_RECORDED', eligibility.reasons.map((r) => r.code), ['NO_AUTHORIZATION_RECORDED']);
 
-  const built = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord: null, existingSend: null, providerContactId: PROVIDER_CONTACT_ID, expirationAt: EXPIRATION_AT });
+  const built = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord: null, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('building a send attempt for an unauthorized preview is refused', built.ok === false);
 }
 
@@ -153,7 +171,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
 // ============================================================
 {
   checkTrue('sanity: this preview is complete', completePreview.previewComplete === true);
-  const eligibility = S.evaluateSendEligibility({ authRecord: null, preview: completePreview, existingSend: null });
+  const eligibility = S.evaluateSendEligibility({ authRecord: null, preview: completePreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('a complete but unauthorized preview cannot send', eligibility.eligible === false);
   check('the refusal names NO_AUTHORIZATION_RECORDED even though the preview is complete', eligibility.reasons.map((r) => r.code), ['NO_AUTHORIZATION_RECORDED']);
 }
@@ -165,7 +183,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
 {
   const bumped = B.nextVersionIdentity(VERSION, { kind: 'same_agreement_reentry' }, null).value;
   const { preview: newerPreview } = buildCompleteReportAndPreview(OPP, bumped);
-  const eligibility = S.evaluateSendEligibility({ authRecord, preview: newerPreview, existingSend: null });
+  const eligibility = S.evaluateSendEligibility({ authRecord, preview: newerPreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('a stale authorization (older revision) cannot send', eligibility.eligible === false);
   check('the refusal names REVISION_CHANGED', eligibility.reasons.map((r) => r.code), ['REVISION_CHANGED']);
 }
@@ -175,7 +193,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
 // ============================================================
 {
   const changedTemplatePreview = Object.assign({}, completePreview, { templateName: 'A DIFFERENT TEMPLATE ENTIRELY' });
-  const eligibility = S.evaluateSendEligibility({ authRecord, preview: changedTemplatePreview, existingSend: null });
+  const eligibility = S.evaluateSendEligibility({ authRecord, preview: changedTemplatePreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('a changed template cannot send', eligibility.eligible === false);
   check('the refusal names TEMPLATE_CHANGED', eligibility.reasons.map((r) => r.code), ['TEMPLATE_CHANGED']);
 }
@@ -188,7 +206,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
     l.group === 'closingPossession' && l.field === 'closingDate' ? Object.assign({}, l, { text: '2099-01-01' }) : l,
   );
   const mutatedPreview = Object.assign({}, completePreview, { documentLines: mutatedLines });
-  const eligibility = S.evaluateSendEligibility({ authRecord, preview: mutatedPreview, existingSend: null });
+  const eligibility = S.evaluateSendEligibility({ authRecord, preview: mutatedPreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('changed material content (closing date) cannot send', eligibility.eligible === false);
   check('the refusal names CONTENT_CHANGED', eligibility.reasons.map((r) => r.code), ['CONTENT_CHANGED']);
 }
@@ -201,7 +219,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
     l.group === 'noticeContact' && l.field === 'sellerNoticeEmail' ? Object.assign({}, l, { text: 'attacker@example.com' }) : l,
   );
   const mutatedPreview = Object.assign({}, completePreview, { documentLines: mutatedLines });
-  const eligibility = S.evaluateSendEligibility({ authRecord, preview: mutatedPreview, existingSend: null });
+  const eligibility = S.evaluateSendEligibility({ authRecord, preview: mutatedPreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('a changed delivery detail (seller notice email) cannot send', eligibility.eligible === false);
   check('the refusal names CONTENT_CHANGED', eligibility.reasons.map((r) => r.code), ['CONTENT_CHANGED']);
 
@@ -209,7 +227,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
     l.group === 'parties' && l.field === 'sellerSigners' ? Object.assign({}, l, { text: 'A Different Person (Seller)' }) : l,
   );
   const mutatedSignerPreview = Object.assign({}, completePreview, { documentLines: mutatedSignerLines });
-  const signerEligibility = S.evaluateSendEligibility({ authRecord, preview: mutatedSignerPreview, existingSend: null });
+  const signerEligibility = S.evaluateSendEligibility({ authRecord, preview: mutatedSignerPreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('a changed signer identity cannot send', signerEligibility.eligible === false);
   check('the refusal names CONTENT_CHANGED', signerEligibility.reasons.map((r) => r.code), ['CONTENT_CHANGED']);
 }
@@ -230,17 +248,19 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
   const forcedAuthBuilt = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AUTH_AT, preview: forcedPreview, currentVersion: VERSION });
   checkTrue('sanity: the forced-missing-signer preview can still be "authorized" at the model level (proves the eligibility check below is REAL, not just inherited from authorization)', forcedAuthBuilt.ok === true);
   const forcedAuthRecord = AC.parseBradContractAuthorizationNote(AC.formatBradContractAuthorizationNote(forcedAuthBuilt.value));
-  const eligibility = S.evaluateSendEligibility({ authRecord: forcedAuthRecord, preview: forcedPreview, existingSend: null });
+  const eligibility = S.evaluateSendEligibility({ authRecord: forcedAuthRecord, preview: forcedPreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('missing signer information cannot send, even if authorization currency alone would pass', eligibility.eligible === false);
   check('the refusal names MISSING_SIGNER_OR_DELIVERY_INFO', eligibility.reasons.map((r) => r.code), ['MISSING_SIGNER_OR_DELIVERY_INFO']);
 
-  const builtAttempt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: noSignerReport, preview: forcedPreview, authRecord: forcedAuthRecord, existingSend: null, providerContactId: PROVIDER_CONTACT_ID, expirationAt: EXPIRATION_AT });
+  const builtAttempt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: noSignerReport, preview: forcedPreview, authRecord: forcedAuthRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('building a send attempt with missing signer information is refused', builtAttempt.ok === false);
 }
 
 // ============================================================
-// 8. Provider failure / ambiguous response classification -- never
-//    "accepted" unless the documented success shape is fully present.
+// 8. Provider failure / ambiguous response classification -- Stage 1
+//    (the POST response alone) can NEVER yield "accepted", only
+//    "provider_accepted_pending_readback" at best (item 5, correction
+//    round: "a successful POST response is not sufficient").
 // ============================================================
 {
   const networkError = S.classifyProviderSendResponse({ kind: 'network_error', message: 'ECONNRESET' });
@@ -267,18 +287,71 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
 
   const wellFormed = S.classifyProviderSendResponse({
     kind: 'http_response', status: 200,
-    body: { success: true, links: [{ referenceId: 'ref-1', documentId: 'doc-1', recipientId: 'recip-1', documentRevision: 1, entityName: 'contacts', recipientCategory: 'recipient', createdBy: 'user-1', deleted: false }] },
+    body: { success: true, links: [{ referenceId: 'ref-1', documentId: 'doc-1', recipientId: RECIPIENT_ID, documentRevision: 1, entityName: 'contacts', recipientCategory: 'recipient', createdBy: SENDER_USER_ID, deleted: false }] },
   });
-  check('a fully documented success shape classifies as accepted', wellFormed.status, 'accepted');
-  check('the accepted classification carries the real documentId', wellFormed.summary.documentId, 'doc-1');
-  check('the accepted classification carries the real documentRevision', wellFormed.summary.documentRevision, 1);
+  check('a fully documented success shape classifies as provider_accepted_pending_readback, NEVER accepted directly', wellFormed.status, 'provider_accepted_pending_readback');
+  check('the provisional classification carries the real documentId', wellFormed.summary.documentId, 'doc-1');
+  check('the provisional classification carries the real documentRevision', wellFormed.summary.documentRevision, 1);
+  check('the provisional classification carries the provider-echoed createdBy (sender)', wellFormed.summary.createdBy, SENDER_USER_ID);
+  check('the provisional classification has no readback facts yet', [wellFormed.summary.readbackStatus, wellFormed.summary.readbackLocationId, wellFormed.summary.fillableFieldCount], [null, null, null]);
+}
+
+// ============================================================
+// 8b. Stage 2: classifyDocumentReadback -- the ONLY path to "accepted".
+//     Zero fillable fields (Brad's own confirmed CURRENT state of the
+//     IAOS Test template, 2026-09-11) is "ambiguous", by name, never
+//     "accepted" -- there is no threshold below which an unsignable
+//     document counts as sent.
+// ============================================================
+{
+  const baseDoc = { documentId: 'doc-1', deleted: false, locationId: TEST_LOCATION_ID, status: 'sent', recipients: [{ id: RECIPIENT_ID }], links: [{ createdBy: SENDER_USER_ID }] };
+  const readArgs = (over) => Object.assign({ expectedDocumentId: 'doc-1', expectedRecipientId: RECIPIENT_ID, expectedSenderUserId: SENDER_USER_ID, expectedLocationId: TEST_LOCATION_ID }, over || {});
+
+  const netErr = S.classifyDocumentReadback(readArgs({ outcome: { kind: 'network_error', message: 'ECONNRESET' } }));
+  check('readback network error classifies as failed', netErr.status, 'failed');
+
+  const http503 = S.classifyDocumentReadback(readArgs({ outcome: { kind: 'http_response', status: 503, body: {} } }));
+  check('readback HTTP 503 classifies as failed', http503.status, 'failed');
+
+  const notFound = S.classifyDocumentReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [] } } } ));
+  check('readback that does not return the expected document classifies as ambiguous', notFound.status, 'ambiguous');
+
+  const deletedDoc = S.classifyDocumentReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { deleted: true, fillableFields: [] })] } } }));
+  check('readback reporting the document deleted classifies as failed', deletedDoc.status, 'failed');
+
+  const wrongLocation = S.classifyDocumentReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { locationId: 'some-other-location', fillableFields: [] })] } } }));
+  check('readback with a mismatched locationId (environment not confirmed exact) classifies as ambiguous', wrongLocation.status, 'ambiguous');
+
+  const wrongRecipient = S.classifyDocumentReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { recipients: [{ id: 'someone-else' }], fillableFields: [] })] } } }));
+  check('readback whose recipients[] omits the expected recipient classifies as ambiguous', wrongRecipient.status, 'ambiguous');
+
+  const wrongSender = S.classifyDocumentReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { links: [{ createdBy: 'someone-else' }], fillableFields: [] })] } } }));
+  check('readback whose links[] omits the expected sender (createdBy) classifies as ambiguous', wrongSender.status, 'ambiguous');
+
+  const stillDraft = S.classifyDocumentReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { status: 'draft', fillableFields: [{ isRequired: true }] })] } } }));
+  check('readback reporting the document still a draft classifies as ambiguous -- never actually dispatched', stillDraft.status, 'ambiguous');
+
+  const zeroFields = S.classifyDocumentReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { fillableFields: [] })] } } }));
+  check('readback confirming the document but with 0 fillableFields classifies as ambiguous -- blank/unsignable, THE current real state of the IAOS Test template', zeroFields.status, 'ambiguous');
+  checkTrue('the 0-fillable-fields failureReason names the blank-template problem explicitly', /0 fillable fields|blank\/unpopulated/.test(zeroFields.failureReason || ''));
+  check('the 0-fillable-fields classification still carries fillableFieldCount 0 as durable evidence', zeroFields.summary.fillableFieldCount, 0);
+
+  const fieldsButNoneRequired = S.classifyDocumentReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { fillableFields: [{ isRequired: false }, { isRequired: false }] })] } } }));
+  check('readback with fields present but none required classifies as ambiguous -- refuses to guess an optional field is the signature block', fieldsButNoneRequired.status, 'ambiguous');
+  check('that classification still reports the real fillableFieldCount', fieldsButNoneRequired.summary.fillableFieldCount, 2);
+
+  const fullyValid = S.classifyDocumentReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { documentRevision: 1, fillableFields: [{ isRequired: true, type: 'signature' }, { isRequired: false, type: 'text' }] })] } } }));
+  check('readback confirming recipient, sender, environment, non-draft status, and at least one required fillable field classifies as accepted', fullyValid.status, 'accepted');
+  check('the accepted readback carries the confirmed fillableFieldCount', fullyValid.summary.fillableFieldCount, 2);
+  check('the accepted readback carries the confirmed readbackStatus', fullyValid.summary.readbackStatus, 'sent');
+  check('the accepted readback carries the confirmed readbackLocationId', fullyValid.summary.readbackLocationId, TEST_LOCATION_ID);
 }
 
 // ============================================================
 // 9. A provider failure does not record Contract Sent.
 // ============================================================
 {
-  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, providerContactId: PROVIDER_CONTACT_ID, expirationAt: EXPIRATION_AT });
+  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('sanity: the attempt builds successfully for the complete, authorized preview', attemptBuilt.ok === true);
 
   const failedClassification = S.classifyProviderSendResponse({ kind: 'network_error', message: 'ECONNRESET' });
@@ -300,7 +373,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
 // 10. An ambiguous response does not record Contract Sent.
 // ============================================================
 {
-  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, providerContactId: PROVIDER_CONTACT_ID, expirationAt: EXPIRATION_AT });
+  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
   const ambiguousClassification = S.classifyProviderSendResponse({ kind: 'http_response', status: 200, body: { success: true, links: [] } });
   const ambiguousResult = S.buildSendResultArgs({ attempt: attemptBuilt.value, operator: null, observedAt: SEND_AT, classification: ambiguousClassification });
   check('an ambiguous send result is persisted with status "ambiguous"', ambiguousResult.status, 'ambiguous');
@@ -311,39 +384,67 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
   checkTrue('Contract Sent is NOT reached after an ambiguous provider response', sentEligibility.eligible === false);
 
   // Ambiguous/failed sends for the SAME revision do not block a retry.
-  const retryEligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: parsedAmbiguous });
+  const retryEligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: parsedAmbiguous, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('an ambiguous prior attempt for the SAME revision does not block a retry', retryEligibility.eligible === true);
 }
 
 // ============================================================
-// 11. A verified provider acceptance records Contract Sent exactly once.
+// 11. A verified provider acceptance records Contract Sent exactly once
+//     -- now THREE notes (in_progress -> provider_accepted_pending_readback
+//     -> accepted), and "accepted" is reachable ONLY via the readback
+//     stage (item 5).
 // ============================================================
 let acceptedSendRecord;
 {
-  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, providerContactId: PROVIDER_CONTACT_ID, expirationAt: EXPIRATION_AT });
+  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
   const attemptNote = K.formatContractSendNote(attemptBuilt.value);
   const parsedAttempt = K.parseContractSendNote(attemptNote);
   check('the in_progress attempt round-trips with status in_progress', parsedAttempt.status, 'in_progress');
+  check('the in_progress attempt carries no confirmedRecipientId yet -- IAOS cannot know it before the provider responds', parsedAttempt.confirmedRecipientId, null);
+  check('the in_progress attempt persists the requested (locked, config-verified) templateId', parsedAttempt.requestedTemplateId, REQUESTED_TEMPLATE_ID);
 
-  const acceptedClassification = S.classifyProviderSendResponse({
+  const postClassification = S.classifyProviderSendResponse({
     kind: 'http_response', status: 200,
-    body: { success: true, links: [{ referenceId: 'ref-1', documentId: 'doc-1', recipientId: 'recip-1', documentRevision: 1 }] },
+    body: { success: true, links: [{ referenceId: 'ref-1', documentId: 'doc-1', recipientId: RECIPIENT_ID, documentRevision: 1, createdBy: SENDER_USER_ID }] },
   });
-  const acceptedResult = S.buildSendResultArgs({ attempt: attemptBuilt.value, operator: null, observedAt: SEND_AT, classification: acceptedClassification });
-  const acceptedNote = K.formatContractSendNote(acceptedResult);
+  check('the POST response alone classifies as provider_accepted_pending_readback, never accepted', postClassification.status, 'provider_accepted_pending_readback');
+  const provisionalResult = S.buildSendResultArgs({ attempt: attemptBuilt.value, operator: null, observedAt: SEND_AT, classification: postClassification });
+  check('the provisional result is persisted with status provider_accepted_pending_readback', provisionalResult.status, 'provider_accepted_pending_readback');
+  check('the provisional result already carries the provider-echoed confirmedRecipientId', provisionalResult.confirmedRecipientId, RECIPIENT_ID);
+  const provisionalNote = K.formatContractSendNote(provisionalResult);
+  const parsedProvisional = K.parseContractSendNote(provisionalNote);
+  check('the provisional note round-trips with status provider_accepted_pending_readback', parsedProvisional.status, 'provider_accepted_pending_readback');
+
+  // A pending-readback record BLOCKS a retry -- a real provider-side send
+  // already went out; retrying here would risk a genuine duplicate.
+  const pendingReadbackEligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: parsedProvisional, populationVerification: G.POPULATION_VERIFIED });
+  checkTrue('a provider_accepted_pending_readback record for the SAME revision blocks a retry', pendingReadbackEligibility.eligible === false);
+  check('the refusal names READBACK_VERIFICATION_INCOMPLETE', pendingReadbackEligibility.reasons.map((r) => r.code), ['READBACK_VERIFICATION_INCOMPLETE']);
+
+  const readbackClassification = S.classifyDocumentReadback({
+    expectedDocumentId: 'doc-1', expectedRecipientId: RECIPIENT_ID, expectedSenderUserId: SENDER_USER_ID, expectedLocationId: TEST_LOCATION_ID,
+    outcome: { kind: 'http_response', status: 200, body: { documents: [{ documentId: 'doc-1', deleted: false, locationId: TEST_LOCATION_ID, status: 'sent', recipients: [{ id: RECIPIENT_ID }], links: [{ createdBy: SENDER_USER_ID }], documentRevision: 1, fillableFields: [{ isRequired: true, type: 'signature' }] }] } },
+  });
+  check('the readback of a genuinely populated, signable document classifies as accepted', readbackClassification.status, 'accepted');
+  const finalResult = S.buildReadbackResultArgs({ attempt: attemptBuilt.value, provisional: provisionalResult, operator: null, observedAt: READBACK_AT, classification: readbackClassification });
+  check('the FINAL result is persisted with status accepted', finalResult.status, 'accepted');
+  check('the final result\'s iaosObservedAcceptanceAt is the READBACK observation time, not the POST response time', finalResult.iaosObservedAcceptanceAt, READBACK_AT);
+  const acceptedNote = K.formatContractSendNote(finalResult);
   acceptedSendRecord = K.parseContractSendNote(acceptedNote);
   check('the accepted result round-trips with status accepted', acceptedSendRecord.status, 'accepted');
 
-  // Both notes exist for the same opportunity (the attempt AND its
-  // resolution) -- the reader must resolve to the LATEST (accepted) state.
-  const combinedNotes = [{ body: attemptNote }, { body: acceptedNote }];
+  // All three notes exist for the same opportunity -- the reader must
+  // resolve to the LATEST (accepted, rank 2) state, never falling back
+  // to the earlier pending notes.
+  const combinedNotes = [{ body: attemptNote }, { body: provisionalNote }, { body: acceptedNote }];
   const resolved = K.latestContractSendForOpportunity(combinedNotes, OPP);
-  check('the reader resolves the attempt+result pair to the accepted status', resolved.status, 'accepted');
+  check('the reader resolves the full 3-note lifecycle to the accepted status', resolved.status, 'accepted');
   check('the resolved record carries the real provider documentId', resolved.providerResponse.documentId, 'doc-1');
+  check('the resolved record carries the readback-confirmed fillableFieldCount', resolved.providerResponse.fillableFieldCount, 1);
 
   const evidence = S.buildContractSentEvidence({ contractReady: true, authRecord, currentPreview: completePreview, send: resolved });
   const sentEligibility = B.evaluateContractSentEligibility(evidence);
-  checkTrue('Contract Sent IS reached after a verified provider acceptance', sentEligibility.eligible === true);
+  checkTrue('Contract Sent IS reached after a verified, readback-confirmed provider acceptance', sentEligibility.eligible === true);
 
   // "Exactly once": a second, independent evaluation against the SAME
   // evidence produces the SAME result -- evaluateContractSentEligibility
@@ -354,20 +455,58 @@ let acceptedSendRecord;
 }
 
 // ============================================================
+// 11b. A provider acceptance WITHOUT a valid readback (item 5's own
+//      reason for existing) never reaches "accepted" -- a blank/
+//      unsignable document (0 fillableFields, Brad's own CURRENTLY
+//      CONFIRMED real state of the IAOS Test template) stays ambiguous
+//      forever, even though the provider's POST looked completely clean.
+// ============================================================
+{
+  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: '2026-09-11T13:00:00.000Z', report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
+  const postClassification = S.classifyProviderSendResponse({
+    kind: 'http_response', status: 200,
+    body: { success: true, links: [{ documentId: 'doc-blank-1', recipientId: RECIPIENT_ID, createdBy: SENDER_USER_ID }] },
+  });
+  const provisionalResult = S.buildSendResultArgs({ attempt: attemptBuilt.value, operator: null, observedAt: '2026-09-11T13:00:01.000Z', classification: postClassification });
+  const readbackOfBlankDoc = S.classifyDocumentReadback({
+    expectedDocumentId: 'doc-blank-1', expectedRecipientId: RECIPIENT_ID, expectedSenderUserId: SENDER_USER_ID, expectedLocationId: TEST_LOCATION_ID,
+    outcome: { kind: 'http_response', status: 200, body: { documents: [{ documentId: 'doc-blank-1', deleted: false, locationId: TEST_LOCATION_ID, status: 'sent', recipients: [{ id: RECIPIENT_ID }], links: [{ createdBy: SENDER_USER_ID }], fillableFields: [] }] } },
+  });
+  checkTrue('a genuinely clean POST response still cannot reach Contract Sent when the readback proves the document is blank', readbackOfBlankDoc.status === 'ambiguous');
+  const finalResult = S.buildReadbackResultArgs({ attempt: attemptBuilt.value, provisional: provisionalResult, operator: null, observedAt: '2026-09-11T13:00:02.000Z', classification: readbackOfBlankDoc });
+  check('the final result for a blank document is persisted as ambiguous, never accepted', finalResult.status, 'ambiguous');
+  const evidence = S.buildContractSentEvidence({ contractReady: true, authRecord, currentPreview: completePreview, send: K.parseContractSendNote(K.formatContractSendNote(finalResult)) });
+  checkTrue('Contract Sent is NOT reached for a readback-confirmed blank document', B.evaluateContractSentEligibility(evidence).eligible === false);
+}
+
+// ============================================================
+// 11c. Sending is refused, before any attempt is even built, while
+//      template population is not verified (item 9's own code-level
+//      enforcement of the STOP condition).
+// ============================================================
+{
+  const eligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: null, populationVerification: G.POPULATION_NOT_VERIFIED });
+  checkTrue('sending is refused while populationVerification is not POPULATION_VERIFIED', eligibility.eligible === false);
+  check('the refusal names TEMPLATE_POPULATION_NOT_VERIFIED', eligibility.reasons.map((r) => r.code), ['TEMPLATE_POPULATION_NOT_VERIFIED']);
+  const builtWhileUnverified = S.buildSendAttemptArgs(sendArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_NOT_VERIFIED }));
+  checkTrue('building a send attempt is refused while template population is not verified', builtWhileUnverified.ok === false);
+}
+
+// ============================================================
 // 12. A retry cannot create a duplicate provider transaction.
 // ============================================================
 {
-  const retryEligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: acceptedSendRecord });
+  const retryEligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: acceptedSendRecord, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('retrying against an already-accepted send for the SAME revision is refused', retryEligibility.eligible === false);
   check('the refusal names ALREADY_SENT', retryEligibility.reasons.map((r) => r.code), ['ALREADY_SENT']);
 
-  const retryBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: '2026-09-11T12:00:00.000Z', report: completeReport, preview: completePreview, authRecord, existingSend: acceptedSendRecord, providerContactId: PROVIDER_CONTACT_ID, expirationAt: EXPIRATION_AT });
+  const retryBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: '2026-09-11T12:00:00.000Z', report: completeReport, preview: completePreview, authRecord, existingSend: acceptedSendRecord, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('building a second send attempt against an already-accepted revision is refused', retryBuilt.ok === false);
 
   // An in-progress (not yet resolved) attempt also blocks a concurrent retry.
-  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, providerContactId: PROVIDER_CONTACT_ID, expirationAt: EXPIRATION_AT });
+  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
   const inProgressRecord = K.parseContractSendNote(K.formatContractSendNote(attemptBuilt.value));
-  const concurrentEligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: inProgressRecord });
+  const concurrentEligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: inProgressRecord, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('a concurrent attempt while one is already in_progress for the SAME revision is refused', concurrentEligibility.eligible === false);
   check('the refusal names SEND_IN_PROGRESS', concurrentEligibility.reasons.map((r) => r.code), ['SEND_IN_PROGRESS']);
 
@@ -375,7 +514,7 @@ let acceptedSendRecord;
   const bumped = B.nextVersionIdentity(VERSION, { kind: 'same_agreement_reentry' }, null).value;
   const { preview: newerPreview } = buildCompleteReportAndPreview(OPP, bumped);
   const newerAuthRecord = authorize(OPP, newerPreview);
-  const newerEligibility = S.evaluateSendEligibility({ authRecord: newerAuthRecord, preview: newerPreview, existingSend: acceptedSendRecord });
+  const newerEligibility = S.evaluateSendEligibility({ authRecord: newerAuthRecord, preview: newerPreview, existingSend: acceptedSendRecord, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('a NEWER revision is not blocked by an older revision\'s accepted send', newerEligibility.eligible === true);
 }
 
@@ -386,7 +525,7 @@ let acceptedSendRecord;
   const { report: otherReport, preview: otherPreview } = buildCompleteReportAndPreview(OTHER_OPP, VERSION);
   const otherAuthRecord = authorize(OTHER_OPP, otherPreview);
 
-  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, providerContactId: PROVIDER_CONTACT_ID, expirationAt: EXPIRATION_AT });
+  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
   const attemptNote = K.formatContractSendNote(attemptBuilt.value);
   const acceptedClassification = S.classifyProviderSendResponse({ kind: 'http_response', status: 200, body: { success: true, links: [{ documentId: 'doc-1' }] } });
   const acceptedResult = S.buildSendResultArgs({ attempt: attemptBuilt.value, operator: null, observedAt: SEND_AT, classification: acceptedClassification });
@@ -396,7 +535,7 @@ let acceptedSendRecord;
   check('a send recorded for OPP is found when reading OPP', K.latestContractSendForOpportunity(combinedNotes, OPP) !== null, true);
   check('a send recorded for OPP is NEVER found when reading a DIFFERENT opportunity', K.latestContractSendForOpportunity(combinedNotes, OTHER_OPP), null);
 
-  const otherEligibility = S.evaluateSendEligibility({ authRecord: otherAuthRecord, preview: otherPreview, existingSend: K.latestContractSendForOpportunity(combinedNotes, OTHER_OPP) });
+  const otherEligibility = S.evaluateSendEligibility({ authRecord: otherAuthRecord, preview: otherPreview, existingSend: K.latestContractSendForOpportunity(combinedNotes, OTHER_OPP), populationVerification: G.POPULATION_VERIFIED });
   checkTrue('the other opportunity remains independently eligible -- no cross-opportunity leak', otherEligibility.eligible === true);
 }
 
@@ -408,11 +547,13 @@ let acceptedSendRecord;
   check('readback preserves the real provider documentRevision', acceptedSendRecord.providerResponse.documentRevision, 1);
   check('readback preserves the exact IAOS version identity', acceptedSendRecord.version, VERSION);
   check('readback preserves the exact template identity', [acceptedSendRecord.templateName, acceptedSendRecord.templateSource], [completePreview.templateName, completePreview.templateSource]);
+  check('readback preserves the LOCKED, config-verified requestedTemplateId (item 2/6)', acceptedSendRecord.requestedTemplateId, REQUESTED_TEMPLATE_ID);
   check('readback preserves the Brad authorization timestamp this send was tied to', acceptedSendRecord.authorizedAt, authRecord.at);
   check('readback preserves the exact signer snapshot', acceptedSendRecord.signers, [{ role: 'Seller', displayName: 'Jane Seller' }]);
-  check('readback preserves the provider contact id used', acceptedSendRecord.providerContactId, PROVIDER_CONTACT_ID);
+  check('readback preserves the ACTUAL PROVIDER-RETURNED recipient id -- never a client-side placeholder (item 6)', acceptedSendRecord.confirmedRecipientId, RECIPIENT_ID);
+  check('readback preserves the confirmed sender (createdBy)', acceptedSendRecord.providerResponse.createdBy, SENDER_USER_ID);
   check('readback preserves the explicit expiration fact', acceptedSendRecord.expirationAt, EXPIRATION_AT);
-  checkTrue('readback\'s acceptance timestamp is IAOS\'s OWN observed time, not claimed as a provider-reported time (same field, documented as such)', acceptedSendRecord.iaosObservedAcceptanceAt === SEND_AT);
+  checkTrue('readback\'s acceptance timestamp is IAOS\'s OWN observed time AT THE READBACK STAGE, not the earlier POST-response time, and not claimed as a provider-reported time', acceptedSendRecord.iaosObservedAcceptanceAt === READBACK_AT);
 }
 
 // ============================================================

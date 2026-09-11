@@ -1269,34 +1269,78 @@ export const ghl = {
   },
 
   /**
-   * GHL Documents & Contracts -- B9-08 / INV-63. The selected V1 e-sign
-   * provider (Product Owner ruling, reaffirmed; not reopened here).
-   * IAOS-Test-only: `ghl-proxy.ts`'s GATE 2 refuses every one of these
-   * three paths unless the running deployment's own `LOCATION_ID` equals
-   * the TEST location, independent of anything this client sends.
+   * GHL Documents & Contracts -- B9-08 / INV-63, corrected 2026-09-11.
+   * The selected V1 e-sign provider (Product Owner ruling, reaffirmed;
+   * not reopened here). IAOS-Test-only: `ghl-proxy.ts`'s GATE 2 refuses
+   * every one of these paths unless the running deployment's own
+   * `LOCATION_ID` equals the TEST location, independent of anything this
+   * client sends.
    *
    * Shapes below are the DOCUMENTED request/response contracts, verified
    * directly from GHL's own reference pages (2026-09-11) -- never
-   * live-called against a real GHL environment this session (see
-   * INV-63's Jess Gate report for why). Treat a live response's exact
+   * live-called against a real GHL environment this session (see the
+   * INV-63 Jess Gate reports for why). Treat a live response's exact
    * shape as unconfirmed until a real Test send has been observed once.
+   *
+   * TEMPLATE ID IS SERVER-ENFORCED, NEVER CLIENT-CHOSEN (correction round
+   * item 2). `send()` still takes `templateId` as a defense-in-depth
+   * echo of what the caller resolved and validated, but `ghl-proxy.ts`'s
+   * GATE 2 unconditionally overwrites it (and `contactId`/`userId`) from
+   * `documentsContracts.templateId` regardless of what is sent here.
+   * `listTemplates()` exists ONLY for the client's own pre-flight
+   * NAME-drift check against the locked id (see `ContractWorkspace.tsx`)
+   * -- it no longer resolves the id used to send.
    */
   proposals: {
-    // GET /proposals/templates -- read-only discovery, used to resolve a
-    // GHL templateId from the fixed CONTRACT_DOCUMENT_TEMPLATE_NAME
-    // constant at send time. This client never stores or hardcodes a
-    // templateId itself (none has been verified to exist in IAOS Test).
+    // GET /proposals/templates -- read-only discovery. Used ONLY as a
+    // pre-flight drift check: does the locked, config-verified templateId
+    // still exist, still carry its expected name, and remain undeleted?
+    // Never used to resolve WHICH template gets sent -- that is the
+    // server-enforced, config-locked id (item 2 of the INV-63 correction
+    // round: "prefer the locked template ID... rather than relying
+    // solely on a mutable display name").
     listTemplates: (params: { name?: string } = {}) => {
       const qs = new URLSearchParams({ locationId: LOCATION_ID, ...params }).toString();
-      return request<{ data: { id: string; name: string; type: string; deleted: boolean }[]; total: number }>(
+      return request<{ data: { id: string; name: string; type: string; deleted: boolean; version?: number }[]; total: number }>(
         `/proposals/templates?${qs}`,
       );
     },
 
+    // GET /proposals/document -- "List Documents". Read-only provider
+    // READBACK, general-purpose read. NOT used by the send flow itself
+    // (see `readback()` below, which is server-side because it must
+    // cross-check against secrets this client is never given) -- kept as
+    // a plain, honest read capability, e.g. for a future "view sent
+    // documents" surface. Filtered client-side by matching `documentId`
+    // if the caller wants a specific one -- the documented query
+    // parameters have no documentId filter, only
+    // status/paymentStatus/date-range/limit/skip/query.
+    listDocuments: async (params: { status?: string; limit?: number } = {}): Promise<
+      | { kind: "network_error"; message: string }
+      | { kind: "http_response"; status: number; body: unknown }
+    > => {
+      const qs = new URLSearchParams({ locationId: LOCATION_ID });
+      if (params.status) qs.set("status", params.status);
+      if (params.limit) qs.set("limit", String(params.limit));
+      try {
+        const res = await fetch(`${PROXY}?path=${encodeURIComponent(`/proposals/document?${qs.toString()}`)}`);
+        const text = await res.text();
+        let parsed: unknown = null;
+        try {
+          parsed = text ? JSON.parse(text) : null;
+        } catch {
+          parsed = text;
+        }
+        return { kind: "http_response", status: res.status, body: parsed };
+      } catch (e: any) {
+        return { kind: "network_error", message: e?.message ?? "Network error calling GHL Documents & Contracts (readback)" };
+      }
+    },
+
     // POST /proposals/templates/send -- the one send-capable path. Deliberately
     // takes NO contactId and NO userId: ghl-proxy.ts's GATE 2 unconditionally
-    // overwrites both server-side (the pre-approved Test contact, and the
-    // configured sender user id), so this client can never name either.
+    // overwrites contactId/userId/templateId server-side, so this client can
+    // never name any of the three for real.
     // Callers pass the raw HTTP outcome to contract-send-model.ts's
     // `classifyProviderSendResponse` -- this method never classifies its own
     // response, matching "no invented GHL behavior" for the success/failure
@@ -1331,6 +1375,55 @@ export const ghl = {
       } catch (e: any) {
         return { kind: "network_error", message: e?.message ?? "Network error calling GHL Documents & Contracts" };
       }
+    },
+
+    // POST /.netlify/functions/ghl-contract-send-reserve -- the ONLY
+    // write path for the "in_progress" attempt note (correction round
+    // item 7). NOT routed through ghl-proxy.ts's generic notes passthrough:
+    // this dedicated server-side function reads the contact's notes fresh
+    // and re-checks for a conflicting pending/accepted send BEFORE writing,
+    // narrowing (not eliminating -- GHL's Notes API has no compare-and-swap
+    // primitive) the two-tabs-both-send race this correction round exists
+    // to close.
+    reserveSend: async (args: {
+      contactId: string;
+      opportunityId: string;
+      versionRaw: string;
+      noteBody: string;
+    }): Promise<{ ok: true } | { ok: false; status: number; reason: string }> => {
+      const res = await fetch("/.netlify/functions/ghl-contract-send-reserve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+      });
+      if (res.ok) return { ok: true };
+      const text = await res.text();
+      return { ok: false, status: res.status, reason: text };
+    },
+
+    // POST /.netlify/functions/ghl-contract-send-readback -- the ONLY
+    // path to a final "accepted" verdict (correction round item 5).
+    // Server-side, not client-classified: the cross-checks against the
+    // TRUE expected sender/recipient require secrets this client is
+    // never given (`documentsContracts.senderUserId`/
+    // `approvedTestContactId`). Returns `contract-send-model.ts`'s own
+    // `ReadbackClassification` shape verbatim -- this client never
+    // reinterprets it.
+    readback: async (args: { documentId: string }): Promise<{
+      status: "accepted" | "failed" | "ambiguous";
+      summary: { documentId: string | null; documentReference: string | null; documentRevision: number | null; recipientId: string | null; createdBy: string | null; readbackStatus: string | null; readbackLocationId: string | null; fillableFieldCount: number | null } | null;
+      failureReason: string | null;
+    }> => {
+      const res = await fetch("/.netlify/functions/ghl-contract-send-readback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        return { status: "failed", summary: null, failureReason: `Readback endpoint returned HTTP ${res.status}: ${text}` };
+      }
+      return res.json();
     },
   },
 };

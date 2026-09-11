@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 79;
+const FLOOR = 86;
 let failures = 0;
 let checks = 0;
 
@@ -147,8 +147,15 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     return onClickWiring && declarations === 1;
   })(), true);
   check('handleSend is never invoked from the data-fetching effect or on mount', /handleSend\(\)/.test(effectBody) === false, true);
-  check('handleSend reuses buildSendAttemptArgs/formatContractSendNote/classifyProviderSendResponse/buildSendResultArgs, never composes a send note body or a provider-response verdict inline', /const built = buildSendAttemptArgs\(/.test(contractTsxNoComments) && /classifyProviderSendResponse\(outcome\)/.test(contractTsxNoComments) && /buildSendResultArgs\(/.test(contractTsxNoComments), true);
-  check('handleSend never sets contactId/userId on the outbound send call -- ghl-proxy.ts GATE 2 overrides both server-side', /ghl\.proposals\.send\(\{ templateId, opportunityId: screen\.opportunity\.id \}\)/.test(contractTsxNoComments), true);
+  check('handleSend reuses buildSendAttemptArgs/formatContractSendNote/classifyProviderSendResponse/buildSendResultArgs/buildReadbackResultArgs, never composes a send note body or a provider-response verdict inline', /const built = buildSendAttemptArgs\(/.test(contractTsxNoComments) && /classifyProviderSendResponse\(sendOutcome\)/.test(contractTsxNoComments) && /buildSendResultArgs\(/.test(contractTsxNoComments) && /buildReadbackResultArgs\(/.test(contractTsxNoComments), true);
+  check('handleSend never sets contactId/userId on the outbound send call -- ghl-proxy.ts GATE 2 overrides both server-side (templateId is still passed, but is ALSO overridden server-side -- item 2)', /ghl\.proposals\.send\(\{ templateId: requestedTemplateId, opportunityId: screen\.opportunity\.id \}\)/.test(contractTsxNoComments), true);
+  check('handleSend correction round item 7 -- the in_progress note is reserved via the dedicated server-side reserveSend endpoint, NOT written via a direct ghl.notes.create call', /ghl\.proposals\.reserveSend\(\{/.test(contractTsxNoComments), true);
+  check('handleSend correction round item 5 -- the final accept/ambiguous/failed verdict comes from an independent server-side readback call, never classified client-side from the POST response alone', /ghl\.proposals\.readback\(\{ documentId \}\)/.test(contractTsxNoComments), true);
+  check('handleSend never classifies "accepted" directly from the POST response -- the provisional branch only checks for provider_accepted_pending_readback before proceeding to readback', /postClassification\.status !== "provider_accepted_pending_readback"/.test(contractTsxNoComments), true);
+  check('sendEligibility passes the non-secret populationVerification projection through to the pure model, never inventing its own eligibility check', /populationVerification: getRuntimeConfig\(\)\.documentsContracts\.populationVerification/.test(contractTsxNoComments), true);
+  check('buildSendAttemptArgs is called with the LOCKED, config-projected requestedTemplateId, never a live-searched value', /requestedTemplateId,?\s*$/m.test(contractTsxNoComments) || /requestedTemplateId(,|\s)/.test(contractTsxNoComments), true);
+  check('ContractWorkspace.tsx performs its own pre-flight template drift check via ghl.proposals.listTemplates before ever offering Send', /ghl\.proposals\s*\n?\s*\.listTemplates\(\{ name: expectedTemplateName \}\)/.test(contractTsxNoComments), true);
+  check('the Send button is disabled while the template drift check has not resolved to "ok"', /disabled=\{sendExpirationDraft === "" \|\| templateDriftCheck\.kind !== "ok"\}/.test(contractTsx), true);
   check('the checklist write lives inside handleToggleChecklistItem', /async function handleToggleChecklistItem[\s\S]*?ghl\.notes\.create\(/.test(contractTsxNoComments), true);
   check('the B9-07/INV-62 authorization write lives inside its own handleAuthorize, never routed through commitNote', (() => {
     const m = contractTsxNoComments.match(/async function handleAuthorize\([\s\S]*?\n  \}/m);

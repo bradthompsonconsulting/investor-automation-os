@@ -40,21 +40,34 @@
  *      whatever `IAOS_ENV` the running function happens to be under — this
  *      is the explicit, path-specific check that closes that gap for these
  *      three paths only.
- *   2. RECIPIENT + SENDER OVERRIDE, POST `/proposals/templates/send` only.
- *      This function UNCONDITIONALLY OVERWRITES the request body's
- *      `contactId` AND `userId` with `documentsContracts.approvedTestContactId`
- *      / `documentsContracts.senderUserId` from the resolved config,
- *      ignoring whatever the browser supplied. The browser is never
- *      trusted to name who receives an actual e-sign send, or under whose
- *      GHL user identity it is sent — matching this file's own "a shared
- *      secret shipped to the browser is not a secret" doctrine, extended
- *      here to "a recipient or sender named by the browser is not
- *      trusted."
- *   3. FAIL CLOSED WHEN `senderUserId` IS UNCONFIGURED. No verified GHL
- *      user id exists for this build (see ghl-config.ts). While
+ *   2. RECIPIENT + SENDER + TEMPLATE OVERRIDE, POST
+ *      `/proposals/templates/send` only. This function UNCONDITIONALLY
+ *      OVERWRITES the request body's `contactId`, `userId`, AND
+ *      `templateId` with `documentsContracts.approvedTestContactId` /
+ *      `senderUserId` / `templateId` from the resolved config, ignoring
+ *      whatever the browser supplied. The browser is never trusted to
+ *      name who receives an actual e-sign send, under whose GHL user
+ *      identity it is sent, or WHICH TEMPLATE is sent (correction round,
+ *      2026-09-11, item 2: "prefer the locked template ID... rather than
+ *      relying solely on a mutable display name") — matching this file's
+ *      own "a shared secret shipped to the browser is not a secret"
+ *      doctrine, extended here to "a recipient, sender, or template
+ *      named by the browser is not trusted."
+ *   3. FAIL CLOSED WHEN `senderUserId` IS UNCONFIGURED, OR WHEN
+ *      TEMPLATE POPULATION IS NOT VERIFIED. While
  *      `documentsContracts.senderUserId` is still the
- *      `SENDER_USER_ID_NOT_CONFIGURED` sentinel, every send is refused
- *      500 before any outbound call — never sent with a placeholder value.
+ *      `SENDER_USER_ID_NOT_CONFIGURED` sentinel, OR while
+ *      `documentsContracts.populationVerification` is not exactly
+ *      `POPULATION_VERIFIED`, every send is refused 500 before any
+ *      outbound call — never sent with a placeholder identity, and never
+ *      sent while Brad has not confirmed (see ghl-config.ts) that the
+ *      uploaded TREC template actually carries population/signature/
+ *      initial/date fields. GHL's public Documents & Contracts API has
+ *      no operation to create, upload, or place fields on a template
+ *      (verified against GHL's own reference pages, 2026-09-11 correction
+ *      round) — this gate exists because there is no API-derivable way
+ *      to make that determination automatically, ever, only a human
+ *      attestation recorded in ghl-config.ts as its own reviewed commit.
  * `Version: v3` (not this proxy's usual `2021-07-28`) is required by all
  * three `/proposals/...` endpoints, confirmed directly from their own
  * reference pages.
@@ -72,7 +85,7 @@
  *   IAOS_ENV — PB-D51 selector; scopes which location's paths are permitted.
  */
 
-import { getConfig, SENDER_USER_ID_NOT_CONFIGURED } from "../../shared/ghl-config";
+import { getConfig, SENDER_USER_ID_NOT_CONFIGURED, POPULATION_VERIFIED } from "../../shared/ghl-config";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
@@ -226,16 +239,24 @@ export const handler = async (event: any) => {
   let outboundBody: string | undefined =
     ["POST", "PUT"].includes(method) && event.body ? event.body : undefined;
   if (PROPOSALS_SEND_PATH.test(pathname)) {
-    // GATE 2 / B9-08 -- `userId` is a REQUIRED field of the documented
-    // request body and no verified GHL user id exists for this build (see
-    // ghl-config.ts's doc comment on `senderUserId`). Refuse before any
-    // outbound call rather than send a request GHL would itself reject, or
-    // worse, one it silently accepts under an unintended user identity.
+    // GATE 2 / B9-08 correction round -- `userId` is a REQUIRED field of
+    // the documented request body, and NO SEND MAY EVER LEAVE THIS
+    // FUNCTION while the template's field population is unverified. Both
+    // refuse before any outbound call rather than send a request GHL
+    // would itself reject, or worse, one that silently delivers a blank,
+    // unsignable document. See ghl-config.ts's doc comments.
     if (DOCUMENTS_CONTRACTS.senderUserId === SENDER_USER_ID_NOT_CONFIGURED) {
       return {
         statusCode: 500,
         headers: CORS,
         body: JSON.stringify({ error: "senderUserId not configured", by: "iaos-proxy-documents-contracts-test-only" }),
+      };
+    }
+    if (DOCUMENTS_CONTRACTS.populationVerification !== POPULATION_VERIFIED) {
+      return {
+        statusCode: 500,
+        headers: CORS,
+        body: JSON.stringify({ error: "template population not verified", by: "iaos-proxy-documents-contracts-test-only" }),
       };
     }
     let parsed: Record<string, unknown>;
@@ -252,6 +273,7 @@ export const handler = async (event: any) => {
       ...parsed,
       contactId: DOCUMENTS_CONTRACTS.approvedTestContactId,
       userId: DOCUMENTS_CONTRACTS.senderUserId,
+      templateId: DOCUMENTS_CONTRACTS.templateId,
     });
   }
 

@@ -9,24 +9,44 @@
  * note; the caller is responsible for `ghl.notes.create()`, one of
  * AGENTS.md's three sanctioned writes -- this module performs no write.
  *
- * ONE NOTE SHAPE, WRITTEN TWICE PER REAL ATTEMPT. `attemptId` (the
- * attempt's own `requestAt` ISO timestamp) correlates the two writes an
- * actual send makes: (1) a `status: "in_progress"` note, written BEFORE
- * the provider call, which alone is enough to make a concurrent or
- * retried attempt against the SAME exact revision fail closed
- * (`contract-send-model.ts`'s idempotency guard reads this back); (2) a
- * `status: "accepted" | "failed" | "ambiguous"` note for the SAME
- * `attemptId`, written after the provider call resolves. The latest note
- * for a given `attemptId` (by `at`) governs that attempt's current
- * status; `latestContractSendForOpportunity` returns the single most
- * recent attempt overall, resolved this way -- there is no separate
- * "revoke" write, matching every other B9 carrier's "revocation/
- * resolution is derived from the latest entry" discipline.
+ * ONE NOTE SHAPE, WRITTEN UP TO THREE TIMES PER REAL ATTEMPT (correction
+ * round, 2026-09-11 -- was two). `attemptId` (the attempt's own
+ * `requestAt` ISO timestamp) correlates every write for one real send:
+ * (1) a `status: "in_progress"` note, written server-side by the
+ * dedicated reservation endpoint BEFORE the provider call (see
+ * `netlify/functions/ghl-contract-send-reserve.ts`) -- alone enough to
+ * make a concurrent or retried attempt against the SAME exact revision
+ * fail closed (`contract-send-model.ts`'s idempotency guard reads this
+ * back, and the reservation endpoint itself re-checks server-side); (2)
+ * a `status: "provider_accepted_pending_readback" | "failed" |
+ * "ambiguous"` note once the provider's POST response resolves -- a
+ * successful POST is NEVER written as `"accepted"` directly (item 5,
+ * INV-63 correction: "a successful POST response is not sufficient");
+ * (3) ONLY when (2) was `provider_accepted_pending_readback`, a final
+ * `status: "accepted" | "failed" | "ambiguous"` note once an independent
+ * provider READBACK (`GET /proposals/document`, i.e. List Documents)
+ * has confirmed the created document, its recipient, its sender, and
+ * that it actually carries fillable fields -- see `contract-send-
+ * model.ts`'s `classifyDocumentReadback`. The latest note for a given
+ * `attemptId`, resolved by pending-vs-terminal rank (never by `at` alone
+ * -- see `latestContractSendForOpportunity`), governs that attempt's
+ * current status; there is no separate "revoke" write, matching every
+ * other B9 carrier's "revocation/resolution is derived from the latest
+ * entry" discipline.
  *
  * NO PROVIDER-SIDE SECRET IS EVER STORED HERE. `providerResponseSummary`
  * is a small, pre-selected set of non-secret response fields
  * (documentId, documentRevision, recipientId) -- never a raw
  * Authorization header, token, or the full unfiltered response body.
+ *
+ * `confirmedRecipientId` (correction round, 2026-09-11 -- was
+ * `providerContactId`, a client-supplied placeholder the client
+ * structurally cannot know truthfully, since `ghl-proxy.ts`'s GATE 2
+ * overwrites the real recipient server-side and never returns it to the
+ * browser ahead of the send). This field is `null` on the `in_progress`
+ * note -- there is nothing true to record yet -- and is populated ONLY
+ * from the PROVIDER'S OWN echoed `recipientId` once a response exists,
+ * never from IAOS's own intended value.
  */
 
 function ledgerValue(value: string | number | null | undefined): string {
@@ -117,14 +137,34 @@ function parseSignersJson(raw: string): SignerSnapshot[] | null {
   return out;
 }
 
-/** Pre-selected, non-secret fields from the provider's own send/document response -- never the raw body. */
+/**
+ * Pre-selected, non-secret fields from the provider's own send/document
+ * response -- never the raw body. Correction round, 2026-09-11: extended
+ * with `createdBy` (the provider-echoed sender/creator id, `links[].
+ * createdBy` in both the Send Template and List Documents response
+ * shapes -- verified directly from GHL's own reference pages) and three
+ * READBACK-ONLY facts (`readbackStatus`, `readbackLocationId`,
+ * `fillableFieldCount`), populated ONLY once an independent `GET
+ * /proposals/document` (List Documents) readback has actually run --
+ * `null` on the provisional POST-response summary. `fillableFieldCount`
+ * is the durable evidence item 4/5 of the INV-63 correction round asks
+ * for: whether the delivered document carries ANY fillable
+ * (population/signature/initial/date) field at all.
+ */
 export type ProviderResponseSummary = {
   documentId: string | null;
   documentReference: string | null;
   documentRevision: number | null;
   recipientId: string | null;
+  createdBy: string | null;
+  readbackStatus: string | null;
+  readbackLocationId: string | null;
+  fillableFieldCount: number | null;
 };
-const PROVIDER_RESPONSE_KEYS = ["documentId", "documentReference", "documentRevision", "recipientId"] as const;
+const PROVIDER_RESPONSE_KEYS = [
+  "documentId", "documentReference", "documentRevision", "recipientId",
+  "createdBy", "readbackStatus", "readbackLocationId", "fillableFieldCount",
+] as const;
 function formatProviderResponseJson(s: ProviderResponseSummary): string {
   return JSON.stringify(s);
 }
@@ -137,21 +177,38 @@ function parseProviderResponseJson(raw: string): ProviderResponseSummary | null 
   if (v.documentReference !== null && typeof v.documentReference !== "string") return null;
   if (v.documentRevision !== null && typeof v.documentRevision !== "number") return null;
   if (v.recipientId !== null && typeof v.recipientId !== "string") return null;
+  if (v.createdBy !== null && typeof v.createdBy !== "string") return null;
+  if (v.readbackStatus !== null && typeof v.readbackStatus !== "string") return null;
+  if (v.readbackLocationId !== null && typeof v.readbackLocationId !== "string") return null;
+  if (v.fillableFieldCount !== null && typeof v.fillableFieldCount !== "number") return null;
   return {
     documentId: v.documentId as string | null,
     documentReference: v.documentReference as string | null,
     documentRevision: v.documentRevision as number | null,
     recipientId: v.recipientId as string | null,
+    createdBy: v.createdBy as string | null,
+    readbackStatus: v.readbackStatus as string | null,
+    readbackLocationId: v.readbackLocationId as string | null,
+    fillableFieldCount: v.fillableFieldCount as number | null,
   };
 }
 
-export type ContractSendStatus = "in_progress" | "accepted" | "failed" | "ambiguous";
+export type ContractSendStatus =
+  | "in_progress"
+  | "provider_accepted_pending_readback"
+  | "accepted"
+  | "failed"
+  | "ambiguous";
 
-export const CONTRACT_SEND_LEDGER_VERSION = "iaos-contract-send-v1" as const;
+/** Pending statuses are never terminal and are always superseded by ANY later note for the same attemptId, pending or terminal, per rank -- see `latestContractSendForOpportunity`. */
+const PENDING_RANK: Record<string, number> = { in_progress: 0, provider_accepted_pending_readback: 1 };
+const TERMINAL_STATUSES = new Set(["accepted", "failed", "ambiguous"]);
+
+export const CONTRACT_SEND_LEDGER_VERSION = "iaos-contract-send-v2" as const;
 const HEADER = `IAOS CONTRACT SEND — ${CONTRACT_SEND_LEDGER_VERSION}`;
 const LABELS = [
   "Recorded at", "Operator", "Opportunity", "Attempt id", "Status", "Version",
-  "Template name", "Template source", "Authorized at", "Signers", "Provider contact id",
+  "Template name", "Template source", "Requested template id", "Authorized at", "Signers", "Confirmed recipient id",
   "Expiration at", "Request at", "IAOS observed acceptance at", "Provider response", "Failure reason",
 ] as const;
 
@@ -164,9 +221,12 @@ export type ParsedContractSend = {
   version: ContractVersionIdentity;
   templateName: string;
   templateSource: string;
+  /** The verified, config-locked GHL templateId requested for this attempt -- item 2/6 of the INV-63 correction round: never resolved by a live name search, and the server (ghl-proxy.ts GATE 2) enforces this same value regardless of what any caller supplies. */
+  requestedTemplateId: string;
   authorizedAt: string;
   signers: SignerSnapshot[];
-  providerContactId: string;
+  /** The provider's OWN echoed recipient id -- null until a provider response exists. Never IAOS's own intended value; see module header. */
+  confirmedRecipientId: string | null;
   expirationAt: string;
   requestAt: string;
   /** OBSERVED-BY-IAOS acceptance time -- never claimed as the provider's own reported transmission time (that field is undocumented; see contract-send-model.ts header). */
@@ -184,9 +244,10 @@ export function formatContractSendNote(args: {
   version: ContractVersionIdentity;
   templateName: string;
   templateSource: string;
+  requestedTemplateId: string;
   authorizedAt: string;
   signers: SignerSnapshot[];
-  providerContactId: string;
+  confirmedRecipientId: string | null;
   expirationAt: string;
   requestAt: string;
   iaosObservedAcceptanceAt: string | null;
@@ -203,14 +264,15 @@ export function formatContractSendNote(args: {
     `${LABELS[5]}: ${formatVersionJson(args.version)}`,
     `${LABELS[6]}: ${args.templateName}`,
     `${LABELS[7]}: ${args.templateSource}`,
-    `${LABELS[8]}: ${args.authorizedAt}`,
-    `${LABELS[9]}: ${formatSignersJson(args.signers)}`,
-    `${LABELS[10]}: ${args.providerContactId}`,
-    `${LABELS[11]}: ${args.expirationAt}`,
-    `${LABELS[12]}: ${args.requestAt}`,
-    `${LABELS[13]}: ${ledgerValue(args.iaosObservedAcceptanceAt)}`,
-    `${LABELS[14]}: ${args.providerResponse ? formatProviderResponseJson(args.providerResponse) : "UNAVAILABLE"}`,
-    `${LABELS[15]}: ${ledgerValue(args.failureReason)}`,
+    `${LABELS[8]}: ${args.requestedTemplateId}`,
+    `${LABELS[9]}: ${args.authorizedAt}`,
+    `${LABELS[10]}: ${formatSignersJson(args.signers)}`,
+    `${LABELS[11]}: ${ledgerValue(args.confirmedRecipientId)}`,
+    `${LABELS[12]}: ${args.expirationAt}`,
+    `${LABELS[13]}: ${args.requestAt}`,
+    `${LABELS[14]}: ${ledgerValue(args.iaosObservedAcceptanceAt)}`,
+    `${LABELS[15]}: ${args.providerResponse ? formatProviderResponseJson(args.providerResponse) : "UNAVAILABLE"}`,
+    `${LABELS[16]}: ${ledgerValue(args.failureReason)}`,
   ].join("\n");
 }
 
@@ -218,13 +280,19 @@ export function parseContractSendNote(body: string): ParsedContractSend | null {
   const values = matchPositionalSchema(body, HEADER, LABELS);
   if (!values) return null;
   const [
-    at, operatorRaw, opportunityId, attemptId, statusRaw, versionRaw, templateName, templateSource,
-    authorizedAt, signersRaw, providerContactId, expirationAt, requestAt, acceptedAtRaw, providerResponseRaw, failureReasonRaw,
+    at, operatorRaw, opportunityId, attemptId, statusRaw, versionRaw, templateName, templateSource, requestedTemplateId,
+    authorizedAt, signersRaw, confirmedRecipientIdRaw, expirationAt, requestAt, acceptedAtRaw, providerResponseRaw, failureReasonRaw,
   ] = values;
-  if (opportunityId === "" || attemptId === "" || templateName === "" || templateSource === "" || providerContactId === "") return null;
+  if (opportunityId === "" || attemptId === "" || templateName === "" || templateSource === "" || requestedTemplateId === "") return null;
   if (!isCanonicalIsoTimestamp(at)) return null;
   if (!isCanonicalIsoTimestamp(attemptId)) return null;
-  if (statusRaw !== "in_progress" && statusRaw !== "accepted" && statusRaw !== "failed" && statusRaw !== "ambiguous") return null;
+  if (
+    statusRaw !== "in_progress" &&
+    statusRaw !== "provider_accepted_pending_readback" &&
+    statusRaw !== "accepted" &&
+    statusRaw !== "failed" &&
+    statusRaw !== "ambiguous"
+  ) return null;
   const version = parseVersionJson(versionRaw);
   if (!version) return null;
   if (!isCanonicalIsoTimestamp(authorizedAt)) return null;
@@ -245,9 +313,10 @@ export function parseContractSendNote(body: string): ParsedContractSend | null {
     version,
     templateName,
     templateSource,
+    requestedTemplateId,
     authorizedAt,
     signers,
-    providerContactId,
+    confirmedRecipientId: confirmedRecipientIdRaw === "UNAVAILABLE" ? null : confirmedRecipientIdRaw,
     expirationAt,
     requestAt,
     iaosObservedAcceptanceAt,
@@ -269,28 +338,36 @@ export function latestContractSendForOpportunity(
   }
   if (parsedForOpp.length === 0) return null;
 
-  // Group by attemptId. A resolution ("accepted" | "failed" | "ambiguous")
-  // ALWAYS supersedes an "in_progress" marker for the SAME attemptId,
-  // regardless of exact timestamp ordering -- a resolution note is
-  // logically always written after its own attempt note, and note-
-  // timestamp precision must never be trusted to prove that when the two
-  // happen to carry the same instant (observed: two writes issued in the
-  // same test/process tick, or any GHL note-timestamp granularity limit).
-  // Only when BOTH notes for one attemptId are already resolved (should
-  // not occur in practice -- exactly one resolution is ever written per
-  // attempt) does this fall back to comparing `at`.
+  // Group by attemptId, resolved by RANK, never by `at` alone -- a later
+  // lifecycle stage ALWAYS supersedes an earlier one for the SAME
+  // attemptId regardless of exact timestamp ordering (note-timestamp
+  // precision must never be trusted to prove ordering when two writes
+  // happen to carry the same instant -- observed: two writes issued in
+  // the same test/process tick, or any GHL note-timestamp granularity
+  // limit). Rank: in_progress (0) < provider_accepted_pending_readback
+  // (1) < any terminal status (2). Only when both notes for one
+  // attemptId carry the SAME rank (should occur only among terminal
+  // statuses, and only if this module's own callers ever mis-wrote two
+  // terminal notes for one attempt -- never expected in practice) does
+  // this fall back to comparing `at`.
+  const rankOf = (status: ContractSendStatus): number =>
+    TERMINAL_STATUSES.has(status) ? 2 : (PENDING_RANK[status] ?? 0);
   const byAttempt = new Map<string, ParsedContractSend>();
   for (const p of parsedForOpp) {
     const existing = byAttempt.get(p.attemptId);
     if (!existing) {
       byAttempt.set(p.attemptId, p);
-    } else if (existing.status === "in_progress" && p.status !== "in_progress") {
+      continue;
+    }
+    const pRank = rankOf(p.status);
+    const existingRank = rankOf(existing.status);
+    if (pRank > existingRank) {
       byAttempt.set(p.attemptId, p);
-    } else if (existing.status !== "in_progress" && p.status === "in_progress") {
-      // An in_progress note can never override an existing resolution.
-    } else if (new Date(p.at).getTime() > new Date(existing.at).getTime()) {
+    } else if (pRank === existingRank && new Date(p.at).getTime() > new Date(existing.at).getTime()) {
       byAttempt.set(p.attemptId, p);
     }
+    // pRank < existingRank: an earlier-lifecycle note can never override
+    // a later one already on record.
   }
 
   // The most recent ATTEMPT overall is the one whose own `requestAt` is
