@@ -25,6 +25,36 @@
  * CORS is not the control — it is browser-enforced and a non-browser caller
  * ignores it. Retained unchanged so the app keeps working.
  *
+ * GATE 2 (2026-09-11, B9-08 / INV-63; NARROWED 2026-09-12, Jess Gate
+ * correction round 2) — the two `/proposals/...` paths still reachable
+ * here (GHL Documents & Contracts, the selected V1 e-sign provider) are
+ * READ-ONLY discovery/readback and get one additive restriction beyond
+ * the plain path allowlist above:
+ *   LOCATION ASSERTION. `LOCATION_ID` (resolved from `IAOS_ENV`, same as
+ *   every other path) must equal the TEST location's own id — resolved
+ *   via `getConfig("test")`, never hardcoded here, so no GHL identifier
+ *   literal exists in this file (`scripts/test-identifier-boundary.cjs`
+ *   enforces that same-file boundary independently).
+ *
+ * `POST /proposals/templates/send` — the ONE send-capable path — IS NO
+ * LONGER REACHABLE THROUGH THIS PROXY AT ALL, by design (Jess Gate
+ * correction round 2). It moved entirely to its own dedicated function,
+ * `ghl-contract-send-execute.ts`, which requires a valid, unconsumed,
+ * exact-revision reservation ticket (`ghl-contract-send-reserve.ts`,
+ * itself gated on a check that a matching Brad-authorization note
+ * currently exists -- BEST-EFFORT, single-user V1 protection only, per
+ * Product Owner ruling 2026-09-12; NOT atomic, NOT authenticated
+ * identity, NOT a guarantee of single-use or at-most-once sending — see
+ * that file's own header) before it will forward anything to GHL. A
+ * direct call to THIS proxy
+ * with `?path=/proposals/templates/send` now simply falls through to
+ * "not allowlisted" (403) — there is no override/recipient/sender/
+ * population logic left in this file to bypass, because there is no
+ * longer a send-capable code path here for any of that logic to gate.
+ * `Version: v3` (not this proxy's usual `2021-07-28`) is required by
+ * both remaining `/proposals/...` endpoints, confirmed directly from
+ * their own reference pages.
+ *
  * getConfig is called at module scope deliberately. If the selector is
  * missing this function dies at load, which is unambiguous. A per-request
  * fallback would silently refuse everything, which looks identical to the
@@ -43,6 +73,11 @@ import { getConfig } from "../../shared/ghl-config";
 const GHL_BASE = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
 const { locationId: LOCATION_ID } = getConfig(process.env.IAOS_ENV);
+// GATE 2 — the TEST location's own id, resolved independently of the
+// CURRENT IAOS_ENV, so the /proposals/... location assertion below can
+// compare "is this deployment actually Test" without ever hardcoding a
+// GHL identifier literal in this file.
+const TEST_LOCATION_ID = getConfig("test").locationId;
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -66,6 +101,11 @@ const ALLOW: Record<string, RegExp[]> = {
     new RegExp(`^/opportunities/pipelines$`),
     new RegExp(`^/opportunities/search$`),
     new RegExp(`^/opportunities/${ID}$`),
+    // GATE 2 / B9-08 — GHL Documents & Contracts, read-only template
+    // discovery and document readback. Both still gated by the location
+    // assertion below; discovery carries no recipient to override.
+    new RegExp(`^/proposals/templates$`),
+    new RegExp(`^/proposals/document$`),
   ],
   PUT: [
     new RegExp(`^/contacts/${ID}$`),
@@ -76,6 +116,9 @@ const ALLOW: Record<string, RegExp[]> = {
     new RegExp(`^/contacts/${ID}/notes$`),
   ],
 };
+
+/** The two remaining GATE 2 paths (read-only discovery/readback) -- each requires the location assertion below. The one send-capable path is no longer reachable through this proxy at all -- see `ghl-contract-send-execute.ts`. */
+const PROPOSALS_PATH = new RegExp(`^/proposals/`);
 
 /**
  * Every location id appearing in the path or the query must be the one this
@@ -136,6 +179,20 @@ export const handler = async (event: any) => {
     };
   }
 
+  // GATE 2 / B9-08 — location assertion. `locationIsPermitted` above only
+  // inspects the query string; `/proposals/templates/send`'s own
+  // documented request body carries `locationId` as a BODY field, which
+  // that check never sees. This is a direct, path-specific,
+  // env-independent-of-request-content check instead: this deployment
+  // must actually BE Test, full stop, for any /proposals/... path.
+  if (PROPOSALS_PATH.test(pathname) && LOCATION_ID !== TEST_LOCATION_ID) {
+    return {
+      statusCode: 403,
+      headers: CORS,
+      body: JSON.stringify({ error: "Forbidden", by: "iaos-proxy-documents-contracts-test-only" }),
+    };
+  }
+
   const token = process.env.GHL_PRIVATE_API_KEY;
   if (!token) {
     // REQUIRED, no fallback. Before this guard existed the missing-credential
@@ -151,14 +208,22 @@ export const handler = async (event: any) => {
 
   const url   = `${GHL_BASE}${raw}`;
 
+  const outboundBody: string | undefined =
+    ["POST", "PUT"].includes(method) && event.body ? event.body : undefined;
+
+  // GATE 2 / B9-08 — /proposals/... requires Version: v3, confirmed
+  // directly from each endpoint's own reference page; every other
+  // allowlisted path keeps the existing 2021-07-28 contract unchanged.
+  const versionHeader = PROPOSALS_PATH.test(pathname) ? "v3" : "2021-07-28";
+
   const res = await fetch(url, {
     method,
     headers: {
       Authorization: `Bearer ${token}`,
-      Version: "2021-07-28",
+      Version: versionHeader,
       "Content-Type": "application/json",
     },
-    body: ["POST", "PUT"].includes(method) && event.body ? event.body : undefined,
+    body: outboundBody,
   });
 
   const body = await res.text();

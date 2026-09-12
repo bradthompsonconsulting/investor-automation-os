@@ -8,7 +8,7 @@ import {
   CONTRACT_READY_ITEM_KEYS, type ContractReadyItemKey, type ContractReadyItems,
 } from "../lib/seller-call-readiness-carriers";
 import { computeContractScreenState, type ContractScreenState } from "../lib/contract-workspace-view";
-import { CONTRACT_STATE_MEANING, initialVersionIdentity } from "../lib/board9-contract-model";
+import { CONTRACT_STATE_MEANING, initialVersionIdentity, evaluateContractSentEligibility } from "../lib/board9-contract-model";
 import {
   computeSellerContractFactsReport, computeSellerContractFactsReadiness,
   type SellerContractFactsReport, type FieldDisposition,
@@ -24,6 +24,14 @@ import {
 import {
   formatBradContractAuthorizationNote, latestBradContractAuthorizationForOpportunity,
 } from "../lib/contract-authorization-carriers";
+import {
+  evaluateSendEligibility, buildSendAttemptArgs, buildSendResultArgs,
+  buildReadbackResultArgs, classifyProviderSendResponse, buildContractSentEvidence,
+} from "../lib/contract-send-model";
+import {
+  formatContractSendNote, latestContractSendForOpportunity,
+} from "../lib/contract-send-carriers";
+import { getRuntimeConfig } from "../../shared/ghl-config";
 import {
   formatBuyerEntityOverrideNote,
   formatPartySignerFactsNote, type SellerSignerFact,
@@ -644,6 +652,237 @@ export default function ContractWorkspace() {
       setAuthorizeError(e?.message ?? "Couldn't save the authorization -- it is not yet in effect. Try again.");
     } finally {
       setAuthorizeBusy(false);
+    }
+  }
+
+  /**
+   * B9-08 / INV-63 -- Contract Sent: e-signature sending via GHL Documents
+   * & Contracts, and recording Contract Sent only after verified provider
+   * acceptance.
+   *
+   * `existingSend` is read fresh from notes every render, same "latest
+   * wins scoped to one Opportunity" discipline as every other B9 carrier
+   * on this page -- never a component-owned copy that could drift from
+   * what is actually durable.
+   */
+  const existingSend = useMemo(() => {
+    if (screen.state !== "ready" || !notes) return null;
+    return latestContractSendForOpportunity(notes, screen.opportunity.id);
+  }, [screen, notes]);
+
+  const sendEligibility = useMemo(() => {
+    if (!contractDocumentPreview) return null;
+    return evaluateSendEligibility({
+      authRecord: bradAuthorizationRecord,
+      preview: contractDocumentPreview,
+      existingSend,
+      populationVerification: getRuntimeConfig().documentsContracts.populationVerification,
+    });
+  }, [contractDocumentPreview, bradAuthorizationRecord, existingSend]);
+
+  /**
+   * INV-63 correction round -- item 2 pre-flight drift check. Compares the
+   * locked, config-projected `templateId`/`expectedTemplateName` (never
+   * client-chosen; `ghl-proxy.ts`'s GATE 2 enforces the same id server-side
+   * regardless) against a live `listTemplates()` lookup, so a renamed,
+   * deleted, or missing GHL template surfaces BEFORE Send is offered,
+   * instead of only as an opaque provider failure. Runs once per mount
+   * (and again if the opportunity changes) -- a live template rename
+   * between this check and an actual click is still possible and is not
+   * claimed to be closed; the readback stage (`classifyDocumentReadback`)
+   * is the actual authoritative, send-time check.
+   */
+  const [templateDriftCheck, setTemplateDriftCheck] = useState<
+    { kind: "checking" } | { kind: "ok" } | { kind: "problem"; message: string }
+  >({ kind: "checking" });
+  useEffect(() => {
+    let cancelled = false;
+    setTemplateDriftCheck({ kind: "checking" });
+    const { templateId, expectedTemplateName } = getRuntimeConfig().documentsContracts;
+    ghl.proposals
+      .listTemplates({ name: expectedTemplateName })
+      .then((found) => {
+        if (cancelled) return;
+        const match = (found.data ?? []).find((t) => t.id === templateId);
+        if (!match) {
+          setTemplateDriftCheck({ kind: "problem", message: `The locked GHL template id (${templateId}) was not found in IAOS Test -- it may have been deleted or the Test location has changed. Sending is refused until this is resolved.` });
+        } else if (match.deleted) {
+          setTemplateDriftCheck({ kind: "problem", message: `The locked GHL template has been deleted in GHL. Sending is refused until a template is restored or the configuration is updated.` });
+        } else if (match.name !== expectedTemplateName) {
+          setTemplateDriftCheck({ kind: "problem", message: `The locked GHL template's name is now "${match.name}", not the expected "${expectedTemplateName}" -- this could mean the wrong template is configured. Verify in GHL before sending.` });
+        } else {
+          setTemplateDriftCheck({ kind: "ok" });
+        }
+      })
+      .catch((e: any) => {
+        if (!cancelled) setTemplateDriftCheck({ kind: "problem", message: e?.message ?? "Could not verify the GHL template's identity before offering Send." });
+      });
+    return () => { cancelled = true; };
+  }, [screen.state === "ready" ? screen.opportunity.id : null]);
+
+  const contractSentEvidence = useMemo(() => {
+    if (!contractDocumentPreview || screen.state !== "ready") return null;
+    return buildContractSentEvidence({
+      contractReady: screen.readiness.ready,
+      authRecord: bradAuthorizationRecord,
+      currentPreview: contractDocumentPreview,
+      send: existingSend,
+    });
+  }, [contractDocumentPreview, screen, bradAuthorizationRecord, existingSend]);
+
+  const contractSentStatus = useMemo(() => {
+    if (!contractSentEvidence) return null;
+    return evaluateContractSentEligibility(contractSentEvidence);
+  }, [contractSentEvidence]);
+
+  const [sendExpirationDraft, setSendExpirationDraft] = useState("");
+  const [sendBusy, setSendBusy] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+
+  /**
+   * The ONLY write path that reaches GHL Documents & Contracts. Correction
+   * round, 2026-09-11 -- now THREE stages instead of two:
+   *
+   * (1) RESERVE. The "in_progress" note is written via
+   *     `ghl.proposals.reserveSend()` -- a dedicated server-side function
+   *     that re-checks for a conflicting pending/accepted send against
+   *     FRESH notes before writing, closing (narrowing -- GHL's Notes API
+   *     has no compare-and-swap primitive) the two-tabs-both-send race a
+   *     purely client-side check could not (item 7). `ghl.notes.create()`
+   *     is never called directly for this note.
+   * (2) SEND. The provider POST. `templateId` is the LOCKED, config-
+   *     verified id (item 2 -- never a live name search); `contactId`/
+   *     `userId`/`templateId` are all still unconditionally overwritten
+   *     server-side by `ghl-proxy.ts`'s GATE 2 regardless of what is sent
+   *     here, and that same GATE refuses the call outright while template
+   *     population is unverified (see `sendEligibility`'s own
+   *     `TEMPLATE_POPULATION_NOT_VERIFIED` check, which mirrors it
+   *     client-side for an honest UI, but the server enforces it
+   *     independently). `classifyProviderSendResponse` can only ever
+   *     yield `"provider_accepted_pending_readback"`, never `"accepted"`
+   *     (item 5 -- "a successful POST response is not sufficient").
+   * (3) READBACK. Only reached if (2) provisionally succeeded: an
+   *     independent `GET /proposals/document` confirms the actual
+   *     created document -- its recipient, its sender, its environment,
+   *     and whether it carries any real fillable field at all
+   *     (`classifyDocumentReadback`). Contract Sent can only ever be
+   *     recorded from THIS stage's own "accepted" verdict.
+   */
+  async function handleSend() {
+    if (screen.state !== "ready" || !contractDocumentPreview || !sellerContractFactsReport) return;
+    setSendError(null);
+
+    const expirationAtIso = sendExpirationDraft ? new Date(sendExpirationDraft).toISOString() : "";
+    if (!sendExpirationDraft || Number.isNaN(new Date(sendExpirationDraft).getTime())) {
+      setSendError("An explicit expiration date/time is required before sending -- it is never assumed or defaulted.");
+      return;
+    }
+
+    const { templateId: requestedTemplateId } = getRuntimeConfig().documentsContracts;
+    const requestAt = new Date().toISOString();
+    const built = buildSendAttemptArgs({
+      opportunityId: screen.opportunity.id,
+      operator: null,
+      requestAt,
+      report: sellerContractFactsReport,
+      preview: contractDocumentPreview,
+      authRecord: bradAuthorizationRecord,
+      existingSend,
+      requestedTemplateId,
+      expirationAt: expirationAtIso,
+      populationVerification: getRuntimeConfig().documentsContracts.populationVerification,
+    });
+    if (!built.ok) {
+      setSendError(built.reasons.map((r) => r.message).join(" "));
+      return;
+    }
+
+    setSendBusy(true);
+    const attempt = built.value;
+    const attemptNote = formatContractSendNote(attempt);
+
+    // Stage 1: RESERVE, server-side, best-effort (NOT atomic --
+    // single-user V1 protection only, see ghl-contract-send-reserve.ts)
+    // check-then-write.
+    const reservation = await ghl.proposals.reserveSend({
+      contactId,
+      opportunityId: screen.opportunity.id,
+      versionRaw: JSON.stringify(attempt.version),
+      noteBody: attemptNote,
+    });
+    if (!reservation.ok) {
+      setSendError(
+        reservation.status === 409
+          ? "A pending or accepted send already exists for this exact revision (confirmed server-side just now) -- refusing to start a second one."
+          : `Couldn't reserve the send attempt (HTTP ${reservation.status}): ${reservation.reason} -- refusing to call the provider without a durable, server-confirmed in-progress record.`,
+      );
+      setSendBusy(false);
+      return;
+    }
+    setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attemptNote, dateAdded: attempt.at }]);
+
+    // Stage 2: SEND -- redeems the reservation ticket just created above.
+    // versionRaw/attemptId must be the EXACT SAME values the reservation
+    // note itself carries, so the server-side execute function's ticket
+    // lookup resolves to this same attempt.
+    const sendOutcome = await ghl.proposals.send({
+      templateId: requestedTemplateId,
+      opportunityId: screen.opportunity.id,
+      versionRaw: JSON.stringify(attempt.version),
+      attemptId: attempt.attemptId,
+    });
+    const postObservedAt = new Date().toISOString();
+    const postClassification = classifyProviderSendResponse(sendOutcome);
+    const provisionalArgs = buildSendResultArgs({ attempt, operator: null, observedAt: postObservedAt, classification: postClassification });
+    const provisionalNote = formatContractSendNote(provisionalArgs);
+    try {
+      await ghl.notes.create(contactId, provisionalNote);
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: provisionalNote, dateAdded: provisionalArgs.at }]);
+    } catch (e: any) {
+      setSendError(
+        `The provider call resolved (${postClassification.status}) but recording the result failed: ${e?.message ?? "unknown error"} -- reload and check GHL notes directly before retrying.`,
+      );
+      setSendBusy(false);
+      return;
+    }
+
+    if (postClassification.status !== "provider_accepted_pending_readback") {
+      setSendError(postClassification.failureReason ?? "The provider did not accept this send.");
+      setSendBusy(false);
+      return;
+    }
+
+    // Stage 3: READBACK -- the only path to "accepted" (item 5). Server-side
+    // (`ghl-contract-send-readback.ts`): the cross-checks against the TRUE
+    // expected sender/recipient require secrets this browser is never
+    // given, so classification happens there, never here.
+    const documentId = postClassification.summary?.documentId ?? "";
+    const readbackObservedAt = new Date().toISOString();
+    const readbackClassification = documentId
+      ? await ghl.proposals.readback({ documentId })
+      : { status: "ambiguous" as const, summary: null, failureReason: "The provider response carried no documentId to read back." };
+    const finalArgs = buildReadbackResultArgs({
+      attempt,
+      provisional: provisionalArgs,
+      operator: null,
+      observedAt: readbackObservedAt,
+      classification: readbackClassification,
+    });
+    const finalNote = formatContractSendNote(finalArgs);
+    try {
+      await ghl.notes.create(contactId, finalNote);
+      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: finalNote, dateAdded: finalArgs.at }]);
+      if (readbackClassification.status !== "accepted") {
+        setSendError(readbackClassification.failureReason ?? "Readback did not confirm acceptance.");
+      } else {
+        setSendExpirationDraft("");
+      }
+    } catch (e: any) {
+      setSendError(
+        `Readback resolved (${readbackClassification.status}) but recording the final result failed: ${e?.message ?? "unknown error"} -- reload and check GHL notes directly before retrying.`,
+      );
+    } finally {
+      setSendBusy(false);
     }
   }
 
@@ -1713,6 +1952,129 @@ export default function ContractWorkspace() {
                   </div>
                 ) : null}
                 <ErrorText testId="contract-authorization-error">{authorizeError}</ErrorText>
+              </div>
+            </div>
+          ) : null}
+
+          {/* ================================================================ */}
+          {/* Contract Sent -- e-signature sending, GHL Documents & Contracts   */}
+          {/* B9-08 / INV-63                                                    */}
+          {/* ================================================================ */}
+          {contractDocumentPreview && sendEligibility && contractSentStatus ? (
+            <div data-testid="contract-send-section" style={{ marginTop: "24px" }}>
+              <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
+                Send via GHL Documents &amp; Contracts
+              </div>
+              <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
+                Sends the exact Brad-authorized agreement through GHL Documents &amp; Contracts (IAOS Test only). Contract Sent is recorded only after the provider affirmatively confirms acceptance -- never on request alone.
+              </div>
+
+              {templateDriftCheck.kind === "problem" ? (
+                <div data-testid="contract-send-template-drift-problem" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(239,68,68,0.35)", fontSize: "12px", color: "#EF4444" }}>
+                  {templateDriftCheck.message}
+                </div>
+              ) : null}
+
+              {(() => {
+                const status: string | null = existingSend && existingSend.status !== "in_progress"
+                  ? existingSend.status
+                  : null;
+                if (sendBusy) {
+                  return (
+                    <div data-testid="contract-send-state-sending" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(148,163,184,0.35)", color: "#94A3B8", fontSize: "12px", fontWeight: 700 }}>
+                      Sending...
+                    </div>
+                  );
+                }
+                if (status === "provider_accepted_pending_readback") {
+                  return (
+                    <div data-testid="contract-send-state-pending-readback" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(245,158,11,0.35)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: "#F59E0B" }}>
+                        <ShieldAlert size={14} /> Provider responded -- readback verification incomplete
+                      </div>
+                      <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>
+                        The provider accepted the POST, but IAOS's own readback confirmation did not complete (e.g. this tab closed mid-flow). A real document may already exist at GHL -- verify directly in GHL before retrying.
+                      </div>
+                    </div>
+                  );
+                }
+                if (status === "accepted") {
+                  return (
+                    <div data-testid="contract-send-state-accepted" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(34,197,94,0.35)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: "#22C55E" }}>
+                        <ShieldCheck size={14} /> Provider accepted -- Contract Sent
+                      </div>
+                      <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>
+                        {existingSend?.iaosObservedAcceptanceAt ? `Observed ${new Date(existingSend.iaosObservedAcceptanceAt).toLocaleString()}. ` : ""}
+                        {existingSend?.providerResponse?.documentId ? `Provider document id: ${existingSend.providerResponse.documentId}. ` : ""}
+                        Expires {new Date(existingSend!.expirationAt).toLocaleString()}.
+                      </div>
+                    </div>
+                  );
+                }
+                if (status === "failed") {
+                  return (
+                    <div data-testid="contract-send-state-failed" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(239,68,68,0.35)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: "#EF4444" }}>
+                        <ShieldAlert size={14} /> Failed
+                      </div>
+                      <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>{existingSend?.failureReason ?? "The provider did not accept this send."} Retrying is allowed for this exact revision.</div>
+                    </div>
+                  );
+                }
+                if (status === "ambiguous") {
+                  return (
+                    <div data-testid="contract-send-state-ambiguous" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(245,158,11,0.35)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: "#F59E0B" }}>
+                        <ShieldAlert size={14} /> Ambiguous -- manual verification required
+                      </div>
+                      <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>{existingSend?.failureReason ?? "The provider's response could not be confirmed as accepted."} Verify directly in GHL before retrying or treating this as sent.</div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
+              {!sendEligibility.eligible ? (
+                <div data-testid={sendEligibility.reasons.some((r) => r.code === "ALREADY_SENT" || r.code === "SEND_IN_PROGRESS") ? "contract-send-state-already-sent" : "contract-send-state-not-eligible"} style={{ marginBottom: "12px" }}>
+                  <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "12px", color: "#94A3B8", lineHeight: 1.8 }}>
+                    {sendEligibility.reasons.map((r) => <li key={r.code} data-testid={`contract-send-reason-${r.code}`}>{r.message}</li>)}
+                  </ul>
+                </div>
+              ) : (
+                <div data-testid="contract-send-state-eligible" style={{ marginBottom: "12px" }}>
+                  <label style={{ fontSize: "11px", color: "#94A3B8", display: "block", marginBottom: "4px" }}>
+                    Expiration date/time (explicit -- required before sending)
+                  </label>
+                  <input
+                    type="datetime-local"
+                    data-testid="contract-send-expiration-input"
+                    value={sendExpirationDraft}
+                    onChange={(e) => setSendExpirationDraft(e.target.value)}
+                    style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: "6px", color: "#E2E8F0", fontSize: "12px", padding: "6px 8px", marginBottom: "10px" }}
+                  />
+                  <div>
+                    <Btn testId="contract-send-button" onClick={handleSend} busy={sendBusy} disabled={sendExpirationDraft === "" || templateDriftCheck.kind !== "ok"}>
+                      Send via GHL Documents &amp; Contracts
+                    </Btn>
+                    {templateDriftCheck.kind === "checking" ? (
+                      <div style={{ fontSize: "10px", color: "#64748B", marginTop: "6px" }}>Verifying the GHL template's identity...</div>
+                    ) : null}
+                  </div>
+                </div>
+              )}
+
+              <ErrorText testId="contract-send-error">{sendError}</ErrorText>
+
+              <div style={{ ...groupCardStyle, marginTop: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Contract Sent (state-machine evaluation)</div>
+                {contractSentStatus.eligible ? (
+                  <div data-testid="contract-sent-true" style={{ fontSize: "12px", color: "#22C55E" }}>Contract Sent -- all three locked facts are present (Brad authorization, confirmed provider transmission, explicit expiration).</div>
+                ) : (
+                  <ul data-testid="contract-sent-false-reasons" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
+                    {contractSentStatus.reasons.map((r) => <li key={r.code}>{r.message}</li>)}
+                  </ul>
+                )}
               </div>
             </div>
           ) : null}
