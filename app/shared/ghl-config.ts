@@ -10,7 +10,6 @@ export interface GhlConfig {
     propertyNotes: string;
     arv: string;
     propertyAddress: string;
-    offerPrice: string;
     motivationScore: string;
     dealScore: string;
     combinedScore: string;
@@ -144,7 +143,13 @@ const PRODUCTION: GhlConfig = {
     propertyNotes:           "k7O0TYVMpqCpnMHRLPol",
     arv:                     "wMBTGWMs97yysQFx7Vad",
     propertyAddress:         "tG4gGFI8JB2VjWeuqYMx",
-    offerPrice:              "v2VO2wUwTYRojmU7VXyZ",
+    // offerPrice REMOVED, INV-70 / B9-07A Phase 3 correction -- its one
+    // reader (netlify/functions/lib/contact-parse.ts, feeding Dashboard's
+    // "Offers to review" tile) was retired in favor of
+    // opportunityFacts.currentOffer. The GHL field itself
+    // (contact.offer_price, v2VO2wUwTYRojmU7VXyZ) is untouched -- only this
+    // now-dead config pointer is gone. See the canonicalization doc's
+    // Phase 3 section.
     motivationScore:         "8vH9yq10xeYVVMHXbS0C",
     dealScore:               "cfkm0kb9CLvjZgyrcIFz",
     combinedScore:           "9SVnuzznYsZOQQazpxld",
@@ -192,9 +197,17 @@ const PRODUCTION: GhlConfig = {
     arv:                "cBkygqcHRseZUGCYYeba",
     repairs:            "hId4Yog6u5GP1Iwz1aNx",
     askingPrice:        "YxCDaX7dLhBJL9GLGFpJ",
-    // Not provisioned this phase -- see the opportunityFacts interface
-    // doc comment above and CURRENT_OFFER_NOT_PROVISIONED's own comment.
-    currentOffer:       CURRENT_OFFER_NOT_PROVISIONED,
+    // Created live in Production 2026-09-12 via
+    // scripts/inv70-create-current-offer-field.cjs --apply (INV-70 / B9-07A
+    // Phase 3 correction), once Brad explicitly authorized Production
+    // provisioning and this credential's use. fieldKey
+    // opportunity.current_offer, NUMERICAL, Opportunity Details folder
+    // (FQJ2zGEAIJu0JA9NubCL -- resolved live from
+    // opportunity.arv_after_repair_value's own parentId, same as Test).
+    // Inert-proofed the same session against the confirmed stale
+    // calculator-test opportunity 1AP9BfFPJ2xYZ0RPTm9U -- see
+    // docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md.
+    currentOffer:       "yZgEdTOvppmmCvv8kx9n",
   },
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
@@ -226,7 +239,7 @@ const TEST: GhlConfig = {
     propertyNotes:           "SWTp5VaVY6OLLKNxq3wn",
     arv:                     "QkWl09I9yXGz8OIcs5Xd",
     propertyAddress:         "1B6u7F1MipquMxVWnAD9",
-    offerPrice:              "oUJHAbPq7tcw67U2Q5Zx",
+    // offerPrice REMOVED -- see PRODUCTION.fields' matching comment above.
     motivationScore:         "kugS259mDJzJyHkK2ble",
     dealScore:               "aCEzgjAIpdx1t87bn0YE",
     combinedScore:           "FYoNN6qK9MbE9x9iloum",

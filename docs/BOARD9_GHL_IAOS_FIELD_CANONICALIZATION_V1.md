@@ -88,6 +88,29 @@ Private Integration token) that would block deletion under this
 document's own rule regardless of the credential issue. No Production
 mutation of any kind occurred. INV-63 untouched.
 
+**Phase 3 correction (this revision).** Brad explicitly authorized the
+Production credential's use for this phase, confirmed the safe inert-proof
+fixture, and reported both integrations newly scoped for dependency
+inspection. This revision: **created and inert-proofed Production
+`opportunity.current_offer`** (id `yZgEdTOvppmmCvv8kx9n`, write→read→
+restore against the confirmed-safe stale opportunity, no residual value);
+**re-ran the Production repairs and offer-fields audits** (unchanged
+substance from prior evidence — the Production conflict remains untouched,
+the stale-record backfill candidate remains excluded); **closed
+`contact.offer_price`'s last live application reader**, rewiring
+Dashboard's "Offers to review" tile onto the Opportunity-owned Current
+Offer carrier and removing the now-dead `fields.offerPrice` config key
+entirely; and **found the dependency-scope grant was partial, not
+complete** — Forms/Surveys/Funnels remain `401` in both environments, and
+Test's own Workflows access is still `401` (only Production's Workflows
+scope was actually added) — reported plainly rather than assumed
+resolved. **No field was deleted, in either environment** — this
+remaining gap is, by this document's own rule, still sufficient on its
+own to block every one of the fourteen fields. See "### Phase 3
+correction (this revision)" further below for the full record. No
+Production mutation beyond the one field creation and the one inert-proof
+cycle above. INV-63 untouched.
+
 ---
 
 ## Phase 2 — approved rulings and implementation
@@ -828,6 +851,156 @@ ARV or Asking Price was touched or evaluated for deletion — out of this
 objective's scope by explicit instruction, and this phase made no such
 attempt. No field was deleted in Test without first being eligible for
 Production (moot this session — none was eligible in either environment).
+
+---
+
+### Phase 3 correction (this revision) — Production provisioned, Dashboard dependency closed, deletion still blocked
+
+Brad explicitly authorized this agent's use of the repository-root `.env`
+Production credential for INV-70's approved scripts, confirmed Production
+opportunity `1AP9BfFPJ2xYZ0RPTm9U` as the safe inert-proof fixture, and
+reported both integrations now carry the required read-only dependency
+scopes. What actually changed, verified live, is recorded here rather than
+rewriting Objectives 1–4 above (which remain the accurate record of the
+first, blocked attempt).
+
+**Objective 1 — done.** `inv70-create-current-offer-field.cjs` against
+Production: dry run confirmed no existing "Current Offer" field/fieldKey
+clash; `--apply` created it. **Production `opportunity.current_offer`:
+id `yZgEdTOvppmmCvv8kx9n`, NUMERICAL, Opportunity Details folder
+`FQJ2zGEAIJu0JA9NubCL`** (resolved live from `opportunity.
+arv_after_repair_value`'s own `parentId`, the same mechanism Test's field
+used). `POST` returned `201`; the immediate readback matched. `PRODUCTION.
+opportunityFacts.currentOffer` in `app/shared/ghl-config.ts` now carries
+this id, replacing `CURRENT_OFFER_NOT_PROVISIONED`.
+
+**Objective 2 (of this correction) — done.** New
+`scripts/inv70-current-offer-inert-proof.cjs`: hardcodes the confirmed
+location and opportunity id (refuses to run against any other pair — no
+flag widens this), then runs precheck → write → verify → restore →
+final-verify, gated at every step. Result against
+`1AP9BfFPJ2xYZ0RPTm9U`: field absent before (KEY_ABSENT) → wrote `999999`
+→ readback confirmed `999999` → restored via `field_value: ""` (the
+OBSERVED clear convention `inert-proof-opp-asking-price-step4.cjs`
+already established) → final readback confirmed KEY_ABSENT again.
+**`restoredToOrigin: true` — no residual value.** Full step-by-step JSON
+evidence is this script's own stdout; not separately reproduced in this
+document beyond the summary above.
+
+**Objective 3 — re-run against Production, unchanged from Phase 2/3's
+prior evidence.** Repairs: 43 total, 1 backfill candidate (`1AP9BfFPJ2xYZ0RPTm9U`,
+still classified stale-test / retirement-not-migration per the reasoning
+above — NOT applied), 1 conflict (`OcGWOP9n666i4Q1MLd31`, still `10000`
+vs `30000`, **untouched** — Objective 7's "never overwrite" constraint
+holds by construction: this script's `--apply` structurally refuses any
+selector other than `test`). Offer-fields audit: all fourteen fields
+confirmed live at their recorded Production ids; **thirteen of the
+fourteen now show exactly one populated value each — ALL on the SAME
+already-disclaimed stale record** (`contactId FiIT0hUaxVCIuokQpZuc` /
+`opportunityId 1AP9BfFPJ2xYZ0RPTm9U`: `offer_price 245001`, `offer_mao
+245000.5`, `offer_wholesale_fee 5000`, `offer_repair_total 0`,
+`offer_margin -0.5`, `offer_arv 250000.5`, `contact.offer_date` one
+timestamp) — `opportunity.offer_date` is the sole field with zero
+populated values. `contact.estimated_repairs`: 2 populated (`30000` on
+the conflict contact, `15000` on the same stale-test contact).
+
+**Objective 4 (dependency inspection) — PARTIALLY, NOT FULLY, unblocked.
+This is reported precisely because it does not match what was
+represented.** Re-running the audit found:
+
+| surface | Test | Production |
+|---|---|---|
+| Workflows | still `401` — "The token is not authorized for this scope" | **now `200`** — 38 workflows fetched |
+| Forms | still `401` | still `401` |
+| Surveys | still `401` | still `401` |
+| Funnels (GHL's Funnels/Websites builder is one product/scope — there is no separate "Websites" API resource to check independently) | still `401` | still `401` |
+
+**Only Production's Workflows scope was actually added.** Forms, Surveys,
+and Funnels/Websites remain uninspectable via this token in BOTH
+environments, and Test's own Workflows access is still `401`. This is
+stated plainly because the correction's own text asserted "the required
+read-only dependency scopes" were now present on both integrations, and
+that is not what was observed on the wire — the discrepancy is reported,
+not silently reconciled or assumed away.
+
+Production's newly-available Workflows list (38 workflows) was checked
+for the same weak, non-conclusive name-substring signal this document
+already caveats: **one hit** — a published workflow named "Seller 7 -
+Offer Sent" (id `9b63147a-ad8f-4418-bc42-8905cc6649c3`). This is a
+workflow whose NAME concerns the offer-sent moment; it is NOT evidence
+that any of the fourteen `offer_*` CUSTOM FIELDS is a trigger or action
+target inside it — GHL's v2 API still does not expose workflow trigger/
+action configuration (confirmed again on the wire this round: the same
+gap this document has recorded since 2026-07-21). Absent that visibility,
+this hit can be neither cleared nor confirmed as a real dependency.
+
+**Objective 5 — done.** `contact.offer_price` is no longer an
+authoritative live reader anywhere in this application:
+- `netlify/functions/lib/contact-parse.ts` no longer resolves
+  `FIELDS.offerPrice` or maps it onto `ContactRow`.
+- `app/src/lib/ghl.ts`'s `ContactRow` interface no longer declares an
+  `offerPrice` field.
+- `Dashboard.tsx`'s "Offers to review" tile (`offersToReview`) now derives
+  "has an offer" from **`opportunity.current_offer`** — Family 5's
+  approved, Opportunity-owned carrier — read via `current-offer-carrier.ts`'s
+  `readCurrentOfferFromOpportunity` against `pipeline.opportunities`,
+  data this page already fetches (`ghl.opportunities.listPipeline()`,
+  unfiltered `customFields` pass-through). The same "not yet `offer-made`
+  tag" exclusion is preserved unchanged — only the SOURCE of "has an
+  offer" moved. **No new write of any kind was introduced** — the tile
+  remains strictly read-only, correlating two already-fetched datasets by
+  `contactId`; no mirrored Contact write was added, per the correction's
+  explicit instruction.
+- The now-fully-unused `fields.offerPrice` config key is removed from
+  `app/shared/ghl-config.ts` (interface and both environment maps). The
+  GHL field itself, `contact.offer_price`, is untouched in both
+  environments — only the application-side pointer and reader are gone.
+- Pinned by `scripts/test-legacy-offer-fields-retired.cjs` §9, REWRITTEN
+  (not merely extended) to prove the corrected state: the old reader is
+  gone, the new one exists and is correctly shaped, no new write exists,
+  and the config key is gone (FLOOR 14 → 21).
+
+**Objective 6 — re-evaluated; conclusion unchanged, for a narrower
+reason.** With `contact.offer_price`'s independent live-reader
+disqualification now resolved, every one of the fourteen fields'
+disposition now turns on ONE remaining axis: GHL-side dependency
+inspection. That axis is still incomplete — Forms/Surveys/Funnels remain
+`401` in both environments (Objective 4 above) — which is, by this
+document's own explicit rule, sufficient on its own to block deletion of
+every one of the fourteen fields, regardless of how clean their
+populated-value picture is. Separately, thirteen of the fourteen fields
+now carry a populated (if already-disclaimed-as-stale) value in
+Production, which is a second, independent reason none of them yet clears
+"zero legitimate populated values" as cleanly as Test's all-zero picture
+does — a question this document flags for Brad/Jess rather than resolving
+unilaterally: does a value already disclaimed as non-representative test
+data count as "zero legitimate populated values," or does its mere
+presence block deletion regardless of legitimacy? This session did not
+need to answer that question, because the Forms/Surveys/Funnels blocker
+alone is already dispositive.
+
+**Objective 7 — honored.** The Production conflict
+(`OcGWOP9n666i4Q1MLd31`, `10000` vs `30000`) was read this session but
+never written to — confirmed by the repairs-migration script's own
+structural refusal of `--apply` for any selector other than `test`, and
+by the dry-run-only invocation actually used.
+
+**Objective 8 — no field deleted, in either environment, this round
+either.** The gate is not clearer, only narrower: Workflows are now
+inspectable in Production (with one non-conclusive name-hit), but Forms/
+Surveys/Funnels remain unavailable everywhere, and Test's Workflows
+access is unchanged. **Clearing this fully requires either (a) the
+Forms/Surveys/Funnels scopes actually being granted (Workflows read
+access for Test as well), or (b) a human, GHL-UI-side manual inspection
+of these surfaces for all fourteen fieldKeys, explicitly recorded as
+substituting for the API check** — neither of which this agent can do
+unilaterally. No GHL field was deleted, no delete request of any kind was
+issued, in either environment.
+
+**GHL mutations this correction round, in full:** one field created
+(Production `opportunity.current_offer`), one inert-proof write+restore
+cycle against the confirmed-safe fixture (net effect: no residual value),
+and the read-only re-audits above. No other write. No delete.
 
 ---
 

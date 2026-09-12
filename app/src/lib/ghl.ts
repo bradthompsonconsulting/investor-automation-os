@@ -117,9 +117,15 @@ export interface ContactRow {
   dealScore:         number | null;
   combinedScore:     number | null;
   completenessScore: number | null;
-  // Contact-side offer_price (§14e) — non-null once a MAO offer has been saved
-  // via the calculator. Read-only signal for the Dashboard's "Offers to review" tile.
-  offerPrice:        number | null;
+  // Contact-side offer_price (§14e) is DELIBERATELY GONE from this row,
+  // INV-70 / B9-07A Phase 3 correction. It fed the Dashboard's "Offers to
+  // review" tile, but that field's writer (the MAO calculator) was retired
+  // in Phase 2, leaving this the last live application reader of a Family
+  // 5 legacy field this document's own audit exists to retire. The tile
+  // now reads opportunity.current_offer (Family 5's approved,
+  // Opportunity-owned carrier) directly from pipeline data instead --
+  // see Dashboard.tsx's offersToReview. contact.offer_price itself is
+  // untouched in GHL; only this application-side reader is gone.
   // Dashboard Phase 2/3 fields (ISO strings). Both last_call_attempt and
   // callback_datetime are DATE-typed in GHL and truncate time-of-day on
   // write — each has a TEXT companion field carrying the exact value,

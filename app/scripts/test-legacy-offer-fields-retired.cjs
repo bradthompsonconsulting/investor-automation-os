@@ -8,20 +8,31 @@
  * mock cannot demonstrate as convincingly as reading the real tree.
  *
  * INV-70 / B9-07A PHASE 3 addendum. This file proves NO WRITES -- it never
- * claimed no READS, and Phase 3's dependency audit found one genuine,
- * intentional exception: `contact.offer_price` (`fields.offerPrice`) IS
+ * claimed no READS, and Phase 3's dependency audit found one genuine
+ * exception at the time: `contact.offer_price` (`fields.offerPrice`) was
  * still read, server-side, by `netlify/functions/lib/contact-parse.ts`,
- * and consumed by `Dashboard.tsx`'s "Offers to review" tile. This is NOT
- * a stray leftover to clean up -- it is a real, live, documented feature
- * (detecting a saved-but-unsent MAO offer) that happens to be built on
- * one of the fourteen fields this family's WRITER was retired from. Its
- * existence is exactly why `contact.offer_price` fails Phase 3's "zero
- * live application readers" deletion gate while the other thirteen
- * `offer_*` fields do not -- see
- * `docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md`'s Phase 3 section.
- * Pinned here as its own section so a future session cannot assume this
- * field is fully dead and eligible for deletion merely because its WRITER
- * (proven above) is gone.
+ * and consumed by `Dashboard.tsx`'s "Offers to review" tile -- a real,
+ * live feature (detecting a saved-but-unsent MAO offer), not dead code,
+ * built on a field whose WRITER had already been retired.
+ *
+ * PHASE 3 CORRECTION (same phase, later round). Brad's own correction
+ * explicitly required this dependency be closed: "contact.offer_price
+ * must not remain an authoritative live reader... consume the
+ * Opportunity-owned Current Offer carrier... do not introduce a mirrored
+ * Contact write." Fixed: `Dashboard.tsx`'s `offersToReview` now derives
+ * "has an offer" from `opportunity.current_offer` (Family 5's approved
+ * carrier), read from `pipeline.opportunities` -- data the page already
+ * fetches -- via `current-offer-carrier.ts`'s `readCurrentOfferFromOpportunity`,
+ * the SAME reader `SellerCallWorkspace.tsx` hydrates from. `contact-parse.ts`
+ * no longer resolves `FIELDS.offerPrice` at all, `ghl.ts`'s `ContactRow`
+ * no longer carries an `offerPrice` field, and the now-fully-unused
+ * `fields.offerPrice` config key is removed from `ghl-config.ts` (the GHL
+ * field itself, `contact.offer_price`, is untouched -- only the
+ * application-side pointer and reader are gone). This section is
+ * REWRITTEN, not merely extended, to prove the corrected state -- a
+ * future session must not resurrect the old exception by reverting this
+ * fix, since `contact.offer_price` having a live reader was NEVER the
+ * approved end state, only an interim finding.
  */
 const fs = require('fs');
 const path = require('path');
@@ -33,7 +44,7 @@ const GHL = path.join(APP, 'src', 'lib', 'ghl.ts');
 const CONTACT_PARSE = path.join(APP, 'netlify', 'functions', 'lib', 'contact-parse.ts');
 const DASHBOARD = path.join(APP, 'src', 'pages', 'Dashboard.tsx');
 
-const FLOOR = 14;
+const FLOOR = 21;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -121,29 +132,49 @@ for (const f of contactWorkspaceFiles) {
 }
 
 /* -------------------------------------------------------------- */
-/* 9. contact.offer_price's ONE genuine live reader -- pinned, not   */
-/*    a regression to fix (INV-70 / B9-07A Phase 3)                 */
+/* 9. contact.offer_price's last live reader is CLOSED               */
+/*    (INV-70 / B9-07A Phase 3 correction)                          */
 /* -------------------------------------------------------------- */
 
 {
   const contactParseSrc = fs.readFileSync(CONTACT_PARSE, 'utf8');
-  check('contact-parse.ts still resolves OFFER_PRICE_ID from fields.offerPrice',
-    /OFFER_PRICE_ID\s*=\s*FIELDS\.offerPrice/.test(contactParseSrc), true);
-  check('contact-parse.ts still maps offerPrice onto the parsed ContactRow (read-only, never written here)',
-    /offerPrice:\s*cfValue\(cf, OFFER_PRICE_ID\)/.test(contactParseSrc), true);
+  check('contact-parse.ts no longer resolves OFFER_PRICE_ID from fields.offerPrice',
+    /OFFER_PRICE_ID\s*=\s*FIELDS\.offerPrice/.test(contactParseSrc), false);
+  check('contact-parse.ts no longer maps offerPrice onto the parsed ContactRow',
+    /offerPrice:\s*cfValue\(cf, OFFER_PRICE_ID\)/.test(contactParseSrc), false);
+}
+{
+  const ghlSrc2 = fs.readFileSync(GHL, 'utf8');
+  check('ghl.ts\'s ContactRow interface no longer declares an offerPrice field',
+    /offerPrice:\s*number \| null/.test(ghlSrc2), false);
 }
 {
   const dashboardSrc = fs.readFileSync(DASHBOARD, 'utf8');
-  check('Dashboard.tsx still consumes c.offerPrice for its "Offers to review" tile',
-    /c\.offerPrice\s*!=\s*null/.test(dashboardSrc), true);
+  check('Dashboard.tsx no longer reads c.offerPrice',
+    /c\.offerPrice/.test(dashboardSrc), false);
+  check('Dashboard.tsx\'s "Offers to review" tile now derives from opportunity.current_offer via readCurrentOfferFromOpportunity',
+    /readCurrentOfferFromOpportunity\(o\.customFields, OPPORTUNITY_FACTS_CFG\.currentOffer\)/.test(dashboardSrc), true);
+  check('the tile reads pipeline.opportunities (already-fetched Opportunity data), never a new Contact fetch or a new write',
+    /const offersToReview = useMemo\(\(\) => \{\s*if \(!pipeline\) return \[\];/.test(dashboardSrc), true);
+  check('no new Contact write was introduced alongside this fix (no setOfferPrice-shaped call anywhere in the page)',
+    /setOfferPrice/.test(dashboardSrc), false);
 }
 {
-  // The other thirteen offer_* fields have no equivalent -- fields.offerPrice
-  // is the ONLY one of the fourteen with a config key at all, which is
-  // exactly why it is the only one with a live reader to pin.
+  // The other thirteen offer_* fields never had a config key either --
+  // fields.offerPrice was the only one of the fourteen with one, and now
+  // that its last reader is gone, the key itself is gone too. Confirmed
+  // against the RAW TypeScript source text (not the compiled loader,
+  // which only reflects VALUES, not the presence or absence of a
+  // TypeScript interface member).
   const configSrc = fs.readFileSync(path.join(APP, 'shared', 'ghl-config.ts'), 'utf8');
+  check('ghl-config.ts\'s fields interface no longer declares offerPrice',
+    /offerPrice:\s*string;/.test(configSrc), false);
+  check('PRODUCTION.fields no longer assigns offerPrice',
+    /offerPrice:\s*"v2VO2wUwTYRojmU7VXyZ"/.test(configSrc), false);
+  check('TEST.fields no longer assigns offerPrice',
+    /offerPrice:\s*"oUJHAbPq7tcw67U2Q5Zx"/.test(configSrc), false);
   const otherOfferKeys = ['offerMao', 'offerWholesaleFee', 'offerRepairTotal', 'offerMargin', 'offerArv', 'offerDate'];
-  check('no OTHER offer_* stem has ever been promoted to a named config key (offerPrice remains the sole exception)',
+  check('no OTHER offer_* stem was ever promoted to a named config key either -- the whole family now has zero config keys',
     otherOfferKeys.some((k) => configSrc.includes(k)), false);
 }
 

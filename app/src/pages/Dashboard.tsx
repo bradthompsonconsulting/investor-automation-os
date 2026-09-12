@@ -14,6 +14,7 @@ import { CallbackPopover } from "../components/CallbackPopover";
 import { readOverrides, effectiveDisposition, type StorageLike } from "../lib/dispositionOverride";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
+import { readCurrentOfferFromOpportunity } from "../lib/current-offer-carrier";
 
 /**
  * Dashboard — Build 2A + 2B + Phase 3 per docs/DASHBOARD_SPEC_v2.txt.
@@ -74,6 +75,11 @@ const CONTENT_MAX_WIDTH = "1600px";
 // one of these drops out of Lead Queue and Unanswered Inbound. Matched by ID,
 // never by name. Long-Term Nurture is deliberately NOT terminal.
 const STAGES_CFG = getRuntimeConfig().stages;
+
+// INV-70 / B9-07A Phase 3 correction -- opportunity.current_offer is the
+// authoritative carrier "Offers to review" now reads (see below); the
+// runtime projection already exposes it (opportunityFacts.currentOffer).
+const OPPORTUNITY_FACTS_CFG = getRuntimeConfig().opportunityFacts;
 
 const TERMINAL_STAGE_IDS = new Set([
   STAGES_CFG.sellerClosedWon,
@@ -436,13 +442,33 @@ export default function Dashboard() {
     return all.filter((r) => r.dueDateCT === today);
   }, [digest, today]);
 
-  // Tile 2 — Offers to review: offer_ fields saved (contact-side offer_price
-  // present) but the contact hasn't been moved to Seller Offer Sent yet
-  // (no offer-made tag, §14d). Count + names only — no offer values, no calc link.
-  const offersToReview = useMemo(
-    () => (contacts ?? []).filter((c) => c.offerPrice != null && !c.tags.includes("offer-made")),
-    [contacts],
-  );
+  /* Tile 2 — Offers to review, INV-70 / B9-07A Phase 3 correction. Used to
+     read the retired contact.offer_price (the MAO calculator's Contact-side
+     snapshot) as "has an offer been saved" -- that field's WRITER
+     (MaoCalculator.tsx) was retired in Phase 2, but this tile kept reading
+     it, which is exactly the kind of stale-but-live dependency Phase 3's
+     dependency audit was built to catch (docs/BOARD9_GHL_IAOS_FIELD_
+     CANONICALIZATION_V1.md, Phase 3 §Objective 4). "Has an offer" now
+     means opportunity.current_offer is populated -- Family 5's approved,
+     Opportunity-owned authoritative carrier (current-offer-carrier.ts's
+     readCurrentOfferFromOpportunity, the SAME reader SellerCallWorkspace.tsx
+     hydrates from) -- read from pipeline.opportunities, which this page
+     already fetches unfiltered (ghl-opportunities.ts passes customFields
+     through raw). Still gated on the SAME "not yet offer-made" tag
+     exclusion as before (§14d) -- only the SOURCE of "has an offer" moved.
+     Read-only: this tile writes nothing, to Contact or Opportunity, and
+     introduces no new write path -- it is strictly a read correlating two
+     already-fetched datasets by contactId. Count + names only — no offer
+     values, no calc link. */
+  const offersToReview = useMemo(() => {
+    if (!pipeline) return [];
+    const contactIdsWithCurrentOffer = new Set(
+      pipeline.opportunities
+        .filter((o) => readCurrentOfferFromOpportunity(o.customFields, OPPORTUNITY_FACTS_CFG.currentOffer) != null)
+        .map((o) => o.contactId),
+    );
+    return (contacts ?? []).filter((c) => contactIdsWithCurrentOffer.has(c.id) && !c.tags.includes("offer-made"));
+  }, [contacts, pipeline]);
 
   // Waiting-on-me 3.3 — a clean read-only "sent, awaiting response" signal:
   // opportunity currently sitting in the Seller Offer Sent stage (the exact
