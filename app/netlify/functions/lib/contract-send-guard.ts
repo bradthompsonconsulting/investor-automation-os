@@ -11,9 +11,16 @@
  * this codebase otherwise keeps separate -- see `netlify/functions/lib/
  * contact-parse.ts` for the established precedent of server-side-only
  * shared helpers). This file deliberately parses FAR LESS than that
- * module's own full `ParsedContractSend` -- only what a same-version
- * conflict check needs: opportunityId, attemptId, status, the raw
- * version JSON string (compared as an opaque string, never re-parsed).
+ * module's own full `ParsedContractSend` -- only what the reservation
+ * endpoint's own checks need: opportunityId, attemptId, status, the raw
+ * version JSON string (compared as an opaque string, never re-parsed),
+ * plus (Jess Gate correction round, 2026-09-12: "a caller cannot create
+ * misleading contract-send ledger evidence") requestedTemplateId and
+ * confirmedRecipientId -- the two fields a caller could otherwise supply
+ * a value for that disagrees with what the server will actually enforce
+ * downstream (`ghl-proxy.ts`'s GATE 2), leaving a durable, misleading
+ * record even though the real send would have used the correct values
+ * regardless.
  *
  * KEEP THE LABEL ORDER AND HEADER IN EXACT SYNC WITH
  * `app/src/lib/contract-send-carriers.ts`. A version bump there
@@ -26,12 +33,14 @@ const HEADER = "IAOS CONTRACT SEND — iaos-contract-send-v2";
 const LABEL_COUNT = 17;
 // Index within the note body's lines (line 0 is the header) of each field
 // this guard actually needs -- mirrors contract-send-carriers.ts's LABELS
-// array positions (2, 3, 4, 5), not re-declared here since only the
-// index, not the label text, is used for parsing.
+// array positions, not re-declared here since only the index, not the
+// label text, is used for parsing.
 const IDX_OPPORTUNITY = 2;
 const IDX_ATTEMPT_ID = 3;
 const IDX_STATUS = 4;
 const IDX_VERSION = 5;
+const IDX_REQUESTED_TEMPLATE_ID = 8;
+const IDX_CONFIRMED_RECIPIENT_ID = 11;
 
 const PENDING_OR_ACCEPTED = new Set(["in_progress", "provider_accepted_pending_readback", "accepted"]);
 
@@ -40,6 +49,9 @@ export type MinimalContractSend = {
   attemptId: string;
   status: string;
   versionRaw: string;
+  requestedTemplateId: string;
+  /** Raw ledger string, NEVER decoded to null here -- "UNAVAILABLE" is itself the expected value on a well-formed in_progress note (see the reservation endpoint's own check); decoding it away would make that check impossible to express. */
+  confirmedRecipientIdRaw: string;
 };
 
 /** Returns null for any note that is not a well-formed contract-send note of the exact expected header/shape -- never a partial/best-effort parse. */
@@ -57,8 +69,10 @@ export function parseMinimalContractSend(body: string): MinimalContractSend | nu
   const attemptId = line(IDX_ATTEMPT_ID);
   const status = line(IDX_STATUS);
   const versionRaw = line(IDX_VERSION);
-  if (!opportunityId || !attemptId || !status || !versionRaw) return null;
-  return { opportunityId, attemptId, status, versionRaw };
+  const requestedTemplateId = line(IDX_REQUESTED_TEMPLATE_ID);
+  const confirmedRecipientIdRaw = line(IDX_CONFIRMED_RECIPIENT_ID);
+  if (!opportunityId || !attemptId || !status || !versionRaw || !requestedTemplateId || !confirmedRecipientIdRaw) return null;
+  return { opportunityId, attemptId, status, versionRaw, requestedTemplateId, confirmedRecipientIdRaw };
 }
 
 export type ContractSendConflictCheck =

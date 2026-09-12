@@ -44,7 +44,8 @@
     "test:legacy-repairs-writer-removed": "node scripts/test-legacy-repairs-writer-removed.cjs",
     "test:contract-send-model": "node scripts/test-contract-send-model.cjs",
     "test:contract-send-guard": "node scripts/test-contract-send-guard.cjs",
-    "test:contract-send-canonical-carriers": "node scripts/test-contract-send-canonical-carriers.cjs"
+    "test:contract-send-canonical-carriers": "node scripts/test-contract-send-canonical-carriers.cjs",
+    "test:contract-send-reserve": "node scripts/test-contract-send-reserve.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",
