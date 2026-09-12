@@ -111,6 +111,18 @@ correction (this revision)" further below for the full record. No
 Production mutation beyond the one field creation and the one inert-proof
 cycle above. INV-63 untouched.
 
+**Final ruling (Jess Gate PASS, this revision).** INV-70's
+field-canonicalization scope is CLOSED: the fourteen legacy `offer_*`
+fields stay physically present but retired and non-authoritative, with
+zero IAOS readers or writers; their physical deletion is deferred to a
+separate manual GHL dependency review (the API cannot conclusively
+inspect workflow/form/survey/funnel internals) and this deferral does not
+block Board #9; `contact.estimated_repairs` stays read-only legacy/
+migration evidence while the documented Production conflict remains
+preserved. See "## Final ruling" further below for the full statement.
+No new GHL mutation this revision — this is a documentation-only update
+plus the PR.
+
 ---
 
 ## Phase 2 — approved rulings and implementation
@@ -1001,6 +1013,65 @@ issued, in either environment.
 (Production `opportunity.current_offer`), one inert-proof write+restore
 cycle against the confirmed-safe fixture (net effect: no residual value),
 and the read-only re-audits above. No other write. No delete.
+
+---
+
+## Final ruling (Jess Gate PASS) — INV-70 / B9-07A closes with the legacy fields retired-in-place
+
+This is the locked disposition of the fourteen legacy `offer_*` fields and
+`contact.estimated_repairs`, closing INV-70's field-canonicalization scope.
+It restates, as one unambiguous ruling, what the Phase 3 sections above
+established through investigation:
+
+1. **The fourteen legacy `offer_*` GHL fields (7 keys × 2 models) remain
+   physically present, in both Test and Production, but are RETIRED and
+   NON-AUTHORITATIVE.** Family 5's approved carrier for the presented/
+   current offer is `opportunity.current_offer` — now provisioned in both
+   environments (Test `7pmvwi6vlu74f5rLOp9M`, Production
+   `yZgEdTOvppmmCvv8kx9n`) — and nothing else.
+2. **IAOS has zero readers and zero writers for any of the fourteen
+   fields**, application-wide. The writer (`MaoCalculator.tsx` /
+   `saveOfferFields`) was retired in Phase 2; the last live reader
+   (`contact.offer_price` via `contact-parse.ts` → Dashboard's "Offers to
+   review" tile) was closed in the Phase 3 correction. Proven by
+   `scripts/test-legacy-offer-fields-retired.cjs`'s repository-wide,
+   comment-stripped scan — an absence of code, not merely an absence of
+   current callers.
+3. **Physical deletion of the fourteen fields from GHL is DEFERRED to a
+   separate, later, manual GHL dependency review** — not to further IAOS
+   engineering work. The GHL v2 API this integration can reach exposes
+   custom-field definitions, populated values, and workflow/form/survey/
+   funnel INVENTORY, but not their internal trigger/action/step
+   configuration (confirmed repeatedly on the wire across this document's
+   Phase 1 spike and Phase 3's two audit rounds). That gap cannot be
+   closed by more scripting against this API; it requires either broader
+   API scopes than GHL exposes for this purpose or a human reviewing each
+   surface directly in the GHL UI. Until that review happens, deletion
+   does not proceed, in either environment, per this document's own strict
+   deletion gate.
+4. **This deferred physical cleanup does not block Board #9.** Every
+   Board #9 consumer already reads and writes exclusively through the
+   canonical carriers this document approved (`opportunity.repair_estimate`,
+   `opportunity.current_offer`); nothing downstream depends on the
+   fourteen legacy fields' continued existence OR their eventual deletion.
+   Leaving them physically in place, inert, is a closed, stable end state
+   for INV-70's purposes — not a blocking loose end.
+5. **`contact.estimated_repairs` remains read-only legacy/migration
+   evidence.** It is never written by any application code path (Phase 2
+   correction round 3), and it is not deleted, because the documented
+   Production conflict (opportunity `OcGWOP9n666i4Q1MLd31`: Opportunity
+   `repair_estimate = 10000` vs. Contact `estimated_repairs = 30000`)
+   remains open and PRESERVED, untouched, exactly as found. Resolving that
+   conflict is a human/business decision this document has never claimed
+   to make; deleting or altering either value before it is resolved would
+   destroy the evidence a future resolution needs.
+
+No further IAOS engineering action is implied or required by this ruling
+beyond what Phases 1–3 already delivered. The fourteen fields' eventual
+physical deletion, and the Production repairs conflict's resolution, are
+both explicitly OUT of INV-70's remaining scope — tracked here as the
+record of what was found and why each was left as-is, not as open IAOS
+work items.
 
 ---
 
