@@ -45,7 +45,8 @@
     "test:contract-send-model": "node scripts/test-contract-send-model.cjs",
     "test:contract-send-guard": "node scripts/test-contract-send-guard.cjs",
     "test:contract-send-canonical-carriers": "node scripts/test-contract-send-canonical-carriers.cjs",
-    "test:contract-send-reserve": "node scripts/test-contract-send-reserve.cjs"
+    "test:contract-send-reserve": "node scripts/test-contract-send-reserve.cjs",
+    "test:contract-send-execute": "node scripts/test-contract-send-execute.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",

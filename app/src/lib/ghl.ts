@@ -1132,32 +1132,32 @@ export const ghl = {
       }
     },
 
-    // POST /proposals/templates/send -- the one send-capable path. Deliberately
-    // takes NO contactId and NO userId: ghl-proxy.ts's GATE 2 unconditionally
-    // overwrites contactId/userId/templateId server-side, so this client can
-    // never name any of the three for real.
+    // POST /.netlify/functions/ghl-contract-send-execute -- the ONLY path
+    // to GHL's actual send-capable /proposals/templates/send, Jess Gate
+    // correction round 2. Deliberately takes NO contactId and NO userId:
+    // the dedicated server-side function resolves both from config,
+    // never from this client. Requires attemptId/versionRaw so the
+    // server can look up and redeem the EXACT reservation ticket
+    // `reserveSend` below already created -- a caller cannot invoke this
+    // for an opportunity/revision it never reserved.
     // Callers pass the raw HTTP outcome to contract-send-model.ts's
     // `classifyProviderSendResponse` -- this method never classifies its own
     // response, matching "no invented GHL behavior" for the success/failure
     // boundary.
     send: async (args: {
       templateId: string;
-      opportunityId?: string;
+      opportunityId: string;
+      versionRaw: string;
+      attemptId: string;
     }): Promise<
       | { kind: "network_error"; message: string }
       | { kind: "http_response"; status: number; body: unknown }
     > => {
-      const body: Record<string, unknown> = {
-        templateId: args.templateId,
-        locationId: LOCATION_ID,
-        sendDocument: true,
-      };
-      if (args.opportunityId) body.opportunityId = args.opportunityId;
       try {
-        const res = await fetch(`${PROXY}?path=${encodeURIComponent("/proposals/templates/send")}`, {
+        const res = await fetch("/.netlify/functions/ghl-contract-send-execute", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(args),
         });
         const text = await res.text();
         let parsed: unknown = null;

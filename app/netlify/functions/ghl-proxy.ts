@@ -25,52 +25,33 @@
  * CORS is not the control — it is browser-enforced and a non-browser caller
  * ignores it. Retained unchanged so the app keeps working.
  *
- * GATE 2 (2026-09-11, B9-08 / INV-63) — the three `/proposals/...` paths
- * (GHL Documents & Contracts, the selected V1 e-sign provider) get a SECOND,
- * additive tier of restriction beyond the plain path allowlist above,
- * because two of them create/transmit a real document rather than merely
- * reading or writing an already-scoped GHL record:
- *   1. LOCATION ASSERTION. `LOCATION_ID` (resolved from `IAOS_ENV`, same as
- *      every other path) must equal the TEST location's own id — resolved
- *      via `getConfig("test")`, never hardcoded here, so no GHL identifier
- *      literal exists in this file (`scripts/test-identifier-boundary.cjs`
- *      enforces that same-file boundary independently). Per
- *      `docs/BOARD9_CONTRACT_INVENTORY_V1.md`'s own proposed design: a path
- *      entry alone says nothing about environment, since it inherits
- *      whatever `IAOS_ENV` the running function happens to be under — this
- *      is the explicit, path-specific check that closes that gap for these
- *      three paths only.
- *   2. RECIPIENT + SENDER + TEMPLATE OVERRIDE, POST
- *      `/proposals/templates/send` only. This function UNCONDITIONALLY
- *      OVERWRITES the request body's `contactId`, `userId`, AND
- *      `templateId` with `documentsContracts.approvedTestContactId` /
- *      `senderUserId` / `templateId` from the resolved config, ignoring
- *      whatever the browser supplied. The browser is never trusted to
- *      name who receives an actual e-sign send, under whose GHL user
- *      identity it is sent, or WHICH TEMPLATE is sent (correction round,
- *      2026-09-11, item 2: "prefer the locked template ID... rather than
- *      relying solely on a mutable display name") — matching this file's
- *      own "a shared secret shipped to the browser is not a secret"
- *      doctrine, extended here to "a recipient, sender, or template
- *      named by the browser is not trusted."
- *   3. FAIL CLOSED WHEN `senderUserId` IS UNCONFIGURED, OR WHEN
- *      TEMPLATE POPULATION IS NOT VERIFIED. While
- *      `documentsContracts.senderUserId` is still the
- *      `SENDER_USER_ID_NOT_CONFIGURED` sentinel, OR while
- *      `documentsContracts.populationVerification` is not exactly
- *      `POPULATION_VERIFIED`, every send is refused 500 before any
- *      outbound call — never sent with a placeholder identity, and never
- *      sent while Brad has not confirmed (see ghl-config.ts) that the
- *      uploaded TREC template actually carries population/signature/
- *      initial/date fields. GHL's public Documents & Contracts API has
- *      no operation to create, upload, or place fields on a template
- *      (verified against GHL's own reference pages, 2026-09-11 correction
- *      round) — this gate exists because there is no API-derivable way
- *      to make that determination automatically, ever, only a human
- *      attestation recorded in ghl-config.ts as its own reviewed commit.
- * `Version: v3` (not this proxy's usual `2021-07-28`) is required by all
- * three `/proposals/...` endpoints, confirmed directly from their own
- * reference pages.
+ * GATE 2 (2026-09-11, B9-08 / INV-63; NARROWED 2026-09-12, Jess Gate
+ * correction round 2) — the two `/proposals/...` paths still reachable
+ * here (GHL Documents & Contracts, the selected V1 e-sign provider) are
+ * READ-ONLY discovery/readback and get one additive restriction beyond
+ * the plain path allowlist above:
+ *   LOCATION ASSERTION. `LOCATION_ID` (resolved from `IAOS_ENV`, same as
+ *   every other path) must equal the TEST location's own id — resolved
+ *   via `getConfig("test")`, never hardcoded here, so no GHL identifier
+ *   literal exists in this file (`scripts/test-identifier-boundary.cjs`
+ *   enforces that same-file boundary independently).
+ *
+ * `POST /proposals/templates/send` — the ONE send-capable path — IS NO
+ * LONGER REACHABLE THROUGH THIS PROXY AT ALL, by design (Jess Gate
+ * correction round 2, "one server-verifiable, single-use send
+ * authorization boundary covering BOTH reservation and actual provider
+ * send"). It moved entirely to its own dedicated function,
+ * `ghl-contract-send-execute.ts`, which requires a valid, unconsumed,
+ * exact-revision reservation ticket (`ghl-contract-send-reserve.ts`,
+ * itself gated on independently-re-verified Brad authorization currency)
+ * before it will forward anything to GHL. A direct call to THIS proxy
+ * with `?path=/proposals/templates/send` now simply falls through to
+ * "not allowlisted" (403) — there is no override/recipient/sender/
+ * population logic left in this file to bypass, because there is no
+ * longer a send-capable code path here for any of that logic to gate.
+ * `Version: v3` (not this proxy's usual `2021-07-28`) is required by
+ * both remaining `/proposals/...` endpoints, confirmed directly from
+ * their own reference pages.
  *
  * getConfig is called at module scope deliberately. If the selector is
  * missing this function dies at load, which is unambiguous. A per-request
@@ -85,11 +66,11 @@
  *   IAOS_ENV — PB-D51 selector; scopes which location's paths are permitted.
  */
 
-import { getConfig, SENDER_USER_ID_NOT_CONFIGURED, POPULATION_VERIFIED } from "../../shared/ghl-config";
+import { getConfig } from "../../shared/ghl-config";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
-const { locationId: LOCATION_ID, documentsContracts: DOCUMENTS_CONTRACTS } = getConfig(process.env.IAOS_ENV);
+const { locationId: LOCATION_ID } = getConfig(process.env.IAOS_ENV);
 // GATE 2 — the TEST location's own id, resolved independently of the
 // CURRENT IAOS_ENV, so the /proposals/... location assertion below can
 // compare "is this deployment actually Test" without ever hardcoding a
@@ -131,15 +112,11 @@ const ALLOW: Record<string, RegExp[]> = {
   ],
   POST: [
     new RegExp(`^/contacts/${ID}/notes$`),
-    // GATE 2 / B9-08 — the one send-capable path. Location-asserted AND
-    // recipient-overridden below; never merely path-allowlisted.
-    new RegExp(`^/proposals/templates/send$`),
   ],
 };
 
-/** The three GATE 2 paths -- every one of them requires the location assertion; only the send path also requires the recipient override. */
+/** The two remaining GATE 2 paths (read-only discovery/readback) -- each requires the location assertion below. The one send-capable path is no longer reachable through this proxy at all -- see `ghl-contract-send-execute.ts`. */
 const PROPOSALS_PATH = new RegExp(`^/proposals/`);
-const PROPOSALS_SEND_PATH = new RegExp(`^/proposals/templates/send$`);
 
 /**
  * Every location id appearing in the path or the query must be the one this
@@ -229,53 +206,8 @@ export const handler = async (event: any) => {
 
   const url   = `${GHL_BASE}${raw}`;
 
-  // GATE 2 / B9-08 — recipient override. The browser is never trusted to
-  // name who receives an actual e-sign send: for this ONE path, the
-  // outbound body's `contactId` is unconditionally replaced with the
-  // pre-approved Test contact from config, discarding whatever the
-  // browser supplied. A malformed/non-JSON body here fails closed (the
-  // send is refused) rather than forwarding an unvalidated body to a
-  // document-creating endpoint.
-  let outboundBody: string | undefined =
+  const outboundBody: string | undefined =
     ["POST", "PUT"].includes(method) && event.body ? event.body : undefined;
-  if (PROPOSALS_SEND_PATH.test(pathname)) {
-    // GATE 2 / B9-08 correction round -- `userId` is a REQUIRED field of
-    // the documented request body, and NO SEND MAY EVER LEAVE THIS
-    // FUNCTION while the template's field population is unverified. Both
-    // refuse before any outbound call rather than send a request GHL
-    // would itself reject, or worse, one that silently delivers a blank,
-    // unsignable document. See ghl-config.ts's doc comments.
-    if (DOCUMENTS_CONTRACTS.senderUserId === SENDER_USER_ID_NOT_CONFIGURED) {
-      return {
-        statusCode: 500,
-        headers: CORS,
-        body: JSON.stringify({ error: "senderUserId not configured", by: "iaos-proxy-documents-contracts-test-only" }),
-      };
-    }
-    if (DOCUMENTS_CONTRACTS.populationVerification !== POPULATION_VERIFIED) {
-      return {
-        statusCode: 500,
-        headers: CORS,
-        body: JSON.stringify({ error: "template population not verified", by: "iaos-proxy-documents-contracts-test-only" }),
-      };
-    }
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = outboundBody ? JSON.parse(outboundBody) : {};
-    } catch {
-      return {
-        statusCode: 400,
-        headers: CORS,
-        body: JSON.stringify({ error: "Malformed JSON body", by: "iaos-proxy-documents-contracts-test-only" }),
-      };
-    }
-    outboundBody = JSON.stringify({
-      ...parsed,
-      contactId: DOCUMENTS_CONTRACTS.approvedTestContactId,
-      userId: DOCUMENTS_CONTRACTS.senderUserId,
-      templateId: DOCUMENTS_CONTRACTS.templateId,
-    });
-  }
 
   // GATE 2 / B9-08 — /proposals/... requires Version: v3, confirmed
   // directly from each endpoint's own reference page; every other

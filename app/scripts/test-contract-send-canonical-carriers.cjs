@@ -34,11 +34,13 @@ const FILES = [
   path.join(APP, 'src', 'lib', 'contract-send-model.ts'),
   path.join(APP, 'src', 'lib', 'contract-send-carriers.ts'),
   path.join(APP, 'netlify', 'functions', 'lib', 'contract-send-guard.ts'),
+  path.join(APP, 'netlify', 'functions', 'lib', 'authorization-guard.ts'),
   path.join(APP, 'netlify', 'functions', 'ghl-contract-send-reserve.ts'),
   path.join(APP, 'netlify', 'functions', 'ghl-contract-send-readback.ts'),
+  path.join(APP, 'netlify', 'functions', 'ghl-contract-send-execute.ts'),
 ];
 
-const FLOOR = 20;
+const FLOOR = 24;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {

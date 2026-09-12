@@ -110,3 +110,28 @@ export function findConflictingContractSend(
   }
   return { conflict: false };
 }
+
+/**
+ * Jess Gate correction round, 2026-09-12 (single-use send-authorization
+ * boundary). Resolves the SAME rank-based "latest state" logic
+ * `findConflictingContractSend` already uses, but scoped to one EXACT
+ * `attemptId` rather than "any attempt for this opportunity+version" --
+ * this is `ghl-contract-send-execute.ts`'s own ticket lookup: "does a
+ * reservation exist for exactly this attempt, and what is its CURRENT
+ * (not merely its FIRST) status." Returns `null` when no note for this
+ * attemptId exists at all -- a caller who never reserved has no ticket
+ * to redeem.
+ */
+export function resolveAttemptByExactId(
+  notes: { body: string }[],
+  attemptId: string,
+): MinimalContractSend | null {
+  const rankOf = (status: string): number => (status === "in_progress" ? 0 : status === "provider_accepted_pending_readback" ? 1 : 2);
+  let resolved: MinimalContractSend | null = null;
+  for (const note of notes) {
+    const parsed = parseMinimalContractSend(note.body);
+    if (!parsed || parsed.attemptId !== attemptId) continue;
+    if (!resolved || rankOf(parsed.status) >= rankOf(resolved.status)) resolved = parsed;
+  }
+  return resolved;
+}

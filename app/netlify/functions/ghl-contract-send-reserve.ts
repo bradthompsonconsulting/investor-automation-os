@@ -61,20 +61,36 @@
  *      the netlify/functions <-> src/lib boundary this codebase
  *      otherwise keeps separate.
  *
- * What is still NOT re-validated here, deliberately: Brad's authorization
- * currency, preview completeness, and full send eligibility remain
- * `contract-send-model.ts`'s `buildSendAttemptArgs`, already run
- * client-side before this call -- this endpoint's job is narrowly "is
- * the SERVER-KNOWN configuration satisfied, and does the note this
- * caller wants written honestly reflect the server's own values,"
- * not a second, competing implementation of authorization/eligibility
- * logic that could itself drift from the client's.
+ * JESS GATE CORRECTION ROUND 2, 2026-09-12 ("the server must
+ * independently verify... before any send-capable outbound GHL call").
+ * This function now ALSO independently re-verifies Brad authorization
+ * currency, server-side, against the SAME freshly-read notes the
+ * conflict check already needs -- `lib/authorization-guard.ts`'s
+ * `verifyServerSideAuthorization` (imports the real, evolving
+ * `latestBradContractAuthorizationForOpportunity`/`isSameContractVersion`
+ * from `src/lib` rather than duplicating them, matching
+ * `ghl-contract-send-readback.ts`'s own precedent for evolving pure
+ * logic). This function is now HALF of the "one server-verifiable,
+ * single-use send authorization boundary" this correction round
+ * establishes: reservation VERIFIES authorization and ISSUES the
+ * durable, single-use ticket (the in_progress note itself);
+ * `ghl-contract-send-execute.ts` REDEEMS it immediately before the real
+ * provider call, re-verifying independently rather than trusting that
+ * this endpoint's own check still holds by the time the send actually
+ * fires. See `lib/authorization-guard.ts`'s own header for exactly what
+ * this DOES and DOES NOT catch (a content-only change with no version
+ * bump is a disclosed, reported gap, not a silent one) -- what remains
+ * client-side, deliberately, is the full, rich preview computation
+ * (`contract-send-model.ts`'s `buildSendAttemptArgs`) that only the
+ * browser has already assembled; reconstructing that server-side is out
+ * of this round's narrow scope.
  */
 
 import {
   getConfig, SENDER_USER_ID_NOT_CONFIGURED, POPULATION_VERIFIED,
 } from "../../shared/ghl-config";
 import { findConflictingContractSend, parseMinimalContractSend } from "./lib/contract-send-guard";
+import { verifyServerSideAuthorization } from "./lib/authorization-guard";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 const { locationId: LOCATION_ID, documentsContracts: DOCUMENTS_CONTRACTS } = getConfig(process.env.IAOS_ENV);
@@ -178,6 +194,27 @@ export const handler = async (event: any) => {
   }
   const notesBody = await notesRes.json();
   const notes: { body: string }[] = Array.isArray(notesBody?.notes) ? notesBody.notes : [];
+
+  // Jess Gate correction round 2, 2026-09-12, items 1/2. Server-side,
+  // independent Brad authorization currency check -- reads the SAME
+  // freshly-fetched notes already needed for the conflict check below
+  // (no second GHL call). Refuses BEFORE writing the in_progress ticket:
+  // an unauthorized, expired, revoked, or superseded caller never gets a
+  // ticket to redeem at send time. See lib/authorization-guard.ts for
+  // exactly what this does and does not verify.
+  const authCheck = verifyServerSideAuthorization({
+    notes,
+    opportunityId,
+    declaredVersionRaw: versionRaw,
+    expectedTemplateName: DOCUMENTS_CONTRACTS.expectedTemplateName,
+  });
+  if (!authCheck.ok) {
+    return {
+      statusCode: 403,
+      headers: CORS,
+      body: JSON.stringify({ error: "Server-side authorization verification failed", reason: authCheck.reason, message: authCheck.message, by: "iaos-contract-send-reserve-test-only" }),
+    };
+  }
 
   const conflict = findConflictingContractSend(notes, opportunityId, versionRaw);
   if (conflict.conflict) {

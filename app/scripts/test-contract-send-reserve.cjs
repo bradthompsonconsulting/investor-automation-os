@@ -55,7 +55,7 @@ try {
   process.exit(10);
 }
 
-const FLOOR = 23;
+const FLOOR = 32;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -157,6 +157,28 @@ function validPayload(overrides) {
   };
 }
 
+/** A well-formed Brad Contract Authorization note, matching contract-authorization-carriers.ts's exact format -- the durable fact `verifyServerSideAuthorization` reads. */
+function wellFormedAuthorizationNote(overrides) {
+  const opportunityId = (overrides && overrides.opportunityId) ?? VALID_OPPORTUNITY_ID;
+  const authorizedBy = (overrides && overrides.authorizedBy) ?? 'brad';
+  const operator = (overrides && 'operator' in overrides) ? overrides.operator : 'brad';
+  const versionRaw = (overrides && overrides.versionRaw) ?? VALID_VERSION_RAW;
+  const templateName = (overrides && overrides.templateName) ?? testConfig.documentsContracts.expectedTemplateName;
+  const at = (overrides && overrides.at) ?? '2026-09-12T00:00:00.000Z';
+  return [
+    'IAOS BRAD CONTRACT AUTHORIZATION — iaos-brad-contract-authorization-v1',
+    `Recorded at: ${at}`,
+    `Operator: ${operator === null ? 'UNAVAILABLE' : operator}`,
+    `Opportunity: ${opportunityId}`,
+    `Authorized by: ${authorizedBy}`,
+    `Version: ${versionRaw}`,
+    `Template name: ${templateName}`,
+    'Template source: ghl_documents_contracts',
+    'Document lines: []',
+    'Additional required facts: []',
+  ].join('\n');
+}
+
 async function invoke(payload) {
   return reserve.handler({ httpMethod: 'POST', body: JSON.stringify(payload) });
 }
@@ -228,16 +250,19 @@ async function main() {
 
   /* -------------------------------------------------------------- */
   /* 4. A valid, fully-configured request retains the existing         */
-  /*    conflict-check behavior                                        */
+  /*    conflict-check behavior, WITH a real authorization on record   */
   /* -------------------------------------------------------------- */
   {
     resetTestConfigToValidBaseline();
     // An existing in_progress note for the SAME opportunity+version is
     // already on record -- the conflict check must fire and the write
-    // must never be attempted.
+    // must never be attempted. A valid authorization note is also
+    // present (this scenario is about the CONFLICT check, not
+    // authorization -- both notes are read in the SAME GET call).
     const conflictingNote = wellFormedInProgressNote();
+    const authNote = wellFormedAuthorizationNote();
     global.fetch = makeMockFetch([
-      { status: 200, body: JSON.stringify({ notes: [{ body: conflictingNote }] }) },
+      { status: 200, body: JSON.stringify({ notes: [{ body: authNote }, { body: conflictingNote }] }) },
     ]);
     const res = await invoke(validPayload());
     check('valid request, existing conflict: refused with 409', res.statusCode, 409);
@@ -246,17 +271,71 @@ async function main() {
   }
   {
     resetTestConfigToValidBaseline();
-    // No conflicting note on record -- the reservation should proceed to
+    // No conflicting note on record, and a valid, exact-revision
+    // authorization IS on record -- the reservation should proceed to
     // write, in exactly two calls: GET (read) then POST (write).
+    const authNote = wellFormedAuthorizationNote();
     global.fetch = makeMockFetch([
-      { status: 200, body: JSON.stringify({ notes: [] }) },
+      { status: 200, body: JSON.stringify({ notes: [{ body: authNote }] }) },
       { status: 201, body: JSON.stringify({ id: 'note-123' }) },
     ]);
     const res = await invoke(validPayload());
-    check('valid request, no conflict: the write succeeds (201 passed through)', res.statusCode, 201);
-    check('valid request, no conflict: exactly two GHL calls (read then write)', global.fetch.calls.length, 2);
-    check('valid request, no conflict: first call is the GET (read)', global.fetch.calls[0].method, 'GET');
-    check('valid request, no conflict: second call is the POST (write)', global.fetch.calls[1].method, 'POST');
+    check('valid request, no conflict, valid authorization: the write succeeds (201 passed through)', res.statusCode, 201);
+    check('valid request, no conflict, valid authorization: exactly two GHL calls (read then write)', global.fetch.calls.length, 2);
+    check('valid request, no conflict, valid authorization: first call is the GET (read)', global.fetch.calls[0].method, 'GET');
+    check('valid request, no conflict, valid authorization: second call is the POST (write)', global.fetch.calls[1].method, 'POST');
+  }
+
+  /* -------------------------------------------------------------- */
+  /* 4b. Server-side authorization currency, independently verified   */
+  /*     (Jess Gate correction round 2) -- zero outbound GHL calls on */
+  /*     every refusal, since the write must never be attempted for   */
+  /*     an unauthorized/stale/wrong-authorizer caller                */
+  /* -------------------------------------------------------------- */
+  {
+    resetTestConfigToValidBaseline();
+    // No authorization note at all -- "missing authorization."
+    global.fetch = makeMockFetch([
+      { status: 200, body: JSON.stringify({ notes: [] }) },
+    ]);
+    const res = await invoke(validPayload());
+    check('missing authorization: refused with 403', res.statusCode, 403);
+    check('missing authorization: the refusal names NO_AUTHORIZATION_RECORDED', JSON.parse(res.body).reason, 'NO_AUTHORIZATION_RECORDED');
+    check('missing authorization: no write is ever attempted (exactly one call, the read)', global.fetch.calls.length, 1);
+  }
+  {
+    resetTestConfigToValidBaseline();
+    // An authorization exists, but for a DIFFERENT (superseded/stale)
+    // revision than the one being reserved -- "expired/superseded."
+    const staleAuthNote = wellFormedAuthorizationNote({
+      versionRaw: JSON.stringify({ agreementAt: '2026-09-12T00:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: null }),
+      at: '2026-09-11T00:00:00.000Z',
+    });
+    global.fetch = makeMockFetch([
+      { status: 200, body: JSON.stringify({ notes: [{ body: staleAuthNote }] }) },
+    ]);
+    // The reservation itself declares a NEWER version than the stale authorization covers.
+    const newerVersionRaw = JSON.stringify({ agreementAt: '2026-09-12T00:00:00.000Z', versionSeq: 2, supersedesVersionSeq: 1, replacesAgreementAt: null });
+    const res = await invoke(validPayload({
+      versionRaw: newerVersionRaw,
+      noteBody: wellFormedInProgressNote({ versionRaw: newerVersionRaw }),
+    }));
+    check('authorization for a superseded revision: refused with 403', res.statusCode, 403);
+    check('authorization for a superseded revision: the refusal names REVISION_CHANGED_OR_SUPERSEDED', JSON.parse(res.body).reason, 'REVISION_CHANGED_OR_SUPERSEDED');
+    check('authorization for a superseded revision: no write is ever attempted', global.fetch.calls.length, 1);
+  }
+  {
+    resetTestConfigToValidBaseline();
+    // A "forged" authorization -- authorizedBy/operator claim someone
+    // other than Brad. V1 permits no other authorizer.
+    const forgedAuthNote = wellFormedAuthorizationNote({ authorizedBy: 'someone-else', operator: 'someone-else' });
+    global.fetch = makeMockFetch([
+      { status: 200, body: JSON.stringify({ notes: [{ body: forgedAuthNote }] }) },
+    ]);
+    const res = await invoke(validPayload());
+    check('forged (non-Brad) authorization: refused with 403', res.statusCode, 403);
+    check('forged (non-Brad) authorization: the refusal names NOT_BRAD', JSON.parse(res.body).reason, 'NOT_BRAD');
+    check('forged (non-Brad) authorization: no write is ever attempted', global.fetch.calls.length, 1);
   }
 
   /* -------------------------------------------------------------- */

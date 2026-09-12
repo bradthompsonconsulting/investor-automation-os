@@ -819,8 +819,16 @@ export default function ContractWorkspace() {
     }
     setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attemptNote, dateAdded: attempt.at }]);
 
-    // Stage 2: SEND.
-    const sendOutcome = await ghl.proposals.send({ templateId: requestedTemplateId, opportunityId: screen.opportunity.id });
+    // Stage 2: SEND -- redeems the reservation ticket just created above.
+    // versionRaw/attemptId must be the EXACT SAME values the reservation
+    // note itself carries, so the server-side execute function's ticket
+    // lookup resolves to this same attempt.
+    const sendOutcome = await ghl.proposals.send({
+      templateId: requestedTemplateId,
+      opportunityId: screen.opportunity.id,
+      versionRaw: JSON.stringify(attempt.version),
+      attemptId: attempt.attemptId,
+    });
     const postObservedAt = new Date().toISOString();
     const postClassification = classifyProviderSendResponse(sendOutcome);
     const provisionalArgs = buildSendResultArgs({ attempt, operator: null, observedAt: postObservedAt, classification: postClassification });
