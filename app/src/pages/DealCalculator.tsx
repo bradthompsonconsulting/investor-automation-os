@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
-  Calculator, ChevronDown, ChevronUp, ExternalLink, Link2, Unlink, Loader2, RotateCcw, Save,
+  Calculator, ChevronDown, ChevronUp, ExternalLink, Link2, Unlink, Loader2, RotateCcw,
 } from "lucide-react";
 import { ghl } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
@@ -24,7 +24,6 @@ import {
   type Answers, type OperatorCondition,
 } from "../lib/repair-estimation/operator-model";
 import { computeRepairEstimate } from "../lib/repair-estimation/compute";
-import { persistGate, persistApprovedRepairTotal, type RepairApproval } from "../lib/repair-estimation/persist";
 import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
 
 /**
@@ -77,10 +76,7 @@ import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
  * one produces the `repairs` figure fed into economics, per the same
  * "no silent double-count" rule Board 6's own UI already enforces.
  *
- * OPTIONAL LINKING IS CONTACT-LEVEL, NOT OPPORTUNITY-LEVEL, AND FOR A
- * DELIBERATE REASON. Repairs save-back (`persist.ts`'s `persistGate` /
- * `persistApprovedRepairTotal`) writes to `contact.estimated_repairs` and
- * needs only a Contact ID -- no Opportunity resolution at all. Reading
+ * OPTIONAL LINKING IS CONTACT-LEVEL, NOT OPPORTUNITY-LEVEL. Reading
  * `parseContactSeeds` off a linked Contact's own custom fields (the SAME
  * PB-D55 "seed" concept Seller Call/Underwriting already read) is enough
  * to prepopulate ARV/Repairs, ONLY into fields still empty -- linking
@@ -88,20 +84,26 @@ import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
  * (linked to, never embedded) already handles multi-opportunity selection
  * internally, so this page does not need to resolve one itself.
  *
- * ARV IS NEVER SAVED BACK FROM HERE -- A DELIBERATE, DOCUMENTED SCOPE
- * BOUNDARY, NOT AN OVERSIGHT. Board 7's authoritative ARV write
- * (`arv-persist.ts`'s `persistApprovedArv`) requires real comp evidence --
- * evidence state, reconciliation outcome, accepted comp count, search
- * level -- none of which a bare typed ARV number on this scratchpad ever
- * has. Fabricating that evidence to unlock a write here would violate
- * PB-D61's evidence doctrine and this issue's own "no invented carriers
- * or policy" HARD NO. When linked, this page instead links to the real
- * ARV & Comps workspace, exactly as Seller Call (B8-07) already does.
+ * NEITHER ARV NOR REPAIRS IS EVER SAVED BACK FROM HERE -- A DELIBERATE,
+ * DOCUMENTED SCOPE BOUNDARY, NOT AN OVERSIGHT. INV-70 / B9-07A Phase 2
+ * correction round 3 REMOVED this page's Repairs save-back entirely
+ * (`persist.ts`'s `persistApprovedRepairTotal` call and the
+ * "Save Repairs to {contact}" action), extending to Repairs the SAME
+ * reasoning ARV's own save-back already didn't have: this scratchpad has
+ * no Opportunity context, `contact.estimated_repairs` is now a read-only
+ * legacy fallback/migration input (Family 3's approved ruling), and Board
+ * 6's real repair estimator already persists to the authoritative
+ * Opportunity carrier from `UnderwritingWorkspace.tsx`. Board 7's
+ * authoritative ARV write (`arv-persist.ts`'s `persistApprovedArv`)
+ * separately requires real comp evidence -- evidence state, reconciliation
+ * outcome, accepted comp count, search level -- none of which a bare typed
+ * number on this scratchpad ever has; fabricating that evidence to unlock
+ * a write here would violate PB-D61's evidence doctrine. When linked, this
+ * page instead links to the real Underwriting workspace for BOTH figures,
+ * exactly as Seller Call (B8-07) already does for ARV.
  *
- * READ ONLY, EXCEPT THE ONE SANCTIONED REPAIRS WRITE. This page performs
- * no write of any kind except `ghl.contacts.setEstimatedRepairs`, gated
- * by the SAME `persistGate` Board 6's real UI uses, and only when a
- * Contact is linked and the operator explicitly clicks Save.
+ * READ ONLY. This page performs no GHL write of any kind. Its only
+ * network calls are reads (contact detail, investor policy).
  */
 
 const CONFIG = getRuntimeConfig();
@@ -329,31 +331,6 @@ export default function DealCalculator() {
     setLinkError(null);
   }
 
-  /* Repairs save-back. The ONLY write this page performs, gated by the
-     SAME persistGate Board 6's real UI uses. ARV is deliberately never
-     saved back here -- see module header. */
-  const [repairApproval, setRepairApproval] = useState<RepairApproval>({ kind: "none" });
-  const [saveBusy, setSaveBusy] = useState(false);
-  const [saveResult, setSaveResult] = useState<
-    { ok: true; confidence: "saved" | "unconfirmed" } | { ok: false; error: string } | null
-  >(null);
-
-  async function handleSaveRepairs() {
-    if (!linkedContactId || repairs === null) return;
-    setSaveBusy(true);
-    setSaveResult(null);
-    const approval: RepairApproval = { kind: "approved", total: repairs, revision: repairRevision };
-    setRepairApproval(approval);
-    const gate = persistGate(approval, repairRevision, repairs);
-    const result = await persistApprovedRepairTotal(ghl as any, linkedContactId, CONTACT_IDS.repairs, gate);
-    setSaveBusy(false);
-    if (result.ok) {
-      setSaveResult({ ok: true, confidence: result.confidence });
-    } else {
-      setSaveResult({ ok: false, error: result.error });
-    }
-  }
-
   function handleClear() {
     setArvInput("");
     setRepairsQuickInput("");
@@ -363,8 +340,6 @@ export default function DealCalculator() {
     setRepairRevision(0);
     setAssignmentMode(DEFAULT_ASSIGNMENT_MODE);
     setManualAmountInput("");
-    setRepairApproval({ kind: "none" });
-    setSaveResult(null);
     // Clear does not unlink -- clearing the scratchpad and severing the
     // link are two different bounded actions, matching this issue's own
     // "Clear/Reset" bullet, distinct from "optional linking."
@@ -507,7 +482,9 @@ export default function DealCalculator() {
         </div>
       </div>
 
-      {/* Optional linking + save-back. */}
+      {/* Optional linking. INV-70 / B9-07A Phase 2 correction round 3 --
+          no save-back of any kind happens from this panel anymore (Repairs'
+          own save-back removed alongside ARV's pre-existing absence). */}
       <div style={{ ...PANEL_STYLE, marginTop: "16px" }} data-testid="deal-calc-link-panel">
         <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Link (optional)</div>
         {linkedContactId ? (
@@ -519,18 +496,10 @@ export default function DealCalculator() {
               <Unlink size={12} /> Unlink
             </button>
             <Link to={`/contacts/${linkedContactId}/underwriting`} data-testid="deal-calc-view-arv-workspace" style={COMPACT_BUTTON_STYLE}>
-              <ExternalLink size={12} /> ARV &amp; Comps workspace
+              <ExternalLink size={12} /> Underwriting workspace
             </Link>
-            <button
-              data-testid="deal-calc-save-repairs"
-              onClick={handleSaveRepairs}
-              disabled={saveBusy || repairs === null}
-              style={{ ...COMPACT_BUTTON_STYLE, opacity: repairs === null ? 0.45 : 1, cursor: saveBusy || repairs === null ? "not-allowed" : "pointer" }}
-            >
-              {saveBusy ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Save Repairs to {linkedContactName}
-            </button>
             <div style={{ fontSize: "10px", color: "#475569" }}>
-              ARV is not saved from here -- approve it with real comp evidence in the ARV &amp; Comps workspace.
+              Neither ARV nor Repairs is saved from here -- approve them in the Underwriting workspace (ARV with real comp evidence; Repairs against the linked Opportunity).
             </div>
           </div>
         ) : (
@@ -553,13 +522,6 @@ export default function DealCalculator() {
           </div>
         )}
         {linkError ? <div data-testid="deal-calc-link-error" style={{ color: "#EF4444", fontSize: "11px", marginTop: "8px" }}>{linkError}</div> : null}
-        {saveResult ? (
-          <div data-testid="deal-calc-save-result" style={{ fontSize: "11px", marginTop: "8px", color: saveResult.ok ? "#22C55E" : "#EF4444" }}>
-            {saveResult.ok
-              ? `Saved${saveResult.confidence === "unconfirmed" ? " (sent, not yet confirmed by readback)" : ""}.`
-              : saveResult.error}
-          </div>
-        ) : null}
       </div>
 
       {/* More Detail -- Assignment Mode + the eleven Investor Policy assumptions. */}

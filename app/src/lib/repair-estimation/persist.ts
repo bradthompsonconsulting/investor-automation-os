@@ -1,24 +1,26 @@
 /**
  * Repair Estimation V1 — the persistence boundary. INV-13.
  *
- * After operator approval, the approved TOTAL is persisted through the
- * existing `estimated_repairs` carrier and nothing else. V1 itemization is
- * not persisted and no line ever leaves the session.
+ * INV-70 / B9-07A Phase 2 correction round 3 — REMOVED the Contact-
+ * targeted write path (`persistApprovedRepairTotal` / `RepairPersistGhl`,
+ * which wrote `contact.estimated_repairs` via `ghl.contacts.
+ * setEstimatedRepairs`). A repository-wide audit
+ * (`app/scripts/test-legacy-repairs-writer-removed.cjs`) found and closed
+ * its last two live callers: `UnderwritingWorkspace.tsx` (already switched
+ * to the Opportunity-targeted path below, in the earlier Phase 2 pass) and
+ * `DealCalculator.tsx`'s standalone scratchpad (its own "Save Repairs to
+ * {contact}" action, removed this round). `contact.estimated_repairs` is
+ * now Family 3's read-only legacy fallback/migration input ONLY — no
+ * application code writes it, anywhere, and this module no longer offers
+ * a way to.
  *
- * ⚠ THE FIELD ID NEVER TRAVELS TO THE WRITE. The caller injects a client
- * exposing the already-named `setEstimatedRepairs` — board item #2B's sixth
- * named write, which spent its own decision and carries its own write-safety
- * clearance. PB-D16 §4.4 forbids a public setter parameterized over a field
- * id, so this module never holds one for writing. The one id it does take is
- * for the READBACK, which is a read and is not gated.
+ * WHAT REMAINS: the approval gate (`persistGate`, unchanged — validation
+ * does not depend on which carrier the approved value lands in) and the
+ * Opportunity-targeted persistence path
+ * (`persistApprovedRepairTotalToOpportunity`), which is now this module's
+ * ONLY write path.
  *
- * ⚠ NO NEW CARRIER, NO SHADOW COPY. GHL stays the sole system of record: the
- * caller re-reads the contact after a confirmed write rather than patching a
- * local copy, so the screen keeps being a claim about what GHL holds.
- *
- * `ghl` is injected rather than imported, on the same reasoning as
- * callbackWrite.ts — it keeps this trivially testable with a mock, and the
- * INV-13 proof runs with no GHL contact and no Production mutation.
+ * ⚠ NO NEW CARRIER, NO SHADOW COPY. GHL stays the sole system of record.
  */
 
 /**
@@ -65,20 +67,6 @@ export function persistGate(
 }
 
 /**
- * Structural subset of the client this boundary needs. The real `ghl`
- * satisfies it, and so can a mock. Deliberately narrow: the only write
- * reachable from here is `setEstimatedRepairs`. No other setter, no note, no
- * opportunity method, and nothing that could touch an `offer_` field or a
- * workflow trigger is in scope of this type at all.
- */
-export interface RepairPersistGhl {
-  contacts: {
-    setEstimatedRepairs: (contactId: string, value: number | "") => Promise<unknown>;
-    getDetail: (contactId: string) => Promise<{ customFields: { id: string; value: unknown }[] }>;
-  };
-}
-
-/**
  * The terminal states, all explicit.
  *
  * PB-D21 governs the vocabulary: "saved" means GHL was read back and
@@ -93,26 +81,54 @@ export type PersistResult =
   | { ok: false; stage: "write"; error: string; written: false }
   | { ok: false; stage: "unverified"; error: string; written: true };
 
-const VERIFY_ATTEMPTS = 3;
+/**
+ * INV-70 / B9-07A Phase 2 — the Opportunity-targeted persistence path,
+ * added in the earlier Phase 2 pass alongside the (now-removed)
+ * Contact-targeted one, and the sole write path remaining after this
+ * correction round.
+ *
+ * WHY A SEPARATE FUNCTION, NOT A PARAMETER ON A GENERIC ONE. Contact and
+ * Opportunity have genuinely different wire shapes (Contact read back via
+ * `getDetail`'s `{id, value}` array; Opportunity via a singular
+ * `GET /opportunities/{id}` parsed by `readSingularFieldValue`) and
+ * different named writers (`setEstimatedRepairs`, removed; `setRepairEstimate`,
+ * below). PB-D16's named-wrapper rule forbids one setter parameterized
+ * over a target; this module extends that discipline to the persistence
+ * boundary itself.
+ *
+ * WHO CALLS THIS. `UnderwritingWorkspace.tsx`'s `RepairEstimator` — the
+ * real, Opportunity-bound approval flow — per
+ * `docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md` Family 3's approved
+ * ruling: "opportunity.repair_estimate becomes the authoritative carrier
+ * ... Change IAOS repair approval/persistence to write the linked
+ * Opportunity." `DealCalculator.tsx`'s standalone scratchpad no longer
+ * calls anything in this module for repairs at all (INV-70 correction
+ * round 3) — it remains a session-only calculation surface, exactly like
+ * its own pre-existing treatment of ARV.
+ */
+export interface RepairPersistGhlOpportunity {
+  opportunities: {
+    setRepairEstimate: (opportunityId: string, value: number) => Promise<{ ok: boolean }>;
+  };
+}
 
 /**
- * Persist the approved total, then confirm it by reading GHL back.
+ * Persist the approved total to the linked Opportunity. The write's own
+ * readback (inside `setRepairEstimate`) already confirms the value landed
+ * — this function's job is translating that `{ok}` into the standard
+ * `PersistResult` vocabulary this module uses.
  *
- * The PUT is issued at most once and is NEVER repeated — PB-D21. A thrown
- * read consumes an attempt and the poll continues; the terminal state then
- * depends on whether the instrument ever worked. One completed read that
- * never matched is "unconfirmed"; a poll that never once reached GHL is
- * "unverified", and the operator is told a write did leave.
- *
- * `readbackFieldId` addresses the READ only. The write above it went through
- * the named setter with no id supplied by this module.
+ * NEVER OVERWRITES A NON-EMPTY AUTHORITATIVE OPPORTUNITY VALUE FROM
+ * CONTACT. This function does not read or touch `contact.estimated_
+ * repairs` at all — the write goes to the Opportunity and nothing else,
+ * so there is no path by which a Contact value could clobber it. Family
+ * 3's "never overwrite" rule is upheld structurally, not by a runtime
+ * check this function would otherwise need.
  */
-export async function persistApprovedRepairTotal(
-  client: RepairPersistGhl,
-  contactId: string,
-  readbackFieldId: string,
+export async function persistApprovedRepairTotalToOpportunity(
+  client: RepairPersistGhlOpportunity,
+  opportunityId: string,
   gate: PersistGate,
-  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<PersistResult> {
   if (gate.kind === "blocked") {
     return { ok: false, stage: "blocked", error: gate.reason, written: false };
@@ -120,36 +136,26 @@ export async function persistApprovedRepairTotal(
 
   const value = gate.value;
 
+  let result: { ok: boolean };
   try {
-    await client.contacts.setEstimatedRepairs(contactId, value);
+    result = await client.opportunities.setRepairEstimate(opportunityId, value);
   } catch (e) {
     return {
       ok: false, stage: "write", written: false,
-      error: `Couldn't save the repair total: ${(e as Error).message}`,
+      error: `Couldn't save the repair total to the opportunity: ${(e as Error).message}`,
     };
   }
 
-  let anyCompleted = false;
-  let lastErr: Error | null = null;
-  for (let attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt++) {
-    if (attempt > 1) await sleep(1000);
-    try {
-      const detail = await client.contacts.getDetail(contactId);
-      anyCompleted = true;
-      const entry = detail.customFields.find((cf) => cf.id === readbackFieldId);
-      if (entry && Number(entry.value) === value) {
-        return { ok: true, value, confidence: "saved" };
-      }
-    } catch (e) {
-      lastErr = e as Error;
-    }
-  }
-
-  if (!anyCompleted) {
+  // setRepairEstimate performs its own PUT-then-readback cycle (matching
+  // setApprovedArv/setAskingPrice), so by the time it resolves the value
+  // has already been confirmed on the wire or the promise would have
+  // rejected above. There is no separate poll loop here the way the
+  // Contact path needed one -- the write call IS the verification.
+  if (!result.ok) {
     return {
       ok: false, stage: "unverified", written: true,
-      error: `The repair total was sent but GHL could not be read back to confirm it${lastErr ? `: ${lastErr.message}` : ""}.`,
+      error: "The repair total was sent but the opportunity readback did not confirm it.",
     };
   }
-  return { ok: true, value, confidence: "unconfirmed" };
+  return { ok: true, value, confidence: "saved" };
 }

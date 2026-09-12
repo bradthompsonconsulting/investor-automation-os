@@ -52,6 +52,11 @@ import {
   CONTRACT_READY_ITEM_KEYS, type ContractReadyItemKey, type ContractReadyItems,
 } from "../lib/seller-call-readiness-carriers";
 import { scheduleCallbackGated } from "../lib/callbackWrite";
+/* INV-70 / B9-07A Phase 2 — Family 5's approved ruling. The pure gate/
+   freeze logic lives in its own module so "frozen after Agreement
+   Reached" is provable without a network call, mirroring how
+   `seller-call-negotiation.ts`'s pure functions already work. */
+import { currentOfferWriteGate, acceptedPriceFreezeValue, readCurrentOfferFromOpportunity, checkCurrentOfferIntegrity } from "../lib/current-offer-carrier";
 
 /**
  * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49,
@@ -483,6 +488,28 @@ export default function SellerCallWorkspace() {
   const sellerPosition = sellerPositionParsed.kind === "value" ? sellerPositionParsed.value : null;
   const currentOffer = currentOfferParsed.kind === "value" ? currentOfferParsed.value : null;
 
+  /* INV-70 / B9-07A Phase 2 -- Family 5's approved ruling. The Opportunity-
+     owned Current Offer carrier is written on BLUR of the Current Offer
+     input, not on every keystroke: this codebase's every other GHL write
+     is a deliberate, gated action (never a continuous sync), and a
+     per-keystroke PUT would send garbage mid-typed values and risk rate
+     limits. This is an explicit implementation-timing decision, not a
+     policy this document's ruling itself specified -- flagged here for
+     Jess Gate review, same as any other engineering judgment call.
+
+     `lastWrittenCurrentOffer` (a ref, not state -- it never drives a
+     render) de-dupes: committing the SAME value twice (e.g. blur without
+     an intervening edit) never issues a second PUT. Reset to null on
+     mount/opportunity change so a genuinely new deal's first blur always
+     writes once, never assumes a prior deal's last-written value still
+     applies. */
+  const lastWrittenCurrentOfferRef = useRef<number | null>(null);
+  const [currentOfferWriteState, setCurrentOfferWriteState] = useState<
+    | { status: "idle" }
+    | { status: "saving" }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
+
   /* The one already-granted override, if any -- see seller-call-
      negotiation.ts's own header for why this is a DIFFERENT concept from
      `readiness.humanAction`. Never mutated in place: a new grant replaces
@@ -674,6 +701,22 @@ export default function SellerCallWorkspace() {
     }
   }, [contact, opps, policyValues, selected]);
 
+  /* INV-70 / B9-07A Phase 2 correction round 3 -- the LIVE value of
+     opportunity.current_offer for the SELECTED deal, read from the exact
+     same raw Opportunity customFields the resolver above already
+     receives (no second network call). `null` whenever no opportunity is
+     selected yet or the field is empty on this one. THE source resume
+     hydration uses for Current Offer -- never Contact, never a legacy
+     offer_ field. Deliberately a separate memo from `pipeline` above:
+     this is a negotiation fact, not an underwriting one, and must not
+     become coupled to that computation's own error/loading branches. */
+  const currentOfferFromOpportunity: number | null = useMemo(() => {
+    if (!opps || !selected) return null;
+    const opp = opps.find((o) => o.id === selected.id);
+    if (!opp) return null;
+    return readCurrentOfferFromOpportunity(opp.customFields, CONFIG.opportunityFacts.currentOffer);
+  }, [opps, selected]);
+
   const screen: ScreenState = toViewModel({
     loading,
     fetchError,
@@ -736,6 +779,42 @@ export default function SellerCallWorkspace() {
     setOverrideReasonDraft("");
     setOverrideActionError(null);
     setWarningDismissed(false);
+  }
+
+  /* INV-70 / B9-07A Phase 2 -- Family 5's approved ruling. Commits the
+     current, already-parsed `currentOffer` to the Opportunity-owned
+     Current Offer carrier. Called on the input's `onBlur`, never on
+     every keystroke (see `lastWrittenCurrentOfferRef`'s own comment for
+     why). `currentOfferWriteGate` (pure, imported) is the ONLY place the
+     freeze decision is made -- this function performs no freeze logic of
+     its own, it only acts on what the gate already decided, exactly as
+     every other write handler on this page defers to its own imported
+     pure validator.
+
+     A blocked gate is NOT surfaced as an error when the reason is simply
+     "no Current Offer entered" or "already frozen" -- those are normal,
+     expected states (nothing typed yet; negotiation already closed), not
+     failures. Only an actual write failure sets `currentOfferWriteState`
+     to `error`. */
+  async function commitCurrentOffer() {
+    if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
+    const agreementAlreadyReached = latestOutcome?.kind === "accept";
+    const decision = currentOfferWriteGate({ value: currentOffer, agreementAlreadyReached });
+    if (decision.kind === "blocked") return;
+    if (lastWrittenCurrentOfferRef.current === decision.value) return;
+
+    setCurrentOfferWriteState({ status: "saving" });
+    try {
+      const result = await ghl.opportunities.setCurrentOffer(screen.opportunity.id, decision.value);
+      if (!result.ok) {
+        setCurrentOfferWriteState({ status: "error", message: "Current Offer was sent but could not be confirmed." });
+        return;
+      }
+      lastWrittenCurrentOfferRef.current = decision.value;
+      setCurrentOfferWriteState({ status: "idle" });
+    } catch (e: any) {
+      setCurrentOfferWriteState({ status: "error", message: e?.message ?? "Couldn't save Current Offer." });
+    }
   }
 
   function handleKeepNegotiating() {
@@ -1478,6 +1557,24 @@ export default function SellerCallWorkspace() {
     return latestOutcomeNoteForOpportunity(notes, screen.opportunity.id);
   }, [notes, screen]);
 
+  /* Jess Gate clarification, INV-70 / B9-07A Phase 2 correction round 3
+     follow-up. Hydration reads ONLY `opportunity.current_offer`, never
+     `latestOutcome` (approved, unchanged by this memo). But an Accept
+     outcome existing while that field is empty or disagrees with the
+     Note's frozen accepted price is a standing data-integrity problem the
+     operator must be told about, not left to infer from an unexplained
+     blank -- see `current-offer-carrier.ts`'s `checkCurrentOfferIntegrity`
+     header. Recomputed every render `currentOfferFromOpportunity` or
+     `latestOutcome` changes, so it stays current for as long as the
+     disagreement persists -- not just on the one hydration pass. */
+  const currentOfferIntegrity = useMemo(() => {
+    return checkCurrentOfferIntegrity({
+      agreementReached: latestOutcome?.kind === "accept",
+      acceptedValue: latestOutcome?.kind === "accept" ? latestOutcome.snapshot.currentOffer : null,
+      opportunityValue: currentOfferFromOpportunity,
+    });
+  }, [latestOutcome, currentOfferFromOpportunity]);
+
   /* Jess Gate correction, 2026-09-08 -- Contract Ready checklist progress,
      made durable. Scoped to `latestOutcome.at` -- the accepted outcome's
      OWN durable timestamp, an identity that ALREADY exists
@@ -1549,6 +1646,12 @@ export default function SellerCallWorkspace() {
       sellerPositionInput,
       currentOfferInput,
       currentOverride: negotiationOverride,
+      // INV-70 / B9-07A Phase 2 correction round 3 -- the authoritative
+      // source for restoreCurrentOffer, per seller-call-resume.ts's own
+      // updated header. Read fresh every render from the currently
+      // selected deal's own data, so a deal switch's next render carries
+      // the NEW deal's value, never the previous one's.
+      currentOfferFromOpportunity,
     });
     dealHydrationRef.current = decision.nextRef;
 
@@ -1569,12 +1672,22 @@ export default function SellerCallWorkspace() {
       setOverrideAcknowledged(false);
       setOverrideActionError(null);
       setWarningDismissed(false);
+      /* INV-70 / B9-07A Phase 2 -- Deal A's last-written Current Offer
+         value must never suppress Deal B's first commit. */
+      lastWrittenCurrentOfferRef.current = null;
+      setCurrentOfferWriteState({ status: "idle" });
     }
     if (decision.restoreSellerPosition !== null) {
       setSellerPositionInput(decision.restoreSellerPosition);
     }
     if (decision.restoreCurrentOffer !== null) {
       setCurrentOfferInput(decision.restoreCurrentOffer);
+      /* INV-70 / B9-07A Phase 2 correction round 3 -- the restored value
+         IS the Opportunity field's own current content (per seller-call-
+         resume.ts), so it is already correctly persisted. Recording it
+         as already-written means an operator who blurs without editing
+         it issues no redundant PUT. */
+      lastWrittenCurrentOfferRef.current = Number(decision.restoreCurrentOffer);
     }
     /* B8-11 / INV-54 -- restoring the durable override record. Whether it
        still APPLIES to the (also just-restored) Current Offer is
@@ -1592,7 +1705,7 @@ export default function SellerCallWorkspace() {
     if (decision.restoreOverride !== null) {
       setNegotiationOverride({ acknowledgedAboveMax: true, ...decision.restoreOverride });
     }
-  }, [loading, currentDealId, latestOutcome, latestNegotiationOverrideNote]);
+  }, [loading, currentDealId, latestOutcome, latestNegotiationOverrideNote, currentOfferFromOpportunity]);
 
   /* The facts a recorded outcome captures, taken verbatim from what this
      page has already computed -- no recomputation, no second source. */
@@ -1618,16 +1731,53 @@ export default function SellerCallWorkspace() {
      write is appended to local `notes` state immediately so
      `latestOutcome` reflects it without a refetch -- safe because
      `latestOutcomeNoteForOpportunity` sorts by the note's OWN embedded
-     timestamp, never by list position or `dateAdded`. */
+     timestamp, never by list position or `dateAdded`.
+
+     INV-70 / B9-07A Phase 2 correction round 3 -- ACCEPT FAILS CLOSED
+     ACROSS BOTH REQUIRED RECORDS, IN A FIXED ORDER. Family 5's approved
+     ruling requires the accepted-price Current Offer write/readback to
+     SUCCEED before the acceptance outcome Note is ever attempted --
+     reversed from this function's prior behavior, which wrote the Note
+     first and treated the Current Offer freeze as a non-blocking
+     afterthought. That afterthought is REMOVED, not merely reordered:
+     there is no longer any path that records an accepted Note while the
+     authoritative field is unconfirmed.
+
+     THE THREE-STATE OUTCOME THIS ORDERING PRODUCES, STATED EXPLICITLY
+     because it is the whole point of the correction:
+       1. Current Offer write/readback FAILS (thrown error OR
+          `result.ok === false`, checked identically) -- the Note is
+          NEVER attempted. Nothing is recorded. The value remains an
+          ordinary, unfrozen negotiation figure (no accept outcome
+          exists), and the operator may retry.
+       2. Current Offer write/readback SUCCEEDS, then the Note write
+          FAILS -- the accepted price is durably saved to the
+          Opportunity, but because NO accept outcome note exists yet,
+          `currentOfferWriteGate`'s freeze check
+          (`agreementAlreadyReached`) still reads `false`: the value
+          remains an ordinary current negotiation value, editable, not
+          yet the accepted price Board #9 will consume. The failure is
+          surfaced via the SAME `outcomeActionError` path Follow-Up/Pass
+          failures already use, and the operator may retry (retrying
+          re-sends the same, already-confirmed Current Offer value --
+          harmless, since `setCurrentOffer` is a plain idempotent PUT --
+          then reattempts the Note).
+       3. Both succeed -- the Note now exists, so the VERY NEXT render's
+          `latestOutcome.kind === "accept"` freezes the field, exactly as
+          `currentOfferWriteGate`'s existing rule already specifies. No
+          separate "freeze" step is needed here beyond the write itself:
+          freezing is a property of a later render observing the Note,
+          not an action this function performs. */
   async function handleRecordOutcome(kind: CallOutcomeKind) {
     if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
     const nowIso = new Date().toISOString();
+    const snapshot = buildOutcomeSnapshot();
     const attempt = attemptRecordOutcome({
       kind,
       opportunityId: screen.opportunity.id,
       operator: null,
       at: nowIso,
-      snapshot: buildOutcomeSnapshot(),
+      snapshot,
       reason: passReasonInput,
       followUpAt: followUpAtInput,
     });
@@ -1638,6 +1788,40 @@ export default function SellerCallWorkspace() {
     setOutcomeActionError(null);
     setRecordingOutcome(kind);
     try {
+      if (kind === "accept") {
+        /* attemptRecordOutcome already required snapshot.currentOffer
+           non-null and readiness OFFER_READY to reach here;
+           acceptedPriceFreezeValue is an independent, second gate on the
+           number itself (positive, finite) -- never skipped merely
+           because the first gate already passed. */
+        const freeze = acceptedPriceFreezeValue(snapshot.currentOffer);
+        if (freeze.kind === "blocked") {
+          setOutcomeActionError(`Cannot record acceptance -- ${freeze.reason}.`);
+          return;
+        }
+        let freezeResult: { ok: boolean };
+        try {
+          freezeResult = await ghl.opportunities.setCurrentOffer(screen.opportunity.id, freeze.value);
+        } catch (e: any) {
+          setOutcomeActionError(
+            `Cannot record acceptance -- the accepted price could not be saved to the opportunity (${e?.message ?? "unknown error"}). Nothing was recorded; you may retry.`,
+          );
+          return;
+        }
+        if (!freezeResult.ok) {
+          setOutcomeActionError(
+            "Cannot record acceptance -- the accepted price was sent but could not be confirmed on the opportunity. Nothing was recorded; you may retry.",
+          );
+          return;
+        }
+        // Confirmed authoritative. Not yet frozen -- freezing is this
+        // deal's NEXT render observing the Note written below, per the
+        // header's outcome (3). Recorded as already-written so an
+        // untouched blur before that next render issues no redundant PUT.
+        lastWrittenCurrentOfferRef.current = freeze.value;
+        setCurrentOfferWriteState({ status: "idle" });
+      }
+
       if (kind === "follow_up") {
         const cb = await scheduleCallbackGated(ghl, contactId, new Date(followUpAtInput).toISOString());
         if (!cb.ok) {
@@ -1973,6 +2157,23 @@ export default function SellerCallWorkspace() {
                 </span>
               </div>
 
+              {!currentOfferIntegrity.ok ? (
+                <div
+                  data-testid="current-offer-integrity-warning"
+                  style={{
+                    marginBottom: "10px", padding: "8px 10px", borderRadius: "6px",
+                    background: "rgba(239,68,68,0.10)", border: "1px solid rgba(239,68,68,0.4)",
+                    fontSize: "11px", color: "#FCA5A5",
+                  }}
+                >
+                  ⚠ Current Offer carrier mismatch —{" "}
+                  {currentOfferIntegrity.reason === "opportunity_field_empty"
+                    ? `the Opportunity's Current Offer field is empty, but this deal has an accepted price of ${moneyOrUnknown(currentOfferIntegrity.acceptedValue)} on record.`
+                    : `the Opportunity's Current Offer field reads ${moneyOrUnknown(currentOfferIntegrity.opportunityValue)}, which disagrees with the accepted price of ${moneyOrUnknown(currentOfferIntegrity.acceptedValue)} on record.`}
+                  {" "}The accepted price above is the immutable Agreement Reached record and governs; this is a reconciliation flag on the queryable field, not a request to re-confirm the agreement.
+                </div>
+              ) : null}
+
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "8px" }}>
                 Contract Ready checklist (Board #9 completes the transaction; this is a handoff, not contract software)
               </div>
@@ -2066,6 +2267,7 @@ export default function SellerCallWorkspace() {
                   data-testid="negotiation-current-offer-input"
                   value={currentOfferInput}
                   onChange={(e) => handleCurrentOfferChange(e.target.value)}
+                  onBlur={() => { void commitCurrentOffer(); }}
                   placeholder="Not yet entered — IAOS never sets this"
                   style={{
                     background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px",
@@ -2075,6 +2277,23 @@ export default function SellerCallWorkspace() {
                 {currentOfferParsed.kind === "invalid" ? (
                   <span data-testid="negotiation-current-offer-error" style={{ color: "#EF4444", fontSize: "10px" }}>
                     {currentOfferParsed.reason}
+                  </span>
+                ) : null}
+                {/* INV-70 / B9-07A Phase 2 -- truthful, minimal status for the
+                    background Opportunity write. Silent when idle: a
+                    successful sync is not something the operator needs to
+                    be told about on every blur, matching this page's
+                    existing philosophy that GHL is the sole system of
+                    record and the screen states only what differs from
+                    "working as expected." */}
+                {currentOfferWriteState.status === "saving" ? (
+                  <span data-testid="current-offer-write-saving" style={{ color: "#64748B", fontSize: "10px" }}>
+                    Saving Current Offer…
+                  </span>
+                ) : null}
+                {currentOfferWriteState.status === "error" ? (
+                  <span data-testid="current-offer-write-error" style={{ color: "#EF4444", fontSize: "10px" }}>
+                    {currentOfferWriteState.message}
                   </span>
                 ) : null}
               </label>

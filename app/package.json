@@ -37,7 +37,11 @@
     "test:seller-contract-facts-carriers": "node scripts/test-seller-contract-facts-carriers.cjs",
     "test:contract-facts-model": "node scripts/test-contract-facts-model.cjs",
     "test:contract-document-model": "node scripts/test-contract-document-model.cjs",
-    "test:contract-authorization-model": "node scripts/test-contract-authorization-model.cjs"
+    "test:contract-authorization-model": "node scripts/test-contract-authorization-model.cjs",
+    "test:repairs-canonicalization": "node scripts/test-repairs-canonicalization.cjs",
+    "test:current-offer-carrier": "node scripts/test-current-offer-carrier.cjs",
+    "test:legacy-offer-fields-retired": "node scripts/test-legacy-offer-fields-retired.cjs",
+    "test:legacy-repairs-writer-removed": "node scripts/test-legacy-repairs-writer-removed.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",

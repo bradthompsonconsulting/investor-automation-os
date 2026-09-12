@@ -10,7 +10,6 @@ export interface GhlConfig {
     propertyNotes: string;
     arv: string;
     propertyAddress: string;
-    offerPrice: string;
     motivationScore: string;
     dealScore: string;
     combinedScore: string;
@@ -69,11 +68,29 @@ export interface GhlConfig {
    * Existing Opportunity deal inputs, read by PB-D55 seed-then-supersede.
    * Distinct from opportunityFields, which holds underwriting outputs and
    * mode. These are facts about the deal; those are state IAOS produces.
+   *
+   * `currentOffer` — INV-70 / B9-07A Phase 2 approved ruling (Family 5).
+   * ONE Opportunity-owned carrier replacing the fourteen-field mirrored
+   * `offer_*` architecture. Before Agreement Reached it holds the latest
+   * negotiated offer; at Agreement Reached it freezes at the accepted
+   * price (`current-offer-carrier.ts`'s `currentOfferWriteGate` is the
+   * pure freeze logic; `ghl.opportunities.setCurrentOffer` is the writer).
+   * Created live in TEST 2026-09-11 (`opportunity.current_offer`, id
+   * `7pmvwi6vlu74f5rLOp9M`, NUMERICAL, Opportunity Details folder),
+   * inert-proofed the same session. An EARLIER attempt that same session
+   * was refused (`HTTP 401 "The token is not authorized for this
+   * scope"` — Custom Fields write/create scope was not yet granted to
+   * the Test Private Integration token); once that scope was added, the
+   * identical script created the field on the first retry. PRODUCTION
+   * still carries `CURRENT_OFFER_NOT_PROVISIONED` below — provisioning it
+   * there was never in this phase's scope (GHL mutations are Test-only
+   * this phase) and remains a separate, later decision.
    */
   opportunityFacts: {
     arv: string;
     repairs: string;
     askingPrice: string;
+    currentOffer: string;
   };
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
@@ -100,6 +117,22 @@ export interface GhlConfig {
   };
 }
 
+/**
+ * INV-70 / B9-07A Phase 2 — the literal placeholder value for the
+ * not-yet-provisioned Current Offer field. Carried by `PRODUCTION` only
+ * as of this revision (`TEST` now has a real id — see the
+ * `opportunityFacts` interface doc comment): provisioning a new
+ * Opportunity field in Production was never in this phase's scope (GHL
+ * mutations are Test-only this phase) and remains a separate, later
+ * decision. `ghl.opportunities.setCurrentOffer` refuses immediately,
+ * before any network call, whenever the configured id equals this
+ * sentinel -- the same fail-closed pattern `SENDER_USER_ID_NOT_CONFIGURED`
+ * already established for B9-08's Documents & Contracts send gate.
+ * Exported so a real Production id, once created, replaces this in
+ * exactly one place -- never toggled, always a reviewed commit.
+ */
+export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVISIONED" as const;
+
 const PRODUCTION: GhlConfig = {
   locationId: "jmHG4B8RdzwpfqruNf68",
   fields: {
@@ -110,7 +143,13 @@ const PRODUCTION: GhlConfig = {
     propertyNotes:           "k7O0TYVMpqCpnMHRLPol",
     arv:                     "wMBTGWMs97yysQFx7Vad",
     propertyAddress:         "tG4gGFI8JB2VjWeuqYMx",
-    offerPrice:              "v2VO2wUwTYRojmU7VXyZ",
+    // offerPrice REMOVED, INV-70 / B9-07A Phase 3 correction -- its one
+    // reader (netlify/functions/lib/contact-parse.ts, feeding Dashboard's
+    // "Offers to review" tile) was retired in favor of
+    // opportunityFacts.currentOffer. The GHL field itself
+    // (contact.offer_price, v2VO2wUwTYRojmU7VXyZ) is untouched -- only this
+    // now-dead config pointer is gone. See the canonicalization doc's
+    // Phase 3 section.
     motivationScore:         "8vH9yq10xeYVVMHXbS0C",
     dealScore:               "cfkm0kb9CLvjZgyrcIFz",
     combinedScore:           "9SVnuzznYsZOQQazpxld",
@@ -158,6 +197,17 @@ const PRODUCTION: GhlConfig = {
     arv:                "cBkygqcHRseZUGCYYeba",
     repairs:            "hId4Yog6u5GP1Iwz1aNx",
     askingPrice:        "YxCDaX7dLhBJL9GLGFpJ",
+    // Created live in Production 2026-09-12 via
+    // scripts/inv70-create-current-offer-field.cjs --apply (INV-70 / B9-07A
+    // Phase 3 correction), once Brad explicitly authorized Production
+    // provisioning and this credential's use. fieldKey
+    // opportunity.current_offer, NUMERICAL, Opportunity Details folder
+    // (FQJ2zGEAIJu0JA9NubCL -- resolved live from
+    // opportunity.arv_after_repair_value's own parentId, same as Test).
+    // Inert-proofed the same session against the confirmed stale
+    // calculator-test opportunity 1AP9BfFPJ2xYZ0RPTm9U -- see
+    // docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md.
+    currentOffer:       "yZgEdTOvppmmCvv8kx9n",
   },
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
@@ -189,7 +239,7 @@ const TEST: GhlConfig = {
     propertyNotes:           "SWTp5VaVY6OLLKNxq3wn",
     arv:                     "QkWl09I9yXGz8OIcs5Xd",
     propertyAddress:         "1B6u7F1MipquMxVWnAD9",
-    offerPrice:              "oUJHAbPq7tcw67U2Q5Zx",
+    // offerPrice REMOVED -- see PRODUCTION.fields' matching comment above.
     motivationScore:         "kugS259mDJzJyHkK2ble",
     dealScore:               "aCEzgjAIpdx1t87bn0YE",
     combinedScore:           "FYoNN6qK9MbE9x9iloum",
@@ -236,6 +286,13 @@ const TEST: GhlConfig = {
     arv:                "ppe2ZTO7DJTMao74xvYI",
     repairs:            "lSWxFUmWksfrViePG4UC",
     askingPrice:        "owIOWnJuIheiwJVdJWQ5",
+    // Created live in Test 2026-09-11 via
+    // scripts/inv70-create-current-offer-field.cjs --apply, once the
+    // Test Private Integration was granted Custom Fields write/create
+    // scope. fieldKey opportunity.current_offer, NUMERICAL, folder
+    // Opportunity Details (sGP3pbDQFN7fXS62MAgA). Inert-proofed the same
+    // session -- see docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md.
+    currentOffer:       "7pmvwi6vlu74f5rLOp9M",
   },
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
@@ -380,7 +437,7 @@ const RUNTIME_GROUPS = {
     "profitSharePct",
   ],
   opportunityFields: ["endBuyerMaxPrice", "assignmentMode", "sellerMAO"],
-  opportunityFacts: ["arv", "repairs", "askingPrice"],
+  opportunityFacts: ["arv", "repairs", "askingPrice", "currentOffer"],
   stages: ["sellerClosedWon", "lostNotInterested", "sellerFollowUp"],
 } as const;
 

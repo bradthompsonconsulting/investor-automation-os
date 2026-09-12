@@ -20,9 +20,13 @@ const SCORE_IDS = {
 };
 
 // Contact-side offer_price (§14e OFFER_FIELD_IDS.contact.offer_price in
-// MaoCalculator.tsx) — read-only here, used by the Dashboard's "Offers to
-// review" tile to detect a saved-but-unsent offer. Never written by this function.
-const OFFER_PRICE_ID = FIELDS.offerPrice;
+// MaoCalculator.tsx) is DELIBERATELY NOT READ HERE ANY MORE, INV-70 /
+// B9-07A Phase 3 correction. It used to feed the Dashboard's "Offers to
+// review" tile, but that tile now reads opportunity.current_offer
+// (Family 5's approved, Opportunity-owned carrier) from pipeline data
+// instead -- see Dashboard.tsx's offersToReview and ghl.ts's ContactRow.
+// This was the last live application reader of this legacy field; the
+// GHL field itself is untouched.
 
 // Property Address (contact.property_address) — the deal's subject-property
 // address, a TEXT custom field. Confirmed live: tG4gGFI8JB2VjWeuqYMx =
@@ -130,7 +134,6 @@ export function parseContact(c: any) {
     dealScore:          cfValue(cf, SCORE_IDS.deal_score),
     combinedScore:      cfValue(cf, SCORE_IDS.combined_score),
     completenessScore:  cfValue(cf, SCORE_IDS.data_completeness_score),
-    offerPrice:         cfValue(cf, OFFER_PRICE_ID),
     callbackDatetime:        cfDate(cf, CALLBACK_DATETIME_ID),
     callbackDatetimePrecise: cfText(cf, CALLBACK_DATETIME_PRECISE_ID),
     lastCallAttempt:         cfDate(cf, LAST_CALL_ATTEMPT_ID),

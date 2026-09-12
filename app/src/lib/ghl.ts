@@ -11,7 +11,7 @@
  * without refactoring once implemented.
  */
 
-import { getRuntimeConfig } from "../../shared/ghl-config";
+import { getRuntimeConfig, CURRENT_OFFER_NOT_PROVISIONED } from "../../shared/ghl-config";
 /* Board item #2C. The three option LABELS are declared once, in resolver-types,
    and this module reads them rather than retyping them. Retyping would create a
    second list that could drift from the one the resolver parses against, and a
@@ -117,9 +117,15 @@ export interface ContactRow {
   dealScore:         number | null;
   combinedScore:     number | null;
   completenessScore: number | null;
-  // Contact-side offer_price (§14e) — non-null once a MAO offer has been saved
-  // via the calculator. Read-only signal for the Dashboard's "Offers to review" tile.
-  offerPrice:        number | null;
+  // Contact-side offer_price (§14e) is DELIBERATELY GONE from this row,
+  // INV-70 / B9-07A Phase 3 correction. It fed the Dashboard's "Offers to
+  // review" tile, but that field's writer (the MAO calculator) was retired
+  // in Phase 2, leaving this the last live application reader of a Family
+  // 5 legacy field this document's own audit exists to retire. The tile
+  // now reads opportunity.current_offer (Family 5's approved,
+  // Opportunity-owned carrier) directly from pipeline data instead --
+  // see Dashboard.tsx's offersToReview. contact.offer_price itself is
+  // untouched in GHL; only this application-side reader is gone.
   // Dashboard Phase 2/3 fields (ISO strings). Both last_call_attempt and
   // callback_datetime are DATE-typed in GHL and truncate time-of-day on
   // write — each has a TEXT companion field carrying the exact value,
@@ -602,12 +608,6 @@ export const ghl = {
     },
     get: (id: string) => request<any>(`/contacts/${id}`),
 
-    // MAO Calculator Phase 6 "Save Offer to GHL" — writes ONLY the given custom
-    // fields (the offer_ fields). Body carries nothing else: no tags key, so this
-    // can never add/remove a tag (e.g. offer-made) as a side effect.
-    saveOfferFields: (contactId: string, customFields: { id: string; field_value: unknown }[]) =>
-      request<any>(`/contacts/${contactId}`, "PUT", { customFields }),
-
     // Dashboard Phase 2 — the note-is-the-attempt rule (spec §5). Still ONE
     // write action: a single PUT carrying exactly these two customFields
     // entries, nothing else (no tags/stage/offer_ keys). last_call_attempt is
@@ -669,31 +669,17 @@ export const ghl = {
     setARV: (contactId: string, value: number | "") =>
       ghl.contacts._putMonetaryField(contactId, ARV_ID, value),
 
-    // Board item #2B — sixth named write. estimated_repairs only.
-    //
-    // A NAMED METHOD, NOT A PARAMETERIZED SETTER. PB-D16 §4.4 forbids a public
-    // setter that takes a field id from the caller, because dataType proves
-    // SERIALIZATION and not FIELD SAFETY (§4.6: workflow triggers are per-field
-    // and are not API-derivable). So each unlocked MONETORY field earns its own
-    // method by its own decision, and this is that decision for repairs. The UI
-    // row component is shared with ARV — two consumers is the threshold — but
-    // the setter is deliberately not.
-    //
-    // WRITE-SAFETY, PROVEN 2026-08-27 and narrow. GHL Advanced Filters with
-    // Trigger Type = Contact Changed returned exactly one published workflow in
-    // Production, `Seller - Reset Phone Status on Phone Change`, whose filter is
-    // specifically "Phone has changed". No generic contact-field-change workflow
-    // exists in the location, so writing this field enrols no contact in any
-    // workflow by virtue of the field changing. THAT CLEARANCE COVERS THE
-    // Contact Changed TRIGGER TYPE ONLY. It does not extend to DATE fields under
-    // Custom Date Reminder. Irrelevant here — this field is MONETORY — but do
-    // not generalise it to the next unlock.
-    //
-    // MONETORY contract is ARV's, unchanged: an unquoted JS number round-trips
-    // exactly and "" clears to KEY_ABSENT. Do NOT copy setCallbackDatetime's
-    // null-to-clear — that is DATE behavior and does not apply here.
-    setEstimatedRepairs: (contactId: string, value: number | "") =>
-      ghl.contacts._putMonetaryField(contactId, ESTIMATED_REPAIRS_ID, value),
+    // INV-70 / B9-07A Phase 2 correction round 3 -- REMOVED
+    // setEstimatedRepairs (Board item #2B's sixth named write). Family 3's
+    // approved ruling makes contact.estimated_repairs a read-only legacy
+    // fallback/migration input; a repository-wide audit found and closed
+    // its last two callers (UnderwritingWorkspace.tsx, already switched to
+    // setRepairEstimate below in the earlier Phase 2 pass, and
+    // DealCalculator.tsx's own save-back action, removed this round, and
+    // ContactWorkspace.tsx's general field-edit row, also converted to
+    // read-only this round). ESTIMATED_REPAIRS_ID (below) remains -- it is
+    // still needed to IDENTIFY the field for display/dispatch, just no
+    // longer to write it. _putMonetaryField stays, still used by setARV.
 
     // Board 4 — PRIVATE string transport, the exact counterpart to
     // _putMonetaryField above and permitted by the same §4.4 sentence: "a
@@ -827,12 +813,6 @@ export const ghl = {
     updateStage: (opportunityId: string, pipelineId: string, pipelineStageId: string) =>
       request<any>(`/opportunities/${opportunityId}`, "PUT", { pipelineId, pipelineStageId }),
 
-    // MAO Calculator Phase 6 "Save Offer to GHL" — writes ONLY the given custom
-    // fields (the offer_ fields). Body carries nothing else: no pipelineStageId
-    // key, so this can never move the pipeline stage as a side effect — that
-    // stays tied to the deliberate Pipeline-page "Move to" action (V7 §14d).
-    saveOfferFields: (opportunityId: string, customFields: { id: string; field_value: unknown }[]) =>
-      request<any>(`/opportunities/${opportunityId}`, "PUT", { customFields }),
     /**
      * Board #5 §4B — the Opportunity Asking Price setter. ONE FIELD, NAMED.
      *
@@ -957,6 +937,126 @@ export const ghl = {
       if (!readRes.ok) {
         const text = await readRes.text();
         throw new Error(`setApprovedArv readback → ${readRes.status}: ${text}`);
+      }
+      const readBody = await readRes.json();
+      const opportunity = readBody.opportunity ?? readBody;
+      const entry = (opportunity.customFields ?? [])
+        .find((field: any) => field.id === fieldId) ?? null;
+      const observed = entry === null ? null : readSingularFieldValue(entry);
+      return { ok: entry !== null && observed === sent, putStatus, sent, observed };
+    },
+
+    /**
+     * INV-70 / B9-07A Phase 2. One named writer for the authoritative deal
+     * repairs figure, matching `setApprovedArv` exactly. Before this writer
+     * existed, `opportunity.repair_estimate` had no writer at all
+     * (`docs/BOARD8_ECONOMICS_INVENTORY_V1.md`, "Repairs" row; independently
+     * confirmed in `docs/UNDERWRITING_FIELD_REFERENCE.md:84`), so
+     * `resolveDealFacts`'s seed-then-supersede path
+     * (`underwriting/resolver.ts:327`) always fell through to
+     * `contact.estimated_repairs` -- PB-D55's design was correct, the
+     * carrier just never got its writer. This closes that gap.
+     *
+     * ⚠ THIS WRITES THE AUTHORITATIVE VALUE AND NOTHING ELSE. It must never
+     * be paired with a write to `contact.estimated_repairs` -- the two
+     * carriers have precedence (Opportunity wins, seed-only on Contact,
+     * PB-D55), and synchronizing them would destroy the fallback's meaning,
+     * exactly as `setAskingPrice`'s own comment already states for its pair.
+     */
+    setRepairEstimate: async (
+      opportunityId: string,
+      value: number,
+    ): Promise<{ ok: boolean; putStatus: number; sent: number; observed: number | string | null }> => {
+      const fieldId = CONFIG.opportunityFacts.repairs;
+      if (!fieldId) throw new Error("setRepairEstimate: no configured id for opportunityFacts.repairs");
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        throw new Error("setRepairEstimate: value must be a non-negative finite number");
+      }
+
+      const sent = roundCurrency(value);
+      const body = { customFields: [{ id: fieldId, field_value: sent }] };
+      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const putStatus = putRes.status;
+      if (!putRes.ok) {
+        const text = await putRes.text();
+        throw new Error(`setRepairEstimate PUT → ${putStatus}: ${text}`);
+      }
+
+      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
+      if (!readRes.ok) {
+        const text = await readRes.text();
+        throw new Error(`setRepairEstimate readback → ${readRes.status}: ${text}`);
+      }
+      const readBody = await readRes.json();
+      const opportunity = readBody.opportunity ?? readBody;
+      const entry = (opportunity.customFields ?? [])
+        .find((field: any) => field.id === fieldId) ?? null;
+      const observed = entry === null ? null : readSingularFieldValue(entry);
+      return { ok: entry !== null && observed === sent, putStatus, sent, observed };
+    },
+
+    /**
+     * INV-70 / B9-07A Phase 2. The single Opportunity-owned Current Offer
+     * carrier. Before Agreement Reached it mirrors the live negotiation
+     * value (`docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md` Family 5's
+     * approved ruling); at Agreement Reached the same field freezes at the
+     * accepted price. This module performs no freeze check itself -- that
+     * is `current-offer-carrier.ts`'s `currentOfferWriteGate`, a pure
+     * function, so the freeze rule is provable without a network call.
+     * This writer only ever sends what the gate already allowed.
+     *
+     * ⚠ NOT ONE OF THE FOURTEEN LEGACY `offer_*` FIELDS. This is a
+     * deliberately NEW carrier, precisely so nothing here can be confused
+     * with, or accidentally reuses, `contact.offer_price` /
+     * `opportunity.offer_price` or any of their twelve siblings -- all
+     * fourteen are retired and must receive no new writes (Family 5's
+     * approved ruling). `opportunityFacts.currentOffer` is a distinct
+     * config key from every legacy `offer_*` id.
+     *
+     * ⚠ PRODUCTION IS NOT YET PROVISIONED. `CONFIG.opportunityFacts.
+     * currentOffer` is a deliberately-fake, obviously-invalid sentinel in
+     * Production (see `ghl-config.ts`'s `CURRENT_OFFER_NOT_PROVISIONED`) --
+     * this writer refuses immediately, before any network call, when the
+     * configured id equals that sentinel, rather than sending a PUT that
+     * targets a field which does not exist in that location.
+     */
+    setCurrentOffer: async (
+      opportunityId: string,
+      value: number,
+    ): Promise<{ ok: boolean; putStatus: number; sent: number; observed: number | string | null }> => {
+      const fieldId = CONFIG.opportunityFacts.currentOffer;
+      if (!fieldId) throw new Error("setCurrentOffer: no configured id for opportunityFacts.currentOffer");
+      if (fieldId === CURRENT_OFFER_NOT_PROVISIONED) {
+        throw new Error(
+          "setCurrentOffer: this environment has no provisioned Current Offer field yet " +
+            "(CURRENT_OFFER_NOT_PROVISIONED sentinel) -- refusing before any network call.",
+        );
+      }
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+        throw new Error("setCurrentOffer: value must be a positive finite number");
+      }
+
+      const sent = roundCurrency(value);
+      const body = { customFields: [{ id: fieldId, field_value: sent }] };
+      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const putStatus = putRes.status;
+      if (!putRes.ok) {
+        const text = await putRes.text();
+        throw new Error(`setCurrentOffer PUT → ${putStatus}: ${text}`);
+      }
+
+      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
+      if (!readRes.ok) {
+        const text = await readRes.text();
+        throw new Error(`setCurrentOffer readback → ${readRes.status}: ${text}`);
       }
       const readBody = await readRes.json();
       const opportunity = readBody.opportunity ?? readBody;

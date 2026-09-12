@@ -989,6 +989,42 @@ function ContactAskRow({ f, askAuthority }: { f: RecordField; askAuthority: Cont
   );
 }
 
+/**
+ * INV-70 / B9-07A Phase 2 correction round 3 -- DISPLAY-ONLY, AND
+ * DELIBERATELY SO, mirroring `ContactAskRow`'s own precedent exactly
+ * (same "two carriers, one authoritative" situation Asking Price already
+ * has). `opportunity.repair_estimate` is now the authoritative carrier
+ * (Family 3's approved ruling); `contact.estimated_repairs` is a
+ * temporary legacy fallback/migration input ONLY -- it must never be
+ * edited from this general Contact record-management surface again,
+ * exactly as Asking Price's Contact-side twin already cannot be.
+ *
+ * NO LIVE AUTHORITY COMPARISON, UNLIKE ContactAskRow. That row's
+ * `askAuthority` prop computes a live Contact-vs-Opportunity agreement
+ * check for Asking Price specifically -- building the equivalent for
+ * Repairs was not asked for by this correction and would be new scope
+ * beyond "this field stops being editable here." This row states the
+ * carrier fact plainly instead.
+ */
+function ContactRepairsRow({ f }: { f: RecordField }) {
+  return (
+    <div style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
+      <span style={{ flex: "0 0 200px", color: "#94A3B8" }}>{f.name}</span>
+      <div style={{ display: "flex", gap: "8px", alignItems: "baseline", flex: 1, minWidth: 0 }}>
+        <span data-testid={`field-display-${f.id}`} style={{ color: "#E2E8F0" }}>
+          {f.value == null ? "—" : String(f.value)}
+        </span>
+        <span
+          data-testid="contact-repairs-readonly-note"
+          style={{ fontSize: "10px", fontStyle: "italic", color: "#64748B" }}
+        >
+          Legacy fallback only — the linked Opportunity's Repair Estimate governs
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function FieldRow({ f, contactId, askAuthority }: {
   f: RecordField;
   contactId: string;
@@ -1000,11 +1036,18 @@ function FieldRow({ f, contactId, askAuthority }: {
      NOT mirror it here — the two carriers have precedence, and synchronizing
      them would erase the only signal that says which one is being obeyed. */
   if (f.id === CONTACT_ASKING_PRICE_ID) return <ContactAskRow f={f} askAuthority={askAuthority} />;
-  // The two unlocked MONETORY fields. Same row, different named setter — the
-  // dispatch is where each field's write decision is spent, and it is one line
-  // per field so an unlock cannot happen by accident.
+  // ARV remains the one unlocked, directly-editable MONETORY field here --
+  // Contact ARV is a deliberate PB-D55 seed input, unaffected by this
+  // correction. The dispatch is where each field's write decision is
+  // spent, one line per field so an unlock cannot happen by accident.
   if (f.id === ARV_ID) return <MonetaryRow f={f} contactId={contactId} save={ghl.contacts.setARV} />;
-  if (f.id === ESTIMATED_REPAIRS_ID) return <MonetaryRow f={f} contactId={contactId} save={ghl.contacts.setEstimatedRepairs} />;
+  /* INV-70 / B9-07A Phase 2 correction round 3 -- REMOVED the
+     MonetaryRow/setEstimatedRepairs unlock. contact.estimated_repairs is
+     read-only everywhere in application code now (Family 3's approved
+     ruling): this was the last live application write path targeting it,
+     found during a repository-wide audit alongside DealCalculator.tsx's
+     own (also removed) save-to-Contact action. See ContactRepairsRow. */
+  if (f.id === ESTIMATED_REPAIRS_ID) return <ContactRepairsRow f={f} />;
   /* Board #5 S3b — the first `choice` unlock, N 3 -> 4. One line, like the two
      above: the dispatch is where each field's write decision is spent, and it is
      one line per field so an unlock cannot happen by accident. ChoiceRow takes no

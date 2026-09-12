@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, AlertCircle, Check, Loader2 } from "lucide-react";
-import { ghl, ESTIMATED_REPAIRS_ID, type ContactDetail, type OpportunityRow } from "../lib/ghl";
+import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
 import {
   parsePolicy,
@@ -39,7 +39,13 @@ import type {
 /* INV-13 — the persistence boundary. The gate and the write/readback live in
    their own module so "unapproved cannot write" is a property of a pure
    function a harness can exhaust, not a claim about this component. */
-import { persistApprovedRepairTotal, persistGate } from "../lib/repair-estimation/persist";
+/* INV-70 / B9-07A Phase 2 — Family 3's approved ruling: this workspace's
+   repair-approval flow is the real, Opportunity-bound path, so it now
+   persists to the linked Opportunity, not the Contact. See persist.ts's
+   own header comment for why this is a separate function rather than a
+   parameter on persistApprovedRepairTotal, and why DealCalculator.tsx
+   (Contact-only by its own deliberate design) is unaffected. */
+import { persistApprovedRepairTotalToOpportunity, persistGate } from "../lib/repair-estimation/persist";
 import type { PersistResult, RepairApproval } from "../lib/repair-estimation/persist";
 import ArvCompsWorkspace from "../components/ArvCompsWorkspace";
 
@@ -553,8 +559,13 @@ function EstimatorRow({ row, answer, onCondition, onAmount, onQuantity }: {
  * confirmed write the page RE-READS the contact rather than patching its own
  * copy.
  */
-function RepairEstimator({ contactId, onPersisted }: {
-  contactId: string;
+function RepairEstimator({ opportunityId, onPersisted }: {
+  /* INV-70 / B9-07A Phase 2 — the approved total now persists here, not to
+     the Contact, so this component no longer needs a contactId prop at
+     all (removed). Required (not optional): this component only ever
+     renders inside the underwriting screen, which per PB-D55 always has
+     one identified Opportunity on screen before rendering its children. */
+  opportunityId: string;
   onPersisted: () => void;
 }) {
   const [answers, setAnswers] = useState<Answers>({});
@@ -595,11 +606,13 @@ function RepairEstimator({ contactId, onPersisted }: {
   }
 
   /* The single path to the carrier. Every caller goes through persistGate, so
-     no branch reaches the setter without an approval decision. */
+     no branch reaches the setter without an approval decision.
+     INV-70 / B9-07A Phase 2 — targets the linked Opportunity, not the
+     Contact (Family 3's approved ruling). */
   async function persistNow(current: RepairApproval, currentTotal: number) {
     setPersistState({ status: "saving" });
-    const result = await persistApprovedRepairTotal(
-      ghl, contactId, ESTIMATED_REPAIRS_ID,
+    const result = await persistApprovedRepairTotalToOpportunity(
+      ghl, opportunityId,
       persistGate(current, revision, currentTotal),
     );
     setPersistState({ status: "done", result });
@@ -1191,7 +1204,7 @@ export default function UnderwritingWorkspace() {
               frequently unresolved BECAUSE the repair number does not exist
               yet. This is the surface that produces one during the call. */}
           <RepairEstimator
-            contactId={contactId}
+            opportunityId={screen.opportunity.id}
             onPersisted={() => setReloadTick((t) => t + 1)}
           />
         </>
@@ -1309,7 +1322,7 @@ export default function UnderwritingWorkspace() {
               the same revise-the-inputs zone: a resolved deal can still have
               its repair allowance worked during the call. */}
           <RepairEstimator
-            contactId={contactId}
+            opportunityId={screen.opportunity.id}
             onPersisted={() => setReloadTick((t) => t + 1)}
           />
         </>
