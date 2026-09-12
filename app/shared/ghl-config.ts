@@ -115,7 +115,80 @@ export interface GhlConfig {
     longTermNurture: string;
     lostNotInterested: string;
   };
+  /**
+   * B9-08 / INV-63. SERVER-SIDE ONLY, with ONE deliberate exception
+   * (`populationVerification`, see the RUNTIME_GROUPS doc comment below)
+   * -- every other key here is never added to RUNTIME_GROUPS /
+   * RuntimeConfig, and never sent to the browser. `ghl-proxy.ts`
+   * reads this and UNCONDITIONALLY OVERWRITES the `contactId` field of any
+   * `POST /proposals/templates/send` request body with it, ignoring
+   * whatever the browser supplied -- the browser is never trusted to name
+   * the recipient of an actual e-sign send, per
+   * `docs/BOARD9_CONTRACT_INVENTORY_V1.md`'s own proposed recipient-
+   * allowlist safeguard for this exact endpoint. `approvedTestContactId`
+   * is the ONE pre-approved GHL Test contact ("IAOS Underwriting Test",
+   * `NAGtUZ9aOE5C1GatJzpT`) Brad's own live Test transaction already used
+   * (that document, 2026-09-09). PRODUCTION's value is a deliberately
+   * fake, obviously-invalid sentinel -- non-empty (so `getConfig`'s own
+   * completeness check still passes) but never a real GHL id, so this
+   * capability is structurally inert if this selector is ever
+   * (mis)configured to "production": the outbound call would carry an
+   * invalid contactId and GHL itself would reject it.
+   *
+   * `senderUserId` -- the documented `POST /proposals/templates/send`
+   * request body requires `userId` (the GHL user the send is attributed
+   * to) as a REQUIRED field, verified directly from that endpoint's own
+   * reference page. TEST's value is Brad's own verified GHL Test sender
+   * user id ("IAOS Test Sender") -- NOT invented or guessed.
+   *
+   * `templateId` / `expectedTemplateName` -- the GHL Documents & Contracts
+   * "Send Template" endpoint is resolved by ID, never by a live name
+   * search: `ghl-proxy.ts`'s GATE 2 UNCONDITIONALLY OVERWRITES the request
+   * body's `templateId` with this value too, exactly like `contactId`/
+   * `userId` -- a mutable GHL display name is never trusted as the SEND
+   * target, only as a pre-flight drift check the client performs against
+   * `expectedTemplateName` before ever offering the Send button (see
+   * `ContractWorkspace.tsx`). TEST's values are Brad's own verified GHL
+   * Test template identity ("TREC NO 20-19 RESALE V1",
+   * `6aa417de09c51fa0927e77cd`).
+   *
+   * `populationVerification` -- Brad has confirmed the uploaded TREC PDF
+   * backing this template carries NO overlaid population, initial, date,
+   * checkbox, or signature fields today. GHL's public Documents &
+   * Contracts API (List/Send Templates, List/Send Documents -- the
+   * complete public surface, verified against GHL's own reference pages)
+   * exposes NO operation to create a template, upload a PDF, or place/map
+   * fields; that configuration can only be done by a human inside GHL's
+   * own template editor, and this codebase has no way to verify it
+   * happened other than a human attestation recorded here. While this
+   * equals `POPULATION_NOT_VERIFIED`, `ghl-proxy.ts`'s GATE 2 refuses
+   * every `/proposals/templates/send` request, unconditionally, for BOTH
+   * environments -- there is no code path that can make sending safe
+   * while the template is actually blank, and no sentinel value this
+   * build is authorized to treat as satisfying that. Flipping this
+   * requires Brad to (1) complete the field placement in GHL, (2) accept
+   * that IAOS's own send-time readback check (`contract-send-model.ts`'s
+   * `classifyDocumentReadback`) is the only available verification, since
+   * the API has no pre-send introspection of a template's own field
+   * layout, and (3) record a new value here himself, as its own reviewed
+   * commit -- never toggled at runtime.
+   */
+  documentsContracts: {
+    approvedTestContactId: string;
+    senderUserId: string;
+    templateId: string;
+    expectedTemplateName: string;
+    populationVerification: string;
+  };
 }
+
+/** GATE 2 / B9-08 -- the literal placeholder value for an unconfigured `senderUserId`. Exported so ghl-proxy.ts can refuse a send while it is in effect, without hardcoding the sentinel a second time. */
+export const SENDER_USER_ID_NOT_CONFIGURED = "GHL_SENDER_USER_ID_NOT_YET_PROVIDED" as const;
+
+/** GATE 2 / B9-08 -- the ONE value that permits a real send. Anything else (including an empty string, which `getConfig`'s completeness check already refuses) fails closed. There is no partial/staged value; population is either verified or it is not. */
+export const POPULATION_VERIFIED = "POPULATION_VERIFIED" as const;
+/** The value both PRODUCTION and TEST carry until a human records `POPULATION_VERIFIED` above, as its own reviewed commit. */
+export const POPULATION_NOT_VERIFIED = "POPULATION_NOT_VERIFIED" as const;
 
 /**
  * INV-70 / B9-07A Phase 2 — the literal placeholder value for the
@@ -224,6 +297,17 @@ const PRODUCTION: GhlConfig = {
     longTermNurture:     "a7436df7-e05a-4bf0-bd29-70f7066ec0bd",
     lostNotInterested:   "f1960b50-8aa2-4a69-ba58-a7a0dc66ce82",
   },
+  // B9-08 / INV-63. Deliberately fake and obviously invalid -- see the
+  // interface doc comment above. This is NOT a real GHL id and must never
+  // become one; Production e-sign sending is out of scope for V1 and this
+  // value exists only so getConfig("production") stays completeness-valid.
+  documentsContracts: {
+    approvedTestContactId: "PRODUCTION_SEND_NOT_AUTHORIZED_NO_CONTACT_CONFIGURED",
+    senderUserId: "PRODUCTION_SEND_NOT_AUTHORIZED_NO_USER_CONFIGURED",
+    templateId: "PRODUCTION_SEND_NOT_AUTHORIZED_NO_TEMPLATE_CONFIGURED",
+    expectedTemplateName: "PRODUCTION_SEND_NOT_AUTHORIZED_NO_TEMPLATE_CONFIGURED",
+    populationVerification: POPULATION_NOT_VERIFIED,
+  },
 };
 
 // TEST identifiers are captured from the GHL Test Environment, never hand-typed.
@@ -309,6 +393,24 @@ const TEST: GhlConfig = {
     longTermNurture:     "c44d504e-cb1b-4a7f-b077-74117e92d91a",
     lostNotInterested:   "08b4d86d-7cdb-48fa-b195-a72b52d0ab8c",
   },
+  // B9-08 / INV-63. The ONE pre-approved GHL Test contact ("IAOS
+  // Underwriting Test") -- the same contact Brad's own live Documents &
+  // Contracts Test transaction used directly in GHL's UI, 2026-09-09
+  // (docs/BOARD9_CONTRACT_INVENTORY_V1.md item 8). SERVER-SIDE ONLY -- see
+  // the interface doc comment; never added to RUNTIME_GROUPS.
+  documentsContracts: {
+    approvedTestContactId: "NAGtUZ9aOE5C1GatJzpT",
+    // Brad's own verified GHL Test sender ("IAOS Test Sender").
+    senderUserId: "d42aAm0d06yZZLsmVuOL",
+    // Brad's own verified GHL Test template identity.
+    templateId: "6aa417de09c51fa0927e77cd",
+    expectedTemplateName: "TREC NO 20-19 RESALE V1",
+    // Brad confirmed this template's uploaded PDF has NO overlaid
+    // population/initial/date/checkbox/signature fields yet -- see the
+    // interface doc comment. Sending is refused (GATE 2, ghl-proxy.ts)
+    // unconditionally while this is not POPULATION_VERIFIED.
+    populationVerification: POPULATION_NOT_VERIFIED,
+  },
 };
 
 export function getConfig(selector: string | undefined): GhlConfig {
@@ -353,6 +455,9 @@ export function getConfig(selector: string | undefined): GhlConfig {
     ),
     ...Object.entries(config.stages).map(
       ([k, v]): [string, string] => [`stages.${k}`, v],
+    ),
+    ...Object.entries(config.documentsContracts).map(
+      ([k, v]): [string, string] => [`documentsContracts.${k}`, v],
     ),
   ];
 
@@ -402,6 +507,26 @@ function firstIncompleteKey(entries: Array<[string, string]>): string | null {
  * customValues.mailerDigestRecipient (server-only, mailer-digest), and the seven
  * contact fields no browser code reads. Nothing here is a secret; adding a key
  * that is means this comment is now wrong.
+ *
+ * `documentsContracts.populationVerification` / `templateId` /
+ * `expectedTemplateName` (B9-08 / INV-63) are exceptions to that group's
+ * own "SERVER-SIDE ONLY" doctrine above -- exposing them carries none of
+ * the risk `senderUserId` / `approvedTestContactId` would, because GATE 2
+ * in `ghl-proxy.ts` unconditionally overrides the SEND'S ACTUAL
+ * contactId/userId/templateId server-side regardless of what any caller
+ * (browser included) supplies or claims. `populationVerification` and
+ * `templateId`/`expectedTemplateName` are exposed so `ContractWorkspace.tsx`
+ * can (1) show an honest, correct "not eligible" reason BEFORE ever
+ * attempting a send instead of only discovering the same server-side
+ * refusal after a failed POST, and (2) perform its OWN pre-flight drift
+ * check -- does the locked template id still exist in GHL and still carry
+ * this exact name? This is precisely the SAME kind of exposure every
+ * other RUNTIME_GROUPS entry above already makes (e.g.
+ * `stages.sellerClosedWon`, `opportunityFields.sellerMAO` -- real GHL
+ * identifiers, browser-visible today) -- `approvedTestContactId` /
+ * `senderUserId` stay withheld specifically because THOSE name who
+ * receives or sends an actual e-sign, which this build never lets the
+ * browser choose; a template identifier carries no equivalent risk.
  */
 const RUNTIME_GROUPS = {
   fields: [
@@ -439,6 +564,7 @@ const RUNTIME_GROUPS = {
   opportunityFields: ["endBuyerMaxPrice", "assignmentMode", "sellerMAO"],
   opportunityFacts: ["arv", "repairs", "askingPrice", "currentOffer"],
   stages: ["sellerClosedWon", "lostNotInterested", "sellerFollowUp"],
+  documentsContracts: ["populationVerification", "templateId", "expectedTemplateName"],
 } as const;
 
 export interface RuntimeConfig {
@@ -466,6 +592,7 @@ export interface RuntimeConfig {
     GhlConfig["stages"],
     "sellerClosedWon" | "lostNotInterested" | "sellerFollowUp"
   >;
+  documentsContracts: Pick<GhlConfig["documentsContracts"], "populationVerification" | "templateId" | "expectedTemplateName">;
 }
 
 /** Server side: project a full config down to what the browser consumes. */
