@@ -38,13 +38,15 @@
  *
  * `POST /proposals/templates/send` — the ONE send-capable path — IS NO
  * LONGER REACHABLE THROUGH THIS PROXY AT ALL, by design (Jess Gate
- * correction round 2, "one server-verifiable, single-use send
- * authorization boundary covering BOTH reservation and actual provider
- * send"). It moved entirely to its own dedicated function,
+ * correction round 2). It moved entirely to its own dedicated function,
  * `ghl-contract-send-execute.ts`, which requires a valid, unconsumed,
  * exact-revision reservation ticket (`ghl-contract-send-reserve.ts`,
- * itself gated on independently-re-verified Brad authorization currency)
- * before it will forward anything to GHL. A direct call to THIS proxy
+ * itself gated on a check that a matching Brad-authorization note
+ * currently exists -- BEST-EFFORT, single-user V1 protection only, per
+ * Product Owner ruling 2026-09-12; NOT atomic, NOT authenticated
+ * identity, NOT a guarantee of single-use or at-most-once sending — see
+ * that file's own header) before it will forward anything to GHL. A
+ * direct call to THIS proxy
  * with `?path=/proposals/templates/send` now simply falls through to
  * "not allowlisted" (403) — there is no override/recipient/sender/
  * population logic left in this file to bypass, because there is no

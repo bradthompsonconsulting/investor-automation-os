@@ -1,7 +1,11 @@
 /**
  * Contract-send concurrency guard — B9-08 / INV-63 correction round,
- * 2026-09-11 (item 7: "the server must own an atomic/idempotent send
- * boundary").
+ * 2026-09-11 (item 7 asked for "an atomic/idempotent send boundary";
+ * what this file actually provides is BEST-EFFORT, single-user V1
+ * concurrency reduction, not a guarantee -- see the Product Owner's
+ * single-user V1 ruling, 2026-09-12, and this same disclosure repeated
+ * at every call site below and in `ghl-contract-send-reserve.ts`/
+ * `ghl-contract-send-execute.ts`).
  *
  * Pure, minimal, server-side-only parse of a durable contract-send note
  * body -- deliberately DUPLICATES (never imports) the header/label shape
@@ -112,15 +116,17 @@ export function findConflictingContractSend(
 }
 
 /**
- * Jess Gate correction round, 2026-09-12 (single-use send-authorization
- * boundary). Resolves the SAME rank-based "latest state" logic
- * `findConflictingContractSend` already uses, but scoped to one EXACT
- * `attemptId` rather than "any attempt for this opportunity+version" --
- * this is `ghl-contract-send-execute.ts`'s own ticket lookup: "does a
- * reservation exist for exactly this attempt, and what is its CURRENT
- * (not merely its FIRST) status." Returns `null` when no note for this
- * attemptId exists at all -- a caller who never reserved has no ticket
- * to redeem.
+ * Jess Gate correction round, 2026-09-12 (best-effort, single-user V1
+ * send-authorization boundary -- NOT atomic, NOT a guarantee of
+ * at-most-once sending; see the module header and the Product Owner's
+ * single-user V1 ruling). Resolves the SAME rank-based "latest state"
+ * logic `findConflictingContractSend` already uses, but scoped to one
+ * EXACT `attemptId` rather than "any attempt for this
+ * opportunity+version" -- this is `ghl-contract-send-execute.ts`'s own
+ * ticket lookup: "does a reservation exist for exactly this attempt, and
+ * what is its CURRENT (not merely its FIRST) status." Returns `null`
+ * when no note for this attemptId exists at all -- a caller who never
+ * reserved has no ticket to redeem.
  */
 export function resolveAttemptByExactId(
   notes: { body: string }[],

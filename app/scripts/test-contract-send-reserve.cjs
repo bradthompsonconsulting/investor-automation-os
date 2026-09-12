@@ -157,7 +157,7 @@ function validPayload(overrides) {
   };
 }
 
-/** A well-formed Brad Contract Authorization note, matching contract-authorization-carriers.ts's exact format -- the durable fact `verifyServerSideAuthorization` reads. */
+/** A well-formed Brad Contract Authorization note, matching contract-authorization-carriers.ts's exact format -- the durable fact `verifyAuthorizationNoteCurrency` reads. */
 function wellFormedAuthorizationNote(overrides) {
   const opportunityId = (overrides && overrides.opportunityId) ?? VALID_OPPORTUNITY_ID;
   const authorizedBy = (overrides && overrides.authorizedBy) ?? 'brad';

@@ -801,7 +801,9 @@ export default function ContractWorkspace() {
     const attempt = built.value;
     const attemptNote = formatContractSendNote(attempt);
 
-    // Stage 1: RESERVE, server-side, atomic-boundary check-then-write.
+    // Stage 1: RESERVE, server-side, best-effort (NOT atomic --
+    // single-user V1 protection only, see ghl-contract-send-reserve.ts)
+    // check-then-write.
     const reservation = await ghl.proposals.reserveSend({
       contactId,
       opportunityId: screen.opportunity.id,

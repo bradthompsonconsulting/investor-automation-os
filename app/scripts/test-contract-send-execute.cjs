@@ -1,19 +1,27 @@
 /**
- * Contract-send EXECUTION endpoint -- single-use ticket redemption proof.
- * B9-08 / INV-63, Jess Gate correction round 2, 2026-09-12.
+ * Contract-send EXECUTION endpoint -- best-effort, single-user V1 ticket
+ * redemption proof. B9-08 / INV-63, Jess Gate correction round 2,
+ * 2026-09-12.
+ *
+ * PRODUCT OWNER SINGLE-USER V1 RULING, 2026-09-12: what this proves is
+ * BEST-EFFORT protection sized for Brad as IAOS V1's only operator --
+ * NOT an atomicity guarantee, NOT proof of authenticated identity, and
+ * NOT a guarantee of single-use or at-most-once sending. See
+ * `ghl-contract-send-execute.ts`'s own header for the full disclosure
+ * this file's checks are scoped against.
  *
  * Mirrors test-contract-send-reserve.cjs's own harness pattern exactly
  * (mocked global.fetch, mutable live TEST config object, require-cache
  * busting only where module-scope env state demands it). The claim being
- * proven -- "an invalid/forged/expired/replayed ticket or authorization
- * never reaches the real provider send" -- can only be demonstrated by
- * actually invoking the handler and recording every fetch call, never by
- * reading source.
+ * proven -- "an invalid/forged/stale/replayed ticket or authorization
+ * note never reaches the real provider send" -- can only be demonstrated
+ * by actually invoking the handler and recording every fetch call, never
+ * by reading source.
  *
  * "Zero send calls" below means specifically zero calls to
  * `/proposals/templates/send` (the ONE real GHL mutation this function
  * can ever trigger) -- a notes-read GET is expected and necessary for
- * every ticket/authorization check, and is not itself a mutation.
+ * every ticket/authorization-note check, and is not itself a mutation.
  */
 const { execSync } = require('child_process');
 const fs = require('fs');

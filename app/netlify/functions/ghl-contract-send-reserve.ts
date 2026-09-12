@@ -4,6 +4,16 @@
  * POST /.netlify/functions/ghl-contract-send-reserve
  * body: { contactId, opportunityId, versionRaw, noteBody }
  *
+ * PRODUCT OWNER SINGLE-USER V1 RULING, 2026-09-12: IAOS V1 is presently
+ * operated only by Brad. No authentication, database, or other new
+ * infrastructure is added in INV-63. Everything this file does is
+ * BEST-EFFORT concurrency/replay reduction sized for that single-operator
+ * reality -- it is explicitly NOT atomic, NOT a mathematical guarantee of
+ * single-use or at-most-once sending, and Brad authorization (see
+ * `lib/authorization-guard.ts`) is NOT authenticated identity proof. Do
+ * not describe anything in this file using those stronger words. See
+ * "FUTURE PRODUCTION GATE" at the end of this comment.
+ *
  * This is the ONLY write site for the "in_progress" attempt note.
  * `ContractWorkspace.tsx`'s `handleSend` used to write that note directly
  * via `ghl.notes.create()`, evaluating eligibility (including "does a
@@ -17,12 +27,14 @@
  * (`lib/contract-send-guard.ts`, the SAME resolution logic
  * `contract-send-model.ts`'s own idempotency guard uses, duplicated
  * server-side per that module's own convention), and ONLY THEN writes
- * the note -- narrowing the race window from "arbitrary browser think
- * time across tabs" down to this one function's own GET-then-POST
- * duration. OBSERVED: GHL's Notes API exposes no compare-and-swap or
- * unique-constraint primitive, so this narrows, but does not
- * mathematically eliminate, a genuinely simultaneous double-invocation
- * of this same function -- that residual is reported, not hidden.
+ * the note -- narrowing (never eliminating) the race window from
+ * "arbitrary browser think time across tabs" down to this one function's
+ * own GET-then-POST duration. OBSERVED: GHL's Notes API exposes no
+ * compare-and-swap or unique-constraint primitive, so this is BEST-EFFORT
+ * ONLY -- it does not mathematically eliminate a genuinely simultaneous
+ * double-invocation of this same function (e.g. across two concurrent
+ * serverless function instances). That residual is reported, not hidden,
+ * and is an accepted risk for single-user V1, not a solved problem.
  *
  * STILL EXACTLY THE SAME SANCTIONED WRITE. This function calls GHL's
  * `POST /contacts/{id}/notes` -- AGENTS.md's `ghl.notes.create()`
@@ -62,35 +74,48 @@
  *      otherwise keeps separate.
  *
  * JESS GATE CORRECTION ROUND 2, 2026-09-12 ("the server must
- * independently verify... before any send-capable outbound GHL call").
- * This function now ALSO independently re-verifies Brad authorization
+ * independently check... before any send-capable outbound GHL call").
+ * This function now ALSO independently checks Brad-authorization-note
  * currency, server-side, against the SAME freshly-read notes the
  * conflict check already needs -- `lib/authorization-guard.ts`'s
- * `verifyServerSideAuthorization` (imports the real, evolving
+ * `verifyAuthorizationNoteCurrency` (imports the real, evolving
  * `latestBradContractAuthorizationForOpportunity`/`isSameContractVersion`
  * from `src/lib` rather than duplicating them, matching
  * `ghl-contract-send-readback.ts`'s own precedent for evolving pure
- * logic). This function is now HALF of the "one server-verifiable,
- * single-use send authorization boundary" this correction round
- * establishes: reservation VERIFIES authorization and ISSUES the
- * durable, single-use ticket (the in_progress note itself);
+ * logic). This function is now HALF of the best-effort, single-user V1
+ * send-authorization boundary this correction round establishes:
+ * reservation CHECKS the authorization note and ISSUES the durable,
+ * best-effort single-use ticket (the in_progress note itself);
  * `ghl-contract-send-execute.ts` REDEEMS it immediately before the real
- * provider call, re-verifying independently rather than trusting that
+ * provider call, re-checking independently rather than trusting that
  * this endpoint's own check still holds by the time the send actually
- * fires. See `lib/authorization-guard.ts`'s own header for exactly what
+ * fires -- this narrows, it does not eliminate, the window between "a
+ * matching authorization note existed" and "the provider call actually
+ * fires." See `lib/authorization-guard.ts`'s own header for exactly what
  * this DOES and DOES NOT catch (a content-only change with no version
- * bump is a disclosed, reported gap, not a silent one) -- what remains
- * client-side, deliberately, is the full, rich preview computation
- * (`contract-send-model.ts`'s `buildSendAttemptArgs`) that only the
- * browser has already assembled; reconstructing that server-side is out
- * of this round's narrow scope.
+ * bump is a disclosed, reported gap; the check is a note-shape match,
+ * NOT authenticated identity) -- what remains client-side, deliberately,
+ * is the full, rich preview computation (`contract-send-model.ts`'s
+ * `buildSendAttemptArgs`) that only the browser has already assembled;
+ * reconstructing that server-side is out of this round's narrow scope.
+ *
+ * FUTURE PRODUCTION GATE. Authentication (binding "Brad" to a real
+ * login/session/credential, not a note-content convention) and a truly
+ * atomic send lock (an external store with a real conditional-write
+ * primitive -- GHL's Notes API has none) are REQUIRED before this
+ * feature is exposed to multi-user access, any form of automation, or
+ * any commercial customer -- not merely recommended. Until both exist,
+ * this remains single-user-V1-only, best-effort protection, by Product
+ * Owner ruling (2026-09-12), never to be described as authenticated,
+ * cryptographically verified, atomic, or guaranteed single-use / at-
+ * most-once.
  */
 
 import {
   getConfig, SENDER_USER_ID_NOT_CONFIGURED, POPULATION_VERIFIED,
 } from "../../shared/ghl-config";
 import { findConflictingContractSend, parseMinimalContractSend } from "./lib/contract-send-guard";
-import { verifyServerSideAuthorization } from "./lib/authorization-guard";
+import { verifyAuthorizationNoteCurrency } from "./lib/authorization-guard";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 const { locationId: LOCATION_ID, documentsContracts: DOCUMENTS_CONTRACTS } = getConfig(process.env.IAOS_ENV);
@@ -202,7 +227,7 @@ export const handler = async (event: any) => {
   // an unauthorized, expired, revoked, or superseded caller never gets a
   // ticket to redeem at send time. See lib/authorization-guard.ts for
   // exactly what this does and does not verify.
-  const authCheck = verifyServerSideAuthorization({
+  const authCheck = verifyAuthorizationNoteCurrency({
     notes,
     opportunityId,
     declaredVersionRaw: versionRaw,

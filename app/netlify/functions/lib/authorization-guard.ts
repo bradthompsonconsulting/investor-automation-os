@@ -38,10 +38,27 @@
  * A content-only change with no version bump AND no new authorization
  * remains a real, REPORTED gap -- exactly the kind of thing
  * `contract-authorization-model.ts`'s own review-screen UI exists to
- * surface to a human before authorizing, and exactly why authorization
- * is re-verified independently at BOTH the reservation and the send-
- * execution boundary (narrowing, not eliminating, the window between
- * "Brad authorized" and "the provider call actually fires").
+ * surface to a human before authorizing, and exactly why this check is
+ * repeated at BOTH the reservation and the send-execution boundary
+ * (narrowing, not eliminating, the window between "Brad authorized" and
+ * "the provider call actually fires").
+ *
+ * NOT AUTHENTICATED IDENTITY -- PRODUCT OWNER SINGLE-USER V1 RULING,
+ * 2026-09-12. This function confirms that a GHL Note exists with the
+ * exact expected SHAPE and CONTENT (author fields reading "brad",
+ * matching revision, matching template) -- it does NOT confirm that a
+ * real, authenticated Brad wrote it. `contact.notes` are written through
+ * `ghl-proxy.ts`'s generic, unauthenticated `POST /contacts/{id}/notes`
+ * path; nothing in this application binds "brad" to a login, session,
+ * or credential of any kind. Brad has accepted this as a named residual
+ * risk for single-user V1, where he is presently the only operator with
+ * access to the deployed application at all -- IAOS V1 does NOT add
+ * authentication, and this check must never be described as
+ * "authenticated" or "cryptographically verified" authorization. It is
+ * accurately described only as: a same-shape, same-content GHL Note
+ * check. Authentication is a REQUIRED, NOT YET BUILT gate before
+ * multi-user access, automation, or commercial customer use -- see
+ * `ghl-contract-send-reserve.ts`'s own "FUTURE PRODUCTION GATE" note.
  */
 
 import { latestBradContractAuthorizationForOpportunity } from "../../../src/lib/contract-authorization-carriers";
@@ -76,17 +93,17 @@ function parseVersionRaw(raw: string): ContractVersionIdentity | null {
   };
 }
 
-export type ServerAuthorizationCheck =
+export type AuthorizationNoteCheck =
   | { ok: true }
   | { ok: false; reason: string; message: string };
 
-export function verifyServerSideAuthorization(args: {
+export function verifyAuthorizationNoteCurrency(args: {
   notes: { body: string }[];
   opportunityId: string;
   /** The raw JSON version string the caller declared -- parsed HERE, never trusted pre-parsed, so a malformed/tampered string fails closed rather than being coerced by a caller-side parse. */
   declaredVersionRaw: string;
   expectedTemplateName: string;
-}): ServerAuthorizationCheck {
+}): AuthorizationNoteCheck {
   const declaredVersion = parseVersionRaw(args.declaredVersionRaw);
   if (!declaredVersion) {
     return { ok: false, reason: "DECLARED_VERSION_MALFORMED", message: "The declared version identity is not well-formed JSON matching ContractVersionIdentity." };
