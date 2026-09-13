@@ -30,14 +30,14 @@ import {
 } from "../lib/contract-send-model";
 import {
   formatContractSendNote, latestContractSendForOpportunity,
-  deriveDeterministicSignerMappingsFromAcceptedSend,
 } from "../lib/contract-send-carriers";
 import { buildProviderObservationRecordFromReadback, type LifecycleRecord } from "../lib/contract-lifecycle-model";
 import {
   classifySelectedFileBytes, verifyRequiredSigners, verifyProviderCompletion,
   verifyManualArtifactSelection, buildVerifiedUnderContractRecord,
   extractProviderSignerRowsFromListDocumentsBody,
-  type ManualArtifactSelectionOutcome,
+  isDuplicateUnderContractRecord, verifyReadbackMatchesWritten,
+  type ManualArtifactSelectionOutcome, type UnderContractRecordEntry,
 } from "../lib/contract-execution-model";
 import { computeManualArtifactSha256Hex } from "../lib/browser-artifact-hash";
 import {
@@ -48,6 +48,16 @@ import {
 import {
   formatExecutedTermsAttestationNote, latestExecutedTermsAttestationForOpportunity,
 } from "../lib/contract-executed-terms-attestation-carriers";
+import {
+  buildRequiredSignerSet, buildSignerMappingAttestationRecordArgs,
+  verifySignerMappingAttestationCurrency, type RequiredSigner,
+} from "../lib/contract-signer-mapping-model";
+import {
+  formatSignerMappingAttestationNote, latestSignerMappingAttestationForOpportunity,
+} from "../lib/contract-signer-mapping-carriers";
+import {
+  formatUnderContractNote, parseUnderContractNote, allUnderContractRecordsForOpportunity,
+} from "../lib/contract-execution-carriers";
 import { getRuntimeConfig } from "../../shared/ghl-config";
 import {
   formatBuyerEntityOverrideNote,
@@ -977,15 +987,98 @@ export default function ContractWorkspace() {
     return verifyProviderCompletion({ opportunityId: screen.opportunity.id, version: existingSend.version, lifecycleHistory: [lifecycleObservationRecord] });
   }, [screen, existingSend, lifecycleObservationRecord]);
 
-  const signerMappingResult = useMemo(() => {
-    if (!existingSend || existingSend.status !== "accepted") return null;
-    return deriveDeterministicSignerMappingsFromAcceptedSend(existingSend);
-  }, [existingSend]);
+  /**
+   * B9-10 / INV-65 -- Product Owner ruling, 2026-09-13. WHO must sign is
+   * assembled ONLY from IAOS's own authoritative contract facts (BTC
+   * LLC's configured buyer signer + every recorded seller signer) --
+   * NEVER from the accepted send's own `signers[]`. See
+   * `contract-signer-mapping-model.ts`'s own header.
+   */
+  const requiredSignerSetResult = useMemo(() => {
+    if (!sellerContractFactsReport) return null;
+    return buildRequiredSignerSet(sellerContractFactsReport);
+  }, [sellerContractFactsReport]);
+
+  const requiredSigners: readonly RequiredSigner[] = requiredSignerSetResult && requiredSignerSetResult.ok ? requiredSignerSetResult.signers : [];
+
+  const availableProviderRecipientIds = useMemo(() => {
+    if (!providerSignerRowsResult || !providerSignerRowsResult.ok) return [];
+    return providerSignerRowsResult.rows.map((r) => r.providerRecipientId);
+  }, [providerSignerRowsResult]);
+
+  const existingSignerMappingAttestation = useMemo(() => {
+    if (screen.state !== "ready" || !notes) return null;
+    return latestSignerMappingAttestationForOpportunity(notes, screen.opportunity.id);
+  }, [screen, notes]);
+
+  const signerMappingCurrencyResult = useMemo(() => {
+    if (screen.state !== "ready" || !existingSend || existingSend.status !== "accepted" || !providerDocumentId || requiredSigners.length === 0) return null;
+    return verifySignerMappingAttestationCurrency({
+      attestation: existingSignerMappingAttestation,
+      opportunityId: screen.opportunity.id,
+      version: existingSend.version,
+      providerDocumentId,
+      providerDocumentRevision: existingSend.providerResponse?.documentRevision ?? null,
+      acceptedSendAttemptId: existingSend.attemptId,
+      requiredSigners,
+    });
+  }, [screen, existingSend, providerDocumentId, requiredSigners, existingSignerMappingAttestation]);
 
   const signerVerificationResult = useMemo(() => {
-    if (!signerMappingResult || !signerMappingResult.ok || !providerSignerRowsResult || !providerSignerRowsResult.ok) return null;
-    return verifyRequiredSigners({ mappings: signerMappingResult.mappings, providerRecipients: providerSignerRowsResult.rows });
-  }, [signerMappingResult, providerSignerRowsResult]);
+    if (!signerMappingCurrencyResult || !signerMappingCurrencyResult.ok || !providerSignerRowsResult || !providerSignerRowsResult.ok) return null;
+    return verifyRequiredSigners({ mappings: signerMappingCurrencyResult.mappings, providerRecipients: providerSignerRowsResult.rows });
+  }, [signerMappingCurrencyResult, providerSignerRowsResult]);
+
+  /**
+   * Brad's own manual, one-to-one recipient-mapping assignment -- NEVER
+   * auto-paired by array order, GHL's generic role string, or a guessed
+   * name/email match. `mappingAssignments` is keyed by required-signer
+   * role, valued by the provider recipient id Brad picked for it; reset
+   * whenever the provider document/revision changes, since a prior
+   * in-progress (unsaved) assignment made against different evidence is
+   * never carried forward silently.
+   */
+  const [mappingAssignments, setMappingAssignments] = useState<Record<string, string>>({});
+  const [mappingBuildError, setMappingBuildError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMappingAssignments({});
+    setMappingBuildError(null);
+  }, [providerDocumentId, existingSend?.providerResponse?.documentRevision]);
+
+  const allSignersAssigned = requiredSigners.length > 0 && requiredSigners.every((s) => mappingAssignments[s.role] !== undefined && mappingAssignments[s.role] !== "");
+
+  /**
+   * The ONLY write this mapping form performs -- routed through the SAME
+   * shared `commitNote` every group-form Save button already uses.
+   * `buildSignerMappingAttestationRecordArgs` itself refuses to build a
+   * record unless the assignment is a true, complete, unambiguous
+   * bijection -- this handler never bypasses that gate.
+   */
+  async function handleRecordSignerMapping() {
+    if (screen.state !== "ready" || !existingSend || existingSend.status !== "accepted" || !providerDocumentId) return;
+    setMappingBuildError(null);
+    const assignments = requiredSigners.map((s) => ({ role: s.role, providerRecipientId: mappingAssignments[s.role] ?? "" }));
+    const built = buildSignerMappingAttestationRecordArgs({
+      opportunityId: screen.opportunity.id,
+      version: existingSend.version,
+      agreementAt: screen.economics.agreementAt,
+      providerDocumentId,
+      providerDocumentRevision: existingSend.providerResponse?.documentRevision ?? null,
+      acceptedSendAttemptId: existingSend.attemptId,
+      attestedAt: new Date().toISOString(),
+      requiredSigners,
+      availableProviderRecipientIds,
+      assignments,
+      evidenceSummary: "Brad's own factual, visually-verified mapping of each required signer to its GHL provider recipient id.",
+    });
+    if (!built.ok) {
+      setMappingBuildError(built.reasons.map((r) => r.message).join(" "));
+      return;
+    }
+    const note = formatSignerMappingAttestationNote(built.value);
+    await commitNote("signer-mapping-attestation", note);
+  }
 
   /**
    * The manual executed-artifact bridge. NEVER uploaded, persisted,
@@ -1064,15 +1157,10 @@ export default function ContractWorkspace() {
       : "unresolved";
   }, [sellerContractFactsReport]);
 
-  const expectedSigners = useMemo(() => {
-    if (!signerMappingResult || !signerMappingResult.ok) return [];
-    return signerMappingResult.mappings.map((m) => ({ role: m.role, displayName: m.displayName }));
-  }, [signerMappingResult]);
-
   const checklistItems: readonly ChecklistItem[] = useMemo(() => {
-    if (!materialTermSnapshot || !buyerIdentityLabel || expectedSigners.length === 0) return [];
-    return buildExecutedTermsChecklist({ agreement: materialTermSnapshot, buyerIdentity: buyerIdentityLabel, expectedSigners });
-  }, [materialTermSnapshot, buyerIdentityLabel, expectedSigners]);
+    if (!materialTermSnapshot || !buyerIdentityLabel || requiredSigners.length === 0) return [];
+    return buildExecutedTermsChecklist({ agreement: materialTermSnapshot, buyerIdentity: buyerIdentityLabel, expectedSigners: requiredSigners });
+  }, [materialTermSnapshot, buyerIdentityLabel, requiredSigners]);
 
   function checklistItemKey(item: { kind: ChecklistItemKind; signerRole: string | null }): string {
     return `${item.kind}::${item.signerRole ?? ""}`;
@@ -1147,13 +1235,15 @@ export default function ContractWorkspace() {
     if (
       screen.state !== "ready" || !existingSend || existingSend.status !== "accepted" ||
       !providerSignerRowsResult || !providerSignerRowsResult.ok || !lifecycleObservationRecord ||
-      !manualFileOutcome || !providerDocumentId
+      !manualFileOutcome || !providerDocumentId || requiredSigners.length === 0
     ) return null;
     return buildVerifiedUnderContractRecord({
       opportunityId: screen.opportunity.id,
       agreementAt: screen.economics.agreementAt,
       version: existingSend.version,
       acceptedSend: existingSend,
+      requiredSigners,
+      signerMappingAttestation: existingSignerMappingAttestation,
       providerRecipients: providerSignerRowsResult.rows,
       lifecycleHistory: [lifecycleObservationRecord],
       manualArtifactOutcome: manualFileOutcome,
@@ -1161,10 +1251,97 @@ export default function ContractWorkspace() {
       selectedForVersion: existingSend.version,
       executedTermsAttestation: existingAttestation,
       iaosVerifiedAt: new Date().toISOString(),
-      evidenceSummary: "Manual in-browser verification: live GHL readback (signer completion, provider completion), a manually selected executed-artifact hash, and Brad's own recorded executed-terms attestation.",
+      evidenceSummary: "Manual in-browser verification: live GHL readback (signer completion, provider completion), Brad's own recorded signer-recipient mapping, a manually selected executed-artifact hash, and Brad's own recorded executed-terms attestation.",
       relatedPriorRecordId: null,
     });
-  }, [screen, existingSend, providerSignerRowsResult, lifecycleObservationRecord, manualFileOutcome, providerDocumentId, existingAttestation]);
+  }, [screen, existingSend, providerSignerRowsResult, lifecycleObservationRecord, manualFileOutcome, providerDocumentId, requiredSigners, existingSignerMappingAttestation, existingAttestation]);
+
+  /**
+   * B9-10 / INV-65, ruling item 4 -- Under Contract persistence. THE ONLY
+   * place this page may ever write an Under Contract record, and ONLY
+   * ever reachable once `fullVerificationResult.ok` -- every earlier gate
+   * (required signers, signer mapping, signer completion, provider
+   * completion, artifact hash, executed-terms attestation) has already
+   * independently passed by construction; this handler adds no shortcut
+   * of its own.
+   *
+   * Sequence, exactly as ruled: (1) refuse outright if an existing
+   * record for this EXACT verified execution already exists
+   * (`isDuplicateUnderContractRecord`) -- never write a second one; (2)
+   * append the one new note via the same sanctioned `ghl.notes.create()`
+   * every write in this app uses; (3) immediately re-fetch notes FRESH
+   * (never trust local state, never trust the write call's own success
+   * alone); (4) parse every fresh note through the canonical carrier and
+   * require EXACT equality with the record requested for persistence
+   * (`verifyReadbackMatchesWritten`); (5) report success ONLY after that
+   * verified match. Any failure at any step reports a precise fail-closed
+   * status, never retries automatically, and explicitly warns that a
+   * write may have occurred so Brad can reconcile directly in GHL.
+   */
+  const [underContractWriteState, setUnderContractWriteState] = useState<
+    | { kind: "idle" }
+    | { kind: "busy" }
+    | { kind: "success"; record: UnderContractRecordEntry }
+    | { kind: "already_recorded"; record: UnderContractRecordEntry }
+    | { kind: "failed"; message: string; writeMayHaveOccurred: boolean }
+  >({ kind: "idle" });
+
+  async function handleCreateUnderContract() {
+    if (screen.state !== "ready" || !fullVerificationResult || !fullVerificationResult.ok || !notes) return;
+    setUnderContractWriteState({ kind: "busy" });
+    const candidate = fullVerificationResult.value;
+
+    // Replay/history safety -- refuse a duplicate BEFORE ever writing.
+    const existingRecords = allUnderContractRecordsForOpportunity(notes, screen.opportunity.id);
+    const duplicate = existingRecords.find((r) => isDuplicateUnderContractRecord(r, candidate));
+    if (duplicate) {
+      setUnderContractWriteState({ kind: "already_recorded", record: duplicate });
+      return;
+    }
+
+    const note = formatUnderContractNote(candidate);
+    try {
+      await ghl.notes.create(contactId, note);
+    } catch (e: any) {
+      setUnderContractWriteState({
+        kind: "failed",
+        message: `The write itself failed: ${e?.message ?? "unknown error"} -- do not assume a record was NOT created; verify directly in GHL before retrying.`,
+        writeMayHaveOccurred: true,
+      });
+      return;
+    }
+
+    // A FRESH readback -- never the local, possibly-stale `notes` state.
+    let freshNotes: { id: string; body: string; dateAdded: string }[];
+    try {
+      const freshResult = await ghl.notes.list(contactId);
+      freshNotes = freshResult.notes ?? [];
+    } catch (e: any) {
+      setUnderContractWriteState({
+        kind: "failed",
+        message: `The write may have succeeded, but the readback fetch itself failed: ${e?.message ?? "unknown error"} -- verify directly in GHL before retrying; this action does not retry automatically.`,
+        writeMayHaveOccurred: true,
+      });
+      return;
+    }
+    setNotes(freshNotes);
+
+    const parsedCandidates = freshNotes
+      .map((n) => parseUnderContractNote(n.body))
+      .filter((r): r is UnderContractRecordEntry => r !== null);
+    const matchingReadback = parsedCandidates.find((r) => JSON.stringify(r) === JSON.stringify(candidate)) ?? null;
+    const readbackCheck = verifyReadbackMatchesWritten(candidate, matchingReadback);
+    if (!readbackCheck.ok) {
+      setUnderContractWriteState({
+        kind: "failed",
+        message: `${readbackCheck.reason} A note carrying this exact evidence may or may not now exist in GHL -- verify directly before retrying; this action does not retry automatically.`,
+        writeMayHaveOccurred: true,
+      });
+      return;
+    }
+
+    setUnderContractWriteState({ kind: "success", record: candidate });
+  }
 
   // Read-only display of the operator's own verbatim attorney/manual text
   // -- shown back exactly as supplied, never interpreted, never drafted.
@@ -2402,16 +2579,96 @@ export default function ContractWorkspace() {
               </div>
 
               {/* -------------------------------------------------------------- */}
-              {/* 1. Signer completion -- shown SEPARATELY, by provider recipient */}
-              {/* id, never GHL's generic "signer" role                          */}
+              {/* 1. Required signers -- WHO must sign, from IAOS's own          */}
+              {/* authoritative contract facts, never from send evidence         */}
               {/* -------------------------------------------------------------- */}
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>1. Signer completion</div>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>1. Required signers</div>
+                {requiredSignerSetResult && requiredSignerSetResult.ok ? (
+                  <ul data-testid="contract-execution-required-signers" style={{ margin: 0, padding: 0, listStyle: "none", fontSize: "12px", color: "#E2E8F0" }}>
+                    {requiredSignerSetResult.signers.map((s) => <li key={s.role}>{s.role}: {s.displayName}</li>)}
+                  </ul>
+                ) : requiredSignerSetResult ? (
+                  <ul data-testid="contract-execution-required-signers-blocked" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#F59E0B", lineHeight: 1.8 }}>
+                    {requiredSignerSetResult.reasons.map((r) => <li key={r.code}>{r.message}</li>)}
+                  </ul>
+                ) : (
+                  <div style={{ fontSize: "11px", color: "#64748B" }}>Loading contract facts...</div>
+                )}
+              </div>
+
+              {/* -------------------------------------------------------------- */}
+              {/* 2. Brad's recipient-mapping attestation -- manual, one-to-one, */}
+              {/* never auto-paired by order, generic role, or guessed identity  */}
+              {/* -------------------------------------------------------------- */}
+              <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>2. Signer-recipient mapping</div>
+                {providerReadback.kind !== "loaded" ? (
+                  <div data-testid="contract-execution-mapping-awaiting-readback" style={{ fontSize: "11px", color: "#64748B" }}>Fetch the live provider readback above before mapping signers to recipients.</div>
+                ) : requiredSigners.length === 0 ? (
+                  <div style={{ fontSize: "11px", color: "#F59E0B" }}>Resolve the required signer set above before mapping can begin.</div>
+                ) : (
+                  <>
+                    <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "8px" }}>
+                      Visually verify each mapping directly in GHL, then assign every required signer below to exactly one provider recipient id. Every recipient observed in this document must be assigned to exactly one signer -- nothing is auto-paired.
+                    </div>
+                    <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "8px" }}>
+                      {requiredSigners.map((s) => (
+                        <li key={s.role} data-testid={`contract-execution-mapping-row-${s.role}`} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <div style={{ fontSize: "11px", color: "#E2E8F0", minWidth: "160px" }}>{s.role}: {s.displayName}</div>
+                          <select
+                            data-testid={`contract-execution-mapping-select-${s.role}`}
+                            value={mappingAssignments[s.role] ?? ""}
+                            onChange={(e) => setMappingAssignments((prev) => ({ ...prev, [s.role]: e.target.value }))}
+                            style={selectStyle}
+                          >
+                            <option value="">-- select provider recipient id --</option>
+                            {availableProviderRecipientIds.map((id) => <option key={id} value={id}>{id}</option>)}
+                          </select>
+                        </li>
+                      ))}
+                    </ul>
+                    <div style={{ marginTop: "10px" }}>
+                      <Btn
+                        testId="contract-execution-mapping-record-button"
+                        onClick={handleRecordSignerMapping}
+                        busy={busyGroup === "signer-mapping-attestation"}
+                        disabled={!allSignersAssigned}
+                      >
+                        Record signer mapping
+                      </Btn>
+                    </div>
+                    <ErrorText testId="contract-execution-mapping-build-error">{mappingBuildError}</ErrorText>
+                    <ErrorText testId="contract-execution-mapping-save-error">{groupErrors["signer-mapping-attestation"] ?? null}</ErrorText>
+                  </>
+                )}
+                {existingSignerMappingAttestation ? (
+                  <div style={{ marginTop: "12px", fontSize: "11px", color: "#64748B" }}>
+                    Last recorded mapping: {new Date(existingSignerMappingAttestation.attestedAt).toLocaleString()} --{" "}
+                    {signerMappingCurrencyResult ? (
+                      signerMappingCurrencyResult.ok ? (
+                        <span data-testid="contract-execution-mapping-current" style={{ color: "#22C55E" }}>current for this exact evidence.</span>
+                      ) : (
+                        <span data-testid="contract-execution-mapping-stale" style={{ color: "#F59E0B" }}>not current for this exact evidence ({signerMappingCurrencyResult.reasons.map((r) => r.message).join(" ")})</span>
+                      )
+                    ) : (
+                      <span>currency not yet checked.</span>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              {/* -------------------------------------------------------------- */}
+              {/* 3. Signer completion -- matched by provider recipient id, WITH */}
+              {/* a valid signed timestamp required for every signer             */}
+              {/* -------------------------------------------------------------- */}
+              <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>3. Signer completion</div>
                 {providerReadback.kind !== "loaded" ? (
                   <div data-testid="contract-execution-signers-awaiting-readback" style={{ fontSize: "11px", color: "#64748B" }}>Fetch the live provider readback above to check signer completion.</div>
-                ) : signerMappingResult && !signerMappingResult.ok ? (
+                ) : signerMappingCurrencyResult && !signerMappingCurrencyResult.ok ? (
                   <ul data-testid="contract-execution-signer-mapping-blocked" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#F59E0B", lineHeight: 1.8 }}>
-                    {signerMappingResult.reasons.map((r) => <li key={r.code}>{r.message}</li>)}
+                    {signerMappingCurrencyResult.reasons.map((r) => <li key={r.code}>{r.message}</li>)}
                   </ul>
                 ) : providerSignerRowsResult && !providerSignerRowsResult.ok ? (
                   <div data-testid="contract-execution-signer-rows-unavailable" style={{ fontSize: "11px", color: "#F59E0B" }}>{providerSignerRowsResult.reason}</div>
@@ -2436,7 +2693,7 @@ export default function ContractWorkspace() {
               {/* 2. Provider completion -- reuses INV-64's own chronology        */}
               {/* -------------------------------------------------------------- */}
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>2. Provider completion</div>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>4. Provider completion</div>
                 {providerReadback.kind !== "loaded" ? (
                   <div data-testid="contract-execution-provider-completion-awaiting-readback" style={{ fontSize: "11px", color: "#64748B" }}>Fetch the live provider readback above to check provider completion.</div>
                 ) : providerCompletionResult ? (
@@ -2455,10 +2712,10 @@ export default function ContractWorkspace() {
               </div>
 
               {/* -------------------------------------------------------------- */}
-              {/* 3. Executed artifact -- manual PDF selection, browser-local     */}
+              {/* 5. Executed artifact -- manual PDF selection, browser-local     */}
               {/* -------------------------------------------------------------- */}
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>3. Executed artifact (manual selection)</div>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>5. Executed artifact (manual selection)</div>
                 <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "8px" }}>
                   GHL's Documents &amp; Contracts API has no download endpoint -- download the completed document for this exact provider document id directly from GHL, then select that PDF file below. It is read and hashed in this browser only; the file itself is never uploaded, saved, or sent anywhere.
                 </div>
@@ -2498,7 +2755,7 @@ export default function ContractWorkspace() {
               {/* attestation checklist (Product Owner ruling, 2026-09-13)        */}
               {/* -------------------------------------------------------------- */}
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>4. Executed material terms</div>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>6. Executed material terms</div>
                 <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "8px" }}>
                   Compare each item below against what is printed on the executed PDF you downloaded from GHL, then answer every item. This is your own factual visual comparison only -- IAOS never reads the PDF's content, never interprets contract language, and never determines legal validity. Only unanimous MATCHES on every item can satisfy this requirement.
                 </div>
@@ -2574,15 +2831,39 @@ export default function ContractWorkspace() {
               </div>
 
               {/* -------------------------------------------------------------- */}
-              {/* 5. Final eligibility -- reflects the REAL pipeline result;      */}
-              {/* still requires every INV-65 stage, including this attestation  */}
+              {/* 7. Final eligibility + Under Contract persistence -- reflects   */}
+              {/* the REAL pipeline result; the write action below is reachable  */}
+              {/* ONLY once every INV-65 gate above independently passes         */}
               {/* -------------------------------------------------------------- */}
               <div style={{ ...groupCardStyle, borderColor: fullVerificationResult?.ok ? "rgba(34,197,94,0.35)" : "rgba(239,68,68,0.35)" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Under Contract</div>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>7. Under Contract</div>
                 {fullVerificationResult ? (
                   fullVerificationResult.ok ? (
-                    <div data-testid="contract-execution-under-contract-eligible" style={{ fontSize: "12px", color: "#22C55E", fontWeight: 700 }}>
-                      Every INV-65 requirement passes for this exact evidence. This section does NOT write an Under Contract record -- it only reports pipeline eligibility.
+                    <div>
+                      <div data-testid="contract-execution-under-contract-eligible" style={{ fontSize: "12px", color: "#22C55E", fontWeight: 700, marginBottom: "10px" }}>
+                        Every INV-65 requirement passes for this exact evidence.
+                      </div>
+                      <Btn
+                        testId="contract-execution-create-under-contract-button"
+                        onClick={handleCreateUnderContract}
+                        busy={underContractWriteState.kind === "busy"}
+                        disabled={underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded"}
+                      >
+                        Create Under Contract
+                      </Btn>
+                      {underContractWriteState.kind === "success" ? (
+                        <div data-testid="contract-execution-under-contract-write-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
+                          Recorded and verified by fresh readback -- the written note round-trips exactly.
+                        </div>
+                      ) : underContractWriteState.kind === "already_recorded" ? (
+                        <div data-testid="contract-execution-under-contract-already-recorded" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "8px" }}>
+                          Already recorded for this exact verified execution (recorded {new Date(underContractWriteState.record.iaosVerifiedAt).toLocaleString()}) -- refusing to append a duplicate.
+                        </div>
+                      ) : underContractWriteState.kind === "failed" ? (
+                        <div data-testid="contract-execution-under-contract-write-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
+                          {underContractWriteState.message}
+                        </div>
+                      ) : null}
                     </div>
                   ) : (
                     <div data-testid="contract-execution-full-result" style={{ fontSize: "11px", color: "#94A3B8" }}>
@@ -2593,7 +2874,7 @@ export default function ContractWorkspace() {
                     </div>
                   )
                 ) : (
-                  <div style={{ fontSize: "11px", color: "#64748B" }}>Fetch the live readback and select the executed PDF above to see exactly which stage this evidence reaches.</div>
+                  <div style={{ fontSize: "11px", color: "#64748B" }}>Fetch the live readback, map signers to recipients, and select the executed PDF above to see exactly which stage this evidence reaches.</div>
                 )}
               </div>
             </div>

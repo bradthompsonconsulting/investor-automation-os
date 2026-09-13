@@ -1,20 +1,28 @@
 /**
  * Board #9 verified full execution -- deterministic model + carrier test
- * runner. B9-10 / INV-65. Jess Gate repair round, 2026-09-13 (manual PDF
- * selection surface, recipient-id mapping DERIVED from accepted send
- * evidence, executed-term verification explicitly unavailable).
+ * runner. B9-10 / INV-65. Product Owner ruling, 2026-09-13: Brad's own
+ * factual recipient-mapping attestation (WHO must sign, assembled from
+ * IAOS's own authoritative contract facts, never send evidence; Brad's
+ * manual, one-to-one provider-recipient mapping, currency-verified);
+ * signer completion now also requires a valid signed timestamp; Under
+ * Contract persistence (write + fresh readback + exact equality +
+ * duplicate refusal) is proven at the model layer via
+ * `verifyReadbackMatchesWritten`/`isDuplicateUnderContractRecord`, with
+ * the live write/readback orchestration itself covered by
+ * `test-contract-workspace-wiring.cjs`.
  *
  * Compiles contract-execution-model.ts, contract-execution-carriers.ts,
- * contract-send-carriers.ts (now carrying the mapping-derivation
- * extension), and their dependency chain to a temp directory, loads the
- * emitted JavaScript, and runs deterministic table-driven cases mapped
- * directly to this repair round's own "Proof required" list. Every
- * provider response, send record, and PDF selection used here is a
- * SIMULATED fixture object -- no network call, no live GHL call, no
- * `ghl.notes.create()`. Artifact bytes are synthetic, non-sensitive ASCII
- * text prefixed with the real PDF magic-byte signature, never a real PDF.
- * Hashing uses Node's `crypto` directly IN THIS TEST FILE ONLY, simulating
- * what the browser's Web Crypto call would produce -- never imported into
+ * contract-send-carriers.ts, contract-signer-mapping-model.ts,
+ * contract-signer-mapping-carriers.ts, and their dependency chain to a
+ * temp directory, loads the emitted JavaScript, and runs deterministic
+ * table-driven cases mapped directly to this round's own "Proof
+ * required" list. Every provider response, send record, contract-facts
+ * report, and PDF selection used here is a SIMULATED fixture object --
+ * no network call, no live GHL call, no `ghl.notes.create()`. Artifact
+ * bytes are synthetic, non-sensitive ASCII text prefixed with the real
+ * PDF magic-byte signature, never a real PDF. Hashing uses Node's
+ * `crypto` directly IN THIS TEST FILE ONLY, simulating what the
+ * browser's Web Crypto call would produce -- never imported into
  * contract-execution-model.ts itself (see that module's own header and
  * `test-browser-artifact-hash.cjs`, which proves the real browser-path
  * hash function independently).
@@ -49,6 +57,8 @@ const SOURCES = [
   path.join(LIB, 'contract-authorization-carriers.ts'),
   path.join(LIB, 'contract-executed-terms-attestation-model.ts'),
   path.join(LIB, 'contract-executed-terms-attestation-carriers.ts'),
+  path.join(LIB, 'contract-signer-mapping-model.ts'),
+  path.join(LIB, 'contract-signer-mapping-carriers.ts'),
 ];
 
 try {
@@ -71,6 +81,8 @@ const B = require(path.join(LIB_OUT, 'board9-contract-model.js'));
 const SC = require(path.join(LIB_OUT, 'contract-send-carriers.js'));
 const AT = require(path.join(LIB_OUT, 'contract-executed-terms-attestation-model.js'));
 const ATC = require(path.join(LIB_OUT, 'contract-executed-terms-attestation-carriers.js'));
+const SM = require(path.join(LIB_OUT, 'contract-signer-mapping-model.js'));
+const SMC = require(path.join(LIB_OUT, 'contract-signer-mapping-carriers.js'));
 
 let failures = 0;
 let checks = 0;
@@ -216,12 +228,47 @@ function validManualOutcome() {
   return selectAndHash(SYNTHETIC_PDF_BYTES, 'executed.pdf', 'application/pdf');
 }
 
+// WHO must sign -- ASSEMBLED, never derived from acceptedSend.signers.
+// Single-signer by default, matching providerRecipientSingleComplete()'s
+// one row `r1`.
+function requiredSignerFixtureSingle() {
+  return [{ role: 'Seller', displayName: 'Jane Seller' }];
+}
+function requiredSignerFixtureTwo() {
+  return [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Spouse', displayName: 'John Seller' }];
+}
+
+/** Brad's own manual, one-to-one recipient-mapping attestation -- built via the REAL builder, never hand-constructed. Defaults to the single-signer/single-recipient (r1) case. */
+function signerMappingAttestationFixture(over) {
+  const requiredSigners = (over && over.requiredSigners) || requiredSignerFixtureSingle();
+  const availableProviderRecipientIds = (over && over.availableProviderRecipientIds) || requiredSigners.map((_, i) => (i === 0 ? 'r1' : 'r2'));
+  const assignments = (over && over.assignments) || requiredSigners.map((s, i) => ({ role: s.role, providerRecipientId: availableProviderRecipientIds[i] }));
+  const args = Object.assign({
+    opportunityId: OPP,
+    version: V1,
+    agreementAt: AGREEMENT_AT,
+    providerDocumentId: DOC_ID,
+    providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT,
+    attestedAt: VERIFIED_AT,
+    requiredSigners,
+    availableProviderRecipientIds,
+    assignments,
+    evidenceSummary: "Brad's own visually-verified mapping -- fixture.",
+  }, (over && over.args) || {});
+  const built = SM.buildSignerMappingAttestationRecordArgs(args);
+  if (!built.ok) throw new Error('fixture signerMappingAttestationFixture failed: ' + JSON.stringify(built.reasons));
+  return built.value;
+}
+
 function baseArgs(over) {
   return Object.assign({
     opportunityId: OPP,
     agreementAt: AGREEMENT_AT,
     version: V1,
     acceptedSend: acceptedSendFixture({}),
+    requiredSigners: requiredSignerFixtureSingle(),
+    signerMappingAttestation: signerMappingAttestationFixture({}),
     providerRecipients: providerRecipientSingleComplete(),
     lifecycleHistory: [completedLifecycleObservation({})],
     manualArtifactOutcome: validManualOutcome(),
@@ -242,7 +289,7 @@ function validAttestationFixture(over) {
   const checklistItems = AT.buildExecutedTermsChecklist({
     agreement: { price: 190000, propertyAddress: '123 Main St', parties: [] },
     buyerIdentity: 'BTC LLC',
-    expectedSigners: [{ role: 'Seller', displayName: 'Jane Seller' }],
+    expectedSigners: requiredSignerFixtureSingle(),
   });
   const responses = checklistItems.map((item) => ({ kind: item.kind, signerRole: item.signerRole, result: 'MATCHES' }));
   const built = AT.buildExecutedTermsAttestationRecordArgs(Object.assign({
@@ -455,62 +502,333 @@ function validAttestationFixture(over) {
 }
 
 /* ====================================================================== */
-/* 5. Accepted-send evidence durably round-trips recipient-ID mappings;   */
-/*    execution consumes mappings PARSED from send evidence               */
+/* 5. Required signer set -- buyer + every seller signer, NEVER derived   */
+/*    solely from acceptedSend.signers (Product Owner ruling, 2026-09-13) */
 /* ====================================================================== */
 
 {
-  const send = acceptedSendFixture({});
-  const note = SC.formatContractSendNote(send);
-  const parsed = SC.parseContractSendNote(note);
-  checkTrue('the accepted send note round-trips', parsed !== null);
-  const mapping = SC.deriveDeterministicSignerMappingsFromAcceptedSend(parsed);
-  checkTrue('a deterministic mapping derives correctly from the ROUND-TRIPPED (parsed-from-note) send evidence, not just the in-memory fixture', mapping.ok);
-  if (mapping.ok) {
-    check('the derived mapping\'s role/displayName match what was durably recorded at send time', [mapping.mappings[0].role, mapping.mappings[0].displayName], ['Seller', 'Jane Seller']);
-    check('the derived mapping\'s providerRecipientId matches the provider-confirmed recipient id', mapping.mappings[0].providerRecipientId, 'r1');
+  checkFalse('BuildVerifiedExecutionArgs has no expectedSignerMappings field at all', 'expectedSignerMappings' in baseArgs({}));
+  checkTrue('BuildVerifiedExecutionArgs has its own requiredSigners field, independent of acceptedSend', 'requiredSigners' in baseArgs({}));
+  checkTrue('BuildVerifiedExecutionArgs has its own signerMappingAttestation field, independent of acceptedSend', 'signerMappingAttestation' in baseArgs({}));
+}
+{
+  // A send recording a DIFFERENT signer set than requiredSigners has ZERO effect on the required set -- proving it is never derived from send evidence.
+  const sendWithDifferentSigners = acceptedSendFixture({ signers: [{ role: 'Totally Different Role', displayName: 'Nobody Real' }] });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ acceptedSend: sendWithDifferentSigners }));
+  checkFalse('even with mismatched send-time signers[], the pipeline still reaches (and is blocked only by) executed_terms -- required_signers/signer_mapping/signers all passed using the ASSEMBLED set, never the send\'s own signers[]', result.ok);
+  check('failure stage is executed_terms (proving required_signers and signer_mapping never consulted acceptedSend.signers at all)', result.failure.stage, 'executed_terms');
+}
+{
+  checkFalse('zero required signers fails closed', E.buildVerifiedUnderContractRecord(baseArgs({ requiredSigners: [] })).ok);
+  check('failure stage is required_signers for zero signers', E.buildVerifiedUnderContractRecord(baseArgs({ requiredSigners: [] })).failure.stage, 'required_signers');
+}
+{
+  // ONE seller signer (plus the buyer signer implicit in every RequiredSigner[] this fixture set represents) succeeds through required_signers.
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({}));
+  checkTrue('one seller signer required_signers/signer_mapping/signers stages all pass (blocked only by executed_terms)', !result.ok && result.failure.stage === 'executed_terms');
+}
+{
+  // MULTIPLE seller signers -- a real, currently-supported case (unlike the prior round's single-signer-only limitation).
+  const twoSigners = requiredSignerFixtureTwo();
+  const twoMapping = signerMappingAttestationFixture({ requiredSigners: twoSigners, availableProviderRecipientIds: ['r1', 'r2'] });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({
+    requiredSigners: twoSigners,
+    signerMappingAttestation: twoMapping,
+    providerRecipients: providerRecipientsTwoComplete(),
+  }));
+  checkFalse('multiple seller signers, fully mapped and completed, still reach (and are blocked only by) executed_terms -- multi-signer IS now supported end to end', result.ok);
+  check('failure stage is executed_terms for the multi-signer case', result.failure.stage, 'executed_terms');
+}
+{
+  const dupRole = [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Seller', displayName: 'Someone Else' }];
+  const check1 = SM.validateRequiredSignerSet(dupRole);
+  checkFalse('a duplicate role within the required signer set is rejected -- an ambiguous identity', check1.ok);
+  check('failure names DUPLICATE_SIGNER_ROLE', check1.reasons[0].code, 'DUPLICATE_SIGNER_ROLE');
+}
+{
+  const blankRole = [{ role: '', displayName: 'Jane Seller' }];
+  const check1 = SM.validateRequiredSignerSet(blankRole);
+  checkFalse('a blank role in the required signer set is rejected', check1.ok);
+  check('failure names SIGNER_BLANK_ROLE', check1.reasons[0].code, 'SIGNER_BLANK_ROLE');
+}
+{
+  const blankName = [{ role: 'Seller', displayName: '' }];
+  const check1 = SM.validateRequiredSignerSet(blankName);
+  checkFalse('a blank display name in the required signer set is rejected', check1.ok);
+  check('failure names SIGNER_BLANK_NAME', check1.reasons[0].code, 'SIGNER_BLANK_NAME');
+}
+{
+  const dupRoleSet = [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Seller', displayName: 'Duplicate Role' }];
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ requiredSigners: dupRoleSet }));
+  checkFalse('the full pipeline fails closed at required_signers for a duplicate role, defense in depth even though the caller should have already validated it', result.ok);
+  check('failure stage is required_signers', result.failure.stage, 'required_signers');
+  checkTrue('failure names DUPLICATE_SIGNER_ROLE', result.failure.reasons.some((r) => r.code === 'DUPLICATE_SIGNER_ROLE'));
+}
+
+/* -- buildRequiredSignerSet itself, against SellerContractFactsReport-  */
+/*    shaped fixtures (buyer signer + seller signers, never send evidence) */
+function populatedDisposition(value) { return { kind: 'populated', value, authority: 'operator_attested', recordedAt: null }; }
+function reportFixture(over) {
+  return Object.assign({
+    noticeContact: { buyerSignerName: populatedDisposition('Brad Thompson'), buyerSignerRole: populatedDisposition('Manager, BTC LLC') },
+    parties: { sellerSigners: populatedDisposition([{ role: 'Seller', displayName: 'Jane Seller', signingAuthorityNote: null }]) },
+  }, over || {});
+}
+{
+  const result = SM.buildRequiredSignerSet(reportFixture({}));
+  checkTrue('buyer signer PLUS one seller signer both required -- builds successfully', result.ok);
+  if (result.ok) {
+    check('exactly 2 required signers: the buyer signer + the one seller signer', result.signers.length, 2);
+    checkTrue('the buyer signer is present', result.signers.some((s) => s.role === 'Manager, BTC LLC' && s.displayName === 'Brad Thompson'));
+    checkTrue('the seller signer is present', result.signers.some((s) => s.role === 'Seller' && s.displayName === 'Jane Seller'));
   }
 }
 {
-  // buildVerifiedUnderContractRecord, given the SAME round-tripped send record, consumes the mapping it derives -- never a separately supplied one.
-  const send = acceptedSendFixture({});
-  const roundTrippedSend = SC.parseContractSendNote(SC.formatContractSendNote(send));
-  const result = E.buildVerifiedUnderContractRecord(baseArgs({ acceptedSend: roundTrippedSend }));
-  checkFalse('using round-tripped send evidence, the pipeline still correctly reaches (and is blocked only by) the executed_terms boundary -- signer_mapping/signers/provider_completion/artifact all passed using the DERIVED mapping', result.ok);
-  check('failure stage is executed_terms (proving every earlier, mapping-dependent stage succeeded)', result.failure.stage, 'executed_terms');
+  // Multiple seller signers -- every one required, plus the buyer.
+  const twoSellersReport = reportFixture({
+    parties: { sellerSigners: populatedDisposition([
+      { role: 'Seller', displayName: 'Jane Seller', signingAuthorityNote: null },
+      { role: 'Spouse', displayName: 'John Seller', signingAuthorityNote: null },
+    ]) },
+  });
+  const result = SM.buildRequiredSignerSet(twoSellersReport);
+  checkTrue('buyer signer plus TWO seller signers all required -- builds successfully', result.ok);
+  if (result.ok) check('exactly 3 required signers: buyer + 2 sellers', result.signers.length, 3);
 }
 {
-  checkFalse('BuildVerifiedExecutionArgs has no expectedSignerMappings field at all -- there is nothing for a caller to supply independently', 'expectedSignerMappings' in baseArgs({}));
-  const smuggled = E.buildVerifiedUnderContractRecord(Object.assign(baseArgs({ providerRecipients: [] }), {
-    expectedSignerMappings: [{ role: 'Seller', displayName: 'A Completely Fabricated Name', providerRecipientId: 'fabricated-id' }],
-  }));
-  checkFalse('a fabricated/smuggled expectedSignerMappings field has zero effect -- the REAL derived mapping (from acceptedSend) is used regardless, and empty providerRecipients still fails closed', smuggled.ok);
-  check('failure stage is signers (the derived mapping, r1, has no matching evidence since providerRecipients was emptied) -- never unlocked by the fabricated mapping', smuggled.failure.stage, 'signers');
+  // Zero seller signers -- fails closed.
+  const zeroSellersReport = reportFixture({ parties: { sellerSigners: populatedDisposition([]) } });
+  const result = SM.buildRequiredSignerSet(zeroSellersReport);
+  checkFalse('zero seller signers fails closed -- at least one seller signer is required', result.ok);
+  check('failure names NO_SELLER_SIGNERS', result.reasons[0].code, 'NO_SELLER_SIGNERS');
+}
+{
+  const unresolvedSellersReport = reportFixture({ parties: { sellerSigners: { kind: 'unresolved' } } });
+  const result = SM.buildRequiredSignerSet(unresolvedSellersReport);
+  checkFalse('unresolved seller signers fails closed', result.ok);
+  check('failure names SELLER_SIGNERS_UNRESOLVED', result.reasons[0].code, 'SELLER_SIGNERS_UNRESOLVED');
+}
+{
+  const unresolvedBuyerReport = reportFixture({ noticeContact: { buyerSignerName: { kind: 'unresolved' }, buyerSignerRole: populatedDisposition('Manager') } });
+  const result = SM.buildRequiredSignerSet(unresolvedBuyerReport);
+  checkFalse('unresolved buyer signer name fails closed -- the buyer signer is required too, never optional', result.ok);
+  check('failure names BUYER_SIGNER_UNRESOLVED', result.reasons[0].code, 'BUYER_SIGNER_UNRESOLVED');
+}
+{
+  const blankBuyerReport = reportFixture({ noticeContact: { buyerSignerName: populatedDisposition('   '), buyerSignerRole: populatedDisposition('Manager') } });
+  const result = SM.buildRequiredSignerSet(blankBuyerReport);
+  checkFalse('a blank (whitespace-only) buyer signer name fails closed', result.ok);
+  check('failure names BUYER_SIGNER_BLANK', result.reasons[0].code, 'BUYER_SIGNER_BLANK');
+}
+{
+  // Ambiguous identity ACROSS buyer + seller -- a seller signer accidentally recorded under the same role as the buyer.
+  const collidingReport = reportFixture({
+    parties: { sellerSigners: populatedDisposition([{ role: 'Manager, BTC LLC', displayName: 'Someone Else', signingAuthorityNote: null }]) },
+  });
+  const result = SM.buildRequiredSignerSet(collidingReport);
+  checkFalse('a seller signer role colliding with the buyer signer role fails closed -- an ambiguous identity across the combined set', result.ok);
+  check('failure names DUPLICATE_SIGNER_ROLE', result.reasons[0].code, 'DUPLICATE_SIGNER_ROLE');
+}
+{
+  // Confirms this module never imports contract-send-carriers.ts at all --
+  // it cannot read acceptedSend.signers/providerResponse even by accident,
+  // since it has no access to that type or module whatsoever. The plain
+  // `acceptedSendAttemptId: string` binding field (ruling item 2: "Bind
+  // the mapping record to ... accepted-send identity") is a bare string
+  // identity, never a dependency on the send record's own signer data.
+  const src = fs.readFileSync(path.join(LIB, 'contract-signer-mapping-model.ts'), 'utf8');
+  checkFalse('contract-signer-mapping-model.ts never imports from contract-send-carriers.ts -- it cannot read acceptedSend.signers even by accident', /from ["']\.\/contract-send-carriers["']/.test(src));
+  checkFalse('contract-signer-mapping-model.ts never imports the ParsedContractSend type', /ParsedContractSend/.test(src));
 }
 
 /* ====================================================================== */
-/* 6. Ambiguous provider-to-signer association fails closed -- more than  */
-/*    one recorded signer cannot be deterministically mapped              */
+/* 6. Brad's recipient-mapping attestation -- manual, one-to-one, never   */
+/*    auto-paired by order/role/name; stale/cross-version/malformed/      */
+/*    incomplete/conflicting mappings fail closed                        */
 /* ====================================================================== */
 
 {
-  const twoSignerSend = acceptedSendFixture({ signers: [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Spouse', displayName: 'John Seller' }] });
-  const mapping = SC.deriveDeterministicSignerMappingsFromAcceptedSend(twoSignerSend);
-  checkFalse('a send recording MORE than one expected signer cannot be deterministically mapped -- fails closed rather than guessing', mapping.ok);
-  check('failure names SIGNER_MAPPING_EVIDENCE_INSUFFICIENT', mapping.reasons[0].code, 'SIGNER_MAPPING_EVIDENCE_INSUFFICIENT');
+  const built = SM.buildSignerMappingAttestationRecordArgs({
+    opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, attestedAt: VERIFIED_AT,
+    requiredSigners: requiredSignerFixtureSingle(), availableProviderRecipientIds: ['r1'],
+    assignments: [{ role: 'Seller', providerRecipientId: 'r1' }],
+    evidenceSummary: 'x',
+  });
+  checkTrue('a true one-to-one bijection (1 signer, 1 recipient, explicitly assigned) builds successfully', built.ok);
 }
 {
-  const notAcceptedSend = acceptedSendFixture({ status: 'failed', providerResponse: null });
-  const mapping = SC.deriveDeterministicSignerMappingsFromAcceptedSend(notAcceptedSend);
-  checkFalse('a send that never reached accepted status cannot supply a mapping', mapping.ok);
-  check('failure names SEND_NOT_ACCEPTED', mapping.reasons[0].code, 'SEND_NOT_ACCEPTED');
+  const twoSigners = requiredSignerFixtureTwo();
+  const built = SM.buildSignerMappingAttestationRecordArgs({
+    opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, attestedAt: VERIFIED_AT,
+    requiredSigners: twoSigners, availableProviderRecipientIds: ['r1', 'r2'],
+    assignments: [{ role: 'Seller', providerRecipientId: 'r1' }, { role: 'Spouse', providerRecipientId: 'r2' }],
+    evidenceSummary: 'x',
+  });
+  checkTrue('a true one-to-one bijection (2 signers, 2 recipients, both explicitly assigned) builds successfully', built.ok);
 }
 {
-  const twoSignerSend = acceptedSendFixture({ signers: [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Spouse', displayName: 'John Seller' }] });
-  const result = E.buildVerifiedUnderContractRecord(baseArgs({ acceptedSend: twoSignerSend }));
-  checkFalse('the full pipeline fails closed at signer_mapping for a multi-signer accepted send -- never pairs by assumed order or guesses', result.ok);
+  // Missing signer -- one required signer never assigned.
+  const twoSigners = requiredSignerFixtureTwo();
+  const built = SM.buildSignerMappingAttestationRecordArgs({
+    opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, attestedAt: VERIFIED_AT,
+    requiredSigners: twoSigners, availableProviderRecipientIds: ['r1', 'r2'],
+    assignments: [{ role: 'Seller', providerRecipientId: 'r1' }],
+    evidenceSummary: 'x',
+  });
+  checkFalse('an assignment count that does not match the required signer count fails closed', built.ok);
+  check('failure names MAPPING_COUNT_MISMATCH', built.reasons[0].code, 'MAPPING_COUNT_MISMATCH');
+}
+{
+  // Duplicate signer -- the SAME role assigned twice, leaving another role unmapped and a recipient double-claimed.
+  const twoSigners = requiredSignerFixtureTwo();
+  const built = SM.buildSignerMappingAttestationRecordArgs({
+    opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, attestedAt: VERIFIED_AT,
+    requiredSigners: twoSigners, availableProviderRecipientIds: ['r1', 'r2'],
+    assignments: [{ role: 'Seller', providerRecipientId: 'r1' }, { role: 'Seller', providerRecipientId: 'r2' }],
+    evidenceSummary: 'x',
+  });
+  checkFalse('the same required signer role assigned more than once fails closed', built.ok);
+  check('failure names SIGNER_DUPLICATE', built.reasons[0].code, 'SIGNER_DUPLICATE');
+}
+{
+  // Duplicate recipient id -- the SAME recipient assigned to two different signers.
+  const twoSigners = requiredSignerFixtureTwo();
+  const built = SM.buildSignerMappingAttestationRecordArgs({
+    opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, attestedAt: VERIFIED_AT,
+    requiredSigners: twoSigners, availableProviderRecipientIds: ['r1', 'r2'],
+    assignments: [{ role: 'Seller', providerRecipientId: 'r1' }, { role: 'Spouse', providerRecipientId: 'r1' }],
+    evidenceSummary: 'x',
+  });
+  checkFalse('the same provider recipient id assigned to more than one required signer fails closed', built.ok);
+  check('failure names RECIPIENT_DUPLICATE', built.reasons[0].code, 'RECIPIENT_DUPLICATE');
+}
+{
+  // Ambiguous/ungrounded assignment -- names a role that is not a required signer.
+  const built = SM.buildSignerMappingAttestationRecordArgs({
+    opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, attestedAt: VERIFIED_AT,
+    requiredSigners: requiredSignerFixtureSingle(), availableProviderRecipientIds: ['r1'],
+    assignments: [{ role: 'Not A Real Required Signer', providerRecipientId: 'r1' }],
+    evidenceSummary: 'x',
+  });
+  checkFalse('an assignment naming a role that is not a required signer fails closed', built.ok);
+}
+{
+  // Ambiguous/ungrounded assignment -- names a recipient id that was never observed.
+  const built = SM.buildSignerMappingAttestationRecordArgs({
+    opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, attestedAt: VERIFIED_AT,
+    requiredSigners: requiredSignerFixtureSingle(), availableProviderRecipientIds: ['r1'],
+    assignments: [{ role: 'Seller', providerRecipientId: 'r-fabricated-not-observed' }],
+    evidenceSummary: 'x',
+  });
+  checkFalse('an assignment naming a provider recipient id never observed in the readback fails closed', built.ok);
+  check('failure names RECIPIENT_UNKNOWN', built.reasons[0].code, 'RECIPIENT_UNKNOWN');
+}
+{
+  // Unmapped recipient -- the document has MORE recipients than required signers; every one must be mapped, none left over.
+  const built = SM.buildSignerMappingAttestationRecordArgs({
+    opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, attestedAt: VERIFIED_AT,
+    requiredSigners: requiredSignerFixtureSingle(), availableProviderRecipientIds: ['r1', 'r2'],
+    assignments: [{ role: 'Seller', providerRecipientId: 'r1' }],
+    evidenceSummary: 'x',
+  });
+  checkFalse('the document reporting MORE recipients than required signers fails closed -- no valid bijection exists, never silently ignores the extra recipient', built.ok);
+  check('failure names MAPPING_COUNT_MISMATCH', built.reasons[0].code, 'MAPPING_COUNT_MISMATCH');
+}
+{
+  // Never auto-paired by array order: swapping the assignment order still requires EXPLICIT role/id pairs, and a genuinely wrong explicit pairing is accepted structurally (it's Brad's own factual claim) but caught downstream if it doesn't match live completion evidence -- the BUILDER itself never infers a pairing from position.
+  const twoSigners = requiredSignerFixtureTwo();
+  const explicitSwap = SM.buildSignerMappingAttestationRecordArgs({
+    opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, attestedAt: VERIFIED_AT,
+    requiredSigners: twoSigners, availableProviderRecipientIds: ['r1', 'r2'],
+    assignments: [{ role: 'Spouse', providerRecipientId: 'r1' }, { role: 'Seller', providerRecipientId: 'r2' }],
+    evidenceSummary: 'x',
+  });
+  checkTrue('an explicit, deliberately-swapped pairing still builds -- the builder takes Brad\'s own explicit role/id pairs exactly as given, never infers or corrects from array position', explicitSwap.ok);
+  if (explicitSwap.ok) {
+    check('the built mapping honors the EXPLICIT swap, not array order', explicitSwap.value.mappings.find((m) => m.role === 'Spouse').providerRecipientId, 'r1');
+  }
+}
+{
+  // Currency -- stale/cross-version/cross-document/missing/changed-required-signers all fail closed.
+  const attestation = signerMappingAttestationFixture({});
+  const currentOk = SM.verifySignerMappingAttestationCurrency({
+    attestation, opportunityId: OPP, version: V1, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, requiredSigners: requiredSignerFixtureSingle(),
+  });
+  checkTrue('a mapping attestation matching every current fact is CURRENT', currentOk.ok);
+
+  const missing = SM.verifySignerMappingAttestationCurrency({
+    attestation: null, opportunityId: OPP, version: V1, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, requiredSigners: requiredSignerFixtureSingle(),
+  });
+  checkFalse('no recorded mapping fails closed', missing.ok);
+  check('failure names MAPPING_ATTESTATION_MISSING', missing.reasons[0].code, 'MAPPING_ATTESTATION_MISSING');
+
+  const wrongDoc = SM.verifySignerMappingAttestationCurrency({
+    attestation, opportunityId: OPP, version: V1, providerDocumentId: 'doc-DIFFERENT', providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, requiredSigners: requiredSignerFixtureSingle(),
+  });
+  checkFalse('a cross-document mapping fails closed', wrongDoc.ok);
+  checkTrue('failure names MAPPING_ATTESTATION_DOCUMENT_MISMATCH', wrongDoc.reasons.some((r) => r.code === 'MAPPING_ATTESTATION_DOCUMENT_MISMATCH'));
+
+  const wrongRevision = SM.verifySignerMappingAttestationCurrency({
+    attestation, opportunityId: OPP, version: V1, providerDocumentId: DOC_ID, providerDocumentRevision: 99,
+    acceptedSendAttemptId: REQUEST_AT, requiredSigners: requiredSignerFixtureSingle(),
+  });
+  checkFalse('a stale (revision-changed) mapping fails closed', wrongRevision.ok);
+  checkTrue('failure names MAPPING_ATTESTATION_REVISION_MISMATCH', wrongRevision.reasons.some((r) => r.code === 'MAPPING_ATTESTATION_REVISION_MISMATCH'));
+
+  const wrongVersion = SM.verifySignerMappingAttestationCurrency({
+    attestation, opportunityId: OPP, version: V2, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, requiredSigners: requiredSignerFixtureSingle(),
+  });
+  checkFalse('a cross-version mapping fails closed -- never reused across a correction', wrongVersion.ok);
+  checkTrue('failure names MAPPING_ATTESTATION_VERSION_MISMATCH', wrongVersion.reasons.some((r) => r.code === 'MAPPING_ATTESTATION_VERSION_MISMATCH'));
+
+  const wrongSend = SM.verifySignerMappingAttestationCurrency({
+    attestation, opportunityId: OPP, version: V1, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: 'different-attempt-id', requiredSigners: requiredSignerFixtureSingle(),
+  });
+  checkFalse('a cross-accepted-send mapping fails closed', wrongSend.ok);
+  checkTrue('failure names MAPPING_ATTESTATION_SEND_MISMATCH', wrongSend.reasons.some((r) => r.code === 'MAPPING_ATTESTATION_SEND_MISMATCH'));
+
+  const changedSigners = SM.verifySignerMappingAttestationCurrency({
+    attestation, opportunityId: OPP, version: V1, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, requiredSigners: requiredSignerFixtureTwo(),
+  });
+  checkFalse('a mapping attested against a DIFFERENT required signer set (e.g. a seller signer fact edited since) fails closed -- never silently reused', changedSigners.ok);
+  checkTrue('failure names MAPPING_ATTESTATION_REQUIRED_SIGNERS_CHANGED', changedSigners.reasons.some((r) => r.code === 'MAPPING_ATTESTATION_REQUIRED_SIGNERS_CHANGED'));
+
+  const tamperedAuthority = Object.assign({}, attestation, { operator: 'not-brad' });
+  const notBrad = SM.verifySignerMappingAttestationCurrency({
+    attestation: tamperedAuthority, opportunityId: OPP, version: V1, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    acceptedSendAttemptId: REQUEST_AT, requiredSigners: requiredSignerFixtureSingle(),
+  });
+  checkFalse('a mapping tampered in memory to a non-Brad operator (bypassing the builder) fails closed -- defense in depth', notBrad.ok);
+  checkTrue('failure names MAPPING_ATTESTATION_NOT_BRAD', notBrad.reasons.some((r) => r.code === 'MAPPING_ATTESTATION_NOT_BRAD'));
+}
+{
+  // The full pipeline fails closed at signer_mapping when no mapping has been recorded.
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ signerMappingAttestation: null }));
+  checkFalse('the full pipeline fails closed at signer_mapping when no mapping has been recorded', result.ok);
   check('failure stage is signer_mapping', result.failure.stage, 'signer_mapping');
-  checkTrue('failure names SIGNER_MAPPING_EVIDENCE_INSUFFICIENT', result.failure.reasons.some((r) => r.code === 'SIGNER_MAPPING_EVIDENCE_INSUFFICIENT'));
+  checkTrue('failure names MAPPING_ATTESTATION_MISSING', result.failure.reasons.some((r) => r.code === 'MAPPING_ATTESTATION_MISSING'));
+}
+{
+  // A mapping bound to a different document fails closed at signer_mapping in the full pipeline too.
+  const staleMapping = signerMappingAttestationFixture({ args: { providerDocumentId: 'doc-STALE' } });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ signerMappingAttestation: staleMapping }));
+  checkFalse('a stale (cross-document) mapping fails closed in the full pipeline', result.ok);
+  check('failure stage is signer_mapping', result.failure.stage, 'signer_mapping');
 }
 
 /* ====================================================================== */
@@ -614,22 +932,37 @@ function validAttestationFixture(over) {
 }
 
 /* ====================================================================== */
-/* 10. signedDate is preserved when available                             */
+/* 10. Every required signer must complete WITH a valid signed timestamp  */
+/*     -- provider completion ALONE is no longer sufficient (ruling item  */
+/*     3, 2026-09-13)                                                     */
 /* ====================================================================== */
 
 {
   const result = E.verifyRequiredSigners({ mappings: EXPECTED_SIGNER_MAPPINGS_TWO, providerRecipients: providerRecipientsTwoComplete() });
-  checkTrue('signedDate is preserved verbatim from the provider evidence', result.ok);
+  checkTrue('signedDate is preserved verbatim from the provider evidence when a real one is present', result.ok);
   if (result.ok) {
     check('Seller\'s providerCompletedAt equals the provider\'s own signedDate', result.matches.find((m) => m.role === 'Seller').providerCompletedAt, SIGNED_DATE_SELLER);
     check('Spouse\'s providerCompletedAt equals the provider\'s own signedDate', result.matches.find((m) => m.role === 'Spouse').providerCompletedAt, SIGNED_DATE_SPOUSE);
   }
 }
 {
+  // Ruling item 3: hasCompleted === true with NO signedDate is now treated the same as incomplete -- never silently accepted.
   const withoutSignedDate = providerRecipientsTwoComplete([{ signedDate: null }, {}]);
   const result = E.verifyRequiredSigners({ mappings: EXPECTED_SIGNER_MAPPINGS_TWO, providerRecipients: withoutSignedDate });
-  checkTrue('a missing signedDate is preserved as null -- never fabricated', result.ok);
-  if (result.ok) checkNull('Seller\'s providerCompletedAt is null when the provider never reported one', result.matches.find((m) => m.role === 'Seller').providerCompletedAt);
+  checkFalse('a missing signedDate on an otherwise-completed signer now fails closed -- provider completion alone is no longer sufficient', result.ok);
+  checkTrue('failure names SIGNER_SIGNED_TIMESTAMP_MISSING', result.reasons.some((r) => r.code === 'SIGNER_SIGNED_TIMESTAMP_MISSING'));
+}
+{
+  const withMalformedSignedDate = providerRecipientsTwoComplete([{ signedDate: 'not-a-real-date' }, {}]);
+  const result = E.verifyRequiredSigners({ mappings: EXPECTED_SIGNER_MAPPINGS_TWO, providerRecipients: withMalformedSignedDate });
+  checkFalse('a malformed (non-parseable) signedDate on an otherwise-completed signer fails closed', result.ok);
+  checkTrue('failure names SIGNER_SIGNED_TIMESTAMP_MISSING', result.reasons.some((r) => r.code === 'SIGNER_SIGNED_TIMESTAMP_MISSING'));
+}
+{
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ providerRecipients: providerRecipientSingleComplete({ signedDate: null }) }));
+  checkFalse('the full pipeline fails closed at signers when the mapped signer completed but carries no signed timestamp', result.ok);
+  check('failure stage is signers', result.failure.stage, 'signers');
+  checkTrue('failure names SIGNER_SIGNED_TIMESTAMP_MISSING', result.failure.reasons.some((r) => r.code === 'SIGNER_SIGNED_TIMESTAMP_MISSING'));
 }
 
 /* ====================================================================== */
@@ -854,14 +1187,12 @@ function listDocumentsBodyFixture(over) {
   checkFalse('extraction fails closed when the response body is not a JSON object', r.ok);
 }
 {
-  // The extracted rows feed DIRECTLY into the same verifyRequiredSigners used by the full pipeline -- proving the live-shaped extraction and the pipeline's own matching logic compose correctly end to end.
+  // The extracted rows feed DIRECTLY into the same verifyRequiredSigners used by the full pipeline -- proving the live-shaped extraction and Brad's own attested mapping compose correctly end to end.
   const extracted = E.extractProviderSignerRowsFromListDocumentsBody({ body: listDocumentsBodyFixture({}), expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID });
-  const send = acceptedSendFixture({});
-  const mapping = SC.deriveDeterministicSignerMappingsFromAcceptedSend(send);
-  checkTrue('setup: mapping derivation succeeds for the single-signer fixture', mapping.ok);
-  if (extracted.ok && mapping.ok) {
-    const signerResult = E.verifyRequiredSigners({ mappings: mapping.mappings, providerRecipients: extracted.rows });
-    checkTrue('end to end: a live-shaped List Documents body, extracted and matched, correctly verifies the single mapped signer', signerResult.ok);
+  const attestation = signerMappingAttestationFixture({});
+  if (extracted.ok) {
+    const signerResult = E.verifyRequiredSigners({ mappings: attestation.mappings, providerRecipients: extracted.rows });
+    checkTrue('end to end: a live-shaped List Documents body, extracted and matched against Brad\'s own attested mapping, correctly verifies the single mapped signer', signerResult.ok);
   }
 }
 
@@ -1003,6 +1334,101 @@ function listDocumentsBodyFixture(over) {
 }
 
 /* ====================================================================== */
+/* 17. Signer-mapping attestation carrier -- round-trip and every          */
+/*     rejection case                                                     */
+/* ====================================================================== */
+
+{
+  const mapping = signerMappingAttestationFixture({});
+  const note = SMC.formatSignerMappingAttestationNote(mapping);
+  const parsed = SMC.parseSignerMappingAttestationNote(note);
+  checkTrue('the signer-mapping note round-trips to a non-null record', parsed !== null);
+  check('round-trip is byte-for-byte field-equal to the original', JSON.stringify(parsed), JSON.stringify(mapping));
+}
+{
+  checkNull('parse: unrelated text is rejected', SMC.parseSignerMappingAttestationNote('not a mapping note'));
+  checkNull('parse: empty string is rejected', SMC.parseSignerMappingAttestationNote(''));
+}
+{
+  const mapping = signerMappingAttestationFixture({});
+  const note = SMC.formatSignerMappingAttestationNote(mapping);
+  const lines = note.split('\n');
+  const opIdx = lines.findIndex((l) => l.startsWith('Operator: '));
+  lines[opIdx] = 'Operator: not-brad';
+  checkNull('parse: a non-Brad Operator is rejected', SMC.parseSignerMappingAttestationNote(lines.join('\n')));
+}
+{
+  const mapping = signerMappingAttestationFixture({});
+  const note = SMC.formatSignerMappingAttestationNote(mapping);
+  const lines = note.split('\n');
+  const authIdx = lines.findIndex((l) => l.startsWith('Authorized by: '));
+  lines[authIdx] = 'Authorized by: not-brad';
+  checkNull('parse: a non-Brad Authorized by is rejected', SMC.parseSignerMappingAttestationNote(lines.join('\n')));
+}
+{
+  const mapping = signerMappingAttestationFixture({});
+  const note = SMC.formatSignerMappingAttestationNote(mapping);
+  const lines = note.split('\n');
+  const agreementIdx = lines.findIndex((l) => l.startsWith('Agreement Reached at: '));
+  lines[agreementIdx] = 'Agreement Reached at: 2099-01-01T00:00:00.000Z';
+  checkNull('parse: a mixed-version record is rejected', SMC.parseSignerMappingAttestationNote(lines.join('\n')));
+}
+{
+  const mapping = signerMappingAttestationFixture({});
+  const note = SMC.formatSignerMappingAttestationNote(mapping);
+  const lines = note.split('\n');
+  const mappingsIdx = lines.findIndex((l) => l.startsWith('Mappings: '));
+  lines[mappingsIdx] = 'Mappings: []';
+  checkNull('parse: an empty Mappings array is rejected', SMC.parseSignerMappingAttestationNote(lines.join('\n')));
+}
+{
+  const twoSigners = requiredSignerFixtureTwo();
+  const mapping = signerMappingAttestationFixture({ requiredSigners: twoSigners, availableProviderRecipientIds: ['r1', 'r2'] });
+  const note = SMC.formatSignerMappingAttestationNote(mapping);
+  const lines = note.split('\n');
+  const mappingsIdx = lines.findIndex((l) => l.startsWith('Mappings: '));
+  const parsedMappings = JSON.parse(lines[mappingsIdx].slice('Mappings: '.length));
+  parsedMappings[1].role = parsedMappings[0].role; // duplicate role
+  lines[mappingsIdx] = 'Mappings: ' + JSON.stringify(parsedMappings);
+  checkNull('parse: a duplicate role within the parsed Mappings array is rejected -- defense in depth against a hand-edited note', SMC.parseSignerMappingAttestationNote(lines.join('\n')));
+}
+{
+  const twoSigners = requiredSignerFixtureTwo();
+  const mapping = signerMappingAttestationFixture({ requiredSigners: twoSigners, availableProviderRecipientIds: ['r1', 'r2'] });
+  const note = SMC.formatSignerMappingAttestationNote(mapping);
+  const lines = note.split('\n');
+  const mappingsIdx = lines.findIndex((l) => l.startsWith('Mappings: '));
+  const parsedMappings = JSON.parse(lines[mappingsIdx].slice('Mappings: '.length));
+  parsedMappings[1].providerRecipientId = parsedMappings[0].providerRecipientId; // duplicate recipient id
+  lines[mappingsIdx] = 'Mappings: ' + JSON.stringify(parsedMappings);
+  checkNull('parse: a duplicate provider recipient id within the parsed Mappings array is rejected', SMC.parseSignerMappingAttestationNote(lines.join('\n')));
+}
+{
+  const mapping = signerMappingAttestationFixture({});
+  const note = SMC.formatSignerMappingAttestationNote(mapping);
+  const lines = note.split('\n');
+  const docIdx = lines.findIndex((l) => l.startsWith('Provider document id: '));
+  lines[docIdx] = 'Provider document id: ';
+  checkNull('parse: a blank provider document id is rejected', SMC.parseSignerMappingAttestationNote(lines.join('\n')));
+}
+checkNull('parse: correct header but wrong line count is rejected', SMC.parseSignerMappingAttestationNote('IAOS SIGNER MAPPING ATTESTATION — iaos-signer-mapping-attestation-v1\nAttested at: 2026-01-01T00:00:00.000Z'));
+{
+  // Append-only, latest-wins convenience.
+  const m1 = signerMappingAttestationFixture({ args: { attestedAt: '2026-09-12T10:00:00.000Z' } });
+  const m2 = signerMappingAttestationFixture({ args: { attestedAt: '2026-09-12T11:00:00.000Z' } });
+  const notes = [{ body: SMC.formatSignerMappingAttestationNote(m1) }, { body: SMC.formatSignerMappingAttestationNote(m2) }];
+  const all = SMC.allSignerMappingAttestationRecordsForOpportunity(notes, OPP);
+  check('append-only reader returns BOTH records, unfiltered', all.length, 2);
+  const latest = SMC.latestSignerMappingAttestationForOpportunity(notes, OPP);
+  check('latest-wins convenience picks the later attestedAt', latest.attestedAt, m2.attestedAt);
+}
+{
+  const different = signerMappingAttestationFixture({ args: { opportunityId: 'opp-OTHER' } });
+  const notes = [{ body: SMC.formatSignerMappingAttestationNote(different) }];
+  check('append-only reader scopes strictly to the requested opportunityId', SMC.allSignerMappingAttestationRecordsForOpportunity(notes, OPP).length, 0);
+}
+
+/* ====================================================================== */
 /* 15. No stage/workflow/send/Production mutation exists anywhere in the  */
 /*     new or modified source (static scan)                               */
 /* ====================================================================== */
@@ -1014,7 +1440,9 @@ function listDocumentsBodyFixture(over) {
   const browserHashSource = fs.readFileSync(path.join(LIB, 'browser-artifact-hash.ts'), 'utf8');
   const attestationModelSource = fs.readFileSync(path.join(LIB, 'contract-executed-terms-attestation-model.ts'), 'utf8');
   const attestationCarrierSource = fs.readFileSync(path.join(LIB, 'contract-executed-terms-attestation-carriers.ts'), 'utf8');
-  const combined = modelSource + '\n' + carrierSource + '\n' + sendCarrierSource + '\n' + browserHashSource + '\n' + attestationModelSource + '\n' + attestationCarrierSource;
+  const signerMappingModelSource = fs.readFileSync(path.join(LIB, 'contract-signer-mapping-model.ts'), 'utf8');
+  const signerMappingCarrierSource = fs.readFileSync(path.join(LIB, 'contract-signer-mapping-carriers.ts'), 'utf8');
+  const combined = modelSource + '\n' + carrierSource + '\n' + sendCarrierSource + '\n' + browserHashSource + '\n' + attestationModelSource + '\n' + attestationCarrierSource + '\n' + signerMappingModelSource + '\n' + signerMappingCarrierSource;
   const forbidden = ['Seller Closed-Won', 'pipelineId', 'pipeline_stage', 'pipelineStageId', '/opportunities/', 'templates/send'];
   const found = forbidden.filter((token) => combined.includes(token));
   check('no pipeline stage, Seller Closed-Won, direct /opportunities/ write path, or send-capable endpoint reference exists in the new/modified INV-65 source', found, []);

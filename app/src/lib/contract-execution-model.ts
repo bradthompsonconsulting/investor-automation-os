@@ -68,33 +68,49 @@
  * the full fail-closed matrix).
  *
  * 2. SIGNER IDENTITY IS BOUND BY PROVIDER RECIPIENT ID, NEVER GHL'S
- * GENERIC `role` FIELD -- AND THE MAPPING ITSELF IS DERIVED, NEVER A
- * CALLER ASSERTION. Live evidence proved `role: "signer"` for every
- * recipient on the one completed Test document observed -- a platform-
- * level label, not a contract-role signal. `verifyRequiredSigners` below
- * matches PRIMARILY by `providerRecipientId` -- an exact, provider-
- * assigned primary key -- never by role-string comparison; GHL's own
- * reported `role` is carried through on `ProviderSignerRow` for audit
- * only and is NEVER consulted for matching. Jess Gate repair round,
- * 2026-09-13, item 2: `buildVerifiedUnderContractRecord` no longer
- * accepts an `ExpectedSignerMapping[]` as an independent caller
- * assertion at all -- it derives the mapping itself, internally, by
- * calling `deriveDeterministicSignerMappingsFromAcceptedSend`
- * (`contract-send-carriers.ts`, extended narrowly for this repair round)
- * against `args.acceptedSend`. That function reads ONLY the accepted
- * send record's own already-durable `signers[]` (IAOS's own established
- * role/identity, recorded at send-attempt time) and `providerResponse.
- * recipientId` (the ONE provider-confirmed recipient) -- and explicitly
- * REFUSES to derive a mapping (`SIGNER_MAPPING_EVIDENCE_INSUFFICIENT`)
- * whenever more than one expected signer was recorded, because no
- * documented GHL evidence can deterministically disambiguate which
- * additional recipient id corresponds to which additional role without
- * pairing by assumed array order, guessing from names, or trusting an
- * unverifiable caller assertion -- all three explicitly disallowed by
- * this repair round's own instruction. `ProviderSignerRow[]` (the LIVE
- * per-recipient readback evidence -- `hasCompleted`/`signedDate`/id) is
- * still supplied by the caller, since it is genuinely per-verification-
- * run live evidence, not something fixed at send time to derive from.
+ * GENERIC `role` FIELD -- AND WHO MUST SIGN, PLUS THE RECIPIENT MAPPING,
+ * ARE TWO SEPARATE, NEVER-DERIVED-FROM-SEND-EVIDENCE FACTS. Product
+ * Owner ruling, 2026-09-13 (superseding the immediately prior repair
+ * round's `deriveDeterministicSignerMappingsFromAcceptedSend`, now
+ * removed from `contract-send-carriers.ts` entirely): "Brad may factually
+ * map each GHL provider recipient ID to its corresponding required
+ * contract signer after visually verifying that mapping in GHL. This is
+ * factual evidence only. IAOS must not determine legal signing
+ * authority, contractual validity, or legal consequences."
+ *
+ *   2a. THE REQUIRED SIGNER SET (WHO must sign) is assembled by
+ *   `buildRequiredSignerSet` (`contract-signer-mapping-model.ts`) from
+ *   IAOS's own already-durable authoritative contract facts -- BTC LLC's
+ *   configured buyer signer plus EVERY recorded seller signer -- NEVER
+ *   from the accepted send's own `signers[]` field, which describes a
+ *   REQUEST made at send time, not an authoritative statement of who a
+ *   contract requires as a party. `buildVerifiedUnderContractRecord`
+ *   below re-validates a caller-supplied `requiredSigners` at its own
+ *   `required_signers` stage (`validateRequiredSignerSet`) as defense in
+ *   depth, never trusting it unchecked.
+ *
+ *   2b. THE RECIPIENT MAPPING (which recipient id belongs to which
+ *   required signer) is Brad's own manual, one-to-one attestation
+ *   (`SignerMappingAttestationRecord`, `contract-signer-mapping-carriers.
+ *   ts`) -- never auto-paired by array order, GHL's generic `role`
+ *   string, or a guessed name/email match. `verifySignerMappingAttestation
+ *   Currency` re-checks that a previously-recorded mapping is still
+ *   CURRENT for the exact opportunity/version/provider document/
+ *   revision/accepted-send/required-signer-set being verified today,
+ *   failing closed at the `signer_mapping` stage on any mismatch.
+ *
+ * Live evidence proved `role: "signer"` for every recipient on the one
+ * completed Test document observed -- a platform-level label, not a
+ * contract-role signal. `verifyRequiredSigners` below still matches
+ * PRIMARILY by `providerRecipientId` -- an exact, provider-assigned
+ * primary key -- never by role-string comparison; GHL's own reported
+ * `role` is carried through on `ProviderSignerRow` for audit only and is
+ * NEVER consulted for matching. It NOW ALSO requires a real, valid
+ * signed timestamp for every matched, completed signer -- "provider
+ * completion" alone is no longer sufficient (ruling item 3).
+ * `ProviderSignerRow[]` (the LIVE per-recipient readback evidence --
+ * `hasCompleted`/`signedDate`/id) is still supplied by the caller, since
+ * it is genuinely per-verification-run live evidence.
  *
  * NODE `crypto` IS NEVER IMPORTED HERE (Jess Gate repair round,
  * 2026-09-13, item 1). This module is now imported by browser-facing UI
@@ -175,8 +191,6 @@ import {
 } from "./board9-contract-model";
 import {
   type ParsedContractSend,
-  type DeterministicSignerMapping,
-  deriveDeterministicSignerMappingsFromAcceptedSend,
 } from "./contract-send-carriers";
 import {
   type LifecycleRecord,
@@ -191,6 +205,13 @@ import {
   type ExecutedTermsAttestationRecord,
   verifyExecutedTermsAttestationCurrency,
 } from "./contract-executed-terms-attestation-model";
+import {
+  type RequiredSigner,
+  type SignerRecipientMapping,
+  type SignerMappingAttestationRecord,
+  validateRequiredSignerSet,
+  verifySignerMappingAttestationCurrency,
+} from "./contract-signer-mapping-model";
 
 function isValidIsoInstant(at: string): boolean {
   return Number.isFinite(new Date(at).getTime());
@@ -282,18 +303,18 @@ export function extractProviderSignerRowsFromListDocumentsBody(args: {
 }
 
 /**
- * The deterministic join this repair round requires ("Use provider
- * recipient ID as the primary lifecycle join") -- a plain alias for
- * `contract-send-carriers.ts`'s own `DeterministicSignerMapping`, the ONE
- * type that mapping is ever expressed as (Jess Gate repair round,
- * 2026-09-13, item 2: no second, independently-defined mapping shape).
- * `verifyRequiredSigners` below only enforces that the mapping, once
- * derived, is well-formed and matches the live readback evidence
- * deterministically -- it does not itself derive the mapping; see
- * `buildVerifiedUnderContractRecord`, which calls
- * `deriveDeterministicSignerMappingsFromAcceptedSend` for that.
+ * The deterministic join this module requires ("Use provider recipient
+ * ID as the primary lifecycle join") -- a plain alias for
+ * `contract-signer-mapping-model.ts`'s own `SignerRecipientMapping`, the
+ * ONE type Brad's recipient-mapping attestation is ever expressed as
+ * (Product Owner ruling, 2026-09-13: no second, independently-defined
+ * mapping shape). `verifyRequiredSigners` below only enforces that the
+ * mapping, once supplied, is well-formed and matches the live readback
+ * evidence deterministically -- it does not itself derive OR attest the
+ * mapping; see `buildVerifiedUnderContractRecord`, which consumes a
+ * currency-verified `SignerMappingAttestationRecord` for that.
  */
-export type ExpectedSignerMapping = DeterministicSignerMapping;
+export type ExpectedSignerMapping = SignerRecipientMapping;
 
 export type VerifiedSignerMatch = {
   role: string;
@@ -307,6 +328,7 @@ export type SignerVerificationReasonCode =
   | "SIGNER_RECIPIENT_NOT_FOUND"
   | "SIGNER_RECIPIENT_ID_DUPLICATED_IN_EVIDENCE"
   | "SIGNER_INCOMPLETE"
+  | "SIGNER_SIGNED_TIMESTAMP_MISSING"
   | "SIGNER_EXTRA_UNMAPPED";
 
 export type SignerVerificationReason = { code: SignerVerificationReasonCode; message: string };
@@ -379,6 +401,17 @@ export function verifyRequiredSigners(args: {
       reasons.push({
         code: "SIGNER_INCOMPLETE",
         message: `Required signer "${m.displayName}" (role "${m.role}") has not completed execution.`,
+      });
+      continue;
+    }
+    // Ruling item 3, 2026-09-13: provider completion ALONE is no longer
+    // sufficient -- every required signer must also carry a real, valid
+    // signed timestamp. `hasCompleted === true` with no signedDate is
+    // now treated the same as incomplete, never silently accepted.
+    if (typeof row.signedDate !== "string" || !isValidIsoInstant(row.signedDate)) {
+      reasons.push({
+        code: "SIGNER_SIGNED_TIMESTAMP_MISSING",
+        message: `Required signer "${m.displayName}" (role "${m.role}") is reported complete but carries no valid signed timestamp.`,
       });
       continue;
     }
@@ -644,7 +677,7 @@ export type UnderContractRecordEntry = {
   relatedPriorRecordId: string | null;
 };
 
-export type VerificationStage = "input" | "binding" | "signer_mapping" | "signers" | "provider_completion" | "artifact" | "executed_terms" | "eligibility";
+export type VerificationStage = "input" | "binding" | "required_signers" | "signer_mapping" | "signers" | "provider_completion" | "artifact" | "executed_terms" | "eligibility";
 
 export type VerifiedExecutionFailure = {
   stage: VerificationStage;
@@ -657,8 +690,11 @@ export type BuildVerifiedExecutionArgs = {
   opportunityId: string;
   agreementAt: string;
   version: ContractVersionIdentity;
-  /** The signer role/identity/provider-recipient-id mapping is DERIVED from this record's own already-durable fields (`deriveDeterministicSignerMappingsFromAcceptedSend`, `contract-send-carriers.ts`) -- there is no separate `expectedSignerMappings` parameter for a caller to supply independently (Jess Gate repair round, 2026-09-13, item 2). */
   acceptedSend: ParsedContractSend;
+  /** WHO must sign -- assembled by `buildRequiredSignerSet` (`contract-signer-mapping-model.ts`) from IAOS's own authoritative contract facts, NEVER from `acceptedSend.signers`. Re-validated here at the `required_signers` stage as defense in depth (Product Owner ruling, 2026-09-13). */
+  requiredSigners: readonly RequiredSigner[];
+  /** Brad's own manual, one-to-one recipient-mapping attestation -- currency-verified at the `signer_mapping` stage against this exact opportunity/version/document/revision/accepted-send/required-signer-set. `null` when none has been recorded yet; fails closed either way. There is no separate caller-supplied mapping parameter -- the mapping used by `verifyRequiredSigners` below comes ONLY from this currency-verified record. */
+  signerMappingAttestation: SignerMappingAttestationRecord | null;
   providerRecipients: readonly ProviderSignerRow[];
   lifecycleHistory: readonly LifecycleRecord[];
   manualArtifactOutcome: ManualArtifactSelectionOutcome;
@@ -684,12 +720,18 @@ function fail(stage: VerificationStage, reasons: readonly { code: string; messag
  *   2. Provider document bound to opportunity/agreement/version/document/
  *      revision -- the SAME binding check, cross-checked again for the
  *      manually selected artifact in `verifyManualArtifactSelection`.
- *   2b. The signer role/identity/provider-recipient-id mapping is DERIVED
- *      from the accepted send's own evidence, never a caller assertion --
- *      `deriveDeterministicSignerMappingsFromAcceptedSend`, failing closed
- *      at its own `signer_mapping` stage when the evidence cannot support it.
+ *   2b. WHO must sign -- `args.requiredSigners`, re-validated at its own
+ *      `required_signers` stage (`validateRequiredSignerSet`) -- assembled
+ *      by the caller from IAOS's own authoritative contract facts, NEVER
+ *      from the accepted send's own `signers[]`.
+ *   2c. Brad's own recipient-mapping attestation, currency-verified at
+ *      its own `signer_mapping` stage (`verifySignerMappingAttestationCurrency`)
+ *      against this exact opportunity/version/document/revision/
+ *      accepted-send/required-signer-set -- missing, stale, cross-version,
+ *      cross-document, non-Brad, or changed-required-signer-set evidence
+ *      fails closed here by name.
  *   3. Every required signer matched individually, by provider recipient
- *      id -- `verifyRequiredSigners`.
+ *      id, WITH a valid signed timestamp -- `verifyRequiredSigners`.
  *   4. GHL independently reports completed -- `verifyProviderCompletion`,
  *      reusing INV-64's own chronology (never a stale/tainted signal).
  *   5-6. Executed artifact selected (the manual bridge) and hashed by the
@@ -727,11 +769,24 @@ export function buildVerifiedUnderContractRecord(
   const binding = verifyAcceptedSendBinding({ acceptedSend: args.acceptedSend, opportunityId: args.opportunityId, version: args.version });
   if (!binding.ok) return fail("binding", binding.reasons);
 
-  // The mapping is DERIVED from the accepted send's own already-durable
-  // evidence -- never a caller assertion (module header, item 2). Fails
-  // closed, by name, when the evidence cannot deterministically support
-  // more than the one confirmed recipient.
-  const mappingResult = deriveDeterministicSignerMappingsFromAcceptedSend(args.acceptedSend);
+  // WHO must sign -- re-validated here as defense in depth, never trusted
+  // unchecked even though the caller (`buildRequiredSignerSet`) already
+  // validated it once (module header, item 2a).
+  const requiredSignersCheck = validateRequiredSignerSet(args.requiredSigners);
+  if (!requiredSignersCheck.ok) return fail("required_signers", requiredSignersCheck.reasons);
+
+  // Brad's own recipient-mapping attestation, currency-verified against
+  // THIS exact evidence -- never derived, never a caller assertion made
+  // some other way (module header, item 2b).
+  const mappingResult = verifySignerMappingAttestationCurrency({
+    attestation: args.signerMappingAttestation,
+    opportunityId: args.opportunityId,
+    version: args.version,
+    providerDocumentId: binding.value.providerDocumentId,
+    providerDocumentRevision: binding.value.providerDocumentRevision,
+    acceptedSendAttemptId: args.acceptedSend.attemptId,
+    requiredSigners: args.requiredSigners,
+  });
   if (!mappingResult.ok) return fail("signer_mapping", mappingResult.reasons);
 
   const signerResult = verifyRequiredSigners({
