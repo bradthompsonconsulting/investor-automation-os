@@ -27,28 +27,46 @@
  * PROVIDER FACTS CANNOT IMPERSONATE HUMAN FACTS, OR VICE VERSA -- ENFORCED
  * AT PARSE TIME, NOT ASSUMED. `parseContractLifecycleNote` rejects (returns
  * `null` for) any note where: the `Authority` column does not match the
- * kind implied by `Event kind` exactly (`provider_reported` for the nine
- * provider statuses, `operator_attested` for `corrected`/`operator_
- * declined`, `brad_authorized` for `resent`/`rescinded`); a provider-kind
- * note carries a non-blank `Operator`/`Authorized at`/`Detail`; a human-
- * kind note carries any raw provider evidence field (`Raw provider
- * status`, `Raw is expired`, `Raw deleted`, `Recipients completed/total`,
- * `Provider document reference/revision`, `Provider reported at`); or a
- * `resent`/`rescinded` note's `Operator` is anything other than the
- * literal `"brad"`. This is what makes "a human fact cannot impersonate a
- * provider event" (and vice versa) a property of every note this codebase
- * will ever read back, not merely of the notes this codebase itself
- * writes.
+ * kind implied by `Event kind` exactly (`provider_reported` OR
+ * `iaos_observed` for the nine provider statuses -- see below --
+ * `operator_attested` for `corrected`/`operator_declined`,
+ * `brad_authorized` for `resent`/`rescinded`); a provider-kind note
+ * carries a non-blank `Operator`/`Authorized at`/`Detail`; a human-kind
+ * note carries any raw provider evidence field (`Raw provider status`,
+ * `Raw is expired`, `Raw deleted`, `Recipients completed/total`,
+ * `Provider document reference/revision`, `Provider reported at`,
+ * `Provider failure reason`); or a `resent`/`rescinded` note's `Operator`
+ * is anything other than the literal `"brad"`. This is what makes "a
+ * human fact cannot impersonate a provider event" (and vice versa) a
+ * property of every note this codebase will ever read back, not merely
+ * of the notes this codebase itself writes.
+ *
+ * IAOS'S OWN OBSERVATION OF A FAILURE IS NEVER LABELED PROVIDER-REPORTED
+ * (Jess Gate repair round, 2026-09-12, item 2). A provider-kind note's
+ * `Authority` is `"iaos_observed"` when no matching provider document row
+ * was ever actually returned (a transport/HTTP failure, a malformed
+ * response, or the expected document's absence) -- in which case `Event
+ * kind` must be exactly `"provider_error"` or `"unknown"`, and every raw
+ * field (`Raw provider status`, `Raw is expired`, `Raw deleted`,
+ * `Recipients completed/total`) must be `UNAVAILABLE`, enforced at parse
+ * time: there is nothing real to preserve when no row was ever observed,
+ * so any raw field present on an `iaos_observed` note is itself proof of
+ * tampering or corruption. `Authority` is `"provider_reported"` only when
+ * a real row was actually observed (`Event kind` may then be any of the
+ * nine, including `"unknown"` for a location mismatch or an unrecognized
+ * raw status) -- `"provider_error"` can never appear with
+ * `"provider_reported"` authority, since reaching `"provider_error"`
+ * itself means no row was ever observed.
  *
  * RAW PROVIDER EVIDENCE IS PRESERVED SEPARATELY FROM THE NORMALIZED STATE
  * (Jess Gate repair round, 2026-09-12, item 3). `Event kind` carries the
  * NORMALIZED IAOS status (e.g. `"sent"`, `"unknown"`); `Raw provider
- * status`, `Raw is expired`, `Raw deleted`, and `Recipients completed`/
- * `Recipients total` carry the provider's own opaque, as-reported facts
- * -- including an unmapped/unrecognized raw status string that produced a
- * normalized `"unknown"`. The two are never conflated: a reader can
- * always distinguish "what IAOS concluded" from "what the provider
- * literally said."
+ * status`, `Raw is expired`, `Raw deleted`, `Recipients completed`/
+ * `Recipients total`, and `Provider failure reason` carry the provider's
+ * own opaque, as-reported facts -- including an unmapped/unrecognized raw
+ * status string that produced a normalized `"unknown"`. The two are never
+ * conflated: a reader can always distinguish "what IAOS concluded" from
+ * "what the provider literally said."
  *
  * APPEND-ONLY, NEVER RESOLVED-TO-ONE. Unlike `contract-send-carriers.ts`'s
  * `latestContractSendForOpportunity` (which collapses a multi-note attempt
@@ -193,6 +211,7 @@ const LABELS = [
   "Raw deleted",
   "Recipients completed",
   "Recipients total",
+  "Provider failure reason",
   "Authority",
   "Operator",
   "Authorized at",
@@ -252,6 +271,7 @@ export function formatContractLifecycleNote(record: LifecycleRecord): string {
   const rawDeleted = record.kind === "provider_observation" ? record.deleted : null;
   const recipientsCompleted = record.kind === "provider_observation" ? (record.recipients?.completed ?? null) : null;
   const recipientsTotal = record.kind === "provider_observation" ? (record.recipients?.total ?? null) : null;
+  const providerFailureReason = record.kind === "provider_observation" ? record.providerFailureReason : null;
   const operator =
     record.kind === "correction" ? record.recordedBy
     : record.kind === "resend" ? record.authorizedBy
@@ -279,12 +299,13 @@ export function formatContractLifecycleNote(record: LifecycleRecord): string {
     `${LABELS[10]}: ${ledgerBooleanValue(rawDeleted)}`,
     `${LABELS[11]}: ${ledgerValue(recipientsCompleted)}`,
     `${LABELS[12]}: ${ledgerValue(recipientsTotal)}`,
-    `${LABELS[13]}: ${record.authority}`,
-    `${LABELS[14]}: ${ledgerValue(operator)}`,
-    `${LABELS[15]}: ${ledgerValue(authorizedAt)}`,
-    `${LABELS[16]}: ${singleLine(record.evidenceSummary)}`,
-    `${LABELS[17]}: ${ledgerValue(record.relatedPriorRecordId)}`,
-    `${LABELS[18]}: ${formatDetail(record)}`,
+    `${LABELS[13]}: ${providerFailureReason === null || providerFailureReason === "" ? "UNAVAILABLE" : singleLine(providerFailureReason)}`,
+    `${LABELS[14]}: ${record.authority}`,
+    `${LABELS[15]}: ${ledgerValue(operator)}`,
+    `${LABELS[16]}: ${ledgerValue(authorizedAt)}`,
+    `${LABELS[17]}: ${singleLine(record.evidenceSummary)}`,
+    `${LABELS[18]}: ${ledgerValue(record.relatedPriorRecordId)}`,
+    `${LABELS[19]}: ${formatDetail(record)}`,
   ].join("\n");
 }
 
@@ -303,7 +324,7 @@ export function parseContractLifecycleNote(body: string): LifecycleRecord | null
   const [
     at, opportunityId, eventKindRaw, versionRaw, providerDocumentIdRaw, providerDocumentReferenceRaw,
     providerDocumentRevisionRaw, providerReportedAtRaw, rawProviderStatusRaw, rawIsExpiredRaw, rawDeletedRaw,
-    recipientsCompletedRaw, recipientsTotalRaw, authorityRaw, operatorRaw, authorizedAtRaw,
+    recipientsCompletedRaw, recipientsTotalRaw, providerFailureReasonRaw, authorityRaw, operatorRaw, authorizedAtRaw,
     evidenceSummary, relatedPriorRecordIdRaw, detailRaw,
   ] = values;
 
@@ -337,6 +358,7 @@ export function parseContractLifecycleNote(body: string): LifecycleRecord | null
   const recipients = recipientsCompletedParsed !== null && recipientsTotalParsed !== null
     ? { total: recipientsTotalParsed, completed: recipientsCompletedParsed }
     : null;
+  const providerFailureReason = providerFailureReasonRaw === "UNAVAILABLE" ? null : providerFailureReasonRaw;
 
   const operator = operatorRaw === "UNAVAILABLE" ? null : operatorRaw;
   const authorizedAt = authorizedAtRaw === "UNAVAILABLE" ? null : authorizedAtRaw;
@@ -348,10 +370,27 @@ export function parseContractLifecycleNote(body: string): LifecycleRecord | null
     // A provider fact can NEVER carry a human authority, an operator, an
     // authorization timestamp, or a Detail payload -- any of these present
     // means the note is malformed or tampered; reject outright.
-    if (authorityRaw !== "provider_reported") return null;
+    if (authorityRaw !== "provider_reported" && authorityRaw !== "iaos_observed") return null;
     if (operator !== null || authorizedAt !== null) return null;
     if (detailRaw !== "UNAVAILABLE") return null;
     if (providerDocumentId === null) return null;
+
+    // Jess Gate repair round, 2026-09-12, item 2, read-side enforcement.
+    // "iaos_observed" means no matching provider row was EVER actually
+    // observed -- that is only ever true for "provider_error" (a
+    // transport/HTTP failure) or "unknown" (a malformed/missing
+    // response), and in that case there is NOTHING real to preserve: any
+    // raw field present is itself proof of tampering. "provider_reported"
+    // means a real row WAS observed, and can never coexist with
+    // "provider_error" (reaching that status itself means no row was ever
+    // observed).
+    if (authorityRaw === "iaos_observed") {
+      if (eventKind !== "provider_error" && eventKind !== "unknown") return null;
+      if (rawProviderStatus !== null || isExpiredParsed.value !== null || deletedParsed.value !== null || recipients !== null) return null;
+    } else if (eventKind === "provider_error") {
+      return null;
+    }
+
     return {
       kind: "provider_observation",
       opportunityId,
@@ -365,8 +404,9 @@ export function parseContractLifecycleNote(body: string): LifecycleRecord | null
       providerDocumentReference,
       providerDocumentRevision: providerDocumentRevisionParsed,
       providerReportedAt,
+      providerFailureReason,
       iaosObservedAt: at,
-      authority: "provider_reported",
+      authority: authorityRaw as "provider_reported" | "iaos_observed",
       evidenceSummary,
       relatedPriorRecordId,
     };
@@ -377,7 +417,8 @@ export function parseContractLifecycleNote(body: string): LifecycleRecord | null
   // repair round, 2026-09-12, item 2/3's read-side counterpart).
   if (
     providerDocumentReference !== null || providerDocumentRevisionParsed !== null || providerReportedAt !== null ||
-    rawProviderStatus !== null || isExpiredParsed.value !== null || deletedParsed.value !== null || recipients !== null
+    rawProviderStatus !== null || isExpiredParsed.value !== null || deletedParsed.value !== null || recipients !== null ||
+    providerFailureReason !== null
   ) {
     return null;
   }

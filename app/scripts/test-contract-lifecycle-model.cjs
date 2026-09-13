@@ -1,18 +1,19 @@
 /**
  * Board #9 lifecycle -- deterministic model + carrier test runner.
- * B9-09 / INV-64. Jess Gate repair round, 2026-09-12.
+ * B9-09 / INV-64. Jess Gate final repair round, 2026-09-12.
  *
  * Compiles contract-lifecycle-model.ts, contract-lifecycle-carriers.ts, and
- * their board9-contract-model.ts dependency chain (unmodified by this
- * issue) to a temp directory, loads the emitted JavaScript, and runs
- * deterministic table-driven cases mapped directly to INV-64's own
- * "Proof required" list PLUS the four Jess Gate repair items (fabrication
- * boundary, raw-evidence preservation, human-decline record, base
- * ancestry -- the last verified by git, not this file). Every provider
- * response used here is a SIMULATED fixture object -- no network call, no
- * live GHL call, no `ghl.notes.create()`, matching this entire codebase's
- * own established testing convention. No Production location, credential,
- * or write path is referenced anywhere in this file.
+ * their board9-contract-model.ts / contract-send-carriers.ts dependency
+ * chain (unmodified by this issue) to a temp directory, loads the emitted
+ * JavaScript, and runs deterministic table-driven cases mapped directly to
+ * INV-64's own "Proof required" list PLUS the two final Jess Gate repair
+ * blockers (provider-evidence version binding, truthful iaos_observed vs
+ * provider_reported authority) and the small duplicate-detection
+ * consistency fix. Every provider response and every INV-63 send record
+ * used here is a SIMULATED fixture object -- no network call, no live GHL
+ * call, no `ghl.notes.create()`, matching this entire codebase's own
+ * established testing convention. No Production location, credential, or
+ * write path is referenced anywhere in this file.
  */
 
 const { execSync } = require('child_process');
@@ -37,6 +38,8 @@ const SOURCES = [
   path.join(LIB, 'board9-contract-model.ts'),
   path.join(LIB, 'seller-call-outcome.ts'),
   path.join(LIB, 'seller-call-readiness-carriers.ts'),
+  path.join(LIB, 'contract-send-carriers.ts'),
+  path.join(LIB, 'contract-authorization-carriers.ts'),
 ];
 
 try {
@@ -87,10 +90,43 @@ const DOC_ID = 'doc-fixture-1';
 const OTHER_DOC_ID = 'doc-fixture-2';
 const LOCATION_ID = 'loc-test-1';
 const V1 = B.initialVersionIdentity(AGREEMENT_AT);
+const V2 = { agreementAt: V1.agreementAt, versionSeq: 2, supersedesVersionSeq: 1, replacesAgreementAt: null };
 
 /* ====================================================================== */
 /* Fixture helpers                                                        */
 /* ====================================================================== */
+
+/** A real-shaped INV-63 `ParsedContractSend` -- the ONLY authoritative binding evidence the repaired builders accept. */
+function acceptedSendFixture(over) {
+  return Object.assign({
+    opportunityId: OPP,
+    at: OBSERVED_AT_1,
+    operator: 'brad',
+    attemptId: OBSERVED_AT_1,
+    status: 'accepted',
+    version: V1,
+    templateName: 'Purchase Agreement',
+    templateSource: 'ghl',
+    requestedTemplateId: 'tmpl-1',
+    authorizedAt: OBSERVED_AT_1,
+    signers: [],
+    confirmedRecipientId: 'recipient-1',
+    expirationAt: '2026-09-20T00:00:00.000Z',
+    requestAt: OBSERVED_AT_1,
+    iaosObservedAcceptanceAt: OBSERVED_AT_1,
+    providerResponse: {
+      documentId: DOC_ID,
+      documentReference: 'ref-1',
+      documentRevision: 1,
+      recipientId: 'recipient-1',
+      createdBy: 'sender-1',
+      readbackStatus: 'sent',
+      readbackLocationId: LOCATION_ID,
+      fillableFieldCount: 3,
+    },
+    failureReason: null,
+  }, over || {});
+}
 
 function outcomeWithDocument(docOverrides) {
   return {
@@ -117,6 +153,7 @@ function providerObservationFromOutcome(over) {
     version: V1,
     expectedDocumentId: DOC_ID,
     expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({}),
     outcome: outcomeWithDocument({}),
     iaosObservedAt: OBSERVED_AT_1,
     evidenceSummary: 'GET /proposals/document readback, documentId=' + DOC_ID + '.',
@@ -146,8 +183,7 @@ function resendRecord(over) {
   const built = M.buildResendRecord(Object.assign({
     opportunityId: OPP,
     version: V1,
-    priorAttemptVersion: V1,
-    priorAttemptId: OBSERVED_AT_1,
+    priorSend: acceptedSendFixture({ attemptId: OBSERVED_AT_1, status: 'accepted' }),
     newAttemptId: OBSERVED_AT_2,
     authorizedBy: 'brad',
     authorizedAt: OBSERVED_AT_2,
@@ -167,8 +203,7 @@ function rescissionRecord(over) {
     reason: 'Seller withdrew verbally; confirmed in writing.',
     authorizedBy: 'brad',
     authorizedAt: OBSERVED_AT_3,
-    wasEverSentToProvider: true,
-    providerDocumentIdAtRescission: DOC_ID,
+    acceptedSend: acceptedSendFixture({}),
     iaosObservedAt: OBSERVED_AT_3,
     evidenceSummary: 'Brad-recorded rescission.',
     relatedPriorRecordId: null,
@@ -181,8 +216,7 @@ function declineRecord(over) {
   const built = M.buildDeclineRecord(Object.assign({
     opportunityId: OPP,
     version: V1,
-    wasEverSentToProvider: true,
-    providerDocumentIdAtDecline: DOC_ID,
+    acceptedSend: acceptedSendFixture({}),
     reasonOrEvidence: 'Seller called and said they will not sign.',
     recordedBy: 'rep-1',
     declinedAt: OBSERVED_AT_3,
@@ -229,170 +263,371 @@ check('readback outcome: 200 but no documents[] -> unknown', M.classifyProviderL
 check('readback outcome: document not found in list -> unknown', M.classifyProviderLifecycleReadback({ expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID, outcome: { kind: 'http_response', status: 200, body: { documents: [{ documentId: OTHER_DOC_ID }] } } }).status, 'unknown');
 
 /* ====================================================================== */
-/* 2. Prevent fabricated provider observations (Jess Gate repair item 2)  */
+/* 2. BLOCKER 1: provider evidence is bound to its contract version via   */
+/*    a real INV-63 accepted-send record, never independent assertions   */
 /* ====================================================================== */
 
-checkTrue('the old fabrication entry point (accepting a pre-built observation) no longer exists', typeof M.buildProviderObservationRecord === 'undefined');
-
-// Arbitrary caller-created "completed" evidence, injected as extra/smuggled
-// fields the real function signature does not define, must be ignored --
-// only the raw outcome is ever consulted.
 {
-  const attempted = M.buildProviderObservationRecordFromReadback({
+  const good = M.buildProviderObservationRecordFromReadback({
     opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
-    outcome: outcomeWithDocument({ status: 'sent', recipients: [{ id: 'r1', hasCompleted: false }] }),
-    // Smuggled fields mimicking the old, repaired API -- must have zero effect.
-    observation: { status: 'completed', row: null, providerDocumentReference: null, providerDocumentRevision: null, failureReason: null },
-    status: 'completed',
+    acceptedSend: acceptedSendFixture({}), outcome: outcomeWithDocument({}),
     iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'x', relatedPriorRecordId: null,
   });
-  checkTrue('smuggled extra fields cannot fabricate a completed status -- only the real outcome is consulted', attempted.ok && attempted.value.status === 'sent');
+  checkTrue('valid, matching send evidence allows the observation to be built', good.ok);
 }
-
-// Arbitrary declined/voided provider evidence is rejected -- GHL exposes
-// no documented status value for either, so even a raw document row
-// literally claiming one normalizes to "unknown", never trusted verbatim.
 {
-  const declined = M.buildProviderObservationRecordFromReadback({
-    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
-    outcome: outcomeWithDocument({ status: 'declined' }),
+  // A completed readback for document A cannot be labeled as evidence for
+  // a DIFFERENT opportunity merely by passing a different opportunityId --
+  // the accepted-send evidence's OWN opportunityId must match.
+  const wrongOpp = M.buildProviderObservationRecordFromReadback({
+    opportunityId: OTHER_OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({}), // still says opportunityId: OPP
+    outcome: outcomeWithDocument({ status: 'completed', recipients: [{ hasCompleted: true }] }),
     iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'x', relatedPriorRecordId: null,
   });
-  checkTrue('a raw document row literally reporting status "declined" is NOT trusted as the declined lifecycle state', declined.ok && declined.value.status === 'unknown');
-  check('the raw, unmapped status is still preserved for audit', declined.value.rawProviderStatus, 'declined');
+  checkFalse('provider evidence cannot cross an OPPORTUNITY boundary via mismatched send evidence', wrongOpp.ok);
+  check('failure reason is PROVIDER_SEND_EVIDENCE_OPPORTUNITY_MISMATCH', wrongOpp.reasons[0].code, 'PROVIDER_SEND_EVIDENCE_OPPORTUNITY_MISMATCH');
 }
 {
-  const voided = M.buildProviderObservationRecordFromReadback({
-    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
-    outcome: outcomeWithDocument({ status: 'voided' }),
+  // A valid completed readback for document A cannot be labeled as
+  // lifecycle evidence for contract VERSION B simply by passing version B
+  // -- the exact scenario the repair item names.
+  const wrongVersion = M.buildProviderObservationRecordFromReadback({
+    opportunityId: OPP, version: V2, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({}), // still says version: V1
+    outcome: outcomeWithDocument({ status: 'completed', recipients: [{ hasCompleted: true }] }),
     iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'x', relatedPriorRecordId: null,
   });
-  checkTrue('a raw document row literally reporting status "voided" is NOT trusted as the voided_or_canceled lifecycle state', voided.ok && voided.value.status === 'unknown');
-  check('the raw, unmapped status is still preserved for audit', voided.value.rawProviderStatus, 'voided');
+  checkFalse('a completed readback for one contract version cannot be labeled as evidence for a DIFFERENT version', wrongVersion.ok);
+  check('failure reason is PROVIDER_SEND_EVIDENCE_VERSION_MISMATCH', wrongVersion.reasons[0].code, 'PROVIDER_SEND_EVIDENCE_VERSION_MISMATCH');
 }
-
-// Malformed/mismatched location evidence cannot become a confident,
-// trusted provider_reported STATUS -- even if the mismatched row itself
-// claims "completed" with every recipient complete.
 {
-  const wrongLocation = M.buildProviderObservationRecordFromReadback({
-    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
-    outcome: outcomeWithDocument({ locationId: 'loc-WRONG', status: 'completed', recipients: [{ id: 'r1', hasCompleted: true }] }),
-    iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'x', relatedPriorRecordId: null,
-  });
-  checkTrue('a document row from the wrong environment is never trusted as completed, regardless of its own claimed status', wrongLocation.ok && wrongLocation.value.status === 'unknown');
-  check('the raw status is still preserved separately from the normalized (unknown) state', wrongLocation.value.rawProviderStatus, 'completed');
-}
-// Mismatched document (readback did not return the expected document at all).
-{
+  // The declared expectedDocumentId must match the send evidence's own document id.
   const wrongDoc = M.buildProviderObservationRecordFromReadback({
-    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
-    outcome: { kind: 'http_response', status: 200, body: { documents: [{ documentId: OTHER_DOC_ID, locationId: LOCATION_ID, status: 'completed', recipients: [{ hasCompleted: true }] }] } },
+    opportunityId: OPP, version: V1, expectedDocumentId: OTHER_DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({}), // says providerResponse.documentId: DOC_ID
+    outcome: outcomeWithDocument({ documentId: OTHER_DOC_ID, status: 'completed', recipients: [{ hasCompleted: true }] }),
     iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'x', relatedPriorRecordId: null,
   });
-  checkTrue('a readback that never returned the expected document cannot become completed', wrongDoc.ok && wrongDoc.value.status === 'unknown');
-  checkNull('no raw evidence is fabricated when the expected document was never actually observed', wrongDoc.value.rawProviderStatus);
+  checkFalse('provider evidence cannot cross a PROVIDER DOCUMENT boundary', wrongDoc.ok);
+  check('failure reason is PROVIDER_SEND_EVIDENCE_DOCUMENT_MISMATCH', wrongDoc.reasons[0].code, 'PROVIDER_SEND_EVIDENCE_DOCUMENT_MISMATCH');
 }
-
-// Valid simulated provider readback CAN create the appropriate observation.
 {
-  const completed = M.buildProviderObservationRecordFromReadback({
+  // The provider's currently-observed revision conflicting with the
+  // revision recorded at send time is refused, not silently trusted.
+  const revisionConflict = M.buildProviderObservationRecordFromReadback({
     opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
-    outcome: outcomeWithDocument({ status: 'completed', recipients: [{ id: 'r1', hasCompleted: true }, { id: 'r2', hasCompleted: true }] }),
+    acceptedSend: acceptedSendFixture({ providerResponse: Object.assign({}, acceptedSendFixture({}).providerResponse, { documentRevision: 1 }) }),
+    outcome: outcomeWithDocument({ documentRevision: 2 }), // live readback reports a DIFFERENT revision
     iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'x', relatedPriorRecordId: null,
   });
-  checkTrue('a genuinely matching, fully-completed readback DOES create a completed observation', completed.ok && completed.value.status === 'completed');
+  checkFalse('provider evidence cannot cross a conflicting PROVIDER REVISION boundary', revisionConflict.ok);
+  check('failure reason is PROVIDER_SEND_EVIDENCE_REVISION_CONFLICT', revisionConflict.reasons[0].code, 'PROVIDER_SEND_EVIDENCE_REVISION_CONFLICT');
+}
+{
+  // Absent send evidence -- required successful INV-63 send/readback
+  // evidence is absent -- fails closed.
+  const noSend = M.buildProviderObservationRecordFromReadback({
+    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({ status: 'failed', providerResponse: null }),
+    outcome: outcomeWithDocument({}),
+    iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'x', relatedPriorRecordId: null,
+  });
+  checkFalse('provider evidence cannot be built without a real accepted INV-63 send record', noSend.ok);
+  check('failure reason is PROVIDER_SEND_EVIDENCE_NOT_ACCEPTED', noSend.reasons[0].code, 'PROVIDER_SEND_EVIDENCE_NOT_ACCEPTED');
+}
+{
+  // Malformed send evidence (accepted status but no real documentId) also fails closed.
+  const malformedSend = M.buildProviderObservationRecordFromReadback({
+    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({ providerResponse: Object.assign({}, acceptedSendFixture({}).providerResponse, { documentId: '' }) }),
+    outcome: outcomeWithDocument({}),
+    iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'x', relatedPriorRecordId: null,
+  });
+  checkFalse('malformed send evidence (blank documentId despite accepted status) fails closed', malformedSend.ok);
+  check('failure reason is PROVIDER_SEND_EVIDENCE_NOT_ACCEPTED', malformedSend.reasons[0].code, 'PROVIDER_SEND_EVIDENCE_NOT_ACCEPTED');
 }
 
-// provider_error and unknown remain recordable with truthful evidence.
+// Same binding principle applied to resend.
+{
+  const good = M.buildResendRecord({
+    opportunityId: OPP, version: V1, priorSend: acceptedSendFixture({}), newAttemptId: OBSERVED_AT_2,
+    authorizedBy: 'brad', authorizedAt: OBSERVED_AT_2, recordedBy: 'brad',
+    iaosObservedAt: OBSERVED_AT_2, evidenceSummary: 'x', relatedPriorRecordId: null,
+  });
+  checkTrue('resend succeeds when priorSend evidence genuinely matches', good.ok);
+  check('resend derives priorAttemptId from the verified send evidence, never a bare caller string', good.value.priorAttemptId, acceptedSendFixture({}).attemptId);
+}
+{
+  const wrongOpp = M.buildResendRecord({
+    opportunityId: OTHER_OPP, version: V1, priorSend: acceptedSendFixture({}), newAttemptId: OBSERVED_AT_2,
+    authorizedBy: 'brad', authorizedAt: OBSERVED_AT_2, recordedBy: 'brad',
+    iaosObservedAt: OBSERVED_AT_2, evidenceSummary: 'x', relatedPriorRecordId: null,
+  });
+  checkFalse('resend cannot cross an OPPORTUNITY boundary via mismatched priorSend', wrongOpp.ok);
+  check('failure reason is PROVIDER_SEND_EVIDENCE_OPPORTUNITY_MISMATCH', wrongOpp.reasons[0].code, 'PROVIDER_SEND_EVIDENCE_OPPORTUNITY_MISMATCH');
+}
+{
+  const wrongVersion = M.buildResendRecord({
+    opportunityId: OPP, version: V2, priorSend: acceptedSendFixture({}), newAttemptId: OBSERVED_AT_2, // priorSend still V1
+    authorizedBy: 'brad', authorizedAt: OBSERVED_AT_2, recordedBy: 'brad',
+    iaosObservedAt: OBSERVED_AT_2, evidenceSummary: 'x', relatedPriorRecordId: null,
+  });
+  checkFalse('resend cannot cross a CONTRACT VERSION boundary via mismatched priorSend', wrongVersion.ok);
+  check('failure reason is RESEND_VERSION_MUST_MATCH_PRIOR', wrongVersion.reasons[0].code, 'RESEND_VERSION_MUST_MATCH_PRIOR');
+}
+{
+  const unresolved = M.buildResendRecord({
+    opportunityId: OPP, version: V1, priorSend: acceptedSendFixture({ status: 'in_progress', providerResponse: null }), newAttemptId: OBSERVED_AT_2,
+    authorizedBy: 'brad', authorizedAt: OBSERVED_AT_2, recordedBy: 'brad',
+    iaosObservedAt: OBSERVED_AT_2, evidenceSummary: 'x', relatedPriorRecordId: null,
+  });
+  checkFalse('a resend cannot be recorded against a still-unresolved prior attempt', unresolved.ok);
+  check('failure reason is PRIOR_SEND_NOT_RESOLVED', unresolved.reasons[0].code, 'PRIOR_SEND_NOT_RESOLVED');
+}
+
+// Same binding principle applied to rescission (when a send occurred).
+{
+  const good = rescissionRecord();
+  check('rescission derives providerDocumentIdAtRescission from verified send evidence', good.providerDocumentIdAtRescission, DOC_ID);
+}
+{
+  const wrongOpp = M.buildRescissionRecord({
+    opportunityId: OTHER_OPP, version: V1, reason: 'x', authorizedBy: 'brad', authorizedAt: OBSERVED_AT_3,
+    acceptedSend: acceptedSendFixture({}), iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
+  });
+  checkFalse('rescission cannot cross an OPPORTUNITY boundary via mismatched send evidence', wrongOpp.ok);
+  check('failure reason is PROVIDER_SEND_EVIDENCE_OPPORTUNITY_MISMATCH', wrongOpp.reasons[0].code, 'PROVIDER_SEND_EVIDENCE_OPPORTUNITY_MISMATCH');
+}
+{
+  const wrongVersion = M.buildRescissionRecord({
+    opportunityId: OPP, version: V2, reason: 'x', authorizedBy: 'brad', authorizedAt: OBSERVED_AT_3,
+    acceptedSend: acceptedSendFixture({}), iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
+  });
+  checkFalse('rescission cannot cross a CONTRACT VERSION boundary via mismatched send evidence', wrongVersion.ok);
+  check('failure reason is PROVIDER_SEND_EVIDENCE_VERSION_MISMATCH', wrongVersion.reasons[0].code, 'PROVIDER_SEND_EVIDENCE_VERSION_MISMATCH');
+}
+{
+  const preSend = M.buildRescissionRecord({
+    opportunityId: OPP, version: V1, reason: 'Withdrawn before send.', authorizedBy: 'brad', authorizedAt: OBSERVED_AT_3,
+    acceptedSend: null, iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
+  });
+  checkTrue('rescission before any send still succeeds with acceptedSend: null', preSend.ok);
+  checkNull('no provider document identity is fabricated when the agreement was never sent', preSend.value.providerDocumentIdAtRescission);
+}
+
+// Same binding principle applied to decline.
+{
+  const good = declineRecord();
+  check('decline derives providerDocumentIdAtDecline from verified send evidence', good.providerDocumentIdAtDecline, DOC_ID);
+}
+{
+  const wrongOpp = M.buildDeclineRecord({
+    opportunityId: OTHER_OPP, version: V1, acceptedSend: acceptedSendFixture({}),
+    reasonOrEvidence: 'x', recordedBy: 'rep-1', declinedAt: OBSERVED_AT_3,
+    iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
+  });
+  checkFalse('decline cannot cross an OPPORTUNITY boundary via mismatched send evidence', wrongOpp.ok);
+  check('failure reason is PROVIDER_SEND_EVIDENCE_OPPORTUNITY_MISMATCH', wrongOpp.reasons[0].code, 'PROVIDER_SEND_EVIDENCE_OPPORTUNITY_MISMATCH');
+}
+{
+  const wrongVersion = M.buildDeclineRecord({
+    opportunityId: OPP, version: V2, acceptedSend: acceptedSendFixture({}),
+    reasonOrEvidence: 'x', recordedBy: 'rep-1', declinedAt: OBSERVED_AT_3,
+    iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
+  });
+  checkFalse('decline cannot cross a CONTRACT VERSION boundary via mismatched send evidence', wrongVersion.ok);
+  check('failure reason is PROVIDER_SEND_EVIDENCE_VERSION_MISMATCH', wrongVersion.reasons[0].code, 'PROVIDER_SEND_EVIDENCE_VERSION_MISMATCH');
+}
+{
+  const notSent = M.buildDeclineRecord({
+    opportunityId: OPP, version: V1, acceptedSend: acceptedSendFixture({ status: 'failed', providerResponse: null }),
+    reasonOrEvidence: 'x', recordedBy: 'rep-1', declinedAt: OBSERVED_AT_3,
+    iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
+  });
+  checkFalse('decline requires a REAL accepted send -- refused otherwise', notSent.ok);
+  check('failure reason is PROVIDER_SEND_EVIDENCE_NOT_ACCEPTED', notSent.reasons[0].code, 'PROVIDER_SEND_EVIDENCE_NOT_ACCEPTED');
+}
+
+/* ====================================================================== */
+/* 3. BLOCKER 2: truthful evidence authority -- iaos_observed vs          */
+/*    provider_reported, never impersonating each other                  */
+/* ====================================================================== */
+
 {
   const networkFailure = M.buildProviderObservationRecordFromReadback({
     opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
-    outcome: { kind: 'network_error', message: 'ECONNRESET' },
+    acceptedSend: acceptedSendFixture({}), outcome: { kind: 'network_error', message: 'ECONNRESET' },
     iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'Readback network error: ECONNRESET', relatedPriorRecordId: null,
-  });
-  checkTrue('a real network failure truthfully records provider_error', networkFailure.ok && networkFailure.value.status === 'provider_error');
+  }).value;
+  check('a network error is truthfully recorded as iaos_observed, never provider_reported', networkFailure.authority, 'iaos_observed');
+  check('a network error normalizes to provider_error', networkFailure.status, 'provider_error');
 }
 {
-  const notFound = M.buildProviderObservationRecordFromReadback({
+  const httpFailure = M.buildProviderObservationRecordFromReadback({
     opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
-    outcome: { kind: 'http_response', status: 200, body: { documents: [] } },
+    acceptedSend: acceptedSendFixture({}), outcome: { kind: 'http_response', status: 500, body: {} },
+    iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'Readback returned HTTP 500', relatedPriorRecordId: null,
+  }).value;
+  check('an HTTP failure is truthfully recorded as iaos_observed, never provider_reported', httpFailure.authority, 'iaos_observed');
+}
+{
+  const malformed = M.buildProviderObservationRecordFromReadback({
+    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({}), outcome: { kind: 'http_response', status: 200, body: {} },
+    iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'Readback response was not a JSON object.', relatedPriorRecordId: null,
+  }).value;
+  check('a malformed response (no documents[]) is truthfully recorded as iaos_observed', malformed.authority, 'iaos_observed');
+  check('a malformed response normalizes to unknown', malformed.status, 'unknown');
+}
+{
+  const missing = M.buildProviderObservationRecordFromReadback({
+    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({}), outcome: { kind: 'http_response', status: 200, body: { documents: [] } },
     iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'Readback returned no documents.', relatedPriorRecordId: null,
-  });
-  checkTrue('a genuinely inconclusive readback truthfully records unknown', notFound.ok && notFound.value.status === 'unknown');
-}
-
-/* ====================================================================== */
-/* 3. Preserve raw provider evidence, separate from normalized state      */
-/*    (Jess Gate repair item 3)                                          */
-/* ====================================================================== */
-
-{
-  const obs = providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'viewed', recipients: [{ id: 'r1', hasCompleted: false }, { id: 'r2', hasCompleted: false }] }) });
-  check('rawProviderStatus preserved', obs.rawProviderStatus, 'viewed');
-  check('normalized status computed separately', obs.status, 'delivered_or_viewed');
-  check('isExpired preserved (raw)', obs.isExpired, null); // outcomeWithDocument's default doc has no isExpired field
-  check('deleted preserved (raw)', obs.deleted, false);
-  check('recipient-completion evidence preserved as bounded counts', obs.recipients, { total: 2, completed: 0 });
-  check('providerDocumentReference preserved', obs.providerDocumentReference, 'ref-1');
-  check('providerDocumentRevision preserved', obs.providerDocumentRevision, 1);
-  check('providerReportedAt extracted from provider evidence (updatedAt), never caller-invented', obs.providerReportedAt, PROVIDER_REPORTED_AT);
+  }).value;
+  check('a missing document is truthfully recorded as iaos_observed unknown', missing.authority, 'iaos_observed');
+  check('a missing document normalizes to unknown', missing.status, 'unknown');
 }
 {
-  // An unmapped raw status is preserved even though the normalized value is "unknown".
-  const obs = providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'some-future-value', recipients: [] }) });
-  check('unmapped raw provider status is preserved verbatim', obs.rawProviderStatus, 'some-future-value');
-  check('normalized status still falls closed to unknown', obs.status, 'unknown');
+  const realRow = providerObservationFromOutcome({});
+  check('a genuinely matching provider row is recorded as provider_reported', realRow.authority, 'provider_reported');
 }
 {
-  // Round-trip through the carrier preserves every raw field exactly.
-  const obs = providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'completed', isExpired: true, deleted: false, recipients: [{ hasCompleted: true }, { hasCompleted: true }, { hasCompleted: true }] }) });
-  const note = K.formatContractLifecycleNote(obs);
-  const parsed = K.parseContractLifecycleNote(note);
-  checkTrue('provider observation round-trips through the carrier', parsed !== null && parsed.kind === 'provider_observation');
-  check('round-trip preserves rawProviderStatus', parsed.rawProviderStatus, obs.rawProviderStatus);
-  check('round-trip preserves isExpired', parsed.isExpired, obs.isExpired);
-  check('round-trip preserves deleted', parsed.deleted, obs.deleted);
-  check('round-trip preserves recipients counts', [parsed.recipients.total, parsed.recipients.completed], [obs.recipients.total, obs.recipients.completed]);
-  check('round-trip preserves providerReportedAt', parsed.providerReportedAt, obs.providerReportedAt);
-}
-{
-  // A provider_error/no-row observation round-trips with all raw fields null, truthfully (nothing fabricated).
-  const noRow = M.buildProviderObservationRecordFromReadback({
+  // A location mismatch (a row WAS observed, just for the wrong environment) is still provider_reported.
+  const wrongLocationRow = M.buildProviderObservationRecordFromReadback({
     opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
-    outcome: { kind: 'network_error', message: 'timeout' },
+    acceptedSend: acceptedSendFixture({}), outcome: outcomeWithDocument({ locationId: 'loc-WRONG' }),
+    iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'x', relatedPriorRecordId: null,
+  }).value;
+  check('a location-mismatched but genuinely-observed row is STILL provider_reported (a row was really seen)', wrongLocationRow.authority, 'provider_reported');
+  check('a location mismatch still normalizes to unknown', wrongLocationRow.status, 'unknown');
+}
+
+// Round-trip: authority is preserved exactly, per-scenario.
+{
+  const networkFailure = M.buildProviderObservationRecordFromReadback({
+    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({}), outcome: { kind: 'network_error', message: 'timeout' },
     iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'Readback network error: timeout', relatedPriorRecordId: null,
   }).value;
-  const parsed = K.parseContractLifecycleNote(K.formatContractLifecycleNote(noRow));
-  checkTrue('a no-row (provider_error) observation round-trips', parsed !== null);
-  checkNull('no fabricated rawProviderStatus for a no-row observation', parsed.rawProviderStatus);
-  checkNull('no fabricated isExpired for a no-row observation', parsed.isExpired);
-  checkNull('no fabricated deleted for a no-row observation', parsed.deleted);
-  checkNull('no fabricated recipients for a no-row observation', parsed.recipients);
-}
-// Malformed recipients columns fail closed: completed present without total, or completed > total.
-{
-  const note = K.formatContractLifecycleNote(providerObservationFromOutcome({}));
-  const lines = note.split('\n');
-  const totalIdx = lines.findIndex((l) => l.startsWith('Recipients total: '));
-  lines[totalIdx] = 'Recipients total: UNAVAILABLE'; // completed remains a real number -- mismatch
-  checkNull('parse: recipients completed present but total UNAVAILABLE is rejected', K.parseContractLifecycleNote(lines.join('\n')));
+  const parsed = K.parseContractLifecycleNote(K.formatContractLifecycleNote(networkFailure));
+  checkTrue('a network/HTTP-error observation round-trips', parsed !== null);
+  check('round-trip preserves iaos_observed authority', parsed.authority, 'iaos_observed');
+  check('round-trip preserves provider_error status', parsed.status, 'provider_error');
 }
 {
-  const note = K.formatContractLifecycleNote(providerObservationFromOutcome({ outcome: outcomeWithDocument({ recipients: [{ hasCompleted: true }, { hasCompleted: true }] }) }));
-  const lines = note.split('\n');
-  const completedIdx = lines.findIndex((l) => l.startsWith('Recipients completed: '));
-  lines[completedIdx] = 'Recipients completed: 99'; // exceeds total -- impossible, must be rejected
-  checkNull('parse: recipients completed exceeding total is rejected', K.parseContractLifecycleNote(lines.join('\n')));
+  const missing = M.buildProviderObservationRecordFromReadback({
+    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({}), outcome: { kind: 'http_response', status: 200, body: { documents: [] } },
+    iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'Readback returned no documents.', relatedPriorRecordId: null,
+  }).value;
+  const parsed = K.parseContractLifecycleNote(K.formatContractLifecycleNote(missing));
+  checkTrue('a missing/malformed-response observation round-trips', parsed !== null);
+  check('round-trip preserves iaos_observed authority for a missing-document unknown', parsed.authority, 'iaos_observed');
+  check('round-trip preserves unknown status', parsed.status, 'unknown');
+}
+{
+  const realRow = providerObservationFromOutcome({});
+  const parsed = K.parseContractLifecycleNote(K.formatContractLifecycleNote(realRow));
+  checkTrue('a matching-row observation round-trips', parsed !== null);
+  check('round-trip preserves provider_reported authority', parsed.authority, 'provider_reported');
+}
+
+// Tampering cannot move a note from one authority to the other.
+{
+  const networkFailureNote = K.formatContractLifecycleNote(M.buildProviderObservationRecordFromReadback({
+    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({}), outcome: { kind: 'network_error', message: 'x' },
+    iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'x', relatedPriorRecordId: null,
+  }).value);
+  const lines = networkFailureNote.split('\n');
+  const authorityIdx = lines.findIndex((l) => l.startsWith('Authority: '));
+  lines[authorityIdx] = 'Authority: provider_reported'; // tamper: claim the provider reported this failure
+  checkNull('a provider_error note cannot be tampered into claiming provider_reported authority', K.parseContractLifecycleNote(lines.join('\n')));
+}
+{
+  const realRowNote = K.formatContractLifecycleNote(providerObservationFromOutcome({}));
+  const lines = realRowNote.split('\n');
+  const authorityIdx = lines.findIndex((l) => l.startsWith('Authority: '));
+  lines[authorityIdx] = 'Authority: iaos_observed'; // tamper: hide a real observed "sent" status behind iaos_observed
+  checkNull('a genuinely observed "sent" note cannot be tampered into claiming iaos_observed authority', K.parseContractLifecycleNote(lines.join('\n')));
+}
+{
+  // iaos_observed can never carry raw provider fields -- tampering one in is rejected.
+  const missingNote = K.formatContractLifecycleNote(M.buildProviderObservationRecordFromReadback({
+    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({}), outcome: { kind: 'http_response', status: 200, body: { documents: [] } },
+    iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'x', relatedPriorRecordId: null,
+  }).value);
+  const lines = missingNote.split('\n');
+  const rawIdx = lines.findIndex((l) => l.startsWith('Raw provider status: '));
+  lines[rawIdx] = 'Raw provider status: sent'; // tamper: fabricate raw evidence that was never observed
+  checkNull('an iaos_observed note cannot be tampered into carrying fabricated raw provider evidence', K.parseContractLifecycleNote(lines.join('\n')));
+}
+{
+  // A malformed authority/status combination (iaos_observed + a row-derived status) is rejected outright, even freshly hand-built.
+  const goodNote = K.formatContractLifecycleNote(providerObservationFromOutcome({}));
+  const lines = goodNote.split('\n');
+  const authorityIdx = lines.findIndex((l) => l.startsWith('Authority: '));
+  const kindIdx = lines.findIndex((l) => l.startsWith('Event kind: '));
+  lines[authorityIdx] = 'Authority: iaos_observed';
+  // Event kind is still "sent" here (from the real row fixture) -- this combination is never valid.
+  checkNull('iaos_observed authority combined with a row-derived status ("sent") is rejected', K.parseContractLifecycleNote(lines.join('\n')));
+  check('(sanity) the event kind line really is "sent" in this fixture', lines[kindIdx], 'Event kind: sent');
 }
 
 /* ====================================================================== */
-/* 4. Provider and authorized-human evidence cannot be confused           */
+/* 4. Small consistency fix: duplicate detection compares every raw fact  */
 /* ====================================================================== */
 
-checkTrue('provider_observation record carries authority provider_reported by construction', providerObservationFromOutcome({}).authority === 'provider_reported');
+{
+  const base = providerObservationFromOutcome({});
+  const differentIsExpired = providerObservationFromOutcome({ outcome: outcomeWithDocument({ isExpired: true }) });
+  checkFalse('observations with the same status but different isExpired are NOT duplicates', M.isDuplicateProviderObservation(base, differentIsExpired));
+}
+{
+  const base = providerObservationFromOutcome({});
+  const differentDeleted = providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'sent', deleted: undefined }) });
+  // base has deleted:false (explicit), differentDeleted has deleted omitted -> null
+  checkFalse('observations with the same status but different deleted are NOT duplicates', M.isDuplicateProviderObservation(base, differentDeleted));
+}
+{
+  const base = providerObservationFromOutcome({});
+  const differentRecipients = providerObservationFromOutcome({ outcome: outcomeWithDocument({ recipients: [{ hasCompleted: false }, { hasCompleted: false }] }) });
+  checkFalse('observations with the same status but different recipient-completion counts are NOT duplicates', M.isDuplicateProviderObservation(base, differentRecipients));
+}
+{
+  const base = providerObservationFromOutcome({});
+  const differentReference = providerObservationFromOutcome({ outcome: outcomeWithDocument({ referenceId: 'ref-DIFFERENT' }) });
+  checkFalse('observations with the same status but different providerDocumentReference are NOT duplicates', M.isDuplicateProviderObservation(base, differentReference));
+}
+{
+  // Two genuinely different unknown observations (different underlying cause) must not be conflated as duplicates.
+  const unknownA = M.buildProviderObservationRecordFromReadback({
+    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({}), outcome: { kind: 'http_response', status: 200, body: { documents: [] } },
+    iaosObservedAt: OBSERVED_AT_1, evidenceSummary: 'x', relatedPriorRecordId: null,
+  }).value;
+  const unknownB = M.buildProviderObservationRecordFromReadback({
+    opportunityId: OPP, version: V1, expectedDocumentId: DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({}), outcome: { kind: 'http_response', status: 200, body: {} },
+    iaosObservedAt: OBSERVED_AT_2, evidenceSummary: 'x', relatedPriorRecordId: null,
+  }).value;
+  checkFalse('two "unknown" observations with different providerFailureReason are NOT duplicates', M.isDuplicateProviderObservation(unknownA, unknownB));
+}
+{
+  const a = providerObservationFromOutcome({ iaosObservedAt: OBSERVED_AT_1 });
+  const b = providerObservationFromOutcome({ iaosObservedAt: OBSERVED_AT_2 });
+  checkTrue('two observations identical on every raw fact ARE duplicates, regardless of when each was recorded', M.isDuplicateProviderObservation(a, b));
+}
 
-// Tamper: inject a human Operator field into a provider-kind note -- must be rejected.
+/* ====================================================================== */
+/* 5. Provider and authorized-human evidence cannot be confused           */
+/* ====================================================================== */
+
+checkTrue('provider_observation record carries a provider-only authority by construction', providerObservationFromOutcome({}).authority === 'provider_reported');
+
 {
   const goodNote = K.formatContractLifecycleNote(providerObservationFromOutcome({}));
   const lines = goodNote.split('\n');
@@ -400,13 +635,12 @@ checkTrue('provider_observation record carries authority provider_reported by co
   lines[operatorIdx] = 'Operator: brad';
   checkNull('a provider-kind note with a forged human Operator is rejected outright', K.parseContractLifecycleNote(lines.join('\n')));
 }
-// Tamper: forge Authority on a provider note to operator_attested.
 {
   const goodNote = K.formatContractLifecycleNote(providerObservationFromOutcome({}));
   const lines = goodNote.split('\n');
   const authorityIdx = lines.findIndex((l) => l.startsWith('Authority: '));
   lines[authorityIdx] = 'Authority: operator_attested';
-  checkNull('a provider-kind note with a forged Authority column is rejected', K.parseContractLifecycleNote(lines.join('\n')));
+  checkNull('a provider-kind note with a forged human Authority column is rejected', K.parseContractLifecycleNote(lines.join('\n')));
 }
 
 checkTrue('correction record carries authority operator_attested', correctionRecord().authority === 'operator_attested');
@@ -415,7 +649,6 @@ checkTrue('correction record carries authority operator_attested', correctionRec
   const parsed = K.parseContractLifecycleNote(note);
   checkTrue('correction note round-trips', parsed !== null && parsed.kind === 'correction');
 }
-// Tamper: a correction note claiming brad_authorized authority is rejected.
 {
   const goodNote = K.formatContractLifecycleNote(correctionRecord());
   const lines = goodNote.split('\n');
@@ -423,7 +656,6 @@ checkTrue('correction record carries authority operator_attested', correctionRec
   lines[authorityIdx] = 'Authority: brad_authorized';
   checkNull('a correction note with a forged brad_authorized Authority is rejected', K.parseContractLifecycleNote(lines.join('\n')));
 }
-// Tamper: a correction note carrying ANY raw provider evidence field is rejected (human fact cannot carry provider evidence).
 {
   const goodNote = K.formatContractLifecycleNote(correctionRecord());
   const lines = goodNote.split('\n');
@@ -469,10 +701,10 @@ checkTrue('rescission record carries authority brad_authorized', rescissionRecor
 }
 
 /* ====================================================================== */
-/* 5. Human decline record (Jess Gate repair item 4)                      */
+/* 6. Human decline record                                                */
 /* ====================================================================== */
 
-checkTrue('decline record carries authority operator_attested -- never provider_reported, never brad_authorized', declineRecord().authority === 'operator_attested');
+checkTrue('decline record carries authority operator_attested -- never provider_reported/iaos_observed, never brad_authorized', declineRecord().authority === 'operator_attested');
 {
   const note = K.formatContractLifecycleNote(declineRecord());
   const parsed = K.parseContractLifecycleNote(note);
@@ -484,16 +716,14 @@ checkTrue('decline record carries authority operator_attested -- never provider_
   check('decline note preserves declinedAt', parsed.declinedAt, OBSERVED_AT_3);
   check('decline note preserves reasonOrEvidence', parsed.reasonOrEvidence, 'Seller called and said they will not sign.');
 }
-// A decline is never restricted to Brad the way Rescission is -- any named operator may record it.
 {
   const byRep = M.buildDeclineRecord({
-    opportunityId: OPP, version: V1, wasEverSentToProvider: true, providerDocumentIdAtDecline: DOC_ID,
+    opportunityId: OPP, version: V1, acceptedSend: acceptedSendFixture({}),
     reasonOrEvidence: 'Text message: "not signing".', recordedBy: 'rep-2', declinedAt: OBSERVED_AT_3,
     iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
   });
   checkTrue('a decline recorded by an operator other than brad succeeds -- no Brad-only restriction applies to Declined', byRep.ok);
 }
-// A decline never impersonates provider evidence.
 {
   const goodNote = K.formatContractLifecycleNote(declineRecord());
   const lines = goodNote.split('\n');
@@ -508,26 +738,15 @@ checkTrue('decline record carries authority operator_attested -- never provider_
   lines[rawStatusIdx] = 'Raw provider status: declined';
   checkNull('a decline note carrying a raw provider status is rejected', K.parseContractLifecycleNote(lines.join('\n')));
 }
-// A decline's own event kind ("operator_declined") never collides with the provider status "declined".
 {
   const declineNote = K.formatContractLifecycleNote(declineRecord());
   const declineLines = declineNote.split('\n');
   const declineKindLine = declineLines.find((l) => l.startsWith('Event kind: '));
   check('decline note uses the distinct "operator_declined" event kind, never colliding with the provider "declined" status', declineKindLine, 'Event kind: operator_declined');
 }
-// Declined requires Contract Sent -- refused outright otherwise, and never fabricates a provider document id.
-{
-  const notSent = M.buildDeclineRecord({
-    opportunityId: OPP, version: V1, wasEverSentToProvider: false, providerDocumentIdAtDecline: DOC_ID,
-    reasonOrEvidence: 'x', recordedBy: 'rep-1', declinedAt: OBSERVED_AT_3,
-    iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
-  });
-  checkFalse('a decline before Contract Sent is refused -- there is nothing to decline before the agreement was sent', notSent.ok);
-  check('failure reason is DECLINE_REQUIRES_CONTRACT_SENT', notSent.reasons[0].code, 'DECLINE_REQUIRES_CONTRACT_SENT');
-}
 {
   const blankReason = M.buildDeclineRecord({
-    opportunityId: OPP, version: V1, wasEverSentToProvider: true, providerDocumentIdAtDecline: DOC_ID,
+    opportunityId: OPP, version: V1, acceptedSend: acceptedSendFixture({}),
     reasonOrEvidence: '   ', recordedBy: 'rep-1', declinedAt: OBSERVED_AT_3,
     iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
   });
@@ -536,32 +755,22 @@ checkTrue('decline record carries authority operator_attested -- never provider_
 }
 {
   const noOperator = M.buildDeclineRecord({
-    opportunityId: OPP, version: V1, wasEverSentToProvider: true, providerDocumentIdAtDecline: DOC_ID,
+    opportunityId: OPP, version: V1, acceptedSend: acceptedSendFixture({}),
     reasonOrEvidence: 'x', recordedBy: '', declinedAt: OBSERVED_AT_3,
     iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
   });
   checkFalse('a decline with no recording operator is refused', noOperator.ok);
   check('failure reason is DECLINE_RECORDED_BY_BLANK', noOperator.reasons[0].code, 'DECLINE_RECORDED_BY_BLANK');
 }
-{
-  const noDoc = M.buildDeclineRecord({
-    opportunityId: OPP, version: V1, wasEverSentToProvider: true, providerDocumentIdAtDecline: '',
-    reasonOrEvidence: 'x', recordedBy: 'rep-1', declinedAt: OBSERVED_AT_3,
-    iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
-  });
-  checkFalse('a decline with no provider document identity is refused (always required once Contract Sent has occurred)', noDoc.ok);
-  check('failure reason is DECLINE_PROVIDER_DOCUMENT_ID_BLANK', noDoc.reasons[0].code, 'DECLINE_PROVIDER_DOCUMENT_ID_BLANK');
-}
-// A decline makes no legal determination and cannot create Under Contract -- see section 9 below, which includes this fixture.
 
 /* ====================================================================== */
-/* 6. Chronology remains append-only; duplicates do not erase history     */
+/* 7. Chronology remains append-only; duplicates do not erase history     */
 /* ====================================================================== */
 
 {
   const n1 = K.formatContractLifecycleNote(providerObservationFromOutcome({ iaosObservedAt: OBSERVED_AT_1 }));
   const n2 = K.formatContractLifecycleNote(providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'viewed' }), iaosObservedAt: OBSERVED_AT_2 }));
-  const n3ForOtherOpp = K.formatContractLifecycleNote(providerObservationFromOutcome({ opportunityId: OTHER_OPP, iaosObservedAt: OBSERVED_AT_3 }));
+  const n3ForOtherOpp = K.formatContractLifecycleNote(providerObservationFromOutcome({ opportunityId: OTHER_OPP, acceptedSend: acceptedSendFixture({ opportunityId: OTHER_OPP }), iaosObservedAt: OBSERVED_AT_3 }));
   const all = K.allContractLifecycleRecordsForOpportunity([{ body: n1 }, { body: n2 }, { body: n3ForOtherOpp }], OPP);
   check('allContractLifecycleRecordsForOpportunity returns exactly the records for this opportunity, all of them', all.length, 2);
   const ordered = M.orderRecordsChronologically(all);
@@ -570,7 +779,7 @@ checkTrue('decline record carries authority operator_attested -- never provider_
 
 {
   const obsA = providerObservationFromOutcome({ iaosObservedAt: OBSERVED_AT_1 });
-  const obsB = providerObservationFromOutcome({ iaosObservedAt: OBSERVED_AT_2 }); // identical underlying fact, reported at a different time
+  const obsB = providerObservationFromOutcome({ iaosObservedAt: OBSERVED_AT_2 });
   checkTrue('isDuplicateProviderObservation recognizes two identical provider facts reported at different times', M.isDuplicateProviderObservation(obsA, obsB));
   const nA = K.formatContractLifecycleNote(obsA);
   const nB = K.formatContractLifecycleNote(obsB);
@@ -580,7 +789,7 @@ checkTrue('decline record carries authority operator_attested -- never provider_
 }
 
 /* ====================================================================== */
-/* 7. Correction creates a distinguishable revision                       */
+/* 8. Correction creates a distinguishable revision                       */
 /* ====================================================================== */
 
 {
@@ -632,13 +841,12 @@ checkTrue('decline record carries authority operator_attested -- never provider_
 }
 
 /* ====================================================================== */
-/* 8. Resend creates a new attempt without overwriting the original       */
+/* 9. Resend creates a new attempt without overwriting the original       */
 /* ====================================================================== */
 
 {
   const resend = M.buildResendRecord({
-    opportunityId: OPP, version: V1, priorAttemptVersion: V1,
-    priorAttemptId: OBSERVED_AT_1, newAttemptId: OBSERVED_AT_2,
+    opportunityId: OPP, version: V1, priorSend: acceptedSendFixture({ attemptId: OBSERVED_AT_1 }), newAttemptId: OBSERVED_AT_2,
     authorizedBy: 'brad', authorizedAt: OBSERVED_AT_2, recordedBy: 'brad',
     iaosObservedAt: OBSERVED_AT_2, evidenceSummary: 'Seller lost the original link.', relatedPriorRecordId: OBSERVED_AT_1,
   });
@@ -648,34 +856,16 @@ checkTrue('decline record carries authority operator_attested -- never provider_
 }
 {
   const sameId = M.buildResendRecord({
-    opportunityId: OPP, version: V1, priorAttemptVersion: V1,
-    priorAttemptId: OBSERVED_AT_1, newAttemptId: OBSERVED_AT_1,
+    opportunityId: OPP, version: V1, priorSend: acceptedSendFixture({ attemptId: OBSERVED_AT_1 }), newAttemptId: OBSERVED_AT_1,
     authorizedBy: 'brad', authorizedAt: OBSERVED_AT_2, recordedBy: 'brad',
     iaosObservedAt: OBSERVED_AT_2, evidenceSummary: 'x', relatedPriorRecordId: null,
   });
   checkFalse('a resend reusing the original attempt id is refused', sameId.ok);
   check('failure reason is RESEND_ATTEMPT_IDS_IDENTICAL', sameId.reasons[0].code, 'RESEND_ATTEMPT_IDS_IDENTICAL');
 }
-
-/* ====================================================================== */
-/* 9. Changed content/revision invalidates prior authorization            */
-/* ====================================================================== */
-
-{
-  const V2 = { agreementAt: V1.agreementAt, versionSeq: 2, supersedesVersionSeq: 1, replacesAgreementAt: null };
-  const changed = M.buildResendRecord({
-    opportunityId: OPP, version: V2, priorAttemptVersion: V1,
-    priorAttemptId: OBSERVED_AT_1, newAttemptId: OBSERVED_AT_2,
-    authorizedBy: 'brad', authorizedAt: OBSERVED_AT_2, recordedBy: 'brad',
-    iaosObservedAt: OBSERVED_AT_2, evidenceSummary: 'x', relatedPriorRecordId: null,
-  });
-  checkFalse('a "resend" whose version differs from the prior attempt is refused -- that is a correction, not a resend', changed.ok);
-  check('failure reason is RESEND_VERSION_MUST_MATCH_PRIOR', changed.reasons[0].code, 'RESEND_VERSION_MUST_MATCH_PRIOR');
-}
 {
   const notBrad = M.buildResendRecord({
-    opportunityId: OPP, version: V1, priorAttemptVersion: V1,
-    priorAttemptId: OBSERVED_AT_1, newAttemptId: OBSERVED_AT_2,
+    opportunityId: OPP, version: V1, priorSend: acceptedSendFixture({}), newAttemptId: OBSERVED_AT_2,
     authorizedBy: 'rep-1', authorizedAt: OBSERVED_AT_2, recordedBy: 'rep-1',
     iaosObservedAt: OBSERVED_AT_2, evidenceSummary: 'x', relatedPriorRecordId: null,
   });
@@ -684,18 +874,17 @@ checkTrue('decline record carries authority operator_attested -- never provider_
 }
 
 /* ====================================================================== */
-/* 10. Lifecycle evidence cannot cross contract versions                  */
+/* 10. Lifecycle evidence cannot cross contract versions (display layer)  */
 /* ====================================================================== */
 
 {
-  const V2 = { agreementAt: V1.agreementAt, versionSeq: 2, supersedesVersionSeq: 1, replacesAgreementAt: null };
   const obsForV1 = providerObservationFromOutcome({ version: V1, iaosObservedAt: OBSERVED_AT_1 });
-  const obsForV2 = providerObservationFromOutcome({
-    version: V2,
+  const obsForV2 = M.buildProviderObservationRecordFromReadback({
+    opportunityId: OPP, version: V2, expectedDocumentId: OTHER_DOC_ID, expectedLocationId: LOCATION_ID,
+    acceptedSend: acceptedSendFixture({ version: V2, providerResponse: Object.assign({}, acceptedSendFixture({}).providerResponse, { documentId: OTHER_DOC_ID }) }),
     outcome: outcomeWithDocument({ documentId: OTHER_DOC_ID, status: 'completed', recipients: [{ hasCompleted: true }] }),
-    expectedDocumentId: OTHER_DOC_ID,
-    iaosObservedAt: OBSERVED_AT_2,
-  });
+    iaosObservedAt: OBSERVED_AT_2, evidenceSummary: 'x', relatedPriorRecordId: null,
+  }).value;
   const all = [obsForV1, obsForV2];
   check('filterRecordsForVersion(V1) excludes a different version\'s evidence', M.filterRecordsForVersion(all, V1).length, 1);
   check('filterRecordsForVersion(V2) excludes V1\'s evidence', M.filterRecordsForVersion(all, V2).length, 1);
@@ -710,7 +899,7 @@ checkTrue('decline record carries authority operator_attested -- never provider_
 {
   const notBrad = M.buildRescissionRecord({
     opportunityId: OPP, version: V1, reason: 'Seller changed their mind.', authorizedBy: 'jess',
-    authorizedAt: OBSERVED_AT_3, wasEverSentToProvider: true, providerDocumentIdAtRescission: DOC_ID,
+    authorizedAt: OBSERVED_AT_3, acceptedSend: acceptedSendFixture({}),
     iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
   });
   checkFalse('rescission authorized by anyone other than brad is refused', notBrad.ok);
@@ -719,33 +908,15 @@ checkTrue('decline record carries authority operator_attested -- never provider_
 {
   const blankReason = M.buildRescissionRecord({
     opportunityId: OPP, version: V1, reason: '   ', authorizedBy: 'brad',
-    authorizedAt: OBSERVED_AT_3, wasEverSentToProvider: true, providerDocumentIdAtRescission: DOC_ID,
+    authorizedAt: OBSERVED_AT_3, acceptedSend: acceptedSendFixture({}),
     iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
   });
   checkFalse('rescission with a blank reason is refused', blankReason.ok);
 }
 {
-  const missingDoc = M.buildRescissionRecord({
-    opportunityId: OPP, version: V1, reason: 'Withdrawn.', authorizedBy: 'brad',
-    authorizedAt: OBSERVED_AT_3, wasEverSentToProvider: true, providerDocumentIdAtRescission: null,
-    iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
-  });
-  checkFalse('rescission of an agreement that was sent to a provider requires naming the affected provider document', missingDoc.ok);
-  check('failure reason is RESCISSION_PROVIDER_DOCUMENT_ID_REQUIRED', missingDoc.reasons[0].code, 'RESCISSION_PROVIDER_DOCUMENT_ID_REQUIRED');
-}
-{
-  const fabricatedDoc = M.buildRescissionRecord({
-    opportunityId: OPP, version: V1, reason: 'Withdrawn before send.', authorizedBy: 'brad',
-    authorizedAt: OBSERVED_AT_3, wasEverSentToProvider: false, providerDocumentIdAtRescission: DOC_ID,
-    iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'x', relatedPriorRecordId: null,
-  });
-  checkFalse('rescission of an agreement never sent to a provider must not carry a fabricated provider document id', fabricatedDoc.ok);
-  check('failure reason is RESCISSION_PROVIDER_DOCUMENT_ID_MUST_BE_ABSENT', fabricatedDoc.reasons[0].code, 'RESCISSION_PROVIDER_DOCUMENT_ID_MUST_BE_ABSENT');
-}
-{
   const preSend = M.buildRescissionRecord({
     opportunityId: OPP, version: V1, reason: 'Withdrawn before send.', authorizedBy: 'brad',
-    authorizedAt: OBSERVED_AT_3, wasEverSentToProvider: false, providerDocumentIdAtRescission: null,
+    authorizedAt: OBSERVED_AT_3, acceptedSend: null,
     iaosObservedAt: OBSERVED_AT_3, evidenceSummary: 'Rescinded at Contract Ready, never sent.', relatedPriorRecordId: null,
   });
   checkTrue('rescission before any provider send succeeds with no provider document identity attached', preSend.ok);
@@ -763,7 +934,7 @@ const ALL_KIND_FIXTURES = [
   providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'sent' }) }),
   providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'viewed' }) }),
   providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'sent', recipients: [{ hasCompleted: true }, { hasCompleted: false }] }) }),
-  providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'declined' }) }), // normalizes to unknown, but include the raw attempt too
+  providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'declined' }) }),
   providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'sent', isExpired: true }) }),
   providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'voided' }) }),
   providerObservationFromOutcome({ outcome: outcomeWithDocument({ status: 'completed', recipients: [{ hasCompleted: true }] }) }),
@@ -866,7 +1037,7 @@ checkNull('parse: empty string is rejected', K.parseContractLifecycleNote(''));
 {
   const withNewline = providerObservationFromOutcome({ evidenceSummary: 'Line one\nLine two' });
   const note = K.formatContractLifecycleNote(withNewline);
-  check('formatted note has exactly HEADER + LABELS.length lines even with an embedded newline in evidenceSummary', note.split('\n').length, 20);
+  check('formatted note has exactly HEADER + LABELS.length lines even with an embedded newline in evidenceSummary', note.split('\n').length, 21);
   const parsed = K.parseContractLifecycleNote(note);
   checkTrue('note with a sanitized embedded newline still round-trips', parsed !== null);
 }

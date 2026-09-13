@@ -49,16 +49,38 @@
  *
  * PROVIDER FACTS VS HUMAN FACTS, ENFORCED BY TYPE, NOT MERELY CONVENTION.
  * `LifecycleRecord` is a discriminated union on `kind`: the
- * `provider_observation` variant carries `authority: "provider_reported"`
- * ALWAYS -- the type has no other option for that variant. The
- * `correction`/`resend`/`rescission`/`decline` variants carry `authority:
- * "operator_attested"` or `"brad_authorized"` and an explicit `recordedBy`/
- * `authorizedBy` operator string. No variant can carry the wrong authority
- * for its own kind -- this is what "a human fact cannot impersonate a
- * provider event" means at the type level. `contract-lifecycle-
- * carriers.ts`'s parser enforces the identical constraint on read-back, so
- * a malformed or tampered note can never round-trip into the wrong
- * variant either.
+ * `provider_observation` variant's `authority` is restricted to exactly
+ * `"provider_reported" | "iaos_observed"` -- the type has no third option,
+ * and neither of those two values is ever available to the human-recorded
+ * variants. `"provider_reported"` means a real provider document row was
+ * actually observed; `"iaos_observed"` means this is IAOS's OWN
+ * observation that the provider was unreachable or returned nothing
+ * usable (Jess Gate repair round, 2026-09-12, item 2) -- a network error,
+ * an HTTP failure, or a malformed/missing response is never claimed as a
+ * provider-reported fact. The `correction`/`resend`/`rescission`/`decline`
+ * variants carry `authority: "operator_attested"` or `"brad_authorized"`
+ * and an explicit `recordedBy`/`authorizedBy` operator string. No variant
+ * can carry an authority value outside its own fixed set -- this is what
+ * "a human fact cannot impersonate a provider event, or vice versa" means
+ * at the type level. `contract-lifecycle-carriers.ts`'s parser enforces
+ * the identical constraint on read-back, so a malformed or tampered note
+ * can never round-trip into the wrong variant or the wrong authority
+ * either.
+ *
+ * PROVIDER EVIDENCE IS BOUND TO ITS CONTRACT VERSION VIA INV-63's OWN
+ * ACCEPTED-SEND RECORD, NEVER VIA INDEPENDENT CALLER ASSERTIONS (Jess Gate
+ * repair round, 2026-09-12, item 1). `buildProviderObservationRecordFromReadback`,
+ * `buildResendRecord`, `buildRescissionRecord`, and `buildDeclineRecord`
+ * all require a real `ParsedContractSend` (`contract-send-carriers.ts`,
+ * already-shipped B9-08/INV-63 evidence, itself only ever produced by
+ * parsing real GHL notes) as proof that a specific `opportunityId` +
+ * `ContractVersionIdentity` + provider document id were genuinely bound
+ * together at send time -- a caller cannot merely assert that binding by
+ * passing matching-looking strings. Every one of these functions
+ * cross-checks the supplied `opportunityId`/`version` against that
+ * evidence's OWN fields and fails closed (`PROVIDER_SEND_EVIDENCE_*`
+ * reason codes) on any mismatch, including a conflicting provider
+ * document revision.
  *
  * APPEND-ONLY, NEVER MUTATION. This module builds and validates ONE new
  * record at a time; it holds no state, and nothing here ever "edits" or
@@ -81,6 +103,7 @@ import {
   isSameContractVersion,
   nextVersionIdentity,
 } from "./board9-contract-model";
+import type { ParsedContractSend } from "./contract-send-carriers";
 
 /* ==================================================================== */
 /* 1. Lifecycle event vocabulary                                        */
@@ -140,13 +163,15 @@ export type LifecycleReasonCode =
   | "RESCISSION_NOT_BRAD_AUTHORIZED"
   | "RESCISSION_REASON_BLANK"
   | "RESCISSION_AUTHORIZATION_TIMESTAMP_INVALID"
-  | "RESCISSION_PROVIDER_DOCUMENT_ID_REQUIRED"
-  | "RESCISSION_PROVIDER_DOCUMENT_ID_MUST_BE_ABSENT"
-  | "DECLINE_REQUIRES_CONTRACT_SENT"
   | "DECLINE_REASON_OR_EVIDENCE_BLANK"
   | "DECLINE_AT_INVALID"
   | "DECLINE_RECORDED_BY_BLANK"
-  | "DECLINE_PROVIDER_DOCUMENT_ID_BLANK";
+  | "PROVIDER_SEND_EVIDENCE_NOT_ACCEPTED"
+  | "PROVIDER_SEND_EVIDENCE_OPPORTUNITY_MISMATCH"
+  | "PROVIDER_SEND_EVIDENCE_VERSION_MISMATCH"
+  | "PROVIDER_SEND_EVIDENCE_DOCUMENT_MISMATCH"
+  | "PROVIDER_SEND_EVIDENCE_REVISION_CONFLICT"
+  | "PRIOR_SEND_NOT_RESOLVED";
 
 export type LifecycleReason = { code: LifecycleReasonCode; message: string };
 
@@ -234,6 +259,18 @@ export type LifecycleReadbackOutcome =
  */
 export type ProviderLifecycleObservationResult = {
   status: ProviderLifecycleStatus;
+  /**
+   * TRUE only when the provider actually returned a matching document row
+   * (even if that row's own location mismatched, or its status was
+   * unrecognized). This is the ONE fact `buildProviderObservationRecordFromReadback`
+   * uses to decide the record's `authority` (Jess Gate repair round,
+   * 2026-09-12, item 2): `true` -> `"provider_reported"` (a provider fact
+   * genuinely exists, however inconclusive); `false` -> `"iaos_observed"`
+   * (IAOS's own observation that the provider was unreachable or returned
+   * nothing usable -- never claimed as something the provider itself
+   * reported).
+   */
+  hadMatchingRow: boolean;
   rawProviderStatus: string | null;
   isExpired: boolean | null;
   deleted: boolean | null;
@@ -272,6 +309,7 @@ export function classifyProviderLifecycleReadback(args: {
     failureReason: string,
   ): ProviderLifecycleObservationResult => ({
     status,
+    hadMatchingRow: false,
     rawProviderStatus: null,
     isExpired: null,
     deleted: null,
@@ -327,6 +365,7 @@ export function classifyProviderLifecycleReadback(args: {
 
   return {
     status: locationMismatch ? "unknown" : normalizeProviderLifecycleStatus(row),
+    hadMatchingRow: true,
     rawProviderStatus,
     isExpired,
     deleted,
@@ -360,8 +399,20 @@ export type ProviderObservationRecord = {
   providerDocumentRevision: number | null;
   /** Extracted from the provider's own evidence (`classifyProviderLifecycleReadback`'s own `updatedAt` derivation) -- never a caller-invented value. */
   providerReportedAt: string | null;
+  /** The IAOS-derived reason a `"provider_error"`/`"unknown"` status was reached (e.g. "Readback network error: ECONNRESET", or a location-mismatch note on an otherwise `"provider_reported"` row) -- `null` only when classification reached a confident, uncontested status. Distinct from `evidenceSummary`, which is the caller's own free-text description of what was attempted. */
+  providerFailureReason: string | null;
   iaosObservedAt: string;
-  authority: "provider_reported";
+  /**
+   * Jess Gate repair round, 2026-09-12, item 2: `"provider_reported"` ONLY
+   * when a real provider document row was actually observed
+   * (`hadMatchingRow: true`) -- `"iaos_observed"` when this record
+   * describes IAOS's OWN observation that the provider was unreachable or
+   * returned nothing usable (a transport/HTTP failure, a malformed
+   * response, or the expected document's absence). A network error, an
+   * HTTP failure, or a missing/malformed response is never claimed as
+   * something the provider itself reported.
+   */
+  authority: "provider_reported" | "iaos_observed";
   evidenceSummary: string;
   relatedPriorRecordId: string | null;
 };
@@ -402,7 +453,7 @@ export type RescissionRecordEntry = {
   reason: string;
   authorizedBy: string;
   authorizedAt: string;
-  /** Required non-blank when `wasEverSentToProvider` was true at build time; required null otherwise. See `buildRescissionRecord`. */
+  /** Derived from a verified INV-63 accepted-send record when one was supplied at build time; `null` when the agreement was never sent to a provider. Never an independent caller assertion -- see `buildRescissionRecord`. */
   providerDocumentIdAtRescission: string | null;
   iaosObservedAt: string;
   authority: "brad_authorized";
@@ -418,12 +469,14 @@ export type RescissionRecordEntry = {
  * "declined" status; see the module header) and NOT restricted to Brad
  * the way Rescission is (`SELLER_CONTRACT_STATE_MACHINE_V1.md` states no
  * such authority restriction for Declined). Its `authority` is always
- * `"operator_attested"`, distinct from both `"provider_reported"` and
- * `"brad_authorized"`, so a decline can never be mistaken for either kind
- * of fact. Declined only ever applies to an agreement that reached
- * Contract Sent ("the seller can only decline to execute an agreement
- * that was actually sent") -- `providerDocumentIdAtDecline` is therefore
- * always required and non-blank, unlike Rescission's conditional field.
+ * `"operator_attested"`, distinct from both provider-observation authority
+ * values and `"brad_authorized"`, so a decline can never be mistaken for
+ * either kind of fact. Declined only ever applies to an agreement that
+ * reached Contract Sent ("the seller can only decline to execute an
+ * agreement that was actually sent") -- `providerDocumentIdAtDecline` is
+ * therefore always derived from a verified INV-63 accepted-send record
+ * (never an independent caller assertion, and never blank), unlike
+ * Rescission's conditional field.
  */
 export type DeclineRecordEntry = {
   kind: "decline";
@@ -446,29 +499,89 @@ export type LifecycleRecord = ProviderObservationRecord | CorrectionRecord | Res
 /* ==================================================================== */
 
 /**
+ * The ONE place every provider-document-claiming builder below verifies
+ * that a specific `opportunityId` + `ContractVersionIdentity` + provider
+ * document id were genuinely bound together at send time (Jess Gate
+ * repair round, 2026-09-12, item 1). `acceptedSend` must be a REAL
+ * `ParsedContractSend` -- in production this is only ever produced by
+ * `contract-send-carriers.ts`'s own `latestContractSendForOpportunity`,
+ * itself only ever parsing REAL GHL notes; this function does not, and
+ * cannot, independently verify that the object it was handed came from
+ * that path (a pure function has no I/O), but it DOES verify every fact
+ * that path's own shape carries: the send actually reached `"accepted"`
+ * with a real, non-blank provider document id, AND that send's own
+ * `opportunityId`/`version` actually match what this record is being
+ * built for. A caller cannot substitute independently-asserted strings
+ * for this cross-check -- there is no parameter for one.
+ */
+function verifyAcceptedSendBinding(args: {
+  acceptedSend: ParsedContractSend;
+  opportunityId: string;
+  version: ContractVersionIdentity;
+}): { ok: true; value: { providerDocumentId: string; providerDocumentReference: string | null; providerDocumentRevision: number | null } } | { ok: false; reasons: LifecycleReason[] } {
+  const { acceptedSend } = args;
+  const reasons: LifecycleReason[] = [];
+  const hasRealDocumentId =
+    acceptedSend.status === "accepted" &&
+    acceptedSend.providerResponse !== null &&
+    typeof acceptedSend.providerResponse.documentId === "string" &&
+    acceptedSend.providerResponse.documentId !== "";
+  if (!hasRealDocumentId) {
+    reasons.push({
+      code: "PROVIDER_SEND_EVIDENCE_NOT_ACCEPTED",
+      message: "The supplied send evidence is not an accepted INV-63 send with a confirmed provider document identifier -- provider evidence cannot be bound to a contract version without it.",
+    });
+  }
+  if (acceptedSend.opportunityId !== args.opportunityId) {
+    reasons.push({
+      code: "PROVIDER_SEND_EVIDENCE_OPPORTUNITY_MISMATCH",
+      message: "The supplied send evidence's opportunityId does not match the opportunity this record is being built for.",
+    });
+  }
+  if (!isSameContractVersion(acceptedSend.version, args.version)) {
+    reasons.push({
+      code: "PROVIDER_SEND_EVIDENCE_VERSION_MISMATCH",
+      message: "The supplied send evidence's contract version does not match the version this record is being built for.",
+    });
+  }
+  if (reasons.length > 0) return { ok: false, reasons };
+  return {
+    ok: true,
+    value: {
+      providerDocumentId: acceptedSend.providerResponse!.documentId as string,
+      providerDocumentReference: acceptedSend.providerResponse!.documentReference,
+      providerDocumentRevision: acceptedSend.providerResponse!.documentRevision,
+    },
+  };
+}
+
+/**
  * THE ONLY WAY TO CONSTRUCT A `ProviderObservationRecord` (Jess Gate
- * repair round, 2026-09-12, item 2: "provider-observation records must be
- * constructible only from validated readback/event evidence processed
- * through the verified classification path"). Unlike the pre-repair
- * design, this function does NOT accept a pre-built classification
- * result as an argument -- there is no parameter through which a caller
- * can hand this function an arbitrary `status` (e.g. `"completed"`)
- * un-derived from real evidence. It accepts only the RAW `outcome` (the
- * literal HTTP/network result a caller's own fetch produced) plus the
- * expected identity to verify against, and calls
- * `classifyProviderLifecycleReadback` INTERNALLY to derive every fact
- * this record will carry -- the classification step cannot be skipped,
- * substituted, or handed a shortcut result, short of editing this
- * module's own source. `providerReportedAt` is likewise never accepted
- * from the caller; it comes exclusively from what
+ * repair round, 2026-09-12, items 1 and 2). Unlike the pre-repair design,
+ * this function does NOT accept a pre-built classification result, and
+ * does NOT accept `opportunityId`/`version`/`expectedDocumentId` as
+ * independent, unverified caller assertions -- `acceptedSend` (a real
+ * INV-63 accepted-send record, see `verifyAcceptedSendBinding`) must
+ * PROVE that binding, and this function fails closed on any mismatch,
+ * including a conflicting provider document revision between what was
+ * recorded at send time and what the live readback now reports. Only
+ * after that binding is verified does this function call
+ * `classifyProviderLifecycleReadback` INTERNALLY to derive every
+ * remaining fact this record will carry -- the classification step
+ * cannot be skipped, substituted, or handed a shortcut result, short of
+ * editing this module's own source. `providerReportedAt` is likewise
+ * never accepted from the caller; it comes exclusively from what
  * `classifyProviderLifecycleReadback` itself extracted from the provider
- * row.
+ * row. `authority` is derived from `hadMatchingRow` -- see that field's
+ * own doc comment and item 2's fix.
  */
 export function buildProviderObservationRecordFromReadback(args: {
   opportunityId: string;
   version: ContractVersionIdentity;
   expectedDocumentId: string;
   expectedLocationId: string;
+  /** Verified proof that `opportunityId`/`version`/`expectedDocumentId` were genuinely bound together at send time -- see `verifyAcceptedSendBinding`. */
+  acceptedSend: ParsedContractSend;
   outcome: LifecycleReadbackOutcome;
   iaosObservedAt: string;
   evidenceSummary: string;
@@ -481,11 +594,40 @@ export function buildProviderObservationRecordFromReadback(args: {
   if (args.evidenceSummary.trim() === "") reasons.push({ code: "EVIDENCE_SUMMARY_BLANK", message: "evidenceSummary is required." });
   if (reasons.length > 0) return { ok: false, reasons };
 
+  const binding = verifyAcceptedSendBinding({ acceptedSend: args.acceptedSend, opportunityId: args.opportunityId, version: args.version });
+  if (!binding.ok) return binding;
+
+  if (binding.value.providerDocumentId !== args.expectedDocumentId) {
+    return {
+      ok: false,
+      reasons: [{
+        code: "PROVIDER_SEND_EVIDENCE_DOCUMENT_MISMATCH",
+        message: "The supplied send evidence's own provider document id does not match the document id this record is being built for.",
+      }],
+    };
+  }
+
   const observation = classifyProviderLifecycleReadback({
     expectedDocumentId: args.expectedDocumentId,
     expectedLocationId: args.expectedLocationId,
     outcome: args.outcome,
   });
+
+  if (
+    binding.value.providerDocumentRevision !== null &&
+    observation.providerDocumentRevision !== null &&
+    binding.value.providerDocumentRevision !== observation.providerDocumentRevision
+  ) {
+    return {
+      ok: false,
+      reasons: [{
+        code: "PROVIDER_SEND_EVIDENCE_REVISION_CONFLICT",
+        message: "The provider's currently observed document revision conflicts with the revision recorded at send time -- this evidence cannot be trusted to describe the authorized version without further review.",
+      }],
+    };
+  }
+
+  const authority: "provider_reported" | "iaos_observed" = observation.hadMatchingRow ? "provider_reported" : "iaos_observed";
 
   return {
     ok: true,
@@ -502,8 +644,9 @@ export function buildProviderObservationRecordFromReadback(args: {
       providerDocumentReference: observation.providerDocumentReference,
       providerDocumentRevision: observation.providerDocumentRevision,
       providerReportedAt: observation.providerReportedAt,
+      providerFailureReason: observation.failureReason,
       iaosObservedAt: args.iaosObservedAt,
-      authority: "provider_reported",
+      authority,
       evidenceSummary: args.evidenceSummary,
       relatedPriorRecordId: args.relatedPriorRecordId,
     },
@@ -567,19 +710,28 @@ export function buildCorrectionRecord(args: {
  * "Resend: represent each transmission as a new send attempt. Preserve
  * the same ContractVersionIdentity only when seller-facing content is
  * byte/identity-equivalent... Require current exact-version Brad
- * authorization for every outbound resend." All three are enforced here:
- * `args.version` must equal `args.priorAttemptVersion` exactly (a changed
- * version is a correction, not a resend -- callers needing that must use
- * `buildCorrectionRecord` instead, never this function); `authorizedBy`
- * must be the literal `"brad"`; `newAttemptId` must differ from
- * `priorAttemptId` so the original send record is never silently
- * converted into the resend.
+ * authorization for every outbound resend." Jess Gate repair round,
+ * 2026-09-12, item 1: the prior attempt this resend claims is no longer
+ * an independent `priorAttemptId`/`priorAttemptVersion` pair a caller
+ * merely asserts -- `priorSend` (a real INV-63 `ParsedContractSend`) is
+ * required, and `priorAttemptId`/the version-match check are both derived
+ * from and verified against ITS OWN fields (`priorSend.attemptId`,
+ * `priorSend.version`), never a bare string the caller could mismatch.
+ * `priorSend.status` must already be resolved to a terminal outcome
+ * (`"accepted"`, `"failed"`, or `"ambiguous"`) -- resending against a
+ * still-`"in_progress"`/`"provider_accepted_pending_readback"` attempt
+ * would mean recording a resend before even knowing what the original
+ * attempt did. `authorizedBy` must be the literal `"brad"`; `newAttemptId`
+ * must differ from `priorSend.attemptId` so the original send record is
+ * never silently converted into the resend.
  */
+const RESOLVED_PRIOR_SEND_STATUSES = new Set(["accepted", "failed", "ambiguous"]);
+
 export function buildResendRecord(args: {
   opportunityId: string;
   version: ContractVersionIdentity;
-  priorAttemptVersion: ContractVersionIdentity;
-  priorAttemptId: string;
+  /** Verified proof of the prior attempt this resend refers to -- see the function's own header. */
+  priorSend: ParsedContractSend;
   newAttemptId: string;
   authorizedBy: string;
   authorizedAt: string;
@@ -592,16 +744,28 @@ export function buildResendRecord(args: {
   if (args.opportunityId.trim() === "") reasons.push({ code: "OPPORTUNITY_ID_BLANK", message: "opportunityId is blank." });
   if (!isValidIsoInstant(args.iaosObservedAt)) reasons.push({ code: "OBSERVED_AT_INVALID", message: "iaosObservedAt is not a valid instant." });
   if (args.evidenceSummary.trim() === "") reasons.push({ code: "EVIDENCE_SUMMARY_BLANK", message: "evidenceSummary is required." });
-  if (!isSameContractVersion(args.version, args.priorAttemptVersion)) {
+  if (args.priorSend.opportunityId !== args.opportunityId) {
+    reasons.push({
+      code: "PROVIDER_SEND_EVIDENCE_OPPORTUNITY_MISMATCH",
+      message: "The supplied prior-send evidence's opportunityId does not match the opportunity this resend is being built for.",
+    });
+  }
+  if (!isSameContractVersion(args.version, args.priorSend.version)) {
     reasons.push({
       code: "RESEND_VERSION_MUST_MATCH_PRIOR",
       message: "A resend preserves the same ContractVersionIdentity as the prior attempt -- content/revision changes are a correction, not a resend.",
     });
   }
-  if (args.priorAttemptId === args.newAttemptId) {
+  if (args.priorSend.attemptId === args.newAttemptId) {
     reasons.push({
       code: "RESEND_ATTEMPT_IDS_IDENTICAL",
       message: "A resend must be represented as a new, distinct send attempt -- it cannot reuse the original attempt id.",
+    });
+  }
+  if (!RESOLVED_PRIOR_SEND_STATUSES.has(args.priorSend.status)) {
+    reasons.push({
+      code: "PRIOR_SEND_NOT_RESOLVED",
+      message: "The prior send attempt has not yet resolved to a terminal outcome -- a resend cannot be recorded against an in-progress or pending attempt.",
     });
   }
   if (args.authorizedBy !== "brad") {
@@ -618,7 +782,7 @@ export function buildResendRecord(args: {
       kind: "resend",
       opportunityId: args.opportunityId,
       version: args.version,
-      priorAttemptId: args.priorAttemptId,
+      priorAttemptId: args.priorSend.attemptId,
       newAttemptId: args.newAttemptId,
       authorizedBy: args.authorizedBy,
       authorizedAt: args.authorizedAt,
@@ -638,11 +802,14 @@ export function buildResendRecord(args: {
  * can be rescinded "at any stage from Contract Ready onward"
  * (`SELLER_CONTRACT_STATE_MACHINE_V1.md`, "Rescinded") -- including before
  * it was ever sent to a provider, when no provider document exists to
- * name. `wasEverSentToProvider` makes that distinction an explicit,
- * caller-supplied fact rather than something this function infers: if
- * true, a real (non-blank) `providerDocumentIdAtRescission` is required;
- * if false, one must be exactly `null` -- never a placeholder invented
- * for a document that never existed.
+ * name. Jess Gate repair round, 2026-09-12, item 1: this distinction is no
+ * longer a bare `wasEverSentToProvider` boolean plus an independently-
+ * asserted `providerDocumentIdAtRescission` string -- `acceptedSend` is
+ * `null` when the agreement was never sent (no id is possible, and none is
+ * invented), or a REAL, verified INV-63 `ParsedContractSend` when it was,
+ * in which case the affected provider document id is DERIVED from and
+ * verified against that evidence's own fields, never asserted
+ * independently.
  */
 export function buildRescissionRecord(args: {
   opportunityId: string;
@@ -650,8 +817,8 @@ export function buildRescissionRecord(args: {
   reason: string;
   authorizedBy: string;
   authorizedAt: string;
-  wasEverSentToProvider: boolean;
-  providerDocumentIdAtRescission: string | null;
+  /** `null` iff this agreement was never sent to a provider. Otherwise, verified proof of that send -- see the function's own header. */
+  acceptedSend: ParsedContractSend | null;
   iaosObservedAt: string;
   evidenceSummary: string;
   relatedPriorRecordId: string | null;
@@ -669,20 +836,15 @@ export function buildRescissionRecord(args: {
   if (!isValidIsoInstant(args.authorizedAt)) {
     reasons.push({ code: "RESCISSION_AUTHORIZATION_TIMESTAMP_INVALID", message: "The rescission timestamp is not a valid instant." });
   }
-  if (args.wasEverSentToProvider) {
-    if (args.providerDocumentIdAtRescission === null || args.providerDocumentIdAtRescission.trim() === "") {
-      reasons.push({
-        code: "RESCISSION_PROVIDER_DOCUMENT_ID_REQUIRED",
-        message: "This agreement was sent to the provider -- the rescission must name the affected provider document identity.",
-      });
-    }
-  } else if (args.providerDocumentIdAtRescission !== null) {
-    reasons.push({
-      code: "RESCISSION_PROVIDER_DOCUMENT_ID_MUST_BE_ABSENT",
-      message: "This agreement was never sent to a provider -- no provider document identity may be attached to its rescission.",
-    });
-  }
   if (reasons.length > 0) return { ok: false, reasons };
+
+  let providerDocumentIdAtRescission: string | null = null;
+  if (args.acceptedSend !== null) {
+    const binding = verifyAcceptedSendBinding({ acceptedSend: args.acceptedSend, opportunityId: args.opportunityId, version: args.version });
+    if (!binding.ok) return binding;
+    providerDocumentIdAtRescission = binding.value.providerDocumentId;
+  }
+
   return {
     ok: true,
     value: {
@@ -692,7 +854,7 @@ export function buildRescissionRecord(args: {
       reason: args.reason,
       authorizedBy: args.authorizedBy,
       authorizedAt: args.authorizedAt,
-      providerDocumentIdAtRescission: args.providerDocumentIdAtRescission,
+      providerDocumentIdAtRescission,
       iaosObservedAt: args.iaosObservedAt,
       authority: "brad_authorized",
       evidenceSummary: args.evidenceSummary,
@@ -702,22 +864,25 @@ export function buildRescissionRecord(args: {
 }
 
 /**
- * Jess Gate repair round, 2026-09-12, item 4: a separate authorized-human
- * decline record, distinct in shape and authority from both provider
- * evidence and Rescission. `wasEverSentToProvider` must be `true` --
- * `SELLER_CONTRACT_STATE_MACHINE_V1.md`'s own "Meaning" for Declined is
- * "the seller explicitly declines to execute the SENT agreement"; there
- * is nothing to decline before Contract Sent, so this function refuses
- * outright rather than accepting a pre-send decline (contrast Rescission,
- * which explicitly can occur before any send). This function makes no
- * legal determination and produces no field resembling
- * `eligible`/`underContract` -- see `lifecycleRecordAloneCanCreateUnderContract`.
+ * Jess Gate repair round, 2026-09-12, items 1 and 4: a separate
+ * authorized-human decline record, distinct in shape and authority from
+ * both provider evidence and Rescission. `SELLER_CONTRACT_STATE_
+ * MACHINE_V1.md`'s own "Meaning" for Declined is "the seller explicitly
+ * declines to execute the SENT agreement"; there is nothing to decline
+ * before Contract Sent, so a REAL, verified INV-63 `acceptedSend` is
+ * always required (never a bare `wasEverSentToProvider` boolean plus an
+ * independently-asserted `providerDocumentIdAtDecline` string) -- passing
+ * evidence that is not actually an accepted send fails closed via the
+ * same `verifyAcceptedSendBinding` every provider-document-claiming
+ * builder uses. This function makes no legal determination and produces
+ * no field resembling `eligible`/`underContract` -- see
+ * `lifecycleRecordAloneCanCreateUnderContract`.
  */
 export function buildDeclineRecord(args: {
   opportunityId: string;
   version: ContractVersionIdentity;
-  wasEverSentToProvider: boolean;
-  providerDocumentIdAtDecline: string;
+  /** Verified proof that this agreement actually reached Contract Sent -- see the function's own header. */
+  acceptedSend: ParsedContractSend;
   reasonOrEvidence: string;
   recordedBy: string;
   declinedAt: string;
@@ -729,15 +894,6 @@ export function buildDeclineRecord(args: {
   if (args.opportunityId.trim() === "") reasons.push({ code: "OPPORTUNITY_ID_BLANK", message: "opportunityId is blank." });
   if (!isValidIsoInstant(args.iaosObservedAt)) reasons.push({ code: "OBSERVED_AT_INVALID", message: "iaosObservedAt is not a valid instant." });
   if (args.evidenceSummary.trim() === "") reasons.push({ code: "EVIDENCE_SUMMARY_BLANK", message: "evidenceSummary is required." });
-  if (!args.wasEverSentToProvider) {
-    reasons.push({
-      code: "DECLINE_REQUIRES_CONTRACT_SENT",
-      message: "Declined requires the agreement to have reached Contract Sent -- the seller can only decline to execute an agreement that was actually sent.",
-    });
-  }
-  if (args.providerDocumentIdAtDecline.trim() === "") {
-    reasons.push({ code: "DECLINE_PROVIDER_DOCUMENT_ID_BLANK", message: "A decline must name the affected provider document identity." });
-  }
   if (args.reasonOrEvidence.trim() === "") {
     reasons.push({ code: "DECLINE_REASON_OR_EVIDENCE_BLANK", message: "Declined requires an explicit, operator-recorded reason or evidence -- never inferred from silence or elapsed time." });
   }
@@ -748,6 +904,10 @@ export function buildDeclineRecord(args: {
     reasons.push({ code: "DECLINE_RECORDED_BY_BLANK", message: "Declined requires an explicit, operator-recorded fact -- no operator identity was supplied." });
   }
   if (reasons.length > 0) return { ok: false, reasons };
+
+  const binding = verifyAcceptedSendBinding({ acceptedSend: args.acceptedSend, opportunityId: args.opportunityId, version: args.version });
+  if (!binding.ok) return binding;
+
   return {
     ok: true,
     value: {
@@ -757,7 +917,7 @@ export function buildDeclineRecord(args: {
       reasonOrEvidence: args.reasonOrEvidence,
       recordedBy: args.recordedBy,
       declinedAt: args.declinedAt,
-      providerDocumentIdAtDecline: args.providerDocumentIdAtDecline,
+      providerDocumentIdAtDecline: binding.value.providerDocumentId,
       iaosObservedAt: args.iaosObservedAt,
       authority: "operator_attested",
       evidenceSummary: args.evidenceSummary,
@@ -796,21 +956,39 @@ export function orderRecordsChronologically<T extends LifecycleRecord>(records: 
 
 /**
  * Two provider observations are the SAME underlying fact -- not two
- * distinct transitions -- when every provider-reported field agrees.
- * Duplicate recognition NEVER removes anything from the caller's own
- * history array; it exists only so a display layer can collapse a status
- * re-polled and reported identically more than once, without erasing
- * either occurrence from the append-only record itself.
+ * distinct transitions -- when EVERY raw, provider-reported field agrees,
+ * not merely the normalized status (small consistency fix, Jess Gate
+ * repair round, 2026-09-12): `isExpired`, `deleted`, recipient-completion
+ * counts, the provider document reference, and the provider failure
+ * reason (distinguishes, e.g., two `"unknown"` observations produced by
+ * genuinely different causes) are all compared alongside the fields
+ * already checked. Two observations sharing the same normalized `status`
+ * but differing on any of these underlying facts are NEVER declared
+ * duplicates. `authority` is compared too, as a defense-in-depth check --
+ * it cannot actually differ between two observations that already agree
+ * on every field above, by construction (`authority` is itself derived
+ * from `hadMatchingRow`, which those fields already reflect). Duplicate
+ * recognition NEVER removes anything from the caller's own history array;
+ * it exists only so a display layer can collapse a status re-polled and
+ * reported identically more than once, without erasing either occurrence
+ * from the append-only record itself.
  */
 export function isDuplicateProviderObservation(a: ProviderObservationRecord, b: ProviderObservationRecord): boolean {
   return (
     a.opportunityId === b.opportunityId &&
     isSameContractVersion(a.version, b.version) &&
     a.status === b.status &&
+    a.authority === b.authority &&
     a.rawProviderStatus === b.rawProviderStatus &&
+    a.isExpired === b.isExpired &&
+    a.deleted === b.deleted &&
+    a.recipients?.total === b.recipients?.total &&
+    a.recipients?.completed === b.recipients?.completed &&
     a.providerDocumentId === b.providerDocumentId &&
+    a.providerDocumentReference === b.providerDocumentReference &&
     a.providerDocumentRevision === b.providerDocumentRevision &&
-    a.providerReportedAt === b.providerReportedAt
+    a.providerReportedAt === b.providerReportedAt &&
+    a.providerFailureReason === b.providerFailureReason
   );
 }
 
