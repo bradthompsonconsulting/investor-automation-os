@@ -1,104 +1,115 @@
 /**
  * Board #9 verified full execution -- signer-level provider verification,
- * executed-artifact retrieval/hash binding, executed-term safety, and the
- * ONE authoritative path that may ever produce Under Contract evidence.
- * B9-10 / INV-65.
+ * manual executed-artifact bridge/hash binding, executed-term safety, and
+ * the ONE authoritative path that may ever produce Under Contract
+ * evidence. B9-10 / INV-65. Jess Gate repair round, 2026-09-13 (approved
+ * V1 boundary, following two rounds of GHL Test discovery).
  *
  * Pure. No I/O, no React, no fetch, no `ghl.notes.create()`. This module
  * performs no persistence itself -- `contract-execution-carriers.ts`
  * defines the durable note shape, and no netlify function/live-wiring
- * call site is added by this issue (see the module-level LIMITATIONS
- * section below for exactly why, and what remains unbuilt as a result).
+ * call site is added by this issue.
  *
  * REUSE, NEVER REIMPLEMENTATION -- every piece below is a thin, fail-
  * closed orchestration over already-shipped Board #9 primitives:
  *   - `ContractVersionIdentity`, `isSameContractVersion`,
- *     `detectMaterialConflicts`, `validateSignerRequirements`,
- *     `evaluateUnderContractEligibility` (`board9-contract-model.ts`,
- *     B9-03/INV-58) -- `evaluateUnderContractEligibility` remains the
- *     SINGLE eligibility decision; this module builds its inputs
- *     correctly and calls it, never reimplements or bypasses its own
- *     three-fact joint requirement.
+ *     `detectMaterialConflicts`, `evaluateUnderContractEligibility`
+ *     (`board9-contract-model.ts`, B9-03/INV-58) -- the single eligibility
+ *     decision, never reimplemented or bypassed.
  *   - `ParsedContractSend` (`contract-send-carriers.ts`, B9-08/INV-63) --
- *     the accepted-send record IS Contract Sent's own proof; nothing here
- *     re-derives it.
+ *     the accepted-send record IS Contract Sent's own proof.
  *   - `verifyAcceptedSendBinding`, `filterRecordsForVersion`,
  *     `deriveLatestProviderStatus`, `LifecycleRecord`,
  *     `ProviderObservationRecord` (`contract-lifecycle-model.ts`,
- *     B9-09/INV-64, exported for this reuse) -- the SAME binding check
- *     that already guards INV-64's own provider-observation/resend/
- *     rescission/decline builders now guards this module's artifact
- *     binding too; the SAME chronology/history reading proves GHL's
- *     completed signal is not stale, superseded, or contradicted by a
- *     later lifecycle event.
+ *     B9-09/INV-64, exported for this reuse).
  *
- * GOVERNING SOURCES:
+ * GOVERNING SOURCES, INCLUDING TWO ROUNDS OF LIVE, AUTHORIZED GHL TEST
+ * DISCOVERY (2026-09-13):
  *   - `docs/SELLER_CONTRACT_STATE_MACHINE_V1.md` -- Under Contract's own
- *     locked three-fact entry evidence ("no single signal alone creates
- *     Under Contract... any one or two present without the third means
- *     Under Contract has not been reached"), already implemented by
- *     `evaluateUnderContractEligibility` and NOT re-decided here.
- *   - `docs/BOARD9_CONTRACT_INVENTORY_V1.md` item 7/8/9 -- what GHL's own
- *     documented List Documents response actually exposes per recipient
- *     (`role`, `email`, `contactName`, `hasCompleted`, `signingOrder`) and
- *     what it does NOT expose (any price/property/party CONTENT field, or
- *     a documented document-download/export endpoint) -- both facts are
- *     load-bearing for the two LIMITATIONS below.
+ *     locked three-fact entry evidence, already implemented by
+ *     `evaluateUnderContractEligibility` and not re-decided here.
+ *   - `docs/BOARD9_CONTRACT_INVENTORY_V1.md` item 7/8/9 -- the documentation-
+ *     only pass.
+ *   - LIVE, read-only GET calls against the real Test location
+ *     (`SoTgVoaFGHtBdRFvXWQV`), authorized by Brad, 2026-09-13, after he
+ *     granted the `documents_contracts/list.readonly` and
+ *     `documents_contracts_template/list.readonly` scopes: `GET
+ *     /proposals/document` confirmed a genuinely completed Test document
+ *     whose `recipients[]` carries `id`, `hasCompleted`, and a REAL,
+ *     POPULATED `signedDate` per recipient (previously unconfirmed) --
+ *     but whose `role` field is the LITERAL, GENERIC STRING `"signer"`
+ *     for every recipient, never a contract-specific role like "Seller"
+ *     or "Buyer". No `templateId` field exists anywhere on a completed
+ *     document. No file URL, download link, or artifact bytes exist in
+ *     either the List Documents or (attempted, 401-blocked) single-
+ *     document response. `fillableFields[].value` is real when present,
+ *     but the one live example observed was a `"Signature"`-type field
+ *     (a signature-stroke image), not `TextField` merge content -- and no
+ *     document generated from the actual TREC 20-19 template exists yet
+ *     to observe at all.
  *
- * TWO REAL, REPORTED LIMITATIONS (STOP CONDITIONS PER THIS ISSUE'S OWN
- * INSTRUCTIONS) -- neither is silently worked around:
+ * THREE LOCKED V1 BOUNDARIES THIS REPAIR ROUND ESTABLISHES, EACH REPLACING
+ * WHAT THE PRE-REPAIR VERSION OF THIS FILE GUESSED AT:
  *
- * 1. EXECUTED-ARTIFACT RETRIEVAL HAS NO VERIFIED, DOCUMENTED GHL PATH
- * TODAY. `BOARD9_CONTRACT_INVENTORY_V1.md`'s own minimal-proof-plan
- * section states plainly: "No document-download/export endpoint was
- * named in what was fetched... would need to be identified during any
- * approved test, not designed around here." This module therefore takes
- * artifact bytes as an already-retrieved `ArtifactRetrievalOutcome` --
- * exactly the same "classify the outcome a caller's own fetch produced"
- * shape `contract-send-model.ts`/`contract-lifecycle-model.ts` already
- * use for send/readback classification -- and never invents, guesses at,
- * or wires a specific GHL download endpoint. NO NETLIFY FUNCTION
- * PERFORMING A REAL ARTIFACT DOWNLOAD IS ADDED BY THIS ISSUE. Until a
- * future, separately-authorized technical-discovery pass confirms a real
- * retrieval path, `buildVerifiedUnderContractRecord` cannot be exercised
- * against a genuine execution -- it is fully built, fully tested against
- * deterministic fixtures, and ready the moment that path exists.
+ * 1. EXECUTED-ARTIFACT RETRIEVAL IS A MANUAL, BRAD-DRIVEN BRIDGE, NEVER AN
+ * AUTOMATED GHL DOWNLOAD. Confirmed live and by GHL's own official
+ * changelog (`ideas.gohighlevel.com/changelog/documents-contracts-public-
+ * apis`): the ENTIRE public Documents & Contracts API surface is exactly
+ * List Documents / Send Document / List Templates / Send Template -- no
+ * download endpoint exists, confirmed, not merely unreachable by this
+ * codebase's own tooling. `verifyManualArtifactSelection` below therefore
+ * NEVER models a fetch outcome -- it models Brad manually downloading the
+ * completed PDF from GHL's own UI, then explicitly selecting that exact
+ * local file through an IAOS file input, with the browser reading the
+ * bytes locally. GHL's native completed document remains the sole
+ * authoritative artifact; IAOS preserves only the verified reference,
+ * evidence, and a SHA-256 computed from the exact selected bytes -- never
+ * a second copy of the PDF itself (see that function's own header for
+ * the full fail-closed matrix).
  *
- * 2. GHL'S DOCUMENTED READBACK EXPOSES NO PRICE/PROPERTY/PARTY CONTENT
- * FIELD. Per the same inventory document, List Documents' own fields are
- * exhaustively: `documentId`, `_id`, `locationId`, `status`,
- * `paymentStatus`, `documentRevision`, `recipients`, `updatedAt`,
- * `grandTotal`, `type`, `name`, `deleted`, `isExpired`, `locale` -- none
- * of which carries the executed agreement's actual price, property
- * address, or party names. This module therefore does NOT, and cannot,
- * derive `executedTermsSnapshot` from any GHL field -- doing so would
- * require inventing a provider field this codebase has no evidence for,
- * which this issue's own instruction forbids outright ("Do not invent
- * PDF parsing, mappings, provider fields, or legal conclusions").
- * `buildVerifiedUnderContractRecord` instead requires the CALLER to
- * supply `executedTermsSnapshot` as a real, structured `MaterialTermSnapshot`
- * -- never a naked boolean -- sourced from IAOS's OWN already-authoritative,
- * version-scoped internal facts (`contract-facts-model.ts`/
- * `contract-document-model.ts`, B9-05/B9-06, already shipped and already
- * the source of what was actually templated into the sent document) --
- * the closest evidence "tied to the executed artifact" that a real GHL
- * readback can support today, comparing it against the Agreement Reached
- * snapshot via the EXACT SAME `detectMaterialConflicts` bright-line test
- * every other Board 9 correction check already uses. This module performs
- * the comparison itself (never trusts a pre-computed result) and fails
- * closed on any conflict via `evaluateUnderContractEligibility`'s own
- * existing `executedTermsMatchAgreement` gate.
+ * 2. SIGNER IDENTITY IS BOUND BY PROVIDER RECIPIENT ID, NEVER GHL'S
+ * GENERIC `role` FIELD. Live evidence proved `role: "signer"` for every
+ * recipient on the one completed Test document observed -- a platform-
+ * level label, not a contract-role signal. `verifyRequiredSigners` below
+ * therefore takes an `ExpectedSignerMapping[]` (IAOS's own already-
+ * established role/identity, each bound to a specific `providerRecipientId`)
+ * and matches PRIMARILY by that id -- an exact, provider-assigned primary
+ * key -- never by role-string comparison. GHL's own reported `role` is
+ * carried through on `ProviderSignerRow` for audit only and is NEVER
+ * consulted for matching.
+ *
+ * 3. EXECUTED-TERM VERIFICATION IS UNAVAILABLE FOR V1, EXPLICITLY, NOT
+ * SILENTLY SKIPPED. The pre-repair version of this file accepted a
+ * caller-supplied `executedTermsSnapshot` "as though it came from the
+ * executed PDF" -- Jess's own correction: that was never proven evidence
+ * tied to the executed artifact, only IAOS's own internal facts dressed
+ * up as if they were. Live discovery confirmed no completed document
+ * carries a `templateId`, and no document from the actual TREC 20-19
+ * template exists yet to observe whether its own fields would even be
+ * readable. The TREC template ALSO remains `POPULATION_NOT_VERIFIED`
+ * (`ghl-config.ts`) -- sending it is refused by INV-63's own GATE 2 and
+ * its dedicated reservation/execution endpoints regardless of anything in
+ * this file. `buildVerifiedUnderContractRecord` therefore has NO
+ * parameter through which a caller can supply executed-term evidence at
+ * all -- the pipeline fails closed, unconditionally, at a distinct
+ * `executed_terms` stage with `EXECUTED_TERMS_EVIDENCE_UNAVAILABLE`,
+ * BEFORE `evaluateUnderContractEligibility` is ever reached. The
+ * deterministic bright-line conflict logic itself
+ * (`evaluateExecutedTermsConflicts`, a thin, tested, reused wrapper over
+ * `detectMaterialConflicts`) is preserved and exported, unwired, so a
+ * future issue that confirms a real, deterministic evidence source needs
+ * only to wire that function into the pipeline in place of the
+ * unconditional failure below -- this module's own conflict-detection
+ * logic requires no change when that day comes.
  *
  * WHAT "BUILDING THE RECORD" DOES NOT MEAN. `buildVerifiedUnderContractRecord`
  * returns a CANDIDATE record ready to be written -- it performs no write.
- * Per this issue's own "AUTHORIZED GHL WRITE" section, "the Under Contract
- * transition IS the successfully written and read-back verified Under
- * Contract evidence record" -- that write-then-read-back step belongs to
- * a future, separately-authorized netlify function (mirroring INV-63's
- * own reserve/execute/readback split), not to this pure module.
- * `verifyReadbackMatchesWritten` is the pure equality check that future
- * call site will use; it is tested here against fixtures, but nothing in
- * this module ever calls `ghl.notes.create()` or reads real GHL notes.
+ * Given boundary 3 above, IT CANNOT RETURN `ok: true` IN V1 AT ALL --
+ * every call fails at the `executed_terms` stage, by design, proven by
+ * this module's own test harness. `verifyReadbackMatchesWritten` is the
+ * pure equality check a future write+readback call site will use once
+ * boundary 3 is lifted; it is tested here against fixtures, but nothing
+ * in this module ever calls `ghl.notes.create()` or reads real GHL notes.
  */
 
 import { createHash } from "crypto";
@@ -113,7 +124,6 @@ import {
   type TransitionReason,
   isSameContractVersion,
   detectMaterialConflicts,
-  validateSignerRequirements,
   evaluateUnderContractEligibility,
 } from "./board9-contract-model";
 import { type ParsedContractSend } from "./contract-send-carriers";
@@ -132,136 +142,139 @@ function isValidIsoInstant(at: string): boolean {
 }
 
 /* ==================================================================== */
-/* 1. Signer-level provider verification -- never recipient counts alone */
+/* 1. Signer-level provider verification -- provider recipient id is the */
+/*    PRIMARY join; GHL's own generic "role" is audit-only, never trusted */
 /* ==================================================================== */
 
-/** One recipient row as GHL's own documented List Documents response actually carries it (`BOARD9_CONTRACT_INVENTORY_V1.md` item 7) -- `role`, `contactName`, `hasCompleted` are documented; `recipientId`/`completedAt` are carried through only when available, never fabricated. */
+/**
+ * One recipient row exactly as the live, authorized Test readback proved
+ * GHL actually returns it (2026-09-13): `id` (the provider-assigned
+ * recipient identifier), `hasCompleted`, and a real, populated
+ * `signedDate` are all confirmed real fields. `reportedRole` is carried
+ * through for audit/display only -- confirmed live to be the generic
+ * literal `"signer"` for every recipient on the one completed document
+ * observed, never a contract-specific role, and NEVER consulted by
+ * `verifyRequiredSigners` below.
+ */
 export type ProviderSignerRow = {
-  role: string | null;
-  contactName: string | null;
-  recipientId: string | null;
+  providerRecipientId: string;
   hasCompleted: boolean;
-  completedAt: string | null;
+  signedDate: string | null;
+  reportedRole: string | null;
+  reportedContactName: string | null;
+};
+
+/**
+ * IAOS's OWN already-established mapping between an expected contract
+ * role/identity and the specific provider recipient id GHL assigned to
+ * it -- the deterministic join this repair round requires ("Use provider
+ * recipient ID as the primary lifecycle join"). This module does not
+ * invent, discover, or independently verify WHERE this mapping came from
+ * (that remains a future wiring issue's job, per the "narrow extension,
+ * not a new carrier" scope of this repair round) -- it only enforces
+ * that the mapping, once supplied, is well-formed and matches the live
+ * readback evidence deterministically.
+ */
+export type ExpectedSignerMapping = {
+  role: string;
+  displayName: string;
+  providerRecipientId: string;
 };
 
 export type VerifiedSignerMatch = {
   role: string;
   displayName: string;
-  providerRecipientId: string | null;
+  providerRecipientId: string;
   providerCompletedAt: string | null;
 };
 
 export type SignerVerificationReasonCode =
-  | "SIGNER_REQUIREMENTS_INVALID"
-  | "SIGNER_MISSING"
-  | "SIGNER_ROLE_AMBIGUOUS"
-  | "SIGNER_IDENTITY_NOT_ESTABLISHED"
-  | "SIGNER_IDENTITY_MISMATCH"
-  | "SIGNER_RECIPIENT_ID_MISMATCH"
+  | "SIGNER_MAPPING_INVALID"
+  | "SIGNER_RECIPIENT_NOT_FOUND"
+  | "SIGNER_RECIPIENT_ID_DUPLICATED_IN_EVIDENCE"
   | "SIGNER_INCOMPLETE"
   | "SIGNER_EXTRA_UNMAPPED";
 
 export type SignerVerificationReason = { code: SignerVerificationReasonCode; message: string };
 
 /**
- * Matches EVERY required signer individually -- never trusts an aggregate
- * "document completed" flag as a substitute. `validateSignerRequirements`
- * (`board9-contract-model.ts`, reused verbatim) rejects an empty or
- * duplicate-role requirement list before any provider row is even
- * consulted. For each requirement: find provider rows sharing its exact
- * `role`; if more than one and the requirement's own `displayName`
- * disambiguates to exactly one by `contactName`, use that one -- otherwise
- * the role is ambiguous and this fails closed (`SIGNER_ROLE_AMBIGUOUS`),
- * never guessing. The chosen row's `contactName` must equal the
- * requirement's `displayName` exactly (`SIGNER_IDENTITY_MISMATCH`
- * otherwise -- catches an unexpected substitution) and, when the caller
- * supplies an independently-known expected recipient id for that role,
- * the row's own `recipientId` must agree (`SIGNER_RECIPIENT_ID_MISMATCH`).
- * `hasCompleted` must be exactly `true` (`SIGNER_INCOMPLETE` otherwise).
- * Finally, any provider row never consumed by a requirement match is an
- * unmapped extra signer this function cannot prove doesn't matter
- * (`SIGNER_EXTRA_UNMAPPED`) -- a document with more recipients than
- * expected required signers is never silently accepted.
+ * Matches EVERY required signer individually, by provider recipient id --
+ * never by GHL's own generic `role` string, and never by trusting an
+ * aggregate "document completed" flag. The expected mapping itself is
+ * validated first: no blank role/displayName/providerRecipientId, no
+ * duplicate role, no duplicate providerRecipientId within the mapping
+ * (`SIGNER_MAPPING_INVALID` otherwise -- this is what "reject ... ambiguous
+ * identity" means at the INPUT layer). The live evidence is then checked
+ * for its own internal integrity: two rows sharing the same
+ * `providerRecipientId` is itself malformed/ambiguous evidence, never
+ * trusted (`SIGNER_RECIPIENT_ID_DUPLICATED_IN_EVIDENCE`). For each
+ * mapping entry, the provider row with the MATCHING id must exist
+ * (`SIGNER_RECIPIENT_NOT_FOUND` otherwise) and must report
+ * `hasCompleted === true` exactly (`SIGNER_INCOMPLETE` otherwise) --
+ * `signedDate` is preserved from that row when available, never
+ * fabricated when absent. Finally, any provider row never claimed by a
+ * mapping entry is an unmapped extra signer this function cannot prove
+ * doesn't matter (`SIGNER_EXTRA_UNMAPPED`).
  */
 export function verifyRequiredSigners(args: {
-  requirements: readonly SignerRequirement[];
+  mappings: readonly ExpectedSignerMapping[];
   providerRecipients: readonly ProviderSignerRow[];
-  /** Independent, already-known expected recipient id per role (e.g. from the accepted send's own confirmed recipient), keyed by role. Optional; absence is never itself a failure. */
-  expectedRecipientIdByRole?: Readonly<Record<string, string>>;
 }): { ok: true; matches: VerifiedSignerMatch[] } | { ok: false; reasons: SignerVerificationReason[] } {
-  const reqCheck = validateSignerRequirements([...args.requirements]);
-  if (!reqCheck.valid) {
+  const inputReasons: SignerVerificationReason[] = [];
+  if (args.mappings.length === 0) {
+    inputReasons.push({ code: "SIGNER_MAPPING_INVALID", message: "No expected signer mapping was supplied." });
+  }
+  for (const m of args.mappings) {
+    if (m.role.trim() === "" || m.displayName.trim() === "" || m.providerRecipientId.trim() === "") {
+      inputReasons.push({ code: "SIGNER_MAPPING_INVALID", message: "The expected signer mapping contains a blank role, display name, or provider recipient id." });
+    }
+  }
+  const roles = args.mappings.map((m) => m.role);
+  if (new Set(roles).size !== roles.length) {
+    inputReasons.push({ code: "SIGNER_MAPPING_INVALID", message: "The expected signer mapping contains a duplicate role." });
+  }
+  const mappedIds = args.mappings.map((m) => m.providerRecipientId);
+  if (new Set(mappedIds).size !== mappedIds.length) {
+    inputReasons.push({ code: "SIGNER_MAPPING_INVALID", message: "The expected signer mapping contains a duplicate provider recipient id -- an ambiguous identity claim." });
+  }
+  if (inputReasons.length > 0) return { ok: false, reasons: inputReasons };
+
+  const evidenceIds = args.providerRecipients.map((r) => r.providerRecipientId);
+  if (new Set(evidenceIds).size !== evidenceIds.length) {
     return {
       ok: false,
-      reasons: [{ code: "SIGNER_REQUIREMENTS_INVALID", message: reqCheck.reasons.map((r) => r.message).join(" ") }],
+      reasons: [{ code: "SIGNER_RECIPIENT_ID_DUPLICATED_IN_EVIDENCE", message: "The provider evidence itself contains duplicate recipient ids -- ambiguous, never trusted." }],
     };
   }
 
   const matches: VerifiedSignerMatch[] = [];
   const reasons: SignerVerificationReason[] = [];
-  const usedProviderIndices = new Set<number>();
+  const usedEvidenceIds = new Set<string>();
 
-  for (const req of args.requirements) {
-    if (req.displayName === null || req.displayName.trim() === "") {
+  for (const m of args.mappings) {
+    const row = args.providerRecipients.find((r) => r.providerRecipientId === m.providerRecipientId);
+    if (!row) {
       reasons.push({
-        code: "SIGNER_IDENTITY_NOT_ESTABLISHED",
-        message: `Required signer role "${req.role}" has no established display name to verify identity against.`,
+        code: "SIGNER_RECIPIENT_NOT_FOUND",
+        message: `No provider recipient with id matching the expected mapping for role "${m.role}" was found in the readback evidence.`,
       });
       continue;
     }
-    const candidates = args.providerRecipients
-      .map((row, i) => ({ row, i }))
-      .filter(({ row, i }) => !usedProviderIndices.has(i) && row.role === req.role);
-
-    if (candidates.length === 0) {
-      reasons.push({ code: "SIGNER_MISSING", message: `No provider recipient reported for required role "${req.role}".` });
-      continue;
-    }
-    let chosen = candidates;
-    if (candidates.length > 1) {
-      const byName = candidates.filter(({ row }) => row.contactName === req.displayName);
-      if (byName.length === 1) {
-        chosen = byName;
-      } else {
-        reasons.push({
-          code: "SIGNER_ROLE_AMBIGUOUS",
-          message: `Multiple provider recipients report role "${req.role}" and identity could not be disambiguated.`,
-        });
-        continue;
-      }
-    }
-    const { row, i } = chosen[0];
-    usedProviderIndices.add(i);
-
-    if (row.contactName === null || row.contactName !== req.displayName) {
-      reasons.push({
-        code: "SIGNER_IDENTITY_MISMATCH",
-        message: `Provider recipient for role "${req.role}" does not match the expected signer identity "${req.displayName}".`,
-      });
-      continue;
-    }
-    const expectedRecipientId = args.expectedRecipientIdByRole?.[req.role] ?? null;
-    if (expectedRecipientId !== null && row.recipientId !== null && row.recipientId !== expectedRecipientId) {
-      reasons.push({
-        code: "SIGNER_RECIPIENT_ID_MISMATCH",
-        message: `Provider recipient identifier for role "${req.role}" does not match the expected recipient.`,
-      });
-      continue;
-    }
+    usedEvidenceIds.add(row.providerRecipientId);
     if (row.hasCompleted !== true) {
       reasons.push({
         code: "SIGNER_INCOMPLETE",
-        message: `Required signer "${req.displayName}" (role "${req.role}") has not completed execution.`,
+        message: `Required signer "${m.displayName}" (role "${m.role}") has not completed execution.`,
       });
       continue;
     }
-    matches.push({ role: req.role, displayName: req.displayName, providerRecipientId: row.recipientId, providerCompletedAt: row.completedAt });
+    matches.push({ role: m.role, displayName: m.displayName, providerRecipientId: m.providerRecipientId, providerCompletedAt: row.signedDate });
   }
 
-  if (usedProviderIndices.size < args.providerRecipients.length) {
+  if (usedEvidenceIds.size < args.providerRecipients.length) {
     reasons.push({
       code: "SIGNER_EXTRA_UNMAPPED",
-      message: "The provider document reports more recipients than expected required signers -- the extra recipient(s) cannot be proven not to matter.",
+      message: "The provider document reports more recipients than the expected signer mapping accounts for -- the extra recipient(s) cannot be proven not to matter.",
     });
   }
 
@@ -270,18 +283,30 @@ export function verifyRequiredSigners(args: {
 }
 
 /* ==================================================================== */
-/* 2. Executed-artifact retrieval, identity binding, and hashing         */
+/* 2. The manual executed-artifact bridge -- Brad-driven, browser-local, */
+/*    never an automated GHL download (none exists; see module header)  */
 /* ==================================================================== */
 
-export type ArtifactRetrievalOutcome =
-  | { kind: "network_error"; message: string }
-  | { kind: "retrieved"; bytes: Uint8Array };
+/**
+ * What a future browser-side file input observes, classified honestly --
+ * NEVER a fetch/network outcome (there is no automated retrieval path).
+ * `"selected"` is reached only when real, non-empty, PDF-shaped bytes
+ * were actually read locally.
+ */
+export type ManualArtifactSelectionOutcome =
+  | { kind: "no_file" }
+  | { kind: "invalid_file_type"; mimeType: string | null; fileName: string | null }
+  | { kind: "empty_file" }
+  | { kind: "unreadable"; message: string }
+  | { kind: "selected"; bytes: Uint8Array; fileName: string; mimeType: string };
 
 export type ArtifactReasonCode =
+  | "NO_FILE_SELECTED"
+  | "INVALID_FILE_TYPE"
+  | "FILE_EMPTY"
+  | "FILE_UNREADABLE"
   | "ARTIFACT_DOCUMENT_MISMATCH"
-  | "ARTIFACT_VERSION_MISMATCH"
-  | "ARTIFACT_RETRIEVAL_FAILED"
-  | "ARTIFACT_EMPTY";
+  | "ARTIFACT_VERSION_MISMATCH";
 
 export type ArtifactReason = { code: ArtifactReasonCode; message: string };
 
@@ -290,44 +315,92 @@ export function computeSha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+const PDF_MAGIC_BYTES = [0x25, 0x50, 0x44, 0x46, 0x2d]; // literal ASCII "%PDF-", the real PDF file-format signature
+
+/** Content-based, not label-based -- a spoofable `mimeType`/filename string is never trusted alone; the actual leading bytes are checked, matching this codebase's own "verify the real underlying fact, not a label" discipline. */
+function looksLikePdfContent(bytes: Uint8Array): boolean {
+  if (bytes.length < PDF_MAGIC_BYTES.length) return false;
+  return PDF_MAGIC_BYTES.every((b, i) => bytes[i] === b);
+}
+
+/**
+ * Classifies a browser-read file selection HONESTLY, from its own actual
+ * bytes -- this is the ONE place "non-PDF input" is decided, and it is
+ * decided from the real PDF magic-byte signature, never from a caller-
+ * supplied (spoofable) mime type or filename alone. Returns the outcome
+ * type `verifyManualArtifactSelection` below consumes; itself performs no
+ * binding/identity check (that happens after a real selection is
+ * confirmed) and computes no hash (that happens only once binding also
+ * passes).
+ */
+export function classifySelectedFile(args: {
+  fileName: string | null;
+  mimeType: string | null;
+  bytes: Uint8Array | null;
+}): ManualArtifactSelectionOutcome {
+  if (args.bytes === null) return { kind: "no_file" };
+  if (args.bytes.length === 0) return { kind: "empty_file" };
+  if (!looksLikePdfContent(args.bytes)) {
+    return { kind: "invalid_file_type", mimeType: args.mimeType, fileName: args.fileName };
+  }
+  return { kind: "selected", bytes: args.bytes, fileName: args.fileName ?? "selected.pdf", mimeType: args.mimeType ?? "application/pdf" };
+}
+
 /**
  * "Never treat a URL alone, an unverified response body, or a locally
  * computed hash without confirmed GHL document identity as preservation."
- * Identity/version binding is checked BEFORE the hash is ever computed or
- * trusted: the artifact must be confirmed retrieved for the EXACT provider
- * document the accepted send was bound to (`confirmedProviderDocumentId`,
- * itself only ever produced by `verifyAcceptedSendBinding`) and the EXACT
- * contract version under verification -- a caller cannot substitute a
- * document/version pair that merely looks right.
+ * `outcome` is checked FIRST (no_file/invalid_file_type/empty_file/
+ * unreadable each fail closed on their own, distinct reason) -- only once
+ * real bytes are confirmed selected is document/version identity checked
+ * (`selectedForDocumentId`/`selectedForVersion`, declared by the caller
+ * alongside the file picker, against `confirmedProviderDocumentId` --
+ * itself only ever produced by `verifyAcceptedSendBinding` -- and
+ * `expectedVersion`). The hash is computed LAST, only once every prior
+ * check has passed. This function's own return type never carries the
+ * bytes themselves -- only `sha256`, a 64-character hex string -- so
+ * nothing downstream of this call can retain, log, or persist the
+ * original bytes through this function's own output; discarding the
+ * caller's own in-memory byte reference once this returns is that
+ * caller's responsibility (a future browser-side concern, not something
+ * a pure function can perform).
  */
-export function verifyExecutedArtifact(args: {
-  outcome: ArtifactRetrievalOutcome;
+export function verifyManualArtifactSelection(args: {
+  outcome: ManualArtifactSelectionOutcome;
   confirmedProviderDocumentId: string;
-  retrievedForDocumentId: string;
-  retrievedForVersion: ContractVersionIdentity;
+  selectedForDocumentId: string;
+  selectedForVersion: ContractVersionIdentity;
   expectedVersion: ContractVersionIdentity;
 }): { ok: true; sha256: string } | { ok: false; reasons: ArtifactReason[] } {
+  if (args.outcome.kind === "no_file") {
+    return { ok: false, reasons: [{ code: "NO_FILE_SELECTED", message: "No file was selected." }] };
+  }
+  if (args.outcome.kind === "invalid_file_type") {
+    return {
+      ok: false,
+      reasons: [{ code: "INVALID_FILE_TYPE", message: `The selected file is not a real PDF (its content does not begin with the PDF file signature; declared mime type: ${args.outcome.mimeType ?? "unknown"}).` }],
+    };
+  }
+  if (args.outcome.kind === "empty_file") {
+    return { ok: false, reasons: [{ code: "FILE_EMPTY", message: "The selected file contains zero bytes." }] };
+  }
+  if (args.outcome.kind === "unreadable") {
+    return { ok: false, reasons: [{ code: "FILE_UNREADABLE", message: `The selected file could not be read: ${args.outcome.message}` }] };
+  }
+
   const reasons: ArtifactReason[] = [];
-  if (args.retrievedForDocumentId !== args.confirmedProviderDocumentId) {
+  if (args.selectedForDocumentId !== args.confirmedProviderDocumentId) {
     reasons.push({
       code: "ARTIFACT_DOCUMENT_MISMATCH",
-      message: "The retrieved artifact's own document id does not match the accepted send's confirmed provider document.",
+      message: "The selected file's declared document identity does not match the accepted send's confirmed provider document.",
     });
   }
-  if (!isSameContractVersion(args.retrievedForVersion, args.expectedVersion)) {
+  if (!isSameContractVersion(args.selectedForVersion, args.expectedVersion)) {
     reasons.push({
       code: "ARTIFACT_VERSION_MISMATCH",
-      message: "The retrieved artifact is not confirmed bound to the exact contract version under verification.",
+      message: "The selected file is not confirmed bound to the exact contract version under verification.",
     });
   }
   if (reasons.length > 0) return { ok: false, reasons };
-
-  if (args.outcome.kind === "network_error") {
-    return { ok: false, reasons: [{ code: "ARTIFACT_RETRIEVAL_FAILED", message: `Artifact retrieval failed: ${args.outcome.message}` }] };
-  }
-  if (args.outcome.bytes.length === 0) {
-    return { ok: false, reasons: [{ code: "ARTIFACT_EMPTY", message: "The retrieved artifact contained zero bytes." }] };
-  }
   return { ok: true, sha256: computeSha256Hex(args.outcome.bytes) };
 }
 
@@ -407,6 +480,41 @@ export function verifyProviderCompletion(args: {
 }
 
 /* ==================================================================== */
+/* 3b. Executed-term conflict logic -- PRESERVED and tested, but NOT     */
+/*     wired into the live V1 pipeline (see module header, boundary 3)  */
+/* ==================================================================== */
+
+/**
+ * A thin, reused wrapper over `detectMaterialConflicts` (board9-contract-
+ * model.ts) -- this is the deterministic bright-line conflict logic this
+ * repair round requires be "preserved," exported and tested on its own so
+ * a future issue that confirms a real, deterministic executed-term
+ * evidence source can wire this directly into the pipeline. It is NOT
+ * called anywhere in `buildVerifiedUnderContractRecord` today -- see
+ * `EXECUTED_TERMS_EVIDENCE_AVAILABLE` below.
+ */
+export function evaluateExecutedTermsConflicts(agreement: MaterialTermSnapshot, executedTerms: MaterialTermSnapshot): MaterialConflict[] {
+  return detectMaterialConflicts(agreement, executedTerms);
+}
+
+/**
+ * THE V1 BOUNDARY, NAMED AND FLIPPABLE IN ONE PLACE. `false` for as long
+ * as: (a) the TREC template remains `POPULATION_NOT_VERIFIED`
+ * (`ghl-config.ts`), and (b) no deterministic, provider-evidenced source
+ * for executed price/property/party content has been confirmed (live
+ * discovery, 2026-09-13: no document generated from the real template
+ * exists to observe, and even the one observed completed document's
+ * `fillableFields[]` carried a `Signature`-type field, not merge
+ * content). This constant is deliberately NOT a parameter any caller can
+ * override -- the only way to change this gate's behavior is an
+ * authorized code change to this exact line, once real evidence exists.
+ */
+const EXECUTED_TERMS_EVIDENCE_AVAILABLE = false as const;
+
+export type ExecutedTermsReasonCode = "EXECUTED_TERMS_EVIDENCE_UNAVAILABLE";
+export type ExecutedTermsReason = { code: ExecutedTermsReasonCode; message: string };
+
+/* ==================================================================== */
 /* 4. The Under Contract record -- built ONLY via joint verification     */
 /* ==================================================================== */
 
@@ -431,13 +539,11 @@ export type UnderContractRecordEntry = {
   relatedPriorRecordId: string | null;
 };
 
-export type VerificationStage = "input" | "binding" | "signers" | "provider_completion" | "artifact" | "eligibility";
+export type VerificationStage = "input" | "binding" | "signers" | "provider_completion" | "artifact" | "executed_terms" | "eligibility";
 
 export type VerifiedExecutionFailure = {
   stage: VerificationStage;
-  reasons: readonly (
-    | { code: string; message: string }
-  )[];
+  reasons: readonly { code: string; message: string }[];
 };
 
 export type InputReasonCode = "OPPORTUNITY_ID_BLANK" | "VERIFIED_AT_INVALID" | "EVIDENCE_SUMMARY_BLANK" | "AGREEMENT_VERSION_MISMATCH";
@@ -447,23 +553,13 @@ export type BuildVerifiedExecutionArgs = {
   agreementAt: string;
   version: ContractVersionIdentity;
   acceptedSend: ParsedContractSend;
-  requirements: readonly SignerRequirement[];
+  /** IAOS's own established role/identity/provider-recipient-id mapping -- see `ExpectedSignerMapping`'s own doc comment. `SignerRequirement[]` (board9-contract-model.ts's own type, required by `evaluateUnderContractEligibility`) is derived from this internally; a caller no longer supplies both separately. */
+  expectedSignerMappings: readonly ExpectedSignerMapping[];
   providerRecipients: readonly ProviderSignerRow[];
-  expectedRecipientIdByRole?: Readonly<Record<string, string>>;
   lifecycleHistory: readonly LifecycleRecord[];
-  artifactOutcome: ArtifactRetrievalOutcome;
-  retrievedForDocumentId: string;
-  retrievedForVersion: ContractVersionIdentity;
-  /** The authoritative Agreement Reached snapshot (price/property/parties), never recomputed here. */
-  agreementTermsSnapshot: MaterialTermSnapshot;
-  /**
-   * IAOS's OWN current, version-scoped authoritative record of what was
-   * actually templated into the sent document -- NEVER a GHL-provided
-   * field (none exists; see LIMITATION 2 above) and NEVER a caller's bare
-   * boolean claim. This module performs the comparison itself via
-   * `detectMaterialConflicts`; it never trusts a pre-computed result.
-   */
-  executedTermsSnapshot: MaterialTermSnapshot;
+  manualArtifactOutcome: ManualArtifactSelectionOutcome;
+  selectedForDocumentId: string;
+  selectedForVersion: ContractVersionIdentity;
   iaosVerifiedAt: string;
   evidenceSummary: string;
   relatedPriorRecordId: string | null;
@@ -475,31 +571,34 @@ function fail(stage: VerificationStage, reasons: readonly { code: string; messag
 
 /**
  * THE ONE authoritative path that may ever produce Under Contract
- * evidence. Every stage below is REQUIRED and INDEPENDENTLY verified,
- * matching this issue's own "All must be true" list exactly:
+ * evidence. Every stage below is REQUIRED and INDEPENDENTLY verified:
  *
  *   1. Contract Sent -- `verifyAcceptedSendBinding` requires an actually-
  *      accepted `ParsedContractSend`.
  *   2. Provider document bound to opportunity/agreement/version/document/
  *      revision -- the SAME binding check, cross-checked again for the
- *      retrieved artifact in `verifyExecutedArtifact`.
- *   3. Every required signer matched individually -- `verifyRequiredSigners`.
+ *      manually selected artifact in `verifyManualArtifactSelection`.
+ *   3. Every required signer matched individually, by provider recipient
+ *      id -- `verifyRequiredSigners`.
  *   4. GHL independently reports completed -- `verifyProviderCompletion`,
  *      reusing INV-64's own chronology (never a stale/tainted signal).
- *   5-6. Executed artifact retrieved and hashed -- `verifyExecutedArtifact`
- *      / `computeSha256Hex`.
- *   7. Durable preservation shape assembled as `PreservedDocumentEvidence`
- *      (board9-contract-model.ts's own type, reused verbatim).
- *   8. Executed material terms compared against the Agreement Reached
- *      snapshot via `detectMaterialConflicts` (reused verbatim).
+ *   5-6. Executed artifact selected (the manual bridge) and hashed --
+ *      `verifyManualArtifactSelection` / `computeSha256Hex`.
+ *   7. Executed material terms -- UNAVAILABLE for V1, explicitly, at its
+ *      own named stage (`executed_terms` /
+ *      `EXECUTED_TERMS_EVIDENCE_UNAVAILABLE`) -- see the module header,
+ *      boundary 3. This is why this function cannot return `ok: true`
+ *      today; the pipeline below stage 6 is real, reused, tested code
+ *      that a future issue activates, not code this issue deletes.
  *   9-10. Append-only write and readback equality are NOT this function's
  *      job -- see the module header's "WHAT BUILDING THE RECORD DOES NOT
- *      MEAN." This function returns the verified CANDIDATE record.
+ *      MEAN."
  *
  * `evaluateUnderContractEligibility` (board9-contract-model.ts, reused
- * verbatim) is the actual, final, single eligibility decision -- every
- * stage above exists to build ITS inputs correctly, never to duplicate or
- * bypass its own joint three-fact requirement.
+ * verbatim) remains the actual, final, single eligibility decision for
+ * whenever stage 7 above is lifted -- every earlier stage exists to build
+ * ITS inputs correctly, never to duplicate or bypass its own joint
+ * three-fact requirement.
  */
 export function buildVerifiedUnderContractRecord(
   args: BuildVerifiedExecutionArgs,
@@ -517,26 +616,39 @@ export function buildVerifiedUnderContractRecord(
   if (!binding.ok) return fail("binding", binding.reasons);
 
   const signerResult = verifyRequiredSigners({
-    requirements: args.requirements,
+    mappings: args.expectedSignerMappings,
     providerRecipients: args.providerRecipients,
-    expectedRecipientIdByRole: args.expectedRecipientIdByRole,
   });
   if (!signerResult.ok) return fail("signers", signerResult.reasons);
 
   const completion = verifyProviderCompletion({ opportunityId: args.opportunityId, version: args.version, lifecycleHistory: args.lifecycleHistory });
   if (!completion.ok) return fail("provider_completion", completion.reasons);
 
-  const artifact = verifyExecutedArtifact({
-    outcome: args.artifactOutcome,
+  const artifact = verifyManualArtifactSelection({
+    outcome: args.manualArtifactOutcome,
     confirmedProviderDocumentId: binding.value.providerDocumentId,
-    retrievedForDocumentId: args.retrievedForDocumentId,
-    retrievedForVersion: args.retrievedForVersion,
+    selectedForDocumentId: args.selectedForDocumentId,
+    selectedForVersion: args.selectedForVersion,
     expectedVersion: args.version,
   });
   if (!artifact.ok) return fail("artifact", artifact.reasons);
 
-  const conflicts: MaterialConflict[] = detectMaterialConflicts(args.agreementTermsSnapshot, args.executedTermsSnapshot);
-  const executedTermsMatchAgreement = conflicts.length === 0;
+  // BOUNDARY 3 (module header): unconditional, explicit, never silently
+  // skipped. The manual PDF bridge above proves artifact POSSESSION and
+  // INTEGRITY only -- it does not, by itself, prove price/property/party
+  // equality, and nothing past this point in the pipeline is reachable
+  // until a future, separately-authorized issue supplies real evidence
+  // and flips `EXECUTED_TERMS_EVIDENCE_AVAILABLE`.
+  if (!EXECUTED_TERMS_EVIDENCE_AVAILABLE) {
+    return fail("executed_terms", [{
+      code: "EXECUTED_TERMS_EVIDENCE_UNAVAILABLE",
+      message: "The configured TREC template remains POPULATION_NOT_VERIFIED and no deterministic, provider-evidenced source for executed price/property/party content has been confirmed -- Under Contract cannot be created without it. The manual PDF bridge proves artifact possession and integrity only.",
+    }]);
+  }
+
+  // Unreachable while EXECUTED_TERMS_EVIDENCE_AVAILABLE is false -- kept
+  // real, reused, and structurally correct for the moment it is lifted.
+  const requirements: SignerRequirement[] = args.expectedSignerMappings.map((m) => ({ role: m.role, displayName: m.displayName, signingAuthorityNote: null }));
 
   const preservedDocument: PreservedDocumentEvidence = {
     sha256: artifact.sha256,
@@ -554,10 +666,10 @@ export function buildVerifiedUnderContractRecord(
 
   const underContractEvidence: UnderContractEvidence = {
     contractSent: true,
-    requirements: [...args.requirements],
+    requirements,
     execution: executionEvidence,
     currentVersion: args.version,
-    executedTermsMatchAgreement,
+    executedTermsMatchAgreement: true,
   };
 
   const eligibility = evaluateUnderContractEligibility(underContractEvidence);

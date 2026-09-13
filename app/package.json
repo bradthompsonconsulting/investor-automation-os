@@ -47,6 +47,7 @@
     "test:contract-send-canonical-carriers": "node scripts/test-contract-send-canonical-carriers.cjs",
     "test:contract-send-reserve": "node scripts/test-contract-send-reserve.cjs",
     "test:contract-send-execute": "node scripts/test-contract-send-execute.cjs",
+    "test:contract-send-readback": "node scripts/test-contract-send-readback.cjs",
     "test:contract-lifecycle-model": "node scripts/test-contract-lifecycle-model.cjs",
     "test:contract-execution-model": "node scripts/test-contract-execution-model.cjs"
   },

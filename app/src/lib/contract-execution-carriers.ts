@@ -130,12 +130,14 @@ function parseSignersJson(raw: string): VerifiedSignerMatch[] | null {
     if (!hasExactKeys(item, SIGNER_MATCH_KEYS)) return null;
     if (typeof item.role !== "string" || item.role === "") return null;
     if (typeof item.displayName !== "string" || item.displayName === "") return null;
-    if (item.providerRecipientId !== null && typeof item.providerRecipientId !== "string") return null;
+    // providerRecipientId is REQUIRED (Jess Gate repair round, 2026-09-13:
+    // it is now the PRIMARY signer-identity join, never optional).
+    if (typeof item.providerRecipientId !== "string" || item.providerRecipientId === "") return null;
     if (item.providerCompletedAt !== null && (typeof item.providerCompletedAt !== "string" || !isCanonicalIsoTimestamp(item.providerCompletedAt))) return null;
     out.push({
       role: item.role,
       displayName: item.displayName,
-      providerRecipientId: item.providerRecipientId as string | null,
+      providerRecipientId: item.providerRecipientId,
       providerCompletedAt: item.providerCompletedAt as string | null,
     });
   }

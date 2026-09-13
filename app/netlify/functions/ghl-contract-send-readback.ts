@@ -35,6 +35,15 @@ import { classifyDocumentReadback, type DocumentReadbackOutcome } from "../../sr
 const GHL_BASE = "https://services.leadconnectorhq.com";
 const { locationId: LOCATION_ID, documentsContracts: DOCUMENTS_CONTRACTS } = getConfig(process.env.IAOS_ENV);
 const TEST_LOCATION_ID = getConfig("test").locationId;
+/**
+ * Jess Gate repair round, 2026-09-13: `GET /proposals/document` rejects
+ * any `limit` above 21 with `422 "limit must not be greater than 21"` --
+ * OBSERVED directly against the live Test location this session (the
+ * prior `limit: "100"` here had never actually been exercised against
+ * the real API and would have failed every real readback attempt). 21 is
+ * the verified supported maximum, not a guess.
+ */
+const MAX_LIST_DOCUMENTS_LIMIT = 21;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -72,9 +81,16 @@ export const handler = async (event: any) => {
     // newest-first is assumed but not documented either; this is a
     // KNOWN, REPORTED limitation (see the INV-63 correction-round
     // report), not a silent gap: a Test location with more than `limit`
-    // documents already in flight could miss the match. Acceptable for
-    // V1's Test-only, low-volume scope; not proven safe at any volume.
-    const qs = new URLSearchParams({ locationId: LOCATION_ID, limit: "100" });
+    // documents already in flight could miss the match, and the
+    // documented maximum itself (21) makes that ceiling low. This
+    // function does NOT claim exhaustiveness -- a caller receiving a
+    // "document not found" classification from `classifyDocumentReadback`
+    // cannot distinguish "truly absent" from "exists on a page this
+    // single, unpaginated call never requested." Acceptable for V1's
+    // Test-only, low-volume scope; not proven safe at any volume, and
+    // NOT broadened into general pagination here -- see the INV-65
+    // repair-round report for why that is deliberately out of scope.
+    const qs = new URLSearchParams({ locationId: LOCATION_ID, limit: String(MAX_LIST_DOCUMENTS_LIMIT) });
     const res = await fetch(`${GHL_BASE}/proposals/document?${qs.toString()}`, {
       headers: { Authorization: `Bearer ${token}`, Version: "v3" },
     });
