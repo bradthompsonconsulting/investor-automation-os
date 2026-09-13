@@ -68,15 +68,50 @@
  * the full fail-closed matrix).
  *
  * 2. SIGNER IDENTITY IS BOUND BY PROVIDER RECIPIENT ID, NEVER GHL'S
- * GENERIC `role` FIELD. Live evidence proved `role: "signer"` for every
+ * GENERIC `role` FIELD -- AND THE MAPPING ITSELF IS DERIVED, NEVER A
+ * CALLER ASSERTION. Live evidence proved `role: "signer"` for every
  * recipient on the one completed Test document observed -- a platform-
  * level label, not a contract-role signal. `verifyRequiredSigners` below
- * therefore takes an `ExpectedSignerMapping[]` (IAOS's own already-
- * established role/identity, each bound to a specific `providerRecipientId`)
- * and matches PRIMARILY by that id -- an exact, provider-assigned primary
- * key -- never by role-string comparison. GHL's own reported `role` is
- * carried through on `ProviderSignerRow` for audit only and is NEVER
- * consulted for matching.
+ * matches PRIMARILY by `providerRecipientId` -- an exact, provider-
+ * assigned primary key -- never by role-string comparison; GHL's own
+ * reported `role` is carried through on `ProviderSignerRow` for audit
+ * only and is NEVER consulted for matching. Jess Gate repair round,
+ * 2026-09-13, item 2: `buildVerifiedUnderContractRecord` no longer
+ * accepts an `ExpectedSignerMapping[]` as an independent caller
+ * assertion at all -- it derives the mapping itself, internally, by
+ * calling `deriveDeterministicSignerMappingsFromAcceptedSend`
+ * (`contract-send-carriers.ts`, extended narrowly for this repair round)
+ * against `args.acceptedSend`. That function reads ONLY the accepted
+ * send record's own already-durable `signers[]` (IAOS's own established
+ * role/identity, recorded at send-attempt time) and `providerResponse.
+ * recipientId` (the ONE provider-confirmed recipient) -- and explicitly
+ * REFUSES to derive a mapping (`SIGNER_MAPPING_EVIDENCE_INSUFFICIENT`)
+ * whenever more than one expected signer was recorded, because no
+ * documented GHL evidence can deterministically disambiguate which
+ * additional recipient id corresponds to which additional role without
+ * pairing by assumed array order, guessing from names, or trusting an
+ * unverifiable caller assertion -- all three explicitly disallowed by
+ * this repair round's own instruction. `ProviderSignerRow[]` (the LIVE
+ * per-recipient readback evidence -- `hasCompleted`/`signedDate`/id) is
+ * still supplied by the caller, since it is genuinely per-verification-
+ * run live evidence, not something fixed at send time to derive from.
+ *
+ * NODE `crypto` IS NEVER IMPORTED HERE (Jess Gate repair round,
+ * 2026-09-13, item 1). This module is now imported by browser-facing UI
+ * code (`ContractWorkspace.tsx`), so it must never pull in a Node
+ * built-in. Hashing is NOT this module's job at all: `verifyManualArtifact
+ * Selection` below validates identity/binding and passes a CALLER-SUPPLIED
+ * `sha256` string straight through -- it never touches raw bytes or
+ * computes a digest. `classifySelectedFileBytes` validates PDF-ness/
+ * emptiness from raw bytes (pure array indexing, fully portable, zero
+ * crypto dependency) and hands the validated bytes BACK to the caller for
+ * hashing in whatever way its own environment supports. The browser path
+ * hashes via `browser-artifact-hash.ts`'s own `computeManualArtifactSha256Hex`,
+ * which explicitly uses `globalThis.crypto.subtle.digest` -- never a
+ * Node-only API. This module's own deterministic test harness
+ * independently reproduces the SAME Web Crypto call (Node has supported
+ * `globalThis.crypto.subtle` natively since v19) to prove the two never
+ * diverge, without needing an actual browser.
  *
  * 3. EXECUTED-TERM VERIFICATION IS UNAVAILABLE FOR V1, EXPLICITLY, NOT
  * SILENTLY SKIPPED. The pre-repair version of this file accepted a
@@ -112,7 +147,6 @@
  * in this module ever calls `ghl.notes.create()` or reads real GHL notes.
  */
 
-import { createHash } from "crypto";
 import {
   type ContractVersionIdentity,
   type SignerRequirement,
@@ -126,7 +160,11 @@ import {
   detectMaterialConflicts,
   evaluateUnderContractEligibility,
 } from "./board9-contract-model";
-import { type ParsedContractSend } from "./contract-send-carriers";
+import {
+  type ParsedContractSend,
+  type DeterministicSignerMapping,
+  deriveDeterministicSignerMappingsFromAcceptedSend,
+} from "./contract-send-carriers";
 import {
   type LifecycleRecord,
   type ProviderObservationRecord,
@@ -164,22 +202,81 @@ export type ProviderSignerRow = {
   reportedContactName: string | null;
 };
 
+export type ProviderSignerRowExtractionResult =
+  | { ok: true; rows: readonly ProviderSignerRow[] }
+  | { ok: false; reason: string };
+
 /**
- * IAOS's OWN already-established mapping between an expected contract
- * role/identity and the specific provider recipient id GHL assigned to
- * it -- the deterministic join this repair round requires ("Use provider
- * recipient ID as the primary lifecycle join"). This module does not
- * invent, discover, or independently verify WHERE this mapping came from
- * (that remains a future wiring issue's job, per the "narrow extension,
- * not a new carrier" scope of this repair round) -- it only enforces
- * that the mapping, once supplied, is well-formed and matches the live
- * readback evidence deterministically.
+ * The ONE place raw `GET /proposals/document` ("List Documents") JSON is
+ * turned into `ProviderSignerRow[]` -- a thin, fail-closed field mapping
+ * over exactly the shape live-confirmed above (`documents[]`, each with
+ * `documentId`/`locationId`/`recipients[]`; each recipient with
+ * `id`/`hasCompleted`/`signedDate`/`role`/`contactName`), never an
+ * invented shape. Mirrors `classifyProviderLifecycleReadback`
+ * (`contract-lifecycle-model.ts`)'s own raw-JSON extraction discipline:
+ * fails closed (a reason, not a guess) on a missing document, a location
+ * mismatch, a missing/malformed `recipients[]`, or a recipient with no
+ * provider-assigned id -- the one field `verifyRequiredSigners` above
+ * joins on and can never fabricate.
  */
-export type ExpectedSignerMapping = {
-  role: string;
-  displayName: string;
-  providerRecipientId: string;
-};
+export function extractProviderSignerRowsFromListDocumentsBody(args: {
+  body: unknown;
+  expectedDocumentId: string;
+  expectedLocationId: string;
+}): ProviderSignerRowExtractionResult {
+  if (typeof args.body !== "object" || args.body === null) {
+    return { ok: false, reason: "The List Documents response was not a JSON object." };
+  }
+  const documents = (args.body as Record<string, unknown>).documents;
+  if (!Array.isArray(documents)) {
+    return { ok: false, reason: "The List Documents response carried no documents[] array." };
+  }
+  const match = documents.find(
+    (d) => typeof d === "object" && d !== null && (d as Record<string, unknown>).documentId === args.expectedDocumentId,
+  ) as Record<string, unknown> | undefined;
+  if (!match) {
+    return { ok: false, reason: "The expected provider document id was not present in this List Documents page." };
+  }
+  if (typeof match.locationId !== "string" || match.locationId !== args.expectedLocationId) {
+    return { ok: false, reason: "The matched document's locationId does not match the expected environment -- refusing to trust its recipients." };
+  }
+  const recipientsRaw = match.recipients;
+  if (!Array.isArray(recipientsRaw)) {
+    return { ok: false, reason: "The matched document carried no recipients[] array." };
+  }
+  const rows: ProviderSignerRow[] = [];
+  for (const r of recipientsRaw) {
+    if (typeof r !== "object" || r === null) {
+      return { ok: false, reason: "A recipient entry was not a JSON object -- refusing to trust malformed evidence." };
+    }
+    const row = r as Record<string, unknown>;
+    if (typeof row.id !== "string" || row.id.trim() === "") {
+      return { ok: false, reason: "A recipient entry carried no provider recipient id -- refusing to trust evidence that cannot be joined." };
+    }
+    rows.push({
+      providerRecipientId: row.id,
+      hasCompleted: row.hasCompleted === true,
+      signedDate: typeof row.signedDate === "string" ? row.signedDate : null,
+      reportedRole: typeof row.role === "string" ? row.role : null,
+      reportedContactName: typeof row.contactName === "string" ? row.contactName : null,
+    });
+  }
+  return { ok: true, rows };
+}
+
+/**
+ * The deterministic join this repair round requires ("Use provider
+ * recipient ID as the primary lifecycle join") -- a plain alias for
+ * `contract-send-carriers.ts`'s own `DeterministicSignerMapping`, the ONE
+ * type that mapping is ever expressed as (Jess Gate repair round,
+ * 2026-09-13, item 2: no second, independently-defined mapping shape).
+ * `verifyRequiredSigners` below only enforces that the mapping, once
+ * derived, is well-formed and matches the live readback evidence
+ * deterministically -- it does not itself derive the mapping; see
+ * `buildVerifiedUnderContractRecord`, which calls
+ * `deriveDeterministicSignerMappingsFromAcceptedSend` for that.
+ */
+export type ExpectedSignerMapping = DeterministicSignerMapping;
 
 export type VerifiedSignerMatch = {
   role: string;
@@ -288,32 +385,19 @@ export function verifyRequiredSigners(args: {
 /* ==================================================================== */
 
 /**
- * What a future browser-side file input observes, classified honestly --
- * NEVER a fetch/network outcome (there is no automated retrieval path).
- * `"selected"` is reached only when real, non-empty, PDF-shaped bytes
- * were actually read locally.
+ * Byte-level classification ONLY -- pure array indexing, zero crypto
+ * dependency, fully portable to a browser. `"valid_bytes"` is reached only
+ * when real, non-empty, PDF-shaped bytes were actually read; the caller
+ * (browser or test) is then responsible for hashing those bytes in
+ * whatever way its own environment supports (Web Crypto in the browser)
+ * and constructing a `ManualArtifactSelectionOutcome` from the result --
+ * this function never sees or produces a hash itself.
  */
-export type ManualArtifactSelectionOutcome =
+export type ManualFileBytesOutcome =
   | { kind: "no_file" }
   | { kind: "invalid_file_type"; mimeType: string | null; fileName: string | null }
   | { kind: "empty_file" }
-  | { kind: "unreadable"; message: string }
-  | { kind: "selected"; bytes: Uint8Array; fileName: string; mimeType: string };
-
-export type ArtifactReasonCode =
-  | "NO_FILE_SELECTED"
-  | "INVALID_FILE_TYPE"
-  | "FILE_EMPTY"
-  | "FILE_UNREADABLE"
-  | "ARTIFACT_DOCUMENT_MISMATCH"
-  | "ARTIFACT_VERSION_MISMATCH";
-
-export type ArtifactReason = { code: ArtifactReasonCode; message: string };
-
-/** Deterministic, pure SHA-256 over exactly the bytes supplied -- Node's built-in `crypto`, no I/O, no network. */
-export function computeSha256Hex(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
+  | { kind: "valid_bytes"; bytes: Uint8Array; fileName: string; mimeType: string };
 
 const PDF_MAGIC_BYTES = [0x25, 0x50, 0x44, 0x46, 0x2d]; // literal ASCII "%PDF-", the real PDF file-format signature
 
@@ -327,42 +411,63 @@ function looksLikePdfContent(bytes: Uint8Array): boolean {
  * Classifies a browser-read file selection HONESTLY, from its own actual
  * bytes -- this is the ONE place "non-PDF input" is decided, and it is
  * decided from the real PDF magic-byte signature, never from a caller-
- * supplied (spoofable) mime type or filename alone. Returns the outcome
- * type `verifyManualArtifactSelection` below consumes; itself performs no
- * binding/identity check (that happens after a real selection is
- * confirmed) and computes no hash (that happens only once binding also
- * passes).
+ * supplied (spoofable) mime type or filename alone. Performs no binding/
+ * identity check (that happens later, in `verifyManualArtifactSelection`)
+ * and computes no hash (hashing is the caller's own environment-specific
+ * next step -- see the module header).
  */
-export function classifySelectedFile(args: {
+export function classifySelectedFileBytes(args: {
   fileName: string | null;
   mimeType: string | null;
   bytes: Uint8Array | null;
-}): ManualArtifactSelectionOutcome {
+}): ManualFileBytesOutcome {
   if (args.bytes === null) return { kind: "no_file" };
   if (args.bytes.length === 0) return { kind: "empty_file" };
   if (!looksLikePdfContent(args.bytes)) {
     return { kind: "invalid_file_type", mimeType: args.mimeType, fileName: args.fileName };
   }
-  return { kind: "selected", bytes: args.bytes, fileName: args.fileName ?? "selected.pdf", mimeType: args.mimeType ?? "application/pdf" };
+  return { kind: "valid_bytes", bytes: args.bytes, fileName: args.fileName ?? "selected.pdf", mimeType: args.mimeType ?? "application/pdf" };
 }
+
+/**
+ * What a future browser-side flow observes AFTER hashing (or failing to
+ * reach hashing), classified honestly -- NEVER a fetch/network outcome
+ * (there is no automated retrieval path). `"selected"` carries only the
+ * already-computed `sha256` -- never raw bytes -- so this type, and every
+ * function that consumes it, can never leak the original bytes through
+ * its own shape.
+ */
+export type ManualArtifactSelectionOutcome =
+  | { kind: "no_file" }
+  | { kind: "invalid_file_type"; mimeType: string | null; fileName: string | null }
+  | { kind: "empty_file" }
+  | { kind: "unreadable"; message: string }
+  | { kind: "selected"; sha256: string; fileName: string; mimeType: string };
+
+export type ArtifactReasonCode =
+  | "NO_FILE_SELECTED"
+  | "INVALID_FILE_TYPE"
+  | "FILE_EMPTY"
+  | "FILE_UNREADABLE"
+  | "ARTIFACT_DOCUMENT_MISMATCH"
+  | "ARTIFACT_VERSION_MISMATCH";
+
+export type ArtifactReason = { code: ArtifactReasonCode; message: string };
 
 /**
  * "Never treat a URL alone, an unverified response body, or a locally
  * computed hash without confirmed GHL document identity as preservation."
  * `outcome` is checked FIRST (no_file/invalid_file_type/empty_file/
  * unreadable each fail closed on their own, distinct reason) -- only once
- * real bytes are confirmed selected is document/version identity checked
- * (`selectedForDocumentId`/`selectedForVersion`, declared by the caller
- * alongside the file picker, against `confirmedProviderDocumentId` --
- * itself only ever produced by `verifyAcceptedSendBinding` -- and
- * `expectedVersion`). The hash is computed LAST, only once every prior
- * check has passed. This function's own return type never carries the
- * bytes themselves -- only `sha256`, a 64-character hex string -- so
- * nothing downstream of this call can retain, log, or persist the
- * original bytes through this function's own output; discarding the
- * caller's own in-memory byte reference once this returns is that
- * caller's responsibility (a future browser-side concern, not something
- * a pure function can perform).
+ * a real `sha256` is confirmed present is document/version identity
+ * checked (`selectedForDocumentId`/`selectedForVersion`, declared by the
+ * caller alongside the file picker, against `confirmedProviderDocumentId`
+ * -- itself only ever produced by `verifyAcceptedSendBinding` -- and
+ * `expectedVersion`). This function computes NO hash and touches NO raw
+ * bytes at all -- it only validates and passes the caller-supplied hash
+ * through, which is what makes it safe to call from either Node (tests)
+ * or a browser bundle without pulling in any environment-specific crypto
+ * API itself.
  */
 export function verifyManualArtifactSelection(args: {
   outcome: ManualArtifactSelectionOutcome;
@@ -401,7 +506,7 @@ export function verifyManualArtifactSelection(args: {
     });
   }
   if (reasons.length > 0) return { ok: false, reasons };
-  return { ok: true, sha256: computeSha256Hex(args.outcome.bytes) };
+  return { ok: true, sha256: args.outcome.sha256 };
 }
 
 /* ==================================================================== */
@@ -539,7 +644,7 @@ export type UnderContractRecordEntry = {
   relatedPriorRecordId: string | null;
 };
 
-export type VerificationStage = "input" | "binding" | "signers" | "provider_completion" | "artifact" | "executed_terms" | "eligibility";
+export type VerificationStage = "input" | "binding" | "signer_mapping" | "signers" | "provider_completion" | "artifact" | "executed_terms" | "eligibility";
 
 export type VerifiedExecutionFailure = {
   stage: VerificationStage;
@@ -552,9 +657,8 @@ export type BuildVerifiedExecutionArgs = {
   opportunityId: string;
   agreementAt: string;
   version: ContractVersionIdentity;
+  /** The signer role/identity/provider-recipient-id mapping is DERIVED from this record's own already-durable fields (`deriveDeterministicSignerMappingsFromAcceptedSend`, `contract-send-carriers.ts`) -- there is no separate `expectedSignerMappings` parameter for a caller to supply independently (Jess Gate repair round, 2026-09-13, item 2). */
   acceptedSend: ParsedContractSend;
-  /** IAOS's own established role/identity/provider-recipient-id mapping -- see `ExpectedSignerMapping`'s own doc comment. `SignerRequirement[]` (board9-contract-model.ts's own type, required by `evaluateUnderContractEligibility`) is derived from this internally; a caller no longer supplies both separately. */
-  expectedSignerMappings: readonly ExpectedSignerMapping[];
   providerRecipients: readonly ProviderSignerRow[];
   lifecycleHistory: readonly LifecycleRecord[];
   manualArtifactOutcome: ManualArtifactSelectionOutcome;
@@ -578,12 +682,18 @@ function fail(stage: VerificationStage, reasons: readonly { code: string; messag
  *   2. Provider document bound to opportunity/agreement/version/document/
  *      revision -- the SAME binding check, cross-checked again for the
  *      manually selected artifact in `verifyManualArtifactSelection`.
+ *   2b. The signer role/identity/provider-recipient-id mapping is DERIVED
+ *      from the accepted send's own evidence, never a caller assertion --
+ *      `deriveDeterministicSignerMappingsFromAcceptedSend`, failing closed
+ *      at its own `signer_mapping` stage when the evidence cannot support it.
  *   3. Every required signer matched individually, by provider recipient
  *      id -- `verifyRequiredSigners`.
  *   4. GHL independently reports completed -- `verifyProviderCompletion`,
  *      reusing INV-64's own chronology (never a stale/tainted signal).
- *   5-6. Executed artifact selected (the manual bridge) and hashed --
- *      `verifyManualArtifactSelection` / `computeSha256Hex`.
+ *   5-6. Executed artifact selected (the manual bridge) and hashed by the
+ *      CALLER's own environment (Web Crypto in the browser) -- this
+ *      module only validates and passes the resulting hash through
+ *      (`verifyManualArtifactSelection`).
  *   7. Executed material terms -- UNAVAILABLE for V1, explicitly, at its
  *      own named stage (`executed_terms` /
  *      `EXECUTED_TERMS_EVIDENCE_UNAVAILABLE`) -- see the module header,
@@ -615,8 +725,15 @@ export function buildVerifiedUnderContractRecord(
   const binding = verifyAcceptedSendBinding({ acceptedSend: args.acceptedSend, opportunityId: args.opportunityId, version: args.version });
   if (!binding.ok) return fail("binding", binding.reasons);
 
+  // The mapping is DERIVED from the accepted send's own already-durable
+  // evidence -- never a caller assertion (module header, item 2). Fails
+  // closed, by name, when the evidence cannot deterministically support
+  // more than the one confirmed recipient.
+  const mappingResult = deriveDeterministicSignerMappingsFromAcceptedSend(args.acceptedSend);
+  if (!mappingResult.ok) return fail("signer_mapping", mappingResult.reasons);
+
   const signerResult = verifyRequiredSigners({
-    mappings: args.expectedSignerMappings,
+    mappings: mappingResult.mappings,
     providerRecipients: args.providerRecipients,
   });
   if (!signerResult.ok) return fail("signers", signerResult.reasons);
@@ -648,7 +765,7 @@ export function buildVerifiedUnderContractRecord(
 
   // Unreachable while EXECUTED_TERMS_EVIDENCE_AVAILABLE is false -- kept
   // real, reused, and structurally correct for the moment it is lifted.
-  const requirements: SignerRequirement[] = args.expectedSignerMappings.map((m) => ({ role: m.role, displayName: m.displayName, signingAuthorityNote: null }));
+  const requirements: SignerRequirement[] = mappingResult.mappings.map((m) => ({ role: m.role, displayName: m.displayName, signingAuthorityNote: null }));
 
   const preservedDocument: PreservedDocumentEvidence = {
     sha256: artifact.sha256,

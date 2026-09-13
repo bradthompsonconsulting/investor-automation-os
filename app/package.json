@@ -49,7 +49,8 @@
     "test:contract-send-execute": "node scripts/test-contract-send-execute.cjs",
     "test:contract-send-readback": "node scripts/test-contract-send-readback.cjs",
     "test:contract-lifecycle-model": "node scripts/test-contract-lifecycle-model.cjs",
-    "test:contract-execution-model": "node scripts/test-contract-execution-model.cjs"
+    "test:contract-execution-model": "node scripts/test-contract-execution-model.cjs",
+    "test:browser-artifact-hash": "node scripts/test-browser-artifact-hash.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",

@@ -380,3 +380,75 @@ export function latestContractSendForOpportunity(
   }
   return latest;
 }
+
+/* ==================================================================== */
+/* Deterministic signer-role-to-provider-recipient-id mapping -- B9-10 / */
+/* INV-65 Jess Gate repair round, 2026-09-13.                            */
+/* ==================================================================== */
+
+/**
+ * IAOS's OWN role/identity, deterministically bound to the ONE provider
+ * recipient id this send/readback lifecycle can actually prove it
+ * corresponds to.
+ */
+export type DeterministicSignerMapping = { role: string; displayName: string; providerRecipientId: string };
+
+export type SignerMappingReasonCode = "SEND_NOT_ACCEPTED" | "SIGNER_MAPPING_EVIDENCE_INSUFFICIENT";
+export type SignerMappingReason = { code: SignerMappingReasonCode; message: string };
+
+/**
+ * Derives a deterministic role-to-provider-recipient-id mapping FROM the
+ * accepted send record's own already-durable fields -- `signers[]`
+ * (recorded at send-attempt time, from IAOS's own already-established
+ * `SellerContractFactsReport.parties.sellerSigners`) and
+ * `providerResponse.recipientId` (the ONE provider-confirmed recipient
+ * the send's single `contactId` was echoed back as, per INV-63's own
+ * single-recipient V1 sandbox). No NEW carrier field is added -- both
+ * inputs are already durably preserved by the existing, shipped INV-63
+ * schema; this function only formalizes reading them together.
+ *
+ * WHY THIS IS THE ONLY CASE THAT IS ACTUALLY DETERMINISTIC. GHL's own
+ * Send Template call addresses exactly ONE `contactId`; its own response
+ * (`links[].recipientId`) can therefore only ever confirm ONE recipient
+ * identity -- there is no channel by which IAOS tells GHL, at send time,
+ * "recipient A is the Seller, recipient B is the Spouse," and no
+ * documented readback field ties a SPECIFIC additional recipient id back
+ * to a SPECIFIC expected role (`BOARD9_CONTRACT_INVENTORY_V1.md`'s own
+ * findings, and the live Test discovery round this repair responds to:
+ * `role` is the generic literal `"signer"` for every recipient). Per this
+ * repair round's own explicit instruction ("Do not pair arrays by assumed
+ * order, guess from names, or accept a caller-created mapping"), this
+ * function returns `ok: false` -- rather than guessing -- whenever more
+ * than exactly one expected signer was recorded at send time:
+ * `SIGNER_MAPPING_EVIDENCE_INSUFFICIENT` names the exact gap. This is a
+ * real, load-bearing V1 scope boundary, not an oversight -- multi-signer
+ * (e.g. Seller + Spouse) verification is NOT deterministically supported
+ * by the current send/readback evidence shape, and no code anywhere
+ * invents a mechanism to pretend otherwise.
+ */
+export function deriveDeterministicSignerMappingsFromAcceptedSend(
+  send: ParsedContractSend,
+): { ok: true; mappings: DeterministicSignerMapping[] } | { ok: false; reasons: SignerMappingReason[] } {
+  if (send.status !== "accepted" || send.providerResponse === null || send.providerResponse.recipientId === null || send.providerResponse.recipientId === "") {
+    return {
+      ok: false,
+      reasons: [{
+        code: "SEND_NOT_ACCEPTED",
+        message: "The supplied send record is not an accepted send with a confirmed provider recipient id -- no signer mapping can be derived without it.",
+      }],
+    };
+  }
+  if (send.signers.length !== 1) {
+    return {
+      ok: false,
+      reasons: [{
+        code: "SIGNER_MAPPING_EVIDENCE_INSUFFICIENT",
+        message: `The accepted send recorded ${send.signers.length} expected signer(s), but only ONE provider recipient id (the confirmed contact recipient) is ever captured by the current send/readback evidence -- a deterministic role-to-recipient mapping cannot be established for more than one signer without pairing by assumed order, guessing from names, or accepting an unverifiable caller assertion, all of which are disallowed.`,
+      }],
+    };
+  }
+  return {
+    ok: true,
+    mappings: [{ role: send.signers[0].role, displayName: send.signers[0].displayName, providerRecipientId: send.providerResponse.recipientId }],
+  };
+}
