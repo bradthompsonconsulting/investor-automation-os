@@ -8,7 +8,7 @@ import {
   CONTRACT_READY_ITEM_KEYS, type ContractReadyItemKey, type ContractReadyItems,
 } from "../lib/seller-call-readiness-carriers";
 import { computeContractScreenState, type ContractScreenState } from "../lib/contract-workspace-view";
-import { CONTRACT_STATE_MEANING, initialVersionIdentity, evaluateContractSentEligibility, type MaterialTermSnapshot } from "../lib/board9-contract-model";
+import { CONTRACT_STATE_MEANING, initialVersionIdentity, evaluateContractSentEligibility, isSameContractVersion, type MaterialTermSnapshot } from "../lib/board9-contract-model";
 import {
   computeSellerContractFactsReport, computeSellerContractFactsReadiness,
   type SellerContractFactsReport, type FieldDisposition,
@@ -58,6 +58,16 @@ import {
 import {
   formatUnderContractNote, parseUnderContractNote, allUnderContractRecordsForOpportunity,
 } from "../lib/contract-execution-carriers";
+import { allContractLifecycleRecordsForOpportunity } from "../lib/contract-lifecycle-carriers";
+import { matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
+import {
+  evaluateDispositionHandoffEligibility, buildDispositionHandoffRecordArgs,
+  verifyHandoffMatchesUnderContract,
+  type DispositionHandoffRecord, type DocumentReference,
+} from "../lib/contract-disposition-handoff-model";
+import {
+  formatDispositionHandoffNote, parseDispositionHandoffNote, allDispositionHandoffsForOpportunity,
+} from "../lib/contract-disposition-handoff-carriers";
 import { getRuntimeConfig } from "../../shared/ghl-config";
 import {
   formatBuyerEntityOverrideNote,
@@ -1341,6 +1351,220 @@ export default function ContractWorkspace() {
     }
 
     setUnderContractWriteState({ kind: "success", record: candidate });
+  }
+
+  /**
+   * B9-11 / INV-66 -- the no-reentry handoff to Board #10 Buyer
+   * Disposition. Everything below is READ-ONLY against GHL except
+   * `handleStartDisposition`'s own final write, gated exactly like
+   * `handleCreateUnderContract` above: Start Disposition is offered ONLY
+   * once a genuinely canonical-carrier-parsed Under Contract record
+   * exists for this exact opportunity/agreement/version, with no later
+   * rescission and no equivalent handoff already recorded.
+   */
+  const currentUnderContractRecord: UnderContractRecordEntry | null = useMemo(() => {
+    if (screen.state !== "ready" || !notes || !documentVersion) return null;
+    const all = allUnderContractRecordsForOpportunity(notes, screen.opportunity.id);
+    return all.find((r) => r.agreementAt === screen.economics.agreementAt && isSameContractVersion(r.version, documentVersion)) ?? null;
+  }, [screen, notes, documentVersion]);
+
+  const dispositionLifecycleHistory = useMemo(() => {
+    if (screen.state !== "ready" || !notes) return [];
+    return allContractLifecycleRecordsForOpportunity(notes, screen.opportunity.id);
+  }, [screen, notes]);
+
+  const existingDispositionHandoffs = useMemo(() => {
+    if (screen.state !== "ready" || !notes) return [];
+    return allDispositionHandoffsForOpportunity(notes, screen.opportunity.id);
+  }, [screen, notes]);
+
+  const dispositionEligibility = useMemo(() => {
+    if (screen.state !== "ready" || !documentVersion) return null;
+    return evaluateDispositionHandoffEligibility({
+      opportunityId: screen.opportunity.id,
+      agreementAt: screen.economics.agreementAt,
+      version: documentVersion,
+      underContract: currentUnderContractRecord,
+      lifecycleHistory: dispositionLifecycleHistory,
+      existingHandoffsForOpportunity: existingDispositionHandoffs.map((h) => ({ agreementAt: h.agreementAt, version: h.version, underContractVerifiedAt: h.underContract.verifiedAt })),
+    });
+  }, [screen, documentVersion, currentUnderContractRecord, dispositionLifecycleHistory, existingDispositionHandoffs]);
+
+  /**
+   * Every downstream section below is sourced from an already-canonical
+   * upstream carrier/model, copied verbatim -- never recomputed. ARV and
+   * repairs are the frozen `OutcomeSnapshot` values captured at Agreement
+   * Reached (`screen.economics.economics`), exactly as
+   * `SELLER_CONTRACT_STATE_MACHINE_V1.md`'s "Consuming Board #8
+   * economics, never recomputing them" requires -- ARV's own
+   * evidence-state provenance is cross-matched via the EXISTING
+   * `matchingArvApprovalForOpportunity` (B8-07/INV-50), never a new
+   * comparison. Access/showing information and photo/document references
+   * have no upstream carrier anywhere in this codebase (confirmed absent
+   * this issue) -- represented honestly, never fabricated.
+   */
+  const dispositionArvApprovalMatch = useMemo(() => {
+    if (screen.state !== "ready" || !notes) return null;
+    return matchingArvApprovalForOpportunity(notes, screen.opportunity.id, screen.economics.economics.arv);
+  }, [screen, notes]);
+
+  const dispositionPackagePreviewArgs = useMemo(() => {
+    if (screen.state !== "ready" || !documentVersion || !sellerContractFactsReport || !currentUnderContractRecord || !requiredSignerSetResult || !requiredSignerSetResult.ok) return null;
+    const arv = screen.economics.economics.arv;
+    const repairs = screen.economics.economics.repairs;
+    return {
+      opportunityId: screen.opportunity.id,
+      contactId,
+      agreementAt: screen.economics.agreementAt,
+      version: documentVersion,
+      underContract: currentUnderContractRecord,
+      propertyAddress: propertyStreetAddressDisposition,
+      propertyLegalDescription: sellerContractFactsReport.propertyLegalDescription,
+      sellerContractPrice: screen.economics.economics.currentOffer,
+      approvedArv: arv === null ? null : {
+        amount: arv,
+        approvalEvidenceState: dispositionArvApprovalMatch?.evidenceState ?? null,
+        approvalDecision: dispositionArvApprovalMatch?.decision ?? null,
+        approvedAt: dispositionArvApprovalMatch?.approvedAt ?? null,
+      },
+      approvedRepairs: repairs,
+      closingDate: sellerContractFactsReport.closingPossession.closingDate,
+      possessionDetails: sellerContractFactsReport.closingPossession.possessionDetails,
+      accessShowingInformation: { kind: "unresolved" as const },
+      sellerContact: {
+        noticeAddress: sellerContractFactsReport.noticeContact.sellerNoticeAddress,
+        noticePhone: sellerContractFactsReport.noticeContact.sellerNoticePhone,
+        noticeEmail: sellerContractFactsReport.noticeContact.sellerNoticeEmail,
+      },
+      requiredSigners: requiredSignerSetResult.signers,
+      documentReferences: [] as readonly DocumentReference[],
+      documentReferencesNote: "No photo/document carrier exists in IAOS today -- this list is honestly empty, not omitted.",
+      evidenceSummary: "No-reentry disposition-start handoff to Board #10, assembled from already-canonical Board #9 upstream sources.",
+    };
+  }, [screen, documentVersion, sellerContractFactsReport, currentUnderContractRecord, requiredSignerSetResult, contactId, propertyStreetAddressDisposition, dispositionArvApprovalMatch]);
+
+  const dispositionPackagePreview = useMemo(() => {
+    if (!dispositionPackagePreviewArgs || !dispositionEligibility) return null;
+    return buildDispositionHandoffRecordArgs(Object.assign({}, dispositionPackagePreviewArgs, {
+      handoffId: "preview",
+      createdAt: new Date().toISOString(),
+      eligibility: dispositionEligibility,
+    }));
+  }, [dispositionPackagePreviewArgs, dispositionEligibility]);
+
+  const [dispositionWriteState, setDispositionWriteState] = useState<
+    | { kind: "idle" }
+    | { kind: "busy" }
+    | { kind: "success"; record: DispositionHandoffRecord }
+    | { kind: "already_recorded"; record: DispositionHandoffRecord }
+    | { kind: "failed"; message: string; writeMayHaveOccurred: boolean }
+  >({ kind: "idle" });
+
+  /**
+   * THE ONLY write this section performs. On Brad's explicit click only:
+   * (1) re-evaluate eligibility against FRESH local `notes` state (not a
+   * cached value); (2) refuse a duplicate equivalent handoff before ever
+   * writing; (3) append exactly one note via the existing sanctioned
+   * `ghl.notes.create()`; (4) perform an independent, fresh
+   * `ghl.notes.list()` readback; (5) parse every fresh note through the
+   * canonical handoff carrier; (6) require EXACT equality with the
+   * requested snapshot; (7) report success only after that verified
+   * match. Any ambiguous failure never retries automatically and warns
+   * that a write may have occurred.
+   */
+  async function handleStartDisposition() {
+    if (screen.state !== "ready" || !documentVersion || !notes) return;
+    setDispositionWriteState({ kind: "busy" });
+
+    // Re-evaluate eligibility against the CURRENT notes, not a stale memo.
+    const freshUnderContract = allUnderContractRecordsForOpportunity(notes, screen.opportunity.id).find(
+      (r) => r.agreementAt === screen.economics.agreementAt && isSameContractVersion(r.version, documentVersion),
+    ) ?? null;
+    const freshLifecycle = allContractLifecycleRecordsForOpportunity(notes, screen.opportunity.id);
+    const freshHandoffs = allDispositionHandoffsForOpportunity(notes, screen.opportunity.id);
+    const freshEligibility = evaluateDispositionHandoffEligibility({
+      opportunityId: screen.opportunity.id,
+      agreementAt: screen.economics.agreementAt,
+      version: documentVersion,
+      underContract: freshUnderContract,
+      lifecycleHistory: freshLifecycle,
+      existingHandoffsForOpportunity: freshHandoffs.map((h) => ({ agreementAt: h.agreementAt, version: h.version, underContractVerifiedAt: h.underContract.verifiedAt })),
+    });
+    if (!freshEligibility.eligible) {
+      setDispositionWriteState({
+        kind: "failed",
+        message: "Eligibility no longer holds: " + freshEligibility.reasons.map((r) => r.message).join(" "),
+        writeMayHaveOccurred: false,
+      });
+      return;
+    }
+    if (!freshUnderContract || !dispositionPackagePreviewArgs) {
+      setDispositionWriteState({ kind: "failed", message: "The disposition package could not be assembled from current evidence.", writeMayHaveOccurred: false });
+      return;
+    }
+
+    const built = buildDispositionHandoffRecordArgs(Object.assign({}, dispositionPackagePreviewArgs, {
+      handoffId: (globalThis.crypto && "randomUUID" in globalThis.crypto) ? globalThis.crypto.randomUUID() : `${screen.opportunity.id}-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      eligibility: freshEligibility,
+      underContract: freshUnderContract,
+    }));
+    if (!built.ok) {
+      setDispositionWriteState({ kind: "failed", message: "The disposition package failed essential-data validation: " + built.reasons.map((r) => r.message).join(" "), writeMayHaveOccurred: false });
+      return;
+    }
+    const candidate = built.value;
+
+    // Duplicate refusal BEFORE ever writing.
+    const duplicate = freshHandoffs.find((h) => {
+      const currency = verifyHandoffMatchesUnderContract({ handoff: h, opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion, underContract: freshUnderContract });
+      return currency.ok;
+    });
+    if (duplicate) {
+      setDispositionWriteState({ kind: "already_recorded", record: duplicate });
+      return;
+    }
+
+    const note = formatDispositionHandoffNote(candidate);
+    try {
+      await ghl.notes.create(contactId, note);
+    } catch (e: any) {
+      setDispositionWriteState({
+        kind: "failed",
+        message: `The write itself failed: ${e?.message ?? "unknown error"} -- do not assume a record was NOT created; verify directly in GHL before retrying.`,
+        writeMayHaveOccurred: true,
+      });
+      return;
+    }
+
+    let freshNotes: { id: string; body: string; dateAdded: string }[];
+    try {
+      const freshResult = await ghl.notes.list(contactId);
+      freshNotes = freshResult.notes ?? [];
+    } catch (e: any) {
+      setDispositionWriteState({
+        kind: "failed",
+        message: `The write may have succeeded, but the readback fetch itself failed: ${e?.message ?? "unknown error"} -- verify directly in GHL before retrying; this action does not retry automatically.`,
+        writeMayHaveOccurred: true,
+      });
+      return;
+    }
+    setNotes(freshNotes);
+
+    const parsedCandidates = freshNotes
+      .map((n) => parseDispositionHandoffNote(n.body))
+      .filter((r): r is DispositionHandoffRecord => r !== null);
+    const matchingReadback = parsedCandidates.find((r) => JSON.stringify(r) === JSON.stringify(candidate)) ?? null;
+    if (matchingReadback === null) {
+      setDispositionWriteState({
+        kind: "failed",
+        message: "No note carrying this exact requested snapshot was found on fresh readback -- the write, the read, or the read's own parse failed. A note may or may not now exist in GHL -- verify directly before retrying; this action does not retry automatically.",
+        writeMayHaveOccurred: true,
+      });
+      return;
+    }
+
+    setDispositionWriteState({ kind: "success", record: candidate });
   }
 
   // Read-only display of the operator's own verbatim attorney/manual text
@@ -2877,6 +3101,107 @@ export default function ContractWorkspace() {
                   <div style={{ fontSize: "11px", color: "#64748B" }}>Fetch the live readback, map signers to recipients, and select the executed PDF above to see exactly which stage this evidence reaches.</div>
                 )}
               </div>
+            </div>
+          ) : null}
+
+          {/* ================================================================ */}
+          {/* Start Disposition -- B9-11 / INV-66. Shown ONLY once a genuine,   */}
+          {/* canonical-carrier-parsed Under Contract record exists. Writes     */}
+          {/* nothing until Brad's own explicit click.                         */}
+          {/* ================================================================ */}
+          {currentUnderContractRecord ? (
+            <div data-testid="disposition-handoff-section" style={{ marginTop: "24px" }}>
+              <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
+                Start Disposition -- hand off to Board #10
+              </div>
+              <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
+                Assembles the complete authoritative deal package Board #10 needs, from already-canonical Board #9 sources only -- nothing recalculated, nothing fabricated. Writes nothing until you explicitly click Start Disposition below.
+              </div>
+
+              {dispositionEligibility && !dispositionEligibility.eligible ? (
+                <div data-testid="disposition-handoff-blocked" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(239,68,68,0.35)" }}>
+                  <div style={{ fontSize: "11px", fontWeight: 700, color: "#EF4444", marginBottom: "6px" }}>Blocking conflicts</div>
+                  <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
+                    {dispositionEligibility.reasons.map((r) => <li key={r.code} data-testid={`disposition-handoff-blocked-reason-${r.code}`}>{r.message}</li>)}
+                  </ul>
+                </div>
+              ) : null}
+
+              {dispositionPackagePreview && !dispositionPackagePreview.ok ? (
+                <div data-testid="disposition-handoff-essential-missing" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(239,68,68,0.35)" }}>
+                  <div style={{ fontSize: "11px", fontWeight: 700, color: "#EF4444", marginBottom: "6px" }}>Missing essential data -- blocks handoff creation</div>
+                  <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
+                    {dispositionPackagePreview.reasons.map((r) => <li key={r.code} data-testid={`disposition-handoff-essential-reason-${r.code}`}>{r.message}</li>)}
+                  </ul>
+                </div>
+              ) : null}
+
+              {dispositionPackagePreview && dispositionPackagePreview.ok ? (() => {
+                const pkg = dispositionPackagePreview.value;
+                const optionalItems: { label: string; fd: { kind: string } }[] = [
+                  { label: "Closing date", fd: pkg.closingDate },
+                  { label: "Possession details", fd: pkg.possessionDetails },
+                  { label: "Access/showing information", fd: pkg.accessShowingInformation },
+                  { label: "Seller notice address", fd: pkg.sellerContact.noticeAddress },
+                  { label: "Seller notice phone", fd: pkg.sellerContact.noticePhone },
+                  { label: "Seller notice email", fd: pkg.sellerContact.noticeEmail },
+                ];
+                const missingOptional = optionalItems.filter((i) => i.fd.kind !== "populated");
+                return (
+                  <>
+                    <div data-testid="disposition-handoff-preview-authoritative" style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                      <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Authoritative data (reused verbatim, never recalculated)</div>
+                      <ul style={{ margin: 0, padding: 0, listStyle: "none", fontSize: "12px", color: "#E2E8F0", lineHeight: 1.9 }}>
+                        <li>Property: {pkg.propertyAddress.kind === "populated" ? pkg.propertyAddress.value : "unconfirmed"}</li>
+                        <li>Seller contract price: {money(pkg.sellerContractPrice)}</li>
+                        <li>Approved ARV: {money(pkg.approvedArv.amount)} {pkg.approvedArv.approvalEvidenceState ? `(${pkg.approvedArv.approvalEvidenceState}, ${pkg.approvedArv.approvalDecision})` : "(no matching approval-ledger entry)"}</li>
+                        <li>Approved repairs: {money(pkg.approvedRepairs)}</li>
+                        <li>Required signers: {pkg.requiredSigners.map((s) => `${s.role} (${s.displayName})`).join(", ")}</li>
+                        <li>Provider document: {pkg.underContract.providerDocumentId} (revision {pkg.underContract.providerDocumentRevision ?? "unavailable"})</li>
+                        <li>Artifact SHA-256: <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{pkg.underContract.artifactSha256}</span></li>
+                        <li>Execution verified at: {new Date(pkg.underContract.verifiedAt).toLocaleString()}</li>
+                      </ul>
+                    </div>
+
+                    {missingOptional.length > 0 ? (
+                      <div data-testid="disposition-handoff-preview-missing-optional" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(245,158,11,0.35)" }}>
+                        <div style={{ fontSize: "11px", fontWeight: 700, color: "#F59E0B", marginBottom: "6px" }}>Missing optional data (disclosed honestly, never fabricated)</div>
+                        <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
+                          {missingOptional.map((i) => <li key={i.label}>{i.label}: not yet recorded.</li>)}
+                          <li>Photos/documents: {pkg.documentReferencesNote}</li>
+                        </ul>
+                      </div>
+                    ) : null}
+
+                    <div style={{ marginBottom: "12px" }}>
+                      <Btn
+                        testId="disposition-handoff-start-button"
+                        onClick={handleStartDisposition}
+                        busy={dispositionWriteState.kind === "busy"}
+                        disabled={
+                          dispositionWriteState.kind === "success" || dispositionWriteState.kind === "already_recorded" ||
+                          !dispositionEligibility || !dispositionEligibility.eligible
+                        }
+                      >
+                        Start Disposition
+                      </Btn>
+                      {dispositionWriteState.kind === "success" ? (
+                        <div data-testid="disposition-handoff-write-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
+                          Recorded and verified by fresh readback -- the written note round-trips exactly. Board #10 may now consume handoff id <span style={{ fontFamily: "monospace" }}>{dispositionWriteState.record.handoffId}</span>.
+                        </div>
+                      ) : dispositionWriteState.kind === "already_recorded" ? (
+                        <div data-testid="disposition-handoff-already-recorded" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "8px" }}>
+                          Already recorded for this exact verified execution (handoff id <span style={{ fontFamily: "monospace" }}>{dispositionWriteState.record.handoffId}</span>, created {new Date(dispositionWriteState.record.createdAt).toLocaleString()}) -- refusing to append a duplicate.
+                        </div>
+                      ) : dispositionWriteState.kind === "failed" ? (
+                        <div data-testid="disposition-handoff-write-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
+                          {dispositionWriteState.message}
+                        </div>
+                      ) : null}
+                    </div>
+                  </>
+                );
+              })() : null}
             </div>
           ) : null}
         </>

@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 92;
+const FLOOR = 100;
 let failures = 0;
 let checks = 0;
 
@@ -136,7 +136,34 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('the data-fetching useEffect contains no ghl.notes.create call', /ghl\.notes\.create/.test(effectBody), false);
   check('the data-fetching useEffect contains no write of any kind (create/update/set)', /\.(create|update|set[A-Z])\(/.test(effectBody), false);
 
-  check('ghl.notes.create is called exactly six times in the whole page (the checklist write, the ONE shared commitNote choke point every B9-05 group form routes through -- now also carrying the executed-terms attestation and the signer-mapping attestation writes, B9-07/INV-62\'s own handleAuthorize, B9-08/INV-63\'s own handleSend -- which writes TWO notes, the in_progress attempt and its resolution, for the same attemptId -- and B9-10/INV-65\'s own handleCreateUnderContract)', (contractTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 6);
+  check('ghl.notes.create is called exactly seven times in the whole page (the checklist write, the ONE shared commitNote choke point every B9-05 group form routes through -- now also carrying the executed-terms attestation and the signer-mapping attestation writes, B9-07/INV-62\'s own handleAuthorize, B9-08/INV-63\'s own handleSend -- which writes TWO notes, the in_progress attempt and its resolution, for the same attemptId -- B9-10/INV-65\'s own handleCreateUnderContract, and B9-11/INV-66\'s own handleStartDisposition)', (contractTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 7);
+  check('handleStartDisposition is the seventh call site, lives in its own dedicated handler (not commitNote), and requires dispositionEligibility.eligible before it can even write', (() => {
+    const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
+    return !!m && (m[0].match(/ghl\.notes\.create\(/g) || []).length === 1 && !/commitNote\(/.test(m[0]) && /!freshEligibility\.eligible/.test(m[0]);
+  })(), true);
+  check('handleStartDisposition is wired to the Start Disposition button\'s onClick, and declared exactly once', (() => {
+    const onClickWiring = /onClick=\{handleStartDisposition\}/.test(contractTsx);
+    const declarations = (contractTsxNoComments.match(/async function handleStartDisposition\(/g) || []).length;
+    return onClickWiring && declarations === 1;
+  })(), true);
+  check('handleStartDisposition re-evaluates eligibility against FRESH notes state, never a stale memo, before ever writing', /const freshEligibility = evaluateDispositionHandoffEligibility\(/.test(contractTsxNoComments), true);
+  check('handleStartDisposition refuses a duplicate BEFORE ever writing, via verifyHandoffMatchesUnderContract against a fresh handoff read -- never after the write', (() => {
+    const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
+    if (!m) return false;
+    const writeIdx = m[0].indexOf('ghl.notes.create(');
+    const dupIdx = m[0].indexOf('verifyHandoffMatchesUnderContract(');
+    return writeIdx > -1 && dupIdx > -1 && dupIdx < writeIdx;
+  })(), true);
+  check('handleStartDisposition performs an independent, FRESH ghl.notes.list(contactId) readback after writing -- never trusts local state or the write call\'s own success alone', (() => {
+    const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
+    return !!m && /await ghl\.notes\.list\(contactId\)/.test(m[0]);
+  })(), true);
+  check('handleStartDisposition requires an EXACT-equality match on fresh readback before ever reporting success -- never success from the POST alone', (() => {
+    const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
+    return !!m && /JSON\.stringify\(r\) === JSON\.stringify\(candidate\)/.test(m[0]) && /matchingReadback === null/.test(m[0]);
+  })(), true);
+  check('handleStartDisposition reuses formatDispositionHandoffNote/parseDispositionHandoffNote (the canonical carrier), never composes or re-parses the note body inline', /formatDispositionHandoffNote\(candidate\)/.test(contractTsxNoComments) && /parseDispositionHandoffNote\(n\.body\)/.test(contractTsxNoComments), true);
+  check('Start Disposition is gated on a genuinely parsed Under Contract record (currentUnderContractRecord), never inferred from pipeline stage or document status alone', /\{currentUnderContractRecord \? \(/.test(contractTsxNoComments), true);
   check('handleCreateUnderContract is the sixth call site, lives in its own dedicated handler (not commitNote), and requires fullVerificationResult.ok before it can even be invoked', (() => {
     const m = contractTsxNoComments.match(/async function handleCreateUnderContract\([\s\S]*?\n  \}/m);
     return !!m && (m[0].match(/ghl\.notes\.create\(/g) || []).length === 1 && !/commitNote\(/.test(m[0]) && /!fullVerificationResult\.ok/.test(m[0]);
