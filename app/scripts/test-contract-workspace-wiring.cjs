@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 86;
+const FLOOR = 92;
 let failures = 0;
 let checks = 0;
 
@@ -136,7 +136,23 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('the data-fetching useEffect contains no ghl.notes.create call', /ghl\.notes\.create/.test(effectBody), false);
   check('the data-fetching useEffect contains no write of any kind (create/update/set)', /\.(create|update|set[A-Z])\(/.test(effectBody), false);
 
-  check('ghl.notes.create is called exactly five times in the whole page (the checklist write, the ONE shared commitNote choke point every B9-05 group form routes through, B9-07/INV-62\'s own handleAuthorize, and B9-08/INV-63\'s own handleSend -- which writes TWO notes, the in_progress attempt and its resolution, for the same attemptId)', (contractTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 5);
+  check('ghl.notes.create is called exactly six times in the whole page (the checklist write, the ONE shared commitNote choke point every B9-05 group form routes through -- now also carrying the executed-terms attestation and the signer-mapping attestation writes, B9-07/INV-62\'s own handleAuthorize, B9-08/INV-63\'s own handleSend -- which writes TWO notes, the in_progress attempt and its resolution, for the same attemptId -- and B9-10/INV-65\'s own handleCreateUnderContract)', (contractTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 6);
+  check('handleCreateUnderContract is the sixth call site, lives in its own dedicated handler (not commitNote), and requires fullVerificationResult.ok before it can even be invoked', (() => {
+    const m = contractTsxNoComments.match(/async function handleCreateUnderContract\([\s\S]*?\n  \}/m);
+    return !!m && (m[0].match(/ghl\.notes\.create\(/g) || []).length === 1 && !/commitNote\(/.test(m[0]) && /!fullVerificationResult\.ok/.test(m[0]);
+  })(), true);
+  check('handleCreateUnderContract is wired to the Create Under Contract button\'s onClick, and declared exactly once', (() => {
+    const onClickWiring = /onClick=\{handleCreateUnderContract\}/.test(contractTsx);
+    const declarations = (contractTsxNoComments.match(/async function handleCreateUnderContract\(/g) || []).length;
+    return onClickWiring && declarations === 1;
+  })(), true);
+  check('handleCreateUnderContract refuses a duplicate BEFORE ever writing, via isDuplicateUnderContractRecord against a fresh existingRecords read -- never after the write', /const duplicate = existingRecords\.find\(\(r\) => isDuplicateUnderContractRecord\(r, candidate\)\)/.test(contractTsxNoComments), true);
+  check('handleCreateUnderContract performs an independent, FRESH ghl.notes.list(contactId) readback after writing -- never trusts local state or the write call\'s own success alone', (() => {
+    const m = contractTsxNoComments.match(/async function handleCreateUnderContract\([\s\S]*?\n  \}/m);
+    return !!m && /await ghl\.notes\.list\(contactId\)/.test(m[0]);
+  })(), true);
+  check('handleCreateUnderContract requires EXACT equality via verifyReadbackMatchesWritten before ever reporting success', /verifyReadbackMatchesWritten\(candidate, matchingReadback\)/.test(contractTsxNoComments), true);
+  check('handleCreateUnderContract reuses formatUnderContractNote/parseUnderContractNote (the canonical carrier), never composes or re-parses the note body inline', /formatUnderContractNote\(candidate\)/.test(contractTsxNoComments) && /parseUnderContractNote\(n\.body\)/.test(contractTsxNoComments), true);
   check('the B9-08/INV-63 send write lives inside its own handleSend, never routed through commitNote', (() => {
     const m = contractTsxNoComments.match(/async function handleSend\([\s\S]*?\n  \}/m);
     return !!m && (m[0].match(/ghl\.notes\.create\(/g) || []).length === 2 && !/commitNote\(/.test(m[0]);

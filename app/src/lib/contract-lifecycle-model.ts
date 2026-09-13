@@ -513,8 +513,14 @@ export type LifecycleRecord = ProviderObservationRecord | CorrectionRecord | Res
  * `opportunityId`/`version` actually match what this record is being
  * built for. A caller cannot substitute independently-asserted strings
  * for this cross-check -- there is no parameter for one.
+ *
+ * Exported (B9-10/INV-65): `contract-execution-model.ts`'s own verified-
+ * execution gate reuses this EXACT function to bind the provider document
+ * it retrieves an executed artifact for -- never a second, parallel
+ * binding check. "Extend existing sanctioned carrier conventions," per
+ * that issue's own instruction, not a new engine.
  */
-function verifyAcceptedSendBinding(args: {
+export function verifyAcceptedSendBinding(args: {
   acceptedSend: ParsedContractSend;
   opportunityId: string;
   version: ContractVersionIdentity;

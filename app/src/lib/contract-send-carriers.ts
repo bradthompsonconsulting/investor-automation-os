@@ -380,3 +380,19 @@ export function latestContractSendForOpportunity(
   }
   return latest;
 }
+
+/* ==================================================================== */
+/* NOTE, 2026-09-13 (Product Owner ruling): the single-signer-only        */
+/* `deriveDeterministicSignerMappingsFromAcceptedSend` this file          */
+/* previously carried has been REMOVED, not merely unwired. Deriving the  */
+/* signer mapping (or the required signer set) from the accepted send's   */
+/* own `signers[]`/`providerResponse.recipientId` conflated a REQUEST     */
+/* made at send time with an authoritative statement of who a contract    */
+/* requires as a party, and was hard-limited to exactly one signer by     */
+/* construction. Both replacements now live in                            */
+/* `contract-signer-mapping-model.ts`: `buildRequiredSignerSet` (WHO must */
+/* sign, sourced from IAOS's own authoritative contract facts) and Brad's */
+/* own manual, one-to-one `SignerMappingAttestationRecord`                */
+/* (`contract-signer-mapping-carriers.ts`) -- see that module's own       */
+/* header for the full rationale.                                         */
+/* ==================================================================== */
