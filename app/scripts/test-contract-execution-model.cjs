@@ -47,6 +47,8 @@ const SOURCES = [
   path.join(LIB, 'seller-call-readiness-carriers.ts'),
   path.join(LIB, 'contract-send-carriers.ts'),
   path.join(LIB, 'contract-authorization-carriers.ts'),
+  path.join(LIB, 'contract-executed-terms-attestation-model.ts'),
+  path.join(LIB, 'contract-executed-terms-attestation-carriers.ts'),
 ];
 
 try {
@@ -67,6 +69,8 @@ const EC = require(path.join(LIB_OUT, 'contract-execution-carriers.js'));
 const L = require(path.join(LIB_OUT, 'contract-lifecycle-model.js'));
 const B = require(path.join(LIB_OUT, 'board9-contract-model.js'));
 const SC = require(path.join(LIB_OUT, 'contract-send-carriers.js'));
+const AT = require(path.join(LIB_OUT, 'contract-executed-terms-attestation-model.js'));
+const ATC = require(path.join(LIB_OUT, 'contract-executed-terms-attestation-carriers.js'));
 
 let failures = 0;
 let checks = 0;
@@ -223,22 +227,52 @@ function baseArgs(over) {
     manualArtifactOutcome: validManualOutcome(),
     selectedForDocumentId: DOC_ID,
     selectedForVersion: V1,
+    // Fails closed by default -- no attestation has been recorded. See
+    // section 16 below for the fixtures that build a real, valid,
+    // unanimous attestation and prove the pipeline reaches ok:true.
+    executedTermsAttestation: null,
     iaosVerifiedAt: VERIFIED_AT,
     evidenceSummary: 'Full joint verification: accepted send, signer-level completion via provider recipient id, provider completed status, PDF manually selected and hashed.',
     relatedPriorRecordId: null,
   }, over || {});
 }
 
+/** A REAL, valid, unanimous-MATCHES attestation for the fixture evidence above -- built via the actual builder, never hand-constructed. */
+function validAttestationFixture(over) {
+  const checklistItems = AT.buildExecutedTermsChecklist({
+    agreement: { price: 190000, propertyAddress: '123 Main St', parties: [] },
+    buyerIdentity: 'BTC LLC',
+    expectedSigners: [{ role: 'Seller', displayName: 'Jane Seller' }],
+  });
+  const responses = checklistItems.map((item) => ({ kind: item.kind, signerRole: item.signerRole, result: 'MATCHES' }));
+  const built = AT.buildExecutedTermsAttestationRecordArgs(Object.assign({
+    opportunityId: OPP,
+    version: V1,
+    agreementAt: AGREEMENT_AT,
+    providerDocumentId: DOC_ID,
+    providerDocumentRevision: 1,
+    selectedArtifactSha256: crypto.createHash('sha256').update(SYNTHETIC_PDF_BYTES).digest('hex'),
+    attestedAt: VERIFIED_AT,
+    requiredItems: checklistItems,
+    responses,
+    evidenceSummary: "Brad's own factual visual comparison -- fixture.",
+  }, over || {}));
+  if (!built.ok) throw new Error('fixture validAttestationFixture failed: ' + JSON.stringify(built.reasons));
+  return built.value;
+}
+
 /* ====================================================================== */
-/* 1. Material-term V1 boundary -- Under Contract remains BLOCKED even    */
-/*    with every other piece of evidence fully valid                     */
+/* 1. Material-term boundary -- Under Contract remains BLOCKED without a  */
+/*    current, unanimous Brad attestation, even with every other piece    */
+/*    of evidence fully valid; a VALID attestation genuinely unlocks it   */
+/*    (Product Owner ruling, 2026-09-13)                                  */
 /* ====================================================================== */
 
 {
   const result = E.buildVerifiedUnderContractRecord(baseArgs({}));
-  checkFalse('even with fully valid signer/completion/artifact evidence, Under Contract remains blocked in V1', result.ok);
+  checkFalse('without any recorded attestation, Under Contract remains blocked even with fully valid signer/completion/artifact evidence', result.ok);
   check('failure stage is executed_terms', result.failure.stage, 'executed_terms');
-  checkTrue('failure names the explicit EXECUTED_TERMS_EVIDENCE_UNAVAILABLE reason', result.failure.reasons.some((r) => r.code === 'EXECUTED_TERMS_EVIDENCE_UNAVAILABLE'));
+  checkTrue('failure names ATTESTATION_MISSING', result.failure.reasons.some((r) => r.code === 'ATTESTATION_MISSING'));
 }
 {
   checkFalse('BuildVerifiedExecutionArgs has no executedTermsSnapshot field at all', 'executedTermsSnapshot' in baseArgs({}));
@@ -256,6 +290,63 @@ function baseArgs(over) {
   const conflicting = { price: 210000, propertyAddress: '123 Main St', parties: ['Jane Seller'] };
   check('evaluateExecutedTermsConflicts finds zero conflicts for identical terms (preserved logic works correctly)', E.evaluateExecutedTermsConflicts(agreement, matching).length, 0);
   checkTrue('evaluateExecutedTermsConflicts finds a real conflict for a price mismatch (preserved logic works correctly)', E.evaluateExecutedTermsConflicts(agreement, conflicting).some((c) => c.field === 'price'));
+}
+{
+  // THE REACHABILITY PROOF -- a real, valid, unanimous, currency-matching
+  // attestation genuinely unlocks ok:true end to end. This is the one
+  // fixture-only case where the full pipeline succeeds.
+  const attestation = validAttestationFixture({});
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ executedTermsAttestation: attestation }));
+  checkTrue('a valid, current, unanimous attestation genuinely unlocks Under Contract end to end', result.ok);
+  if (result.ok) {
+    check('the resulting record carries executedTermsConflictCount 0', result.value.executedTermsConflictCount, 0);
+    check('the resulting record carries the real artifact sha256', result.value.artifactSha256, attestation.selectedArtifactSha256);
+  }
+}
+{
+  const staleDocId = validAttestationFixture({ providerDocumentId: 'doc-STALE-different' });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ executedTermsAttestation: staleDocId }));
+  checkFalse('an attestation bound to a DIFFERENT provider document id fails closed', result.ok);
+  check('failure stage is executed_terms', result.failure.stage, 'executed_terms');
+  checkTrue('failure names ATTESTATION_DOCUMENT_MISMATCH', result.failure.reasons.some((r) => r.code === 'ATTESTATION_DOCUMENT_MISMATCH'));
+}
+{
+  const staleRevision = validAttestationFixture({ providerDocumentRevision: 99 });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ executedTermsAttestation: staleRevision }));
+  checkFalse('an attestation bound to a DIFFERENT provider document revision fails closed (the document changed since Brad attested)', result.ok);
+  checkTrue('failure names ATTESTATION_REVISION_MISMATCH', result.failure.reasons.some((r) => r.code === 'ATTESTATION_REVISION_MISMATCH'));
+}
+{
+  const staleHash = validAttestationFixture({ selectedArtifactSha256: 'f'.repeat(64) });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ executedTermsAttestation: staleHash }));
+  checkFalse('an attestation bound to a DIFFERENT artifact hash fails closed (a different PDF was selected since Brad attested)', result.ok);
+  checkTrue('failure names ATTESTATION_ARTIFACT_HASH_MISMATCH', result.failure.reasons.some((r) => r.code === 'ATTESTATION_ARTIFACT_HASH_MISMATCH'));
+}
+{
+  const crossVersion = validAttestationFixture({ version: V2, agreementAt: V2.agreementAt });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ executedTermsAttestation: crossVersion }));
+  checkFalse('an attestation bound to a DIFFERENT contract version fails closed -- never reused across a correction', result.ok);
+  checkTrue('failure names ATTESTATION_VERSION_MISMATCH', result.failure.reasons.some((r) => r.code === 'ATTESTATION_VERSION_MISMATCH'));
+}
+{
+  const wrongOpp = validAttestationFixture({ opportunityId: 'opp-DIFFERENT' });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ executedTermsAttestation: wrongOpp }));
+  checkFalse('an attestation bound to a DIFFERENT opportunity fails closed', result.ok);
+  checkTrue('failure names ATTESTATION_OPPORTUNITY_MISMATCH', result.failure.reasons.some((r) => r.code === 'ATTESTATION_OPPORTUNITY_MISMATCH'));
+}
+{
+  const tamperedAuthority = Object.assign({}, validAttestationFixture({}), { operator: 'not-brad' });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ executedTermsAttestation: tamperedAuthority }));
+  checkFalse('an attestation not attributed to Brad (tampered in memory, bypassing the builder) fails closed', result.ok);
+  checkTrue('failure names ATTESTATION_NOT_BRAD', result.failure.reasons.some((r) => r.code === 'ATTESTATION_NOT_BRAD'));
+}
+{
+  const tamperedUnanimous = Object.assign({}, validAttestationFixture({}), {
+    items: validAttestationFixture({}).items.map((i, idx) => (idx === 0 ? Object.assign({}, i, { result: 'DOES_NOT_MATCH' }) : i)),
+  });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ executedTermsAttestation: tamperedUnanimous }));
+  checkFalse('an attestation tampered in memory to carry a non-MATCHES item (bypassing the builder) fails closed -- defense in depth', result.ok);
+  checkTrue('failure names ATTESTATION_NOT_UNANIMOUS_MATCHES', result.failure.reasons.some((r) => r.code === 'ATTESTATION_NOT_UNANIMOUS_MATCHES'));
 }
 
 /* ====================================================================== */
@@ -775,6 +866,143 @@ function listDocumentsBodyFixture(over) {
 }
 
 /* ====================================================================== */
+/* 16. Executed-terms attestation model -- checklist building, the        */
+/*     unanimous-MATCHES gate, and carrier round-trip/rejection           */
+/* ====================================================================== */
+
+{
+  const items = AT.buildExecutedTermsChecklist({
+    agreement: { price: 190000, propertyAddress: '123 Main St', parties: [] },
+    buyerIdentity: 'BTC LLC',
+    expectedSigners: [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Spouse', displayName: 'John Seller' }],
+  });
+  check('checklist has exactly 3 fixed items + one per signer + one catch-all', items.length, 6);
+  check('item order is fixed: property, price, buyer, then each signer, then catch-all', items.map((i) => i.kind), [
+    'property_identity', 'purchase_price', 'buyer_identity', 'signing_party', 'signing_party', 'other_material_terms',
+  ]);
+  checkTrue('property_identity carries the real authoritative address', items[0].authoritativeLabel.includes('123 Main St'));
+  checkTrue('purchase_price carries the real authoritative price', items[1].authoritativeLabel.includes('190,000') || items[1].authoritativeLabel.includes('190000'));
+  check('buyer_identity carries the real authoritative buyer', items[2].authoritativeLabel, 'BTC LLC');
+  check('one signing_party item exists per expected signer, each naming its own role', items.filter((i) => i.kind === 'signing_party').map((i) => i.signerRole), ['Seller', 'Spouse']);
+  checkTrue('every non-signing_party item has a null signerRole', items.filter((i) => i.kind !== 'signing_party').every((i) => i.signerRole === null));
+}
+{
+  // ruling item 3: ONLY unanimous MATCHES may satisfy verification.
+  const items = AT.buildExecutedTermsChecklist({ agreement: { price: 1, propertyAddress: 'x', parties: [] }, buyerIdentity: 'BTC LLC', expectedSigners: [{ role: 'Seller', displayName: 'Jane Seller' }] });
+  const allMatches = items.map((i) => ({ kind: i.kind, signerRole: i.signerRole, result: 'MATCHES' }));
+  const oneDoesNotMatch = items.map((i, idx) => ({ kind: i.kind, signerRole: i.signerRole, result: idx === 0 ? 'DOES_NOT_MATCH' : 'MATCHES' }));
+  const oneCannotVerify = items.map((i, idx) => ({ kind: i.kind, signerRole: i.signerRole, result: idx === 0 ? 'CANNOT_VERIFY' : 'MATCHES' }));
+  const baseAttestationArgs = { opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1, selectedArtifactSha256: 'a'.repeat(64), attestedAt: VERIFIED_AT, requiredItems: items, evidenceSummary: 'x' };
+
+  const okResult = AT.buildExecutedTermsAttestationRecordArgs(Object.assign({}, baseAttestationArgs, { responses: allMatches }));
+  checkTrue('unanimous MATCHES builds successfully', okResult.ok);
+
+  const notMatchResult = AT.buildExecutedTermsAttestationRecordArgs(Object.assign({}, baseAttestationArgs, { responses: oneDoesNotMatch }));
+  checkFalse('a single DOES_NOT_MATCH blocks the whole attestation from being built', notMatchResult.ok);
+  check('failure names NOT_UNANIMOUS_MATCHES', notMatchResult.reasons[0].code, 'NOT_UNANIMOUS_MATCHES');
+
+  const cannotVerifyResult = AT.buildExecutedTermsAttestationRecordArgs(Object.assign({}, baseAttestationArgs, { responses: oneCannotVerify }));
+  checkFalse('a single CANNOT_VERIFY blocks the whole attestation from being built -- treated the same as a mismatch, never a silent pass', cannotVerifyResult.ok);
+  check('failure names NOT_UNANIMOUS_MATCHES', cannotVerifyResult.reasons[0].code, 'NOT_UNANIMOUS_MATCHES');
+}
+{
+  const items = AT.buildExecutedTermsChecklist({ agreement: { price: 1, propertyAddress: 'x', parties: [] }, buyerIdentity: 'BTC LLC', expectedSigners: [{ role: 'Seller', displayName: 'Jane Seller' }] });
+  const base = { opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1, selectedArtifactSha256: 'a'.repeat(64), attestedAt: VERIFIED_AT, requiredItems: items, evidenceSummary: 'x' };
+  const allMatches = items.map((i) => ({ kind: i.kind, signerRole: i.signerRole, result: 'MATCHES' }));
+
+  checkFalse('a response count that does not match the required item count fails closed', AT.buildExecutedTermsAttestationRecordArgs(Object.assign({}, base, { responses: allMatches.slice(0, -1) })).ok);
+  const dup = allMatches.slice(0, -1).concat([allMatches[0]]);
+  checkFalse('a duplicate response for the same item fails closed', AT.buildExecutedTermsAttestationRecordArgs(Object.assign({}, base, { responses: dup })).ok);
+  const substituted = allMatches.slice(0, -1).concat([{ kind: 'purchase_price', signerRole: null, result: 'MATCHES' }]);
+  checkFalse('a response set that does not correspond one-to-one to the required items fails closed', AT.buildExecutedTermsAttestationRecordArgs(Object.assign({}, base, { responses: substituted })).ok);
+  checkFalse('zero required items fails closed', AT.buildExecutedTermsAttestationRecordArgs(Object.assign({}, base, { requiredItems: [], responses: [] })).ok);
+  checkFalse('a malformed (non-64-hex) sha256 fails closed', AT.buildExecutedTermsAttestationRecordArgs(Object.assign({}, base, { responses: allMatches, selectedArtifactSha256: 'not-a-hash' })).ok);
+  checkFalse('a mismatched Agreement Reached identity vs version.agreementAt fails closed', AT.buildExecutedTermsAttestationRecordArgs(Object.assign({}, base, { responses: allMatches, agreementAt: '2099-01-01T00:00:00.000Z' })).ok);
+  const built = AT.buildExecutedTermsAttestationRecordArgs(Object.assign({}, base, { responses: allMatches }));
+  checkTrue('operator/authorizedBy are hardcoded "brad" literals, never caller-supplied', built.ok && built.value.operator === 'brad' && built.value.authorizedBy === 'brad');
+}
+{
+  // Carrier round-trip -- exact field equality.
+  const attestation = validAttestationFixture({});
+  const note = ATC.formatExecutedTermsAttestationNote(attestation);
+  const parsed = ATC.parseExecutedTermsAttestationNote(note);
+  checkTrue('the attestation note round-trips to a non-null record', parsed !== null);
+  check('round-trip is byte-for-byte field-equal to the original', JSON.stringify(parsed), JSON.stringify(attestation));
+}
+{
+  checkNull('parse: unrelated text is rejected', ATC.parseExecutedTermsAttestationNote('not an attestation note'));
+  checkNull('parse: empty string is rejected', ATC.parseExecutedTermsAttestationNote(''));
+}
+{
+  const attestation = validAttestationFixture({});
+  const note = ATC.formatExecutedTermsAttestationNote(attestation);
+  const lines = note.split('\n');
+  const opIdx = lines.findIndex((l) => l.startsWith('Operator: '));
+  lines[opIdx] = 'Operator: not-brad';
+  checkNull('parse: a non-Brad Operator is rejected', ATC.parseExecutedTermsAttestationNote(lines.join('\n')));
+}
+{
+  const attestation = validAttestationFixture({});
+  const note = ATC.formatExecutedTermsAttestationNote(attestation);
+  const lines = note.split('\n');
+  const authIdx = lines.findIndex((l) => l.startsWith('Authorized by: '));
+  lines[authIdx] = 'Authorized by: not-brad';
+  checkNull('parse: a non-Brad Authorized by is rejected', ATC.parseExecutedTermsAttestationNote(lines.join('\n')));
+}
+{
+  const attestation = validAttestationFixture({});
+  const note = ATC.formatExecutedTermsAttestationNote(attestation);
+  const lines = note.split('\n');
+  const agreementIdx = lines.findIndex((l) => l.startsWith('Agreement Reached at: '));
+  lines[agreementIdx] = 'Agreement Reached at: 2099-01-01T00:00:00.000Z';
+  checkNull('parse: a mixed-version record is rejected', ATC.parseExecutedTermsAttestationNote(lines.join('\n')));
+}
+{
+  const attestation = validAttestationFixture({});
+  const note = ATC.formatExecutedTermsAttestationNote(attestation);
+  const lines = note.split('\n');
+  const itemsIdx = lines.findIndex((l) => l.startsWith('Items: '));
+  lines[itemsIdx] = 'Items: []';
+  checkNull('parse: an empty Items array is rejected', ATC.parseExecutedTermsAttestationNote(lines.join('\n')));
+}
+{
+  const attestation = validAttestationFixture({});
+  const note = ATC.formatExecutedTermsAttestationNote(attestation);
+  const lines = note.split('\n');
+  const itemsIdx = lines.findIndex((l) => l.startsWith('Items: '));
+  const items = JSON.parse(lines[itemsIdx].slice('Items: '.length));
+  items[0].result = 'DOES_NOT_MATCH';
+  lines[itemsIdx] = 'Items: ' + JSON.stringify(items);
+  checkNull('parse: an Items array containing ANY non-MATCHES result is rejected -- the carrier\'s own central gate, defense in depth against a hand-edited note', ATC.parseExecutedTermsAttestationNote(lines.join('\n')));
+}
+{
+  const attestation = validAttestationFixture({});
+  const note = ATC.formatExecutedTermsAttestationNote(attestation);
+  const lines = note.split('\n');
+  const shaIdx = lines.findIndex((l) => l.startsWith('Artifact SHA-256: '));
+  lines[shaIdx] = 'Artifact SHA-256: not-a-real-hash';
+  checkNull('parse: a malformed SHA-256 is rejected', ATC.parseExecutedTermsAttestationNote(lines.join('\n')));
+}
+{
+  checkNull('parse: correct header but wrong line count is rejected', ATC.parseExecutedTermsAttestationNote('IAOS EXECUTED TERMS ATTESTATION — iaos-executed-terms-attestation-v1\nAttested at: 2026-01-01T00:00:00.000Z'));
+}
+{
+  // Append-only, latest-wins convenience.
+  const a1 = validAttestationFixture({ attestedAt: '2026-09-12T10:00:00.000Z' });
+  const a2 = validAttestationFixture({ attestedAt: '2026-09-12T11:00:00.000Z' });
+  const notes = [{ body: ATC.formatExecutedTermsAttestationNote(a1) }, { body: ATC.formatExecutedTermsAttestationNote(a2) }];
+  const all = ATC.allExecutedTermsAttestationRecordsForOpportunity(notes, OPP);
+  check('append-only reader returns BOTH records, unfiltered', all.length, 2);
+  const latest = ATC.latestExecutedTermsAttestationForOpportunity(notes, OPP);
+  check('latest-wins convenience picks the later attestedAt', latest.attestedAt, a2.attestedAt);
+}
+{
+  const different = validAttestationFixture({ opportunityId: 'opp-OTHER' });
+  const notes = [{ body: ATC.formatExecutedTermsAttestationNote(different) }];
+  check('append-only reader scopes strictly to the requested opportunityId', ATC.allExecutedTermsAttestationRecordsForOpportunity(notes, OPP).length, 0);
+}
+
+/* ====================================================================== */
 /* 15. No stage/workflow/send/Production mutation exists anywhere in the  */
 /*     new or modified source (static scan)                               */
 /* ====================================================================== */
@@ -784,7 +1012,9 @@ function listDocumentsBodyFixture(over) {
   const carrierSource = fs.readFileSync(path.join(LIB, 'contract-execution-carriers.ts'), 'utf8');
   const sendCarrierSource = fs.readFileSync(path.join(LIB, 'contract-send-carriers.ts'), 'utf8');
   const browserHashSource = fs.readFileSync(path.join(LIB, 'browser-artifact-hash.ts'), 'utf8');
-  const combined = modelSource + '\n' + carrierSource + '\n' + sendCarrierSource + '\n' + browserHashSource;
+  const attestationModelSource = fs.readFileSync(path.join(LIB, 'contract-executed-terms-attestation-model.ts'), 'utf8');
+  const attestationCarrierSource = fs.readFileSync(path.join(LIB, 'contract-executed-terms-attestation-carriers.ts'), 'utf8');
+  const combined = modelSource + '\n' + carrierSource + '\n' + sendCarrierSource + '\n' + browserHashSource + '\n' + attestationModelSource + '\n' + attestationCarrierSource;
   const forbidden = ['Seller Closed-Won', 'pipelineId', 'pipeline_stage', 'pipelineStageId', '/opportunities/', 'templates/send'];
   const found = forbidden.filter((token) => combined.includes(token));
   check('no pipeline stage, Seller Closed-Won, direct /opportunities/ write path, or send-capable endpoint reference exists in the new/modified INV-65 source', found, []);

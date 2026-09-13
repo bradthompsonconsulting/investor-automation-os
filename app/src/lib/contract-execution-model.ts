@@ -113,38 +113,51 @@
  * `globalThis.crypto.subtle` natively since v19) to prove the two never
  * diverge, without needing an actual browser.
  *
- * 3. EXECUTED-TERM VERIFICATION IS UNAVAILABLE FOR V1, EXPLICITLY, NOT
- * SILENTLY SKIPPED. The pre-repair version of this file accepted a
- * caller-supplied `executedTermsSnapshot` "as though it came from the
- * executed PDF" -- Jess's own correction: that was never proven evidence
+ * 3. EXECUTED-TERM VERIFICATION IS BRAD'S OWN FACTUAL VISUAL ATTESTATION,
+ * NEVER AN AUTO-EXTRACTED OR CALLER-ASSERTED VALUE. Product Owner ruling,
+ * 2026-09-13: "For single-user IAOS V1, Brad's factual visual attestation
+ * may verify that the material terms visible in the selected, hash-
+ * verified executed PDF match the authoritative Agreement Reached
+ * record." The pre-repair version of this file once accepted a caller-
+ * supplied `executedTermsSnapshot` "as though it came from the executed
+ * PDF" -- Jess's own prior correction: that was never proven evidence
  * tied to the executed artifact, only IAOS's own internal facts dressed
- * up as if they were. Live discovery confirmed no completed document
- * carries a `templateId`, and no document from the actual TREC 20-19
- * template exists yet to observe whether its own fields would even be
- * readable. The TREC template ALSO remains `POPULATION_NOT_VERIFIED`
- * (`ghl-config.ts`) -- sending it is refused by INV-63's own GATE 2 and
- * its dedicated reservation/execution endpoints regardless of anything in
- * this file. `buildVerifiedUnderContractRecord` therefore has NO
- * parameter through which a caller can supply executed-term evidence at
- * all -- the pipeline fails closed, unconditionally, at a distinct
- * `executed_terms` stage with `EXECUTED_TERMS_EVIDENCE_UNAVAILABLE`,
- * BEFORE `evaluateUnderContractEligibility` is ever reached. The
+ * up as if they were. Live discovery confirmed GHL exposes no field-value
+ * merge content anywhere in its Documents & Contracts API surface -- this
+ * remains true, and this module still computes and trusts NOTHING about
+ * the PDF's own content itself. What changed is narrower: Brad's own
+ * plain, per-item MATCHES/DOES_NOT_MATCH/CANNOT_VERIFY comparison
+ * (`contract-executed-terms-attestation-model.ts`) is now sanctioned
+ * evidence, gated hard: unanimous `"MATCHES"` across property identity,
+ * purchase price, buyer identity, EVERY required signing party
+ * individually, and a catch-all "other material terms" item, or the
+ * attestation cannot even be built
+ * (`buildExecutedTermsAttestationRecordArgs`); a previously-recorded
+ * attestation is re-checked for currency against THIS exact opportunity/
+ * version/provider document/revision/artifact hash every time
+ * (`verifyExecutedTermsAttestationCurrency`) -- stale, cross-version, or
+ * cross-artifact attestations are never silently reused. IAOS still never
+ * interprets contract language or judges legal validity; it only
+ * compares its own already-held facts against Brad's own responses. The
  * deterministic bright-line conflict logic itself
  * (`evaluateExecutedTermsConflicts`, a thin, tested, reused wrapper over
- * `detectMaterialConflicts`) is preserved and exported, unwired, so a
- * future issue that confirms a real, deterministic evidence source needs
- * only to wire that function into the pipeline in place of the
- * unconditional failure below -- this module's own conflict-detection
- * logic requires no change when that day comes.
+ * `detectMaterialConflicts`) remains preserved and exported, still unwired
+ * into this pipeline directly -- it is the logic a FUTURE issue with a
+ * real deterministic (non-attestation) evidence source would wire in
+ * instead, not something this ruling replaces.
  *
  * WHAT "BUILDING THE RECORD" DOES NOT MEAN. `buildVerifiedUnderContractRecord`
  * returns a CANDIDATE record ready to be written -- it performs no write.
- * Given boundary 3 above, IT CANNOT RETURN `ok: true` IN V1 AT ALL --
- * every call fails at the `executed_terms` stage, by design, proven by
- * this module's own test harness. `verifyReadbackMatchesWritten` is the
- * pure equality check a future write+readback call site will use once
- * boundary 3 is lifted; it is tested here against fixtures, but nothing
- * in this module ever calls `ghl.notes.create()` or reads real GHL notes.
+ * It can now return `ok: true` ONLY when every earlier stage (binding,
+ * signer mapping, signer completion, provider completion, artifact) AND
+ * a current, unanimous executed-terms attestation ALL independently
+ * pass -- in practice, for real live evidence, this remains unreached
+ * today (no document has ever been generated from the real TREC
+ * template; see `contract-execution-model.ts`'s own INV-65 test suite for
+ * the exact fixture-only cases where it is reachable). `verifyReadback
+ * MatchesWritten` is the pure equality check a future write+readback call
+ * site will use; it is tested here against fixtures, but nothing in this
+ * module ever calls `ghl.notes.create()` or reads real GHL notes.
  */
 
 import {
@@ -174,6 +187,10 @@ import {
   deriveLatestProviderStatus,
   orderRecordsChronologically,
 } from "./contract-lifecycle-model";
+import {
+  type ExecutedTermsAttestationRecord,
+  verifyExecutedTermsAttestationCurrency,
+} from "./contract-executed-terms-attestation-model";
 
 function isValidIsoInstant(at: string): boolean {
   return Number.isFinite(new Date(at).getTime());
@@ -602,23 +619,6 @@ export function evaluateExecutedTermsConflicts(agreement: MaterialTermSnapshot, 
   return detectMaterialConflicts(agreement, executedTerms);
 }
 
-/**
- * THE V1 BOUNDARY, NAMED AND FLIPPABLE IN ONE PLACE. `false` for as long
- * as: (a) the TREC template remains `POPULATION_NOT_VERIFIED`
- * (`ghl-config.ts`), and (b) no deterministic, provider-evidenced source
- * for executed price/property/party content has been confirmed (live
- * discovery, 2026-09-13: no document generated from the real template
- * exists to observe, and even the one observed completed document's
- * `fillableFields[]` carried a `Signature`-type field, not merge
- * content). This constant is deliberately NOT a parameter any caller can
- * override -- the only way to change this gate's behavior is an
- * authorized code change to this exact line, once real evidence exists.
- */
-const EXECUTED_TERMS_EVIDENCE_AVAILABLE = false as const;
-
-export type ExecutedTermsReasonCode = "EXECUTED_TERMS_EVIDENCE_UNAVAILABLE";
-export type ExecutedTermsReason = { code: ExecutedTermsReasonCode; message: string };
-
 /* ==================================================================== */
 /* 4. The Under Contract record -- built ONLY via joint verification     */
 /* ==================================================================== */
@@ -664,6 +664,8 @@ export type BuildVerifiedExecutionArgs = {
   manualArtifactOutcome: ManualArtifactSelectionOutcome;
   selectedForDocumentId: string;
   selectedForVersion: ContractVersionIdentity;
+  /** Brad's own recorded, unanimous, currency-checked visual comparison -- see `verifyExecutedTermsAttestationCurrency` and this module's own header, boundary 3. `null` when none has been recorded yet; fails closed at the `executed_terms` stage either way. */
+  executedTermsAttestation: ExecutedTermsAttestationRecord | null;
   iaosVerifiedAt: string;
   evidenceSummary: string;
   relatedPriorRecordId: string | null;
@@ -694,21 +696,21 @@ function fail(stage: VerificationStage, reasons: readonly { code: string; messag
  *      CALLER's own environment (Web Crypto in the browser) -- this
  *      module only validates and passes the resulting hash through
  *      (`verifyManualArtifactSelection`).
- *   7. Executed material terms -- UNAVAILABLE for V1, explicitly, at its
- *      own named stage (`executed_terms` /
- *      `EXECUTED_TERMS_EVIDENCE_UNAVAILABLE`) -- see the module header,
- *      boundary 3. This is why this function cannot return `ok: true`
- *      today; the pipeline below stage 6 is real, reused, tested code
- *      that a future issue activates, not code this issue deletes.
+ *   7. Executed material terms -- Brad's own current, unanimous MATCHES
+ *      visual attestation, at its own named stage (`executed_terms`) --
+ *      see the module header, boundary 3, and
+ *      `verifyExecutedTermsAttestationCurrency`
+ *      (`contract-executed-terms-attestation-model.ts`). Missing, stale,
+ *      cross-version, cross-document, cross-artifact, non-Brad, or
+ *      non-unanimous evidence fails closed here by name.
  *   9-10. Append-only write and readback equality are NOT this function's
  *      job -- see the module header's "WHAT BUILDING THE RECORD DOES NOT
  *      MEAN."
  *
  * `evaluateUnderContractEligibility` (board9-contract-model.ts, reused
- * verbatim) remains the actual, final, single eligibility decision for
- * whenever stage 7 above is lifted -- every earlier stage exists to build
- * ITS inputs correctly, never to duplicate or bypass its own joint
- * three-fact requirement.
+ * verbatim) remains the actual, final, single eligibility decision --
+ * every earlier stage exists to build ITS inputs correctly, never to
+ * duplicate or bypass its own joint three-fact requirement.
  */
 export function buildVerifiedUnderContractRecord(
   args: BuildVerifiedExecutionArgs,
@@ -750,21 +752,22 @@ export function buildVerifiedUnderContractRecord(
   });
   if (!artifact.ok) return fail("artifact", artifact.reasons);
 
-  // BOUNDARY 3 (module header): unconditional, explicit, never silently
-  // skipped. The manual PDF bridge above proves artifact POSSESSION and
-  // INTEGRITY only -- it does not, by itself, prove price/property/party
-  // equality, and nothing past this point in the pipeline is reachable
-  // until a future, separately-authorized issue supplies real evidence
-  // and flips `EXECUTED_TERMS_EVIDENCE_AVAILABLE`.
-  if (!EXECUTED_TERMS_EVIDENCE_AVAILABLE) {
-    return fail("executed_terms", [{
-      code: "EXECUTED_TERMS_EVIDENCE_UNAVAILABLE",
-      message: "The configured TREC template remains POPULATION_NOT_VERIFIED and no deterministic, provider-evidenced source for executed price/property/party content has been confirmed -- Under Contract cannot be created without it. The manual PDF bridge proves artifact possession and integrity only.",
-    }]);
-  }
+  // BOUNDARY 3 (module header): the manual PDF bridge above proves
+  // artifact POSSESSION and INTEGRITY only -- it does not, by itself,
+  // prove price/property/party equality. Brad's own current, unanimous
+  // MATCHES attestation is the ONLY evidence this pipeline ever accepts
+  // for that; missing, stale, cross-version, cross-document, cross-
+  // artifact, non-Brad, or non-unanimous evidence fails closed here.
+  const attestationCheck = verifyExecutedTermsAttestationCurrency({
+    attestation: args.executedTermsAttestation,
+    opportunityId: args.opportunityId,
+    version: args.version,
+    providerDocumentId: binding.value.providerDocumentId,
+    providerDocumentRevision: binding.value.providerDocumentRevision,
+    selectedArtifactSha256: artifact.sha256,
+  });
+  if (!attestationCheck.ok) return fail("executed_terms", attestationCheck.reasons);
 
-  // Unreachable while EXECUTED_TERMS_EVIDENCE_AVAILABLE is false -- kept
-  // real, reused, and structurally correct for the moment it is lifted.
   const requirements: SignerRequirement[] = mappingResult.mappings.map((m) => ({ role: m.role, displayName: m.displayName, signingAuthorityNote: null }));
 
   const preservedDocument: PreservedDocumentEvidence = {
