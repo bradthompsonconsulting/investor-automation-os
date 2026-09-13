@@ -13,52 +13,74 @@
  * write and no fourth write class is introduced.
  *
  * ONE NOTE SHAPE FOR EVERY LIFECYCLE EVENT KIND. `contract-lifecycle-
- * model.ts`'s four `LifecycleRecord` variants (`provider_observation`,
- * `correction`, `resend`, `rescission`) all serialize through the SAME
- * positional schema -- fields that do not apply to a given kind are
- * written as the ledger's own `UNAVAILABLE` sentinel, exactly as
+ * model.ts`'s five `LifecycleRecord` variants (`provider_observation`,
+ * `correction`, `resend`, `rescission`, `decline`) all serialize through
+ * the SAME positional schema -- fields that do not apply to a given kind
+ * are written as the ledger's own `UNAVAILABLE` sentinel, exactly as
  * `contract-send-carriers.ts` already does for its own optional fields.
  * `formatContractLifecycleNote` NEVER writes a note that mixes fields
- * from two different kinds (e.g. a `"sent"` provider observation carrying
- * a `recordedBy` operator, or a `"rescinded"` record missing its
- * authorization timestamp) -- `parseContractLifecycleNote` independently
+ * from two different kinds -- `parseContractLifecycleNote` independently
  * re-derives and re-checks the same per-kind shape on read-back, so a
  * hand-edited or malformed note can never round-trip into a record that
- * claims an authority its own fields do not support.
+ * claims an authority or evidence its own fields do not support.
  *
  * PROVIDER FACTS CANNOT IMPERSONATE HUMAN FACTS, OR VICE VERSA -- ENFORCED
  * AT PARSE TIME, NOT ASSUMED. `parseContractLifecycleNote` rejects (returns
  * `null` for) any note where: the `Authority` column does not match the
  * kind implied by `Event kind` exactly (`provider_reported` for the nine
- * provider statuses, `operator_attested` for `corrected`, `brad_authorized`
- * for `resent`/`rescinded`); a provider-kind note carries a non-blank
- * `Operator`/`Authorized at`/`Detail`; or a `resent`/`rescinded` note's
- * `Operator` is anything other than the literal `"brad"`. This is what
- * makes "a human fact cannot impersonate a provider event" a property of
- * every note this codebase will ever read back, not merely of the notes
- * this codebase itself writes.
+ * provider statuses, `operator_attested` for `corrected`/`operator_
+ * declined`, `brad_authorized` for `resent`/`rescinded`); a provider-kind
+ * note carries a non-blank `Operator`/`Authorized at`/`Detail`; a human-
+ * kind note carries any raw provider evidence field (`Raw provider
+ * status`, `Raw is expired`, `Raw deleted`, `Recipients completed/total`,
+ * `Provider document reference/revision`, `Provider reported at`); or a
+ * `resent`/`rescinded` note's `Operator` is anything other than the
+ * literal `"brad"`. This is what makes "a human fact cannot impersonate a
+ * provider event" (and vice versa) a property of every note this codebase
+ * will ever read back, not merely of the notes this codebase itself
+ * writes.
+ *
+ * RAW PROVIDER EVIDENCE IS PRESERVED SEPARATELY FROM THE NORMALIZED STATE
+ * (Jess Gate repair round, 2026-09-12, item 3). `Event kind` carries the
+ * NORMALIZED IAOS status (e.g. `"sent"`, `"unknown"`); `Raw provider
+ * status`, `Raw is expired`, `Raw deleted`, and `Recipients completed`/
+ * `Recipients total` carry the provider's own opaque, as-reported facts
+ * -- including an unmapped/unrecognized raw status string that produced a
+ * normalized `"unknown"`. The two are never conflated: a reader can
+ * always distinguish "what IAOS concluded" from "what the provider
+ * literally said."
  *
  * APPEND-ONLY, NEVER RESOLVED-TO-ONE. Unlike `contract-send-carriers.ts`'s
  * `latestContractSendForOpportunity` (which collapses a multi-note attempt
  * lifecycle down to ONE current record because an attempt genuinely has a
  * single current status), this module's `allContractLifecycleRecordsFor`
  * returns EVERY parsed record for an opportunity, unfiltered and
- * unresolved -- duplicates included. `latestProviderStatusForVersion` is
- * offered as a separate, explicitly-named DERIVED view (thin wrapper over
- * `contract-lifecycle-model.ts`'s own `deriveLatestProviderStatus`) so a
- * caller wanting "the current status" and a caller wanting "the complete
- * history" are never the same function call.
+ * unresolved -- duplicates included. Order is NOT guaranteed here --
+ * callers wanting chronology use `contract-lifecycle-model.ts`'s
+ * `orderRecordsChronologically` explicitly, so "what order" is always a
+ * visible, separate decision.
  *
- * Embedded newlines in free-text fields (`evidenceSummary`, `reason`)
- * would break this schema's one-line-per-field contract on read-back --
- * `formatContractLifecycleNote` replaces any `\n` in those two fields with
- * a single space before writing, so a note this module writes always
- * round-trips through its own parser. Callers should keep both fields
- * short, single-line, and non-secret.
+ * Embedded newlines in free-text fields (`evidenceSummary`, `reason`/
+ * `reasonOrEvidence`) would break this schema's one-line-per-field
+ * contract on read-back -- `formatContractLifecycleNote` replaces any
+ * `\n` in those fields with a single space before writing, so a note this
+ * module writes always round-trips through its own parser. Callers should
+ * keep these fields short, single-line, and non-secret.
  */
 
 function ledgerValue(value: string | number | null | undefined): string {
   return value === null || value === undefined || value === "" ? "UNAVAILABLE" : String(value);
+}
+
+function ledgerBooleanValue(value: boolean | null): string {
+  return value === null ? "UNAVAILABLE" : value ? "true" : "false";
+}
+
+function parseLedgerBoolean(raw: string): { ok: true; value: boolean | null } | { ok: false } {
+  if (raw === "UNAVAILABLE") return { ok: true, value: null };
+  if (raw === "true") return { ok: true, value: true };
+  if (raw === "false") return { ok: true, value: false };
+  return { ok: false };
 }
 
 function singleLine(value: string): string {
@@ -104,6 +126,13 @@ function safeJsonParse(raw: string): { ok: true; value: unknown } | { ok: false 
   }
 }
 
+/** A non-negative integer literal exactly (rejects "3.5", "-1", "", "abc", leading/trailing whitespace). */
+function parseNonNegativeInt(raw: string): number | null {
+  if (!/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
 import {
   type ContractVersionIdentity,
   type MaterialConflict,
@@ -143,9 +172,9 @@ function isMaterialConflict(v: unknown): v is MaterialConflict {
   return typeof v.agreementValue === "string" && typeof v.candidateValue === "string";
 }
 
-/** Every lifecycle event kind this ledger can hold -- the nine provider statuses plus the three human-recorded kinds. */
-export type LifecycleEventKind = ProviderLifecycleStatus | "corrected" | "resent" | "rescinded";
-const HUMAN_EVENT_KINDS = ["corrected", "resent", "rescinded"] as const;
+/** Every lifecycle event kind this ledger can hold -- the nine provider statuses plus the four human-recorded kinds. `"operator_declined"` is deliberately distinct from the provider status `"declined"` -- the two must never collide in the shared `Event kind` column. */
+export type LifecycleEventKind = ProviderLifecycleStatus | "corrected" | "resent" | "rescinded" | "operator_declined";
+const HUMAN_EVENT_KINDS = ["corrected", "resent", "rescinded", "operator_declined"] as const;
 const ALL_EVENT_KINDS: readonly LifecycleEventKind[] = [...PROVIDER_LIFECYCLE_STATUSES, ...HUMAN_EVENT_KINDS];
 
 export const CONTRACT_LIFECYCLE_LEDGER_VERSION = "iaos-contract-lifecycle-v1" as const;
@@ -159,6 +188,11 @@ const LABELS = [
   "Provider document reference",
   "Provider document revision",
   "Provider reported at",
+  "Raw provider status",
+  "Raw is expired",
+  "Raw deleted",
+  "Recipients completed",
+  "Recipients total",
   "Authority",
   "Operator",
   "Authorized at",
@@ -170,6 +204,7 @@ const LABELS = [
 type CorrectionDetail = { priorVersion: ContractVersionIdentity; classification: "new_agreement_required" | "same_agreement_reentry"; materialConflicts: MaterialConflict[] };
 type ResendDetail = { priorAttemptId: string; newAttemptId: string };
 type RescissionDetail = { reason: string };
+type DeclineDetail = { reasonOrEvidence: string };
 
 function formatDetail(record: LifecycleRecord): string {
   if (record.kind === "correction") {
@@ -188,20 +223,46 @@ function formatDetail(record: LifecycleRecord): string {
     const detail: RescissionDetail = { reason: singleLine(record.reason) };
     return JSON.stringify(detail);
   }
+  if (record.kind === "decline") {
+    const detail: DeclineDetail = { reasonOrEvidence: singleLine(record.reasonOrEvidence) };
+    return JSON.stringify(detail);
+  }
   return "UNAVAILABLE";
 }
 
 /** Serializes ANY `LifecycleRecord` variant into the one shared note shape. Never mixes fields across kinds -- see module header. */
 export function formatContractLifecycleNote(record: LifecycleRecord): string {
-  const eventKind: LifecycleEventKind = record.kind === "provider_observation" ? record.status : record.kind === "correction" ? "corrected" : record.kind === "resend" ? "resent" : "rescinded";
+  const eventKind: LifecycleEventKind =
+    record.kind === "provider_observation" ? record.status
+    : record.kind === "correction" ? "corrected"
+    : record.kind === "resend" ? "resent"
+    : record.kind === "rescission" ? "rescinded"
+    : "operator_declined";
   const version = record.kind === "correction" ? record.newVersion : record.version;
-  const providerDocumentId = record.kind === "provider_observation" ? record.providerDocumentId : record.kind === "rescission" ? record.providerDocumentIdAtRescission : null;
+  const providerDocumentId =
+    record.kind === "provider_observation" ? record.providerDocumentId
+    : record.kind === "rescission" ? record.providerDocumentIdAtRescission
+    : record.kind === "decline" ? record.providerDocumentIdAtDecline
+    : null;
   const providerDocumentReference = record.kind === "provider_observation" ? record.providerDocumentReference : null;
   const providerDocumentRevision = record.kind === "provider_observation" ? record.providerDocumentRevision : null;
   const providerReportedAt = record.kind === "provider_observation" ? record.providerReportedAt : null;
+  const rawProviderStatus = record.kind === "provider_observation" ? record.rawProviderStatus : null;
+  const rawIsExpired = record.kind === "provider_observation" ? record.isExpired : null;
+  const rawDeleted = record.kind === "provider_observation" ? record.deleted : null;
+  const recipientsCompleted = record.kind === "provider_observation" ? (record.recipients?.completed ?? null) : null;
+  const recipientsTotal = record.kind === "provider_observation" ? (record.recipients?.total ?? null) : null;
   const operator =
-    record.kind === "correction" ? record.recordedBy : record.kind === "resend" ? record.authorizedBy : record.kind === "rescission" ? record.authorizedBy : null;
-  const authorizedAt = record.kind === "resend" ? record.authorizedAt : record.kind === "rescission" ? record.authorizedAt : null;
+    record.kind === "correction" ? record.recordedBy
+    : record.kind === "resend" ? record.authorizedBy
+    : record.kind === "rescission" ? record.authorizedBy
+    : record.kind === "decline" ? record.recordedBy
+    : null;
+  const authorizedAt =
+    record.kind === "resend" ? record.authorizedAt
+    : record.kind === "rescission" ? record.authorizedAt
+    : record.kind === "decline" ? record.declinedAt
+    : null;
 
   return [
     HEADER,
@@ -213,12 +274,17 @@ export function formatContractLifecycleNote(record: LifecycleRecord): string {
     `${LABELS[5]}: ${ledgerValue(providerDocumentReference)}`,
     `${LABELS[6]}: ${ledgerValue(providerDocumentRevision)}`,
     `${LABELS[7]}: ${ledgerValue(providerReportedAt)}`,
-    `${LABELS[8]}: ${record.authority}`,
-    `${LABELS[9]}: ${ledgerValue(operator)}`,
-    `${LABELS[10]}: ${ledgerValue(authorizedAt)}`,
-    `${LABELS[11]}: ${singleLine(record.evidenceSummary)}`,
-    `${LABELS[12]}: ${ledgerValue(record.relatedPriorRecordId)}`,
-    `${LABELS[13]}: ${formatDetail(record)}`,
+    `${LABELS[8]}: ${ledgerValue(rawProviderStatus)}`,
+    `${LABELS[9]}: ${ledgerBooleanValue(rawIsExpired)}`,
+    `${LABELS[10]}: ${ledgerBooleanValue(rawDeleted)}`,
+    `${LABELS[11]}: ${ledgerValue(recipientsCompleted)}`,
+    `${LABELS[12]}: ${ledgerValue(recipientsTotal)}`,
+    `${LABELS[13]}: ${record.authority}`,
+    `${LABELS[14]}: ${ledgerValue(operator)}`,
+    `${LABELS[15]}: ${ledgerValue(authorizedAt)}`,
+    `${LABELS[16]}: ${singleLine(record.evidenceSummary)}`,
+    `${LABELS[17]}: ${ledgerValue(record.relatedPriorRecordId)}`,
+    `${LABELS[18]}: ${formatDetail(record)}`,
   ].join("\n");
 }
 
@@ -227,16 +293,17 @@ export function formatContractLifecycleNote(record: LifecycleRecord): string {
  * variant -- returns `null` (never a best-effort partial record) for
  * anything malformed, ambiguous, or carrying a fact its own kind does not
  * support. This is the read-side half of "a human fact cannot impersonate
- * a provider event": the checks below are not merely mirrored from
- * `formatContractLifecycleNote`, they are independently re-verified on
- * every read.
+ * a provider event, or vice versa": the checks below are not merely
+ * mirrored from `formatContractLifecycleNote`, they are independently
+ * re-verified on every read.
  */
 export function parseContractLifecycleNote(body: string): LifecycleRecord | null {
   const values = matchPositionalSchema(body, HEADER, LABELS);
   if (!values) return null;
   const [
     at, opportunityId, eventKindRaw, versionRaw, providerDocumentIdRaw, providerDocumentReferenceRaw,
-    providerDocumentRevisionRaw, providerReportedAtRaw, authorityRaw, operatorRaw, authorizedAtRaw,
+    providerDocumentRevisionRaw, providerReportedAtRaw, rawProviderStatusRaw, rawIsExpiredRaw, rawDeletedRaw,
+    recipientsCompletedRaw, recipientsTotalRaw, authorityRaw, operatorRaw, authorizedAtRaw,
     evidenceSummary, relatedPriorRecordIdRaw, detailRaw,
   ] = values;
 
@@ -254,6 +321,23 @@ export function parseContractLifecycleNote(body: string): LifecycleRecord | null
   if (providerDocumentRevisionRaw !== "UNAVAILABLE" && (!Number.isFinite(providerDocumentRevisionParsed) || !Number.isInteger(providerDocumentRevisionParsed))) return null;
   const providerReportedAt = providerReportedAtRaw === "UNAVAILABLE" ? null : providerReportedAtRaw;
   if (providerReportedAt !== null && !isCanonicalIsoTimestamp(providerReportedAt)) return null;
+
+  const rawProviderStatus = rawProviderStatusRaw === "UNAVAILABLE" ? null : rawProviderStatusRaw;
+  const isExpiredParsed = parseLedgerBoolean(rawIsExpiredRaw);
+  if (!isExpiredParsed.ok) return null;
+  const deletedParsed = parseLedgerBoolean(rawDeletedRaw);
+  if (!deletedParsed.ok) return null;
+  const recipientsCompletedParsed = recipientsCompletedRaw === "UNAVAILABLE" ? null : parseNonNegativeInt(recipientsCompletedRaw);
+  if (recipientsCompletedRaw !== "UNAVAILABLE" && recipientsCompletedParsed === null) return null;
+  const recipientsTotalParsed = recipientsTotalRaw === "UNAVAILABLE" ? null : parseNonNegativeInt(recipientsTotalRaw);
+  if (recipientsTotalRaw !== "UNAVAILABLE" && recipientsTotalParsed === null) return null;
+  // Both present or both absent, and completed can never exceed total.
+  if ((recipientsCompletedParsed === null) !== (recipientsTotalParsed === null)) return null;
+  if (recipientsCompletedParsed !== null && recipientsTotalParsed !== null && recipientsCompletedParsed > recipientsTotalParsed) return null;
+  const recipients = recipientsCompletedParsed !== null && recipientsTotalParsed !== null
+    ? { total: recipientsTotalParsed, completed: recipientsCompletedParsed }
+    : null;
+
   const operator = operatorRaw === "UNAVAILABLE" ? null : operatorRaw;
   const authorizedAt = authorizedAtRaw === "UNAVAILABLE" ? null : authorizedAtRaw;
   const relatedPriorRecordId = relatedPriorRecordIdRaw === "UNAVAILABLE" ? null : relatedPriorRecordIdRaw;
@@ -273,6 +357,10 @@ export function parseContractLifecycleNote(body: string): LifecycleRecord | null
       opportunityId,
       version,
       status: eventKind as ProviderLifecycleStatus,
+      rawProviderStatus,
+      isExpired: isExpiredParsed.value,
+      deleted: deletedParsed.value,
+      recipients,
       providerDocumentId,
       providerDocumentReference,
       providerDocumentRevision: providerDocumentRevisionParsed,
@@ -284,13 +372,23 @@ export function parseContractLifecycleNote(body: string): LifecycleRecord | null
     };
   }
 
+  // Every human-recorded kind below carries NO raw provider evidence at
+  // all -- a human fact cannot impersonate a provider event (Jess Gate
+  // repair round, 2026-09-12, item 2/3's read-side counterpart).
+  if (
+    providerDocumentReference !== null || providerDocumentRevisionParsed !== null || providerReportedAt !== null ||
+    rawProviderStatus !== null || isExpiredParsed.value !== null || deletedParsed.value !== null || recipients !== null
+  ) {
+    return null;
+  }
+
   if (eventKind === "corrected") {
     if (authorityRaw !== "operator_attested") return null;
     if (operator === null) return null;
     if (authorizedAt !== null) return null;
-    // A correction carries no provider fields at all -- it is an IAOS/
-    // human-side product-record event, never a provider observation.
-    if (providerDocumentId !== null || providerDocumentReference !== null || providerDocumentRevisionParsed !== null || providerReportedAt !== null) return null;
+    // A correction carries no provider document id at all -- it is an
+    // IAOS/human-side product-record event, never a provider observation.
+    if (providerDocumentId !== null) return null;
     const detailParsed = safeJsonParse(detailRaw);
     if (!detailParsed.ok || !isPlainObject(detailParsed.value)) return null;
     const d = detailParsed.value;
@@ -316,6 +414,34 @@ export function parseContractLifecycleNote(body: string): LifecycleRecord | null
     };
   }
 
+  if (eventKind === "operator_declined") {
+    if (authorityRaw !== "operator_attested") return null;
+    if (operator === null) return null;
+    // Declined always requires the agreement to have reached Contract
+    // Sent -- a real provider document id is therefore always required,
+    // unlike Rescission's conditional one.
+    if (providerDocumentId === null) return null;
+    if (authorizedAt === null || !isCanonicalIsoTimestamp(authorizedAt)) return null;
+    const detailParsed = safeJsonParse(detailRaw);
+    if (!detailParsed.ok || !isPlainObject(detailParsed.value)) return null;
+    const d = detailParsed.value;
+    if (!hasExactKeys(d, ["reasonOrEvidence"])) return null;
+    if (typeof d.reasonOrEvidence !== "string" || d.reasonOrEvidence.trim() === "") return null;
+    return {
+      kind: "decline",
+      opportunityId,
+      version,
+      reasonOrEvidence: d.reasonOrEvidence,
+      recordedBy: operator,
+      declinedAt: authorizedAt,
+      providerDocumentIdAtDecline: providerDocumentId,
+      iaosObservedAt: at,
+      authority: "operator_attested",
+      evidenceSummary,
+      relatedPriorRecordId,
+    };
+  }
+
   // Remaining kinds ("resent", "rescinded") are both brad_authorized --
   // the literal operator identity is enforced here, on read, not merely
   // trusted from what a caller once wrote.
@@ -324,7 +450,7 @@ export function parseContractLifecycleNote(body: string): LifecycleRecord | null
   if (authorizedAt === null || !isCanonicalIsoTimestamp(authorizedAt)) return null;
 
   if (eventKind === "resent") {
-    if (providerDocumentId !== null || providerDocumentReference !== null || providerDocumentRevisionParsed !== null || providerReportedAt !== null) return null;
+    if (providerDocumentId !== null) return null;
     const detailParsed = safeJsonParse(detailRaw);
     if (!detailParsed.ok || !isPlainObject(detailParsed.value)) return null;
     const d = detailParsed.value;
@@ -348,7 +474,6 @@ export function parseContractLifecycleNote(body: string): LifecycleRecord | null
   }
 
   // eventKind === "rescinded"
-  if (providerDocumentReference !== null || providerDocumentRevisionParsed !== null || providerReportedAt !== null) return null;
   const detailParsed = safeJsonParse(detailRaw);
   if (!detailParsed.ok || !isPlainObject(detailParsed.value)) return null;
   const d = detailParsed.value;
@@ -376,9 +501,7 @@ export function parseContractLifecycleNote(body: string): LifecycleRecord | null
  * `latestContractSendForOpportunity`): the whole point of this ledger is
  * that no earlier send, correction, resend, decline, expiration,
  * completion, or rescission record is ever superseded or hidden by a
- * later one. Order is NOT guaranteed here -- callers wanting chronology
- * use `contract-lifecycle-model.ts`'s `orderRecordsChronologically`
- * explicitly, so "what order" is always a visible, separate decision.
+ * later one.
  */
 export function allContractLifecycleRecordsForOpportunity(
   notes: { body: string }[],

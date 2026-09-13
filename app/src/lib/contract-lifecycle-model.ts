@@ -51,7 +51,7 @@
  * `LifecycleRecord` is a discriminated union on `kind`: the
  * `provider_observation` variant carries `authority: "provider_reported"`
  * ALWAYS -- the type has no other option for that variant. The
- * `correction`/`resend`/`rescission` variants carry `authority:
+ * `correction`/`resend`/`rescission`/`decline` variants carry `authority:
  * "operator_attested"` or `"brad_authorized"` and an explicit `recordedBy`/
  * `authorizedBy` operator string. No variant can carry the wrong authority
  * for its own kind -- this is what "a human fact cannot impersonate a
@@ -121,7 +121,7 @@ export const PROVIDER_EVIDENCED_REACHABLE_STATUSES: readonly ProviderLifecycleSt
   "unknown",
 ];
 
-export type LifecycleRecordKind = "provider_observation" | "correction" | "resend" | "rescission";
+export type LifecycleRecordKind = "provider_observation" | "correction" | "resend" | "rescission" | "decline";
 
 export type LifecycleReasonCode =
   | "OPPORTUNITY_ID_BLANK"
@@ -141,7 +141,12 @@ export type LifecycleReasonCode =
   | "RESCISSION_REASON_BLANK"
   | "RESCISSION_AUTHORIZATION_TIMESTAMP_INVALID"
   | "RESCISSION_PROVIDER_DOCUMENT_ID_REQUIRED"
-  | "RESCISSION_PROVIDER_DOCUMENT_ID_MUST_BE_ABSENT";
+  | "RESCISSION_PROVIDER_DOCUMENT_ID_MUST_BE_ABSENT"
+  | "DECLINE_REQUIRES_CONTRACT_SENT"
+  | "DECLINE_REASON_OR_EVIDENCE_BLANK"
+  | "DECLINE_AT_INVALID"
+  | "DECLINE_RECORDED_BY_BLANK"
+  | "DECLINE_PROVIDER_DOCUMENT_ID_BLANK";
 
 export type LifecycleReason = { code: LifecycleReasonCode; message: string };
 
@@ -159,6 +164,13 @@ export type ProviderDocumentLifecycleRow = {
   deleted: boolean | null;
   recipients: readonly { hasCompleted: boolean }[];
 };
+
+/** Bounded, non-secret recipient-completion evidence -- counts only, never names/emails/ids. */
+export type RecipientCompletionCounts = { total: number; completed: number };
+
+function countRecipients(recipients: readonly { hasCompleted: boolean }[]): RecipientCompletionCounts {
+  return { total: recipients.length, completed: recipients.filter((r) => r.hasCompleted === true).length };
+}
 
 /**
  * Maps GHL's own documented List Documents fields to ONE normalized
@@ -204,11 +216,32 @@ export type LifecycleReadbackOutcome =
   | { kind: "network_error"; message: string }
   | { kind: "http_response"; status: number; body: unknown };
 
+/**
+ * The COMPLETE result of classifying a readback outcome -- normalized
+ * status AND every raw fact that produced it, preserved side by side
+ * (item 3 of the Jess Gate repair round, 2026-09-12: "normalized IAOS
+ * state must remain separate from the opaque provider-reported value").
+ * `rawProviderStatus`/`isExpired`/`deleted`/`recipients` are populated
+ * whenever the provider actually returned a matching document row --
+ * INCLUDING when that row's own `locationId` did not match the expected
+ * environment, or its `status` value was unmapped/unrecognized -- so raw
+ * evidence is preserved even in cases the NORMALIZED status conservatively
+ * reports as `"unknown"`. They are `null`/empty ONLY when no document row
+ * was ever actually observed (a transport/HTTP failure, or the expected
+ * document was absent from the response entirely) -- there is nothing
+ * real to preserve in that case, and this function never invents a
+ * placeholder row to fill the gap.
+ */
 export type ProviderLifecycleObservationResult = {
   status: ProviderLifecycleStatus;
-  row: ProviderDocumentLifecycleRow | null;
+  rawProviderStatus: string | null;
+  isExpired: boolean | null;
+  deleted: boolean | null;
+  recipients: RecipientCompletionCounts | null;
   providerDocumentReference: string | null;
   providerDocumentRevision: number | null;
+  /** Extracted from the provider's own row (`updatedAt`), never caller-supplied -- `null` when absent or not a valid instant. This is the ONLY source `buildProviderObservationRecordFromReadback` ever uses for `providerReportedAt`. */
+  providerReportedAt: string | null;
   failureReason: string | null;
 };
 
@@ -219,6 +252,14 @@ export type ProviderLifecycleObservationResult = {
  * reached-but-unrecognized one, and callers building a durable record
  * should never conflate the two). A reached-but-non-matching/malformed
  * response is `"unknown"` with a stated, non-secret reason.
+ *
+ * PURE CLASSIFICATION ONLY -- this function builds no durable record.
+ * `buildProviderObservationRecordFromReadback` (section 3a) is the ONLY
+ * sanctioned way to turn this result into a persisted
+ * `ProviderObservationRecord`, and it calls this function internally
+ * rather than accepting a pre-built result from a caller (Jess Gate
+ * repair round, 2026-09-12, item 2) -- see that function's own header for
+ * why a caller cannot bypass this classification to fabricate a status.
  */
 export function classifyProviderLifecycleReadback(args: {
   expectedDocumentId: string;
@@ -226,57 +267,74 @@ export function classifyProviderLifecycleReadback(args: {
   outcome: LifecycleReadbackOutcome;
 }): ProviderLifecycleObservationResult {
   const { outcome } = args;
-  const fail = (
+  const noRow = (
     status: ProviderLifecycleStatus,
     failureReason: string,
   ): ProviderLifecycleObservationResult => ({
     status,
-    row: null,
+    rawProviderStatus: null,
+    isExpired: null,
+    deleted: null,
+    recipients: null,
     providerDocumentReference: null,
     providerDocumentRevision: null,
+    providerReportedAt: null,
     failureReason,
   });
 
   if (outcome.kind === "network_error") {
-    return fail("provider_error", `Readback network error: ${outcome.message}`);
+    return noRow("provider_error", `Readback network error: ${outcome.message}`);
   }
   if (outcome.status < 200 || outcome.status >= 300) {
-    return fail("provider_error", `Readback returned HTTP ${outcome.status}`);
+    return noRow("provider_error", `Readback returned HTTP ${outcome.status}`);
   }
   const body = outcome.body;
   if (typeof body !== "object" || body === null) {
-    return fail("unknown", "Readback response was not a JSON object.");
+    return noRow("unknown", "Readback response was not a JSON object.");
   }
   const documents = (body as Record<string, unknown>).documents;
   if (!Array.isArray(documents)) {
-    return fail("unknown", "Readback response carried no documents[] array.");
+    return noRow("unknown", "Readback response carried no documents[] array.");
   }
   const match = documents.find(
     (d) => typeof d === "object" && d !== null && (d as Record<string, unknown>).documentId === args.expectedDocumentId,
   ) as Record<string, unknown> | undefined;
   if (!match) {
-    return fail("unknown", "Readback did not return the expected document -- its current lifecycle status could not be confirmed.");
+    return noRow("unknown", "Readback did not return the expected document -- its current lifecycle status could not be confirmed.");
   }
-  if (typeof match.locationId !== "string" || match.locationId !== args.expectedLocationId) {
-    return fail("unknown", "Readback's locationId does not match the expected environment.");
-  }
-  const recipients = Array.isArray(match.recipients)
+
+  // A matching document row WAS observed -- raw fields are preserved from
+  // here on regardless of whether the normalized status below ends up
+  // "unknown" (e.g. a location mismatch or an unrecognized raw status is
+  // still real evidence worth keeping, even though it is not trusted
+  // enough to normalize into a specific lifecycle state).
+  const recipientsRaw = Array.isArray(match.recipients)
     ? match.recipients
         .filter((r): r is Record<string, unknown> => typeof r === "object" && r !== null)
         .map((r) => ({ hasCompleted: r.hasCompleted === true }))
     : [];
-  const row: ProviderDocumentLifecycleRow = {
-    status: typeof match.status === "string" ? match.status : null,
-    isExpired: typeof match.isExpired === "boolean" ? match.isExpired : null,
-    deleted: typeof match.deleted === "boolean" ? match.deleted : null,
-    recipients,
-  };
+  const rawProviderStatus = typeof match.status === "string" ? match.status : null;
+  const isExpired = typeof match.isExpired === "boolean" ? match.isExpired : null;
+  const deleted = typeof match.deleted === "boolean" ? match.deleted : null;
+  const providerDocumentReference = typeof match.referenceId === "string" ? match.referenceId : null;
+  const providerDocumentRevision = typeof match.documentRevision === "number" ? match.documentRevision : null;
+  const providerReportedAtCandidate = typeof match.updatedAt === "string" ? match.updatedAt : null;
+  const providerReportedAt = providerReportedAtCandidate !== null && isValidIsoInstant(providerReportedAtCandidate) ? providerReportedAtCandidate : null;
+  const recipients = countRecipients(recipientsRaw);
+
+  const locationMismatch = typeof match.locationId !== "string" || match.locationId !== args.expectedLocationId;
+  const row: ProviderDocumentLifecycleRow = { status: rawProviderStatus, isExpired, deleted, recipients: recipientsRaw };
+
   return {
-    status: normalizeProviderLifecycleStatus(row),
-    row,
-    providerDocumentReference: typeof match.referenceId === "string" ? match.referenceId : null,
-    providerDocumentRevision: typeof match.documentRevision === "number" ? match.documentRevision : null,
-    failureReason: null,
+    status: locationMismatch ? "unknown" : normalizeProviderLifecycleStatus(row),
+    rawProviderStatus,
+    isExpired,
+    deleted,
+    recipients,
+    providerDocumentReference,
+    providerDocumentRevision,
+    providerReportedAt,
+    failureReason: locationMismatch ? "Readback's locationId does not match the expected environment." : null,
   };
 }
 
@@ -289,9 +347,18 @@ export type ProviderObservationRecord = {
   opportunityId: string;
   version: ContractVersionIdentity;
   status: ProviderLifecycleStatus;
+  /** The raw, opaque provider status string as reported, INCLUDING unmapped/unrecognized values -- kept separate from `status` (the normalized IAOS value) per Jess Gate repair item 3. `null` only when no document row was ever observed (a transport/HTTP failure, or the document was absent from the response). */
+  rawProviderStatus: string | null;
+  /** The provider's own raw `isExpired` flag, as reported -- `null` when no row was observed or the provider omitted the field. */
+  isExpired: boolean | null;
+  /** The provider's own raw `deleted` flag, as reported -- `null` when no row was observed or the provider omitted the field. */
+  deleted: boolean | null;
+  /** Bounded, non-secret recipient-completion evidence (counts only) -- `null` when no row was observed. */
+  recipients: RecipientCompletionCounts | null;
   providerDocumentId: string;
   providerDocumentReference: string | null;
   providerDocumentRevision: number | null;
+  /** Extracted from the provider's own evidence (`classifyProviderLifecycleReadback`'s own `updatedAt` derivation) -- never a caller-invented value. */
   providerReportedAt: string | null;
   iaosObservedAt: string;
   authority: "provider_reported";
@@ -343,42 +410,98 @@ export type RescissionRecordEntry = {
   relatedPriorRecordId: string | null;
 };
 
-export type LifecycleRecord = ProviderObservationRecord | CorrectionRecord | ResendRecord | RescissionRecordEntry;
+/**
+ * `SELLER_CONTRACT_STATE_MACHINE_V1.md`, "Declined": "An explicit,
+ * operator-recorded fact that the seller declined -- never inferred from
+ * silence or elapsed time." This is a distinct, human/operator-recorded
+ * variant -- NOT a `ProviderObservationRecord` (GHL exposes no documented
+ * "declined" status; see the module header) and NOT restricted to Brad
+ * the way Rescission is (`SELLER_CONTRACT_STATE_MACHINE_V1.md` states no
+ * such authority restriction for Declined). Its `authority` is always
+ * `"operator_attested"`, distinct from both `"provider_reported"` and
+ * `"brad_authorized"`, so a decline can never be mistaken for either kind
+ * of fact. Declined only ever applies to an agreement that reached
+ * Contract Sent ("the seller can only decline to execute an agreement
+ * that was actually sent") -- `providerDocumentIdAtDecline` is therefore
+ * always required and non-blank, unlike Rescission's conditional field.
+ */
+export type DeclineRecordEntry = {
+  kind: "decline";
+  opportunityId: string;
+  version: ContractVersionIdentity;
+  reasonOrEvidence: string;
+  recordedBy: string;
+  declinedAt: string;
+  providerDocumentIdAtDecline: string;
+  iaosObservedAt: string;
+  authority: "operator_attested";
+  evidenceSummary: string;
+  relatedPriorRecordId: string | null;
+};
+
+export type LifecycleRecord = ProviderObservationRecord | CorrectionRecord | ResendRecord | RescissionRecordEntry | DeclineRecordEntry;
 
 /* ==================================================================== */
 /* 3a. Builders -- one per kind, each fail-closed on its own evidence    */
 /* ==================================================================== */
 
-export function buildProviderObservationRecord(args: {
+/**
+ * THE ONLY WAY TO CONSTRUCT A `ProviderObservationRecord` (Jess Gate
+ * repair round, 2026-09-12, item 2: "provider-observation records must be
+ * constructible only from validated readback/event evidence processed
+ * through the verified classification path"). Unlike the pre-repair
+ * design, this function does NOT accept a pre-built classification
+ * result as an argument -- there is no parameter through which a caller
+ * can hand this function an arbitrary `status` (e.g. `"completed"`)
+ * un-derived from real evidence. It accepts only the RAW `outcome` (the
+ * literal HTTP/network result a caller's own fetch produced) plus the
+ * expected identity to verify against, and calls
+ * `classifyProviderLifecycleReadback` INTERNALLY to derive every fact
+ * this record will carry -- the classification step cannot be skipped,
+ * substituted, or handed a shortcut result, short of editing this
+ * module's own source. `providerReportedAt` is likewise never accepted
+ * from the caller; it comes exclusively from what
+ * `classifyProviderLifecycleReadback` itself extracted from the provider
+ * row.
+ */
+export function buildProviderObservationRecordFromReadback(args: {
   opportunityId: string;
   version: ContractVersionIdentity;
-  observation: ProviderLifecycleObservationResult;
-  providerDocumentId: string;
-  providerReportedAt: string | null;
+  expectedDocumentId: string;
+  expectedLocationId: string;
+  outcome: LifecycleReadbackOutcome;
   iaosObservedAt: string;
   evidenceSummary: string;
   relatedPriorRecordId: string | null;
 }): { ok: true; value: ProviderObservationRecord } | { ok: false; reasons: LifecycleReason[] } {
   const reasons: LifecycleReason[] = [];
   if (args.opportunityId.trim() === "") reasons.push({ code: "OPPORTUNITY_ID_BLANK", message: "opportunityId is blank." });
-  if (args.providerDocumentId.trim() === "") reasons.push({ code: "PROVIDER_DOCUMENT_ID_BLANK", message: "A provider observation must name the provider document it observed." });
+  if (args.expectedDocumentId.trim() === "") reasons.push({ code: "PROVIDER_DOCUMENT_ID_BLANK", message: "A provider observation must name the provider document it attempted to observe." });
   if (!isValidIsoInstant(args.iaosObservedAt)) reasons.push({ code: "OBSERVED_AT_INVALID", message: "iaosObservedAt is not a valid instant." });
-  if (args.providerReportedAt !== null && !isValidIsoInstant(args.providerReportedAt)) {
-    reasons.push({ code: "PROVIDER_REPORTED_AT_INVALID", message: "providerReportedAt is not a valid instant." });
-  }
   if (args.evidenceSummary.trim() === "") reasons.push({ code: "EVIDENCE_SUMMARY_BLANK", message: "evidenceSummary is required." });
   if (reasons.length > 0) return { ok: false, reasons };
+
+  const observation = classifyProviderLifecycleReadback({
+    expectedDocumentId: args.expectedDocumentId,
+    expectedLocationId: args.expectedLocationId,
+    outcome: args.outcome,
+  });
+
   return {
     ok: true,
     value: {
       kind: "provider_observation",
       opportunityId: args.opportunityId,
       version: args.version,
-      status: args.observation.status,
-      providerDocumentId: args.providerDocumentId,
-      providerDocumentReference: args.observation.providerDocumentReference,
-      providerDocumentRevision: args.observation.providerDocumentRevision,
-      providerReportedAt: args.providerReportedAt,
+      status: observation.status,
+      rawProviderStatus: observation.rawProviderStatus,
+      isExpired: observation.isExpired,
+      deleted: observation.deleted,
+      recipients: observation.recipients,
+      providerDocumentId: args.expectedDocumentId,
+      providerDocumentReference: observation.providerDocumentReference,
+      providerDocumentRevision: observation.providerDocumentRevision,
+      providerReportedAt: observation.providerReportedAt,
       iaosObservedAt: args.iaosObservedAt,
       authority: "provider_reported",
       evidenceSummary: args.evidenceSummary,
@@ -578,6 +701,71 @@ export function buildRescissionRecord(args: {
   };
 }
 
+/**
+ * Jess Gate repair round, 2026-09-12, item 4: a separate authorized-human
+ * decline record, distinct in shape and authority from both provider
+ * evidence and Rescission. `wasEverSentToProvider` must be `true` --
+ * `SELLER_CONTRACT_STATE_MACHINE_V1.md`'s own "Meaning" for Declined is
+ * "the seller explicitly declines to execute the SENT agreement"; there
+ * is nothing to decline before Contract Sent, so this function refuses
+ * outright rather than accepting a pre-send decline (contrast Rescission,
+ * which explicitly can occur before any send). This function makes no
+ * legal determination and produces no field resembling
+ * `eligible`/`underContract` -- see `lifecycleRecordAloneCanCreateUnderContract`.
+ */
+export function buildDeclineRecord(args: {
+  opportunityId: string;
+  version: ContractVersionIdentity;
+  wasEverSentToProvider: boolean;
+  providerDocumentIdAtDecline: string;
+  reasonOrEvidence: string;
+  recordedBy: string;
+  declinedAt: string;
+  iaosObservedAt: string;
+  evidenceSummary: string;
+  relatedPriorRecordId: string | null;
+}): { ok: true; value: DeclineRecordEntry } | { ok: false; reasons: LifecycleReason[] } {
+  const reasons: LifecycleReason[] = [];
+  if (args.opportunityId.trim() === "") reasons.push({ code: "OPPORTUNITY_ID_BLANK", message: "opportunityId is blank." });
+  if (!isValidIsoInstant(args.iaosObservedAt)) reasons.push({ code: "OBSERVED_AT_INVALID", message: "iaosObservedAt is not a valid instant." });
+  if (args.evidenceSummary.trim() === "") reasons.push({ code: "EVIDENCE_SUMMARY_BLANK", message: "evidenceSummary is required." });
+  if (!args.wasEverSentToProvider) {
+    reasons.push({
+      code: "DECLINE_REQUIRES_CONTRACT_SENT",
+      message: "Declined requires the agreement to have reached Contract Sent -- the seller can only decline to execute an agreement that was actually sent.",
+    });
+  }
+  if (args.providerDocumentIdAtDecline.trim() === "") {
+    reasons.push({ code: "DECLINE_PROVIDER_DOCUMENT_ID_BLANK", message: "A decline must name the affected provider document identity." });
+  }
+  if (args.reasonOrEvidence.trim() === "") {
+    reasons.push({ code: "DECLINE_REASON_OR_EVIDENCE_BLANK", message: "Declined requires an explicit, operator-recorded reason or evidence -- never inferred from silence or elapsed time." });
+  }
+  if (!isValidIsoInstant(args.declinedAt)) {
+    reasons.push({ code: "DECLINE_AT_INVALID", message: "The decline timestamp is not a valid instant." });
+  }
+  if (args.recordedBy.trim() === "") {
+    reasons.push({ code: "DECLINE_RECORDED_BY_BLANK", message: "Declined requires an explicit, operator-recorded fact -- no operator identity was supplied." });
+  }
+  if (reasons.length > 0) return { ok: false, reasons };
+  return {
+    ok: true,
+    value: {
+      kind: "decline",
+      opportunityId: args.opportunityId,
+      version: args.version,
+      reasonOrEvidence: args.reasonOrEvidence,
+      recordedBy: args.recordedBy,
+      declinedAt: args.declinedAt,
+      providerDocumentIdAtDecline: args.providerDocumentIdAtDecline,
+      iaosObservedAt: args.iaosObservedAt,
+      authority: "operator_attested",
+      evidenceSummary: args.evidenceSummary,
+      relatedPriorRecordId: args.relatedPriorRecordId,
+    },
+  };
+}
+
 /* ==================================================================== */
 /* 4. Chronology, duplicates, and version-scoped derivation -- ALWAYS    */
 /*    reading the full history, never mutating or discarding it          */
@@ -619,6 +807,7 @@ export function isDuplicateProviderObservation(a: ProviderObservationRecord, b: 
     a.opportunityId === b.opportunityId &&
     isSameContractVersion(a.version, b.version) &&
     a.status === b.status &&
+    a.rawProviderStatus === b.rawProviderStatus &&
     a.providerDocumentId === b.providerDocumentId &&
     a.providerDocumentRevision === b.providerDocumentRevision &&
     a.providerReportedAt === b.providerReportedAt
