@@ -488,7 +488,7 @@ const fullChecklist = {
 }
 
 // ============================================================
-// 11. Disposition handoff payload -- stable, fail-closed for a terminal
+// 11. Terminal outcome payload -- stable, fail-closed for a terminal
 //     state not actually reached, and Brad-only for Rescinded.
 // ============================================================
 {
@@ -506,47 +506,47 @@ const fullChecklist = {
     },
   };
 
-  const ucPayload = M.buildDispositionHandoffPayload({
+  const ucPayload = M.buildTerminalOutcomePayload({
     terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
     underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: version, executedTermsMatchAgreement: true },
   });
   check('an actually-verified Under Contract handoff builds successfully', ucPayload.ok, true);
-  check('the handoff payload always carries the literal noReentry: true', ucPayload.value.noReentry, true);
+  check('the terminal outcome payload always carries the literal noReentry: true', ucPayload.value.noReentry, true);
   check('the payload is frozen (stable, cannot be mutated after the fact)', Object.isFrozen(ucPayload.value), true);
 
-  const ucNotYetVerified = M.buildDispositionHandoffPayload({
+  const ucNotYetVerified = M.buildTerminalOutcomePayload({
     terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
     underContractEvidence: { contractSent: true, requirements, execution: { ...verifiedExecution, providerReportedCompletionAt: null }, currentVersion: version, executedTermsMatchAgreement: true },
   });
   check('an Under Contract handoff is REFUSED when the state was not actually verified -- never emits a payload for an unreached state', ucNotYetVerified.ok, false);
 
-  const ucBadSha256 = M.buildDispositionHandoffPayload({
+  const ucBadSha256 = M.buildTerminalOutcomePayload({
     terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
     underContractEvidence: { contractSent: true, requirements, execution: { ...verifiedExecution, preservedDocument: { ...verifiedExecution.preservedDocument, sha256: 'bad' } }, currentVersion: version, executedTermsMatchAgreement: true },
   });
   check('an Under Contract handoff is REFUSED when the preserved document carries a malformed SHA-256 -- the new content validation blocks the handoff, not just the eligibility check', ucBadSha256.ok, false);
 
   const otherVersion = { agreementAt: '2026-09-10T09:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: version.agreementAt };
-  const ucWrongBoundVersion = M.buildDispositionHandoffPayload({
+  const ucWrongBoundVersion = M.buildTerminalOutcomePayload({
     terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
     underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: otherVersion, executedTermsMatchAgreement: true },
   });
   check('an Under Contract handoff is REFUSED when the preserved document is bound to a DIFFERENT IAOS version than the one being evaluated', ucWrongBoundVersion.ok, false);
 
-  const goodRescission = M.buildDispositionHandoffPayload({
+  const goodRescission = M.buildTerminalOutcomePayload({
     terminalState: 'rescinded', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
     rescission: { authorizedBy: 'brad', at: '2026-09-10T00:00:00.000Z', reason: 'Seller withdrew.' },
   });
   check('a Brad-authorized rescission with a reason builds successfully', goodRescission.ok, true);
 
-  const badRescission = M.buildDispositionHandoffPayload({
+  const badRescission = M.buildTerminalOutcomePayload({
     terminalState: 'rescinded', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
     rescission: { authorizedBy: 'some-rep', at: '2026-09-10T00:00:00.000Z', reason: 'Seller withdrew.' },
   });
   check('a rescission NOT authorized by Brad is refused -- Brad-only in V1', badRescission.ok, false);
   check('the refusal names RESCISSION_NOT_BRAD_AUTHORIZED', badRescission.reasons[0].code, 'RESCISSION_NOT_BRAD_AUTHORIZED');
 
-  const noReasonRescission = M.buildDispositionHandoffPayload({
+  const noReasonRescission = M.buildTerminalOutcomePayload({
     terminalState: 'rescinded', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
     rescission: { authorizedBy: 'brad', at: '2026-09-10T00:00:00.000Z', reason: '   ' },
   });
@@ -560,34 +560,34 @@ const fullChecklist = {
     terminalState: 'expired', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
     contractSent: true, expirationAt: '2026-09-11T10:00:00.000Z', now: '2026-09-12T00:00:00.000Z', verifiedExecuted: false,
   };
-  const expiredPayload = M.buildDispositionHandoffPayload(expiredBase);
+  const expiredPayload = M.buildTerminalOutcomePayload(expiredBase);
   check('an expired handoff builds successfully once expiration has actually occurred, Sent, and not verified-executed', expiredPayload, { ok: true, value: { opportunityId: 'opp-1', agreementAt: version.agreementAt, version, noReentry: true, terminalState: 'expired', expirationAt: '2026-09-11T10:00:00.000Z' } });
 
   const expiredNotYet = { ...expiredBase, now: '2026-09-10T00:00:00.000Z' };
-  const expiredNotYetResult = M.buildDispositionHandoffPayload(expiredNotYet);
+  const expiredNotYetResult = M.buildTerminalOutcomePayload(expiredNotYet);
   check('naming "expired" BEFORE the expiration timestamp has passed is refused -- never emitted merely because the caller asked', expiredNotYetResult.ok, false);
   check('the not-yet-expired refusal names EXPIRATION_HAS_NOT_OCCURRED', expiredNotYetResult.reasons.some((r) => r.code === 'EXPIRATION_HAS_NOT_OCCURRED'), true);
 
   const expiredButVerified = { ...expiredBase, verifiedExecuted: true };
-  const expiredButVerifiedResult = M.buildDispositionHandoffPayload(expiredButVerified);
+  const expiredButVerifiedResult = M.buildTerminalOutcomePayload(expiredButVerified);
   check('naming "expired" for an agreement that WAS verified-executed is refused', expiredButVerifiedResult.ok, false);
   check('the verified-execution refusal names EXPIRED_REQUIRES_NO_VERIFIED_EXECUTION', expiredButVerifiedResult.reasons.some((r) => r.code === 'EXPIRED_REQUIRES_NO_VERIFIED_EXECUTION'), true);
 
   const expiredNotSent = { ...expiredBase, contractSent: false };
-  check('naming "expired" for an agreement never Contract Sent is refused', M.buildDispositionHandoffPayload(expiredNotSent).ok, false);
+  check('naming "expired" for an agreement never Contract Sent is refused', M.buildTerminalOutcomePayload(expiredNotSent).ok, false);
 
   const expiredBadExpirationTimestamp = { ...expiredBase, expirationAt: 'not-a-real-date' };
-  const expiredBadExpirationResult = M.buildDispositionHandoffPayload(expiredBadExpirationTimestamp);
+  const expiredBadExpirationResult = M.buildTerminalOutcomePayload(expiredBadExpirationTimestamp);
   check('an invalid expiration timestamp refuses the expired handoff -- unsupported terminal evidence, never guessed', expiredBadExpirationResult.ok, false);
   check('the invalid-expiration-timestamp refusal names EXPIRATION_TIMESTAMP_INVALID', expiredBadExpirationResult.reasons.some((r) => r.code === 'EXPIRATION_TIMESTAMP_INVALID'), true);
 
   const expiredBadNowTimestamp = { ...expiredBase, now: 'not-a-real-date' };
-  const expiredBadNowResult = M.buildDispositionHandoffPayload(expiredBadNowTimestamp);
+  const expiredBadNowResult = M.buildTerminalOutcomePayload(expiredBadNowTimestamp);
   check('an invalid reference "now" timestamp refuses the expired handoff', expiredBadNowResult.ok, false);
   check('the invalid-now-timestamp refusal names EXPIRED_NOW_TIMESTAMP_INVALID', expiredBadNowResult.reasons.some((r) => r.code === 'EXPIRED_NOW_TIMESTAMP_INVALID'), true);
 
   const expiredFutureNow = { ...expiredBase, expirationAt: '2099-01-01T00:00:00.000Z' };
-  check('a far-future, unsupported expiration timestamp (has not occurred) is refused, not guessed as expired', M.buildDispositionHandoffPayload(expiredFutureNow).ok, false);
+  check('a far-future, unsupported expiration timestamp (has not occurred) is refused, not guessed as expired', M.buildTerminalOutcomePayload(expiredFutureNow).ok, false);
 
   // -- Jess Gate correction 2: Declined must never emit merely because the
   // caller names that terminal state -- Contract Sent, a valid timestamp,
@@ -597,21 +597,21 @@ const fullChecklist = {
     terminalState: 'declined', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
     contractSent: true, declinedAt: '2026-09-11T10:00:00.000Z', recordedBy: 'brad',
   };
-  const declinedPayload = M.buildDispositionHandoffPayload(declinedBase);
+  const declinedPayload = M.buildTerminalOutcomePayload(declinedBase);
   check('a declined handoff builds successfully once Sent, timestamped, and operator-recorded', declinedPayload, { ok: true, value: { opportunityId: 'opp-1', agreementAt: version.agreementAt, version, noReentry: true, terminalState: 'declined', declinedAt: '2026-09-11T10:00:00.000Z', recordedBy: 'brad' } });
 
   const declinedNotSent = { ...declinedBase, contractSent: false };
-  const declinedNotSentResult = M.buildDispositionHandoffPayload(declinedNotSent);
+  const declinedNotSentResult = M.buildTerminalOutcomePayload(declinedNotSent);
   check('naming "declined" for an agreement never Contract Sent is refused -- nothing was sent to decline', declinedNotSentResult.ok, false);
   check('the not-sent refusal names NOT_CONTRACT_SENT', declinedNotSentResult.reasons.some((r) => r.code === 'NOT_CONTRACT_SENT'), true);
 
   const declinedBadTimestamp = { ...declinedBase, declinedAt: 'not-a-real-date' };
-  const declinedBadTimestampResult = M.buildDispositionHandoffPayload(declinedBadTimestamp);
+  const declinedBadTimestampResult = M.buildTerminalOutcomePayload(declinedBadTimestamp);
   check('an invalid decline timestamp refuses the declined handoff -- unsupported terminal evidence, never guessed', declinedBadTimestampResult.ok, false);
   check('the invalid-timestamp refusal names DECLINED_TIMESTAMP_INVALID', declinedBadTimestampResult.reasons.some((r) => r.code === 'DECLINED_TIMESTAMP_INVALID'), true);
 
   const declinedNoOperator = { ...declinedBase, recordedBy: '   ' };
-  const declinedNoOperatorResult = M.buildDispositionHandoffPayload(declinedNoOperator);
+  const declinedNoOperatorResult = M.buildTerminalOutcomePayload(declinedNoOperator);
   check('a blank/whitespace-only recordedBy refuses the declined handoff -- "operator-recorded" per B9-01 requires a real operator identity', declinedNoOperatorResult.ok, false);
   check('the no-operator refusal names DECLINED_NOT_OPERATOR_RECORDED', declinedNoOperatorResult.reasons.some((r) => r.code === 'DECLINED_NOT_OPERATOR_RECORDED'), true);
 
@@ -620,48 +620,48 @@ const fullChecklist = {
   // uniformly to ALL FOUR terminal states, not only Under Contract.
   const mismatchedAgreementAt = '1999-01-01T00:00:00.000Z';
 
-  const ucAgreementVersionMismatch = M.buildDispositionHandoffPayload({
+  const ucAgreementVersionMismatch = M.buildTerminalOutcomePayload({
     terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: mismatchedAgreementAt, version,
     underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: version, executedTermsMatchAgreement: true },
   });
   check('required test 1a: an Under Contract handoff is refused when args.agreementAt differs from args.version.agreementAt', ucAgreementVersionMismatch.ok, false);
-  check('the Under Contract agreementAt/version mismatch names HANDOFF_AGREEMENT_VERSION_MISMATCH', ucAgreementVersionMismatch.reasons[0].code, 'HANDOFF_AGREEMENT_VERSION_MISMATCH');
+  check('the Under Contract agreementAt/version mismatch names TERMINAL_OUTCOME_AGREEMENT_VERSION_MISMATCH', ucAgreementVersionMismatch.reasons[0].code, 'TERMINAL_OUTCOME_AGREEMENT_VERSION_MISMATCH');
 
-  const rescindedAgreementVersionMismatch = M.buildDispositionHandoffPayload({
+  const rescindedAgreementVersionMismatch = M.buildTerminalOutcomePayload({
     terminalState: 'rescinded', opportunityId: 'opp-1', agreementAt: mismatchedAgreementAt, version,
     rescission: { authorizedBy: 'brad', at: '2026-09-10T00:00:00.000Z', reason: 'Seller withdrew.' },
   });
   check('required test 1b: a Rescinded handoff is refused when args.agreementAt differs from args.version.agreementAt', rescindedAgreementVersionMismatch.ok, false);
-  check('the Rescinded agreementAt/version mismatch names HANDOFF_AGREEMENT_VERSION_MISMATCH', rescindedAgreementVersionMismatch.reasons[0].code, 'HANDOFF_AGREEMENT_VERSION_MISMATCH');
+  check('the Rescinded agreementAt/version mismatch names TERMINAL_OUTCOME_AGREEMENT_VERSION_MISMATCH', rescindedAgreementVersionMismatch.reasons[0].code, 'TERMINAL_OUTCOME_AGREEMENT_VERSION_MISMATCH');
 
-  const expiredAgreementVersionMismatch = M.buildDispositionHandoffPayload({ ...expiredBase, agreementAt: mismatchedAgreementAt });
+  const expiredAgreementVersionMismatch = M.buildTerminalOutcomePayload({ ...expiredBase, agreementAt: mismatchedAgreementAt });
   check('required test 1c: an Expired handoff is refused when args.agreementAt differs from args.version.agreementAt', expiredAgreementVersionMismatch.ok, false);
-  check('the Expired agreementAt/version mismatch names HANDOFF_AGREEMENT_VERSION_MISMATCH', expiredAgreementVersionMismatch.reasons[0].code, 'HANDOFF_AGREEMENT_VERSION_MISMATCH');
+  check('the Expired agreementAt/version mismatch names TERMINAL_OUTCOME_AGREEMENT_VERSION_MISMATCH', expiredAgreementVersionMismatch.reasons[0].code, 'TERMINAL_OUTCOME_AGREEMENT_VERSION_MISMATCH');
 
-  const declinedAgreementVersionMismatch = M.buildDispositionHandoffPayload({ ...declinedBase, agreementAt: mismatchedAgreementAt });
+  const declinedAgreementVersionMismatch = M.buildTerminalOutcomePayload({ ...declinedBase, agreementAt: mismatchedAgreementAt });
   check('required test 1d: a Declined handoff is refused when args.agreementAt differs from args.version.agreementAt', declinedAgreementVersionMismatch.ok, false);
-  check('the Declined agreementAt/version mismatch names HANDOFF_AGREEMENT_VERSION_MISMATCH', declinedAgreementVersionMismatch.reasons[0].code, 'HANDOFF_AGREEMENT_VERSION_MISMATCH');
+  check('the Declined agreementAt/version mismatch names TERMINAL_OUTCOME_AGREEMENT_VERSION_MISMATCH', declinedAgreementVersionMismatch.reasons[0].code, 'TERMINAL_OUTCOME_AGREEMENT_VERSION_MISMATCH');
 
   // -- Required test 2: Under Contract refused when args.version and
   // underContractEvidence.currentVersion have DIFFERENT agreementAt values
   // (args.agreementAt kept internally consistent with args.version, so
   // ONLY the version-vs-currentVersion guard is exercised here).
-  const ucVersionCurrentVersionDifferentAgreement = M.buildDispositionHandoffPayload({
+  const ucVersionCurrentVersionDifferentAgreement = M.buildTerminalOutcomePayload({
     terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: otherVersion.agreementAt, version: otherVersion,
     underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: version, executedTermsMatchAgreement: true },
   });
   check('required test 2: an Under Contract handoff is refused when args.version and currentVersion have different agreementAt values', ucVersionCurrentVersionDifferentAgreement.ok, false);
-  check('the version-vs-currentVersion agreementAt mismatch names HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION', ucVersionCurrentVersionDifferentAgreement.reasons[0].code, 'HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION');
+  check('the version-vs-currentVersion agreementAt mismatch names TERMINAL_OUTCOME_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION', ucVersionCurrentVersionDifferentAgreement.reasons[0].code, 'TERMINAL_OUTCOME_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION');
 
   // -- Required test 3: Under Contract refused when args.version and
   // currentVersion have different versionSeq values (SAME agreementAt).
   const versionSeq2SameAgreement = { ...version, versionSeq: 2, supersedesVersionSeq: 1 };
-  const ucVersionCurrentVersionDifferentSeq = M.buildDispositionHandoffPayload({
+  const ucVersionCurrentVersionDifferentSeq = M.buildTerminalOutcomePayload({
     terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: versionSeq2SameAgreement.agreementAt, version: versionSeq2SameAgreement,
     underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: version, executedTermsMatchAgreement: true },
   });
   check('required test 3: an Under Contract handoff is refused when args.version and currentVersion have different versionSeq values (same agreementAt)', ucVersionCurrentVersionDifferentSeq.ok, false);
-  check('the version-vs-currentVersion versionSeq mismatch also names HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION', ucVersionCurrentVersionDifferentSeq.reasons[0].code, 'HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION');
+  check('the version-vs-currentVersion versionSeq mismatch also names TERMINAL_OUTCOME_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION', ucVersionCurrentVersionDifferentSeq.reasons[0].code, 'TERMINAL_OUTCOME_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION');
 
   // -- Required test 4: the SAME otherwise-fully-valid execution evidence
   // (preservedDocument.boundVersion === currentVersion === version, which
@@ -669,7 +669,7 @@ const fullChecklist = {
   // mislabeled with a different contract version -- the only variable
   // between this call and the correctly-aligned one directly below is
   // args.version/agreementAt.
-  const ucMislabeledDespiteValidExecution = M.buildDispositionHandoffPayload({
+  const ucMislabeledDespiteValidExecution = M.buildTerminalOutcomePayload({
     terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: versionSeq2SameAgreement.agreementAt, version: versionSeq2SameAgreement,
     underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: version, executedTermsMatchAgreement: true },
   });
@@ -680,7 +680,7 @@ const fullChecklist = {
   // boundVersion, and args.agreementAt === args.version.agreementAt),
   // still produces the expected successful handoff -- this correction
   // does not overcorrect into refusing a genuinely valid case.
-  const ucCorrectlyAligned = M.buildDispositionHandoffPayload({
+  const ucCorrectlyAligned = M.buildTerminalOutcomePayload({
     terminalState: 'under_contract', opportunityId: 'opp-1', agreementAt: version.agreementAt, version,
     underContractEvidence: { contractSent: true, requirements, execution: verifiedExecution, currentVersion: version, executedTermsMatchAgreement: true },
   });

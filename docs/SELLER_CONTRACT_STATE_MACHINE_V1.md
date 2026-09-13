@@ -370,7 +370,7 @@ authority rule above), and the affected contract and version
 replacement version already exists).
 
 **No-reentry.** Once Rescinded, this specific agreement (`agreementAt`)
-is terminal. See No-reentry disposition handoff below.
+is terminal. See No-reentry terminal-outcome handoff (Board #8 closure) below.
 
 ### Expired
 
@@ -406,7 +406,9 @@ declined — never inferred from silence or elapsed time.
 **No-reentry.** Once Declined, this specific agreement is terminal. See
 below.
 
-### No-reentry disposition handoff
+### No-reentry terminal-outcome handoff (Board #8 closure)
+
+**Renamed 2026-09-13 (B9-11/INV-66 Jess Gate correction; PB-D43 amendment — later statement governs).** This section was originally titled "No-reentry disposition handoff." That name is now reserved exclusively for Board #10's own "Start Disposition" input contract (INV-66), which requires verified Under Contract specifically and must never be confused with a Rescinded, Expired, or Declined outcome. This section's own subject — closing Board #8's negotiation surface against re-entry once ANY terminal state (including the three non-Under-Contract ones) is reached — is unchanged; only its name changed, to keep "disposition handoff" unambiguous across the codebase.
 
 Once any terminal state is reached for a given agreement
 (`agreementAt`) — Under Contract with all three verified-execution facts

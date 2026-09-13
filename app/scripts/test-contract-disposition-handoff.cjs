@@ -503,6 +503,65 @@ function stripComments(src) {
 }
 
 /* ====================================================================== */
+/* 11. Jess Gate correction, 2026-09-13 -- exactly ONE canonical          */
+/*     "Disposition Handoff" / "Start Disposition" authority exists.      */
+/*     board9-contract-model.ts's older, broader four-terminal-state      */
+/*     payload was renamed to TerminalOutcomePayload/                     */
+/*     buildTerminalOutcomePayload -- no competing DispositionHandoff-    */
+/*     named authority remains anywhere, and the Board #10 handoff        */
+/*     structurally cannot be produced from a rescinded/expired/declined  */
+/*     outcome.                                                           */
+/* ====================================================================== */
+
+{
+  checkFalse('board9-contract-model.ts no longer exports a function named buildDispositionHandoffPayload', typeof B.buildDispositionHandoffPayload === 'function');
+  checkTrue('board9-contract-model.ts exports the RENAMED buildTerminalOutcomePayload instead', typeof B.buildTerminalOutcomePayload === 'function');
+}
+{
+  // A full source-tree search (not just this module's own two files) for
+  // the old, now-ambiguous names -- a pure-Node recursive walk (never
+  // shells out to `grep`, which is not portable to this script's own
+  // Windows execSync default shell) so this proof is self-contained.
+  const OLD_NAMES_PATTERN = /DispositionHandoffPayload|buildDispositionHandoffPayload|BuildHandoffArgs\b|isHandoffAgreementConsistent|HANDOFF_AGREEMENT_VERSION_MISMATCH|HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION/;
+  function walk(dir, out) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name.startsWith('.tmp')) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full, out);
+      else if (/\.(ts|tsx|cjs|js)$/.test(entry.name)) out.push(full);
+    }
+  }
+  const allFiles = [];
+  walk(path.join(APP, 'src'), allFiles);
+  walk(path.join(APP, 'scripts'), allFiles);
+  const remainingFiles = allFiles
+    .filter((f) => OLD_NAMES_PATTERN.test(fs.readFileSync(f, 'utf8')))
+    // The one file allowed to still mention the OLD names is board9-contract-model.ts itself, and ONLY inside its own historical-naming explanation comment -- checked precisely below, not exempted wholesale here.
+    // board9-contract-model.ts: exempted, checked precisely below instead.
+    // This test file itself: exempted -- it necessarily names the old
+    // tokens in its own search pattern/prose, never as a real reference.
+    .filter((f) => path.basename(f) !== 'board9-contract-model.ts' && path.basename(f) !== 'test-contract-disposition-handoff.cjs')
+    .map((f) => path.relative(APP, f));
+  check('a full app/src + app/scripts search finds the old DispositionHandoffPayload/buildDispositionHandoffPayload/BuildHandoffArgs/isHandoffAgreementConsistent/HANDOFF_* names in NO file except board9-contract-model.ts itself', remainingFiles, []);
+}
+{
+  const modelSource = fs.readFileSync(path.join(LIB, 'board9-contract-model.ts'), 'utf8');
+  const liveCodeOccurrences = (stripComments(modelSource).match(/DispositionHandoffPayload|buildDispositionHandoffPayload|BuildHandoffArgs\b|isHandoffAgreementConsistent|HANDOFF_AGREEMENT_VERSION_MISMATCH|HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION/g) || []).length;
+  check('board9-contract-model.ts\'s own LIVE CODE (comments stripped) contains zero occurrences of the old names -- only its own historical-naming prose comment may still mention them', liveCodeOccurrences, 0);
+}
+{
+  checkTrue('evaluateDispositionHandoffEligibility requires a genuinely-typed UnderContractRecordEntry -- its own source never references the literal terminal-state strings "rescinded"/"expired"/"declined" at all, so it structurally cannot special-case or accept one', (() => {
+    const src = stripComments(fs.readFileSync(path.join(LIB, 'contract-disposition-handoff-model.ts'), 'utf8'));
+    return !/["']rescinded["']|["']expired["']|["']declined["']/.test(src);
+  })());
+}
+{
+  // Direct proof: eligibility is false for EVERY possible non-null, non-UnderContractRecordEntry input this function's own type signature could ever be handed by a caller that (incorrectly) tried to pass a terminal-outcome-shaped value instead -- since the type system itself refuses anything but a real UnderContractRecordEntry, the only runtime-observable case is `null`, already proven UNDER_CONTRACT_MISSING above. This check confirms the FUNCTION SIGNATURE'S OWN PARAMETER NAME says `underContract`, never `terminalOutcome`/`payload`, so no caller could pass a TerminalOutcomePayload under a plausible-looking key name either.
+  const src = fs.readFileSync(path.join(LIB, 'contract-disposition-handoff-model.ts'), 'utf8');
+  checkTrue('evaluateDispositionHandoffEligibility\'s own parameter is explicitly typed UnderContractRecordEntry | null, never a broader terminal-outcome union', /underContract: UnderContractRecordEntry \| null/.test(src));
+}
+
+/* ====================================================================== */
 /* Summary                                                                 */
 /* ====================================================================== */
 

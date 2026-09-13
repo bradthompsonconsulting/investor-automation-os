@@ -10,9 +10,13 @@
  * requires ("No invented GHL carrier... No state mutation... No second
  * source of truth"). What this module provides is the ONE deterministic
  * domain model a future carrier, UI, document-generation step, execution
- * tracker, and disposition-handoff consumer must all agree on, so that no
+ * tracker, and terminal-outcome consumer must all agree on, so that no
  * later surface invents its own competing notion of what these states
- * mean or when a transition is legitimate.
+ * mean or when a transition is legitimate. (Section 8's own payload was
+ * renamed away from "disposition handoff" terminology, 2026-09-13 --
+ * that term now refers exclusively to Board #10's verified-Under-
+ * Contract "Start Disposition" input contract, `contract-disposition-
+ * handoff-model.ts` -- see Section 8's own header for why.)
  *
  * GOVERNING SOURCES, cited throughout rather than restated from memory:
  *   - `docs/SELLER_CONTRACT_STATE_MACHINE_V1.md` (B9-01/INV-56, locked) --
@@ -139,7 +143,9 @@ export const CONTRACT_STATE_MEANING: Record<ContractStateName, string> = {
  * -- Under Contract with all three verified-execution facts preserved,
  * Rescinded, Expired, or Declined -- that specific agreement is terminal
  * and must never be reopened (`SELLER_CONTRACT_STATE_MACHINE_V1.md`,
- * "No-reentry disposition handoff"). Under Contract's own "Transition
+ * "No-reentry terminal-outcome handoff (Board #8 closure)" -- renamed
+ * 2026-09-13 from "No-reentry disposition handoff," same correction as
+ * this module's own Section 8). Under Contract's own "Transition
  * trigger OUT" is explicitly "None... preserved exactly as reached," which
  * is why it is included here alongside the three named branch/terminal
  * states.
@@ -200,8 +206,8 @@ export type TransitionReasonCode =
   | "EXPIRATION_HAS_NOT_OCCURRED"
   | "DECLINED_TIMESTAMP_INVALID"
   | "DECLINED_NOT_OPERATOR_RECORDED"
-  | "HANDOFF_AGREEMENT_VERSION_MISMATCH"
-  | "HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION";
+  | "TERMINAL_OUTCOME_AGREEMENT_VERSION_MISMATCH"
+  | "TERMINAL_OUTCOME_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION";
 
 export type TransitionReason = { code: TransitionReasonCode; message: string };
 
@@ -938,22 +944,45 @@ export function evaluateUnderContractEligibility(
 }
 
 /* ==================================================================== */
-/* 8. No-reentry disposition-handoff payload -- stable, downstream-safe */
+/* 8. No-reentry TERMINAL OUTCOME payload -- stable, downstream-safe --  */
+/*    NOT the Board #10 Start Disposition handoff (renamed away from    */
+/*    that term, B9-11/INV-66 Jess Gate correction, 2026-09-13; see this */
+/*    type's own doc comment immediately below for why)                 */
 /* ==================================================================== */
 
 /** "Rescission is Brad-only authority in V1" (`SELLER_CONTRACT_STATE_MACHINE_V1.md`, resolved decision 3) -- enforced as a runtime literal check, never assumed from context, exactly as this codebase never fabricates an operator identity. */
 export type RescissionRecord = { authorizedBy: string; at: string; reason: string };
 
 /**
- * The stable payload a downstream consumer (closing/title handoff, a
- * future disposition surface) reads once a terminal outcome is reached.
- * `noReentry` is always the literal `true` here -- named explicitly so a
- * consumer never has to infer it from which `terminalState` variant it
- * received. Each variant carries exactly the fields relevant to that
- * termination and no others, so a consumer branching on `terminalState`
- * gets a narrowed, exhaustive shape.
+ * The stable payload a downstream consumer (Board #8's OWN re-entry
+ * guard -- "must not reopen or renegotiate this specific agreement" --
+ * and, potentially, a future closing/title handoff) reads once a
+ * terminal outcome is reached, for ANY of the four terminal states,
+ * including three (`rescinded`/`expired`/`declined`) that explicitly
+ * mean the deal did NOT close. `noReentry` is always the literal `true`
+ * here -- named explicitly so a consumer never has to infer it from
+ * which `terminalState` variant it received. Each variant carries
+ * exactly the fields relevant to that termination and no others, so a
+ * consumer branching on `terminalState` gets a narrowed, exhaustive
+ * shape.
+ *
+ * RENAMED, B9-11/INV-66 Jess Gate correction, 2026-09-13. This type and
+ * its builder were originally named `DispositionHandoffPayload`/
+ * `buildDispositionHandoffPayload` -- names that collided with B9-11's
+ * OWN new, richer `DispositionHandoffRecord`/
+ * `buildDispositionHandoffRecordArgs`
+ * (`contract-disposition-handoff-model.ts`), the actual Board #10 "Start
+ * Disposition" input contract, which requires verified Under Contract
+ * specifically and MUST NEVER be confused with a `rescinded`/`expired`/
+ * `declined` outcome reading as permission to begin Buyer Disposition.
+ * This type is renamed to `TerminalOutcomePayload` precisely so the
+ * words "Disposition Handoff" and "Start Disposition" refer to exactly
+ * ONE thing in this codebase -- the verified-Under-Contract Board #10
+ * package -- never this broader, four-state, Board #8-facing concept.
+ * Nothing about this type's own behavior, fields, or callers changed;
+ * only its name and this module's own header comment did.
  */
-export type DispositionHandoffPayload = {
+export type TerminalOutcomePayload = {
   opportunityId: string;
   agreementAt: string;
   version: ContractVersionIdentity;
@@ -965,7 +994,7 @@ export type DispositionHandoffPayload = {
   | { terminalState: "declined"; declinedAt: string; recordedBy: string }
 );
 
-export type BuildHandoffArgs =
+export type BuildTerminalOutcomeArgs =
   | {
       terminalState: "under_contract";
       opportunityId: string;
@@ -1026,7 +1055,7 @@ export type BuildHandoffArgs =
  * `args.version.agreementAt` are compared directly, independent of which
  * terminal state is being built.
  */
-function isHandoffAgreementConsistent(agreementAt: string, version: ContractVersionIdentity): boolean {
+function isTerminalOutcomeAgreementConsistent(agreementAt: string, version: ContractVersionIdentity): boolean {
   return agreementAt === version.agreementAt;
 }
 
@@ -1052,15 +1081,15 @@ function isHandoffAgreementConsistent(agreementAt: string, version: ContractVers
  * exact same contract version -- never three independently-trusted values
  * that happen to be passed together.
  */
-export function buildDispositionHandoffPayload(
-  args: BuildHandoffArgs,
-): { ok: true; value: DispositionHandoffPayload } | { ok: false; reasons: TransitionReason[] } {
-  if (!isHandoffAgreementConsistent(args.agreementAt, args.version)) {
+export function buildTerminalOutcomePayload(
+  args: BuildTerminalOutcomeArgs,
+): { ok: true; value: TerminalOutcomePayload } | { ok: false; reasons: TransitionReason[] } {
+  if (!isTerminalOutcomeAgreementConsistent(args.agreementAt, args.version)) {
     return {
       ok: false,
       reasons: [
         {
-          code: "HANDOFF_AGREEMENT_VERSION_MISMATCH",
+          code: "TERMINAL_OUTCOME_AGREEMENT_VERSION_MISMATCH",
           message:
             "This handoff's own agreementAt does not match its own version.agreementAt -- the two must identify the same agreement lineage before any terminal state can be evaluated.",
         },
@@ -1074,7 +1103,7 @@ export function buildDispositionHandoffPayload(
         ok: false,
         reasons: [
           {
-            code: "HANDOFF_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION",
+            code: "TERMINAL_OUTCOME_VERSION_DOES_NOT_MATCH_VALIDATED_EXECUTION",
             message:
               "The contract version this handoff would be labeled with does not match the version the execution evidence was actually validated against -- refusing to emit a handoff for a different version than the one just verified.",
           },
