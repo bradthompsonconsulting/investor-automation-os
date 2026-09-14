@@ -153,6 +153,73 @@ export const BROKER_TEXT_KEYS = [
 export type BrokerTextKey = (typeof BROKER_TEXT_KEYS)[number];
 
 /* ==================================================================== */
+/* 1b. Repeated printed destinations -- Jess Gate correction              */
+/* ==================================================================== */
+
+/**
+ * TREC 20-19's own paragraph 22 "Addenda, Notices, and Other Provisions"
+ * checklist DUPLICATES three elections already asked once elsewhere on the
+ * form, rather than posing a new question:
+ *
+ *   - Paragraph 4A's residential-leases election is echoed by paragraph
+ *     22's "Addendum Regarding Residential Leases" checkbox.
+ *   - Paragraph 4B's fixture-leases election is echoed by paragraph 22's
+ *     "Addendum Regarding Fixture Leases" checkbox.
+ *   - Paragraph 10A's temporary-lease possession election (rendered
+ *     "According to a temporary residential lease" -- `contract-document-
+ *     model.ts`) is echoed by paragraph 22's "Seller's Temporary
+ *     Residential Lease" checkbox. Confirmed non-ambiguous: TREC's own
+ *     promulgated addendum set implements paragraph 10A's second option
+ *     with exactly one form, the Seller's Temporary Residential Lease --
+ *     under which Seller retains possession after closing under a
+ *     temporary lease from Buyer. There is no second, differently-meaning
+ *     "leaseback" scenario this carrier's `"leaseback"` kind could
+ *     ambiguously refer to.
+ *
+ * GHL's Text-block merge mechanism supports positioning the SAME
+ * Opportunity custom field at more than one location on one template --
+ * this is a PLACEMENT manifest only. It changes nothing about which key is
+ * written or what value it carries, and introduces NO new field: reusing
+ * `lease_residential_mark`, `lease_fixture_mark`, and
+ * `possession_leaseback_mark` at their second paragraph-22 destination
+ * keeps `CHECKBOX_MARKER_KEYS` at exactly 48 unique keys. Every marker NOT
+ * listed here is placed at exactly one printed destination -- absence from
+ * this manifest means "single placement," never "unplaced."
+ */
+export type MarkerTemplateDestination = { paragraph: string; description: string };
+
+export const CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS: Readonly<Partial<Record<CheckboxMarkerKey, readonly MarkerTemplateDestination[]>>> = {
+  lease_residential_mark: [
+    { paragraph: "4A", description: "Residential leases election" },
+    { paragraph: "22", description: 'Addendum Regarding Residential Leases checkbox' },
+  ],
+  lease_fixture_mark: [
+    { paragraph: "4B", description: "Fixture leases election" },
+    { paragraph: "22", description: 'Addendum Regarding Fixture Leases checkbox' },
+  ],
+  possession_leaseback_mark: [
+    { paragraph: "10A", description: "Temporary-lease possession election" },
+    { paragraph: "22", description: "Seller's Temporary Residential Lease checkbox" },
+  ],
+};
+
+/**
+ * The number of PHYSICAL checkbox overlay placements the 48 unique markers
+ * require across the whole template -- distinct from `CHECKBOX_MARKER_KEYS
+ * .length` (48 unique fields). Each entry in `CHECKBOX_MARKER_REPEATED_
+ * TEMPLATE_PLACEMENTS` adds `(destinations.length - 1)` EXTRA placements
+ * beyond the one every marker already gets. Used by the future GHL
+ * template-placement proof plan so the overlay-placement count is never
+ * mistaken for the new-field count.
+ */
+export const CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS: number =
+  CHECKBOX_MARKER_KEYS.length +
+  Object.values(CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS).reduce(
+    (sum, destinations) => sum + ((destinations as readonly MarkerTemplateDestination[]).length - 1),
+    0,
+  );
+
+/* ==================================================================== */
 /* 2. Per-group derive functions -- exhaustive over each fact's own union */
 /* ==================================================================== */
 

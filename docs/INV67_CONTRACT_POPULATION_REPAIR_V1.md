@@ -219,11 +219,11 @@ Code-only correction.
 **Problem found in review (Spock's live GHL discovery).** GHL Checkbox
 elements cannot bind to Opportunity custom values or conditional logic --
 confirmed live against the GHL account. Of the original 48 projection keys,
-15 were modeled as one rendered-sentence TEXT field standing in for what the
+14 were modeled as one rendered-sentence TEXT field standing in for what the
 TREC template actually prints as a set of checkboxes (e.g. "Residential
 leases: applies" for a printed `☐ applies ☐ does not apply` pair) -- no GHL
 mechanism can place that rendered sentence onto the printed checkbox
-positions. A 16th key, `propertyLegalDescription.reservations`, shares one
+positions. A 15th key, `propertyLegalDescription.reservations`, shares one
 physical checkbox with ¶22's mineral-reservation addendum and needed the
 same treatment. `representation.representation` (originally cited to ¶8) was
 also wrong -- representation's real printed destination is page 11's broker
@@ -231,22 +231,43 @@ blocks, not ¶8 body text, and TREC prints THREE broker configurations
 (separate Seller-side / Buyer-side blocks, or a single intermediary block)
 that a single rendered sentence cannot address either. Two further keys,
 `noticeContact.buyerSignerName` / `buyerSignerRole`, and
-`closingPossession.possessionDetails`, were found to have no truthful
-projected destination at all (the first two are Board #10 scope, the third
-belongs to a future addendum, per Brad's ruling) and are dropped, not
-replaced.
+`closingPossession.possessionDetails`, were found to have no truthful GHL
+projection destination at all (the first two are Board #10 scope, the third
+belongs to a future addendum, per Brad's ruling) -- each is RETAINED
+canonically in `SellerContractFactsReport` (still a real, readable fact),
+simply never given a GHL field.
 
 **Corrected architecture -- three additions, one retirement, ONE new gate:**
 
 1. **19 keys retired** (`CONTRACT_PROJECTION_RETIRED_KEYS`) -- their
    dedicated GHL Test field stops receiving writes (kept, never deleted, per
-   the INV-70 retirement precedent). 15 checkbox-shaped keys + 1 shared
-   reservation key are replaced by markers/text below; 4 are fully dropped
-   (`closingPossession.possessionDetails`,
-   `propertyLegalDescription.reservations` folds into the mineral-
-   reservation marker rather than getting a text field of its own,
-   `representation.representation`, `noticeContact.buyerSignerName`,
-   `noticeContact.buyerSignerRole`).
+   the INV-70 retirement precedent). Jess Gate correction (repeated-
+   destination re-gate, this session): each of the 19 has a DISTINCT,
+   precise disposition -- not a loose "15 + 4" split:
+   - **14** are checkbox-shaped and replaced by the new markers/text below
+     (`leaseDisclosure.residentialLeases`/`fixtureLeases`/
+     `naturalResourceLeases`, `titleSurvey.titlePolicyExpenseParty`/
+     `shortageAmendmentElection`/`surveyElection`/`poaMembership`,
+     `propertyCondition.sellerDisclosureNotice`/`asIsElection`/
+     `waterDisclosure`, `closingPossession.possessionElection`,
+     `settlementExpense.sellerPaysBuyerBroker`/`buyerPaysSellerBroker`,
+     `addendaApplicability.items`).
+   - **1** is checkbox-ADJACENT, not itself replaced by a new field:
+     `propertyLegalDescription.reservations` FOLDS INTO / is reconciled
+     against the existing `addenda_mineral_reservation_mark` (see
+     `checkMineralReservationConsistency`) -- it shares that one checkbox
+     rather than getting a dedicated field of its own.
+   - **1** is REPLACED by a differently-shaped projection, not dropped:
+     `representation.representation` is superseded by the 22-key page-11
+     broker-text decomposition.
+   - **1** is retained canonically but deliberately NOT projected into TREC
+     20-19 in V1: `closingPossession.possessionDetails` stays a real,
+     readable fact in `SellerContractFactsReport` -- it is scoped to a
+     future addendum (Brad's ruling), never given a GHL field here.
+   - **2** are retained as internal/audit metadata, also not projected:
+     `noticeContact.buyerSignerName` and `noticeContact.buyerSignerRole`
+     are Board #10 scope, out of this repair.
+   - `14 + 1 + 1 + 1 + 2 = 19`.
 2. **48 new checkbox-marker keys** (`CHECKBOX_MARKER_KEYS`,
    `contract-checkbox-marker-model.ts`) -- every value is exactly `"X"` or
    `""`, one Text-block merge field positioned over each printed checkbox.
@@ -277,6 +298,67 @@ replaced.
    missing fields to explicit `{kind:"none"}`, never invented or guessed.
    No ledger-version bump -- the note's outer header/labels are unchanged,
    only the inner JSON blob gained optional-with-fallback fields.
+
+### Repeated printed destinations (Jess Gate correction, PR #52 re-gate)
+
+TREC 20-19's own ¶22 "Addenda, Notices, and Other Provisions" checklist
+DUPLICATES three elections already asked once elsewhere on the form, rather
+than posing a new question:
+
+| Marker (unique GHL field) | Destination 1 | Destination 2 |
+|---|---|---|
+| `lease_residential_mark` | ¶4A residential-leases election | ¶22 "Addendum Regarding Residential Leases" checkbox |
+| `lease_fixture_mark` | ¶4B fixture-leases election | ¶22 "Addendum Regarding Fixture Leases" checkbox |
+| `possession_leaseback_mark` | ¶10A temporary-lease possession election | ¶22 "Seller's Temporary Residential Lease" checkbox |
+
+**Confirmed non-ambiguous.** `possession_leaseback_mark`'s meaning was
+checked against the canonical carrier before reuse: `closingPossession.
+possessionElection`'s `"leaseback"` kind renders as "According to a
+temporary residential lease" (`contract-document-model.ts`,
+`buildClosingPossessionLines`), which is ¶10A's second printed option. TREC's
+own promulgated addendum set implements that option with exactly one form --
+the Seller's Temporary Residential Lease -- under which Seller retains
+possession after closing under a temporary lease from Buyer. There is no
+second, differently-meaning "leaseback" scenario this carrier's `"leaseback"`
+kind could ambiguously refer to, so the reuse is correct as directed.
+
+**This is a PLACEMENT distinction, not a new-field distinction.** GHL's
+Text-block merge mechanism supports positioning the SAME Opportunity custom
+field at more than one location on one template -- no duplicate field is (or
+will be) created for any of the three echoed destinations.
+`CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS`
+(`contract-checkbox-marker-model.ts`) is the authoritative manifest naming
+exactly these 3 reused markers and their 2 destinations each; every other of
+the 45 remaining `CHECKBOX_MARKER_KEYS` is placed exactly once. Three counts
+must never be conflated:
+
+| Count | Value | Meaning |
+|---|---|---|
+| Unique GHL projection fields (`CONTRACT_PROJECTION_FIELD_KEYS.length`) | **110** | What this repair reads/writes -- one write per key, always, regardless of template placement. |
+| New unique GHL fields this repair adds (48 markers + 11 text + 22 broker) | **81** | What the follow-on field-creation script must create. Unaffected by repeated placements -- reusing a field at a second location creates no new field. |
+| Physical checkbox/text overlay placements the 48 markers require on the future Test template (`CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS`) | **51** (48 unique + 3 extra) | What the follow-on template-placement work and its visual-verification proof must cover. NEVER equal to 48 or 81 -- an overlay-placement count stated as 81 would silently omit the 3 repeated pastes. |
+
+**Future GHL proof plan, corrected.** The template-placement and E2E proof
+work this repair does not perform (deferred to Spock/browser work, per this
+issue's own scope) must, when it happens:
+
+- Create 81 new GHL Test fields (unchanged from before this correction).
+- Place 51 checkbox overlays for the 48 markers -- not 48 -- with all THREE
+  paragraph-22 echo placements (`lease_residential_mark`,
+  `lease_fixture_mark`, `possession_leaseback_mark`'s second destination
+  each) visually verified against the printed template in addition to their
+  primary ¶4/¶10 destination, using the SAME field for both pastes.
+- Report the overlay-placement count and the new-field count as two
+  DISTINCT numbers in its own evidence, never one figure standing in for
+  both.
+- Field-by-field visual verification must enumerate every physical
+  destination for a repeated marker (both placements), not just confirm the
+  field exists once.
+
+No template edit, no field creation, and no E2E proof is performed in THIS
+repository-only correction -- the table and manifest above are the
+authoritative reference for that future work, not evidence that it has
+happened.
 
 **Broker-arrangement classification -- `classifyBrokerArrangement`
 (`contract-broker-arrangement-model.ts`), exhaustive over
@@ -362,20 +444,25 @@ for all 110 keys.
 
 | File | Role |
 |---|---|
-| `app/src/lib/contract-checkbox-marker-model.ts` | Pure: 48-marker + 11-text derivation, 13-group exclusivity validation, mineral-reservation/POA consistency checks, `buildCheckboxMarkersAndText` (the one entry point `buildContractProjectionPlan` calls) |
+| `app/src/lib/contract-checkbox-marker-model.ts` | Pure: 48-marker + 11-text derivation, 13-group exclusivity validation, mineral-reservation/POA consistency checks, the repeated-template-placement manifest (`CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS`, `CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS`), `buildCheckboxMarkersAndText` (the one entry point `buildContractProjectionPlan` calls) |
 | `app/src/lib/contract-broker-arrangement-model.ts` | Pure: `classifyBrokerArrangement`, the blocking-state table, distinct per-state messages |
-| `app/scripts/test-contract-checkbox-marker-model.cjs` | Per-group derive-function tests, all 13 exclusivity groups, mineral/POA consistency, broker-text gating, `buildCheckboxMarkersAndText` integration (87/87) |
+| `app/scripts/test-contract-checkbox-marker-model.cjs` | Per-group derive-function tests, all 13 exclusivity groups, mineral/POA consistency, broker-text gating, the repeated-placement manifest + absence-of-duplicate-key proofs, `buildCheckboxMarkersAndText` integration (99/99) |
 | `app/scripts/test-contract-broker-arrangement-model.cjs` | All 6 classification states incl. the mandatory correction, blocking-set membership, distinct messages (29/29) |
 
-**Test evidence, this session:** `test-contract-checkbox-marker-model.cjs`
-(87/87), `test-contract-broker-arrangement-model.cjs` (29/29),
-`test-contract-ghl-projection.cjs` rewritten for the 3-arg
-`buildContractProjectionPlan(opportunityId, preview, report)` signature and
-the 110-key reality (51/51, including the plan-level integration proofs for
-every blocking/warning condition above and the corrected drift guard against
-both `shared/ghl-config.ts` and the untouched field-creation script),
-`test-seller-contract-facts-carriers.cjs` extended for `BrokerInfo` backward
-compatibility (current 11-key shape, legacy 6-key upconversion, the
+**Test evidence, this session (including the PR #52 repeated-destination
+re-gate):** `test-contract-checkbox-marker-model.cjs` (99/99, +12 for the
+repeated-placement manifest, the placement-count-vs-field-count distinction,
+and the absence-of-synthetic-duplicate-key proof), `test-contract-broker-
+arrangement-model.cjs` (29/29), `test-contract-ghl-projection.cjs` rewritten
+for the 3-arg `buildContractProjectionPlan(opportunityId, preview, report)`
+signature and the 110-key reality (55/55, +4 for the same placement-vs-field
+distinction proven at the integration layer -- 110 unique keys and 81 new
+keys are unaffected by the manifest, each repeated-placement marker is
+written exactly once per plan, including the plan-level integration proofs
+for every blocking/warning condition above and the corrected drift guard
+against both `shared/ghl-config.ts` and the untouched field-creation
+script), `test-seller-contract-facts-carriers.cjs` extended for `BrokerInfo`
+backward compatibility (current 11-key shape, legacy 6-key upconversion, the
 `intermediary` kind, and represented-but-empty at the carrier layer; 56/56).
 Full repo-wide `scripts/test-*.cjs` suite (57 files) re-run clean. `tsc -b
 --force` and `vite build` both clean.

@@ -68,10 +68,13 @@ const {
   buildContractProjectionPlan,
   reusedCurrentOfferLines,
 } = require(path.join(TMP, 'contract-ghl-projection-model.js'));
-const { CHECKBOX_MARKER_KEYS, CHECKBOX_TEXT_KEYS, BROKER_TEXT_KEYS } = require(path.join(TMP, 'contract-checkbox-marker-model.js'));
+const {
+  CHECKBOX_MARKER_KEYS, CHECKBOX_TEXT_KEYS, BROKER_TEXT_KEYS,
+  CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS, CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS,
+} = require(path.join(TMP, 'contract-checkbox-marker-model.js'));
 const { ADDENDA_APPLICABILITY_ITEM_KEYS } = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
 
-const FLOOR = 45;
+const FLOOR = 55;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -217,6 +220,20 @@ function completeReport(overrides) {
   check('a checkbox marker for the selected election is "X"', byKey.get('title_expense_seller_mark'), 'X');
   check('every marker value is "X" or ""', CHECKBOX_MARKER_KEYS.every((k) => byKey.get(k) === 'X' || byKey.get(k) === ''), true);
   check('broker text is all-blank when representation is "none"', BROKER_TEXT_KEYS.every((k) => byKey.get(k) === ''), true);
+
+  // Jess Gate correction (repeated-destination re-gate): the paragraph-22 echo of 3
+  // markers is a TEMPLATE PLACEMENT concern only -- it must never change the unique
+  // 110-key / 81-new-field totals this plan writes.
+  check('CONTRACT_PROJECTION_FIELD_KEYS is still exactly 110 UNIQUE keys with the repeated-placement manifest present', CONTRACT_PROJECTION_FIELD_KEYS.length, 110);
+  check('new-key total (48 markers + 11 text + 22 broker) is still exactly 81, NOT 84 -- placements are not fields', CHECKBOX_MARKER_KEYS.length + CHECKBOX_TEXT_KEYS.length + BROKER_TEXT_KEYS.length, 81);
+  checkTrue(
+    'the overlay-placement count (51, from the marker model) is distinct from and greater than the marker-key count (48) -- never conflated in this integration layer either',
+    CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS > CHECKBOX_MARKER_KEYS.length,
+  );
+  checkTrue(
+    'every plan entry key for a repeated-placement marker is written exactly ONCE in the plan (one field write, regardless of how many places it is later pasted on the template)',
+    Object.keys(CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS).every((k) => (plan.ok ? plan.entries.filter((e) => e.key === k).length : 0) === 1),
+  );
 }
 
 /* ==================================================================== */

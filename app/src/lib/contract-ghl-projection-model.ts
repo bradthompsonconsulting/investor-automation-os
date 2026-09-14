@@ -81,15 +81,42 @@ export const CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS = [
 /**
  * INV-67 checkbox-marker / broker-model repair. The 19 keys retired from
  * the original 48 -- their dedicated GHL Test field stops receiving
- * writes (kept, never deleted, per the same INV-70 retirement precedent);
- * 15 are checkbox-shaped and replaced by `CHECKBOX_MARKER_KEYS`/
- * `CHECKBOX_TEXT_KEYS`, 4 are fully dropped (no truthful destination
- * exists -- `possessionDetails`, `representation.representation`,
- * `noticeContact.buyerSignerName`, `noticeContact.buyerSignerRole`).
- * `propertyLegalDescription.reservations` is among the 15: it receives NO
- * new field of its own -- it shares `addenda_mineral_reservation_mark`
- * (see `checkMineralReservationConsistency`), so this document's own
- * dedicated "Contract Legal Reservations" field is retired too.
+ * writes (kept, never deleted, per the same INV-70 retirement precedent).
+ * Jess Gate correction (repeated-destination re-gate, this session): each
+ * of the 19 has a DISTINCT, precise disposition -- five categories, not a
+ * loose "15 + 4" split:
+ *
+ *   14 are checkbox-shaped and replaced by `CHECKBOX_MARKER_KEYS`/
+ *      `CHECKBOX_TEXT_KEYS`: `leaseDisclosure.residentialLeases`,
+ *      `leaseDisclosure.fixtureLeases`, `leaseDisclosure.
+ *      naturalResourceLeases`, `titleSurvey.titlePolicyExpenseParty`,
+ *      `titleSurvey.shortageAmendmentElection`, `titleSurvey.
+ *      surveyElection`, `titleSurvey.poaMembership`, `propertyCondition.
+ *      sellerDisclosureNotice`, `propertyCondition.asIsElection`,
+ *      `propertyCondition.waterDisclosure`, `closingPossession.
+ *      possessionElection`, `settlementExpense.sellerPaysBuyerBroker`,
+ *      `settlementExpense.buyerPaysSellerBroker`, `addendaApplicability.
+ *      items`.
+ *    1 is checkbox-ADJACENT, not itself replaced by a new field:
+ *      `propertyLegalDescription.reservations` FOLDS INTO / is reconciled
+ *      against the existing `addenda_mineral_reservation_mark` (see
+ *      `checkMineralReservationConsistency`) -- it shares that one
+ *      checkbox rather than getting a dedicated field of its own, so this
+ *      document's own former "Contract Legal Reservations" field is
+ *      retired.
+ *    1 is REPLACED by a differently-shaped projection, not dropped:
+ *      `representation.representation` is superseded by the 22-key
+ *      page-11 broker-text decomposition (`BROKER_TEXT_KEYS`), gated by
+ *      `classifyBrokerArrangement`.
+ *    1 is retained canonically but deliberately NOT projected into TREC
+ *      20-19 in V1: `closingPossession.possessionDetails` stays a real,
+ *      readable fact in `SellerContractFactsReport` -- it is scoped to a
+ *      future addendum, per Brad's ruling, never given a GHL field here.
+ *    2 are retained as internal/audit metadata, also not projected:
+ *      `noticeContact.buyerSignerName`, `noticeContact.buyerSignerRole`
+ *      are Board #10 scope, out of this repair.
+ *
+ *   14 + 1 + 1 + 1 + 2 = 19.
  */
 export const CONTRACT_PROJECTION_RETIRED_KEYS = [
   "leaseDisclosure.residentialLeases",

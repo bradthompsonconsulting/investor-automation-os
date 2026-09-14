@@ -24,6 +24,16 @@
  *      ok:false on a blocking broker arrangement, ok:false on mineral-
  *      reservation disagreement, warnings (not blocking) on POA/addenda
  *      disagreement.
+ *   9. Jess Gate correction (repeated-destination re-gate): paragraph 22's
+ *      own addenda checklist echoes three elections asked once elsewhere
+ *      on the form (residential leases ¶4A, fixture leases ¶4B, the
+ *      temporary-lease possession election ¶10A / Seller's Temporary
+ *      Residential Lease) -- `CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS`
+ *      names exactly those 3 reused markers and their 2 destinations each,
+ *      `CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS` is 51 (48 unique + 3
+ *      extra), and no synthetic duplicate key exists for any echoed
+ *      destination -- `CHECKBOX_MARKER_KEYS` stays at exactly 48 unique
+ *      fields.
  */
 const { execSync } = require('child_process');
 const fs = require('fs');
@@ -56,10 +66,11 @@ const {
   derivePossessionMarkers, deriveBrokerageContributionMarkers, deriveAddendaMarkers,
   checkMineralReservationConsistency, checkPoaAddendaConsistency, validateMarkerExclusivity,
   deriveBrokerText, buildCheckboxMarkersAndText,
+  CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS, CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS,
 } = M;
 const { ADDENDA_APPLICABILITY_ITEM_KEYS } = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
 
-const FLOOR = 87;
+const FLOOR = 99;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -87,6 +98,70 @@ check('BROKER_FIELD_SUFFIXES has exactly 11 suffixes', BROKER_FIELD_SUFFIXES.len
 check('BROKER_TEXT_KEYS has exactly 22 keys (11 per side)', BROKER_TEXT_KEYS.length, 22);
 check('BROKER_TEXT_KEYS has no duplicates', new Set(BROKER_TEXT_KEYS).size, 22);
 checkTrue('no overlap between marker keys and text keys', CHECKBOX_MARKER_KEYS.every((k) => !CHECKBOX_TEXT_KEYS.includes(k)));
+
+/* ==================================================================== */
+/* 1b. Repeated printed destinations -- Jess Gate correction: paragraph   */
+/*     22's addenda checkboxes reuse three existing markers rather than   */
+/*     introducing duplicate fields.                                     */
+/* ==================================================================== */
+
+{
+  const repeatedKeys = Object.keys(CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS);
+  check(
+    'CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS names exactly the 3 reused markers',
+    [...repeatedKeys].sort(),
+    ['lease_fixture_mark', 'lease_residential_mark', 'possession_leaseback_mark'].sort(),
+  );
+  checkTrue(
+    'every repeated-placement key is an EXISTING member of CHECKBOX_MARKER_KEYS -- no new/duplicate key was introduced',
+    repeatedKeys.every((k) => CHECKBOX_MARKER_KEYS.includes(k)),
+  );
+  checkTrue(
+    'each repeated marker names exactly 2 physical destinations',
+    repeatedKeys.every((k) => CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS[k].length === 2),
+  );
+  check(
+    'lease_residential_mark destinations are paragraph 4A and paragraph 22',
+    CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS.lease_residential_mark.map((d) => d.paragraph),
+    ['4A', '22'],
+  );
+  check(
+    'lease_fixture_mark destinations are paragraph 4B and paragraph 22',
+    CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS.lease_fixture_mark.map((d) => d.paragraph),
+    ['4B', '22'],
+  );
+  check(
+    'possession_leaseback_mark destinations are paragraph 10A and paragraph 22',
+    CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS.possession_leaseback_mark.map((d) => d.paragraph),
+    ['10A', '22'],
+  );
+  checkTrue(
+    "possession_leaseback_mark's paragraph-22 destination names the Seller's Temporary Residential Lease checkbox",
+    /Seller's Temporary Residential Lease/.test(CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS.possession_leaseback_mark[1].description),
+  );
+
+  // Unique-field count (48) is unaffected by physical placement count.
+  check('CHECKBOX_MARKER_KEYS.length (unique fields) is still exactly 48 -- unaffected by repeated placements', CHECKBOX_MARKER_KEYS.length, 48);
+  // Physical overlay placement count: 48 unique markers + 1 extra placement for each of the 3 reused markers = 51.
+  check('CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS is 51 (48 unique markers + 3 extra reused placements), NOT 48', CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS, 51);
+  checkTrue(
+    'the overlay-placement count is explicitly NOT the same number as the unique marker-key count (would silently hide the 3 reused placements)',
+    CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS !== CHECKBOX_MARKER_KEYS.length,
+  );
+
+  // Absence proof: no duplicate/synthetic key was created for the paragraph-22 echo of any of the 3 reused markers.
+  const forbiddenDuplicateKeyPatterns = [
+    'lease_residential_addendum_mark', 'lease_residential_22_mark', 'addenda_residential_lease_mark',
+    'lease_fixture_addendum_mark', 'lease_fixture_22_mark', 'addenda_fixture_lease_mark',
+    'possession_leaseback_addendum_mark', 'possession_leaseback_22_mark',
+    'addenda_seller_temporary_residential_lease_mark', 'seller_temporary_residential_lease_mark',
+  ];
+  checkTrue(
+    'no synthetic duplicate marker key exists for any paragraph-22 echo destination',
+    forbiddenDuplicateKeyPatterns.every((k) => !CHECKBOX_MARKER_KEYS.includes(k)),
+  );
+  check('CHECKBOX_MARKER_KEYS still has zero duplicates after adding the placement manifest', new Set(CHECKBOX_MARKER_KEYS).size, CHECKBOX_MARKER_KEYS.length);
+}
 
 /* ==================================================================== */
 /* 2. Per-group derive functions -- exhaustive branch coverage, blank    */
