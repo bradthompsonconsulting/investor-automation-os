@@ -311,16 +311,21 @@ than posing a new question:
 | `lease_fixture_mark` | ¶4B fixture-leases election | ¶22 "Addendum Regarding Fixture Leases" checkbox |
 | `possession_leaseback_mark` | ¶10A temporary-lease possession election | ¶22 "Seller's Temporary Residential Lease" checkbox |
 
-**Confirmed non-ambiguous.** `possession_leaseback_mark`'s meaning was
-checked against the canonical carrier before reuse: `closingPossession.
-possessionElection`'s `"leaseback"` kind renders as "According to a
-temporary residential lease" (`contract-document-model.ts`,
-`buildClosingPossessionLines`), which is ¶10A's second printed option. TREC's
-own promulgated addendum set implements that option with exactly one form --
-the Seller's Temporary Residential Lease -- under which Seller retains
-possession after closing under a temporary lease from Buyer. There is no
-second, differently-meaning "leaseback" scenario this carrier's `"leaseback"`
-kind could ambiguously refer to, so the reuse is correct as directed.
+**Correction (Jess Gate, factual-wording re-gate).** An earlier version of
+this section claimed TREC promulgates "exactly one" temporary-lease form for
+¶10A's second option. That is factually wrong -- ¶22 actually lists BOTH a
+"Buyer's Temporary Residential Lease" and a "Seller's Temporary Residential
+Lease" checkbox, and this repair does not claim otherwise.
+
+**The correct basis for the reuse is IAOS's own V1 scope, not TREC's form
+count.** IAOS V1's canonical possession election explicitly uses the term
+`leaseback` (`closingPossession.possessionElection`'s `"leaseback"` kind),
+and its operator UI labels the choice "Leaseback" (`ContractWorkspace.tsx`).
+In IAOS V1, this means Seller retains possession after closing. Therefore
+`possession_leaseback_mark` is reused at ¶22's Seller's Temporary
+Residential Lease checkbox. Buyer possession before closing and the Buyer's
+Temporary Residential Lease are not modeled or populated in V1 -- there is
+no carrier value, marker, or projected field for either.
 
 **This is a PLACEMENT distinction, not a new-field distinction.** GHL's
 Text-block merge mechanism supports positioning the SAME Opportunity custom

@@ -168,13 +168,20 @@ export type BrokerTextKey = (typeof BROKER_TEXT_KEYS)[number];
  *   - Paragraph 10A's temporary-lease possession election (rendered
  *     "According to a temporary residential lease" -- `contract-document-
  *     model.ts`) is echoed by paragraph 22's "Seller's Temporary
- *     Residential Lease" checkbox. Confirmed non-ambiguous: TREC's own
- *     promulgated addendum set implements paragraph 10A's second option
- *     with exactly one form, the Seller's Temporary Residential Lease --
- *     under which Seller retains possession after closing under a
- *     temporary lease from Buyer. There is no second, differently-meaning
- *     "leaseback" scenario this carrier's `"leaseback"` kind could
- *     ambiguously refer to.
+ *     Residential Lease" checkbox. Jess Gate correction (factual wording
+ *     re-gate): paragraph 22 actually lists BOTH a "Buyer's Temporary
+ *     Residential Lease" and a "Seller's Temporary Residential Lease"
+ *     checkbox -- TREC does NOT promulgate "exactly one" temporary-lease
+ *     form for paragraph 10A's second option, and this module does not
+ *     claim otherwise. The correct basis for this reuse is IAOS's OWN V1
+ *     scope, not TREC's form count: IAOS V1's canonical possession
+ *     election explicitly uses the term `leaseback`, and its operator UI
+ *     labels the choice "Leaseback." In IAOS V1, this means Seller
+ *     retains possession after closing. Therefore
+ *     `possession_leaseback_mark` is reused at paragraph 22's Seller's
+ *     Temporary Residential Lease checkbox. Buyer possession before
+ *     closing and the Buyer's Temporary Residential Lease are not modeled
+ *     or populated in V1.
  *
  * GHL's Text-block merge mechanism supports positioning the SAME
  * Opportunity custom field at more than one location on one template --
