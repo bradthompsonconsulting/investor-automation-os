@@ -28,9 +28,16 @@
  *  8. Drift guard: `shared/ghl-config.ts`'s 110-key list matches this
  *     module's exactly; the field-creation script's 48 already-provisioned
  *     keys remain EXACTLY the original 29 retained + 19 retired keys (that
- *     script provisions nothing new this session -- no GHL mutation was
- *     made, so its key set is untouched even though 19 of those keys are
- *     no longer live).
+ *     script provisions nothing new -- its key set is untouched even
+ *     though 19 of those keys are no longer live). Batch 1 GHL Test
+ *     provisioning (2026-09-14, `inv67-create-checkbox-marker-fields-
+ *     batch1.cjs --apply`): `shared/ghl-config.ts`'s TEST config now
+ *     carries real ids for exactly 77 keys (29 retained + 48 Batch 1
+ *     markers, all unique, none the sentinel), exactly 33 keys (Batches
+ *     2/3, unprovisioned) remain sentinel-filled, no retired key
+ *     re-enters the live map, and PRODUCTION remains fully sentinel-
+ *     filled for all 110 keys -- proven directly against the committed
+ *     file, not merely asserted.
  */
 const { execSync } = require('child_process');
 const fs = require('fs');
@@ -74,7 +81,7 @@ const {
 } = require(path.join(TMP, 'contract-checkbox-marker-model.js'));
 const { ADDENDA_APPLICABILITY_ITEM_KEYS } = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
 
-const FLOOR = 55;
+const FLOOR = 65;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -386,10 +393,47 @@ check('29 retained + 19 retired = the original 48', CONTRACT_PROJECTION_RETAINED
 
   const configFieldsBlockMatch = configSrc.match(/contractProjectionFields: \{([\s\S]*?)\r?\n  \},\r?\n  contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI"/);
   checkTrue('shared/ghl-config.ts TEST.contractProjectionFields block is present', !!configFieldsBlockMatch);
-  const testRealIdKeys = configFieldsBlockMatch
-    ? Array.from(configFieldsBlockMatch[1].matchAll(/"([^"]+)":\s*"(?!CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED)[^"]+"/g)).map((m) => m[1])
+  const testRealIdEntries = configFieldsBlockMatch
+    ? Array.from(configFieldsBlockMatch[1].matchAll(/"([^"]+)":\s*"(?!CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED)([^"]+)"/g)).map((m) => ({ key: m[1], id: m[2] }))
     : [];
-  check('TEST carries a REAL id for exactly the 29 retained keys, and none of the 81 new keys', [...testRealIdKeys].sort(), [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS].sort());
+  const testRealIdKeys = testRealIdEntries.map((e) => e.key);
+
+  // Batch 1 (INV-67 checkbox-marker / broker-model repair, GHL Test provisioning,
+  // 2026-09-14): the 48 CHECKBOX_MARKER_KEYS were created live and readback-verified,
+  // then wired in with their real ids. Batches 2 (11 CHECKBOX_TEXT_KEYS) and 3 (22
+  // BROKER_TEXT_KEYS) remain unprovisioned -- exactly 33 keys still carry the sentinel.
+  check(
+    'TEST carries a REAL id for exactly 77 keys: the 29 retained + the 48 Batch 1 markers',
+    [...testRealIdKeys].sort(),
+    [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS, ...CHECKBOX_MARKER_KEYS].sort(),
+  );
+  check('exactly 48 of those real-id keys are CHECKBOX_MARKER_KEYS', testRealIdKeys.filter((k) => CHECKBOX_MARKER_KEYS.includes(k)).length, 48);
+  check('the 48 real Batch 1 marker ids are themselves unique (no id reused across two keys)', new Set(testRealIdEntries.filter((e) => CHECKBOX_MARKER_KEYS.includes(e.key)).map((e) => e.id)).size, 48);
+  checkTrue(
+    'no Batch 1 marker id is empty, whitespace, or the sentinel string itself',
+    testRealIdEntries.filter((e) => CHECKBOX_MARKER_KEYS.includes(e.key)).every((e) => e.id.trim().length > 0 && e.id !== 'CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED'),
+  );
+  checkTrue(
+    'none of the 3 repeated-destination markers (lease_residential_mark, lease_fixture_mark, possession_leaseback_mark) is missing its real id',
+    Object.keys(CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS).every((k) => testRealIdKeys.includes(k)),
+  );
+
+  const sentinelKeys = CONTRACT_PROJECTION_FIELD_KEYS.filter((k) => !testRealIdKeys.includes(k));
+  check(
+    'exactly 33 keys remain sentinel-filled in TEST: the 11 restructured contract-text + 22 broker-text keys (Batches 2/3, unprovisioned)',
+    [...sentinelKeys].sort(),
+    [...CHECKBOX_TEXT_KEYS, ...BROKER_TEXT_KEYS].sort(),
+  );
+  checkTrue('none of the 19 retired keys re-enters the live TEST real-id map', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !testRealIdKeys.includes(k)));
+  checkTrue('the 29 retained TEST ids are exactly unchanged from before Batch 1 wiring', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.every((k) => testRealIdEntries.some((e) => e.key === k)));
+
+  // Production must remain fully sentinel-filled for all 110 keys -- Batch 1's live Test
+  // provisioning must never leak into the PRODUCTION config block.
+  const prodSentinelMatch = configSrc.match(/const PRODUCTION: GhlConfig = \{[\s\S]*?contractProjectionFields: sentinelContractProjectionFields\(\),[\s\S]*?contractDraftRequest: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,/);
+  checkTrue('PRODUCTION.contractProjectionFields is still exactly `sentinelContractProjectionFields()` -- untouched by Batch 1 Test wiring', !!prodSentinelMatch);
+  checkTrue('PRODUCTION.contractDraftRequest is still exactly the sentinel constant', !!prodSentinelMatch);
+
+  checkTrue('TEST.contractDraftRequest is unchanged (still the pre-existing real dropdown id, untouched by Batch 1)', /contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",/.test(configSrc));
 }
 
 /* ==================================================================== */

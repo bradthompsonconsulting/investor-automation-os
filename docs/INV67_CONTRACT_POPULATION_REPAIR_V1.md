@@ -453,6 +453,8 @@ for all 110 keys.
 | `app/src/lib/contract-broker-arrangement-model.ts` | Pure: `classifyBrokerArrangement`, the blocking-state table, distinct per-state messages |
 | `app/scripts/test-contract-checkbox-marker-model.cjs` | Per-group derive-function tests, all 13 exclusivity groups, mineral/POA consistency, broker-text gating, the repeated-placement manifest + absence-of-duplicate-key proofs, `buildCheckboxMarkersAndText` integration (99/99) |
 | `app/scripts/test-contract-broker-arrangement-model.cjs` | All 6 classification states incl. the mandatory correction, blocking-set membership, distinct messages (29/29) |
+| `app/scripts/inv67-create-checkbox-marker-fields-batch1.cjs` | Batch 1 (48 keys) GHL field-creation script -- hard Test-location allowlist, exact-existing/conflict preflight across the complete unfiltered 48-spec batch, fail-closed canonical-anchor `parentId` resolution, readback validation, unconfirmed-create safety. Used live (`--apply`) 2026-09-14 -- see the "Batch 1 GHL Test provisioning" section above. |
+| `app/scripts/test-inv67-checkbox-marker-fields-batch1-script.cjs` | Pure-function + network-free child-process proofs of every safety property above (110/110) |
 
 **Test evidence, this session (including the PR #52 repeated-destination
 re-gate):** `test-contract-checkbox-marker-model.cjs` (99/99, +12 for the
@@ -471,6 +473,22 @@ backward compatibility (current 11-key shape, legacy 6-key upconversion, the
 `intermediary` kind, and represented-but-empty at the carrier layer; 56/56).
 Full repo-wide `scripts/test-*.cjs` suite (57 files) re-run clean. `tsc -b
 --force` and `vite build` both clean.
+
+**Batch 1 GHL Test wiring, this session (repository-only, following the
+live Test apply above):** `test-inv67-checkbox-marker-fields-batch1-script.cjs`
+(110/110, unchanged -- the committed script was not modified this step).
+`test-contract-ghl-projection.cjs`'s drift guard extended (65/65, +10):
+`shared/ghl-config.ts`'s TEST config now proven to carry a real id for
+exactly 77 keys (29 retained + 48 Batch 1 markers, all unique, none the
+sentinel), exactly 33 keys (Batches 2/3) proven to remain sentinel-filled,
+no retired key re-enters the live map, `PRODUCTION.contractProjectionFields`
+proven still exactly `sentinelContractProjectionFields()`, and
+`contractDraftRequest` proven unchanged on both TEST and PRODUCTION. Full
+repo-wide `scripts/test-*.cjs` suite re-run clean. `tsc -b --force` and
+`vite build` both clean. The 48 wired ids were sourced from a fresh,
+independent, fail-closed read-only GET joined against the committed
+script's own classification/validation functions -- never hand-transcribed
+from a prior console paste.
 
 ## Field mapping (original -- 48 keys)
 
@@ -525,6 +543,50 @@ write/readback/restore inert-proof against the approved fixture opportunity
 No other field, contact, or opportunity was touched. No Production GHL call
 was made. No document was created or sent.
 
+## Batch 1 GHL Test provisioning -- 48 checkbox-marker fields (2026-09-14)
+
+**State: PROVISIONED.** Following the checkbox-marker / broker-model
+repair's repository merge (PR #52, then the repeated-destination
+correction and live-safety hardening in PR #53), Brad authorized the live
+Batch 1 apply. `app/scripts/inv67-create-checkbox-marker-fields-batch1.cjs
+--apply` ran against GHL Test (`SoTgVoaFGHtBdRFvXWQV`), canonical
+`parentId` `sGP3pbDQFN7fXS62MAgA` (the same Opportunity Details folder
+`opportunityFacts.currentOffer` and the original 29 retained fields use).
+
+- **Pre-apply Test Opportunity field count:** 67.
+- **Created:** all 48 `CHECKBOX_MARKER_KEYS` -- zero pre-existing
+  collisions, so all 48 were `CREATE`, none `REUSE`.
+- **Post-apply Test Opportunity field count:** 115 (67 + 48, exact).
+- **Readback verification:** every one of the 48 creates was independently
+  re-read and validated against name, `fieldKey`, `dataType` (`TEXT`),
+  `model` (`opportunity`), and `parentId` before being logged as
+  `-- readback verified`. Exit code `0`.
+- **Post-apply dry run (second, independent run):** all 48 keys
+  reclassified `exact_existing`, re-verified via their own single-field
+  GET, zero proposed creates, zero conflicts. Exit code `0`.
+- **Independent source-of-truth re-verification** (before repository
+  wiring): a SEPARATE, fresh read-only GET joined against the committed
+  script's own `FIELD_SPECS`/`classifyExistingMatch`/
+  `validateFieldAgainstSpec`/`resolveCanonicalParentId` (not the earlier
+  console paste) confirmed all 48 a second time, fail-closed on any
+  missing/mismatched/duplicated/unexpected field or a field count other
+  than 115.
+- **Repeated-destination markers** (`lease_residential_mark`,
+  `lease_fixture_mark`, `possession_leaseback_mark`) each confirmed to
+  exist as exactly ONE field -- template placement at their second
+  paragraph-22 destination remains unperformed, future work.
+- **All 19 retired fields confirmed present, unmodified** (name and
+  `dataType` unchanged) -- none was touched by this provisioning.
+- **Batches 2 (11 restructured contract-text keys) and 3 (22 page-11
+  broker-text keys) remain UNPROVISIONED** -- confirmed no field matching
+  either shape exists; `shared/ghl-config.ts`'s TEST config keeps the
+  sentinel for exactly those 33 keys.
+- **Zero sends, zero template mutation, zero draft creation, zero
+  Production mutation.** Repository wiring (pasting the 48 real ids into
+  `shared/ghl-config.ts`) was performed as a SEPARATE, subsequent,
+  repository-only step (no further GHL mutation) -- see the Code map/Test
+  evidence sections below.
+
 ## What this repair does NOT do
 
 - Does not edit the GHL TREC template or place any merge field on it.
@@ -535,10 +597,14 @@ was made. No document was created or sent.
 - Does not provision Production (`CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`
   sentinel throughout `PRODUCTION`).
 - Does not touch Board #10 in any way.
-- (checkbox-marker / broker-model repair, this session) Does not create any
-  new GHL field for the 81 new keys, does not modify the GHL template, does
-  not add intermediary template/GHL support, does not expand ¶8's carrier or
-  scope, does not project `possessionDetails` into TREC 20-19.
+- (checkbox-marker / broker-model repair) Does not modify the GHL
+  template, does not add intermediary template/GHL support, does not
+  expand ¶8's carrier or scope, does not project `possessionDetails` into
+  TREC 20-19. Batch 1 (48 checkbox-marker keys) IS now provisioned in GHL
+  Test, per the section above -- Batches 2 (11 restructured contract-text
+  keys) and 3 (22 broker-text keys) remain unprovisioned, and no template
+  placement of any of the 51 physical Batch 1 overlay positions has been
+  performed.
 
 Those are explicitly Spock/browser work, gated on Jess's review of this
 implementation, per this issue's own scope instruction.
