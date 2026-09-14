@@ -53,7 +53,17 @@
  *   node scripts/inv67-create-checkbox-marker-fields-batch1.cjs --location <id>
  *                                                                --credential-file <path>
  *                                                                [--apply]
- *                                                                [--only <key>]
+ *
+ * Jess Gate correction (whole-batch/folder safety repair, this session):
+ * there is NO `--only` flag. An earlier version accepted one, letting a
+ * caller preflight a single field while 47 others' conflicts went
+ * unchecked -- that violated the requirement that ALL 48 specs be
+ * preflighted before the first POST. `main()` always calls `planBatch`
+ * with the complete, unfiltered `FIELD_SPECS` array; there is no
+ * partial-batch or single-field recovery mode in this script. If
+ * partial-failure recovery is ever needed, it is a SEPARATELY gated,
+ * separately reviewed capability designed after reviewing actual
+ * partial-failure evidence -- not pre-authorized here.
  */
 const fs = require('fs');
 const path = require('path');
@@ -77,7 +87,7 @@ function parseArgs(argv) {
   if (!location) die('--location is required. There is no default and no fallback.');
   const credentialFile = get('--credential-file');
   if (!credentialFile) die('--credential-file is required. There is no default and no fallback.');
-  return { location, credentialFile, apply: argv.includes('--apply'), only: get('--only') };
+  return { location, credentialFile, apply: argv.includes('--apply') };
 }
 
 function parseEnv(text) {
@@ -278,6 +288,48 @@ function parsePostResponse(postText) {
 }
 
 /**
+ * The ONE canonical anchor this script resolves its target folder from.
+ * Jess Gate correction (whole-batch/folder safety repair, this session):
+ * an earlier version fell back to "the first Opportunity-field folder
+ * found" when this anchor was missing -- that could silently place all 48
+ * fields in the wrong folder. There is no fallback: the anchor must exist
+ * exactly once and carry a non-empty `parentId`, or this script refuses
+ * before any POST.
+ */
+const CANONICAL_PARENT_ANCHOR_FIELD_KEY = 'opportunity.arv_after_repair_value';
+
+/**
+ * Fail-closed resolution of the target folder. Returns `{ok:true,
+ * parentId}` only when the canonical anchor exists EXACTLY once and its
+ * `parentId` is a non-empty string; otherwise `{ok:false, reason}` naming
+ * exactly which of the three failure conditions applies (missing,
+ * duplicated, or blank parentId) -- never a generic message.
+ */
+function resolveCanonicalParentId(existingFields) {
+  const matches = existingFields.filter((f) => f.fieldKey === CANONICAL_PARENT_ANCHOR_FIELD_KEY);
+  if (matches.length === 0) {
+    return {
+      ok: false,
+      reason: `canonical anchor field "${CANONICAL_PARENT_ANCHOR_FIELD_KEY}" was not found among this location's Opportunity custom fields. Refusing -- there is no fallback to an arbitrary folder.`,
+    };
+  }
+  if (matches.length > 1) {
+    return {
+      ok: false,
+      reason: `canonical anchor field "${CANONICAL_PARENT_ANCHOR_FIELD_KEY}" exists ${matches.length} times (ids: ${matches.map((f) => f.id).join(', ')}) -- ambiguous, refusing rather than guessing which one is authoritative.`,
+    };
+  }
+  const anchor = matches[0];
+  if (typeof anchor.parentId !== 'string' || anchor.parentId.trim() === '') {
+    return {
+      ok: false,
+      reason: `canonical anchor field "${CANONICAL_PARENT_ANCHOR_FIELD_KEY}" (id ${anchor.id}) has no usable parentId (got ${JSON.stringify(anchor.parentId)}). Refusing.`,
+    };
+  }
+  return { ok: true, parentId: anchor.parentId };
+}
+
+/**
  * Pure preflight over ALL specs at once -- classifies every one before a
  * single network call for field creation is ever made. Returns
  * `{ok:false, conflicts, plan}` if ANY spec conflicts (the caller must
@@ -303,11 +355,13 @@ function planBatch(specs, existingFields, parentId) {
 module.exports = {
   APPROVED_TEST_LOCATION_ID,
   FIELD_SPECS,
+  CANONICAL_PARENT_ANCHOR_FIELD_KEY,
   expectedFieldKey,
   verifyAgainstAuthoritativeSource,
   classifyExistingMatch,
   validateFieldAgainstSpec,
   parsePostResponse,
+  resolveCanonicalParentId,
   planBatch,
 };
 
@@ -326,18 +380,17 @@ async function main() {
 
   const existingOpp = await get(token, `${BASE}/locations/${args.location}/customFields?model=opportunity`);
   const existingFields = existingOpp.customFields ?? [];
-  const arvField = existingFields.find((f) => f.fieldKey === 'opportunity.arv_after_repair_value');
-  const parentId = arvField ? arvField.parentId : (existingFields.map((f) => f.parentId).filter(Boolean)[0] ?? null);
-  if (!parentId) die('could not resolve an Opportunity Details-shaped folder to create fields in.');
+
+  const resolvedParent = resolveCanonicalParentId(existingFields);
+  if (!resolvedParent.ok) die(resolvedParent.reason);
+  const parentId = resolvedParent.parentId;
 
   console.log('Location:', args.location, '(verified == approved Test location)');
-  console.log('Resolved parentId (from opportunity.arv_after_repair_value\'s own folder):', parentId);
+  console.log(`Resolved canonical parentId (from the single required "${CANONICAL_PARENT_ANCHOR_FIELD_KEY}" anchor):`, parentId);
   console.log('Existing Opportunity custom fields in this location:', existingFields.length);
+  console.log('Field count this batch (always the complete FIELD_SPECS -- no partial-batch mode):', FIELD_SPECS.length, '\n');
 
-  const specsToRun = args.only ? FIELD_SPECS.filter((s) => s.key === args.only) : FIELD_SPECS;
-  console.log('Field count this batch:', specsToRun.length, '\n');
-
-  const batch = planBatch(specsToRun, existingFields, parentId);
+  const batch = planBatch(FIELD_SPECS, existingFields, parentId);
   const rows = batch.plan.map((p, i) => ({
     ordinal: i + 1,
     key: p.spec.key,
@@ -361,7 +414,7 @@ async function main() {
   }
 
   if (!batch.ok) {
-    console.error(`PREFLIGHT CONFLICTS -- ${batch.conflicts.length} of ${specsToRun.length} specs conflict. Creating ZERO fields.`);
+    console.error(`PREFLIGHT CONFLICTS -- ${batch.conflicts.length} of ${FIELD_SPECS.length} specs conflict. Creating ZERO fields.`);
     for (const c of batch.conflicts) console.error(`  CONFLICT ${c.key}: ${c.reasons.join('; ')}`);
     printSummaryAndExit(5, 'PREFLIGHT REFUSED THE WHOLE BATCH -- one or more specs conflict with the existing GHL inventory. Zero fields were created. Resolve the conflicts (or correct FIELD_SPECS if it has drifted) and re-run.');
   }

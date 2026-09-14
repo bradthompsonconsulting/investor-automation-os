@@ -25,6 +25,21 @@
  *   13. `parsePostResponse` treats malformed JSON and JSON with no usable
  *       `id` as distinctly unconfirmed, never silently treated as success.
  *
+ * Jess Gate correction (whole-batch/folder safety repair, this session)
+ * extends the suite further with:
+ *   14. There is no `--only` flag anywhere in this script -- an earlier
+ *       version let a caller preflight one field while 47 others'
+ *       conflicts went unchecked. `main()` always calls `planBatch` with
+ *       the complete, unfiltered `FIELD_SPECS` -- proven both statically
+ *       (no `--only` parsing exists) and by construction (a conflict on
+ *       spec #1 is caught even when only spec #48 would otherwise have
+ *       been "run").
+ *   15. `resolveCanonicalParentId` fails closed on all three ways the
+ *       canonical `opportunity.arv_after_repair_value` anchor can be
+ *       unusable -- missing, duplicated, or present with no (or a blank)
+ *       `parentId` -- and there is no fallback to "the first Opportunity
+ *       folder found."
+ *
  * The pure classification/validation/planning functions are exercised
  * directly (via `require`, `main()` never auto-runs on require -- guarded
  * by `require.main === module`) with synthetic data -- no network calls.
@@ -59,7 +74,7 @@ const { CHECKBOX_MARKER_KEYS } = require(path.join(TMP, 'contract-checkbox-marke
 const S = require(SCRIPT);
 const src = fs.readFileSync(SCRIPT, 'utf8');
 
-const FLOOR = 55;
+const FLOOR = 110;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -284,7 +299,7 @@ checkTrue('missing-id reason mentions no usable id', /no usable "id"/.test(S.par
 /* ==================================================================== */
 
 {
-  const planCallIdx = src.indexOf('const batch = planBatch(specsToRun, existingFields, parentId);');
+  const planCallIdx = src.indexOf('const batch = planBatch(FIELD_SPECS, existingFields, parentId);');
   const notOkCheckIdx = src.indexOf('if (!batch.ok) {');
   const creationLoopIdx = src.indexOf('for (const entry of batch.plan) {');
   const postFetchIdx = src.indexOf("method: 'POST'");
@@ -343,6 +358,103 @@ checkTrue('this script only ever calls the customFields endpoint', Array.from(sr
 
 checkTrue('printSummaryAndExit always prints the full proposed-mapping table before exiting', /function printSummaryAndExit\(code, closingMessage\) \{\s*console\.log\('\\n--- Proposed mapping/.test(src));
 checkTrue('printSummaryAndExit is used for the natural successful/dry-run end', /printSummaryAndExit\(0, 'DRY RUN/.test(src) && /printSummaryAndExit\(0, 'Next step/.test(src));
+
+/* ==================================================================== */
+/* 15. NO --only bypass -- main() always preflights the complete,        */
+/*     unfiltered FIELD_SPECS                                            */
+/* ==================================================================== */
+
+checkTrue('parseArgs contains no --only parsing at all', !/'--only'/.test(src) && !/get\('--only'\)/.test(src));
+checkTrue('the returned args object from parseArgs carries no `only` field', !/return \{ location, credentialFile, apply: argv\.includes\('--apply'\), only:/.test(src));
+checkTrue('the usage comment documents no [--only <key>] flag', !/\[--only <key>\]/.test(src));
+checkTrue('there is no `specsToRun` filtering variable anywhere in this script', !/specsToRun/.test(src));
+{
+  const planCallIdx = src.indexOf('const batch = planBatch(');
+  checkTrue('planBatch is called with the literal, complete FIELD_SPECS array, never a filtered subset', src.slice(planCallIdx, planCallIdx + 80).includes('planBatch(FIELD_SPECS, existingFields, parentId)'));
+}
+{
+  // Behavioral proof at the pure-function level (the level main() itself calls):
+  // a conflict on the LAST spec (#48) still surfaces when planBatch is given the
+  // complete 48-spec array -- there is no code path that could ever narrow this to
+  // one field and skip preflighting the rest.
+  const specs = S.FIELD_SPECS; // all 48, exactly as main() would pass them
+  const conflictingOnLast = realField({ name: specs[47].name, fieldKey: 'opportunity.totally_wrong_key' });
+  const result = S.planBatch(specs, [conflictingOnLast], PARENT_ID);
+  checkTrue('a conflict on field #48 (of a full 48-spec batch) still blocks the WHOLE batch, including field #1', result.ok === false && result.plan.length === 48);
+  check('the conflict is attributed to the correct (last) key', result.conflicts.map((c) => c.key), [specs[47].key]);
+  checkTrue('field #1 is present in the plan (fully preflighted) even though the conflict is on field #48', result.plan[0].spec.key === specs[0].key && result.plan[0].action !== undefined);
+}
+{
+  // No live network call needed: any invocation of this script (--only removed)
+  // reaches main() with exactly one specs array in scope for planBatch -- FIELD_SPECS
+  // itself. Confirm no alternate, narrower array literal is ever constructed for it.
+  const mainStart = src.indexOf('async function main()');
+  const mainBody = src.slice(mainStart);
+  checkTrue('main()\'s body constructs no filtered specs array (no .filter( call operating on FIELD_SPECS)', !/FIELD_SPECS\.filter\(/.test(mainBody));
+}
+
+/* ==================================================================== */
+/* 16. Canonical parent-folder anchor -- fail closed, no arbitrary       */
+/*     fallback                                                          */
+/* ==================================================================== */
+
+check('CANONICAL_PARENT_ANCHOR_FIELD_KEY is exported and is exactly the ARV anchor key', S.CANONICAL_PARENT_ANCHOR_FIELD_KEY, 'opportunity.arv_after_repair_value');
+checkTrue('no arbitrary "first folder found" fallback exists anywhere in this script', !/filter\(Boolean\)\[0\]/.test(src) && !/existingFields\.map\(\(f\) => f\.parentId\)/.test(src));
+checkTrue('main() calls resolveCanonicalParentId and dies on failure before using any parentId', /const resolvedParent = resolveCanonicalParentId\(existingFields\);\s*if \(!resolvedParent\.ok\) die\(resolvedParent\.reason\);/.test(src));
+
+{
+  const anchor = { id: 'anchor-1', fieldKey: 'opportunity.arv_after_repair_value', parentId: PARENT_ID, name: 'ARV (After Repair Value)', dataType: 'NUMERICAL', model: 'opportunity' };
+  check('exactly one valid anchor resolves to its own parentId', S.resolveCanonicalParentId([anchor]), { ok: true, parentId: PARENT_ID });
+  check('the anchor is found regardless of position in the existing-fields array', S.resolveCanonicalParentId([realField(), anchor, realField({ id: 'x2' })]), { ok: true, parentId: PARENT_ID });
+}
+{
+  const result = S.resolveCanonicalParentId([]); // no fields at all
+  checkTrue('a location with NO anchor field fails closed', result.ok === false);
+  checkTrue('missing-anchor reason names the exact anchor key and says there is no fallback', /opportunity\.arv_after_repair_value/.test(result.reason) && /no fallback/.test(result.reason));
+}
+{
+  const result = S.resolveCanonicalParentId([realField({ name: 'Unrelated Field', fieldKey: 'opportunity.something_else' })]); // fields exist, but not the anchor
+  checkTrue('a location with OTHER fields but no matching anchor still fails closed', result.ok === false);
+}
+{
+  const dup1 = { id: 'anchor-1', fieldKey: 'opportunity.arv_after_repair_value', parentId: PARENT_ID, name: 'ARV (After Repair Value)', dataType: 'NUMERICAL', model: 'opportunity' };
+  const dup2 = { id: 'anchor-2', fieldKey: 'opportunity.arv_after_repair_value', parentId: 'a-different-folder', name: 'ARV (After Repair Value) (dup)', dataType: 'NUMERICAL', model: 'opportunity' };
+  const result = S.resolveCanonicalParentId([dup1, dup2]);
+  checkTrue('TWO anchor fields (duplicated) fails closed -- never silently picks the first', result.ok === false);
+  checkTrue('duplicate-anchor reason states how many were found and lists both ids', /2 times/.test(result.reason) && /anchor-1/.test(result.reason) && /anchor-2/.test(result.reason));
+}
+{
+  const noParent = { id: 'anchor-1', fieldKey: 'opportunity.arv_after_repair_value', parentId: undefined, name: 'ARV (After Repair Value)', dataType: 'NUMERICAL', model: 'opportunity' };
+  const result = S.resolveCanonicalParentId([noParent]);
+  checkTrue('an anchor with a MISSING parentId fails closed', result.ok === false);
+  checkTrue('missing-parentId reason names the anchor id', /anchor-1/.test(result.reason));
+}
+{
+  const blankParent = { id: 'anchor-1', fieldKey: 'opportunity.arv_after_repair_value', parentId: '   ', name: 'ARV (After Repair Value)', dataType: 'NUMERICAL', model: 'opportunity' };
+  const result = S.resolveCanonicalParentId([blankParent]);
+  checkTrue('an anchor with a BLANK (whitespace-only) parentId fails closed, same as missing', result.ok === false);
+}
+{
+  const nonStringParent = { id: 'anchor-1', fieldKey: 'opportunity.arv_after_repair_value', parentId: 12345, name: 'ARV (After Repair Value)', dataType: 'NUMERICAL', model: 'opportunity' };
+  const result = S.resolveCanonicalParentId([nonStringParent]);
+  checkTrue('an anchor with a non-string parentId fails closed', result.ok === false);
+}
+{
+  // The dry-run must REPORT the resolved parentId, not just use it silently.
+  checkTrue('the dry run explicitly logs the resolved canonical parentId', /console\.log\(`Resolved canonical parentId \(from the single required "\$\{CANONICAL_PARENT_ANCHOR_FIELD_KEY\}" anchor\):`, parentId\);/.test(src));
+}
+{
+  // End-to-end (still network-free): approved location + a nonexistent credential
+  // file reaches the point of attempting to read that file -- i.e. it passes the
+  // location guard and would go on to resolve the anchor and plan all 48, proving
+  // there is no location- or anchor-related early exit that bypasses the rest of
+  // the pipeline for a valid setup. (The anchor/parentId resolution itself cannot
+  // be reached without a real network call, which this suite never makes --
+  // resolveCanonicalParentId's own unit tests above cover its behavior directly.)
+  const bogusCred = path.join(TMP, 'nope2.env');
+  const r = spawnSync(process.execPath, [SCRIPT, '--location', 'SoTgVoaFGHtBdRFvXWQV', '--credential-file', bogusCred], { cwd: APP, encoding: 'utf8', timeout: 15000 });
+  checkTrue('approved Test location + (eventually) a valid anchor is the only path that reaches the network boundary -- proven by reaching the credential-read failure, not a location or --only related refusal', /ENOENT|no such file/i.test(String(r.stderr || r.error || '')) && !/Test location only/.test(r.stderr));
+}
 
 cleanup();
 console.log(`\n${checks} checks, ${failures} failures. FLOOR ${FLOOR}.`);
