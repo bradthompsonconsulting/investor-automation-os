@@ -11,7 +11,9 @@
  * without refactoring once implemented.
  */
 
-import { getRuntimeConfig, CURRENT_OFFER_NOT_PROVISIONED } from "../../shared/ghl-config";
+import { getRuntimeConfig, CURRENT_OFFER_NOT_PROVISIONED, CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED } from "../../shared/ghl-config";
+import type { ContractProjectionFieldKey } from "./contract-ghl-projection-model";
+import type { ContractDraftRequestState } from "./contract-draft-request-model";
 /* Board item #2C. The three option LABELS are declared once, in resolver-types,
    and this module reads them rather than retyping them. Retyping would create a
    second list that could drift from the one the resolver parses against, and a
@@ -1064,6 +1066,164 @@ export const ghl = {
         .find((field: any) => field.id === fieldId) ?? null;
       const observed = entry === null ? null : readSingularFieldValue(entry);
       return { ok: entry !== null && observed === sent, putStatus, sent, observed };
+    },
+
+    /**
+     * INV-67 / B9-12 contract-population repair. Writes every "projected"
+     * field in an already-built `ContractProjectionPlan` (48 narrowly-scoped
+     * Opportunity fields, `contract-ghl-projection-model.ts`) in ONE PUT,
+     * custom-fields-only -- the same invariant `saveUnderwritingFields`
+     * already establishes: a body carrying pipelineStageId, status, name,
+     * monetaryValue or tags forfeits the mechanism this write rests on (a
+     * custom-fields-only PUT cannot fire a stage trigger). Readback is the
+     * SAME singular GET / `readSingularFieldValue` pair every other named
+     * writer in this file uses -- never the list endpoint, whose shape
+     * varies by dataType. `ok` is true only when EVERY entry lands; a
+     * partial result is returned with per-key detail, never silently
+     * compensated (PB-D59's own no-compensating-write precedent).
+     *
+     * ALSO reads back `opportunityFacts.currentOffer` in the SAME response
+     * (no second network call) so the caller can run the price cross-check
+     * `contract-draft-request-model.ts`'s `evaluateContractDraftRequestTransition`
+     * requires, without a field of its own -- ¶3A/¶3C reuse that existing
+     * carrier rather than duplicating it (see
+     * `contract-ghl-projection-model.ts`'s module header).
+     *
+     * Refuses immediately, before any network call, if any configured id is
+     * missing or still the `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`
+     * sentinel -- the same fail-closed pattern `setCurrentOffer` already
+     * established.
+     */
+    syncContractProjectionFields: async (
+      opportunityId: string,
+      entries: { key: ContractProjectionFieldKey; text: string }[],
+    ): Promise<{
+      ok: boolean;
+      putStatus: number;
+      entries: { key: ContractProjectionFieldKey; sent: string; observed: string | number | null; landed: boolean }[];
+      currentOfferObserved: number | string | null;
+    }> => {
+      const ids = CONFIG.contractProjectionFields;
+      const plan = entries.map((e) => {
+        const fieldId = ids[e.key];
+        if (!fieldId || fieldId === CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED) {
+          throw new Error(
+            `syncContractProjectionFields: no configured id for "${e.key}" (or not yet provisioned) -- refusing before any network call.`,
+          );
+        }
+        return { key: e.key, fieldId, value: e.text };
+      });
+      if (new Set(plan.map((p) => p.fieldId)).size !== plan.length) {
+        throw new Error("syncContractProjectionFields: two projected keys resolved to the same GHL field id -- refusing.");
+      }
+
+      const body = { customFields: plan.map((p) => ({ id: p.fieldId, field_value: p.value })) };
+
+      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const putStatus = putRes.status;
+      if (!putRes.ok) {
+        const text = await putRes.text();
+        throw new Error(`syncContractProjectionFields PUT → ${putStatus}: ${text}`);
+      }
+
+      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
+      if (!readRes.ok) {
+        const text = await readRes.text();
+        throw new Error(`syncContractProjectionFields readback → ${readRes.status}: ${text}`);
+      }
+      const readBody = await readRes.json();
+      const opp = readBody.opportunity ?? readBody;
+      const byId = new Map<string, any>((opp.customFields ?? []).map((f: any) => [f.id, f]));
+
+      const results = plan.map((p) => {
+        const entry = byId.get(p.fieldId) ?? null;
+        const observed = entry === null ? null : readSingularFieldValue(entry);
+        return { key: p.key, sent: p.value, observed, landed: observed === p.value };
+      });
+
+      const currentOfferEntry = byId.get(CONFIG.opportunityFacts.currentOffer) ?? null;
+      const currentOfferObserved = currentOfferEntry === null ? null : readSingularFieldValue(currentOfferEntry);
+
+      return { ok: results.every((r) => r.landed), putStatus, entries: results, currentOfferObserved };
+    },
+
+    /**
+     * INV-67 / B9-12 -- READS the Contract Draft Request field fresh, via
+     * the singular GET (never cached). This is the ONE required precondition
+     * for `evaluateContractDraftRequestTransition`'s duplicate-request
+     * guard: the caller must pass THIS call's result as `currentRaw`, taken
+     * immediately before deciding, never a value read earlier in the same
+     * session.
+     */
+    readContractDraftRequest: async (opportunityId: string): Promise<string | null> => {
+      const fieldId = CONFIG.contractDraftRequest;
+      if (!fieldId || fieldId === CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED) {
+        throw new Error("readContractDraftRequest: no configured id (or not yet provisioned) -- refusing before any network call.");
+      }
+      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
+      if (!readRes.ok) {
+        const text = await readRes.text();
+        throw new Error(`readContractDraftRequest → ${readRes.status}: ${text}`);
+      }
+      const readBody = await readRes.json();
+      const opp = readBody.opportunity ?? readBody;
+      const entry = (opp.customFields ?? []).find((f: any) => f.id === fieldId) ?? null;
+      const observed = entry === null ? null : readSingularFieldValue(entry);
+      return typeof observed === "string" ? observed : null;
+    },
+
+    /**
+     * INV-67 / B9-12 -- the ONE writer for the one-shot Contract Draft
+     * Request control. CUSTOM-FIELDS-ONLY PUT, one field, exactly the
+     * `setAssignmentMode` shape: value checked against the declared option
+     * labels BEFORE the request (GHL's picker will not store a string it
+     * does not offer), singular-GET readback, `ok` only on exact match.
+     * This writer NEVER decides whether the transition is allowed -- that
+     * is `evaluateContractDraftRequestTransition`'s job, called by the
+     * caller BEFORE this function, using a fresh `readContractDraftRequest`
+     * result. This writer also never touches pipelineStageId, status, name,
+     * monetaryValue, or tags -- it cannot trigger a stage-based workflow,
+     * and it never implies or performs a document send.
+     */
+    setContractDraftRequest: async (
+      opportunityId: string,
+      value: ContractDraftRequestState,
+    ): Promise<{ ok: boolean; putStatus: number; sent: string; observed: number | string | null }> => {
+      const fieldId = CONFIG.contractDraftRequest;
+      if (!fieldId || fieldId === CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED) {
+        throw new Error("setContractDraftRequest: no configured id (or not yet provisioned) -- refusing before any network call.");
+      }
+      if (value !== "Idle" && value !== "Requested") {
+        throw new Error(`setContractDraftRequest: ${JSON.stringify(value)} is not "Idle" or "Requested". Refusing.`);
+      }
+
+      const body = { customFields: [{ id: fieldId, field_value: value }] };
+      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const putStatus = putRes.status;
+      if (!putRes.ok) {
+        const text = await putRes.text();
+        throw new Error(`setContractDraftRequest PUT → ${putStatus}: ${text}`);
+      }
+
+      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
+      if (!readRes.ok) {
+        const text = await readRes.text();
+        throw new Error(`setContractDraftRequest readback → ${readRes.status}: ${text}`);
+      }
+      const readBody = await readRes.json();
+      const opp = readBody.opportunity ?? readBody;
+      const entry = (opp.customFields ?? []).find((f: any) => f.id === fieldId) ?? null;
+      const observed = entry === null ? null : readSingularFieldValue(entry);
+
+      return { ok: observed === value, putStatus, sent: value, observed };
     },
   },
 

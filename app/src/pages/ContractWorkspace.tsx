@@ -18,6 +18,13 @@ import {
   CONTRACT_DOCUMENT_GROUP_LABEL,
 } from "../lib/contract-document-model";
 import {
+  buildContractProjectionPlan, reusedCurrentOfferLines, type ContractProjectionFieldKey,
+} from "../lib/contract-ghl-projection-model";
+import {
+  evaluateContractDraftRequestTransition, normalizeContractDraftRequestState,
+} from "../lib/contract-draft-request-model";
+import { formatContractProjectionSyncNote, latestContractProjectionSyncForOpportunity } from "../lib/contract-projection-sync-carriers";
+import {
   evaluateBradAuthorizationCurrency, evaluateAuthorizationEligibility,
   buildAuthorizationRecordArgs, computeDifferencesFromLastAuthorized,
 } from "../lib/contract-authorization-model";
@@ -635,6 +642,122 @@ export default function ContractWorkspace() {
       propertyStreetAddress: propertyStreetAddressDisposition,
     });
   }, [sellerContractFactsReport, documentVersion, screen, propertyStreetAddressDisposition]);
+
+  /**
+   * INV-67 / B9-12 contract-population repair -- Contract Workspace
+   * synchronization control. Projects `contractDocumentPreview`'s
+   * already-resolved facts into the 48 narrowly-scoped GHL Opportunity
+   * fields, then -- ONLY once every write/readback lands and the accepted
+   * price cross-checks -- sets the one-shot `Contract Draft Request`
+   * dropdown to "Requested". This control NEVER creates or sends a
+   * document itself: it writes Opportunity custom fields and one audit
+   * Note only, exactly the write classes this repair authorizes. The
+   * future GHL workflow (not built here) is what actually creates the
+   * draft and resets the field back to "Idle".
+   */
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncResult, setSyncResult] = useState<
+    | null
+    | {
+        kind: "blocked";
+        blockingReasons: string[];
+      }
+    | {
+        kind: "done";
+        ok: boolean;
+        entries: { key: ContractProjectionFieldKey; landed: boolean }[];
+        currentOfferCrossCheckOk: boolean;
+        draftRequest: { attempted: boolean; allowed: boolean; reason: string | null; toState: string | null };
+      }
+    | { kind: "error"; message: string }
+  >(null);
+
+  const latestProjectionSync = useMemo(() => {
+    if (screen.state !== "ready" || !notes) return null;
+    return latestContractProjectionSyncForOpportunity(notes, screen.opportunity.id);
+  }, [screen, notes]);
+
+  async function handleSyncContractProjectionFields() {
+    if (screen.state !== "ready" || !contractDocumentPreview) return;
+    setSyncResult(null);
+    setSyncBusy(true);
+    try {
+      const opportunityId = screen.opportunity.id;
+      const plan = buildContractProjectionPlan(opportunityId, contractDocumentPreview);
+      if (!plan.ok) {
+        setSyncResult({ kind: "blocked", blockingReasons: plan.blockingReasons });
+        return;
+      }
+
+      const writeResult = await ghl.opportunities.syncContractProjectionFields(opportunityId, plan.entries);
+
+      const reused = reusedCurrentOfferLines(contractDocumentPreview);
+      const currentOfferCrossCheckOk =
+        reused.every((r) => r.text !== null) && writeResult.currentOfferObserved === screen.agreedPrice;
+
+      let draftRequest: { attempted: boolean; allowed: boolean; reason: string | null; fromState: string | null; toState: string | null } = {
+        attempted: false, allowed: false, reason: null, fromState: null, toState: null,
+      };
+
+      if (writeResult.ok) {
+        // Fresh read, immediately before deciding -- never a cached value (see
+        // contract-draft-request-model.ts's own duplicate/stale-request note).
+        const currentRaw = await ghl.opportunities.readContractDraftRequest(opportunityId);
+        const fromState = normalizeContractDraftRequestState(currentRaw);
+        const decision = evaluateContractDraftRequestTransition({
+          currentRaw,
+          projection: { entryCount: writeResult.entries.length, allEntriesLanded: writeResult.ok },
+          currentOfferCrossCheckOk,
+        });
+        if (decision.allowed) {
+          const setResult = await ghl.opportunities.setContractDraftRequest(opportunityId, "Requested");
+          draftRequest = {
+            attempted: true,
+            allowed: setResult.ok,
+            reason: setResult.ok ? null : `Write did not read back as "Requested" (observed ${JSON.stringify(setResult.observed)}).`,
+            fromState,
+            toState: setResult.ok ? "Requested" : fromState,
+          };
+        } else {
+          draftRequest = { attempted: true, allowed: false, reason: decision.reason, fromState, toState: fromState };
+        }
+      }
+
+      const at = new Date().toISOString();
+      const note = formatContractProjectionSyncNote({
+        at,
+        opportunityId,
+        version: documentVersion!,
+        ok: writeResult.ok,
+        entriesAttempted: writeResult.entries.length,
+        entriesLanded: writeResult.entries.filter((e) => e.landed).length,
+        failedKeys: writeResult.entries.filter((e) => !e.landed).map((e) => e.key),
+        currentOfferCrossCheckOk,
+        draftRequest,
+        operator: "brad",
+      });
+      try {
+        await ghl.notes.create(contactId, note);
+        setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
+      } catch {
+        // Evidence note failure does not unwind the already-confirmed GHL
+        // field writes -- same "no compensating write" precedent as every
+        // other B9 write flow on this page.
+      }
+
+      setSyncResult({
+        kind: "done",
+        ok: writeResult.ok,
+        entries: writeResult.entries.map((e) => ({ key: e.key, landed: e.landed })),
+        currentOfferCrossCheckOk,
+        draftRequest,
+      });
+    } catch (e: any) {
+      setSyncResult({ kind: "error", message: e?.message ?? "Couldn't synchronize the contract projection fields. Try again." });
+    } finally {
+      setSyncBusy(false);
+    }
+  }
 
   const bradAuthorizationRecord = useMemo(() => {
     if (screen.state !== "ready" || !notes) return null;
@@ -2599,6 +2722,62 @@ export default function ContractWorkspace() {
                     </div>
                   ))}
                 </div>
+              </div>
+
+              {/* INV-67 / B9-12 contract-population repair -- Contract Workspace synchronization control. */}
+              <div data-testid="contract-projection-sync-section" style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>
+                  Sync contract fields to GHL (IAOS Test only)
+                </div>
+                <div style={{ fontSize: "10px", color: "#64748B", marginBottom: "8px" }}>
+                  Writes the populated preview above into the 48 narrowly-scoped GHL Opportunity fields, verifies every write by readback, then -- only if every field lands and the accepted price cross-checks -- sets Contract Draft Request to "Requested" for the future GHL workflow to pick up. Never creates or sends a document itself.
+                </div>
+
+                {latestProjectionSync ? (
+                  <div data-testid="contract-projection-sync-last-evidence" style={{ fontSize: "10px", color: "#64748B", marginBottom: "8px" }}>
+                    Last sync: {new Date(latestProjectionSync.at).toLocaleString()} -- {latestProjectionSync.ok ? "all fields landed" : `${latestProjectionSync.entriesLanded}/${latestProjectionSync.entriesAttempted} fields landed`}, draft request {latestProjectionSync.draftRequest.attempted ? (latestProjectionSync.draftRequest.allowed ? "Requested" : "not requested -- " + (latestProjectionSync.draftRequest.reason ?? "")) : "not attempted"}.
+                  </div>
+                ) : (
+                  <div data-testid="contract-projection-sync-no-evidence" style={{ fontSize: "10px", color: "#64748B", marginBottom: "8px" }}>No sync has been recorded for this opportunity yet.</div>
+                )}
+
+                <Btn
+                  testId="contract-projection-sync-button"
+                  onClick={handleSyncContractProjectionFields}
+                  busy={syncBusy}
+                  disabled={!contractDocumentPreview.previewComplete}
+                >
+                  Sync contract fields to GHL
+                </Btn>
+
+                {syncResult?.kind === "blocked" ? (
+                  <ul data-testid="contract-projection-sync-blocked" style={{ margin: "8px 0 0", padding: "0 0 0 18px", fontSize: "11px", color: "#F59E0B", lineHeight: 1.8 }}>
+                    {syncResult.blockingReasons.map((r, i) => <li key={i}>{r}</li>)}
+                  </ul>
+                ) : null}
+
+                {syncResult?.kind === "done" ? (
+                  <div data-testid="contract-projection-sync-result" style={{ marginTop: "8px", fontSize: "11px" }}>
+                    <div style={{ color: syncResult.ok ? "#22C55E" : "#F59E0B", fontWeight: 700 }}>
+                      {syncResult.ok ? "All 48 fields landed." : `${syncResult.entries.filter((e) => e.landed).length}/${syncResult.entries.length} fields landed.`}
+                    </div>
+                    {!syncResult.ok ? (
+                      <ul data-testid="contract-projection-sync-failed-keys" style={{ margin: "4px 0 0", padding: "0 0 0 18px", color: "#F59E0B" }}>
+                        {syncResult.entries.filter((e) => !e.landed).map((e) => <li key={e.key}>{e.key}</li>)}
+                      </ul>
+                    ) : null}
+                    <div style={{ color: "#94A3B8", marginTop: "4px" }}>
+                      Accepted-price cross-check: {syncResult.currentOfferCrossCheckOk ? "matches" : "MISMATCH"}.
+                    </div>
+                    <div data-testid="contract-projection-sync-draft-request" style={{ color: syncResult.draftRequest.allowed ? "#22C55E" : "#94A3B8", marginTop: "4px" }}>
+                      {syncResult.draftRequest.attempted
+                        ? (syncResult.draftRequest.allowed ? "Contract Draft Request set to Requested." : `Draft not requested -- ${syncResult.draftRequest.reason}`)
+                        : "Draft request not attempted (field writes did not all land)."}
+                    </div>
+                  </div>
+                ) : null}
+
+                <ErrorText testId="contract-projection-sync-error">{syncResult?.kind === "error" ? syncResult.message : null}</ErrorText>
               </div>
 
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
