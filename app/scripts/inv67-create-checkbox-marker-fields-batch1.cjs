@@ -3,29 +3,51 @@
  * 48 narrowly-scoped Opportunity custom TEXT fields
  * `src/lib/contract-checkbox-marker-model.ts`'s `CHECKBOX_MARKER_KEYS`
  * requires. Mirrors `inv67-create-contract-projection-fields.cjs`'s (and,
- * before it, `inv70-create-current-offer-field.cjs`'s) proven pattern
- * exactly: READ-ONLY DRY RUN BY DEFAULT, --apply to actually POST, always
- * confirms no name/fieldKey clash first (a re-run never creates a
- * duplicate), always reads each created field back.
+ * before it, `inv70-create-current-offer-field.cjs`'s) proven pattern:
+ * READ-ONLY DRY RUN BY DEFAULT, --apply to actually POST, always confirms
+ * no clash first, always reads each created field back.
  *
- * SCOPE -- this script creates ONLY the 48 marker fields. It does not
- * touch the 11 restructured contract-text keys, the 22 broker-text keys,
- * any retired field, or the Contract Draft Request field -- those are
- * later, separately reviewed batches (2 and 3) and out of THIS script's
- * authorized scope entirely.
+ * Jess Gate correction (live-safety repair, this session) hardens FIVE
+ * additional properties beyond the original pattern:
  *
- * REPEATED DESTINATIONS -- `lease_residential_mark`, `lease_fixture_mark`,
- * and `possession_leaseback_mark` each get exactly ONE field here, exactly
- * like every other marker. Placing that one field at TWO locations on the
- * Test template (paragraph 4/10 AND paragraph 22) is template-placement
- * work, not a field-creation concern, and is NOT performed by this script
- * or authorized in this phase. See `CHECKBOX_MARKER_REPEATED_TEMPLATE_
- * PLACEMENTS` (`contract-checkbox-marker-model.ts`) for the placement
- * manifest this script's field creation feeds into later.
+ *   1. HARD LOCATION ALLOWLIST -- `--location` is still required with no
+ *      default, but it must additionally equal `APPROVED_TEST_LOCATION_ID`
+ *      exactly. The check runs BEFORE the credential file is ever read and
+ *      BEFORE any network call -- a mismatched location (Production,
+ *      typo, or anything else) refuses immediately. The Production
+ *      location id is never present anywhere in this file; the approved
+ *      Test id is present ONLY as this one allowlist constant.
+ *   2. EXACT-EXISTING vs. CONFLICT, preflighted for ALL 48 specs BEFORE
+ *      the first POST. A field that matches on name AND fieldKey AND
+ *      dataType AND model AND parentId is `exact_existing` (safe to
+ *      reuse, after its own re-verification). Anything else -- a partial
+ *      match on only name or only fieldKey, multiple matching records, or
+ *      a full identity match whose other properties differ -- is a
+ *      `conflict`. If ANY spec conflicts, the WHOLE batch refuses before
+ *      creating anything: zero POSTs.
+ *   3. READBACK VALIDATION -- every field this script is about to treat
+ *      as provisioned (freshly created OR reused exact-existing) is
+ *      independently re-read and checked against name/fieldKey/dataType/
+ *      model/parentId/id. A mismatch stops immediately with the created
+ *      id (if any), expected-vs-actual values, and which fields were
+ *      never attempted.
+ *   4. UNCONFIRMED-CREATE SAFETY -- a POST response is parsed
+ *      defensively; if it is not valid JSON or carries no `id`, this
+ *      script reports that GHL may have created a field whose identity it
+ *      cannot confirm, and stops -- it never attempts another creation
+ *      after an unconfirmed one.
+ *   5. Every exit path (full success, preflight conflict, POST failure,
+ *      unconfirmed-create, readback transport failure, readback/exact-
+ *      existing validation mismatch) prints the full proposed mapping and
+ *      the results accumulated so far before the process ends.
  *
- * NO LOCATION SELECTOR. --location is required, no default -- this script
- * must never guess which environment it targets, and per this repair's
- * authorization it must never be pointed at anything but IAOS Test.
+ * Pure classification/validation logic (`classifyExistingMatch`,
+ * `validateFieldAgainstSpec`, `parsePostResponse`, `planBatch`) is
+ * exported for `test-inv67-checkbox-marker-fields-batch1-script.cjs` to
+ * exercise directly with synthetic data -- no network, no child process,
+ * matching this codebase's established "pure function, testable in
+ * isolation" convention. `main()` only runs when this file is executed
+ * directly (`require.main === module`), never on `require()`.
  *
  * Usage:
  *   node scripts/inv67-create-checkbox-marker-fields-batch1.cjs --location <id>
@@ -38,6 +60,14 @@ const path = require('path');
 
 const BASE = 'https://services.leadconnectorhq.com';
 const API_VERSION = '2021-07-28';
+
+/**
+ * The ONLY location this script will ever act against. An allowlist
+ * safety constant, NOT a default -- `--location` must still be passed
+ * explicitly on every invocation, and it must equal this exactly. The
+ * Production location id is never present anywhere in this file.
+ */
+const APPROVED_TEST_LOCATION_ID = 'SoTgVoaFGHtBdRFvXWQV';
 
 function die(msg) { console.error('ERROR: ' + msg); process.exit(2); }
 
@@ -73,7 +103,7 @@ function expectedFieldKey(name) {
 /**
  * MUST match `src/lib/contract-checkbox-marker-model.ts`'s
  * `CHECKBOX_MARKER_KEYS` exactly -- same 48 keys, same order. Verified
- * programmatically at the top of `main()` below (throws before any network
+ * programmatically at the top of `main()` (throws before any network
  * call if the two ever diverge) rather than trusted by eye alone.
  */
 const FIELD_SPECS = [
@@ -157,41 +187,172 @@ function verifyAgainstAuthoritativeSource() {
   console.log(`Verified: this script's 48 FIELD_SPECS keys match CHECKBOX_MARKER_KEYS exactly (same 48, same order).\n`);
 }
 
+/**
+ * Classifies one spec's relationship to the existing GHL inventory.
+ *   - `{kind:'none'}` -- no existing field matches by name or fieldKey;
+ *     safe to create.
+ *   - `{kind:'exact_existing', field}` -- EXACTLY one existing field
+ *     matches by name-or-fieldKey, and that field ALSO matches dataType
+ *     TEXT, model 'opportunity', and the intended parentId. Safe to reuse
+ *     -- but only after its own independent re-verification
+ *     (`validateFieldAgainstSpec`), never trusted from this listing alone.
+ *   - `{kind:'conflict', reasons, field?}` -- anything else: a match on
+ *     ONLY name or ONLY fieldKey (not both), more than one existing
+ *     record matching this spec's identity, or a single full-identity
+ *     match whose dataType/model/parentId differ from what this spec
+ *     requires. Never safe to proceed past.
+ */
+function classifyExistingMatch(spec, expectedKey, parentId, existingFields) {
+  const nameMatches = existingFields.filter((f) => f.name === spec.name);
+  const keyMatches = existingFields.filter((f) => f.fieldKey === expectedKey);
+  const matchingIds = new Set([...nameMatches, ...keyMatches].map((f) => f.id));
+  if (matchingIds.size === 0) return { kind: 'none' };
+  if (matchingIds.size > 1) {
+    return {
+      kind: 'conflict',
+      reasons: [`${matchingIds.size} distinct existing fields match this spec by name or fieldKey (ids: ${[...matchingIds].join(', ')}) -- ambiguous, refusing.`],
+    };
+  }
+  const onlyId = [...matchingIds][0];
+  const candidate = existingFields.find((f) => f.id === onlyId);
+  const matchedByName = candidate.name === spec.name;
+  const matchedByKey = candidate.fieldKey === expectedKey;
+  if (!(matchedByName && matchedByKey)) {
+    return {
+      kind: 'conflict',
+      field: candidate,
+      reasons: [
+        matchedByName
+          ? `name matches ("${spec.name}") but fieldKey differs: expected "${expectedKey}", existing field (id ${candidate.id}) has "${candidate.fieldKey}"`
+          : `fieldKey matches ("${expectedKey}") but name differs: expected "${spec.name}", existing field (id ${candidate.id}) has "${candidate.name}"`,
+      ],
+    };
+  }
+  const identityValidation = validateFieldAgainstSpec(spec, expectedKey, parentId, candidate);
+  if (!identityValidation.ok) {
+    return { kind: 'conflict', field: candidate, reasons: identityValidation.mismatches };
+  }
+  return { kind: 'exact_existing', field: candidate };
+}
+
+/**
+ * Validates a field object (either just-created-and-read-back, or an
+ * `exact_existing` candidate re-verified via its own single-field GET)
+ * against the spec it is supposed to satisfy. Used identically for both
+ * cases -- an exact-existing field is never trusted without the SAME
+ * check a freshly created one gets. `model` and `parentId` are checked
+ * strictly, not optionally -- confirmed live (this session) that GHL's
+ * customFields list AND single-field GET both always return both.
+ */
+function validateFieldAgainstSpec(spec, expectedKey, parentId, field) {
+  const mismatches = [];
+  if (!field || typeof field !== 'object') return { ok: false, mismatches: ['field object missing or not an object'] };
+  if (field.name !== spec.name) mismatches.push(`name: expected "${spec.name}", got "${field.name}"`);
+  if (field.fieldKey !== expectedKey) mismatches.push(`fieldKey: expected "${expectedKey}", got "${field.fieldKey}"`);
+  if (field.dataType !== spec.dataType) mismatches.push(`dataType: expected "${spec.dataType}", got "${field.dataType}"`);
+  if (field.model !== 'opportunity') mismatches.push(`model: expected "opportunity", got "${field.model}"`);
+  if (field.parentId !== parentId) mismatches.push(`parentId: expected "${parentId}", got "${field.parentId}"`);
+  if (!field.id) mismatches.push('id: missing');
+  return mismatches.length === 0 ? { ok: true } : { ok: false, mismatches };
+}
+
+/**
+ * Parses a POST response body defensively. GHL is expected to return
+ * `{ customField: { id, ... } }` or the field object directly -- either
+ * way an `id` MUST be present. A parse failure or a missing id means
+ * GHL's own confirmation of what (if anything) was created cannot be
+ * trusted -- reported distinctly, never thrown as an unguarded exception.
+ */
+function parsePostResponse(postText) {
+  let parsed;
+  try {
+    parsed = JSON.parse(postText);
+  } catch (e) {
+    return { ok: false, reason: `response body is not valid JSON: ${e.message}` };
+  }
+  const field = (parsed && typeof parsed === 'object' && parsed.customField) ? parsed.customField : parsed;
+  if (!field || typeof field !== 'object' || !field.id) {
+    return { ok: false, reason: `response JSON parsed but carries no usable "id" field (${JSON.stringify(parsed).slice(0, 200)})` };
+  }
+  return { ok: true, field };
+}
+
+/**
+ * Pure preflight over ALL specs at once -- classifies every one before a
+ * single network call for field creation is ever made. Returns
+ * `{ok:false, conflicts, plan}` if ANY spec conflicts (the caller must
+ * create zero fields, full stop); otherwise `{ok:true, plan}`, one entry
+ * per spec tagged `'create'` or `'reuse'`.
+ */
+function planBatch(specs, existingFields, parentId) {
+  const plan = [];
+  const conflicts = [];
+  for (const spec of specs) {
+    const expectedKey = expectedFieldKey(spec.name);
+    const classification = classifyExistingMatch(spec, expectedKey, parentId, existingFields);
+    if (classification.kind === 'conflict') {
+      conflicts.push({ key: spec.key, name: spec.name, reasons: classification.reasons });
+      plan.push({ spec, expectedKey, action: 'conflict', classification });
+      continue;
+    }
+    plan.push({ spec, expectedKey, action: classification.kind === 'exact_existing' ? 'reuse' : 'create', classification });
+  }
+  return conflicts.length > 0 ? { ok: false, conflicts, plan } : { ok: true, plan };
+}
+
+module.exports = {
+  APPROVED_TEST_LOCATION_ID,
+  FIELD_SPECS,
+  expectedFieldKey,
+  verifyAgainstAuthoritativeSource,
+  classifyExistingMatch,
+  validateFieldAgainstSpec,
+  parsePostResponse,
+  planBatch,
+};
+
 async function main() {
   verifyAgainstAuthoritativeSource();
 
   const args = parseArgs(process.argv.slice(2));
+
+  // HARD LOCATION ALLOWLIST -- before credential reading, before any network access.
+  if (args.location !== APPROVED_TEST_LOCATION_ID) {
+    die(`Test location only. --location must equal the approved IAOS Test location (${APPROVED_TEST_LOCATION_ID}); got "${args.location}". Refusing before reading any credential file or making any network call.`);
+  }
+
   const token = parseEnv(fs.readFileSync(args.credentialFile, 'utf8')).GHL_PRIVATE_API_KEY;
   if (!token) die(`GHL_PRIVATE_API_KEY is not present in ${args.credentialFile}.`);
 
   const existingOpp = await get(token, `${BASE}/locations/${args.location}/customFields?model=opportunity`);
-  const arvField = (existingOpp.customFields ?? []).find((f) => f.fieldKey === 'opportunity.arv_after_repair_value');
-  const parentId = arvField ? arvField.parentId : ((existingOpp.customFields ?? []).map((f) => f.parentId).filter(Boolean)[0] ?? null);
+  const existingFields = existingOpp.customFields ?? [];
+  const arvField = existingFields.find((f) => f.fieldKey === 'opportunity.arv_after_repair_value');
+  const parentId = arvField ? arvField.parentId : (existingFields.map((f) => f.parentId).filter(Boolean)[0] ?? null);
   if (!parentId) die('could not resolve an Opportunity Details-shaped folder to create fields in.');
 
-  console.log('Location:', args.location);
+  console.log('Location:', args.location, '(verified == approved Test location)');
   console.log('Resolved parentId (from opportunity.arv_after_repair_value\'s own folder):', parentId);
-  console.log('Existing Opportunity custom fields in this location:', (existingOpp.customFields ?? []).length);
-  console.log('Field count this batch:', FIELD_SPECS.length, '\n');
+  console.log('Existing Opportunity custom fields in this location:', existingFields.length);
 
+  const specsToRun = args.only ? FIELD_SPECS.filter((s) => s.key === args.only) : FIELD_SPECS;
+  console.log('Field count this batch:', specsToRun.length, '\n');
+
+  const batch = planBatch(specsToRun, existingFields, parentId);
+  const rows = batch.plan.map((p, i) => ({
+    ordinal: i + 1,
+    key: p.spec.key,
+    name: p.spec.name,
+    fieldKey: p.expectedKey,
+    mergeTag: `{{${p.expectedKey}}}`,
+    action: p.action,
+    detail: p.action === 'conflict' ? `CONFLICT -- ${p.classification.reasons.join('; ')}` : p.action === 'reuse' ? `exact existing id ${p.classification.field.id}` : 'none, will create',
+  }));
   const results = {};
-  const rows = [];
 
-  /**
-   * Partial-failure safety: EVERY exit path from this function -- the
-   * natural end of a fully successful/dry run, a POST failure, or a
-   * readback failure after a successful POST -- prints the full proposed
-   * mapping and the results accumulated SO FAR before the process ends.
-   * A field that was actually created in GHL (POST succeeded) is recorded
-   * in `results` immediately on POST success, before readback is even
-   * attempted, so a readback failure never hides evidence that a field
-   * was created -- it is reported as created-but-unconfirmed, distinctly
-   * from never-attempted.
-   */
   function printSummaryAndExit(code, closingMessage) {
-    console.log('\n--- Proposed mapping (ordinal | key | name | fieldKey | mergeTag | collision) ---');
+    console.log('\n--- Proposed mapping (ordinal | key | name | fieldKey | mergeTag | action) ---');
     for (const r of rows) {
-      console.log(`${String(r.ordinal).padStart(2)}. ${r.key.padEnd(45)} | ${r.name.padEnd(50)} | ${r.fieldKey.padEnd(55)} | ${r.mergeTag.padEnd(60)} | ${r.collision}`);
+      console.log(`${String(r.ordinal).padStart(2)}. ${r.key.padEnd(45)} | ${r.name.padEnd(50)} | ${r.fieldKey.padEnd(55)} | ${r.mergeTag.padEnd(60)} | ${r.detail}`);
     }
     console.log('\n--- Results (key -> id; dry-run/never-attempted entries absent) ---');
     console.log(JSON.stringify(results, null, 2));
@@ -199,25 +360,34 @@ async function main() {
     process.exit(code);
   }
 
-  let ordinal = 0;
-  for (const spec of FIELD_SPECS) {
-    ordinal++;
-    if (args.only && spec.key !== args.only) continue;
+  if (!batch.ok) {
+    console.error(`PREFLIGHT CONFLICTS -- ${batch.conflicts.length} of ${specsToRun.length} specs conflict. Creating ZERO fields.`);
+    for (const c of batch.conflicts) console.error(`  CONFLICT ${c.key}: ${c.reasons.join('; ')}`);
+    printSummaryAndExit(5, 'PREFLIGHT REFUSED THE WHOLE BATCH -- one or more specs conflict with the existing GHL inventory. Zero fields were created. Resolve the conflicts (or correct FIELD_SPECS if it has drifted) and re-run.');
+  }
 
-    const expectedKey = expectedFieldKey(spec.name);
-    const mergeTag = `{{${expectedKey}}}`;
-    const clash = (existingOpp.customFields ?? []).find(
-      (f) => f.name === spec.name || f.fieldKey === expectedKey,
-    );
-    const collision = clash ? `CLASH -- existing id ${clash.id}, fieldKey ${clash.fieldKey}, name "${clash.name}"` : 'none';
-    rows.push({ ordinal, key: spec.key, name: spec.name, fieldKey: expectedKey, mergeTag, collision });
+  for (const entry of batch.plan) {
+    const { spec, expectedKey, action, classification } = entry;
 
-    if (clash) {
-      console.log(`SKIP  ${spec.key.padEnd(45)} -- already exists (id ${clash.id}, fieldKey ${clash.fieldKey})`);
-      results[spec.key] = clash.id;
+    if (action === 'reuse') {
+      // Never trust the bulk listing alone -- re-fetch and re-validate this ONE field independently.
+      let rb;
+      try {
+        const readback = await get(token, `${BASE}/locations/${args.location}/customFields/${classification.field.id}`);
+        rb = readback.customField ?? readback;
+      } catch (e) {
+        printSummaryAndExit(6, `PARTIAL FAILURE -- re-verification GET for the EXACT EXISTING candidate for ${spec.key} (id ${classification.field.id}) failed: ${e.message}. Refusing to treat it as safely provisioned. Nothing after ${spec.key} in FIELD_SPECS order was attempted.`);
+      }
+      const validation = validateFieldAgainstSpec(spec, expectedKey, parentId, rb);
+      if (!validation.ok) {
+        printSummaryAndExit(6, `EXACT EXISTING field for ${spec.key} (id ${classification.field.id}) failed re-verification: ${validation.mismatches.join('; ')}. Refusing to treat it as safely provisioned. Nothing after ${spec.key} in FIELD_SPECS order was attempted.`);
+      }
+      console.log(`REUSE ${spec.key.padEnd(45)} -- verified existing id ${rb.id}, fieldKey ${rb.fieldKey}, dataType ${rb.dataType}`);
+      results[spec.key] = rb.id;
       continue;
     }
 
+    // action === 'create'
     const body = { name: spec.name, dataType: spec.dataType, model: 'opportunity', parentId };
 
     if (!args.apply) {
@@ -235,7 +405,13 @@ async function main() {
       console.error(`FAIL  ${spec.key.padEnd(45)} -- POST ${postRes.status}: ${postText.slice(0, 300)}`);
       printSummaryAndExit(3, `PARTIAL FAILURE -- stopped after ${spec.key} failed to POST. Everything above "Results" that already carries an id was actually created in GHL; nothing after it in FIELD_SPECS order was attempted.`);
     }
-    const created = JSON.parse(postText).customField ?? JSON.parse(postText);
+
+    const parsedPost = parsePostResponse(postText);
+    if (!parsedPost.ok) {
+      console.error(`UNCONFIRMED-CREATE ${spec.key.padEnd(33)} -- POST returned HTTP ${postRes.status} but ${parsedPost.reason}`);
+      printSummaryAndExit(7, `PARTIAL FAILURE -- POST for ${spec.key} returned HTTP ${postRes.status} (success), but GHL may have created a field whose identity IAOS cannot confirm from the response body. Stopping immediately -- no further creation attempted. Everything above "Results" that already carries an id was CONFIRMED created; ${spec.key} is NOT in that list despite possibly existing in GHL now. Nothing after ${spec.key} in FIELD_SPECS order was attempted.`);
+    }
+    const created = parsedPost.field;
     // Recorded BEFORE readback: a readback failure below must never hide that this field was actually created.
     results[spec.key] = created.id;
 
@@ -247,7 +423,13 @@ async function main() {
       console.error(`FAIL-READBACK ${spec.key.padEnd(38)} -- created (id ${created.id}) but readback failed: ${e.message}`);
       printSummaryAndExit(4, `PARTIAL FAILURE -- ${spec.key} WAS created in GHL (id ${created.id}) but its readback could not confirm it. Everything above "Results" that carries an id was actually created; nothing after it in FIELD_SPECS order was attempted.`);
     }
-    console.log(`CREATE ${spec.key.padEnd(45)} -- id ${created.id}, fieldKey ${rb.fieldKey}, dataType ${rb.dataType}`);
+
+    const validation = validateFieldAgainstSpec(spec, expectedKey, parentId, rb);
+    if (!validation.ok) {
+      console.error(`READBACK-MISMATCH ${spec.key.padEnd(34)} -- created (id ${created.id}) but readback mismatches: ${validation.mismatches.join('; ')}`);
+      printSummaryAndExit(8, `PARTIAL FAILURE -- ${spec.key} WAS created in GHL (id ${created.id}) but its readback does not match the intended spec: ${validation.mismatches.join('; ')}. Everything above "Results" that carries an id was actually created; nothing after ${spec.key} in FIELD_SPECS order was attempted.`);
+    }
+    console.log(`CREATE ${spec.key.padEnd(45)} -- id ${rb.id}, fieldKey ${rb.fieldKey}, dataType ${rb.dataType} -- readback verified`);
   }
 
   if (!args.apply) {
@@ -257,4 +439,6 @@ async function main() {
   }
 }
 
-main().catch((e) => { console.error('FATAL: ' + e.message); process.exit(1); });
+if (require.main === module) {
+  main().catch((e) => { console.error('FATAL: ' + e.message); process.exit(1); });
+}
