@@ -68,6 +68,34 @@ export type ContractDraftRequestState = "Idle" | "Requested";
 export const CONTRACT_DRAFT_REQUEST_OPTIONS: readonly ContractDraftRequestState[] = ["Idle", "Requested"] as const;
 
 /**
+ * INV-67 / B9-12, Jess Gate TRANSPORT-OUTCOME correction. The discriminated
+ * outcome `ghl.ts`'s `setContractDraftRequest` returns -- NEVER a thrown
+ * error, for any failure mode. Declared here (the pure model layer) rather
+ * than in `ghl.ts` itself so the caller's classification logic
+ * (`ContractWorkspace.tsx`) and this module's own tests share ONE type,
+ * never a second, independently-typed shape that could drift.
+ *
+ * Preserves the exact transport boundary the corrected ruling requires:
+ *   `refused`             -- never reached the network. No draft could have been triggered.
+ *   `put_failed`          -- a CONFIRMED non-success HTTP response. GHL was reached and rejected the request.
+ *   `put_transport_error` -- the PUT's own transport failed before any response arrived. GHL may have received it.
+ *   `readback_failed`     -- the PUT succeeded, but the readback's own transport or HTTP response failed.
+ *   `readback_mismatch`   -- the PUT succeeded, the readback succeeded, but the observed value is not the one sent.
+ *   `confirmed`           -- the PUT succeeded and the readback exactly confirms the sent value.
+ * Only `refused` and `put_failed` are ever CONFIRMED non-events; the other
+ * three failure-shaped variants (`put_transport_error`, `readback_failed`,
+ * `readback_mismatch`) must always classify as "indeterminate," never
+ * "failed" -- see `classifyContractDraftRequestOutcome` below.
+ */
+export type ContractDraftRequestWriteOutcome =
+  | { kind: "refused"; reason: string }
+  | { kind: "put_failed"; putStatus: number; responseBody: string }
+  | { kind: "put_transport_error"; message: string }
+  | { kind: "readback_failed"; putStatus: number; readbackFailureReason: string }
+  | { kind: "readback_mismatch"; putStatus: number; sent: string; observed: number | string | null }
+  | { kind: "confirmed"; putStatus: number; sent: string; observed: string };
+
+/**
  * Fail-safe normalization: an absent field, or any value other than the
  * literal "Requested," reads as "Idle" -- the corrected ruling's own stated
  * default. `isRecognizedContractDraftRequestState` below is the separate,
@@ -263,4 +291,86 @@ export function buildContractDraftRequestResolutionRecord(
     providerStatus: args.providerStatus,
     failureReason: args.failureReason,
   };
+}
+
+/* ==================================================================== */
+/* Transport-outcome classification -- Jess Gate correction (this session) */
+/* ==================================================================== */
+
+export type ContractDraftRequestOutcomeClassification = {
+  status: "accepted" | "failed" | "indeterminate";
+  sentValue: string | null;
+  observedValue: string | null;
+  providerStatus: number | null;
+  failureReason: string | null;
+};
+
+/**
+ * The ONE place `ContractDraftRequestWriteOutcome` is turned into a
+ * resolution-note status. Pure, exhaustive over all six variants (a TS
+ * `never` check below fails to compile if a seventh is ever added without
+ * updating this function). Only `refused` and `put_failed` -- CONFIRMED
+ * non-events -- ever classify `"failed"`. `put_transport_error`,
+ * `readback_failed`, and `readback_mismatch` ALWAYS classify
+ * `"indeterminate"`, never `"failed"` -- collapsing them into `"failed"`
+ * would wrongly assert the write is confirmed NOT to have happened, when a
+ * draft may in fact have been triggered.
+ */
+export function classifyContractDraftRequestOutcome(
+  outcome: ContractDraftRequestWriteOutcome,
+): ContractDraftRequestOutcomeClassification {
+  switch (outcome.kind) {
+    case "refused":
+      return {
+        status: "failed",
+        sentValue: null,
+        observedValue: null,
+        providerStatus: null,
+        failureReason: `Refused before any network call -- ${outcome.reason}`,
+      };
+    case "put_failed":
+      return {
+        status: "failed",
+        sentValue: null,
+        observedValue: null,
+        providerStatus: outcome.putStatus,
+        failureReason: `GHL rejected the request (HTTP ${outcome.putStatus}): ${outcome.responseBody}`,
+      };
+    case "put_transport_error":
+      return {
+        status: "indeterminate",
+        sentValue: "Requested",
+        observedValue: null,
+        providerStatus: null,
+        failureReason: `The write's own transport failed before a conclusive response arrived (${outcome.message}) -- GHL may have received it.`,
+      };
+    case "readback_failed":
+      return {
+        status: "indeterminate",
+        sentValue: "Requested",
+        observedValue: null,
+        providerStatus: outcome.putStatus,
+        failureReason: `PUT succeeded (HTTP ${outcome.putStatus}) but the readback could not confirm the result (${outcome.readbackFailureReason}).`,
+      };
+    case "readback_mismatch":
+      return {
+        status: "indeterminate",
+        sentValue: outcome.sent,
+        observedValue: outcome.observed === null ? null : String(outcome.observed),
+        providerStatus: outcome.putStatus,
+        failureReason: `PUT succeeded but readback did not confirm "${outcome.sent}" (observed ${JSON.stringify(outcome.observed)}).`,
+      };
+    case "confirmed":
+      return {
+        status: "accepted",
+        sentValue: outcome.sent,
+        observedValue: outcome.observed,
+        providerStatus: outcome.putStatus,
+        failureReason: null,
+      };
+    default: {
+      const _exhaustive: never = outcome;
+      throw new Error(`classifyContractDraftRequestOutcome: unhandled outcome kind ${JSON.stringify(_exhaustive)}`);
+    }
+  }
 }

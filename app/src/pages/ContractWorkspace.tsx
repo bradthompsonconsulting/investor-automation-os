@@ -23,6 +23,7 @@ import {
 import {
   evaluateContractDraftRequestTransition, normalizeContractDraftRequestState,
   buildContractDraftRequestAttemptRecord, buildContractDraftRequestResolutionRecord,
+  classifyContractDraftRequestOutcome,
 } from "../lib/contract-draft-request-model";
 import { formatContractProjectionSyncNote, latestContractProjectionSyncForOpportunity } from "../lib/contract-projection-sync-carriers";
 import {
@@ -778,32 +779,27 @@ export default function ContractWorkspace() {
           }
 
           if (attemptNoteOk) {
-            // Stage 2: the actual one-shot write -- redeems the attempt just durably recorded above.
-            let setResult: { ok: boolean; putStatus: number; sent: string; observed: number | string | null } | null = null;
-            let putFailureMessage: string | null = null;
-            try {
-              setResult = await ghl.opportunities.setContractDraftRequest(opportunityId, "Requested");
-            } catch (e: any) {
-              putFailureMessage = e?.message ?? "unknown error";
-            }
-
-            const rawStatus: "accepted" | "failed" | "indeterminate" =
-              putFailureMessage !== null ? "failed" : setResult!.ok ? "accepted" : "indeterminate";
+            // Stage 2: the actual one-shot write -- redeems the attempt just
+            // durably recorded above. setContractDraftRequest NEVER throws
+            // (Jess Gate transport-outcome correction) -- it always returns
+            // a discriminated ContractDraftRequestWriteOutcome, classified
+            // below by the SAME pure function this module's own tests
+            // exercise against all six variants -- no ad hoc try/catch
+            // classification here that could re-collapse a transport
+            // exception or a readback failure into "failed".
+            const outcome = await ghl.opportunities.setContractDraftRequest(opportunityId, "Requested");
+            const classification = classifyContractDraftRequestOutcome(outcome);
+            const rawStatus = classification.status;
 
             const resolvedAt = new Date().toISOString();
             const resolutionRecord = buildContractDraftRequestResolutionRecord({
               attempt: attemptRecord,
               resolvedAt,
               status: rawStatus,
-              sentValue: putFailureMessage !== null ? null : "Requested",
-              observedValue: putFailureMessage !== null ? null : setResult!.observed === null ? null : String(setResult!.observed),
-              providerStatus: putFailureMessage !== null ? null : setResult!.putStatus,
-              failureReason:
-                putFailureMessage !== null
-                  ? putFailureMessage
-                  : rawStatus === "indeterminate"
-                    ? `PUT succeeded but readback did not confirm "Requested" (observed ${JSON.stringify(setResult!.observed)}).`
-                    : null,
+              sentValue: classification.sentValue,
+              observedValue: classification.observedValue,
+              providerStatus: classification.providerStatus,
+              failureReason: classification.failureReason,
             });
             const resolutionNote = formatContractProjectionSyncNote(resolutionRecord);
 
@@ -826,7 +822,15 @@ export default function ContractWorkspace() {
             draftRequest = {
               attempted: true,
               transitionAllowed: true,
-              refusalReason: null,
+              // The exact, kind-specific explanation classifyContractDraftRequestOutcome
+              // built -- never a generic fallback. null only for "accepted"
+              // (and downgraded to the resolution-note-missing message below
+              // when reportedStatus escalates a clean "accepted" to "indeterminate").
+              refusalReason:
+                reportedStatus === "accepted"
+                  ? null
+                  : resolutionRecord.failureReason ??
+                    'The write succeeded and read back correctly, but the resolution evidence note itself failed to record -- a draft may have been triggered without confirmed durable evidence.',
               attemptNoteOk: true,
               rawStatus,
               resolutionNoteOk,
@@ -2880,8 +2884,8 @@ export default function ContractWorkspace() {
                             : syncResult.draftRequest.reportedStatus === "accepted"
                               ? "Contract Draft Request set to Requested (confirmed on readback, evidence recorded)."
                               : syncResult.draftRequest.reportedStatus === "indeterminate"
-                                ? `INDETERMINATE -- a draft may have been triggered but IAOS could not confirm it (${syncResult.draftRequest.refusalReason ?? "readback or evidence-note write did not confirm"}). Do not retry; check GHL directly.`
-                                : `Draft request failed -- ${syncResult.draftRequest.refusalReason ?? "the write did not reach GHL"}.`}
+                                ? `INDETERMINATE -- a draft may have been triggered but IAOS could not confirm it (${syncResult.draftRequest.refusalReason ?? "no further detail was recorded"}). Do not retry; check GHL directly.`
+                                : `Draft request failed -- ${syncResult.draftRequest.refusalReason ?? "no further detail was recorded"}.`}
                     </div>
                     {syncResult.draftRequest.resolutionNoteOk === false ? (
                       <div data-testid="contract-projection-sync-resolution-note-failed" style={{ color: "#EF4444", marginTop: "4px" }}>

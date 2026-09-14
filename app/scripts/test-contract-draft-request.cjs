@@ -53,9 +53,10 @@ const {
   evaluateContractDraftRequestTransition,
   buildContractDraftRequestAttemptRecord,
   buildContractDraftRequestResolutionRecord,
+  classifyContractDraftRequestOutcome,
 } = require(path.join(TMP, 'contract-draft-request-model.js'));
 
-const FLOOR = 40;
+const FLOOR = 65;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -240,6 +241,109 @@ const ATTEMPT_ARGS = {
   const attemptA = buildContractDraftRequestAttemptRecord({ ...ATTEMPT_ARGS, attemptAt: '2026-09-14T12:00:00.000Z' });
   const attemptB = buildContractDraftRequestAttemptRecord({ ...ATTEMPT_ARGS, attemptAt: '2026-09-14T12:05:00.000Z' });
   checkTrue('two distinct attemptAt values never produce the same attemptId', attemptA.attemptId !== attemptB.attemptId);
+}
+
+/* ==================================================================== */
+/* Transport-outcome classification -- Jess Gate correction (this session) */
+/* ==================================================================== */
+/* Proves all six paths the corrected ruling enumerates, each in isolation,
+   plus that PUT and readback evidence are preserved SEPARATELY rather than
+   collapsed into one opaque message. */
+
+{
+  // 1. Refused before any network call -- "failed", no draft could have been triggered.
+  const c = classifyContractDraftRequestOutcome({ kind: 'refused', reason: 'not yet provisioned' });
+  check('refused classifies "failed"', c.status, 'failed');
+  check('refused carries no PUT/readback facts', [c.sentValue, c.observedValue, c.providerStatus], [null, null, null]);
+  checkTrue('refused failureReason names the refusal, not a network claim', /not yet provisioned/.test(c.failureReason) && !/GHL/.test(c.failureReason));
+}
+
+{
+  // 2. A CONFIRMED non-success HTTP response -- "failed", HTTP status + response body preserved.
+  const c = classifyContractDraftRequestOutcome({ kind: 'put_failed', putStatus: 422, responseBody: 'Unprocessable' });
+  check('a confirmed non-success PUT response classifies "failed"', c.status, 'failed');
+  check('put_failed preserves the exact HTTP status', c.providerStatus, 422);
+  checkTrue('put_failed failureReason quotes the HTTP status and response body', /422/.test(c.failureReason) && /Unprocessable/.test(c.failureReason));
+  check('put_failed carries no sent/observed value (the write did not land)', [c.sentValue, c.observedValue], [null, null]);
+}
+
+{
+  // 3. PUT transport exception, no conclusive response -- "indeterminate", never "failed".
+  const c = classifyContractDraftRequestOutcome({ kind: 'put_transport_error', message: 'ECONNRESET' });
+  check('a PUT transport exception classifies "indeterminate", never "failed"', c.status, 'indeterminate');
+  check('put_transport_error has no providerStatus (no response ever arrived)', c.providerStatus, null);
+  check('put_transport_error still records the INTENDED sent value', c.sentValue, 'Requested');
+  checkTrue('put_transport_error failureReason states GHL may have received it', /may have received/.test(c.failureReason));
+}
+
+{
+  // 4. PUT succeeds, but readback transport/HTTP fails -- "indeterminate"; PUT and readback evidence preserved separately.
+  const c = classifyContractDraftRequestOutcome({ kind: 'readback_failed', putStatus: 200, readbackFailureReason: 'readback HTTP 503: Service Unavailable' });
+  check('a PUT success + readback failure classifies "indeterminate"', c.status, 'indeterminate');
+  check('readback_failed preserves the SUCCESSFUL put status', c.providerStatus, 200);
+  checkTrue('readback_failed failureReason cites the successful PUT status AND the readback failure separately', /HTTP 200/.test(c.failureReason) && /503/.test(c.failureReason));
+  check('readback_failed still records the intended sent value (the PUT itself succeeded)', c.sentValue, 'Requested');
+  check('readback_failed has no observedValue (no readback was ever confirmed)', c.observedValue, null);
+}
+
+{
+  // 5. PUT succeeds, readback succeeds, but observed !== sent -- "indeterminate".
+  const c = classifyContractDraftRequestOutcome({ kind: 'readback_mismatch', putStatus: 200, sent: 'Requested', observed: 'Idle' });
+  check('a readback mismatch classifies "indeterminate", never "accepted"', c.status, 'indeterminate');
+  check('readback_mismatch preserves both sent and observed values', [c.sentValue, c.observedValue], ['Requested', 'Idle']);
+  check('readback_mismatch preserves the PUT status', c.providerStatus, 200);
+  checkTrue('readback_mismatch failureReason quotes the sent value and the observed value', /Requested/.test(c.failureReason) && /Idle/.test(c.failureReason));
+}
+{
+  // Observed null (field structurally absent on readback) is still a mismatch, never coerced to a value.
+  const c = classifyContractDraftRequestOutcome({ kind: 'readback_mismatch', putStatus: 200, sent: 'Requested', observed: null });
+  check('a null observed value on mismatch is preserved as null, not coerced', c.observedValue, null);
+}
+
+{
+  // 6. PUT succeeds, exact readback confirms -- "accepted".
+  const c = classifyContractDraftRequestOutcome({ kind: 'confirmed', putStatus: 200, sent: 'Requested', observed: 'Requested' });
+  check('an exact confirmed readback classifies "accepted"', c.status, 'accepted');
+  check('confirmed preserves sent, observed, and putStatus', [c.sentValue, c.observedValue, c.providerStatus], ['Requested', 'Requested', 200]);
+  check('confirmed carries no failureReason', c.failureReason, null);
+}
+
+{
+  // Only refused/put_failed are ever "failed" -- every other failure-shaped variant is "indeterminate".
+  const indeterminateKinds = [
+    { kind: 'put_transport_error', message: 'x' },
+    { kind: 'readback_failed', putStatus: 200, readbackFailureReason: 'x' },
+    { kind: 'readback_mismatch', putStatus: 200, sent: 'Requested', observed: 'Idle' },
+  ];
+  checkTrue(
+    'put_transport_error, readback_failed, and readback_mismatch are ALL "indeterminate", never "failed"',
+    indeterminateKinds.every((o) => classifyContractDraftRequestOutcome(o).status === 'indeterminate'),
+  );
+  const failedKinds = [{ kind: 'refused', reason: 'x' }, { kind: 'put_failed', putStatus: 500, responseBody: 'x' }];
+  checkTrue(
+    'refused and put_failed are the ONLY two variants classified "failed"',
+    failedKinds.every((o) => classifyContractDraftRequestOutcome(o).status === 'failed'),
+  );
+}
+
+/* ==================================================================== */
+/* STATIC -- ghl.ts's setContractDraftRequest never throws               */
+/* ==================================================================== */
+
+{
+  const ghlSrc = fs.readFileSync(path.join(APP, 'src', 'lib', 'ghl.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const m = ghlSrc.match(/setContractDraftRequest: async \([\s\S]*?\n    \},\r?\n  \},/);
+  checkTrue('setContractDraftRequest was located in ghl.ts', !!m);
+  const body = m ? m[0] : '';
+
+  checkTrue('setContractDraftRequest contains no throw statement -- every failure mode returns a discriminated outcome', !/throw /.test(body));
+  checkTrue('the PUT fetch is wrapped in its own try/catch (put_transport_error)', /try \{[\s\S]*?putRes = await fetch\([\s\S]*?\} catch \(e: any\) \{[\s\S]*?put_transport_error/.test(body));
+  checkTrue('a non-ok PUT response returns put_failed (a CONFIRMED rejection), distinct from the transport-exception path', /if \(!putRes\.ok\)[\s\S]*?put_failed/.test(body));
+  checkTrue('the readback fetch is wrapped in its own try/catch (readback_failed)', /try \{[\s\S]*?readRes = await fetch\([\s\S]*?\} catch \(e: any\) \{[\s\S]*?readback_failed/.test(body));
+  checkTrue('a non-ok readback response also returns readback_failed', /if \(!readRes\.ok\)[\s\S]*?readback_failed/.test(body));
+  checkTrue('a malformed readback JSON body also returns readback_failed', /readBody = await readRes\.json\(\)[\s\S]*?\} catch \(e: any\) \{[\s\S]*?readback_failed/.test(body));
+  checkTrue('an exact-match readback returns confirmed; anything else returns readback_mismatch', /if \(observed !== value\)[\s\S]*?readback_mismatch[\s\S]*?return \{ kind: "confirmed"/.test(body));
+  check('setContractDraftRequest is declared exactly once in ghl.ts', (ghlSrc.match(/setContractDraftRequest: async \(/g) || []).length, 1);
 }
 
 /* ==================================================================== */

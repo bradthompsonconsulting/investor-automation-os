@@ -13,7 +13,7 @@
 
 import { getRuntimeConfig, CURRENT_OFFER_NOT_PROVISIONED, CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED } from "../../shared/ghl-config";
 import type { ContractProjectionFieldKey } from "./contract-ghl-projection-model";
-import type { ContractDraftRequestState } from "./contract-draft-request-model";
+import type { ContractDraftRequestState, ContractDraftRequestWriteOutcome } from "./contract-draft-request-model";
 /* Board item #2C. The three option LABELS are declared once, in resolver-types,
    and this module reads them rather than retyping them. Retyping would create a
    second list that could drift from the one the resolver parses against, and a
@@ -1177,53 +1177,102 @@ export const ghl = {
     },
 
     /**
-     * INV-67 / B9-12 -- the ONE writer for the one-shot Contract Draft
-     * Request control. CUSTOM-FIELDS-ONLY PUT, one field, exactly the
-     * `setAssignmentMode` shape: value checked against the declared option
-     * labels BEFORE the request (GHL's picker will not store a string it
-     * does not offer), singular-GET readback, `ok` only on exact match.
-     * This writer NEVER decides whether the transition is allowed -- that
-     * is `evaluateContractDraftRequestTransition`'s job, called by the
-     * caller BEFORE this function, using a fresh `readContractDraftRequest`
-     * result. This writer also never touches pipelineStageId, status, name,
-     * monetaryValue, or tags -- it cannot trigger a stage-based workflow,
-     * and it never implies or performs a document send.
+     * INV-67 / B9-12, Jess Gate TRANSPORT-OUTCOME correction (this session).
+     * The ONE writer for the one-shot Contract Draft Request control.
+     * CUSTOM-FIELDS-ONLY PUT, one field, value checked against the declared
+     * option labels BEFORE the request (GHL's picker will not store a
+     * string it does not offer). This writer NEVER decides whether the
+     * transition is allowed -- that is `evaluateContractDraftRequestTransition`'s
+     * job, called by the caller BEFORE this function, using a fresh
+     * `readContractDraftRequest` result. This writer also never touches
+     * pipelineStageId, status, name, monetaryValue, or tags -- it cannot
+     * trigger a stage-based workflow, and it never implies or performs a
+     * document send.
+     *
+     * NEVER THROWS. Every failure mode -- a config/value refusal before any
+     * network call, a confirmed non-success PUT response, a PUT transport
+     * exception with no conclusive response, a readback transport/HTTP
+     * failure after a successful PUT, or a readback that does not confirm
+     * the value -- is returned as its own `ContractDraftRequestWriteOutcome`
+     * variant, never collapsed into "thrown, therefore failed." The prior
+     * version threw for BOTH a confirmed-rejected PUT and a transport
+     * exception, which forced the caller to classify every thrown error as
+     * "failed" -- wrong for a transport exception or a post-PUT readback
+     * failure, either of which means GHL may already hold "Requested" with
+     * IAOS unable to confirm it. The six variants below are exactly the six
+     * cases the corrected ruling enumerates:
+     *   1. `refused`               -- never reached the network; no draft could have been triggered.
+     *   2. `put_failed`            -- a CONFIRMED non-success HTTP response (GHL responded and rejected it).
+     *   3. `put_transport_error`   -- the PUT's own transport failed before any response arrived; GHL may have received it.
+     *   4. `readback_failed`       -- the PUT succeeded, but the readback's own transport or HTTP response failed.
+     *   5. `readback_mismatch`     -- the PUT succeeded and the readback succeeded, but the observed value is not "Requested".
+     *   6. `confirmed`             -- the PUT succeeded and the readback exactly confirms "Requested".
+     * Only (1) and (2) are ever "failed" (a CONFIRMED non-event); (3), (4),
+     * and (5) are always "indeterminate" -- the caller must never fold them
+     * into "failed", which would wrongly assert the write is confirmed NOT
+     * to have happened.
      */
     setContractDraftRequest: async (
       opportunityId: string,
       value: ContractDraftRequestState,
-    ): Promise<{ ok: boolean; putStatus: number; sent: string; observed: number | string | null }> => {
+    ): Promise<ContractDraftRequestWriteOutcome> => {
       const fieldId = CONFIG.contractDraftRequest;
       if (!fieldId || fieldId === CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED) {
-        throw new Error("setContractDraftRequest: no configured id (or not yet provisioned) -- refusing before any network call.");
+        return { kind: "refused", reason: "No configured id for Contract Draft Request (or not yet provisioned) -- refusing before any network call." };
       }
       if (value !== "Idle" && value !== "Requested") {
-        throw new Error(`setContractDraftRequest: ${JSON.stringify(value)} is not "Idle" or "Requested". Refusing.`);
+        return { kind: "refused", reason: `${JSON.stringify(value)} is not "Idle" or "Requested" -- refusing before any network call.` };
       }
 
       const body = { customFields: [{ id: fieldId, field_value: value }] };
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const putStatus = putRes.status;
-      if (!putRes.ok) {
-        const text = await putRes.text();
-        throw new Error(`setContractDraftRequest PUT → ${putStatus}: ${text}`);
+
+      let putRes: Response;
+      try {
+        putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (e: any) {
+        // No HTTP response ever arrived -- the request may or may not have
+        // reached GHL. Never "failed": that would wrongly assert the write
+        // is confirmed NOT to have happened.
+        return { kind: "put_transport_error", message: e?.message ?? "network error before a response arrived" };
       }
 
-      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
-      if (!readRes.ok) {
-        const text = await readRes.text();
-        throw new Error(`setContractDraftRequest readback → ${readRes.status}: ${text}`);
+      if (!putRes.ok) {
+        const responseBody = await putRes.text().catch(() => "");
+        // A CONFIRMED non-success response -- GHL was reached and rejected the request.
+        return { kind: "put_failed", putStatus: putRes.status, responseBody };
       }
-      const readBody = await readRes.json();
+      const putStatus = putRes.status;
+
+      let readRes: Response;
+      try {
+        readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
+      } catch (e: any) {
+        return { kind: "readback_failed", putStatus, readbackFailureReason: `readback transport failed: ${e?.message ?? "network error"}` };
+      }
+      if (!readRes.ok) {
+        const text = await readRes.text().catch(() => "");
+        return { kind: "readback_failed", putStatus, readbackFailureReason: `readback HTTP ${readRes.status}: ${text}` };
+      }
+
+      let readBody: any;
+      try {
+        readBody = await readRes.json();
+      } catch (e: any) {
+        return { kind: "readback_failed", putStatus, readbackFailureReason: `readback response was not valid JSON: ${e?.message ?? "parse error"}` };
+      }
+
       const opp = readBody.opportunity ?? readBody;
       const entry = (opp.customFields ?? []).find((f: any) => f.id === fieldId) ?? null;
       const observed = entry === null ? null : readSingularFieldValue(entry);
 
-      return { ok: observed === value, putStatus, sent: value, observed };
+      if (observed !== value) {
+        return { kind: "readback_mismatch", putStatus, sent: value, observed };
+      }
+      return { kind: "confirmed", putStatus, sent: value, observed: value };
     },
   },
 

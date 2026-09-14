@@ -124,12 +124,13 @@ reused by direct mirroring rather than reinvented:
    `ghl.opportunities.setContractDraftRequest` ever run.
 4. `buildContractDraftRequestResolutionRecord` builds the SECOND note, for
    the SAME `attemptId`: `"accepted"` (PUT succeeded, readback confirmed),
-   `"failed"` (the PUT itself never reached GHL -- network/HTTP failure,
-   no provider facts), or `"indeterminate"` (the PUT succeeded but its own
-   readback did not confirm "Requested," **or** the resolution note itself
-   failed to write -- either way, a draft may have been triggered with no
-   confirmed durable evidence, and this is never silently reported as
-   success, failure, or safe-to-retry).
+   `"failed"` (a CONFIRMED non-event -- refused before any network call, or
+   GHL returned a confirmed non-success response), or `"indeterminate"`
+   (anything short of a confirmed non-event or a confirmed match -- see the
+   transport-outcomes correction below for the exact boundary), **or** the
+   resolution note itself failed to write -- either way, a draft may have
+   been triggered with no confirmed durable evidence, and this is never
+   silently reported as success, failure, or safe-to-retry.
 5. Neither evidence write is swallowed. A resolution-note failure after a
    successful, readback-confirmed PUT is explicitly escalated to
    `"indeterminate"` in the reported result (`rawStatus === "accepted" &&
@@ -150,6 +151,68 @@ recent ATTEMPT overall, by `attemptId`, wins).
 
 **No further GHL mutation.** This correction is code-only -- no new Test
 field, no template edit, no workflow, no Production or Linear change.
+
+## Jess Gate correction (this session, round 2) -- transport outcomes
+
+**Problem found in review.** `setContractDraftRequest` (round 1's own
+version) threw for BOTH a confirmed non-success PUT response AND a bare
+transport exception (no response ever arrived). The caller consequently
+classified every thrown error identically as `"failed"` -- wrong for a
+transport exception or a post-PUT readback failure, either of which means
+GHL may already hold "Requested" with IAOS unable to confirm it. This
+violated the locked rule that a successful-or-possibly-successful write
+whose readback cannot confirm the result must be `"indeterminate"`, with an
+explicit "a draft may have been triggered" warning and no automatic retry.
+
+**Corrected: `setContractDraftRequest` NEVER THROWS.** It now always
+returns a discriminated `ContractDraftRequestWriteOutcome`
+(`contract-draft-request-model.ts`), preserving the exact transport
+boundary as six variants:
+
+| Variant | Meaning | Classifies |
+|---|---|---|
+| `refused` | Never reached the network (bad config/value). No draft could have been triggered. | `"failed"` |
+| `put_failed` | A CONFIRMED non-success HTTP response -- GHL was reached and rejected it. | `"failed"` |
+| `put_transport_error` | The PUT's own transport failed before any response arrived. GHL may have received it. | `"indeterminate"` |
+| `readback_failed` | PUT succeeded, but the readback's own transport, HTTP response, or JSON parse failed. | `"indeterminate"` |
+| `readback_mismatch` | PUT succeeded, readback succeeded, but the observed value is not the one sent. | `"indeterminate"` |
+| `confirmed` | PUT succeeded and the readback exactly confirms the sent value. | `"accepted"` |
+
+Only `refused` and `put_failed` -- CONFIRMED non-events -- are ever
+`"failed"`. The other three failure-shaped variants are ALWAYS
+`"indeterminate"`, never `"failed"` -- collapsing them into `"failed"`
+would wrongly assert the write is confirmed NOT to have happened.
+`classifyContractDraftRequestOutcome` (`contract-draft-request-model.ts`)
+is the ONE, exhaustive (TS `never`-checked) place this mapping happens;
+`ContractWorkspace.tsx`'s handler calls it directly instead of its own
+ad hoc try/catch classification.
+
+**Evidence preserved separately, per variant.** `put_failed` preserves the
+PUT's own HTTP status and response body. `readback_failed` preserves the
+PUT's own (successful) status AND names the readback failure distinctly --
+never one opaque merged message. `readback_mismatch` preserves both the
+sent and observed values distinctly. Every attempted request still
+receives a terminal resolution note for the SAME `attemptId` and exact
+`ContractVersionIdentity` -- `setContractDraftRequest` returning cleanly
+(never throwing) means the resolution-note stage in `ContractWorkspace.tsx`
+always runs; there is no code path where an attempted write goes
+unresolved.
+
+**UI corrected.** The prior "the write did not reach GHL" fallback text
+(reachable only when no specific reason was recorded) is removed --
+`refusalReason` is now always populated with the exact,
+kind-specific explanation `classifyContractDraftRequestOutcome` built, so
+the UI never states non-arrival unless that is conclusively known
+(`put_failed`'s own message explicitly confirms GHL WAS reached). Every
+`"indeterminate"` outcome renders the same dedicated "a draft may have been
+triggered... do not retry" warning, regardless of which of the three
+indeterminate variants produced it. No automatic retry exists anywhere in
+this flow (single button click, no retry loop) -- the next manual
+invocation's own fresh duplicate-guard read is what actually prevents a
+second request, unchanged from round 1.
+
+**No further GHL mutation, no template/workflow/Production/Linear change.**
+Code-only correction.
 
 ## Field mapping
 
@@ -222,7 +285,7 @@ implementation, per this issue's own scope instruction.
 | `app/src/lib/contract-draft-request-model.ts` | Pure one-shot transition gating |
 | `app/src/lib/contract-projection-sync-carriers.ts` | Append-only audit-evidence ledger (Note-based) |
 | `app/shared/ghl-config.ts` | 48 field ids + the dropdown id (Test); Production sentinel |
-| `app/src/lib/ghl.ts` | `syncContractProjectionFields`, `readContractDraftRequest`, `setContractDraftRequest` |
+| `app/src/lib/ghl.ts` | `syncContractProjectionFields`, `readContractDraftRequest`, `setContractDraftRequest` (never throws -- returns `ContractDraftRequestWriteOutcome`) |
 | `app/src/pages/ContractWorkspace.tsx` | "Sync contract fields to GHL" control |
 | `app/scripts/inv67-create-contract-projection-fields.cjs` | Test field-creation script (dry-run by default) |
 | `app/scripts/test-contract-ghl-projection.cjs` | Mapping model tests + drift guard |
@@ -232,21 +295,23 @@ implementation, per this issue's own scope instruction.
 ## Test evidence
 
 `pnpm --dir app test:contract-ghl-projection` (32/32), `test:contract-draft-
-request` (51/51 -- includes the two-phase record builders and static
-source-order proofs against `ContractWorkspace.tsx`), `test:contract-
-projection-sync-carriers` (23/23 -- rewritten for the two-phase ledger
-shape and rank-then-latest-attempt reading). Full Board #9 regression suite
-re-run clean (`test:board9-contract-model`, `test:contract-authorization-
-model`, `test:contract-disposition-handoff`, `test:contract-document-model`,
-`test:contract-execution-model`, `test:contract-facts-model`, `test:
-contract-lifecycle-model`, `test:contract-send-*` (6 suites), `test:
-contract-workspace-view`, `test:contract-workspace-wiring` (updated for the
-9th `ghl.notes.create` call site -- the corrected handler now writes two
-notes, attempt and resolution, per the same two-phase pattern `handleSend`
-already uses), `test:current-offer-carrier`, `test:repairs-canonicalization`,
-`test:seller-contract-facts-carriers`, `test:seller-call-resume`, `test:
-seller-call-workspace-wiring`, `test:legacy-offer-fields-retired`, `test:
-legacy-repairs-writer-removed`). `pnpm --dir app build` (tsc -b + vite build)
+request` (86/86 -- one-shot gating + the two-phase record builders + all six
+transport-outcome classifications (refused/put_failed/put_transport_error/
+readback_failed/readback_mismatch/confirmed), each proven to preserve PUT
+and readback evidence separately + static source-order proofs against both
+`ghl.ts` and `ContractWorkspace.tsx`), `test:contract-projection-sync-
+carriers` (23/23 -- the two-phase ledger shape and rank-then-latest-attempt
+reading). Full Board #9 regression suite re-run clean (`test:board9-
+contract-model`, `test:contract-authorization-model`, `test:contract-
+disposition-handoff`, `test:contract-document-model`, `test:contract-
+execution-model`, `test:contract-facts-model`, `test:contract-lifecycle-
+model`, `test:contract-send-*` (6 suites), `test:contract-workspace-view`,
+`test:contract-workspace-wiring` (the handler writes two notes, attempt and
+resolution, per the same two-phase pattern `handleSend` already uses),
+`test:current-offer-carrier`, `test:repairs-canonicalization`, `test:
+seller-contract-facts-carriers`, `test:seller-call-resume`, `test:seller-
+call-workspace-wiring`, `test:legacy-offer-fields-retired`, `test:legacy-
+repairs-writer-removed`). `pnpm --dir app build` (tsc -b + vite build)
 clean. CI's own remaining runners re-run clean: `test:underwriting-core`,
 `test:underwriting-resolver`, `test:rail`, `netlify-status.test.cjs`, root
 Netlify functions typecheck, `test-identifier-boundary.cjs` (confirms every
