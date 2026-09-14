@@ -91,6 +91,66 @@ fresh, immediately before `contract-draft-request-model.ts`'s
 failures, or later edits cannot create a duplicate draft. The reset back to
 `Idle` after a draft is created is the future workflow's job, not IAOS's.
 
+## Jess Gate correction (this session) -- audit ordering
+
+**Problem found in review.** The originally shipped `handleSyncContract
+ProjectionFields` wrote and verified the projection fields, wrote
+"Requested," and only afterward attempted ONE audit note, best-effort
+(failure swallowed). Because GHL may create the draft the instant
+"Requested" lands, a failed post-write note could leave IAOS with a live
+generated draft and no durable evidence of who authorized it or which
+`ContractVersionIdentity` initiated it.
+
+**Corrected to the SAME two-phase attempt/resolution evidence pattern
+`contract-send-model.ts` / `contract-send-carriers.ts` already established
+for Contract Sent** (`buildSendAttemptArgs` -> reserve note -> POST ->
+`buildSendResultArgs` -> resolution note -> readback -> final note),
+reused by direct mirroring rather than reinvented:
+
+1. After all 48 projection writes/readbacks and the price cross-check
+   succeed, and the fresh-read duplicate guard allows a transition,
+   `buildContractDraftRequestAttemptRecord` (`contract-draft-request-
+   model.ts`) builds an `in_progress` evidence record -- unique `attemptId`
+   (the attempt's own timestamp, generated fresh inside the handler on every
+   invocation, so a repeated UI action can never reuse an earlier attempt's
+   id), Opportunity id, exact `ContractVersionIdentity`, projection-field
+   counts, the current-offer cross-check result, the freshly observed
+   pre-write state, and the intended transition (always `"Requested"`).
+2. That record's note is written via `ghl.notes.create` BEFORE "Requested"
+   is ever attempted. **If that write fails, IAOS does not write
+   "Requested,"** surfaces a precise blocking error, and preserves the
+   already-confirmed projection-field results in the reported result.
+3. Only once that note is confirmed durable does
+   `ghl.opportunities.setContractDraftRequest` ever run.
+4. `buildContractDraftRequestResolutionRecord` builds the SECOND note, for
+   the SAME `attemptId`: `"accepted"` (PUT succeeded, readback confirmed),
+   `"failed"` (the PUT itself never reached GHL -- network/HTTP failure,
+   no provider facts), or `"indeterminate"` (the PUT succeeded but its own
+   readback did not confirm "Requested," **or** the resolution note itself
+   failed to write -- either way, a draft may have been triggered with no
+   confirmed durable evidence, and this is never silently reported as
+   success, failure, or safe-to-retry).
+5. Neither evidence write is swallowed. A resolution-note failure after a
+   successful, readback-confirmed PUT is explicitly escalated to
+   `"indeterminate"` in the reported result (`rawStatus === "accepted" &&
+   !resolutionNoteOk ? "indeterminate" : rawStatus`) -- the UI shows a
+   dedicated warning that the resolution evidence did not land. Nothing
+   here retries automatically; the NEXT invocation's own fresh read is what
+   actually prevents a duplicate request (item 3 above), not a client-side
+   retry loop.
+
+**Ledger version bumped** (`contract-projection-sync-carriers.ts`):
+`iaos-contract-draft-request-sync-v1` -> `iaos-contract-draft-request-
+sync-v2`, ONE record shape reused across both notes for an attempt
+(mirroring `contract-send-carriers.ts`'s `ParsedContractSend` exactly),
+read back via the same rank-then-latest-attempt algorithm as
+`latestContractSendForOpportunity` (a terminal note always supersedes its
+own `in_progress` note regardless of exact timestamp ordering; the most
+recent ATTEMPT overall, by `attemptId`, wins).
+
+**No further GHL mutation.** This correction is code-only -- no new Test
+field, no template edit, no workflow, no Production or Linear change.
+
 ## Field mapping
 
 **48 new Opportunity TEXT fields** (`CONTRACT_PROJECTION_FIELD_KEYS`,
@@ -172,19 +232,24 @@ implementation, per this issue's own scope instruction.
 ## Test evidence
 
 `pnpm --dir app test:contract-ghl-projection` (32/32), `test:contract-draft-
-request` (23/23), `test:contract-projection-sync-carriers` (17/17). Full
-Board #9 regression suite re-run clean (`test:board9-contract-model`,
-`test:contract-authorization-model`, `test:contract-disposition-handoff`,
-`test:contract-document-model`, `test:contract-execution-model`, `test:
-contract-facts-model`, `test:contract-lifecycle-model`, `test:contract-send-*`
-(6 suites), `test:contract-workspace-view`, `test:contract-workspace-wiring`
-(updated for the 8th `ghl.notes.create` call site), `test:current-offer-
-carrier`, `test:repairs-canonicalization`, `test:seller-contract-facts-
-carriers`, `test:seller-call-resume`, `test:seller-call-workspace-wiring`,
-`test:legacy-offer-fields-retired`, `test:legacy-repairs-writer-removed`).
-`pnpm --dir app build` (tsc -b + vite build) clean. CI's own remaining
-runners re-run clean: `test:underwriting-core`, `test:underwriting-resolver`,
-`test:rail`, `netlify-status.test.cjs`, root Netlify functions typecheck,
-`test-identifier-boundary.cjs` (confirms every new GHL id lives only in
-`app/shared/ghl-config.ts`), `test-exit-contract-static.cjs`,
+request` (51/51 -- includes the two-phase record builders and static
+source-order proofs against `ContractWorkspace.tsx`), `test:contract-
+projection-sync-carriers` (23/23 -- rewritten for the two-phase ledger
+shape and rank-then-latest-attempt reading). Full Board #9 regression suite
+re-run clean (`test:board9-contract-model`, `test:contract-authorization-
+model`, `test:contract-disposition-handoff`, `test:contract-document-model`,
+`test:contract-execution-model`, `test:contract-facts-model`, `test:
+contract-lifecycle-model`, `test:contract-send-*` (6 suites), `test:
+contract-workspace-view`, `test:contract-workspace-wiring` (updated for the
+9th `ghl.notes.create` call site -- the corrected handler now writes two
+notes, attempt and resolution, per the same two-phase pattern `handleSend`
+already uses), `test:current-offer-carrier`, `test:repairs-canonicalization`,
+`test:seller-contract-facts-carriers`, `test:seller-call-resume`, `test:
+seller-call-workspace-wiring`, `test:legacy-offer-fields-retired`, `test:
+legacy-repairs-writer-removed`). `pnpm --dir app build` (tsc -b + vite build)
+clean. CI's own remaining runners re-run clean: `test:underwriting-core`,
+`test:underwriting-resolver`, `test:rail`, `netlify-status.test.cjs`, root
+Netlify functions typecheck, `test-identifier-boundary.cjs` (confirms every
+GHL id still lives only in `app/shared/ghl-config.ts` -- unchanged this
+round, no new GHL mutation), `test-exit-contract-static.cjs`,
 `test-exit-contract-runtime.cjs`.

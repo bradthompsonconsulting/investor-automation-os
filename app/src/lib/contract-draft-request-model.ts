@@ -34,7 +34,33 @@
  * then writes has reintroduced the race this function exists to close;
  * `ghl.ts`'s writer is the one place that must honor "fresh read right
  * before the decision."
+ *
+ * JESS GATE CORRECTION (this session) -- AUDIT ORDERING. The original
+ * shipped flow wrote "Requested" and only afterward attempted one audit
+ * note, best-effort. Because GHL may create the draft the instant
+ * "Requested" lands, a failed post-write note could leave a live draft with
+ * no durable evidence of who authorized it or which
+ * `ContractVersionIdentity` initiated it. Corrected to the SAME two-phase
+ * attempt/resolution evidence pattern `contract-send-model.ts` already
+ * established for Contract Sent (`buildSendAttemptArgs` /
+ * `buildSendResultArgs`, `contract-send-carriers.ts`'s one-shape-two-notes
+ * ledger): `buildContractDraftRequestAttemptRecord` below builds the FIRST
+ * ("in_progress") note's data -- written and confirmed durable BEFORE the
+ * "Requested" PUT is ever attempted; `buildContractDraftRequestResolutionRecord`
+ * builds the SECOND note, for the SAME `attemptId`, recording the actual
+ * outcome. Both are pure builders -- writing either note, and deciding
+ * whether the PUT is attempted at all, are the caller's (`ghl.ts`
+ * consumer's) job, exactly mirroring the send flow's own model/carrier
+ * split. `attemptId` is the attempt's own `at` timestamp, generated fresh by
+ * the caller on every invocation (never a closure-captured or module-level
+ * value), so a repeated UI action can never reuse an earlier attempt's id --
+ * the same convention `contract-send-model.ts`'s own `BuildSendAttemptArgs`
+ * doc comment states verbatim ("Also serves as the attempt's own
+ * correlation id").
  */
+
+import type { ContractVersionIdentity } from "./board9-contract-model";
+import type { ContractProjectionFieldKey } from "./contract-ghl-projection-model";
 
 export type ContractDraftRequestState = "Idle" | "Requested";
 
@@ -120,4 +146,121 @@ export function evaluateContractDraftRequestTransition(
   }
 
   return { allowed: true };
+}
+
+/* ==================================================================== */
+/* Two-phase attempt/resolution evidence -- pure record builders          */
+/* ==================================================================== */
+
+export type ContractDraftRequestSyncStatus = "in_progress" | "accepted" | "failed" | "indeterminate";
+
+/**
+ * ONE shape, reused across both notes for the same `attemptId` -- exactly
+ * `contract-send-carriers.ts`'s own `ParsedContractSend` convention. Fields
+ * that only make sense once the write has actually been attempted
+ * (`sentValue`, `observedValue`, `providerStatus`) are `null` on the
+ * `in_progress` record and populated only by
+ * `buildContractDraftRequestResolutionRecord`.
+ */
+export type ContractDraftRequestSyncRecord = {
+  /** This note's own "Recorded at". Equals `attemptId` for the in_progress record; later for the resolution record. */
+  at: string;
+  operator: string;
+  opportunityId: string;
+  /** The attempt's own correlation id -- the in_progress record's own `at`. Fresh per invocation; never reused across separate UI actions. */
+  attemptId: string;
+  status: ContractDraftRequestSyncStatus;
+  version: ContractVersionIdentity;
+  entriesAttempted: number;
+  entriesLanded: number;
+  failedKeys: ContractProjectionFieldKey[];
+  currentOfferCrossCheckOk: boolean;
+  /** The freshly-read Contract Draft Request value immediately BEFORE this attempt's intended write -- captured once, on the attempt record, and carried forward unchanged onto the resolution record. */
+  observedStateBeforeWrite: ContractDraftRequestState;
+  /** Always "Requested" -- the only transition this control ever attempts. Named explicitly per the corrected ruling's own evidence requirement, not inferred from `status`. */
+  intendedToState: "Requested";
+  /** Resolution-only: what was actually sent to GHL. `null` on the in_progress record. */
+  sentValue: string | null;
+  /** Resolution-only: what the readback actually observed. `null` on the in_progress record, and also `null` on a "failed" resolution where the PUT itself never succeeded (no readback was possible). */
+  observedValue: string | null;
+  /** Resolution-only: the PUT's own HTTP status, when the PUT was actually issued. `null` on the in_progress record and on a resolution where the request never reached GHL. */
+  providerStatus: number | null;
+  failureReason: string | null;
+};
+
+export type BuildContractDraftRequestAttemptArgs = {
+  opportunityId: string;
+  operator: string;
+  /** Also serves as the attempt's own `attemptId` and this note's own "Recorded at" -- generate fresh (`new Date().toISOString()`) on every invocation. */
+  attemptAt: string;
+  version: ContractVersionIdentity;
+  entriesAttempted: number;
+  entriesLanded: number;
+  failedKeys: ContractProjectionFieldKey[];
+  currentOfferCrossCheckOk: boolean;
+  observedStateBeforeWrite: ContractDraftRequestState;
+};
+
+/** Builds the FIRST note's data -- "in_progress" -- durable evidence of intent, written and confirmed BEFORE the "Requested" PUT is ever attempted. */
+export function buildContractDraftRequestAttemptRecord(
+  args: BuildContractDraftRequestAttemptArgs,
+): ContractDraftRequestSyncRecord {
+  return {
+    at: args.attemptAt,
+    operator: args.operator,
+    opportunityId: args.opportunityId,
+    attemptId: args.attemptAt,
+    status: "in_progress",
+    version: args.version,
+    entriesAttempted: args.entriesAttempted,
+    entriesLanded: args.entriesLanded,
+    failedKeys: args.failedKeys,
+    currentOfferCrossCheckOk: args.currentOfferCrossCheckOk,
+    observedStateBeforeWrite: args.observedStateBeforeWrite,
+    intendedToState: "Requested",
+    sentValue: null,
+    observedValue: null,
+    providerStatus: null,
+    failureReason: null,
+  };
+}
+
+export type BuildContractDraftRequestResolutionArgs = {
+  attempt: ContractDraftRequestSyncRecord;
+  resolvedAt: string;
+  status: "accepted" | "failed" | "indeterminate";
+  sentValue: string | null;
+  observedValue: string | null;
+  providerStatus: number | null;
+  failureReason: string | null;
+};
+
+/**
+ * Builds the SECOND note's data, for the SAME `attemptId` as the attempt
+ * record -- never re-decides eligibility, never re-derives the projection
+ * counts or cross-check result; those are carried forward from the attempt
+ * verbatim, exactly like `contract-send-model.ts`'s `buildSendResultArgs`
+ * carries `attempt.templateName`/`attempt.signers` forward unchanged.
+ */
+export function buildContractDraftRequestResolutionRecord(
+  args: BuildContractDraftRequestResolutionArgs,
+): ContractDraftRequestSyncRecord {
+  return {
+    at: args.resolvedAt,
+    operator: args.attempt.operator,
+    opportunityId: args.attempt.opportunityId,
+    attemptId: args.attempt.attemptId,
+    status: args.status,
+    version: args.attempt.version,
+    entriesAttempted: args.attempt.entriesAttempted,
+    entriesLanded: args.attempt.entriesLanded,
+    failedKeys: args.attempt.failedKeys,
+    currentOfferCrossCheckOk: args.attempt.currentOfferCrossCheckOk,
+    observedStateBeforeWrite: args.attempt.observedStateBeforeWrite,
+    intendedToState: "Requested",
+    sentValue: args.sentValue,
+    observedValue: args.observedValue,
+    providerStatus: args.providerStatus,
+    failureReason: args.failureReason,
+  };
 }
