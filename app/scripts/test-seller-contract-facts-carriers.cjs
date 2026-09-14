@@ -39,7 +39,7 @@ try {
 
 const M = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
 
-const FLOOR = 51;
+const FLOOR = 56;
 let failures = 0;
 let checks = 0;
 
@@ -186,15 +186,58 @@ const AT = '2026-09-10T12:00:00.000Z';
 }
 
 // ============================================================
-// 10. Representation facts
+// 10. Representation facts -- INV-67 checkbox-marker / broker-model repair
 // ============================================================
 {
   const noneNote = M.formatRepresentationFactsNote({ opportunityId: OPP, at: AT, operator: null, representation: { kind: 'none' } });
   check('representation "none" round-trips', M.parseRepresentationFactsNote(noneNote).representation, { kind: 'none' });
-  const broker = { firmName: 'ABC Realty', licenseNo: '123', associateName: 'Jane Agent', associateLicenseNo: '456', email: 'a@b.com', phone: '555-0100' };
-  const repNote = M.formatRepresentationFactsNote({ opportunityId: OPP, at: AT, operator: null, representation: { kind: 'represented', sellerAgent: broker, buyerAgent: null } });
-  check('representation "represented" round-trips with a null buyerAgent', M.parseRepresentationFactsNote(repNote).representation, { kind: 'represented', sellerAgent: broker, buyerAgent: null });
-  check('representation fails closed on an incomplete broker record', M.parseRepresentationFactsNote(repNote.replace('"licenseNo":"123"', '"licenseNo":""')), null);
+
+  // Current (11-key) BrokerInfo shape -- the five new page-11 fields
+  // resolve independently to a real value or an explicit "none".
+  const currentBroker = {
+    firmName: 'ABC Realty', licenseNo: '123', associateName: 'Jane Agent', associateLicenseNo: '456', email: 'a@b.com', phone: '555-0100',
+    address: { kind: 'value', value: '100 Main St' }, teamName: { kind: 'none' },
+    supervisorName: { kind: 'value', value: 'Sam Supervisor' }, supervisorPhone: { kind: 'none' }, supervisorLicenseNo: { kind: 'none' },
+  };
+  const currentRepNote = M.formatRepresentationFactsNote({ opportunityId: OPP, at: AT, operator: null, representation: { kind: 'represented', sellerAgent: currentBroker, buyerAgent: null } });
+  check(
+    'representation "represented" round-trips exactly with the CURRENT 11-key BrokerInfo shape',
+    M.parseRepresentationFactsNote(currentRepNote).representation,
+    { kind: 'represented', sellerAgent: currentBroker, buyerAgent: null },
+  );
+  check('representation fails closed on an incomplete broker record (current shape)', M.parseRepresentationFactsNote(currentRepNote.replace('"licenseNo":"123"', '"licenseNo":""')), null);
+
+  // MANDATORY COMPATIBILITY TEST (Jess Gate, this session): a note written
+  // BEFORE this repair -- literally the original six-key BrokerInfo shape,
+  // with none of the five new keys present at all -- must still parse, and
+  // must upconvert with all five new fields defaulting to an explicit
+  // "none", never invented, never guessed.
+  const legacyBroker = { firmName: 'ABC Realty', licenseNo: '123', associateName: 'Jane Agent', associateLicenseNo: '456', email: 'a@b.com', phone: '555-0100' };
+  const legacyRepNote = M.formatRepresentationFactsNote({ opportunityId: OPP, at: AT, operator: null, representation: { kind: 'represented', sellerAgent: legacyBroker, buyerAgent: null } });
+  const legacyExpected = {
+    kind: 'represented',
+    sellerAgent: { ...legacyBroker, address: { kind: 'none' }, teamName: { kind: 'none' }, supervisorName: { kind: 'none' }, supervisorPhone: { kind: 'none' }, supervisorLicenseNo: { kind: 'none' } },
+    buyerAgent: null,
+  };
+  check(
+    'BACKWARD COMPATIBILITY: a note stored under the ORIGINAL six-key BrokerInfo shape still parses, upconverted with the five new fields defaulting to explicit "none"',
+    M.parseRepresentationFactsNote(legacyRepNote).representation,
+    legacyExpected,
+  );
+  check('representation fails closed on an incomplete broker record (legacy shape)', M.parseRepresentationFactsNote(legacyRepNote.replace('"licenseNo":"123"', '"licenseNo":""')), null);
+
+  // The new "intermediary" kind -- pure addition, "none"/"represented" behavior above is otherwise unchanged.
+  const intermediaryNote = M.formatRepresentationFactsNote({ opportunityId: OPP, at: AT, operator: null, representation: { kind: 'intermediary', brokerFirm: currentBroker } });
+  check('representation "intermediary" round-trips exactly', M.parseRepresentationFactsNote(intermediaryNote).representation, { kind: 'intermediary', brokerFirm: currentBroker });
+  check('representation "intermediary" fails closed on an incomplete broker record', M.parseRepresentationFactsNote(intermediaryNote.replace('"licenseNo":"123"', '"licenseNo":""')), null);
+
+  // A "represented" fact with BOTH agents null is a structurally VALID
+  // carrier shape -- the carrier parser has no opinion on arrangement
+  // semantics; `classifyBrokerArrangement` (a separate module) is what
+  // refuses it. Proving the carrier parses it is a precondition for that
+  // module's own "represented_but_empty" test to be meaningful at all.
+  const emptyRepNote = M.formatRepresentationFactsNote({ opportunityId: OPP, at: AT, operator: null, representation: { kind: 'represented', sellerAgent: null, buyerAgent: null } });
+  check('representation "represented" with both agents null still parses at the carrier layer (arrangement semantics are a separate module\'s job)', M.parseRepresentationFactsNote(emptyRepNote).representation, { kind: 'represented', sellerAgent: null, buyerAgent: null });
 }
 
 // ============================================================

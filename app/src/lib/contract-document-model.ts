@@ -372,8 +372,19 @@ function renderBrokerInfo(b: BrokerInfo): string {
   return `${b.firmName} (Lic. ${b.licenseNo}) -- ${b.associateName} (Lic. ${b.associateLicenseNo}), ${b.phone}, ${b.email}`;
 }
 
+/**
+ * INV-67 checkbox-marker / broker-model repair -- narrowly justified
+ * adjustment required by compilation: `RepresentationFact` gained a third
+ * kind, `"intermediary"` (`seller-contract-facts-carriers.ts`), so this
+ * function is no longer exhaustive without a branch for it. The `"none"`/
+ * `"represented"` behavior below is UNCHANGED. This preview rendering
+ * stays purely descriptive -- it is not the GHL projection path (that is
+ * `contract-broker-arrangement-model.ts` / `contract-checkbox-marker-
+ * model.ts`, which fail closed on intermediary rather than render it).
+ */
 function renderRepresentation(v: RepresentationFact): string {
   if (v.kind === "none") return "No broker/agent representation.";
+  if (v.kind === "intermediary") return `Intermediary (represents both Buyer and Seller): ${renderBrokerInfo(v.brokerFirm)}`;
   const seller = v.sellerAgent ? `Seller's agent: ${renderBrokerInfo(v.sellerAgent)}` : "Seller's agent: none.";
   const buyer = v.buyerAgent ? `Buyer's agent: ${renderBrokerInfo(v.buyerAgent)}` : "Buyer's agent: none.";
   return `${seller} ${buyer}`;
