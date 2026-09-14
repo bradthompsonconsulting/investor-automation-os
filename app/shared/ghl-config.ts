@@ -251,12 +251,18 @@ export const CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED = "CONTRACT_PROJECTION_FI
  * 110 = 29 retained (UNCHANGED single-TEXT keys from the original 48) +
  * 48 `"X"`/`""` checkbox markers + 11 restructured contract-text keys +
  * 22 page-11 broker-text keys (11 per side). 19 of the original 48 keys
- * are RETIRED (15 checkbox-shaped, replaced by markers/restructured text;
- * 4 fully dropped -- `closingPossession.possessionDetails`,
- * `representation.representation`, `noticeContact.buyerSignerName`,
- * `noticeContact.buyerSignerRole` -- no truthful destination exists). No
- * GHL field was created, modified, or deleted for this repair -- every key
- * below that lacks a real id in `TEST` (all 81 new keys) carries
+ * are RETIRED from the live projection (14 checkbox-shaped + 1 checkbox-
+ * adjacent, replaced by markers/restructured text; 1
+ * (`representation.representation`) replaced by the 22-key broker-text
+ * decomposition; 3 retired from the TREC 20-19 projection while retained
+ * canonically or as IAOS audit metadata -- `closingPossession.
+ * possessionDetails` stays a real, readable fact scoped to a future
+ * addendum, `noticeContact.buyerSignerName`/`buyerSignerRole` stay IAOS
+ * audit/internal metadata, Board #10 scope). See
+ * `contract-ghl-projection-model.ts`'s `CONTRACT_PROJECTION_RETIRED_KEYS`
+ * for the precise per-key disposition. No GHL field was created,
+ * modified, or deleted for this repair -- every key below that lacks a
+ * real id in `TEST` (all 81 new keys) carries
  * `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`, exactly like `PRODUCTION`
  * carries it for all 110.
  */
@@ -570,21 +576,37 @@ const TEST: GhlConfig = {
   // folder as `opportunityFacts.currentOffer`). No clash on any
   // name/fieldKey; no Test data was populated, no other field was touched.
   //
-  // INV-67 checkbox-marker / broker-model repair (this revision) RETIRES
-  // 19 of the original 48 keys (15 checkbox-shaped, replaced by 48 new
-  // marker keys + 11 restructured text keys; 4 dropped entirely -- see
-  // `contract-ghl-projection-model.ts`'s `CONTRACT_PROJECTION_RETIRED_KEYS`
-  // for the full list and reasons). THEIR GHL TEST FIELDS ARE UNTOUCHED --
-  // still physically present in Test, simply no longer written by this
-  // repository. The 81 new keys this repair adds (48 markers + 11
-  // restructured text + 22 page-11 broker text) have NOT been provisioned
-  // in GHL -- this is a repository-only implementation, no GHL mutation --
-  // so every one of them carries `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`
-  // via the `sentinelContractProjectionFields()` spread below, overridden
-  // only by the 29 real ids that already existed and are unaffected by
-  // this repair.
+  // INV-67 checkbox-marker / broker-model repair RETIRES 19 of the
+  // original 48 keys (14 checkbox-shaped + 1 checkbox-adjacent, replaced
+  // by 48 new marker keys + 11 restructured text keys; 1 replaced by the
+  // 22-key broker-text decomposition; 3 retired from the TREC 20-19
+  // projection while retained canonically or as IAOS audit metadata --
+  // `closingPossession.possessionDetails` stays a real, readable fact
+  // scoped to a future addendum; `noticeContact.buyerSignerName`/
+  // `buyerSignerRole` stay IAOS audit/internal metadata, Board #10 scope
+  // -- see `contract-ghl-projection-model.ts`'s
+  // `CONTRACT_PROJECTION_RETIRED_KEYS` for the full list and precise
+  // per-key disposition). THEIR GHL TEST FIELDS ARE UNTOUCHED -- still
+  // physically present in Test, simply no longer written by this
+  // repository.
+  //
+  // Batch 1 (48 CHECKBOX_MARKER_KEYS) was provisioned live in GHL Test
+  // (`scripts/inv67-create-checkbox-marker-fields-batch1.cjs --apply`,
+  // 2026-09-14, location SoTgVoaFGHtBdRFvXWQV, canonical parentId
+  // sGP3pbDQFN7fXS62MAgA -- Opportunity Details, same folder as
+  // `opportunityFacts.currentOffer`) -- 67 -> 115 existing Opportunity
+  // fields, all 48 created and independently readback-verified against
+  // name/fieldKey/dataType/model/parentId, re-confirmed via a SECOND,
+  // fully independent fresh-GET-plus-join verification pass before these
+  // 48 real ids were wired in below. Batch 2 (11 restructured contract-
+  // text keys) and Batch 3 (22 page-11 broker-text keys) remain
+  // UNPROVISIONED -- every one of those 33 keys still carries
+  // `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED` via the
+  // `sentinelContractProjectionFields()` spread below, overridden only by
+  // the 29 pre-existing retained ids and the 48 Batch 1 marker ids.
   contractProjectionFields: {
     ...sentinelContractProjectionFields(),
+    // -- 29 retained (unchanged, pre-existing this repair) --
     "identity.propertyStreetAddress": "UjJRDmdeuEpQKA9I2yFr",
     "parties.buyerEntityName": "roFgPXN9bPMeLBxLPhpw",
     "parties.sellerSigners": "ELLuYUYyPqhVMIKMjSAh",
@@ -614,6 +636,56 @@ const TEST: GhlConfig = {
     "noticeContact.sellerNoticeEmail": "T9TlfDicQnhiHInISE2N",
     "attorneyManualFields.specialProvisions": "eZImM9FtKYff6CJzAafO",
     "attorneyManualFields.otherAddendaText": "xQ1mLI1l8aHnhOLe07fy",
+    // -- Batch 1: 48 checkbox-marker keys, provisioned and readback-
+    //    verified live in GHL Test 2026-09-14 --
+    "lease_residential_mark": "aScwbIAJRuV3cFiKS09E",
+    "lease_fixture_mark": "h60tQTX5V339pL2Kkygs",
+    "lease_nrl_applies_mark": "WMXYsnvXYQN9b3CmGXNT",
+    "lease_nrl_delivered_mark": "vJz27kh08aSSvBqKaakT",
+    "lease_nrl_not_delivered_mark": "LKli45H0Nr3nbZpYwjbp",
+    "title_expense_seller_mark": "2Su66drCeruZD3BPWLTE",
+    "title_expense_buyer_mark": "ayCF12CoJpuDrp0o2D5T",
+    "shortage_not_amended_mark": "8pphVEZBaRLbjiwOSo91",
+    "shortage_amended_mark": "OO8u48boOVwvUhTPlSNb",
+    "shortage_amended_buyer_mark": "04o5JNDHU8RT1FLBcO4w",
+    "shortage_amended_seller_mark": "23SCz6pfBxlzXRLBAe23",
+    "survey_opt1_mark": "VF0IBL2Si2LaBFh2feaW",
+    "survey_opt2_mark": "XZS6zPtncMRmOE7uC2Kx",
+    "survey_opt3_mark": "ZoX7uWlw4D7sNnIHhSXb",
+    "survey_opt1_expense_buyer_mark": "uCdzFP5SGvJ4gN7nlupp",
+    "survey_opt1_expense_seller_mark": "MszEe7kMJBhsjtSqFciy",
+    "poa_is_subject_mark": "Z0UnZIVEI1zGK61NpSKJ",
+    "poa_is_not_subject_mark": "IcSITgJPOFRkrLMulqjg",
+    "sdn_received_mark": "8C5DbEYVF1YRuelPRZQV",
+    "sdn_not_received_mark": "pvKObPCyffKDzx1hwoYt",
+    "sdn_not_required_mark": "KgtPnweNDnOuz6BKjM6k",
+    "as_is_plain_mark": "khQmW6JpU3kFzJBH7Nlm",
+    "as_is_with_repairs_mark": "oIcJ9Xd21ktI7hOOlvCk",
+    "water_received_mark": "MLxpIA58JR9Wqr2ltazg",
+    "water_not_received_mark": "dJGi6Pq1bU2lK8NVK8AW",
+    "water_exempt_mark": "TkG9weH8ruhKP2iLxmco",
+    "possession_upon_closing_mark": "Ae1IFhDcZwJYONOgJXR5",
+    "possession_leaseback_mark": "yV2k1PAdSpxCg2B9nBOd",
+    "spbb_applies_mark": "O7CzOFOa0phJFy3PEExP",
+    "spbb_dollar_mark": "8fuIJmOMzmwBkIS7ymMn",
+    "spbb_percent_mark": "0mlDez8SVUYQDHXuCEsW",
+    "bpsb_applies_mark": "ZQywx7qCjxuvds5iexzT",
+    "bpsb_dollar_mark": "u3aE3seViwHuJNBfhOYv",
+    "bpsb_percent_mark": "Ty3PKjwT1nwBQL2ZVHVy",
+    "addenda_sale_of_other_property_mark": "YFgsEFYuzmEXHhkLef9E",
+    "addenda_lender_appraisal_termination_mark": "gEfEATkLQv1yX21005c3",
+    "addenda_section_1031_exchange_mark": "K9NWow38jwnjGBgHdq9x",
+    "addenda_short_sale_mark": "GSbwMGY31JdPaMpiVUi6",
+    "addenda_hydrostatic_testing_mark": "JlSUHhT1NFTa8kkXkqi5",
+    "addenda_environmental_assessment_mark": "Btu5r6Iuv31PA8vrZoFv",
+    "addenda_lead_based_paint_mark": "0abvgNZlKfsfPzO1jn1x",
+    "addenda_propane_gas_service_area_mark": "7Sa2WVq1Y72awT34WVgL",
+    "addenda_seaward_of_gulf_intracoastal_mark": "CoqFFXPbIN0QcHPGH75X",
+    "addenda_coastal_area_property_mark": "NXTZ9IiHoqdJLIJdABeO",
+    "addenda_poa_membership_mark": "5ZU2f0XeMWHjQbwBEsD1",
+    "addenda_non_realty_items_mark": "3PU9i62PLkov9YV6q3Mc",
+    "addenda_back_up_contract_mark": "CVKqL2Ir1VNglli2XO6f",
+    "addenda_mineral_reservation_mark": "1TpO61JNm595TSf7DxwT",
   },
   contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",
   pipelines: {
