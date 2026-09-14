@@ -93,19 +93,24 @@ export interface GhlConfig {
     currentOffer: string;
   };
   /**
-   * INV-67 / B9-12 contract-population repair. One narrowly-scoped
-   * Opportunity custom field per remaining TREC 20-19 body-merge fact --
-   * the exact key set `app/src/lib/contract-ghl-projection-model.ts`'s
-   * `CONTRACT_PROJECTION_FIELD_KEYS` declares (48 keys; kept in sync with
+   * INV-67 / B9-12 contract-population repair, extended by the INV-67
+   * checkbox-marker / broker-model repair. One narrowly-scoped Opportunity
+   * custom field per remaining TREC 20-19 fact -- the exact key set
+   * `app/src/lib/contract-ghl-projection-model.ts`'s
+   * `CONTRACT_PROJECTION_FIELD_KEYS` declares (110 live keys: 29 retained
+   * single-TEXT keys + 48 `"X"`/`""` checkbox markers + 11 restructured
+   * contract-text keys + 22 page-11 broker-text keys; kept in sync with
    * that module by hand, guarded by `scripts/test-contract-ghl-projection.cjs`'s
    * drift check). Deliberately EXCLUDES: the four proven-invariant facts
    * (buyer capacity, Texas-license status, the fixed $0 financing sum, the
    * fixed not-applicable financing addenda -- no field, no GHL mutation),
-   * and the two facts that reuse the existing `opportunityFacts.currentOffer`
+   * the two facts that reuse the existing `opportunityFacts.currentOffer`
    * carrier instead of a new field (sales-price cash portion / total --
-   * never duplicated). `contractDraftRequest` is the separate one-shot
-   * dropdown control (`Idle` / `Requested`) -- see
-   * `app/src/lib/contract-draft-request-model.ts`.
+   * never duplicated), and 19 keys RETIRED by the checkbox-marker repair
+   * (their GHL Test fields still exist, physically untouched, but are no
+   * longer written -- see `CONTRACT_PROJECTION_RETIRED_KEYS`).
+   * `contractDraftRequest` is the separate one-shot dropdown control
+   * (`Idle` / `Requested`) -- see `app/src/lib/contract-draft-request-model.ts`.
    */
   contractProjectionFields: Record<string, string>;
   contractDraftRequest: string;
@@ -235,15 +240,28 @@ export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVIS
 export const CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED = "CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED" as const;
 
 /**
- * INV-67 / B9-12 -- the exact 48 keys, duplicated by hand from
- * `app/src/lib/contract-ghl-projection-model.ts`'s
+ * INV-67 checkbox-marker / broker-model repair -- the exact 110 live keys,
+ * duplicated by hand from `app/src/lib/contract-ghl-projection-model.ts`'s
  * `CONTRACT_PROJECTION_FIELD_KEYS` (that module cannot be imported here --
  * `shared/` stays free of an `src/lib` dependency, the same layering every
  * other key in this file already respects). Kept in sync by
- * `scripts/test-contract-ghl-projection.cjs`'s drift check, which fails loud
- * if the two lists ever diverge.
+ * `scripts/test-contract-ghl-projection.cjs`'s drift check, which fails
+ * loud if the two lists ever diverge.
+ *
+ * 110 = 29 retained (UNCHANGED single-TEXT keys from the original 48) +
+ * 48 `"X"`/`""` checkbox markers + 11 restructured contract-text keys +
+ * 22 page-11 broker-text keys (11 per side). 19 of the original 48 keys
+ * are RETIRED (15 checkbox-shaped, replaced by markers/restructured text;
+ * 4 fully dropped -- `closingPossession.possessionDetails`,
+ * `representation.representation`, `noticeContact.buyerSignerName`,
+ * `noticeContact.buyerSignerRole` -- no truthful destination exists). No
+ * GHL field was created, modified, or deleted for this repair -- every key
+ * below that lacks a real id in `TEST` (all 81 new keys) carries
+ * `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`, exactly like `PRODUCTION`
+ * carries it for all 110.
  */
 const CONTRACT_PROJECTION_FIELD_KEYS = [
+  // -- 29 retained, UNCHANGED single-TEXT keys --
   "identity.propertyStreetAddress",
   "parties.buyerEntityName",
   "parties.sellerSigners",
@@ -252,46 +270,111 @@ const CONTRACT_PROJECTION_FIELD_KEYS = [
   "propertyLegalDescription.addition",
   "propertyLegalDescription.county",
   "propertyLegalDescription.exclusions",
-  "propertyLegalDescription.reservations",
-  "leaseDisclosure.residentialLeases",
-  "leaseDisclosure.fixtureLeases",
-  "leaseDisclosure.naturalResourceLeases",
   "earnestMoneyOption.escrowAgentName",
   "earnestMoneyOption.escrowAgentAddress",
   "earnestMoneyOption.earnestMoney",
   "earnestMoneyOption.optionFee",
   "earnestMoneyOption.optionPeriodDays",
   "earnestMoneyOption.additionalEarnestMoney",
-  "titleSurvey.titlePolicyExpenseParty",
   "titleSurvey.titleCompanyName",
-  "titleSurvey.shortageAmendmentElection",
-  "titleSurvey.surveyElection",
   "titleSurvey.objectionsText",
   "titleSurvey.objectionsDays",
-  "titleSurvey.poaMembership",
-  "propertyCondition.sellerDisclosureNotice",
-  "propertyCondition.asIsElection",
   "propertyCondition.serviceContractCap",
-  "propertyCondition.waterDisclosure",
   "closingPossession.closingDate",
-  "closingPossession.possessionElection",
-  "closingPossession.possessionDetails",
   "settlementExpense.sellerCreditCap",
-  "settlementExpense.sellerPaysBuyerBroker",
-  "settlementExpense.buyerPaysSellerBroker",
-  "representation.representation",
-  "addendaApplicability.items",
   "addendaApplicability.districtNotices",
   "noticeContact.buyerNoticeAddress",
   "noticeContact.buyerNoticePhone",
   "noticeContact.buyerNoticeEmail",
-  "noticeContact.buyerSignerName",
-  "noticeContact.buyerSignerRole",
   "noticeContact.sellerNoticeAddress",
   "noticeContact.sellerNoticePhone",
   "noticeContact.sellerNoticeEmail",
   "attorneyManualFields.specialProvisions",
   "attorneyManualFields.otherAddendaText",
+  // -- 48 checkbox markers ("X" | "") --
+  "lease_residential_mark",
+  "lease_fixture_mark",
+  "lease_nrl_applies_mark",
+  "lease_nrl_delivered_mark",
+  "lease_nrl_not_delivered_mark",
+  "title_expense_seller_mark",
+  "title_expense_buyer_mark",
+  "shortage_not_amended_mark",
+  "shortage_amended_mark",
+  "shortage_amended_buyer_mark",
+  "shortage_amended_seller_mark",
+  "survey_opt1_mark",
+  "survey_opt2_mark",
+  "survey_opt3_mark",
+  "survey_opt1_expense_buyer_mark",
+  "survey_opt1_expense_seller_mark",
+  "poa_is_subject_mark",
+  "poa_is_not_subject_mark",
+  "sdn_received_mark",
+  "sdn_not_received_mark",
+  "sdn_not_required_mark",
+  "as_is_plain_mark",
+  "as_is_with_repairs_mark",
+  "water_received_mark",
+  "water_not_received_mark",
+  "water_exempt_mark",
+  "possession_upon_closing_mark",
+  "possession_leaseback_mark",
+  "spbb_applies_mark",
+  "spbb_dollar_mark",
+  "spbb_percent_mark",
+  "bpsb_applies_mark",
+  "bpsb_dollar_mark",
+  "bpsb_percent_mark",
+  "addenda_sale_of_other_property_mark",
+  "addenda_lender_appraisal_termination_mark",
+  "addenda_section_1031_exchange_mark",
+  "addenda_short_sale_mark",
+  "addenda_hydrostatic_testing_mark",
+  "addenda_environmental_assessment_mark",
+  "addenda_lead_based_paint_mark",
+  "addenda_propane_gas_service_area_mark",
+  "addenda_seaward_of_gulf_intracoastal_mark",
+  "addenda_coastal_area_property_mark",
+  "addenda_poa_membership_mark",
+  "addenda_non_realty_items_mark",
+  "addenda_back_up_contract_mark",
+  "addenda_mineral_reservation_mark",
+  // -- 11 restructured contract-text keys --
+  "lease_nrl_terminate_within_days_text",
+  "survey_opt1_seller_furnish_days_text",
+  "survey_opt2_buyer_obtain_days_text",
+  "survey_opt3_seller_furnish_days_text",
+  "sdn_deliver_within_days_text",
+  "water_deliver_within_days_text",
+  "water_source_text",
+  "spbb_dollar_amount_text",
+  "spbb_percent_amount_text",
+  "bpsb_dollar_amount_text",
+  "bpsb_percent_amount_text",
+  // -- 22 page-11 broker-text keys (11 per side) --
+  "seller_broker_firm_name_text",
+  "seller_broker_address_text",
+  "seller_broker_firm_license_no_text",
+  "seller_broker_associate_name_text",
+  "seller_broker_team_name_text",
+  "seller_broker_associate_email_text",
+  "seller_broker_associate_phone_text",
+  "seller_broker_associate_license_no_text",
+  "seller_broker_supervisor_name_text",
+  "seller_broker_supervisor_phone_text",
+  "seller_broker_supervisor_license_no_text",
+  "buyer_broker_firm_name_text",
+  "buyer_broker_address_text",
+  "buyer_broker_firm_license_no_text",
+  "buyer_broker_associate_name_text",
+  "buyer_broker_team_name_text",
+  "buyer_broker_associate_email_text",
+  "buyer_broker_associate_phone_text",
+  "buyer_broker_associate_license_no_text",
+  "buyer_broker_supervisor_name_text",
+  "buyer_broker_supervisor_phone_text",
+  "buyer_broker_supervisor_license_no_text",
 ] as const;
 
 /** Builds a sentinel-filled `contractProjectionFields` map -- one call site, never 48 hand-typed literals. */
@@ -481,13 +564,27 @@ const TEST: GhlConfig = {
     // session -- see docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md.
     currentOffer:       "7pmvwi6vlu74f5rLOp9M",
   },
-  // INV-67 / B9-12 -- created live in Test via
-  // `scripts/inv67-create-contract-projection-fields.cjs --apply`, this
-  // session. All 49 fields (48 TEXT + the one SINGLE_OPTIONS dropdown),
-  // Opportunity Details folder (sGP3pbDQFN7fXS62MAgA, same folder as
-  // `opportunityFacts.currentOffer`). No clash on any name/fieldKey; no
-  // Test data was populated, no other field was touched.
+  // INV-67 / B9-12 -- the 29 RETAINED fields below were created live in
+  // Test via `scripts/inv67-create-contract-projection-fields.cjs --apply`
+  // (2026-09), Opportunity Details folder (sGP3pbDQFN7fXS62MAgA, same
+  // folder as `opportunityFacts.currentOffer`). No clash on any
+  // name/fieldKey; no Test data was populated, no other field was touched.
+  //
+  // INV-67 checkbox-marker / broker-model repair (this revision) RETIRES
+  // 19 of the original 48 keys (15 checkbox-shaped, replaced by 48 new
+  // marker keys + 11 restructured text keys; 4 dropped entirely -- see
+  // `contract-ghl-projection-model.ts`'s `CONTRACT_PROJECTION_RETIRED_KEYS`
+  // for the full list and reasons). THEIR GHL TEST FIELDS ARE UNTOUCHED --
+  // still physically present in Test, simply no longer written by this
+  // repository. The 81 new keys this repair adds (48 markers + 11
+  // restructured text + 22 page-11 broker text) have NOT been provisioned
+  // in GHL -- this is a repository-only implementation, no GHL mutation --
+  // so every one of them carries `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`
+  // via the `sentinelContractProjectionFields()` spread below, overridden
+  // only by the 29 real ids that already existed and are unaffected by
+  // this repair.
   contractProjectionFields: {
+    ...sentinelContractProjectionFields(),
     "identity.propertyStreetAddress": "UjJRDmdeuEpQKA9I2yFr",
     "parties.buyerEntityName": "roFgPXN9bPMeLBxLPhpw",
     "parties.sellerSigners": "ELLuYUYyPqhVMIKMjSAh",
@@ -496,41 +593,22 @@ const TEST: GhlConfig = {
     "propertyLegalDescription.addition": "8P8xlcoQvJPiTCtEYmze",
     "propertyLegalDescription.county": "VQdEFCszBn2I1R29v9Ku",
     "propertyLegalDescription.exclusions": "8BkJWlSfgp8WfqcdTE60",
-    "propertyLegalDescription.reservations": "eGTOybaRpn6DyF5UfA3p",
-    "leaseDisclosure.residentialLeases": "jXwpoDi1FM0Vd6c9W28y",
-    "leaseDisclosure.fixtureLeases": "2Cyh5dkYCwMgcE7JZ8le",
-    "leaseDisclosure.naturalResourceLeases": "QmsM0JkO46qCdWwkWx9u",
     "earnestMoneyOption.escrowAgentName": "bhxE1ZSOmyYWrOHqm6jf",
     "earnestMoneyOption.escrowAgentAddress": "EvuENItvKDCw8WaCHMd3",
     "earnestMoneyOption.earnestMoney": "HJpetNeLUCy6mIv4hOKO",
     "earnestMoneyOption.optionFee": "Gygwe13y13CZJJvJFk3y",
     "earnestMoneyOption.optionPeriodDays": "02LqDO3fMiKBLBFzheJX",
     "earnestMoneyOption.additionalEarnestMoney": "lx0NWWA8tgilbEY71n3b",
-    "titleSurvey.titlePolicyExpenseParty": "JrRuKPeb7C9aOsDiqEDE",
     "titleSurvey.titleCompanyName": "hqovBqMSkSzi7hgyyonq",
-    "titleSurvey.shortageAmendmentElection": "XH6f9I55mCtqrfx98NKX",
-    "titleSurvey.surveyElection": "XJxwxUr8Umm7FJDJJfWV",
     "titleSurvey.objectionsText": "cqOCAubHmuLFbCl9TczS",
     "titleSurvey.objectionsDays": "vAInvdtJ0nYHINzAwGy3",
-    "titleSurvey.poaMembership": "kOy9jBk0GHd1637TswTS",
-    "propertyCondition.sellerDisclosureNotice": "BWsrQogptLCLGEISjgry",
-    "propertyCondition.asIsElection": "d5186HsrHsRNhF7urBcP",
     "propertyCondition.serviceContractCap": "UiWOxyGDrbWO9cTkJSx9",
-    "propertyCondition.waterDisclosure": "ZvSz3nIagb95FOjC03WF",
     "closingPossession.closingDate": "s7jauYhoSPQd09GjoGOr",
-    "closingPossession.possessionElection": "JzN3BienkRkhirmdA3uJ",
-    "closingPossession.possessionDetails": "J4Nf801Wq6b2sPKTU8wJ",
     "settlementExpense.sellerCreditCap": "fUWZ54vsfUyGBlxszHB0",
-    "settlementExpense.sellerPaysBuyerBroker": "RXBq4IezbpavkiwQuLlQ",
-    "settlementExpense.buyerPaysSellerBroker": "mIbMRrNLqsxi3tnBUz1F",
-    "representation.representation": "aIBHje2RJe9erA2A9Y3s",
-    "addendaApplicability.items": "X8EbiJpo7UGW4QHG84wI",
     "addendaApplicability.districtNotices": "SpRUfNbdSL94QZz7vfrs",
     "noticeContact.buyerNoticeAddress": "OWVLUUS4pyD0JA2bRqBy",
     "noticeContact.buyerNoticePhone": "4ehkRvZbgm4xTFqjugib",
     "noticeContact.buyerNoticeEmail": "glYaD6otYjvlw5avJ5I0",
-    "noticeContact.buyerSignerName": "kWPcFkBaljLj64JX67ZU",
-    "noticeContact.buyerSignerRole": "kmSqLfWgxCogH3SnsXqS",
     "noticeContact.sellerNoticeAddress": "4ZSZTquyk1MTN7wBLqlO",
     "noticeContact.sellerNoticePhone": "G7ovatOKYrMECUchooxr",
     "noticeContact.sellerNoticeEmail": "T9TlfDicQnhiHInISE2N",

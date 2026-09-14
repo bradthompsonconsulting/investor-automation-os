@@ -911,18 +911,85 @@ export function latestSettlementExpenseFactsForOpportunity(
 /* 10. Representation facts -- ONE shared fact for ¶8, ¶12B, p.11, ¶21  */
 /* ==================================================================== */
 
-export type BrokerInfo = { firmName: string; licenseNo: string; associateName: string; associateLicenseNo: string; email: string; phone: string };
-const BROKER_INFO_KEYS = ["firmName", "licenseNo", "associateName", "associateLicenseNo", "email", "phone"] as const;
+/**
+ * INV-67 checkbox-marker / broker-model repair. Extended from the
+ * originally-shipped six-field shape (`firmName`/`licenseNo`/
+ * `associateName`/`associateLicenseNo`/`email`/`phone` -- UNCHANGED, still
+ * required non-empty strings, exactly as before -- see
+ * `BROKER_INFO_REQUIRED_STRING_KEYS`) with the five remaining printed
+ * page-11 destinations Brad's ruling this session requires: `address`,
+ * `teamName`, and the three "Licensed Supervisor" fields. Each of the five
+ * is `ValueOrNone`, not a plain string -- many real brokers genuinely have
+ * no team name or no distinct licensed supervisor, and forcing a
+ * non-empty string there would misrepresent "confirmed absent" as "never
+ * captured." The mandatory architect correction this session is explicit:
+ * there is no separate `city`/`state`/`zip` -- TREC's own page 11 has ONE
+ * `Address` blank per side, and none is added here.
+ */
+export type BrokerInfo = {
+  firmName: string;
+  licenseNo: string;
+  associateName: string;
+  associateLicenseNo: string;
+  email: string;
+  phone: string;
+  address: ValueOrNone;
+  teamName: ValueOrNone;
+  supervisorName: ValueOrNone;
+  supervisorPhone: ValueOrNone;
+  supervisorLicenseNo: ValueOrNone;
+};
+const BROKER_INFO_REQUIRED_STRING_KEYS = ["firmName", "licenseNo", "associateName", "associateLicenseNo", "email", "phone"] as const;
+const BROKER_INFO_VALUE_OR_NONE_KEYS = ["address", "teamName", "supervisorName", "supervisorPhone", "supervisorLicenseNo"] as const;
+const BROKER_INFO_KEYS = [...BROKER_INFO_REQUIRED_STRING_KEYS, ...BROKER_INFO_VALUE_OR_NONE_KEYS] as const;
 
-export type RepresentationFact = { kind: "none" } | { kind: "represented"; sellerAgent: BrokerInfo | null; buyerAgent: BrokerInfo | null };
+/**
+ * INV-67 checkbox-marker / broker-model repair. A third kind, alongside
+ * the originally-shipped `"none"`/`"represented"` -- UNCHANGED, see
+ * `parseRepresentationFactsNote`'s compatibility note. `"intermediary"`
+ * exists ONLY so `classifyBrokerArrangement`
+ * (`contract-broker-arrangement-model.ts`) can detect and fail closed on
+ * this arrangement -- no code path in this repair populates a document
+ * from it, and no GHL/template support for it is built here.
+ */
+export type RepresentationFact =
+  | { kind: "none" }
+  | { kind: "represented"; sellerAgent: BrokerInfo | null; buyerAgent: BrokerInfo | null }
+  | { kind: "intermediary"; brokerFirm: BrokerInfo };
 
+/**
+ * Accepts BOTH the current 11-key `BrokerInfo` shape and the ORIGINAL
+ * 6-key shape a note written before this repair still carries --
+ * INV-67 checkbox-marker / broker-model repair backward compatibility.
+ * A legacy 6-key object upconverts with all five new fields defaulting to
+ * an explicit `{kind:"none"}` -- never invented, never guessed, and never
+ * silently reinterpreted as a value the original note never recorded.
+ */
 function validateBrokerInfo(v: unknown): BrokerInfo | null {
   if (!isPlainObject(v)) return null;
-  if (!hasExactKeys(v, BROKER_INFO_KEYS)) return null;
-  for (const k of BROKER_INFO_KEYS) {
-    if (typeof v[k] !== "string" || (v[k] as string).trim() === "") return null;
+  if (hasExactKeys(v, BROKER_INFO_KEYS)) {
+    for (const k of BROKER_INFO_REQUIRED_STRING_KEYS) {
+      if (typeof v[k] !== "string" || (v[k] as string).trim() === "") return null;
+    }
+    const out: Record<string, unknown> = {};
+    for (const k of BROKER_INFO_REQUIRED_STRING_KEYS) out[k] = v[k];
+    for (const k of BROKER_INFO_VALUE_OR_NONE_KEYS) {
+      const parsed = parseValueOrNoneJson(JSON.stringify(v[k]));
+      if (!parsed) return null;
+      out[k] = parsed;
+    }
+    return out as unknown as BrokerInfo;
   }
-  return v as unknown as BrokerInfo;
+  if (hasExactKeys(v, BROKER_INFO_REQUIRED_STRING_KEYS)) {
+    for (const k of BROKER_INFO_REQUIRED_STRING_KEYS) {
+      if (typeof v[k] !== "string" || (v[k] as string).trim() === "") return null;
+    }
+    const out: Record<string, unknown> = {};
+    for (const k of BROKER_INFO_REQUIRED_STRING_KEYS) out[k] = v[k];
+    for (const k of BROKER_INFO_VALUE_OR_NONE_KEYS) out[k] = { kind: "none" };
+    return out as unknown as BrokerInfo;
+  }
+  return null;
 }
 
 export const REPRESENTATION_LEDGER_VERSION = "iaos-representation-facts-v1" as const;
@@ -943,6 +1010,15 @@ export function formatRepresentationFactsNote(args: {
   ].join("\n");
 }
 
+/**
+ * The `"none"`/`"represented"` branches are UNCHANGED from the originally
+ * shipped parser -- `validateBrokerInfo` alone absorbs the backward
+ * compatibility for what BrokerInfo carries, so an old, pre-this-repair
+ * stored note (six-key BrokerInfo, no `"intermediary"` kind) still parses
+ * successfully here without any special-casing at this layer. The
+ * `"intermediary"` branch is pure addition -- INV-67 checkbox-marker /
+ * broker-model repair.
+ */
 export function parseRepresentationFactsNote(body: string): ParsedRepresentationFacts | null {
   const values = matchPositionalSchema(body, REPRESENTATION_HEADER, REPRESENTATION_LABELS);
   if (!values) return null;
@@ -964,6 +1040,11 @@ export function parseRepresentationFactsNote(body: string): ParsedRepresentation
     if (v.sellerAgent !== null && sellerAgent === null) return null;
     if (v.buyerAgent !== null && buyerAgent === null) return null;
     representation = { kind: "represented", sellerAgent, buyerAgent };
+  } else if (v.kind === "intermediary") {
+    if (!hasExactKeys(v, ["kind", "brokerFirm"])) return null;
+    const brokerFirm = validateBrokerInfo(v.brokerFirm);
+    if (!brokerFirm) return null;
+    representation = { kind: "intermediary", brokerFirm };
   } else {
     return null;
   }

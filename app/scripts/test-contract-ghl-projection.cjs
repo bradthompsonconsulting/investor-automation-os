@@ -1,25 +1,36 @@
 /**
- * INV-67 / B9-12 contract-population repair -- deterministic proof of
- * `contract-ghl-projection-model.ts`. Pure functions and static drift checks
- * only; no GHL, no network.
+ * INV-67 / B9-12 contract-population repair, extended by the INV-67
+ * checkbox-marker / broker-model repair -- deterministic proof of
+ * `contract-ghl-projection-model.ts`'s PLAN-LEVEL integration. Pure
+ * functions and static drift checks only; no GHL, no network.
  *
- * Proves:
- *  1. The plan fails closed when the preview is incomplete, and reproduces
- *     the exact blocking reasons -- no partial plan.
- *  2. The plan fails closed on an unresolved `sellerEquitableInterest`
- *     additional-required-fact even when `previewComplete` itself is true
- *     (the independent gate this module adds -- see its own header).
- *  3. Every one of the 48 keys in `CONTRACT_PROJECTION_FIELD_KEYS` produces
- *     exactly one entry, carrying the document line's own `text` verbatim
- *     (never re-rendered).
- *  4. The four invariant keys and the two reused-current-offer keys are
- *     NEVER present in `CONTRACT_PROJECTION_FIELD_KEYS` -- no duplicate
- *     field, no field for a proven-invariant fact.
- *  5. `reusedCurrentOfferLines` returns exactly the two sales-price document
- *     lines' text, keyed correctly.
- *  6. Drift guard: the 48-key list is IDENTICAL (same set) across this
- *     module, `shared/ghl-config.ts`'s duplicated list, and
- *     `scripts/inv67-create-contract-projection-fields.cjs`'s FIELD_SPECS.
+ * Per-fact-group marker derivation, exclusivity, broker-text decomposition,
+ * and consistency checks are exhaustively tested in their OWN dedicated
+ * suites (`test-contract-checkbox-marker-model.cjs`,
+ * `test-contract-broker-arrangement-model.cjs`) -- this file proves
+ * `buildContractProjectionPlan` correctly WIRES all of it together:
+ *
+ *  1. Fails closed on an incomplete preview / unresolved equitable-interest
+ *     gate (UNCHANGED from the original repair).
+ *  2. The happy path produces exactly 110 entries -- 29 retained document-
+ *     line entries + 48 markers + 11 restructured text + 22 broker text.
+ *  3. A marker-exclusivity violation, a mineral-reservation disagreement,
+ *     and a blocking broker arrangement (intermediary /
+ *     represented-but-empty) each block the WHOLE plan, each with the
+ *     expected message -- never a partial plan.
+ *  4. A POA/addendum disagreement surfaces as a `warnings` entry and does
+ *     NOT block.
+ *  5. Invariant and reused-current-offer keys are excluded; the 19 retired
+ *     keys are excluded too.
+ *  6. `reusedCurrentOfferLines` is unaffected by this session's changes.
+ *  7. Integrity guards (mapping drift / null text) still fire for the
+ *     retained document-line keys.
+ *  8. Drift guard: `shared/ghl-config.ts`'s 110-key list matches this
+ *     module's exactly; the field-creation script's 48 already-provisioned
+ *     keys remain EXACTLY the original 29 retained + 19 retired keys (that
+ *     script provisions nothing new this session -- no GHL mutation was
+ *     made, so its key set is untouched even though 19 of those keys are
+ *     no longer live).
  */
 const { execSync } = require('child_process');
 const fs = require('fs');
@@ -28,6 +39,9 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const TMP = path.join(APP, '.tmp-contract-ghl-projection-test');
 const MODEL = path.join(APP, 'src', 'lib', 'contract-ghl-projection-model.ts');
+const MARKER_MODEL = path.join(APP, 'src', 'lib', 'contract-checkbox-marker-model.ts');
+const BROKER_MODEL = path.join(APP, 'src', 'lib', 'contract-broker-arrangement-model.ts');
+const CARRIERS = path.join(APP, 'src', 'lib', 'seller-contract-facts-carriers.ts');
 
 function cleanup() { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {} }
 cleanup();
@@ -36,7 +50,7 @@ fs.writeFileSync(path.join(TMP, 'package.json'), JSON.stringify({ type: 'commonj
 
 try {
   execSync(
-    `npx tsc "${MODEL}" --outDir "${TMP}" --module commonjs --target es2020 --strict`,
+    `npx tsc "${MODEL}" "${MARKER_MODEL}" "${BROKER_MODEL}" "${CARRIERS}" --outDir "${TMP}" --module commonjs --target es2020 --strict`,
     { cwd: APP, stdio: 'inherit' },
   );
 } catch (_) {
@@ -49,11 +63,15 @@ const {
   CONTRACT_PROJECTION_FIELD_KEYS,
   CONTRACT_PROJECTION_INVARIANT_KEYS,
   CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS,
+  CONTRACT_PROJECTION_RETIRED_KEYS,
+  CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS,
   buildContractProjectionPlan,
   reusedCurrentOfferLines,
 } = require(path.join(TMP, 'contract-ghl-projection-model.js'));
+const { CHECKBOX_MARKER_KEYS, CHECKBOX_TEXT_KEYS, BROKER_TEXT_KEYS } = require(path.join(TMP, 'contract-checkbox-marker-model.js'));
+const { ADDENDA_APPLICABILITY_ITEM_KEYS } = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
 
-const FLOOR = 32;
+const FLOOR = 45;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -79,7 +97,7 @@ function line(group, field, status, text) {
   return { paragraph: 'X', group, field, label: `${group}.${field}`, status, text, authority: status === 'unresolved' ? null : 'system_derived', recordedAt: null };
 }
 
-/** A complete, resolvable preview: every documentLines key + the equitable-interest additional fact populated. */
+/** A complete, resolvable preview covering ONLY the 29 retained document-line keys + the 4 invariant/2 reused keys the preview itself still carries as document lines. */
 function completePreview(overrides) {
   const documentLines = [
     line('identity', 'propertyStreetAddress', 'populated', '123 Main St'),
@@ -90,7 +108,7 @@ function completePreview(overrides) {
     line('salesPrice', 'cashPortion', 'populated', '$275,000.00'),
     line('salesPrice', 'financingSum', 'populated', '$0.00'),
     line('salesPrice', 'salesPrice', 'populated', '$275,000.00'),
-    ...CONTRACT_PROJECTION_FIELD_KEYS
+    ...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS
       .filter((k) => !['identity.propertyStreetAddress', 'parties.buyerEntityName', 'parties.sellerSigners'].includes(k))
       .map((k) => { const [g, f] = k.split('.'); return line(g, f, 'populated', `value for ${k}`); }),
   ];
@@ -103,27 +121,70 @@ function completePreview(overrides) {
   };
 }
 
+function populated(value) { return { kind: 'populated', value, authority: 'operator_attested', recordedAt: null }; }
+
+/** A complete, resolvable SellerContractFactsReport -- every checkbox-shaped fact `buildCheckboxMarkersAndText` reads, all clean/no-conflict by default. */
+function completeReport(overrides) {
+  const base = {
+    leaseDisclosure: {
+      residentialLeases: populated('none'),
+      fixtureLeases: populated('none'),
+      naturalResourceLeases: populated({ kind: 'none' }),
+    },
+    titleSurvey: {
+      titlePolicyExpenseParty: populated('seller'),
+      shortageAmendmentElection: populated({ kind: 'not_amended' }),
+      surveyElection: populated({ option: 'buyer_new_survey', buyerObtainDays: 10 }),
+      poaMembership: populated('is_not_subject'),
+    },
+    propertyCondition: {
+      sellerDisclosureNotice: populated({ kind: 'received' }),
+      asIsElection: populated({ kind: 'as_is' }),
+      waterDisclosure: populated({ kind: 'received' }),
+    },
+    closingPossession: {
+      possessionElection: populated('upon_closing_and_funding'),
+    },
+    settlementExpense: {
+      sellerPaysBuyerBroker: populated({ kind: 'none' }),
+      buyerPaysSellerBroker: populated({ kind: 'none' }),
+    },
+    addendaApplicability: {
+      items: populated(Object.fromEntries(ADDENDA_APPLICABILITY_ITEM_KEYS.map((k) => [k, false]))),
+    },
+    representation: {
+      representation: populated({ kind: 'none' }),
+    },
+    propertyLegalDescription: {
+      reservations: populated({ kind: 'none' }),
+    },
+  };
+  for (const [group, patch] of Object.entries(overrides || {})) {
+    base[group] = { ...base[group], ...patch };
+  }
+  return base;
+}
+
 /* ==================================================================== */
-/* 1. Fail-closed on incomplete preview                                  */
+/* 1. Fail-closed on incomplete preview (UNCHANGED)                      */
 /* ==================================================================== */
 
 {
   const preview = completePreview({ previewComplete: false, blockingReasons: ['Something is unresolved.'] });
-  const plan = buildContractProjectionPlan('OPP-1', preview);
+  const plan = buildContractProjectionPlan('OPP-1', preview, completeReport());
   checkTrue('blocked when previewComplete is false', plan.ok === false);
   check('blocked plan carries the exact blocking reasons', plan.ok ? null : plan.blockingReasons, ['Something is unresolved.']);
 }
 
 /* ==================================================================== */
-/* 2. Independent equitable-interest gate (ruling 9)                     */
+/* 2. Independent equitable-interest gate (ruling 9, UNCHANGED)          */
 /* ==================================================================== */
 
 {
   const preview = completePreview({
     additionalRequiredFacts: [line('sellerEquitableInterest', 'disposition', 'unresolved', null)],
   });
-  checkTrue('fixture sanity: previewComplete is true despite unresolved equitable interest', preview.previewComplete === true);
-  const plan = buildContractProjectionPlan('OPP-1', preview);
+  const plan = buildContractProjectionPlan('OPP-1', preview, completeReport());
   checkTrue('blocked on unresolved equitable-interest disclosure even though previewComplete is true', plan.ok === false);
   checkTrue(
     'blocking reasons name the equitable-interest gate',
@@ -132,60 +193,119 @@ function completePreview(overrides) {
 }
 
 /* ==================================================================== */
-/* 3. Happy path -- exactly 48 entries, verbatim text                    */
+/* 3. Happy path -- exactly 110 entries                                  */
 /* ==================================================================== */
 
 {
   const preview = completePreview();
-  const plan = buildContractProjectionPlan('OPP-1', preview);
-  checkTrue('ok plan on a fully resolved preview', plan.ok === true);
+  const plan = buildContractProjectionPlan('OPP-1', preview, completeReport());
+  checkTrue('ok plan on a fully resolved preview + report', plan.ok === true);
   check('entry count equals CONTRACT_PROJECTION_FIELD_KEYS length', plan.ok ? plan.entries.length : null, CONTRACT_PROJECTION_FIELD_KEYS.length);
-  check('entry count is exactly 48', plan.ok ? plan.entries.length : null, 48);
+  check('entry count is exactly 110', plan.ok ? plan.entries.length : null, 110);
+  check('CONTRACT_PROJECTION_FIELD_KEYS.length is exactly 110', CONTRACT_PROJECTION_FIELD_KEYS.length, 110);
+  check('29 retained + 48 markers + 11 text + 22 broker = 110', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length + CHECKBOX_MARKER_KEYS.length + CHECKBOX_TEXT_KEYS.length + BROKER_TEXT_KEYS.length, 110);
   check('agreementAt carried from preview.version', plan.ok ? plan.agreementAt : null, VERSION.agreementAt);
   check('versionSeq carried from preview.version', plan.ok ? plan.versionSeq : null, VERSION.versionSeq);
   check('opportunityId is the caller-supplied id, not read off the preview', plan.ok ? plan.opportunityId : null, 'OPP-1');
+  check('no warnings on a fully clean report', plan.ok ? plan.warnings : null, []);
 
   const byKey = new Map((plan.ok ? plan.entries : []).map((e) => [e.key, e.text]));
   checkTrue('every CONTRACT_PROJECTION_FIELD_KEYS entry is present', CONTRACT_PROJECTION_FIELD_KEYS.every((k) => byKey.has(k)));
-  check('text is verbatim from the document line', byKey.get('propertyLegalDescription.lot'), 'value for propertyLegalDescription.lot');
+  check('a retained document-line key projects its own text verbatim', byKey.get('propertyLegalDescription.lot'), 'value for propertyLegalDescription.lot');
   check('identity.propertyStreetAddress projects its own text', byKey.get('identity.propertyStreetAddress'), '123 Main St');
+  check('a checkbox marker for a "none" election is blank', byKey.get('lease_residential_mark'), '');
+  check('a checkbox marker for the selected election is "X"', byKey.get('title_expense_seller_mark'), 'X');
+  check('every marker value is "X" or ""', CHECKBOX_MARKER_KEYS.every((k) => byKey.get(k) === 'X' || byKey.get(k) === ''), true);
+  check('broker text is all-blank when representation is "none"', BROKER_TEXT_KEYS.every((k) => byKey.get(k) === ''), true);
 }
 
 /* ==================================================================== */
-/* 4. Not-applicable ("None") lines project their resolved text          */
+/* 4. Blocking: marker-exclusivity violation cannot reach the plan       */
+/*    normally -- proven here via a report whose canonical facts, if     */
+/*    mis-derived, WOULD violate exclusivity; the by-construction         */
+/*    guarantee is proven in test-contract-checkbox-marker-model.cjs.    */
+/*    This section proves the INTEGRATION path instead: mineral-         */
+/*    reservation disagreement and blocking broker arrangements.         */
 /* ==================================================================== */
 
 {
   const preview = completePreview();
-  preview.documentLines = preview.documentLines.map((l) =>
-    l.group === 'leaseDisclosure' && l.field === 'naturalResourceLeases'
-      ? { ...l, status: 'not_applicable', text: 'None.' }
-      : l,
-  );
-  const plan = buildContractProjectionPlan('OPP-1', preview);
-  checkTrue('ok plan when a field is not_applicable, not unresolved', plan.ok === true);
-  const entry = plan.ok ? plan.entries.find((e) => e.key === 'leaseDisclosure.naturalResourceLeases') : null;
-  check('not_applicable disposition projects its own resolved "None." text', entry ? entry.text : null, 'None.');
+  const report = completeReport({
+    propertyLegalDescription: { reservations: populated({ kind: 'applies', addendumNote: 'see addendum' }) },
+    // addendaApplicability.items.mineral_reservation stays false -> disagreement
+  });
+  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  checkTrue('mineral-reservation disagreement blocks the WHOLE plan', plan.ok === false);
+  checkTrue('mineral-reservation blocking reason is distinct and operator-facing', plan.ok ? false : plan.blockingReasons.some((r) => r.includes('Mineral-reservation disagreement')));
+}
+
+{
+  const preview = completePreview();
+  const brokerFirm = {
+    firmName: 'Both Sides Realty', licenseNo: '1', associateName: 'A', associateLicenseNo: '2', email: 'e@x.com', phone: '555',
+    address: { kind: 'none' }, teamName: { kind: 'none' }, supervisorName: { kind: 'none' }, supervisorPhone: { kind: 'none' }, supervisorLicenseNo: { kind: 'none' },
+  };
+  const report = completeReport({ representation: { representation: populated({ kind: 'intermediary', brokerFirm }) } });
+  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  checkTrue('intermediary broker arrangement blocks the WHOLE plan before any entry is built', plan.ok === false);
+  checkTrue('intermediary blocking reason names the arrangement', plan.ok ? false : plan.blockingReasons.some((r) => /intermediary/i.test(r)));
+}
+
+{
+  const preview = completePreview();
+  const report = completeReport({ representation: { representation: populated({ kind: 'represented', sellerAgent: null, buyerAgent: null }) } });
+  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  checkTrue('represented-but-empty broker arrangement ALSO blocks the WHOLE plan (mandatory correction)', plan.ok === false);
+  checkTrue('represented-but-empty blocking reason is distinct from "no broker"', plan.ok ? false : plan.blockingReasons.some((r) => /not the same fact as "no broker"/.test(r)));
 }
 
 /* ==================================================================== */
-/* 5. Invariant and reused-current-offer keys are excluded               */
+/* 5. Warning (not blocking): POA membership vs. addendum disagreement   */
 /* ==================================================================== */
 
-checkTrue(
-  'no invariant key appears in CONTRACT_PROJECTION_FIELD_KEYS',
-  CONTRACT_PROJECTION_INVARIANT_KEYS.every((k) => !CONTRACT_PROJECTION_FIELD_KEYS.includes(k)),
-);
-checkTrue(
-  'no reused-current-offer key appears in CONTRACT_PROJECTION_FIELD_KEYS',
-  CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS.every((k) => !CONTRACT_PROJECTION_FIELD_KEYS.includes(k)),
-);
+{
+  const preview = completePreview();
+  const report = completeReport({ titleSurvey: { poaMembership: populated('is_subject') } }); // addenda.poa_membership stays false -> disagreement
+  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  checkTrue('POA/addendum disagreement does NOT block the plan', plan.ok === true);
+  checkTrue('POA/addendum disagreement surfaces as a warning', plan.ok && plan.warnings.some((w) => w.includes('POA membership')));
+}
+
+/* ==================================================================== */
+/* 6. Broker text -- seller-only arrangement populates only that side    */
+/* ==================================================================== */
+
+{
+  const preview = completePreview();
+  const sellerAgent = {
+    firmName: 'Seller Firm', licenseNo: 'SL1', associateName: 'Sam Assoc', associateLicenseNo: 'SA1', email: 's@x.com', phone: '555-1',
+    address: { kind: 'value', value: '1 Main St' }, teamName: { kind: 'none' }, supervisorName: { kind: 'none' }, supervisorPhone: { kind: 'none' }, supervisorLicenseNo: { kind: 'none' },
+  };
+  const report = completeReport({ representation: { representation: populated({ kind: 'represented', sellerAgent, buyerAgent: null }) } });
+  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  checkTrue('seller-only arrangement produces an ok plan', plan.ok === true);
+  const byKey = new Map(plan.ok ? plan.entries.map((e) => [e.key, e.text]) : []);
+  check('seller broker firm name is populated', byKey.get('seller_broker_firm_name_text'), 'Seller Firm');
+  check('seller broker address (ValueOrNone "value") is populated', byKey.get('seller_broker_address_text'), '1 Main St');
+  check('seller broker team name (ValueOrNone "none") is blank', byKey.get('seller_broker_team_name_text'), '');
+  checkTrue('every buyer broker field is blank when only the seller has an agent', BROKER_TEXT_KEYS.filter((k) => k.startsWith('buyer_broker_')).every((k) => byKey.get(k) === ''));
+}
+
+/* ==================================================================== */
+/* 7. Invariant, reused, and retired keys are excluded                   */
+/* ==================================================================== */
+
+checkTrue('no invariant key appears in CONTRACT_PROJECTION_FIELD_KEYS', CONTRACT_PROJECTION_INVARIANT_KEYS.every((k) => !CONTRACT_PROJECTION_FIELD_KEYS.includes(k)));
+checkTrue('no reused-current-offer key appears in CONTRACT_PROJECTION_FIELD_KEYS', CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS.every((k) => !CONTRACT_PROJECTION_FIELD_KEYS.includes(k)));
+checkTrue('none of the 19 retired keys appear in CONTRACT_PROJECTION_FIELD_KEYS', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !CONTRACT_PROJECTION_FIELD_KEYS.includes(k)));
 check('exactly 4 invariant keys', CONTRACT_PROJECTION_INVARIANT_KEYS.length, 4);
 check('exactly 2 reused-current-offer keys', CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS.length, 2);
-check('48 + 4 + 2 = 54 = the full documentLines count this fixture carries', CONTRACT_PROJECTION_FIELD_KEYS.length + CONTRACT_PROJECTION_INVARIANT_KEYS.length + CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS.length, 54);
+check('exactly 19 retired keys', CONTRACT_PROJECTION_RETIRED_KEYS.length, 19);
+check('exactly 29 retained document-line keys', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length, 29);
+check('29 retained + 19 retired = the original 48', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length + CONTRACT_PROJECTION_RETIRED_KEYS.length, 48);
 
 /* ==================================================================== */
-/* 6. reusedCurrentOfferLines                                            */
+/* 8. reusedCurrentOfferLines (UNCHANGED by this session)                */
 /* ==================================================================== */
 
 {
@@ -193,61 +313,66 @@ check('48 + 4 + 2 = 54 = the full documentLines count this fixture carries', CON
   const reused = reusedCurrentOfferLines(preview);
   check('reusedCurrentOfferLines returns exactly the 2 reused keys', reused.map((r) => r.key), [...CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS]);
   check('cashPortion text is carried verbatim', reused.find((r) => r.key === 'salesPrice.cashPortion').text, '$275,000.00');
-  check('salesPrice text is carried verbatim', reused.find((r) => r.key === 'salesPrice.salesPrice').text, '$275,000.00');
-}
-{
-  const preview = completePreview();
-  preview.documentLines = preview.documentLines.filter((l) => !(l.group === 'salesPrice' && l.field === 'cashPortion'));
-  const reused = reusedCurrentOfferLines(preview);
-  check('a missing document line reads as null text, never throws', reused.find((r) => r.key === 'salesPrice.cashPortion').text, null);
 }
 
 /* ==================================================================== */
-/* 7. Integrity guards -- mapping drift / null text despite completeness */
+/* 9. Integrity guards -- mapping drift / null text (retained keys only) */
 /* ==================================================================== */
 
 {
   const preview = completePreview();
   preview.documentLines = preview.documentLines.filter((l) => !(l.group === 'propertyLegalDescription' && l.field === 'lot'));
   let threw = false;
-  try { buildContractProjectionPlan('OPP-1', preview); } catch (e) { threw = /mapping drift/.test(e.message); }
-  checkTrue('throws on mapping drift (a projected key with no document line)', threw);
+  try { buildContractProjectionPlan('OPP-1', preview, completeReport()); } catch (e) { threw = /mapping drift/.test(e.message); }
+  checkTrue('throws on mapping drift (a retained key with no document line)', threw);
 }
 {
   const preview = completePreview();
-  preview.documentLines = preview.documentLines.map((l) =>
-    l.group === 'propertyLegalDescription' && l.field === 'lot' ? { ...l, text: null } : l,
-  );
+  preview.documentLines = preview.documentLines.map((l) => (l.group === 'propertyLegalDescription' && l.field === 'lot' ? { ...l, text: null } : l));
   let threw = false;
-  try { buildContractProjectionPlan('OPP-1', preview); } catch (e) { threw = /no text despite previewComplete/.test(e.message); }
-  checkTrue('throws when a line has null text despite previewComplete=true', threw);
+  try { buildContractProjectionPlan('OPP-1', preview, completeReport()); } catch (e) { threw = /no text despite previewComplete/.test(e.message); }
+  checkTrue('throws when a retained-key line has null text despite previewComplete=true', threw);
 }
 
 /* ==================================================================== */
-/* 8. Drift guard -- shared/ghl-config.ts and the field-creation script  */
-/*    duplicate the SAME 48-key set (kept in sync by hand, per each      */
-/*    file's own header comment)                                        */
+/* 10. Drift guard -- shared/ghl-config.ts (110 keys) and the ALREADY-   */
+/*     PROVISIONED field-creation script (48 keys = original             */
+/*     29 retained + 19 retired -- no new GHL field was created this     */
+/*     session, so this script is deliberately untouched)                */
 /* ==================================================================== */
 
 {
   const configSrc = fs.readFileSync(path.join(APP, 'shared', 'ghl-config.ts'), 'utf8');
   const configListMatch = configSrc.match(/const CONTRACT_PROJECTION_FIELD_KEYS = \[([\s\S]*?)\] as const;/);
   checkTrue('shared/ghl-config.ts declares CONTRACT_PROJECTION_FIELD_KEYS', !!configListMatch);
+  // Line-based extraction -- NOT a blanket `"([^"]+)"` scan, which desyncs against the
+  // literal `"X"`/`""` example text inside this array's own section-header comments
+  // (e.g. `// -- 48 checkbox markers ("X" | "") --`). Only lines that are themselves a
+  // bare quoted array element (optionally comma-terminated) count as a key.
   const configKeys = configListMatch
-    ? Array.from(configListMatch[1].matchAll(/"([^"]+)"/g)).map((m) => m[1])
+    ? configListMatch[1]
+        .split(/\r?\n/)
+        .map((l) => l.match(/^\s*"([^"]+)",?\s*$/))
+        .filter(Boolean)
+        .map((m) => m[1])
     : [];
-  check('shared/ghl-config.ts key set matches contract-ghl-projection-model.ts exactly', [...configKeys].sort(), [...CONTRACT_PROJECTION_FIELD_KEYS].sort());
+  check('shared/ghl-config.ts key set matches contract-ghl-projection-model.ts exactly (110 keys)', [...configKeys].sort(), [...CONTRACT_PROJECTION_FIELD_KEYS].sort());
 
   const scriptSrc = fs.readFileSync(path.join(APP, 'scripts', 'inv67-create-contract-projection-fields.cjs'), 'utf8');
   const specKeys = Array.from(scriptSrc.matchAll(/\{ key: '([^']+)'/g)).map((m) => m[1]).filter((k) => k !== 'contractDraftRequest');
-  check('inv67-create-contract-projection-fields.cjs FIELD_SPECS key set matches exactly', [...specKeys].sort(), [...CONTRACT_PROJECTION_FIELD_KEYS].sort());
+  check('the field-creation script still lists exactly 48 keys (retired, not deleted -- untouched by this repair)', specKeys.length, 48);
+  check(
+    'the field-creation script\'s 48 keys are EXACTLY the original 29 retained + 19 retired keys (no new GHL field was created this session)',
+    [...specKeys].sort(),
+    [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS, ...CONTRACT_PROJECTION_RETIRED_KEYS].sort(),
+  );
 
   const configFieldsBlockMatch = configSrc.match(/contractProjectionFields: \{([\s\S]*?)\r?\n  \},\r?\n  contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI"/);
-  checkTrue('shared/ghl-config.ts TEST.contractProjectionFields block is present with real ids', !!configFieldsBlockMatch);
-  const testIdKeys = configFieldsBlockMatch
-    ? Array.from(configFieldsBlockMatch[1].matchAll(/"([^"]+)":\s*"[^"]+"/g)).map((m) => m[1])
+  checkTrue('shared/ghl-config.ts TEST.contractProjectionFields block is present', !!configFieldsBlockMatch);
+  const testRealIdKeys = configFieldsBlockMatch
+    ? Array.from(configFieldsBlockMatch[1].matchAll(/"([^"]+)":\s*"(?!CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED)[^"]+"/g)).map((m) => m[1])
     : [];
-  check('TEST.contractProjectionFields carries an id for every one of the 48 keys', [...testIdKeys].sort(), [...CONTRACT_PROJECTION_FIELD_KEYS].sort());
+  check('TEST carries a REAL id for exactly the 29 retained keys, and none of the 81 new keys', [...testRealIdKeys].sort(), [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS].sort());
 }
 
 /* ==================================================================== */

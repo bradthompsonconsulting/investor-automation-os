@@ -355,6 +355,14 @@ function renderFieldValue(group: string, field: string, d: FieldDisposition<unkn
     case "representation.representation": {
       const r = v as RepresentationFact;
       if (r.kind === "none") return { text: "No representation", color: "#22C55E" };
+      // INV-67 checkbox-marker / broker-model repair -- narrowly justified
+      // adjustment required by compilation: RepresentationFact gained a
+      // third kind. Intermediary status is surfaced distinctly (never
+      // rendered as if it were the separate-side "represented" shape) so
+      // an operator sees the fail-closed state this codebase's own
+      // classifier (`contract-broker-arrangement-model.ts`) already refuses
+      // to sync.
+      if (r.kind === "intermediary") return { text: `Intermediary — ${r.brokerFirm.firmName}`, color: "#F59E0B" };
       const sellerText = r.sellerAgent ? `seller's agent: ${r.sellerAgent.firmName}` : "no seller's agent on file";
       const buyerText = r.buyerAgent ? `buyer's agent: ${r.buyerAgent.firmName}` : "no buyer's agent on file";
       return { text: `Represented — ${sellerText}; ${buyerText}`, color: "#22C55E" };
@@ -465,12 +473,36 @@ const CONTRACT_CHECKLIST_ITEMS: { key: ContractReadyItemKey; label: string }[] =
 /* Draft shapes for every group's entry form                             */
 /* ==================================================================== */
 
-type BrokerDraft = { firmName: string; licenseNo: string; associateName: string; associateLicenseNo: string; email: string; phone: string };
-const BROKER_DRAFT_EMPTY: BrokerDraft = { firmName: "", licenseNo: "", associateName: "", associateLicenseNo: "", email: "", phone: "" };
-const BROKER_FIELDS: { key: keyof BrokerDraft; label: string }[] = [
+/**
+ * INV-67 checkbox-marker / broker-model repair -- the five page-11 fields
+ * beyond the originally-shipped six (`BROKER_FIELDS` below, UNCHANGED).
+ * Each is a `VNDraft` ("has a value" vs. explicit "None"), matching
+ * `BrokerInfo`'s own `ValueOrNone` shape for these five -- many real
+ * brokers genuinely have no team name or no distinct licensed supervisor,
+ * and a plain empty string cannot distinguish "not yet captured" from
+ * "confirmed absent." There is no separate address/city/state/zip -- TREC
+ * page 11 has ONE Address blank per side.
+ */
+type BrokerDraft = {
+  firmName: string; licenseNo: string; associateName: string; associateLicenseNo: string; email: string; phone: string;
+  address: VNDraft; teamName: VNDraft; supervisorName: VNDraft; supervisorPhone: VNDraft; supervisorLicenseNo: VNDraft;
+};
+const BROKER_DRAFT_EMPTY: BrokerDraft = {
+  firmName: "", licenseNo: "", associateName: "", associateLicenseNo: "", email: "", phone: "",
+  address: VN_UNSET, teamName: VN_UNSET, supervisorName: VN_UNSET, supervisorPhone: VN_UNSET, supervisorLicenseNo: VN_UNSET,
+};
+const BROKER_FIELDS: { key: "firmName" | "licenseNo" | "associateName" | "associateLicenseNo" | "email" | "phone"; label: string }[] = [
   { key: "firmName", label: "Firm name" }, { key: "licenseNo", label: "License #" },
   { key: "associateName", label: "Associate name" }, { key: "associateLicenseNo", label: "Associate license #" },
   { key: "email", label: "Email" }, { key: "phone", label: "Phone" },
+];
+/** INV-67 checkbox-marker / broker-model repair -- the five new ValueOrNone page-11 fields. */
+const BROKER_VALUE_OR_NONE_FIELDS: { key: "address" | "teamName" | "supervisorName" | "supervisorPhone" | "supervisorLicenseNo"; label: string }[] = [
+  { key: "address", label: "Address" },
+  { key: "teamName", label: "Team name" },
+  { key: "supervisorName", label: "Licensed supervisor name" },
+  { key: "supervisorPhone", label: "Licensed supervisor phone" },
+  { key: "supervisorLicenseNo", label: "Licensed supervisor license #" },
 ];
 
 type Drafts = {
@@ -701,6 +733,8 @@ export default function ContractWorkspace() {
         entries: { key: ContractProjectionFieldKey; landed: boolean }[];
         currentOfferCrossCheckOk: boolean;
         draftRequest: DraftRequestOutcome;
+        /** INV-67 checkbox-marker / broker-model repair -- non-blocking issues (e.g. POA membership/addendum disagreement). Never causes `ok:false`. */
+        warnings: string[];
       }
     | { kind: "error"; message: string }
   >(null);
@@ -711,12 +745,15 @@ export default function ContractWorkspace() {
   }, [screen, notes]);
 
   async function handleSyncContractProjectionFields() {
-    if (screen.state !== "ready" || !contractDocumentPreview) return;
+    // INV-67 checkbox-marker / broker-model repair -- buildContractProjectionPlan
+    // now also derives markers/broker text from the raw report, not just the
+    // rendered preview, so both must be available before attempting a sync.
+    if (screen.state !== "ready" || !contractDocumentPreview || !sellerContractFactsReport) return;
     setSyncResult(null);
     setSyncBusy(true);
     try {
       const opportunityId = screen.opportunity.id;
-      const plan = buildContractProjectionPlan(opportunityId, contractDocumentPreview);
+      const plan = buildContractProjectionPlan(opportunityId, contractDocumentPreview, sellerContractFactsReport);
       if (!plan.ok) {
         setSyncResult({ kind: "blocked", blockingReasons: plan.blockingReasons });
         return;
@@ -848,6 +885,7 @@ export default function ContractWorkspace() {
         entries: writeResult.entries.map((e) => ({ key: e.key, landed: e.landed })),
         currentOfferCrossCheckOk,
         draftRequest,
+        warnings: plan.warnings,
       });
     } catch (e: any) {
       setSyncResult({ kind: "error", message: e?.message ?? "Couldn't synchronize the contract projection fields. Try again." });
@@ -2024,7 +2062,21 @@ export default function ContractWorkspace() {
       function toBrokerInfo(present: boolean, d: BrokerDraft): BrokerInfo | null | "invalid" {
         if (!present) return null;
         for (const f of BROKER_FIELDS) if (d[f.key].trim() === "") return "invalid";
-        return { ...d };
+        // INV-67 checkbox-marker / broker-model repair -- the five new
+        // ValueOrNone fields each resolve independently to a real value or
+        // an explicit "none"; `valueOrNoneToFact` returns null only when
+        // "Has a value" is selected but left blank, which is the same
+        // "invalid" case the six required strings above already guard.
+        const address = valueOrNoneToFact(d.address);
+        const teamName = valueOrNoneToFact(d.teamName);
+        const supervisorName = valueOrNoneToFact(d.supervisorName);
+        const supervisorPhone = valueOrNoneToFact(d.supervisorPhone);
+        const supervisorLicenseNo = valueOrNoneToFact(d.supervisorLicenseNo);
+        if (!address || !teamName || !supervisorName || !supervisorPhone || !supervisorLicenseNo) return "invalid";
+        return {
+          firmName: d.firmName, licenseNo: d.licenseNo, associateName: d.associateName, associateLicenseNo: d.associateLicenseNo,
+          email: d.email, phone: d.phone, address, teamName, supervisorName, supervisorPhone, supervisorLicenseNo,
+        };
       }
       const sellerAgent = toBrokerInfo(drafts.representation.sellerAgentPresent, drafts.representation.sellerAgent);
       if (sellerAgent === "invalid") { setGroupError("representation", "Seller's agent needs every field filled in, or uncheck \"agent present.\""); return; }
@@ -2569,11 +2621,18 @@ export default function ContractWorkspace() {
                                 </label>
                               </div>
                               {drafts.representation.sellerAgentPresent ? (
-                                <div style={rowStyle}>
-                                  {BROKER_FIELDS.map((f) => (
-                                    <TextField key={f.key} testId={`contract-fact-input-seller-agent-${f.key}`} value={drafts.representation.sellerAgent[f.key]} onChange={(v) => updateDraft("representation", { sellerAgent: { ...drafts.representation.sellerAgent, [f.key]: v } })} placeholder={f.label} />
-                                  ))}
-                                </div>
+                                <>
+                                  <div style={rowStyle}>
+                                    {BROKER_FIELDS.map((f) => (
+                                      <TextField key={f.key} testId={`contract-fact-input-seller-agent-${f.key}`} value={drafts.representation.sellerAgent[f.key]} onChange={(v) => updateDraft("representation", { sellerAgent: { ...drafts.representation.sellerAgent, [f.key]: v } })} placeholder={f.label} />
+                                    ))}
+                                  </div>
+                                  <div style={rowStyle}>
+                                    {BROKER_VALUE_OR_NONE_FIELDS.map((f) => (
+                                      <Field key={f.key} label={f.label}><ValueOrNoneField testId={`contract-fact-input-seller-agent-${f.key}`} value={drafts.representation.sellerAgent[f.key]} onChange={(v) => updateDraft("representation", { sellerAgent: { ...drafts.representation.sellerAgent, [f.key]: v } })} /></Field>
+                                    ))}
+                                  </div>
+                                </>
                               ) : null}
                               <div style={rowStyle}>
                                 <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#94A3B8" }}>
@@ -2582,11 +2641,18 @@ export default function ContractWorkspace() {
                                 </label>
                               </div>
                               {drafts.representation.buyerAgentPresent ? (
-                                <div style={rowStyle}>
-                                  {BROKER_FIELDS.map((f) => (
-                                    <TextField key={f.key} testId={`contract-fact-input-buyer-agent-${f.key}`} value={drafts.representation.buyerAgent[f.key]} onChange={(v) => updateDraft("representation", { buyerAgent: { ...drafts.representation.buyerAgent, [f.key]: v } })} placeholder={f.label} />
-                                  ))}
-                                </div>
+                                <>
+                                  <div style={rowStyle}>
+                                    {BROKER_FIELDS.map((f) => (
+                                      <TextField key={f.key} testId={`contract-fact-input-buyer-agent-${f.key}`} value={drafts.representation.buyerAgent[f.key]} onChange={(v) => updateDraft("representation", { buyerAgent: { ...drafts.representation.buyerAgent, [f.key]: v } })} placeholder={f.label} />
+                                    ))}
+                                  </div>
+                                  <div style={rowStyle}>
+                                    {BROKER_VALUE_OR_NONE_FIELDS.map((f) => (
+                                      <Field key={f.key} label={f.label}><ValueOrNoneField testId={`contract-fact-input-buyer-agent-${f.key}`} value={drafts.representation.buyerAgent[f.key]} onChange={(v) => updateDraft("representation", { buyerAgent: { ...drafts.representation.buyerAgent, [f.key]: v } })} /></Field>
+                                    ))}
+                                  </div>
+                                </>
                               ) : null}
                             </>
                           ) : null}
@@ -2891,6 +2957,11 @@ export default function ContractWorkspace() {
                       <div data-testid="contract-projection-sync-resolution-note-failed" style={{ color: "#EF4444", marginTop: "4px" }}>
                         The resolution evidence note itself failed to record -- the outcome above is reported from this session's own observation only.
                       </div>
+                    ) : null}
+                    {syncResult.warnings.length > 0 ? (
+                      <ul data-testid="contract-projection-sync-warnings" style={{ margin: "8px 0 0", padding: "0 0 0 18px", color: "#F59E0B" }}>
+                        {syncResult.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
                     ) : null}
                   </div>
                 ) : null}
