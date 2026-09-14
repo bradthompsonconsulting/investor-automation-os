@@ -92,6 +92,23 @@ export interface GhlConfig {
     askingPrice: string;
     currentOffer: string;
   };
+  /**
+   * INV-67 / B9-12 contract-population repair. One narrowly-scoped
+   * Opportunity custom field per remaining TREC 20-19 body-merge fact --
+   * the exact key set `app/src/lib/contract-ghl-projection-model.ts`'s
+   * `CONTRACT_PROJECTION_FIELD_KEYS` declares (48 keys; kept in sync with
+   * that module by hand, guarded by `scripts/test-contract-ghl-projection.cjs`'s
+   * drift check). Deliberately EXCLUDES: the four proven-invariant facts
+   * (buyer capacity, Texas-license status, the fixed $0 financing sum, the
+   * fixed not-applicable financing addenda -- no field, no GHL mutation),
+   * and the two facts that reuse the existing `opportunityFacts.currentOffer`
+   * carrier instead of a new field (sales-price cash portion / total --
+   * never duplicated). `contractDraftRequest` is the separate one-shot
+   * dropdown control (`Idle` / `Requested`) -- see
+   * `app/src/lib/contract-draft-request-model.ts`.
+   */
+  contractProjectionFields: Record<string, string>;
+  contractDraftRequest: string;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -206,6 +223,84 @@ export const POPULATION_NOT_VERIFIED = "POPULATION_NOT_VERIFIED" as const;
  */
 export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVISIONED" as const;
 
+/**
+ * INV-67 / B9-12 -- the literal placeholder value for a not-yet-provisioned
+ * contract-projection field or the Contract Draft Request control. Carried
+ * by `PRODUCTION` for every key in `contractProjectionFields` plus
+ * `contractDraftRequest`: this repair is Test-only GHL mutation, exactly
+ * like `CURRENT_OFFER_NOT_PROVISIONED` before it. `ghl.ts`'s writers refuse
+ * immediately, before any network call, whenever a configured id equals
+ * this sentinel -- the same fail-closed pattern already established.
+ */
+export const CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED = "CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED" as const;
+
+/**
+ * INV-67 / B9-12 -- the exact 48 keys, duplicated by hand from
+ * `app/src/lib/contract-ghl-projection-model.ts`'s
+ * `CONTRACT_PROJECTION_FIELD_KEYS` (that module cannot be imported here --
+ * `shared/` stays free of an `src/lib` dependency, the same layering every
+ * other key in this file already respects). Kept in sync by
+ * `scripts/test-contract-ghl-projection.cjs`'s drift check, which fails loud
+ * if the two lists ever diverge.
+ */
+const CONTRACT_PROJECTION_FIELD_KEYS = [
+  "identity.propertyStreetAddress",
+  "parties.buyerEntityName",
+  "parties.sellerSigners",
+  "propertyLegalDescription.lot",
+  "propertyLegalDescription.block",
+  "propertyLegalDescription.addition",
+  "propertyLegalDescription.county",
+  "propertyLegalDescription.exclusions",
+  "propertyLegalDescription.reservations",
+  "leaseDisclosure.residentialLeases",
+  "leaseDisclosure.fixtureLeases",
+  "leaseDisclosure.naturalResourceLeases",
+  "earnestMoneyOption.escrowAgentName",
+  "earnestMoneyOption.escrowAgentAddress",
+  "earnestMoneyOption.earnestMoney",
+  "earnestMoneyOption.optionFee",
+  "earnestMoneyOption.optionPeriodDays",
+  "earnestMoneyOption.additionalEarnestMoney",
+  "titleSurvey.titlePolicyExpenseParty",
+  "titleSurvey.titleCompanyName",
+  "titleSurvey.shortageAmendmentElection",
+  "titleSurvey.surveyElection",
+  "titleSurvey.objectionsText",
+  "titleSurvey.objectionsDays",
+  "titleSurvey.poaMembership",
+  "propertyCondition.sellerDisclosureNotice",
+  "propertyCondition.asIsElection",
+  "propertyCondition.serviceContractCap",
+  "propertyCondition.waterDisclosure",
+  "closingPossession.closingDate",
+  "closingPossession.possessionElection",
+  "closingPossession.possessionDetails",
+  "settlementExpense.sellerCreditCap",
+  "settlementExpense.sellerPaysBuyerBroker",
+  "settlementExpense.buyerPaysSellerBroker",
+  "representation.representation",
+  "addendaApplicability.items",
+  "addendaApplicability.districtNotices",
+  "noticeContact.buyerNoticeAddress",
+  "noticeContact.buyerNoticePhone",
+  "noticeContact.buyerNoticeEmail",
+  "noticeContact.buyerSignerName",
+  "noticeContact.buyerSignerRole",
+  "noticeContact.sellerNoticeAddress",
+  "noticeContact.sellerNoticePhone",
+  "noticeContact.sellerNoticeEmail",
+  "attorneyManualFields.specialProvisions",
+  "attorneyManualFields.otherAddendaText",
+] as const;
+
+/** Builds a sentinel-filled `contractProjectionFields` map -- one call site, never 48 hand-typed literals. */
+function sentinelContractProjectionFields(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of CONTRACT_PROJECTION_FIELD_KEYS) out[key] = CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED;
+  return out;
+}
+
 const PRODUCTION: GhlConfig = {
   locationId: "jmHG4B8RdzwpfqruNf68",
   fields: {
@@ -282,6 +377,14 @@ const PRODUCTION: GhlConfig = {
     // docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md.
     currentOffer:       "yZgEdTOvppmmCvv8kx9n",
   },
+  // INV-67 / B9-12 -- Production provisioning is out of this repair's
+  // authorized scope (Test-only GHL mutation, per Brad's explicit
+  // authorization for this issue). Every key fails closed via
+  // CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED until a separate, later
+  // decision provisions Production -- the same deferral
+  // opportunityFacts.currentOffer used above.
+  contractProjectionFields: sentinelContractProjectionFields(),
+  contractDraftRequest: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -378,6 +481,63 @@ const TEST: GhlConfig = {
     // session -- see docs/BOARD9_GHL_IAOS_FIELD_CANONICALIZATION_V1.md.
     currentOffer:       "7pmvwi6vlu74f5rLOp9M",
   },
+  // INV-67 / B9-12 -- created live in Test via
+  // `scripts/inv67-create-contract-projection-fields.cjs --apply`, this
+  // session. All 49 fields (48 TEXT + the one SINGLE_OPTIONS dropdown),
+  // Opportunity Details folder (sGP3pbDQFN7fXS62MAgA, same folder as
+  // `opportunityFacts.currentOffer`). No clash on any name/fieldKey; no
+  // Test data was populated, no other field was touched.
+  contractProjectionFields: {
+    "identity.propertyStreetAddress": "UjJRDmdeuEpQKA9I2yFr",
+    "parties.buyerEntityName": "roFgPXN9bPMeLBxLPhpw",
+    "parties.sellerSigners": "ELLuYUYyPqhVMIKMjSAh",
+    "propertyLegalDescription.lot": "0N1jKEJBP1LOsBO9WAfE",
+    "propertyLegalDescription.block": "v3PvqyE7KqNo9wHuF77k",
+    "propertyLegalDescription.addition": "8P8xlcoQvJPiTCtEYmze",
+    "propertyLegalDescription.county": "VQdEFCszBn2I1R29v9Ku",
+    "propertyLegalDescription.exclusions": "8BkJWlSfgp8WfqcdTE60",
+    "propertyLegalDescription.reservations": "eGTOybaRpn6DyF5UfA3p",
+    "leaseDisclosure.residentialLeases": "jXwpoDi1FM0Vd6c9W28y",
+    "leaseDisclosure.fixtureLeases": "2Cyh5dkYCwMgcE7JZ8le",
+    "leaseDisclosure.naturalResourceLeases": "QmsM0JkO46qCdWwkWx9u",
+    "earnestMoneyOption.escrowAgentName": "bhxE1ZSOmyYWrOHqm6jf",
+    "earnestMoneyOption.escrowAgentAddress": "EvuENItvKDCw8WaCHMd3",
+    "earnestMoneyOption.earnestMoney": "HJpetNeLUCy6mIv4hOKO",
+    "earnestMoneyOption.optionFee": "Gygwe13y13CZJJvJFk3y",
+    "earnestMoneyOption.optionPeriodDays": "02LqDO3fMiKBLBFzheJX",
+    "earnestMoneyOption.additionalEarnestMoney": "lx0NWWA8tgilbEY71n3b",
+    "titleSurvey.titlePolicyExpenseParty": "JrRuKPeb7C9aOsDiqEDE",
+    "titleSurvey.titleCompanyName": "hqovBqMSkSzi7hgyyonq",
+    "titleSurvey.shortageAmendmentElection": "XH6f9I55mCtqrfx98NKX",
+    "titleSurvey.surveyElection": "XJxwxUr8Umm7FJDJJfWV",
+    "titleSurvey.objectionsText": "cqOCAubHmuLFbCl9TczS",
+    "titleSurvey.objectionsDays": "vAInvdtJ0nYHINzAwGy3",
+    "titleSurvey.poaMembership": "kOy9jBk0GHd1637TswTS",
+    "propertyCondition.sellerDisclosureNotice": "BWsrQogptLCLGEISjgry",
+    "propertyCondition.asIsElection": "d5186HsrHsRNhF7urBcP",
+    "propertyCondition.serviceContractCap": "UiWOxyGDrbWO9cTkJSx9",
+    "propertyCondition.waterDisclosure": "ZvSz3nIagb95FOjC03WF",
+    "closingPossession.closingDate": "s7jauYhoSPQd09GjoGOr",
+    "closingPossession.possessionElection": "JzN3BienkRkhirmdA3uJ",
+    "closingPossession.possessionDetails": "J4Nf801Wq6b2sPKTU8wJ",
+    "settlementExpense.sellerCreditCap": "fUWZ54vsfUyGBlxszHB0",
+    "settlementExpense.sellerPaysBuyerBroker": "RXBq4IezbpavkiwQuLlQ",
+    "settlementExpense.buyerPaysSellerBroker": "mIbMRrNLqsxi3tnBUz1F",
+    "representation.representation": "aIBHje2RJe9erA2A9Y3s",
+    "addendaApplicability.items": "X8EbiJpo7UGW4QHG84wI",
+    "addendaApplicability.districtNotices": "SpRUfNbdSL94QZz7vfrs",
+    "noticeContact.buyerNoticeAddress": "OWVLUUS4pyD0JA2bRqBy",
+    "noticeContact.buyerNoticePhone": "4ehkRvZbgm4xTFqjugib",
+    "noticeContact.buyerNoticeEmail": "glYaD6otYjvlw5avJ5I0",
+    "noticeContact.buyerSignerName": "kWPcFkBaljLj64JX67ZU",
+    "noticeContact.buyerSignerRole": "kmSqLfWgxCogH3SnsXqS",
+    "noticeContact.sellerNoticeAddress": "4ZSZTquyk1MTN7wBLqlO",
+    "noticeContact.sellerNoticePhone": "G7ovatOKYrMECUchooxr",
+    "noticeContact.sellerNoticeEmail": "T9TlfDicQnhiHInISE2N",
+    "attorneyManualFields.specialProvisions": "eZImM9FtKYff6CJzAafO",
+    "attorneyManualFields.otherAddendaText": "xQ1mLI1l8aHnhOLe07fy",
+  },
+  contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },
@@ -450,6 +610,10 @@ export function getConfig(selector: string | undefined): GhlConfig {
     ...Object.entries(config.opportunityFacts).map(
       ([k, v]): [string, string] => [`opportunityFacts.${k}`, v],
     ),
+    ...Object.entries(config.contractProjectionFields).map(
+      ([k, v]): [string, string] => [`contractProjectionFields.${k}`, v],
+    ),
+    ["contractDraftRequest", config.contractDraftRequest],
     ...Object.entries(config.pipelines).map(
       ([k, v]): [string, string] => [`pipelines.${k}`, v],
     ),
@@ -563,6 +727,14 @@ const RUNTIME_GROUPS = {
   ],
   opportunityFields: ["endBuyerMaxPrice", "assignmentMode", "sellerMAO"],
   opportunityFacts: ["arv", "repairs", "askingPrice", "currentOffer"],
+  /**
+   * INV-67 / B9-12 -- browser-WRITTEN by the Contract Workspace sync
+   * control, so every id must reach the client, exactly like
+   * `opportunityFacts` above. None of these is a secret: they are GHL
+   * Opportunity custom-field identifiers, the same risk class as every
+   * other id this object already exposes.
+   */
+  contractProjectionFields: CONTRACT_PROJECTION_FIELD_KEYS,
   stages: ["sellerClosedWon", "lostNotInterested", "sellerFollowUp"],
   documentsContracts: ["populationVerification", "templateId", "expectedTemplateName"],
 } as const;
@@ -588,6 +760,9 @@ export interface RuntimeConfig {
   customValues: Omit<GhlConfig["customValues"], "mailerDigestRecipient">;
   opportunityFields: GhlConfig["opportunityFields"];
   opportunityFacts: GhlConfig["opportunityFacts"];
+  contractProjectionFields: GhlConfig["contractProjectionFields"];
+  /** INV-67 / B9-12 -- flat, like `locationId` above: the Contract Draft Request field is a single id, not a nested group. */
+  contractDraftRequest: string;
   stages: Pick<
     GhlConfig["stages"],
     "sellerClosedWon" | "lostNotInterested" | "sellerFollowUp"
@@ -597,7 +772,7 @@ export interface RuntimeConfig {
 
 /** Server side: project a full config down to what the browser consumes. */
 export function projectRuntimeConfig(config: GhlConfig): RuntimeConfig {
-  const out: Record<string, unknown> = { locationId: config.locationId };
+  const out: Record<string, unknown> = { locationId: config.locationId, contractDraftRequest: config.contractDraftRequest };
   for (const [group, keys] of Object.entries(RUNTIME_GROUPS)) {
     const source = config[group as keyof GhlConfig] as Record<string, string>;
     const picked: Record<string, string> = {};
@@ -612,6 +787,7 @@ function runtimeEntries(payload: unknown): Array<[string, string]> {
   const p = (payload ?? {}) as Record<string, Record<string, string> | string>;
   const entries: Array<[string, string]> = [
     ["locationId", p.locationId as string],
+    ["contractDraftRequest", p.contractDraftRequest as string],
   ];
   for (const [group, keys] of Object.entries(RUNTIME_GROUPS)) {
     const g = p[group] as Record<string, string> | undefined;

@@ -18,6 +18,15 @@ import {
   CONTRACT_DOCUMENT_GROUP_LABEL,
 } from "../lib/contract-document-model";
 import {
+  buildContractProjectionPlan, reusedCurrentOfferLines, type ContractProjectionFieldKey,
+} from "../lib/contract-ghl-projection-model";
+import {
+  evaluateContractDraftRequestTransition, normalizeContractDraftRequestState,
+  buildContractDraftRequestAttemptRecord, buildContractDraftRequestResolutionRecord,
+  classifyContractDraftRequestOutcome,
+} from "../lib/contract-draft-request-model";
+import { formatContractProjectionSyncNote, latestContractProjectionSyncForOpportunity } from "../lib/contract-projection-sync-carriers";
+import {
   evaluateBradAuthorizationCurrency, evaluateAuthorizationEligibility,
   buildAuthorizationRecordArgs, computeDifferencesFromLastAuthorized,
 } from "../lib/contract-authorization-model";
@@ -635,6 +644,217 @@ export default function ContractWorkspace() {
       propertyStreetAddress: propertyStreetAddressDisposition,
     });
   }, [sellerContractFactsReport, documentVersion, screen, propertyStreetAddressDisposition]);
+
+  /**
+   * INV-67 / B9-12 contract-population repair -- Contract Workspace
+   * synchronization control. Projects `contractDocumentPreview`'s
+   * already-resolved facts into the 48 narrowly-scoped GHL Opportunity
+   * fields, then -- ONLY once every write/readback lands and the accepted
+   * price cross-checks -- sets the one-shot `Contract Draft Request`
+   * dropdown to "Requested". This control NEVER creates or sends a
+   * document itself: it writes Opportunity custom fields and audit Notes
+   * only, exactly the write classes this repair authorizes. The future GHL
+   * workflow (not built here) is what actually creates the draft and
+   * resets the field back to "Idle".
+   *
+   * JESS GATE CORRECTION (this session) -- AUDIT ORDERING. GHL may create
+   * the draft the instant "Requested" lands, so a durable, DURABLE-BEFORE-
+   * THE-WRITE "in_progress" note is required -- see
+   * `contract-draft-request-model.ts`'s own header for the full ruling.
+   * This handler now performs the SAME two-phase attempt/resolution
+   * sequence `handleSend` above already establishes for Contract Sent:
+   * build the attempt record -> write ITS note -> only on that note's
+   * confirmed success, attempt the actual "Requested" PUT -> build and
+   * write the resolution record for the SAME attemptId. Neither evidence
+   * write is ever swallowed; a resolution-note failure (or a readback
+   * mismatch) after a successful PUT is surfaced as "indeterminate," never
+   * silently treated as success, failure, or safe-to-retry -- the next
+   * invocation's own fresh read is what actually prevents a duplicate
+   * request, not a client-side retry loop (there is none here).
+   */
+  const [syncBusy, setSyncBusy] = useState(false);
+  type DraftRequestOutcome = {
+    attempted: boolean;
+    /** null = never evaluated (the projection write itself did not fully land). */
+    transitionAllowed: boolean | null;
+    refusalReason: string | null;
+    attemptNoteOk: boolean | null;
+    /** The raw PUT+readback outcome. null until the PUT was actually attempted. */
+    rawStatus: "accepted" | "failed" | "indeterminate" | null;
+    resolutionNoteOk: boolean | null;
+    /**
+     * "accepted"/"failed" straight from `rawStatus`, EXCEPT a successful PUT
+     * whose resolution note failed to write is escalated to "indeterminate"
+     * here -- durable evidence of the outcome does not exist, which is
+     * exactly the condition the corrected ruling's item 6 names.
+     */
+    reportedStatus: "accepted" | "failed" | "indeterminate" | null;
+    sentValue: string | null;
+    observedValue: string | null;
+  };
+  const [syncResult, setSyncResult] = useState<
+    | null
+    | { kind: "blocked"; blockingReasons: string[] }
+    | {
+        kind: "done";
+        ok: boolean;
+        entries: { key: ContractProjectionFieldKey; landed: boolean }[];
+        currentOfferCrossCheckOk: boolean;
+        draftRequest: DraftRequestOutcome;
+      }
+    | { kind: "error"; message: string }
+  >(null);
+
+  const latestProjectionSync = useMemo(() => {
+    if (screen.state !== "ready" || !notes) return null;
+    return latestContractProjectionSyncForOpportunity(notes, screen.opportunity.id);
+  }, [screen, notes]);
+
+  async function handleSyncContractProjectionFields() {
+    if (screen.state !== "ready" || !contractDocumentPreview) return;
+    setSyncResult(null);
+    setSyncBusy(true);
+    try {
+      const opportunityId = screen.opportunity.id;
+      const plan = buildContractProjectionPlan(opportunityId, contractDocumentPreview);
+      if (!plan.ok) {
+        setSyncResult({ kind: "blocked", blockingReasons: plan.blockingReasons });
+        return;
+      }
+
+      const writeResult = await ghl.opportunities.syncContractProjectionFields(opportunityId, plan.entries);
+
+      const reused = reusedCurrentOfferLines(contractDocumentPreview);
+      const currentOfferCrossCheckOk =
+        reused.every((r) => r.text !== null) && writeResult.currentOfferObserved === screen.agreedPrice;
+
+      let draftRequest: DraftRequestOutcome = {
+        attempted: false, transitionAllowed: null, refusalReason: null, attemptNoteOk: null,
+        rawStatus: null, resolutionNoteOk: null, reportedStatus: null, sentValue: null, observedValue: null,
+      };
+
+      if (writeResult.ok) {
+        // Fresh read, immediately before deciding -- never a cached value (see
+        // contract-draft-request-model.ts's own duplicate/stale-request note).
+        const currentRaw = await ghl.opportunities.readContractDraftRequest(opportunityId);
+        const observedStateBeforeWrite = normalizeContractDraftRequestState(currentRaw);
+        const decision = evaluateContractDraftRequestTransition({
+          currentRaw,
+          projection: { entryCount: writeResult.entries.length, allEntriesLanded: writeResult.ok },
+          currentOfferCrossCheckOk,
+        });
+
+        if (!decision.allowed) {
+          draftRequest = { ...draftRequest, attempted: true, transitionAllowed: false, refusalReason: decision.reason };
+        } else {
+          // Fresh attemptId, generated here, every invocation -- a repeated
+          // UI action can never reuse an earlier attempt's id.
+          const attemptAt = new Date().toISOString();
+          const attemptRecord = buildContractDraftRequestAttemptRecord({
+            opportunityId,
+            operator: "brad",
+            attemptAt,
+            version: documentVersion!,
+            entriesAttempted: writeResult.entries.length,
+            entriesLanded: writeResult.entries.filter((e) => e.landed).length,
+            failedKeys: writeResult.entries.filter((e) => !e.landed).map((e) => e.key),
+            currentOfferCrossCheckOk,
+            observedStateBeforeWrite,
+          });
+          const attemptNote = formatContractProjectionSyncNote(attemptRecord);
+
+          // Stage 1: the "in_progress" note -- MUST land before "Requested" is ever attempted.
+          let attemptNoteOk = false;
+          try {
+            await ghl.notes.create(contactId, attemptNote);
+            setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attemptNote, dateAdded: attemptRecord.at }]);
+            attemptNoteOk = true;
+          } catch (e: any) {
+            draftRequest = {
+              ...draftRequest, attempted: true, transitionAllowed: true, attemptNoteOk: false,
+              refusalReason:
+                `Couldn't durably record the draft-request attempt (${e?.message ?? "unknown error"}) -- ` +
+                'refusing to write "Requested" without evidence of intent. The projection fields above are still confirmed landed; nothing was requested.',
+            };
+          }
+
+          if (attemptNoteOk) {
+            // Stage 2: the actual one-shot write -- redeems the attempt just
+            // durably recorded above. setContractDraftRequest NEVER throws
+            // (Jess Gate transport-outcome correction) -- it always returns
+            // a discriminated ContractDraftRequestWriteOutcome, classified
+            // below by the SAME pure function this module's own tests
+            // exercise against all six variants -- no ad hoc try/catch
+            // classification here that could re-collapse a transport
+            // exception or a readback failure into "failed".
+            const outcome = await ghl.opportunities.setContractDraftRequest(opportunityId, "Requested");
+            const classification = classifyContractDraftRequestOutcome(outcome);
+            const rawStatus = classification.status;
+
+            const resolvedAt = new Date().toISOString();
+            const resolutionRecord = buildContractDraftRequestResolutionRecord({
+              attempt: attemptRecord,
+              resolvedAt,
+              status: rawStatus,
+              sentValue: classification.sentValue,
+              observedValue: classification.observedValue,
+              providerStatus: classification.providerStatus,
+              failureReason: classification.failureReason,
+            });
+            const resolutionNote = formatContractProjectionSyncNote(resolutionRecord);
+
+            // Stage 3: the resolution note -- for the SAME attemptId. Never swallowed.
+            let resolutionNoteOk = false;
+            try {
+              await ghl.notes.create(contactId, resolutionNote);
+              setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: resolutionNote, dateAdded: resolutionRecord.at }]);
+              resolutionNoteOk = true;
+            } catch {
+              resolutionNoteOk = false;
+            }
+
+            // A successful write whose own evidence failed to land is
+            // reported exactly like an unconfirmed readback: indeterminate,
+            // never silently "accepted" -- item 6 of the corrected ruling.
+            const reportedStatus: "accepted" | "failed" | "indeterminate" =
+              rawStatus === "accepted" && !resolutionNoteOk ? "indeterminate" : rawStatus;
+
+            draftRequest = {
+              attempted: true,
+              transitionAllowed: true,
+              // The exact, kind-specific explanation classifyContractDraftRequestOutcome
+              // built -- never a generic fallback. null only for "accepted"
+              // (and downgraded to the resolution-note-missing message below
+              // when reportedStatus escalates a clean "accepted" to "indeterminate").
+              refusalReason:
+                reportedStatus === "accepted"
+                  ? null
+                  : resolutionRecord.failureReason ??
+                    'The write succeeded and read back correctly, but the resolution evidence note itself failed to record -- a draft may have been triggered without confirmed durable evidence.',
+              attemptNoteOk: true,
+              rawStatus,
+              resolutionNoteOk,
+              reportedStatus,
+              sentValue: resolutionRecord.sentValue,
+              observedValue: resolutionRecord.observedValue,
+            };
+          }
+        }
+      }
+
+      setSyncResult({
+        kind: "done",
+        ok: writeResult.ok,
+        entries: writeResult.entries.map((e) => ({ key: e.key, landed: e.landed })),
+        currentOfferCrossCheckOk,
+        draftRequest,
+      });
+    } catch (e: any) {
+      setSyncResult({ kind: "error", message: e?.message ?? "Couldn't synchronize the contract projection fields. Try again." });
+    } finally {
+      setSyncBusy(false);
+    }
+  }
 
   const bradAuthorizationRecord = useMemo(() => {
     if (screen.state !== "ready" || !notes) return null;
@@ -2599,6 +2819,83 @@ export default function ContractWorkspace() {
                     </div>
                   ))}
                 </div>
+              </div>
+
+              {/* INV-67 / B9-12 contract-population repair -- Contract Workspace synchronization control. */}
+              <div data-testid="contract-projection-sync-section" style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>
+                  Sync contract fields to GHL (IAOS Test only)
+                </div>
+                <div style={{ fontSize: "10px", color: "#64748B", marginBottom: "8px" }}>
+                  Writes the populated preview above into the 48 narrowly-scoped GHL Opportunity fields, verifies every write by readback, then -- only if every field lands and the accepted price cross-checks -- sets Contract Draft Request to "Requested" for the future GHL workflow to pick up. Never creates or sends a document itself.
+                </div>
+
+                {latestProjectionSync ? (
+                  <div data-testid="contract-projection-sync-last-evidence" style={{ fontSize: "10px", color: "#64748B", marginBottom: "8px" }}>
+                    Last attempt: {new Date(latestProjectionSync.attemptId).toLocaleString()} ({latestProjectionSync.entriesLanded}/{latestProjectionSync.entriesAttempted} projection fields landed on that attempt) -- draft request {latestProjectionSync.status === "in_progress" ? "still in progress (no terminal resolution recorded)" : latestProjectionSync.status === "accepted" ? "Requested (confirmed)" : latestProjectionSync.status === "indeterminate" ? "INDETERMINATE -- a draft may have been triggered without confirmed evidence; check GHL directly" : `not requested -- ${latestProjectionSync.failureReason ?? "failed"}`}.
+                  </div>
+                ) : (
+                  <div data-testid="contract-projection-sync-no-evidence" style={{ fontSize: "10px", color: "#64748B", marginBottom: "8px" }}>No sync has been recorded for this opportunity yet.</div>
+                )}
+
+                <Btn
+                  testId="contract-projection-sync-button"
+                  onClick={handleSyncContractProjectionFields}
+                  busy={syncBusy}
+                  disabled={!contractDocumentPreview.previewComplete}
+                >
+                  Sync contract fields to GHL
+                </Btn>
+
+                {syncResult?.kind === "blocked" ? (
+                  <ul data-testid="contract-projection-sync-blocked" style={{ margin: "8px 0 0", padding: "0 0 0 18px", fontSize: "11px", color: "#F59E0B", lineHeight: 1.8 }}>
+                    {syncResult.blockingReasons.map((r, i) => <li key={i}>{r}</li>)}
+                  </ul>
+                ) : null}
+
+                {syncResult?.kind === "done" ? (
+                  <div data-testid="contract-projection-sync-result" style={{ marginTop: "8px", fontSize: "11px" }}>
+                    <div style={{ color: syncResult.ok ? "#22C55E" : "#F59E0B", fontWeight: 700 }}>
+                      {syncResult.ok ? "All 48 fields landed." : `${syncResult.entries.filter((e) => e.landed).length}/${syncResult.entries.length} fields landed.`}
+                    </div>
+                    {!syncResult.ok ? (
+                      <ul data-testid="contract-projection-sync-failed-keys" style={{ margin: "4px 0 0", padding: "0 0 0 18px", color: "#F59E0B" }}>
+                        {syncResult.entries.filter((e) => !e.landed).map((e) => <li key={e.key}>{e.key}</li>)}
+                      </ul>
+                    ) : null}
+                    <div style={{ color: "#94A3B8", marginTop: "4px" }}>
+                      Accepted-price cross-check: {syncResult.currentOfferCrossCheckOk ? "matches" : "MISMATCH"}.
+                    </div>
+                    <div
+                      data-testid="contract-projection-sync-draft-request"
+                      style={{
+                        color: syncResult.draftRequest.reportedStatus === "accepted" ? "#22C55E"
+                          : syncResult.draftRequest.reportedStatus === "indeterminate" ? "#EF4444"
+                          : "#94A3B8",
+                        marginTop: "4px",
+                      }}
+                    >
+                      {!syncResult.draftRequest.attempted
+                        ? "Draft request not attempted (field writes did not all land)."
+                        : syncResult.draftRequest.transitionAllowed === false
+                          ? `Draft not requested -- ${syncResult.draftRequest.refusalReason}`
+                          : syncResult.draftRequest.attemptNoteOk === false
+                            ? `Draft not requested -- ${syncResult.draftRequest.refusalReason}`
+                            : syncResult.draftRequest.reportedStatus === "accepted"
+                              ? "Contract Draft Request set to Requested (confirmed on readback, evidence recorded)."
+                              : syncResult.draftRequest.reportedStatus === "indeterminate"
+                                ? `INDETERMINATE -- a draft may have been triggered but IAOS could not confirm it (${syncResult.draftRequest.refusalReason ?? "no further detail was recorded"}). Do not retry; check GHL directly.`
+                                : `Draft request failed -- ${syncResult.draftRequest.refusalReason ?? "no further detail was recorded"}.`}
+                    </div>
+                    {syncResult.draftRequest.resolutionNoteOk === false ? (
+                      <div data-testid="contract-projection-sync-resolution-note-failed" style={{ color: "#EF4444", marginTop: "4px" }}>
+                        The resolution evidence note itself failed to record -- the outcome above is reported from this session's own observation only.
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <ErrorText testId="contract-projection-sync-error">{syncResult?.kind === "error" ? syncResult.message : null}</ErrorText>
               </div>
 
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>

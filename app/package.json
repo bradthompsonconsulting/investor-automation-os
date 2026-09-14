@@ -51,7 +51,10 @@
     "test:contract-lifecycle-model": "node scripts/test-contract-lifecycle-model.cjs",
     "test:contract-execution-model": "node scripts/test-contract-execution-model.cjs",
     "test:browser-artifact-hash": "node scripts/test-browser-artifact-hash.cjs",
-    "test:contract-disposition-handoff": "node scripts/test-contract-disposition-handoff.cjs"
+    "test:contract-disposition-handoff": "node scripts/test-contract-disposition-handoff.cjs",
+    "test:contract-ghl-projection": "node scripts/test-contract-ghl-projection.cjs",
+    "test:contract-draft-request": "node scripts/test-contract-draft-request.cjs",
+    "test:contract-projection-sync-carriers": "node scripts/test-contract-projection-sync-carriers.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",
