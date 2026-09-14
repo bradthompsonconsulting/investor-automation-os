@@ -251,12 +251,18 @@ export const CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED = "CONTRACT_PROJECTION_FI
  * 110 = 29 retained (UNCHANGED single-TEXT keys from the original 48) +
  * 48 `"X"`/`""` checkbox markers + 11 restructured contract-text keys +
  * 22 page-11 broker-text keys (11 per side). 19 of the original 48 keys
- * are RETIRED (15 checkbox-shaped, replaced by markers/restructured text;
- * 4 fully dropped -- `closingPossession.possessionDetails`,
- * `representation.representation`, `noticeContact.buyerSignerName`,
- * `noticeContact.buyerSignerRole` -- no truthful destination exists). No
- * GHL field was created, modified, or deleted for this repair -- every key
- * below that lacks a real id in `TEST` (all 81 new keys) carries
+ * are RETIRED from the live projection (14 checkbox-shaped + 1 checkbox-
+ * adjacent, replaced by markers/restructured text; 1
+ * (`representation.representation`) replaced by the 22-key broker-text
+ * decomposition; 3 retired from the TREC 20-19 projection while retained
+ * canonically or as IAOS audit metadata -- `closingPossession.
+ * possessionDetails` stays a real, readable fact scoped to a future
+ * addendum, `noticeContact.buyerSignerName`/`buyerSignerRole` stay IAOS
+ * audit/internal metadata, Board #10 scope). See
+ * `contract-ghl-projection-model.ts`'s `CONTRACT_PROJECTION_RETIRED_KEYS`
+ * for the precise per-key disposition. No GHL field was created,
+ * modified, or deleted for this repair -- every key below that lacks a
+ * real id in `TEST` (all 81 new keys) carries
  * `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`, exactly like `PRODUCTION`
  * carries it for all 110.
  */
@@ -573,11 +579,16 @@ const TEST: GhlConfig = {
   // INV-67 checkbox-marker / broker-model repair RETIRES 19 of the
   // original 48 keys (14 checkbox-shaped + 1 checkbox-adjacent, replaced
   // by 48 new marker keys + 11 restructured text keys; 1 replaced by the
-  // 22-key broker-text decomposition; 3 dropped entirely -- see
-  // `contract-ghl-projection-model.ts`'s `CONTRACT_PROJECTION_RETIRED_KEYS`
-  // for the full list and precise per-key disposition). THEIR GHL TEST
-  // FIELDS ARE UNTOUCHED -- still physically present in Test, simply no
-  // longer written by this repository.
+  // 22-key broker-text decomposition; 3 retired from the TREC 20-19
+  // projection while retained canonically or as IAOS audit metadata --
+  // `closingPossession.possessionDetails` stays a real, readable fact
+  // scoped to a future addendum; `noticeContact.buyerSignerName`/
+  // `buyerSignerRole` stay IAOS audit/internal metadata, Board #10 scope
+  // -- see `contract-ghl-projection-model.ts`'s
+  // `CONTRACT_PROJECTION_RETIRED_KEYS` for the full list and precise
+  // per-key disposition). THEIR GHL TEST FIELDS ARE UNTOUCHED -- still
+  // physically present in Test, simply no longer written by this
+  // repository.
   //
   // Batch 1 (48 CHECKBOX_MARKER_KEYS) was provisioned live in GHL Test
   // (`scripts/inv67-create-checkbox-marker-fields-batch1.cjs --apply`,
