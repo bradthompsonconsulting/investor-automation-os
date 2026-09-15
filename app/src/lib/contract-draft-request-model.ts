@@ -61,6 +61,7 @@
 
 import type { ContractVersionIdentity } from "./board9-contract-model";
 import type { ContractProjectionFieldKey } from "./contract-ghl-projection-model";
+import type { SellerSigningAuditEvidence } from "./contract-seller-signing-model";
 
 export type ContractDraftRequestState = "Idle" | "Requested";
 
@@ -214,6 +215,16 @@ export type ContractDraftRequestSyncRecord = {
   /** Resolution-only: the PUT's own HTTP status, when the PUT was actually issued. `null` on the in_progress record and on a resolution where the request never reached GHL. */
   providerStatus: number | null;
   failureReason: string | null;
+  /**
+   * INV-67 Phase 1 Jess re-gate correction (this session). The seller-
+   * signing readiness snapshot for THIS attempt -- computed ONCE, from the
+   * SAME `writeResult` the projection-field counts above are computed
+   * from, then carried forward UNCHANGED onto the resolution record,
+   * exactly like `currentOfferCrossCheckOk` already is. Extends this
+   * EXISTING opportunity-scoped, two-phase ledger -- never a second,
+   * global, or independently-scoped audit system.
+   */
+  sellerSigningEvidence: SellerSigningAuditEvidence;
 };
 
 export type BuildContractDraftRequestAttemptArgs = {
@@ -227,6 +238,8 @@ export type BuildContractDraftRequestAttemptArgs = {
   failedKeys: ContractProjectionFieldKey[];
   currentOfferCrossCheckOk: boolean;
   observedStateBeforeWrite: ContractDraftRequestState;
+  /** INV-67 Phase 1 Jess re-gate correction -- see `ContractDraftRequestSyncRecord.sellerSigningEvidence`'s own doc comment. */
+  sellerSigningEvidence: SellerSigningAuditEvidence;
 };
 
 /** Builds the FIRST note's data -- "in_progress" -- durable evidence of intent, written and confirmed BEFORE the "Requested" PUT is ever attempted. */
@@ -250,6 +263,7 @@ export function buildContractDraftRequestAttemptRecord(
     observedValue: null,
     providerStatus: null,
     failureReason: null,
+    sellerSigningEvidence: args.sellerSigningEvidence,
   };
 }
 
@@ -290,6 +304,7 @@ export function buildContractDraftRequestResolutionRecord(
     observedValue: args.observedValue,
     providerStatus: args.providerStatus,
     failureReason: args.failureReason,
+    sellerSigningEvidence: args.attempt.sellerSigningEvidence,
   };
 }
 

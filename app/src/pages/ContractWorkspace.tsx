@@ -77,7 +77,7 @@ import {
 import {
   formatDispositionHandoffNote, parseDispositionHandoffNote, allDispositionHandoffsForOpportunity,
 } from "../lib/contract-disposition-handoff-carriers";
-import { getRuntimeConfig } from "../../shared/ghl-config";
+import { getRuntimeConfig, CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED } from "../../shared/ghl-config";
 import {
   formatBuyerEntityOverrideNote,
   formatPartySignerFactsNote, type SellerSignerFact,
@@ -95,8 +95,14 @@ import {
   latestAttorneyManualFieldDispositionForOpportunity,
   formatSellerNoticeConfirmationFactsNote, type SellerNoticeSource,
   formatBuyerBusinessConfigFactsNote,
+  formatSellerSigningModelNote, latestSellerSigningModelForOpportunity,
   type ValueOrNone, type AmountOrNone, type DaysOrNone,
 } from "../lib/seller-contract-facts-carriers";
+import {
+  resolveSeller1FromOpportunity, checkSeller2LegalName, checkSeller2EmailFormat, checkSellerEmailsDistinct,
+  normalizeEmail, evaluateSellerSigningPreWriteReadiness, buildSellerSigningAuditEvidence, sellerCountTransportValue,
+  type SellerSigningModel, type SigningCapacityDisposition, type Seller1Resolution, type SellerSigningModelDisposition,
+} from "../lib/contract-seller-signing-model";
 
 /**
  * Contract Workspace -- B9-04 / INV-59, extended by B9-05 / INV-60.
@@ -533,6 +539,8 @@ type Drafts = {
   attorneyOther: { kind: "not_applicable" | "attorney_will_draft" | "provided_verbatim"; text: string };
   buyerBusinessConfig: { noticeAddress: string; noticePhone: string; noticeEmail: string; signerName: string; signerRole: string };
   sellerNotice: { noticeAddress: string; noticePhone: VNDraft; noticeEmail: VNDraft };
+  /** INV-67 Phase 1. `count: "unset"` = no default seller count -- an explicit choice is required. `seller1Capacity`/`seller2Capacity` default to `"unresolved"`, which is a real, persistable disposition (not an eligible passing state), matching "no eligible default." */
+  sellerSigning: { count: "unset" | 1 | 2; seller1Capacity: SigningCapacityDisposition; seller2LegalName: string; seller2Email: string; seller2Capacity: SigningCapacityDisposition };
 };
 
 const INITIAL_DRAFTS: Drafts = {
@@ -552,6 +560,7 @@ const INITIAL_DRAFTS: Drafts = {
   attorneyOther: { kind: "not_applicable", text: "" },
   buyerBusinessConfig: { noticeAddress: "", noticePhone: "", noticeEmail: "", signerName: "", signerRole: "" },
   sellerNotice: { noticeAddress: "", noticePhone: VN_UNSET, noticeEmail: VN_UNSET },
+  sellerSigning: { count: "unset", seller1Capacity: "unresolved", seller2LegalName: "", seller2Email: "", seller2Capacity: "unresolved" },
 };
 
 export default function ContractWorkspace() {
@@ -645,6 +654,36 @@ export default function ContractWorkspace() {
     () => (sellerContractFactsReport ? computeSellerContractFactsReadiness(sellerContractFactsReport) : null),
     [sellerContractFactsReport],
   );
+
+  /**
+   * INV-67 Phase 1 -- Seller 1 resolution. PURE, from data already fetched
+   * above (`opps`) -- no new GHL call. Distinct from `sellerNoticeCandidate`
+   * (that is inherited candidate data for the seller's *notice* address;
+   * this is the Opportunity's bound primary Contact identity for the
+   * signer-cardinality fact).
+   */
+  const seller1Resolution: Seller1Resolution = useMemo(() => {
+    if (screen.state !== "ready") return { ok: false, reason: "No Opportunity is selected." };
+    const row = (opps ?? []).find((o) => o.id === screen.opportunity.id) ?? null;
+    return resolveSeller1FromOpportunity(row ? { contactId: row.contactId, contactName: row.contactName, email: row.email } : null);
+  }, [screen, opps]);
+
+  const latestSellerSigningModel = useMemo(() => {
+    if (screen.state !== "ready" || !notes) return null;
+    return latestSellerSigningModelForOpportunity(notes, screen.opportunity.id);
+  }, [screen, notes]);
+
+  /** INV-67 Phase 1 Jess re-gate correction -- the canonical seller-signing fact, as a `SellerSigningModelDisposition` (the exact shape `evaluateSellerSigningPreWriteReadiness` / `buildSellerSigningAuditEvidence` take). No Note ever recorded reads as `unresolved`, never a silent default. */
+  const sellerSigningDisposition: SellerSigningModelDisposition = useMemo(
+    () => (latestSellerSigningModel ? { kind: "populated", value: latestSellerSigningModel.model } : { kind: "unresolved" }),
+    [latestSellerSigningModel],
+  );
+
+  /** The existing `parties.sellerSigners` printed-identity array, narrowed to the one field the seller-readiness gate compares against -- never a second, independently-read source. */
+  const printedSellerSigners = useMemo(() => {
+    const d = sellerContractFactsReport?.parties.sellerSigners;
+    return d && d.kind === "populated" ? d.value.map((s) => ({ displayName: s.displayName })) : [];
+  }, [sellerContractFactsReport]);
 
   /**
    * B9-07 / INV-62 -- Contract Review & Send-Authorization Gate.
@@ -753,13 +792,55 @@ export default function ContractWorkspace() {
     setSyncBusy(true);
     try {
       const opportunityId = screen.opportunity.id;
-      const plan = buildContractProjectionPlan(opportunityId, contractDocumentPreview, sellerContractFactsReport);
+
+      // INV-67 Phase 1 Jess re-gate correction -- the seller-signing gate
+      // runs BEFORE buildContractProjectionPlan is even called, and its
+      // result is FOLDED into that plan's own blockingReasons/ok:false
+      // path below -- there is no separate seller-only short-circuit here,
+      // so the SAME "if (!plan.ok) return" already in place structurally
+      // covers both. Nothing here performs network I/O; every input is
+      // already-resolved live data this component already holds.
+      const sellerCountFieldId = getRuntimeConfig().contractSellerCountField;
+      const sellerReadiness = evaluateSellerSigningPreWriteReadiness({
+        disposition: sellerSigningDisposition,
+        seller1: seller1Resolution,
+        printedSellerSigners,
+        sellerCountFieldId,
+        sellerCountFieldSentinel: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+        sellerCountWriteReadbackVerified: true, // see evaluateSellerSigningPreWriteReadiness's own doc comment -- gate 15 is enforced post-write, below.
+      });
+
+      const plan = buildContractProjectionPlan(opportunityId, contractDocumentPreview, sellerContractFactsReport, sellerReadiness);
       if (!plan.ok) {
         setSyncResult({ kind: "blocked", blockingReasons: plan.blockingReasons });
         return;
       }
 
-      const writeResult = await ghl.opportunities.syncContractProjectionFields(opportunityId, plan.entries);
+      // plan.ok === true guarantees sellerReadiness.ok === true, which
+      // guarantees sellerSigningDisposition.kind === "populated" (gate 1)
+      // and sellerCountFieldId is provisioned (gate 14) -- safe to build
+      // and include the Seller Count write in the SAME verified write/
+      // readback call the 112 TREC fields already go through.
+      const sellerCountText =
+        sellerSigningDisposition.kind === "populated" ? sellerCountTransportValue(sellerSigningDisposition.value) : null;
+      const writeResult = await ghl.opportunities.syncContractProjectionFields(
+        opportunityId,
+        plan.entries,
+        sellerCountText !== null ? { fieldId: sellerCountFieldId, text: sellerCountText } : null,
+      );
+
+      // Extends the EXISTING opportunity-scoped, two-phase evidence --
+      // never a second, global, or independently-scoped audit system. See
+      // buildSellerSigningAuditEvidence's own doc comment for why this is
+      // computed ONCE here and carried forward unchanged onto both notes.
+      const sellerSigningEvidence = buildSellerSigningAuditEvidence({
+        disposition: sellerSigningDisposition,
+        seller1: seller1Resolution,
+        printedSellerSigners,
+        sellerCountFieldId,
+        sellerCountFieldSentinel: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+        sellerCountWriteReadbackOk: writeResult.sellerCount ? writeResult.sellerCount.landed : null,
+      });
 
       const reused = reusedCurrentOfferLines(contractDocumentPreview);
       const currentOfferCrossCheckOk =
@@ -797,6 +878,7 @@ export default function ContractWorkspace() {
             failedKeys: writeResult.entries.filter((e) => !e.landed).map((e) => e.key),
             currentOfferCrossCheckOk,
             observedStateBeforeWrite,
+            sellerSigningEvidence,
           });
           const attemptNote = formatContractProjectionSyncNote(attemptRecord);
 
@@ -1869,6 +1951,47 @@ export default function ContractWorkspace() {
     await commitNote("parties", note);
   }
 
+  /**
+   * INV-67 Phase 1. Builds a `SellerSigningModel` from the draft and writes
+   * it through the SAME sanctioned Note write every other group uses.
+   * Validates only what the Note carrier itself requires to round-trip
+   * (a selected count; for Two Sellers, a non-blank Seller 2 legal name and
+   * a valid, distinct email) -- capacity dispositions of "unresolved" are a
+   * real, persistable recorded state (matching every other explicit
+   * populated/not-applicable/unresolved fact group in this file), not a
+   * save-time error; downstream draft-readiness gating on capacity is later,
+   * separately authorized integration work (see `contract-seller-signing-model.ts`).
+   */
+  async function handleSaveSellerSigning() {
+    if (screen.state !== "ready") return;
+    if (drafts.sellerSigning.count === "unset") {
+      setGroupError("parties", "Select One Seller or Two Sellers before saving.");
+      return;
+    }
+    let model: SellerSigningModel;
+    if (drafts.sellerSigning.count === 1) {
+      model = { kind: "one_seller", seller1Capacity: drafts.sellerSigning.seller1Capacity };
+    } else {
+      const nameErr = checkSeller2LegalName(drafts.sellerSigning.seller2LegalName);
+      if (nameErr) { setGroupError("parties", nameErr); return; }
+      const emailErr = checkSeller2EmailFormat(drafts.sellerSigning.seller2Email);
+      if (emailErr) { setGroupError("parties", emailErr); return; }
+      if (seller1Resolution.ok) {
+        const dupErr = checkSellerEmailsDistinct(seller1Resolution.email, drafts.sellerSigning.seller2Email);
+        if (dupErr) { setGroupError("parties", dupErr); return; }
+      }
+      model = {
+        kind: "two_sellers",
+        seller1Capacity: drafts.sellerSigning.seller1Capacity,
+        seller2: { legalName: drafts.sellerSigning.seller2LegalName.trim(), email: normalizeEmail(drafts.sellerSigning.seller2Email) },
+        seller2Capacity: drafts.sellerSigning.seller2Capacity,
+      };
+    }
+    const at = new Date().toISOString();
+    const note = formatSellerSigningModelNote({ opportunityId: screen.opportunity.id, at, operator: null, model });
+    await commitNote("parties", note);
+  }
+
   async function handleSaveBuyerOverride() {
     if (screen.state !== "ready") return;
     if (!drafts.buyerOverride.active) return;
@@ -2432,6 +2555,85 @@ export default function ContractWorkspace() {
                             ) : null}
                           </div>
                           <ErrorText testId="contract-fact-error-parties">{groupErrors.parties ?? null}</ErrorText>
+                        </div>
+                      ) : null}
+
+                      {/* -------------------------------------------------- */}
+                      {/* Number of Sellers -- INV-67 Phase 1                */}
+                      {/* -------------------------------------------------- */}
+                      {group.key === "parties" ? (
+                        <div style={formBoxStyle} data-testid="contract-fact-group-seller-signing">
+                          <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Number of Sellers</div>
+                          {latestSellerSigningModel ? (
+                            <div data-testid="contract-fact-seller-signing-current" style={{ fontSize: "11px", color: "#64748B", marginBottom: "8px" }}>
+                              Currently recorded: {latestSellerSigningModel.model.kind === "one_seller" ? "One Seller" : "Two Sellers"}
+                            </div>
+                          ) : null}
+
+                          <div style={rowStyle}>
+                            <Field label="Number of Sellers">
+                              <SelectField
+                                testId="contract-fact-input-seller-count"
+                                value={drafts.sellerSigning.count === "unset" ? "unset" : String(drafts.sellerSigning.count)}
+                                onChange={(v) => updateDraft("sellerSigning", { count: v === "unset" ? "unset" : (Number(v) as 1 | 2) })}
+                                options={[{ value: "unset", label: "Select…" }, { value: "1", label: "One Seller" }, { value: "2", label: "Two Sellers" }]}
+                              />
+                            </Field>
+                          </div>
+
+                          <div style={rowStyle}>
+                            <Field label="Seller 1 (resolved from this Opportunity's primary Contact)" testId="contract-fact-seller1-resolved">
+                              {seller1Resolution.ok ? (
+                                <div style={{ fontSize: "12px", color: "#E2E8F0" }}>
+                                  {seller1Resolution.name} &lt;{seller1Resolution.email}&gt; <span style={{ color: "#64748B" }}>({seller1Resolution.contactId})</span>
+                                </div>
+                              ) : (
+                                <div style={{ fontSize: "12px", color: "#EF4444" }}>{seller1Resolution.reason}</div>
+                              )}
+                            </Field>
+                          </div>
+                          <div style={rowStyle}>
+                            <Field label="Seller 1 signing capacity">
+                              <SelectField
+                                testId="contract-fact-input-seller1-capacity"
+                                value={drafts.sellerSigning.seller1Capacity}
+                                onChange={(v) => updateDraft("sellerSigning", { seller1Capacity: v })}
+                                options={[
+                                  { value: "unresolved", label: "Not yet confirmed" },
+                                  { value: "individual_own_capacity", label: "Individual, own capacity" },
+                                  { value: "unsupported_capacity", label: "Entity / trust / POA / other (not supported in V1)" },
+                                ]}
+                              />
+                            </Field>
+                          </div>
+
+                          {drafts.sellerSigning.count === 2 ? (
+                            <>
+                              <div style={rowStyle}>
+                                <Field label="Seller 2 legal name"><TextField testId="contract-fact-input-seller2-name" value={drafts.sellerSigning.seller2LegalName} onChange={(v) => updateDraft("sellerSigning", { seller2LegalName: v })} placeholder="Jane Doe" /></Field>
+                                <Field label="Seller 2 email"><TextField testId="contract-fact-input-seller2-email" value={drafts.sellerSigning.seller2Email} onChange={(v) => updateDraft("sellerSigning", { seller2Email: v })} placeholder="jane@example.com" /></Field>
+                              </div>
+                              <div style={rowStyle}>
+                                <Field label="Seller 2 signing capacity">
+                                  <SelectField
+                                    testId="contract-fact-input-seller2-capacity"
+                                    value={drafts.sellerSigning.seller2Capacity}
+                                    onChange={(v) => updateDraft("sellerSigning", { seller2Capacity: v })}
+                                    options={[
+                                      { value: "unresolved", label: "Not yet confirmed" },
+                                      { value: "individual_own_capacity", label: "Individual, own capacity" },
+                                      { value: "unsupported_capacity", label: "Entity / trust / POA / other (not supported in V1)" },
+                                    ]}
+                                  />
+                                </Field>
+                              </div>
+                            </>
+                          ) : null}
+
+                          <div style={rowStyle}>
+                            <Btn testId="contract-fact-save-seller-signing" onClick={handleSaveSellerSigning} busy={busyGroup === "parties"}>Save seller signing model</Btn>
+                          </div>
+                          <ErrorText testId="contract-fact-error-seller-signing">{groupErrors.parties ?? null}</ErrorText>
                         </div>
                       ) : null}
 

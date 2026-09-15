@@ -33,6 +33,7 @@
 import { type ContractVersionIdentity, isSameContractVersion } from "./board9-contract-model";
 import type { ContractProjectionFieldKey } from "./contract-ghl-projection-model";
 import type { ContractDraftRequestSyncRecord, ContractDraftRequestSyncStatus, ContractDraftRequestState } from "./contract-draft-request-model";
+import { validateSellerSigningAuditEvidenceValue } from "./contract-seller-signing-model";
 
 /* ------------------------------------------------------------------ */
 /* Shared helpers -- same idiom every existing carrier file repeats    */
@@ -109,7 +110,16 @@ function parseVersionJson(raw: string): ContractVersionIdentity | null {
 const PENDING_RANK: Record<string, number> = { in_progress: 0 };
 const TERMINAL_STATUSES = new Set<ContractDraftRequestSyncStatus>(["accepted", "failed", "indeterminate"]);
 
-export const CONTRACT_PROJECTION_SYNC_LEDGER_VERSION = "iaos-contract-draft-request-sync-v2" as const;
+/**
+ * v2 -> v3 (INV-67 Phase 1 Jess re-gate correction, this session): adds
+ * "Seller signing evidence" as a seventeenth positional field, JSON-
+ * encoded exactly like "Version" already is. A v2 note (none exist in any
+ * live GHL environment yet -- Contract Draft Request remains sentinel-
+ * filled in both Test and Production) simply fails this version's header
+ * match and parses as `null`, matching this ledger's own established
+ * schema-bump precedent.
+ */
+export const CONTRACT_PROJECTION_SYNC_LEDGER_VERSION = "iaos-contract-draft-request-sync-v3" as const;
 const HEADER = `IAOS CONTRACT DRAFT REQUEST SYNC — ${CONTRACT_PROJECTION_SYNC_LEDGER_VERSION}`;
 const LABELS = [
   "Recorded at",
@@ -128,6 +138,7 @@ const LABELS = [
   "Observed value",
   "Provider status",
   "Failure reason",
+  "Seller signing evidence",
 ] as const;
 
 export function formatContractProjectionSyncNote(record: ContractDraftRequestSyncRecord): string {
@@ -149,6 +160,7 @@ export function formatContractProjectionSyncNote(record: ContractDraftRequestSyn
     `${LABELS[13]}: ${ledgerValue(record.observedValue)}`,
     `${LABELS[14]}: ${ledgerValue(record.providerStatus)}`,
     `${LABELS[15]}: ${ledgerValue(record.failureReason)}`,
+    `${LABELS[16]}: ${JSON.stringify(record.sellerSigningEvidence)}`,
   ].join("\n");
 }
 
@@ -159,7 +171,7 @@ export function parseContractProjectionSyncNote(body: string): ContractDraftRequ
     at, operatorRaw, opportunityId, attemptId, statusRaw, versionRaw,
     entriesAttemptedRaw, entriesLandedRaw, failedKeysRaw, currentOfferCrossCheckOkRaw,
     observedStateBeforeWriteRaw, intendedToStateRaw, sentValueRaw, observedValueRaw,
-    providerStatusRaw, failureReasonRaw,
+    providerStatusRaw, failureReasonRaw, sellerSigningEvidenceRaw,
   ] = values;
 
   if (!isCanonicalIsoTimestamp(at)) return null;
@@ -193,6 +205,11 @@ export function parseContractProjectionSyncNote(body: string): ContractDraftRequ
   const providerStatus = providerStatusRaw === "UNAVAILABLE" ? null : Number(providerStatusRaw);
   if (providerStatus !== null && !Number.isInteger(providerStatus)) return null;
 
+  const sellerSigningEvidenceParsed = safeJsonParse(sellerSigningEvidenceRaw);
+  if (!sellerSigningEvidenceParsed.ok) return null;
+  const sellerSigningEvidence = validateSellerSigningAuditEvidenceValue(sellerSigningEvidenceParsed.value);
+  if (!sellerSigningEvidence) return null;
+
   return {
     at,
     operator: operatorRaw,
@@ -210,6 +227,7 @@ export function parseContractProjectionSyncNote(body: string): ContractDraftRequ
     observedValue: observedValueRaw === "UNAVAILABLE" ? null : observedValueRaw,
     providerStatus,
     failureReason: failureReasonRaw === "UNAVAILABLE" ? null : failureReasonRaw,
+    sellerSigningEvidence,
   };
 }
 
