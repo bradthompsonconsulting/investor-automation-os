@@ -53,6 +53,7 @@
     "test:browser-artifact-hash": "node scripts/test-browser-artifact-hash.cjs",
     "test:contract-disposition-handoff": "node scripts/test-contract-disposition-handoff.cjs",
     "test:contract-ghl-projection": "node scripts/test-contract-ghl-projection.cjs",
+    "test:contract-ghl-transport-formatting": "node scripts/test-contract-ghl-transport-formatting.cjs",
     "test:contract-draft-request": "node scripts/test-contract-draft-request.cjs",
     "test:contract-projection-sync-carriers": "node scripts/test-contract-projection-sync-carriers.cjs"
   },
