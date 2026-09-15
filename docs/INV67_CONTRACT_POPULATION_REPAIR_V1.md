@@ -837,3 +837,141 @@ Netlify functions typecheck, `test-identifier-boundary.cjs` (confirms every
 GHL id still lives only in `app/shared/ghl-config.ts` -- unchanged this
 round, no new GHL mutation), `test-exit-contract-static.cjs`,
 `test-exit-contract-runtime.cjs`.
+
+## Compound text-destination repair (this session) -- retires 2 more keys, adds 4, reformats 14
+
+**What Jess found.** The 113-placement template manifest exercise (built
+after the checkbox-marker / broker-model repair above provisioned all 110
+live keys) surfaced that two of the original 29 retained document-line keys
+project onto TREC paragraphs printing TWO physically separate blanks with
+live printed language between them:
+
+- `earnestMoneyOption.additionalEarnestMoney` -- ¶5(1): `"additional earnest
+  money of $ ___ to Escrow Agent within ___ days"`.
+- `closingPossession.closingDate` -- ¶9A: `"on or before ___, 20 ___"`.
+
+A single merge-tag overlay cannot truthfully populate either destination.
+A follow-up audit (Jess's own instruction: "do not assume these two are the
+complete set") found two further deterministic defect classes among the
+remaining retained keys, both provable directly from the renderer source in
+`contract-document-model.ts`:
+
+- **Four keys** (`earnestMoneyOption.earnestMoney`, `earnestMoneyOption.
+  optionFee`, `earnestMoneyOption.optionPeriodDays`, `titleSurvey.
+  objectionsDays`) whose renderer (`money()` / `daysText()`)
+  unconditionally re-adds a `"$"` or `"day(s)"` word the printed form
+  already supplies immediately adjacent to the blank -- placing the
+  preview's verbatim text would duplicate printed TREC language
+  (`"$$1,000.00"`, `"10 days days"`).
+- **Nine keys** (`propertyLegalDescription.lot/block/addition/county/
+  exclusions`, `titleSurvey.objectionsText`, `propertyCondition.
+  serviceContractCap`, `settlementExpense.sellerCreditCap`,
+  `addendaApplicability.districtNotices`) whose "none" disposition renders
+  the invented sentence `"None (explicitly confirmed)."` -- never itself
+  TREC language, never sized for the printed blank.
+
+`parties.sellerSigners` was separately narrowed by Product Owner ruling
+(not a defect -- the printed ¶1 Seller blank legitimately holds one or more
+names, but the preview's `renderSignerRequirements()` also includes role
+and a signing-authority note, which the printed contract must not carry).
+
+**Product Owner rulings (all four approved before implementation):**
+
+1. **Option A** -- retire the two compound keys from template projection
+   entirely (join `CONTRACT_PROJECTION_RETIRED_KEYS`, 19 -> 21). Their
+   existing GHL Test fields (`lx0NWWA8tgilbEY71n3b`,
+   `s7jauYhoSPQd09GjoGOr`) remain physically present, unwritten and
+   unplaced -- exactly the same disposition as the original 19 retired
+   keys. **No audit-only writer was introduced** (Option B, a separately
+   named/configured non-template audit projection path, was presented and
+   explicitly declined).
+2. **Four new transport-only key names approved**, collision-verified
+   against every existing internal projection key and every existing GHL
+   field key before approval: `additional_earnest_money_amount_text`,
+   `additional_earnest_money_days_text`, `closing_date_month_day_text`,
+   `closing_date_year_suffix_text`.
+3. **Closing month/day format**: UTC-derived `"MMMM d"` (e.g.
+   `"September 15"`). Its eventual template PLACEMENT remains Visual
+   judgment in the manifest until Spock confirms fit on the clone -- this
+   repair only builds the correct transport VALUE, never claims a proven
+   GHL coordinate. The year suffix is exactly two numeric digits.
+4. **`parties.sellerSigners` narrowed** to legal names only, `"; "`-
+   separated, no role/note/status prose -- the human-facing Contract
+   Workspace preview is UNCHANGED (still shows role + signing-authority
+   note via `renderSignerRequirements()`, untouched).
+
+**Architecture.** A new pure module, `app/src/lib/contract-ghl-transport-
+formatting.ts`, supplies transport-only renderers that derive directly from
+the same canonical `SellerContractFactsReport` fields
+`contract-document-model.ts`'s preview renderers already read -- never a
+second, independently-read carrier, never a re-parse of the preview's own
+rendered text. `contract-document-model.ts` itself is completely
+UNCHANGED. `contract-ghl-projection-model.ts`'s `buildContractProjectionPlan`
+now routes fourteen of the 27 remaining retained keys
+(`REFORMATTED_RETAINED_KEYS`) through the new transport renderers instead
+of copying `preview.documentLines[key].text` verbatim; the other thirteen
+retained keys are genuinely unaffected and still project verbatim preview
+text exactly as before. `propertyCondition.serviceContractCap` and
+`settlementExpense.sellerCreditCap` get an ADDITIONAL defensive fix beyond
+the "none" -> `""` correction: their underlying `ValueOrNone.value` is free
+text from a generic, currency-unaware capture control
+(`ValueOrNoneField` in `ContractWorkspace.tsx`) with no guarantee an
+operator never types a leading `"$"`, so their transport renderer
+(`dollarValueOrNoneTransport`) strips one leading `"$"` and adjacent
+whitespace defensively, by construction, regardless of what was typed.
+
+**Closing-date fail-closed gate.** A new exported check,
+`checkClosingDateCenturyBound(closingDateIso)`, refuses a malformed/
+unparseable instant or any year outside 2000-2099 (the century TREC's own
+printed `"20 ___"` prefix requires) via `blockingReasons` -- called from
+`buildContractProjectionPlan` before either closing-date transport value is
+derived, exactly like every other blocking reason (mineral-reservation
+disagreement, marker-exclusivity violation, blocking broker arrangement).
+This is the SAME gate `ContractWorkspace.tsx`'s sync handler checks (`plan.
+ok`) before calling the GHL write or evaluating the Contract Draft Request
+transition -- a failed gate structurally blocks both.
+
+**Key inventory, before -> after:**
+
+| Metric | Before | After |
+|---|---|---|
+| Retained template document-line keys | 29 | 27 |
+| New transport-only keys | 0 | 4 |
+| Retired keys | 19 | 21 |
+| Active template-projection keys (`CONTRACT_PROJECTION_FIELD_KEYS`) | 110 | 112 |
+| Real GHL Test ids (unaffected, byte-for-byte unchanged) | 110 | 108 |
+| Sentinel-filled GHL Test ids | 0 | 4 (the new transport-only keys -- NOT provisioned this session) |
+| Production | 110/110 sentinel | 112/112 sentinel |
+
+**Code map (this repair):**
+
+| File | Role |
+|---|---|
+| `app/src/lib/contract-ghl-transport-formatting.ts` (new) | Pure transport-only renderers + `checkClosingDateCenturyBound` |
+| `app/src/lib/contract-ghl-projection-model.ts` | `CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS` (new), retained/retired arrays updated, `buildContractProjectionPlan`'s reformatted-key routing + century-bound gate |
+| `app/shared/ghl-config.ts` | `CONTRACT_PROJECTION_FIELD_KEYS` (112), TEST/PRODUCTION `contractProjectionFields` updated |
+| `app/scripts/test-contract-ghl-transport-formatting.cjs` (new) | Direct unit proof of every transport function, including the 2000-2099 boundary table, leap day, and UTC-boundary instants |
+| `app/scripts/test-contract-ghl-projection.cjs` | Extended: 112-entry happy path, reformatted-key transport proofs, century-bound blocking proof, updated drift guard (108 real / 4 sentinel in TEST, 27-key `RETAINED_APPROVED_IDS` reference) |
+| `app/package.json` | `test:contract-ghl-transport-formatting` script entry |
+
+**Test evidence.** `test:contract-ghl-projection` 133/133, `test:contract-
+ghl-transport-formatting` 54/54 (new), `test:contract-document-model`
+100/100 (proves the human-facing preview is byte-for-byte unaffected),
+`test:contract-checkbox-marker-model` 99/99, `test:contract-broker-
+arrangement-model` 29/29, `test:contract-facts-model` 52/52, `test:seller-
+contract-facts-carriers` 56/56, `test:contract-draft-request` 86/86,
+`test:contract-workspace-wiring` 100/100, `test:contract-workspace-view`
+37/37. Full repository suite (every `scripts/test-*.cjs`) re-run clean.
+`tsc -b` (project-wide TypeScript build) clean. `pnpm --dir app build`
+(tsc -b + vite build) clean.
+
+**What this repair does NOT do.** Does not provision the 4 new GHL Test
+fields (a separately authorized future Test-only provisioning pass,
+mirroring Batches 1-3's hardened architecture, is required first). Does not
+touch the source template (`6aa417de09c51fa0927e77cd`) or the clone
+(`6aa8cd5958e1a1e2c804c80b`) in any way. Does not edit
+`docs/INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md` -- that manifest must be
+regenerated only after the 4 fields are provisioned and wired, against the
+corrected 112-key / 115-placement structure. Does not create a draft, send
+anything, or touch Production, Linear, or Board #10. PR opened for Jess
+Gate review; not merged pending that review.

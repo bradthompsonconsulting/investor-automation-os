@@ -240,37 +240,52 @@ export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVIS
 export const CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED = "CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED" as const;
 
 /**
- * INV-67 checkbox-marker / broker-model repair -- the exact 110 live keys,
- * duplicated by hand from `app/src/lib/contract-ghl-projection-model.ts`'s
+ * INV-67 checkbox-marker / broker-model repair, extended by the INV-67
+ * compound text-destination repair -- the exact 112 live keys, duplicated
+ * by hand from `app/src/lib/contract-ghl-projection-model.ts`'s
  * `CONTRACT_PROJECTION_FIELD_KEYS` (that module cannot be imported here --
  * `shared/` stays free of an `src/lib` dependency, the same layering every
  * other key in this file already respects). Kept in sync by
  * `scripts/test-contract-ghl-projection.cjs`'s drift check, which fails
  * loud if the two lists ever diverge.
  *
- * 110 = 29 retained (UNCHANGED single-TEXT keys from the original 48) +
- * 48 `"X"`/`""` checkbox markers + 11 restructured contract-text keys +
- * 22 page-11 broker-text keys (11 per side). 19 of the original 48 keys
- * are RETIRED from the live projection (14 checkbox-shaped + 1 checkbox-
+ * 112 = 27 retained (UNCHANGED single-TEXT keys from the original 29) +
+ * 4 new transport-only keys (compound text-destination repair) + 48
+ * `"X"`/`""` checkbox markers + 11 restructured contract-text keys + 22
+ * page-11 broker-text keys (11 per side). 21 of the original 48 keys are
+ * RETIRED from the live projection (14 checkbox-shaped + 1 checkbox-
  * adjacent, replaced by markers/restructured text; 1
  * (`representation.representation`) replaced by the 22-key broker-text
  * decomposition; 3 retired from the TREC 20-19 projection while retained
  * canonically or as IAOS audit metadata -- `closingPossession.
  * possessionDetails` stays a real, readable fact scoped to a future
  * addendum, `noticeContact.buyerSignerName`/`buyerSignerRole` stay IAOS
- * audit/internal metadata, Board #10 scope). See
- * `contract-ghl-projection-model.ts`'s `CONTRACT_PROJECTION_RETIRED_KEYS`
- * for the precise per-key disposition. Batches 1 (48 markers), 2 (11
- * restructured contract-text keys), and 3 (22 page-11 broker-text keys)
- * were all provisioned live in GHL Test, 2026-09-14/15 -- see the
- * `contractProjectionFields` doc comment below for the exact
- * apply/verification record. All 110 live projection keys now carry a
- * real `TEST` id -- zero sentinels remain in `TEST`. No GHL field of any
- * kind was created, modified, or deleted for `PRODUCTION` -- it carries
- * the sentinel for all 110 keys, unconditionally.
+ * audit/internal metadata, Board #10 scope; 2 retired by the compound
+ * text-destination repair -- `earnestMoneyOption.additionalEarnestMoney`
+ * and `closingPossession.closingDate` each project onto a TREC paragraph
+ * printing two physically separate blanks divided by live printed
+ * language, replaced by the four new transport-only keys below, Product
+ * Owner ruling Option A -- their existing GHL Test fields remain
+ * physically present, unwritten and unplaced, no audit-only writer
+ * introduced). See `contract-ghl-projection-model.ts`'s
+ * `CONTRACT_PROJECTION_RETIRED_KEYS` for the precise per-key disposition.
+ * Batches 1 (48 markers), 2 (11 restructured contract-text keys), and 3
+ * (22 page-11 broker-text keys) were all provisioned live in GHL Test,
+ * 2026-09-14/15 -- see the `contractProjectionFields` doc comment below
+ * for the exact apply/verification record. All 108 of the (unaffected by
+ * the compound text-destination repair) 110 previously-provisioned keys
+ * still carry a real `TEST` id, byte-for-byte unchanged. The four new
+ * transport-only keys remain `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`
+ * sentinels in BOTH `TEST` and `PRODUCTION` until a separately authorized
+ * Test-only provisioning pass creates them -- NOT authorized or performed
+ * this session. No GHL field of any kind was created, modified, or
+ * deleted for `PRODUCTION`, which carries the sentinel for all 112 keys,
+ * unconditionally.
  */
 const CONTRACT_PROJECTION_FIELD_KEYS = [
-  // -- 29 retained, UNCHANGED single-TEXT keys --
+  // -- 27 retained, UNCHANGED single-TEXT keys (29 minus 2 retired by the
+  //    compound text-destination repair: earnestMoneyOption.
+  //    additionalEarnestMoney, closingPossession.closingDate) --
   "identity.propertyStreetAddress",
   "parties.buyerEntityName",
   "parties.sellerSigners",
@@ -284,12 +299,10 @@ const CONTRACT_PROJECTION_FIELD_KEYS = [
   "earnestMoneyOption.earnestMoney",
   "earnestMoneyOption.optionFee",
   "earnestMoneyOption.optionPeriodDays",
-  "earnestMoneyOption.additionalEarnestMoney",
   "titleSurvey.titleCompanyName",
   "titleSurvey.objectionsText",
   "titleSurvey.objectionsDays",
   "propertyCondition.serviceContractCap",
-  "closingPossession.closingDate",
   "settlementExpense.sellerCreditCap",
   "addendaApplicability.districtNotices",
   "noticeContact.buyerNoticeAddress",
@@ -300,6 +313,11 @@ const CONTRACT_PROJECTION_FIELD_KEYS = [
   "noticeContact.sellerNoticeEmail",
   "attorneyManualFields.specialProvisions",
   "attorneyManualFields.otherAddendaText",
+  // -- 4 new transport-only keys (compound text-destination repair) --
+  "additional_earnest_money_amount_text",
+  "additional_earnest_money_days_text",
+  "closing_date_month_day_text",
+  "closing_date_year_suffix_text",
   // -- 48 checkbox markers ("X" | "") --
   "lease_residential_mark",
   "lease_fixture_mark",
@@ -621,13 +639,41 @@ const TEST: GhlConfig = {
   // 29 retained + 48 Batch 1 + 11 Batch 2 ids were unaffected) before
   // these 22 real ids were wired in below.
   //
-  // The `sentinelContractProjectionFields()` spread below is now fully
-  // overridden -- ALL 110 live projection keys carry a real id (29
-  // retained + 48 Batch 1 + 11 Batch 2 + 22 Batch 3). Zero sentinels
-  // remain in `TEST`.
+  // Prior to the compound text-destination repair, the
+  // `sentinelContractProjectionFields()` spread below was fully overridden
+  // -- ALL 110 live projection keys carried a real id (29 retained + 48
+  // Batch 1 + 11 Batch 2 + 22 Batch 3), zero sentinels.
+  //
+  // INV-67 COMPOUND TEXT-DESTINATION REPAIR (this session, Product Owner
+  // ruling, Option A) retires 2 more keys from template projection --
+  // `earnestMoneyOption.additionalEarnestMoney` (was
+  // lx0NWWA8tgilbEY71n3b) and `closingPossession.closingDate` (was
+  // s7jauYhoSPQd09GjoGOr) -- each replaced by TWO narrower transport-only
+  // keys (4 total: `additional_earnest_money_amount_text`,
+  // `additional_earnest_money_days_text`, `closing_date_month_day_text`,
+  // `closing_date_year_suffix_text`). THEIR EXISTING GHL TEST FIELDS ARE
+  // UNTOUCHED -- still physically present in Test, simply no longer
+  // referenced by this config (exactly the same disposition as the
+  // original 19 retired keys above). No audit-only writer was introduced.
+  // The 4 new transport-only keys are NOT YET PROVISIONED -- a separately
+  // authorized future Test-only provisioning pass (mirroring Batches 1-3's
+  // architecture) must create them before this config can wire in real
+  // ids; until then they remain sentinel-filled via the spread below, in
+  // BOTH `TEST` and `PRODUCTION`. The net result: 108 of the previous 110
+  // live keys keep their unchanged real `TEST` id; 2 keys are retired
+  // (their ids simply no longer appear here); 4 new keys are sentinel;
+  // 112 total live projection keys.
   contractProjectionFields: {
     ...sentinelContractProjectionFields(),
-    // -- 29 retained (unchanged, pre-existing this repair) --
+    // -- 27 retained (unchanged, pre-existing this repair -- 2 of the
+    //    original 29 IDs, `earnestMoneyOption.additionalEarnestMoney`
+    //    (lx0NWWA8tgilbEY71n3b) and `closingPossession.closingDate`
+    //    (s7jauYhoSPQd09GjoGOr), are DELIBERATELY ABSENT below: the
+    //    compound text-destination repair retires both from template
+    //    projection -- Product Owner ruling, Option A. Their GHL Test
+    //    fields remain physically present, simply no longer referenced by
+    //    this config, exactly like the original 19 retired keys' ids,
+    //    which were never listed here either.) --
     "identity.propertyStreetAddress": "UjJRDmdeuEpQKA9I2yFr",
     "parties.buyerEntityName": "roFgPXN9bPMeLBxLPhpw",
     "parties.sellerSigners": "ELLuYUYyPqhVMIKMjSAh",
@@ -641,12 +687,10 @@ const TEST: GhlConfig = {
     "earnestMoneyOption.earnestMoney": "HJpetNeLUCy6mIv4hOKO",
     "earnestMoneyOption.optionFee": "Gygwe13y13CZJJvJFk3y",
     "earnestMoneyOption.optionPeriodDays": "02LqDO3fMiKBLBFzheJX",
-    "earnestMoneyOption.additionalEarnestMoney": "lx0NWWA8tgilbEY71n3b",
     "titleSurvey.titleCompanyName": "hqovBqMSkSzi7hgyyonq",
     "titleSurvey.objectionsText": "cqOCAubHmuLFbCl9TczS",
     "titleSurvey.objectionsDays": "vAInvdtJ0nYHINzAwGy3",
     "propertyCondition.serviceContractCap": "UiWOxyGDrbWO9cTkJSx9",
-    "closingPossession.closingDate": "s7jauYhoSPQd09GjoGOr",
     "settlementExpense.sellerCreditCap": "fUWZ54vsfUyGBlxszHB0",
     "addendaApplicability.districtNotices": "SpRUfNbdSL94QZz7vfrs",
     "noticeContact.buyerNoticeAddress": "OWVLUUS4pyD0JA2bRqBy",
@@ -657,6 +701,11 @@ const TEST: GhlConfig = {
     "noticeContact.sellerNoticeEmail": "T9TlfDicQnhiHInISE2N",
     "attorneyManualFields.specialProvisions": "eZImM9FtKYff6CJzAafO",
     "attorneyManualFields.otherAddendaText": "xQ1mLI1l8aHnhOLe07fy",
+    // -- 4 new transport-only keys (compound text-destination repair) --
+    // remain CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED sentinels (from the
+    // `...sentinelContractProjectionFields()` spread below) until a
+    // separately authorized Test-only provisioning pass creates them --
+    // NOT authorized or performed this session.
     // -- Batch 1: 48 checkbox-marker keys, provisioned and readback-
     //    verified live in GHL Test 2026-09-14 --
     "lease_residential_mark": "aScwbIAJRuV3cFiKS09E",

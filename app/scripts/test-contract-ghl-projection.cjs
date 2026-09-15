@@ -55,6 +55,7 @@ const MODEL = path.join(APP, 'src', 'lib', 'contract-ghl-projection-model.ts');
 const MARKER_MODEL = path.join(APP, 'src', 'lib', 'contract-checkbox-marker-model.ts');
 const BROKER_MODEL = path.join(APP, 'src', 'lib', 'contract-broker-arrangement-model.ts');
 const CARRIERS = path.join(APP, 'src', 'lib', 'seller-contract-facts-carriers.ts');
+const TRANSPORT = path.join(APP, 'src', 'lib', 'contract-ghl-transport-formatting.ts');
 
 function cleanup() { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {} }
 cleanup();
@@ -63,7 +64,7 @@ fs.writeFileSync(path.join(TMP, 'package.json'), JSON.stringify({ type: 'commonj
 
 try {
   execSync(
-    `npx tsc "${MODEL}" "${MARKER_MODEL}" "${BROKER_MODEL}" "${CARRIERS}" --outDir "${TMP}" --module commonjs --target es2020 --strict`,
+    `npx tsc "${MODEL}" "${MARKER_MODEL}" "${BROKER_MODEL}" "${CARRIERS}" "${TRANSPORT}" --outDir "${TMP}" --module commonjs --target es2020 --strict`,
     { cwd: APP, stdio: 'inherit' },
   );
 } catch (_) {
@@ -78,6 +79,7 @@ const {
   CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS,
   CONTRACT_PROJECTION_RETIRED_KEYS,
   CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS,
+  CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS,
   buildContractProjectionPlan,
   reusedCurrentOfferLines,
 } = require(path.join(TMP, 'contract-ghl-projection-model.js'));
@@ -86,8 +88,11 @@ const {
   CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS, CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS,
 } = require(path.join(TMP, 'contract-checkbox-marker-model.js'));
 const { ADDENDA_APPLICABILITY_ITEM_KEYS } = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
+const {
+  checkClosingDateCenturyBound,
+} = require(path.join(TMP, 'contract-ghl-transport-formatting.js'));
 
-const FLOOR = 79;
+const FLOOR = 100;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -139,9 +144,35 @@ function completePreview(overrides) {
 
 function populated(value) { return { kind: 'populated', value, authority: 'operator_attested', recordedAt: null }; }
 
-/** A complete, resolvable SellerContractFactsReport -- every checkbox-shaped fact `buildCheckboxMarkersAndText` reads, all clean/no-conflict by default. */
+/**
+ * A complete, resolvable SellerContractFactsReport -- every checkbox-shaped
+ * fact `buildCheckboxMarkersAndText` reads, all clean/no-conflict by
+ * default, PLUS (compound text-destination repair, this session) every
+ * canonical fact the fourteen `REFORMATTED_RETAINED_KEYS` and the four new
+ * `CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS` now read DIRECTLY from `report`
+ * rather than from `preview.documentLines`.
+ */
 function completeReport(overrides) {
   const base = {
+    parties: {
+      sellerSigners: populated([
+        { displayName: 'Jane Seller', role: 'Owner', signingAuthorityNote: 'as trustee' },
+      ]),
+    },
+    propertyLegalDescription: {
+      lot: populated({ kind: 'value', value: '7' }),
+      block: populated({ kind: 'value', value: '3' }),
+      addition: populated({ kind: 'value', value: 'Oak Ridge Estates' }),
+      county: populated({ kind: 'value', value: 'Travis' }),
+      exclusions: populated({ kind: 'none' }),
+      reservations: populated({ kind: 'none' }),
+    },
+    earnestMoneyOption: {
+      earnestMoney: populated(1000),
+      optionFee: populated(500),
+      optionPeriodDays: populated(10),
+      additionalEarnestMoney: populated({ kind: 'none' }),
+    },
     leaseDisclosure: {
       residentialLeases: populated('none'),
       fixtureLeases: populated('none'),
@@ -152,27 +183,30 @@ function completeReport(overrides) {
       shortageAmendmentElection: populated({ kind: 'not_amended' }),
       surveyElection: populated({ option: 'buyer_new_survey', buyerObtainDays: 10 }),
       poaMembership: populated('is_not_subject'),
+      objectionsText: populated({ kind: 'none' }),
+      objectionsDays: populated(15),
     },
     propertyCondition: {
       sellerDisclosureNotice: populated({ kind: 'received' }),
       asIsElection: populated({ kind: 'as_is' }),
       waterDisclosure: populated({ kind: 'received' }),
+      serviceContractCap: populated({ kind: 'none' }),
     },
     closingPossession: {
       possessionElection: populated('upon_closing_and_funding'),
+      closingDate: populated('2026-12-15T00:00:00.000Z'),
     },
     settlementExpense: {
       sellerPaysBuyerBroker: populated({ kind: 'none' }),
       buyerPaysSellerBroker: populated({ kind: 'none' }),
+      sellerCreditCap: populated({ kind: 'none' }),
     },
     addendaApplicability: {
       items: populated(Object.fromEntries(ADDENDA_APPLICABILITY_ITEM_KEYS.map((k) => [k, false]))),
+      districtNotices: populated({ kind: 'none' }),
     },
     representation: {
       representation: populated({ kind: 'none' }),
-    },
-    propertyLegalDescription: {
-      reservations: populated({ kind: 'none' }),
     },
   };
   for (const [group, patch] of Object.entries(overrides || {})) {
@@ -209,7 +243,7 @@ function completeReport(overrides) {
 }
 
 /* ==================================================================== */
-/* 3. Happy path -- exactly 110 entries                                  */
+/* 3. Happy path -- exactly 112 entries                                  */
 /* ==================================================================== */
 
 {
@@ -217,9 +251,13 @@ function completeReport(overrides) {
   const plan = buildContractProjectionPlan('OPP-1', preview, completeReport());
   checkTrue('ok plan on a fully resolved preview + report', plan.ok === true);
   check('entry count equals CONTRACT_PROJECTION_FIELD_KEYS length', plan.ok ? plan.entries.length : null, CONTRACT_PROJECTION_FIELD_KEYS.length);
-  check('entry count is exactly 110', plan.ok ? plan.entries.length : null, 110);
-  check('CONTRACT_PROJECTION_FIELD_KEYS.length is exactly 110', CONTRACT_PROJECTION_FIELD_KEYS.length, 110);
-  check('29 retained + 48 markers + 11 text + 22 broker = 110', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length + CHECKBOX_MARKER_KEYS.length + CHECKBOX_TEXT_KEYS.length + BROKER_TEXT_KEYS.length, 110);
+  check('entry count is exactly 112', plan.ok ? plan.entries.length : null, 112);
+  check('CONTRACT_PROJECTION_FIELD_KEYS.length is exactly 112', CONTRACT_PROJECTION_FIELD_KEYS.length, 112);
+  check(
+    '27 retained + 4 transport-only + 48 markers + 11 text + 22 broker = 112',
+    CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length + CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.length + CHECKBOX_MARKER_KEYS.length + CHECKBOX_TEXT_KEYS.length + BROKER_TEXT_KEYS.length,
+    112,
+  );
   check('agreementAt carried from preview.version', plan.ok ? plan.agreementAt : null, VERSION.agreementAt);
   check('versionSeq carried from preview.version', plan.ok ? plan.versionSeq : null, VERSION.versionSeq);
   check('opportunityId is the caller-supplied id, not read off the preview', plan.ok ? plan.opportunityId : null, 'OPP-1');
@@ -227,7 +265,7 @@ function completeReport(overrides) {
 
   const byKey = new Map((plan.ok ? plan.entries : []).map((e) => [e.key, e.text]));
   checkTrue('every CONTRACT_PROJECTION_FIELD_KEYS entry is present', CONTRACT_PROJECTION_FIELD_KEYS.every((k) => byKey.has(k)));
-  check('a retained document-line key projects its own text verbatim', byKey.get('propertyLegalDescription.lot'), 'value for propertyLegalDescription.lot');
+  check('an UNAFFECTED retained document-line key still projects its own preview text verbatim', byKey.get('earnestMoneyOption.escrowAgentName'), 'value for earnestMoneyOption.escrowAgentName');
   check('identity.propertyStreetAddress projects its own text', byKey.get('identity.propertyStreetAddress'), '123 Main St');
   check('a checkbox marker for a "none" election is blank', byKey.get('lease_residential_mark'), '');
   check('a checkbox marker for the selected election is "X"', byKey.get('title_expense_seller_mark'), 'X');
@@ -236,9 +274,9 @@ function completeReport(overrides) {
 
   // Jess Gate correction (repeated-destination re-gate): the paragraph-22 echo of 3
   // markers is a TEMPLATE PLACEMENT concern only -- it must never change the unique
-  // 110-key / 81-new-field totals this plan writes.
-  check('CONTRACT_PROJECTION_FIELD_KEYS is still exactly 110 UNIQUE keys with the repeated-placement manifest present', CONTRACT_PROJECTION_FIELD_KEYS.length, 110);
-  check('new-key total (48 markers + 11 text + 22 broker) is still exactly 81, NOT 84 -- placements are not fields', CHECKBOX_MARKER_KEYS.length + CHECKBOX_TEXT_KEYS.length + BROKER_TEXT_KEYS.length, 81);
+  // 112-key / 81-new-marker-field totals this plan writes.
+  check('CONTRACT_PROJECTION_FIELD_KEYS is still exactly 112 UNIQUE keys with the repeated-placement manifest present', CONTRACT_PROJECTION_FIELD_KEYS.length, 112);
+  check('marker/text/broker new-key total is still exactly 81, NOT 84 -- placements are not fields', CHECKBOX_MARKER_KEYS.length + CHECKBOX_TEXT_KEYS.length + BROKER_TEXT_KEYS.length, 81);
   checkTrue(
     'the overlay-placement count (51, from the marker model) is distinct from and greater than the marker-key count (48) -- never conflated in this integration layer either',
     CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS > CHECKBOX_MARKER_KEYS.length,
@@ -247,6 +285,107 @@ function completeReport(overrides) {
     'every plan entry key for a repeated-placement marker is written exactly ONCE in the plan (one field write, regardless of how many places it is later pasted on the template)',
     Object.keys(CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS).every((k) => (plan.ok ? plan.entries.filter((e) => e.key === k).length : 0) === 1),
   );
+
+  // Compound text-destination repair -- the retired combined keys are never
+  // written; the fourteen reformatted retained keys carry transport-safe
+  // text; the four new transport-only keys carry correctly-derived text.
+  checkTrue('the retired earnestMoneyOption.additionalEarnestMoney key is never written', !byKey.has('earnestMoneyOption.additionalEarnestMoney'));
+  checkTrue('the retired closingPossession.closingDate key is never written', !byKey.has('closingPossession.closingDate'));
+  check('parties.sellerSigners transport is names ONLY, no role, no signing-authority note', byKey.get('parties.sellerSigners'), 'Jane Seller');
+  check('propertyLegalDescription.lot transport (populated) is the bare value, not preview prose', byKey.get('propertyLegalDescription.lot'), '7');
+  check('propertyLegalDescription.exclusions transport ("none") is "", never "None (explicitly confirmed)."', byKey.get('propertyLegalDescription.exclusions'), '');
+  check('earnestMoneyOption.earnestMoney transport carries NO "$"', byKey.get('earnestMoneyOption.earnestMoney'), '1,000.00');
+  check('earnestMoneyOption.optionFee transport carries NO "$"', byKey.get('earnestMoneyOption.optionFee'), '500.00');
+  check('earnestMoneyOption.optionPeriodDays transport carries NO "day"/"days"', byKey.get('earnestMoneyOption.optionPeriodDays'), '10');
+  check('titleSurvey.objectionsDays transport carries NO "day"/"days"', byKey.get('titleSurvey.objectionsDays'), '15');
+  check('titleSurvey.objectionsText transport ("none") is ""', byKey.get('titleSurvey.objectionsText'), '');
+  check('propertyCondition.serviceContractCap transport ("none") is ""', byKey.get('propertyCondition.serviceContractCap'), '');
+  check('settlementExpense.sellerCreditCap transport ("none") is ""', byKey.get('settlementExpense.sellerCreditCap'), '');
+  check('addendaApplicability.districtNotices transport ("none") is ""', byKey.get('addendaApplicability.districtNotices'), '');
+  check('additional_earnest_money_amount_text is blank when the canonical fact is "none"', byKey.get('additional_earnest_money_amount_text'), '');
+  check('additional_earnest_money_days_text is blank when the canonical fact is "none"', byKey.get('additional_earnest_money_days_text'), '');
+  check('closing_date_month_day_text is UTC-derived "MMMM d"', byKey.get('closing_date_month_day_text'), 'December 15');
+  check('closing_date_year_suffix_text is exactly two numeric digits', byKey.get('closing_date_year_suffix_text'), '26');
+  checkTrue('closing_date_year_suffix_text matches /^[0-9]{2}$/', /^[0-9]{2}$/.test(byKey.get('closing_date_year_suffix_text')));
+}
+
+/* ==================================================================== */
+/* 3b. Compound text-destination repair -- additional-earnest-money and  */
+/*     closing-date transport values, "$"/"$ removal", and the leading- */
+/*     "$" defensive strip for serviceContractCap / sellerCreditCap      */
+/* ==================================================================== */
+
+{
+  const preview = completePreview();
+  const report = completeReport({
+    earnestMoneyOption: { additionalEarnestMoney: populated({ kind: 'value', amount: 2500, withinDays: 5 }) },
+    propertyCondition: { serviceContractCap: populated({ kind: 'value', value: '$500' }) },
+    settlementExpense: { sellerCreditCap: populated({ kind: 'value', value: '1,500' }) },
+    parties: {
+      sellerSigners: populated([
+        { displayName: 'Jane Seller', role: 'Owner', signingAuthorityNote: 'as trustee' },
+        { displayName: null, role: 'Unknown', signingAuthorityNote: null },
+        { displayName: 'John Seller', role: 'Co-Owner', signingAuthorityNote: null },
+      ]),
+    },
+  });
+  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  checkTrue('ok plan with additional-earnest-money value and a "$"-typed cap value', plan.ok === true);
+  const byKey = new Map((plan.ok ? plan.entries : []).map((e) => [e.key, e.text]));
+  check('additional_earnest_money_amount_text derives the bare amount, no "$"', byKey.get('additional_earnest_money_amount_text'), '2,500.00');
+  check('additional_earnest_money_days_text derives the bare day count, no "day"/"days"', byKey.get('additional_earnest_money_days_text'), '5');
+  check('both additional-earnest-money transport values derive from the SAME canonical fact (amount=2500, days=5 both present together)', [byKey.get('additional_earnest_money_amount_text'), byKey.get('additional_earnest_money_days_text')], ['2,500.00', '5']);
+  check('a leading "$" typed into serviceContractCap is defensively stripped', byKey.get('propertyCondition.serviceContractCap'), '500');
+  check('sellerCreditCap with no leading "$" passes through unchanged', byKey.get('settlementExpense.sellerCreditCap'), '1,500');
+  check('sellerSigners transport omits a null-displayName signer and keeps only names, "; "-joined', byKey.get('parties.sellerSigners'), 'Jane Seller; John Seller');
+}
+
+/* ==================================================================== */
+/* 3c. Closing-date century-bound gate -- fails closed before any entry  */
+/*     is built, exactly like every other blocking reason                */
+/* ==================================================================== */
+
+{
+  for (const [label, iso, shouldPass] of [
+    ['year 2000 (lower boundary)', '2000-06-15T00:00:00.000Z', true],
+    ['year 2099 (upper boundary)', '2099-06-15T00:00:00.000Z', true],
+    ['year 1999 (just below)', '1999-12-31T23:59:59.000Z', false],
+    ['year 2100 (just above)', '2100-01-01T00:00:00.000Z', false],
+    ['leap day 2028-02-29', '2028-02-29T00:00:00.000Z', true],
+    ['UTC boundary a: 2026-01-01T00:30:00.000Z', '2026-01-01T00:30:00.000Z', true],
+    ['UTC boundary b: 2025-12-31T23:45:00.000Z', '2025-12-31T23:45:00.000Z', true],
+    ['malformed instant', 'not-a-real-date', false],
+    ['missing/empty instant', '', false],
+  ]) {
+    const preview = completePreview();
+    const report = completeReport({ closingPossession: { closingDate: populated(iso) } });
+    const plan = buildContractProjectionPlan('OPP-1', preview, report);
+    check(`closing date -- ${label} -- plan.ok is ${shouldPass}`, plan.ok, shouldPass);
+    if (!shouldPass) {
+      checkTrue(`closing date -- ${label} -- blocking reason names the closing date`, plan.ok ? false : plan.blockingReasons.some((r) => /closing date/i.test(r)));
+    }
+  }
+
+  // Direct unit proof the gate itself matches this table (belt-and-suspenders
+  // over the integration proof above).
+  check('checkClosingDateCenturyBound(2000) ok', checkClosingDateCenturyBound('2000-06-15T00:00:00.000Z').ok, true);
+  check('checkClosingDateCenturyBound(2099) ok', checkClosingDateCenturyBound('2099-06-15T00:00:00.000Z').ok, true);
+  check('checkClosingDateCenturyBound(1999) refused', checkClosingDateCenturyBound('1999-12-31T23:59:59.000Z').ok, false);
+  check('checkClosingDateCenturyBound(2100) refused', checkClosingDateCenturyBound('2100-01-01T00:00:00.000Z').ok, false);
+  check('checkClosingDateCenturyBound(malformed) refused', checkClosingDateCenturyBound('not-a-real-date').ok, false);
+
+  // The failed date gate must prevent the plan from ever reaching ok:true --
+  // ContractWorkspace.tsx's sync handler checks `plan.ok` BEFORE calling the
+  // GHL write (`ghl.opportunities.syncContractProjectionFields`) and BEFORE
+  // evaluating the Contract Draft Request transition
+  // (`evaluateContractDraftRequestTransition`) -- both are structurally
+  // unreachable once `plan.ok === false`.
+  {
+    const preview = completePreview();
+    const report = completeReport({ closingPossession: { closingDate: populated('2100-01-01T00:00:00.000Z') } });
+    const plan = buildContractProjectionPlan('OPP-1', preview, report);
+    checkTrue('an out-of-range closing year yields ok:false (no `entries`, no GHL write, no draft-request transition possible)', plan.ok === false && !('entries' in plan));
+  }
 }
 
 /* ==================================================================== */
@@ -327,12 +466,28 @@ function completeReport(overrides) {
 
 checkTrue('no invariant key appears in CONTRACT_PROJECTION_FIELD_KEYS', CONTRACT_PROJECTION_INVARIANT_KEYS.every((k) => !CONTRACT_PROJECTION_FIELD_KEYS.includes(k)));
 checkTrue('no reused-current-offer key appears in CONTRACT_PROJECTION_FIELD_KEYS', CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS.every((k) => !CONTRACT_PROJECTION_FIELD_KEYS.includes(k)));
-checkTrue('none of the 19 retired keys appear in CONTRACT_PROJECTION_FIELD_KEYS', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !CONTRACT_PROJECTION_FIELD_KEYS.includes(k)));
+checkTrue('none of the 21 retired keys appear in CONTRACT_PROJECTION_FIELD_KEYS', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !CONTRACT_PROJECTION_FIELD_KEYS.includes(k)));
 check('exactly 4 invariant keys', CONTRACT_PROJECTION_INVARIANT_KEYS.length, 4);
 check('exactly 2 reused-current-offer keys', CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS.length, 2);
-check('exactly 19 retired keys', CONTRACT_PROJECTION_RETIRED_KEYS.length, 19);
-check('exactly 29 retained document-line keys', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length, 29);
-check('29 retained + 19 retired = the original 48', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length + CONTRACT_PROJECTION_RETIRED_KEYS.length, 48);
+check('exactly 21 retired keys (compound text-destination repair: 19 + 2)', CONTRACT_PROJECTION_RETIRED_KEYS.length, 21);
+check('exactly 27 retained document-line keys (compound text-destination repair: 29 - 2)', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length, 27);
+check('exactly 4 new transport-only keys', CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.length, 4);
+check('27 retained + 21 retired = the original 48', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length + CONTRACT_PROJECTION_RETIRED_KEYS.length, 48);
+checkTrue('earnestMoneyOption.additionalEarnestMoney is retired', CONTRACT_PROJECTION_RETIRED_KEYS.includes('earnestMoneyOption.additionalEarnestMoney'));
+checkTrue('closingPossession.closingDate is retired', CONTRACT_PROJECTION_RETIRED_KEYS.includes('closingPossession.closingDate'));
+checkTrue('earnestMoneyOption.additionalEarnestMoney is NOT in the retained set', !CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.includes('earnestMoneyOption.additionalEarnestMoney'));
+checkTrue('closingPossession.closingDate is NOT in the retained set', !CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.includes('closingPossession.closingDate'));
+check(
+  'CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS is exactly the four approved transport-only names',
+  [...CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS].sort(),
+  ['additional_earnest_money_amount_text', 'additional_earnest_money_days_text', 'closing_date_month_day_text', 'closing_date_year_suffix_text'].sort(),
+);
+checkTrue(
+  'none of the 4 transport-only keys collides with any retained, marker, text, or broker key',
+  CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.every(
+    (k) => !CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.includes(k) && !CHECKBOX_MARKER_KEYS.includes(k) && !CHECKBOX_TEXT_KEYS.includes(k) && !BROKER_TEXT_KEYS.includes(k),
+  ),
+);
 
 /* ==================================================================== */
 /* 8. reusedCurrentOfferLines (UNCHANGED by this session)                */
@@ -346,29 +501,47 @@ check('29 retained + 19 retired = the original 48', CONTRACT_PROJECTION_RETAINED
 }
 
 /* ==================================================================== */
-/* 9. Integrity guards -- mapping drift / null text (retained keys only) */
+/* 9. Integrity guards -- mapping drift / null text (UNAFFECTED retained */
+/*    keys only -- `propertyLegalDescription.lot` is now REFORMATTED and */
+/*    no longer reads `preview.documentLines` at all, so these two       */
+/*    guards must target a key still on the verbatim-preview path, e.g.  */
+/*    `earnestMoneyOption.escrowAgentName`)                              */
 /* ==================================================================== */
 
 {
   const preview = completePreview();
-  preview.documentLines = preview.documentLines.filter((l) => !(l.group === 'propertyLegalDescription' && l.field === 'lot'));
+  preview.documentLines = preview.documentLines.filter((l) => !(l.group === 'earnestMoneyOption' && l.field === 'escrowAgentName'));
   let threw = false;
   try { buildContractProjectionPlan('OPP-1', preview, completeReport()); } catch (e) { threw = /mapping drift/.test(e.message); }
-  checkTrue('throws on mapping drift (a retained key with no document line)', threw);
+  checkTrue('throws on mapping drift (an UNAFFECTED retained key with no document line)', threw);
 }
 {
   const preview = completePreview();
-  preview.documentLines = preview.documentLines.map((l) => (l.group === 'propertyLegalDescription' && l.field === 'lot' ? { ...l, text: null } : l));
+  preview.documentLines = preview.documentLines.map((l) => (l.group === 'earnestMoneyOption' && l.field === 'escrowAgentName' ? { ...l, text: null } : l));
   let threw = false;
   try { buildContractProjectionPlan('OPP-1', preview, completeReport()); } catch (e) { threw = /no text despite previewComplete/.test(e.message); }
-  checkTrue('throws when a retained-key line has null text despite previewComplete=true', threw);
+  checkTrue('throws when an UNAFFECTED retained-key line has null text despite previewComplete=true', threw);
+}
+{
+  // Reformatted keys have their OWN integrity guard, reading `report` directly --
+  // proven here with `unresolved`, the one FieldDisposition.kind `transportFieldText`
+  // treats as a code-integrity violation (never a normal refusal path).
+  const preview = completePreview();
+  const report = completeReport({ propertyLegalDescription: { lot: { kind: 'unresolved', value: undefined, authority: null, recordedAt: null } } });
+  let threw = false;
+  try { buildContractProjectionPlan('OPP-1', preview, report); } catch (e) { threw = /is unresolved despite previewComplete=true/.test(e.message); }
+  checkTrue('throws when a REFORMATTED retained key\'s report disposition is unresolved despite previewComplete=true', threw);
 }
 
 /* ==================================================================== */
-/* 10. Drift guard -- shared/ghl-config.ts (110 keys) and the ALREADY-   */
+/* 10. Drift guard -- shared/ghl-config.ts (112 keys) and the ALREADY-   */
 /*     PROVISIONED field-creation script (48 keys = original             */
-/*     29 retained + 19 retired -- no new GHL field was created this     */
-/*     session, so this script is deliberately untouched)                */
+/*     29 retained + 19 retired -- STILL 48/29/19 even after the         */
+/*     compound text-destination repair, since that repair only moves    */
+/*     2 keys from the retained array to the retired array; their union  */
+/*     is unchanged. No new GHL field was created this session for       */
+/*     that ORIGINAL 48-key batch, so this script is deliberately        */
+/*     untouched)                                                        */
 /* ==================================================================== */
 
 {
@@ -386,7 +559,7 @@ check('29 retained + 19 retired = the original 48', CONTRACT_PROJECTION_RETAINED
         .filter(Boolean)
         .map((m) => m[1])
     : [];
-  check('shared/ghl-config.ts key set matches contract-ghl-projection-model.ts exactly (110 keys)', [...configKeys].sort(), [...CONTRACT_PROJECTION_FIELD_KEYS].sort());
+  check('shared/ghl-config.ts key set matches contract-ghl-projection-model.ts exactly (112 keys)', [...configKeys].sort(), [...CONTRACT_PROJECTION_FIELD_KEYS].sort());
 
   const scriptSrc = fs.readFileSync(path.join(APP, 'scripts', 'inv67-create-contract-projection-fields.cjs'), 'utf8');
   const specKeys = Array.from(scriptSrc.matchAll(/\{ key: '([^']+)'/g)).map((m) => m[1]).filter((k) => k !== 'contractDraftRequest');
@@ -407,26 +580,36 @@ check('29 retained + 19 retired = the original 48', CONTRACT_PROJECTION_RETAINED
   // Batch 1 (48 CHECKBOX_MARKER_KEYS), Batch 2 (11 CHECKBOX_TEXT_KEYS), and
   // Batch 3 (22 BROKER_TEXT_KEYS) -- INV-67 checkbox-marker / broker-model
   // repair, GHL Test provisioning, 2026-09-14/15 -- were all created live and
-  // readback-verified, then wired in with their real ids. ALL 110 live
-  // projection keys now carry a real TEST id -- zero sentinels remain.
+  // readback-verified, then wired in with their real ids.
+  //
+  // COMPOUND TEXT-DESTINATION REPAIR (this session) retires 2 of the
+  // original 29 retained keys from template projection -- their real TEST
+  // ids are simply no longer referenced by `contractProjectionFields`
+  // (Option A: no audit-only writer). The 4 new transport-only keys are
+  // NOT YET PROVISIONED -- they remain sentinel-filled pending a separately
+  // authorized future provisioning pass. Net: 108 of the (formerly 110)
+  // live projection keys carry a real TEST id, byte-for-byte unchanged;
+  // exactly 4 keys (the new transport-only ones) remain sentinel.
   check(
-    'TEST carries a REAL id for exactly 110 keys: the 29 retained + the 48 Batch 1 markers + the 11 Batch 2 contract-text keys + the 22 Batch 3 broker-text keys',
+    'TEST carries a REAL id for exactly 108 keys: the 27 retained + the 48 Batch 1 markers + the 11 Batch 2 contract-text keys + the 22 Batch 3 broker-text keys',
     [...testRealIdKeys].sort(),
     [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS, ...CHECKBOX_MARKER_KEYS, ...CHECKBOX_TEXT_KEYS, ...BROKER_TEXT_KEYS].sort(),
   );
-  check('TEST carries a real id for EVERY one of CONTRACT_PROJECTION_FIELD_KEYS -- exactly 110, none missing', [...testRealIdKeys].sort(), [...CONTRACT_PROJECTION_FIELD_KEYS].sort());
   check('exactly 48 of those real-id keys are CHECKBOX_MARKER_KEYS', testRealIdKeys.filter((k) => CHECKBOX_MARKER_KEYS.includes(k)).length, 48);
   check('exactly 11 of those real-id keys are CHECKBOX_TEXT_KEYS', testRealIdKeys.filter((k) => CHECKBOX_TEXT_KEYS.includes(k)).length, 11);
   check('exactly 22 of those real-id keys are BROKER_TEXT_KEYS', testRealIdKeys.filter((k) => BROKER_TEXT_KEYS.includes(k)).length, 22);
+  check('exactly 27 of those real-id keys are the retained document-line keys', testRealIdKeys.filter((k) => CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.includes(k)).length, 27);
   checkTrue(
-    'all 110 real-id entries are non-empty, non-whitespace, and never the sentinel string',
+    'all 108 real-id entries are non-empty, non-whitespace, and never the sentinel string',
     testRealIdEntries.every((e) => e.id.trim().length > 0 && e.id !== 'CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED'),
   );
-  check('all 110 real ids are themselves unique (no id reused across two keys, across all 4 groups)', new Set(testRealIdEntries.map((e) => e.id)).size, 110);
+  check('all 108 real ids are themselves unique (no id reused across two keys, across all groups)', new Set(testRealIdEntries.map((e) => e.id)).size, 108);
   checkTrue(
     'none of the 3 repeated-destination markers (lease_residential_mark, lease_fixture_mark, possession_leaseback_mark) is missing its real id',
     Object.keys(CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS).every((k) => testRealIdKeys.includes(k)),
   );
+  checkTrue('neither retired compound key (additionalEarnestMoney, closingDate) has a real id in TEST', !testRealIdKeys.includes('earnestMoneyOption.additionalEarnestMoney') && !testRealIdKeys.includes('closingPossession.closingDate'));
+  checkTrue('neither retired compound key is even PRESENT as an object key in TEST.contractProjectionFields (not just non-real)', !configFieldsBlockMatch[1].includes('"earnestMoneyOption.additionalEarnestMoney"') && !configFieldsBlockMatch[1].includes('"closingPossession.closingDate"'));
   // Jess Gate correction: the prior version of this proof sampled only 2 of
   // the 48 Batch 1 keys, which cannot detect a silent id change on any of
   // the other 46. This is the COMPLETE, known-good reference -- the exact
@@ -562,19 +745,30 @@ check('29 retained + 19 retired = the original 48', CONTRACT_PROJECTION_RETAINED
     );
   }
 
+  // Compound text-destination repair -- exactly 4 keys remain sentinel-
+  // filled in TEST (the four new transport-only keys, not yet
+  // provisioned); the two retired compound keys are correctly ABSENT from
+  // CONTRACT_PROJECTION_FIELD_KEYS entirely (checked earlier), so they
+  // never appear in `sentinelKeys` either -- retirement and
+  // not-yet-provisioned are deliberately distinct states.
   const sentinelKeys = CONTRACT_PROJECTION_FIELD_KEYS.filter((k) => !testRealIdKeys.includes(k));
   check(
-    'ZERO keys remain sentinel-filled in TEST -- Batches 1, 2, and 3 are all fully provisioned; all 110 live projection keys are real',
-    sentinelKeys,
-    [],
+    'exactly the 4 new transport-only keys remain sentinel-filled in TEST -- everything else (108 keys) is fully provisioned',
+    [...sentinelKeys].sort(),
+    [...CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS].sort(),
   );
-  checkTrue('none of the 19 retired keys re-enters the live TEST real-id map', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !testRealIdKeys.includes(k)));
+  checkTrue('none of the 21 retired keys re-enters the live TEST real-id map', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !testRealIdKeys.includes(k)));
 
-  // Jess Gate correction: "the 29 retained TEST ids are exactly unchanged" previously
+  // Jess Gate correction: "the retained TEST ids are exactly unchanged" previously
   // checked only that each retained KEY is present with SOME id -- it could not have
-  // caught one of those 29 ids silently changing value. Same known-good-reference
-  // discipline as the Batch 1 fix above: the exact 29 ids from the original repair
-  // (predating Batch 1/2, never touched by either), checked key-by-key.
+  // caught one of those ids silently changing value. Same known-good-reference
+  // discipline as the Batch 1 fix above: the exact 27 ids surviving the compound
+  // text-destination repair (predating Batch 1/2, never touched by either), checked
+  // key-by-key. The two retired ids (`earnestMoneyOption.additionalEarnestMoney` =
+  // lx0NWWA8tgilbEY71n3b, `closingPossession.closingDate` = s7jauYhoSPQd09GjoGOr)
+  // are deliberately NOT in this reference -- they must be absent from
+  // CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS and from testRealIdKeys both,
+  // proven separately above.
   const RETAINED_APPROVED_IDS = {
     'identity.propertyStreetAddress': 'UjJRDmdeuEpQKA9I2yFr',
     'parties.buyerEntityName': 'roFgPXN9bPMeLBxLPhpw',
@@ -589,12 +783,10 @@ check('29 retained + 19 retired = the original 48', CONTRACT_PROJECTION_RETAINED
     'earnestMoneyOption.earnestMoney': 'HJpetNeLUCy6mIv4hOKO',
     'earnestMoneyOption.optionFee': 'Gygwe13y13CZJJvJFk3y',
     'earnestMoneyOption.optionPeriodDays': '02LqDO3fMiKBLBFzheJX',
-    'earnestMoneyOption.additionalEarnestMoney': 'lx0NWWA8tgilbEY71n3b',
     'titleSurvey.titleCompanyName': 'hqovBqMSkSzi7hgyyonq',
     'titleSurvey.objectionsText': 'cqOCAubHmuLFbCl9TczS',
     'titleSurvey.objectionsDays': 'vAInvdtJ0nYHINzAwGy3',
     'propertyCondition.serviceContractCap': 'UiWOxyGDrbWO9cTkJSx9',
-    'closingPossession.closingDate': 's7jauYhoSPQd09GjoGOr',
     'settlementExpense.sellerCreditCap': 'fUWZ54vsfUyGBlxszHB0',
     'addendaApplicability.districtNotices': 'SpRUfNbdSL94QZz7vfrs',
     'noticeContact.buyerNoticeAddress': 'OWVLUUS4pyD0JA2bRqBy',
@@ -606,25 +798,35 @@ check('29 retained + 19 retired = the original 48', CONTRACT_PROJECTION_RETAINED
     'attorneyManualFields.specialProvisions': 'eZImM9FtKYff6CJzAafO',
     'attorneyManualFields.otherAddendaText': 'xQ1mLI1l8aHnhOLe07fy',
   };
-  check('RETAINED_APPROVED_IDS itself names exactly the 29 retained keys -- no missing or extra key in the reference set', [...Object.keys(RETAINED_APPROVED_IDS)].sort(), [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS].sort());
-  check('the 29 approved retained reference ids are themselves unique', new Set(Object.values(RETAINED_APPROVED_IDS)).size, 29);
+  check('RETAINED_APPROVED_IDS itself names exactly the 27 retained keys -- no missing or extra key in the reference set', [...Object.keys(RETAINED_APPROVED_IDS)].sort(), [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS].sort());
+  check('the 27 approved retained reference ids are themselves unique', new Set(Object.values(RETAINED_APPROVED_IDS)).size, 27);
   {
     const observedRetainedIds = Object.fromEntries(CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
     check(
-      'every one of the 29 retained keys maps to its EXACT unchanged id in TEST -- full 29-key mapping proof, not key presence alone',
+      'every one of the 27 retained keys maps to its EXACT unchanged id in TEST -- full 27-key mapping proof, not key presence alone',
       observedRetainedIds,
       RETAINED_APPROVED_IDS,
     );
   }
 
-  // Production must remain fully sentinel-filled for all 110 keys -- Batch 1/2/3's
-  // live Test provisioning must never leak into the PRODUCTION config block, even
-  // now that TEST itself is fully provisioned (zero sentinels).
+  // The 4 new transport-only keys must be sentinel-filled in TEST (not yet
+  // provisioned -- no field-creation was authorized or performed this
+  // session). They deliberately carry NO explicit literal line in
+  // `TEST.contractProjectionFields` (see that object's own comment) --
+  // their sentinel value comes purely from the `...sentinelContractProjectionFields()`
+  // spread, which is exactly why they are absent from `testRealIdEntries`
+  // (a regex over explicit `"key": "value"` lines) and therefore already
+  // fully proven sentinel by the `sentinelKeys` check above; no further
+  // check is needed here.
+
+  // Production must remain fully sentinel-filled for all 112 keys -- Batch 1/2/3's
+  // live Test provisioning, and this session's transport-only key additions, must
+  // never leak into the PRODUCTION config block.
   const prodSentinelMatch = configSrc.match(/const PRODUCTION: GhlConfig = \{[\s\S]*?contractProjectionFields: sentinelContractProjectionFields\(\),[\s\S]*?contractDraftRequest: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,/);
-  checkTrue('PRODUCTION.contractProjectionFields is still exactly `sentinelContractProjectionFields()` -- untouched by Batch 1/2/3 Test wiring', !!prodSentinelMatch);
+  checkTrue('PRODUCTION.contractProjectionFields is still exactly `sentinelContractProjectionFields()` -- untouched by Batch 1/2/3 or this session\'s Test wiring', !!prodSentinelMatch);
   checkTrue('PRODUCTION.contractDraftRequest is still exactly the sentinel constant', !!prodSentinelMatch);
 
-  checkTrue('TEST.contractDraftRequest is unchanged (still the pre-existing real dropdown id, untouched by Batch 1/2/3)', /contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",/.test(configSrc));
+  checkTrue('TEST.contractDraftRequest is unchanged (still the pre-existing real dropdown id, untouched by this repair)', /contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",/.test(configSrc));
 }
 
 /* ==================================================================== */
