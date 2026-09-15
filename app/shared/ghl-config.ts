@@ -260,15 +260,14 @@ export const CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED = "CONTRACT_PROJECTION_FI
  * addendum, `noticeContact.buyerSignerName`/`buyerSignerRole` stay IAOS
  * audit/internal metadata, Board #10 scope). See
  * `contract-ghl-projection-model.ts`'s `CONTRACT_PROJECTION_RETIRED_KEYS`
- * for the precise per-key disposition. Batches 1 (48 markers) and 2 (11
- * restructured contract-text keys) were provisioned live in GHL Test,
- * 2026-09-14 -- see the `contractProjectionFields` doc comment below for
- * the exact apply/verification record. Batch 3 (22 page-11 broker-text
- * keys) remains unprovisioned -- every key below that still lacks a real
- * id in `TEST` (exactly those 22) carries
- * `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`. No GHL field of any kind
- * was created, modified, or deleted for `PRODUCTION` -- it carries the
- * sentinel for all 110 keys, unconditionally.
+ * for the precise per-key disposition. Batches 1 (48 markers), 2 (11
+ * restructured contract-text keys), and 3 (22 page-11 broker-text keys)
+ * were all provisioned live in GHL Test, 2026-09-14/15 -- see the
+ * `contractProjectionFields` doc comment below for the exact
+ * apply/verification record. All 110 live projection keys now carry a
+ * real `TEST` id -- zero sentinels remain in `TEST`. No GHL field of any
+ * kind was created, modified, or deleted for `PRODUCTION` -- it carries
+ * the sentinel for all 110 keys, unconditionally.
  */
 const CONTRACT_PROJECTION_FIELD_KEYS = [
   // -- 29 retained, UNCHANGED single-TEXT keys --
@@ -613,12 +612,19 @@ const TEST: GhlConfig = {
   // re-verified Batch 1's 48 ids were unaffected, and that no Batch
   // 3-shaped field exists) before these 11 real ids were wired in below.
   //
-  // Batch 3 (22 page-11 broker-text keys) remains UNPROVISIONED -- every
-  // one of those 22 keys still carries
-  // `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED` via the
-  // `sentinelContractProjectionFields()` spread below, overridden only by
-  // the 29 pre-existing retained ids, the 48 Batch 1 marker ids, and the
-  // 11 Batch 2 contract-text ids (88 real ids total).
+  // Batch 3 (22 BROKER_TEXT_KEYS) was provisioned live in GHL Test
+  // (`scripts/inv67-create-broker-text-fields-batch3.cjs --apply`,
+  // 2026-09-15, same location and canonical parentId) -- 126 -> 148
+  // existing Opportunity fields, all 22 created and independently
+  // readback-verified the same way, re-confirmed via a third, independent
+  // fresh-GET-plus-join verification pass (that pass also re-verified all
+  // 29 retained + 48 Batch 1 + 11 Batch 2 ids were unaffected) before
+  // these 22 real ids were wired in below.
+  //
+  // The `sentinelContractProjectionFields()` spread below is now fully
+  // overridden -- ALL 110 live projection keys carry a real id (29
+  // retained + 48 Batch 1 + 11 Batch 2 + 22 Batch 3). Zero sentinels
+  // remain in `TEST`.
   contractProjectionFields: {
     ...sentinelContractProjectionFields(),
     // -- 29 retained (unchanged, pre-existing this repair) --
@@ -714,6 +720,31 @@ const TEST: GhlConfig = {
     "spbb_percent_amount_text": "mWYz5ZTIbMvSBTOVroCN",
     "bpsb_dollar_amount_text": "btZyfuT3OWUtno5lXBY0",
     "bpsb_percent_amount_text": "zF8SP63sgaDucKbSu9aM",
+    // -- Batch 3: 22 page-11 broker-text keys, provisioned and
+    //    readback-verified live in GHL Test 2026-09-15. All 110 live
+    //    projection keys are now real ids -- zero sentinels remain. --
+    "seller_broker_firm_name_text": "fQ5nJcC4J75talRkepts",
+    "seller_broker_address_text": "G45ZH9axVugvfobPGvuS",
+    "seller_broker_firm_license_no_text": "AoBHfaBz9pBJKikN1Eko",
+    "seller_broker_associate_name_text": "Pdep7yJF2NSjUcjSth3k",
+    "seller_broker_team_name_text": "sdI6iQaoNk59KbL21Lfl",
+    "seller_broker_associate_email_text": "8GvAYN43flkL9Ym8taP6",
+    "seller_broker_associate_phone_text": "TnPsNqI99PneMzrGbPdD",
+    "seller_broker_associate_license_no_text": "KAb0Le7PTH7nvCa8IUtB",
+    "seller_broker_supervisor_name_text": "xWpS4xAMNhFRdl4pAOZU",
+    "seller_broker_supervisor_phone_text": "kOMxDcTFZGrYjfEP8V6f",
+    "seller_broker_supervisor_license_no_text": "QuDhSYEG7OPf6pQSYHqP",
+    "buyer_broker_firm_name_text": "VwPs2a9SxVX0tCvh7Fdn",
+    "buyer_broker_address_text": "rzGaryRSVJJ4kIf0x9SX",
+    "buyer_broker_firm_license_no_text": "UvftPMxalVkg6W2kaFKR",
+    "buyer_broker_associate_name_text": "3u0i3DFGlwEndug8J1mb",
+    "buyer_broker_team_name_text": "p2r4okZEpPOAVrb8jmWz",
+    "buyer_broker_associate_email_text": "TGV1cchvAHsytzeG0F0k",
+    "buyer_broker_associate_phone_text": "fx126eOS938C09GQx8LM",
+    "buyer_broker_associate_license_no_text": "dI3u3ab6APNEI0kyDLlw",
+    "buyer_broker_supervisor_name_text": "LQPRlxZ4muswJ74cwGBj",
+    "buyer_broker_supervisor_phone_text": "mHsY9gaeivKRLZabmw25",
+    "buyer_broker_supervisor_license_no_text": "usaUY2BYjLFXzTMklCU0",
   },
   contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",
   pipelines: {
