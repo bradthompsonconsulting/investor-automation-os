@@ -23,7 +23,13 @@ cleanup();
 fs.mkdirSync(TMP, { recursive: true });
 fs.writeFileSync(path.join(TMP, 'package.json'), JSON.stringify({ type: 'commonjs' }), 'utf8');
 
-const SOURCES = [path.join(LIB, 'seller-contract-facts-carriers.ts')];
+const SOURCES = [
+  path.join(LIB, 'seller-contract-facts-carriers.ts'),
+  // INV-67 Phase 1 -- the carriers file now carries a type-only import from
+  // this sibling module (Section 16); tsc needs it present to resolve types,
+  // even though nothing here requires its compiled output at runtime.
+  path.join(LIB, 'contract-seller-signing-model.ts'),
+];
 
 try {
   execSync(
@@ -39,7 +45,7 @@ try {
 
 const M = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
 
-const FLOOR = 56;
+const FLOOR = 73;
 let failures = 0;
 let checks = 0;
 
@@ -320,6 +326,59 @@ const AT = '2026-09-10T12:00:00.000Z';
   const older = M.formatBuyerBusinessConfigFactsNote({ ...args, at: '2026-09-01T00:00:00.000Z', noticeAddress: 'Old address' });
   check('buyer business config latest-wins scoped to opportunity', M.latestBuyerBusinessConfigFactsForOpportunity([{ body: older }, { body: note }], OPP).noticeAddress, args.noticeAddress);
   check('buyer business config ignores a different opportunity', M.latestBuyerBusinessConfigFactsForOpportunity([{ body: note }], 'opp-other'), null);
+}
+
+// ---------------------------------------------------------------------
+// Section 16 -- seller signing model (INV-67 Phase 1, this session)
+// ---------------------------------------------------------------------
+{
+  const oneSellerArgs = { opportunityId: OPP, at: '2026-09-15T00:00:00.000Z', operator: 'brad', model: { kind: 'one_seller', seller1Capacity: 'individual_own_capacity' } };
+  const oneSellerNote = M.formatSellerSigningModelNote(oneSellerArgs);
+  const oneSellerParsed = M.parseSellerSigningModelNote(oneSellerNote);
+  check('seller signing model round-trips a one_seller note', oneSellerParsed, oneSellerArgs);
+
+  const twoSellersArgs = {
+    opportunityId: OPP, at: '2026-09-15T01:00:00.000Z', operator: 'brad',
+    model: { kind: 'two_sellers', seller1Capacity: 'individual_own_capacity', seller2: { legalName: 'Jane Doe', email: 'jane@example.com' }, seller2Capacity: 'individual_own_capacity' },
+  };
+  const twoSellersNote = M.formatSellerSigningModelNote(twoSellersArgs);
+  const twoSellersParsed = M.parseSellerSigningModelNote(twoSellersNote);
+  check('seller signing model round-trips a two_sellers note', twoSellersParsed, twoSellersArgs);
+
+  check('seller signing model fails closed on garbage body', M.parseSellerSigningModelNote('not a real note'), null);
+  check('seller signing model fails closed on wrong header version', M.parseSellerSigningModelNote(oneSellerNote.replace('iaos-seller-contract-signing-model-v1', 'iaos-seller-contract-signing-model-v2')), null);
+  check('seller signing model fails closed on an unrecognized kind', M.parseSellerSigningModelNote(oneSellerNote.replace('"kind":"one_seller"', '"kind":"three_sellers"')), null);
+  check('seller signing model fails closed on an invalid capacity disposition', M.parseSellerSigningModelNote(oneSellerNote.replace('individual_own_capacity', 'trust_or_entity')), null);
+  check('seller signing model fails closed on a blank Seller 2 legal name', M.parseSellerSigningModelNote(twoSellersNote.replace('Jane Doe', '')), null);
+  check('seller signing model fails closed on a blank Seller 2 email', M.parseSellerSigningModelNote(twoSellersNote.replace('jane@example.com', '')), null);
+  check('seller signing model fails closed on an extra unexpected key', M.parseSellerSigningModelNote(oneSellerNote.replace('{"kind":"one_seller","seller1Capacity":"individual_own_capacity"}', '{"kind":"one_seller","seller1Capacity":"individual_own_capacity","extra":true}')), null);
+  check('seller signing model fails closed on a two_sellers note missing seller2Capacity', M.parseSellerSigningModelNote(twoSellersNote.replace(',"seller2Capacity":"individual_own_capacity"', '')), null);
+  check('seller signing model fails closed on a non-canonical timestamp', M.parseSellerSigningModelNote(oneSellerNote.replace('2026-09-15T00:00:00.000Z', '2026-09-15')), null);
+  check('seller signing model fails closed on a blank opportunity id', M.parseSellerSigningModelNote(oneSellerNote.replace(OPP, '')), null);
+
+  check(
+    'seller signing model latest-wins, scoped to one opportunity',
+    M.latestSellerSigningModelForOpportunity([{ body: oneSellerNote }, { body: twoSellersNote }], OPP).model,
+    twoSellersArgs.model,
+  );
+  check('seller signing model ignores a different opportunity', M.latestSellerSigningModelForOpportunity([{ body: oneSellerNote }], 'opp-other'), null);
+  check('seller signing model resolves null when no note exists for the opportunity', M.latestSellerSigningModelForOpportunity([], OPP), null);
+
+  // Switching Two Sellers -> One Seller: the stale two_sellers note (with
+  // Seller 2's name/email) remains fully readable as history, but is no
+  // longer "latest" once a newer one_seller note supersedes it -- the SAME
+  // "most-recent-Note-wins, never deleted" mechanism every other carrier
+  // in this file already uses. Proves stale Seller 2 data has zero
+  // influence on the resolved fact once superseded.
+  const revertedArgs = { opportunityId: OPP, at: '2026-09-15T02:00:00.000Z', operator: 'brad', model: { kind: 'one_seller', seller1Capacity: 'individual_own_capacity' } };
+  const revertedNote = M.formatSellerSigningModelNote(revertedArgs);
+  const historyAfterRevert = [{ body: oneSellerNote }, { body: twoSellersNote }, { body: revertedNote }];
+  check('switching Two Sellers -> One Seller: latest resolved fact is one_seller', M.latestSellerSigningModelForOpportunity(historyAfterRevert, OPP).model, revertedArgs.model);
+  check(
+    'switching Two Sellers -> One Seller: the stale two_sellers note is still independently parseable as history (never deleted/edited)',
+    M.parseSellerSigningModelNote(twoSellersNote).model,
+    twoSellersArgs.model,
+  );
 }
 
 cleanup();

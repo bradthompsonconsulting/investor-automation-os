@@ -975,3 +975,142 @@ regenerated only after the 4 fields are provisioned and wired, against the
 corrected 112-key / 115-placement structure. Does not create a draft, send
 anything, or touch Production, Linear, or Board #10. PR opened for Jess
 Gate review; not merged pending that review.
+
+## One-/Two-Seller signer model + Test Seller-Count field -- Phase 1 (this session)
+
+**What this phase is.** Brad's final-gated "INV-67 ONE-/TWO-SELLER MODEL +
+TEST SELLER-COUNT FIELD -- PHASE 1 IMPLEMENTATION" authorization, following
+four rounds of READ-ONLY planning (circular-gate removal, discovery-before-
+implementation sequencing, strict name-matching, entity-capacity-boundary,
+template-readiness-must-include-verification, draft-bound recipient-
+confirmation binding). This phase builds and tests the canonical model, the
+persistence carrier, Seller 1 resolution, the Contract Workspace UI, and a
+dry-run-only GHL Test provisioning script for a new `Contract Seller Count`
+transport field. **It does not wire any of this into the live sync/draft
+path** -- see "What this phase does NOT do" below.
+
+**Locked canonical model** (`app/src/lib/contract-seller-signing-model.ts`,
+new, pure). `SellerSigningModel` is a discriminated union on `kind`:
+`"one_seller"` (`seller1Capacity` only) or `"two_sellers"` (`seller1Capacity`,
+`seller2: {legalName, email}`, `seller2Capacity`). `SigningCapacityDisposition`
+is `"individual_own_capacity" | "unsupported_capacity" | "unresolved"` --
+only the first passes; the other two fail closed with DIFFERENT messages.
+V1 supports natural-person Sellers signing in their own capacity only --
+entity/trust/trustee/POA/estate/representative capacity is explicitly
+unsupported, never inferred from free-text `role`/`signingAuthorityNote`.
+Email normalizes via `trim().toLowerCase()`; name comparison normalizes via
+trim + collapse-internal-whitespace + case-fold ONLY -- no fuzzy matching,
+so punctuation/middle-name/suffix/abbreviation differences fail closed and
+show both values.
+
+**Seller 1 -- zero new GHL API surface.** `OpportunityRow`
+(`app/src/lib/ghl.ts`) already carries `contactId`/`contactName`/`email` on
+every row, populated server-side by the existing `ghl-opportunities`
+function and already fetched by `ContractWorkspace.tsx` via the existing
+`ghl.opportunities.listPipeline()` / `opportunitiesForContact()` path.
+`resolveSeller1FromOpportunity()` is therefore 100% pure -- it validates
+already-fetched data, it does not fetch anything. Seller 1 is never
+manually duplicated into the canonical fact; `SellerSigningModel` carries no
+Seller-1 identity fields at all.
+
+**Persistence.** A sixteenth section appended to `app/src/lib/seller-
+contract-facts-carriers.ts` (`SELLER_SIGNING_MODEL_LEDGER_VERSION =
+"iaos-seller-contract-signing-model-v1"`), mirroring every existing section's
+append-only, positional-label, latest-note-wins pattern exactly. Switching
+Two Sellers -> One Seller writes a new `one_seller` note; the prior
+`two_sellers` note remains independently parseable as history (never
+edited/deleted), but has zero influence once the latest fact resolves to
+`one_seller` -- proved directly in the test suite.
+
+**Fifteen distinct pre-draft gates**, each its own exported function, plus
+one aggregator (`evaluateSellerSigningReadiness`) that collects ALL
+applicable reasons in one pass (never just the first) and mirrors
+`board9-contract-model.ts`'s own `{ok:true} | {ok:false; reasons}` shape.
+Two-Seller-only gates (7-11, Seller 2's half of 13) are skipped entirely for
+`one_seller` -- One-Seller produces zero Seller-2-shaped output of any kind.
+Printed-party consistency (gates 12-13) cross-validates against the existing
+`parties.sellerSigners` cardinality and, only once cardinality agrees, each
+name -- resolved Seller 1 name vs. the first printed Seller, Seller 2's
+legal name vs. the second.
+
+**Contract Workspace UI** (`app/src/pages/ContractWorkspace.tsx`). A new
+form box in the existing "parties" group, alongside (not replacing) the
+existing signer/buyer-override forms: a required Number-of-Sellers selector
+with no default (`"unset"` until chosen); a read-only display of the
+resolved Seller 1 name/email/contact id (or the specific resolution failure
+reason); an explicit three-state Seller 1 capacity selector defaulting to
+"Not yet confirmed" (`unresolved` -- a real, persistable disposition, not an
+eligible default); and, rendered ONLY when Two Sellers is selected, Seller 2
+legal-name/email fields and its own three-state capacity selector. Save
+validates only what the Note carrier itself requires to round-trip (a
+selected count; for Two Sellers, non-blank name, valid + distinct email) --
+an `unresolved` capacity is itself a valid recorded state, exactly like every
+other explicit populated/not-applicable/unresolved fact group in this file;
+gating a draft on capacity is the later, separately authorized integration.
+
+**Contract Seller Count transport field -- Test-only, dry-run only.** New
+script `app/scripts/inv67-create-seller-count-field.cjs`, structurally
+identical to the proven Batch 1-3 provisioning architecture (hard
+Test-location allowlist checked before any credential read, canonical-anchor
+`parentId` resolution, `classifyExistingMatch` / `validateFieldAgainstSpec`
+/ `parsePostResponse` / `planBatch` / `printSummaryAndExit`, dry-run
+default, zero PUT/PATCH/DELETE capability anywhere in the script), plus one
+addition: `validateFieldAgainstSpec` now also enforces exact, order-
+sensitive equality of the field's options array, and a new
+`verifyAgainstAuthoritativeSource()` reads
+`contract-seller-signing-model.ts` and dies loud before any network call if
+its `SELLER_COUNT_ONE_SELLER_VALUE`/`SELLER_COUNT_TWO_SELLERS_VALUE`
+constants ever drift from this script's `options` array. One field:
+`Contract Seller Count`, `SINGLE_OPTIONS`, options exactly `["One Seller",
+"Two Sellers"]`, on the existing Opportunity Details folder (same canonical
+anchor, `opportunity.arv_after_repair_value`).
+
+**Configuration.** `app/shared/ghl-config.ts` gets a new, separate
+`contractSellerCountField: string` field on `GhlConfig` -- NOT a member of
+`CONTRACT_PROJECTION_FIELD_KEYS` (still exactly 112). Both `TEST` and
+`PRODUCTION` are sentinel-filled (`CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`)
+this phase; `checkSellerCountFieldProvisioned` fails closed on that exact
+sentinel. No fake field id was ever written.
+
+**Live GHL Test dry run (authorized, zero POSTs).** One proposed field,
+zero collisions: `contractSellerCount` does not yet exist in GHL Test.
+Proposed fieldKey `opportunity.contract_seller_count`, merge tag
+`{{opportunity.contract_seller_count}}`, canonical parentId
+`sGP3pbDQFN7fXS62MAgA` (the same Opportunity Details folder every other
+INV-67 field uses), against 148 existing fields at the time of the read.
+
+**What this phase does NOT do** (Brad's explicit out-of-scope list, verbatim
+respected). Does not create the live Seller Count field (no `--apply` was
+ever passed). Does not mutate any GHL workflow, template, or clone. Does not
+create a draft or send anything. Does not build the Two-Seller template.
+Does not modify the placement manifest (`docs/
+INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md`'s hash is unchanged from this
+phase's authorized starting point,
+`075d847f3f7d8916feb16fc23a8ee92828a7033b5f3e1bb6fc76bf245e36e60d`). Does
+not wire `evaluateSellerSigningReadiness` into `buildContractProjectionPlan`
+or the `contract-draft-request-model.ts` transition gate -- that live
+integration, and the final draft-bound recipient-confirmation gate, remain
+later, separately authorized work per Brad's own out-of-scope list. Does not
+touch Production, Linear, or Board #10. Does not mark INV-67 complete. PR
+opened for Jess Gate review; not merged pending that review.
+
+**Code map (this phase):**
+
+| File | Role |
+|---|---|
+| `app/src/lib/contract-seller-signing-model.ts` (new) | Canonical `SellerSigningModel` type, normalization, transport derivation, fifteen gates, `evaluateSellerSigningReadiness` aggregator, `resolveSeller1FromOpportunity` |
+| `app/src/lib/seller-contract-facts-carriers.ts` | New Section 16 -- `formatSellerSigningModelNote` / `parseSellerSigningModelNote` / `latestSellerSigningModelForOpportunity` |
+| `app/src/pages/ContractWorkspace.tsx` | New Number-of-Sellers form in the "parties" group; `handleSaveSellerSigning`; `seller1Resolution` / `latestSellerSigningModel` memos |
+| `app/shared/ghl-config.ts` | New `contractSellerCountField` config entry, separate from `CONTRACT_PROJECTION_FIELD_KEYS`, sentinel in both TEST and PRODUCTION |
+| `app/scripts/inv67-create-seller-count-field.cjs` (new) | Dry-run-only Test provisioning script for the Contract Seller Count field |
+| `app/scripts/test-contract-seller-signing-model.cjs` (new) | Direct unit proof of every gate, the aggregator, and `resolveSeller1FromOpportunity` |
+| `app/scripts/test-seller-contract-facts-carriers.cjs` | Extended -- Section 16 round-trip, fail-closed, and Two-Sellers-to-One-Seller history-isolation proofs |
+| `app/scripts/test-inv67-seller-count-field-script.cjs` (new) | Offline (network-free) safety suite for the new provisioning script |
+| `app/package.json` | `test:contract-seller-signing-model`, `test:inv67-seller-count-field-script` script entries |
+
+**Test evidence.** `test:contract-seller-signing-model` 76/76 (new),
+`test:seller-contract-facts-carriers` 73/73 (56 existing + 17 new),
+`test:inv67-seller-count-field-script` 89/89 (new). Full repository suite
+(every `scripts/test-*.cjs`) re-run clean. `tsc -b --force` (project-wide
+TypeScript build) clean. `CONTRACT_PROJECTION_FIELD_KEYS` count unaffected
+at exactly 112.

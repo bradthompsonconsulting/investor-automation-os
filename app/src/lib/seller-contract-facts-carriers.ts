@@ -2,10 +2,12 @@
  * Seller contract facts -- durable carriers. B9-05 / INV-60.
  *
  * Pure. No I/O, no React. Fifteen format/parse pairs, one per TREC 20-19
- * fact group named in the locked INV-60 Product Owner ruling. Every
- * function here builds or reads a note string; NONE performs a write --
- * the caller is responsible for `ghl.notes.create()`, one of AGENTS.md's
- * "three sanctioned writes, and no fourth." No new write class.
+ * fact group named in the locked INV-60 Product Owner ruling, plus a
+ * sixteenth (INV-67 Phase 1, this session) for the One-/Two-Seller
+ * signer-cardinality fact. Every function here builds or reads a note
+ * string; NONE performs a write -- the caller is responsible for
+ * `ghl.notes.create()`, one of AGENTS.md's "three sanctioned writes, and
+ * no fourth." No new write class.
  *
  * JESS GATE CORRECTION ROUND (2026-09-10): three changes to the original
  * thirteen. (1) ¶5's earnest money, option fee, and option-period-days no
@@ -47,7 +49,17 @@
  * operator/attorney-supplied string plus who-and-when provenance -- this
  * module never drafts, interprets, recommends, or validates that text's
  * content.
+ *
+ * Section 16 (INV-67 Phase 1) is this file's first type-only import --
+ * `SellerSigningModel`/`SigningCapacityDisposition` are the ONE canonical
+ * definition, owned by `contract-seller-signing-model.ts`, never
+ * redeclared here. A type-only import (erased at compile time) does not
+ * create any runtime coupling and does not violate this file's "no I/O"
+ * discipline -- it avoids the strictly worse alternative of two
+ * independent, driftable definitions of the same fact shape.
  */
+
+import type { SellerSigningModel, SigningCapacityDisposition } from "./contract-seller-signing-model";
 
 /* ------------------------------------------------------------------ */
 /* Shared helpers -- same idiom every existing carrier file repeats     */
@@ -1412,6 +1424,95 @@ export function latestBuyerBusinessConfigFactsForOpportunity(
   let latest: ParsedBuyerBusinessConfigFacts | null = null;
   for (const note of notes) {
     const parsed = parseBuyerBusinessConfigFactsNote(note.body);
+    if (!parsed || parsed.opportunityId !== opportunityId) continue;
+    if (!latest || new Date(parsed.at).getTime() > new Date(latest.at).getTime()) latest = parsed;
+  }
+  return latest;
+}
+
+/* ==================================================================== */
+/* 16. Seller signing model (INV-67 Phase 1, this session) -- One-/Two-  */
+/*     Seller cardinality, capacity dispositions, Seller 2 identity      */
+/* ==================================================================== */
+
+/**
+ * SAME proven append-only pattern as every carrier above -- a versioned
+ * header, positional labels, a canonical ISO timestamp, "latest entry
+ * wins, scoped to ONE Opportunity." Switching from Two Sellers back to One
+ * Seller writes a FRESH `one_seller` note; the prior `two_sellers` note
+ * (with Seller 2's name/email) is never edited or deleted -- it simply
+ * stops being "latest," so it remains readable as history but influences
+ * nothing downstream (projection, template routing, readiness) once a
+ * newer note supersedes it. This is the SAME mechanism every other fact in
+ * this file already relies on -- no new deletion/edit capability was
+ * introduced to achieve "stale Seller 2 data has zero influence."
+ */
+export const SELLER_SIGNING_MODEL_LEDGER_VERSION = "iaos-seller-contract-signing-model-v1" as const;
+const SELLER_SIGNING_MODEL_HEADER = `IAOS SELLER SIGNING MODEL — ${SELLER_SIGNING_MODEL_LEDGER_VERSION}`;
+const SELLER_SIGNING_MODEL_LABELS = ["Recorded at", "Operator", "Opportunity", "Model"] as const;
+
+export type ParsedSellerSigningModel = { opportunityId: string; at: string; operator: string | null; model: SellerSigningModel };
+
+const SIGNING_CAPACITY_DISPOSITIONS: readonly SigningCapacityDisposition[] = ["individual_own_capacity", "unsupported_capacity", "unresolved"];
+function isSigningCapacityDisposition(v: unknown): v is SigningCapacityDisposition {
+  return typeof v === "string" && (SIGNING_CAPACITY_DISPOSITIONS as readonly string[]).includes(v);
+}
+
+function validateSellerSigningModelValue(v: unknown): SellerSigningModel | null {
+  if (!isPlainObject(v)) return null;
+  if (v.kind === "one_seller") {
+    if (!hasExactKeys(v, ["kind", "seller1Capacity"])) return null;
+    if (!isSigningCapacityDisposition(v.seller1Capacity)) return null;
+    return { kind: "one_seller", seller1Capacity: v.seller1Capacity };
+  }
+  if (v.kind === "two_sellers") {
+    if (!hasExactKeys(v, ["kind", "seller1Capacity", "seller2", "seller2Capacity"])) return null;
+    if (!isSigningCapacityDisposition(v.seller1Capacity)) return null;
+    if (!isSigningCapacityDisposition(v.seller2Capacity)) return null;
+    if (!isPlainObject(v.seller2) || !hasExactKeys(v.seller2, ["legalName", "email"])) return null;
+    if (typeof v.seller2.legalName !== "string" || v.seller2.legalName.trim() === "") return null;
+    if (typeof v.seller2.email !== "string" || v.seller2.email.trim() === "") return null;
+    return {
+      kind: "two_sellers",
+      seller1Capacity: v.seller1Capacity,
+      seller2: { legalName: v.seller2.legalName, email: v.seller2.email },
+      seller2Capacity: v.seller2Capacity,
+    };
+  }
+  return null;
+}
+
+export function formatSellerSigningModelNote(args: {
+  opportunityId: string; at: string; operator: string | null; model: SellerSigningModel;
+}): string {
+  return [
+    SELLER_SIGNING_MODEL_HEADER,
+    `${SELLER_SIGNING_MODEL_LABELS[0]}: ${args.at}`,
+    `${SELLER_SIGNING_MODEL_LABELS[1]}: ${ledgerValue(args.operator)}`,
+    `${SELLER_SIGNING_MODEL_LABELS[2]}: ${args.opportunityId}`,
+    `${SELLER_SIGNING_MODEL_LABELS[3]}: ${JSON.stringify(args.model)}`,
+  ].join("\n");
+}
+
+export function parseSellerSigningModelNote(body: string): ParsedSellerSigningModel | null {
+  const values = matchPositionalSchema(body, SELLER_SIGNING_MODEL_HEADER, SELLER_SIGNING_MODEL_LABELS);
+  if (!values) return null;
+  const [at, operatorRaw, opportunityId, modelRaw] = values;
+  if (opportunityId === "") return null;
+  if (!isCanonicalIsoTimestamp(at)) return null;
+  const parsed = safeJsonParse(modelRaw);
+  if (!parsed.ok) return null;
+  const model = validateSellerSigningModelValue(parsed.value);
+  if (!model) return null;
+  return { opportunityId, at, operator: operatorRaw === "UNAVAILABLE" ? null : operatorRaw, model };
+}
+
+export function latestSellerSigningModelForOpportunity(
+  notes: { body: string }[], opportunityId: string,
+): ParsedSellerSigningModel | null {
+  let latest: ParsedSellerSigningModel | null = null;
+  for (const note of notes) {
+    const parsed = parseSellerSigningModelNote(note.body);
     if (!parsed || parsed.opportunityId !== opportunityId) continue;
     if (!latest || new Date(parsed.at).getTime() > new Date(latest.at).getTime()) latest = parsed;
   }

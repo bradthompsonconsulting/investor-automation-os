@@ -114,6 +114,30 @@ export interface GhlConfig {
    */
   contractProjectionFields: Record<string, string>;
   contractDraftRequest: string;
+  /**
+   * INV-67 One-/Two-Seller signer model, Phase 1 (this session) -- the
+   * `Contract Seller Count` Opportunity custom field (SINGLE_OPTIONS,
+   * options `"One Seller"` / `"Two Sellers"`, exactly the transport values
+   * `contract-seller-signing-model.ts`'s `sellerCountTransportValue`
+   * produces). DELIBERATELY SEPARATE from `contractProjectionFields` /
+   * `CONTRACT_PROJECTION_FIELD_KEYS` -- this is a signer-routing/template-
+   * selection signal, not one of the 112 TREC-body-fact projection keys,
+   * and must never be counted toward or confused with that set. Not yet
+   * provisioned in either environment as of this phase (sentinel-filled,
+   * `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`, the same fail-closed
+   * sentinel `contractProjectionFields` already uses) -- creating the live
+   * field (`--apply`) is a separately authorized future step; this phase
+   * is planning/dry-run/config-shape only. `evaluateSellerSigningReadiness`
+   * (`contract-seller-signing-model.ts`) fails closed on this exact
+   * sentinel via `checkSellerCountFieldProvisioned`, before any network
+   * mutation that would depend on it -- see that module's own doc
+   * comment. This field is TRANSPORT ONLY: never read back into the
+   * canonical `SellerSigningModel` carrier, which remains the sole
+   * authoritative source (Note-based, `seller-contract-facts-carriers.ts`
+   * Section 16) -- a one-way write target, exactly like every other
+   * transport-projected field in this codebase.
+   */
+  contractSellerCountField: string;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -495,6 +519,10 @@ const PRODUCTION: GhlConfig = {
   // opportunityFacts.currentOffer used above.
   contractProjectionFields: sentinelContractProjectionFields(),
   contractDraftRequest: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+  // INV-67 One-/Two-Seller signer model, Phase 1 -- Production is
+  // unconditionally sentinel-filled, exactly like every other
+  // Documents & Contracts / contract-projection identifier above.
+  contractSellerCountField: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -796,6 +824,15 @@ const TEST: GhlConfig = {
     "buyer_broker_supervisor_license_no_text": "usaUY2BYjLFXzTMklCU0",
   },
   contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",
+  // INV-67 One-/Two-Seller signer model, Phase 1 (this session) -- the
+  // `Contract Seller Count` field has NOT been created in GHL Test yet.
+  // `scripts/inv67-create-seller-count-field.cjs` (dry-run by default, no
+  // --apply this phase) is the one, separately authorized future
+  // provisioning path -- see that script's own header. Remains sentinel
+  // until that script is run with --apply and this value is hand-wired
+  // to the real id, exactly the same discipline every batch before it
+  // (Batches 1-3) followed.
+  contractSellerCountField: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },
@@ -872,6 +909,7 @@ export function getConfig(selector: string | undefined): GhlConfig {
       ([k, v]): [string, string] => [`contractProjectionFields.${k}`, v],
     ),
     ["contractDraftRequest", config.contractDraftRequest],
+    ["contractSellerCountField", config.contractSellerCountField],
     ...Object.entries(config.pipelines).map(
       ([k, v]): [string, string] => [`pipelines.${k}`, v],
     ),
@@ -1021,6 +1059,8 @@ export interface RuntimeConfig {
   contractProjectionFields: GhlConfig["contractProjectionFields"];
   /** INV-67 / B9-12 -- flat, like `locationId` above: the Contract Draft Request field is a single id, not a nested group. */
   contractDraftRequest: string;
+  /** INV-67 One-/Two-Seller signer model, Phase 1 -- flat, same pattern as `contractDraftRequest` above. Sentinel-filled in both environments this phase -- see `GhlConfig.contractSellerCountField`'s own doc comment. */
+  contractSellerCountField: string;
   stages: Pick<
     GhlConfig["stages"],
     "sellerClosedWon" | "lostNotInterested" | "sellerFollowUp"
@@ -1030,7 +1070,11 @@ export interface RuntimeConfig {
 
 /** Server side: project a full config down to what the browser consumes. */
 export function projectRuntimeConfig(config: GhlConfig): RuntimeConfig {
-  const out: Record<string, unknown> = { locationId: config.locationId, contractDraftRequest: config.contractDraftRequest };
+  const out: Record<string, unknown> = {
+    locationId: config.locationId,
+    contractDraftRequest: config.contractDraftRequest,
+    contractSellerCountField: config.contractSellerCountField,
+  };
   for (const [group, keys] of Object.entries(RUNTIME_GROUPS)) {
     const source = config[group as keyof GhlConfig] as Record<string, string>;
     const picked: Record<string, string> = {};
@@ -1046,6 +1090,7 @@ function runtimeEntries(payload: unknown): Array<[string, string]> {
   const entries: Array<[string, string]> = [
     ["locationId", p.locationId as string],
     ["contractDraftRequest", p.contractDraftRequest as string],
+    ["contractSellerCountField", p.contractSellerCountField as string],
   ];
   for (const [group, keys] of Object.entries(RUNTIME_GROUPS)) {
     const g = p[group] as Record<string, string> | undefined;
