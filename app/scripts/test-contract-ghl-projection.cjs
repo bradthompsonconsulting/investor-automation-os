@@ -389,6 +389,73 @@ function completeReport(overrides) {
 }
 
 /* ==================================================================== */
+/* 3d. Jess Gate correction -- closing-date MISSING-DISPOSITION gap      */
+/*     fixed. Closing Date is REQUIRED: `not_applicable` and             */
+/*     `unresolved` must both block the whole plan, never silently fall  */
+/*     through `transportFieldText`'s generic `not_applicable -> ""`     */
+/*     branch to a blank month/day/year-suffix and an ok:true plan.      */
+/* ==================================================================== */
+
+{
+  // not_applicable -- the exact real FieldDisposition shape for this kind
+  // (`contract-facts-model.ts`'s own `{ kind: "not_applicable"; confirmedBy;
+  // at; note }`), not a populated-with-empty-string stand-in.
+  const preview = completePreview();
+  const report = completeReport({
+    closingPossession: {
+      closingDate: { kind: 'not_applicable', confirmedBy: 'operator', at: '2026-09-01T00:00:00.000Z', note: 'To be determined.' },
+    },
+  });
+  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  checkTrue('not_applicable closing date -- plan.ok is false (Closing Date is required, "not applicable" is not an allowed disposition)', plan.ok === false);
+  checkTrue('not_applicable closing date -- blocking reason names the closing date', plan.ok ? false : plan.blockingReasons.some((r) => /closing.?date/i.test(r)));
+  checkTrue('not_applicable closing date -- blocking reason is distinct (mentions "not applicable")', plan.ok ? false : plan.blockingReasons.some((r) => /not applicable/i.test(r)));
+  checkTrue('not_applicable closing date -- no successful projection entries are returned', !('entries' in plan));
+  checkTrue('not_applicable closing date -- no `warnings` array either (this is the ok:false shape, not ok:true)', !('warnings' in plan));
+}
+
+{
+  // unresolved -- the exact real FieldDisposition shape (`{ kind:
+  // "unresolved" }`, no other fields at all).
+  const preview = completePreview();
+  const report = completeReport({ closingPossession: { closingDate: { kind: 'unresolved' } } });
+  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  checkTrue('unresolved closing date -- plan.ok is false', plan.ok === false);
+  checkTrue('unresolved closing date -- blocking reason names the closing date', plan.ok ? false : plan.blockingReasons.some((r) => /closing.?date/i.test(r)));
+  checkTrue('unresolved closing date -- blocking reason is distinct (mentions "unresolved", not "not applicable")', plan.ok ? false : plan.blockingReasons.some((r) => /unresolved/i.test(r)));
+  checkTrue('unresolved closing date -- blocking reason is DIFFERENT from the not_applicable reason (never conflated)', (() => {
+    const naReport = completeReport({ closingPossession: { closingDate: { kind: 'not_applicable', confirmedBy: null, at: '2026-09-01T00:00:00.000Z', note: null } } });
+    const naPlan = buildContractProjectionPlan('OPP-1', preview, naReport);
+    return plan.ok === false && naPlan.ok === false && plan.blockingReasons[0] !== naPlan.blockingReasons[0];
+  })());
+  checkTrue('unresolved closing date -- no successful projection entries are returned', !('entries' in plan));
+  checkTrue('unresolved closing date -- no `warnings` array either (this is the ok:false shape, not ok:true)', !('warnings' in plan));
+  checkTrue('unresolved closing date -- does NOT throw (a real data condition, refused via blockingReasons, never a thrown integrity-violation exception)', true); // the call above already completed without throwing; this assertion documents the intent for the reader
+}
+
+{
+  // Structural proof (not a UI-level test -- ContractWorkspace.tsx itself is
+  // out of this suite's scope) that `plan.ok === false` for BOTH missing
+  // dispositions makes the downstream GHL write and the Contract Draft
+  // Request transition structurally unreachable: `ContractWorkspace.tsx`'s
+  // `handleSyncContractProjectionFields` reads `if (!plan.ok) { ...; return; }`
+  // BEFORE ever calling `ghl.opportunities.syncContractProjectionFields` or
+  // `evaluateContractDraftRequestTransition` -- both calls are gated
+  // entirely behind `plan.ok`, which is `false` here, so neither can run.
+  const workspaceSrc = fs.readFileSync(path.join(APP, 'src', 'pages', 'ContractWorkspace.tsx'), 'utf8');
+  const handlerStartIdx = workspaceSrc.indexOf('async function handleSyncContractProjectionFields');
+  checkTrue('ContractWorkspace.tsx still defines handleSyncContractProjectionFields', handlerStartIdx > -1);
+  // Search from the handler's own start (not the whole file) so the
+  // `evaluateContractDraftRequestTransition` import statement earlier in
+  // the file is never mistaken for its call site inside this handler.
+  const planOkCheckIdx = handlerStartIdx > -1 ? workspaceSrc.indexOf('if (!plan.ok)', handlerStartIdx) : -1;
+  const ghlWriteIdx = handlerStartIdx > -1 ? workspaceSrc.indexOf('ghl.opportunities.syncContractProjectionFields(', handlerStartIdx) : -1;
+  const draftRequestIdx = handlerStartIdx > -1 ? workspaceSrc.indexOf('evaluateContractDraftRequestTransition(', handlerStartIdx) : -1;
+  checkTrue('handleSyncContractProjectionFields checks `!plan.ok` and returns before the GHL write call site', planOkCheckIdx > -1 && ghlWriteIdx > -1 && planOkCheckIdx < ghlWriteIdx);
+  checkTrue('handleSyncContractProjectionFields checks `!plan.ok` and returns before the Contract Draft Request transition call site', planOkCheckIdx > -1 && draftRequestIdx > -1 && planOkCheckIdx < draftRequestIdx);
+}
+
+/* ==================================================================== */
 /* 4. Blocking: marker-exclusivity violation cannot reach the plan       */
 /*    normally -- proven here via a report whose canonical facts, if     */
 /*    mis-derived, WOULD violate exclusivity; the by-construction         */

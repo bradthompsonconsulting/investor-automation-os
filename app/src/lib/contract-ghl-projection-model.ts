@@ -431,22 +431,59 @@ export function buildContractProjectionPlan(
     return { ok: false, blockingReasons: checkboxResult.blockingReasons };
   }
 
-  // Compound text-destination repair -- the closing-date century-bound gate
-  // MUST run, and MUST block the whole plan on failure, BEFORE either
-  // closing-date transport value below is derived. A malformed/unparseable
-  // instant or a year outside 2000-2099 is a real data condition an
-  // operator can produce (not a code-integrity violation), refused via
-  // `blockingReasons` exactly like a mineral-reservation disagreement or a
-  // blocking broker arrangement already is -- never a thrown exception.
-  // This is the SAME gate `ContractWorkspace.tsx`'s sync handler checks
-  // before it ever calls the GHL write or evaluates the Contract Draft
-  // Request transition (`plan.ok === false` short-circuits both).
-  const closingDateDisposition = report.closingPossession.closingDate;
-  if (closingDateDisposition.kind === "populated") {
-    const centuryCheck = checkClosingDateCenturyBound(closingDateDisposition.value);
-    if (!centuryCheck.ok) {
-      return { ok: false, blockingReasons: [centuryCheck.reason] };
+  // Compound text-destination repair -- Closing Date is REQUIRED (TREC
+  // 20-19 Paragraph 9A). This gate runs UNCONDITIONALLY, before either
+  // closing-date transport value is derived, and before the century-bound
+  // check below -- a `not_applicable` or `unresolved` disposition must
+  // block the whole plan exactly like a malformed/out-of-range instant
+  // does, never silently fall through to a blank transport value. Jess
+  // Gate correction: an earlier version of this gate only ran when
+  // `closingDateDisposition.kind === "populated"`, so a `not_applicable`
+  // disposition skipped the gate entirely and reached `transportFieldText`,
+  // whose OWN (correct, for keys where "not applicable" is a legitimate
+  // resolved state) `not_applicable -> ""` branch silently produced blank
+  // month/day and year-suffix text and let the plan return `ok:true` --
+  // exactly the gap this correction closes. `checkClosingDateRequired`
+  // returns a DISTINCT, operator-readable reason for each of the two
+  // non-populated dispositions so they are never conflated with each other
+  // or with the century-bound refusal.
+  function checkClosingDateRequired(
+    disposition: FieldDisposition<string>,
+  ): { ok: true; value: string } | { ok: false; reason: string } {
+    if (disposition.kind === "populated") return { ok: true, value: disposition.value };
+    if (disposition.kind === "not_applicable") {
+      return {
+        ok: false,
+        reason:
+          `closingPossession.closingDate is marked not applicable, but Closing Date is a required TREC 20-19 term ` +
+          `(Paragraph 9A) -- refusing to sync until a closing date is populated.`,
+      };
     }
+    return {
+      ok: false,
+      reason: `closingPossession.closingDate is unresolved -- required field, refusing to sync until it is populated.`,
+    };
+  }
+
+  const closingDateRequired = checkClosingDateRequired(report.closingPossession.closingDate);
+  if (!closingDateRequired.ok) {
+    return { ok: false, blockingReasons: [closingDateRequired.reason] };
+  }
+  const closingDateIso = closingDateRequired.value;
+
+  // The century-bound gate MUST run, and MUST block the whole plan on
+  // failure, BEFORE either closing-date transport value below is derived.
+  // A malformed/unparseable instant or a year outside 2000-2099 is a real
+  // data condition an operator can produce (not a code-integrity
+  // violation), refused via `blockingReasons` exactly like a mineral-
+  // reservation disagreement or a blocking broker arrangement already is --
+  // never a thrown exception. This is the SAME gate `ContractWorkspace.tsx`'s
+  // sync handler checks before it ever calls the GHL write or evaluates the
+  // Contract Draft Request transition (`plan.ok === false` short-circuits
+  // both).
+  const centuryCheck = checkClosingDateCenturyBound(closingDateIso);
+  if (!centuryCheck.ok) {
+    return { ok: false, blockingReasons: [centuryCheck.reason] };
   }
 
   const markerEntries: ContractProjectionEntry[] = CHECKBOX_MARKER_KEYS.map((key) => ({
@@ -464,9 +501,15 @@ export function buildContractProjectionPlan(
 
   // The four new transport-only entries -- each pair derived from ONE
   // canonical fact, never independently entered, so the two sibling values
-  // can never disagree. Safe to compute here: the century-bound gate above
-  // has already refused the whole plan if the closing-date instant were
-  // malformed or out of range.
+  // can never disagree. Safe to compute here: `checkClosingDateRequired`
+  // above has already refused the whole plan unless the closing date is
+  // `populated` (never `not_applicable`/`unresolved`), and the century-
+  // bound gate has already refused the whole plan if that populated
+  // instant were malformed or out of range -- `closingDateIso` reaching
+  // here is guaranteed valid, so the closing-date entries below call the
+  // transport renderers directly rather than through `transportFieldText`
+  // (whose generic `not_applicable -> ""` branch is exactly the gap this
+  // correction closes for this required field).
   const additionalEarnestMoneyDisposition = report.earnestMoneyOption.additionalEarnestMoney;
   const transportOnlyEntries: ContractProjectionEntry[] = [
     {
@@ -487,11 +530,11 @@ export function buildContractProjectionPlan(
     },
     {
       key: "closing_date_month_day_text" as ContractProjectionFieldKey,
-      text: transportFieldText(closingDateDisposition, "closingPossession.closingDate (month/day)", closingDateMonthDayTransport),
+      text: closingDateMonthDayTransport(closingDateIso),
     },
     {
       key: "closing_date_year_suffix_text" as ContractProjectionFieldKey,
-      text: transportFieldText(closingDateDisposition, "closingPossession.closingDate (year suffix)", closingDateYearSuffixTransport),
+      text: closingDateYearSuffixTransport(closingDateIso),
     },
   ];
 
