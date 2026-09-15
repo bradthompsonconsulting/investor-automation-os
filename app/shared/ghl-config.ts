@@ -260,11 +260,15 @@ export const CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED = "CONTRACT_PROJECTION_FI
  * addendum, `noticeContact.buyerSignerName`/`buyerSignerRole` stay IAOS
  * audit/internal metadata, Board #10 scope). See
  * `contract-ghl-projection-model.ts`'s `CONTRACT_PROJECTION_RETIRED_KEYS`
- * for the precise per-key disposition. No GHL field was created,
- * modified, or deleted for this repair -- every key below that lacks a
- * real id in `TEST` (all 81 new keys) carries
- * `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`, exactly like `PRODUCTION`
- * carries it for all 110.
+ * for the precise per-key disposition. Batches 1 (48 markers) and 2 (11
+ * restructured contract-text keys) were provisioned live in GHL Test,
+ * 2026-09-14 -- see the `contractProjectionFields` doc comment below for
+ * the exact apply/verification record. Batch 3 (22 page-11 broker-text
+ * keys) remains unprovisioned -- every key below that still lacks a real
+ * id in `TEST` (exactly those 22) carries
+ * `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`. No GHL field of any kind
+ * was created, modified, or deleted for `PRODUCTION` -- it carries the
+ * sentinel for all 110 keys, unconditionally.
  */
 const CONTRACT_PROJECTION_FIELD_KEYS = [
   // -- 29 retained, UNCHANGED single-TEXT keys --
@@ -598,12 +602,23 @@ const TEST: GhlConfig = {
   // fields, all 48 created and independently readback-verified against
   // name/fieldKey/dataType/model/parentId, re-confirmed via a SECOND,
   // fully independent fresh-GET-plus-join verification pass before these
-  // 48 real ids were wired in below. Batch 2 (11 restructured contract-
-  // text keys) and Batch 3 (22 page-11 broker-text keys) remain
-  // UNPROVISIONED -- every one of those 33 keys still carries
+  // 48 real ids were wired in below.
+  //
+  // Batch 2 (11 CHECKBOX_TEXT_KEYS) was provisioned live in GHL Test the
+  // same day (`scripts/inv67-create-checkbox-text-fields-batch2.cjs
+  // --apply`, 2026-09-14, same location and canonical parentId) -- 115 ->
+  // 126 existing Opportunity fields, all 11 created and independently
+  // readback-verified the same way, re-confirmed via a second,
+  // independent fresh-GET-plus-join verification pass (that pass also
+  // re-verified Batch 1's 48 ids were unaffected, and that no Batch
+  // 3-shaped field exists) before these 11 real ids were wired in below.
+  //
+  // Batch 3 (22 page-11 broker-text keys) remains UNPROVISIONED -- every
+  // one of those 22 keys still carries
   // `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED` via the
   // `sentinelContractProjectionFields()` spread below, overridden only by
-  // the 29 pre-existing retained ids and the 48 Batch 1 marker ids.
+  // the 29 pre-existing retained ids, the 48 Batch 1 marker ids, and the
+  // 11 Batch 2 contract-text ids (88 real ids total).
   contractProjectionFields: {
     ...sentinelContractProjectionFields(),
     // -- 29 retained (unchanged, pre-existing this repair) --
@@ -686,6 +701,19 @@ const TEST: GhlConfig = {
     "addenda_non_realty_items_mark": "3PU9i62PLkov9YV6q3Mc",
     "addenda_back_up_contract_mark": "CVKqL2Ir1VNglli2XO6f",
     "addenda_mineral_reservation_mark": "1TpO61JNm595TSf7DxwT",
+    // -- Batch 2: 11 restructured contract-text keys, provisioned and
+    //    readback-verified live in GHL Test 2026-09-14 --
+    "lease_nrl_terminate_within_days_text": "eeamXWV5F7d8Q6ne9HJy",
+    "survey_opt1_seller_furnish_days_text": "u59OMAoyjK9YuTwcqa0r",
+    "survey_opt2_buyer_obtain_days_text": "61wPlte1S9BkNZpfGLys",
+    "survey_opt3_seller_furnish_days_text": "j05f5WAhuvVWbBEzaRP9",
+    "sdn_deliver_within_days_text": "9Ct8c2DpVFf5Gv0hMAMo",
+    "water_deliver_within_days_text": "iyEFgnDlPSrUTnjWh6AL",
+    "water_source_text": "mBCxlruQK1THlKzAlCND",
+    "spbb_dollar_amount_text": "cLVDbtp1nlPKH9NGUCUz",
+    "spbb_percent_amount_text": "mWYz5ZTIbMvSBTOVroCN",
+    "bpsb_dollar_amount_text": "btZyfuT3OWUtno5lXBY0",
+    "bpsb_percent_amount_text": "zF8SP63sgaDucKbSu9aM",
   },
   contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",
   pipelines: {

@@ -29,15 +29,18 @@
  *     module's exactly; the field-creation script's 48 already-provisioned
  *     keys remain EXACTLY the original 29 retained + 19 retired keys (that
  *     script provisions nothing new -- its key set is untouched even
- *     though 19 of those keys are no longer live). Batch 1 GHL Test
- *     provisioning (2026-09-14, `inv67-create-checkbox-marker-fields-
- *     batch1.cjs --apply`): `shared/ghl-config.ts`'s TEST config now
- *     carries real ids for exactly 77 keys (29 retained + 48 Batch 1
- *     markers, all unique, none the sentinel), exactly 33 keys (Batches
- *     2/3, unprovisioned) remain sentinel-filled, no retired key
- *     re-enters the live map, and PRODUCTION remains fully sentinel-
- *     filled for all 110 keys -- proven directly against the committed
- *     file, not merely asserted.
+ *     though 19 of those keys are no longer live). Batch 1 + Batch 2 GHL
+ *     Test provisioning (2026-09-14, `inv67-create-checkbox-marker-fields-
+ *     batch1.cjs --apply` then `inv67-create-checkbox-text-fields-
+ *     batch2.cjs --apply`): `shared/ghl-config.ts`'s TEST config now
+ *     carries real ids for exactly 88 keys (29 retained + 48 Batch 1
+ *     markers + 11 Batch 2 contract-text keys, all unique, none the
+ *     sentinel, each Batch's ids independently cross-checked against
+ *     their fresh-verified values), exactly 22 keys (Batch 3, unprovisioned)
+ *     remain sentinel-filled, no retired key re-enters the live map, Batch
+ *     1's ids are proven unchanged by the Batch 2 wiring, and PRODUCTION
+ *     remains fully sentinel-filled for all 110 keys -- proven directly
+ *     against the committed file, not merely asserted.
  */
 const { execSync } = require('child_process');
 const fs = require('fs');
@@ -81,7 +84,7 @@ const {
 } = require(path.join(TMP, 'contract-checkbox-marker-model.js'));
 const { ADDENDA_APPLICABILITY_ITEM_KEYS } = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
 
-const FLOOR = 65;
+const FLOOR = 74;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -398,42 +401,186 @@ check('29 retained + 19 retired = the original 48', CONTRACT_PROJECTION_RETAINED
     : [];
   const testRealIdKeys = testRealIdEntries.map((e) => e.key);
 
-  // Batch 1 (INV-67 checkbox-marker / broker-model repair, GHL Test provisioning,
-  // 2026-09-14): the 48 CHECKBOX_MARKER_KEYS were created live and readback-verified,
-  // then wired in with their real ids. Batches 2 (11 CHECKBOX_TEXT_KEYS) and 3 (22
-  // BROKER_TEXT_KEYS) remain unprovisioned -- exactly 33 keys still carry the sentinel.
+  // Batch 1 (48 CHECKBOX_MARKER_KEYS) and Batch 2 (11 CHECKBOX_TEXT_KEYS) --
+  // INV-67 checkbox-marker / broker-model repair, GHL Test provisioning,
+  // 2026-09-14 -- were both created live and readback-verified, then wired in
+  // with their real ids. Batch 3 (22 BROKER_TEXT_KEYS) remains unprovisioned --
+  // exactly 22 keys still carry the sentinel.
   check(
-    'TEST carries a REAL id for exactly 77 keys: the 29 retained + the 48 Batch 1 markers',
+    'TEST carries a REAL id for exactly 88 keys: the 29 retained + the 48 Batch 1 markers + the 11 Batch 2 contract-text keys',
     [...testRealIdKeys].sort(),
-    [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS, ...CHECKBOX_MARKER_KEYS].sort(),
+    [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS, ...CHECKBOX_MARKER_KEYS, ...CHECKBOX_TEXT_KEYS].sort(),
   );
   check('exactly 48 of those real-id keys are CHECKBOX_MARKER_KEYS', testRealIdKeys.filter((k) => CHECKBOX_MARKER_KEYS.includes(k)).length, 48);
-  check('the 48 real Batch 1 marker ids are themselves unique (no id reused across two keys)', new Set(testRealIdEntries.filter((e) => CHECKBOX_MARKER_KEYS.includes(e.key)).map((e) => e.id)).size, 48);
+  check('exactly 11 of those real-id keys are CHECKBOX_TEXT_KEYS', testRealIdKeys.filter((k) => CHECKBOX_TEXT_KEYS.includes(k)).length, 11);
   checkTrue(
-    'no Batch 1 marker id is empty, whitespace, or the sentinel string itself',
-    testRealIdEntries.filter((e) => CHECKBOX_MARKER_KEYS.includes(e.key)).every((e) => e.id.trim().length > 0 && e.id !== 'CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED'),
+    'all 88 real-id entries are non-empty, non-whitespace, and never the sentinel string',
+    testRealIdEntries.every((e) => e.id.trim().length > 0 && e.id !== 'CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED'),
   );
+  check('all 88 real ids are themselves unique (no id reused across two keys, Batch 1 and Batch 2 combined)', new Set(testRealIdEntries.map((e) => e.id)).size, 88);
   checkTrue(
     'none of the 3 repeated-destination markers (lease_residential_mark, lease_fixture_mark, possession_leaseback_mark) is missing its real id',
     Object.keys(CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS).every((k) => testRealIdKeys.includes(k)),
   );
+  // Jess Gate correction: the prior version of this proof sampled only 2 of
+  // the 48 Batch 1 keys, which cannot detect a silent id change on any of
+  // the other 46. This is the COMPLETE, known-good reference -- the exact
+  // 48 ids verified live and wired in by the Batch 1 apply (PR #54) --
+  // checked key-by-key against every one of CHECKBOX_MARKER_KEYS, so a
+  // single changed, missing, or extra id fails the check and (via `check`,
+  // not `checkTrue`) prints exactly which key(s) differ.
+  const BATCH1_APPROVED_MARKER_IDS = {
+    lease_residential_mark: 'aScwbIAJRuV3cFiKS09E',
+    lease_fixture_mark: 'h60tQTX5V339pL2Kkygs',
+    lease_nrl_applies_mark: 'WMXYsnvXYQN9b3CmGXNT',
+    lease_nrl_delivered_mark: 'vJz27kh08aSSvBqKaakT',
+    lease_nrl_not_delivered_mark: 'LKli45H0Nr3nbZpYwjbp',
+    title_expense_seller_mark: '2Su66drCeruZD3BPWLTE',
+    title_expense_buyer_mark: 'ayCF12CoJpuDrp0o2D5T',
+    shortage_not_amended_mark: '8pphVEZBaRLbjiwOSo91',
+    shortage_amended_mark: 'OO8u48boOVwvUhTPlSNb',
+    shortage_amended_buyer_mark: '04o5JNDHU8RT1FLBcO4w',
+    shortage_amended_seller_mark: '23SCz6pfBxlzXRLBAe23',
+    survey_opt1_mark: 'VF0IBL2Si2LaBFh2feaW',
+    survey_opt2_mark: 'XZS6zPtncMRmOE7uC2Kx',
+    survey_opt3_mark: 'ZoX7uWlw4D7sNnIHhSXb',
+    survey_opt1_expense_buyer_mark: 'uCdzFP5SGvJ4gN7nlupp',
+    survey_opt1_expense_seller_mark: 'MszEe7kMJBhsjtSqFciy',
+    poa_is_subject_mark: 'Z0UnZIVEI1zGK61NpSKJ',
+    poa_is_not_subject_mark: 'IcSITgJPOFRkrLMulqjg',
+    sdn_received_mark: '8C5DbEYVF1YRuelPRZQV',
+    sdn_not_received_mark: 'pvKObPCyffKDzx1hwoYt',
+    sdn_not_required_mark: 'KgtPnweNDnOuz6BKjM6k',
+    as_is_plain_mark: 'khQmW6JpU3kFzJBH7Nlm',
+    as_is_with_repairs_mark: 'oIcJ9Xd21ktI7hOOlvCk',
+    water_received_mark: 'MLxpIA58JR9Wqr2ltazg',
+    water_not_received_mark: 'dJGi6Pq1bU2lK8NVK8AW',
+    water_exempt_mark: 'TkG9weH8ruhKP2iLxmco',
+    possession_upon_closing_mark: 'Ae1IFhDcZwJYONOgJXR5',
+    possession_leaseback_mark: 'yV2k1PAdSpxCg2B9nBOd',
+    spbb_applies_mark: 'O7CzOFOa0phJFy3PEExP',
+    spbb_dollar_mark: '8fuIJmOMzmwBkIS7ymMn',
+    spbb_percent_mark: '0mlDez8SVUYQDHXuCEsW',
+    bpsb_applies_mark: 'ZQywx7qCjxuvds5iexzT',
+    bpsb_dollar_mark: 'u3aE3seViwHuJNBfhOYv',
+    bpsb_percent_mark: 'Ty3PKjwT1nwBQL2ZVHVy',
+    addenda_sale_of_other_property_mark: 'YFgsEFYuzmEXHhkLef9E',
+    addenda_lender_appraisal_termination_mark: 'gEfEATkLQv1yX21005c3',
+    addenda_section_1031_exchange_mark: 'K9NWow38jwnjGBgHdq9x',
+    addenda_short_sale_mark: 'GSbwMGY31JdPaMpiVUi6',
+    addenda_hydrostatic_testing_mark: 'JlSUHhT1NFTa8kkXkqi5',
+    addenda_environmental_assessment_mark: 'Btu5r6Iuv31PA8vrZoFv',
+    addenda_lead_based_paint_mark: '0abvgNZlKfsfPzO1jn1x',
+    addenda_propane_gas_service_area_mark: '7Sa2WVq1Y72awT34WVgL',
+    addenda_seaward_of_gulf_intracoastal_mark: 'CoqFFXPbIN0QcHPGH75X',
+    addenda_coastal_area_property_mark: 'NXTZ9IiHoqdJLIJdABeO',
+    addenda_poa_membership_mark: '5ZU2f0XeMWHjQbwBEsD1',
+    addenda_non_realty_items_mark: '3PU9i62PLkov9YV6q3Mc',
+    addenda_back_up_contract_mark: 'CVKqL2Ir1VNglli2XO6f',
+    addenda_mineral_reservation_mark: '1TpO61JNm595TSf7DxwT',
+  };
+  check('BATCH1_APPROVED_MARKER_IDS itself names exactly the 48 CHECKBOX_MARKER_KEYS -- no missing or extra key in the reference set', [...Object.keys(BATCH1_APPROVED_MARKER_IDS)].sort(), [...CHECKBOX_MARKER_KEYS].sort());
+  check('the 48 approved Batch 1 reference ids are themselves unique', new Set(Object.values(BATCH1_APPROVED_MARKER_IDS)).size, 48);
+  {
+    // Built by iterating ALL 48 CHECKBOX_MARKER_KEYS (never just the approved
+    // reference's own keys), so a key present in TEST under a DIFFERENT id, or
+    // absent from TEST entirely, both surface here -- `null` for "missing."
+    const observedBatch1Ids = Object.fromEntries(CHECKBOX_MARKER_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
+    check(
+      'every one of the 48 CHECKBOX_MARKER_KEYS maps to its EXACT previously-approved Batch 1 id in TEST -- full 48-key mapping proof, not a sample',
+      observedBatch1Ids,
+      BATCH1_APPROVED_MARKER_IDS,
+    );
+  }
+  // Same known-good-reference discipline as Batch 1's fix above, applied here
+  // for consistency (this one already covered all 11 keys, not a sample, but
+  // `check()` gives a precise per-key diff on failure instead of one boolean).
+  const BATCH2_APPROVED_TEXT_IDS = {
+    lease_nrl_terminate_within_days_text: 'eeamXWV5F7d8Q6ne9HJy',
+    survey_opt1_seller_furnish_days_text: 'u59OMAoyjK9YuTwcqa0r',
+    survey_opt2_buyer_obtain_days_text: '61wPlte1S9BkNZpfGLys',
+    survey_opt3_seller_furnish_days_text: 'j05f5WAhuvVWbBEzaRP9',
+    sdn_deliver_within_days_text: '9Ct8c2DpVFf5Gv0hMAMo',
+    water_deliver_within_days_text: 'iyEFgnDlPSrUTnjWh6AL',
+    water_source_text: 'mBCxlruQK1THlKzAlCND',
+    spbb_dollar_amount_text: 'cLVDbtp1nlPKH9NGUCUz',
+    spbb_percent_amount_text: 'mWYz5ZTIbMvSBTOVroCN',
+    bpsb_dollar_amount_text: 'btZyfuT3OWUtno5lXBY0',
+    bpsb_percent_amount_text: 'zF8SP63sgaDucKbSu9aM',
+  };
+  check('BATCH2_APPROVED_TEXT_IDS itself names exactly the 11 CHECKBOX_TEXT_KEYS -- no missing or extra key in the reference set', [...Object.keys(BATCH2_APPROVED_TEXT_IDS)].sort(), [...CHECKBOX_TEXT_KEYS].sort());
+  check('the 11 approved Batch 2 reference ids are themselves unique', new Set(Object.values(BATCH2_APPROVED_TEXT_IDS)).size, 11);
+  {
+    const observedBatch2Ids = Object.fromEntries(CHECKBOX_TEXT_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
+    check(
+      'every one of the 11 CHECKBOX_TEXT_KEYS maps to its EXACT verified, Brad-authorized Batch 2 id in TEST -- full 11-key mapping proof',
+      observedBatch2Ids,
+      BATCH2_APPROVED_TEXT_IDS,
+    );
+  }
 
   const sentinelKeys = CONTRACT_PROJECTION_FIELD_KEYS.filter((k) => !testRealIdKeys.includes(k));
   check(
-    'exactly 33 keys remain sentinel-filled in TEST: the 11 restructured contract-text + 22 broker-text keys (Batches 2/3, unprovisioned)',
+    'exactly 22 keys remain sentinel-filled in TEST: the 22 broker-text keys (Batch 3, unprovisioned)',
     [...sentinelKeys].sort(),
-    [...CHECKBOX_TEXT_KEYS, ...BROKER_TEXT_KEYS].sort(),
+    [...BROKER_TEXT_KEYS].sort(),
   );
   checkTrue('none of the 19 retired keys re-enters the live TEST real-id map', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !testRealIdKeys.includes(k)));
-  checkTrue('the 29 retained TEST ids are exactly unchanged from before Batch 1 wiring', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.every((k) => testRealIdEntries.some((e) => e.key === k)));
 
-  // Production must remain fully sentinel-filled for all 110 keys -- Batch 1's live Test
+  // Jess Gate correction: "the 29 retained TEST ids are exactly unchanged" previously
+  // checked only that each retained KEY is present with SOME id -- it could not have
+  // caught one of those 29 ids silently changing value. Same known-good-reference
+  // discipline as the Batch 1 fix above: the exact 29 ids from the original repair
+  // (predating Batch 1/2, never touched by either), checked key-by-key.
+  const RETAINED_APPROVED_IDS = {
+    'identity.propertyStreetAddress': 'UjJRDmdeuEpQKA9I2yFr',
+    'parties.buyerEntityName': 'roFgPXN9bPMeLBxLPhpw',
+    'parties.sellerSigners': 'ELLuYUYyPqhVMIKMjSAh',
+    'propertyLegalDescription.lot': '0N1jKEJBP1LOsBO9WAfE',
+    'propertyLegalDescription.block': 'v3PvqyE7KqNo9wHuF77k',
+    'propertyLegalDescription.addition': '8P8xlcoQvJPiTCtEYmze',
+    'propertyLegalDescription.county': 'VQdEFCszBn2I1R29v9Ku',
+    'propertyLegalDescription.exclusions': '8BkJWlSfgp8WfqcdTE60',
+    'earnestMoneyOption.escrowAgentName': 'bhxE1ZSOmyYWrOHqm6jf',
+    'earnestMoneyOption.escrowAgentAddress': 'EvuENItvKDCw8WaCHMd3',
+    'earnestMoneyOption.earnestMoney': 'HJpetNeLUCy6mIv4hOKO',
+    'earnestMoneyOption.optionFee': 'Gygwe13y13CZJJvJFk3y',
+    'earnestMoneyOption.optionPeriodDays': '02LqDO3fMiKBLBFzheJX',
+    'earnestMoneyOption.additionalEarnestMoney': 'lx0NWWA8tgilbEY71n3b',
+    'titleSurvey.titleCompanyName': 'hqovBqMSkSzi7hgyyonq',
+    'titleSurvey.objectionsText': 'cqOCAubHmuLFbCl9TczS',
+    'titleSurvey.objectionsDays': 'vAInvdtJ0nYHINzAwGy3',
+    'propertyCondition.serviceContractCap': 'UiWOxyGDrbWO9cTkJSx9',
+    'closingPossession.closingDate': 's7jauYhoSPQd09GjoGOr',
+    'settlementExpense.sellerCreditCap': 'fUWZ54vsfUyGBlxszHB0',
+    'addendaApplicability.districtNotices': 'SpRUfNbdSL94QZz7vfrs',
+    'noticeContact.buyerNoticeAddress': 'OWVLUUS4pyD0JA2bRqBy',
+    'noticeContact.buyerNoticePhone': '4ehkRvZbgm4xTFqjugib',
+    'noticeContact.buyerNoticeEmail': 'glYaD6otYjvlw5avJ5I0',
+    'noticeContact.sellerNoticeAddress': '4ZSZTquyk1MTN7wBLqlO',
+    'noticeContact.sellerNoticePhone': 'G7ovatOKYrMECUchooxr',
+    'noticeContact.sellerNoticeEmail': 'T9TlfDicQnhiHInISE2N',
+    'attorneyManualFields.specialProvisions': 'eZImM9FtKYff6CJzAafO',
+    'attorneyManualFields.otherAddendaText': 'xQ1mLI1l8aHnhOLe07fy',
+  };
+  check('RETAINED_APPROVED_IDS itself names exactly the 29 retained keys -- no missing or extra key in the reference set', [...Object.keys(RETAINED_APPROVED_IDS)].sort(), [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS].sort());
+  check('the 29 approved retained reference ids are themselves unique', new Set(Object.values(RETAINED_APPROVED_IDS)).size, 29);
+  {
+    const observedRetainedIds = Object.fromEntries(CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
+    check(
+      'every one of the 29 retained keys maps to its EXACT unchanged id in TEST -- full 29-key mapping proof, not key presence alone',
+      observedRetainedIds,
+      RETAINED_APPROVED_IDS,
+    );
+  }
+
+  // Production must remain fully sentinel-filled for all 110 keys -- Batch 1/2's live Test
   // provisioning must never leak into the PRODUCTION config block.
   const prodSentinelMatch = configSrc.match(/const PRODUCTION: GhlConfig = \{[\s\S]*?contractProjectionFields: sentinelContractProjectionFields\(\),[\s\S]*?contractDraftRequest: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,/);
-  checkTrue('PRODUCTION.contractProjectionFields is still exactly `sentinelContractProjectionFields()` -- untouched by Batch 1 Test wiring', !!prodSentinelMatch);
+  checkTrue('PRODUCTION.contractProjectionFields is still exactly `sentinelContractProjectionFields()` -- untouched by Batch 1/2 Test wiring', !!prodSentinelMatch);
   checkTrue('PRODUCTION.contractDraftRequest is still exactly the sentinel constant', !!prodSentinelMatch);
 
-  checkTrue('TEST.contractDraftRequest is unchanged (still the pre-existing real dropdown id, untouched by Batch 1)', /contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",/.test(configSrc));
+  checkTrue('TEST.contractDraftRequest is unchanged (still the pre-existing real dropdown id, untouched by Batch 1/2)', /contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",/.test(configSrc));
 }
 
 /* ==================================================================== */
