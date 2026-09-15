@@ -496,15 +496,30 @@ live Test apply above):** `test-inv67-checkbox-text-fields-batch2-script.cjs`
 (new, 79/79) -- mirrors Batch 1's suite exactly for the 11-key
 `CHECKBOX_TEXT_KEYS` batch, plus confirms Batch 1's script file remains
 untouched. `test-contract-ghl-projection.cjs`'s drift guard extended
-further (68/68, +3): `shared/ghl-config.ts`'s TEST config now proven to
-carry a real id for exactly **88** keys (29 retained + 48 Batch 1 markers
-+ 11 Batch 2 contract-text keys, all unique, none the sentinel), exactly
-**22** keys (Batch 3 only, now the sole remaining unprovisioned batch)
-proven to remain sentinel-filled, Batch 1's 48 ids proven byte-for-byte
-unchanged by the Batch 2 wiring, Batch 2's 11 ids proven to match Brad's
-authorized mapping exactly, no retired key re-enters the live map, and
-PRODUCTION/`contractDraftRequest` proven unchanged. The 11 wired ids were
-sourced from a fresh, independent, fail-closed read-only GET joined
+further (74/74, +6 over the 68 from initial Batch 2 wiring): `shared/
+ghl-config.ts`'s TEST config now proven to carry a real id for exactly
+**88** keys (29 retained + 48 Batch 1 markers + 11 Batch 2 contract-text
+keys, all unique, none the sentinel), exactly **22** keys (Batch 3 only,
+now the sole remaining unprovisioned batch) proven to remain
+sentinel-filled, no retired key re-enters the live map, and PRODUCTION/
+`contractDraftRequest` proven unchanged.
+
+**Jess Gate correction (PR #56 re-gate):** the original wiring proof for
+"Batch 1's ids unchanged by Batch 2 wiring" sampled only 2 of the 48
+Batch 1 keys, which could not detect a silent id change on any of the
+other 46. Replaced with a complete, known-good 48-key reference map
+(`BATCH1_APPROVED_MARKER_IDS`) checked key-by-key against every one of
+`CHECKBOX_MARKER_KEYS` -- a single changed, missing, or extra id now fails
+the check and prints exactly which key differs. The same weakness was
+found and fixed in the 29-retained-ids proof (previously checked only key
+*presence*, not id *value* -- replaced with `RETAINED_APPROVED_IDS`, a
+complete 29-key reference map) and the Batch 2 proof was upgraded to the
+same pattern for consistency (it already covered all 11 keys, but now
+gives a precise per-key diff on failure instead of one boolean). Sanity-
+verified: deliberately corrupting one reference id causes the check to
+fail with an exact diff, confirming the proof is not tautological. The
+11 wired Batch 2 ids were sourced from a fresh, independent, fail-closed
+read-only GET joined
 against BOTH the committed Batch 1 and Batch 2 scripts' own
 classification/validation functions -- that same pass also re-verified
 Batch 1's 48 ids and confirmed zero Batch-3-shaped field exists -- never
