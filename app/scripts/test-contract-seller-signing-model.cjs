@@ -28,7 +28,7 @@ try {
 
 const M = require(path.join(TMP, 'contract-seller-signing-model.js'));
 
-const FLOOR = 76;
+const FLOOR = 126;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -249,6 +249,157 @@ checkTrue('evaluateSellerSigningReadiness: multiple simultaneous failures are AL
   const r = M.evaluateSellerSigningReadiness(baseInput({ disposition: { kind: 'populated', value: model }, printedSellerSigners: [{ displayName: 'Jane Seller' }, { displayName: 'Jane Doe' }] }));
   return r.ok === false && r.reasons.length >= 3;
 })());
+
+/* ==================================================================== */
+/* INV-67 Phase 1 Jess re-gate correction -- canonical/transport split,  */
+/* the pre-write gate, and the audit-evidence builder                    */
+/* ==================================================================== */
+
+check('evaluateSellerSigningCanonicalReadiness: fully ready input is ok:true', M.evaluateSellerSigningCanonicalReadiness(baseInput()), { ok: true });
+
+checkTrue('evaluateSellerSigningCanonicalReadiness: ok:true EVEN WHEN the Seller Count field is still the sentinel -- canonical is independent of transport', (() => {
+  const r = M.evaluateSellerSigningCanonicalReadiness(baseInput({ sellerCountFieldId: SENTINEL, sellerCountWriteReadbackVerified: false }));
+  return r.ok === true;
+})());
+
+checkTrue('evaluateSellerSigningCanonicalReadiness: still blocks on a genuine model defect (Seller 1 capacity unresolved) regardless of transport state', (() => {
+  const model = { kind: 'one_seller', seller1Capacity: 'unresolved' };
+  const r = M.evaluateSellerSigningCanonicalReadiness(baseInput({ disposition: { kind: 'populated', value: model } }));
+  return r.ok === false && r.reasons.some((x) => /signing capacity/.test(x));
+})());
+
+check('evaluateSellerSigningTransportReadiness: field provisioned + readback verified is ok:true', M.evaluateSellerSigningTransportReadiness({ sellerCountFieldId: 'real-field-id-123', sellerCountFieldSentinel: SENTINEL, sellerCountWriteReadbackVerified: true }), { ok: true });
+
+checkTrue('evaluateSellerSigningTransportReadiness: sentinel field id blocks, independent of the model', (() => {
+  const r = M.evaluateSellerSigningTransportReadiness({ sellerCountFieldId: SENTINEL, sellerCountFieldSentinel: SENTINEL, sellerCountWriteReadbackVerified: true });
+  return r.ok === false && r.reasons.some((x) => /not yet provisioned/.test(x));
+})());
+
+checkTrue('evaluateSellerSigningTransportReadiness: provisioned but unverified readback blocks with its own distinct reason', (() => {
+  const r = M.evaluateSellerSigningTransportReadiness({ sellerCountFieldId: 'real-field-id-123', sellerCountFieldSentinel: SENTINEL, sellerCountWriteReadbackVerified: false });
+  return r.ok === false && r.reasons.length === 1 && /has not been confirmed by a fresh readback/.test(r.reasons[0]);
+})());
+
+check('evaluateSellerSigningPreWriteReadiness: a fully-ready input is ok:true', M.evaluateSellerSigningPreWriteReadiness(baseInput()), { ok: true });
+
+checkTrue('evaluateSellerSigningPreWriteReadiness: IGNORES sellerCountWriteReadbackVerified -- ok:true even when passed false (gate 15 is post-write, not pre-write)', (() => {
+  const r = M.evaluateSellerSigningPreWriteReadiness(baseInput({ sellerCountWriteReadbackVerified: false }));
+  return r.ok === true;
+})());
+
+checkTrue('evaluateSellerSigningPreWriteReadiness: STILL blocks on the sentinel field id (gate 14 is pre-write)', (() => {
+  const r = M.evaluateSellerSigningPreWriteReadiness(baseInput({ sellerCountFieldId: SENTINEL, sellerCountWriteReadbackVerified: false }));
+  return r.ok === false && r.reasons.some((x) => /not yet provisioned/.test(x));
+})());
+
+checkTrue('evaluateSellerSigningPreWriteReadiness: STILL blocks on a genuine model defect', (() => {
+  const r = M.evaluateSellerSigningPreWriteReadiness(baseInput({ disposition: { kind: 'unresolved' }, seller1: { ok: false, reason: 'irrelevant' } }));
+  return r.ok === false;
+})());
+
+/* -------------------------------------------------- audit evidence ---- */
+
+function evidenceArgs(overrides) {
+  const base = baseInput();
+  delete base.sellerCountWriteReadbackVerified;
+  return Object.assign(base, { sellerCountWriteReadbackOk: null }, overrides || {});
+}
+
+{
+  const e = M.buildSellerSigningAuditEvidence(evidenceArgs());
+  check('buildSellerSigningAuditEvidence: One-Seller happy path -- sellerCountDiscriminator', e.sellerCountDiscriminator, 'one_seller');
+  checkTrue('buildSellerSigningAuditEvidence: One-Seller happy path -- seller1Ok', e.seller1Ok === true);
+  check('buildSellerSigningAuditEvidence: One-Seller happy path -- seller1ContactId', e.seller1ContactId, 'contact-1');
+  check('buildSellerSigningAuditEvidence: One-Seller happy path -- seller1Capacity', e.seller1Capacity, 'individual_own_capacity');
+  check('buildSellerSigningAuditEvidence: One-Seller happy path -- seller2 fields are all null', [e.seller2LegalName, e.seller2NormalizedEmail, e.seller2Capacity], [null, null, null]);
+  checkTrue('buildSellerSigningAuditEvidence: One-Seller happy path -- printedPartyConsistencyOk', e.printedPartyConsistencyOk === true);
+  check('buildSellerSigningAuditEvidence: One-Seller happy path -- expectedSellerCountTransportValue', e.expectedSellerCountTransportValue, 'One Seller');
+  checkTrue('buildSellerSigningAuditEvidence: One-Seller happy path -- canonicalReadinessOk', e.canonicalReadinessOk === true);
+  checkTrue('buildSellerSigningAuditEvidence: One-Seller happy path -- sellerCountFieldProvisioned', e.sellerCountFieldProvisioned === true);
+  checkNull('buildSellerSigningAuditEvidence: sellerCountWriteReadbackOk is null when no write has been attempted yet', e.sellerCountWriteReadbackOk);
+  check('buildSellerSigningAuditEvidence: effectiveDateStatus is always the fixed literal', e.effectiveDateStatus, 'pending_final_acceptance');
+  check('buildSellerSigningAuditEvidence: recipientAssignmentStatus is always the fixed literal', e.recipientAssignmentStatus, 'pending_manual_review');
+  checkTrue(
+    'buildSellerSigningAuditEvidence: with no write attempted yet (sellerCountWriteReadbackOk:null), blockingReasons names ONLY the not-yet-confirmed readback gate -- everything else is genuinely clear',
+    e.blockingReasons.length === 1 && /has not been confirmed by a fresh readback/.test(e.blockingReasons[0]),
+  );
+  check('buildSellerSigningAuditEvidence: sendOccurred is always false', e.sendOccurred, false);
+}
+
+{
+  // The TRULY fully-ready case: canonical model ready, field provisioned,
+  // AND this cycle's own write/readback already confirmed -- only here is
+  // blockingReasons genuinely empty.
+  const e = M.buildSellerSigningAuditEvidence(evidenceArgs({ sellerCountWriteReadbackOk: true }));
+  check('buildSellerSigningAuditEvidence: blockingReasons is empty ONLY once the write/readback is also confirmed', e.blockingReasons, []);
+}
+
+{
+  const model = { kind: 'two_sellers', seller1Capacity: 'individual_own_capacity', seller2: { legalName: 'John Seller', email: '  John@Example.COM  ' }, seller2Capacity: 'individual_own_capacity' };
+  const e = M.buildSellerSigningAuditEvidence(evidenceArgs({
+    disposition: { kind: 'populated', value: model },
+    printedSellerSigners: [{ displayName: 'Jane Seller' }, { displayName: 'John Seller' }],
+  }));
+  check('buildSellerSigningAuditEvidence: Two-Seller happy path -- sellerCountDiscriminator', e.sellerCountDiscriminator, 'two_sellers');
+  check('buildSellerSigningAuditEvidence: Two-Seller happy path -- seller2LegalName', e.seller2LegalName, 'John Seller');
+  check('buildSellerSigningAuditEvidence: seller2NormalizedEmail is normalized (trim + lowercase), never the raw typed value', e.seller2NormalizedEmail, 'john@example.com');
+  check('buildSellerSigningAuditEvidence: Two-Seller happy path -- expectedSellerCountTransportValue', e.expectedSellerCountTransportValue, 'Two Sellers');
+}
+
+{
+  // Transport blocked (sentinel), canonical model fully ready -- the two
+  // must NEVER be conflated. "Do not log a successful readiness result
+  // when the transport sentinel blocks it; distinguish canonical readiness
+  // from transport readiness."
+  const e = M.buildSellerSigningAuditEvidence(evidenceArgs({ sellerCountFieldId: SENTINEL }));
+  checkTrue('buildSellerSigningAuditEvidence: transport-blocked -- canonicalReadinessOk is STILL true', e.canonicalReadinessOk === true);
+  checkTrue('buildSellerSigningAuditEvidence: transport-blocked -- sellerCountFieldProvisioned is false', e.sellerCountFieldProvisioned === false);
+  checkTrue('buildSellerSigningAuditEvidence: transport-blocked -- blockingReasons is non-empty (never silently ok)', e.blockingReasons.length > 0);
+  checkTrue('buildSellerSigningAuditEvidence: transport-blocked -- the blocking reason names the field-provisioning gate', e.blockingReasons.some((r) => /not yet provisioned/.test(r)));
+}
+
+{
+  // Canonical model itself broken (unresolved count) -- no seller1/model
+  // facts to report; every model-derived field reads as its own "unset".
+  const e = M.buildSellerSigningAuditEvidence(evidenceArgs({ disposition: { kind: 'unresolved' }, seller1: { ok: false, reason: 'irrelevant' } }));
+  check('buildSellerSigningAuditEvidence: unresolved count -- sellerCountDiscriminator is "unresolved"', e.sellerCountDiscriminator, 'unresolved');
+  checkTrue('buildSellerSigningAuditEvidence: unresolved count -- seller1Ok is false', e.seller1Ok === false);
+  check('buildSellerSigningAuditEvidence: unresolved count -- seller1Capacity is null (no model to read it from)', e.seller1Capacity, null);
+  check('buildSellerSigningAuditEvidence: unresolved count -- expectedSellerCountTransportValue is null', e.expectedSellerCountTransportValue, null);
+  checkTrue('buildSellerSigningAuditEvidence: unresolved count -- canonicalReadinessOk is false', e.canonicalReadinessOk === false);
+}
+
+{
+  // A write WAS attempted and confirmed -- sellerCountWriteReadbackOk
+  // reflects the real outcome, folded into the overall blockingReasons too.
+  const okEvidence = M.buildSellerSigningAuditEvidence(evidenceArgs({ sellerCountWriteReadbackOk: true }));
+  checkTrue('buildSellerSigningAuditEvidence: a confirmed write -- sellerCountWriteReadbackOk true, ok overall (no readback-related reason)', okEvidence.sellerCountWriteReadbackOk === true && okEvidence.blockingReasons.length === 0);
+
+  const failedEvidence = M.buildSellerSigningAuditEvidence(evidenceArgs({ sellerCountWriteReadbackOk: false }));
+  checkTrue('buildSellerSigningAuditEvidence: a failed write -- sellerCountWriteReadbackOk false, AND blockingReasons names the readback gate', failedEvidence.sellerCountWriteReadbackOk === false && failedEvidence.blockingReasons.some((r) => /has not been confirmed by a fresh readback/.test(r)));
+}
+
+/* -------------------------------------------------- evidence validator */
+
+{
+  const e = M.buildSellerSigningAuditEvidence(evidenceArgs());
+  check('validateSellerSigningAuditEvidenceValue: round-trips a well-formed evidence object exactly', M.validateSellerSigningAuditEvidenceValue(JSON.parse(JSON.stringify(e))), e);
+}
+checkNull('validateSellerSigningAuditEvidenceValue: null input fails closed', M.validateSellerSigningAuditEvidenceValue(null));
+checkNull('validateSellerSigningAuditEvidenceValue: an array fails closed', M.validateSellerSigningAuditEvidenceValue([]));
+checkNull('validateSellerSigningAuditEvidenceValue: a plain string fails closed', M.validateSellerSigningAuditEvidenceValue('not an object'));
+{
+  const e = M.buildSellerSigningAuditEvidence(evidenceArgs());
+  const missingKey = { ...e };
+  delete missingKey.blockingReasons;
+  checkNull('validateSellerSigningAuditEvidenceValue: missing a required key fails closed', M.validateSellerSigningAuditEvidenceValue(missingKey));
+  const extraKey = { ...e, extra: 'unexpected' };
+  checkNull('validateSellerSigningAuditEvidenceValue: an extra unexpected key fails closed', M.validateSellerSigningAuditEvidenceValue(extraKey));
+  checkNull('validateSellerSigningAuditEvidenceValue: an invalid capacity disposition fails closed', M.validateSellerSigningAuditEvidenceValue({ ...e, seller1Capacity: 'made_up' }));
+  checkNull('validateSellerSigningAuditEvidenceValue: sendOccurred:true fails closed (never a valid recorded state)', M.validateSellerSigningAuditEvidenceValue({ ...e, sendOccurred: true }));
+  checkNull('validateSellerSigningAuditEvidenceValue: an unrecognized effectiveDateStatus fails closed', M.validateSellerSigningAuditEvidenceValue({ ...e, effectiveDateStatus: 'something_else' }));
+  checkNull('validateSellerSigningAuditEvidenceValue: a non-array blockingReasons fails closed', M.validateSellerSigningAuditEvidenceValue({ ...e, blockingReasons: 'not an array' }));
+}
 
 cleanup();
 console.log(`\n${checks} checks, ${failures} failures. FLOOR ${FLOOR}.`);

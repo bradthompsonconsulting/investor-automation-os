@@ -57,7 +57,8 @@
     "test:contract-draft-request": "node scripts/test-contract-draft-request.cjs",
     "test:contract-projection-sync-carriers": "node scripts/test-contract-projection-sync-carriers.cjs",
     "test:contract-seller-signing-model": "node scripts/test-contract-seller-signing-model.cjs",
-    "test:inv67-seller-count-field-script": "node scripts/test-inv67-seller-count-field-script.cjs"
+    "test:inv67-seller-count-field-script": "node scripts/test-inv67-seller-count-field-script.cjs",
+    "test:ghl-seller-count-transport-write": "node scripts/test-ghl-seller-count-transport-write.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",

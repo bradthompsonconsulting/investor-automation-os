@@ -986,8 +986,12 @@ template-readiness-must-include-verification, draft-bound recipient-
 confirmation binding). This phase builds and tests the canonical model, the
 persistence carrier, Seller 1 resolution, the Contract Workspace UI, and a
 dry-run-only GHL Test provisioning script for a new `Contract Seller Count`
-transport field. **It does not wire any of this into the live sync/draft
-path** -- see "What this phase does NOT do" below.
+transport field. **CORRECTED by the Jess re-gate round below: the live
+readiness gate IS wired into `buildContractProjectionPlan` and the
+Contract Draft Request write path in this same phase** -- see "One-/Two-
+Seller signer model -- Phase 1 Jess re-gate correction" further down for
+what changed and why, and "What this phase does NOT do" below for what
+genuinely remains out of scope.
 
 **Locked canonical model** (`app/src/lib/contract-seller-signing-model.ts`,
 new, pure). `SellerSigningModel` is a discriminated union on `kind`:
@@ -1045,8 +1049,10 @@ legal-name/email fields and its own three-state capacity selector. Save
 validates only what the Note carrier itself requires to round-trip (a
 selected count; for Two Sellers, non-blank name, valid + distinct email) --
 an `unresolved` capacity is itself a valid recorded state, exactly like every
-other explicit populated/not-applicable/unresolved fact group in this file;
-gating a draft on capacity is the later, separately authorized integration.
+other explicit populated/not-applicable/unresolved fact group in this file
+-- draft-readiness gating on that capacity happens downstream, in
+`buildContractProjectionPlan`'s own fold (see the Jess re-gate correction
+section below), not at Note-save time.
 
 **Contract Seller Count transport field -- Test-only, dry-run only.** New
 script `app/scripts/inv67-create-seller-count-field.cjs`, structurally
@@ -1080,19 +1086,19 @@ Proposed fieldKey `opportunity.contract_seller_count`, merge tag
 INV-67 field uses), against 148 existing fields at the time of the read.
 
 **What this phase does NOT do** (Brad's explicit out-of-scope list, verbatim
-respected). Does not create the live Seller Count field (no `--apply` was
-ever passed). Does not mutate any GHL workflow, template, or clone. Does not
-create a draft or send anything. Does not build the Two-Seller template.
-Does not modify the placement manifest (`docs/
-INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md`'s hash is unchanged from this
-phase's authorized starting point,
+respected -- CORRECTED by the Jess re-gate round below: the live readiness
+gate itself is now in scope and wired; see that section for what changed).
+Does not create the live Seller Count field (no `--apply` was ever passed).
+Does not mutate any GHL workflow, template, or clone. Does not create a
+draft or send anything. Does not build the Two-Seller template. Does not
+modify the placement manifest (`docs/INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md`'s
+hash is unchanged from this phase's authorized starting point,
 `075d847f3f7d8916feb16fc23a8ee92828a7033b5f3e1bb6fc76bf245e36e60d`). Does
-not wire `evaluateSellerSigningReadiness` into `buildContractProjectionPlan`
-or the `contract-draft-request-model.ts` transition gate -- that live
-integration, and the final draft-bound recipient-confirmation gate, remain
-later, separately authorized work per Brad's own out-of-scope list. Does not
-touch Production, Linear, or Board #10. Does not mark INV-67 complete. PR
-opened for Jess Gate review; not merged pending that review.
+not implement the final draft-bound recipient-confirmation gate (draft-time
+recipient status is recorded as `pending_manual_review` audit evidence; no
+routing/sending is implemented or simulated). Does not touch Production,
+Linear, or Board #10. Does not mark INV-67 complete. PR opened for Jess
+Gate review; not merged pending that review.
 
 **Code map (this phase):**
 
@@ -1114,3 +1120,148 @@ opened for Jess Gate review; not merged pending that review.
 (every `scripts/test-*.cjs`) re-run clean. `tsc -b --force` (project-wide
 TypeScript build) clean. `CONTRACT_PROJECTION_FIELD_KEYS` count unaffected
 at exactly 112.
+
+## One-/Two-Seller signer model -- Phase 1 Jess re-gate correction (this session)
+
+**What this correction is.** PR #60's Phase 1 build (above) built and unit-
+tested the canonical model, gates, and aggregator but deliberately did NOT
+wire them into the live sync/draft path -- Jess Gate review found that a
+blocking scope miss: the authorization required every seller-model blocker
+to prevent Contract Draft Request from reaching Requested. This correction
+wires the live gate into the EXACT same fail-closed path
+`buildContractProjectionPlan` and the Contract Draft Request write already
+use, extends the existing two-phase audit evidence, and adds the live-
+capable (not yet reachable, since the field remains sentinel) write/readback
+path for the Seller Count transport field -- without weakening any of the
+112 TREC projection fields' or the Contract Draft Request control's
+existing guarantees. **Zero GHL mutations. The Seller Count field, the
+GHL workflow, the Two-Seller template, and the draft-bound recipient-
+confirmation gate all remain exactly as out of scope as PR #60 stated.**
+
+**1. Canonical vs. transport readiness split** (`contract-seller-signing-
+model.ts`, additive -- the existing fifteen gates and `evaluateSellerSigningReadiness`
+are UNCHANGED, byte-for-byte, and all 76 of their existing tests still pass
+unmodified). Three new pure functions, each re-invoking the same
+unmodified aggregator with the other half's inputs probed as passing,
+never a second, independently-maintained copy of any gate's logic:
+- `evaluateSellerSigningCanonicalReadiness` -- gates 1-13 only (the seller
+  model itself: cardinality, Seller 1, capacity, printed-party consistency).
+- `evaluateSellerSigningTransportReadiness` -- gates 14-15 only (the Seller
+  Count field's provisioning and write/readback state).
+- `evaluateSellerSigningPreWriteReadiness` -- gates 1-14, the actual live
+  gate. Gate 15 (write/readback confirmed) cannot be evaluated before a
+  write is attempted at all, so it is probed as satisfied here and enforced
+  SEPARATELY, post-write, via the exact same `allEntriesLanded` mechanism
+  every one of the 112 TREC fields already uses (see #3 below) -- not a
+  weaker guarantee, the SAME guarantee enforced at the pipeline stage where
+  it is actually knowable.
+
+**2. `buildContractProjectionPlan` now takes a REQUIRED fourth argument**,
+`sellerReadiness` (`contract-ghl-projection-model.ts`). Its reasons (when
+not `ok`) are folded into the SAME `blockingReasons` array every existing
+gate already populates, at the very top of the function, before ANY entry
+is built. All 17 pre-existing call sites (`ContractWorkspace.tsx`'s one live
+call, plus 17 in `test-contract-ghl-projection.cjs`) were updated
+mechanically; all 148 of that suite's pre-existing checks still pass
+unmodified, proving the fold changes nothing about the TREC-fact gates'
+own behavior. `ContractWorkspace.tsx`'s `handleSyncContractProjectionFields`
+now: resolves the live seller-readiness input (the latest `SellerSigningModel`
+Note via `latestSellerSigningModelForOpportunity`, the resolved Seller 1
+identity via the existing `seller1Resolution` memo, the printed
+`parties.sellerSigners` array, and the configured `contractSellerCountField`
+id/sentinel from `shared/ghl-config.ts`) -- calls
+`evaluateSellerSigningPreWriteReadiness` -- passes the result into
+`buildContractProjectionPlan` -- and only THEN, on `plan.ok`, proceeds to
+the Opportunity-field write. A single `if (!plan.ok) { ...; return; }`
+(unchanged code, already there) structurally short-circuits BEFORE the
+112-field write AND before `setContractDraftRequest`, for every one of the
+fifteen seller gates -- proven directly by a new structural test section
+reading `ContractWorkspace.tsx`'s own source (see Test evidence below).
+
+**3. The Seller Count write is folded into the SAME atomic PUT + SAME
+atomic readback** the 112 TREC fields already go through (`ghl.ts`'s
+`syncContractProjectionFields`), via a new optional third argument,
+`sellerCount: {fieldId, text} | null`. Refuses before any network call on
+the same missing/sentinel/duplicate-id conditions the 112 fields already
+refuse on. Its own `landed` boolean is folded into the function's overall
+`ok`, exactly like every projection entry's `landed` already is -- so
+`evaluateContractDraftRequestTransition`'s existing `allEntriesLanded` gate
+already refuses "Requested" on a failed Seller Count write/readback,
+**with zero change to `contract-draft-request-model.ts`'s transition
+logic**. Never reads the observed value back into the canonical
+`SellerSigningModel` Note carrier -- transport only, exactly per the locked
+ruling. Proven directly with a mocked-`fetch` test (`test-ghl-seller-count-
+transport-write.cjs`, new) -- the first test in this repository to invoke
+`ghl.ts` directly with a mocked network boundary rather than only reading
+its source; ZERO real network calls anywhere in that suite.
+
+**4. Extended, NOT duplicated, audit evidence.** `ContractDraftRequestSyncRecord`
+(`contract-draft-request-model.ts`) gains one new required field,
+`sellerSigningEvidence: SellerSigningAuditEvidence` -- a JSON-encoded blob
+(new type + exact-keys validator, both in `contract-seller-signing-model.ts`)
+computed ONCE per sync attempt (`buildSellerSigningAuditEvidence`,
+immediately after the write) and carried forward UNCHANGED from the attempt
+note to the resolution note, exactly like the existing `currentOfferCrossCheckOk`
+field already is. Records: the seller-count discriminator; the resolved
+Seller 1 reference and capacity; Seller 2's legal name, NORMALIZED email,
+and capacity (when applicable); the printed-party consistency outcome; the
+expected Seller Count transport value; `canonicalReadinessOk` and
+`sellerCountFieldProvisioned` as SEPARATE booleans (never conflated --
+"do not log a successful readiness result when the transport sentinel
+blocks it"); the write/readback outcome (`null` pre-write); the fixed
+`effectiveDateStatus: "pending_final_acceptance"` and
+`recipientAssignmentStatus: "pending_manual_review"` literals; every
+applicable blocking reason; and `sendOccurred: false`, always. This is the
+SAME opportunity-scoped, two-phase ledger PR #60 already built
+(`contract-projection-sync-carriers.ts`) -- no second, global, or
+independently-scoped audit system. Ledger version bumped
+`iaos-contract-draft-request-sync-v2` -> `-v3` (one new positional field);
+a pre-existing v2 note -- none exist live, Contract Draft Request remains
+sentinel-filled everywhere -- simply fails the new header match and parses
+`null`, this ledger's own established schema-bump precedent.
+
+**5. UI uses the live result.** No second, UI-only validation set exists for
+draft-readiness -- the Number-of-Sellers form's own Save validates only what
+the Note carrier requires to round-trip (unchanged from PR #60); the SAME
+`plan.blockingReasons` the live sync handler computes (now including every
+applicable seller reason) is what the existing generic "blocked" UI already
+renders, with zero new rendering code required.
+
+**Code map (this correction):**
+
+| File | Role |
+|---|---|
+| `app/src/lib/contract-seller-signing-model.ts` | Additive -- `SellerSigningReadinessResult` type, `evaluateSellerSigningCanonicalReadiness` / `evaluateSellerSigningTransportReadiness` / `evaluateSellerSigningPreWriteReadiness`, `SellerSigningAuditEvidence` type + `validateSellerSigningAuditEvidenceValue`, `buildSellerSigningAuditEvidence` |
+| `app/src/lib/contract-ghl-projection-model.ts` | `buildContractProjectionPlan` takes a required 4th `sellerReadiness` argument, folded into `blockingReasons` |
+| `app/src/lib/contract-draft-request-model.ts` | `ContractDraftRequestSyncRecord` / attempt+resolution builders gain `sellerSigningEvidence` |
+| `app/src/lib/contract-projection-sync-carriers.ts` | Ledger v2 -> v3, new "Seller signing evidence" positional field |
+| `app/src/lib/ghl.ts` | `syncContractProjectionFields` gains an optional `sellerCount` argument, folded into the same PUT + readback |
+| `app/src/pages/ContractWorkspace.tsx` | `handleSyncContractProjectionFields` resolves and folds live seller readiness before any write; new `sellerSigningDisposition` / `printedSellerSigners` memos |
+| `app/scripts/test-contract-ghl-projection.cjs` | 17 call sites updated for the new required argument (148 pre-existing checks unaffected); new Section 11 (19 checks) proving the fold, including "Requested impossible" for every seller blocker |
+| `app/scripts/test-contract-seller-signing-model.cjs` | Extended -- 50 new checks covering the canonical/transport split, the pre-write gate, and the audit-evidence builder/validator |
+| `app/scripts/test-contract-projection-sync-carriers.cjs` | Extended -- 5 new checks: evidence round-trip, malformed-evidence fail-closed, v2-header-now-rejected |
+| `app/scripts/test-contract-draft-request.cjs` | Extended -- new evidence-carry-forward checks, and new STATIC source-order checks proving the handler short-circuits before both the Opportunity-field write and `setContractDraftRequest`, and that the canonical Note never absorbs the transport write's observed value |
+| `app/scripts/test-ghl-seller-count-transport-write.cjs` (new) | Mocked-`fetch` proof of the write/readback fold: configured-field success, readback mismatch, write failure, sentinel/collision refusal -- zero real network calls |
+| `app/package.json` | `test:ghl-seller-count-transport-write` script entry |
+
+**Test evidence.** `test:contract-seller-signing-model` 126/126 (was 76),
+`test:contract-ghl-projection` 167/167 (was 148), `test:contract-draft-request`
+104/104 (was 90), `test:contract-projection-sync-carriers` 28/28 (was 23),
+`test:ghl-seller-count-transport-write` 16/16 (new), `test:contract-workspace-wiring`
+100/100 (unchanged -- the `ghl.notes.create` call-count invariant of 9 is
+unaffected; no new note-write class was introduced). Full repository suite
+(every `scripts/test-*.cjs`) re-run clean. `tsc -b --force` clean.
+`pnpm --dir app build` clean. `CONTRACT_PROJECTION_FIELD_KEYS` count
+unaffected at exactly 112. Manifest hash unchanged.
+
+**What this correction does NOT do.** Does not use the provisioning script
+with `--apply`; does not create the live Seller Count field; does not
+mutate any GHL workflow or template; does not create a draft; does not
+send anything; does not touch Production, Linear, or Board #10; does not
+implement the final draft-bound recipient-confirmation gate or any
+automatic recipient routing/sending. Because `contractSellerCountField`
+remains the sentinel in both Test and Production, the live gate refuses
+before any Seller-Count-dependent write in BOTH environments today --
+proven directly (`TEST.contractSellerCountField`/`PRODUCTION.contractSellerCountField`
+sentinel checks, `test-contract-ghl-projection.cjs`). PR #60 remains open,
+not merged, pending Jess re-gate review.

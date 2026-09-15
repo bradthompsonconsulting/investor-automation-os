@@ -1,6 +1,10 @@
 /**
  * One-/Two-Seller signer-cardinality model -- INV-67 Phase 1 (this
- * session), per Brad/Jess's final-gated planning rounds.
+ * session), per Brad/Jess's final-gated planning rounds. EXTENDED by the
+ * Phase 1 Jess re-gate correction (this session): the live readiness gate
+ * is now WIRED into `contract-ghl-projection-model.ts`'s
+ * `buildContractProjectionPlan` -- see `evaluateSellerSigningPreWriteReadiness`
+ * and `buildSellerSigningAuditEvidence` below.
  *
  * Pure. No I/O, no React, no GHL identifiers, no writes -- with ONE
  * explicit, clearly-marked exception at the bottom of this file
@@ -8,7 +12,7 @@
  * documents the network boundary it sits just inside of; see that
  * function's own doc comment).
  *
- * SCOPE OF THIS FILE, EXACTLY AS AUTHORIZED THIS PHASE:
+ * SCOPE OF THIS FILE:
  *   - The canonical `SellerSigningModel` type, including the explicit,
  *     STRUCTURED `SigningCapacityDisposition` (never inferred from free-
  *     text `role`/`signingAuthorityNote` -- those remain descriptive audit
@@ -24,17 +28,24 @@
  *     reasons are reported together, never just the first, so an operator
  *     sees everything wrong in one pass.
  *   - The transport-value derivation (`sellerCountTransportValue`).
+ *   - (Re-gate correction, this session) `evaluateSellerSigningCanonicalReadiness`
+ *     / `evaluateSellerSigningTransportReadiness` / `evaluateSellerSigningPreWriteReadiness`
+ *     -- the exact split `buildContractProjectionPlan` and the opportunity-
+ *     scoped audit evidence require between "the seller model itself is
+ *     ready" (gates 1-13) and "the Seller Count transport field is ready"
+ *     (gates 14-15), and `buildSellerSigningAuditEvidence`, the ONE pure
+ *     builder for the evidence blob `contract-draft-request-model.ts`'s
+ *     two-phase ledger now carries -- so this "no readiness logic in the
+ *     interface" doctrine (see `ContractWorkspace.tsx`'s own header) holds
+ *     for the seller-signing concern exactly like every other fact group.
  *
- * DELIBERATELY NOT DONE THIS PHASE (see the governing plan, PR description,
- * and Brad's own "OUT OF SCOPE" list): `evaluateSellerSigningReadiness` is
- * NOT wired into `contract-ghl-projection-model.ts`'s
- * `buildContractProjectionPlan` or `contract-draft-request-model.ts`'s
- * transition gate in this phase -- that live integration is later,
- * separately authorized work, matching "implement final template
- * routing/config before the Two-Seller clone exists" and "implement the
- * final draft-bound recipient-confirmation gate" both being explicitly
- * out of scope. This file makes that integration possible and fully
- * testable in isolation; it does not perform it.
+ * STILL OUT OF SCOPE THIS PHASE (Brad's own list, unchanged): live GHL
+ * field creation, workflow/template mutation, draft creation, sending, the
+ * Two-Seller template, and the final draft-bound recipient-confirmation
+ * gate. The gate below enforces fail-closed behavior against the CURRENT
+ * sentinel-filled `contractSellerCountField` -- it does not, and cannot,
+ * make a live write succeed until that field is separately provisioned and
+ * wired by a later, explicitly authorized session.
  *
  * SELLER 1 NEVER MANUALLY DUPLICATED. Seller 1 carries no captured
  * identity fields in `SellerSigningModel` at all -- it always references
@@ -217,16 +228,23 @@ export type SellerSigningReadinessInput = {
   sellerCountWriteReadbackVerified: boolean;
 };
 
+/** Named so callers across module boundaries (`contract-ghl-projection-model.ts`, `contract-draft-request-model.ts`) share ONE result shape, never a second, independently-typed copy. */
+export type SellerSigningReadinessResult = { ok: true } | { ok: false; reasons: string[] };
+
 /**
- * The one entry point a future integration (Phase 4+, NOT this phase) would
- * call from `buildContractProjectionPlan`/`contract-draft-request-model.ts`.
+ * PHASE 1 RE-GATE CORRECTION (this session, Jess Gate). This IS now the
+ * live entry point `contract-ghl-projection-model.ts`'s
+ * `buildContractProjectionPlan` folds into its own `blockingReasons` --
+ * see `evaluateSellerSigningPreWriteReadiness` below for the exact pre-
+ * write variant that call site actually uses (gate 15 cannot be evaluated
+ * before a write is attempted; see that function's own doc comment).
  * Accumulates every applicable reason from gates 1-15 -- an operator sees
  * everything blocking Requested in one pass, not one error at a time.
  * Gates that depend on `two_sellers` (7-11, and Seller 2's half of 13) are
  * skipped entirely for `one_seller` -- per the locked rule, One-Seller
  * renders/produces NO Seller 2 warnings of any kind.
  */
-export function evaluateSellerSigningReadiness(input: SellerSigningReadinessInput): { ok: true } | { ok: false; reasons: string[] } {
+export function evaluateSellerSigningReadiness(input: SellerSigningReadinessInput): SellerSigningReadinessResult {
   const reasons: string[] = [];
 
   const countReason = checkSellerCountResolved(input.disposition);
@@ -324,4 +342,246 @@ export function resolveSeller1FromOpportunity(opportunity: OpportunityContactRef
     return { ok: false, reason: "The primary Contact's email is missing or invalid -- required for Seller 1's signing request." };
   }
   return { ok: true, contactId, name, email };
+}
+
+/* ==================================================================== */
+/* 7. Live-gate wiring -- canonical vs. transport, and the pre-write gate */
+/*    (Jess re-gate correction, this session)                            */
+/* ==================================================================== */
+
+/**
+ * Gates 1-13 only -- whether the seller MODEL ITSELF (cardinality, Seller 1,
+ * capacity, printed-party consistency) is ready, independent of the Seller
+ * Count GHL field's own provisioning/write state. Implemented by
+ * re-invoking the SAME, UNMODIFIED `evaluateSellerSigningReadiness` with the
+ * transport half of its input forced to a passing state -- never a second,
+ * independently-maintained copy of gates 1-13's own logic. Used ONLY for
+ * audit-evidence transparency (Brad's ruling: "distinguish canonical
+ * readiness from transport readiness"); the live blocking decision is
+ * `evaluateSellerSigningPreWriteReadiness` below, not this function.
+ */
+export function evaluateSellerSigningCanonicalReadiness(
+  input: SellerSigningReadinessInput,
+): SellerSigningReadinessResult {
+  return evaluateSellerSigningReadiness({
+    ...input,
+    sellerCountFieldId: `${input.sellerCountFieldSentinel}-canonical-probe`,
+    sellerCountWriteReadbackVerified: true,
+  });
+}
+
+/**
+ * Gates 14-15 only -- whether the Seller Count GHL field itself is ready:
+ * provisioned (14), and, once a write has actually been attempted this
+ * cycle, confirmed by readback (15). Independent of the seller model's own
+ * canonical state.
+ */
+export function evaluateSellerSigningTransportReadiness(
+  input: Pick<SellerSigningReadinessInput, "sellerCountFieldId" | "sellerCountFieldSentinel" | "sellerCountWriteReadbackVerified">,
+): SellerSigningReadinessResult {
+  const reasons: string[] = [];
+  const fieldReason = checkSellerCountFieldProvisioned(input.sellerCountFieldId, input.sellerCountFieldSentinel);
+  if (fieldReason) reasons.push(fieldReason);
+  const readbackReason = checkSellerCountWriteReadbackVerified(input.sellerCountWriteReadbackVerified);
+  if (readbackReason) reasons.push(readbackReason);
+  return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
+}
+
+/**
+ * THE live pre-write gate. `contract-ghl-projection-model.ts`'s
+ * `buildContractProjectionPlan` folds this result's reasons into its own
+ * `blockingReasons`, BEFORE any GHL write of any kind (the 112 TREC
+ * projection fields, the Seller Count field, or the Contract Draft Request
+ * transition) is ever attempted -- see that module's own doc comment.
+ *
+ * Covers gates 1-14 (the full model plus "is the Seller Count field
+ * provisioned"). Gate 15 ("was THIS write's own readback confirmed")
+ * cannot be evaluated before a write has been attempted at all -- it is
+ * probed here as satisfied (never actually checked at this call site) and
+ * is instead enforced SEPARATELY, POST-write, via the exact same
+ * `allEntriesLanded` mechanism every other projection field already uses
+ * (`ghl.ts`'s `syncContractProjectionFields` now folds the Seller Count
+ * entry's own landed/not-landed result into that SAME boolean --
+ * `contract-draft-request-model.ts`'s `evaluateContractDraftRequestTransition`
+ * therefore already refuses "Requested" on a failed Seller-Count write
+ * without any change to that module at all). This is not a weaker
+ * guarantee than gate 15 -- it is the SAME guarantee, enforced at the
+ * pipeline stage where it is actually knowable, never a second competing
+ * gate for the same concern.
+ */
+export function evaluateSellerSigningPreWriteReadiness(
+  input: SellerSigningReadinessInput,
+): SellerSigningReadinessResult {
+  return evaluateSellerSigningReadiness({ ...input, sellerCountWriteReadbackVerified: true });
+}
+
+/* ==================================================================== */
+/* 8. Opportunity-scoped audit evidence (Jess re-gate correction)        */
+/* ==================================================================== */
+
+/**
+ * Extends the EXISTING opportunity-scoped, two-phase Contract Draft
+ * Request evidence (`contract-draft-request-model.ts`'s
+ * `ContractDraftRequestSyncRecord`) -- never a second, global, or
+ * independently-scoped audit system. One blob, JSON-encoded into that
+ * ledger's own "Seller signing evidence" positional field (see
+ * `contract-projection-sync-carriers.ts`).
+ *
+ * `canonicalReadinessOk` and `sellerCountFieldProvisioned` are recorded as
+ * SEPARATE booleans specifically so a reader can never mistake "the seller
+ * model itself is fully ready" for "therefore nothing is blocking" when the
+ * transport sentinel is the only thing still refusing -- Brad's own ruling:
+ * "Do not log a successful readiness result when the transport sentinel
+ * blocks it; distinguish canonical readiness from transport readiness."
+ *
+ * `effectiveDateStatus` and `recipientAssignmentStatus` are FIXED literals,
+ * never derived -- this phase performs no Effective Date or recipient-
+ * routing work of any kind (see this module's own header); they are
+ * recorded here only so the evidence record is honest about what those two
+ * concerns' status is AT THE TIME of this attempt, matching Brad's exact
+ * audit-evidence list. `sendOccurred` is always `false` -- no send path
+ * exists anywhere in this codebase for a contract draft.
+ */
+export type SellerSigningAuditEvidence = {
+  sellerCountDiscriminator: "one_seller" | "two_sellers" | "unresolved";
+  seller1Ok: boolean;
+  seller1ContactId: string | null;
+  seller1Capacity: SigningCapacityDisposition | null;
+  seller2LegalName: string | null;
+  seller2NormalizedEmail: string | null;
+  seller2Capacity: SigningCapacityDisposition | null;
+  printedPartyConsistencyOk: boolean;
+  expectedSellerCountTransportValue: typeof SELLER_COUNT_ONE_SELLER_VALUE | typeof SELLER_COUNT_TWO_SELLERS_VALUE | null;
+  canonicalReadinessOk: boolean;
+  sellerCountFieldProvisioned: boolean;
+  /** `null` = no write was attempted this cycle yet (e.g. the pre-write gate itself already refused). Populated once `syncContractProjectionFields` has actually run with a Seller Count entry included. */
+  sellerCountWriteReadbackOk: boolean | null;
+  effectiveDateStatus: "pending_final_acceptance";
+  recipientAssignmentStatus: "pending_manual_review";
+  blockingReasons: string[];
+  sendOccurred: false;
+};
+
+const SELLER_SIGNING_AUDIT_EVIDENCE_KEYS = [
+  "sellerCountDiscriminator", "seller1Ok", "seller1ContactId", "seller1Capacity",
+  "seller2LegalName", "seller2NormalizedEmail", "seller2Capacity",
+  "printedPartyConsistencyOk", "expectedSellerCountTransportValue",
+  "canonicalReadinessOk", "sellerCountFieldProvisioned", "sellerCountWriteReadbackOk",
+  "effectiveDateStatus", "recipientAssignmentStatus", "blockingReasons", "sendOccurred",
+] as const;
+
+function isOptionalSigningCapacityDisposition(v: unknown): v is SigningCapacityDisposition | null {
+  return v === null || v === "individual_own_capacity" || v === "unsupported_capacity" || v === "unresolved";
+}
+
+/**
+ * Exact-keys, exact-shape validator for the JSON-encoded evidence blob --
+ * mirrors `seller-contract-facts-carriers.ts`'s own `validateSellerSigningModelValue`
+ * pattern exactly. Consumed by `contract-projection-sync-carriers.ts`'s
+ * note parser -- kept HERE, beside the type it validates, rather than
+ * duplicated in the carrier file.
+ */
+export function validateSellerSigningAuditEvidenceValue(v: unknown): SellerSigningAuditEvidence | null {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const keys = Object.keys(o);
+  if (keys.length !== SELLER_SIGNING_AUDIT_EVIDENCE_KEYS.length || !SELLER_SIGNING_AUDIT_EVIDENCE_KEYS.every((k) => keys.includes(k))) return null;
+
+  if (o.sellerCountDiscriminator !== "one_seller" && o.sellerCountDiscriminator !== "two_sellers" && o.sellerCountDiscriminator !== "unresolved") return null;
+  if (typeof o.seller1Ok !== "boolean") return null;
+  if (o.seller1ContactId !== null && typeof o.seller1ContactId !== "string") return null;
+  if (!isOptionalSigningCapacityDisposition(o.seller1Capacity)) return null;
+  if (o.seller2LegalName !== null && typeof o.seller2LegalName !== "string") return null;
+  if (o.seller2NormalizedEmail !== null && typeof o.seller2NormalizedEmail !== "string") return null;
+  if (!isOptionalSigningCapacityDisposition(o.seller2Capacity)) return null;
+  if (typeof o.printedPartyConsistencyOk !== "boolean") return null;
+  if (
+    o.expectedSellerCountTransportValue !== null &&
+    o.expectedSellerCountTransportValue !== SELLER_COUNT_ONE_SELLER_VALUE &&
+    o.expectedSellerCountTransportValue !== SELLER_COUNT_TWO_SELLERS_VALUE
+  ) return null;
+  if (typeof o.canonicalReadinessOk !== "boolean") return null;
+  if (typeof o.sellerCountFieldProvisioned !== "boolean") return null;
+  if (o.sellerCountWriteReadbackOk !== null && typeof o.sellerCountWriteReadbackOk !== "boolean") return null;
+  if (o.effectiveDateStatus !== "pending_final_acceptance") return null;
+  if (o.recipientAssignmentStatus !== "pending_manual_review") return null;
+  if (!Array.isArray(o.blockingReasons) || !o.blockingReasons.every((r) => typeof r === "string")) return null;
+  if (o.sendOccurred !== false) return null;
+
+  return {
+    sellerCountDiscriminator: o.sellerCountDiscriminator,
+    seller1Ok: o.seller1Ok,
+    seller1ContactId: o.seller1ContactId as string | null,
+    seller1Capacity: o.seller1Capacity as SigningCapacityDisposition | null,
+    seller2LegalName: o.seller2LegalName as string | null,
+    seller2NormalizedEmail: o.seller2NormalizedEmail as string | null,
+    seller2Capacity: o.seller2Capacity as SigningCapacityDisposition | null,
+    printedPartyConsistencyOk: o.printedPartyConsistencyOk,
+    expectedSellerCountTransportValue: o.expectedSellerCountTransportValue as SellerSigningAuditEvidence["expectedSellerCountTransportValue"],
+    canonicalReadinessOk: o.canonicalReadinessOk,
+    sellerCountFieldProvisioned: o.sellerCountFieldProvisioned,
+    sellerCountWriteReadbackOk: o.sellerCountWriteReadbackOk as boolean | null,
+    effectiveDateStatus: "pending_final_acceptance",
+    recipientAssignmentStatus: "pending_manual_review",
+    blockingReasons: o.blockingReasons as string[],
+    sendOccurred: false,
+  };
+}
+
+export type BuildSellerSigningAuditEvidenceArgs = Omit<SellerSigningReadinessInput, "sellerCountWriteReadbackVerified"> & {
+  /** `null` before any write has been attempted this cycle -- see `SellerSigningAuditEvidence.sellerCountWriteReadbackOk`. */
+  sellerCountWriteReadbackOk: boolean | null;
+};
+
+/**
+ * THE one pure builder for the evidence blob -- called ONCE per sync
+ * attempt (immediately after the projection write, whether or not a
+ * Seller Count entry was included in it), its result carried forward
+ * UNCHANGED from the attempt note to the resolution note, exactly like
+ * this ledger's existing `currentOfferCrossCheckOk` field already is.
+ */
+export function buildSellerSigningAuditEvidence(args: BuildSellerSigningAuditEvidenceArgs): SellerSigningAuditEvidence {
+  const model = args.disposition.kind === "populated" ? args.disposition.value : null;
+
+  const canonical = evaluateSellerSigningCanonicalReadiness({ ...args, sellerCountWriteReadbackVerified: true });
+  const fullReadiness = evaluateSellerSigningReadiness({
+    ...args,
+    sellerCountWriteReadbackVerified: args.sellerCountWriteReadbackOk ?? false,
+  });
+
+  let printedPartyConsistencyOk = false;
+  if (model) {
+    const cardinalityReason = checkPrintedSellerCardinality(model, args.printedSellerSigners.length);
+    if (!cardinalityReason) {
+      const seller1NameReason = checkPrintedSellerNameMatch(
+        "Seller 1",
+        args.seller1.ok ? args.seller1.name : "",
+        args.printedSellerSigners[0]?.displayName ?? null,
+      );
+      const seller2NameReason =
+        model.kind === "two_sellers"
+          ? checkPrintedSellerNameMatch("Seller 2", model.seller2.legalName, args.printedSellerSigners[1]?.displayName ?? null)
+          : null;
+      printedPartyConsistencyOk = !seller1NameReason && !seller2NameReason;
+    }
+  }
+
+  return {
+    sellerCountDiscriminator: model ? model.kind : "unresolved",
+    seller1Ok: args.seller1.ok,
+    seller1ContactId: args.seller1.ok ? args.seller1.contactId : null,
+    seller1Capacity: model ? model.seller1Capacity : null,
+    seller2LegalName: model && model.kind === "two_sellers" ? model.seller2.legalName : null,
+    seller2NormalizedEmail: model && model.kind === "two_sellers" ? normalizeEmail(model.seller2.email) : null,
+    seller2Capacity: model && model.kind === "two_sellers" ? model.seller2Capacity : null,
+    printedPartyConsistencyOk,
+    expectedSellerCountTransportValue: model ? sellerCountTransportValue(model) : null,
+    canonicalReadinessOk: canonical.ok,
+    sellerCountFieldProvisioned: checkSellerCountFieldProvisioned(args.sellerCountFieldId, args.sellerCountFieldSentinel) === null,
+    sellerCountWriteReadbackOk: args.sellerCountWriteReadbackOk,
+    effectiveDateStatus: "pending_final_acceptance",
+    recipientAssignmentStatus: "pending_manual_review",
+    blockingReasons: fullReadiness.ok ? [] : fullReadiness.reasons,
+    sendOccurred: false,
+  };
 }

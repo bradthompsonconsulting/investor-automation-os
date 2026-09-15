@@ -56,6 +56,7 @@ const MARKER_MODEL = path.join(APP, 'src', 'lib', 'contract-checkbox-marker-mode
 const BROKER_MODEL = path.join(APP, 'src', 'lib', 'contract-broker-arrangement-model.ts');
 const CARRIERS = path.join(APP, 'src', 'lib', 'seller-contract-facts-carriers.ts');
 const TRANSPORT = path.join(APP, 'src', 'lib', 'contract-ghl-transport-formatting.ts');
+const SIGNING_MODEL = path.join(APP, 'src', 'lib', 'contract-seller-signing-model.ts');
 
 function cleanup() { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {} }
 cleanup();
@@ -64,7 +65,7 @@ fs.writeFileSync(path.join(TMP, 'package.json'), JSON.stringify({ type: 'commonj
 
 try {
   execSync(
-    `npx tsc "${MODEL}" "${MARKER_MODEL}" "${BROKER_MODEL}" "${CARRIERS}" "${TRANSPORT}" --outDir "${TMP}" --module commonjs --target es2020 --strict`,
+    `npx tsc "${MODEL}" "${MARKER_MODEL}" "${BROKER_MODEL}" "${CARRIERS}" "${TRANSPORT}" "${SIGNING_MODEL}" --outDir "${TMP}" --module commonjs --target es2020 --strict`,
     { cwd: APP, stdio: 'inherit' },
   );
 } catch (_) {
@@ -91,8 +92,12 @@ const { ADDENDA_APPLICABILITY_ITEM_KEYS } = require(path.join(TMP, 'seller-contr
 const {
   checkClosingDateCenturyBound,
 } = require(path.join(TMP, 'contract-ghl-transport-formatting.js'));
+const {
+  evaluateSellerSigningReadiness,
+  evaluateSellerSigningPreWriteReadiness,
+} = require(path.join(TMP, 'contract-seller-signing-model.js'));
 
-const FLOOR = 100;
+const FLOOR = 167;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -113,6 +118,17 @@ function checkTrue(name, actual) { check(name, actual, true); }
 /* ==================================================================== */
 
 const VERSION = { agreementAt: '2026-09-01T00:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: null };
+
+/**
+ * Jess re-gate correction (this session) -- `buildContractProjectionPlan`
+ * now takes a fourth, REQUIRED `sellerReadiness` argument (see
+ * `contract-seller-signing-model.ts`'s `SellerSigningReadinessResult`).
+ * Every pre-existing TREC-fact-only test above this section is
+ * deliberately UNCHANGED in intent -- it passes this fixed "ok" fixture so
+ * it keeps testing ONLY what it always tested. The seller-readiness FOLD
+ * itself is proven separately, in its own section below.
+ */
+const SELLER_READINESS_OK = { ok: true };
 
 function line(group, field, status, text) {
   return { paragraph: 'X', group, field, label: `${group}.${field}`, status, text, authority: status === 'unresolved' ? null : 'system_derived', recordedAt: null };
@@ -221,7 +237,7 @@ function completeReport(overrides) {
 
 {
   const preview = completePreview({ previewComplete: false, blockingReasons: ['Something is unresolved.'] });
-  const plan = buildContractProjectionPlan('OPP-1', preview, completeReport());
+  const plan = buildContractProjectionPlan('OPP-1', preview, completeReport(), SELLER_READINESS_OK);
   checkTrue('blocked when previewComplete is false', plan.ok === false);
   check('blocked plan carries the exact blocking reasons', plan.ok ? null : plan.blockingReasons, ['Something is unresolved.']);
 }
@@ -234,7 +250,7 @@ function completeReport(overrides) {
   const preview = completePreview({
     additionalRequiredFacts: [line('sellerEquitableInterest', 'disposition', 'unresolved', null)],
   });
-  const plan = buildContractProjectionPlan('OPP-1', preview, completeReport());
+  const plan = buildContractProjectionPlan('OPP-1', preview, completeReport(), SELLER_READINESS_OK);
   checkTrue('blocked on unresolved equitable-interest disclosure even though previewComplete is true', plan.ok === false);
   checkTrue(
     'blocking reasons name the equitable-interest gate',
@@ -248,7 +264,7 @@ function completeReport(overrides) {
 
 {
   const preview = completePreview();
-  const plan = buildContractProjectionPlan('OPP-1', preview, completeReport());
+  const plan = buildContractProjectionPlan('OPP-1', preview, completeReport(), SELLER_READINESS_OK);
   checkTrue('ok plan on a fully resolved preview + report', plan.ok === true);
   check('entry count equals CONTRACT_PROJECTION_FIELD_KEYS length', plan.ok ? plan.entries.length : null, CONTRACT_PROJECTION_FIELD_KEYS.length);
   check('entry count is exactly 112', plan.ok ? plan.entries.length : null, 112);
@@ -329,7 +345,7 @@ function completeReport(overrides) {
       ]),
     },
   });
-  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
   checkTrue('ok plan with additional-earnest-money value and a "$"-typed cap value', plan.ok === true);
   const byKey = new Map((plan.ok ? plan.entries : []).map((e) => [e.key, e.text]));
   check('additional_earnest_money_amount_text derives the bare amount, no "$"', byKey.get('additional_earnest_money_amount_text'), '2,500.00');
@@ -359,7 +375,7 @@ function completeReport(overrides) {
   ]) {
     const preview = completePreview();
     const report = completeReport({ closingPossession: { closingDate: populated(iso) } });
-    const plan = buildContractProjectionPlan('OPP-1', preview, report);
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
     check(`closing date -- ${label} -- plan.ok is ${shouldPass}`, plan.ok, shouldPass);
     if (!shouldPass) {
       checkTrue(`closing date -- ${label} -- blocking reason names the closing date`, plan.ok ? false : plan.blockingReasons.some((r) => /closing date/i.test(r)));
@@ -383,7 +399,7 @@ function completeReport(overrides) {
   {
     const preview = completePreview();
     const report = completeReport({ closingPossession: { closingDate: populated('2100-01-01T00:00:00.000Z') } });
-    const plan = buildContractProjectionPlan('OPP-1', preview, report);
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
     checkTrue('an out-of-range closing year yields ok:false (no `entries`, no GHL write, no draft-request transition possible)', plan.ok === false && !('entries' in plan));
   }
 }
@@ -406,7 +422,7 @@ function completeReport(overrides) {
       closingDate: { kind: 'not_applicable', confirmedBy: 'operator', at: '2026-09-01T00:00:00.000Z', note: 'To be determined.' },
     },
   });
-  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
   checkTrue('not_applicable closing date -- plan.ok is false (Closing Date is required, "not applicable" is not an allowed disposition)', plan.ok === false);
   checkTrue('not_applicable closing date -- blocking reason names the closing date', plan.ok ? false : plan.blockingReasons.some((r) => /closing.?date/i.test(r)));
   checkTrue('not_applicable closing date -- blocking reason is distinct (mentions "not applicable")', plan.ok ? false : plan.blockingReasons.some((r) => /not applicable/i.test(r)));
@@ -419,13 +435,13 @@ function completeReport(overrides) {
   // "unresolved" }`, no other fields at all).
   const preview = completePreview();
   const report = completeReport({ closingPossession: { closingDate: { kind: 'unresolved' } } });
-  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
   checkTrue('unresolved closing date -- plan.ok is false', plan.ok === false);
   checkTrue('unresolved closing date -- blocking reason names the closing date', plan.ok ? false : plan.blockingReasons.some((r) => /closing.?date/i.test(r)));
   checkTrue('unresolved closing date -- blocking reason is distinct (mentions "unresolved", not "not applicable")', plan.ok ? false : plan.blockingReasons.some((r) => /unresolved/i.test(r)));
   checkTrue('unresolved closing date -- blocking reason is DIFFERENT from the not_applicable reason (never conflated)', (() => {
     const naReport = completeReport({ closingPossession: { closingDate: { kind: 'not_applicable', confirmedBy: null, at: '2026-09-01T00:00:00.000Z', note: null } } });
-    const naPlan = buildContractProjectionPlan('OPP-1', preview, naReport);
+    const naPlan = buildContractProjectionPlan('OPP-1', preview, naReport, SELLER_READINESS_OK);
     return plan.ok === false && naPlan.ok === false && plan.blockingReasons[0] !== naPlan.blockingReasons[0];
   })());
   checkTrue('unresolved closing date -- no successful projection entries are returned', !('entries' in plan));
@@ -470,7 +486,7 @@ function completeReport(overrides) {
     propertyLegalDescription: { reservations: populated({ kind: 'applies', addendumNote: 'see addendum' }) },
     // addendaApplicability.items.mineral_reservation stays false -> disagreement
   });
-  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
   checkTrue('mineral-reservation disagreement blocks the WHOLE plan', plan.ok === false);
   checkTrue('mineral-reservation blocking reason is distinct and operator-facing', plan.ok ? false : plan.blockingReasons.some((r) => r.includes('Mineral-reservation disagreement')));
 }
@@ -482,7 +498,7 @@ function completeReport(overrides) {
     address: { kind: 'none' }, teamName: { kind: 'none' }, supervisorName: { kind: 'none' }, supervisorPhone: { kind: 'none' }, supervisorLicenseNo: { kind: 'none' },
   };
   const report = completeReport({ representation: { representation: populated({ kind: 'intermediary', brokerFirm }) } });
-  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
   checkTrue('intermediary broker arrangement blocks the WHOLE plan before any entry is built', plan.ok === false);
   checkTrue('intermediary blocking reason names the arrangement', plan.ok ? false : plan.blockingReasons.some((r) => /intermediary/i.test(r)));
 }
@@ -490,7 +506,7 @@ function completeReport(overrides) {
 {
   const preview = completePreview();
   const report = completeReport({ representation: { representation: populated({ kind: 'represented', sellerAgent: null, buyerAgent: null }) } });
-  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
   checkTrue('represented-but-empty broker arrangement ALSO blocks the WHOLE plan (mandatory correction)', plan.ok === false);
   checkTrue('represented-but-empty blocking reason is distinct from "no broker"', plan.ok ? false : plan.blockingReasons.some((r) => /not the same fact as "no broker"/.test(r)));
 }
@@ -502,7 +518,7 @@ function completeReport(overrides) {
 {
   const preview = completePreview();
   const report = completeReport({ titleSurvey: { poaMembership: populated('is_subject') } }); // addenda.poa_membership stays false -> disagreement
-  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
   checkTrue('POA/addendum disagreement does NOT block the plan', plan.ok === true);
   checkTrue('POA/addendum disagreement surfaces as a warning', plan.ok && plan.warnings.some((w) => w.includes('POA membership')));
 }
@@ -518,7 +534,7 @@ function completeReport(overrides) {
     address: { kind: 'value', value: '1 Main St' }, teamName: { kind: 'none' }, supervisorName: { kind: 'none' }, supervisorPhone: { kind: 'none' }, supervisorLicenseNo: { kind: 'none' },
   };
   const report = completeReport({ representation: { representation: populated({ kind: 'represented', sellerAgent, buyerAgent: null }) } });
-  const plan = buildContractProjectionPlan('OPP-1', preview, report);
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
   checkTrue('seller-only arrangement produces an ok plan', plan.ok === true);
   const byKey = new Map(plan.ok ? plan.entries.map((e) => [e.key, e.text]) : []);
   check('seller broker firm name is populated', byKey.get('seller_broker_firm_name_text'), 'Seller Firm');
@@ -579,14 +595,14 @@ checkTrue(
   const preview = completePreview();
   preview.documentLines = preview.documentLines.filter((l) => !(l.group === 'earnestMoneyOption' && l.field === 'escrowAgentName'));
   let threw = false;
-  try { buildContractProjectionPlan('OPP-1', preview, completeReport()); } catch (e) { threw = /mapping drift/.test(e.message); }
+  try { buildContractProjectionPlan('OPP-1', preview, completeReport(), SELLER_READINESS_OK); } catch (e) { threw = /mapping drift/.test(e.message); }
   checkTrue('throws on mapping drift (an UNAFFECTED retained key with no document line)', threw);
 }
 {
   const preview = completePreview();
   preview.documentLines = preview.documentLines.map((l) => (l.group === 'earnestMoneyOption' && l.field === 'escrowAgentName' ? { ...l, text: null } : l));
   let threw = false;
-  try { buildContractProjectionPlan('OPP-1', preview, completeReport()); } catch (e) { threw = /no text despite previewComplete/.test(e.message); }
+  try { buildContractProjectionPlan('OPP-1', preview, completeReport(), SELLER_READINESS_OK); } catch (e) { threw = /no text despite previewComplete/.test(e.message); }
   checkTrue('throws when an UNAFFECTED retained-key line has null text despite previewComplete=true', threw);
 }
 {
@@ -596,7 +612,7 @@ checkTrue(
   const preview = completePreview();
   const report = completeReport({ propertyLegalDescription: { lot: { kind: 'unresolved', value: undefined, authority: null, recordedAt: null } } });
   let threw = false;
-  try { buildContractProjectionPlan('OPP-1', preview, report); } catch (e) { threw = /is unresolved despite previewComplete=true/.test(e.message); }
+  try { buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK); } catch (e) { threw = /is unresolved despite previewComplete=true/.test(e.message); }
   checkTrue('throws when a REFORMATTED retained key\'s report disposition is unresolved despite previewComplete=true', threw);
 }
 
@@ -894,6 +910,153 @@ checkTrue(
   checkTrue('PRODUCTION.contractDraftRequest is still exactly the sentinel constant', !!prodSentinelMatch);
 
   checkTrue('TEST.contractDraftRequest is unchanged (still the pre-existing real dropdown id, untouched by this repair)', /contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",/.test(configSrc));
+
+  // INV-67 Phase 1 Jess re-gate correction -- the Seller Count field must
+  // remain unconditionally sentinel-filled in BOTH environments; neither
+  // this session nor any prior one may fake or bypass it.
+  checkTrue(
+    'TEST.contractSellerCountField is still exactly the sentinel constant',
+    /const TEST: GhlConfig = \{[\s\S]*?contractSellerCountField: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,/.test(configSrc),
+  );
+  checkTrue(
+    'PRODUCTION.contractSellerCountField is still exactly the sentinel constant',
+    /const PRODUCTION: GhlConfig = \{[\s\S]*?contractSellerCountField: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,/.test(configSrc),
+  );
+}
+
+/* ==================================================================== */
+/* 11. Seller-readiness fold (Jess re-gate correction, this session) --   */
+/*     buildContractProjectionPlan's REQUIRED fourth argument             */
+/* ==================================================================== */
+
+const SELLER_SENTINEL = 'CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED';
+const READY_SELLER1 = { ok: true, contactId: 'CONTACT-1', name: 'Jane Seller', email: 'jane@example.com' };
+const ONE_SELLER_READY = { kind: 'populated', value: { kind: 'one_seller', seller1Capacity: 'individual_own_capacity' } };
+const PRINTED_ONE_SELLER = [{ displayName: 'Jane Seller' }];
+
+function readySellerReadinessInput(overrides) {
+  return {
+    disposition: ONE_SELLER_READY,
+    seller1: READY_SELLER1,
+    printedSellerSigners: PRINTED_ONE_SELLER,
+    sellerCountFieldId: 'REAL-FIELD-ID-123',
+    sellerCountFieldSentinel: SELLER_SENTINEL,
+    sellerCountWriteReadbackVerified: true,
+    ...overrides,
+  };
+}
+
+{
+  // A fully-ready seller-readiness input, folded into an otherwise-perfect
+  // plan, still produces plan.ok === true -- the fold never blocks a
+  // legitimately clear case.
+  const preview = completePreview();
+  const report = completeReport();
+  const readiness = evaluateSellerSigningPreWriteReadiness(readySellerReadinessInput());
+  checkTrue('a fully-ready seller-readiness input itself evaluates ok:true', readiness.ok === true);
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, readiness);
+  checkTrue('plan.ok is true when both the TREC facts AND seller readiness are clear', plan.ok === true);
+}
+
+{
+  // The pre-write gate NEVER depends on sellerCountWriteReadbackVerified --
+  // gate 15 is probed as satisfied here and enforced post-write instead
+  // (see evaluateSellerSigningPreWriteReadiness's own doc comment).
+  const readiness = evaluateSellerSigningPreWriteReadiness(readySellerReadinessInput({ sellerCountWriteReadbackVerified: false }));
+  checkTrue('the pre-write gate ignores sellerCountWriteReadbackVerified -- still ok:true even when passed false', readiness.ok === true);
+}
+
+{
+  // The Seller Count field remains the sentinel -- exactly this phase's
+  // live reality in both Test and Production. The fold must block the
+  // WHOLE plan, before any entries are built, before any GHL write.
+  const preview = completePreview();
+  const report = completeReport();
+  const readiness = evaluateSellerSigningPreWriteReadiness(readySellerReadinessInput({ sellerCountFieldId: SELLER_SENTINEL }));
+  checkTrue('a sentinel Seller Count field id blocks the pre-write readiness result', readiness.ok === false);
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, readiness);
+  checkTrue('the sentinel blocks the WHOLE plan -- plan.ok is false', plan.ok === false);
+  checkTrue('the plan carries no entries at all when the seller sentinel blocks it (no partial write is even representable)', plan.ok === false && !('entries' in plan));
+  checkTrue(
+    'the blocking reason names the Seller Count field provisioning gate',
+    plan.ok ? false : plan.blockingReasons.some((r) => r.includes('Contract Seller Count') && r.includes('not yet provisioned')),
+  );
+}
+
+{
+  // No SellerSigningModel Note has ever been recorded for this Opportunity
+  // -- disposition is "unresolved". Requested must be impossible.
+  const preview = completePreview();
+  const report = completeReport();
+  const readiness = evaluateSellerSigningPreWriteReadiness(readySellerReadinessInput({ disposition: { kind: 'unresolved' } }));
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, readiness);
+  checkTrue('no seller-count Note recorded -- plan.ok is false', plan.ok === false);
+}
+
+{
+  // Seller 1 unresolved (no bound primary Contact) -- Requested must be impossible.
+  const preview = completePreview();
+  const report = completeReport();
+  const readiness = evaluateSellerSigningPreWriteReadiness(
+    readySellerReadinessInput({ seller1: { ok: false, reason: 'No primary Contact is bound to this Opportunity -- Seller 1 cannot be identified.' } }),
+  );
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, readiness);
+  checkTrue('Seller 1 unresolved -- plan.ok is false', plan.ok === false);
+}
+
+{
+  // Seller 1 capacity unresolved / unsupported -- each independently blocks.
+  const preview = completePreview();
+  const report = completeReport();
+  for (const capacity of ['unresolved', 'unsupported_capacity']) {
+    const readiness = evaluateSellerSigningPreWriteReadiness(
+      readySellerReadinessInput({ disposition: { kind: 'populated', value: { kind: 'one_seller', seller1Capacity: capacity } } }),
+    );
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, readiness);
+    check(`Seller 1 capacity "${capacity}" -- plan.ok is false`, plan.ok, false);
+  }
+}
+
+{
+  // Two Sellers with missing/invalid Seller 2 data, or duplicate emails --
+  // each independently blocks.
+  const preview = completePreview();
+  const report = completeReport();
+  const twoSellersMissingName = { kind: 'populated', value: { kind: 'two_sellers', seller1Capacity: 'individual_own_capacity', seller2: { legalName: '', email: 'john@example.com' }, seller2Capacity: 'individual_own_capacity' } };
+  const twoSellersDuplicateEmail = { kind: 'populated', value: { kind: 'two_sellers', seller1Capacity: 'individual_own_capacity', seller2: { legalName: 'John Seller', email: 'JANE@EXAMPLE.COM' }, seller2Capacity: 'individual_own_capacity' } };
+  for (const disposition of [twoSellersMissingName, twoSellersDuplicateEmail]) {
+    const readiness = evaluateSellerSigningPreWriteReadiness(readySellerReadinessInput({ disposition, printedSellerSigners: [{ displayName: 'Jane Seller' }, { displayName: 'John Seller' }] }));
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, readiness);
+    checkTrue('invalid Two-Seller data (missing name or duplicate email) -- plan.ok is false', plan.ok === false);
+  }
+}
+
+{
+  // Printed Seller count/name mismatch -- each independently blocks.
+  const preview = completePreview();
+  const report = completeReport();
+  const countMismatch = evaluateSellerSigningPreWriteReadiness(readySellerReadinessInput({ printedSellerSigners: [] }));
+  const nameMismatch = evaluateSellerSigningPreWriteReadiness(readySellerReadinessInput({ printedSellerSigners: [{ displayName: 'Someone Else' }] }));
+  checkTrue('printed Seller count mismatch -- plan.ok is false', buildContractProjectionPlan('OPP-1', preview, report, countMismatch).ok === false);
+  checkTrue('printed Seller name mismatch -- plan.ok is false', buildContractProjectionPlan('OPP-1', preview, report, nameMismatch).ok === false);
+}
+
+{
+  // Both a TREC-fact blocking reason AND a seller-readiness blocking reason
+  // are present simultaneously -- BOTH sets of reasons are reported, never
+  // just one silently swallowing the other.
+  const preview = completePreview({ previewComplete: false, blockingReasons: ['Something TREC-side is unresolved.'] });
+  const report = completeReport();
+  const readiness = evaluateSellerSigningPreWriteReadiness(readySellerReadinessInput({ sellerCountFieldId: SELLER_SENTINEL }));
+  const plan = buildContractProjectionPlan('OPP-1', preview, report, readiness);
+  checkTrue('plan.ok is false when BOTH a TREC-fact reason and a seller reason apply', plan.ok === false);
+  checkTrue(
+    'BOTH the TREC-fact reason and the seller reason are present together, neither swallowing the other',
+    plan.ok
+      ? false
+      : plan.blockingReasons.includes('Something TREC-side is unresolved.') &&
+          plan.blockingReasons.some((r) => r.includes('Contract Seller Count')),
+  );
 }
 
 /* ==================================================================== */

@@ -77,7 +77,7 @@ import {
 import {
   formatDispositionHandoffNote, parseDispositionHandoffNote, allDispositionHandoffsForOpportunity,
 } from "../lib/contract-disposition-handoff-carriers";
-import { getRuntimeConfig } from "../../shared/ghl-config";
+import { getRuntimeConfig, CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED } from "../../shared/ghl-config";
 import {
   formatBuyerEntityOverrideNote,
   formatPartySignerFactsNote, type SellerSignerFact,
@@ -100,8 +100,8 @@ import {
 } from "../lib/seller-contract-facts-carriers";
 import {
   resolveSeller1FromOpportunity, checkSeller2LegalName, checkSeller2EmailFormat, checkSellerEmailsDistinct,
-  normalizeEmail,
-  type SellerSigningModel, type SigningCapacityDisposition, type Seller1Resolution,
+  normalizeEmail, evaluateSellerSigningPreWriteReadiness, buildSellerSigningAuditEvidence, sellerCountTransportValue,
+  type SellerSigningModel, type SigningCapacityDisposition, type Seller1Resolution, type SellerSigningModelDisposition,
 } from "../lib/contract-seller-signing-model";
 
 /**
@@ -673,6 +673,18 @@ export default function ContractWorkspace() {
     return latestSellerSigningModelForOpportunity(notes, screen.opportunity.id);
   }, [screen, notes]);
 
+  /** INV-67 Phase 1 Jess re-gate correction -- the canonical seller-signing fact, as a `SellerSigningModelDisposition` (the exact shape `evaluateSellerSigningPreWriteReadiness` / `buildSellerSigningAuditEvidence` take). No Note ever recorded reads as `unresolved`, never a silent default. */
+  const sellerSigningDisposition: SellerSigningModelDisposition = useMemo(
+    () => (latestSellerSigningModel ? { kind: "populated", value: latestSellerSigningModel.model } : { kind: "unresolved" }),
+    [latestSellerSigningModel],
+  );
+
+  /** The existing `parties.sellerSigners` printed-identity array, narrowed to the one field the seller-readiness gate compares against -- never a second, independently-read source. */
+  const printedSellerSigners = useMemo(() => {
+    const d = sellerContractFactsReport?.parties.sellerSigners;
+    return d && d.kind === "populated" ? d.value.map((s) => ({ displayName: s.displayName })) : [];
+  }, [sellerContractFactsReport]);
+
   /**
    * B9-07 / INV-62 -- Contract Review & Send-Authorization Gate.
    *
@@ -780,13 +792,55 @@ export default function ContractWorkspace() {
     setSyncBusy(true);
     try {
       const opportunityId = screen.opportunity.id;
-      const plan = buildContractProjectionPlan(opportunityId, contractDocumentPreview, sellerContractFactsReport);
+
+      // INV-67 Phase 1 Jess re-gate correction -- the seller-signing gate
+      // runs BEFORE buildContractProjectionPlan is even called, and its
+      // result is FOLDED into that plan's own blockingReasons/ok:false
+      // path below -- there is no separate seller-only short-circuit here,
+      // so the SAME "if (!plan.ok) return" already in place structurally
+      // covers both. Nothing here performs network I/O; every input is
+      // already-resolved live data this component already holds.
+      const sellerCountFieldId = getRuntimeConfig().contractSellerCountField;
+      const sellerReadiness = evaluateSellerSigningPreWriteReadiness({
+        disposition: sellerSigningDisposition,
+        seller1: seller1Resolution,
+        printedSellerSigners,
+        sellerCountFieldId,
+        sellerCountFieldSentinel: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+        sellerCountWriteReadbackVerified: true, // see evaluateSellerSigningPreWriteReadiness's own doc comment -- gate 15 is enforced post-write, below.
+      });
+
+      const plan = buildContractProjectionPlan(opportunityId, contractDocumentPreview, sellerContractFactsReport, sellerReadiness);
       if (!plan.ok) {
         setSyncResult({ kind: "blocked", blockingReasons: plan.blockingReasons });
         return;
       }
 
-      const writeResult = await ghl.opportunities.syncContractProjectionFields(opportunityId, plan.entries);
+      // plan.ok === true guarantees sellerReadiness.ok === true, which
+      // guarantees sellerSigningDisposition.kind === "populated" (gate 1)
+      // and sellerCountFieldId is provisioned (gate 14) -- safe to build
+      // and include the Seller Count write in the SAME verified write/
+      // readback call the 112 TREC fields already go through.
+      const sellerCountText =
+        sellerSigningDisposition.kind === "populated" ? sellerCountTransportValue(sellerSigningDisposition.value) : null;
+      const writeResult = await ghl.opportunities.syncContractProjectionFields(
+        opportunityId,
+        plan.entries,
+        sellerCountText !== null ? { fieldId: sellerCountFieldId, text: sellerCountText } : null,
+      );
+
+      // Extends the EXISTING opportunity-scoped, two-phase evidence --
+      // never a second, global, or independently-scoped audit system. See
+      // buildSellerSigningAuditEvidence's own doc comment for why this is
+      // computed ONCE here and carried forward unchanged onto both notes.
+      const sellerSigningEvidence = buildSellerSigningAuditEvidence({
+        disposition: sellerSigningDisposition,
+        seller1: seller1Resolution,
+        printedSellerSigners,
+        sellerCountFieldId,
+        sellerCountFieldSentinel: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+        sellerCountWriteReadbackOk: writeResult.sellerCount ? writeResult.sellerCount.landed : null,
+      });
 
       const reused = reusedCurrentOfferLines(contractDocumentPreview);
       const currentOfferCrossCheckOk =
@@ -824,6 +878,7 @@ export default function ContractWorkspace() {
             failedKeys: writeResult.entries.filter((e) => !e.landed).map((e) => e.key),
             currentOfferCrossCheckOk,
             observedStateBeforeWrite,
+            sellerSigningEvidence,
           });
           const attemptNote = formatContractProjectionSyncNote(attemptRecord);
 

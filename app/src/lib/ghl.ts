@@ -1093,15 +1093,33 @@ export const ghl = {
      * missing or still the `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`
      * sentinel -- the same fail-closed pattern `setCurrentOffer` already
      * established.
+     *
+     * INV-67 Phase 1 Jess re-gate correction (this session). An OPTIONAL
+     * third argument, `sellerCount`, folds the Seller Count transport
+     * field's own write into this SAME PUT + SAME readback -- one atomic
+     * network round trip, never a second, independent write call. Its
+     * field id is resolved by the CALLER (`ContractWorkspace.tsx`, from
+     * `shared/ghl-config.ts`'s separate `contractSellerCountField` entry --
+     * NOT a member of `CONTRACT_PROJECTION_FIELD_KEYS`) and passed in
+     * directly; this function never reads that config entry itself, and
+     * never writes the observed value back into the canonical
+     * `SellerSigningModel` Note carrier -- transport only, exactly per the
+     * locked ruling. Refuses before any network call on the same missing/
+     * sentinel/duplicate-id conditions the 112 TREC fields already refuse
+     * on. `sellerCount: null` (the default) preserves this function's
+     * exact prior behavior and prior callers' exact prior contract.
      */
     syncContractProjectionFields: async (
       opportunityId: string,
       entries: { key: ContractProjectionFieldKey; text: string }[],
+      sellerCount: { fieldId: string; text: string } | null = null,
     ): Promise<{
       ok: boolean;
       putStatus: number;
       entries: { key: ContractProjectionFieldKey; sent: string; observed: string | number | null; landed: boolean }[];
       currentOfferObserved: number | string | null;
+      /** `null` when no `sellerCount` argument was supplied. Its own `landed` boolean is folded into this result's top-level `ok`, exactly like every projection entry's `landed` already is. */
+      sellerCount: { sent: string; observed: string | number | null; landed: boolean } | null;
     }> => {
       const ids = CONFIG.contractProjectionFields;
       const plan = entries.map((e) => {
@@ -1116,8 +1134,23 @@ export const ghl = {
       if (new Set(plan.map((p) => p.fieldId)).size !== plan.length) {
         throw new Error("syncContractProjectionFields: two projected keys resolved to the same GHL field id -- refusing.");
       }
+      if (sellerCount) {
+        if (!sellerCount.fieldId || sellerCount.fieldId === CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED) {
+          throw new Error(
+            "syncContractProjectionFields: no configured id for the Seller Count field (or not yet provisioned) -- refusing before any network call.",
+          );
+        }
+        if (plan.some((p) => p.fieldId === sellerCount.fieldId)) {
+          throw new Error("syncContractProjectionFields: the Seller Count field id collides with a projected TREC field id -- refusing.");
+        }
+      }
 
-      const body = { customFields: plan.map((p) => ({ id: p.fieldId, field_value: p.value })) };
+      const body = {
+        customFields: [
+          ...plan.map((p) => ({ id: p.fieldId, field_value: p.value })),
+          ...(sellerCount ? [{ id: sellerCount.fieldId, field_value: sellerCount.text }] : []),
+        ],
+      };
 
       const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
         method: "PUT",
@@ -1145,10 +1178,24 @@ export const ghl = {
         return { key: p.key, sent: p.value, observed, landed: observed === p.value };
       });
 
+      const sellerCountResult = sellerCount
+        ? (() => {
+            const entry = byId.get(sellerCount.fieldId) ?? null;
+            const observed = entry === null ? null : readSingularFieldValue(entry);
+            return { sent: sellerCount.text, observed, landed: observed === sellerCount.text };
+          })()
+        : null;
+
       const currentOfferEntry = byId.get(CONFIG.opportunityFacts.currentOffer) ?? null;
       const currentOfferObserved = currentOfferEntry === null ? null : readSingularFieldValue(currentOfferEntry);
 
-      return { ok: results.every((r) => r.landed), putStatus, entries: results, currentOfferObserved };
+      return {
+        ok: results.every((r) => r.landed) && (sellerCountResult === null || sellerCountResult.landed),
+        putStatus,
+        entries: results,
+        currentOfferObserved,
+        sellerCount: sellerCountResult,
+      };
     },
 
     /**

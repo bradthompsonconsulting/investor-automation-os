@@ -56,7 +56,7 @@ const {
   classifyContractDraftRequestOutcome,
 } = require(path.join(TMP, 'contract-draft-request-model.js'));
 
-const FLOOR = 65;
+const FLOOR = 104;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -176,6 +176,26 @@ check('isRecognized: garbage is not recognized', isRecognizedContractDraftReques
 
 const VERSION = { agreementAt: '2026-09-01T00:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: null };
 
+/** INV-67 Phase 1 Jess re-gate correction -- a representative, fully-ok evidence snapshot. Its own shape/derivation is proven directly in `test-contract-seller-signing-model.cjs`; here it is only carried through. */
+const SELLER_SIGNING_EVIDENCE = {
+  sellerCountDiscriminator: 'one_seller',
+  seller1Ok: true,
+  seller1ContactId: 'CONTACT-1',
+  seller1Capacity: 'individual_own_capacity',
+  seller2LegalName: null,
+  seller2NormalizedEmail: null,
+  seller2Capacity: null,
+  printedPartyConsistencyOk: true,
+  expectedSellerCountTransportValue: 'One Seller',
+  canonicalReadinessOk: true,
+  sellerCountFieldProvisioned: true,
+  sellerCountWriteReadbackOk: true,
+  effectiveDateStatus: 'pending_final_acceptance',
+  recipientAssignmentStatus: 'pending_manual_review',
+  blockingReasons: [],
+  sendOccurred: false,
+};
+
 const ATTEMPT_ARGS = {
   opportunityId: 'OPP-1',
   operator: 'brad',
@@ -186,6 +206,7 @@ const ATTEMPT_ARGS = {
   failedKeys: [],
   currentOfferCrossCheckOk: true,
   observedStateBeforeWrite: 'Idle',
+  sellerSigningEvidence: SELLER_SIGNING_EVIDENCE,
 };
 
 {
@@ -212,6 +233,35 @@ const ATTEMPT_ARGS = {
   check('resolution carries the attempt\'s projection counts forward unchanged', [resolution.entriesAttempted, resolution.entriesLanded], [48, 48]);
   check('resolution carries the attempt\'s observedStateBeforeWrite forward unchanged', resolution.observedStateBeforeWrite, 'Idle');
   check('resolution status "accepted" carries sent/observed/provider facts', [resolution.sentValue, resolution.observedValue, resolution.providerStatus], ['Requested', 'Requested', 200]);
+}
+
+/* ==================================================================== */
+/* INV-67 Phase 1 Jess re-gate correction -- sellerSigningEvidence        */
+/* ==================================================================== */
+
+{
+  const attempt = buildContractDraftRequestAttemptRecord(ATTEMPT_ARGS);
+  check('attempt record carries the exact seller signing evidence supplied', attempt.sellerSigningEvidence, SELLER_SIGNING_EVIDENCE);
+  const resolution = buildContractDraftRequestResolutionRecord({
+    attempt, resolvedAt: '2026-09-14T12:00:05.000Z', status: 'accepted',
+    sentValue: 'Requested', observedValue: 'Requested', providerStatus: 200, failureReason: null,
+  });
+  check('resolution carries the attempt\'s seller signing evidence forward UNCHANGED', resolution.sellerSigningEvidence, SELLER_SIGNING_EVIDENCE);
+}
+
+{
+  // A blocked attempt -- canonicalReadinessOk false, sentinel still applies -- is
+  // recorded truthfully, never silently upgraded to a passing snapshot.
+  const blockedEvidence = {
+    ...SELLER_SIGNING_EVIDENCE,
+    canonicalReadinessOk: false,
+    sellerCountFieldProvisioned: false,
+    sellerCountWriteReadbackOk: null,
+    blockingReasons: ['The Contract Seller Count GHL field is not yet provisioned -- refusing to sync until it is created and wired.'],
+  };
+  const attempt = buildContractDraftRequestAttemptRecord({ ...ATTEMPT_ARGS, sellerSigningEvidence: blockedEvidence });
+  check('a blocked seller-readiness snapshot is recorded exactly as supplied, never upgraded', attempt.sellerSigningEvidence, blockedEvidence);
+  checkTrue('the blocked snapshot never silently claims canonicalReadinessOk:true when it is false', attempt.sellerSigningEvidence.canonicalReadinessOk === false);
 }
 
 {
@@ -381,6 +431,51 @@ const ATTEMPT_ARGS = {
   checkTrue('attemptAt is declared with const (never reassigned / never hoisted to a ref)', !/let attemptAt/.test(body));
   checkTrue('the resolution note failure path never re-attempts the PUT (no second setContractDraftRequest call)', (body.match(/setContractDraftRequest\(/g) || []).length === 1);
   checkTrue('a successful PUT whose resolution note fails is escalated to "indeterminate" (never silently "accepted")', /reportedStatus[\s\S]*?rawStatus === "accepted" && !resolutionNoteOk \? "indeterminate" : rawStatus/.test(body));
+
+  /* -------------------------------------------------------------------- */
+  /* INV-67 Phase 1 Jess re-gate correction -- the seller-readiness gate   */
+  /* must short-circuit BEFORE the Opportunity-field write AND before      */
+  /* setContractDraftRequest, with zero separate control flow of its own   */
+  /* -------------------------------------------------------------------- */
+
+  const preWriteIdx = body.indexOf('evaluateSellerSigningPreWriteReadiness(');
+  const buildPlanIdx = body.indexOf('buildContractProjectionPlan(');
+  const planNotOkIdx = body.indexOf('if (!plan.ok) {');
+  const syncWriteIdx = body.indexOf('ghl.opportunities.syncContractProjectionFields(');
+  const evidenceIdx = body.indexOf('buildSellerSigningAuditEvidence(');
+  const attemptRecordIdx = body.indexOf('buildContractDraftRequestAttemptRecord(');
+
+  checkTrue('evaluateSellerSigningPreWriteReadiness is called in the handler', preWriteIdx !== -1);
+  checkTrue('evaluateSellerSigningPreWriteReadiness is called BEFORE buildContractProjectionPlan', preWriteIdx !== -1 && buildPlanIdx !== -1 && preWriteIdx < buildPlanIdx);
+  checkTrue(
+    'buildContractProjectionPlan is called with the seller readiness result as its fourth argument',
+    /buildContractProjectionPlan\(opportunityId, contractDocumentPreview, sellerContractFactsReport, sellerReadiness\)/.test(body),
+  );
+  checkTrue('the "if (!plan.ok)" short-circuit appears BEFORE the Opportunity-field write (syncContractProjectionFields)', planNotOkIdx !== -1 && syncWriteIdx !== -1 && planNotOkIdx < syncWriteIdx);
+  checkTrue(
+    'the "if (!plan.ok)" block itself contains a "return;" -- an actual short-circuit, not merely a state update',
+    /if \(!plan\.ok\) \{\s*\n\s*setSyncResult\(\{ kind: "blocked", blockingReasons: plan\.blockingReasons \}\);\s*\n\s*return;\s*\n\s*\}/.test(body),
+  );
+  checkTrue('the Opportunity-field write happens BEFORE setContractDraftRequest is ever attempted', syncWriteIdx !== -1 && setDraftRequestIdx !== -1 && syncWriteIdx < setDraftRequestIdx);
+  checkTrue(
+    'a sentinel/unresolved seller readiness therefore short-circuits BEFORE BOTH the Opportunity-field write and setContractDraftRequest -- the SAME single "if (!plan.ok) return" already proven above covers both, structurally, with no second gate to drift out of sync',
+    planNotOkIdx !== -1 && planNotOkIdx < syncWriteIdx && syncWriteIdx < setDraftRequestIdx,
+  );
+  checkTrue('the Seller Count write is folded into the SAME syncContractProjectionFields call, never a second write call', (body.match(/ghl\.opportunities\.syncContractProjectionFields\(/g) || []).length === 1);
+  checkTrue('buildSellerSigningAuditEvidence is computed AFTER the write (it needs the write result) and BEFORE the attempt record is built', evidenceIdx !== -1 && syncWriteIdx < evidenceIdx && evidenceIdx < attemptRecordIdx);
+  checkTrue('the attempt record is built WITH the seller signing evidence', /buildContractDraftRequestAttemptRecord\(\{[\s\S]*?sellerSigningEvidence,/.test(body));
+  checkTrue('the Seller Count field id and sentinel are read from the SAME shared config every other sentinel check in this codebase uses, never a hardcoded/faked id', /getRuntimeConfig\(\)\.contractSellerCountField/.test(body) && /CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED/.test(body));
+  checkTrue('the pre-write gate never fakes/bypasses the field-provisioned check with a hardcoded non-sentinel id', !/sellerCountFieldId:\s*["'](?!getRuntimeConfig)/.test(body));
+
+  // Canonical Note remains authoritative -- the Seller Count TRANSPORT
+  // write's own observed value is never read back into the canonical
+  // SellerSigningModel carrier anywhere in this handler.
+  checkTrue(
+    'writeResult.sellerCount (the transport write/readback outcome) is never assigned into sellerSigningDisposition or fed into formatSellerSigningModelNote',
+    !/writeResult\.sellerCount[\s\S]{0,80}(sellerSigningDisposition|formatSellerSigningModelNote)/.test(body) &&
+      !/(sellerSigningDisposition|formatSellerSigningModelNote)[\s\S]{0,80}writeResult\.sellerCount/.test(body),
+  );
+  checkTrue('formatSellerSigningModelNote is never called from handleSyncContractProjectionFields (only handleSaveSellerSigning writes the canonical Note)', !/formatSellerSigningModelNote\(/.test(body));
 }
 
 cleanup();

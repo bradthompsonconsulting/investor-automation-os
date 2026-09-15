@@ -77,10 +77,22 @@
  * `opportunityFacts.currentOffer` carrier. `ghl.ts`'s sync writer
  * cross-checks `current_offer` against these two document lines instead of
  * writing a new field for them -- REUSE, not duplication.
+ *
+ * INV-67 PHASE 1 JESS RE-GATE CORRECTION (this session). `buildContractProjectionPlan`
+ * now takes a REQUIRED fourth argument, `sellerReadiness` -- see that
+ * function's own doc comment and `contract-seller-signing-model.ts`'s
+ * `evaluateSellerSigningPreWriteReadiness`. The One-/Two-Seller signer
+ * model, Seller 1 resolution, printed-party consistency, and Seller Count
+ * transport-field provisioning are now enforced through the SAME
+ * `plan.ok === false` fail-closed path every other gate in this module
+ * already uses -- no GHL write of any kind (the 112 TREC fields, the
+ * Seller Count field, or the Contract Draft Request transition) can happen
+ * while any of the fifteen seller-signing gates is unresolved.
  */
 
 import type { ContractDocumentPreview } from "./contract-document-model";
 import type { SellerContractFactsReport, FieldDisposition } from "./contract-facts-model";
+import type { SellerSigningReadinessResult } from "./contract-seller-signing-model";
 import {
   buildCheckboxMarkersAndText,
   CHECKBOX_MARKER_KEYS,
@@ -388,20 +400,37 @@ function reformattedRetainedText(key: string, report: SellerContractFactsReport)
  * Builds the write plan from an already-computed preview AND report. FAILS
  * CLOSED: any unresolved template-blank field, any unresolved additional
  * required fact (ruling 9), a price conflict, a mineral-reservation
- * disagreement, a marker-exclusivity violation, or a blocking broker
- * arrangement (intermediary / represented-but-empty) blocks the ENTIRE
- * sync -- there is no partial plan and no partial write. The caller passes
- * the exact `opportunityId` this plan is scoped to; it is never read off
- * the preview implicitly.
+ * disagreement, a marker-exclusivity violation, a blocking broker
+ * arrangement (intermediary / represented-but-empty), OR an unresolved
+ * seller-signing-readiness reason (INV-67 Phase 1 Jess re-gate correction,
+ * this session -- see below) blocks the ENTIRE sync -- there is no partial
+ * plan and no partial write. The caller passes the exact `opportunityId`
+ * this plan is scoped to; it is never read off the preview implicitly.
+ *
+ * `sellerReadiness` is the caller-supplied result of
+ * `contract-seller-signing-model.ts`'s `evaluateSellerSigningPreWriteReadiness`
+ * -- REQUIRED, never optional, so a caller cannot silently skip the seller
+ * gate by omitting it. This module never resolves the Seller 1 identity,
+ * the latest `SellerSigningModel` Note, the printed-party comparison, or
+ * the Seller Count field's configured id itself (all of that requires live
+ * Opportunity/Note/config data this pure module deliberately never touches
+ * -- see `ContractWorkspace.tsx`'s own header, "no readiness logic in the
+ * interface"); it only folds the ALREADY-DECIDED result's reasons into the
+ * SAME `blockingReasons` array every other gate here already uses, so the
+ * caller's `plan.ok === false` short-circuit (already in place, before any
+ * GHL write) structurally covers the seller gate too, with zero new
+ * control flow at the call site.
  */
 export function buildContractProjectionPlan(
   opportunityId: string,
   preview: ContractDocumentPreview,
   report: SellerContractFactsReport,
+  sellerReadiness: SellerSigningReadinessResult,
 ): ContractProjectionPlan {
   const equitableInterestBlocking = equitableInterestBlockingReasons(preview);
-  if (!preview.previewComplete || equitableInterestBlocking.length > 0) {
-    return { ok: false, blockingReasons: [...preview.blockingReasons, ...equitableInterestBlocking] };
+  const sellerReadinessBlocking = sellerReadiness.ok ? [] : sellerReadiness.reasons;
+  if (!preview.previewComplete || equitableInterestBlocking.length > 0 || sellerReadinessBlocking.length > 0) {
+    return { ok: false, blockingReasons: [...preview.blockingReasons, ...equitableInterestBlocking, ...sellerReadinessBlocking] };
   }
 
   const byKey = new Map(preview.documentLines.map((line) => [`${line.group}.${line.field}`, line]));

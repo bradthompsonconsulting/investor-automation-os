@@ -25,6 +25,7 @@ const APP = path.resolve(__dirname, '..');
 const TMP = path.join(APP, '.tmp-contract-projection-sync-carriers-test');
 const CARRIERS = path.join(APP, 'src', 'lib', 'contract-projection-sync-carriers.ts');
 const BOARD9 = path.join(APP, 'src', 'lib', 'board9-contract-model.ts');
+const SIGNING_MODEL = path.join(APP, 'src', 'lib', 'contract-seller-signing-model.ts');
 
 function cleanup() { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {} }
 cleanup();
@@ -32,7 +33,7 @@ fs.mkdirSync(TMP, { recursive: true });
 fs.writeFileSync(path.join(TMP, 'package.json'), JSON.stringify({ type: 'commonjs' }));
 
 try {
-  execSync(`npx tsc "${CARRIERS}" "${BOARD9}" --outDir "${TMP}" --module commonjs --target es2020 --strict`, { cwd: APP, stdio: 'inherit' });
+  execSync(`npx tsc "${CARRIERS}" "${BOARD9}" "${SIGNING_MODEL}" --outDir "${TMP}" --module commonjs --target es2020 --strict`, { cwd: APP, stdio: 'inherit' });
 } catch (_) {
   console.error('ABORT: TypeScript compilation failed. Nothing tested.');
   cleanup();
@@ -46,7 +47,7 @@ const {
   isContractProjectionSyncStale,
 } = require(path.join(TMP, 'contract-projection-sync-carriers.js'));
 
-const FLOOR = 23;
+const FLOOR = 28;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -67,6 +68,26 @@ const VERSION_2 = { agreementAt: '2026-09-01T00:00:00.000Z', versionSeq: 2, supe
 
 const ATTEMPT_ID = '2026-09-14T12:00:00.000Z';
 
+/** INV-67 Phase 1 Jess re-gate correction -- a representative, fully-ok evidence snapshot. Its own shape/derivation is proven directly in `test-contract-seller-signing-model.cjs`; here it is only round-tripped. */
+const SELLER_SIGNING_EVIDENCE = {
+  sellerCountDiscriminator: 'one_seller',
+  seller1Ok: true,
+  seller1ContactId: 'CONTACT-1',
+  seller1Capacity: 'individual_own_capacity',
+  seller2LegalName: null,
+  seller2NormalizedEmail: null,
+  seller2Capacity: null,
+  printedPartyConsistencyOk: true,
+  expectedSellerCountTransportValue: 'One Seller',
+  canonicalReadinessOk: true,
+  sellerCountFieldProvisioned: true,
+  sellerCountWriteReadbackOk: true,
+  effectiveDateStatus: 'pending_final_acceptance',
+  recipientAssignmentStatus: 'pending_manual_review',
+  blockingReasons: [],
+  sendOccurred: false,
+};
+
 const IN_PROGRESS_RECORD = {
   at: ATTEMPT_ID,
   operator: 'brad',
@@ -84,6 +105,7 @@ const IN_PROGRESS_RECORD = {
   observedValue: null,
   providerStatus: null,
   failureReason: null,
+  sellerSigningEvidence: SELLER_SIGNING_EVIDENCE,
 };
 
 const ACCEPTED_RECORD = {
@@ -149,6 +171,38 @@ check('a truncated note (missing lines) parses as null', parseContractProjection
 {
   const corrupted = formatContractProjectionSyncNote(ACCEPTED_RECORD).replace(/Attempt id: .*/, 'Attempt id: not-a-timestamp');
   check('a non-ISO Attempt id parses as null', parseContractProjectionSyncNote(corrupted), null);
+}
+
+/* -------------------------------------------------- INV-67 Phase 1 ---- */
+/* Jess re-gate correction -- "Seller signing evidence" field             */
+{
+  const corrupted = formatContractProjectionSyncNote(ACCEPTED_RECORD).replace(/Seller signing evidence: .*/, 'Seller signing evidence: not-json');
+  check('an unparseable Seller signing evidence field parses as null', parseContractProjectionSyncNote(corrupted), null);
+}
+{
+  const badEvidence = { ...SELLER_SIGNING_EVIDENCE };
+  delete badEvidence.blockingReasons;
+  const corrupted = formatContractProjectionSyncNote(ACCEPTED_RECORD).replace(/Seller signing evidence: .*/, `Seller signing evidence: ${JSON.stringify(badEvidence)}`);
+  check('a Seller signing evidence object missing a required key parses as null', parseContractProjectionSyncNote(corrupted), null);
+}
+{
+  const badEvidence = { ...SELLER_SIGNING_EVIDENCE, seller1Capacity: 'not_a_real_disposition' };
+  const corrupted = formatContractProjectionSyncNote(ACCEPTED_RECORD).replace(/Seller signing evidence: .*/, `Seller signing evidence: ${JSON.stringify(badEvidence)}`);
+  check('a Seller signing evidence object with an invalid capacity disposition parses as null', parseContractProjectionSyncNote(corrupted), null);
+}
+{
+  const badEvidence = { ...SELLER_SIGNING_EVIDENCE, sendOccurred: true };
+  const corrupted = formatContractProjectionSyncNote(ACCEPTED_RECORD).replace(/Seller signing evidence: .*/, `Seller signing evidence: ${JSON.stringify(badEvidence)}`);
+  check('a Seller signing evidence object claiming sendOccurred:true parses as null -- never a valid recorded state', parseContractProjectionSyncNote(corrupted), null);
+}
+{
+  // Schema bump: a v2-header note (the pre-existing shape, one field
+  // shorter, no Seller signing evidence line) no longer matches this
+  // ledger's v3 header -- fails closed, never a best-effort partial parse.
+  const v2Note = formatContractProjectionSyncNote(ACCEPTED_RECORD)
+    .replace('IAOS CONTRACT DRAFT REQUEST SYNC — iaos-contract-draft-request-sync-v3', 'IAOS CONTRACT DRAFT REQUEST SYNC — iaos-contract-draft-request-sync-v2')
+    .split('\n').slice(0, -1).join('\n');
+  check('a pre-existing v2-header note (no Seller signing evidence line) parses as null against the v3 ledger', parseContractProjectionSyncNote(v2Note), null);
 }
 
 /* -------------------------------------------------- rank-then-latest -- */
