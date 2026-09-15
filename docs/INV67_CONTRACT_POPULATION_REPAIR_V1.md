@@ -1076,7 +1076,10 @@ anchor, `opportunity.arv_after_repair_value`).
 `CONTRACT_PROJECTION_FIELD_KEYS` (still exactly 112). Both `TEST` and
 `PRODUCTION` are sentinel-filled (`CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`)
 this phase; `checkSellerCountFieldProvisioned` fails closed on that exact
-sentinel. No fake field id was ever written.
+sentinel. No fake field id was ever written. **STALE as of "Seller Count
+Test-ID wiring" further below: `TEST.contractSellerCountField` now carries
+the real, readback-verified id -- `PRODUCTION` remains exactly as described
+here.**
 
 **Live GHL Test dry run (authorized, zero POSTs).** One proposed field,
 zero collisions: `contractSellerCount` does not yet exist in GHL Test.
@@ -1131,8 +1134,10 @@ to prevent Contract Draft Request from reaching Requested. This correction
 wires the live gate into the EXACT same fail-closed path
 `buildContractProjectionPlan` and the Contract Draft Request write already
 use, extends the existing two-phase audit evidence, and adds the live-
-capable (not yet reachable, since the field remains sentinel) write/readback
-path for the Seller Count transport field -- without weakening any of the
+capable write/readback path for the Seller Count transport field (at the
+time of this correction, not yet reachable in Test -- the field was still
+sentinel; see "Seller Count Test-ID wiring" further below for when and how
+that changed) -- without weakening any of the
 112 TREC projection fields' or the Contract Draft Request control's
 existing guarantees. **Zero GHL mutations. The Seller Count field, the
 GHL workflow, the Two-Seller template, and the draft-bound recipient-
@@ -1259,9 +1264,78 @@ with `--apply`; does not create the live Seller Count field; does not
 mutate any GHL workflow or template; does not create a draft; does not
 send anything; does not touch Production, Linear, or Board #10; does not
 implement the final draft-bound recipient-confirmation gate or any
-automatic recipient routing/sending. Because `contractSellerCountField`
-remains the sentinel in both Test and Production, the live gate refuses
-before any Seller-Count-dependent write in BOTH environments today --
-proven directly (`TEST.contractSellerCountField`/`PRODUCTION.contractSellerCountField`
-sentinel checks, `test-contract-ghl-projection.cjs`). PR #60 remains open,
-not merged, pending Jess re-gate review.
+automatic recipient routing/sending. At the time of this correction,
+`contractSellerCountField` remained the sentinel in both Test and
+Production, so the live gate refused before any Seller-Count-dependent
+write in BOTH environments -- proven directly
+(`TEST.contractSellerCountField`/`PRODUCTION.contractSellerCountField`
+sentinel checks, `test-contract-ghl-projection.cjs`). **STALE for Test as
+of "Seller Count Test-ID wiring" below -- Production is unaffected and
+remains sentinel.** PR #60 remains open, not merged, pending Jess re-gate
+review.
+
+## Seller Count Test-ID wiring (this session)
+
+**What this is.** A separately authorized live GHL Test apply
+(`scripts/inv67-create-seller-count-field.cjs --apply`, against the
+approved Test location `SoTgVoaFGHtBdRFvXWQV`) created the `Contract
+Seller Count` field, followed by this repository-wiring PR. **Test only.
+Production untouched. Zero GHL mutations in this PR** -- the field already
+exists from the prior authorized apply; this PR only edits committed
+configuration and tests.
+
+**Live field, readback-verified independently** (a separate GET, not the
+provisioning script's own internal confirmation): id `gW6eD1ZgbS4UOhPWVyMm`,
+name `Contract Seller Count`, fieldKey `opportunity.contract_seller_count`,
+dataType `SINGLE_OPTIONS`, model `opportunity`, parentId
+`sGP3pbDQFN7fXS62MAgA` (the same canonical Opportunity Details anchor every
+other INV-67 field resolves from), options exactly `["One Seller", "Two
+Sellers"]` in that order. Opportunity-field count went from 148 to 149
+(exactly +1). A subsequent dry run classified it "exact existing" (0
+create / 1 reuse / 0 conflict), confirming this is the SAME field, never a
+second one.
+
+**Configuration.** `TEST.contractSellerCountField` now carries
+`"gW6eD1ZgbS4UOhPWVyMm"` (`app/shared/ghl-config.ts`).
+`PRODUCTION.contractSellerCountField` remains exactly
+`CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`, unaffected. Contract Seller
+Count remains OUTSIDE `CONTRACT_PROJECTION_FIELD_KEYS` -- still exactly
+112 -- it is a separate transport/control field, never one of the 112 TREC
+projection keys, per the original design.
+
+**Effect on the live gate.** `evaluateSellerSigningPreWriteReadiness`'s
+field-provisioned check (gate 14) now passes in Test whenever the
+canonical seller-model gates (1-13) also pass, and
+`buildContractProjectionPlan`'s fold reflects that (`plan.ok` can now be
+`true` in Test on a clear seller model). Production's own config value is
+unchanged, so the SAME gate still refuses in Production -- proven directly,
+side by side, in `test-contract-ghl-projection.cjs`. Expected transport
+values remain exactly `"One Seller"` / `"Two Sellers"`, unchanged. The
+Test id is not read back into the canonical `SellerSigningModel` Note
+carrier -- transport only, exactly per the locked ruling.
+
+**Code map:**
+
+| File | Role |
+|---|---|
+| `app/shared/ghl-config.ts` | `TEST.contractSellerCountField` wired to the verified id; `PRODUCTION.contractSellerCountField` unchanged |
+| `app/scripts/test-contract-ghl-projection.cjs` | Extended -- Test carries the exact verified id, Production remains sentinel, no duplicate id, Seller Count stays outside the 112-key set, the live gate passes in Test / still refuses in Production, expected transport values unchanged |
+
+**Test evidence.** `test:contract-ghl-projection` 178/178 (was 167).
+`test:contract-seller-signing-model`, `test:contract-draft-request`,
+`test:contract-projection-sync-carriers`, `test:ghl-seller-count-transport-write`,
+`test:contract-workspace-wiring` all unaffected (none reference the live
+config value directly; the mocked transport-write suite supplies its own
+fake id and is unaffected by the real committed value). Identifier
+boundary green (10/10). Full repository suite (every `scripts/test-*.cjs`)
+re-run clean. `tsc -b --force` clean. `pnpm --dir app build` clean.
+`CONTRACT_PROJECTION_FIELD_KEYS` count unaffected at exactly 112. Manifest
+hash unchanged.
+
+**What this PR does NOT do.** Does not create, modify, or delete any GHL
+field (the field was created by a prior, separately authorized apply, not
+by this PR). Does not wire or provision the four remaining transport-only
+fields. Does not touch any template or workflow. Does not create a draft.
+Does not send anything. Does not touch Production, Linear, INV-66, or
+Board #10. Does not mark INV-67 complete. PR opened for review; not
+merged.
