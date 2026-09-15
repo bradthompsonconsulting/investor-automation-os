@@ -1205,7 +1205,7 @@ note to the resolution note, exactly like the existing `currentOfferCrossCheckOk
 field already is. Records: the seller-count discriminator; the resolved
 Seller 1 reference and capacity; Seller 2's legal name, NORMALIZED email,
 and capacity (when applicable); the printed-party consistency outcome; the
-expected Seller Count transport value; `canonicalReadinessOk` and
+expected Seller Count transport value; `canonicalReady` and
 `sellerCountFieldProvisioned` as SEPARATE booleans (never conflated --
 "do not log a successful readiness result when the transport sentinel
 blocks it"); the write/readback outcome (`null` pre-write); the fixed

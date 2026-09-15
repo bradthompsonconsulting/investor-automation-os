@@ -314,7 +314,7 @@ function evidenceArgs(overrides) {
   check('buildSellerSigningAuditEvidence: One-Seller happy path -- seller2 fields are all null', [e.seller2LegalName, e.seller2NormalizedEmail, e.seller2Capacity], [null, null, null]);
   checkTrue('buildSellerSigningAuditEvidence: One-Seller happy path -- printedPartyConsistencyOk', e.printedPartyConsistencyOk === true);
   check('buildSellerSigningAuditEvidence: One-Seller happy path -- expectedSellerCountTransportValue', e.expectedSellerCountTransportValue, 'One Seller');
-  checkTrue('buildSellerSigningAuditEvidence: One-Seller happy path -- canonicalReadinessOk', e.canonicalReadinessOk === true);
+  checkTrue('buildSellerSigningAuditEvidence: One-Seller happy path -- canonicalReady', e.canonicalReady === true);
   checkTrue('buildSellerSigningAuditEvidence: One-Seller happy path -- sellerCountFieldProvisioned', e.sellerCountFieldProvisioned === true);
   checkNull('buildSellerSigningAuditEvidence: sellerCountWriteReadbackOk is null when no write has been attempted yet', e.sellerCountWriteReadbackOk);
   check('buildSellerSigningAuditEvidence: effectiveDateStatus is always the fixed literal', e.effectiveDateStatus, 'pending_final_acceptance');
@@ -352,7 +352,7 @@ function evidenceArgs(overrides) {
   // when the transport sentinel blocks it; distinguish canonical readiness
   // from transport readiness."
   const e = M.buildSellerSigningAuditEvidence(evidenceArgs({ sellerCountFieldId: SENTINEL }));
-  checkTrue('buildSellerSigningAuditEvidence: transport-blocked -- canonicalReadinessOk is STILL true', e.canonicalReadinessOk === true);
+  checkTrue('buildSellerSigningAuditEvidence: transport-blocked -- canonicalReady is STILL true', e.canonicalReady === true);
   checkTrue('buildSellerSigningAuditEvidence: transport-blocked -- sellerCountFieldProvisioned is false', e.sellerCountFieldProvisioned === false);
   checkTrue('buildSellerSigningAuditEvidence: transport-blocked -- blockingReasons is non-empty (never silently ok)', e.blockingReasons.length > 0);
   checkTrue('buildSellerSigningAuditEvidence: transport-blocked -- the blocking reason names the field-provisioning gate', e.blockingReasons.some((r) => /not yet provisioned/.test(r)));
@@ -366,7 +366,7 @@ function evidenceArgs(overrides) {
   checkTrue('buildSellerSigningAuditEvidence: unresolved count -- seller1Ok is false', e.seller1Ok === false);
   check('buildSellerSigningAuditEvidence: unresolved count -- seller1Capacity is null (no model to read it from)', e.seller1Capacity, null);
   check('buildSellerSigningAuditEvidence: unresolved count -- expectedSellerCountTransportValue is null', e.expectedSellerCountTransportValue, null);
-  checkTrue('buildSellerSigningAuditEvidence: unresolved count -- canonicalReadinessOk is false', e.canonicalReadinessOk === false);
+  checkTrue('buildSellerSigningAuditEvidence: unresolved count -- canonicalReady is false', e.canonicalReady === false);
 }
 
 {

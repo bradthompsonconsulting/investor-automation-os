@@ -79,7 +79,7 @@ const SELLER_SIGNING_EVIDENCE = {
   seller2Capacity: null,
   printedPartyConsistencyOk: true,
   expectedSellerCountTransportValue: 'One Seller',
-  canonicalReadinessOk: true,
+  canonicalReady: true,
   sellerCountFieldProvisioned: true,
   sellerCountWriteReadbackOk: true,
   effectiveDateStatus: 'pending_final_acceptance',

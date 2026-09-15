@@ -427,7 +427,7 @@ export function evaluateSellerSigningPreWriteReadiness(
  * ledger's own "Seller signing evidence" positional field (see
  * `contract-projection-sync-carriers.ts`).
  *
- * `canonicalReadinessOk` and `sellerCountFieldProvisioned` are recorded as
+ * `canonicalReady` and `sellerCountFieldProvisioned` are recorded as
  * SEPARATE booleans specifically so a reader can never mistake "the seller
  * model itself is fully ready" for "therefore nothing is blocking" when the
  * transport sentinel is the only thing still refusing -- Brad's own ruling:
@@ -452,7 +452,7 @@ export type SellerSigningAuditEvidence = {
   seller2Capacity: SigningCapacityDisposition | null;
   printedPartyConsistencyOk: boolean;
   expectedSellerCountTransportValue: typeof SELLER_COUNT_ONE_SELLER_VALUE | typeof SELLER_COUNT_TWO_SELLERS_VALUE | null;
-  canonicalReadinessOk: boolean;
+  canonicalReady: boolean;
   sellerCountFieldProvisioned: boolean;
   /** `null` = no write was attempted this cycle yet (e.g. the pre-write gate itself already refused). Populated once `syncContractProjectionFields` has actually run with a Seller Count entry included. */
   sellerCountWriteReadbackOk: boolean | null;
@@ -466,7 +466,7 @@ const SELLER_SIGNING_AUDIT_EVIDENCE_KEYS = [
   "sellerCountDiscriminator", "seller1Ok", "seller1ContactId", "seller1Capacity",
   "seller2LegalName", "seller2NormalizedEmail", "seller2Capacity",
   "printedPartyConsistencyOk", "expectedSellerCountTransportValue",
-  "canonicalReadinessOk", "sellerCountFieldProvisioned", "sellerCountWriteReadbackOk",
+  "canonicalReady", "sellerCountFieldProvisioned", "sellerCountWriteReadbackOk",
   "effectiveDateStatus", "recipientAssignmentStatus", "blockingReasons", "sendOccurred",
 ] as const;
 
@@ -500,7 +500,7 @@ export function validateSellerSigningAuditEvidenceValue(v: unknown): SellerSigni
     o.expectedSellerCountTransportValue !== SELLER_COUNT_ONE_SELLER_VALUE &&
     o.expectedSellerCountTransportValue !== SELLER_COUNT_TWO_SELLERS_VALUE
   ) return null;
-  if (typeof o.canonicalReadinessOk !== "boolean") return null;
+  if (typeof o.canonicalReady !== "boolean") return null;
   if (typeof o.sellerCountFieldProvisioned !== "boolean") return null;
   if (o.sellerCountWriteReadbackOk !== null && typeof o.sellerCountWriteReadbackOk !== "boolean") return null;
   if (o.effectiveDateStatus !== "pending_final_acceptance") return null;
@@ -518,7 +518,7 @@ export function validateSellerSigningAuditEvidenceValue(v: unknown): SellerSigni
     seller2Capacity: o.seller2Capacity as SigningCapacityDisposition | null,
     printedPartyConsistencyOk: o.printedPartyConsistencyOk,
     expectedSellerCountTransportValue: o.expectedSellerCountTransportValue as SellerSigningAuditEvidence["expectedSellerCountTransportValue"],
-    canonicalReadinessOk: o.canonicalReadinessOk,
+    canonicalReady: o.canonicalReady,
     sellerCountFieldProvisioned: o.sellerCountFieldProvisioned,
     sellerCountWriteReadbackOk: o.sellerCountWriteReadbackOk as boolean | null,
     effectiveDateStatus: "pending_final_acceptance",
@@ -576,7 +576,7 @@ export function buildSellerSigningAuditEvidence(args: BuildSellerSigningAuditEvi
     seller2Capacity: model && model.kind === "two_sellers" ? model.seller2Capacity : null,
     printedPartyConsistencyOk,
     expectedSellerCountTransportValue: model ? sellerCountTransportValue(model) : null,
-    canonicalReadinessOk: canonical.ok,
+    canonicalReady: canonical.ok,
     sellerCountFieldProvisioned: checkSellerCountFieldProvisioned(args.sellerCountFieldId, args.sellerCountFieldSentinel) === null,
     sellerCountWriteReadbackOk: args.sellerCountWriteReadbackOk,
     effectiveDateStatus: "pending_final_acceptance",

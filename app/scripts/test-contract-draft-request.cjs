@@ -187,7 +187,7 @@ const SELLER_SIGNING_EVIDENCE = {
   seller2Capacity: null,
   printedPartyConsistencyOk: true,
   expectedSellerCountTransportValue: 'One Seller',
-  canonicalReadinessOk: true,
+  canonicalReady: true,
   sellerCountFieldProvisioned: true,
   sellerCountWriteReadbackOk: true,
   effectiveDateStatus: 'pending_final_acceptance',
@@ -250,18 +250,18 @@ const ATTEMPT_ARGS = {
 }
 
 {
-  // A blocked attempt -- canonicalReadinessOk false, sentinel still applies -- is
+  // A blocked attempt -- canonicalReady false, sentinel still applies -- is
   // recorded truthfully, never silently upgraded to a passing snapshot.
   const blockedEvidence = {
     ...SELLER_SIGNING_EVIDENCE,
-    canonicalReadinessOk: false,
+    canonicalReady: false,
     sellerCountFieldProvisioned: false,
     sellerCountWriteReadbackOk: null,
     blockingReasons: ['The Contract Seller Count GHL field is not yet provisioned -- refusing to sync until it is created and wired.'],
   };
   const attempt = buildContractDraftRequestAttemptRecord({ ...ATTEMPT_ARGS, sellerSigningEvidence: blockedEvidence });
   check('a blocked seller-readiness snapshot is recorded exactly as supplied, never upgraded', attempt.sellerSigningEvidence, blockedEvidence);
-  checkTrue('the blocked snapshot never silently claims canonicalReadinessOk:true when it is false', attempt.sellerSigningEvidence.canonicalReadinessOk === false);
+  checkTrue('the blocked snapshot never silently claims canonicalReady:true when it is false', attempt.sellerSigningEvidence.canonicalReady === false);
 }
 
 {
