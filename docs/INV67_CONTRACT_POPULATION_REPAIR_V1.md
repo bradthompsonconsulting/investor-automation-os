@@ -457,6 +457,8 @@ for all 110 keys.
 | `app/scripts/test-inv67-checkbox-marker-fields-batch1-script.cjs` | Pure-function + network-free child-process proofs of every safety property above (110/110) |
 | `app/scripts/inv67-create-checkbox-text-fields-batch2.cjs` | Batch 2 (11 keys) GHL field-creation script -- sibling to Batch 1, same hardened architecture (hard Test-location allowlist, complete unfiltered 11-spec preflight, no `--only`, fail-closed canonical-anchor resolution, readback validation, unconfirmed-create safety) applied to `CHECKBOX_TEXT_KEYS`. Used live (`--apply`) 2026-09-14 -- see the "Batch 2 GHL Test provisioning" section above. Batch 1's script is untouched by this addition. |
 | `app/scripts/test-inv67-checkbox-text-fields-batch2-script.cjs` | Pure-function + network-free child-process proofs of every safety property above, plus confirmation Batch 1's script remains untouched (79/79) |
+| `app/scripts/inv67-create-broker-text-fields-batch3.cjs` | Batch 3 (22 keys) GHL field-creation script -- sibling to Batch 1/2, same hardened architecture applied to `BROKER_TEXT_KEYS` (11 Seller-broker + 11 Buyer-broker, both derived from `BROKER_FIELD_SUFFIXES`). Used live (`--apply`) 2026-09-15 -- see the "Batch 3 GHL Test provisioning" section above. Neither Batch 1's nor Batch 2's script is touched by this addition. |
+| `app/scripts/test-inv67-broker-text-fields-batch3-script.cjs` | Pure-function + network-free child-process proofs of every safety property above, confirmation Batch 1/2's scripts remain untouched, and page-11 model boundary proofs (no city/state/ZIP, no intermediary, no paragraph-8; Team Name/Supervisor Phone present on both sides) (91/91) |
 
 **Test evidence, this session (including the PR #52 repeated-destination
 re-gate):** `test-contract-checkbox-marker-model.cjs` (99/99, +12 for the
@@ -526,6 +528,34 @@ Batch 1's 48 ids and confirmed zero Batch-3-shaped field exists -- never
 hand-transcribed from a prior console paste. Full repo-wide
 `scripts/test-*.cjs` suite (59 files) re-run clean. `tsc -b --force` and
 `vite build` both clean.
+
+**Batch 3 GHL Test provisioning + wiring (repository-only, following the
+live Test apply above) -- the FINAL wiring step, completing all 110 live
+projection keys:** `test-inv67-broker-text-fields-batch3-script.cjs`
+(new, 91/91) -- mirrors Batch 1/2's suite exactly for the 22-key
+`BROKER_TEXT_KEYS` batch, plus confirms Batch 1/2's script files remain
+untouched, plus proves the page-11 model boundaries (no city/state/ZIP,
+no intermediary, no paragraph-8; Team Name/Supervisor Phone present on
+both sides). `test-contract-ghl-projection.cjs`'s drift guard extended to
+completion (79/79, +5 over the 74 from Batch 2's correction):
+`shared/ghl-config.ts`'s TEST config now proven to carry a real id for
+**every one of the 110 live projection keys** -- 29 retained + 48 Batch 1
+markers + 11 Batch 2 contract-text keys + 22 Batch 3 broker-text keys,
+all unique, none the sentinel, **zero sentinels remain in TEST**. A
+fourth complete, known-good reference map (`BATCH3_APPROVED_BROKER_TEXT_
+IDS`, 22 keys) joins `RETAINED_APPROVED_IDS` (29), `BATCH1_APPROVED_
+MARKER_IDS` (48), and `BATCH2_APPROVED_TEXT_IDS` (11) -- every one of the
+110 keys is checked key-by-key against its own exact previously-approved
+or newly-authorized id, never a sample and never key-presence-only. No
+retired key re-enters the live map, and PRODUCTION/`contractDraftRequest`
+proven unchanged. The 22 wired Batch 3 ids were sourced from a fresh,
+independent, fail-closed read-only GET joined against ALL THREE committed
+scripts' own classification/validation functions -- that same pass also
+re-verified all 29 retained + 48 Batch 1 + 11 Batch 2 ids (110 keys
+total) and cross-checked the 22 Batch 3 ids against Brad's authorized
+mapping exactly -- never hand-transcribed from a prior console paste.
+Full repo-wide `scripts/test-*.cjs` suite (60 files) re-run clean. `tsc -b
+--force` and `vite build` both clean.
 
 ## Field mapping (original -- 48 keys)
 
@@ -618,8 +648,9 @@ Batch 1 apply. `app/scripts/inv67-create-checkbox-marker-fields-batch1.cjs
   broker-text keys) remained UNPROVISIONED at this point** -- confirmed no
   field matching either shape existed yet; `shared/ghl-config.ts`'s TEST
   config carried the sentinel for exactly those 33 keys immediately after
-  Batch 1 wiring. Batch 2 was subsequently provisioned -- see the next
-  section.
+  Batch 1 wiring. Both were subsequently provisioned -- see the Batch 2
+  and Batch 3 sections below; all 110 live projection keys are now real
+  TEST ids.
 - **Zero sends, zero template mutation, zero draft creation, zero
   Production mutation.** Repository wiring (pasting the 48 real ids into
   `shared/ghl-config.ts`) was performed as a SEPARATE, subsequent,
@@ -683,6 +714,64 @@ Seller Pays Buyer Broker Dollar Amount", "Contract Seller Pays Buyer
 Broker Percent Amount", "Contract Buyer Pays Seller Broker Dollar
 Amount", "Contract Buyer Pays Seller Broker Percent Amount".
 
+## Batch 3 GHL Test provisioning -- 22 page-11 broker-text fields (2026-09-15)
+
+**State: PROVISIONED. All 110 live projection keys are now real TEST
+ids -- zero sentinels remain.** Following Batch 2's repository merge (PR
+#55, then the complete 48/29/11-key ID-preservation correction and PR
+#56's wiring merge), Brad authorized the live Batch 3 apply.
+`app/scripts/inv67-create-broker-text-fields-batch3.cjs --apply` ran
+against GHL Test (`SoTgVoaFGHtBdRFvXWQV`), the same canonical `parentId`
+`sGP3pbDQFN7fXS62MAgA` Batches 1/2 and the original 29 retained fields
+use -- mirrors Batch 1/2's hardened architecture exactly, applied to the
+22-key `BROKER_TEXT_KEYS` spec set (11 Seller-broker + 11 Buyer-broker,
+both derived from the same 11 `BROKER_FIELD_SUFFIXES`); neither Batch
+1's nor Batch 2's own script file is touched.
+
+- **Pre-apply Test Opportunity field count:** 126.
+- **Created:** all 22 `BROKER_TEXT_KEYS` -- zero pre-existing collisions,
+  so all 22 were `CREATE`, none `REUSE`.
+- **Post-apply Test Opportunity field count:** 148 (126 + 22, exact).
+- **Readback verification:** every one of the 22 creates was
+  independently re-read and validated against name, `fieldKey`,
+  `dataType` (`TEXT`), `model` (`opportunity`), and `parentId` before
+  being logged as `-- readback verified`. Exit code `0`.
+- **Post-apply dry run (second, independent run):** all 22 keys
+  reclassified `exact_existing`, zero proposed creates, zero conflicts.
+  Exit code `0`. All 22 ids confirmed unique.
+- **Independent source-of-truth re-verification** (before repository
+  wiring): a SEPARATE, fresh read-only GET joined against ALL THREE
+  committed scripts' own `FIELD_SPECS`/`classifyExistingMatch`/
+  `validateFieldAgainstSpec`/`resolveCanonicalParentId` confirmed all 22
+  Batch 3 ids a second time AND cross-checked them against Brad's
+  authorized 22-key mapping (exact match); ALSO re-verified all 29
+  retained + 48 Batch 1 + 11 Batch 2 ids in the same pass (110 keys
+  total, all fail-closed on any missing/mismatched/duplicated/unexpected
+  field or a field count other than 148).
+- **Batches 1 and 2's 59 fields confirmed unchanged** (ids, `dataType`,
+  `model` all re-verified live) -- none was touched by Batch 3's
+  provisioning.
+- **No unauthorized broker-shaped field exists** -- exact-set proof: the
+  22 keys created this run equal, element-for-element, `BROKER_TEXT_KEYS`.
+- **Page-11 model boundaries preserved**: no intermediary field, no
+  city/state/ZIP field, no paragraph-8 field; Team Name and Licensed
+  Supervisor Phone present on both sides.
+- **Zero sends, zero template mutation, zero draft creation, zero
+  Production mutation.** Repository wiring (pasting the 22 real ids into
+  `shared/ghl-config.ts`) was performed as a SEPARATE, subsequent,
+  repository-only step (no further GHL mutation) -- see the Code
+  map/Test evidence sections below.
+
+**Batch 3 display names** (Brad/Jess approved): "Contract Seller Broker
+Firm Name", "Contract Seller Broker Address", "Contract Seller Broker
+Firm License No", "Contract Seller Broker Associate Name", "Contract
+Seller Broker Team Name", "Contract Seller Broker Associate Email",
+"Contract Seller Broker Associate Phone", "Contract Seller Broker
+Associate License No", "Contract Seller Broker Supervisor Name",
+"Contract Seller Broker Supervisor Phone", "Contract Seller Broker
+Supervisor License No", and the same 11 with "Buyer" in place of
+"Seller".
+
 ## What this repair does NOT do
 
 - Does not edit the GHL TREC template or place any merge field on it.
@@ -696,11 +785,13 @@ Amount", "Contract Buyer Pays Seller Broker Percent Amount".
 - (checkbox-marker / broker-model repair) Does not modify the GHL
   template, does not add intermediary template/GHL support, does not
   expand ¶8's carrier or scope, does not project `possessionDetails` into
-  TREC 20-19. Batch 1 (48 checkbox-marker keys) IS now provisioned in GHL
-  Test, per the section above -- Batches 2 (11 restructured contract-text
-  keys) and 3 (22 broker-text keys) remain unprovisioned, and no template
-  placement of any of the 51 physical Batch 1 overlay positions has been
-  performed.
+  TREC 20-19. All three batches (48 checkbox-marker keys, 11 restructured
+  contract-text keys, 22 page-11 broker-text keys -- all 81 new keys, all
+  110 live projection keys total) ARE now provisioned in GHL Test, per
+  the sections above -- but no template placement of any kind has been
+  performed, including the 51 physical Batch 1 marker overlay positions
+  (3 markers each printed at 2 locations) and all 110 keys' merge-tag
+  placement on the Test template generally.
 
 Those are explicitly Spock/browser work, gated on Jess's review of this
 implementation, per this issue's own scope instruction.
