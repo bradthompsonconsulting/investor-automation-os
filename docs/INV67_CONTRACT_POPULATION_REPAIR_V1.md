@@ -1339,3 +1339,91 @@ fields. Does not touch any template or workflow. Does not create a draft.
 Does not send anything. Does not touch Production, Linear, INV-66, or
 Board #10. Does not mark INV-67 complete. PR opened for review; not
 merged.
+
+## Batch 4 transport-only fields -- Test provisioning script + live dry run (this session)
+
+**What this is.** A new, hardened provisioning script and offline safety
+suite for the four remaining `CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS`
+fields (introduced by the compound text-destination repair, above), plus
+one authorized read-only live dry run against GHL Test. **Zero GHL
+mutations. No field was created. `--apply` was never passed.**
+
+**The four-field batch, exactly:**
+
+| IAOS key | Display name | Expected fieldKey |
+|---|---|---|
+| `additional_earnest_money_amount_text` | Contract Additional Earnest Money Amount | `opportunity.contract_additional_earnest_money_amount` |
+| `additional_earnest_money_days_text` | Contract Additional Earnest Money Days | `opportunity.contract_additional_earnest_money_days` |
+| `closing_date_month_day_text` | Contract Closing Date Month Day | `opportunity.contract_closing_date_month_day` |
+| `closing_date_year_suffix_text` | Contract Closing Date Year Suffix | `opportunity.contract_closing_date_year_suffix` |
+
+All four Opportunity `TEXT` fields, on the same canonical Opportunity
+Details folder every prior batch and the Seller Count field use (anchor
+`opportunity.arv_after_repair_value`). Does NOT include Contract Seller
+Count, any checkbox marker, any broker-text field, any retired field, or
+Contract Draft Request.
+
+**Script** (`app/scripts/inv67-create-transport-only-fields-batch4.cjs`,
+new), structurally identical to Batch 1-3's and the Seller Count script's
+proven architecture: dry-run by default, `--apply` required for mutation,
+hard Test-location allowlist checked before any credential read, canonical-
+anchor `parentId` resolution (fails closed on missing/duplicate/blank
+anchor), the complete unfiltered 4-spec batch always preflighted before any
+POST (no `--only`), exact-existing vs. conflict classification, strict
+readback validation on both create and reuse paths, unconfirmed-create and
+partial-failure safety, and zero PUT/PATCH/DELETE capability anywhere in
+the script. `verifyAgainstAuthoritativeSource()` reads
+`contract-ghl-projection-model.ts`'s `CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS`
+directly and dies loud before any network call if this script's own
+`FIELD_SPECS` ever drifts from it.
+
+**Offline safety suite**
+(`app/scripts/test-inv67-transport-fields-batch4-script.cjs`, new), 88/88,
+mirroring Batch 2's own safety-suite structure exactly (the closest prior
+precedent -- also a multi-`TEXT`-field batch): FIELD_SPECS count/order/
+names/fieldKeys, location allowlist (static + real network-free child-
+process spawns for both the approved location and Production's own id),
+self-verification-before-network-access, `classifyExistingMatch` across
+every conflict shape, `validateFieldAgainstSpec`, `parsePostResponse`,
+`planBatch` (including a full-batch-preflight-before-any-POST proof and a
+one-conflict-refuses-the-whole-batch proof), no `--only` bypass, the
+canonical-anchor fail-closed proofs, the zero-PUT/PATCH/DELETE / no-
+template/draft/send/Linear-endpoint proofs, and confirmation this script
+does not modify the Seller Count script. One addition beyond the Batch 2
+template: a direct proof that re-running `planBatch` against a hypothetical
+post-apply inventory (all four fields already existing exactly as
+specified) classifies every one `"reuse"`, never `"create"` -- a future
+re-run cannot produce a duplicate field.
+
+**Live GHL Test dry run (authorized, zero POSTs).** Existing Opportunity
+fields: 149 (unchanged from the Seller Count field's own post-apply count).
+Canonical parentId: `sGP3pbDQFN7fXS62MAgA` (same anchor, unchanged). Result:
+**4 create, 0 exact-existing/reuse, 0 conflict** -- none of the four fields
+exists yet in GHL Test. Zero POST, PUT, PATCH, or DELETE calls were issued
+-- only the two GET calls (existing-fields list, canonical-anchor
+resolution) every dry run of every prior batch also makes.
+
+**Code map:**
+
+| File | Role |
+|---|---|
+| `app/scripts/inv67-create-transport-only-fields-batch4.cjs` (new) | Dry-run-only Test provisioning script for the four transport-only fields |
+| `app/scripts/test-inv67-transport-fields-batch4-script.cjs` (new) | Offline (network-free) safety suite, 88/88 |
+| `app/package.json` | `test:inv67-transport-fields-batch4-script` script entry |
+
+**Test evidence.** `test:inv67-transport-fields-batch4-script` 88/88 (new).
+`test:contract-ghl-projection` 178/178 and `test:contract-ghl-transport-formatting`
+54/54, both unaffected (this batch adds no new code to either module).
+Identifier boundary green (10/10) -- unaffected, since no id was ever
+created or wired. Full repository suite (every `scripts/test-*.cjs`)
+re-run clean. `tsc -b --force` clean. `pnpm --dir app build` clean.
+
+**What this session does NOT do.** Does not use `--apply`. Does not create,
+modify, or delete any GHL field. Does not wire any id into
+`app/shared/ghl-config.ts`. Does not regenerate or otherwise modify
+`docs/INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md` -- that manifest remains
+frozen until all four fields are provisioned and wired, per its own
+governing note. Does not touch any template or workflow. Does not create a
+draft. Does not send anything. Does not touch Production, Linear, INV-66,
+or Board #10. Does not mark INV-67 complete. PR opened for review; not
+merged.
