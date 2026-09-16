@@ -113,6 +113,10 @@ export const CHECKBOX_MARKER_KEYS = [
   "addenda_non_realty_items_mark",
   "addenda_back_up_contract_mark",
   "addenda_mineral_reservation_mark",
+  // INV-67 Phase 2B -- two new standalone markers, each independent (no
+  // exclusivity group; not mutually exclusive with anything else).
+  "district_notices_mark",
+  "other_addenda_mark",
 ] as const;
 export type CheckboxMarkerKey = (typeof CHECKBOX_MARKER_KEYS)[number];
 
@@ -122,6 +126,9 @@ export const CHECKBOX_TEXT_KEYS = [
   "survey_opt2_buyer_obtain_days_text",
   "survey_opt3_seller_furnish_days_text",
   "sdn_deliver_within_days_text",
+  // INV-67 Phase 2B -- derives from the SAME `AsIsElectionFact` as
+  // `as_is_plain_mark`/`as_is_with_repairs_mark` above (see `deriveAsIsMarkers`).
+  "as_is_repairs_text",
   "water_deliver_within_days_text",
   "water_source_text",
   "spbb_dollar_amount_text",
@@ -302,10 +309,25 @@ export function deriveSellerDisclosureNoticeMarkers(
   return { markers, text };
 }
 
-export function deriveAsIsMarkers(v: AsIsElectionFact): Record<string, MarkerValue> {
+/**
+ * INV-67 Phase 2B extends this to also derive `as_is_repairs_text` from the
+ * SAME `AsIsElectionFact` -- plain As-Is projects an explicit blank (never
+ * stale repair text from a prior election); with-repairs projects the exact
+ * operator-attested `repairsText` verbatim. Every call constructs BOTH keys
+ * regardless of which branch is active (module-header doctrine: inactive
+ * fields always write an explicit `""`), so an election change from
+ * with-repairs back to plain As-Is clears the stale text on the very next
+ * sync, never leaves it behind.
+ */
+export function deriveAsIsMarkers(v: AsIsElectionFact): { markers: Record<string, MarkerValue>; text: Record<string, string> } {
   return {
-    as_is_plain_mark: v.kind === "as_is" ? "X" : "",
-    as_is_with_repairs_mark: v.kind === "as_is_with_repairs" ? "X" : "",
+    markers: {
+      as_is_plain_mark: v.kind === "as_is" ? "X" : "",
+      as_is_with_repairs_mark: v.kind === "as_is_with_repairs" ? "X" : "",
+    },
+    text: {
+      as_is_repairs_text: v.kind === "as_is_with_repairs" ? v.repairsText : "",
+    },
   };
 }
 
@@ -353,6 +375,47 @@ export function deriveAddendaMarkers(items: AddendaApplicabilityItems): Record<s
     markers[`addenda_${key}_mark`] = items[key] ? "X" : "";
   }
   return markers;
+}
+
+/**
+ * INV-67 Phase 2B addendum (Spock's rendered-PDF measurement, this
+ * session): Paragraph 7D(2)'s repairs overlay safely fits only the second
+ * printed rule of the "As Is" paragraph -- a SINGLE printed line, at most
+ * 110 characters. Fails closed on anything that would not fit rather than
+ * truncating or silently clipping the operator-attested repair terms,
+ * which could drop legally material text from the executed contract.
+ * Blank-after-trim is already prevented by the carrier at save time
+ * (`seller-contract-facts-carriers.ts`'s `parseAsIsElectionFact` requires
+ * `repairsText.trim() !== ""`), but re-verified here, defense-in-depth,
+ * matching every other projection-boundary gate in this repair (the money
+ * gate, the option-fee/period gate). Trims surrounding whitespace on
+ * success -- normalization, never a length-affecting transform.
+ */
+const AS_IS_REPAIRS_TEXT_MAX_LENGTH = 110;
+
+export function checkAsIsRepairsTextProjectable(repairsText: string): { ok: true; text: string } | { ok: false; reason: string } {
+  if (/\r|\n/.test(repairsText)) {
+    return {
+      ok: false,
+      reason: `As-Is repairs text (¶7D(2)) contains an embedded line break -- the printed overlay is a single line. Refusing to sync.`,
+    };
+  }
+  const trimmed = repairsText.trim();
+  if (trimmed === "") {
+    return {
+      ok: false,
+      reason: `As-Is repairs text (¶7D(2)) is blank -- required when "with repairs" is selected. Refusing to sync.`,
+    };
+  }
+  if (trimmed.length > AS_IS_REPAIRS_TEXT_MAX_LENGTH) {
+    return {
+      ok: false,
+      reason:
+        `As-Is repairs text (¶7D(2)) is ${trimmed.length} characters, exceeding the ${AS_IS_REPAIRS_TEXT_MAX_LENGTH}-character fit ` +
+        `limit for the printed overlay -- refusing to sync rather than truncate the repair terms.`,
+    };
+  }
+  return { ok: true, text: trimmed };
 }
 
 /* ==================================================================== */
@@ -548,6 +611,33 @@ export function buildCheckboxMarkersAndText(report: SellerContractFactsReport): 
   const representationFact = populatedValue(report.representation.representation, "representation.representation");
   const reservations = populatedValue(report.propertyLegalDescription.reservations, "propertyLegalDescription.reservations");
 
+  // INV-67 Phase 2B -- `district_notices_mark` derives from the SAME
+  // `addendaApplicability.districtNotices` disposition the retained
+  // document-line text key already reads (never a second, independently-
+  // read carrier). This disposition is never `not_applicable` at the
+  // FieldDisposition level (the value/none distinction lives inside its own
+  // `ValueOrNone` value) -- only `populated` or `unresolved`, and the
+  // caller's `previewComplete` gate has already refused the whole plan on
+  // `unresolved` before this function is ever reached.
+  const districtNoticesValue = populatedValue(report.addendaApplicability.districtNotices, "addendaApplicability.districtNotices");
+  const districtNoticesMarker: MarkerValue = districtNoticesValue.kind === "value" ? "X" : "";
+
+  // `other_addenda_mark` derives from the SAME `attorneyManualFields.
+  // otherAddendaText` disposition the retained document-line text key
+  // already reads. Unlike the fact above, THIS disposition legitimately
+  // resolves to `not_applicable` (Not Applicable is a real operator
+  // choice, distinct from provided_verbatim text) -- so it is read directly
+  // here, not through `populatedValue`, which would wrongly throw on that
+  // valid state. `unresolved` (including `attorney_will_draft`, which
+  // resolves to `unresolved` upstream -- "intent to draft is not drafted
+  // content") is refused by `previewComplete` before this function runs,
+  // exactly like every other required field.
+  const otherAddendaDisposition = report.attorneyManualFields.otherAddendaText;
+  const otherAddendaMarker: MarkerValue =
+    otherAddendaDisposition.kind === "populated" ? "X"
+    : otherAddendaDisposition.kind === "not_applicable" ? ""
+    : (() => { throw new Error(`buildCheckboxMarkersAndText: "attorneyManualFields.otherAddendaText" is not resolved despite the caller's previewComplete gate -- integrity violation.`); })();
+
   const blockingReasons: string[] = [];
   const warnings: string[] = [];
 
@@ -564,7 +654,7 @@ export function buildCheckboxMarkersAndText(report: SellerContractFactsReport): 
   const surveyResult = deriveSurveyMarkers(surveyElection);
   const poaMarkers = derivePoaMarkers(poaMembership);
   const sdnResult = deriveSellerDisclosureNoticeMarkers(sellerDisclosureNotice);
-  const asIsMarkers = deriveAsIsMarkers(asIsElection);
+  const asIsResult = deriveAsIsMarkers(asIsElection);
   const waterResult = deriveWaterDisclosureMarkers(waterDisclosure);
   const possessionMarkers = derivePossessionMarkers(possessionElection);
   const spbbResult = deriveBrokerageContributionMarkers("spbb", sellerPaysBuyerBroker);
@@ -578,21 +668,37 @@ export function buildCheckboxMarkersAndText(report: SellerContractFactsReport): 
     ...surveyResult.markers,
     ...poaMarkers,
     ...sdnResult.markers,
-    ...asIsMarkers,
+    ...asIsResult.markers,
     ...waterResult.markers,
     ...possessionMarkers,
     ...spbbResult.markers,
     ...bpsbResult.markers,
     ...addendaMarkers,
+    district_notices_mark: districtNoticesMarker,
+    other_addenda_mark: otherAddendaMarker,
   };
   const text: Record<string, string> = {
     ...leaseResult.text,
     ...surveyResult.text,
     ...sdnResult.text,
+    ...asIsResult.text,
     ...waterResult.text,
     ...spbbResult.text,
     ...bpsbResult.text,
   };
+
+  // As-Is repairs text fit safety (INV-67 Phase 2B addendum) -- fails closed
+  // rather than truncating; on success, overrides the raw (untrimmed)
+  // `asIsResult.text.as_is_repairs_text` above with the trimmed, verified
+  // value. Plain As-Is already projects "" via `deriveAsIsMarkers`, unaffected.
+  if (asIsElection.kind === "as_is_with_repairs") {
+    const repairsCheck = checkAsIsRepairsTextProjectable(asIsElection.repairsText);
+    if (!repairsCheck.ok) {
+      blockingReasons.push(repairsCheck.reason);
+    } else {
+      text.as_is_repairs_text = repairsCheck.text;
+    }
+  }
 
   // Mineral-reservation disagreement -- fail closed, distinct message.
   const mineralConsistency = checkMineralReservationConsistency(

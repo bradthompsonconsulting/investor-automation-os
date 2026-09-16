@@ -64,13 +64,13 @@ const {
   deriveLeaseMarkers, deriveTitleExpenseMarkers, deriveShortageMarkers, deriveSurveyMarkers,
   derivePoaMarkers, deriveSellerDisclosureNoticeMarkers, deriveAsIsMarkers, deriveWaterDisclosureMarkers,
   derivePossessionMarkers, deriveBrokerageContributionMarkers, deriveAddendaMarkers,
-  checkMineralReservationConsistency, checkPoaAddendaConsistency, checkCashOnlyAddendaConsistency, validateMarkerExclusivity,
+  checkMineralReservationConsistency, checkPoaAddendaConsistency, checkCashOnlyAddendaConsistency, checkAsIsRepairsTextProjectable, validateMarkerExclusivity,
   deriveBrokerText, buildCheckboxMarkersAndText,
   CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS, CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS,
 } = M;
 const { ADDENDA_APPLICABILITY_ITEM_KEYS } = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
 
-const FLOOR = 104;
+const FLOOR = 115;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -91,9 +91,9 @@ function onlyXOrBlank(obj) { return Object.values(obj).every((v) => v === 'X' ||
 /* 1. Exact key-set sizes                                                */
 /* ==================================================================== */
 
-check('CHECKBOX_MARKER_KEYS has exactly 48 keys', CHECKBOX_MARKER_KEYS.length, 48);
-check('CHECKBOX_MARKER_KEYS has no duplicates', new Set(CHECKBOX_MARKER_KEYS).size, 48);
-check('CHECKBOX_TEXT_KEYS has exactly 11 keys', CHECKBOX_TEXT_KEYS.length, 11);
+check('CHECKBOX_MARKER_KEYS has exactly 50 keys (48 + district_notices_mark + other_addenda_mark, INV-67 Phase 2B)', CHECKBOX_MARKER_KEYS.length, 50);
+check('CHECKBOX_MARKER_KEYS has no duplicates', new Set(CHECKBOX_MARKER_KEYS).size, 50);
+check('CHECKBOX_TEXT_KEYS has exactly 12 keys (11 + as_is_repairs_text, INV-67 Phase 2B)', CHECKBOX_TEXT_KEYS.length, 12);
 check('BROKER_FIELD_SUFFIXES has exactly 11 suffixes', BROKER_FIELD_SUFFIXES.length, 11);
 check('BROKER_TEXT_KEYS has exactly 22 keys (11 per side)', BROKER_TEXT_KEYS.length, 22);
 check('BROKER_TEXT_KEYS has no duplicates', new Set(BROKER_TEXT_KEYS).size, 22);
@@ -140,10 +140,13 @@ checkTrue('no overlap between marker keys and text keys', CHECKBOX_MARKER_KEYS.e
     /Seller's Temporary Residential Lease/.test(CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS.possession_leaseback_mark[1].description),
   );
 
-  // Unique-field count (48) is unaffected by physical placement count.
-  check('CHECKBOX_MARKER_KEYS.length (unique fields) is still exactly 48 -- unaffected by repeated placements', CHECKBOX_MARKER_KEYS.length, 48);
-  // Physical overlay placement count: 48 unique markers + 1 extra placement for each of the 3 reused markers = 51.
-  check('CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS is 51 (48 unique markers + 3 extra reused placements), NOT 48', CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS, 51);
+  // Unique-field count (50, INV-67 Phase 2B) is unaffected by physical placement count.
+  check('CHECKBOX_MARKER_KEYS.length (unique fields) is still exactly 50 -- unaffected by repeated placements', CHECKBOX_MARKER_KEYS.length, 50);
+  // Physical overlay placement count: 50 unique markers (INV-67 Phase 2B) + 1 extra
+  // placement for each of the 3 reused markers = 53. Neither of Phase 2B's 2 new
+  // markers has a repeated placement -- the +3 itself is unchanged; only the base
+  // (CHECKBOX_MARKER_KEYS.length) grew, exactly as this constant's own formula predicts.
+  check('CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS is 53 (50 unique markers + 3 extra reused placements), NOT 50', CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS, 53);
   checkTrue(
     'the overlay-placement count is explicitly NOT the same number as the unique marker-key count (would silently hide the 3 reused placements)',
     CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS !== CHECKBOX_MARKER_KEYS.length,
@@ -226,8 +229,8 @@ checkTrue('no overlap between marker keys and text keys', CHECKBOX_MARKER_KEYS.e
 }
 
 {
-  check('asIs: as_is', deriveAsIsMarkers({ kind: 'as_is' }), { as_is_plain_mark: 'X', as_is_with_repairs_mark: '' });
-  check('asIs: as_is_with_repairs', deriveAsIsMarkers({ kind: 'as_is_with_repairs', repairsText: 'fix roof' }), { as_is_plain_mark: '', as_is_with_repairs_mark: 'X' });
+  check('asIs: as_is', deriveAsIsMarkers({ kind: 'as_is' }), { markers: { as_is_plain_mark: 'X', as_is_with_repairs_mark: '' }, text: { as_is_repairs_text: '' } });
+  check('asIs: as_is_with_repairs', deriveAsIsMarkers({ kind: 'as_is_with_repairs', repairsText: 'fix roof' }), { markers: { as_is_plain_mark: '', as_is_with_repairs_mark: 'X' }, text: { as_is_repairs_text: 'fix roof' } });
 }
 
 {
@@ -288,6 +291,36 @@ check('poa consistency: is_not_subject + unchecked -> null (no warning)', checkP
   checkTrue('poa consistency warning explicitly states it does not block the sync', /does not block/i.test(w));
   checkTrue('poa consistency warning never says "refus" (only mineral-reservation and marker-exclusivity refuse)', !/refus/i.test(w));
 }
+
+/* ==================================================================== */
+/* 3b. checkAsIsRepairsTextProjectable -- INV-67 Phase 2B addendum       */
+/*     (Spock's rendered-PDF fit measurement): single line, <=110 chars, */
+/*     trimmed on success, never truncated on failure.                   */
+/* ==================================================================== */
+
+check('as-is repairs text: 1 character -- passes, unchanged', checkAsIsRepairsTextProjectable('x'), { ok: true, text: 'x' });
+check('as-is repairs text: exactly 110 characters -- passes (boundary)', checkAsIsRepairsTextProjectable('x'.repeat(110)), { ok: true, text: 'x'.repeat(110) });
+{
+  const r = checkAsIsRepairsTextProjectable('x'.repeat(111));
+  checkTrue('as-is repairs text: 111 characters -- fails closed (boundary)', r.ok === false);
+  checkTrue('as-is repairs text: 111-character reason names the exact length and the 110 limit, and never truncates', /111 characters, exceeding the 110-character fit limit/.test(r.reason));
+}
+check('as-is repairs text: leading/trailing whitespace is trimmed on success', checkAsIsRepairsTextProjectable('   fix the roof   '), { ok: true, text: 'fix the roof' });
+{
+  const cr = checkAsIsRepairsTextProjectable('fix the roof\rand gutters');
+  const lf = checkAsIsRepairsTextProjectable('fix the roof\nand gutters');
+  const crlf = checkAsIsRepairsTextProjectable('fix the roof\r\nand gutters');
+  checkTrue('as-is repairs text: embedded CR -- fails closed', cr.ok === false && /embedded line break/.test(cr.reason));
+  checkTrue('as-is repairs text: embedded LF -- fails closed', lf.ok === false && /embedded line break/.test(lf.reason));
+  checkTrue('as-is repairs text: embedded CRLF -- fails closed', crlf.ok === false && /embedded line break/.test(crlf.reason));
+}
+{
+  const blank = checkAsIsRepairsTextProjectable('');
+  const whitespaceOnly = checkAsIsRepairsTextProjectable('   ');
+  checkTrue('as-is repairs text: blank -- fails closed, required when "with repairs" is selected', blank.ok === false && /is blank -- required/.test(blank.reason));
+  checkTrue('as-is repairs text: whitespace-only -- fails closed (blank after trim)', whitespaceOnly.ok === false && /is blank -- required/.test(whitespaceOnly.reason));
+}
+checkTrue('as-is repairs text: 200 characters -- fails closed, never silently truncated to 110', checkAsIsRepairsTextProjectable('y'.repeat(200)).ok === false);
 
 /* ==================================================================== */
 /* 4. validateMarkerExclusivity -- the explicit runtime check             */
@@ -369,9 +402,10 @@ function cleanReport(overrides) {
     propertyCondition: { sellerDisclosureNotice: populated({ kind: 'received' }), asIsElection: populated({ kind: 'as_is' }), waterDisclosure: populated({ kind: 'received' }) },
     closingPossession: { possessionElection: populated('upon_closing_and_funding') },
     settlementExpense: { sellerPaysBuyerBroker: populated({ kind: 'none' }), buyerPaysSellerBroker: populated({ kind: 'none' }) },
-    addendaApplicability: { items: populated(Object.fromEntries(ADDENDA_APPLICABILITY_ITEM_KEYS.map((k) => [k, false]))) },
+    addendaApplicability: { items: populated(Object.fromEntries(ADDENDA_APPLICABILITY_ITEM_KEYS.map((k) => [k, false]))), districtNotices: populated({ kind: 'none' }) },
     representation: { representation: populated({ kind: 'none' }) },
     propertyLegalDescription: { reservations: populated({ kind: 'none' }) },
+    attorneyManualFields: { otherAddendaText: { kind: 'not_applicable', confirmedBy: null, at: null, note: null } },
   };
   for (const [group, patch] of Object.entries(overrides || {})) base[group] = { ...base[group], ...patch };
   return base;
@@ -380,8 +414,8 @@ function cleanReport(overrides) {
 {
   const result = buildCheckboxMarkersAndText(cleanReport());
   checkTrue('build: clean report -> ok', result.ok === true);
-  check('build: markers has exactly 48 keys', result.ok ? Object.keys(result.markers).length : null, 48);
-  check('build: text has exactly 11 keys', result.ok ? Object.keys(result.text).length : null, 11);
+  check('build: markers has exactly 50 keys (INV-67 Phase 2B)', result.ok ? Object.keys(result.markers).length : null, 50);
+  check('build: text has exactly 12 keys (INV-67 Phase 2B)', result.ok ? Object.keys(result.text).length : null, 12);
   check('build: brokerText has exactly 22 keys', result.ok ? Object.keys(result.brokerText).length : null, 22);
   checkTrue('build: every marker value is "X" or ""', result.ok ? onlyXOrBlank(result.markers) : false);
   check('build: no warnings on a clean report', result.ok ? result.warnings : null, []);

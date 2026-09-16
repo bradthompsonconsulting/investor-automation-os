@@ -49,7 +49,7 @@
  * is introduced.
  */
 
-import type { ValueOrNone, AdditionalEarnestMoneyFact } from "./seller-contract-facts-carriers";
+import type { ValueOrNone, AdditionalEarnestMoneyFact, LegalMunicipalityFact } from "./seller-contract-facts-carriers";
 import type { SignerRequirement } from "./board9-contract-model";
 
 /* ==================================================================== */
@@ -75,6 +75,26 @@ export function moneyTransport(n: number): string {
  */
 export function daysTransport(n: number): string {
   return String(n);
+}
+
+/**
+ * Defense-in-depth guard for any money amount about to be formatted for
+ * template projection (INV-67 Phase 2B). `moneyTransport` above will happily
+ * stringify `NaN`, `Infinity`, or a negative number -- this function is the
+ * single place that refuses those BEFORE formatting, so a caller building
+ * `blockingReasons` never has to duplicate the finite/nonnegative check.
+ * Never throws -- a bad value is a real data condition an operator or a
+ * defect elsewhere could produce, not a code-integrity violation, so it is
+ * reported the same way every other blocking reason in this repair is.
+ */
+export function checkMoneyAmountProjectable(n: number, label: string): { ok: true } | { ok: false; reason: string } {
+  if (!Number.isFinite(n)) {
+    return { ok: false, reason: `${label} is not a finite number (${n}) -- refusing to sync.` };
+  }
+  if (n < 0) {
+    return { ok: false, reason: `${label} is negative (${n}) -- refusing to sync.` };
+  }
+  return { ok: true };
 }
 
 /**
@@ -123,6 +143,19 @@ export function sellerSignersTransport(signers: SignerRequirement[]): string {
     .filter((s): s is SignerRequirement & { displayName: string } => s.displayName !== null)
     .map((s) => s.displayName)
     .join("; ");
+}
+
+/**
+ * `""` for Unincorporated -- NOT the human-facing preview's "Unincorporated
+ * area." sentence (INV-67 Phase 2A's own header: "This preview wording is
+ * not future GHL transport text"). A Municipality's attested name is
+ * already trimmed by the carrier at write time (`seller-contract-facts-
+ * carriers.ts`'s `parseLegalMunicipality`) -- this function does not
+ * re-derive or re-normalize it, only selects which of the two resolved
+ * states to project.
+ */
+export function legalMunicipalityTransport(m: LegalMunicipalityFact): string {
+  return m.kind === "unincorporated" ? "" : m.name;
 }
 
 /* ==================================================================== */

@@ -110,17 +110,26 @@ import {
   closingDateMonthDayTransport,
   closingDateYearSuffixTransport,
   checkClosingDateCenturyBound,
+  legalMunicipalityTransport,
+  checkMoneyAmountProjectable,
 } from "./contract-ghl-transport-formatting";
 
 /* ==================================================================== */
 /* 1. Field classification -- proven, not inferred (see header)          */
 /* ==================================================================== */
 
-/** No GHL field exists for these -- proven invariant by the cited source module, never a per-deal choice. */
+/**
+ * No GHL field exists for these -- proven invariant by the cited source
+ * module, never a per-deal choice. INV-67 Phase 2B: `salesPrice.
+ * financingSum` is REMOVED from this list -- it now projects into
+ * `financing_sum_amount_text` (`CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS`
+ * below), so its $0 fixed value is written and defensively re-verified at
+ * every sync rather than merely asserted true by source code no template
+ * placement ever proves.
+ */
 export const CONTRACT_PROJECTION_INVARIANT_KEYS = [
   "parties.buyerCapacity",
   "parties.buyerTexasLicenseStatus",
-  "salesPrice.financingSum",
   "addendaApplicability.financingAddenda",
 ] as const;
 
@@ -208,10 +217,11 @@ export const CONTRACT_PROJECTION_RETIRED_KEYS = [
 ] as const;
 
 /**
- * The 27 keys retained from the original 29 (2 retired by the compound
- * text-destination repair -- see `CONTRACT_PROJECTION_RETIRED_KEYS` above)
- * -- still sourced from `ContractDocumentPreview.documentLines` by default.
- * FOURTEEN of these 27 (`REFORMATTED_RETAINED_KEYS` below, in
+ * The 28 keys retained from the original 29 (2 retired by the compound
+ * text-destination repair, 1 added by INV-67 Phase 2B -- see
+ * `CONTRACT_PROJECTION_RETIRED_KEYS` above and the Phase 2B note below) --
+ * still sourced from `ContractDocumentPreview.documentLines` by default.
+ * FIFTEEN of these 28 (`REFORMATTED_RETAINED_KEYS` below, in
  * `buildContractProjectionPlan`) no longer project the preview's verbatim
  * text -- they route through `contract-ghl-transport-formatting.ts`
  * instead, reading the same canonical `SellerContractFactsReport` fact the
@@ -219,6 +229,14 @@ export const CONTRACT_PROJECTION_RETIRED_KEYS = [
  * unaffected (no adjacent-printed-symbol risk, no "none" sentence
  * injection) and still project the preview's verbatim text exactly as
  * before.
+ *
+ * INV-67 PHASE 2B adds `propertyLegalDescription.legalMunicipality`
+ * (Product Owner ruling, Phase 2A's canonical Legal Municipality fact) --
+ * projects into GHL field "Contract Legal City". It is one of the fifteen
+ * reformatted keys: the preview's "Unincorporated area." wording is
+ * explicitly NOT transport text (Phase 2A's own header) -- the transport
+ * value is the attested name for Municipality, `""` for Unincorporated, via
+ * `legalMunicipalityTransport`.
  */
 export const CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS = [
   "identity.propertyStreetAddress",
@@ -229,6 +247,7 @@ export const CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS = [
   "propertyLegalDescription.addition",
   "propertyLegalDescription.county",
   "propertyLegalDescription.exclusions",
+  "propertyLegalDescription.legalMunicipality",
   "earnestMoneyOption.escrowAgentName",
   "earnestMoneyOption.escrowAgentAddress",
   "earnestMoneyOption.earnestMoney",
@@ -251,33 +270,40 @@ export const CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS = [
 ] as const;
 
 /**
- * The four new keys introduced by the compound text-destination repair
- * (this session, Product Owner rulings 1-3), replacing the retired
- * `earnestMoneyOption.additionalEarnestMoney` / `closingPossession.
- * closingDate` template placements. TRANSPORT-ONLY NAMES, deliberately NOT
- * dotted like the retained document-line keys above (Product Owner ruling
- * 2) -- verified collision-free against every existing internal projection
- * key and every existing GHL field key in `shared/ghl-config.ts` before
- * approval. Each pair derives from exactly one canonical fact
- * (`AdditionalEarnestMoneyFact`, the `closingDate` ISO instant) so its two
- * sibling values can never disagree -- see `contract-ghl-transport-
- * formatting.ts`.
+ * The four keys introduced by the compound text-destination repair,
+ * replacing the retired `earnestMoneyOption.additionalEarnestMoney` /
+ * `closingPossession.closingDate` template placements, PLUS two more added
+ * by INV-67 Phase 2B (`sales_price_amount_text`, `financing_sum_amount_text`
+ * -- Product Owner ruling; sourced from `salesPrice.salesPrice` /
+ * `salesPrice.financingSum`, cross-checked against `salesPrice.cashPortion`
+ * for ¶3A/¶3C agreement and required to equal exactly $0 for financing sum,
+ * by `checkSalesPriceAndFinancingSum` below). TRANSPORT-ONLY NAMES,
+ * deliberately NOT dotted like the retained document-line keys above
+ * (Product Owner ruling 2) -- verified collision-free against every
+ * existing internal projection key and every existing GHL field key in
+ * `shared/ghl-config.ts` before approval. The first pair derives from
+ * exactly one canonical fact (`AdditionalEarnestMoneyFact`), the second
+ * pair from exactly one canonical instant (the `closingDate` ISO string),
+ * so each pair's two sibling values can never disagree -- see
+ * `contract-ghl-transport-formatting.ts`. `sales_price_amount_text` /
+ * `financing_sum_amount_text` are each their own single fact, not a pair.
  */
 export const CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS = [
   "additional_earnest_money_amount_text",
   "additional_earnest_money_days_text",
   "closing_date_month_day_text",
   "closing_date_year_suffix_text",
+  "sales_price_amount_text",
+  "financing_sum_amount_text",
 ] as const;
 
 /**
- * The complete, FINAL live projection-key set -- exactly 112: 27 retained
- * document-line keys + 4 new transport-only keys (above) + 48 checkbox
- * markers + 11 restructured contract-text keys + 22 page-11 broker-text
- * keys. This is the array `shared/ghl-config.ts` duplicates by hand (that
- * module cannot import from `src/lib`) and
- * `scripts/test-contract-ghl-projection.cjs`'s drift check compares
- * against.
+ * The complete, FINAL live projection-key set -- exactly 118: 28 retained
+ * document-line keys + 6 transport-only keys (above) + 50 checkbox markers
+ * + 12 restructured contract-text keys + 22 page-11 broker-text keys. This
+ * is the array `shared/ghl-config.ts` duplicates by hand (that module
+ * cannot import from `src/lib`) and `scripts/test-contract-ghl-
+ * projection.cjs`'s drift check compares against.
  */
 export const CONTRACT_PROJECTION_FIELD_KEYS = [
   ...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS,
@@ -394,6 +420,65 @@ function optionPeriodFeeBlockingReasons(report: SellerContractFactsReport): stri
 }
 
 /**
+ * Sales price / financing sum defense-in-depth gate (INV-67 Phase 2B,
+ * Product Owner ruling). `salesPrice.salesPrice`, `.cashPortion`, and
+ * `.financingSum` are already required/populated facts by construction
+ * (`contract-facts-model.ts` always resolves them together from the same
+ * accepted price, financing sum fixed at $0) -- this gate does not trust
+ * that invariant alone. It re-verifies, at the projection boundary, exactly
+ * like the option-fee/period and closing-date gates already do: every
+ * value must be a finite, nonnegative number; ¶3A (`cashPortion`) must
+ * still agree with ¶3C (`salesPrice`) -- an accepted-price disagreement
+ * blocks rather than silently projecting a stale or diverged figure; and
+ * `financingSum` must equal exactly 0 -- any nonzero or financed posture
+ * blocks the whole sync, never partially writes. Returns the two validated
+ * amounts on success so the caller never re-reads or re-derives them.
+ */
+function checkSalesPriceAndFinancingSum(
+  report: SellerContractFactsReport,
+): { ok: true; salesPriceAmount: number; financingSumAmount: number } | { ok: false; reasons: string[] } {
+  const { salesPrice, cashPortion, financingSum } = report.salesPrice;
+  const reasons: string[] = [];
+
+  if (salesPrice.kind !== "populated") reasons.push(`salesPrice.salesPrice (¶3C) is ${salesPrice.kind} -- required, refusing to sync.`);
+  if (cashPortion.kind !== "populated") reasons.push(`salesPrice.cashPortion (¶3A) is ${cashPortion.kind} -- required, refusing to sync.`);
+  if (financingSum.kind !== "populated") reasons.push(`salesPrice.financingSum (¶3B) is ${financingSum.kind} -- required, refusing to sync.`);
+  if (reasons.length > 0) return { ok: false, reasons };
+
+  // TS cannot narrow through the loop above; each disposition is provably
+  // `populated` at this point (every non-populated case already returned).
+  const priceValue = (salesPrice as { kind: "populated"; value: number }).value;
+  const cashValue = (cashPortion as { kind: "populated"; value: number }).value;
+  const financingValue = (financingSum as { kind: "populated"; value: number }).value;
+
+  for (const [label, n] of [
+    ["salesPrice.salesPrice (¶3C)", priceValue],
+    ["salesPrice.cashPortion (¶3A)", cashValue],
+    ["salesPrice.financingSum (¶3B)", financingValue],
+  ] as const) {
+    const check = checkMoneyAmountProjectable(n, label);
+    if (!check.ok) reasons.push(check.reason);
+  }
+  if (reasons.length > 0) return { ok: false, reasons };
+
+  if (cashValue !== priceValue) {
+    reasons.push(
+      `Accepted-price disagreement: salesPrice.cashPortion (¶3A, ${cashValue}) does not match salesPrice.salesPrice ` +
+        `(¶3C, ${priceValue}) -- refusing to sync until these agree.`,
+    );
+  }
+  if (financingValue !== 0) {
+    reasons.push(
+      `Financing sum must be exactly $0 in the approved cash-acquisition/assignment-exit V1 path -- got ${financingValue}. ` +
+        `Refusing to sync on any nonzero/financed posture.`,
+    );
+  }
+  if (reasons.length > 0) return { ok: false, reasons };
+
+  return { ok: true, salesPriceAmount: priceValue, financingSumAmount: financingValue };
+}
+
+/**
  * Compound text-destination repair -- reads a `FieldDisposition<T>` DIRECTLY
  * (never via `preview.documentLines`) and applies a transport renderer.
  * `not_applicable` renders `""`, never invented prose -- the same doctrine
@@ -412,11 +497,13 @@ function transportFieldText<T>(disposition: FieldDisposition<T>, key: string, re
 }
 
 /**
- * The fourteen retained keys (of 27) whose GHL transport value no longer
+ * The fifteen retained keys (of 28) whose GHL transport value no longer
  * matches `contract-document-model.ts`'s preview-rendered text -- see
  * `contract-ghl-transport-formatting.ts`'s module header for why. The
  * remaining thirteen retained keys are unaffected and still project the
- * preview's verbatim text below.
+ * preview's verbatim text below. INV-67 Phase 2B adds
+ * `propertyLegalDescription.legalMunicipality` (Phase 2A's own header: its
+ * preview wording is not transport text).
  */
 const REFORMATTED_RETAINED_KEYS = new Set<string>([
   "parties.sellerSigners",
@@ -425,6 +512,7 @@ const REFORMATTED_RETAINED_KEYS = new Set<string>([
   "propertyLegalDescription.addition",
   "propertyLegalDescription.county",
   "propertyLegalDescription.exclusions",
+  "propertyLegalDescription.legalMunicipality",
   "earnestMoneyOption.earnestMoney",
   "earnestMoneyOption.optionFee",
   "earnestMoneyOption.optionPeriodDays",
@@ -450,6 +538,8 @@ function reformattedRetainedText(key: string, report: SellerContractFactsReport)
       return transportFieldText(report.propertyLegalDescription.county, key, valueOrNoneTransport);
     case "propertyLegalDescription.exclusions":
       return transportFieldText(report.propertyLegalDescription.exclusions, key, valueOrNoneTransport);
+    case "propertyLegalDescription.legalMunicipality":
+      return transportFieldText(report.propertyLegalDescription.legalMunicipality, key, legalMunicipalityTransport);
     case "earnestMoneyOption.earnestMoney":
       return transportFieldText(report.earnestMoneyOption.earnestMoney, key, moneyTransport);
     case "earnestMoneyOption.optionFee":
@@ -505,15 +595,23 @@ export function buildContractProjectionPlan(
   const equitableInterestBlocking = equitableInterestBlockingReasons(preview);
   const sellerReadinessBlocking = sellerReadiness.ok ? [] : sellerReadiness.reasons;
   const optionPeriodBlocking = optionPeriodFeeBlockingReasons(report);
+  const salesPriceCheck = checkSalesPriceAndFinancingSum(report);
   if (
     !preview.previewComplete ||
     equitableInterestBlocking.length > 0 ||
     sellerReadinessBlocking.length > 0 ||
-    optionPeriodBlocking.length > 0
+    optionPeriodBlocking.length > 0 ||
+    !salesPriceCheck.ok
   ) {
     return {
       ok: false,
-      blockingReasons: [...preview.blockingReasons, ...equitableInterestBlocking, ...sellerReadinessBlocking, ...optionPeriodBlocking],
+      blockingReasons: [
+        ...preview.blockingReasons,
+        ...equitableInterestBlocking,
+        ...sellerReadinessBlocking,
+        ...optionPeriodBlocking,
+        ...(salesPriceCheck.ok ? [] : salesPriceCheck.reasons),
+      ],
     };
   }
 
@@ -656,6 +754,17 @@ export function buildContractProjectionPlan(
     {
       key: "closing_date_year_suffix_text" as ContractProjectionFieldKey,
       text: closingDateYearSuffixTransport(closingDateIso),
+    },
+    // INV-67 Phase 2B -- both values already validated (finite, nonnegative,
+    // ¶3A/¶3C agreement, financing sum exactly $0) by `checkSalesPriceAndFinancingSum`
+    // above; `salesPriceCheck` is narrowed to its `ok: true` branch here.
+    {
+      key: "sales_price_amount_text" as ContractProjectionFieldKey,
+      text: moneyTransport(salesPriceCheck.salesPriceAmount),
+    },
+    {
+      key: "financing_sum_amount_text" as ContractProjectionFieldKey,
+      text: moneyTransport(salesPriceCheck.financingSumAmount),
     },
   ];
 

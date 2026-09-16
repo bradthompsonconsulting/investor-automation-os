@@ -61,7 +61,7 @@ const { CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS } = require(path.join(TMP, 'cont
 const S = require(SCRIPT);
 const src = fs.readFileSync(SCRIPT, 'utf8');
 
-const FLOOR = 88;
+const FLOOR = 89;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -89,11 +89,19 @@ const SPEC1_KEY = S.expectedFieldKey(SPEC1.name);
 /*    TRANSPORT_ONLY_KEYS, and the exact authorized names/fieldKeys      */
 /* ==================================================================== */
 
+// INV-67 Phase 2B added 2 new transport-only keys (sales_price_amount_text,
+// financing_sum_amount_text) to CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS,
+// unrelated to this batch's own original 4. This script's FIELD_SPECS is a
+// SUBSET of the (now-larger) authoritative array, never required to equal it
+// exactly -- see the Brad-authorized narrow fix to `verifyAgainstAuthoritativeSource`
+// in the script itself.
+const PRE_PHASE_2B_TRANSPORT_ONLY_KEYS = CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.filter((k) => k !== 'sales_price_amount_text' && k !== 'financing_sum_amount_text');
 const fieldSpecKeys = Array.from(src.matchAll(/\{ key: '([^']+)', name: '[^']+' \}/g)).map((m) => m[1]);
 check('script declares exactly 4 FIELD_SPECS', fieldSpecKeys.length, 4);
 check('FIELD_SPECS keys are unique', new Set(fieldSpecKeys).size, 4);
-check('FIELD_SPECS keys equal CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS exactly, SAME ORDER (source-level extraction)', fieldSpecKeys, [...CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS]);
-check('module.exports.FIELD_SPECS also has exactly 4 keys, same order', S.FIELD_SPECS.map((s) => s.key), [...CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS]);
+check('FIELD_SPECS keys equal the ORIGINAL 4 CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS exactly, SAME ORDER (source-level extraction; Phase 2B\'s 2 new keys excluded)', fieldSpecKeys, [...PRE_PHASE_2B_TRANSPORT_ONLY_KEYS]);
+check('module.exports.FIELD_SPECS also has exactly 4 keys, same order', S.FIELD_SPECS.map((s) => s.key), [...PRE_PHASE_2B_TRANSPORT_ONLY_KEYS]);
+checkTrue('every one of this script\'s 4 keys is present in the (now-larger) authoritative CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS', fieldSpecKeys.every((k) => CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.includes(k)));
 check('every FIELD_SPEC is dataType TEXT', S.FIELD_SPECS.map((s) => s.dataType), ['TEXT', 'TEXT', 'TEXT', 'TEXT']);
 check(
   'the exact authorized display names, in order',
@@ -174,7 +182,7 @@ checkTrue(
 );
 {
   const r = spawnSync(process.execPath, [SCRIPT], { cwd: APP, encoding: 'utf8', timeout: 15000 });
-  checkTrue('running with zero args: self-verification message appears on stdout', /Verified: this script's 4 FIELD_SPECS keys match CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS exactly/.test(r.stdout));
+  checkTrue('running with zero args: self-verification message appears on stdout', /Verified: this script's 4 FIELD_SPECS keys all exist in CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS/.test(r.stdout));
   checkTrue('running with zero args: dies on missing --location with a specific message', /ERROR: --location is required\. There is no default and no fallback\./.test(r.stderr));
   check('running with zero args: exits with code 2 (die()), never attempts a network call', r.status, 2);
 }

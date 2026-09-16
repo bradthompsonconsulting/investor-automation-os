@@ -1,32 +1,37 @@
 /**
- * INV-67 compound text-destination repair -- Batch 4 of 4. Creates the 4
- * narrowly-scoped Opportunity custom TEXT fields
- * `src/lib/contract-ghl-projection-model.ts`'s `CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS`
- * requires -- the two split-blank pairs derived from
- * `earnestMoneyOption.additionalEarnestMoney` and
- * `closingPossession.closingDate` (see that module's own header for why
- * those two compound keys were retired and replaced by these four).
- * Mirrors Batch 1-3's (`inv67-create-checkbox-marker-fields-batch1.cjs`,
+ * INV-67 Phase 2B -- Batch 5. Creates the 6 narrowly-scoped Opportunity
+ * custom TEXT fields Phase 2B's six-key projection expansion requires:
+ * `propertyLegalDescription.legalMunicipality` (`src/lib/contract-ghl-
+ * projection-model.ts`'s `CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS`),
+ * `sales_price_amount_text` / `financing_sum_amount_text` (that same
+ * module's `CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS`), `as_is_repairs_text`
+ * (`src/lib/contract-checkbox-marker-model.ts`'s `CHECKBOX_TEXT_KEYS`), and
+ * `district_notices_mark` / `other_addenda_mark` (that same module's
+ * `CHECKBOX_MARKER_KEYS`). See those two modules' own headers for why each
+ * field exists and what canonical fact it derives from.
+ *
+ * Mirrors Batch 1-4's (`inv67-create-checkbox-marker-fields-batch1.cjs`,
  * `inv67-create-checkbox-text-fields-batch2.cjs`,
- * `inv67-create-broker-text-fields-batch3.cjs`) and the Seller Count
+ * `inv67-create-broker-text-fields-batch3.cjs`,
+ * `inv67-create-transport-only-fields-batch4.cjs`) and the Seller Count
  * script's (`inv67-create-seller-count-field.cjs`) hardened architecture
  * exactly -- none of those scripts is modified by this one; this is a new,
- * sibling script for a different 4-key spec set.
+ * sibling script for a different 6-key spec set.
  *
  * READ-ONLY DRY RUN BY DEFAULT, `--apply` required to POST (a later,
- * separately authorized phase -- not used by this dry-run task). Hard
+ * separately authorized phase -- NOT used or performed by this task). Hard
  * Test-location allowlist, fail-closed canonical-anchor `parentId`
- * resolution, the complete unfiltered 4-spec batch always preflighted
+ * resolution, the complete unfiltered 6-spec batch always preflighted
  * before any POST (no `--only`, no partial-selection option), exact-
  * existing vs. conflict classification, readback validation on both
  * create and reuse paths, unconfirmed-create safety, and full partial-
  * failure/results reporting on every exit path -- all identical in kind to
- * every prior batch, applied to this batch's own 4 specs.
+ * every prior batch, applied to this batch's own 6 specs.
  *
  * NOT INCLUDED (deliberately, per this batch's exact authorized scope):
- * Contract Seller Count (its own separate, already-applied script), any
- * checkbox marker, any broker-text field, any retired field, Contract
- * Draft Request, or any other field.
+ * Contract Seller Count, the one-shot Contract Draft
+ * Request control, any of the 112
+ * already-provisioned keys, any retired field, or any other field.
  *
  * NO LOCATION SELECTOR. --location is required, no default -- and must
  * equal the approved IAOS Test location exactly (see
@@ -34,11 +39,11 @@
  * reading any credential file or making any network call.
  *
  * Usage:
- *   node scripts/inv67-create-transport-only-fields-batch4.cjs --location <id>
- *                                                               --credential-file <path>
- *                                                               [--apply]
+ *   node scripts/inv67-create-batch5-fields.cjs --location <id>
+ *                                                --credential-file <path>
+ *                                                [--apply]
  *
- * There is NO `--only` flag -- the complete, unfiltered 4-spec batch is
+ * There is NO `--only` flag -- the complete, unfiltered 6-spec batch is
  * always preflighted together, exactly like every prior batch.
  */
 const fs = require('fs');
@@ -87,51 +92,69 @@ function expectedFieldKey(name) {
 }
 
 /**
- * MUST match `src/lib/contract-ghl-projection-model.ts`'s
- * `CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS` exactly -- same 4 keys, same
- * order. Verified programmatically at the top of `main()` (throws before
- * any network call if the two ever diverge) rather than trusted by eye
- * alone. Display names, expected fieldKeys, and merge tags are EXACTLY
- * Brad's authorized batch -- not proposed, not derived.
+ * The exact 6 keys Brad authorized for this batch, each mapped to the
+ * authoritative source array it must appear in -- `verifyAgainstAuthoritativeSource`
+ * checks every one of these against the real TypeScript source before any
+ * network call, never trusted by eye alone. Display names, expected
+ * fieldKeys, and merge tags are EXACTLY Brad's authorized batch -- not
+ * proposed, not derived.
  */
 const FIELD_SPECS = [
-  { key: 'additional_earnest_money_amount_text', name: 'Contract Additional Earnest Money Amount' },
-  { key: 'additional_earnest_money_days_text', name: 'Contract Additional Earnest Money Days' },
-  { key: 'closing_date_month_day_text', name: 'Contract Closing Date Month Day' },
-  { key: 'closing_date_year_suffix_text', name: 'Contract Closing Date Year Suffix' },
+  { key: 'propertyLegalDescription.legalMunicipality', name: 'Contract Legal City', sourceArray: 'CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS', sourceFile: 'contract-ghl-projection-model.ts' },
+  { key: 'sales_price_amount_text', name: 'Contract Sales Price Amount Text', sourceArray: 'CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS', sourceFile: 'contract-ghl-projection-model.ts' },
+  { key: 'financing_sum_amount_text', name: 'Contract Financing Sum Amount Text', sourceArray: 'CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS', sourceFile: 'contract-ghl-projection-model.ts' },
+  { key: 'as_is_repairs_text', name: 'Contract As Is Repairs Text', sourceArray: 'CHECKBOX_TEXT_KEYS', sourceFile: 'contract-checkbox-marker-model.ts' },
+  { key: 'district_notices_mark', name: 'Contract District Notices Mark', sourceArray: 'CHECKBOX_MARKER_KEYS', sourceFile: 'contract-checkbox-marker-model.ts' },
+  { key: 'other_addenda_mark', name: 'Contract Other Addenda Mark', sourceArray: 'CHECKBOX_MARKER_KEYS', sourceFile: 'contract-checkbox-marker-model.ts' },
 ].map((s) => ({ ...s, dataType: 'TEXT' }));
 
 /**
- * Fails loud, before any network call, if this script's own FIELD_SPECS
- * ever drifts from the authoritative `CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS`.
- * Reads the TypeScript source directly (regex, not a compile) so this
- * script has zero build-time dependency.
+ * Reads one `export const <name> = [...] as const;` array out of a
+ * TypeScript source file via regex (not a compile) -- zero build-time
+ * dependency, identical technique to every prior batch's own
+ * `verifyAgainstAuthoritativeSource`.
  */
-function verifyAgainstAuthoritativeSource() {
-  const srcPath = path.join(__dirname, '..', 'src', 'lib', 'contract-ghl-projection-model.ts');
+function extractStringArray(srcPath, arrayName) {
   const src = fs.readFileSync(srcPath, 'utf8');
-  const m = src.match(/export const CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS = \[([\s\S]*?)\] as const;/);
-  if (!m) die(`could not find CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS in ${srcPath} -- refusing to run against a source this script cannot verify.`);
-  const authoritative = m[1]
+  const m = src.match(new RegExp(`export const ${arrayName} = \\[([\\s\\S]*?)\\] as const;`));
+  if (!m) die(`could not find "${arrayName}" in ${srcPath} -- refusing to run against a source this script cannot verify.`);
+  return m[1]
     .split(/\r?\n/)
     .map((l) => l.match(/^\s*"([^"]+)",?\s*$/))
     .filter(Boolean)
     .map((mm) => mm[1]);
-  const proposed = FIELD_SPECS.map((s) => s.key);
-  // INV-67 Phase 2B narrow correction (Brad-authorized): the authoritative
-  // source may now carry MORE keys than this batch's own 4 -- a later phase
-  // legitimately adding new, unrelated keys is not drift for THIS script.
-  // Only a key THIS script proposes going missing/renamed relative to its
-  // own 4 is drift; a strict length/order equality check would (and did)
-  // produce a false positive the moment any later phase extended the array.
-  const missing = proposed.filter((k) => !authoritative.includes(k));
-  if (missing.length > 0) {
-    die(
-      `FIELD_SPECS names key(s) no longer present in CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS: ${JSON.stringify(missing)} -- ` +
-      `refusing to run. Update this script's FIELD_SPECS to match the authoritative source before retrying.`,
-    );
+}
+
+/**
+ * Fails loud, before any network call, if this script's own FIELD_SPECS
+ * ever drifts from the authoritative source arrays it names. Unlike Batch
+ * 1-4 (each a single, homogeneous key set from one array), this batch's 6
+ * keys span three different exported arrays across two files -- each spec
+ * is checked against exactly the one array it claims to belong to.
+ */
+function verifyAgainstAuthoritativeSource() {
+  if (FIELD_SPECS.length !== 6) die(`FIELD_SPECS has ${FIELD_SPECS.length} entries, expected exactly 6 -- refusing.`);
+
+  const cache = {};
+  function arrayFor(sourceFile, arrayName) {
+    const cacheKey = sourceFile + '::' + arrayName;
+    if (!(cacheKey in cache)) {
+      const srcPath = path.join(__dirname, '..', 'src', 'lib', sourceFile);
+      cache[cacheKey] = extractStringArray(srcPath, arrayName);
+    }
+    return cache[cacheKey];
   }
-  console.log(`Verified: this script's 4 FIELD_SPECS keys all exist in CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS (the source may carry additional keys added by a later phase; that is not drift for this batch).\n`);
+
+  for (const spec of FIELD_SPECS) {
+    const authoritative = arrayFor(spec.sourceFile, spec.sourceArray);
+    if (!authoritative.includes(spec.key)) {
+      die(
+        `"${spec.key}" not found in authoritative ${spec.sourceArray} (${spec.sourceFile}) -- refusing to run. ` +
+        `Either the source has drifted since this script was written, or this script's FIELD_SPECS is wrong.`,
+      );
+    }
+  }
+  console.log(`Verified: this script's 6 FIELD_SPECS keys each match their authoritative source array exactly (2 CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS, 1 CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS, 1 CHECKBOX_TEXT_KEYS, 2 CHECKBOX_MARKER_KEYS).\n`);
 }
 
 /**
@@ -247,7 +270,7 @@ function parsePostResponse(postText) {
 }
 
 /**
- * Pure preflight over ALL 4 specs at once -- classifies every one before a
+ * Pure preflight over ALL 6 specs at once -- classifies every one before a
  * single network call for field creation is ever made. Returns
  * `{ok:false, conflicts, plan}` if ANY spec conflicts (zero creates, full
  * stop); otherwise `{ok:true, plan}`, one entry per spec tagged 'create'
@@ -274,6 +297,7 @@ module.exports = {
   FIELD_SPECS,
   CANONICAL_PARENT_ANCHOR_FIELD_KEY,
   expectedFieldKey,
+  extractStringArray,
   verifyAgainstAuthoritativeSource,
   classifyExistingMatch,
   validateFieldAgainstSpec,
