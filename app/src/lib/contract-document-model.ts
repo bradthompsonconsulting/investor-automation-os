@@ -81,7 +81,8 @@
  * 20-19 contract terms, and are not read by this module.
  *
  * REQUIRED-FIELD VALIDATION reuses `computeSellerContractFactsReadiness`'s
- * `blocksSendForSignature`/`unresolvedFields` rollup verbatim (49 fields,
+ * `blocksSendForSignature`/`unresolvedFields` rollup verbatim (50 fields as of
+ * INV-67 Phase 2A's Legal Municipality addition, originally 49,
  * already exhaustively enumerated and tested by B9-05) rather than
  * re-declaring a second, potentially-drifting completeness rule. This
  * module adds exactly one more required fact `SellerContractFactsReport`
@@ -151,6 +152,7 @@ import {
 import type {
   ValueOrNone,
   ReservationsFact,
+  LegalMunicipalityFact,
   NaturalResourceLeaseFact,
   AdditionalEarnestMoneyFact,
   ExpenseParty,
@@ -221,6 +223,7 @@ export const CONTRACT_DOCUMENT_FIELD_LABEL: Record<string, string> = {
   "propertyLegalDescription.county": "County",
   "propertyLegalDescription.exclusions": "Exclusions from conveyance",
   "propertyLegalDescription.reservations": "Reservations",
+  "propertyLegalDescription.legalMunicipality": "Legal municipality (¶2A City of)",
   "leaseDisclosure.residentialLeases": "Residential leases",
   "leaseDisclosure.fixtureLeases": "Fixture leases",
   "leaseDisclosure.naturalResourceLeases": "Natural resource leases",
@@ -297,6 +300,11 @@ function renderSignerRequirements(signers: SignerRequirement[]): string {
 
 function renderReservations(r: ReservationsFact): string {
   return r.kind === "none" ? "None." : `Reservation applies -- see attached addendum. ${r.addendumNote}`;
+}
+
+/** Preview wording only -- NOT future GHL transport text (INV-67 Phase 2A, see module header). */
+function renderLegalMunicipality(m: LegalMunicipalityFact): string {
+  return m.kind === "unincorporated" ? "Unincorporated area." : m.name;
 }
 
 function renderNaturalResourceLease(v: NaturalResourceLeaseFact): string {
@@ -502,6 +510,7 @@ export function buildPropertyLegalDescriptionLines(
     toLine("2A", "propertyLegalDescription", "block", r.block, renderValueOrNone),
     toLine("2A", "propertyLegalDescription", "addition", r.addition, renderValueOrNone),
     toLine("2A", "propertyLegalDescription", "county", r.county, renderValueOrNone),
+    toLine("2A", "propertyLegalDescription", "legalMunicipality", r.legalMunicipality, renderLegalMunicipality),
     toLine("2D", "propertyLegalDescription", "exclusions", r.exclusions, renderValueOrNone),
     toLine("2E", "propertyLegalDescription", "reservations", r.reservations, renderReservations),
   ];

@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 100;
+const FLOOR = 108;
 let failures = 0;
 let checks = 0;
 
@@ -314,6 +314,63 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('renders a conflicting_history state with an explicit operator-readable body', /screen\.state === "conflicting_history"/.test(contractTsx), true);
   check('renders an economics_unavailable state with the real refusal reason', /screen\.state === "economics_unavailable"[\s\S]{0,160}screen\.reason/.test(contractTsx), true);
   check('renders a distinct stale/revised warning, separate from the fail-closed states above', /screen\.isStale && screen\.staleInfo/.test(contractTsx), true);
+}
+
+// ============================================================
+// INV-67 Phase 2A -- Legal Municipality (¶2A "City of ___") UI. Static
+// source assertions, matching this file's existing convention for
+// ContractWorkspace.tsx (no DOM render harness in this suite).
+// ============================================================
+{
+  check(
+    'legal municipality choice begins unset -- INITIAL_DRAFTS preselects neither Municipality nor Unincorporated',
+    /municipalityKind: "unset", municipalityName: ""/.test(contractTsx),
+    true,
+  );
+  check(
+    'the municipality-name input is shown only when Municipality is selected',
+    /drafts\.legalDesc\.municipalityKind === "municipality" \?[\s\S]{0,120}TextField[\s\S]{0,200}contract-fact-input-legal-municipality-name/.test(contractTsx),
+    true,
+  );
+  check(
+    'saving with no municipality choice made ("unset") is rejected before any note is written',
+    /drafts\.legalDesc\.municipalityKind === "unset"\)\s*\{[\s\S]{0,200}setGroupError\("propertyLegalDescription"/.test(contractTsx),
+    true,
+  );
+  check(
+    'Municipality requires a non-blank name -- rejected when the trimmed name is empty',
+    /drafts\.legalDesc\.municipalityName\.trim\(\) === ""\)\s*\{[\s\S]{0,200}setGroupError\("propertyLegalDescription"/.test(contractTsx),
+    true,
+  );
+  check(
+    'Municipality writes the trimmed name into the LegalMunicipalityFact (input normalization, never the raw untrimmed draft)',
+    /legalMunicipality = \{ kind: "municipality", name: drafts\.legalDesc\.municipalityName\.trim\(\) \}/.test(contractTsx),
+    true,
+  );
+  check(
+    'Unincorporated carries no name at all -- a bare { kind: "unincorporated" } literal, structurally incapable of smuggling a name',
+    /legalMunicipality = \{ kind: "unincorporated" \};/.test(contractTsx),
+    true,
+  );
+  check(
+    'no contact/address source is ever read into the municipality draft -- "municipalityName"/"municipalityKind" never appear near contact.city or the property street address',
+    (() => {
+      const idx = [];
+      let m;
+      const re = /municipalityName|municipalityKind/g;
+      while ((m = re.exec(contractTsxNoComments))) idx.push(m.index);
+      return idx.every((i) => {
+        const window = contractTsxNoComments.slice(Math.max(0, i - 80), i + 80);
+        return !/contact\.city|contact\?\.city|propertyStreetAddress|\.zip\b|geocod/i.test(window);
+      });
+    })(),
+    true,
+  );
+  check(
+    'ContractWorkspace.tsx\'s own FIELD_LABELS carries the Legal Municipality entry (same "group.field" key contract-document-model.ts uses)',
+    /"propertyLegalDescription\.legalMunicipality": "Legal municipality \(¶2A City of\)"/.test(contractTsx),
+    true,
+  );
 }
 
 console.log('');
