@@ -98,7 +98,7 @@ const {
   sellerCountTransportValue,
 } = require(path.join(TMP, 'contract-seller-signing-model.js'));
 
-const FLOOR = 207;
+const FLOOR = 226;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -531,34 +531,61 @@ function completeReport(overrides) {
 }
 
 /* ==================================================================== */
-/* 3f. Phase 1 completeness repair -- option-period fail-closed rule:    */
-/*     a populated, positive option period requires a nonzero option    */
-/*     fee. Valid no-option scenarios (days absent/zero) are unaffected. */
+/* 3f. Phase 1 completeness repair -- BIDIRECTIONAL option-fee/period    */
+/*     consistency (Jess Gate correction): valid option requires BOTH    */
+/*     fee and days positive; valid no-option requires BOTH zero/not-    */
+/*     applicable. Either side positive without the other -- blocked.    */
+/*     Either side unresolved -- blocked regardless of the other side.   */
+/*     Either side a negative populated value -- blocked.                */
 /* ==================================================================== */
 
 {
   const NOT_APPLICABLE_FEE = { kind: 'not_applicable', confirmedBy: 'brad', at: '2026-01-01T00:00:00.000Z', note: 'Explicitly recorded as $0 / waived.' };
-  const UNRESOLVED_FEE = { kind: 'unresolved' };
   const NOT_APPLICABLE_DAYS = { kind: 'not_applicable', confirmedBy: 'brad', at: '2026-01-01T00:00:00.000Z', note: 'Explicitly recorded as no option period.' };
+  const UNRESOLVED = { kind: 'unresolved' };
 
+  // [label, optionFee, optionPeriodDays, shouldPass, reasonPattern (null when shouldPass)]
   const cases = [
-    ['populated positive days + populated positive fee -- valid option', populated(500), populated(10), true],
-    ['populated positive days + not_applicable (waived) fee -- fails closed', NOT_APPLICABLE_FEE, populated(10), false],
-    ['populated positive days + unresolved fee -- fails closed', UNRESOLVED_FEE, populated(10), false],
-    ['populated positive days + populated $0 fee -- fails closed', populated(0), populated(10), false],
-    ['populated ZERO days + not_applicable fee -- valid no-option scenario', NOT_APPLICABLE_FEE, populated(0), true],
-    ['not_applicable days + not_applicable fee -- valid no-option scenario', NOT_APPLICABLE_FEE, NOT_APPLICABLE_DAYS, true],
-    ['not_applicable days + populated fee -- no option period, rule does not apply', populated(500), NOT_APPLICABLE_DAYS, true],
+    // Valid option: both positive.
+    ['positive fee + positive days -- valid option', populated(500), populated(10), true, null],
+
+    // Valid no-option: both sides zero/not-applicable, every combination.
+    ['zero fee + zero days -- valid no-option', populated(0), populated(0), true, null],
+    ['zero fee + not_applicable days -- valid no-option', populated(0), NOT_APPLICABLE_DAYS, true, null],
+    ['not_applicable fee + zero days -- valid no-option', NOT_APPLICABLE_FEE, populated(0), true, null],
+    ['not_applicable fee + not_applicable days -- valid no-option', NOT_APPLICABLE_FEE, NOT_APPLICABLE_DAYS, true, null],
+
+    // Positive days without a positive fee -- blocked (mismatch), every non-positive fee shape.
+    ['positive days + zero fee -- fails closed (mismatch)', populated(0), populated(10), false, /option period/i],
+    ['positive days + not_applicable fee -- fails closed (mismatch)', NOT_APPLICABLE_FEE, populated(10), false, /option period/i],
+    ['positive days + unresolved fee -- fails closed (unresolved, not a mismatch message)', UNRESOLVED, populated(10), false, /unresolved/i],
+
+    // Positive fee without positive days -- blocked (mismatch), every non-positive days shape.
+    // This is the direction the pre-correction gate incorrectly let through.
+    ['positive fee + zero days -- fails closed (mismatch)', populated(500), populated(0), false, /option fee/i],
+    ['positive fee + not_applicable days -- fails closed (mismatch)', populated(500), NOT_APPLICABLE_DAYS, false, /option fee/i],
+    ['positive fee + unresolved days -- fails closed (unresolved, not a mismatch message)', populated(500), UNRESOLVED, false, /unresolved/i],
+
+    // Unresolved on either side blocks regardless of the other side's value --
+    // never treated as a legitimate no-option scenario.
+    ['unresolved fee + zero days -- fails closed regardless of the other side', UNRESOLVED, populated(0), false, /unresolved/i],
+    ['unresolved fee + not_applicable days -- fails closed regardless of the other side', UNRESOLVED, NOT_APPLICABLE_DAYS, false, /unresolved/i],
+    ['unresolved days + zero fee -- fails closed regardless of the other side', populated(0), UNRESOLVED, false, /unresolved/i],
+    ['unresolved days + not_applicable fee -- fails closed regardless of the other side', NOT_APPLICABLE_FEE, UNRESOLVED, false, /unresolved/i],
+
+    // Negative populated values -- blocked as invalid, distinct from the mismatch/unresolved messages.
+    ['negative fee -- fails closed (invalid value)', populated(-100), populated(10), false, /negative/i],
+    ['negative days -- fails closed (invalid value)', populated(500), populated(-5), false, /negative/i],
   ];
-  for (const [label, optionFee, optionPeriodDays, shouldPass] of cases) {
+  for (const [label, optionFee, optionPeriodDays, shouldPass, reasonPattern] of cases) {
     const preview = completePreview();
     const report = completeReport({ earnestMoneyOption: { optionFee, optionPeriodDays } });
     const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
-    check(`option period/fee -- ${label} -- plan.ok is ${shouldPass}`, plan.ok, shouldPass);
+    check(`option fee/period -- ${label} -- plan.ok is ${shouldPass}`, plan.ok, shouldPass);
     if (!shouldPass) {
       checkTrue(
-        `option period/fee -- ${label} -- blocking reason names the option period requiring a nonzero fee`,
-        plan.ok ? false : plan.blockingReasons.some((r) => /option period/i.test(r) && /option fee/i.test(r)),
+        `option fee/period -- ${label} -- blocking reason clearly identifies the mismatch`,
+        plan.ok ? false : plan.blockingReasons.some((r) => reasonPattern.test(r)),
       );
     }
   }
