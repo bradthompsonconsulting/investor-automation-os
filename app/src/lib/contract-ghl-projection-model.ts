@@ -319,6 +319,32 @@ function equitableInterestBlockingReasons(preview: ContractDocumentPreview): str
 }
 
 /**
+ * Option-period fail-closed rule (Product Owner ruling, INV-67 Phase 1
+ * completeness repair). `earnestMoneyOption.optionFee` and `.optionPeriodDays`
+ * each resolve independently (populated / not_applicable / unresolved --
+ * see `contract-facts-model.ts`), so nothing upstream already prevents a
+ * populated, positive option period from reaching the contract with a
+ * zero/waived/unresolved fee -- a void option under TREC 20-19 Paragraph
+ * 5, never a silently-acceptable one. A populated period of exactly 0
+ * days, or a not_applicable/unresolved period, is a legitimate no-option
+ * scenario and never triggers this gate regardless of the fee.
+ */
+function optionPeriodFeeBlockingReasons(report: SellerContractFactsReport): string[] {
+  const days = report.earnestMoneyOption.optionPeriodDays;
+  const fee = report.earnestMoneyOption.optionFee;
+  const daysRequireFee = days.kind === "populated" && days.value > 0;
+  if (!daysRequireFee) return [];
+  const feeOk = fee.kind === "populated" && fee.value > 0;
+  if (feeOk) return [];
+  const feeState =
+    fee.kind === "populated" ? `$${fee.value}` : fee.kind === "not_applicable" ? "explicitly waived/not applicable" : "unresolved";
+  return [
+    `Option period is populated at ${(days as { value: number }).value} day(s) (Paragraph 5), but the option fee is ` +
+      `${feeState} -- a populated, positive option period requires a nonzero option fee. Refusing to sync until these agree.`,
+  ];
+}
+
+/**
  * Compound text-destination repair -- reads a `FieldDisposition<T>` DIRECTLY
  * (never via `preview.documentLines`) and applies a transport renderer.
  * `not_applicable` renders `""`, never invented prose -- the same doctrine
@@ -429,8 +455,17 @@ export function buildContractProjectionPlan(
 ): ContractProjectionPlan {
   const equitableInterestBlocking = equitableInterestBlockingReasons(preview);
   const sellerReadinessBlocking = sellerReadiness.ok ? [] : sellerReadiness.reasons;
-  if (!preview.previewComplete || equitableInterestBlocking.length > 0 || sellerReadinessBlocking.length > 0) {
-    return { ok: false, blockingReasons: [...preview.blockingReasons, ...equitableInterestBlocking, ...sellerReadinessBlocking] };
+  const optionPeriodBlocking = optionPeriodFeeBlockingReasons(report);
+  if (
+    !preview.previewComplete ||
+    equitableInterestBlocking.length > 0 ||
+    sellerReadinessBlocking.length > 0 ||
+    optionPeriodBlocking.length > 0
+  ) {
+    return {
+      ok: false,
+      blockingReasons: [...preview.blockingReasons, ...equitableInterestBlocking, ...sellerReadinessBlocking, ...optionPeriodBlocking],
+    };
   }
 
   const byKey = new Map(preview.documentLines.map((line) => [`${line.group}.${line.field}`, line]));
@@ -444,6 +479,14 @@ export function buildContractProjectionPlan(
       throw new Error(
         `buildContractProjectionPlan: no document line found for projected key "${key}" -- mapping drift between this module and contract-document-model.ts.`,
       );
+    }
+    // `not_applicable` renders "", same doctrine `transportFieldText` already applies below --
+    // `line.text` for a not_applicable disposition carries an internal audit/provenance note
+    // (e.g. "Explicitly confirmed no phone for notice.") or the generic "Not applicable
+    // (explicitly confirmed)." fallback, valuable for the operator-facing preview but never
+    // legitimate contract-bound prose. The note itself is untouched in `line` for that preview.
+    if (line.status === "not_applicable") {
+      return { key: key as ContractProjectionFieldKey, text: "" };
     }
     if (line.text === null) {
       throw new Error(
