@@ -824,15 +824,26 @@ const TEST: GhlConfig = {
     "buyer_broker_supervisor_license_no_text": "usaUY2BYjLFXzTMklCU0",
   },
   contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",
-  // INV-67 One-/Two-Seller signer model, Phase 1 (this session) -- the
-  // `Contract Seller Count` field has NOT been created in GHL Test yet.
-  // `scripts/inv67-create-seller-count-field.cjs` (dry-run by default, no
-  // --apply this phase) is the one, separately authorized future
-  // provisioning path -- see that script's own header. Remains sentinel
-  // until that script is run with --apply and this value is hand-wired
-  // to the real id, exactly the same discipline every batch before it
-  // (Batches 1-3) followed.
-  contractSellerCountField: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+  // INV-67 One-/Two-Seller signer model -- `scripts/inv67-create-seller-
+  // count-field.cjs --apply` created this field live in GHL Test
+  // (2026-09-15). Readback-verified independently (separate GET, not the
+  // script's own internal confirmation): name "Contract Seller Count",
+  // fieldKey "opportunity.contract_seller_count", dataType SINGLE_OPTIONS,
+  // model opportunity, parentId sGP3pbDQFN7fXS62MAgA (the same canonical
+  // Opportunity Details anchor every other INV-67 field resolves from),
+  // options exactly ["One Seller", "Two Sellers"] in that order. A
+  // subsequent dry run classified it "exact existing" (0 create / 1 reuse
+  // / 0 conflict), confirming the id below is the SAME field, not a
+  // second one. Deliberately NOT a member of `CONTRACT_PROJECTION_FIELD_KEYS`
+  // -- see this field's own doc comment on the `GhlConfig` interface above:
+  // this is a transport/control field, never one of the 112 TREC
+  // projection keys. The live fail-closed gate
+  // (`evaluateSellerSigningPreWriteReadiness`'s field-provisioned check,
+  // `contract-ghl-projection-model.ts`) now passes this ONE precondition
+  // in Test whenever the canonical seller-model gates also pass -- it does
+  // not by itself authorize a write, a draft, or a send, and it is not
+  // read back into the canonical `SellerSigningModel` Note carrier.
+  contractSellerCountField: "gW6eD1ZgbS4UOhPWVyMm",
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },

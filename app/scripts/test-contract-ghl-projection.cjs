@@ -95,9 +95,10 @@ const {
 const {
   evaluateSellerSigningReadiness,
   evaluateSellerSigningPreWriteReadiness,
+  sellerCountTransportValue,
 } = require(path.join(TMP, 'contract-seller-signing-model.js'));
 
-const FLOOR = 167;
+const FLOOR = 178;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -911,17 +912,84 @@ checkTrue(
 
   checkTrue('TEST.contractDraftRequest is unchanged (still the pre-existing real dropdown id, untouched by this repair)', /contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI",/.test(configSrc));
 
-  // INV-67 Phase 1 Jess re-gate correction -- the Seller Count field must
-  // remain unconditionally sentinel-filled in BOTH environments; neither
-  // this session nor any prior one may fake or bypass it.
+  // INV-67 Seller Count Test-ID wiring (this session). TEST now carries the
+  // real, readback-verified id (`scripts/inv67-create-seller-count-field.cjs
+  // --apply`, live GHL Test, 2026-09-15); PRODUCTION remains unconditionally
+  // sentinel-filled -- neither this session nor any prior one may fake or
+  // bypass Production's own gate.
+  const SELLER_COUNT_TEST_ID = 'gW6eD1ZgbS4UOhPWVyMm';
   checkTrue(
-    'TEST.contractSellerCountField is still exactly the sentinel constant',
-    /const TEST: GhlConfig = \{[\s\S]*?contractSellerCountField: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,/.test(configSrc),
+    'TEST.contractSellerCountField carries the exact verified id, not the sentinel',
+    new RegExp(`const TEST: GhlConfig = \\{[\\s\\S]*?contractSellerCountField: "${SELLER_COUNT_TEST_ID}",`).test(configSrc),
   );
   checkTrue(
-    'PRODUCTION.contractSellerCountField is still exactly the sentinel constant',
+    'PRODUCTION.contractSellerCountField is still exactly the sentinel constant, unaffected by the Test wiring',
     /const PRODUCTION: GhlConfig = \{[\s\S]*?contractSellerCountField: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,/.test(configSrc),
   );
+  checkTrue(
+    'the verified Test id appears in the config file EXACTLY ONCE -- never duplicated',
+    (configSrc.match(new RegExp(SELLER_COUNT_TEST_ID, 'g')) || []).length === 1,
+  );
+  checkTrue(
+    'the Test Seller Count id does not collide with TEST.contractDraftRequest',
+    SELLER_COUNT_TEST_ID !== 'GlbJxxrxnvMkwJSRNUwI',
+  );
+  checkTrue(
+    'the Test Seller Count id does not collide with any of the 108 real projection-field ids already wired in TEST',
+    !testRealIdEntries.some((e) => e.id === SELLER_COUNT_TEST_ID),
+  );
+  checkTrue(
+    'Contract Seller Count remains OUTSIDE CONTRACT_PROJECTION_FIELD_KEYS -- still exactly 112, unaffected by the Test wiring',
+    !CONTRACT_PROJECTION_FIELD_KEYS.includes('contractSellerCount') && CONTRACT_PROJECTION_FIELD_KEYS.length === 112,
+  );
+}
+
+/* ==================================================================== */
+/* 11b. Live pre-write gate now passes the provisioning check in Test,   */
+/*      whenever the canonical seller-model gates also pass -- Production*/
+/*      still fails closed at the SAME gate                              */
+/* ==================================================================== */
+
+{
+  const SELLER_COUNT_TEST_ID = 'gW6eD1ZgbS4UOhPWVyMm';
+  const SELLER_SENTINEL = 'CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED';
+  const READY_SELLER1 = { ok: true, contactId: 'CONTACT-1', name: 'Jane Seller', email: 'jane@example.com' };
+  const ONE_SELLER_READY = { kind: 'populated', value: { kind: 'one_seller', seller1Capacity: 'individual_own_capacity' } };
+  const PRINTED_ONE_SELLER = [{ displayName: 'Jane Seller' }];
+  const preview = completePreview();
+  const report = completeReport();
+
+  const testReadiness = evaluateSellerSigningPreWriteReadiness({
+    disposition: ONE_SELLER_READY,
+    seller1: READY_SELLER1,
+    printedSellerSigners: PRINTED_ONE_SELLER,
+    sellerCountFieldId: SELLER_COUNT_TEST_ID,
+    sellerCountFieldSentinel: SELLER_SENTINEL,
+    sellerCountWriteReadbackVerified: true,
+  });
+  checkTrue('using the REAL, verified Test id, the pre-write readiness gate is ok:true once every canonical seller gate also passes', testReadiness.ok === true);
+  const testPlan = buildContractProjectionPlan('OPP-1', preview, report, testReadiness);
+  checkTrue('with the real Test id and a clear canonical model, plan.ok is true -- the provisioning gate no longer blocks in Test', testPlan.ok === true);
+
+  const productionReadiness = evaluateSellerSigningPreWriteReadiness({
+    disposition: ONE_SELLER_READY,
+    seller1: READY_SELLER1,
+    printedSellerSigners: PRINTED_ONE_SELLER,
+    sellerCountFieldId: SELLER_SENTINEL, // Production's own live config value, unchanged
+    sellerCountFieldSentinel: SELLER_SENTINEL,
+    sellerCountWriteReadbackVerified: true,
+  });
+  checkTrue('using Production\'s own (still-sentinel) field id, the SAME gate still refuses', productionReadiness.ok === false);
+  const productionPlan = buildContractProjectionPlan('OPP-1', preview, report, productionReadiness);
+  checkTrue('Production still fails closed at the provisioning gate -- plan.ok is false', productionPlan.ok === false);
+  checkTrue(
+    'Production\'s blocking reason names the Seller Count field provisioning gate',
+    productionPlan.ok ? false : productionPlan.blockingReasons.some((r) => r.includes('Contract Seller Count') && r.includes('not yet provisioned')),
+  );
+
+  checkTrue('the expected transport value for one_seller remains exactly "One Seller"', sellerCountTransportValue(ONE_SELLER_READY.value) === 'One Seller');
+  const twoSellersModel = { kind: 'two_sellers', seller1Capacity: 'individual_own_capacity', seller2: { legalName: 'John Seller', email: 'john@example.com' }, seller2Capacity: 'individual_own_capacity' };
+  checkTrue('the expected transport value for two_sellers remains exactly "Two Sellers"', sellerCountTransportValue(twoSellersModel) === 'Two Sellers');
 }
 
 /* ==================================================================== */
