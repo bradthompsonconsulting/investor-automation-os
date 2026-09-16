@@ -59,7 +59,8 @@
     "test:contract-seller-signing-model": "node scripts/test-contract-seller-signing-model.cjs",
     "test:inv67-seller-count-field-script": "node scripts/test-inv67-seller-count-field-script.cjs",
     "test:ghl-seller-count-transport-write": "node scripts/test-ghl-seller-count-transport-write.cjs",
-    "test:inv67-transport-fields-batch4-script": "node scripts/test-inv67-transport-fields-batch4-script.cjs"
+    "test:inv67-transport-fields-batch4-script": "node scripts/test-inv67-transport-fields-batch4-script.cjs",
+    "test:inv67-template-placement-manifest": "node scripts/test-inv67-template-placement-manifest.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",
