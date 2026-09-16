@@ -1501,16 +1501,22 @@ not merged.
 
 ## Template-placement manifest regeneration -- 115 placements / 112 keys (this session)
 
-**What this is.** `docs/INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md` -- frozen
-since the original V1 build, untouched through PRs #59-#63 -- has been
-regenerated for the corrected 112-key structure. Count reconciliation: 113
-old placements - 2 retired (`earnestMoneyOption.additionalEarnestMoney`,
-`closingPossession.closingDate`) + 4 new transport-only placements = **115**;
-110 old unique keys - 2 + 4 = **112**, exactly matching
-`CONTRACT_PROJECTION_FIELD_KEYS.length`. The 108 unchanged rows were
-carried forward programmatically (parsed from the prior manifest's own
-committed table, never re-typed by hand) to eliminate transcription risk;
-the 2 retired rows' printed TREC language was independently re-verified
+**What this is.** `docs/INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md` -- authored
+when authoritative main was at `29f2b3406b...` but NEVER itself committed
+to Git; it existed only as a local, untracked file (recorded SHA-256
+`075d847f3f7d8916feb16fc23a8ee92828a7033b5f3e1bb6fc76bf245e36e60d`),
+uncommitted and untouched through PRs #59-#63 -- has been regenerated for
+the corrected 112-key structure and committed to this path for the FIRST
+TIME by this PR. Count reconciliation: 113 old placements - 2 retired
+(`earnestMoneyOption.additionalEarnestMoney`, `closingPossession.closingDate`)
++ 4 new transport-only placements = **115**; 110 old unique keys - 2 + 4 =
+**112**, exactly matching `CONTRACT_PROJECTION_FIELD_KEYS.length`. The 108
+unchanged rows were carried forward programmatically (parsed from that
+prior, locally preserved, untracked file's own table, never re-typed by
+hand) to eliminate transcription risk -- Git history does not
+independently preserve or prove the prior V1 manifest's contents; only
+this session's own local copy, verified against its recorded hash, did.
+The 2 retired rows' printed TREC language was independently re-verified
 against a fresh `pdftotext -layout` extraction of the source PDF this
 session. Repository/document work only -- zero GHL mutation, zero
 template mutation (source and clone both untouched), zero draft, zero
