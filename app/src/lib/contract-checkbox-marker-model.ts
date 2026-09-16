@@ -374,6 +374,33 @@ export function checkMineralReservationConsistency(
   };
 }
 
+/**
+ * ¶22 "Addendum Concerning Right to Terminate Due to Lender's Appraisal"
+ * -- fail closed, distinct message (Product Owner ruling, INV-67 Phase 1
+ * completeness repair). IAOS's approved V1 deal structure is cash
+ * acquisition / assignment-exit ONLY -- there is no buyer lender, so no
+ * lender's appraisal contingency can ever legitimately exist. Unlike
+ * `financingAddenda` (already unconditionally forced `not_applicable`
+ * upstream in `contract-facts-model.ts`, never a per-deal choice), this
+ * addendum lives inside the general, operator-editable
+ * `AddendaApplicabilityItems` set, so nothing upstream already prevents
+ * an operator from checking it. Failing closed (rather than silently
+ * clearing the checkbox) surfaces the contradiction to the operator
+ * instead of masking a genuine data-entry mistake.
+ */
+export function checkCashOnlyAddendaConsistency(
+  lenderAppraisalTerminationChecked: boolean,
+): { ok: true } | { ok: false; reason: string } {
+  if (!lenderAppraisalTerminationChecked) return { ok: true };
+  return {
+    ok: false,
+    reason:
+      `Lender's-appraisal-termination disagreement: the ¶22 "Addendum Concerning Right to Terminate Due to ` +
+      `Lender's Appraisal" checkbox is checked, but IAOS's approved V1 path is cash acquisition / assignment-exit ` +
+      `only -- there is no buyer lender for this addendum to apply to. Refusing to sync until this selection is cleared.`,
+  };
+}
+
 /** ¶6E(2) POA membership vs. ¶22's POA addendum checkbox -- operator warning only, never a blocker (Product Owner ruling, this session). */
 export function checkPoaAddendaConsistency(
   poaMembership: "is_subject" | "is_not_subject",
@@ -573,6 +600,10 @@ export function buildCheckboxMarkersAndText(report: SellerContractFactsReport): 
     addendaItems.mineral_reservation,
   );
   if (!mineralConsistency.ok) blockingReasons.push(mineralConsistency.reason);
+
+  // Lender's-appraisal-termination addendum -- fail closed, cash-only V1 has no buyer lender.
+  const cashOnlyAddendaConsistency = checkCashOnlyAddendaConsistency(addendaItems.lender_appraisal_termination);
+  if (!cashOnlyAddendaConsistency.ok) blockingReasons.push(cashOnlyAddendaConsistency.reason);
 
   // POA membership vs. POA addendum -- warning only, never blocks.
   const poaWarning = checkPoaAddendaConsistency(poaMembership, addendaItems.poa_membership);

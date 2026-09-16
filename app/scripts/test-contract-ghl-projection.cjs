@@ -98,7 +98,7 @@ const {
   sellerCountTransportValue,
 } = require(path.join(TMP, 'contract-seller-signing-model.js'));
 
-const FLOOR = 188;
+const FLOOR = 226;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -157,6 +157,16 @@ function completePreview(overrides) {
     unresolvedFieldCount: 0, priceConflictCount: 0, previewComplete: true, blockingReasons: [],
     ...overrides,
   };
+}
+
+/** Overrides specific `preview.documentLines` entries by group/field, leaving every other line from `completePreview()` untouched. */
+function withLineOverrides(overrides) {
+  const base = completePreview();
+  const documentLines = base.documentLines.map((l) => {
+    const o = overrides.find((x) => x.group === l.group && x.field === l.field);
+    return o ? { ...l, status: o.status, text: o.text } : l;
+  });
+  return { ...base, documentLines };
 }
 
 function populated(value) { return { kind: 'populated', value, authority: 'operator_attested', recordedAt: null }; }
@@ -470,6 +480,115 @@ function completeReport(overrides) {
   const draftRequestIdx = handlerStartIdx > -1 ? workspaceSrc.indexOf('evaluateContractDraftRequestTransition(', handlerStartIdx) : -1;
   checkTrue('handleSyncContractProjectionFields checks `!plan.ok` and returns before the GHL write call site', planOkCheckIdx > -1 && ghlWriteIdx > -1 && planOkCheckIdx < ghlWriteIdx);
   checkTrue('handleSyncContractProjectionFields checks `!plan.ok` and returns before the Contract Draft Request transition call site', planOkCheckIdx > -1 && draftRequestIdx > -1 && planOkCheckIdx < draftRequestIdx);
+}
+
+/* ==================================================================== */
+/* 3e. Phase 1 completeness repair -- audit/status prose must never      */
+/*     reach contract-bound text. A `not_applicable` document line       */
+/*     projects "", never its internal audit note or the generic         */
+/*     "Not applicable (explicitly confirmed)." fallback. Supplied       */
+/*     (`populated`) Special Provisions / Other Addenda text remains     */
+/*     verbatim, unaffected by this gate.                                */
+/* ==================================================================== */
+
+{
+  const BANNED_PHRASES = [
+    'Not applicable (explicitly confirmed).',
+    'Explicitly confirmed no phone for notice.',
+    'Explicitly confirmed no email for notice.',
+  ];
+  const preview = withLineOverrides([
+    { group: 'attorneyManualFields', field: 'specialProvisions', status: 'not_applicable', text: BANNED_PHRASES[0] },
+    { group: 'attorneyManualFields', field: 'otherAddendaText', status: 'not_applicable', text: BANNED_PHRASES[0] },
+    { group: 'noticeContact', field: 'sellerNoticePhone', status: 'not_applicable', text: BANNED_PHRASES[1] },
+    { group: 'noticeContact', field: 'sellerNoticeEmail', status: 'not_applicable', text: BANNED_PHRASES[2] },
+  ]);
+  const plan = buildContractProjectionPlan('OPP-1', preview, completeReport(), SELLER_READINESS_OK);
+  checkTrue('ok plan when special provisions/other addenda/seller notice phone+email are explicitly not applicable', plan.ok === true);
+  const byKey = new Map((plan.ok ? plan.entries : []).map((e) => [e.key, e.text]));
+  check('not_applicable Special Provisions projects blank, never the audit fallback phrase', byKey.get('attorneyManualFields.specialProvisions'), '');
+  check('not_applicable Other Addenda text projects blank, never the audit fallback phrase', byKey.get('attorneyManualFields.otherAddendaText'), '');
+  check('not_applicable seller notice phone projects blank, never "Explicitly confirmed no phone for notice."', byKey.get('noticeContact.sellerNoticePhone'), '');
+  check('not_applicable seller notice email projects blank, never "Explicitly confirmed no email for notice."', byKey.get('noticeContact.sellerNoticeEmail'), '');
+  checkTrue(
+    'no projected entry anywhere in the plan contains any of the three banned internal audit/status phrases',
+    (plan.ok ? plan.entries : []).every((e) => BANNED_PHRASES.every((phrase) => !e.text.includes(phrase))),
+  );
+}
+
+{
+  const SPECIAL_PROVISIONS_TEXT = "Seller to leave the swing set. Buyer to assume the well permit.";
+  const OTHER_ADDENDA_TEXT = 'Addendum for Coastal Area Property.';
+  const preview = withLineOverrides([
+    { group: 'attorneyManualFields', field: 'specialProvisions', status: 'populated', text: SPECIAL_PROVISIONS_TEXT },
+    { group: 'attorneyManualFields', field: 'otherAddendaText', status: 'populated', text: OTHER_ADDENDA_TEXT },
+  ]);
+  const plan = buildContractProjectionPlan('OPP-1', preview, completeReport(), SELLER_READINESS_OK);
+  checkTrue('ok plan with supplied (populated) special provisions/other addenda text', plan.ok === true);
+  const byKey = new Map((plan.ok ? plan.entries : []).map((e) => [e.key, e.text]));
+  check('supplied Special Provisions text projects verbatim, untouched by the not_applicable gate', byKey.get('attorneyManualFields.specialProvisions'), SPECIAL_PROVISIONS_TEXT);
+  check('supplied Other Addenda text projects verbatim, untouched by the not_applicable gate', byKey.get('attorneyManualFields.otherAddendaText'), OTHER_ADDENDA_TEXT);
+}
+
+/* ==================================================================== */
+/* 3f. Phase 1 completeness repair -- BIDIRECTIONAL option-fee/period    */
+/*     consistency (Jess Gate correction): valid option requires BOTH    */
+/*     fee and days positive; valid no-option requires BOTH zero/not-    */
+/*     applicable. Either side positive without the other -- blocked.    */
+/*     Either side unresolved -- blocked regardless of the other side.   */
+/*     Either side a negative populated value -- blocked.                */
+/* ==================================================================== */
+
+{
+  const NOT_APPLICABLE_FEE = { kind: 'not_applicable', confirmedBy: 'brad', at: '2026-01-01T00:00:00.000Z', note: 'Explicitly recorded as $0 / waived.' };
+  const NOT_APPLICABLE_DAYS = { kind: 'not_applicable', confirmedBy: 'brad', at: '2026-01-01T00:00:00.000Z', note: 'Explicitly recorded as no option period.' };
+  const UNRESOLVED = { kind: 'unresolved' };
+
+  // [label, optionFee, optionPeriodDays, shouldPass, reasonPattern (null when shouldPass)]
+  const cases = [
+    // Valid option: both positive.
+    ['positive fee + positive days -- valid option', populated(500), populated(10), true, null],
+
+    // Valid no-option: both sides zero/not-applicable, every combination.
+    ['zero fee + zero days -- valid no-option', populated(0), populated(0), true, null],
+    ['zero fee + not_applicable days -- valid no-option', populated(0), NOT_APPLICABLE_DAYS, true, null],
+    ['not_applicable fee + zero days -- valid no-option', NOT_APPLICABLE_FEE, populated(0), true, null],
+    ['not_applicable fee + not_applicable days -- valid no-option', NOT_APPLICABLE_FEE, NOT_APPLICABLE_DAYS, true, null],
+
+    // Positive days without a positive fee -- blocked (mismatch), every non-positive fee shape.
+    ['positive days + zero fee -- fails closed (mismatch)', populated(0), populated(10), false, /option period/i],
+    ['positive days + not_applicable fee -- fails closed (mismatch)', NOT_APPLICABLE_FEE, populated(10), false, /option period/i],
+    ['positive days + unresolved fee -- fails closed (unresolved, not a mismatch message)', UNRESOLVED, populated(10), false, /unresolved/i],
+
+    // Positive fee without positive days -- blocked (mismatch), every non-positive days shape.
+    // This is the direction the pre-correction gate incorrectly let through.
+    ['positive fee + zero days -- fails closed (mismatch)', populated(500), populated(0), false, /option fee/i],
+    ['positive fee + not_applicable days -- fails closed (mismatch)', populated(500), NOT_APPLICABLE_DAYS, false, /option fee/i],
+    ['positive fee + unresolved days -- fails closed (unresolved, not a mismatch message)', populated(500), UNRESOLVED, false, /unresolved/i],
+
+    // Unresolved on either side blocks regardless of the other side's value --
+    // never treated as a legitimate no-option scenario.
+    ['unresolved fee + zero days -- fails closed regardless of the other side', UNRESOLVED, populated(0), false, /unresolved/i],
+    ['unresolved fee + not_applicable days -- fails closed regardless of the other side', UNRESOLVED, NOT_APPLICABLE_DAYS, false, /unresolved/i],
+    ['unresolved days + zero fee -- fails closed regardless of the other side', populated(0), UNRESOLVED, false, /unresolved/i],
+    ['unresolved days + not_applicable fee -- fails closed regardless of the other side', NOT_APPLICABLE_FEE, UNRESOLVED, false, /unresolved/i],
+
+    // Negative populated values -- blocked as invalid, distinct from the mismatch/unresolved messages.
+    ['negative fee -- fails closed (invalid value)', populated(-100), populated(10), false, /negative/i],
+    ['negative days -- fails closed (invalid value)', populated(500), populated(-5), false, /negative/i],
+  ];
+  for (const [label, optionFee, optionPeriodDays, shouldPass, reasonPattern] of cases) {
+    const preview = completePreview();
+    const report = completeReport({ earnestMoneyOption: { optionFee, optionPeriodDays } });
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
+    check(`option fee/period -- ${label} -- plan.ok is ${shouldPass}`, plan.ok, shouldPass);
+    if (!shouldPass) {
+      checkTrue(
+        `option fee/period -- ${label} -- blocking reason clearly identifies the mismatch`,
+        plan.ok ? false : plan.blockingReasons.some((r) => reasonPattern.test(r)),
+      );
+    }
+  }
 }
 
 /* ==================================================================== */

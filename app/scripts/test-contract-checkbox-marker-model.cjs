@@ -64,13 +64,13 @@ const {
   deriveLeaseMarkers, deriveTitleExpenseMarkers, deriveShortageMarkers, deriveSurveyMarkers,
   derivePoaMarkers, deriveSellerDisclosureNoticeMarkers, deriveAsIsMarkers, deriveWaterDisclosureMarkers,
   derivePossessionMarkers, deriveBrokerageContributionMarkers, deriveAddendaMarkers,
-  checkMineralReservationConsistency, checkPoaAddendaConsistency, validateMarkerExclusivity,
+  checkMineralReservationConsistency, checkPoaAddendaConsistency, checkCashOnlyAddendaConsistency, validateMarkerExclusivity,
   deriveBrokerText, buildCheckboxMarkersAndText,
   CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS, CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS,
 } = M;
 const { ADDENDA_APPLICABILITY_ITEM_KEYS } = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
 
-const FLOOR = 99;
+const FLOOR = 104;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -270,6 +270,16 @@ check('mineral consistency: both false -> ok', checkMineralReservationConsistenc
   checkTrue('mineral consistency: disagreement reason names "Mineral-reservation disagreement"', bad.ok ? false : bad.reason.startsWith('Mineral-reservation disagreement'));
 }
 
+check('cash-only addenda consistency: unchecked -> ok', checkCashOnlyAddendaConsistency(false), { ok: true });
+{
+  const bad = checkCashOnlyAddendaConsistency(true);
+  checkTrue('cash-only addenda consistency: checked -> not ok (fails closed)', bad.ok === false);
+  checkTrue(
+    'cash-only addenda consistency: disagreement reason names "Lender\'s-appraisal-termination disagreement"',
+    bad.ok ? false : bad.reason.startsWith("Lender's-appraisal-termination disagreement"),
+  );
+}
+
 check('poa consistency: is_subject + checked -> null (no warning)', checkPoaAddendaConsistency('is_subject', true), null);
 check('poa consistency: is_not_subject + unchecked -> null (no warning)', checkPoaAddendaConsistency('is_not_subject', false), null);
 {
@@ -384,6 +394,23 @@ function cleanReport(overrides) {
   }));
   checkTrue('build: mineral-reservation disagreement -> ok:false', result.ok === false);
   checkTrue('build: mineral-reservation blocking reason present', result.ok ? false : result.blockingReasons.some((r) => r.startsWith('Mineral-reservation disagreement')));
+}
+
+{
+  // Phase 1 completeness repair: the lender's-appraisal-termination addendum
+  // cannot survive the cash-only/assignment-exit V1 contract path -- fails
+  // closed exactly like the mineral-reservation disagreement above, never a
+  // silently-cleared checkbox and never a partial plan.
+  const result = buildCheckboxMarkersAndText(cleanReport({
+    addendaApplicability: {
+      items: populated(Object.fromEntries(ADDENDA_APPLICABILITY_ITEM_KEYS.map((k) => [k, k === 'lender_appraisal_termination']))),
+    },
+  }));
+  checkTrue('build: lender-appraisal-termination checked -> ok:false (cash-only V1 has no buyer lender)', result.ok === false);
+  checkTrue(
+    "build: lender-appraisal-termination blocking reason present",
+    result.ok ? false : result.blockingReasons.some((r) => r.startsWith("Lender's-appraisal-termination disagreement")),
+  );
 }
 
 {

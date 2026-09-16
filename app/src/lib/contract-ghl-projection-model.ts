@@ -319,6 +319,81 @@ function equitableInterestBlockingReasons(preview: ContractDocumentPreview): str
 }
 
 /**
+ * Option-period fail-closed rule (Product Owner ruling, INV-67 Phase 1
+ * completeness repair; corrected to be BIDIRECTIONAL per Jess Gate). `earnestMoneyOption.
+ * optionFee` and `.optionPeriodDays` each resolve independently (populated /
+ * not_applicable / unresolved -- see `contract-facts-model.ts`), so nothing
+ * upstream already prevents either mismatch: a populated, positive option
+ * period reaching the contract with a zero/waived fee, OR a populated,
+ * positive fee reaching the contract with no corresponding option period --
+ * both are a void/incoherent option under TREC 20-19 Paragraph 5, never a
+ * silently-acceptable one. A populated period/fee of exactly 0, or an
+ * explicit not_applicable on either side, is a legitimate no-option
+ * scenario ONLY when BOTH sides agree. `unresolved` is NEVER a legitimate
+ * no-option scenario on either side -- it means the fact has not actually
+ * been resolved yet, not that it has been resolved to "none" -- so it
+ * always fails this gate closed, defense-in-depth, regardless of the other
+ * side's value (this function runs before the `previewComplete` gate can
+ * be assumed to have already excluded it).
+ */
+type OptionSideState =
+  | { kind: "positive"; value: number }
+  | { kind: "zero_or_not_applicable" }
+  | { kind: "unresolved" }
+  | { kind: "invalid_negative"; value: number };
+
+function classifyOptionSide(disposition: FieldDisposition<number>): OptionSideState {
+  if (disposition.kind === "unresolved") return { kind: "unresolved" };
+  if (disposition.kind === "not_applicable") return { kind: "zero_or_not_applicable" };
+  if (disposition.value < 0) return { kind: "invalid_negative", value: disposition.value };
+  if (disposition.value === 0) return { kind: "zero_or_not_applicable" };
+  return { kind: "positive", value: disposition.value };
+}
+
+function optionPeriodFeeBlockingReasons(report: SellerContractFactsReport): string[] {
+  const feeState = classifyOptionSide(report.earnestMoneyOption.optionFee);
+  const daysState = classifyOptionSide(report.earnestMoneyOption.optionPeriodDays);
+
+  const reasons: string[] = [];
+  if (feeState.kind === "unresolved") {
+    reasons.push(
+      "Option fee/option-period consistency: the option fee is unresolved -- refusing to sync until it is explicitly " +
+        "populated or marked not applicable (Paragraph 5).",
+    );
+  }
+  if (daysState.kind === "unresolved") {
+    reasons.push(
+      "Option fee/option-period consistency: the option period (days) is unresolved -- refusing to sync until it is " +
+        "explicitly populated or marked not applicable (Paragraph 5).",
+    );
+  }
+  if (reasons.length > 0) return reasons;
+
+  if (feeState.kind === "invalid_negative") {
+    reasons.push(`Option fee/option-period consistency: the option fee is a negative value (${feeState.value}) -- refusing to sync.`);
+  }
+  if (daysState.kind === "invalid_negative") {
+    reasons.push(`Option fee/option-period consistency: the option period is a negative number of days (${daysState.value}) -- refusing to sync.`);
+  }
+  if (reasons.length > 0) return reasons;
+
+  const feePositive = feeState.kind === "positive";
+  const daysPositive = daysState.kind === "positive";
+  if (feePositive === daysPositive) return []; // both positive (valid option) or both zero/not-applicable (valid no-option)
+
+  if (daysPositive) {
+    return [
+      `Option period is populated at ${(daysState as { value: number }).value} day(s) (Paragraph 5), but the option fee is ` +
+        `not a positive amount -- a populated, positive option period requires a nonzero option fee. Refusing to sync until these agree.`,
+    ];
+  }
+  return [
+    `Option fee is populated at $${(feeState as { value: number }).value} (Paragraph 5), but the option period is not a ` +
+      `positive number of days -- a populated, positive option fee requires a populated, positive option period. Refusing to sync until these agree.`,
+  ];
+}
+
+/**
  * Compound text-destination repair -- reads a `FieldDisposition<T>` DIRECTLY
  * (never via `preview.documentLines`) and applies a transport renderer.
  * `not_applicable` renders `""`, never invented prose -- the same doctrine
@@ -429,8 +504,17 @@ export function buildContractProjectionPlan(
 ): ContractProjectionPlan {
   const equitableInterestBlocking = equitableInterestBlockingReasons(preview);
   const sellerReadinessBlocking = sellerReadiness.ok ? [] : sellerReadiness.reasons;
-  if (!preview.previewComplete || equitableInterestBlocking.length > 0 || sellerReadinessBlocking.length > 0) {
-    return { ok: false, blockingReasons: [...preview.blockingReasons, ...equitableInterestBlocking, ...sellerReadinessBlocking] };
+  const optionPeriodBlocking = optionPeriodFeeBlockingReasons(report);
+  if (
+    !preview.previewComplete ||
+    equitableInterestBlocking.length > 0 ||
+    sellerReadinessBlocking.length > 0 ||
+    optionPeriodBlocking.length > 0
+  ) {
+    return {
+      ok: false,
+      blockingReasons: [...preview.blockingReasons, ...equitableInterestBlocking, ...sellerReadinessBlocking, ...optionPeriodBlocking],
+    };
   }
 
   const byKey = new Map(preview.documentLines.map((line) => [`${line.group}.${line.field}`, line]));
@@ -444,6 +528,14 @@ export function buildContractProjectionPlan(
       throw new Error(
         `buildContractProjectionPlan: no document line found for projected key "${key}" -- mapping drift between this module and contract-document-model.ts.`,
       );
+    }
+    // `not_applicable` renders "", same doctrine `transportFieldText` already applies below --
+    // `line.text` for a not_applicable disposition carries an internal audit/provenance note
+    // (e.g. "Explicitly confirmed no phone for notice.") or the generic "Not applicable
+    // (explicitly confirmed)." fallback, valuable for the operator-facing preview but never
+    // legitimate contract-bound prose. The note itself is untouched in `line` for that preview.
+    if (line.status === "not_applicable") {
+      return { key: key as ContractProjectionFieldKey, text: "" };
     }
     if (line.text === null) {
       throw new Error(
