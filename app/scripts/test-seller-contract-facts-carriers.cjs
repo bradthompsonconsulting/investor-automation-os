@@ -45,7 +45,7 @@ try {
 
 const M = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
 
-const FLOOR = 73;
+const FLOOR = 90;
 let failures = 0;
 let checks = 0;
 
@@ -90,14 +90,73 @@ const AT = '2026-09-10T12:00:00.000Z';
 }
 
 // ============================================================
-// 3. Property legal description facts
+// 3. Property legal description facts (INV-67 Phase 2A: Legal Municipality,
+//    V1 -> V2 schema evolution)
 // ============================================================
 {
-  const args = { opportunityId: OPP, at: AT, operator: null, lot: { kind: 'value', value: '7' }, block: { kind: 'none' }, addition: { kind: 'value', value: 'Sunset Ridge' }, county: { kind: 'value', value: 'Travis' }, exclusions: { kind: 'none' }, reservations: { kind: 'none' } };
-  const note = M.formatPropertyLegalDescriptionFactsNote(args);
-  const parsed = M.parsePropertyLegalDescriptionFactsNote(note);
-  check('property legal description round-trips (value/none mix)', { lot: parsed.lot, block: parsed.block }, { lot: args.lot, block: args.block });
-  check('property legal description: reservations "applies" requires an addendum note', M.parsePropertyLegalDescriptionFactsNote(note.replace('{"kind":"none"}', '{"kind":"applies"}')), null);
+  const baseFields = { opportunityId: OPP, at: AT, operator: null, lot: { kind: 'value', value: '7' }, block: { kind: 'none' }, addition: { kind: 'value', value: 'Sunset Ridge' }, county: { kind: 'value', value: 'Travis' }, exclusions: { kind: 'none' }, reservations: { kind: 'none' } };
+
+  // -- Valid municipality V2 round-trip --
+  const municipalityArgs = { ...baseFields, legalMunicipality: { kind: 'municipality', name: 'Round Rock' } };
+  const municipalityNote = M.formatPropertyLegalDescriptionFactsNote(municipalityArgs);
+  const municipalityParsed = M.parsePropertyLegalDescriptionFactsNote(municipalityNote);
+  check('property legal description V2 round-trips (value/none mix)', { lot: municipalityParsed.lot, block: municipalityParsed.block }, { lot: baseFields.lot, block: baseFields.block });
+  check('property legal description V2: municipality round-trips verbatim', municipalityParsed.legalMunicipality, { kind: 'municipality', name: 'Round Rock' });
+  check('property legal description: reservations "applies" requires an addendum note', M.parsePropertyLegalDescriptionFactsNote(municipalityNote.replace('{"kind":"none"}', '{"kind":"applies"}')), null);
+
+  // -- Valid unincorporated V2 round-trip --
+  const unincorporatedArgs = { ...baseFields, legalMunicipality: { kind: 'unincorporated' } };
+  const unincorporatedNote = M.formatPropertyLegalDescriptionFactsNote(unincorporatedArgs);
+  const unincorporatedParsed = M.parsePropertyLegalDescriptionFactsNote(unincorporatedNote);
+  check('property legal description V2: unincorporated round-trips (resolved, not unresolved)', unincorporatedParsed.legalMunicipality, { kind: 'unincorporated' });
+
+  // -- No postal/contact-city inference: the attested name is preserved verbatim,
+  //    never overridden or reshaped by anything address-like. --
+  const distinctNameArgs = { ...baseFields, legalMunicipality: { kind: 'municipality', name: 'Not The Postal City' } };
+  check(
+    'property legal description V2: attested municipality name is preserved exactly as given, never re-derived',
+    M.parsePropertyLegalDescriptionFactsNote(M.formatPropertyLegalDescriptionFactsNote(distinctNameArgs)).legalMunicipality,
+    { kind: 'municipality', name: 'Not The Postal City' },
+  );
+
+  // -- Blank/whitespace municipality name rejected --
+  check('property legal description V2: blank municipality name rejected', M.parsePropertyLegalDescriptionFactsNote(M.formatPropertyLegalDescriptionFactsNote({ ...baseFields, legalMunicipality: { kind: 'municipality', name: '' } })), null);
+  check('property legal description V2: whitespace-only municipality name rejected', M.parsePropertyLegalDescriptionFactsNote(M.formatPropertyLegalDescriptionFactsNote({ ...baseFields, legalMunicipality: { kind: 'municipality', name: '   ' } })), null);
+
+  // -- Input normalization: surrounding whitespace is trimmed, not preserved verbatim --
+  check(
+    'property legal description V2: municipality name is trimmed of surrounding whitespace',
+    M.parsePropertyLegalDescriptionFactsNote(M.formatPropertyLegalDescriptionFactsNote({ ...baseFields, legalMunicipality: { kind: 'municipality', name: '  Round Rock  ' } })).legalMunicipality,
+    { kind: 'municipality', name: 'Round Rock' },
+  );
+
+  // -- Extra keys and malformed variants rejected --
+  check('property legal description V2: extra key on municipality rejected', M.parsePropertyLegalDescriptionFactsNote(municipalityNote.replace('{"kind":"municipality","name":"Round Rock"}', '{"kind":"municipality","name":"Round Rock","extra":"nope"}')), null);
+  check('property legal description V2: extra key on unincorporated rejected', M.parsePropertyLegalDescriptionFactsNote(unincorporatedNote.replace('{"kind":"unincorporated"}', '{"kind":"unincorporated","extra":"nope"}')), null);
+  check('property legal description V2: unknown kind rejected', M.parsePropertyLegalDescriptionFactsNote(municipalityNote.replace('{"kind":"municipality","name":"Round Rock"}', '{"kind":"annexed"}')), null);
+  check('property legal description V2: non-string name rejected', M.parsePropertyLegalDescriptionFactsNote(municipalityNote.replace('"name":"Round Rock"', '"name":123')), null);
+
+  // -- V1 records preserve prior facts but yield unresolved City (legalMunicipality: null) --
+  const v1Note = M.formatPropertyLegalDescriptionFactsNoteV1(baseFields);
+  const v1Parsed = M.parsePropertyLegalDescriptionFactsNote(v1Note);
+  check('property legal description V1: still parses (backward-compatible read)', v1Parsed !== null, true);
+  check('property legal description V1: prior facts (lot/block/addition/county/exclusions/reservations) preserved', { lot: v1Parsed.lot, block: v1Parsed.block, addition: v1Parsed.addition, county: v1Parsed.county, exclusions: v1Parsed.exclusions, reservations: v1Parsed.reservations }, { lot: baseFields.lot, block: baseFields.block, addition: baseFields.addition, county: baseFields.county, exclusions: baseFields.exclusions, reservations: baseFields.reservations });
+  check('property legal description V1: legalMunicipality is null (unresolved), never postal-inferred', v1Parsed.legalMunicipality, null);
+
+  // -- Latest-record selection compares V1 and V2 using canonical timestamp rules --
+  const olderV2Note = M.formatPropertyLegalDescriptionFactsNote({ ...baseFields, at: '2026-09-01T00:00:00.000Z', legalMunicipality: { kind: 'municipality', name: 'Old Municipality V2' } });
+  const newerV1Note = M.formatPropertyLegalDescriptionFactsNoteV1({ ...baseFields, at: '2026-09-05T00:00:00.000Z', addition: { kind: 'value', value: 'Newer Addition From V1' } });
+  const newerV2Note = M.formatPropertyLegalDescriptionFactsNote({ ...baseFields, at: '2026-09-05T00:00:00.000Z', legalMunicipality: { kind: 'municipality', name: 'Newer Municipality V2' } });
+
+  const latestWhenV2IsNewest = M.latestPropertyLegalDescriptionFactsForOpportunity([{ body: olderV2Note }, { body: newerV2Note }], OPP);
+  check('property legal description: newer V2 supersedes older V2 by timestamp', latestWhenV2IsNewest.legalMunicipality, { kind: 'municipality', name: 'Newer Municipality V2' });
+
+  const latestWhenNewerV1SupersedesOlderV2 = M.latestPropertyLegalDescriptionFactsForOpportunity([{ body: olderV2Note }, { body: newerV1Note }], OPP);
+  check('property legal description: newer V1 supersedes older V2 for existing facts (addition)', latestWhenNewerV1SupersedesOlderV2.addition, { kind: 'value', value: 'Newer Addition From V1' });
+  check('property legal description: newer V1 superseding an older V2 still yields unresolved City (never carries forward the old V2 municipality)', latestWhenNewerV1SupersedesOlderV2.legalMunicipality, null);
+
+  const latestWhenV2SupersedesOlderV1 = M.latestPropertyLegalDescriptionFactsForOpportunity([{ body: newerV1Note }, { body: newerV2Note }], OPP);
+  check('property legal description: a same-or-later V2 note beats an earlier V1 note, resolving City', M.latestPropertyLegalDescriptionFactsForOpportunity([{ body: M.formatPropertyLegalDescriptionFactsNoteV1({ ...baseFields, at: '2026-09-01T00:00:00.000Z' }) }, { body: newerV2Note }], OPP).legalMunicipality, { kind: 'municipality', name: 'Newer Municipality V2' });
 }
 
 // ============================================================

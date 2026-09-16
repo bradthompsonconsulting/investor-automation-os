@@ -112,7 +112,7 @@ function buildPreview(report, propertyStreetAddress) {
 
 const FULLY_POPULATED_NOTES = [
   { body: C.formatPartySignerFactsNote({ opportunityId: OPP, at: AGREEMENT_AT, operator: 'brad', signers: [{ role: 'Seller', displayName: 'Jane Seller', signingAuthorityNote: null }] }) },
-  { body: C.formatPropertyLegalDescriptionFactsNote({ opportunityId: OPP, at: AGREEMENT_AT, operator: 'brad', lot: { kind: 'value', value: '12' }, block: { kind: 'value', value: 'A' }, addition: { kind: 'value', value: 'Oak Hills' }, county: { kind: 'value', value: 'Travis' }, exclusions: { kind: 'none' }, reservations: { kind: 'none' } }) },
+  { body: C.formatPropertyLegalDescriptionFactsNote({ opportunityId: OPP, at: AGREEMENT_AT, operator: 'brad', lot: { kind: 'value', value: '12' }, block: { kind: 'value', value: 'A' }, addition: { kind: 'value', value: 'Oak Hills' }, county: { kind: 'value', value: 'Travis' }, exclusions: { kind: 'none' }, reservations: { kind: 'none' }, legalMunicipality: { kind: 'municipality', name: 'Round Rock' } }) },
   { body: C.formatLeaseDisclosureFactsNote({ opportunityId: OPP, at: AGREEMENT_AT, operator: 'brad', residentialLeases: 'none', fixtureLeases: 'none', naturalResourceLeases: { kind: 'none' } }) },
   { body: C.formatEarnestMoneyOptionFactsNote({ opportunityId: OPP, at: AGREEMENT_AT, operator: 'brad', escrowAgentName: 'First Title Co', escrowAgentAddress: '1 Main St, Austin, TX', earnestMoney: { kind: 'amount', amount: 1000 }, optionFee: { kind: 'amount', amount: 200 }, optionPeriodDays: { kind: 'days', days: 10 }, additionalEarnestMoney: { kind: 'none' } }) },
   { body: C.formatTitleSurveyFactsNote({ opportunityId: OPP, at: AGREEMENT_AT, operator: 'brad', titlePolicyExpenseParty: 'seller', titleCompanyName: 'Austin Title Co', shortageAmendmentElection: { kind: 'amended', expenseParty: 'buyer' }, surveyElection: { option: 'seller_existing_survey', sellerFurnishDays: 10, ifRejectedExpenseParty: 'seller' }, objectionsText: { kind: 'none' }, objectionsDays: 5, poaMembership: 'is_not_subject' }) },
@@ -171,6 +171,7 @@ const FULLY_POPULATED_NOTES = [
 
   check('empty preview: property street address line is unresolved', lineFor(preview, 'identity', 'propertyStreetAddress').status, 'unresolved');
   check('empty preview: lot is unresolved', lineFor(preview, 'propertyLegalDescription', 'lot').status, 'unresolved');
+  check('empty preview: legal municipality (¶2A City of) is unresolved with no carrier record', lineFor(preview, 'propertyLegalDescription', 'legalMunicipality').status, 'unresolved');
   check('empty preview: escrow agent name is unresolved', lineFor(preview, 'earnestMoneyOption', 'escrowAgentName').status, 'unresolved');
   check('empty preview: closing date is unresolved', lineFor(preview, 'closingPossession', 'closingDate').status, 'unresolved');
   check('empty preview: attorney special provisions unresolved with no carrier record', lineFor(preview, 'attorneyManualFields', 'specialProvisions').status, 'unresolved');
@@ -205,6 +206,8 @@ const FULLY_POPULATED_NOTES = [
 
   check('¶2A lot renders the entered value', lineFor(preview, 'propertyLegalDescription', 'lot').text, '12');
   check('¶2D exclusions renders the explicit none marker', lineFor(preview, 'propertyLegalDescription', 'exclusions').text, 'None (explicitly confirmed).');
+  check('¶2A legal municipality is populated (resolved, operator-attested)', lineFor(preview, 'propertyLegalDescription', 'legalMunicipality').status, 'populated');
+  check('¶2A legal municipality renders the attested name verbatim', lineFor(preview, 'propertyLegalDescription', 'legalMunicipality').text, 'Round Rock');
   check('¶5A earnest money renders as currency', lineFor(preview, 'earnestMoneyOption', 'earnestMoney').text, '$1,000.00');
   check('¶5B option period renders with day pluralization', lineFor(preview, 'earnestMoneyOption', 'optionPeriodDays').text, '10 days');
   check('¶6A title expense party renders the real form phrase', lineFor(preview, 'titleSurvey', 'titlePolicyExpenseParty').text, "Seller's expense.");
@@ -233,6 +236,25 @@ const FULLY_POPULATED_NOTES = [
 
   check('populated lines carry their disposition authority verbatim', lineFor(preview, 'earnestMoneyOption', 'earnestMoney').authority, 'operator_attested');
   check('populated lines carry their disposition recordedAt verbatim', lineFor(preview, 'earnestMoneyOption', 'earnestMoney').recordedAt, AGREEMENT_AT);
+}
+
+// ============================================================
+// 4b. INV-67 Phase 2A -- Legal Municipality preview wording. Unincorporated
+//     resolves (never treated as unresolved) and communicates clearly to
+//     the operator; this preview wording is NOT future GHL transport text.
+// ============================================================
+{
+  const unincorporatedNotes = FULLY_POPULATED_NOTES.map((n) =>
+    n.body.indexOf('IAOS PROPERTY LEGAL DESCRIPTION FACTS') >= 0
+      ? { body: C.formatPropertyLegalDescriptionFactsNote({ opportunityId: OPP, at: AGREEMENT_AT, operator: 'brad', lot: { kind: 'value', value: '12' }, block: { kind: 'value', value: 'A' }, addition: { kind: 'value', value: 'Oak Hills' }, county: { kind: 'value', value: 'Travis' }, exclusions: { kind: 'none' }, reservations: { kind: 'none' }, legalMunicipality: { kind: 'unincorporated' } }) }
+      : n,
+  );
+  const report = M.computeSellerContractFactsReport(baseFactsArgs({ notes: unincorporatedNotes }));
+  const preview = buildPreview(report, POPULATED_ADDRESS);
+
+  check('unincorporated: legal municipality is populated (resolved), never unresolved', lineFor(preview, 'propertyLegalDescription', 'legalMunicipality').status, 'populated');
+  check('unincorporated: preview wording clearly communicates "Unincorporated area."', lineFor(preview, 'propertyLegalDescription', 'legalMunicipality').text, 'Unincorporated area.');
+  checkTrue('unincorporated: preview is still complete (a resolved no-municipality disposition, not a blocker)', preview.previewComplete === true);
 }
 
 // ============================================================

@@ -303,16 +303,59 @@ export function latestPartySignerFactsForOpportunity(
 
 export type ReservationsFact = { kind: "none" } | { kind: "applies"; addendumNote: string };
 
-export const PROPERTY_LEGAL_DESCRIPTION_LEDGER_VERSION = "iaos-property-legal-description-facts-v1" as const;
-const PROPERTY_LEGAL_DESCRIPTION_HEADER = `IAOS PROPERTY LEGAL DESCRIPTION FACTS — ${PROPERTY_LEGAL_DESCRIPTION_LEDGER_VERSION}`;
-const PROPERTY_LEGAL_DESCRIPTION_LABELS = [
+/**
+ * TREC 20-19 Paragraph 2A's "City of ___" blank (INV-67 Phase 2A). Deliberately
+ * NOT `ValueOrNone` -- there is no legitimate silent default here, and "none"
+ * would be ambiguous between "not yet decided" and "unincorporated." The
+ * operator must make one of exactly two explicit choices: a named municipality,
+ * or unincorporated. Never inferred from contact/postal city, the formatted
+ * property street address, ZIP, county, geocoding, or the water-source
+ * municipality (Paragraph 7I) -- those are different facts serving different
+ * TREC paragraphs and carry no legal-municipality authority of their own.
+ */
+export type LegalMunicipalityFact = { kind: "municipality"; name: string } | { kind: "unincorporated" };
+
+function formatLegalMunicipality(m: LegalMunicipalityFact): string { return JSON.stringify(m); }
+function parseLegalMunicipality(raw: string): LegalMunicipalityFact | null {
+  const parsed = safeJsonParse(raw);
+  if (!parsed.ok || !isPlainObject(parsed.value)) return null;
+  const v = parsed.value;
+  if (v.kind === "unincorporated") return hasExactKeys(v, ["kind"]) ? { kind: "unincorporated" } : null;
+  if (v.kind === "municipality") {
+    if (!hasExactKeys(v, ["kind", "name"])) return null;
+    if (typeof v.name !== "string") return null;
+    const name = v.name.trim();
+    if (name === "") return null;
+    return { kind: "municipality", name };
+  }
+  return null;
+}
+
+/**
+ * V1 -> V2 schema evolution (INV-67 Phase 2A) adds Legal Municipality. V1
+ * records predate this fact entirely -- they are still readable (every prior
+ * legal-description fact they carry remains valid), but a V1 record can never
+ * itself resolve City; that would require manufacturing authority the
+ * operator never actually attested. New writes always emit V2. See
+ * `parsePropertyLegalDescriptionFactsNote`'s V2-then-V1 dispatch below.
+ */
+export const PROPERTY_LEGAL_DESCRIPTION_LEDGER_VERSION_V1 = "iaos-property-legal-description-facts-v1" as const;
+export const PROPERTY_LEGAL_DESCRIPTION_LEDGER_VERSION_V2 = "iaos-property-legal-description-facts-v2" as const;
+const PROPERTY_LEGAL_DESCRIPTION_HEADER_V1 = `IAOS PROPERTY LEGAL DESCRIPTION FACTS — ${PROPERTY_LEGAL_DESCRIPTION_LEDGER_VERSION_V1}`;
+const PROPERTY_LEGAL_DESCRIPTION_HEADER_V2 = `IAOS PROPERTY LEGAL DESCRIPTION FACTS — ${PROPERTY_LEGAL_DESCRIPTION_LEDGER_VERSION_V2}`;
+const PROPERTY_LEGAL_DESCRIPTION_LABELS_V1 = [
   "Recorded at", "Operator", "Opportunity", "Lot", "Block", "Addition", "County", "Exclusions", "Reservations",
+] as const;
+const PROPERTY_LEGAL_DESCRIPTION_LABELS_V2 = [
+  ...PROPERTY_LEGAL_DESCRIPTION_LABELS_V1, "Legal municipality",
 ] as const;
 
 export type ParsedPropertyLegalDescriptionFacts = {
   opportunityId: string; at: string; operator: string | null;
   lot: ValueOrNone; block: ValueOrNone; addition: ValueOrNone; county: ValueOrNone;
   exclusions: ValueOrNone; reservations: ReservationsFact;
+  /** `null` for a V1 record -- the schema predates this fact, so there is nothing to read, never an inferred default. A valid `LegalMunicipalityFact` for V2. */
+  legalMunicipality: LegalMunicipalityFact | null;
 };
 
 function formatReservations(r: ReservationsFact): string { return JSON.stringify(r); }
@@ -329,27 +372,49 @@ function parseReservations(raw: string): ReservationsFact | null {
   return null;
 }
 
-export function formatPropertyLegalDescriptionFactsNote(args: {
+/** @deprecated V1 -- read-only compatibility for pre-Phase-2A records. New writes always use `formatPropertyLegalDescriptionFactsNote` (V2). Exported only so legacy-record tests/back-fills can construct a real V1 note body, never as a second live write path. */
+export function formatPropertyLegalDescriptionFactsNoteV1(args: {
   opportunityId: string; at: string; operator: string | null;
   lot: ValueOrNone; block: ValueOrNone; addition: ValueOrNone; county: ValueOrNone;
   exclusions: ValueOrNone; reservations: ReservationsFact;
 }): string {
   return [
-    PROPERTY_LEGAL_DESCRIPTION_HEADER,
-    `${PROPERTY_LEGAL_DESCRIPTION_LABELS[0]}: ${args.at}`,
-    `${PROPERTY_LEGAL_DESCRIPTION_LABELS[1]}: ${ledgerValue(args.operator)}`,
-    `${PROPERTY_LEGAL_DESCRIPTION_LABELS[2]}: ${args.opportunityId}`,
-    `${PROPERTY_LEGAL_DESCRIPTION_LABELS[3]}: ${formatValueOrNoneJson(args.lot)}`,
-    `${PROPERTY_LEGAL_DESCRIPTION_LABELS[4]}: ${formatValueOrNoneJson(args.block)}`,
-    `${PROPERTY_LEGAL_DESCRIPTION_LABELS[5]}: ${formatValueOrNoneJson(args.addition)}`,
-    `${PROPERTY_LEGAL_DESCRIPTION_LABELS[6]}: ${formatValueOrNoneJson(args.county)}`,
-    `${PROPERTY_LEGAL_DESCRIPTION_LABELS[7]}: ${formatValueOrNoneJson(args.exclusions)}`,
-    `${PROPERTY_LEGAL_DESCRIPTION_LABELS[8]}: ${formatReservations(args.reservations)}`,
+    PROPERTY_LEGAL_DESCRIPTION_HEADER_V1,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V1[0]}: ${args.at}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V1[1]}: ${ledgerValue(args.operator)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V1[2]}: ${args.opportunityId}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V1[3]}: ${formatValueOrNoneJson(args.lot)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V1[4]}: ${formatValueOrNoneJson(args.block)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V1[5]}: ${formatValueOrNoneJson(args.addition)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V1[6]}: ${formatValueOrNoneJson(args.county)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V1[7]}: ${formatValueOrNoneJson(args.exclusions)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V1[8]}: ${formatReservations(args.reservations)}`,
   ].join("\n");
 }
 
-export function parsePropertyLegalDescriptionFactsNote(body: string): ParsedPropertyLegalDescriptionFacts | null {
-  const values = matchPositionalSchema(body, PROPERTY_LEGAL_DESCRIPTION_HEADER, PROPERTY_LEGAL_DESCRIPTION_LABELS);
+/** V2 -- the only live write path. `legalMunicipality` is required (no default), per the Product Owner ruling that no choice is ever inferred or preselected. */
+export function formatPropertyLegalDescriptionFactsNote(args: {
+  opportunityId: string; at: string; operator: string | null;
+  lot: ValueOrNone; block: ValueOrNone; addition: ValueOrNone; county: ValueOrNone;
+  exclusions: ValueOrNone; reservations: ReservationsFact; legalMunicipality: LegalMunicipalityFact;
+}): string {
+  return [
+    PROPERTY_LEGAL_DESCRIPTION_HEADER_V2,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V2[0]}: ${args.at}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V2[1]}: ${ledgerValue(args.operator)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V2[2]}: ${args.opportunityId}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V2[3]}: ${formatValueOrNoneJson(args.lot)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V2[4]}: ${formatValueOrNoneJson(args.block)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V2[5]}: ${formatValueOrNoneJson(args.addition)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V2[6]}: ${formatValueOrNoneJson(args.county)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V2[7]}: ${formatValueOrNoneJson(args.exclusions)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V2[8]}: ${formatReservations(args.reservations)}`,
+    `${PROPERTY_LEGAL_DESCRIPTION_LABELS_V2[9]}: ${formatLegalMunicipality(args.legalMunicipality)}`,
+  ].join("\n");
+}
+
+function parsePropertyLegalDescriptionFactsNoteV1(body: string): ParsedPropertyLegalDescriptionFacts | null {
+  const values = matchPositionalSchema(body, PROPERTY_LEGAL_DESCRIPTION_HEADER_V1, PROPERTY_LEGAL_DESCRIPTION_LABELS_V1);
   if (!values) return null;
   const [at, operatorRaw, opportunityId, lotRaw, blockRaw, additionRaw, countyRaw, exclusionsRaw, reservationsRaw] = values;
   if (opportunityId === "") return null;
@@ -361,7 +426,35 @@ export function parsePropertyLegalDescriptionFactsNote(body: string): ParsedProp
   const exclusions = parseValueOrNoneJson(exclusionsRaw);
   const reservations = parseReservations(reservationsRaw);
   if (!lot || !block || !addition || !county || !exclusions || !reservations) return null;
-  return { opportunityId, at, operator: operatorRaw === "UNAVAILABLE" ? null : operatorRaw, lot, block, addition, county, exclusions, reservations };
+  return {
+    opportunityId, at, operator: operatorRaw === "UNAVAILABLE" ? null : operatorRaw,
+    lot, block, addition, county, exclusions, reservations, legalMunicipality: null,
+  };
+}
+
+function parsePropertyLegalDescriptionFactsNoteV2(body: string): ParsedPropertyLegalDescriptionFacts | null {
+  const values = matchPositionalSchema(body, PROPERTY_LEGAL_DESCRIPTION_HEADER_V2, PROPERTY_LEGAL_DESCRIPTION_LABELS_V2);
+  if (!values) return null;
+  const [at, operatorRaw, opportunityId, lotRaw, blockRaw, additionRaw, countyRaw, exclusionsRaw, reservationsRaw, legalMunicipalityRaw] = values;
+  if (opportunityId === "") return null;
+  if (!isCanonicalIsoTimestamp(at)) return null;
+  const lot = parseValueOrNoneJson(lotRaw);
+  const block = parseValueOrNoneJson(blockRaw);
+  const addition = parseValueOrNoneJson(additionRaw);
+  const county = parseValueOrNoneJson(countyRaw);
+  const exclusions = parseValueOrNoneJson(exclusionsRaw);
+  const reservations = parseReservations(reservationsRaw);
+  const legalMunicipality = parseLegalMunicipality(legalMunicipalityRaw);
+  if (!lot || !block || !addition || !county || !exclusions || !reservations || !legalMunicipality) return null;
+  return {
+    opportunityId, at, operator: operatorRaw === "UNAVAILABLE" ? null : operatorRaw,
+    lot, block, addition, county, exclusions, reservations, legalMunicipality,
+  };
+}
+
+/** Dispatches by header: tries V2 first (the only live write shape), falls back to V1 (read-only compatibility). A record that matches neither exact schema -- malformed, wrong line count, unexpected keys -- parses to `null`, exactly like today. */
+export function parsePropertyLegalDescriptionFactsNote(body: string): ParsedPropertyLegalDescriptionFacts | null {
+  return parsePropertyLegalDescriptionFactsNoteV2(body) ?? parsePropertyLegalDescriptionFactsNoteV1(body);
 }
 
 export function latestPropertyLegalDescriptionFactsForOpportunity(

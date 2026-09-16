@@ -87,6 +87,7 @@ import {
   ADDENDA_APPLICABILITY_ITEM_KEYS,
   type ValueOrNone,
   type ReservationsFact,
+  type LegalMunicipalityFact,
   type NaturalResourceLeaseFact,
   type AdditionalEarnestMoneyFact,
   type ExpenseParty,
@@ -170,6 +171,8 @@ export type PropertyLegalDescriptionReport = {
   county: FieldDisposition<ValueOrNone>;
   exclusions: FieldDisposition<ValueOrNone>;
   reservations: FieldDisposition<ReservationsFact>;
+  /** INV-67 Phase 2A (¶2A "City of ___"). `unresolved` for a V1-only record -- see `LegalMunicipalityFact`'s own header; V1 recovery must never manufacture City authority. */
+  legalMunicipality: FieldDisposition<LegalMunicipalityFact>;
 };
 
 export type LeaseDisclosureReport = {
@@ -320,8 +323,16 @@ export function computeSellerContractFactsReport(args: {
         county: populated(legalDesc.county, "operator_attested", legalDesc.at),
         exclusions: populated(legalDesc.exclusions, "operator_attested", legalDesc.at),
         reservations: populated(legalDesc.reservations, "operator_attested", legalDesc.at),
+        // `null` means the latest record is V1-only (predates this fact) -- unresolved,
+        // never inferred from any other source. See `LegalMunicipalityFact`'s own header.
+        legalMunicipality: legalDesc.legalMunicipality !== null
+          ? populated(legalDesc.legalMunicipality, "operator_attested", legalDesc.at)
+          : unresolved(),
       }
-    : { lot: unresolved(), block: unresolved(), addition: unresolved(), county: unresolved(), exclusions: unresolved(), reservations: unresolved() };
+    : {
+        lot: unresolved(), block: unresolved(), addition: unresolved(), county: unresolved(),
+        exclusions: unresolved(), reservations: unresolved(), legalMunicipality: unresolved(),
+      };
 
   // ---- Lease disclosure (¶4) ----
   const lease = latestLeaseDisclosureFactsForOpportunity(notes, opportunityId);
@@ -523,6 +534,7 @@ export function computeSellerContractFactsReadiness(report: SellerContractFactsR
     ["propertyLegalDescription", "county", report.propertyLegalDescription.county],
     ["propertyLegalDescription", "exclusions", report.propertyLegalDescription.exclusions],
     ["propertyLegalDescription", "reservations", report.propertyLegalDescription.reservations],
+    ["propertyLegalDescription", "legalMunicipality", report.propertyLegalDescription.legalMunicipality],
     ["leaseDisclosure", "residentialLeases", report.leaseDisclosure.residentialLeases],
     ["leaseDisclosure", "fixtureLeases", report.leaseDisclosure.fixtureLeases],
     ["leaseDisclosure", "naturalResourceLeases", report.leaseDisclosure.naturalResourceLeases],

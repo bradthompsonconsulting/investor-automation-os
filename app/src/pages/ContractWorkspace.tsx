@@ -81,7 +81,7 @@ import { getRuntimeConfig, CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED } from "../
 import {
   formatBuyerEntityOverrideNote,
   formatPartySignerFactsNote, type SellerSignerFact,
-  formatPropertyLegalDescriptionFactsNote, type ReservationsFact,
+  formatPropertyLegalDescriptionFactsNote, type ReservationsFact, type LegalMunicipalityFact,
   formatLeaseDisclosureFactsNote, type NaturalResourceLeaseFact,
   formatEarnestMoneyOptionFactsNote, type AdditionalEarnestMoneyFact,
   formatTitleSurveyFactsNote, type ExpenseParty, type ShortageAmendmentElection, type SurveyElection,
@@ -399,6 +399,7 @@ const FIELD_LABELS: Record<string, string> = {
   "salesPrice.cashPortion": "Cash portion (¶3A)", "salesPrice.financingSum": "Financing sum (¶3B)", "salesPrice.salesPrice": "Sales price (¶3C)",
   "propertyLegalDescription.lot": "Lot", "propertyLegalDescription.block": "Block", "propertyLegalDescription.addition": "Addition",
   "propertyLegalDescription.county": "County", "propertyLegalDescription.exclusions": "Exclusions from conveyance", "propertyLegalDescription.reservations": "Reservations",
+  "propertyLegalDescription.legalMunicipality": "Legal municipality (¶2A City of)",
   "leaseDisclosure.residentialLeases": "Residential leases", "leaseDisclosure.fixtureLeases": "Fixture leases", "leaseDisclosure.naturalResourceLeases": "Natural resource leases",
   "earnestMoneyOption.escrowAgentName": "Escrow agent name", "earnestMoneyOption.escrowAgentAddress": "Escrow agent address",
   "earnestMoneyOption.earnestMoney": "Earnest money", "earnestMoneyOption.optionFee": "Option fee",
@@ -514,7 +515,8 @@ const BROKER_VALUE_OR_NONE_FIELDS: { key: "address" | "teamName" | "supervisorNa
 type Drafts = {
   buyerOverride: { active: boolean; buyerName: string; reason: string };
   signer: { role: string; displayName: string; signingAuthorityNote: string };
-  legalDesc: { lot: VNDraft; block: VNDraft; addition: VNDraft; county: VNDraft; exclusions: VNDraft; reservationsKind: "none" | "applies"; reservationsNote: string };
+  /** `municipalityKind: "unset"` = no default -- INV-67 Phase 2A Product Owner ruling forbids inferring or preselecting either choice. */
+  legalDesc: { lot: VNDraft; block: VNDraft; addition: VNDraft; county: VNDraft; exclusions: VNDraft; reservationsKind: "none" | "applies"; reservationsNote: string; municipalityKind: "unset" | "municipality" | "unincorporated"; municipalityName: string };
   lease: { residentialLeases: "none" | "applies"; fixtureLeases: "none" | "applies"; naturalKind: "none" | "delivered" | "not_yet_delivered"; naturalDays: string };
   earnest: { escrowAgentName: string; escrowAgentAddress: string; earnestMoney: AONDraft; optionFee: AONDraft; optionPeriodDays: DONDraft; additionalKind: "unset" | "none" | "value"; additionalAmount: string; additionalWithinDays: string };
   titleSurvey: {
@@ -546,7 +548,7 @@ type Drafts = {
 const INITIAL_DRAFTS: Drafts = {
   buyerOverride: { active: false, buyerName: "", reason: "" },
   signer: { role: "", displayName: "", signingAuthorityNote: "" },
-  legalDesc: { lot: VN_UNSET, block: VN_UNSET, addition: VN_UNSET, county: VN_UNSET, exclusions: VN_UNSET, reservationsKind: "none", reservationsNote: "" },
+  legalDesc: { lot: VN_UNSET, block: VN_UNSET, addition: VN_UNSET, county: VN_UNSET, exclusions: VN_UNSET, reservationsKind: "none", reservationsNote: "", municipalityKind: "unset", municipalityName: "" },
   lease: { residentialLeases: "none", fixtureLeases: "none", naturalKind: "none", naturalDays: "" },
   earnest: { escrowAgentName: "", escrowAgentAddress: "", earnestMoney: AON_UNSET, optionFee: AON_UNSET, optionPeriodDays: DON_UNSET, additionalKind: "unset", additionalAmount: "", additionalWithinDays: "" },
   titleSurvey: { titlePolicyExpenseParty: "seller", titleCompanyName: "", shortageKind: "not_amended", shortageExpenseParty: "seller", surveyOption: "seller_existing_survey", sellerFurnishDays: "", buyerObtainDays: "", ifRejectedExpenseParty: "buyer", objectionsText: VN_UNSET, objectionsDays: "", poaMembership: "is_not_subject" },
@@ -2025,8 +2027,24 @@ export default function ContractWorkspace() {
       }
       reservations = { kind: "applies", addendumNote: drafts.legalDesc.reservationsNote };
     }
+    // INV-67 Phase 2A: legal municipality is a required, explicit choice -- never
+    // inferred from contact/postal city, address, ZIP, county, geocoding, or the
+    // water-source municipality (¶7I). No default; "unset" always blocks save.
+    let legalMunicipality: LegalMunicipalityFact;
+    if (drafts.legalDesc.municipalityKind === "unset") {
+      setGroupError("propertyLegalDescription", "Select Municipality or Unincorporated for the legal municipality (¶2A).");
+      return;
+    } else if (drafts.legalDesc.municipalityKind === "unincorporated") {
+      legalMunicipality = { kind: "unincorporated" };
+    } else {
+      if (drafts.legalDesc.municipalityName.trim() === "") {
+        setGroupError("propertyLegalDescription", "Enter the legal municipality name, or select Unincorporated.");
+        return;
+      }
+      legalMunicipality = { kind: "municipality", name: drafts.legalDesc.municipalityName.trim() };
+    }
     const at = new Date().toISOString();
-    const note = formatPropertyLegalDescriptionFactsNote({ opportunityId: screen.opportunity.id, at, operator: null, lot, block, addition, county, exclusions, reservations });
+    const note = formatPropertyLegalDescriptionFactsNote({ opportunityId: screen.opportunity.id, at, operator: null, lot, block, addition, county, exclusions, reservations, legalMunicipality });
     await commitNote("propertyLegalDescription", note);
   }
 
@@ -2654,6 +2672,28 @@ export default function ContractWorkspace() {
                           <div style={rowStyle}>
                             <Field label="Reservations"><SelectField testId="contract-fact-input-reservations-kind" value={drafts.legalDesc.reservationsKind} onChange={(v) => updateDraft("legalDesc", { reservationsKind: v })} options={[{ value: "none", label: "None" }, { value: "applies", label: "Applies" }]} /></Field>
                             {drafts.legalDesc.reservationsKind === "applies" ? <TextField testId="contract-fact-input-reservations-note" value={drafts.legalDesc.reservationsNote} onChange={(v) => updateDraft("legalDesc", { reservationsNote: v })} placeholder="Describe the reservation" /> : null}
+                          </div>
+                          <div style={rowStyle}>
+                            <Field label="Legal municipality (City of)">
+                              <SelectField
+                                testId="contract-fact-input-legal-municipality-kind"
+                                value={drafts.legalDesc.municipalityKind}
+                                onChange={(v) => updateDraft("legalDesc", { municipalityKind: v })}
+                                options={[
+                                  { value: "unset", label: "Select…" },
+                                  { value: "municipality", label: "Municipality" },
+                                  { value: "unincorporated", label: "Unincorporated" },
+                                ]}
+                              />
+                            </Field>
+                            {drafts.legalDesc.municipalityKind === "municipality" ? (
+                              <TextField
+                                testId="contract-fact-input-legal-municipality-name"
+                                value={drafts.legalDesc.municipalityName}
+                                onChange={(v) => updateDraft("legalDesc", { municipalityName: v })}
+                                placeholder="Municipality name"
+                              />
+                            ) : null}
                             <Btn testId="contract-fact-save-legal-desc" onClick={handleSaveLegalDesc} busy={busyGroup === "propertyLegalDescription"}>Save</Btn>
                           </div>
                           <ErrorText testId="contract-fact-error-propertyLegalDescription">{groupErrors.propertyLegalDescription ?? null}</ErrorText>
