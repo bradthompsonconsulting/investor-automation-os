@@ -683,14 +683,14 @@ const TEST: GhlConfig = {
   // UNTOUCHED -- still physically present in Test, simply no longer
   // referenced by this config (exactly the same disposition as the
   // original 19 retired keys above). No audit-only writer was introduced.
-  // The 4 new transport-only keys are NOT YET PROVISIONED -- a separately
-  // authorized future Test-only provisioning pass (mirroring Batches 1-3's
-  // architecture) must create them before this config can wire in real
-  // ids; until then they remain sentinel-filled via the spread below, in
-  // BOTH `TEST` and `PRODUCTION`. The net result: 108 of the previous 110
-  // live keys keep their unchanged real `TEST` id; 2 keys are retired
-  // (their ids simply no longer appear here); 4 new keys are sentinel;
-  // 112 total live projection keys.
+  // The 4 new transport-only keys were provisioned live in GHL Test by
+  // Batch 4 (see below) and now carry real ids in `TEST`. `PRODUCTION`
+  // remains sentinel-filled for all 112 keys, unconditionally -- Test
+  // provisioning never leaks into Production. The net result in `TEST`:
+  // 108 of the previous 110 live keys keep their unchanged real id; 2 keys
+  // are retired (their ids simply no longer appear here); the 4 new keys
+  // now ALSO carry a real id -- zero sentinels remain in `TEST`; 112 total
+  // live projection keys, all real.
   contractProjectionFields: {
     ...sentinelContractProjectionFields(),
     // -- 27 retained (unchanged, pre-existing this repair -- 2 of the
@@ -729,11 +729,21 @@ const TEST: GhlConfig = {
     "noticeContact.sellerNoticeEmail": "T9TlfDicQnhiHInISE2N",
     "attorneyManualFields.specialProvisions": "eZImM9FtKYff6CJzAafO",
     "attorneyManualFields.otherAddendaText": "xQ1mLI1l8aHnhOLe07fy",
-    // -- 4 new transport-only keys (compound text-destination repair) --
-    // remain CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED sentinels (from the
-    // `...sentinelContractProjectionFields()` spread below) until a
-    // separately authorized Test-only provisioning pass creates them --
-    // NOT authorized or performed this session.
+    // -- Batch 4 (4 CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS) was
+    //    provisioned live in GHL Test
+    //    (`scripts/inv67-create-transport-only-fields-batch4.cjs --apply`,
+    //    2026-09-16, same location and canonical parentId) -- 149 -> 153
+    //    existing Opportunity fields, all 4 created and independently
+    //    readback-verified (name/fieldKey/dataType/model/parentId, via a
+    //    separate GET, not the provisioning script's own internal
+    //    confirmation), then a second dry run confirmed 0 create / 4
+    //    exact-existing-reuse / 0 conflict before these 4 real ids were
+    //    wired in below. TEST now carries a real id for ALL 112 live
+    //    projection keys -- zero sentinels remain in TEST.
+    "additional_earnest_money_amount_text": "y6dsY9ckRDEeVnF413FX",
+    "additional_earnest_money_days_text": "b26q2D3hlm3Z1YUxerbX",
+    "closing_date_month_day_text": "RAghy4JYlTPwXwnGEuN4",
+    "closing_date_year_suffix_text": "y6TaYNpbz0xNbDVQMcwg",
     // -- Batch 1: 48 checkbox-marker keys, provisioned and readback-
     //    verified live in GHL Test 2026-09-14 --
     "lease_residential_mark": "aScwbIAJRuV3cFiKS09E",
