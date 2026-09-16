@@ -74,7 +74,7 @@ const { CHECKBOX_MARKER_KEYS } = require(path.join(TMP, 'contract-checkbox-marke
 const S = require(SCRIPT);
 const src = fs.readFileSync(SCRIPT, 'utf8');
 
-const FLOOR = 110;
+const FLOOR = 111;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -101,11 +101,18 @@ const SPEC1_KEY = S.expectedFieldKey(SPEC1.name);
 /* 1. FIELD_SPECS -- exactly 48, exactly equal to CHECKBOX_MARKER_KEYS   */
 /* ==================================================================== */
 
+// INV-67 Phase 2B added 2 new markers (district_notices_mark, other_addenda_mark)
+// to CHECKBOX_MARKER_KEYS, unrelated to this batch's own original 48. This
+// script's FIELD_SPECS is a SUBSET of the (now-larger) authoritative array,
+// never required to equal it exactly -- see the Brad-authorized narrow fix to
+// `verifyAgainstAuthoritativeSource` in the script itself.
+const PRE_PHASE_2B_MARKER_KEYS = CHECKBOX_MARKER_KEYS.filter((k) => k !== 'district_notices_mark' && k !== 'other_addenda_mark');
 const fieldSpecKeys = Array.from(src.matchAll(/\{ key: '([^']+)', name: '[^']+' \}/g)).map((m) => m[1]);
 check('script declares exactly 48 FIELD_SPECS', fieldSpecKeys.length, 48);
 check('FIELD_SPECS keys are unique', new Set(fieldSpecKeys).size, 48);
-check('FIELD_SPECS keys equal CHECKBOX_MARKER_KEYS exactly, SAME ORDER (source-level extraction)', fieldSpecKeys, [...CHECKBOX_MARKER_KEYS]);
-check('module.exports.FIELD_SPECS also has exactly 48 keys, same order', S.FIELD_SPECS.map((s) => s.key), [...CHECKBOX_MARKER_KEYS]);
+check('FIELD_SPECS keys equal the ORIGINAL 48 CHECKBOX_MARKER_KEYS exactly, SAME ORDER (source-level extraction; Phase 2B\'s 2 new markers excluded)', fieldSpecKeys, [...PRE_PHASE_2B_MARKER_KEYS]);
+check('module.exports.FIELD_SPECS also has exactly 48 keys, same order', S.FIELD_SPECS.map((s) => s.key), [...PRE_PHASE_2B_MARKER_KEYS]);
+checkTrue('every one of this script\'s 48 keys is present in the (now-larger) authoritative CHECKBOX_MARKER_KEYS', fieldSpecKeys.every((k) => CHECKBOX_MARKER_KEYS.includes(k)));
 
 /* ==================================================================== */
 /* 2. require() never auto-runs main()                                   */
@@ -171,7 +178,7 @@ checkTrue(
 );
 {
   const r = spawnSync(process.execPath, [SCRIPT], { cwd: APP, encoding: 'utf8', timeout: 15000 });
-  checkTrue('running with zero args: self-verification message appears on stdout', /Verified: this script's 48 FIELD_SPECS keys match CHECKBOX_MARKER_KEYS exactly/.test(r.stdout));
+  checkTrue('running with zero args: self-verification message appears on stdout', /Verified: this script's 48 FIELD_SPECS keys all exist in CHECKBOX_MARKER_KEYS/.test(r.stdout));
   checkTrue('running with zero args: dies on missing --location with a specific message', /ERROR: --location is required\. There is no default and no fallback\./.test(r.stderr));
   check('running with zero args: exits with code 2 (die()), never attempts a network call', r.status, 2);
 }

@@ -118,16 +118,20 @@ function verifyAgainstAuthoritativeSource() {
     .filter(Boolean)
     .map((mm) => mm[1]);
   const proposed = FIELD_SPECS.map((s) => s.key);
-  if (authoritative.length !== 11) die(`authoritative CHECKBOX_TEXT_KEYS has ${authoritative.length} keys, expected 11 -- STOP, source has drifted since this script was written.`);
-  if (JSON.stringify(authoritative) !== JSON.stringify(proposed)) {
-    const missing = authoritative.filter((k) => !proposed.includes(k));
-    const extra = proposed.filter((k) => !authoritative.includes(k));
+  // INV-67 Phase 2B narrow correction (Brad-authorized): the authoritative
+  // source may now carry MORE keys than this batch's own 11 -- a later phase
+  // legitimately adding new, unrelated keys is not drift for THIS script.
+  // Only a key THIS script proposes going missing/renamed relative to its
+  // own 11 is drift; a strict length/order equality check would (and did)
+  // produce a false positive the moment any later phase extended the array.
+  const missing = proposed.filter((k) => !authoritative.includes(k));
+  if (missing.length > 0) {
     die(
-      `FIELD_SPECS has drifted from CHECKBOX_TEXT_KEYS. missing=${JSON.stringify(missing)} extra=${JSON.stringify(extra)} -- ` +
-      `refusing to run. Update this script's FIELD_SPECS to match the authoritative source exactly before retrying.`,
+      `FIELD_SPECS names key(s) no longer present in CHECKBOX_TEXT_KEYS: ${JSON.stringify(missing)} -- ` +
+      `refusing to run. Update this script's FIELD_SPECS to match the authoritative source before retrying.`,
     );
   }
-  console.log(`Verified: this script's 11 FIELD_SPECS keys match CHECKBOX_TEXT_KEYS exactly (same 11, same order).\n`);
+  console.log(`Verified: this script's 11 FIELD_SPECS keys all exist in CHECKBOX_TEXT_KEYS (the source may carry additional keys added by a later phase; that is not drift for this batch).\n`);
 }
 
 /**

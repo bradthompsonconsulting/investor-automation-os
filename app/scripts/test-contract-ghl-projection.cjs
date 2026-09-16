@@ -44,6 +44,20 @@
  *     later wiring step, and PRODUCTION remains fully sentinel-filled for
  *     all 110 keys -- proven directly against the committed file, not
  *     merely asserted.
+ *
+ * INV-67 PHASE 2B (this session) expands the live inventory from 112 to
+ * exactly 118 unique keys: `propertyLegalDescription.legalMunicipality`
+ * (retained, +1 -> 28), `sales_price_amount_text` /
+ * `financing_sum_amount_text` (transport-only, +2 -> 6),
+ * `district_notices_mark` / `other_addenda_mark` (checkbox markers, +2 ->
+ * 50), `as_is_repairs_text` (checkbox-adjacent text, +1 -> 12). Broker text
+ * stays 22. All 112 previously-verified TEST ids remain byte-for-byte
+ * unchanged; the 6 new keys are sentinel-filled in BOTH `TEST` and
+ * `PRODUCTION` pending a separately authorized Batch 5 apply
+ * (`scripts/inv67-create-batch5-fields.cjs`, dry-run only, not performed
+ * this session). `salesPrice.financingSum` is REMOVED from
+ * `CONTRACT_PROJECTION_INVARIANT_KEYS` (it now projects, defensively
+ * re-verified at $0 every sync rather than merely asserted true by source).
  */
 const { execSync } = require('child_process');
 const fs = require('fs');
@@ -98,7 +112,7 @@ const {
   sellerCountTransportValue,
 } = require(path.join(TMP, 'contract-seller-signing-model.js'));
 
-const FLOOR = 226;
+const FLOOR = 298;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -193,6 +207,16 @@ function completeReport(overrides) {
       county: populated({ kind: 'value', value: 'Travis' }),
       exclusions: populated({ kind: 'none' }),
       reservations: populated({ kind: 'none' }),
+      legalMunicipality: populated({ kind: 'municipality', name: 'Round Rock' }),
+    },
+    // INV-67 Phase 2B -- `salesPrice.salesPrice` must agree with `cashPortion`
+    // (¶3A/¶3C) and `financingSum` must be exactly $0, matching the SAME
+    // $275,000.00 the `completePreview()` fixture's own salesPrice document
+    // lines already show.
+    salesPrice: {
+      salesPrice: populated(275000),
+      cashPortion: populated(275000),
+      financingSum: populated(0),
     },
     earnestMoneyOption: {
       earnestMoney: populated(1000),
@@ -235,6 +259,12 @@ function completeReport(overrides) {
     representation: {
       representation: populated({ kind: 'none' }),
     },
+    // INV-67 Phase 2B -- `other_addenda_mark` reads this disposition directly
+    // (never via `preview.documentLines`), same doctrine as the reformatted
+    // retained keys. Defaults to not_applicable -> blank marker.
+    attorneyManualFields: {
+      otherAddendaText: { kind: 'not_applicable', confirmedBy: null, at: null, note: null },
+    },
   };
   for (const [group, patch] of Object.entries(overrides || {})) {
     base[group] = { ...base[group], ...patch };
@@ -270,7 +300,7 @@ function completeReport(overrides) {
 }
 
 /* ==================================================================== */
-/* 3. Happy path -- exactly 112 entries                                  */
+/* 3. Happy path -- exactly 118 entries (INV-67 Phase 2B)                */
 /* ==================================================================== */
 
 {
@@ -278,12 +308,12 @@ function completeReport(overrides) {
   const plan = buildContractProjectionPlan('OPP-1', preview, completeReport(), SELLER_READINESS_OK);
   checkTrue('ok plan on a fully resolved preview + report', plan.ok === true);
   check('entry count equals CONTRACT_PROJECTION_FIELD_KEYS length', plan.ok ? plan.entries.length : null, CONTRACT_PROJECTION_FIELD_KEYS.length);
-  check('entry count is exactly 112', plan.ok ? plan.entries.length : null, 112);
-  check('CONTRACT_PROJECTION_FIELD_KEYS.length is exactly 112', CONTRACT_PROJECTION_FIELD_KEYS.length, 112);
+  check('entry count is exactly 118', plan.ok ? plan.entries.length : null, 118);
+  check('CONTRACT_PROJECTION_FIELD_KEYS.length is exactly 118', CONTRACT_PROJECTION_FIELD_KEYS.length, 118);
   check(
-    '27 retained + 4 transport-only + 48 markers + 11 text + 22 broker = 112',
+    '28 retained + 6 transport-only + 50 markers + 12 text + 22 broker = 118',
     CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length + CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.length + CHECKBOX_MARKER_KEYS.length + CHECKBOX_TEXT_KEYS.length + BROKER_TEXT_KEYS.length,
-    112,
+    118,
   );
   check('agreementAt carried from preview.version', plan.ok ? plan.agreementAt : null, VERSION.agreementAt);
   check('versionSeq carried from preview.version', plan.ok ? plan.versionSeq : null, VERSION.versionSeq);
@@ -298,15 +328,21 @@ function completeReport(overrides) {
   check('a checkbox marker for the selected election is "X"', byKey.get('title_expense_seller_mark'), 'X');
   check('every marker value is "X" or ""', CHECKBOX_MARKER_KEYS.every((k) => byKey.get(k) === 'X' || byKey.get(k) === ''), true);
   check('broker text is all-blank when representation is "none"', BROKER_TEXT_KEYS.every((k) => byKey.get(k) === ''), true);
+  check('sales_price_amount_text formats 275000 with no dollar sign', byKey.get('sales_price_amount_text'), '275,000.00');
+  check('financing_sum_amount_text formats the fixed $0 with no dollar sign', byKey.get('financing_sum_amount_text'), '0.00');
+  check('propertyLegalDescription.legalMunicipality projects the attested municipality name', byKey.get('propertyLegalDescription.legalMunicipality'), 'Round Rock');
+  check('as_is_repairs_text is blank for a plain As-Is election', byKey.get('as_is_repairs_text'), '');
+  check('district_notices_mark is blank for an explicit "none" district-notices disposition', byKey.get('district_notices_mark'), '');
+  check('other_addenda_mark is blank for a not_applicable other-addenda disposition', byKey.get('other_addenda_mark'), '');
 
   // Jess Gate correction (repeated-destination re-gate): the paragraph-22 echo of 3
   // markers is a TEMPLATE PLACEMENT concern only -- it must never change the unique
-  // 112-key / 81-new-marker-field totals this plan writes.
-  check('CONTRACT_PROJECTION_FIELD_KEYS is still exactly 112 UNIQUE keys with the repeated-placement manifest present', CONTRACT_PROJECTION_FIELD_KEYS.length, 112);
-  check('marker/text/broker new-key total is still exactly 81, NOT 84 -- placements are not fields', CHECKBOX_MARKER_KEYS.length + CHECKBOX_TEXT_KEYS.length + BROKER_TEXT_KEYS.length, 81);
+  // 118-key / new-marker-field totals this plan writes.
+  check('CONTRACT_PROJECTION_FIELD_KEYS is still exactly 118 UNIQUE keys with the repeated-placement manifest present', CONTRACT_PROJECTION_FIELD_KEYS.length, 118);
+  check('marker/text/broker key total is exactly 84 (50 + 12 + 22, INV-67 Phase 2B) -- distinct from the overlay-PLACEMENT count below', CHECKBOX_MARKER_KEYS.length + CHECKBOX_TEXT_KEYS.length + BROKER_TEXT_KEYS.length, 84);
   checkTrue(
-    'the overlay-placement count (51, from the marker model) is distinct from and greater than the marker-key count (48) -- never conflated in this integration layer either',
-    CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS > CHECKBOX_MARKER_KEYS.length,
+    'the overlay-placement count (51, from the marker model, UNCHANGED by Phase 2B -- these two new markers are not yet placed anywhere) is distinct from and greater than the ORIGINAL 48-marker-key count -- never conflated in this integration layer either',
+    CHECKBOX_MARKER_TOTAL_TEMPLATE_PLACEMENTS > 48,
   );
   checkTrue(
     'every plan entry key for a repeated-placement marker is written exactly ONCE in the plan (one field write, regardless of how many places it is later pasted on the template)',
@@ -592,6 +628,156 @@ function completeReport(overrides) {
 }
 
 /* ==================================================================== */
+/* 3b. INV-67 Phase 2B -- money, repairs-text fit safety, district/other */
+/*     addenda markers, and Legal City boundary behavior                 */
+/* ==================================================================== */
+
+// -- Money: finite/nonnegative/agreement/zero-financing gate --
+{
+  const cases = [
+    ['negative sales price -- fails closed', { salesPrice: populated(-1), cashPortion: populated(-1) }, false, /not a finite number|negative/i],
+    ['NaN sales price -- fails closed', { salesPrice: populated(NaN), cashPortion: populated(NaN) }, false, /not a finite number/i],
+    ['Infinity sales price -- fails closed', { salesPrice: populated(Infinity), cashPortion: populated(Infinity) }, false, /not a finite number/i],
+    ['nonzero financing sum -- fails closed', { financingSum: populated(5000) }, false, /Financing sum must be exactly \$0/],
+    ['negative financing sum -- fails closed', { financingSum: populated(-1) }, false, /negative/i],
+    ['accepted-price disagreement (cashPortion != salesPrice) -- fails closed', { cashPortion: populated(200000) }, false, /Accepted-price disagreement/],
+    ['unresolved salesPrice.salesPrice -- fails closed', { salesPrice: { kind: 'unresolved' } }, false, /salesPrice\.salesPrice.*unresolved/],
+  ];
+  for (const [label, salesPriceOverride, shouldPass, reasonPattern] of cases) {
+    const preview = completePreview();
+    const report = completeReport({ salesPrice: salesPriceOverride });
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
+    check(`money gate -- ${label} -- plan.ok is ${shouldPass}`, plan.ok, shouldPass);
+    if (!shouldPass) checkTrue(`money gate -- ${label} -- blocking reason matches`, plan.ok ? false : plan.blockingReasons.some((r) => reasonPattern.test(r)));
+  }
+  // Valid boundary: zero-dollar sales price is finite/nonnegative and agrees -- passes.
+  {
+    const preview = completePreview();
+    const report = completeReport({ salesPrice: { salesPrice: populated(0), cashPortion: populated(0), financingSum: populated(0) } });
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
+    checkTrue('money gate -- $0 sales price (finite, nonnegative, agrees, financing still $0) -- plan.ok is true', plan.ok === true);
+    check('money gate -- $0 sales price formats as "0.00", no dollar sign', plan.ok ? plan.entries.find((e) => e.key === 'sales_price_amount_text').text : null, '0.00');
+  }
+}
+
+// -- As-Is repairs text: fit safety (INV-67 Phase 2B addendum, Spock's     --
+// -- rendered-PDF measurement) -- single line, <=110 chars, trimmed,       --
+// -- blank-after-trim rejected, embedded CR/LF/CRLF rejected, election     --
+// -- change clears stale text, never truncated.                            --
+{
+  const asIsCases = [
+    ['1 character -- passes', 'x', true, 'x'],
+    ['exactly 110 characters -- passes (boundary)', 'x'.repeat(110), true, 'x'.repeat(110)],
+    ['111 characters -- fails closed (boundary)', 'x'.repeat(111), false, /111 characters, exceeding the 110-character fit limit/],
+    ['leading/trailing whitespace -- trimmed on success', '   fix the roof   ', true, 'fix the roof'],
+    ['embedded CR -- fails closed', 'fix the roof\rand gutters', false, /embedded line break/],
+    ['embedded LF -- fails closed', 'fix the roof\nand gutters', false, /embedded line break/],
+    ['embedded CRLF -- fails closed', 'fix the roof\r\nand gutters', false, /embedded line break/],
+    ['whitespace-only -- fails closed (blank after trim)', '   ', false, /is blank -- required when "with repairs" is selected/],
+  ];
+  for (const [label, repairsText, shouldPass, expected] of asIsCases) {
+    const preview = completePreview();
+    const report = completeReport({ propertyCondition: { asIsElection: populated({ kind: 'as_is_with_repairs', repairsText }) } });
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
+    check(`as-is repairs text -- ${label} -- plan.ok is ${shouldPass}`, plan.ok, shouldPass);
+    if (shouldPass) {
+      check(`as-is repairs text -- ${label} -- projects exactly`, plan.ok ? plan.entries.find((e) => e.key === 'as_is_repairs_text').text : null, expected);
+    } else {
+      checkTrue(`as-is repairs text -- ${label} -- blocking reason matches`, plan.ok ? false : plan.blockingReasons.some((r) => expected.test(r)));
+    }
+  }
+  // Never truncates: a too-long value is refused whole, never clipped to 110.
+  {
+    const preview = completePreview();
+    const report = completeReport({ propertyCondition: { asIsElection: populated({ kind: 'as_is_with_repairs', repairsText: 'y'.repeat(200) }) } });
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
+    checkTrue('as-is repairs text -- 200 characters -- fails closed, never silently truncated to 110', plan.ok === false);
+  }
+  // Election change clears stale repairs text -- plain As-Is always projects blank,
+  // regardless of what a PRIOR report (never passed here) might have carried, because
+  // every call derives fresh from the CURRENT AsIsElectionFact, never accumulated state.
+  {
+    const preview = completePreview();
+    const withRepairsReport = completeReport({ propertyCondition: { asIsElection: populated({ kind: 'as_is_with_repairs', repairsText: 'Replace the water heater' }) } });
+    const withRepairsPlan = buildContractProjectionPlan('OPP-1', preview, withRepairsReport, SELLER_READINESS_OK);
+    checkTrue('election-change fixture step 1 (with repairs) -- ok', withRepairsPlan.ok === true);
+    check('election-change fixture step 1 -- as_is_repairs_text carries the repair text', withRepairsPlan.ok ? withRepairsPlan.entries.find((e) => e.key === 'as_is_repairs_text').text : null, 'Replace the water heater');
+
+    const plainReport = completeReport({ propertyCondition: { asIsElection: populated({ kind: 'as_is' }) } });
+    const plainPlan = buildContractProjectionPlan('OPP-1', preview, plainReport, SELLER_READINESS_OK);
+    checkTrue('election-change step 2 (switched to plain As-Is) -- ok', plainPlan.ok === true);
+    check('election change from with-repairs to plain As-Is clears the stale repairs text to "" (never left behind)', plainPlan.ok ? plainPlan.entries.find((e) => e.key === 'as_is_repairs_text').text : null, '');
+  }
+}
+
+// -- District Notices / Other Addenda markers --
+{
+  {
+    const preview = completePreview();
+    const report = completeReport({ addendaApplicability: { districtNotices: populated({ kind: 'value', value: 'District X notice text' }) } });
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
+    checkTrue('district_notices_mark -- applicable/populated -- ok', plan.ok === true);
+    check('district_notices_mark -- applicable -- marker is "X"', plan.ok ? plan.entries.find((e) => e.key === 'district_notices_mark').text : null, 'X');
+  }
+  {
+    // `addendaApplicability.districtNotices` is also a REFORMATTED_RETAINED_KEY --
+    // `documentLineEntries` (which runs BEFORE `buildCheckboxMarkersAndText`) hits its
+    // own `transportFieldText` integrity-throw on this same unresolved disposition first.
+    const preview = completePreview();
+    const report = completeReport({ addendaApplicability: { districtNotices: { kind: 'unresolved' } } });
+    let threw = false;
+    try { buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK); } catch (e) { threw = /"addendaApplicability\.districtNotices" is unresolved despite previewComplete=true/.test(e.message); }
+    checkTrue('district_notices_mark -- unresolved disposition -- integrity-throws (previewComplete should have already blocked)', threw);
+  }
+  {
+    const preview = completePreview();
+    const report = completeReport({ attorneyManualFields: { otherAddendaText: populated({ kind: 'provided_verbatim', text: 'Addendum for Coastal Area Property.' }) } });
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
+    checkTrue('other_addenda_mark -- provided_verbatim text -- ok', plan.ok === true);
+    check('other_addenda_mark -- provided -- marker is "X"', plan.ok ? plan.entries.find((e) => e.key === 'other_addenda_mark').text : null, 'X');
+  }
+  {
+    const preview = completePreview();
+    const report = completeReport({ attorneyManualFields: { otherAddendaText: { kind: 'unresolved' } } });
+    let threw = false;
+    try { buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK); } catch (e) { threw = /"attorneyManualFields\.otherAddendaText" is not resolved despite the caller's previewComplete gate/.test(e.message); }
+    checkTrue('other_addenda_mark -- unresolved (attorney_will_draft resolves to unresolved upstream) -- integrity-throws', threw);
+  }
+}
+
+// -- Legal City (propertyLegalDescription.legalMunicipality) --
+{
+  {
+    const preview = completePreview();
+    const report = completeReport({ propertyLegalDescription: { legalMunicipality: populated({ kind: 'unincorporated' }) } });
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
+    checkTrue('legal city -- unincorporated -- ok', plan.ok === true);
+    check('legal city -- unincorporated -- projects blank (never the preview\'s "Unincorporated area." wording)', plan.ok ? plan.entries.find((e) => e.key === 'propertyLegalDescription.legalMunicipality').text : null, '');
+  }
+  {
+    const preview = completePreview();
+    const report = completeReport({ propertyLegalDescription: { legalMunicipality: { kind: 'unresolved' } } });
+    let threw = false;
+    try { buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK); } catch (e) { threw = /"propertyLegalDescription\.legalMunicipality" is unresolved despite previewComplete=true/.test(e.message); }
+    checkTrue('legal city -- unresolved -- integrity-throws (previewComplete should have already blocked)', threw);
+  }
+  {
+    // No postal/contact-city inference: only the attested carrier value is
+    // ever used -- proven by round-tripping a name that plainly could not
+    // have come from a formatted address.
+    const preview = completePreview();
+    const report = completeReport({ propertyLegalDescription: { legalMunicipality: populated({ kind: 'municipality', name: 'Definitely Not A Postal City' }) } });
+    const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
+    checkTrue('legal city -- municipality with an arbitrary attested name -- ok', plan.ok === true);
+    check(
+      'legal city -- projects EXACTLY the attested name, proving no postal/contact/address inference is ever substituted',
+      plan.ok ? plan.entries.find((e) => e.key === 'propertyLegalDescription.legalMunicipality').text : null,
+      'Definitely Not A Postal City',
+    );
+  }
+}
+
+/* ==================================================================== */
 /* 4. Blocking: marker-exclusivity violation cannot reach the plan       */
 /*    normally -- proven here via a report whose canonical facts, if     */
 /*    mis-derived, WOULD violate exclusivity; the by-construction         */
@@ -670,27 +856,50 @@ function completeReport(overrides) {
 checkTrue('no invariant key appears in CONTRACT_PROJECTION_FIELD_KEYS', CONTRACT_PROJECTION_INVARIANT_KEYS.every((k) => !CONTRACT_PROJECTION_FIELD_KEYS.includes(k)));
 checkTrue('no reused-current-offer key appears in CONTRACT_PROJECTION_FIELD_KEYS', CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS.every((k) => !CONTRACT_PROJECTION_FIELD_KEYS.includes(k)));
 checkTrue('none of the 21 retired keys appear in CONTRACT_PROJECTION_FIELD_KEYS', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !CONTRACT_PROJECTION_FIELD_KEYS.includes(k)));
-check('exactly 4 invariant keys', CONTRACT_PROJECTION_INVARIANT_KEYS.length, 4);
+check('exactly 3 invariant keys (INV-67 Phase 2B removed salesPrice.financingSum -- it now projects)', CONTRACT_PROJECTION_INVARIANT_KEYS.length, 3);
+checkTrue('salesPrice.financingSum is NOT an invariant key anymore (Phase 2B)', !CONTRACT_PROJECTION_INVARIANT_KEYS.includes('salesPrice.financingSum'));
 check('exactly 2 reused-current-offer keys', CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS.length, 2);
 check('exactly 21 retired keys (compound text-destination repair: 19 + 2)', CONTRACT_PROJECTION_RETIRED_KEYS.length, 21);
-check('exactly 27 retained document-line keys (compound text-destination repair: 29 - 2)', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length, 27);
-check('exactly 4 new transport-only keys', CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.length, 4);
-check('27 retained + 21 retired = the original 48', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length + CONTRACT_PROJECTION_RETIRED_KEYS.length, 48);
+check('exactly 28 retained document-line keys (compound text-destination repair: 29 - 2, + 1 Phase 2B legalMunicipality)', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length, 28);
+check('exactly 6 transport-only keys (4 compound text-destination + 2 Phase 2B)', CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.length, 6);
+check(
+  '27 of the 28 retained keys (excluding Phase 2B\'s new legalMunicipality, which was never part of the original 48) + 21 retired = the original 48',
+  CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.filter((k) => k !== 'propertyLegalDescription.legalMunicipality').length + CONTRACT_PROJECTION_RETIRED_KEYS.length,
+  48,
+);
 checkTrue('earnestMoneyOption.additionalEarnestMoney is retired', CONTRACT_PROJECTION_RETIRED_KEYS.includes('earnestMoneyOption.additionalEarnestMoney'));
 checkTrue('closingPossession.closingDate is retired', CONTRACT_PROJECTION_RETIRED_KEYS.includes('closingPossession.closingDate'));
 checkTrue('earnestMoneyOption.additionalEarnestMoney is NOT in the retained set', !CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.includes('earnestMoneyOption.additionalEarnestMoney'));
 checkTrue('closingPossession.closingDate is NOT in the retained set', !CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.includes('closingPossession.closingDate'));
+checkTrue('propertyLegalDescription.legalMunicipality IS in the retained set (Phase 2B)', CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.includes('propertyLegalDescription.legalMunicipality'));
 check(
-  'CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS is exactly the four approved transport-only names',
+  'CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS is exactly the six approved transport-only names',
   [...CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS].sort(),
-  ['additional_earnest_money_amount_text', 'additional_earnest_money_days_text', 'closing_date_month_day_text', 'closing_date_year_suffix_text'].sort(),
+  ['additional_earnest_money_amount_text', 'additional_earnest_money_days_text', 'closing_date_month_day_text', 'closing_date_year_suffix_text', 'sales_price_amount_text', 'financing_sum_amount_text'].sort(),
 );
 checkTrue(
-  'none of the 4 transport-only keys collides with any retained, marker, text, or broker key',
+  'none of the 6 transport-only keys collides with any retained, marker, text, or broker key',
   CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.every(
     (k) => !CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.includes(k) && !CHECKBOX_MARKER_KEYS.includes(k) && !CHECKBOX_TEXT_KEYS.includes(k) && !BROKER_TEXT_KEYS.includes(k),
   ),
 );
+check('exactly 50 checkbox marker keys (48 + district_notices_mark + other_addenda_mark, Phase 2B)', CHECKBOX_MARKER_KEYS.length, 50);
+check('exactly 12 checkbox-adjacent text keys (11 + as_is_repairs_text, Phase 2B)', CHECKBOX_TEXT_KEYS.length, 12);
+check('exactly 22 broker text keys (unchanged by Phase 2B)', BROKER_TEXT_KEYS.length, 22);
+check(
+  'INV-67 Phase 2B inventory equation: 28 + 6 + 50 + 12 + 22 = 118 unique projection keys',
+  CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.length + CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.length + CHECKBOX_MARKER_KEYS.length + CHECKBOX_TEXT_KEYS.length + BROKER_TEXT_KEYS.length,
+  118,
+);
+check('CONTRACT_PROJECTION_FIELD_KEYS.length is exactly 118', CONTRACT_PROJECTION_FIELD_KEYS.length, 118);
+checkTrue('CONTRACT_PROJECTION_FIELD_KEYS has no duplicate key across all five categories', new Set(CONTRACT_PROJECTION_FIELD_KEYS).size === CONTRACT_PROJECTION_FIELD_KEYS.length);
+{
+  const PHASE_2B_NEW_KEYS = ['propertyLegalDescription.legalMunicipality', 'sales_price_amount_text', 'financing_sum_amount_text', 'as_is_repairs_text', 'district_notices_mark', 'other_addenda_mark'];
+  checkTrue('none of the 6 new Phase 2B keys overlaps any retired key', PHASE_2B_NEW_KEYS.every((k) => !CONTRACT_PROJECTION_RETIRED_KEYS.includes(k)));
+  checkTrue('none of the 6 new Phase 2B keys overlaps any invariant key', PHASE_2B_NEW_KEYS.every((k) => !CONTRACT_PROJECTION_INVARIANT_KEYS.includes(k)));
+  checkTrue('none of the 6 new Phase 2B keys overlaps any reused-current-offer key', PHASE_2B_NEW_KEYS.every((k) => !CONTRACT_PROJECTION_REUSED_CURRENT_OFFER_KEYS.includes(k)));
+  checkTrue('all 6 new Phase 2B keys ARE present in CONTRACT_PROJECTION_FIELD_KEYS', PHASE_2B_NEW_KEYS.every((k) => CONTRACT_PROJECTION_FIELD_KEYS.includes(k)));
+}
 
 /* ==================================================================== */
 /* 8. reusedCurrentOfferLines (UNCHANGED by this session)                */
@@ -762,15 +971,28 @@ checkTrue(
         .filter(Boolean)
         .map((m) => m[1])
     : [];
-  check('shared/ghl-config.ts key set matches contract-ghl-projection-model.ts exactly (112 keys)', [...configKeys].sort(), [...CONTRACT_PROJECTION_FIELD_KEYS].sort());
+  check('shared/ghl-config.ts key set matches contract-ghl-projection-model.ts exactly (118 keys, INV-67 Phase 2B)', [...configKeys].sort(), [...CONTRACT_PROJECTION_FIELD_KEYS].sort());
+
+  // INV-67 Phase 2B's 6 new keys, named once here and reused by every
+  // "exclude the new keys, compare against the historical/already-
+  // provisioned reference" check below.
+  const PHASE_2B_NEW_KEYS = ['propertyLegalDescription.legalMunicipality', 'sales_price_amount_text', 'financing_sum_amount_text', 'as_is_repairs_text', 'district_notices_mark', 'other_addenda_mark'];
+  const PRE_PHASE_2B_RETAINED_KEYS = CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.filter((k) => !PHASE_2B_NEW_KEYS.includes(k));
+  const PRE_PHASE_2B_TRANSPORT_ONLY_KEYS = CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.filter((k) => !PHASE_2B_NEW_KEYS.includes(k));
+  const PRE_PHASE_2B_MARKER_KEYS = CHECKBOX_MARKER_KEYS.filter((k) => !PHASE_2B_NEW_KEYS.includes(k));
+  const PRE_PHASE_2B_TEXT_KEYS = CHECKBOX_TEXT_KEYS.filter((k) => !PHASE_2B_NEW_KEYS.includes(k));
+  check('PRE_PHASE_2B_RETAINED_KEYS has exactly 27 entries (28 - legalMunicipality)', PRE_PHASE_2B_RETAINED_KEYS.length, 27);
+  check('PRE_PHASE_2B_TRANSPORT_ONLY_KEYS has exactly 4 entries (6 - 2 Phase 2B)', PRE_PHASE_2B_TRANSPORT_ONLY_KEYS.length, 4);
+  check('PRE_PHASE_2B_MARKER_KEYS has exactly 48 entries (50 - 2 Phase 2B)', PRE_PHASE_2B_MARKER_KEYS.length, 48);
+  check('PRE_PHASE_2B_TEXT_KEYS has exactly 11 entries (12 - as_is_repairs_text)', PRE_PHASE_2B_TEXT_KEYS.length, 11);
 
   const scriptSrc = fs.readFileSync(path.join(APP, 'scripts', 'inv67-create-contract-projection-fields.cjs'), 'utf8');
   const specKeys = Array.from(scriptSrc.matchAll(/\{ key: '([^']+)'/g)).map((m) => m[1]).filter((k) => k !== 'contractDraftRequest');
   check('the field-creation script still lists exactly 48 keys (retired, not deleted -- untouched by this repair)', specKeys.length, 48);
   check(
-    'the field-creation script\'s 48 keys are EXACTLY the original 29 retained + 19 retired keys (no new GHL field was created this session)',
+    'the field-creation script\'s 48 keys are EXACTLY the original 29 retained + 19 retired keys (excluding INV-67 Phase 2B\'s legalMunicipality, which post-dates and was never part of that original script)',
     [...specKeys].sort(),
-    [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS, ...CONTRACT_PROJECTION_RETIRED_KEYS].sort(),
+    [...PRE_PHASE_2B_RETAINED_KEYS, ...CONTRACT_PROJECTION_RETIRED_KEYS].sort(),
   );
 
   const configFieldsBlockMatch = configSrc.match(/contractProjectionFields: \{([\s\S]*?)\r?\n  \},\r?\n  contractDraftRequest: "GlbJxxrxnvMkwJSRNUwI"/);
@@ -788,13 +1010,15 @@ checkTrue(
   // COMPOUND TEXT-DESTINATION REPAIR retired 2 of the original 29 retained
   // keys from template projection -- their real TEST ids are simply no
   // longer referenced by `contractProjectionFields` (Option A: no audit-
-  // only writer). BATCH 4 (this session) provisioned and wired in the 4
-  // new transport-only keys' real TEST ids. Net: ALL 112 of the live
-  // projection keys now carry a real TEST id -- zero sentinels remain.
+  // only writer). BATCH 4 provisioned and wired in the 4 (pre-Phase-2B)
+  // transport-only keys' real TEST ids. Net: ALL 112 of the (pre-Phase-2B)
+  // live projection keys carry a real TEST id -- INV-67 Phase 2B's 6 new
+  // keys are deliberately excluded from this reference list; they remain
+  // sentinel-filled below, pending a separately authorized Batch 5 apply.
   check(
-    'TEST carries a REAL id for exactly 112 keys: the 27 retained + the 48 Batch 1 markers + the 11 Batch 2 contract-text keys + the 22 Batch 3 broker-text keys + the 4 Batch 4 transport-only keys',
+    'TEST carries a REAL id for exactly 112 keys: the 27 retained + the 48 Batch 1 markers + the 11 Batch 2 contract-text keys + the 22 Batch 3 broker-text keys + the 4 Batch 4 transport-only keys (Phase 2B\'s 6 new keys excluded -- not yet provisioned)',
     [...testRealIdKeys].sort(),
-    [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS, ...CHECKBOX_MARKER_KEYS, ...CHECKBOX_TEXT_KEYS, ...BROKER_TEXT_KEYS, ...CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS].sort(),
+    [...PRE_PHASE_2B_RETAINED_KEYS, ...PRE_PHASE_2B_MARKER_KEYS, ...PRE_PHASE_2B_TEXT_KEYS, ...BROKER_TEXT_KEYS, ...PRE_PHASE_2B_TRANSPORT_ONLY_KEYS].sort(),
   );
   check('exactly 48 of those real-id keys are CHECKBOX_MARKER_KEYS', testRealIdKeys.filter((k) => CHECKBOX_MARKER_KEYS.includes(k)).length, 48);
   check('exactly 11 of those real-id keys are CHECKBOX_TEXT_KEYS', testRealIdKeys.filter((k) => CHECKBOX_TEXT_KEYS.includes(k)).length, 11);
@@ -869,13 +1093,13 @@ checkTrue(
     addenda_back_up_contract_mark: 'CVKqL2Ir1VNglli2XO6f',
     addenda_mineral_reservation_mark: '1TpO61JNm595TSf7DxwT',
   };
-  check('BATCH1_APPROVED_MARKER_IDS itself names exactly the 48 CHECKBOX_MARKER_KEYS -- no missing or extra key in the reference set', [...Object.keys(BATCH1_APPROVED_MARKER_IDS)].sort(), [...CHECKBOX_MARKER_KEYS].sort());
+  check('BATCH1_APPROVED_MARKER_IDS itself names exactly the ORIGINAL 48 CHECKBOX_MARKER_KEYS (excluding Phase 2B\'s 2 new markers) -- no missing or extra key in the reference set', [...Object.keys(BATCH1_APPROVED_MARKER_IDS)].sort(), [...PRE_PHASE_2B_MARKER_KEYS].sort());
   check('the 48 approved Batch 1 reference ids are themselves unique', new Set(Object.values(BATCH1_APPROVED_MARKER_IDS)).size, 48);
   {
     // Built by iterating ALL 48 CHECKBOX_MARKER_KEYS (never just the approved
     // reference's own keys), so a key present in TEST under a DIFFERENT id, or
     // absent from TEST entirely, both surface here -- `null` for "missing."
-    const observedBatch1Ids = Object.fromEntries(CHECKBOX_MARKER_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
+    const observedBatch1Ids = Object.fromEntries(PRE_PHASE_2B_MARKER_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
     check(
       'every one of the 48 CHECKBOX_MARKER_KEYS maps to its EXACT previously-approved Batch 1 id in TEST -- full 48-key mapping proof, not a sample',
       observedBatch1Ids,
@@ -898,10 +1122,10 @@ checkTrue(
     bpsb_dollar_amount_text: 'btZyfuT3OWUtno5lXBY0',
     bpsb_percent_amount_text: 'zF8SP63sgaDucKbSu9aM',
   };
-  check('BATCH2_APPROVED_TEXT_IDS itself names exactly the 11 CHECKBOX_TEXT_KEYS -- no missing or extra key in the reference set', [...Object.keys(BATCH2_APPROVED_TEXT_IDS)].sort(), [...CHECKBOX_TEXT_KEYS].sort());
+  check('BATCH2_APPROVED_TEXT_IDS itself names exactly the ORIGINAL 11 CHECKBOX_TEXT_KEYS (excluding Phase 2B\'s as_is_repairs_text) -- no missing or extra key in the reference set', [...Object.keys(BATCH2_APPROVED_TEXT_IDS)].sort(), [...PRE_PHASE_2B_TEXT_KEYS].sort());
   check('the 11 approved Batch 2 reference ids are themselves unique', new Set(Object.values(BATCH2_APPROVED_TEXT_IDS)).size, 11);
   {
-    const observedBatch2Ids = Object.fromEntries(CHECKBOX_TEXT_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
+    const observedBatch2Ids = Object.fromEntries(PRE_PHASE_2B_TEXT_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
     check(
       'every one of the 11 CHECKBOX_TEXT_KEYS maps to its EXACT verified, Brad-authorized Batch 2 id in TEST -- full 11-key mapping proof',
       observedBatch2Ids,
@@ -947,18 +1171,26 @@ checkTrue(
     );
   }
 
-  // Batch 4 (this session) provisioned the last 4 sentinel-filled keys --
-  // TEST now has ZERO projection sentinels; every one of the 112 live
-  // projection keys carries a real id. The two retired compound keys are
+  // Batch 4 provisioned the last of the ORIGINAL 4 sentinel-filled keys --
+  // TEST had ZERO projection sentinels for those 112. INV-67 Phase 2B adds
+  // 6 MORE keys to CONTRACT_PROJECTION_FIELD_KEYS (now 118 total); those 6
+  // are deliberately sentinel-filled in TEST too, pending a separately
+  // authorized Batch 5 apply -- so `sentinelKeys` now correctly names
+  // exactly those 6, never zero. The two retired compound keys are
   // correctly ABSENT from CONTRACT_PROJECTION_FIELD_KEYS entirely (checked
   // earlier), so they never appear in `sentinelKeys` either.
   const sentinelKeys = CONTRACT_PROJECTION_FIELD_KEYS.filter((k) => !testRealIdKeys.includes(k));
-  check('TEST has ZERO projection sentinels remaining -- all 112 live projection keys carry a real id', sentinelKeys, []);
+  check('TEST has exactly 6 projection sentinels remaining -- the INV-67 Phase 2B keys, not yet provisioned (Batch 5)', [...sentinelKeys].sort(), [...PHASE_2B_NEW_KEYS].sort());
   checkTrue('none of the 21 retired keys re-enters the live TEST real-id map', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !testRealIdKeys.includes(k)));
   checkTrue(
-    'a complete projection plan (all 112 CONTRACT_PROJECTION_FIELD_KEYS) can now resolve a real, non-sentinel TEST id for every single key -- no provisioning sentinel would block a live write',
-    CONTRACT_PROJECTION_FIELD_KEYS.every((k) => testRealIdKeys.includes(k)),
+    'a complete projection plan (all 112 PRE-PHASE-2B keys) can still resolve a real, non-sentinel TEST id for every one of them -- Phase 2B never disturbed a previously-provisioned id',
+    [...PRE_PHASE_2B_RETAINED_KEYS, ...PRE_PHASE_2B_TRANSPORT_ONLY_KEYS, ...PRE_PHASE_2B_MARKER_KEYS, ...PRE_PHASE_2B_TEXT_KEYS, ...BROKER_TEXT_KEYS].every((k) => testRealIdKeys.includes(k)),
   );
+  checkTrue(
+    'each of the 6 new Phase 2B keys resolves to the sentinel (not a real id) in TEST -- correctly blocks a live write until Batch 5 is applied',
+    PHASE_2B_NEW_KEYS.every((k) => !testRealIdKeys.includes(k)),
+  );
+  check('shared/ghl-config.ts CONTRACT_PROJECTION_FIELD_KEYS total is exactly 118 (112 real-id + 6 sentinel)', configKeys.length, 118);
 
   // Batch 4 (4 CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS) was provisioned
   // live in GHL Test (`scripts/inv67-create-transport-only-fields-batch4.cjs
@@ -974,10 +1206,10 @@ checkTrue(
     closing_date_month_day_text: 'RAghy4JYlTPwXwnGEuN4',
     closing_date_year_suffix_text: 'y6TaYNpbz0xNbDVQMcwg',
   };
-  check('BATCH4_APPROVED_TRANSPORT_ONLY_IDS itself names exactly the 4 transport-only keys -- no missing or extra key in the reference set', [...Object.keys(BATCH4_APPROVED_TRANSPORT_ONLY_IDS)].sort(), [...CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS].sort());
+  check('BATCH4_APPROVED_TRANSPORT_ONLY_IDS itself names exactly the ORIGINAL 4 transport-only keys (excluding Phase 2B\'s 2 new ones) -- no missing or extra key in the reference set', [...Object.keys(BATCH4_APPROVED_TRANSPORT_ONLY_IDS)].sort(), [...PRE_PHASE_2B_TRANSPORT_ONLY_KEYS].sort());
   check('the 4 approved Batch 4 reference ids are themselves unique', new Set(Object.values(BATCH4_APPROVED_TRANSPORT_ONLY_IDS)).size, 4);
   {
-    const observedBatch4Ids = Object.fromEntries(CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
+    const observedBatch4Ids = Object.fromEntries(PRE_PHASE_2B_TRANSPORT_ONLY_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
     check(
       'every one of the 4 CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS maps to its EXACT verified, Brad-authorized Batch 4 id in TEST -- full 4-key mapping proof',
       observedBatch4Ids,
@@ -1024,10 +1256,10 @@ checkTrue(
     'attorneyManualFields.specialProvisions': 'eZImM9FtKYff6CJzAafO',
     'attorneyManualFields.otherAddendaText': 'xQ1mLI1l8aHnhOLe07fy',
   };
-  check('RETAINED_APPROVED_IDS itself names exactly the 27 retained keys -- no missing or extra key in the reference set', [...Object.keys(RETAINED_APPROVED_IDS)].sort(), [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS].sort());
+  check('RETAINED_APPROVED_IDS itself names exactly the ORIGINAL 27 retained keys (excluding Phase 2B\'s legalMunicipality) -- no missing or extra key in the reference set', [...Object.keys(RETAINED_APPROVED_IDS)].sort(), [...PRE_PHASE_2B_RETAINED_KEYS].sort());
   check('the 27 approved retained reference ids are themselves unique', new Set(Object.values(RETAINED_APPROVED_IDS)).size, 27);
   {
-    const observedRetainedIds = Object.fromEntries(CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
+    const observedRetainedIds = Object.fromEntries(PRE_PHASE_2B_RETAINED_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
     check(
       'every one of the 27 retained keys maps to its EXACT unchanged id in TEST -- full 27-key mapping proof, not key presence alone',
       observedRetainedIds,
@@ -1076,8 +1308,8 @@ checkTrue(
     !testRealIdEntries.some((e) => e.id === SELLER_COUNT_TEST_ID),
   );
   checkTrue(
-    'Contract Seller Count remains OUTSIDE CONTRACT_PROJECTION_FIELD_KEYS -- still exactly 112, unaffected by the Test wiring',
-    !CONTRACT_PROJECTION_FIELD_KEYS.includes('contractSellerCount') && CONTRACT_PROJECTION_FIELD_KEYS.length === 112,
+    'Contract Seller Count remains OUTSIDE CONTRACT_PROJECTION_FIELD_KEYS -- still exactly 118 (INV-67 Phase 2B), unaffected by the Test wiring',
+    !CONTRACT_PROJECTION_FIELD_KEYS.includes('contractSellerCount') && CONTRACT_PROJECTION_FIELD_KEYS.length === 118,
   );
 
   // Batch 4 Test-ID wiring (this session) -- no collision with Seller

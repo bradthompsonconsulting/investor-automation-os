@@ -121,7 +121,7 @@ export interface GhlConfig {
    * `contract-seller-signing-model.ts`'s `sellerCountTransportValue`
    * produces). DELIBERATELY SEPARATE from `contractProjectionFields` /
    * `CONTRACT_PROJECTION_FIELD_KEYS` -- this is a signer-routing/template-
-   * selection signal, not one of the 112 TREC-body-fact projection keys,
+   * selection signal, not one of the 118 TREC-body-fact projection keys,
    * and must never be counted toward or confused with that set. Not yet
    * provisioned in either environment as of this phase (sentinel-filled,
    * `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`, the same fail-closed
@@ -265,18 +265,28 @@ export const CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED = "CONTRACT_PROJECTION_FI
 
 /**
  * INV-67 checkbox-marker / broker-model repair, extended by the INV-67
- * compound text-destination repair -- the exact 112 live keys, duplicated
- * by hand from `app/src/lib/contract-ghl-projection-model.ts`'s
+ * compound text-destination repair, extended by INV-67 Phase 2B -- the
+ * exact 118 live keys, duplicated by hand from
+ * `app/src/lib/contract-ghl-projection-model.ts`'s
  * `CONTRACT_PROJECTION_FIELD_KEYS` (that module cannot be imported here --
  * `shared/` stays free of an `src/lib` dependency, the same layering every
  * other key in this file already respects). Kept in sync by
  * `scripts/test-contract-ghl-projection.cjs`'s drift check, which fails
  * loud if the two lists ever diverge.
  *
- * 112 = 27 retained (UNCHANGED single-TEXT keys from the original 29) +
- * 4 new transport-only keys (compound text-destination repair) + 48
- * `"X"`/`""` checkbox markers + 11 restructured contract-text keys + 22
- * page-11 broker-text keys (11 per side). 21 of the original 48 keys are
+ * 118 = 28 retained (27 UNCHANGED single-TEXT keys from the original 29,
+ * plus `propertyLegalDescription.legalMunicipality` added by Phase 2B) +
+ * 6 transport-only keys (4 from the compound text-destination repair +
+ * `sales_price_amount_text`/`financing_sum_amount_text` added by Phase 2B)
+ * + 50 `"X"`/`""` checkbox markers (48 + `district_notices_mark`/
+ * `other_addenda_mark` added by Phase 2B) + 12 restructured contract-text
+ * keys (11 + `as_is_repairs_text` added by Phase 2B) + 22 page-11
+ * broker-text keys (11 per side, unchanged). The six Phase 2B keys remain
+ * `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED` sentinels in BOTH `TEST` and
+ * `PRODUCTION` until a separately authorized Batch 5 Test-only apply
+ * creates them -- NOT performed by this session; see
+ * `scripts/inv67-create-batch5-fields.cjs` (dry-run only, not applied).
+ * 21 of the original 48 keys are
  * RETIRED from the live projection (14 checkbox-shaped + 1 checkbox-
  * adjacent, replaced by markers/restructured text; 1
  * (`representation.representation`) replaced by the 22-key broker-text
@@ -303,8 +313,10 @@ export const CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED = "CONTRACT_PROJECTION_FI
  * sentinels in BOTH `TEST` and `PRODUCTION` until a separately authorized
  * Test-only provisioning pass creates them -- NOT authorized or performed
  * this session. No GHL field of any kind was created, modified, or
- * deleted for `PRODUCTION`, which carries the sentinel for all 112 keys,
- * unconditionally.
+ * deleted for `PRODUCTION`, which carried the sentinel for all 112 keys,
+ * unconditionally, as of that repair (now 118 after INV-67 Phase 2B added
+ * six more -- see the paragraph above; `PRODUCTION` remains sentinel-filled
+ * for every key, unconditionally, regardless of count).
  */
 const CONTRACT_PROJECTION_FIELD_KEYS = [
   // -- 27 retained, UNCHANGED single-TEXT keys (29 minus 2 retired by the
@@ -318,6 +330,8 @@ const CONTRACT_PROJECTION_FIELD_KEYS = [
   "propertyLegalDescription.addition",
   "propertyLegalDescription.county",
   "propertyLegalDescription.exclusions",
+  // -- +1 retained key, INV-67 Phase 2B (Product Owner ruling) --
+  "propertyLegalDescription.legalMunicipality",
   "earnestMoneyOption.escrowAgentName",
   "earnestMoneyOption.escrowAgentAddress",
   "earnestMoneyOption.earnestMoney",
@@ -342,6 +356,9 @@ const CONTRACT_PROJECTION_FIELD_KEYS = [
   "additional_earnest_money_days_text",
   "closing_date_month_day_text",
   "closing_date_year_suffix_text",
+  // -- +2 transport-only keys, INV-67 Phase 2B --
+  "sales_price_amount_text",
+  "financing_sum_amount_text",
   // -- 48 checkbox markers ("X" | "") --
   "lease_residential_mark",
   "lease_fixture_mark",
@@ -391,12 +408,17 @@ const CONTRACT_PROJECTION_FIELD_KEYS = [
   "addenda_non_realty_items_mark",
   "addenda_back_up_contract_mark",
   "addenda_mineral_reservation_mark",
+  // -- +2 checkbox markers, INV-67 Phase 2B --
+  "district_notices_mark",
+  "other_addenda_mark",
   // -- 11 restructured contract-text keys --
   "lease_nrl_terminate_within_days_text",
   "survey_opt1_seller_furnish_days_text",
   "survey_opt2_buyer_obtain_days_text",
   "survey_opt3_seller_furnish_days_text",
   "sdn_deliver_within_days_text",
+  // -- +1 checkbox-adjacent text key, INV-67 Phase 2B --
+  "as_is_repairs_text",
   "water_deliver_within_days_text",
   "water_source_text",
   "spbb_dollar_amount_text",
@@ -744,6 +766,25 @@ const TEST: GhlConfig = {
     "additional_earnest_money_days_text": "b26q2D3hlm3Z1YUxerbX",
     "closing_date_month_day_text": "RAghy4JYlTPwXwnGEuN4",
     "closing_date_year_suffix_text": "y6TaYNpbz0xNbDVQMcwg",
+    // -- Batch 5 (INV-67 Phase 2B, 6 new keys: propertyLegalDescription.
+    //    legalMunicipality, sales_price_amount_text,
+    //    financing_sum_amount_text, as_is_repairs_text,
+    //    district_notices_mark, other_addenda_mark) -- NOT YET PROVISIONED.
+    //    Explicit sentinel entries (redundant with the
+    //    `...sentinelContractProjectionFields()` spread above, which
+    //    already fills every key in `CONTRACT_PROJECTION_FIELD_KEYS` this
+    //    isn't otherwise overridden for -- listed here anyway for the same
+    //    documentation clarity every prior batch's entries provide).
+    //    `scripts/inv67-create-batch5-fields.cjs` (dry-run only, not
+    //    applied this session) is the narrowly-scoped provisioning script
+    //    for exactly these 6 fields. Replace these 6 lines with real ids
+    //    once that script is separately authorized and run with --apply.
+    "propertyLegalDescription.legalMunicipality": CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+    "sales_price_amount_text": CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+    "financing_sum_amount_text": CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+    "as_is_repairs_text": CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+    "district_notices_mark": CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+    "other_addenda_mark": CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
     // -- Batch 1: 48 checkbox-marker keys, provisioned and readback-
     //    verified live in GHL Test 2026-09-14 --
     "lease_residential_mark": "aScwbIAJRuV3cFiKS09E",
@@ -846,7 +887,7 @@ const TEST: GhlConfig = {
   // / 0 conflict), confirming the id below is the SAME field, not a
   // second one. Deliberately NOT a member of `CONTRACT_PROJECTION_FIELD_KEYS`
   // -- see this field's own doc comment on the `GhlConfig` interface above:
-  // this is a transport/control field, never one of the 112 TREC
+  // this is a transport/control field, never one of the 118 TREC
   // projection keys. The live fail-closed gate
   // (`evaluateSellerSigningPreWriteReadiness`'s field-provisioned check,
   // `contract-ghl-projection-model.ts`) now passes this ONE precondition
