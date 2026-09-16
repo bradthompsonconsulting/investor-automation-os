@@ -1498,3 +1498,65 @@ not by this PR). Does not touch any template or workflow. Does not create
 a draft. Does not send anything. Does not touch Production, Linear,
 INV-66, or Board #10. Does not mark INV-67 complete. PR opened for review;
 not merged.
+
+## Template-placement manifest regeneration -- 115 placements / 112 keys (this session)
+
+**What this is.** `docs/INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md` -- frozen
+since the original V1 build, untouched through PRs #59-#63 -- has been
+regenerated for the corrected 112-key structure. Count reconciliation: 113
+old placements - 2 retired (`earnestMoneyOption.additionalEarnestMoney`,
+`closingPossession.closingDate`) + 4 new transport-only placements = **115**;
+110 old unique keys - 2 + 4 = **112**, exactly matching
+`CONTRACT_PROJECTION_FIELD_KEYS.length`. The 108 unchanged rows were
+carried forward programmatically (parsed from the prior manifest's own
+committed table, never re-typed by hand) to eliminate transcription risk;
+the 2 retired rows' printed TREC language was independently re-verified
+against a fresh `pdftotext -layout` extraction of the source PDF this
+session. Repository/document work only -- zero GHL mutation, zero
+template mutation (source and clone both untouched), zero draft, zero
+send.
+
+**New validator** (`app/scripts/test-inv67-template-placement-manifest.cjs`,
+new, network-free) parses the manifest's own markdown table and cross-
+checks it against `CONTRACT_PROJECTION_FIELD_KEYS`/`CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS`/
+`CONTRACT_PROJECTION_RETIRED_KEYS` and the committed `TEST.contractProjectionFields`
+map -- 60/60, covering row/key counts, exact id/fieldKey/merge-tag matches,
+zero sentinels, zero Production/source-template ids, zero retired keys,
+the four new keys' exact verified ids, the three repeated-destination
+keys' exact duplication, zero forbidden fields (intermediary, Paragraph 8,
+city/state/zip broker split, buyerSignerName/Role, possessionDetails,
+Contract Seller Count, Contract Draft Request), contiguous ordinals,
+non-decreasing page order, and a closed readiness-classification set.
+
+**Readiness reclassification (not copied from the old count).** The four
+new placements were independently evaluated: the two earnest-money splits
+(ordinals 19-20) sit on two separate, generously-bounded printed lines and
+are classified **Ready**; the two closing-date splits (ordinals 53-54)
+inherit the SAME tightly-packed single-line layout that made the original
+combined placement Visual judgment, and remain **Visual judgment** for
+that reason. Recalculated totals: **91 Ready / 24 Visual judgment / 0
+Blocked** (was 90/23/0).
+
+**Code map:**
+
+| File | Role |
+|---|---|
+| `docs/INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md` | Regenerated -- 115 rows, 112 unique keys, new front matter, updated formatting standard and execution batches |
+| `app/scripts/test-inv67-template-placement-manifest.cjs` (new) | Network-free manifest validator, 60/60 |
+| `app/package.json` | `test:inv67-template-placement-manifest` script entry |
+
+**Test evidence.** `test:inv67-template-placement-manifest` 60/60 (new).
+`test:contract-ghl-projection`, `test:contract-ghl-transport-formatting`
+unaffected (this session touches no application code). Identifier
+boundary green (10/10) -- the manifest lives outside the identifier-
+boundary detector's scanned tree (`docs/`), and no id appears anywhere
+except already-approved `app/shared/ghl-config.ts`-sourced values quoted
+for cross-reference. Full repository suite (every `scripts/test-*.cjs`)
+re-run clean. `tsc -b --force` clean. `pnpm --dir app build` clean.
+
+**What this session does NOT do.** Does not touch either template (source
+`6aa417de09c51fa0927e77cd` or clone `6aa8cd5958e1a1e2c804c80b`). Does not
+place any field in GHL's template editor -- the manifest remains planning
+authority only. Does not create a draft. Does not send anything. Does not
+touch Production, Linear, INV-66, or Board #10. Does not mark INV-67
+complete. Does not begin Board #10. PR opened for review; not merged.
