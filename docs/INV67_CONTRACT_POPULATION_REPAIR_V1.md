@@ -1425,5 +1425,76 @@ modify, or delete any GHL field. Does not wire any id into
 frozen until all four fields are provisioned and wired, per its own
 governing note. Does not touch any template or workflow. Does not create a
 draft. Does not send anything. Does not touch Production, Linear, INV-66,
-or Board #10. Does not mark INV-67 complete. PR opened for review; not
-merged.
+or Board #10. Does not mark INV-67 complete. **STALE as of "Batch 4
+Test-ID wiring" below -- the apply happened and the ids ARE wired.** PR
+opened for review; not merged.
+
+## Batch 4 Test-ID wiring -- 112/112 TEST projection ids real (this session)
+
+**What this is.** A separately authorized live GHL Test apply
+(`scripts/inv67-create-transport-only-fields-batch4.cjs --apply`, against
+the approved Test location `SoTgVoaFGHtBdRFvXWQV`) created the four
+remaining `CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS` fields, followed by
+this repository-wiring PR. **Test only. Production untouched. Zero GHL
+mutations in this PR** -- the fields already exist from the prior
+authorized apply; this PR only edits committed configuration and tests.
+
+**Live apply evidence.** Opportunity-field count went from 148 to 153
+across this session (149 after the Seller Count apply, then 153 after this
+Batch 4 apply -- exactly +4). All four fields independently readback-
+verified (a separate GET, not the provisioning script's own internal
+confirmation): name, fieldKey, dataType `TEXT`, model `opportunity`, and
+parentId `sGP3pbDQFN7fXS62MAgA` (the same canonical Opportunity Details
+anchor every other INV-67 field resolves from) all confirmed exact for
+every field. A subsequent second dry run classified all four "exact
+existing" (0 create / 4 reuse / 0 conflict), confirming these are the SAME
+four fields, never duplicates.
+
+| Key | ID | Name | fieldKey |
+|---|---|---|---|
+| `additional_earnest_money_amount_text` | `y6dsY9ckRDEeVnF413FX` | Contract Additional Earnest Money Amount | `opportunity.contract_additional_earnest_money_amount` |
+| `additional_earnest_money_days_text` | `b26q2D3hlm3Z1YUxerbX` | Contract Additional Earnest Money Days | `opportunity.contract_additional_earnest_money_days` |
+| `closing_date_month_day_text` | `RAghy4JYlTPwXwnGEuN4` | Contract Closing Date Month Day | `opportunity.contract_closing_date_month_day` |
+| `closing_date_year_suffix_text` | `y6TaYNpbz0xNbDVQMcwg` | Contract Closing Date Year Suffix | `opportunity.contract_closing_date_year_suffix` |
+
+**Configuration.** `TEST.contractProjectionFields` now carries a real id
+for all four keys above (`app/shared/ghl-config.ts`).
+`PRODUCTION.contractProjectionFields` remains exactly
+`sentinelContractProjectionFields()`, unaffected. **TEST now has ZERO
+projection sentinels -- all 112 live `CONTRACT_PROJECTION_FIELD_KEYS` carry
+a real id.** Production remains 112/112 sentinel-filled, unconditionally.
+
+**Effect on the live gate.** A complete projection plan in Test can now
+resolve a real, non-sentinel id for every one of the 112 keys -- no
+provisioning sentinel would block a live projection write in Test. This is
+independent of, and does not by itself authorize, an actual write, a
+draft, or a send -- the Seller Count field's own gate (already live-
+capable), Effective Date, and the recipient-confirmation gate remain
+exactly as previously scoped.
+
+**Code map:**
+
+| File | Role |
+|---|---|
+| `app/shared/ghl-config.ts` | `TEST.contractProjectionFields` wired for all four keys; `PRODUCTION.contractProjectionFields` unchanged |
+| `app/scripts/test-contract-ghl-projection.cjs` | Extended -- TEST carries a real id for all 112 keys (zero sentinels), a Batch 4 key-by-key reference-id mapping proof, no duplicate/no collision with Seller Count or Contract Draft Request, and a direct "complete plan can resolve all 112 ids" proof |
+
+**Test evidence.** `test:contract-ghl-projection` 188/188 (was 178).
+`test:inv67-transport-fields-batch4-script` 88/88, `test:contract-ghl-transport-formatting`
+54/54, `test:contract-draft-request` 104/104, `test:contract-workspace-wiring`
+100/100 -- all unaffected (none reference the live config value directly).
+Identifier boundary green (10/10) -- the four new ids live only in their
+approved home, `app/shared/ghl-config.ts`. Full repository suite (every
+`scripts/test-*.cjs`) re-run clean. `tsc -b --force` clean.
+`pnpm --dir app build` clean. `CONTRACT_PROJECTION_FIELD_KEYS` (112),
+`CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS` (4, same order), and
+`CONTRACT_PROJECTION_RETIRED_KEYS` (21) all unaffected. Manifest hash
+unchanged; `docs/INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md` itself untouched
+-- its regeneration is the next, separately gated step.
+
+**What this PR does NOT do.** Does not create, modify, or delete any GHL
+field (the fields were created by a prior, separately authorized apply,
+not by this PR). Does not touch any template or workflow. Does not create
+a draft. Does not send anything. Does not touch Production, Linear,
+INV-66, or Board #10. Does not mark INV-67 complete. PR opened for review;
+not merged.

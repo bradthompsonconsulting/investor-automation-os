@@ -98,7 +98,7 @@ const {
   sellerCountTransportValue,
 } = require(path.join(TMP, 'contract-seller-signing-model.js'));
 
-const FLOOR = 178;
+const FLOOR = 188;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -666,28 +666,27 @@ checkTrue(
   // repair, GHL Test provisioning, 2026-09-14/15 -- were all created live and
   // readback-verified, then wired in with their real ids.
   //
-  // COMPOUND TEXT-DESTINATION REPAIR (this session) retires 2 of the
-  // original 29 retained keys from template projection -- their real TEST
-  // ids are simply no longer referenced by `contractProjectionFields`
-  // (Option A: no audit-only writer). The 4 new transport-only keys are
-  // NOT YET PROVISIONED -- they remain sentinel-filled pending a separately
-  // authorized future provisioning pass. Net: 108 of the (formerly 110)
-  // live projection keys carry a real TEST id, byte-for-byte unchanged;
-  // exactly 4 keys (the new transport-only ones) remain sentinel.
+  // COMPOUND TEXT-DESTINATION REPAIR retired 2 of the original 29 retained
+  // keys from template projection -- their real TEST ids are simply no
+  // longer referenced by `contractProjectionFields` (Option A: no audit-
+  // only writer). BATCH 4 (this session) provisioned and wired in the 4
+  // new transport-only keys' real TEST ids. Net: ALL 112 of the live
+  // projection keys now carry a real TEST id -- zero sentinels remain.
   check(
-    'TEST carries a REAL id for exactly 108 keys: the 27 retained + the 48 Batch 1 markers + the 11 Batch 2 contract-text keys + the 22 Batch 3 broker-text keys',
+    'TEST carries a REAL id for exactly 112 keys: the 27 retained + the 48 Batch 1 markers + the 11 Batch 2 contract-text keys + the 22 Batch 3 broker-text keys + the 4 Batch 4 transport-only keys',
     [...testRealIdKeys].sort(),
-    [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS, ...CHECKBOX_MARKER_KEYS, ...CHECKBOX_TEXT_KEYS, ...BROKER_TEXT_KEYS].sort(),
+    [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS, ...CHECKBOX_MARKER_KEYS, ...CHECKBOX_TEXT_KEYS, ...BROKER_TEXT_KEYS, ...CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS].sort(),
   );
   check('exactly 48 of those real-id keys are CHECKBOX_MARKER_KEYS', testRealIdKeys.filter((k) => CHECKBOX_MARKER_KEYS.includes(k)).length, 48);
   check('exactly 11 of those real-id keys are CHECKBOX_TEXT_KEYS', testRealIdKeys.filter((k) => CHECKBOX_TEXT_KEYS.includes(k)).length, 11);
   check('exactly 22 of those real-id keys are BROKER_TEXT_KEYS', testRealIdKeys.filter((k) => BROKER_TEXT_KEYS.includes(k)).length, 22);
   check('exactly 27 of those real-id keys are the retained document-line keys', testRealIdKeys.filter((k) => CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.includes(k)).length, 27);
+  check('exactly 4 of those real-id keys are CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS (Batch 4)', testRealIdKeys.filter((k) => CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.includes(k)).length, 4);
   checkTrue(
-    'all 108 real-id entries are non-empty, non-whitespace, and never the sentinel string',
+    'all 112 real-id entries are non-empty, non-whitespace, and never the sentinel string',
     testRealIdEntries.every((e) => e.id.trim().length > 0 && e.id !== 'CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED'),
   );
-  check('all 108 real ids are themselves unique (no id reused across two keys, across all groups)', new Set(testRealIdEntries.map((e) => e.id)).size, 108);
+  check('all 112 real ids are themselves unique (no id reused across two keys, across all groups)', new Set(testRealIdEntries.map((e) => e.id)).size, 112);
   checkTrue(
     'none of the 3 repeated-destination markers (lease_residential_mark, lease_fixture_mark, possession_leaseback_mark) is missing its real id',
     Object.keys(CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS).every((k) => testRealIdKeys.includes(k)),
@@ -829,19 +828,43 @@ checkTrue(
     );
   }
 
-  // Compound text-destination repair -- exactly 4 keys remain sentinel-
-  // filled in TEST (the four new transport-only keys, not yet
-  // provisioned); the two retired compound keys are correctly ABSENT from
-  // CONTRACT_PROJECTION_FIELD_KEYS entirely (checked earlier), so they
-  // never appear in `sentinelKeys` either -- retirement and
-  // not-yet-provisioned are deliberately distinct states.
+  // Batch 4 (this session) provisioned the last 4 sentinel-filled keys --
+  // TEST now has ZERO projection sentinels; every one of the 112 live
+  // projection keys carries a real id. The two retired compound keys are
+  // correctly ABSENT from CONTRACT_PROJECTION_FIELD_KEYS entirely (checked
+  // earlier), so they never appear in `sentinelKeys` either.
   const sentinelKeys = CONTRACT_PROJECTION_FIELD_KEYS.filter((k) => !testRealIdKeys.includes(k));
-  check(
-    'exactly the 4 new transport-only keys remain sentinel-filled in TEST -- everything else (108 keys) is fully provisioned',
-    [...sentinelKeys].sort(),
-    [...CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS].sort(),
-  );
+  check('TEST has ZERO projection sentinels remaining -- all 112 live projection keys carry a real id', sentinelKeys, []);
   checkTrue('none of the 21 retired keys re-enters the live TEST real-id map', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !testRealIdKeys.includes(k)));
+  checkTrue(
+    'a complete projection plan (all 112 CONTRACT_PROJECTION_FIELD_KEYS) can now resolve a real, non-sentinel TEST id for every single key -- no provisioning sentinel would block a live write',
+    CONTRACT_PROJECTION_FIELD_KEYS.every((k) => testRealIdKeys.includes(k)),
+  );
+
+  // Batch 4 (4 CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS) was provisioned
+  // live in GHL Test (`scripts/inv67-create-transport-only-fields-batch4.cjs
+  // --apply`, 2026-09-16, same location and canonical parentId) -- 149 ->
+  // 153 existing Opportunity fields, all 4 created and independently
+  // readback-verified (a separate GET, not the provisioning script's own
+  // internal confirmation), then a second dry run confirmed 0 create / 4
+  // exact-existing-reuse / 0 conflict before these 4 real ids were wired
+  // in. Full key-by-key mapping proof, not key presence alone.
+  const BATCH4_APPROVED_TRANSPORT_ONLY_IDS = {
+    additional_earnest_money_amount_text: 'y6dsY9ckRDEeVnF413FX',
+    additional_earnest_money_days_text: 'b26q2D3hlm3Z1YUxerbX',
+    closing_date_month_day_text: 'RAghy4JYlTPwXwnGEuN4',
+    closing_date_year_suffix_text: 'y6TaYNpbz0xNbDVQMcwg',
+  };
+  check('BATCH4_APPROVED_TRANSPORT_ONLY_IDS itself names exactly the 4 transport-only keys -- no missing or extra key in the reference set', [...Object.keys(BATCH4_APPROVED_TRANSPORT_ONLY_IDS)].sort(), [...CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS].sort());
+  check('the 4 approved Batch 4 reference ids are themselves unique', new Set(Object.values(BATCH4_APPROVED_TRANSPORT_ONLY_IDS)).size, 4);
+  {
+    const observedBatch4Ids = Object.fromEntries(CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
+    check(
+      'every one of the 4 CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS maps to its EXACT verified, Brad-authorized Batch 4 id in TEST -- full 4-key mapping proof',
+      observedBatch4Ids,
+      BATCH4_APPROVED_TRANSPORT_ONLY_IDS,
+    );
+  }
 
   // Jess Gate correction: "the retained TEST ids are exactly unchanged" previously
   // checked only that each retained KEY is present with SOME id -- it could not have
@@ -893,19 +916,14 @@ checkTrue(
     );
   }
 
-  // The 4 new transport-only keys must be sentinel-filled in TEST (not yet
-  // provisioned -- no field-creation was authorized or performed this
-  // session). They deliberately carry NO explicit literal line in
-  // `TEST.contractProjectionFields` (see that object's own comment) --
-  // their sentinel value comes purely from the `...sentinelContractProjectionFields()`
-  // spread, which is exactly why they are absent from `testRealIdEntries`
-  // (a regex over explicit `"key": "value"` lines) and therefore already
-  // fully proven sentinel by the `sentinelKeys` check above; no further
-  // check is needed here.
+  // The 4 new transport-only keys now carry a real id (Batch 4, this
+  // session, proven key-by-key above) -- they DO appear as explicit
+  // literal lines in `TEST.contractProjectionFields` now, unlike before
+  // Batch 4 when they were sentinel-filled purely via the
+  // `...sentinelContractProjectionFields()` spread.
 
-  // Production must remain fully sentinel-filled for all 112 keys -- Batch 1/2/3's
-  // live Test provisioning, and this session's transport-only key additions, must
-  // never leak into the PRODUCTION config block.
+  // Production must remain fully sentinel-filled for all 112 keys -- Batch 1/2/3/4's
+  // live Test provisioning must never leak into the PRODUCTION config block.
   const prodSentinelMatch = configSrc.match(/const PRODUCTION: GhlConfig = \{[\s\S]*?contractProjectionFields: sentinelContractProjectionFields\(\),[\s\S]*?contractDraftRequest: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,/);
   checkTrue('PRODUCTION.contractProjectionFields is still exactly `sentinelContractProjectionFields()` -- untouched by Batch 1/2/3 or this session\'s Test wiring', !!prodSentinelMatch);
   checkTrue('PRODUCTION.contractDraftRequest is still exactly the sentinel constant', !!prodSentinelMatch);
@@ -935,12 +953,24 @@ checkTrue(
     SELLER_COUNT_TEST_ID !== 'GlbJxxrxnvMkwJSRNUwI',
   );
   checkTrue(
-    'the Test Seller Count id does not collide with any of the 108 real projection-field ids already wired in TEST',
+    'the Test Seller Count id does not collide with any of the 112 real projection-field ids wired in TEST',
     !testRealIdEntries.some((e) => e.id === SELLER_COUNT_TEST_ID),
   );
   checkTrue(
     'Contract Seller Count remains OUTSIDE CONTRACT_PROJECTION_FIELD_KEYS -- still exactly 112, unaffected by the Test wiring',
     !CONTRACT_PROJECTION_FIELD_KEYS.includes('contractSellerCount') && CONTRACT_PROJECTION_FIELD_KEYS.length === 112,
+  );
+
+  // Batch 4 Test-ID wiring (this session) -- no collision with Seller
+  // Count, Contract Draft Request, or any of the other 108 projection ids.
+  const BATCH4_IDS = ['y6dsY9ckRDEeVnF413FX', 'b26q2D3hlm3Z1YUxerbX', 'RAghy4JYlTPwXwnGEuN4', 'y6TaYNpbz0xNbDVQMcwg'];
+  checkTrue('every Batch 4 id appears in the config file EXACTLY ONCE -- never duplicated', BATCH4_IDS.every((id) => (configSrc.match(new RegExp(id, 'g')) || []).length === 1));
+  check('the 4 Batch 4 ids are mutually unique', new Set(BATCH4_IDS).size, 4);
+  checkTrue('none of the 4 Batch 4 ids collides with TEST.contractSellerCountField', !BATCH4_IDS.includes(SELLER_COUNT_TEST_ID));
+  checkTrue('none of the 4 Batch 4 ids collides with TEST.contractDraftRequest', !BATCH4_IDS.includes('GlbJxxrxnvMkwJSRNUwI'));
+  checkTrue(
+    'none of the 4 Batch 4 ids collides with any of the other 108 (non-Batch-4) real projection-field ids in TEST',
+    testRealIdEntries.filter((e) => !CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.includes(e.key)).every((e) => !BATCH4_IDS.includes(e.id)),
   );
 }
 
