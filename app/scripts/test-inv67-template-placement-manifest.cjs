@@ -76,7 +76,7 @@ const {
   CONTRACT_PROJECTION_RETIRED_KEYS,
 } = require(path.join(TMP, 'contract-ghl-projection-model.js'));
 
-const FLOOR = 320;
+const FLOOR = 327;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -509,6 +509,22 @@ const PAGE_PARAGRAPH_ANCHORS = {
   '12||Header': 'Page 12 of 12',
 };
 
+// PDF-anchor comparison normalization (Jess correction, poppler-version
+// portability fix). Different pdftotext builds (this repo's local 4.00 vs.
+// Spock's 24.02.0) can legitimately emit different Unicode punctuation for
+// the SAME printed character (curly vs. straight quotes/apostrophes) and
+// different whitespace runs for the same layout gap. This normalization is
+// used ONLY for per-page anchor matching below -- it must never be applied
+// to manifest rows, IDs, keys, merge tags, counts, or any other
+// exact-equality proof in this file.
+function normalizeAnchorText(s) {
+  return s
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 checkTrue(
   'every distinct (page, paragraph) pair actually used in the manifest has a validator-owned anchor entry',
   [...new Set(parsed.map((r) => `${r.page}||${r.para}`))].every((k) => k in PAGE_PARAGRAPH_ANCHORS),
@@ -542,10 +558,34 @@ checkTrue(
 );
 
 if (pdftotextAvailable) {
+  // Portability self-proofs for normalizeAnchorText itself, run once,
+  // independent of any live PDF extraction -- these must hold on ANY
+  // poppler build, since they test the function's own logic, not its input.
+  checkTrue(
+    'normalizeAnchorText: straight and curly apostrophes normalize identically',
+    normalizeAnchorText("Seller's agent") === normalizeAnchorText('Seller’s agent')
+      && normalizeAnchorText("Seller's agent") === normalizeAnchorText('Seller‘s agent'),
+  );
+  checkTrue(
+    'normalizeAnchorText: straight and curly quotation marks normalize identically',
+    normalizeAnchorText('the "Property"') === normalizeAnchorText('the “Property”')
+      && normalizeAnchorText('the "Property"') === normalizeAnchorText('the ”Property“'),
+  );
+  checkTrue(
+    'normalizeAnchorText: single and repeated spaces/newlines/tabs normalize identically',
+    normalizeAnchorText('A. Cash portion of Sales Price')
+      === normalizeAnchorText('A.  Cash\n\nportion\tof   Sales\r\nPrice')
+      && normalizeAnchorText('  A. Cash portion of Sales Price  ') === normalizeAnchorText('A. Cash portion of Sales Price'),
+  );
+  checkTrue(
+    'normalizeAnchorText: a genuinely different anchor still fails (normalization does not collapse distinct text)',
+    normalizeAnchorText('A. Cash portion of Sales Price') !== normalizeAnchorText('B. Sum of all financing'),
+  );
+
   for (const [key, anchor] of Object.entries(PAGE_PARAGRAPH_ANCHORS)) {
     const [page] = key.split('||');
-    const text = getPageText(page);
-    checkTrue(`independent live per-page extraction of page ${page} contains the anchor for "${key}"`, text.includes(anchor));
+    const text = normalizeAnchorText(getPageText(page));
+    checkTrue(`independent live per-page extraction of page ${page} contains the anchor for "${key}" (normalized)`, text.includes(normalizeAnchorText(anchor)));
   }
   // Every row's (page, para) anchor is independently re-confirmed present
   // on that EXACT page, live, at test time -- not merely that the anchor
@@ -553,7 +593,28 @@ if (pdftotextAvailable) {
   // cites it.
   for (const r of parsed) {
     const anchor = PAGE_PARAGRAPH_ANCHORS[`${r.page}||${r.para}`];
-    checkTrue(`row ordinal ${r.ordinal} (page ${r.page}, ¶${r.para}) is confirmed present on that exact independently-extracted page`, anchor !== undefined && getPageText(r.page).includes(anchor));
+    checkTrue(
+      `row ordinal ${r.ordinal} (page ${r.page}, ¶${r.para}) is confirmed present on that exact independently-extracted page (normalized)`,
+      anchor !== undefined && normalizeAnchorText(getPageText(r.page)).includes(normalizeAnchorText(anchor)),
+    );
+  }
+
+  // Fail-closed proof: an anchor that is genuinely correct for one page must
+  // NOT be found (via the same normalized comparison) on a page it does not
+  // belong to -- normalization must never turn into an accidental substring
+  // match across pages.
+  {
+    const wrongPageChecks = [
+      { anchor: PAGE_PARAGRAPH_ANCHORS['1||1'], wrongPage: '2' },
+      { anchor: PAGE_PARAGRAPH_ANCHORS['6||9A'], wrongPage: '7' },
+      { anchor: PAGE_PARAGRAPH_ANCHORS['11||Broker Contact Information'], wrongPage: '1' },
+    ];
+    for (const { anchor, wrongPage } of wrongPageChecks) {
+      checkTrue(
+        `fail-closed: the anchor for its correct page is NOT found (even normalized) on page ${wrongPage}`,
+        !normalizeAnchorText(getPageText(wrongPage)).includes(normalizeAnchorText(anchor)),
+      );
+    }
   }
 } else {
   console.error(
