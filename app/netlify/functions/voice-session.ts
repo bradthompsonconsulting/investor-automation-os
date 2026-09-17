@@ -1,8 +1,16 @@
 import { issueOperatorSession, verifyGoogleIdentity } from "./lib/operator-auth";
 import { json, safeJsonBody } from "./lib/voice-http";
+import { voiceCapability } from "./lib/voice-provider";
 
 export const handler = async (event: any) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: json(204, null).headers, body: "" };
+  if (event.httpMethod === "GET") {
+    const capability = voiceCapability();
+    const googleClientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() ?? "";
+    return json(200, capability.enabled && googleClientId
+      ? { enabled: true, googleClientId }
+      : { enabled: false, googleClientId: null });
+  }
   if (event.httpMethod !== "POST") return json(405, { error: "Method Not Allowed" });
   try {
     const body = safeJsonBody(event);

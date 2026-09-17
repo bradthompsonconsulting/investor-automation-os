@@ -1,5 +1,15 @@
 export const VOICE_ACTION = "authorize-outbound-call" as const;
 
+/** One browser/server normalization rule for the authoritative GHL primary phone. */
+export function normalizeVoicePhone(raw: unknown): string | null {
+  const value = String(raw ?? "").trim();
+  if (/^\+1\d{10}$/.test(value)) return value;
+  const digits = value.replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return null;
+}
+
 export const VOICE_STATES = [
   "idle", "authorizing", "ready", "initiating", "ringing", "connected", "muted",
   "completed", "busy", "no-answer", "rejected", "failed", "disconnected",

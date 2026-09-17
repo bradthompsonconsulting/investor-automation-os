@@ -1,5 +1,6 @@
 import twilio from "twilio";
 import { getConfig } from "../../../shared/ghl-config";
+import { normalizeVoicePhone } from "../../../shared/voice-call-contract";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 
@@ -7,14 +8,7 @@ export type VoiceEligibility =
   | { eligible: true; contactId: string; destination: string }
   | { eligible: false; code: "invalid-phone" | "suppressed" | "suppression-unknown" | "incorrect-number" | "contact-mismatch"; reason: string };
 
-export function normalizeUsPhone(raw: unknown): string | null {
-  const value = String(raw ?? "").trim();
-  if (/^\+1\d{10}$/.test(value)) return value;
-  const digits = value.replace(/\D/g, "");
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  return null;
-}
+export const normalizeUsPhone = normalizeVoicePhone;
 
 function customFieldValue(fields: any[], id: string): string {
   const field = fields.find((candidate) => candidate?.id === id);
