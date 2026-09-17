@@ -60,7 +60,7 @@ const {
   CONTRACT_PROJECTION_RETIRED_KEYS,
 } = require(path.join(TMP, 'contract-ghl-projection-model.js'));
 
-const FLOOR = 133;
+const FLOOR = 138;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -120,6 +120,7 @@ function extractRows(src) {
     fieldKey: strip(r[8]),
     mergeTag: strip(r[9]),
     valueShape: r[11],
+    guidance: r[14],
     applicability: r[15],
     cls: r[17],
   }));
@@ -386,6 +387,36 @@ if (para3C.length === 1) {
   check('paragraph 3C is the sales_price_amount_text key', para3C[0].key, 'sales_price_amount_text');
   checkTrue('paragraph 3C\'s Source/canonical-fact text names salesPrice.salesPrice (the accepted purchase price)', para3C[0].sourceFact.includes('salesPrice.salesPrice'));
   checkTrue('paragraph 3C\'s Source/canonical-fact text cross-verifies against salesPrice.cashPortion (the SAME accepted price 3A also carries)', para3C[0].sourceFact.includes('salesPrice.cashPortion'));
+
+  // Jess re-gate #2: paragraph 3C's own placement guidance previously
+  // claimed 3A "is not independently placed" / "has no separate projected
+  // key" -- stale the moment 3A got its own reused-carrier row. Proven two
+  // ways: the exact banned phrases are gone, AND the guidance affirmatively
+  // states the current, correct facts.
+  const BANNED_3C_PHRASES = [
+    "is not independently placed",
+    "has no separate projected key",
+  ];
+  checkTrue(
+    'paragraph 3C\'s guidance no longer contains either stale banned phrase about paragraph 3A',
+    BANNED_3C_PHRASES.every((phrase) => !para3C[0].guidance.includes(phrase)),
+  );
+  checkTrue(
+    'paragraph 3C\'s guidance acknowledges paragraph 3A\'s separate reused-carrier placement',
+    para3C[0].guidance.includes('opportunity.current_offer') && /separately placed|SEPARATELY placed/.test(para3C[0].guidance),
+  );
+  checkTrue(
+    'paragraph 3C\'s guidance states no new GHL field was created for paragraph 3A',
+    /no new GHL field was created/.test(para3C[0].guidance),
+  );
+  checkTrue(
+    'paragraph 3C\'s guidance names its own key, sales_price_amount_text',
+    para3C[0].guidance.includes('sales_price_amount_text'),
+  );
+  checkTrue(
+    'paragraph 3C\'s guidance cites the existing money gate verifying both paragraphs represent the same accepted purchase price',
+    para3C[0].guidance.includes('checkSalesPriceAndFinancingSum') && /same accepted purchase price/i.test(para3C[0].guidance),
+  );
 }
 
 /* ==================================================================== */
