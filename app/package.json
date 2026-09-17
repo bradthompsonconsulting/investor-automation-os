@@ -60,13 +60,17 @@
     "test:inv67-seller-count-field-script": "node scripts/test-inv67-seller-count-field-script.cjs",
     "test:ghl-seller-count-transport-write": "node scripts/test-ghl-seller-count-transport-write.cjs",
     "test:inv67-transport-fields-batch4-script": "node scripts/test-inv67-transport-fields-batch4-script.cjs",
-    "test:inv67-template-placement-manifest": "node scripts/test-inv67-template-placement-manifest.cjs"
+    "test:inv67-template-placement-manifest": "node scripts/test-inv67-template-placement-manifest.cjs",
+    "test:voice-foundation": "node scripts/test-voice-foundation.cjs"
   },
   "dependencies": {
+    "@netlify/blobs": "^11.1.0",
+    "@twilio/voice-sdk": "^2.18.5",
     "lucide-react": "^0.453.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-router-dom": "^6.28.0"
+    "react-router-dom": "^6.28.0",
+    "twilio": "^6.1.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.3",
