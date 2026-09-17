@@ -6,23 +6,28 @@
  * summary) and cross-checks it against the SAME programmatic sources of
  * truth the manifest itself cites: `contract-ghl-projection-model.ts`'s
  * key arrays, and `shared/ghl-config.ts`'s committed `TEST.contractProjectionFields`
- * map. No GHL call, no network access, no rendering.
+ * / `TEST.opportunityFacts` maps. No GHL call, no network access, no
+ * rendering.
  *
- * INV-67 Batch 5 regeneration (118 keys / 121 placements) -- this pass:
- *  - Fixes the known CRLF row-count bug narrowly at the read/parsing
- *    boundary: `parseRow` previously trusted `/\|$/` to strip the row's
- *    trailing pipe, which never matches on a CRLF-terminated line (the
- *    real trailing character is `\r`, not `|`), leaving a spurious 20th
- *    cell and throwing "has 20 cells, expected 19" on every CRLF checkout.
- *    The fix strips a trailing `\r` before any other parsing, once, at
- *    the single point every row line is normalized.
- *  - Extracts the whole parse pipeline into `extractRows(src)` so the
- *    identical logic can run against the real checked-out file AND two
- *    synthetic re-encodings (pure LF, pure CRLF) of the same content, to
- *    prove line endings cannot alter the result.
- *  - Adds the 6 Batch 5 key/id/fieldKey mappings, and a diff against the
- *    exact prior committed manifest revision proving the 112 pre-Batch-5
- *    mappings are byte-for-byte unchanged.
+ * INV-67 Batch 5 regeneration (118 keys / 121 placements) -- fixed the
+ * known CRLF row-count bug narrowly at the read/parsing boundary
+ * (`parseRow` previously trusted `/\|$/` to strip a row's trailing pipe,
+ * which never matches on a CRLF-terminated line), extracted the parse
+ * pipeline into `extractRows(src)` for reuse against synthetic LF/CRLF
+ * re-encodings, and added the 6 Batch 5 mappings plus a diff against the
+ * exact prior committed manifest revision proving the 112 pre-Batch-5
+ * mappings are unchanged.
+ *
+ * Jess Gate correction (PR #69) -- 118 keys + 1 approved reused carrier /
+ * 122 placements. This pass models the ONE approved exception explicitly
+ * rather than weakening any exact-equality check: `uniqueKeys` (compared
+ * against `CONTRACT_PROJECTION_FIELD_KEYS`) now EXCLUDES the one reused-
+ * carrier row by construction, and that row is verified separately,
+ * end to end, against `TEST.opportunityFacts.currentOffer` -- a
+ * deliberately different config namespace than `contractProjectionFields`,
+ * never conflated with it. Also fixes the Legal Municipality row's value
+ * shape/applicability text, which previously contradicted
+ * `legalMunicipalityTransport`'s real (blank-for-unincorporated) behavior.
  */
 const { execSync } = require('child_process');
 const fs = require('fs');
@@ -55,7 +60,7 @@ const {
   CONTRACT_PROJECTION_RETIRED_KEYS,
 } = require(path.join(TMP, 'contract-ghl-projection-model.js'));
 
-const FLOOR = 102;
+const FLOOR = 133;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -107,10 +112,15 @@ function extractRows(src) {
   const parsed = rows.map((r) => ({
     ordinal: Number(r[0]),
     page: r[1],
+    para: r[2],
+    destination: r[3],
     key: strip(r[4]),
+    sourceFact: r[5],
     id: strip(r[7]),
     fieldKey: strip(r[8]),
     mergeTag: strip(r[9]),
+    valueShape: r[11],
+    applicability: r[15],
     cls: r[17],
   }));
   return { rowLines, rows, parsed };
@@ -120,29 +130,71 @@ checkTrue('the manifest file exists at its documented path', fs.existsSync(MANIF
 const manifestSrc = fs.readFileSync(MANIFEST_PATH, 'utf8');
 
 const { rowLines, rows, parsed } = extractRows(manifestSrc);
-check('exactly 121 placement rows exist', rowLines.length, 121);
+check('exactly 122 placement rows exist', rowLines.length, 122);
 // cols: 0=#,1=Page,2=Para,3=Destination,4=Key,5=SourceFact,6=DisplayName,7=ID,8=FieldKey,9=MergeTag,
 //       10=Type,11=ValueShape,12=Placements,13=FormattingRule,14=Guidance,15=Applicability,16=DuplicateNote,17=Class,18=ValidationNote
 
 /* ==================================================================== */
-/* 1-2. Row and unique-key counts                                        */
+/* The one approved reused/external carrier -- modeled explicitly,       */
+/* never as a weakening of any exact-equality check below                */
 /* ==================================================================== */
 
-const uniqueKeys = [...new Set(parsed.map((r) => r.key))];
-check('exactly 118 unique active keys exist', uniqueKeys.length, 118);
+const REUSED_CARRIER_APPROVED = {
+  'opportunityFacts.currentOffer': {
+    id: '7pmvwi6vlu74f5rLOp9M',
+    fieldKey: 'opportunity.current_offer',
+    semanticSource: 'salesPrice.cashPortion',
+    paragraph: '3A',
+  },
+};
+check('REUSED_CARRIER_APPROVED itself names exactly 1 key', Object.keys(REUSED_CARRIER_APPROVED).length, 1);
+
+const reusedCarrierRows = parsed.filter((r) => r.key in REUSED_CARRIER_APPROVED);
+const projectionRows = parsed.filter((r) => !(r.key in REUSED_CARRIER_APPROVED));
+
+checkTrue(
+  '3 (task requirement). exactly one approved external/reused carrier placement exists',
+  reusedCarrierRows.length === 1,
+);
+if (reusedCarrierRows.length === 1) {
+  const rc = reusedCarrierRows[0];
+  const expected = REUSED_CARRIER_APPROVED['opportunityFacts.currentOffer'];
+  check('the reused carrier row carries its exact verified id', rc.id, expected.id);
+  check('the reused carrier row carries its exact expected fieldKey', rc.fieldKey, expected.fieldKey);
+  check('the reused carrier row carries a merge tag referencing its exact fieldKey', rc.mergeTag.includes(expected.fieldKey), true);
+  check('the reused carrier row is TREC Paragraph 3A', rc.para, expected.paragraph);
+  checkTrue('the reused carrier row\'s Source/canonical-fact text names its semantic source (salesPrice.cashPortion)', rc.sourceFact.includes(expected.semanticSource));
+}
+
+checkTrue(
+  '4 (task requirement). no other non-projection key appears -- every row is either a real CONTRACT_PROJECTION_FIELD_KEYS entry or the one approved reused carrier',
+  parsed.every((r) => CONTRACT_PROJECTION_FIELD_KEYS.includes(r.key) || r.key in REUSED_CARRIER_APPROVED),
+);
 
 /* ==================================================================== */
-/* 3. Manifest key set exactly equals CONTRACT_PROJECTION_FIELD_KEYS     */
+/* 1-2. Row and unique-key counts (projection keys EXCLUDE the one       */
+/*      reused carrier by construction, never by exception-listing an   */
+/*      exact-equality check)                                           */
+/* ==================================================================== */
+
+const uniqueKeys = [...new Set(projectionRows.map((r) => r.key))];
+check('exactly 118 unique projection keys exist (reused carrier excluded)', uniqueKeys.length, 118);
+check('118 projection keys + 1 reused carrier = 119 unique semantic template inputs', uniqueKeys.length + reusedCarrierRows.length, 119);
+
+/* ==================================================================== */
+/* 2 (task requirement). Manifest projection-key set exactly equals      */
+/*    CONTRACT_PROJECTION_FIELD_KEYS                                     */
 /* ==================================================================== */
 
 check(
-  'the manifest key set exactly equals CONTRACT_PROJECTION_FIELD_KEYS (same 118, no missing/extra)',
+  'the manifest PROJECTION key set exactly equals CONTRACT_PROJECTION_FIELD_KEYS (same 118, no missing/extra, reused carrier never counted here)',
   [...uniqueKeys].sort(),
   [...CONTRACT_PROJECTION_FIELD_KEYS].sort(),
 );
 
 /* ==================================================================== */
-/* 4-5. Every manifest ID matches TEST config; all 118 unique             */
+/* 4-5 (mechanical). Every PROJECTION manifest ID matches TEST config;   */
+/*      all 118 unique                                                   */
 /* ==================================================================== */
 
 const configSrc = fs.readFileSync(path.join(APP, 'shared', 'ghl-config.ts'), 'utf8');
@@ -154,13 +206,37 @@ const testIdEntries = testBlockMatch
 const testIdMap = new Map(testIdEntries.map((e) => [e.key, e.id]));
 
 checkTrue(
-  'every manifest ID exactly matches the committed TEST.contractProjectionFields id for its key',
-  parsed.every((r) => testIdMap.get(r.key) === r.id),
+  'every PROJECTION manifest ID exactly matches the committed TEST.contractProjectionFields id for its key',
+  projectionRows.every((r) => testIdMap.get(r.key) === r.id),
 );
-check('all 118 manifest ids are themselves unique', new Set(parsed.map((r) => r.id)).size, 118);
+check('all 118 projection manifest ids are themselves unique', new Set(projectionRows.map((r) => r.id)).size, 118);
+checkTrue(
+  'the reused carrier\'s id never collides with any projection id',
+  reusedCarrierRows.every((r) => !projectionRows.some((p) => p.id === r.id)),
+);
 
 /* ==================================================================== */
-/* 6-7. No sentinel, no Production id                                    */
+/* The reused carrier's id independently verified against                */
+/* TEST.opportunityFacts.currentOffer -- a DIFFERENT config namespace,   */
+/* never conflated with contractProjectionFields                         */
+/* ==================================================================== */
+
+{
+  const testSectionSrc = configSrc.slice(configSrc.indexOf('const TEST: GhlConfig = {'));
+  checkTrue('shared/ghl-config.ts has a TEST: GhlConfig block', testSectionSrc.length > 0 && configSrc.indexOf('const TEST: GhlConfig = {') > -1);
+  const currentOfferMatch = testSectionSrc.match(/currentOffer:\s*"([^"]+)"/);
+  checkTrue('TEST.opportunityFacts.currentOffer is present and non-sentinel', !!currentOfferMatch);
+  if (currentOfferMatch && reusedCarrierRows.length === 1) {
+    check(
+      'the reused carrier row\'s id exactly matches the committed TEST.opportunityFacts.currentOffer id (independent cross-check)',
+      reusedCarrierRows[0].id,
+      currentOfferMatch[1],
+    );
+  }
+}
+
+/* ==================================================================== */
+/* 6-7. No sentinel, no Production id (all 122 rows)                     */
 /* ==================================================================== */
 
 const SENTINEL = 'CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED';
@@ -171,10 +247,10 @@ checkTrue('no Production/source-template id (6aa417de09c51fa0927e77cd) appears i
 /* 8-9. No retired key; the two specific retired compound keys absent    */
 /* ==================================================================== */
 
-checkTrue('no retired key appears in the manifest', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !uniqueKeys.includes(k)));
+checkTrue('no retired key appears in the manifest', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !parsed.some((r) => r.key === k)));
 checkTrue(
   'the two retired compound keys are specifically absent',
-  !uniqueKeys.includes('earnestMoneyOption.additionalEarnestMoney') && !uniqueKeys.includes('closingPossession.closingDate'),
+  !parsed.some((r) => r.key === 'earnestMoneyOption.additionalEarnestMoney') && !parsed.some((r) => r.key === 'closingPossession.closingDate'),
 );
 
 /* ==================================================================== */
@@ -199,8 +275,8 @@ for (const [key, expected] of Object.entries(BATCH4_APPROVED)) {
 }
 
 /* ==================================================================== */
-/* 4 (task requirement). All six Batch 5 key/ID/fieldKey mappings match   */
-/*    the current TEST config                                            */
+/* 9 (task requirement). All six Batch 5 key/ID/fieldKey mappings remain  */
+/*    exact                                                               */
 /* ==================================================================== */
 
 const BATCH5_APPROVED = {
@@ -224,7 +300,7 @@ for (const [key, expected] of Object.entries(BATCH5_APPROVED)) {
 }
 
 /* ==================================================================== */
-/* 5 (task requirement). All 112 pre-Batch-5 mappings remain unchanged   */
+/* 8 (task requirement). All 112 pre-Batch-5 mappings remain unchanged   */
 /*    from the exact prior committed manifest revision                   */
 /* ==================================================================== */
 
@@ -254,7 +330,7 @@ if (priorManifestSrc !== null) {
     'every pre-Batch-5 key\'s id/fieldKey/mergeTag is byte-for-byte unchanged from the prior committed revision',
     preBatch5Keys.every((k) => {
       const before = priorMap.get(k);
-      const afterRows = parsed.filter((r) => r.key === k);
+      const afterRows = projectionRows.filter((r) => r.key === k);
       return before && afterRows.every((after) => after.id === before.id && after.fieldKey === before.fieldKey && after.mergeTag === before.mergeTag);
     }),
   );
@@ -263,13 +339,13 @@ if (priorManifestSrc !== null) {
 }
 
 /* ==================================================================== */
-/* 11-12. Three approved repeated keys appear exactly twice each, same   */
-/*        id/merge tag; every other key appears exactly once             */
+/* 10 (task requirement). Three repeated destinations remain the only    */
+/*     repetitions; every other PROJECTION key appears exactly once      */
 /* ==================================================================== */
 
 const REPEATED_KEYS = ['lease_residential_mark', 'lease_fixture_mark', 'possession_leaseback_mark'];
 for (const key of REPEATED_KEYS) {
-  const matches = parsed.filter((r) => r.key === key);
+  const matches = projectionRows.filter((r) => r.key === key);
   check(`repeated key "${key}" appears exactly twice`, matches.length, 2);
   if (matches.length === 2) {
     check(`"${key}"'s two placements share the SAME id`, matches[0].id, matches[1].id);
@@ -277,16 +353,74 @@ for (const key of REPEATED_KEYS) {
   }
 }
 checkTrue(
-  'every other active key (not one of the 3 repeated keys) appears exactly once',
-  uniqueKeys.filter((k) => !REPEATED_KEYS.includes(k)).every((k) => parsed.filter((r) => r.key === k).length === 1),
+  'every other PROJECTION key (not one of the 3 repeated keys) appears exactly once',
+  uniqueKeys.filter((k) => !REPEATED_KEYS.includes(k)).every((k) => projectionRows.filter((r) => r.key === k).length === 1),
 );
-check('total placement count reconciles: 118 unique - 3 repeated + 3*2 = 121', uniqueKeys.length - REPEATED_KEYS.length + REPEATED_KEYS.length * 2, 121);
+check(
+  'total placement count reconciles: 118 projection keys - 3 repeated + 3*2 + 1 reused carrier = 122',
+  uniqueKeys.length - REPEATED_KEYS.length + REPEATED_KEYS.length * 2 + reusedCarrierRows.length,
+  122,
+);
+
+/* ==================================================================== */
+/* 5 (task requirement). Paragraphs 3A, 3B, and 3C each have their        */
+/*    required placement; 3A and 3C both represent the accepted           */
+/*    purchase price through their approved carriers                     */
+/* ==================================================================== */
+
+const para3A = parsed.filter((r) => r.para === '3A');
+const para3B = parsed.filter((r) => r.para === '3B');
+const para3C = parsed.filter((r) => r.para === '3C');
+check('paragraph 3A has exactly one placement', para3A.length, 1);
+check('paragraph 3B has exactly one placement', para3B.length, 1);
+check('paragraph 3C has exactly one placement', para3C.length, 1);
+if (para3A.length === 1) {
+  checkTrue('paragraph 3A is the approved reused carrier (Current Offer), not a new contractProjectionFields key', para3A[0].key === 'opportunityFacts.currentOffer');
+  checkTrue('paragraph 3A\'s Source/canonical-fact text names salesPrice.cashPortion (the accepted purchase price)', para3A[0].sourceFact.includes('salesPrice.cashPortion'));
+  check('paragraph 3A is classified Ready', para3A[0].cls, 'Ready');
+}
+if (para3B.length === 1) {
+  check('paragraph 3B is the financing_sum_amount_text key', para3B[0].key, 'financing_sum_amount_text');
+}
+if (para3C.length === 1) {
+  check('paragraph 3C is the sales_price_amount_text key', para3C[0].key, 'sales_price_amount_text');
+  checkTrue('paragraph 3C\'s Source/canonical-fact text names salesPrice.salesPrice (the accepted purchase price)', para3C[0].sourceFact.includes('salesPrice.salesPrice'));
+  checkTrue('paragraph 3C\'s Source/canonical-fact text cross-verifies against salesPrice.cashPortion (the SAME accepted price 3A also carries)', para3C[0].sourceFact.includes('salesPrice.cashPortion'));
+}
+
+/* ==================================================================== */
+/* 7 (task requirement). Legal Municipality's manifest behavior matches  */
+/*    current transport code -- municipality name or blank; the human-   */
+/*    facing preview sentence "Unincorporated area." is NOT transport    */
+/*    text                                                                */
+/* ==================================================================== */
+
+{
+  const legalMunicipalityRows = parsed.filter((r) => r.key === 'propertyLegalDescription.legalMunicipality');
+  check('propertyLegalDescription.legalMunicipality appears exactly once', legalMunicipalityRows.length, 1);
+  if (legalMunicipalityRows.length === 1) {
+    const row = legalMunicipalityRows[0];
+    checkTrue('Legal Municipality\'s Value Shape never claims the preview sentence "Unincorporated area." as its value', !row.valueShape.includes('Unincorporated area.'));
+    checkTrue('Legal Municipality\'s Applicability text never claims "Unincorporated area." is rendered', !row.applicability.includes('Renders "Unincorporated area."'));
+    checkTrue('Legal Municipality\'s Applicability text explicitly states blank ("") for Unincorporated', row.applicability.includes('Blank ("")'));
+    checkTrue('Legal Municipality\'s Applicability text cites the real transport function, legalMunicipalityTransport', row.applicability.includes('legalMunicipalityTransport'));
+    // Structural cross-check against the ACTUAL transport source, never
+    // merely re-asserted -- fails closed if that function's own behavior
+    // ever changes without this manifest being updated to match.
+    const transportSrc = fs.readFileSync(path.join(APP, 'src', 'lib', 'contract-ghl-transport-formatting.ts'), 'utf8');
+    const fnMatch = transportSrc.match(/export function legalMunicipalityTransport\(m: LegalMunicipalityFact\): string \{\s*return ([^;]+);\s*\}/);
+    checkTrue('legalMunicipalityTransport itself is found in contract-ghl-transport-formatting.ts', !!fnMatch);
+    if (fnMatch) {
+      checkTrue('legalMunicipalityTransport really does return "" for unincorporated (not a prose sentence)', /"unincorporated"\s*\?\s*""/.test(fnMatch[1]));
+    }
+  }
+}
 
 /* ==================================================================== */
 /* 13. All 22 broker fields remain page 11 only                          */
 /* ==================================================================== */
 
-const brokerRows = parsed.filter((r) => r.key.startsWith('seller_broker_') || r.key.startsWith('buyer_broker_'));
+const brokerRows = projectionRows.filter((r) => r.key.startsWith('seller_broker_') || r.key.startsWith('buyer_broker_'));
 check('exactly 22 broker-field rows exist', brokerRows.length, 22);
 checkTrue('every broker-field row is on page 11', brokerRows.every((r) => r.page === '11'));
 checkTrue('no non-broker key appears on page 11', parsed.filter((r) => r.page === '11').every((r) => r.key.startsWith('seller_broker_') || r.key.startsWith('buyer_broker_')));
@@ -301,35 +435,36 @@ checkTrue('no non-broker key appears on page 11', parsed.filter((r) => r.page ==
 // table) legitimately NAMES these excluded concepts without placing them.
 const rowText = rows.map((r) => r.join(' | ')).join('\n');
 const FORBIDDEN_KEY_SUBSTRINGS = ['buyerSignerName', 'buyerSignerRole', 'possessionDetails'];
-checkTrue('no buyerSignerName/buyerSignerRole/possessionDetails key appears as an actual placement row', FORBIDDEN_KEY_SUBSTRINGS.every((s) => !uniqueKeys.some((k) => k.includes(s))));
-checkTrue('representation.representation is not an active placement key', !uniqueKeys.includes('representation.representation'));
+checkTrue('no buyerSignerName/buyerSignerRole/possessionDetails key appears as an actual placement row', FORBIDDEN_KEY_SUBSTRINGS.every((s) => !parsed.some((r) => r.key.includes(s))));
+checkTrue('representation.representation is not an active placement key', !parsed.some((r) => r.key === 'representation.representation'));
 checkTrue('no row\'s own destination/guidance text places anything in the printed "Intermediary" block', !/\bIntermediary\b/.test(rowText));
-checkTrue('no city/state/ZIP broker-split field key appears (no "_city_"/"_state_"/"_zip_" broker key)', !uniqueKeys.some((k) => /_(city|state|zip)_/.test(k)));
+checkTrue('no city/state/ZIP broker-split field key appears (no "_city_"/"_state_"/"_zip_" broker key)', !parsed.some((r) => /_(city|state|zip)_/.test(r.key)));
 
 /* ==================================================================== */
 /* 15. Seller Count and Contract Draft Request absent                    */
 /* ==================================================================== */
 
-checkTrue('Contract Seller Count is not a manifest placement', !uniqueKeys.includes('contractSellerCount') && !manifestSrc.includes('gW6eD1ZgbS4UOhPWVyMm'));
+checkTrue('Contract Seller Count is not a manifest placement', !parsed.some((r) => r.key === 'contractSellerCount') && !manifestSrc.includes('gW6eD1ZgbS4UOhPWVyMm'));
 checkTrue('Contract Draft Request is not a manifest placement', !manifestSrc.includes('GlbJxxrxnvMkwJSRNUwI'));
 
 /* ==================================================================== */
-/* 16-17. Ordinals contiguous 1-121; page order never decreases          */
+/* 11 (task requirement). Ordinals contiguous 1-122                      */
 /* ==================================================================== */
 
 const sortedByOrdinal = [...parsed].sort((a, b) => a.ordinal - b.ordinal);
-check('ordinals are contiguous 1-121', sortedByOrdinal.map((r) => r.ordinal), Array.from({ length: 121 }, (_, i) => i + 1));
+check('ordinals are contiguous 1-122', sortedByOrdinal.map((r) => r.ordinal), Array.from({ length: 122 }, (_, i) => i + 1));
 checkTrue('page order never decreases across ordinals', sortedByOrdinal.every((r, i) => i === 0 || Number(r.page) >= Number(sortedByOrdinal[i - 1].page)));
 
 /* ==================================================================== */
-/* 18. Readiness classification from the approved closed set             */
+/* 13 (task requirement). Readiness totals reconcile to 122               */
 /* ==================================================================== */
 
 const APPROVED_CLASSES = new Set(['Ready', 'Visual judgment', 'Blocked']);
 checkTrue('every readiness classification is from the approved closed set', parsed.every((r) => APPROVED_CLASSES.has(r.cls)));
 check('zero rows are Blocked', parsed.filter((r) => r.cls === 'Blocked').length, 0);
-check('97 rows are Ready', parsed.filter((r) => r.cls === 'Ready').length, 97);
+check('98 rows are Ready', parsed.filter((r) => r.cls === 'Ready').length, 98);
 check('24 rows are Visual judgment', parsed.filter((r) => r.cls === 'Visual judgment').length, 24);
+check('98 + 24 + 0 = 122', parsed.filter((r) => r.cls === 'Ready').length + parsed.filter((r) => r.cls === 'Visual judgment').length + parsed.filter((r) => r.cls === 'Blocked').length, 122);
 
 /* ==================================================================== */
 /* 19. No row left without a printed destination, value shape,           */
@@ -375,7 +510,7 @@ checkTrue('every Visual-judgment row has a non-empty validation note (col 19)', 
   checkTrue('the pure-CRLF re-encoding parses successfully (does not throw) -- this is the exact bug class this fix repairs', crlfError === null);
 
   if (lfResult && crlfResult) {
-    check('LF and CRLF re-encodings produce the SAME row count', [lfResult.rowLines.length, crlfResult.rowLines.length], [121, 121]);
+    check('LF and CRLF re-encodings produce the SAME row count', [lfResult.rowLines.length, crlfResult.rowLines.length], [122, 122]);
     check('LF and CRLF re-encodings produce byte-identical parsed row/count/mapping results', JSON.stringify(lfResult.parsed), JSON.stringify(crlfResult.parsed));
   }
 
