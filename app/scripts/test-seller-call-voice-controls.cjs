@@ -1,4 +1,4 @@
-/** INV-91: offline acceptance harness for responsive dual-mode Seller Call controls. */
+/** INV-91/INV-92: offline acceptance and preservation proof for Seller Call controls. */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -72,9 +72,16 @@ check('lifecycle and failure text are announced', /role="status"/.test(component
 check('ending a call leaves disposition and callback manual', /does not select a disposition or schedule a callback/i.test(component), true);
 check('component contains no GHL write path', !/\bghl\b|DispositionControl|CallbackPopover|setCallback|setLastCall|notes\.create/.test(component), true);
 check('component contains no automatic retry loop', !/retry|setTimeout/.test(component), true);
+check('cell fallback remains outside every IAOS capability and authentication gate',
+  component.indexOf('data-testid="call-with-cell-mode"') < component.indexOf('{availability.showIaosMode ?'), true);
 check('Seller Call mounts controls with exact contact identity and primary phone', /<SellerCallVoiceControls[\s\S]*contactId=\{contactId\}[\s\S]*sellerName=\{contactName\(contact\)\}[\s\S]*sellerPhone=\{contact\.phone\}/.test(workspace), true);
 check('voice controls precede and preserve resume context', workspace.indexOf('<SellerCallVoiceControls') < workspace.indexOf('data-testid="seller-call-resume-context"'), true);
 check('existing script and outcome surfaces remain present', /<FullScriptDrawer/.test(workspace) && /data-testid="call-outcome-panel"/.test(workspace), true);
+check('call lifecycle remains isolated from script navigation state',
+  !/set(?:ActiveStage|Script|Question)|on(?:Stage|Script|Question)/.test(component), true);
+check('existing notes, callbacks, dispositions, and GHL handoffs remain owned by Seller Call',
+  /ghl\.notes\.create/.test(workspace) && /scheduleCallbackGated/.test(workspace) &&
+  /data-testid="call-outcome-panel"/.test(workspace) && /handoffToPropStream/.test(workspace), true);
 check('responsive layout switches to one column on mobile', /@media \(max-width: 767px\)[\s\S]*grid-template-columns: 1fr/.test(css), true);
 check('public bootstrap returns only enablement and Google client ID', /\{ enabled: true, googleClientId \}/.test(sessionEndpoint) && /\{ enabled: false, googleClientId: null \}/.test(sessionEndpoint), true);
 
