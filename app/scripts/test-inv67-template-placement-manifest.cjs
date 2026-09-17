@@ -76,7 +76,7 @@ const {
   CONTRACT_PROJECTION_RETIRED_KEYS,
 } = require(path.join(TMP, 'contract-ghl-projection-model.js'));
 
-const FLOOR = 312;
+const FLOOR = 320;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -285,6 +285,13 @@ for (const prefix of ['seller_broker_', 'buyer_broker_']) {
 
   checkTrue(`${prefix}firm_name_text\'s guidance places it on its OWN line, before the address`, /OWN.{0,20}line/i.test(firmName.guidance) && new RegExp(`ordinal ${address.ordinal}\\b`).test(firmName.guidance));
   checkTrue(`${prefix}address_text\'s guidance places it on the line FOLLOWING firm-name`, /FOLLOWING/i.test(address.guidance) && new RegExp(`ordinal ${firmName.ordinal}\\b`).test(address.guidance));
+  checkTrue(`${prefix}firm_name_text\'s destination does NOT contain "Address:" (Jess re-gate #1 -- the firm-name blank is not the Address blank)`, !/Address:/i.test(firmName.destination));
+  checkTrue(`${prefix}firm_name_text\'s destination names "(Broker Firm) represents"`, /\(Broker Firm\) represents/.test(firmName.destination));
+  checkTrue(`${prefix}address_text\'s destination contains "Address:"`, /Address:/i.test(address.destination));
+  checkTrue(
+    `${prefix}firm_name_text and ${prefix}address_text are distinct, consecutive printed lines (address ordinal = firm-name ordinal + 1)`,
+    address.ordinal === firmName.ordinal + 1,
+  );
   checkTrue(`${prefix}associate_name_text is asserted as a SINGLE-BLANK line`, /SINGLE-BLANK/i.test(associateName.destination) || /SINGLE-BLANK/i.test(associateName.guidance));
   checkTrue(`${prefix}team_name_text is asserted as a SINGLE-BLANK line with no license blank`, /SINGLE-BLANK/i.test(teamName.destination) || /SINGLE-BLANK/i.test(teamName.guidance));
   checkTrue(
