@@ -45,19 +45,24 @@
  *     all 110 keys -- proven directly against the committed file, not
  *     merely asserted.
  *
- * INV-67 PHASE 2B (this session) expands the live inventory from 112 to
- * exactly 118 unique keys: `propertyLegalDescription.legalMunicipality`
- * (retained, +1 -> 28), `sales_price_amount_text` /
- * `financing_sum_amount_text` (transport-only, +2 -> 6),
- * `district_notices_mark` / `other_addenda_mark` (checkbox markers, +2 ->
- * 50), `as_is_repairs_text` (checkbox-adjacent text, +1 -> 12). Broker text
- * stays 22. All 112 previously-verified TEST ids remain byte-for-byte
- * unchanged; the 6 new keys are sentinel-filled in BOTH `TEST` and
- * `PRODUCTION` pending a separately authorized Batch 5 apply
- * (`scripts/inv67-create-batch5-fields.cjs`, dry-run only, not performed
- * this session). `salesPrice.financingSum` is REMOVED from
- * `CONTRACT_PROJECTION_INVARIANT_KEYS` (it now projects, defensively
- * re-verified at $0 every sync rather than merely asserted true by source).
+ * INV-67 PHASE 2B expanded the live inventory from 112 to exactly 118
+ * unique keys: `propertyLegalDescription.legalMunicipality` (retained, +1
+ * -> 28), `sales_price_amount_text` / `financing_sum_amount_text`
+ * (transport-only, +2 -> 6), `district_notices_mark` / `other_addenda_mark`
+ * (checkbox markers, +2 -> 50), `as_is_repairs_text` (checkbox-adjacent
+ * text, +1 -> 12). Broker text stays 22. `salesPrice.financingSum` is
+ * REMOVED from `CONTRACT_PROJECTION_INVARIANT_KEYS` (it now projects,
+ * defensively re-verified at $0 every sync rather than merely asserted
+ * true by source).
+ *
+ * INV-67 BATCH 5 TEST ID WIRING (this session) wires in the 6 Phase 2B
+ * keys' real GHL Test ids (`scripts/inv67-create-batch5-fields.cjs
+ * --apply`, GHL Test, 2026-09-17, independently readback-verified). All
+ * 112 previously-verified TEST ids remain byte-for-byte unchanged; `TEST`
+ * now carries a real id for every one of the 118 live projection keys --
+ * zero sentinels remain in `TEST`. `PRODUCTION` remains fully
+ * sentinel-filled for all 118 keys, unconditionally, unaffected by this
+ * wiring.
  */
 const { execSync } = require('child_process');
 const fs = require('fs');
@@ -112,7 +117,7 @@ const {
   sellerCountTransportValue,
 } = require(path.join(TMP, 'contract-seller-signing-model.js'));
 
-const FLOOR = 298;
+const FLOOR = 308;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -1011,25 +1016,25 @@ checkTrue('CONTRACT_PROJECTION_FIELD_KEYS has no duplicate key across all five c
   // keys from template projection -- their real TEST ids are simply no
   // longer referenced by `contractProjectionFields` (Option A: no audit-
   // only writer). BATCH 4 provisioned and wired in the 4 (pre-Phase-2B)
-  // transport-only keys' real TEST ids. Net: ALL 112 of the (pre-Phase-2B)
-  // live projection keys carry a real TEST id -- INV-67 Phase 2B's 6 new
-  // keys are deliberately excluded from this reference list; they remain
-  // sentinel-filled below, pending a separately authorized Batch 5 apply.
+  // transport-only keys' real TEST ids. BATCH 5 (this session) provisioned
+  // and wired in the remaining 6 INV-67 Phase 2B keys' real TEST ids. Net:
+  // ALL 118 live projection keys carry a real TEST id -- zero sentinels
+  // remain.
   check(
-    'TEST carries a REAL id for exactly 112 keys: the 27 retained + the 48 Batch 1 markers + the 11 Batch 2 contract-text keys + the 22 Batch 3 broker-text keys + the 4 Batch 4 transport-only keys (Phase 2B\'s 6 new keys excluded -- not yet provisioned)',
+    'TEST carries a REAL id for exactly 118 keys: the 28 retained + the 50 checkbox markers + the 12 contract-text keys + the 22 broker-text keys + the 6 transport-only keys (Batch 1-5, all live)',
     [...testRealIdKeys].sort(),
-    [...PRE_PHASE_2B_RETAINED_KEYS, ...PRE_PHASE_2B_MARKER_KEYS, ...PRE_PHASE_2B_TEXT_KEYS, ...BROKER_TEXT_KEYS, ...PRE_PHASE_2B_TRANSPORT_ONLY_KEYS].sort(),
+    [...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS, ...CHECKBOX_MARKER_KEYS, ...CHECKBOX_TEXT_KEYS, ...BROKER_TEXT_KEYS, ...CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS].sort(),
   );
-  check('exactly 48 of those real-id keys are CHECKBOX_MARKER_KEYS', testRealIdKeys.filter((k) => CHECKBOX_MARKER_KEYS.includes(k)).length, 48);
-  check('exactly 11 of those real-id keys are CHECKBOX_TEXT_KEYS', testRealIdKeys.filter((k) => CHECKBOX_TEXT_KEYS.includes(k)).length, 11);
+  check('exactly 50 of those real-id keys are CHECKBOX_MARKER_KEYS', testRealIdKeys.filter((k) => CHECKBOX_MARKER_KEYS.includes(k)).length, 50);
+  check('exactly 12 of those real-id keys are CHECKBOX_TEXT_KEYS', testRealIdKeys.filter((k) => CHECKBOX_TEXT_KEYS.includes(k)).length, 12);
   check('exactly 22 of those real-id keys are BROKER_TEXT_KEYS', testRealIdKeys.filter((k) => BROKER_TEXT_KEYS.includes(k)).length, 22);
-  check('exactly 27 of those real-id keys are the retained document-line keys', testRealIdKeys.filter((k) => CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.includes(k)).length, 27);
-  check('exactly 4 of those real-id keys are CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS (Batch 4)', testRealIdKeys.filter((k) => CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.includes(k)).length, 4);
+  check('exactly 28 of those real-id keys are the retained document-line keys', testRealIdKeys.filter((k) => CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.includes(k)).length, 28);
+  check('exactly 6 of those real-id keys are CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS (Batch 4 + Batch 5)', testRealIdKeys.filter((k) => CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.includes(k)).length, 6);
   checkTrue(
-    'all 112 real-id entries are non-empty, non-whitespace, and never the sentinel string',
+    'all 118 real-id entries are non-empty, non-whitespace, and never the sentinel string',
     testRealIdEntries.every((e) => e.id.trim().length > 0 && e.id !== 'CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED'),
   );
-  check('all 112 real ids are themselves unique (no id reused across two keys, across all groups)', new Set(testRealIdEntries.map((e) => e.id)).size, 112);
+  check('all 118 real ids are themselves unique (no id reused across two keys, across all groups)', new Set(testRealIdEntries.map((e) => e.id)).size, 118);
   checkTrue(
     'none of the 3 repeated-destination markers (lease_residential_mark, lease_fixture_mark, possession_leaseback_mark) is missing its real id',
     Object.keys(CHECKBOX_MARKER_REPEATED_TEMPLATE_PLACEMENTS).every((k) => testRealIdKeys.includes(k)),
@@ -1171,26 +1176,24 @@ checkTrue('CONTRACT_PROJECTION_FIELD_KEYS has no duplicate key across all five c
     );
   }
 
-  // Batch 4 provisioned the last of the ORIGINAL 4 sentinel-filled keys --
-  // TEST had ZERO projection sentinels for those 112. INV-67 Phase 2B adds
-  // 6 MORE keys to CONTRACT_PROJECTION_FIELD_KEYS (now 118 total); those 6
-  // are deliberately sentinel-filled in TEST too, pending a separately
-  // authorized Batch 5 apply -- so `sentinelKeys` now correctly names
-  // exactly those 6, never zero. The two retired compound keys are
+  // Batch 4 provisioned the last of the ORIGINAL 4 sentinel-filled
+  // (pre-Phase-2B) keys. Batch 5 (this session) provisioned and wired in
+  // the remaining 6 INV-67 Phase 2B keys -- TEST now has ZERO projection
+  // sentinels across all 118 keys. The two retired compound keys are
   // correctly ABSENT from CONTRACT_PROJECTION_FIELD_KEYS entirely (checked
   // earlier), so they never appear in `sentinelKeys` either.
   const sentinelKeys = CONTRACT_PROJECTION_FIELD_KEYS.filter((k) => !testRealIdKeys.includes(k));
-  check('TEST has exactly 6 projection sentinels remaining -- the INV-67 Phase 2B keys, not yet provisioned (Batch 5)', [...sentinelKeys].sort(), [...PHASE_2B_NEW_KEYS].sort());
+  check('TEST has ZERO projection sentinels remaining -- all 118 keys (including the 6 Batch 5 keys) now carry a real id', sentinelKeys, []);
   checkTrue('none of the 21 retired keys re-enters the live TEST real-id map', CONTRACT_PROJECTION_RETIRED_KEYS.every((k) => !testRealIdKeys.includes(k)));
   checkTrue(
-    'a complete projection plan (all 112 PRE-PHASE-2B keys) can still resolve a real, non-sentinel TEST id for every one of them -- Phase 2B never disturbed a previously-provisioned id',
-    [...PRE_PHASE_2B_RETAINED_KEYS, ...PRE_PHASE_2B_TRANSPORT_ONLY_KEYS, ...PRE_PHASE_2B_MARKER_KEYS, ...PRE_PHASE_2B_TEXT_KEYS, ...BROKER_TEXT_KEYS].every((k) => testRealIdKeys.includes(k)),
+    'a complete projection plan (all 118 keys) can still resolve a real, non-sentinel TEST id for every one of them',
+    CONTRACT_PROJECTION_FIELD_KEYS.every((k) => testRealIdKeys.includes(k)),
   );
   checkTrue(
-    'each of the 6 new Phase 2B keys resolves to the sentinel (not a real id) in TEST -- correctly blocks a live write until Batch 5 is applied',
-    PHASE_2B_NEW_KEYS.every((k) => !testRealIdKeys.includes(k)),
+    'each of the 6 Phase 2B keys now resolves to its OWN real Batch 5 id in TEST, never the sentinel',
+    PHASE_2B_NEW_KEYS.every((k) => testRealIdKeys.includes(k)),
   );
-  check('shared/ghl-config.ts CONTRACT_PROJECTION_FIELD_KEYS total is exactly 118 (112 real-id + 6 sentinel)', configKeys.length, 118);
+  check('shared/ghl-config.ts CONTRACT_PROJECTION_FIELD_KEYS total is exactly 118 (118 real-id + 0 sentinel)', configKeys.length, 118);
 
   // Batch 4 (4 CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS) was provisioned
   // live in GHL Test (`scripts/inv67-create-transport-only-fields-batch4.cjs
@@ -1216,6 +1219,41 @@ checkTrue('CONTRACT_PROJECTION_FIELD_KEYS has no duplicate key across all five c
       BATCH4_APPROVED_TRANSPORT_ONLY_IDS,
     );
   }
+
+  // Same known-good-reference discipline as Batch 1-4's fixes above: the
+  // exact 6 ids verified live and wired in by the Batch 5 apply
+  // (`scripts/inv67-create-batch5-fields.cjs --apply`, GHL Test,
+  // 2026-09-17), checked key-by-key against every one of the 6 INV-67
+  // Phase 2B keys, spanning all four of their authoritative source
+  // categories (1 retained, 2 transport-only, 1 checkbox-text, 2 checkbox
+  // markers).
+  const BATCH5_APPROVED_IDS = {
+    'propertyLegalDescription.legalMunicipality': 'dk180zpCxZkgC44C9czO',
+    sales_price_amount_text: 'ZQsKcGBaSVdQ9Yjof04L',
+    financing_sum_amount_text: 'bI6apbMzHK4c4dz84zlo',
+    as_is_repairs_text: '0mS0zMKkOqLwPPJu31KH',
+    district_notices_mark: 'aDjS33PNq5Fjhtv4qKZz',
+    other_addenda_mark: 'MUA4VAnIzotPxSE8bQKg',
+  };
+  check('BATCH5_APPROVED_IDS itself names exactly the 6 INV-67 Phase 2B keys -- no missing or extra key in the reference set', [...Object.keys(BATCH5_APPROVED_IDS)].sort(), [...PHASE_2B_NEW_KEYS].sort());
+  check('the 6 approved Batch 5 reference ids are themselves unique', new Set(Object.values(BATCH5_APPROVED_IDS)).size, 6);
+  {
+    const observedBatch5Ids = Object.fromEntries(PHASE_2B_NEW_KEYS.map((k) => [k, (testRealIdEntries.find((e) => e.key === k) || {}).id ?? null]));
+    check(
+      'every one of the 6 INV-67 Phase 2B keys maps to its EXACT verified, Brad-authorized Batch 5 id in TEST -- full 6-key mapping proof',
+      observedBatch5Ids,
+      BATCH5_APPROVED_IDS,
+    );
+  }
+  checkTrue(
+    'the 6 Batch 5 keys remain in their correct authoritative categories: 1 retained document-line key, 2 transport-only keys, 1 checkbox-text key, 2 checkbox-marker keys',
+    CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS.includes('propertyLegalDescription.legalMunicipality') &&
+      CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.includes('sales_price_amount_text') &&
+      CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.includes('financing_sum_amount_text') &&
+      CHECKBOX_TEXT_KEYS.includes('as_is_repairs_text') &&
+      CHECKBOX_MARKER_KEYS.includes('district_notices_mark') &&
+      CHECKBOX_MARKER_KEYS.includes('other_addenda_mark'),
+  );
 
   // Jess Gate correction: "the retained TEST ids are exactly unchanged" previously
   // checked only that each retained KEY is present with SOME id -- it could not have
@@ -1322,6 +1360,20 @@ checkTrue('CONTRACT_PROJECTION_FIELD_KEYS has no duplicate key across all five c
   checkTrue(
     'none of the 4 Batch 4 ids collides with any of the other 108 (non-Batch-4) real projection-field ids in TEST',
     testRealIdEntries.filter((e) => !CONTRACT_PROJECTION_TRANSPORT_ONLY_KEYS.includes(e.key)).every((e) => !BATCH4_IDS.includes(e.id)),
+  );
+
+  // Batch 5 Test-ID wiring (this session) -- no collision with Seller
+  // Count, Contract Draft Request, Batch 4, or any of the other 112
+  // (non-Batch-5) projection ids.
+  const BATCH5_IDS = Object.values(BATCH5_APPROVED_IDS);
+  checkTrue('every Batch 5 id appears in the config file EXACTLY ONCE -- never duplicated', BATCH5_IDS.every((id) => (configSrc.match(new RegExp(id, 'g')) || []).length === 1));
+  check('the 6 Batch 5 ids are mutually unique', new Set(BATCH5_IDS).size, 6);
+  checkTrue('none of the 6 Batch 5 ids collides with TEST.contractSellerCountField', !BATCH5_IDS.includes(SELLER_COUNT_TEST_ID));
+  checkTrue('none of the 6 Batch 5 ids collides with TEST.contractDraftRequest', !BATCH5_IDS.includes('GlbJxxrxnvMkwJSRNUwI'));
+  checkTrue('none of the 6 Batch 5 ids collides with any of the 4 Batch 4 ids', BATCH5_IDS.every((id) => !BATCH4_IDS.includes(id)));
+  checkTrue(
+    'none of the 6 Batch 5 ids collides with any of the other 112 (non-Batch-5) real projection-field ids in TEST',
+    testRealIdEntries.filter((e) => !PHASE_2B_NEW_KEYS.includes(e.key)).every((e) => !BATCH5_IDS.includes(e.id)),
   );
 }
 

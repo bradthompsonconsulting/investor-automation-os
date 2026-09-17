@@ -281,11 +281,14 @@ export const CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED = "CONTRACT_PROJECTION_FI
  * + 50 `"X"`/`""` checkbox markers (48 + `district_notices_mark`/
  * `other_addenda_mark` added by Phase 2B) + 12 restructured contract-text
  * keys (11 + `as_is_repairs_text` added by Phase 2B) + 22 page-11
- * broker-text keys (11 per side, unchanged). The six Phase 2B keys remain
+ * broker-text keys (11 per side, unchanged). The six Phase 2B keys were
  * `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED` sentinels in BOTH `TEST` and
  * `PRODUCTION` until a separately authorized Batch 5 Test-only apply
- * creates them -- NOT performed by this session; see
- * `scripts/inv67-create-batch5-fields.cjs` (dry-run only, not applied).
+ * (`scripts/inv67-create-batch5-fields.cjs --apply`, GHL Test,
+ * 2026-09-17) created and independently readback-verified all six --
+ * `TEST` now carries a real id for every one of the 118 live projection
+ * keys, zero sentinels remaining in `TEST`; `PRODUCTION` remains fully
+ * sentinel-filled for all 118 keys, unconditionally, exactly as before.
  * 21 of the original 48 keys are
  * RETIRED from the live projection (14 checkbox-shaped + 1 checkbox-
  * adjacent, replaced by markers/restructured text; 1
@@ -769,22 +772,20 @@ const TEST: GhlConfig = {
     // -- Batch 5 (INV-67 Phase 2B, 6 new keys: propertyLegalDescription.
     //    legalMunicipality, sales_price_amount_text,
     //    financing_sum_amount_text, as_is_repairs_text,
-    //    district_notices_mark, other_addenda_mark) -- NOT YET PROVISIONED.
-    //    Explicit sentinel entries (redundant with the
-    //    `...sentinelContractProjectionFields()` spread above, which
-    //    already fills every key in `CONTRACT_PROJECTION_FIELD_KEYS` this
-    //    isn't otherwise overridden for -- listed here anyway for the same
-    //    documentation clarity every prior batch's entries provide).
-    //    `scripts/inv67-create-batch5-fields.cjs` (dry-run only, not
-    //    applied this session) is the narrowly-scoped provisioning script
-    //    for exactly these 6 fields. Replace these 6 lines with real ids
-    //    once that script is separately authorized and run with --apply.
-    "propertyLegalDescription.legalMunicipality": CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
-    "sales_price_amount_text": CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
-    "financing_sum_amount_text": CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
-    "as_is_repairs_text": CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
-    "district_notices_mark": CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
-    "other_addenda_mark": CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+    //    district_notices_mark, other_addenda_mark) -- provisioned live in
+    //    GHL Test (`scripts/inv67-create-batch5-fields.cjs --apply`,
+    //    2026-09-17, same location and canonical parentId) -- 153 -> 159
+    //    existing Opportunity fields, all 6 created and independently
+    //    readback-verified (name/fieldKey/dataType/model/parentId, via a
+    //    separate GET, not the provisioning script's own internal
+    //    confirmation). TEST now carries a real id for ALL 118 live
+    //    projection keys -- zero sentinels remain in TEST.
+    "propertyLegalDescription.legalMunicipality": "dk180zpCxZkgC44C9czO",
+    "sales_price_amount_text": "ZQsKcGBaSVdQ9Yjof04L",
+    "financing_sum_amount_text": "bI6apbMzHK4c4dz84zlo",
+    "as_is_repairs_text": "0mS0zMKkOqLwPPJu31KH",
+    "district_notices_mark": "aDjS33PNq5Fjhtv4qKZz",
+    "other_addenda_mark": "MUA4VAnIzotPxSE8bQKg",
     // -- Batch 1: 48 checkbox-marker keys, provisioned and readback-
     //    verified live in GHL Test 2026-09-14 --
     "lease_residential_mark": "aScwbIAJRuV3cFiKS09E",
