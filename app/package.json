@@ -61,7 +61,8 @@
     "test:ghl-seller-count-transport-write": "node scripts/test-ghl-seller-count-transport-write.cjs",
     "test:inv67-transport-fields-batch4-script": "node scripts/test-inv67-transport-fields-batch4-script.cjs",
     "test:inv67-template-placement-manifest": "node scripts/test-inv67-template-placement-manifest.cjs",
-    "test:voice-foundation": "node scripts/test-voice-foundation.cjs"
+    "test:voice-foundation": "node scripts/test-voice-foundation.cjs",
+    "test:seller-call-voice-controls": "node scripts/test-seller-call-voice-controls.cjs"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.0",

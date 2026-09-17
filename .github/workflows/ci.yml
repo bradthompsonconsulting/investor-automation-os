@@ -192,6 +192,9 @@ jobs:
       - name: Rail — 94 offline checks
         run: node app/scripts/test-rail.cjs
 
+      - name: Dual-mode Seller Call controls — 28 offline checks
+        run: node app/scripts/test-seller-call-voice-controls.cjs
+
       - name: Netlify observer — 86 offline checks
         run: node scripts/netlify-status.test.cjs
 

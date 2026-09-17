@@ -20,6 +20,7 @@ import { computeBoard8Economics, computeExpectedSpread, type Board8Economics, ty
 import { computeOfferReadiness, CATEGORY_LABEL, type ReadinessResult, type MaterialCategory, type HumanAction } from "../lib/underwriting/offer-readiness";
 import { computeNextBestQuestion, computeQuestionQueue, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { FullScriptDrawer } from "../components/FullScriptDrawer";
+import { SellerCallVoiceControls } from "../components/SellerCallVoiceControls";
 import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
 import { buildOfferReadinessInputs } from "../lib/seller-call-readiness-inputs";
 import { latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
@@ -1889,6 +1890,14 @@ export default function SellerCallWorkspace() {
           {formatAddress(contact)}{contact?.phone ? ` · ${contact.phone}` : ""}
         </div>
       </div>
+
+      {!loading && fetchError === null && contact ? (
+        <SellerCallVoiceControls
+          contactId={contactId}
+          sellerName={contactName(contact)}
+          sellerPhone={contact.phone}
+        />
+      ) : null}
 
       {/* Call context. No call-session carrier exists (see module header):
           this is a one-line framing derived from what is already known,
