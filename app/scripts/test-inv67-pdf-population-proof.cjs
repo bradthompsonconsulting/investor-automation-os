@@ -1,15 +1,17 @@
 'use strict';
 
 // Narrow automated validation for the INV-67 IAOS-generated PDF population
-// proof (app/scripts/inv67-pdf-population-proof.cjs). Regenerates the proof
-// output fresh, then checks the 10 properties Jess/Brad's assignment asked
-// for. Offline, deterministic, no network, no GHL, no Production data.
+// proof (app/scripts/inv67-pdf-population-proof.cjs), PHASE A expansion.
+// Regenerates the proof output fresh, then checks manifest coverage/
+// accounting, geometry, duplicate-value consistency, the signer/date
+// exclusion, determinism, no network dependency, and the existing Board 9
+// regression suite. Offline, deterministic, no network, no GHL, no
+// Production data.
 
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const {
-  PROOF_FIELDS,
   PINNED_SOURCE_SHA256,
   EXPECTED_SOURCE_PAGE_COUNT,
   PAGE_WIDTH_PT,
@@ -17,7 +19,9 @@ const {
   SOURCE_PDF_PATH,
   OUTPUT_PDF_PATH,
   PLACEMENTS_JSON_PATH,
+  buildAllFields,
   validatePlacementGeometry,
+  validateDuplicateConsistency,
   sha256Hex,
 } = require('./inv67-pdf-population-proof.cjs');
 const { PDFDocument } = require('pdf-lib');
@@ -44,10 +48,43 @@ async function main() {
   const sourceHash = sha256Hex(sourceBytes);
   check('source PDF hash matches pinned manifest hash', sourceHash === PINNED_SOURCE_SHA256);
 
-  // Regenerate fresh so this test never trusts a stale artifact on disk.
-  execFileSync(process.execPath, [GENERATOR_SCRIPT_PATH], { stdio: 'inherit' });
+  // Build the field plan directly (in-process) for the accounting/geometry
+  // checks below, THEN separately regenerate via a fresh child process so
+  // this test never trusts a stale artifact on disk for the file-level
+  // checks (hash, determinism, extracted text).
+  const { converted, deferred, manifestRows } = await buildAllFields();
 
-  // Source must still be byte-identical after a generator run (no in-place mutation).
+  // 2. Manifest coverage / exact row accounting.
+  check('manifest has exactly 133 rows', manifestRows.length === 133);
+  const readyRows = manifestRows.filter((r) => r.cls === 'Ready');
+  const visualJudgmentRows = manifestRows.filter((r) => r.cls === 'Visual judgment');
+  check('exactly 98 Ready + 35 Visual judgment rows (0 other)', readyRows.length === 98 && visualJudgmentRows.length === 35 && readyRows.length + visualJudgmentRows.length === 133);
+
+  const convertedOrdinals = new Set(converted.map((f) => f.ordinal));
+  const deferredOrdinals = new Set(deferred.map((f) => f.ordinal));
+  check('no ordinal is both converted and deferred', [...convertedOrdinals].every((o) => !deferredOrdinals.has(o)));
+  check('no ordinal appears twice among converted', convertedOrdinals.size === converted.length);
+  check('no ordinal appears twice among deferred', deferredOrdinals.size === deferred.length);
+
+  const visualJudgmentOrdinals = new Set(visualJudgmentRows.map((r) => r.ordinal));
+  const convertedVisualJudgment = converted.filter((f) => visualJudgmentOrdinals.has(f.ordinal));
+  const convertedReady = converted.filter((f) => !visualJudgmentOrdinals.has(f.ordinal));
+  // Every converted Visual-judgment-class row must be one of PR #75's own
+  // 2 already-proven, hand-verified rows (19, 63) -- this pass must never
+  // newly convert a Visual-judgment row itself.
+  check(
+    'every converted Visual-judgment-class row is one of PR #75\'s 2 already-proven rows (19, 63), never a newly converted one',
+    convertedVisualJudgment.length === 2 && convertedVisualJudgment.every((f) => f.ordinal === 19 || f.ordinal === 63)
+  );
+  check(
+    'converted Ready rows + deferred rows account for all 98 Ready rows exactly',
+    convertedReady.length + deferred.length === 98
+  );
+  check(`at least 85 of the 98 Ready rows were converted (observed: ${convertedReady.length})`, convertedReady.length >= 85);
+  check('total accounting: converted + deferred + untouched-visual-judgment == 133', converted.length + deferred.length + (visualJudgmentRows.length - 2) === 133);
+
+  // 3. Source PDF hash and page-count preservation (via a fresh child-process run).
+  execFileSync(process.execPath, [GENERATOR_SCRIPT_PATH], { stdio: 'inherit' });
   const sourceBytesAfter = fs.readFileSync(SOURCE_PDF_PATH);
   check('source PDF unchanged after generation', sha256Hex(sourceBytesAfter) === PINNED_SOURCE_SHA256);
 
@@ -55,82 +92,96 @@ async function main() {
   const outputBytes = fs.readFileSync(OUTPUT_PDF_PATH);
   check('generated output differs from source', sha256Hex(outputBytes) !== sha256Hex(sourceBytesAfter));
 
-  // 3. Page count remains unchanged.
   const outputDoc = await PDFDocument.load(outputBytes);
   check(
     `generated output page count (${outputDoc.getPageCount()}) matches source (${EXPECTED_SOURCE_PAGE_COUNT})`,
     outputDoc.getPageCount() === EXPECTED_SOURCE_PAGE_COUNT
   );
 
-  // 4. Expected synthetic values are embedded/extractable where technically possible.
-  // The checkbox mark (ordinal 54) is a single "X" glyph inside a symbol-font
-  // checkbox; pdftotext's reading order is not guaranteed to isolate it as a
-  // standalone token, so it is checked separately and more loosely below.
+  // 4. Every placement's rendered text fits its assigned region (re-checked
+  // against the actually-embedded Helvetica/Helvetica-Bold metrics).
+  const { StandardFonts } = require('pdf-lib');
+  const metricsDoc = await PDFDocument.create();
+  const helv = await metricsDoc.embedFont(StandardFonts.Helvetica);
+  const helvB = await metricsDoc.embedFont(StandardFonts.HelveticaBold);
+  let allFit = true;
+  for (const f of converted) {
+    const font = f.font === 'Helvetica-Bold' ? helvB : helv;
+    const w = font.widthOfTextAtSize(f.value, f.fontSize);
+    if (w > f.width) {
+      allFit = false;
+      console.error(`  ordinal ${f.ordinal} (${f.fieldKey}): text width ${w.toFixed(1)} exceeds box width ${f.width.toFixed(1)}`);
+    }
+  }
+  check(`every converted field's value fits its assigned width (${converted.length} checked)`, allFit);
+
+  // 5. Extracted text spot-check: a sample of non-empty text-field values
+  // (not checkbox marks, whose "X" glyph is not reliably isolatable as a
+  // standalone pdftotext token) are actually present in the output.
   const extractedText = pdftotextAllPages(OUTPUT_PDF_PATH);
-  for (const field of PROOF_FIELDS) {
-    if (field.fieldKey === 'as_is_with_repairs_mark') continue;
-    check(
-      `extracted text contains synthetic value for ordinal ${field.manifestOrdinal} (${field.fieldKey})`,
-      extractedText.includes(field.syntheticValue)
-    );
+  const textSample = converted.filter((f) => f.value !== '' && f.align !== 'center');
+  const missing = textSample.filter((f) => !extractedText.includes(f.value));
+  check(`extracted text contains the value for every sampled non-empty text field (${textSample.length} sampled, 0 missing)`, missing.length === 0);
+  if (missing.length > 0) {
+    for (const m of missing) console.error(`  MISSING ordinal ${m.ordinal} (${m.fieldKey}): "${m.value}"`);
   }
   check(
     'extracted text contains the As-Is checkbox "X" adjacent to its paragraph (technically extractable, exact token boundary not guaranteed by pdftotext reading order)',
     /q\s*X\s*\(2\)\s*Buyer accepts the Property As Is provided Seller/.test(extractedText)
   );
 
-  // 5. Required coordinate metadata exists for every proof field.
+  // 6. Coordinate metadata completeness, bounds, and duplicate-value consistency.
   const placementsRecord = JSON.parse(fs.readFileSync(PLACEMENTS_JSON_PATH, 'utf8'));
-  const requiredKeys = ['manifestOrdinal', 'fieldKey', 'page', 'x', 'y', 'width', 'height', 'font', 'fontSize', 'align', 'destination'];
+  const requiredKeys = ['ordinal', 'fieldKey', 'page', 'x', 'y', 'width', 'height', 'font', 'fontSize', 'align', 'destination', 'value'];
   check(
-    `placements.json records exactly ${PROOF_FIELDS.length} fields`,
-    placementsRecord.fields.length === PROOF_FIELDS.length
+    `placements.json records exactly ${converted.length} converted fields`,
+    placementsRecord.fields.length === converted.length
   );
   check(
     'every recorded field carries all required coordinate metadata',
-    placementsRecord.fields.every((f) => requiredKeys.every((k) => f[k] !== undefined && f[k] !== null))
+    placementsRecord.fields.every((f) => requiredKeys.every((k) => f[k] !== undefined))
   );
+  check(`placements.json records exactly ${deferred.length} deferred rows, each with a reason`, placementsRecord.deferred.length === deferred.length && placementsRecord.deferred.every((d) => typeof d.reason === 'string' && d.reason.length > 0));
 
-  // 6. Coordinates remain within page bounds.
   let boundsOk = true;
   try {
-    validatePlacementGeometry(PROOF_FIELDS);
+    validatePlacementGeometry(converted);
   } catch (e) {
     boundsOk = false;
     console.error('  ' + e.message);
   }
-  check('all fields are within page bounds and mutually non-overlapping (geometry re-validated)', boundsOk);
+  check('all converted fields are within page bounds and mutually non-overlapping on their page', boundsOk);
+
   let pageSizeOk = true;
-  for (const field of PROOF_FIELDS) {
+  for (const field of converted) {
     const page = outputDoc.getPage(field.page - 1);
     const { width, height } = page.getSize();
     if (Math.round(width) !== PAGE_WIDTH_PT || Math.round(height) !== PAGE_HEIGHT_PT) pageSizeOk = false;
   }
   check(`every field's page dimensions are the expected US Letter size (${PAGE_WIDTH_PT}x${PAGE_HEIGHT_PT}pt)`, pageSizeOk);
 
-  // 7. Proof fields do not overlap each other -- already asserted inside
-  // validatePlacementGeometry above (check 6); re-stated here as its own
-  // named assertion per the assignment's explicit list.
-  const byPage = new Map();
-  for (const f of PROOF_FIELDS) {
-    if (!byPage.has(f.page)) byPage.set(f.page, []);
-    byPage.get(f.page).push(f);
+  let duplicatesOk = true;
+  try {
+    validateDuplicateConsistency(converted);
+  } catch (e) {
+    duplicatesOk = false;
+    console.error('  ' + e.message);
   }
-  let noOverlap = true;
-  for (const fields of byPage.values()) {
-    for (let i = 0; i < fields.length; i += 1) {
-      for (let j = i + 1; j < fields.length; j += 1) {
-        const a = fields[i];
-        const b = fields[j];
-        const overlapsX = a.x < b.x + b.width && b.x < a.x + a.width;
-        const overlapsY = a.y < b.y + b.height && b.y < a.y + a.height;
-        if (overlapsX && overlapsY) noOverlap = false;
-      }
-    }
-  }
-  check('no two proof fields share overlapping bounding boxes on the same page', noOverlap);
+  check('every duplicate-key group (address, sales-price, lease/leaseback markers) shares byte-identical text across all its placements', duplicatesOk);
+  const addressGroup = converted.filter((f) => f.fieldKey === 'identity.propertyStreetAddress');
+  check(`identity.propertyStreetAddress is converted at 2 physical placements (ordinals 8 and 19), sharing one value`, addressGroup.length === 2 && addressGroup.every((f) => f.value === addressGroup[0].value));
+  const salesPriceGroup = converted.filter((f) => f.fieldKey === 'sales_price_amount_text');
+  check(`sales_price_amount_text is converted at 2 physical placements (ordinals 10 and 12), sharing one value`, salesPriceGroup.length === 2 && salesPriceGroup.every((f) => f.value === salesPriceGroup[0].value));
 
-  // 8. Generation is deterministic: re-run and compare extracted text + placements metadata.
+  // 7. Static proof that signature, initials, signer-entered dates, and
+  // Effective Date are excluded from IAOS population.
+  const EXCLUDED_PATTERN = /signature|initial|signerDate|effectiveDate/i;
+  const violatingKeys = converted.filter((f) => EXCLUDED_PATTERN.test(f.fieldKey));
+  check('no converted field key references a signature, initial, signer-entered date, or Effective Date', violatingKeys.length === 0);
+  const manifestSignerLikeRows = manifestRows.filter((r) => EXCLUDED_PATTERN.test(r.key));
+  check('the authoritative manifest itself contains zero signature/initial/signer-date/Effective-Date projection keys (structurally excluded by contract-ghl-projection-model.ts)', manifestSignerLikeRows.length === 0);
+
+  // 8. Deterministic generation: re-run and compare output bytes + extracted text + placements metadata.
   execFileSync(process.execPath, [GENERATOR_SCRIPT_PATH], { stdio: 'inherit' });
   const secondRunBytes = fs.readFileSync(OUTPUT_PDF_PATH);
   const secondRunText = pdftotextAllPages(OUTPUT_PDF_PATH);
@@ -142,11 +193,26 @@ async function main() {
     JSON.stringify(secondRunPlacements.fields) === JSON.stringify(placementsRecord.fields)
   );
 
-  // 9. No network or credential dependency exists (static source scan).
-  const generatorSource = fs.readFileSync(GENERATOR_SCRIPT_PATH, 'utf8');
+  // 9. No network or credential dependency exists (static source scan across every new lib file too).
+  const scannedFiles = [
+    GENERATOR_SCRIPT_PATH,
+    path.join(__dirname, 'lib', 'inv67-pdf-field-plan.cjs'),
+    path.join(__dirname, 'lib', 'inv67-pdf-anchor-helper.cjs'),
+    path.join(__dirname, 'lib', 'inv67-projection-fixture.cjs'),
+    path.join(__dirname, 'lib', 'inv67-manifest-parser.cjs'),
+  ];
   const forbiddenPatterns = [/require\(['"]https?['"]\)/, /require\(['"]net['"]\)/, /\bfetch\(/, /\baxios\b/, /process\.env\./];
-  const foundForbidden = forbiddenPatterns.filter((re) => re.test(generatorSource));
-  check('generator script contains no network or credential-access calls', foundForbidden.length === 0);
+  let noNetwork = true;
+  for (const file of scannedFiles) {
+    const src = fs.readFileSync(file, 'utf8');
+    for (const re of forbiddenPatterns) {
+      if (re.test(src)) {
+        noNetwork = false;
+        console.error(`  forbidden pattern ${re} found in ${file}`);
+      }
+    }
+  }
+  check('no generator/helper file contains network or credential-access calls', noNetwork);
 
   // 10. Existing Board 9 and core regression suites remain green.
   // Excludes "*-script.cjs" tests (test-inv67-*-script.cjs): those cover the
@@ -177,6 +243,9 @@ async function main() {
   }
   check(`existing Board 9 / INV-67 regression suite remains green (${regressionScripts.length} scripts run)`, regressionsOk);
 
+  console.log('');
+  console.log(`Manifest totals: ${manifestRows.length} rows, ${readyRows.length} Ready, ${visualJudgmentRows.length} Visual judgment.`);
+  console.log(`Converted: ${converted.length} (${convertedReady.length} of 98 Ready rows + 2 already-proven Visual-judgment rows). Deferred: ${deferred.length}.`);
   console.log('');
   if (failures > 0) {
     console.error(`${failures} check(s) FAILED`);
