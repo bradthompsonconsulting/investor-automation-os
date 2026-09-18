@@ -67,7 +67,7 @@ export const handler = async (event: any) => {
     return { statusCode: 204, headers: CORS, body: "" };
   }
 
-  if (event.httpMethod !== "GET" || event.body || event.isBase64Encoded || Object.keys(event.queryStringParameters ?? {}).some(k=>k!=="path")) return { statusCode: 403, headers: CORS, body: JSON.stringify({ error: "Writes require named operations", by: "iaos-proxy-allowlist" }) };
+  if (event.httpMethod !== "GET" || (event.body !== undefined && event.body !== null && event.body !== "") || Object.keys(event.queryStringParameters ?? {}).some(k=>k!=="path")) return { statusCode: 403, headers: CORS, body: JSON.stringify({ error: "Writes require named operations", by: "iaos-proxy-allowlist" }) };
   const raw = event.queryStringParameters?.path ?? "";
   if (!raw) {
     return {

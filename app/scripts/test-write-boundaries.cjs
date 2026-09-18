@@ -222,6 +222,68 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
 
   const proxy=require('../netlify/functions/ghl-proxy.ts').handler;
   for(const method of ['POST','PUT','PATCH','DELETE'])await check('generic proxy refuses '+method,async()=>{const before=calls.length;assert.equal((await proxy({httpMethod:method,queryStringParameters:{path:`/contacts/${contact.id}`},body:'{}'})).statusCode,403);assert.equal(calls.length,before);});
+  // Encoding metadata alone never turns a bodyless GET into a write.
+  for (const suffix of ['', '/notes']) {
+    const pathname = '/contacts/' + contact.id + suffix;
+    const base = {httpMethod:'GET', queryStringParameters:{path:pathname}};
+    for (const body of [undefined, null, '']) {
+      for (const flag of [undefined, false, true]) {
+        await check('proxy GET ' + suffix + ' empty=' + String(body) +
+          ' encoded=' + String(flag), async () => {
+          const before = {calls:calls.length, writes, blobCalls};
+          const input = {...base};
+          if (body !== undefined) input.body = body;
+          if (flag !== undefined) input.isBase64Encoded = flag;
+          const result = await proxy(input);
+          assert.equal(result.statusCode, 200, result.body);
+          assert.deepEqual(calls.slice(before.calls),
+            [{pathname, method:'GET'}]);
+          assert.equal(writes, before.writes);
+          assert.equal(blobCalls, before.blobCalls);
+        });
+      }
+    }
+    async function refused(label, extra) {
+      await check('proxy refuses ' + suffix + ' ' + label, async () => {
+        const before = {calls:calls.length, writes, blobCalls};
+        const result = await proxy({...base, ...extra});
+        assert.equal(result.statusCode, 403, result.body);
+        assert.equal(JSON.parse(result.body).by, 'iaos-proxy-allowlist');
+        assert.deepEqual({calls:calls.length, writes, blobCalls}, before);
+      });
+    }
+    for (const body of ['{}', ' ', 'e30=', 'AA==', 0, false, {}, []]) {
+      for (const flag of [false, true]) {
+        await refused('body=' + JSON.stringify(body) + ' encoded=' + flag,
+          {body, isBase64Encoded:flag});
+      }
+    }
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']) {
+      for (const flag of [false, true]) {
+        await refused(method + ' empty encoded=' + flag,
+          {httpMethod:method, body:'', isBase64Encoded:flag});
+      }
+    }
+    for (const key of ['method', 'body', 'locationId']) {
+      await refused('extra query ' + key,
+        {queryStringParameters:{path:pathname, [key]:'unexpected'}});
+    }
+    for (const key of ['locationId', 'location_id', 'locationid']) {
+      await refused('foreign location ' + key,
+        {queryStringParameters:{path:pathname + '?' + key + '=foreign'}});
+    }
+    await refused('path suffix',
+      {queryStringParameters:{path:pathname + '/forbidden'}});
+  }
+  for (const pathname of ['/proposals/templates/send', '/contacts/x/tasks']) {
+    await check('proxy keeps path retired/disallowed ' + pathname, async () => {
+      const before = {calls:calls.length, writes, blobCalls};
+      const result = await proxy({httpMethod:'GET', body:'',
+        isBase64Encoded:true, queryStringParameters:{path:pathname}});
+      assert.equal(result.statusCode, 403);
+      assert.deepEqual({calls:calls.length, writes, blobCalls}, before);
+    });
+  }
   const {requireWebhook}=require('../netlify/functions/lib/write-webhook-auth.ts');
   await check('root webhook does not inherit app session',()=>assert.throws(()=>requireWebhook(event('', '', {}),'IAOS_PHONE_LOOKUP_WEBHOOK_SECRET')));
   await check('root webhook exact dedicated secret accepted',()=>{requireWebhook({headers:{'x-iaos-secret':'offline-webhook-fixture-only-long-secret'}},'IAOS_PHONE_LOOKUP_WEBHOOK_SECRET',{IAOS_PHONE_LOOKUP_WEBHOOK_SECRET:'offline-webhook-fixture-only-long-secret'});});

@@ -377,3 +377,40 @@ This is not a live authenticated Chrome or Blob proof.
 
 Status: local uncommitted correction. No push, deployment, configuration
 change, live write, contact change, cleanup or merge.
+
+### 2026-09-18 bodyless-GET proxy correction (local only)
+
+OBSERVED: Brad's Chrome contact GET was refused with HTTP 403 and
+"Writes require named operations", by "iaos-proxy-allowlist".
+The first proxy guard returned before GHL access. The note helper stopped
+at this preflight read, before any note POST or Blob receipt operation.
+The live event.isBase64Encoded value remains INFERRED, not captured.
+Offline reproduction confirmed that the encoding flag alone rejected
+an otherwise permitted empty-body GET at base commit
+f717aa7478bfc0eb59a8dcb58d94c4896d466b9d.
+
+Correction: reject bodies other than undefined, null, or the empty string;
+encoding metadata alone is no longer a rejection reason. Non-GET methods,
+extra query keys, path allowlists and location gates remain enforced.
+Authentication, Origin, named-write handlers and retired paths are unchanged.
+
+OBSERVED: both contact and notes GETs now have regression coverage for
+absent/null/empty bodies and absent/false/true encoding flags. Nonempty
+plain/encoded and invalid-type bodies, write methods, extra query keys,
+foreign location aliases and disallowed paths refuse before upstream
+or Blob access. Successful mocked reads remain GET-only with no writes.
+
+Command: node app/scripts/test-inv95.cjs
+192 offline boundary checks passed
+INV-95 suites=26 failed=0
+exit=0
+Full literal stdout/stderr is appended to
+ evidence/inv95/origin-boundary-local.txt; prior evidence is preserved.
+Expected negative-test error messages appear in the captured stderr.
+
+This entry supersedes earlier local-status statements for this correction
+only. Local correction authorized for commit; publication and live proof
+remain pending. No live retry, note, receipt, configuration change,
+deployment, push, Production access, cleanup or merge in this work.
+The earlier Chrome helper is already marked attempted; do not retry it
+or regenerate a request for a live proof without the next explicit gate.
