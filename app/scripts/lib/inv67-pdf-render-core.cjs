@@ -17,8 +17,58 @@ const path = require('path');
 const crypto = require('crypto');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 
+// Board #9 Phase B runtime slice -- __dirname-relative asset resolution,
+// made robust to bundling depth. `__dirname` is baked in at BUNDLE time by
+// esbuild as a literal string (confirmed empirically via the Phase B
+// packaging proof: it resolves to wherever the bundled OUTPUT file
+// actually sits at runtime, NOT the original source file's location) --
+// meaning `path.join(__dirname, '..', '..', '..')` (correct for this
+// file's own real location, app/scripts/lib/) silently computes the WRONG
+// path once this file is bundled into a Netlify Function elsewhere, where
+// the source PDF (declared via netlify.toml's `included_files`) lands
+// alongside the bundle at a DIFFERENT relative depth. Rather than assume
+// one fixed depth, try a short, fixed, non-caller-influenceable list of
+// candidates in order and use the first that actually exists on disk --
+// this is deployment-topology robustness, never a caller-facing override
+// (the sealed generator API in inv67-pdf-generator.cjs still accepts no
+// source-path parameter of any kind; see that file's own header). Fails
+// closed (throws) if none exist -- never silently falls through to a
+// missing/wrong file.
 const REPO_ROOT = path.join(__dirname, '..', '..', '..');
-const CANONICAL_SOURCE_PDF_PATH = path.join(REPO_ROOT, 'docs', 'TREC Resale Home Contract.pdf');
+const SOURCE_PDF_FILENAME = 'TREC Resale Home Contract.pdf';
+const SOURCE_PDF_PATH_CANDIDATES = [
+  // 1. Local dev / test / the original proof script: this file's real
+  //    on-disk location, app/scripts/lib/ -- three levels up to repo root.
+  path.join(REPO_ROOT, 'docs', SOURCE_PDF_FILENAME),
+  // 2. Bundled Netlify Function, asset declared via `included_files` with
+  //    a path relative to the site's base dir (app/) -- lands as a
+  //    sibling `docs/` next to the bundle's own __dirname.
+  path.join(__dirname, 'docs', SOURCE_PDF_FILENAME),
+  // 3. Same, one directory level deeper (a per-function subfolder some
+  //    packaging layouts use).
+  path.join(__dirname, '..', 'docs', SOURCE_PDF_FILENAME),
+];
+
+function resolveCanonicalSourcePdfPath() {
+  // Deployer-controlled only (an environment variable set at deploy
+  // configuration time, never a request/caller parameter) -- checked
+  // first so an explicit deployment override always wins, but every
+  // candidate below still applies the same fs.existsSync fail-closed
+  // discipline; an unset env var is simply skipped, not an error.
+  const envOverride = process.env.IAOS_CANONICAL_DOCS_DIR;
+  const candidates = envOverride
+    ? [path.join(envOverride, SOURCE_PDF_FILENAME), ...SOURCE_PDF_PATH_CANDIDATES]
+    : SOURCE_PDF_PATH_CANDIDATES;
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    `Cannot locate the canonical source PDF -- tried: ${candidates.join(' | ')}. ` +
+      'Refusing to guess; none of the known deployment-topology candidates exist on disk.'
+  );
+}
+
+const CANONICAL_SOURCE_PDF_PATH = resolveCanonicalSourcePdfPath();
 
 const PINNED_SOURCE_SHA256 = '3f458518e9e01fc9c84cab420dcd0ce9793113c4b356ed5caf7a2fb1bdef2ca5';
 const EXPECTED_SOURCE_PAGE_COUNT = 12;

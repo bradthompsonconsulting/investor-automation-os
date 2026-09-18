@@ -11,10 +11,19 @@
 // already established, and binds the output to fail-closed evidence.
 //
 // REUSE, NEVER REIMPLEMENTATION:
-//   - buildFieldPlan / ROW_DERIVATIONS (inv67-pdf-field-plan.cjs) -- the ONE
-//     133-key manifest-row -> PDF-coordinate map. Not duplicated here; this
-//     file only supplies that function's one input (entriesByKey) from a
-//     real plan instead of the synthetic fixture.
+//   - buildFieldPlanFromCache (inv67-pdf-runtime-field-plan.cjs), added by
+//     Board #9 Phase B's runtime slice -- a verified-equivalent, pdfjs-free
+//     lookup over the committed inv67-pdf-geometry-cache.json, itself
+//     precomputed ONCE from the SAME buildFieldPlan / ROW_DERIVATIONS
+//     (inv67-pdf-field-plan.cjs, unmodified, still the one 133-key
+//     manifest-row -> PDF-coordinate map) the original proof script uses
+//     live. See generate-inv67-pdf-geometry-cache.cjs and
+//     test-inv67-pdf-geometry-cache.cjs for why this is safe: source PDF
+//     geometry is pinned/immutable, so deriving it live via pdfjs-dist on
+//     every server-runtime call was unnecessary work AND (per the Phase B
+//     packaging proof) a real, fragile runtime-bundling dependency
+//     (pdfjs-dist's own worker file). This generator no longer imports
+//     pdfjs-dist, directly or transitively, at all.
 //   - loadAndVerifySourcePdf / stampDeterministicMetadata /
 //     renderFieldsOntoPdf / validatePlacementGeometry /
 //     validateDuplicateConsistency / validateNoSignerControlledFields
@@ -24,7 +33,10 @@
 // WHAT'S DIFFERENT FROM THE PROOF SCRIPT, DELIBERATELY:
 //   - Input is a caller-supplied real ContractProjectionPlan, never the
 //     synthetic fixture (inv67-projection-fixture.cjs is not imported here
-//     at all).
+//     at all -- it is used only by the dev-time cache generator).
+//   - Geometry comes from the committed cache, not live pdfjs derivation --
+//     the proof script remains the live, independently-verifiable ground
+//     truth; this generator is the verified-equivalent runtime path.
 //   - FAILS CLOSED on ANY deferred row, and on plan.ok !== true. The proof
 //     script's job was to report accounting including any deferred rows;
 //     THIS generator's job is to produce an actual contract artifact for
@@ -32,8 +44,9 @@
 //     silently reported and continued past -- "zero-deferred" is an
 //     enforced precondition here, not just an observed count.
 //   - Returns bytes + an evidence record to the caller; performs no file
-//     I/O itself (no OUTPUT_DIR, no fixed output path) -- a future caller
-//     (server function, CLI, test) decides where/whether to persist.
+//     I/O itself beyond reading the pinned source PDF and the committed
+//     geometry cache (no OUTPUT_DIR, no fixed output path) -- a future
+//     caller (server function, CLI, test) decides where/whether to persist.
 //
 // OUT OF SCOPE (Phase A, per Board #9 architecture ruling, 2026-09-18):
 // no UI wiring, no ContractWorkspace edits, no GHL calls, no Netlify
@@ -42,7 +55,7 @@
 // already-computed projection plan in memory and returns PDF bytes + an
 // evidence record. It does not fetch, authorize, send, or persist anything.
 
-const { buildFieldPlan } = require('./inv67-pdf-field-plan.cjs');
+const { buildFieldPlanFromCache } = require('./inv67-pdf-runtime-field-plan.cjs');
 const {
   MANIFEST_VERSION,
   sha256Hex,
@@ -153,8 +166,9 @@ async function generatePopulatedContractPdf(args) {
   requireCompleteProjectionPlan(projectionPlan);
   const entriesByKey = new Map(projectionPlan.entries.map((e) => [e.key, e.text]));
 
-  // REUSED, unmodified -- the one 133-key manifest-row -> PDF-coordinate map.
-  const { converted, deferred, manifestRows } = await buildFieldPlan(entriesByKey);
+  // Verified-equivalent to the live, pdfjs-derived buildFieldPlan (see
+  // test-inv67-pdf-geometry-cache.cjs) -- synchronous, no pdfjs-dist.
+  const { converted, deferred, manifestRows } = buildFieldPlanFromCache(entriesByKey);
 
   if (deferred.length > 0) {
     throw new ContractPdfGenerationError(
