@@ -17,6 +17,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { PDFDocument, StandardFonts } = require('pdf-lib');
 
 const REPO_ROOT = path.join(__dirname, '..', '..', '..');
 const SOURCE_PDF_PATH = path.join(REPO_ROOT, 'docs', 'TREC Resale Home Contract.pdf');
@@ -208,6 +209,26 @@ function trailingLineBlank(items, anchorPredicate, rightMarginX, description) {
 }
 
 /**
+ * Strategy G: the blank is the LEFT portion of a line, running from a
+ * caller-supplied left margin to an anchor item that is NOT first on its
+ * own line (e.g. the page-11 broker-firm-name blank preceding "(Broker
+ * Firm) represents Seller only as Seller's agent."). Mirrors
+ * `trailingLineBlank`'s logic in the opposite direction.
+ */
+function blankBeforeAnchorOnLine(items, anchorPredicate, leftMarginX, description) {
+  const lines = groupIntoLines(items);
+  for (const line of lines) {
+    const idx = line.items.findIndex(anchorPredicate);
+    if (idx === -1) continue;
+    const anchor = line.items[idx];
+    const width = anchor.x - 2 - leftMarginX;
+    if (width <= 2) throw new Error(`blankBeforeAnchorOnLine: non-positive width: ${description}`);
+    return { x: leftMarginX, y: anchor.y, width, height: anchor.height };
+  }
+  throw new Error(`blankBeforeAnchorOnLine: anchor not found: ${description}`);
+}
+
+/**
  * Strategy D: locate a checkbox glyph ("q" in this form's symbol font --
  * confirmed against PR #75's proven ordinal 54 placement) immediately
  * preceding specific label text on the same line, then return the exact
@@ -253,6 +274,76 @@ function checkboxMarkBox(q) {
   return { x: q.x, y: q.y + 2.65, width: q.width, height: markHeight };
 }
 
+let measurementFontsPromise = null;
+async function getMeasurementFonts() {
+  if (!measurementFontsPromise) {
+    measurementFontsPromise = (async () => {
+      const doc = await PDFDocument.create();
+      const times = await doc.embedFont(StandardFonts.TimesRoman);
+      const helvetica = await doc.embedFont(StandardFonts.Helvetica);
+      return { times, helvetica };
+    })();
+  }
+  return measurementFontsPromise;
+}
+
+/**
+ * Strategy F: a blank rendered as underscores embedded WITHIN a single
+ * merged pdfjs text item (e.g. `"may terminate the contract within _____"`),
+ * not as its own adjacent item -- none of strategies A-E apply, since there
+ * is no separate blank-like item to find. `disableCombineTextItems: true`
+ * does not split these; the underscores are genuinely part of one
+ * content-stream text-showing operation.
+ *
+ * Estimates the underscore run's real position by computing what FRACTION
+ * of the full string's width the text before/through the run occupies,
+ * using standard font metrics as a proxy for the source PDF's actual
+ * (unknown) font, then applying that fraction to the item's REAL
+ * pdfjs-measured width. Cross-validates against two structurally different
+ * fonts (Times-Roman and Helvetica) and REFUSES (throws, forcing a defer)
+ * if they disagree by more than a small tolerance -- close agreement
+ * between two very different font shapes is the actual evidence that the
+ * proportional estimate is trustworthy for this particular string, not a
+ * coincidence of one font's specific metrics.
+ *
+ * This is an ESTIMATE, not an exact measurement -- every placement using
+ * this strategy MUST still be visually confirmed via a rendered screenshot
+ * before being accepted, exactly like a Visual-judgment row.
+ */
+async function blankWithinMergedRun(item, underscoreRunPattern, description, opts) {
+  const pattern = underscoreRunPattern || /_{3,}/;
+  const match = item.str.match(pattern);
+  if (!match) throw new Error(`blankWithinMergedRun: no underscore run matching ${pattern} in "${item.str}": ${description}`);
+  const prefix = item.str.slice(0, match.index);
+  const throughRun = item.str.slice(0, match.index + match[0].length);
+  const full = item.str;
+
+  const { times, helvetica } = await getMeasurementFonts();
+  const fontSize = item.height; // this document's item.height already carries the real glyph size (see getPageItems)
+  const ratios = [times, helvetica].map((font) => {
+    const wFull = font.widthOfTextAtSize(full, fontSize);
+    const wStart = font.widthOfTextAtSize(prefix, fontSize);
+    const wEnd = font.widthOfTextAtSize(throughRun, fontSize);
+    return { start: wStart / wFull, end: wEnd / wFull };
+  });
+  const startDelta = Math.abs(ratios[0].start - ratios[1].start);
+  const endDelta = Math.abs(ratios[0].end - ratios[1].end);
+  const tolerance = (opts && opts.tolerance) || 0.04;
+  if (startDelta > tolerance || endDelta > tolerance) {
+    throw new Error(
+      `blankWithinMergedRun: Times-Roman/Helvetica estimates disagree too much to trust (start Δ${startDelta.toFixed(3)}, end Δ${endDelta.toFixed(3)}, tolerance ${tolerance}): ${description}`
+    );
+  }
+  const startRatio = (ratios[0].start + ratios[1].start) / 2;
+  const endRatio = (ratios[0].end + ratios[1].end) / 2;
+  const pad = (opts && opts.pad) !== undefined ? opts.pad : 1.5;
+  const rawStartX = item.x + startRatio * item.width;
+  const rawEndX = item.x + endRatio * item.width;
+  const width = rawEndX - rawStartX - 2 * pad;
+  if (width <= 2) throw new Error(`blankWithinMergedRun: estimated width non-positive after padding: ${description}`);
+  return { x: rawStartX + pad, y: item.y, width, height: item.height, estimated: true };
+}
+
 module.exports = {
   normalizeAnchorText,
   getPageItems,
@@ -263,9 +354,11 @@ module.exports = {
   blankAfterAnchorOnLine,
   blankAfterDollarSign,
   trailingLineBlank,
+  blankBeforeAnchorOnLine,
   blankAfterWrappingAnchor,
   isUnderscoreRun,
   isBlankLike,
   checkboxBeforeLabel,
   checkboxMarkBox,
+  blankWithinMergedRun,
 };

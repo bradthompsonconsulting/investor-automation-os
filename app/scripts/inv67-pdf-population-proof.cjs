@@ -177,6 +177,30 @@ async function main() {
     }
     const drawX = field.align === 'center' ? field.x + (field.width - textWidth) / 2 : field.x;
     if (field.value !== '') {
+      // Strategy-F fields (`estimated: true`) overlay a printed underscore
+      // run that pdf-lib cannot remove from the content stream -- drawing
+      // text alone leaves the original underscores physically present
+      // underneath, which pdftotext extraction proves via character-level
+      // interleaving even when the render looks visually clean at normal
+      // zoom (confirmed empirically this session: e.g. "Phone(s):_____"
+      // extracts as "Phone(s):_(5_1_2_)..." without this mask). A white
+      // background rectangle sized to the estimated blank, drawn first,
+      // genuinely erases the underscores visually -- explicitly permitted
+      // ("Any masking or background treatment must be limited to
+      // replaceable blank/underscore space and proven visually safe").
+      // This does not and cannot change what pdftotext extracts (it reads
+      // the text-showing operators, not the rendered/masked appearance);
+      // see the validation suite's own carve-out for why exact-substring
+      // extraction is not the right proof for this field class.
+      if (field.estimated) {
+        page.drawRectangle({
+          x: field.x - 0.5,
+          y: field.y - 1.5,
+          width: field.width + 1,
+          height: field.height + 2,
+          color: rgb(1, 1, 1),
+        });
+      }
       page.drawText(field.value, {
         x: drawX,
         y: field.y,

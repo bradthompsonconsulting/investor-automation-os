@@ -63,6 +63,14 @@ function buildProjectionEntries() {
     'earnestMoneyOption.escrowAgentAddress': '4521 Test Ridge Lane, Austin, TX 78701',
     'titleSurvey.titleCompanyName': 'Travis County Title Co.',
     'attorneyManualFields.specialProvisions': 'None.',
+    // PHASE B: previously unused by any converted placement (ordinal 108 was
+    // deferred throughout Phase A) -- without this override the fixture's
+    // generic "value for <key>" fallback would be drawn verbatim onto the
+    // printed PDF. `completeReport()`'s own `otherAddendaText` disposition is
+    // `not_applicable`, matching the sibling `specialProvisions` override's
+    // convention above and the manifest's own documented default ("Renders
+    // 'None.' when no other addenda apply").
+    'attorneyManualFields.otherAddendaText': 'None.',
     'noticeContact.buyerNoticeAddress': '4521 Test Ridge Lane, Austin, TX 78701',
     'noticeContact.buyerNoticePhone': '(512) 555-0101',
     'noticeContact.buyerNoticeEmail': 'buyer.test@example.com',
