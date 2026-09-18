@@ -414,3 +414,33 @@ remain pending. No live retry, note, receipt, configuration change,
 deployment, push, Production access, cleanup or merge in this work.
 The earlier Chrome helper is already marked attempted; do not retry it
 or regenerate a request for a live proof without the next explicit gate.
+
+## 2026-09-18: Lambda Blob context initialization (local only)
+
+OBSERVED: ghl-write now calls connectLambda(event) inside its guarded
+write block, after method/authentication/Origin/request validation and
+before Blob access. Missing or invalid context remains fail-closed.
+No receipt, lock, readback, location, or operation contract was changed.
+
+OBSERVED: the boundary suite uses installed @netlify/blobs for Lambda
+initialization and store construction, with a real SDK read through an
+intercepted transport. Storage mutations remain in-memory fixtures.
+Cases cover valid context, absent context, malformed encoding/JSON, null,
+missing token/site, previous-invocation context, and early rejection.
+The existing contract-ledger harness now supplies synthetic Lambda
+context and uses the real initializer so its retained regressions run.
+
+Literal validation output, including failed tooling attempts and their
+follow-up checks, is appended to evidence/inv95/origin-boundary-local.txt.
+Prior evidence is preserved. No live proof, remote write, publication,
+configuration change, or cleanup of live artifacts occurred.
+
+INFERRED: missing initialization caused the previous live generic 409.
+The real SDK reproduced that response offline; the swallowed live
+exception was not captured. Live success of this correction is UNKNOWN.
+
+OBSERVED final local validation: 26 suites green, 203 boundary checks;
+app tsc/Vite build, root-function typecheck, and CI offline/security
+checks green. Runtime exit contract: 37/37 with Git Bash on process PATH.
+Initial tooling failures remain in the literal evidence; no configuration
+was changed to resolve them. This correction is local only.

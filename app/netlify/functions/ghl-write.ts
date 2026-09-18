@@ -1,3 +1,4 @@
+import { connectLambda } from "@netlify/blobs";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { validateLedgerNote } from "./lib/write-note-guard";
 import { getConfig } from "../../shared/ghl-config";
@@ -25,6 +26,7 @@ export const handler = async (event: any) => {
   } catch { return json(400, { error: "Invalid named write request" }); }
   let release: (() => Promise<void>) | undefined;
   try {
+    connectLambda(event);
     const boundary = configuredBoundary();
     const { targetId, operation, args, requestId } = request;
     let target = plan.kind === "opportunity" ? await boundary.opportunity(targetId) : await boundary.contact(targetId);
