@@ -1,3 +1,15 @@
+/** INV-95 supersedes the historical unauthenticated/best-effort V1 commentary below:
+ * app-write authentication, full canonical currency, Test template identity,
+ * atomic reservation serialization and single-use execution receipts now apply.
+ * See docs/INV95_WRITE_BOUNDARIES.md for current controls and rollout gates. */
+import { parseContractSendNote } from "../../src/lib/contract-send-carriers";
+import { lockContact } from "./lib/write-receipts";
+import { CONTRACT_DOCUMENT_TEMPLATE_NAME, CONTRACT_DOCUMENT_TEMPLATE_SOURCE } from "../../src/lib/contract-document-model";
+import { requireCurrentContractAuthorization, requireConfiguredTestTemplate } from "./lib/write-contract-context";
+import { configuredBoundary } from "./lib/ghl-write-boundary";
+import { claimWrite } from "./lib/write-receipts";
+import { requireAppWriter } from "./lib/app-write-auth";
+import { exact, identifier } from "./lib/write-contracts";
 /**
  * Contract-send RESERVATION — B9-08 / INV-63.
  *
@@ -138,6 +150,8 @@ export const handler = async (event: any) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: CORS, body: "" };
   if (event.httpMethod !== "POST") return { statusCode: 405, headers: CORS, body: "Method Not Allowed" };
 
+  try { requireAppWriter(event); } catch { return { statusCode: 401, headers: CORS, body: JSON.stringify({ error: "Application write sign-in required" }) }; }
+
   if (LOCATION_ID !== TEST_LOCATION_ID) {
     return { statusCode: 403, headers: CORS, body: JSON.stringify({ error: "Forbidden", by: "iaos-contract-send-reserve-test-only" }) };
   }
@@ -156,7 +170,11 @@ export const handler = async (event: any) => {
 
   let payload: Record<string, unknown>;
   try {
+    if (event.isBase64Encoded || Object.keys(event.queryStringParameters ?? {}).length) throw new Error("Unexpected request envelope");
     payload = event.body ? JSON.parse(event.body) : {};
+    exact(payload, ["contactId","opportunityId","versionRaw","noteBody"]);
+    identifier(payload.opportunityId);
+    if (typeof payload.versionRaw !== "string" || JSON.stringify(JSON.parse(payload.versionRaw)) !== payload.versionRaw) throw new Error("Noncanonical version identity");
   } catch {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "Malformed JSON body" }) };
   }
@@ -188,6 +206,8 @@ export const handler = async (event: any) => {
   // opportunityId/version the caller separately declared -- a mismatch
   // here means the caller's own claim disagrees with the note it wants
   // written, which is refused rather than trusted.
+  const full = parseContractSendNote(noteBody);
+  if (!full || (full.operator !== null && full.operator !== "brad") || full.providerResponse !== null || full.iaosObservedAcceptanceAt !== null) return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "Invalid reservation evidence" }) };
   const parsed = parseMinimalContractSend(noteBody);
   if (!parsed || parsed.status !== "in_progress" || parsed.opportunityId !== opportunityId || parsed.versionRaw !== versionRaw) {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "noteBody is not a well-formed in_progress contract-send note matching the declared opportunityId/version" }) };
@@ -212,6 +232,10 @@ export const handler = async (event: any) => {
   }
   const headers = { Authorization: `Bearer ${token}`, Version: "2021-07-28", "Content-Type": "application/json" };
 
+  try {
+    const opportunity = await configuredBoundary().opportunity(opportunityId as string);
+    if (opportunity.contactId !== DOCUMENTS_CONTRACTS.approvedTestContactId) throw new Error("Target mismatch");
+  } catch { return { statusCode: 403, headers: CORS, body: JSON.stringify({ error: "Contract target identity refused" }) }; }
   const notesRes = await fetch(`${GHL_BASE}/contacts/${contactId}/notes`, { headers });
   if (!notesRes.ok) {
     const text = await notesRes.text();
@@ -231,7 +255,8 @@ export const handler = async (event: any) => {
     notes,
     opportunityId,
     declaredVersionRaw: versionRaw,
-    expectedTemplateName: DOCUMENTS_CONTRACTS.expectedTemplateName,
+    expectedTemplateName: CONTRACT_DOCUMENT_TEMPLATE_NAME,
+    expectedTemplateSource: CONTRACT_DOCUMENT_TEMPLATE_SOURCE,
   });
   if (!authCheck.ok) {
     return {
@@ -250,15 +275,15 @@ export const handler = async (event: any) => {
     };
   }
 
-  const writeRes = await fetch(`${GHL_BASE}/contacts/${contactId}/notes`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ body: noteBody }),
-  });
-  const writeBody = await writeRes.text();
-  return {
-    statusCode: writeRes.status,
-    headers: { ...CORS, "Content-Type": "application/json" },
-    body: writeBody,
-  };
+  let release: (() => Promise<void>) | undefined;
+  try {
+    release = await lockContact(contactId);
+    const current = await requireCurrentContractAuthorization(configuredBoundary(), opportunityId);
+    if (findConflictingContractSend(current.notes, opportunityId, versionRaw).conflict) throw new Error("Conflicting reservation");
+    await requireConfiguredTestTemplate(configuredBoundary());
+    await claimWrite("contract.reserve", parsed.attemptId, { contactId, opportunityId, versionRaw, noteBody });
+    const result = await configuredBoundary().note(contactId, noteBody);
+    return { statusCode: 200, headers: CORS, body: JSON.stringify(result) };
+  } catch { return { statusCode: 409, headers: CORS, body: JSON.stringify({ outcome: "indeterminate", error: "Reservation unconfirmed or duplicate; inspect notes before retrying" }) }; }
+  finally { if (release) await release(); }
 };

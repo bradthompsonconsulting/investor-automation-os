@@ -223,3 +223,6 @@ jobs:
       # is unavoidable if truncation is to be observed at all.
       - name: Exit contract, runtime — 37 checks
         run: node scripts/test-exit-contract-runtime.cjs
+
+      - name: INV-95 named write boundaries and affected regressions
+        run: node app/scripts/test-inv95.cjs

@@ -1,3 +1,6 @@
+import { requireWebhook } from "../../app/netlify/functions/lib/write-webhook-auth";
+import { configuredBoundary } from "../../app/netlify/functions/lib/ghl-write-boundary";
+import { exact, identifier } from "../../app/netlify/functions/lib/write-contracts";
 /**
  * Motivation Score v4 — Netlify function.
  * Writes: motivation_score, deal_score, combined_score, data_completeness_score.
@@ -54,7 +57,7 @@ async function fetchFieldIdMap(): Promise<Record<string, string>> {
   const map: Record<string, string> = {};
   for (const f of fields) {
     const key = (f.fieldKey ?? f.key ?? "").replace(/^contact\./, "");
-    if (key && f.id) map[key] = f.id;
+    if (key && f.id) { identifier(f.id); if (map[key]) throw new Error("Ambiguous scoring field definition"); map[key] = f.id; }
   }
   return map;
 }
@@ -76,22 +79,19 @@ async function writeScores(
   combinedScore:      number,
   completenessScore:  number,
 ): Promise<void> {
-  const res = await fetch(`${GHL_BASE}/contacts/${contactId}`, {
-    method: "PUT",
-    headers: ghlHeaders(),
-    body: JSON.stringify({
-      customFields: [
-        { id: motivationFieldId,          field_value: motivationScore  },
-        { id: DEAL_SCORE_FIELD_ID,        field_value: dealScore        },
-        { id: COMBINED_SCORE_FIELD_ID,    field_value: combinedScore    },
-        { id: DATA_COMPLETENESS_FIELD_ID, field_value: completenessScore },
-      ],
-    }),
-  });
-  if (!res.ok) throw new Error(`PUT /contacts/${contactId} → ${res.status}: ${await res.text()}`);
+  const fields = [
+    { id: motivationFieldId, field_value: motivationScore },
+    { id: DEAL_SCORE_FIELD_ID, field_value: dealScore },
+    { id: COMBINED_SCORE_FIELD_ID, field_value: combinedScore },
+    { id: DATA_COMPLETENESS_FIELD_ID, field_value: completenessScore },
+  ];
+  if (new Set(fields.map(f => f.id)).size !== 4 || fields.some(f => !Number.isFinite(f.field_value))) throw new Error("Invalid score write");
+  const result = await configuredBoundary(process.env.GHL_API_TOKEN).fields("contact", contactId, fields);
+  if (!result.confirmed) throw new Error("Score readback mismatch");
 }
 
 async function addContactTag(contactId: string, tag: string): Promise<void> {
+  if (!BUCKET_TAGS.includes(tag as BucketTag)) throw new Error("Tag refused");
   const res = await fetch(`${GHL_BASE}/contacts/${contactId}/tags`, {
     method: "POST",
     headers: ghlHeaders(),
@@ -101,6 +101,7 @@ async function addContactTag(contactId: string, tag: string): Promise<void> {
 }
 
 async function removeContactTags(contactId: string, tags: string[]): Promise<void> {
+  if (!tags.length || tags.some(t => !BUCKET_TAGS.includes(t as BucketTag)) || new Set(tags).size !== tags.length) throw new Error("Tags refused");
   const res = await fetch(`${GHL_BASE}/contacts/${contactId}/tags`, {
     method: "DELETE",
     headers: ghlHeaders(),
@@ -335,9 +336,11 @@ export const handler = async (event: any) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, body: "" };
   if (event.httpMethod !== "POST")    return { statusCode: 405, body: "Method Not Allowed" };
 
+  try { requireWebhook(event, "IAOS_MOTIVATION_WEBHOOK_SECRET"); } catch { return { statusCode: 401, body: "Webhook authorization refused" }; }
   let data: any = {};
   try {
     data = JSON.parse(event.body ?? "{}");
+    if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid body");
   } catch {
     return { statusCode: 400, body: "Invalid JSON" };
   }
@@ -348,6 +351,8 @@ export const handler = async (event: any) => {
   if (!contactId) return { statusCode: 400, body: "Missing contactId" };
 
   try {
+    exact(data, ["contactId"]); identifier(contactId);
+    await configuredBoundary(process.env.GHL_API_TOKEN).contact(contactId);
     const fieldIdMap = await fetchFieldIdMap();
 
     const ids = {
@@ -395,6 +400,9 @@ export const handler = async (event: any) => {
       writeBucketTag(contactId, result.bucketTag),
     ]);
 
+    const confirmed = await configuredBoundary(process.env.GHL_API_TOKEN).contact(contactId);
+    const desiredTags = BUCKET_TAGS.filter(t => (confirmed.tags ?? []).includes(t));
+    if (desiredTags.length !== 1 || desiredTags[0] !== result.bucketTag) throw new Error("Score tag readback mismatch");
     return {
       statusCode: 200,
       body: JSON.stringify({

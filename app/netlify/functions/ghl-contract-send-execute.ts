@@ -1,3 +1,16 @@
+/** INV-95 supersedes the historical unauthenticated/best-effort V1 commentary below:
+ * app-write authentication, full canonical currency, Test template identity,
+ * atomic reservation serialization and single-use execution receipts now apply.
+ * See docs/INV95_WRITE_BOUNDARIES.md for current controls and rollout gates. */
+import { recordSendOutcome } from "./lib/write-receipts";
+import { CONTRACT_DOCUMENT_TEMPLATE_NAME, CONTRACT_DOCUMENT_TEMPLATE_SOURCE } from "../../src/lib/contract-document-model";
+import { requireCurrentContractAuthorization, requireConfiguredTestTemplate } from "./lib/write-contract-context";
+import { classifyProviderSendResponse } from "../../src/lib/contract-send-model";
+import { handler as documentReadback } from "./ghl-contract-send-readback";
+import { configuredBoundary } from "./lib/ghl-write-boundary";
+import { claimWrite } from "./lib/write-receipts";
+import { requireAppWriter } from "./lib/app-write-auth";
+import { exact, identifier } from "./lib/write-contracts";
 /**
  * Contract-send EXECUTION — B9-08 / INV-63, Jess Gate correction round 2,
  * 2026-09-12.
@@ -91,6 +104,8 @@ export const handler = async (event: any) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: CORS, body: "" };
   if (event.httpMethod !== "POST") return { statusCode: 405, headers: CORS, body: "Method Not Allowed" };
 
+  try { requireAppWriter(event); } catch { return { statusCode: 401, headers: CORS, body: JSON.stringify({ error: "Application write sign-in required" }) }; }
+
   if (LOCATION_ID !== TEST_LOCATION_ID) {
     return { statusCode: 403, headers: CORS, body: JSON.stringify({ error: "Forbidden", by: "iaos-contract-send-execute-test-only" }) };
   }
@@ -103,7 +118,11 @@ export const handler = async (event: any) => {
 
   let payload: Record<string, unknown>;
   try {
+    if (event.isBase64Encoded || Object.keys(event.queryStringParameters ?? {}).length) throw new Error("Unexpected request envelope");
     payload = event.body ? JSON.parse(event.body) : {};
+    exact(payload, ["templateId","opportunityId","versionRaw","attemptId"]);
+    identifier(payload.opportunityId);
+    if (typeof payload.versionRaw !== "string" || JSON.stringify(JSON.parse(payload.versionRaw)) !== payload.versionRaw) throw new Error("Noncanonical version identity");
   } catch {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "Malformed JSON body" }) };
   }
@@ -135,6 +154,10 @@ export const handler = async (event: any) => {
   }
   const headers = { Authorization: `Bearer ${token}`, Version: "2021-07-28", "Content-Type": "application/json" };
 
+  try {
+    const opportunity = await configuredBoundary().opportunity(opportunityId as string);
+    if (opportunity.contactId !== DOCUMENTS_CONTRACTS.approvedTestContactId) throw new Error("Target mismatch");
+  } catch { return { statusCode: 403, headers: CORS, body: JSON.stringify({ error: "Contract target identity refused" }) }; }
   const notesRes = await fetch(`${GHL_BASE}/contacts/${DOCUMENTS_CONTRACTS.approvedTestContactId}/notes`, { headers });
   if (!notesRes.ok) {
     const text = await notesRes.text();
@@ -187,7 +210,8 @@ export const handler = async (event: any) => {
     notes,
     opportunityId,
     declaredVersionRaw: versionRaw,
-    expectedTemplateName: DOCUMENTS_CONTRACTS.expectedTemplateName,
+    expectedTemplateName: CONTRACT_DOCUMENT_TEMPLATE_NAME,
+    expectedTemplateSource: CONTRACT_DOCUMENT_TEMPLATE_SOURCE,
   });
   if (!authCheck.ok) {
     return {
@@ -207,15 +231,24 @@ export const handler = async (event: any) => {
     userId: DOCUMENTS_CONTRACTS.senderUserId,
     opportunityId,
   });
-  const sendRes = await fetch(`${GHL_BASE}/proposals/templates/send`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, Version: "v3", "Content-Type": "application/json" },
-    body: outboundBody,
-  });
-  const sendBody = await sendRes.text();
-  return {
-    statusCode: sendRes.status,
-    headers: { ...CORS, "Content-Type": "application/json" },
-    body: sendBody,
-  };
+  try { await requireCurrentContractAuthorization(configuredBoundary(), opportunityId); await requireConfiguredTestTemplate(configuredBoundary()); await claimWrite("contract.send", attemptId, { opportunityId, versionRaw, templateId }); }
+  catch { return { statusCode: 409, headers: CORS, body: JSON.stringify({ outcome: "indeterminate", error: "Attempt already consumed or unavailable; use document readback" }) }; }
+  try {
+    const sendRes = await fetch(`${GHL_BASE}/proposals/templates/send`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, Version: "v3", "Content-Type": "application/json" },
+      body: outboundBody,
+    });
+    const sendBody = await sendRes.text();
+    let body: any;
+    try { body = JSON.parse(sendBody); } catch { body = null; }
+    const classification = classifyProviderSendResponse({ kind: "http_response", status: sendRes.status, body });
+    await recordSendOutcome(attemptId, sendRes.ok && classification.summary?.documentId ? "submitted" : [400,401,403,404,422].includes(sendRes.status) ? "refused" : "uncertain",classification.summary?.documentId??null);
+    if (!sendRes.ok) return { statusCode: sendRes.status, headers: CORS, body: JSON.stringify({ error: "Provider refused the send" }) };
+    if (!classification.summary?.documentId) return { statusCode: 202, headers: CORS, body: JSON.stringify({ outcome: "indeterminate", error: "Send response identity unconfirmed" }) };
+    const proof = await documentReadback({ ...event, body: JSON.stringify({ documentId: classification.summary.documentId }) });
+    const readback = JSON.parse(proof.body);
+    const confirmed = proof.statusCode === 200 && readback.status === "accepted";
+    return { statusCode: confirmed ? 200 : 202, headers: CORS, body: JSON.stringify({ ...body, confirmed, readback }) };
+  } catch { return { statusCode: 202, headers: CORS, body: JSON.stringify({ outcome: "indeterminate", error: "Send or readback outcome unknown; do not retry blindly" }) }; }
 };

@@ -1,3 +1,5 @@
+import { writeCommand, confirmedCommand } from "./write-command";
+import { appWriteFetch } from "./app-write-session";
 /**
  * IAOS GHL Service Module — single entry point for all GHL data access.
  *
@@ -499,7 +501,7 @@ export interface UnderwritingWriteResult {
 
 async function request<T = unknown>(
   path: string,
-  method: "GET" | "POST" | "PUT" | "DELETE" = "GET",
+  method: "GET" = "GET",
   body?: unknown,
 ): Promise<T> {
   const res = await fetch(`${PROXY}?path=${encodeURIComponent(path)}`, {
@@ -617,13 +619,7 @@ export const ghl = {
     // (TEXT) rides along in the same call as the exact value our own read path
     // uses. Called exactly once, right after a note saves — never on its own,
     // never from a Call click.
-    setLastCallAttempt: (contactId: string, iso: string) =>
-      request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [
-          { id: LAST_CALL_ATTEMPT_ID, field_value: iso },
-          { id: LAST_CALL_ATTEMPT_PRECISE_ID, field_value: iso },
-        ],
-      }),
+    setLastCallAttempt: (contactId: string, iso: string) => confirmedCommand("contact.lastCallAttempt", contactId, { value: iso }),
 
     // Dashboard Phase 3 — the schedule-callback control. Still ONE write
     // action: a single PUT carrying exactly these two customFields entries,
@@ -631,13 +627,7 @@ export const ghl = {
     // in GHL and truncates time-of-day, so callback_datetime_precise (TEXT)
     // rides along in the same call as the exact value our own read path uses.
     // Pass null (not "") to clear both — GHL silently ignores an empty string.
-    setCallbackDatetime: (contactId: string, iso: string | null) =>
-      request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [
-          { id: CALLBACK_DATETIME_ID, field_value: iso },
-          { id: CALLBACK_DATETIME_PRECISE_ID, field_value: iso },
-        ],
-      }),
+    setCallbackDatetime: (contactId: string, iso: string | null) => confirmedCommand("contact.callback", contactId, { value: iso }),
 
     // Phase B PB-D1 — the first authorized Class 1 app write and the fourth
     // named GHL write. ONE field per PUT: this body carries exactly one
@@ -647,29 +637,13 @@ export const ghl = {
     // customFields entirely (KEY_ABSENT, OBSERVED in the inert-proof). Do NOT
     // copy the null-to-clear pattern from setCallbackDatetime — that is
     // DATE-field behavior and does not apply to this field.
-    setPropertyNotes: (contactId: string, value: string) =>
-      request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [{ id: PROPERTY_NOTES_ID, field_value: value }],
-      }),
+    setPropertyNotes: (contactId: string, value: string) => confirmedCommand("contact.propertyNotes", contactId, { value }),
 
-    // PB-D16 — PRIVATE monetary transport BY CONVENTION, not by enforcement. It is
-    // exported and reachable as ghl.contacts._putMonetaryField; the underscore is the
-    // signal, not a barrier. The real guard is that no caller may use it except a
-    // named per-field setter, admitted by its own decision.
-    // §4.4 permits a private one-field PUT helper; a PUBLIC setter parameterized over
-    // field ID is forbidden, because dataType proves serialization, not field safety
-    // (§4.6: workflow triggers are per-field and not API-derivable). Each unlocked
-    // MONETORY field earns its own named public method below by its own decision.
-    // MONETORY write contract, OBSERVED 2026-07-28: an unquoted JS number is accepted
-    // and round-trips exactly; "" clears to KEY_ABSENT.
-    _putMonetaryField: (contactId: string, fieldId: string, value: number | "") =>
-      request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [{ id: fieldId, field_value: value }],
-      }),
+    // INV-95: all field IDs and GHL PUT bodies are owned by server operations.
 
     // PB-D16 — fifth named write. ARV only. Empty string is a real clear, not a skip.
     setARV: (contactId: string, value: number | "") =>
-      ghl.contacts._putMonetaryField(contactId, ARV_ID, value),
+      confirmedCommand("contact.arv", contactId, { value }),
 
     // INV-70 / B9-07A Phase 2 correction round 3 -- REMOVED
     // setEstimatedRepairs (Board item #2B's sixth named write). Family 3's
@@ -681,18 +655,7 @@ export const ghl = {
     // ContactWorkspace.tsx's general field-edit row, also converted to
     // read-only this round). ESTIMATED_REPAIRS_ID (below) remains -- it is
     // still needed to IDENTIFY the field for display/dispatch, just no
-    // longer to write it. _putMonetaryField stays, still used by setARV.
-
-    // Board 4 — PRIVATE string transport, the exact counterpart to
-    // _putMonetaryField above and permitted by the same §4.4 sentence: "a
-    // private one-field PUT helper" is allowed; a PUBLIC setter parameterized
-    // over field ID is not. Three named setters below each spend their own
-    // decision. setPropertyNotes predates this and is deliberately NOT
-    // converted — that would be a refactor, not this commit's business.
-    _putStringField: (contactId: string, fieldId: string, value: string) =>
-      request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [{ id: fieldId, field_value: value }],
-      }),
+    // longer to write it. The former generic helper is removed by INV-95.
 
     // Board 4 — the three carrier writes. Each is a named public method by its
     // own decision; none takes a field id from the caller.
@@ -706,15 +669,15 @@ export const ghl = {
     // "Stay in Cold Outreach" is an explicit value precisely so that clearing is
     // never required. Do not add a clear path on the assumption that it works.
     setCallDisposition: (contactId: string, value: string) =>
-      ghl.contacts._putStringField(contactId, CALL_DISPOSITION_ID, value),
+      confirmedCommand("contact.disposition", contactId, { value: value }),
 
     setCallRouting: (contactId: string, value: string) =>
-      ghl.contacts._putStringField(contactId, CALL_ROUTING_ID, value),
+      confirmedCommand("contact.routing", contactId, { value: value }),
 
     // The bell. An ISO instant, written LAST in the disposition sequence, and
     // the trigger the four migrated workflows watch. TEXT, not DATE.
     setDispositionAt: (contactId: string, iso: string) =>
-      ghl.contacts._putStringField(contactId, DISPOSITION_AT_ID, iso),
+      confirmedCommand("contact.dispositionAt", contactId, { value: iso }),
 
     /* Board #5 S3 — PRIVATE options transport, the counterpart to
        _putMonetaryField and _putStringField and permitted by the same PB-D16
@@ -727,10 +690,7 @@ export const ghl = {
        MULTIPLE_OPTIONS. A future multi-valued field would pass a longer array
        through this same helper and would need its OWN named setter and its OWN
        ruling. Do not add a `single` flag here and do not branch on dataType. */
-    _putOptionsField: (contactId: string, fieldId: string, value: string[] | "") =>
-      request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [{ id: fieldId, field_value: value }],
-      }),
+
 
     /* Board #5 S3 — occupancy_status. A named method by its own decision; it
        takes no field id from the caller.
@@ -750,18 +710,14 @@ export const ghl = {
        single-option parameter is what keeps this setter inside what was
        measured. */
     setOccupancyStatus: (contactId: string, value: OccupancyStatus | "") =>
-      ghl.contacts._putOptionsField(
-        contactId,
-        OCCUPANCY_STATUS_ID,
-        value === "" ? "" : [value],
-      ),
+      confirmedCommand("contact.occupancy", contactId, { value }),
   },
 
   notes: {
     // Dashboard Phase 2 — the ONLY note-write path. Always a NEW note, never
     // an overwrite/edit of a prior one (GHL has no "edit" call site here).
     create: (contactId: string, body: string) =>
-      request<any>(`/contacts/${contactId}/notes`, "POST", { body }),
+      confirmedCommand("note.create", contactId, { body }),
 
     // Contact Workspace §8 step 2 — READ-ONLY note history. GET only; not a
     // write, does not touch the three-write invariant. Returns GHL's
@@ -812,8 +768,7 @@ export const ghl = {
     // opportunity-update API (PUT /opportunities/:id) so GHL's own stage-change
     // triggers fire exactly as they would from a manual move inside GHL — this
     // never bypasses those triggers.
-    updateStage: (opportunityId: string, pipelineId: string, pipelineStageId: string) =>
-      request<any>(`/opportunities/${opportunityId}`, "PUT", { pipelineId, pipelineStageId }),
+
 
     /**
      * Board #5 §4B — the Opportunity Asking Price setter. ONE FIELD, NAMED.
@@ -883,11 +838,7 @@ export const ghl = {
 
       const body = { customFields: [{ id: fieldId, field_value: sent }] };
 
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("opportunity.askingPrice", opportunityId, { value: sent });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();
@@ -924,11 +875,7 @@ export const ghl = {
 
       const sent = roundCurrency(value);
       const body = { customFields: [{ id: fieldId, field_value: sent }] };
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("opportunity.arv", opportunityId, { value: sent });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();
@@ -977,11 +924,7 @@ export const ghl = {
 
       const sent = roundCurrency(value);
       const body = { customFields: [{ id: fieldId, field_value: sent }] };
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("opportunity.repairs", opportunityId, { value: sent });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();
@@ -1044,11 +987,7 @@ export const ghl = {
 
       const sent = roundCurrency(value);
       const body = { customFields: [{ id: fieldId, field_value: sent }] };
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("opportunity.currentOffer", opportunityId, { value: sent });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();
@@ -1145,18 +1084,7 @@ export const ghl = {
         }
       }
 
-      const body = {
-        customFields: [
-          ...plan.map((p) => ({ id: p.fieldId, field_value: p.value })),
-          ...(sellerCount ? [{ id: sellerCount.fieldId, field_value: sellerCount.text }] : []),
-        ],
-      };
-
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("contract.projection", opportunityId, { entries, sellerCount: sellerCount?.text ?? null });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();
@@ -1275,11 +1203,7 @@ export const ghl = {
 
       let putRes: Response;
       try {
-        putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
+        putRes = await writeCommand("contract.draftRequest", opportunityId, { value });
       } catch (e: any) {
         // No HTTP response ever arrived -- the request may or may not have
         // reached GHL. Never "failed": that would wrongly assert the write
@@ -1289,7 +1213,10 @@ export const ghl = {
 
       if (!putRes.ok) {
         const responseBody = await putRes.text().catch(() => "");
-        // A CONFIRMED non-success response -- GHL was reached and rejected the request.
+        let failure: any = null;
+        try { failure = JSON.parse(responseBody); } catch { /* non-JSON refusal */ }
+        if (failure?.outcome === "indeterminate") return { kind: "readback_failed", putStatus: 202, readbackFailureReason: failure.error ?? "Server could not confirm the write" };
+        // A refusal before mutation remains distinct from an unknown write outcome.
         return { kind: "put_failed", putStatus: putRes.status, responseBody };
       }
       const putStatus = putRes.status;
@@ -1410,7 +1337,7 @@ export const ghl = {
       | { kind: "http_response"; status: number; body: unknown }
     > => {
       try {
-        const res = await fetch("/.netlify/functions/ghl-contract-send-execute", {
+        const res = await appWriteFetch("/.netlify/functions/ghl-contract-send-execute", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(args),
@@ -1422,7 +1349,7 @@ export const ghl = {
         } catch {
           parsed = text;
         }
-        return { kind: "http_response", status: res.status, body: parsed };
+        return { kind: "http_response", status: (parsed as any)?.outcome === "indeterminate" ? 202 : res.status, body: parsed };
       } catch (e: any) {
         return { kind: "network_error", message: e?.message ?? "Network error calling GHL Documents & Contracts" };
       }
@@ -1441,7 +1368,7 @@ export const ghl = {
       versionRaw: string;
       noteBody: string;
     }): Promise<{ ok: true } | { ok: false; status: number; reason: string }> => {
-      const res = await fetch("/.netlify/functions/ghl-contract-send-reserve", {
+      const res = await appWriteFetch("/.netlify/functions/ghl-contract-send-reserve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args),
@@ -1463,7 +1390,7 @@ export const ghl = {
       summary: { documentId: string | null; documentReference: string | null; documentRevision: number | null; recipientId: string | null; createdBy: string | null; readbackStatus: string | null; readbackLocationId: string | null; fillableFieldCount: number | null } | null;
       failureReason: string | null;
     }> => {
-      const res = await fetch("/.netlify/functions/ghl-contract-send-readback", {
+      const res = await appWriteFetch("/.netlify/functions/ghl-contract-send-readback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args),
@@ -1548,7 +1475,7 @@ export const ghl = {
     // so it cannot touch the task's title/dueDate/assignedTo, or any
     // contact/tag/pipeline field.
     completeTask: (contactId: string, taskId: string) =>
-      request<any>(`/contacts/${contactId}/tasks/${taskId}/completed`, "PUT", { completed: true }),
+      confirmedCommand("task.complete", contactId, { taskId }),
   },
 
   underwriting: {
@@ -1658,13 +1585,7 @@ export const ghl = {
         throw new Error("saveUnderwritingFields: the three carrier ids are not distinct");
       }
 
-      const body = { customFields: plan.map((p) => ({ id: p.fieldId, field_value: p.value })) };
-
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("opportunity.underwriting", opportunityId, { endBuyerMaxPrice: plan[0].value, sellerMAO: plan[1].value, assignmentMode: plan[2].value });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();
@@ -1751,11 +1672,7 @@ export const ghl = {
 
       const body = { customFields: [{ id: fieldId, field_value: optionLabel }] };
 
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("opportunity.assignmentMode", opportunityId, { value: optionLabel });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();

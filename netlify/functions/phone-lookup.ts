@@ -1,4 +1,6 @@
-const GHL_BASE = "https://services.leadconnectorhq.com";
+import { requireWebhook } from "../../app/netlify/functions/lib/write-webhook-auth";
+import { configuredBoundary } from "../../app/netlify/functions/lib/ghl-write-boundary";
+import { exact, identifier } from "../../app/netlify/functions/lib/write-contracts";
 const TWILIO_LOOKUP_BASE = "https://lookups.twilio.com/v2";
 
 // Twilio returns: mobile, landline, voip, nonFixedVoip, tollFree, unknown
@@ -15,14 +17,6 @@ function mapLineType(twilioType: string): "Mobile" | "Landline" | "VoIP" | "Unkn
     default:
       return "Unknown";
   }
-}
-
-function ghlHeaders() {
-  return {
-    Authorization: `Bearer ${process.env.GHL_API_TOKEN}`,
-    Version: "2021-07-28",
-    "Content-Type": "application/json",
-  };
 }
 
 function twilioBasicAuth(): string {
@@ -42,17 +36,14 @@ async function lookupLineType(phone: string): Promise<string> {
 }
 
 async function updateGhlContactPhoneType(contactId: string, phoneType: string): Promise<void> {
-  const res = await fetch(`${GHL_BASE}/contacts/${contactId}`, {
-    method: "PUT",
-    headers: ghlHeaders(),
-    body: JSON.stringify({
-      customFields: [{ key: "phone_type", field_value: phoneType }],
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`GHL PUT /contacts/${contactId} → ${res.status}: ${text}`);
-  }
+  const boundary = configuredBoundary(process.env.GHL_API_TOKEN);
+  const defs = await boundary.call(`/locations/${boundary.locationId}/customFields`);
+  if (!Array.isArray(defs.customFields)) throw new Error("Phone Type field definition unavailable");
+  const fields = defs.customFields.filter((f: any) => f.fieldKey === "contact.phone_type" || f.fieldKey === "phone_type");
+  if (fields.length !== 1 || !["Mobile", "Landline", "VoIP", "Unknown"].includes(phoneType)) throw new Error("Invalid Phone Type field or result");
+  identifier(fields[0].id);
+  const result = await boundary.fields("contact", contactId, [{ id: fields[0].id, field_value: phoneType }]);
+  if (!result.confirmed) throw new Error("Phone Type readback mismatch");
 }
 
 export const handler = async (event: any) => {
@@ -63,9 +54,11 @@ export const handler = async (event: any) => {
     return { statusCode: 405, body: "Method Not Allowed" };
   }
 
+  try { requireWebhook(event, "IAOS_PHONE_LOOKUP_WEBHOOK_SECRET"); } catch { return { statusCode: 401, body: "Webhook authorization refused" }; }
   let data: { contactId?: string; phone?: string } = {};
   try {
     data = JSON.parse(event.body ?? "{}");
+    exact(data, ["contactId", "phone"]);
   } catch {
     return { statusCode: 400, body: "Invalid JSON" };
   }
@@ -75,6 +68,12 @@ export const handler = async (event: any) => {
     return { statusCode: 400, body: "Missing contactId or phone" };
   }
 
+  try {
+    exact(data, ["contactId", "phone"]); identifier(contactId);
+    if (typeof phone !== "string" || !phone.trim()) throw new Error("Invalid phone");
+    const contact = await configuredBoundary(process.env.GHL_API_TOKEN).contact(contactId);
+    if (contact.phone !== phone) throw new Error("Phone does not match the contact");
+  } catch { return { statusCode: 403, body: "Target identity refused" }; }
   // Step 1 — Twilio Lookup (fail gracefully → Unknown)
   let phoneType: "Mobile" | "Landline" | "VoIP" | "Unknown" = "Unknown";
   try {

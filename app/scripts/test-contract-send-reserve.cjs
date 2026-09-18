@@ -1,3 +1,4 @@
+const { authorizedModule, resetClaims, targetRead } = require("./write-auth-fixture.cjs");
 /**
  * Contract-send RESERVATION endpoint -- server-side fail-closed gate proof.
  * B9-08 / INV-63, Jess Gate correction round, 2026-09-12.
@@ -46,7 +47,7 @@ const SOURCES = [
 try {
   execSync(
     'npx tsc ' + SOURCES.map((s) => '"' + s + '"').join(' ') +
-    ' --outDir "' + TMP + '" --rootDir "' + APP + '" --module commonjs --target es2020 --strict',
+    ' --outDir "' + TMP + '" --rootDir "' + APP + '" --module commonjs --target es2020 --strict --skipLibCheck',
     { cwd: APP, stdio: 'inherit' },
   );
 } catch (_) {
@@ -99,16 +100,24 @@ function restorePristineTestConfig() {
   Object.assign(testConfig.documentsContracts, PRISTINE_DOCUMENTS_CONTRACTS);
 }
 
-let reserve = require(RESERVE_JS);
+let reserve = authorizedModule(RESERVE_JS);
 
 /** Records every fetch call as {url, method}; returns canned responses in order; throws if exhausted. */
+function fixture(opp = 'opp-1', at = '2026-09-12T00:00:00.000Z') { return require('./write-contract-fixture.cjs').contractFixture(name=>require(path.join(TMP,'src','lib',name+'.js')),opp,at); }
 function makeMockFetch(responses) {
+  let cachedNotes = null;
+  resetClaims();
   const calls = [];
   let i = 0;
   const fn = async (url, init) => {
     calls.push({ url: String(url), method: (init && init.method) || 'GET' });
+    const identity = (!init || !init.method || init.method === 'GET') && targetRead(String(url), testConfig);
+    if (identity) return {ok:true,status:200,json:async()=>identity,text:async()=>JSON.stringify(identity)};
+    if ((!init || !init.method || init.method === 'GET') && String(url).endsWith('/notes') && cachedNotes && !JSON.parse(responses[i]?.body || '{}').notes) return {ok:true,status:200,json:async()=>cachedNotes,text:async()=>JSON.stringify(cachedNotes)};
     if (i >= responses.length) throw new Error('mock fetch called more times than responses were queued');
-    const r = responses[i++];
+    const r = {...responses[i++]};
+    const parsed = JSON.parse(r.body);
+    if (Array.isArray(parsed.notes)) { parsed.notes.push(...fixture().notes); cachedNotes=parsed; r.body=JSON.stringify(parsed); }
     return { ok: r.status >= 200 && r.status < 300, status: r.status, text: async () => r.body, json: async () => JSON.parse(r.body) };
   };
   fn.calls = calls;
@@ -134,7 +143,7 @@ function wellFormedInProgressNote(overrides) {
     `Status: ${status}`,
     `Version: ${versionRaw}`,
     'Template name: TREC NO 20-19 RESALE V1',
-    'Template source: ghl_documents_contracts',
+    `Template source: ${fixture(opportunityId, JSON.parse(versionRaw).agreementAt).authorization.templateSource}`,
     `Requested template id: ${requestedTemplateId}`,
     'Authorized at: 2026-09-12T00:00:00.000Z',
     'Signers: []',
@@ -163,7 +172,7 @@ function wellFormedAuthorizationNote(overrides) {
   const authorizedBy = (overrides && overrides.authorizedBy) ?? 'brad';
   const operator = (overrides && 'operator' in overrides) ? overrides.operator : 'brad';
   const versionRaw = (overrides && overrides.versionRaw) ?? VALID_VERSION_RAW;
-  const templateName = (overrides && overrides.templateName) ?? testConfig.documentsContracts.expectedTemplateName;
+  const templateName = (overrides && overrides.templateName) ?? fixture(opportunityId, JSON.parse(versionRaw).agreementAt).authorization.templateName;
   const at = (overrides && overrides.at) ?? '2026-09-12T00:00:00.000Z';
   return [
     'IAOS BRAD CONTRACT AUTHORIZATION — iaos-brad-contract-authorization-v1',
@@ -173,9 +182,9 @@ function wellFormedAuthorizationNote(overrides) {
     `Authorized by: ${authorizedBy}`,
     `Version: ${versionRaw}`,
     `Template name: ${templateName}`,
-    'Template source: ghl_documents_contracts',
-    'Document lines: []',
-    'Additional required facts: []',
+    `Template source: ${fixture(opportunityId, JSON.parse(versionRaw).agreementAt).authorization.templateSource}`,
+    `Document lines: ${JSON.stringify(fixture(opportunityId, JSON.parse(versionRaw).agreementAt).authorization.documentLines)}`,
+    `Additional required facts: ${JSON.stringify(fixture(opportunityId, JSON.parse(versionRaw).agreementAt).authorization.additionalRequiredFacts)}`,
   ].join('\n');
 }
 
@@ -266,7 +275,7 @@ async function main() {
     ]);
     const res = await invoke(validPayload());
     check('valid request, existing conflict: refused with 409', res.statusCode, 409);
-    check('valid request, existing conflict: exactly one GHL call (the read), no write attempted', global.fetch.calls.length, 1);
+    check('valid request, existing conflict: target and notes reads only, no write attempted', global.fetch.calls.length, 3);
     check('valid request, existing conflict: the one call was a GET (read), never a POST (write)', global.fetch.calls[0].method, 'GET');
   }
   {
@@ -278,12 +287,13 @@ async function main() {
     global.fetch = makeMockFetch([
       { status: 200, body: JSON.stringify({ notes: [{ body: authNote }] }) },
       { status: 201, body: JSON.stringify({ id: 'note-123' }) },
+      { status: 200, body: JSON.stringify({ notes: [{ id: 'note-123', body: wellFormedInProgressNote() }] }) },
     ]);
     const res = await invoke(validPayload());
-    check('valid request, no conflict, valid authorization: the write succeeds (201 passed through)', res.statusCode, 201);
-    check('valid request, no conflict, valid authorization: exactly two GHL calls (read then write)', global.fetch.calls.length, 2);
+    check('valid request, no conflict, valid authorization: the write is independently readback-confirmed', res.statusCode, 200);
+    check('valid request, no conflict, valid authorization: identity, authorization, current content, write and readback calls', global.fetch.calls.length, 11);
     check('valid request, no conflict, valid authorization: first call is the GET (read)', global.fetch.calls[0].method, 'GET');
-    check('valid request, no conflict, valid authorization: second call is the POST (write)', global.fetch.calls[1].method, 'POST');
+    check('valid request, no conflict, valid authorization: tenth call is the POST (write)', global.fetch.calls[9].method, 'POST');
   }
 
   /* -------------------------------------------------------------- */
@@ -301,7 +311,7 @@ async function main() {
     const res = await invoke(validPayload());
     check('missing authorization: refused with 403', res.statusCode, 403);
     check('missing authorization: the refusal names NO_AUTHORIZATION_RECORDED', JSON.parse(res.body).reason, 'NO_AUTHORIZATION_RECORDED');
-    check('missing authorization: no write is ever attempted (exactly one call, the read)', global.fetch.calls.length, 1);
+    check('missing authorization: no write is ever attempted (three identity/notes reads)', global.fetch.calls.length, 3);
   }
   {
     resetTestConfigToValidBaseline();
@@ -322,7 +332,7 @@ async function main() {
     }));
     check('authorization for a superseded revision: refused with 403', res.statusCode, 403);
     check('authorization for a superseded revision: the refusal names REVISION_CHANGED_OR_SUPERSEDED', JSON.parse(res.body).reason, 'REVISION_CHANGED_OR_SUPERSEDED');
-    check('authorization for a superseded revision: no write is ever attempted', global.fetch.calls.length, 1);
+    check('authorization for a superseded revision: no write is ever attempted', global.fetch.calls.length, 3);
   }
   {
     resetTestConfigToValidBaseline();
@@ -335,7 +345,7 @@ async function main() {
     const res = await invoke(validPayload());
     check('forged (non-Brad) authorization: refused with 403', res.statusCode, 403);
     check('forged (non-Brad) authorization: the refusal names NOT_BRAD', JSON.parse(res.body).reason, 'NOT_BRAD');
-    check('forged (non-Brad) authorization: no write is ever attempted', global.fetch.calls.length, 1);
+    check('forged (non-Brad) authorization: no write is ever attempted', global.fetch.calls.length, 3);
   }
 
   /* -------------------------------------------------------------- */
@@ -345,7 +355,7 @@ async function main() {
     resetTestConfigToValidBaseline();
     delete require.cache[RESERVE_JS];
     process.env.IAOS_ENV = 'production';
-    const prodReserve = require(RESERVE_JS);
+    const prodReserve = authorizedModule(RESERVE_JS);
     global.fetch = makeMockFetch([]);
     const res = await prodReserve.handler({ httpMethod: 'POST', body: JSON.stringify(validPayload()) });
     check('production deployment: refused with 403', res.statusCode, 403);
@@ -353,7 +363,7 @@ async function main() {
     check('production deployment: zero outbound GHL calls', global.fetch.calls.length, 0);
     process.env.IAOS_ENV = 'test';
     delete require.cache[RESERVE_JS];
-    reserve = require(RESERVE_JS);
+    reserve = authorizedModule(RESERVE_JS);
   }
 
   /* -------------------------------------------------------------- */

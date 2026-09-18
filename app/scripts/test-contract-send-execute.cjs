@@ -1,3 +1,4 @@
+const { authorizedModule, resetClaims, targetRead } = require("./write-auth-fixture.cjs");
 /**
  * Contract-send EXECUTION endpoint -- best-effort, single-user V1 ticket
  * redemption proof. B9-08 / INV-63, Jess Gate correction round 2,
@@ -45,7 +46,7 @@ const SOURCES = [
 try {
   execSync(
     'npx tsc ' + SOURCES.map((s) => '"' + s + '"').join(' ') +
-    ' --outDir "' + TMP + '" --rootDir "' + APP + '" --module commonjs --target es2020 --strict',
+    ' --outDir "' + TMP + '" --rootDir "' + APP + '" --module commonjs --target es2020 --strict --skipLibCheck',
     { cwd: APP, stdio: 'inherit' },
   );
 } catch (_) {
@@ -86,15 +87,23 @@ function restorePristineTestConfig() {
   Object.assign(testConfig.documentsContracts, PRISTINE_DOCUMENTS_CONTRACTS);
 }
 
-let execute = require(EXECUTE_JS);
+let execute = authorizedModule(EXECUTE_JS);
 
+function fixture(opp = 'opp-1', at = '2026-09-12T00:00:00.000Z') { return require('./write-contract-fixture.cjs').contractFixture(name=>require(path.join(TMP,'src','lib',name+'.js')),opp,at); }
 function makeMockFetch(responses) {
+  let cachedNotes = null;
+  resetClaims();
   const calls = [];
   let i = 0;
   const fn = async (url, init) => {
     calls.push({ url: String(url), method: (init && init.method) || 'GET' });
+    const identity = (!init || !init.method || init.method === 'GET') && targetRead(String(url), testConfig);
+    if (identity) return {ok:true,status:200,json:async()=>identity,text:async()=>JSON.stringify(identity)};
+    if ((!init || !init.method || init.method === 'GET') && String(url).endsWith('/notes') && cachedNotes && !JSON.parse(responses[i]?.body || '{}').notes) return {ok:true,status:200,json:async()=>cachedNotes,text:async()=>JSON.stringify(cachedNotes)};
     if (i >= responses.length) throw new Error('mock fetch called more times than responses were queued');
-    const r = responses[i++];
+    const r = {...responses[i++]};
+    const parsed = JSON.parse(r.body);
+    if (Array.isArray(parsed.notes)) { parsed.notes.push(...fixture().notes); cachedNotes=parsed; r.body=JSON.stringify(parsed); }
     return { ok: r.status >= 200 && r.status < 300, status: r.status, text: async () => r.body, json: async () => JSON.parse(r.body) };
   };
   fn.calls = calls;
@@ -124,7 +133,7 @@ function wellFormedSendNote(overrides) {
     `Status: ${status}`,
     `Version: ${versionRaw}`,
     'Template name: TREC NO 20-19 RESALE V1',
-    'Template source: ghl_documents_contracts',
+    `Template source: ${fixture(opportunityId, JSON.parse(versionRaw).agreementAt).authorization.templateSource}`,
     `Requested template id: ${requestedTemplateId}`,
     'Authorized at: 2026-09-12T00:00:00.000Z',
     'Signers: []',
@@ -142,7 +151,7 @@ function wellFormedAuthorizationNote(overrides) {
   const authorizedBy = (overrides && overrides.authorizedBy) ?? 'brad';
   const operator = (overrides && 'operator' in overrides) ? overrides.operator : 'brad';
   const versionRaw = (overrides && overrides.versionRaw) ?? VALID_VERSION_RAW;
-  const templateName = (overrides && overrides.templateName) ?? testConfig.documentsContracts.expectedTemplateName;
+  const templateName = (overrides && overrides.templateName) ?? fixture(opportunityId, JSON.parse(versionRaw).agreementAt).authorization.templateName;
   const at = (overrides && overrides.at) ?? '2026-09-12T00:00:00.000Z';
   return [
     'IAOS BRAD CONTRACT AUTHORIZATION — iaos-brad-contract-authorization-v1',
@@ -152,9 +161,9 @@ function wellFormedAuthorizationNote(overrides) {
     `Authorized by: ${authorizedBy}`,
     `Version: ${versionRaw}`,
     `Template name: ${templateName}`,
-    'Template source: ghl_documents_contracts',
-    'Document lines: []',
-    'Additional required facts: []',
+    `Template source: ${fixture(opportunityId, JSON.parse(versionRaw).agreementAt).authorization.templateSource}`,
+    `Document lines: ${JSON.stringify(fixture(opportunityId, JSON.parse(versionRaw).agreementAt).authorization.documentLines)}`,
+    `Additional required facts: ${JSON.stringify(fixture(opportunityId, JSON.parse(versionRaw).agreementAt).authorization.additionalRequiredFacts)}`,
   ].join('\n');
 }
 
@@ -299,6 +308,7 @@ async function main() {
     global.fetch = makeMockFetch([
       { status: 200, body: JSON.stringify({ notes: [{ body: ticket }, { body: auth }] }) },
       { status: 200, body: JSON.stringify({ success: true, links: [{ documentId: 'doc-1', createdBy: testConfig.documentsContracts.senderUserId }] }) },
+      { status: 200, body: JSON.stringify({ documents: [{documentId:'doc-1', locationId:testConfig.locationId, status:'sent', recipients:[{id:testConfig.documentsContracts.approvedTestContactId}], links:[{createdBy:testConfig.documentsContracts.senderUserId}], fillableFields:[{isRequired:true}]}] }) },
     ]);
     const res = await invoke(validPayload());
     check('valid ticket + valid authorization: the real send is reached (provider response passed through)', res.statusCode, 200);
@@ -316,14 +326,14 @@ async function main() {
     resetTestConfigToValidBaseline();
     delete require.cache[EXECUTE_JS];
     process.env.IAOS_ENV = 'production';
-    const prodExecute = require(EXECUTE_JS);
+    const prodExecute = authorizedModule(EXECUTE_JS);
     global.fetch = makeMockFetch([]);
     const res = await prodExecute.handler({ httpMethod: 'POST', body: JSON.stringify(validPayload()) });
     check('production deployment: refused with 403', res.statusCode, 403);
     check('production deployment: zero GHL calls of any kind', global.fetch.calls.length, 0);
     process.env.IAOS_ENV = 'test';
     delete require.cache[EXECUTE_JS];
-    execute = require(EXECUTE_JS);
+    execute = authorizedModule(EXECUTE_JS);
   }
 
   restorePristineTestConfig();

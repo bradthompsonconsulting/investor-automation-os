@@ -87,6 +87,7 @@ configModule.setRuntimeConfig(payload);
 // ghl.ts reads getRuntimeConfig() ONCE, at ITS OWN module-load time -- so
 // setRuntimeConfig() above MUST run before this require().
 const { ghl } = require(GHL_JS);
+require(path.join(TMP, "src", "lib", "app-write-session.js")).setAppWriteSession({token:"offline-fixture",expiresAt:new Date(Date.now()+60000).toISOString()});
 
 function makeMockFetch(responses) {
   const calls = [];
@@ -95,7 +96,7 @@ function makeMockFetch(responses) {
     calls.push({ url: String(url), method: (init && init.method) || 'GET', body: init && init.body ? JSON.parse(init.body) : null });
     if (i >= responses.length) throw new Error('mock fetch called more times than responses were queued');
     const r = responses[i++];
-    return { ok: r.status >= 200 && r.status < 300, status: r.status, text: async () => r.body, json: async () => JSON.parse(r.body) };
+    return { clone() { return this; }, ok: r.status >= 200 && r.status < 300, status: r.status, text: async () => r.body, json: async () => JSON.parse(r.body) };
   };
   fn.calls = calls;
   return fn;
@@ -116,7 +117,7 @@ const ONE_ENTRY = [{ key: REAL_TREC_KEY, text: '123 Main St' }];
   const r = await ghl.opportunities.syncContractProjectionFields(OPP_ID, ONE_ENTRY);
   checkTrue('sellerCount omitted: ok is true on a clean TREC-only write/readback', r.ok === true);
   check('sellerCount omitted: result.sellerCount is null', r.sellerCount, null);
-  checkTrue('sellerCount omitted: exactly one customField sent (no Seller Count entry added)', global.fetch.calls[0].body.customFields.length === 1);
+  checkTrue('sellerCount omitted: exactly one customField sent (no Seller Count entry added)', global.fetch.calls[0].body.operation === "contract.projection" && global.fetch.calls[0].body.args.entries.length === 1 && global.fetch.calls[0].body.args.sellerCount === null);
 
   /* ==================================================================== */
   /* 2. sellerCount provided, exact readback match -- folded into the SAME */
@@ -143,8 +144,8 @@ const ONE_ENTRY = [{ key: REAL_TREC_KEY, text: '123 Main St' }];
   check('configured field + exact readback match: sellerCount.sent', r2.sellerCount.sent, 'One Seller');
   check('configured field + exact readback match: sellerCount.observed', r2.sellerCount.observed, 'One Seller');
   checkTrue('configured field + exact readback match: sellerCount.landed is true', r2.sellerCount.landed === true);
-  checkTrue('exactly ONE atomic PUT + ONE atomic readback -- never a second, separate write call for Seller Count', global.fetch.calls.length === 2);
-  checkTrue('the Seller Count field is included in the SAME PUT body as the TREC entries', global.fetch.calls[0].body.customFields.some((f) => f.id === FAKE_SELLER_COUNT_FIELD_ID));
+  checkTrue('exactly ONE named command + ONE client readback -- no separate Seller Count write', global.fetch.calls.length === 2);
+  checkTrue('Seller Count is included in the SAME named command without a browser-supplied field ID', global.fetch.calls[0].body.args.sellerCount === "One Seller" && !JSON.stringify(global.fetch.calls[0].body).includes(FAKE_SELLER_COUNT_FIELD_ID));
 
   /* ==================================================================== */
   /* 3. sellerCount provided, readback MISMATCH -- overall ok is false,   */

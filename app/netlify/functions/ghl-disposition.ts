@@ -1,3 +1,6 @@
+import { lockContact } from "./lib/write-receipts";
+import { configuredBoundary } from "./lib/ghl-write-boundary";
+import { identifier, dispositions } from "./lib/write-contracts";
 /**
  * GHL call-disposition capture — server-side webhook receiver (§8 step 6,
  * CONTACT_WORKSPACE_SPEC_v2.md §5.4 Path A + §6).
@@ -59,44 +62,33 @@ function secretMatches(provided: string, expected: string): boolean {
 // GHL's DATE fields truncate time-of-day, so last_call_attempt_precise (TEXT)
 // carries the exact ISO string in the SAME PUT. Both ride one call → one write.
 async function markAttempt(token: string, contactId: string, iso: string): Promise<void> {
-  const res = await fetch(`${GHL_BASE}/contacts/${contactId}`, {
-    method: "PUT",
-    headers: writeHeaders(token),
-    body: JSON.stringify({
-      customFields: [
-        { id: LAST_CALL_ATTEMPT_ID,         field_value: iso },
-        { id: LAST_CALL_ATTEMPT_PRECISE_ID, field_value: iso },
-      ],
-    }),
-  });
-  if (!res.ok) throw new Error(`PUT /contacts/${contactId} (attempt) → ${res.status}: ${await res.text()}`);
+  const result = await configuredBoundary(token).fields("contact", contactId, [
+    { id: LAST_CALL_ATTEMPT_ID, field_value: iso, date: true },
+    { id: LAST_CALL_ATTEMPT_PRECISE_ID, field_value: iso },
+  ]);
+  if (!result.confirmed) throw new Error("Attempt readback not confirmed");
 }
 
 async function createNote(token: string, contactId: string, body: string): Promise<void> {
-  const res = await fetch(`${GHL_BASE}/contacts/${contactId}/notes`, {
-    method: "POST",
-    headers: writeHeaders(token),
-    body: JSON.stringify({ body }),
-  });
-  if (!res.ok) throw new Error(`POST /contacts/${contactId}/notes → ${res.status}: ${await res.text()}`);
+  await configuredBoundary(token).note(contactId, body);
 }
 
 // True if an identical note already exists within the dedupe window (i.e. this
-// is a retry). On a READ failure we deliberately return false — "favor greying"
-// (Brad): a rare duplicate note is recoverable; a stranded un-greyed row is the
-// catastrophic failure, so we proceed to write rather than bail.
+// is a retry). INV-95 requires failure closed when duplicate/readback evidence
+// is unavailable. A retry can still complete the attempt after a confirmed note.
 async function noteAlreadyWritten(token: string, contactId: string, body: string): Promise<boolean> {
   try {
     const res = await fetch(`${GHL_BASE}/contacts/${contactId}/notes`, { headers: authHeaders(token) });
-    if (!res.ok) return false;
+    if (!res.ok) throw new Error("Dedupe read unavailable");
     const json = await res.json();
-    const notes: any[] = json?.notes ?? [];
+    if (!Array.isArray(json?.notes) || json.notes.some((n: any) => typeof n?.body !== "string" || !Number.isFinite(Date.parse(n.dateAdded)))) throw new Error("Ambiguous dedupe readback");
+    const notes: any[] = json.notes;
     const cutoff = Date.now() - DEDUPE_WINDOW_MS;
     return notes.some(
       (n) => n?.body === body && new Date(n?.dateAdded ?? 0).getTime() >= cutoff,
     );
   } catch {
-    return false; // favor greying — see above
+    throw new Error("Dedupe read unavailable; refusing a blind duplicate");
   }
 }
 
@@ -170,13 +162,23 @@ export const handler = async (event: any) => {
   if (!contactId)   return json(400, { error: "missing customData.contact_id" });
   if (!disposition) return json(400, { error: "missing customData.disposition" });
 
+  try {
+    identifier(contactId);
+    if (!cd || typeof cd !== "object" || Array.isArray(cd) || Object.keys(cd).some(k => !["contact_id", "disposition", "duration"].includes(k))) throw new Error("Undeclared customData field");
+    if (!dispositions.includes(disposition) || (duration && !/^\d+$/.test(duration))) throw new Error("Malformed disposition");
+    await configuredBoundary(token).contact(contactId);
+  } catch { return json(403, { error: "Disposition payload or target refused" }); }
   // Note copy (§6.1, locked). Keep the em-dash form when duration is present;
   // fall back to disposition-only if GHL ever omits it, still parseable.
   const noteBody = duration
     ? `Call: ${disposition} — ${duration}s`
     : `Call: ${disposition}`;
 
-  const result = await writeDisposition(token, contactId, noteBody);
+  let result: WriteResult;
+  let release: (() => Promise<void>) | undefined;
+  try { release = await lockContact(contactId); result = await writeDisposition(token, contactId, noteBody); }
+  catch { return json(409, { error: "Disposition deduplication unavailable; no blind retry write" }); }
+  finally { if (release) await release(); }
 
   if (!result.ok) {
     // Non-2xx → GHL retries with backoff; the dedupe guard keeps it idempotent.
