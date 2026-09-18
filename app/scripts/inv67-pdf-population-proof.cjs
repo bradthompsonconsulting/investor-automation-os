@@ -1,26 +1,41 @@
 'use strict';
 
-// INV-67 / B9-12 -- smallest repository proof that IAOS can populate canonical
-// deal values directly onto the ORIGINAL TREC 20-19 PDF at exact PDF-space
-// coordinates, without modifying the source file, using only synthetic Test
-// data. Authorized scope: 6 representative rows from
-// docs/INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md. Signature, initials,
-// signer-entered dates, and Effective Date handling are explicitly OUT of
-// scope. No GHL call, no network call, no Production data anywhere in this
-// script.
+// INV-67 / B9-12 -- IAOS-generated TREC PDF population proof, PHASE A
+// expansion. Populates every deterministic (Class: Ready, or already
+// hand-verified in PR #75) manifest row it can derive and validate without
+// subjective visual judgment, onto the ORIGINAL TREC 20-19 PDF at exact
+// PDF-space coordinates, without modifying the source file, using only
+// synthetic Test data wired through the real contract-projection model
+// (contract-ghl-projection-model.ts's buildContractProjectionPlan, via
+// scripts/lib/inv67-projection-fixture.cjs -- NOT hand-typed strings).
 //
-// Coordinates below are PDF user-space points (bottom-left origin, y-up),
-// derived once via pdfjs-dist text-item extraction against the pinned source
-// PDF (see docs/INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md's own anchor text for
-// the paragraph each row targets) and hand-verified against the rendered
-// page images this script also produces. They are fixed literals, not
-// recomputed at runtime, so a run cannot silently drift if pdfjs's text
-// extraction ever changes.
+// Coordinates are derived at run time from pdfjs-dist text-item extraction
+// against the pinned source PDF (scripts/lib/inv67-pdf-anchor-helper.cjs's
+// named strategies) and cross-referenced against
+// docs/INV67_TEMPLATE_PLACEMENT_MANIFEST_V1.md's own row data
+// (scripts/lib/inv67-manifest-parser.cjs), not hardcoded per row --
+// EXCEPT the 6 ordinals PR #75 already proved and hand-verified (1, 8, 10,
+// 19, 54, 63), which keep their exact proven literals as a sanity baseline
+// (scripts/lib/inv67-pdf-field-plan.cjs's ROW_DERIVATIONS still documents
+// them for traceability, but does not re-derive their geometry from
+// scratch).
+//
+// Every "Visual judgment" manifest row, and every row whose printed blank
+// turned out to be underscores embedded within a single merged text run
+// (no clean duplicate caption to measure a sub-position from), is DEFERRED
+// -- never guessed. See placements.json's own `deferred` array for the
+// full accounting.
+//
+// Signature, initials, signer-entered dates, and Effective Date handling
+// remain explicitly OUT of scope. No GHL call, no network call, no
+// Production data anywhere in this script.
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+const { buildProjectionEntries } = require('./lib/inv67-projection-fixture.cjs');
+const { buildFieldPlan } = require('./lib/inv67-pdf-field-plan.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
 const SOURCE_PDF_PATH = path.join(REPO_ROOT, 'docs', 'TREC Resale Home Contract.pdf');
@@ -34,118 +49,6 @@ const PLACEMENTS_JSON_PATH = path.join(OUTPUT_DIR, 'placements.json');
 const PAGE_WIDTH_PT = 612; // US Letter, confirmed via pdfjs viewport on every inspected page
 const PAGE_HEIGHT_PT = 792;
 
-// Six representative rows, chosen per assignment: a name, the property
-// address (placed twice -- once at its primary paragraph, once at its
-// repeated-header duplicate, satisfying "one repeated value on another
-// page" without inventing a 7th field), the Paragraph 3A sales-price
-// amount, one checkbox mark, and one contract-term date (NOT the signer
-// Effective Date, which is out of scope).
-const PROOF_FIELDS = [
-  {
-    manifestOrdinal: 1,
-    fieldKey: 'parties.sellerSigners',
-    opportunityFieldKey: 'opportunity.contract_seller_signers',
-    mergeTag: '{{ opportunity.contract_seller_signers }}',
-    page: 1,
-    x: 282,
-    y: 689.86,
-    width: 280,
-    height: 11,
-    font: 'Helvetica',
-    fontSize: 9,
-    align: 'left',
-    syntheticValue: 'Jordan A. Testseller',
-    destination:
-      'Paragraph 1 (PARTIES) -- Seller-name blank filling the remainder of the "The parties to this contract are" line, before it wraps to "(Seller) and ... (Buyer)."',
-  },
-  {
-    manifestOrdinal: 8,
-    fieldKey: 'identity.propertyStreetAddress',
-    opportunityFieldKey: 'opportunity.contract_property_street_address',
-    mergeTag: '{{ opportunity.contract_property_street_address }}',
-    page: 1,
-    x: 165,
-    y: 595.3,
-    width: 400,
-    height: 11,
-    font: 'Helvetica',
-    fontSize: 9,
-    align: 'left',
-    syntheticValue: '4521 Test Ridge Lane, Austin, TX 78701',
-    destination:
-      'Paragraph 2A -- address/zip blank at the end of the "Texas, known as" line, above the "(address/zip code), or as described on attached exhibit." caption.',
-  },
-  {
-    manifestOrdinal: 10,
-    fieldKey: 'sales_price_amount_text',
-    opportunityFieldKey: 'opportunity.contract_sales_price_amount_text',
-    mergeTag: '{{ opportunity.contract_sales_price_amount_text }}',
-    page: 1,
-    x: 459,
-    y: 318.41,
-    width: 110,
-    height: 11,
-    font: 'Helvetica',
-    fontSize: 9,
-    align: 'left',
-    syntheticValue: '250,000.00',
-    destination:
-      'Paragraph 3A -- dollar-amount blank immediately right of the printed "$" at the end of "A. Cash portion of Sales Price payable by Buyer at closing .........."',
-  },
-  {
-    manifestOrdinal: 54,
-    fieldKey: 'as_is_with_repairs_mark',
-    opportunityFieldKey: 'opportunity.contract_as_is_with_repairs_mark',
-    mergeTag: '{{ opportunity.contract_as_is_with_repairs_mark }}',
-    page: 5,
-    x: 58.2,
-    y: 712.0,
-    width: 11.55,
-    height: 12.96,
-    font: 'Helvetica-Bold',
-    fontSize: 10,
-    align: 'center',
-    syntheticValue: 'X',
-    destination:
-      'Paragraph 7D(2) -- centered inside the printed "q" checkbox glyph immediately preceding "(2) Buyer accepts the Property As Is provided Seller...".',
-  },
-  {
-    manifestOrdinal: 63,
-    fieldKey: 'closing_date_month_day_text',
-    opportunityFieldKey: 'opportunity.contract_closing_date_month_day',
-    mergeTag: '{{ opportunity.contract_closing_date_month_day }}',
-    page: 6,
-    x: 292,
-    y: 669.82,
-    width: 125,
-    height: 11,
-    font: 'Helvetica',
-    fontSize: 9,
-    align: 'left',
-    syntheticValue: 'October 15',
-    destination:
-      'Paragraph 9A -- month/day blank between "The closing of the sale will be on or before" and the printed ", 20 ___" -- a contract-term date, NOT the signer Effective Date, which remains out of scope.',
-  },
-  {
-    manifestOrdinal: 19,
-    fieldKey: 'identity.propertyStreetAddress',
-    opportunityFieldKey: 'opportunity.contract_property_street_address',
-    mergeTag: '{{ opportunity.contract_property_street_address }}',
-    page: 2,
-    x: 129,
-    y: 750.6,
-    width: 325,
-    height: 9,
-    font: 'Helvetica',
-    fontSize: 7.5,
-    align: 'left',
-    syntheticValue: '4521 Test Ridge Lane, Austin, TX 78701',
-    destination:
-      'Repeated page-2-of-12 header -- "Contract Concerning ___ (Address of Property)" blank. SAME field/value as ordinal 8, proving one repeated value placed correctly on a second page.',
-    duplicateOfOrdinal: 8,
-  },
-];
-
 function sha256Hex(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
@@ -154,7 +57,7 @@ function validatePlacementGeometry(fields) {
   for (const field of fields) {
     if (field.x < 0 || field.y < 0 || field.x + field.width > PAGE_WIDTH_PT || field.y + field.height > PAGE_HEIGHT_PT) {
       throw new Error(
-        `Ordinal ${field.manifestOrdinal} (${field.fieldKey}) falls outside page bounds: ` +
+        `Ordinal ${field.ordinal} (${field.fieldKey}) falls outside page bounds: ` +
           `x=${field.x} y=${field.y} width=${field.width} height=${field.height} against ${PAGE_WIDTH_PT}x${PAGE_HEIGHT_PT}`
       );
     }
@@ -172,13 +75,35 @@ function validatePlacementGeometry(fields) {
         const overlapsX = a.x < b.x + b.width && b.x < a.x + a.width;
         const overlapsY = a.y < b.y + b.height && b.y < a.y + a.height;
         if (overlapsX && overlapsY) {
-          throw new Error(
-            `Ordinals ${a.manifestOrdinal} and ${b.manifestOrdinal} overlap on page ${page}`
-          );
+          throw new Error(`Ordinals ${a.ordinal} and ${b.ordinal} overlap on page ${page}`);
         }
       }
     }
   }
+}
+
+/** Every duplicate-note-linked group (address x12 subset placed, sales-price x2) must carry byte-identical text at every physical placement. */
+function validateDuplicateConsistency(fields) {
+  const byKey = new Map();
+  for (const f of fields) {
+    if (!byKey.has(f.fieldKey)) byKey.set(f.fieldKey, []);
+    byKey.get(f.fieldKey).push(f);
+  }
+  for (const [key, group] of byKey) {
+    if (group.length < 2) continue;
+    const first = group[0].value;
+    for (const f of group.slice(1)) {
+      if (f.value !== first) {
+        throw new Error(`Duplicate-key group "${key}" disagrees: ordinal ${group[0].ordinal}="${first}" vs ordinal ${f.ordinal}="${f.value}"`);
+      }
+    }
+  }
+}
+
+async function buildAllFields() {
+  const { entriesByKey } = buildProjectionEntries();
+  const { converted, deferred, manifestRows } = await buildFieldPlan(entriesByKey);
+  return { converted, deferred, manifestRows, entriesByKey };
 }
 
 async function main() {
@@ -193,8 +118,27 @@ async function main() {
   }
   console.log(`PASS source PDF hash verified unchanged: ${actualSourceHash}`);
 
-  validatePlacementGeometry(PROOF_FIELDS);
-  console.log(`PASS all ${PROOF_FIELDS.length} proof fields are in-bounds and non-overlapping`);
+  console.log('Building projection plan and PDF-coordinate field plan...');
+  const { converted, deferred, manifestRows } = await buildAllFields();
+
+  const visualJudgmentCount = manifestRows.filter((r) => r.cls === 'Visual judgment').length;
+  const readyCount = manifestRows.filter((r) => r.cls === 'Ready').length;
+  console.log(`Manifest: ${manifestRows.length} total rows, ${readyCount} Ready, ${visualJudgmentCount} Visual judgment.`);
+  console.log(`Converted: ${converted.length}. Deferred: ${deferred.length}.`);
+  for (const d of deferred) console.log(`  DEFERRED ordinal ${d.ordinal} (${d.key}): ${d.reason}`);
+
+  validatePlacementGeometry(converted);
+  console.log(`PASS all ${converted.length} converted fields are in-bounds and non-overlapping`);
+
+  validateDuplicateConsistency(converted);
+  console.log('PASS every duplicate-key group shares identical text across all its placements');
+
+  const EXCLUDED_KEY_PATTERN = /signature|initial|signerDate|effectiveDate/i;
+  const violating = converted.filter((f) => EXCLUDED_KEY_PATTERN.test(f.fieldKey));
+  if (violating.length > 0) {
+    throw new Error(`Signature/initial/signer-date/Effective-Date keys must never be converted: ${violating.map((f) => f.fieldKey).join(', ')}`);
+  }
+  console.log('PASS no converted field key references a signature, initial, signer-entered date, or Effective Date');
 
   const pdfDoc = await PDFDocument.load(sourceBytes);
   const sourcePageCount = pdfDoc.getPageCount();
@@ -221,27 +165,29 @@ async function main() {
   const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
   const drawnFields = [];
-  for (const field of PROOF_FIELDS) {
+  for (const field of converted) {
     const page = pdfDoc.getPage(field.page - 1);
     const useFont = field.font === 'Helvetica-Bold' ? helveticaBold : helvetica;
-    const textWidth = useFont.widthOfTextAtSize(field.syntheticValue, field.fontSize);
+    const textWidth = useFont.widthOfTextAtSize(field.value, field.fontSize);
     if (textWidth > field.width) {
       throw new Error(
-        `Ordinal ${field.manifestOrdinal} synthetic value "${field.syntheticValue}" (width ${textWidth.toFixed(2)}pt) ` +
+        `Ordinal ${field.ordinal} value "${field.value}" (width ${textWidth.toFixed(2)}pt) ` +
           `exceeds its assigned blank width (${field.width}pt) -- would risk drifting into printed contract language`
       );
     }
     const drawX = field.align === 'center' ? field.x + (field.width - textWidth) / 2 : field.x;
-    page.drawText(field.syntheticValue, {
-      x: drawX,
-      y: field.y,
-      size: field.fontSize,
-      font: useFont,
-      color: rgb(0, 0, 0),
-    });
+    if (field.value !== '') {
+      page.drawText(field.value, {
+        x: drawX,
+        y: field.y,
+        size: field.fontSize,
+        font: useFont,
+        color: rgb(0, 0, 0),
+      });
+    }
     drawnFields.push({ ...field, resolvedDrawX: drawX, resolvedTextWidthPt: Math.round(textWidth * 100) / 100 });
   }
-  console.log(`PASS drew ${drawnFields.length} synthetic values, none exceeding its assigned blank width`);
+  console.log(`PASS drew ${drawnFields.filter((f) => f.value !== '').length} non-empty values, none exceeding its assigned blank width (${drawnFields.length} placements verified total, including legitimately-empty dispositions)`);
 
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   const outputBytes = await pdfDoc.save();
@@ -254,7 +200,15 @@ async function main() {
     sourcePageCount,
     outputPdfPath: 'app/proof-artifacts/inv67-pdf-population-proof/populated-proof.pdf',
     outputSha256: sha256Hex(outputBytes),
+    manifestTotals: {
+      totalRows: manifestRows.length,
+      readyRows: readyCount,
+      visualJudgmentRows: visualJudgmentCount,
+      convertedCount: drawnFields.length,
+      deferredCount: deferred.length,
+    },
     fields: drawnFields,
+    deferred,
   };
   fs.writeFileSync(PLACEMENTS_JSON_PATH, JSON.stringify(record, null, 2));
 
@@ -270,7 +224,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  PROOF_FIELDS,
   PINNED_SOURCE_SHA256,
   EXPECTED_SOURCE_PAGE_COUNT,
   PAGE_WIDTH_PT,
@@ -278,6 +231,8 @@ module.exports = {
   SOURCE_PDF_PATH,
   OUTPUT_PDF_PATH,
   PLACEMENTS_JSON_PATH,
+  buildAllFields,
   validatePlacementGeometry,
+  validateDuplicateConsistency,
   sha256Hex,
 };
