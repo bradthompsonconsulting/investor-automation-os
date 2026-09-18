@@ -205,6 +205,38 @@ async function main() {
   }
   check('generator refuses a malformed entry (missing text)', refusedMalformed);
 
+  // 11. Fails closed: a duplicate projection-plan entry key is refused
+  // outright, BEFORE entriesByKey is ever built -- proving new Map() is
+  // never given the chance to silently keep whichever duplicate is last in
+  // the array. No artifact (no PDF bytes, no evidence) is produced.
+  const duplicatedKey = evidence.fields[1].fieldKey;
+  const duplicateKeyEntries = [...livePlan.entries, { key: duplicatedKey, text: 'A CONFLICTING DUPLICATE VALUE' }];
+  let refusedDuplicate = false;
+  let duplicateReasons = null;
+  let duplicateProducedOutput = false;
+  try {
+    const result = await generatePopulatedContractPdf({ projectionPlan: { ...livePlan, entries: duplicateKeyEntries } });
+    duplicateProducedOutput = !!(result && result.outputBytes);
+  } catch (err) {
+    refusedDuplicate = err instanceof ContractPdfGenerationError;
+    duplicateReasons = err.reasons;
+  }
+  check('generator refuses a projection plan with a duplicate entry key (fails closed, never lets Map choose the last value)', refusedDuplicate);
+  check('the duplicate-key refusal names the specific duplicated key', Array.isArray(duplicateReasons) && duplicateReasons.some((d) => d.key === duplicatedKey));
+  check('no artifact (no output bytes) was produced for the duplicate-key plan', !duplicateProducedOutput);
+
+  // 12. Sealed source API: a caller-supplied `source` field (path/hash
+  // override) is simply not part of the function's contract -- passing one
+  // alongside an otherwise-valid plan has zero effect, and the output still
+  // verifies against the real pinned canonical source, never a substitute.
+  const withIgnoredSourceOverride = await generatePopulatedContractPdf({
+    projectionPlan: livePlan,
+    opportunityId: 'OPP-LIVE-TEST-1',
+    source: { sourcePdfPath: '/tmp/not-the-real-contract.pdf', expectedSha256: 'deadbeef'.repeat(8), expectedPageCount: 1 },
+  });
+  check('a caller-supplied source override has no effect -- output still binds the real pinned source SHA-256', withIgnoredSourceOverride.evidence.sourceSha256 === PINNED_SOURCE_SHA256);
+  check('a caller-supplied source override has no effect -- output is byte-identical to the sealed call', sha256Hex(withIgnoredSourceOverride.outputBytes) === evidence.outputSha256);
+
   console.log('');
   if (failures > 0) {
     console.error(`${failures} check(s) FAILED`);

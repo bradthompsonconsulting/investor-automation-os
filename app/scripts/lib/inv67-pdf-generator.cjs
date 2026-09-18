@@ -44,8 +44,6 @@
 
 const { buildFieldPlan } = require('./inv67-pdf-field-plan.cjs');
 const {
-  PINNED_SOURCE_SHA256,
-  EXPECTED_SOURCE_PAGE_COUNT,
   MANIFEST_VERSION,
   sha256Hex,
   validatePlacementGeometry,
@@ -55,6 +53,17 @@ const {
   stampDeterministicMetadata,
   renderFieldsOntoPdf,
 } = require('./inv67-pdf-render-core.cjs');
+
+// Sealed to the pinned canonical TREC 20-19 source -- the generator's public
+// API takes NO source-path/hash/page-count override of any kind. A caller
+// that could substitute both a different sourcePdfPath and a self-consistent
+// expectedSha256 together would defeat source verification entirely (it
+// would just check the substitute file against its own claimed hash). If a
+// test genuinely needs to exercise loadAndVerifySourcePdf's own mismatch
+// behavior, it calls that render-core function directly -- never through
+// this generator's public surface, and never via a parallel override path
+// grafted onto generatePopulatedContractPdf.
+const CANONICAL_SOURCE_DISPLAY_PATH = 'docs/TREC Resale Home Contract.pdf';
 
 // Bump when ROW_DERIVATIONS, the render core, or this module's own contract
 // changes in a way that could change generated output for the same input.
@@ -71,10 +80,20 @@ class ContractPdfGenerationError extends Error {
 /**
  * Fails closed unless `projectionPlan` is a real, complete
  * ContractProjectionPlan: `ok: true` and a non-empty `entries` array of
- * `{key, text}` pairs. Never accepts a caller-supplied entriesByKey Map
- * directly -- the plan's own `ok`/`blockingReasons` are the ONLY accepted
- * evidence that the canonical facts behind it are actually complete
- * (contract-ghl-projection-model.ts's own "builds no partial plan" rule).
+ * `{key, text}` pairs with NO duplicate keys. Never accepts a caller-supplied
+ * entriesByKey Map directly -- the plan's own `ok`/`blockingReasons` are the
+ * ONLY accepted evidence that the canonical facts behind it are actually
+ * complete (contract-ghl-projection-model.ts's own "builds no partial plan"
+ * rule).
+ *
+ * DUPLICATE KEYS ARE REJECTED HERE, BEFORE entriesByKey EVER EXISTS.
+ * `new Map(entries.map(e => [e.key, e.text]))` would otherwise silently keep
+ * whichever duplicate happened to be LAST in the array and discard the
+ * other(s) -- a real, silent data-loss risk for a live contract artifact
+ * (two entries disagreeing on the same manifest key is evidence the plan is
+ * internally inconsistent, never a value to arbitrate by array order). This
+ * throws before buildFieldPlan/entriesByKey are ever constructed, so a
+ * duplicate-key plan produces no artifact at all.
  */
 function requireCompleteProjectionPlan(projectionPlan) {
   if (!projectionPlan || typeof projectionPlan !== 'object') {
@@ -89,10 +108,21 @@ function requireCompleteProjectionPlan(projectionPlan) {
   if (!Array.isArray(projectionPlan.entries) || projectionPlan.entries.length === 0) {
     throw new ContractPdfGenerationError('Cannot generate: projection plan carries no entries.');
   }
+  const seenKeys = new Set();
+  const duplicateKeys = new Set();
   for (const entry of projectionPlan.entries) {
     if (!entry || typeof entry.key !== 'string' || typeof entry.text !== 'string') {
       throw new ContractPdfGenerationError('Cannot generate: a projection plan entry is malformed (expected {key, text}).');
     }
+    if (seenKeys.has(entry.key)) duplicateKeys.add(entry.key);
+    seenKeys.add(entry.key);
+  }
+  if (duplicateKeys.size > 0) {
+    const keys = [...duplicateKeys];
+    throw new ContractPdfGenerationError(
+      `Cannot generate: projection plan carries duplicate entry key(s), refusing to let a Map silently choose the last value: ${keys.join(', ')}`,
+      keys.map((key) => ({ key }))
+    );
   }
 }
 
@@ -110,13 +140,15 @@ function requireCompleteProjectionPlan(projectionPlan) {
  *   fixture -- this module never imports inv67-projection-fixture.cjs.
  * @param {string} [args.opportunityId] Overrides projectionPlan.opportunityId
  *   in the returned evidence record, if the caller tracks it separately.
- * @param {{sourcePdfPath?: string, expectedSha256?: string, expectedPageCount?: number}} [args.source]
- *   Overrides for the canonical source PDF location/hash/page-count --
- *   defaults to the same pinned TREC 20-19 constants the proof uses.
+ *   NO source-path/hash/page-count parameter exists on this public function --
+ *   it is sealed to the pinned canonical TREC 20-19 source (see
+ *   CANONICAL_SOURCE_DISPLAY_PATH / inv67-pdf-render-core.cjs's own pinned
+ *   constants, which loadAndVerifySourcePdf() below is called with no
+ *   arguments to use unconditionally).
  * @returns {Promise<{outputBytes: Uint8Array, evidence: object}>}
  */
 async function generatePopulatedContractPdf(args) {
-  const { projectionPlan, opportunityId, source } = args || {};
+  const { projectionPlan, opportunityId } = args || {};
 
   requireCompleteProjectionPlan(projectionPlan);
   const entriesByKey = new Map(projectionPlan.entries.map((e) => [e.key, e.text]));
@@ -140,11 +172,9 @@ async function generatePopulatedContractPdf(args) {
   validateDuplicateConsistency(converted);
   validateNoSignerControlledFields(converted);
 
-  const { sourceBytes, sourceSha256, pdfDoc, sourcePageCount } = await loadAndVerifySourcePdf({
-    sourcePdfPath: source && source.sourcePdfPath,
-    expectedSha256: (source && source.expectedSha256) || PINNED_SOURCE_SHA256,
-    expectedPageCount: (source && source.expectedPageCount) || EXPECTED_SOURCE_PAGE_COUNT,
-  });
+  // No arguments -- always the pinned canonical source. See the sealed-API
+  // note above; this call can never be redirected by a caller.
+  const { sourceBytes, sourceSha256, pdfDoc, sourcePageCount } = await loadAndVerifySourcePdf();
   void sourceBytes; // read only to hash/verify; the loaded pdfDoc is what gets populated
 
   stampDeterministicMetadata(pdfDoc, {
@@ -164,7 +194,7 @@ async function generatePopulatedContractPdf(args) {
     opportunityId: opportunityId || projectionPlan.opportunityId || null,
     projectionVersion: projectionPlan.version !== undefined ? projectionPlan.version : null,
     generatedAt: new Date().toISOString(),
-    sourcePdfPath: (source && source.sourcePdfPath) || 'docs/TREC Resale Home Contract.pdf',
+    sourcePdfPath: CANONICAL_SOURCE_DISPLAY_PATH,
     sourceSha256,
     sourcePageCount,
     outputSha256,
