@@ -132,7 +132,34 @@ function notApplicable(confirmedBy, at, note) {
   return { kind: 'not_applicable', confirmedBy: confirmedBy || 'brad', at: at || AGREEMENT_AT, note: note === undefined ? null : note };
 }
 
+/**
+ * Seven-key correction (this session): `legalMunicipality` (INV-67 Phase
+ * 2A, `8e75497`) was missing from this fixture, which is exactly why
+ * `test-contract-disposition-handoff.cjs` kept passing after Phase 2A
+ * shipped while the real carrier silently rejected every authoritative
+ * (seven-key) write -- see `OBSOLETE_SIX_KEY_PROPERTY_LEGAL_DESCRIPTION`
+ * below for the payload shape this fixture used to match.
+ */
 function propertyLegalDescriptionFixture() {
+  return {
+    lot: populated({ kind: 'value', value: '12' }),
+    block: populated({ kind: 'value', value: 'A' }),
+    addition: populated({ kind: 'value', value: 'Fixture Addition' }),
+    county: populated({ kind: 'value', value: 'Dallas' }),
+    exclusions: notApplicable(),
+    reservations: notApplicable(),
+    legalMunicipality: populated({ kind: 'municipality', name: 'Round Rock' }),
+  };
+}
+
+/**
+ * The OBSOLETE six-key shape every authoritative write has NOT produced
+ * since INV-67 Phase 2A (2026-09-16) -- `legalMunicipality` omitted
+ * entirely, not merely null/unresolved. Product Owner ruling: this shape
+ * fails closed, with no legacy-compatibility path. Used only by the
+ * negative proof below.
+ */
+function obsoleteSixKeyPropertyLegalDescription() {
   return {
     lot: populated({ kind: 'value', value: '12' }),
     block: populated({ kind: 'value', value: 'A' }),
@@ -419,6 +446,39 @@ checkNull('parse: empty string is rejected', HC.parseDispositionHandoffNote(''))
   const parsed = HC.parseDispositionHandoffNote(note);
   checkTrue('the handoff note round-trips to a non-null record', parsed !== null);
   check('round-trip is byte-for-byte field-equal to the original', JSON.stringify(parsed), JSON.stringify(handoff));
+}
+{
+  // Seven-key correction regression proof (this session). INV-67 Phase 2A
+  // (8e75497, 2026-09-16) added `legalMunicipality` to the authoritative
+  // `PropertyLegalDescriptionReport`; this carrier's own six-key allowlist
+  // (5db1306, 2026-09-13) was never updated, so `hasExactKeys` silently
+  // rejected the ENTIRE handoff record on every real write (see this
+  // module's own "SEVEN-KEY CORRECTION" header). This test proves the
+  // fixed producer -> serialization -> parser -> readback chain explicitly,
+  // field by field, rather than relying only on the pre-existing generic
+  // round-trip check above.
+  const handoff = validHandoffFixture({});
+  const note = HC.formatDispositionHandoffNote(handoff);
+  const parsed = HC.parseDispositionHandoffNote(note);
+  checkTrue('seven-key correction: the current authoritative propertyLegalDescription shape parses successfully (does not silently discard the whole record)', parsed !== null);
+  check('seven-key correction: legalMunicipality survives the carrier round-trip exactly', parsed && parsed.propertyLegalDescription.legalMunicipality, propertyLegalDescriptionFixture().legalMunicipality);
+  check('seven-key correction: the full seven-key propertyLegalDescription survives the carrier round-trip, field for field', parsed && parsed.propertyLegalDescription, propertyLegalDescriptionFixture());
+}
+{
+  // Negative proof (Product Owner ruling, this session): the OBSOLETE
+  // six-key shape (legalMunicipality omitted entirely, not merely
+  // unresolved/not_applicable) must fail closed. No legacy-compatibility
+  // path was added -- any old IAOS Test handoff note written under this
+  // shape must be regenerated from current authoritative facts, never
+  // accepted downstream.
+  const note = HC.formatDispositionHandoffNote(validHandoffFixture({}));
+  const lines = note.split('\n');
+  const legalDescIdx = lines.findIndex((l) => l.startsWith('Property legal description: '));
+  lines[legalDescIdx] = 'Property legal description: ' + JSON.stringify(obsoleteSixKeyPropertyLegalDescription());
+  checkNull(
+    'parse: the obsolete six-key property legal description (legalMunicipality omitted) is rejected -- fails closed, no legacy path',
+    HC.parseDispositionHandoffNote(lines.join('\n')),
+  );
 }
 {
   const note = HC.formatDispositionHandoffNote(validHandoffFixture({}));
