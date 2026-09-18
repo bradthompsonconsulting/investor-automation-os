@@ -95,8 +95,8 @@ for (const f of FILES) {
   // (e.g. a different B9 issue's own economics display) happens to be
   // clean.
   const start = noComments.indexOf('const existingSend = useMemo');
-  const handleSendStart = noComments.indexOf('async function handleSend(');
-  const handleSendEnd = noComments.indexOf('\n  }', handleSendStart);
+  const handleSendStart = noComments.indexOf('const contractSentEvidence = useMemo');
+  const handleSendEnd = noComments.indexOf('const [providerReadback,', handleSendStart);
   if (start === -1 || handleSendStart === -1 || handleSendEnd === -1) {
     check('could isolate the send-related block in ContractWorkspace.tsx (existingSend through end of handleSend)', false, true);
   } else {

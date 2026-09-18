@@ -1,14 +1,11 @@
-import { currentContractContext } from "./lib/write-contract-context";
-import { recordProjectionProof, requireProjectionProof } from "./lib/write-receipts";
 import { validateLedgerNote } from "./lib/write-note-guard";
 import { getConfig } from "../../shared/ghl-config";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { exact, identifier, planWrite, dispositions, routings } from "./lib/write-contracts";
-import { configuredBoundary, fieldValue, matchesField, WriteUncertain } from "./lib/ghl-write-boundary";
+import { configuredBoundary, fieldValue, WriteUncertain } from "./lib/ghl-write-boundary";
 import { claimWrite, lockContact } from "./lib/write-receipts";
 import { latestOutcomeNoteForOpportunity } from "../../src/lib/seller-call-outcome";
 import { currentOfferWriteGate } from "../../src/lib/current-offer-carrier";
-import { latestContractProjectionSyncForOpportunity } from "../../src/lib/contract-projection-sync-carriers";
 const json = (statusCode: number, data: unknown) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(data) });
 export const handler = async (event: any) => {
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
@@ -43,22 +40,6 @@ export const handler = async (event: any) => {
       if (!dispositions.includes(d)) return json(409, { error: "A valid disposition must be confirmed first" });
       if (d === "Follow Up" && !fieldValue(target.customFields, config.fields.callbackDatetimePrecise, "contact").value) return json(409, { error: "Follow Up requires a confirmed callback" });
     }
-    if (operation === "contract.projection" || operation === "contract.draftRequest") {
-      const context = await currentContractContext(boundary, targetId);
-      if (!context.projection.ok) return json(409, { error: "Canonical contract facts are not ready" });
-      if (operation === "contract.draftRequest") {
-        const expected = planWrite("contract.projection", { entries: context.projection.entries, sellerCount: context.sellerCount }, config);
-        if (!expected.fields.every(f=>matchesField(target.customFields,f,"opportunity")) || fieldValue(target.customFields,config.opportunityFacts.currentOffer,"opportunity").value !== context.agreement.snapshot.currentOffer) throw new Error("Projection no longer matches canonical contract");
-      }
-      if (operation === "contract.projection" && (JSON.stringify(args.entries) !== JSON.stringify(context.projection.entries) || args.sellerCount !== context.sellerCount)) return json(409, { error: "Projection does not match current canonical facts" });
-    }
-    if (operation === "contract.draftRequest") {
-      const state = fieldValue(target.customFields, config.contractDraftRequest, "opportunity").value;
-      if (state !== null && state !== "" && state !== "Idle") return json(409, { error: "Draft already requested" });
-      await requireProjectionProof(targetId, target);
-      const sync = latestContractProjectionSyncForOpportunity(await boundary.notes(contactId), targetId);
-      if (!sync || sync.status !== "in_progress" || !sync.entriesAttempted || sync.entriesLanded !== sync.entriesAttempted || !sync.currentOfferCrossCheckOk) return json(409, { error: "Confirmed contract projection is required" });
-    }
     if (plan.kind === "note") await validateLedgerNote(boundary, targetId, plan.body!);
     await claimWrite(`${operator}:${operation}:${targetId}`, requestId, request);
     if (plan.kind === "note") return json(200, await boundary.note(targetId, plan.body!));
@@ -72,7 +53,6 @@ export const handler = async (event: any) => {
       return json(200, { confirmed: true });
     }
     const result = await boundary.fields(plan.kind, targetId, plan.fields);
-    if (operation === "contract.projection" && result.confirmed) await recordProjectionProof(targetId, plan.fields, result.readback);
     // A deterministic partial readback is not a successful write. Existing clients
     // receive per-field evidence and retain their partial-recovery path.
     return json(200, { ...result.response, confirmed: result.confirmed, readback: result.readback, results: result.results });

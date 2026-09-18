@@ -104,8 +104,8 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   await check('unauthenticated request makes zero upstream calls',async()=>{const e=event('contact.propertyNotes',contact.id,{value:'x'});e.headers={};const before=calls.length;assert.equal((await handler(e)).statusCode,401);assert.equal(calls.length,before);});
   await check('malformed JSON makes zero upstream calls',async()=>{const e=event('',contact.id,{});e.body='{';const before=calls.length;assert.equal((await handler(e)).statusCode,400);assert.equal(calls.length,before);});
   await check('duplicate request refused before a second write',async()=>{const e=event('note.create',contact.id,{body:'replay fixture'});assert.equal((await handler(e)).statusCode,200);const before=writes;assert.equal((await handler(e)).statusCode,409);assert.equal(writes,before);});
-  await check('invalid draft transition refuses without mutation',async()=>{const before=writes;assert.equal((await handler(event('contract.draftRequest',opportunity.id,{value:'Idle'}))).statusCode,400);assert.equal(writes,before);});
-  await check('draft without confirmed projection refused',async()=>{const before=writes;assert.equal((await handler(event('contract.draftRequest',opportunity.id,{value:'Requested'}))).statusCode,409);assert.equal(writes,before);});
+
+
   await check('partial write is explicit and never confirmed',async()=>{omitReadback=true;const res=await handler(event('opportunity.repairs',opportunity.id,{value:999}));assert.equal(JSON.parse(res.body).confirmed,false);omitReadback=false;});
   await check('duplicate readback field rejected',()=>assert.throws(()=>boundaryLib.fieldValue([{id:'x',value:1},{id:'x',value:1}],'x','contact')));
   await check('wrong field representation rejected',()=>assert.throws(()=>boundaryLib.fieldValue([{id:'x',fieldValueNumber:1}],'x','opportunity')));
@@ -116,8 +116,26 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   opportunity.customFields.push({id:config.opportunityFacts.currentOffer,fieldValue:190000});
   for(const note of fixture.notes) await check('retained ledger '+note.body.split(' — ')[0],async()=>{const res=await handler(event('note.create',contact.id,{body:note.body}));assert.equal(res.statusCode,200,res.body);});
   const context = await require('../netlify/functions/lib/write-contract-context.ts').currentContractContext(boundaryLib.configuredBoundary(),opportunity.id);
-  await check('retained canonical contract projection',async()=>{assert.equal(context.projection.ok,true);const res=await handler(event('contract.projection',opportunity.id,{entries:context.projection.entries,sellerCount:context.sellerCount}));assert.equal(res.statusCode,200,res.body);assert.equal(JSON.parse(res.body).confirmed,true);});
-  await check('reject tampered canonical projection',async()=>{const before=writes;const res=await handler(event('contract.projection',opportunity.id,{entries:[{key:context.projection.entries[0].key,text:'tampered'}],sellerCount:context.sellerCount}));assert.equal(res.statusCode,409);assert.equal(writes,before);});
+
+
+  for (const environment of ['test', 'production']) {
+    for (const [operation, args] of [
+      ['contract.projection', {entries: context.projection.entries,
+        sellerCount: context.sellerCount}],
+      ['contract.draftRequest', {value: 'Requested'}],
+      ['contract.draftRequest', {value: 'Idle'}],
+    ]) await check('retired ' + operation + ' refused in ' + environment, async () => {
+      process.env.IAOS_ENV = environment;
+      const before = {calls: calls.length, writes, receipts: receipts.size};
+      const response = await handler(event(operation, opportunity.id, args));
+      assert.equal(response.statusCode, 400);
+      assert.deepEqual({calls: calls.length, writes, receipts: receipts.size}, before);
+      assert.throws(() => contracts.planWrite(operation, args, getConfig(environment)));
+    });
+  }
+  process.env.IAOS_ENV = 'test';
+  await check('canonical projection computation remains available',
+    () => assert.equal(context.projection.ok, true));
   const authorization=require('../src/lib/contract-authorization-carriers.ts').formatBradContractAuthorizationNote(fixture.authorization);
   await check('retained canonical Brad authorization',async()=>{const res=await handler(event('note.create',contact.id,{body:authorization}));assert.equal(res.statusCode,200,res.body);});
   await check('reject stale authorization content',async()=>{const before=writes;const res=await handler(event('note.create',contact.id,{body:authorization.replace('Jane Seller','Other Seller')}));assert.equal(res.statusCode,409);assert.equal(writes,before);});
@@ -125,8 +143,8 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   const sync={opportunityId:opportunity.id,at:'2026-09-18T01:00:00.000Z',attemptId:'2026-09-18T01:00:00.000Z',operator:'brad',status:'in_progress',version:fixture.version,entriesAttempted:context.projection.entries.length,entriesLanded:context.projection.entries.length,failedKeys:[],currentOfferCrossCheckOk:true,observedStateBeforeWrite:'Idle',intendedToState:'Requested',sentValue:null,observedValue:null,providerStatus:null,failureReason:null,sellerSigningEvidence:{sellerCountDiscriminator:'one_seller',seller1Ok:true,seller1ContactId:contact.id,seller1Capacity:'individual_own_capacity',seller2LegalName:null,seller2NormalizedEmail:null,seller2Capacity:null,printedPartyConsistencyOk:true,expectedSellerCountTransportValue:'One Seller',canonicalReady:true,sellerCountFieldProvisioned:true,sellerCountWriteReadbackOk:true,effectiveDateStatus:'pending_final_acceptance',recipientAssignmentStatus:'pending_manual_review',blockingReasons:[],sendOccurred:false}};
   const syncBody=require('../src/lib/contract-projection-sync-carriers.ts').formatContractProjectionSyncNote(sync);
   await check('retained projection reservation note',async()=>{const res=await handler(event('note.create',contact.id,{body:syncBody}));assert.equal(res.statusCode,200,res.body);});
-  await check('retained draft Requested transition',async()=>{const res=await handler(event('contract.draftRequest',opportunity.id,{value:'Requested'}));assert.equal(res.statusCode,200,res.body);assert.equal(JSON.parse(res.body).confirmed,true);});
-  await check('duplicate draft transition refused',async()=>{const before=writes;assert.equal((await handler(event('contract.draftRequest',opportunity.id,{value:'Requested'}))).statusCode,409);assert.equal(writes,before);});
+
+
   const proxy=require('../netlify/functions/ghl-proxy.ts').handler;
   for(const method of ['POST','PUT','PATCH','DELETE'])await check('generic proxy refuses '+method,async()=>{const before=calls.length;assert.equal((await proxy({httpMethod:method,queryStringParameters:{path:`/contacts/${contact.id}`},body:'{}'})).statusCode,403);assert.equal(calls.length,before);});
   const {requireWebhook}=require('../netlify/functions/lib/write-webhook-auth.ts');

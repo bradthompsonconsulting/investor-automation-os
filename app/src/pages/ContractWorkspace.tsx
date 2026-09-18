@@ -18,28 +18,14 @@ import {
   CONTRACT_DOCUMENT_GROUP_LABEL,
 } from "../lib/contract-document-model";
 import {
-  buildContractProjectionPlan, reusedCurrentOfferLines, type ContractProjectionFieldKey,
-} from "../lib/contract-ghl-projection-model";
-import {
-  evaluateContractDraftRequestTransition, normalizeContractDraftRequestState,
-  buildContractDraftRequestAttemptRecord, buildContractDraftRequestResolutionRecord,
-  classifyContractDraftRequestOutcome,
-} from "../lib/contract-draft-request-model";
-import { formatContractProjectionSyncNote, latestContractProjectionSyncForOpportunity } from "../lib/contract-projection-sync-carriers";
-import {
   evaluateBradAuthorizationCurrency, evaluateAuthorizationEligibility,
   buildAuthorizationRecordArgs, computeDifferencesFromLastAuthorized,
 } from "../lib/contract-authorization-model";
 import {
   formatBradContractAuthorizationNote, latestBradContractAuthorizationForOpportunity,
 } from "../lib/contract-authorization-carriers";
-import {
-  evaluateSendEligibility, buildSendAttemptArgs, buildSendResultArgs,
-  buildReadbackResultArgs, classifyProviderSendResponse, buildContractSentEvidence,
-} from "../lib/contract-send-model";
-import {
-  formatContractSendNote, latestContractSendForOpportunity,
-} from "../lib/contract-send-carriers";
+import { buildContractSentEvidence } from "../lib/contract-send-model";
+import { latestContractSendForOpportunity } from "../lib/contract-send-carriers";
 import { buildProviderObservationRecordFromReadback, type LifecycleRecord } from "../lib/contract-lifecycle-model";
 import {
   classifySelectedFileBytes, verifyRequiredSigners, verifyProviderCompletion,
@@ -77,7 +63,6 @@ import {
 import {
   formatDispositionHandoffNote, parseDispositionHandoffNote, allDispositionHandoffsForOpportunity,
 } from "../lib/contract-disposition-handoff-carriers";
-import { getRuntimeConfig, CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED } from "../../shared/ghl-config";
 import {
   formatBuyerEntityOverrideNote,
   formatPartySignerFactsNote, type SellerSignerFact,
@@ -100,8 +85,8 @@ import {
 } from "../lib/seller-contract-facts-carriers";
 import {
   resolveSeller1FromOpportunity, checkSeller2LegalName, checkSeller2EmailFormat, checkSellerEmailsDistinct,
-  normalizeEmail, evaluateSellerSigningPreWriteReadiness, buildSellerSigningAuditEvidence, sellerCountTransportValue,
-  type SellerSigningModel, type SigningCapacityDisposition, type Seller1Resolution, type SellerSigningModelDisposition,
+  normalizeEmail,
+  type SellerSigningModel, type SigningCapacityDisposition, type Seller1Resolution,
 } from "../lib/contract-seller-signing-model";
 
 /**
@@ -675,18 +660,6 @@ export default function ContractWorkspace() {
     return latestSellerSigningModelForOpportunity(notes, screen.opportunity.id);
   }, [screen, notes]);
 
-  /** INV-67 Phase 1 Jess re-gate correction -- the canonical seller-signing fact, as a `SellerSigningModelDisposition` (the exact shape `evaluateSellerSigningPreWriteReadiness` / `buildSellerSigningAuditEvidence` take). No Note ever recorded reads as `unresolved`, never a silent default. */
-  const sellerSigningDisposition: SellerSigningModelDisposition = useMemo(
-    () => (latestSellerSigningModel ? { kind: "populated", value: latestSellerSigningModel.model } : { kind: "unresolved" }),
-    [latestSellerSigningModel],
-  );
-
-  /** The existing `parties.sellerSigners` printed-identity array, narrowed to the one field the seller-readiness gate compares against -- never a second, independently-read source. */
-  const printedSellerSigners = useMemo(() => {
-    const d = sellerContractFactsReport?.parties.sellerSigners;
-    return d && d.kind === "populated" ? d.value.map((s) => ({ displayName: s.displayName })) : [];
-  }, [sellerContractFactsReport]);
-
   /**
    * B9-07 / INV-62 -- Contract Review & Send-Authorization Gate.
    *
@@ -717,266 +690,6 @@ export default function ContractWorkspace() {
       propertyStreetAddress: propertyStreetAddressDisposition,
     });
   }, [sellerContractFactsReport, documentVersion, screen, propertyStreetAddressDisposition]);
-
-  /**
-   * INV-67 / B9-12 contract-population repair -- Contract Workspace
-   * synchronization control. Projects `contractDocumentPreview`'s
-   * already-resolved facts into the 48 narrowly-scoped GHL Opportunity
-   * fields, then -- ONLY once every write/readback lands and the accepted
-   * price cross-checks -- sets the one-shot `Contract Draft Request`
-   * dropdown to "Requested". This control NEVER creates or sends a
-   * document itself: it writes Opportunity custom fields and audit Notes
-   * only, exactly the write classes this repair authorizes. The future GHL
-   * workflow (not built here) is what actually creates the draft and
-   * resets the field back to "Idle".
-   *
-   * JESS GATE CORRECTION (this session) -- AUDIT ORDERING. GHL may create
-   * the draft the instant "Requested" lands, so a durable, DURABLE-BEFORE-
-   * THE-WRITE "in_progress" note is required -- see
-   * `contract-draft-request-model.ts`'s own header for the full ruling.
-   * This handler now performs the SAME two-phase attempt/resolution
-   * sequence `handleSend` above already establishes for Contract Sent:
-   * build the attempt record -> write ITS note -> only on that note's
-   * confirmed success, attempt the actual "Requested" PUT -> build and
-   * write the resolution record for the SAME attemptId. Neither evidence
-   * write is ever swallowed; a resolution-note failure (or a readback
-   * mismatch) after a successful PUT is surfaced as "indeterminate," never
-   * silently treated as success, failure, or safe-to-retry -- the next
-   * invocation's own fresh read is what actually prevents a duplicate
-   * request, not a client-side retry loop (there is none here).
-   */
-  const [syncBusy, setSyncBusy] = useState(false);
-  type DraftRequestOutcome = {
-    attempted: boolean;
-    /** null = never evaluated (the projection write itself did not fully land). */
-    transitionAllowed: boolean | null;
-    refusalReason: string | null;
-    attemptNoteOk: boolean | null;
-    /** The raw PUT+readback outcome. null until the PUT was actually attempted. */
-    rawStatus: "accepted" | "failed" | "indeterminate" | null;
-    resolutionNoteOk: boolean | null;
-    /**
-     * "accepted"/"failed" straight from `rawStatus`, EXCEPT a successful PUT
-     * whose resolution note failed to write is escalated to "indeterminate"
-     * here -- durable evidence of the outcome does not exist, which is
-     * exactly the condition the corrected ruling's item 6 names.
-     */
-    reportedStatus: "accepted" | "failed" | "indeterminate" | null;
-    sentValue: string | null;
-    observedValue: string | null;
-  };
-  const [syncResult, setSyncResult] = useState<
-    | null
-    | { kind: "blocked"; blockingReasons: string[] }
-    | {
-        kind: "done";
-        ok: boolean;
-        entries: { key: ContractProjectionFieldKey; landed: boolean }[];
-        currentOfferCrossCheckOk: boolean;
-        draftRequest: DraftRequestOutcome;
-        /** INV-67 checkbox-marker / broker-model repair -- non-blocking issues (e.g. POA membership/addendum disagreement). Never causes `ok:false`. */
-        warnings: string[];
-      }
-    | { kind: "error"; message: string }
-  >(null);
-
-  const latestProjectionSync = useMemo(() => {
-    if (screen.state !== "ready" || !notes) return null;
-    return latestContractProjectionSyncForOpportunity(notes, screen.opportunity.id);
-  }, [screen, notes]);
-
-  async function handleSyncContractProjectionFields() {
-    // INV-67 checkbox-marker / broker-model repair -- buildContractProjectionPlan
-    // now also derives markers/broker text from the raw report, not just the
-    // rendered preview, so both must be available before attempting a sync.
-    if (screen.state !== "ready" || !contractDocumentPreview || !sellerContractFactsReport) return;
-    setSyncResult(null);
-    setSyncBusy(true);
-    try {
-      const opportunityId = screen.opportunity.id;
-
-      // INV-67 Phase 1 Jess re-gate correction -- the seller-signing gate
-      // runs BEFORE buildContractProjectionPlan is even called, and its
-      // result is FOLDED into that plan's own blockingReasons/ok:false
-      // path below -- there is no separate seller-only short-circuit here,
-      // so the SAME "if (!plan.ok) return" already in place structurally
-      // covers both. Nothing here performs network I/O; every input is
-      // already-resolved live data this component already holds.
-      const sellerCountFieldId = getRuntimeConfig().contractSellerCountField;
-      const sellerReadiness = evaluateSellerSigningPreWriteReadiness({
-        disposition: sellerSigningDisposition,
-        seller1: seller1Resolution,
-        printedSellerSigners,
-        sellerCountFieldId,
-        sellerCountFieldSentinel: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
-        sellerCountWriteReadbackVerified: true, // see evaluateSellerSigningPreWriteReadiness's own doc comment -- gate 15 is enforced post-write, below.
-      });
-
-      const plan = buildContractProjectionPlan(opportunityId, contractDocumentPreview, sellerContractFactsReport, sellerReadiness);
-      if (!plan.ok) {
-        setSyncResult({ kind: "blocked", blockingReasons: plan.blockingReasons });
-        return;
-      }
-
-      // plan.ok === true guarantees sellerReadiness.ok === true, which
-      // guarantees sellerSigningDisposition.kind === "populated" (gate 1)
-      // and sellerCountFieldId is provisioned (gate 14) -- safe to build
-      // and include the Seller Count write in the SAME verified write/
-      // readback call the 112 TREC fields already go through.
-      const sellerCountText =
-        sellerSigningDisposition.kind === "populated" ? sellerCountTransportValue(sellerSigningDisposition.value) : null;
-      const writeResult = await ghl.opportunities.syncContractProjectionFields(
-        opportunityId,
-        plan.entries,
-        sellerCountText !== null ? { fieldId: sellerCountFieldId, text: sellerCountText } : null,
-      );
-
-      // Extends the EXISTING opportunity-scoped, two-phase evidence --
-      // never a second, global, or independently-scoped audit system. See
-      // buildSellerSigningAuditEvidence's own doc comment for why this is
-      // computed ONCE here and carried forward unchanged onto both notes.
-      const sellerSigningEvidence = buildSellerSigningAuditEvidence({
-        disposition: sellerSigningDisposition,
-        seller1: seller1Resolution,
-        printedSellerSigners,
-        sellerCountFieldId,
-        sellerCountFieldSentinel: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
-        sellerCountWriteReadbackOk: writeResult.sellerCount ? writeResult.sellerCount.landed : null,
-      });
-
-      const reused = reusedCurrentOfferLines(contractDocumentPreview);
-      const currentOfferCrossCheckOk =
-        reused.every((r) => r.text !== null) && writeResult.currentOfferObserved === screen.agreedPrice;
-
-      let draftRequest: DraftRequestOutcome = {
-        attempted: false, transitionAllowed: null, refusalReason: null, attemptNoteOk: null,
-        rawStatus: null, resolutionNoteOk: null, reportedStatus: null, sentValue: null, observedValue: null,
-      };
-
-      if (writeResult.ok) {
-        // Fresh read, immediately before deciding -- never a cached value (see
-        // contract-draft-request-model.ts's own duplicate/stale-request note).
-        const currentRaw = await ghl.opportunities.readContractDraftRequest(opportunityId);
-        const observedStateBeforeWrite = normalizeContractDraftRequestState(currentRaw);
-        const decision = evaluateContractDraftRequestTransition({
-          currentRaw,
-          projection: { entryCount: writeResult.entries.length, allEntriesLanded: writeResult.ok },
-          currentOfferCrossCheckOk,
-        });
-
-        if (!decision.allowed) {
-          draftRequest = { ...draftRequest, attempted: true, transitionAllowed: false, refusalReason: decision.reason };
-        } else {
-          // Fresh attemptId, generated here, every invocation -- a repeated
-          // UI action can never reuse an earlier attempt's id.
-          const attemptAt = new Date().toISOString();
-          const attemptRecord = buildContractDraftRequestAttemptRecord({
-            opportunityId,
-            operator: "brad",
-            attemptAt,
-            version: documentVersion!,
-            entriesAttempted: writeResult.entries.length,
-            entriesLanded: writeResult.entries.filter((e) => e.landed).length,
-            failedKeys: writeResult.entries.filter((e) => !e.landed).map((e) => e.key),
-            currentOfferCrossCheckOk,
-            observedStateBeforeWrite,
-            sellerSigningEvidence,
-          });
-          const attemptNote = formatContractProjectionSyncNote(attemptRecord);
-
-          // Stage 1: the "in_progress" note -- MUST land before "Requested" is ever attempted.
-          let attemptNoteOk = false;
-          try {
-            await ghl.notes.create(contactId, attemptNote);
-            setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attemptNote, dateAdded: attemptRecord.at }]);
-            attemptNoteOk = true;
-          } catch (e: any) {
-            draftRequest = {
-              ...draftRequest, attempted: true, transitionAllowed: true, attemptNoteOk: false,
-              refusalReason:
-                `Couldn't durably record the draft-request attempt (${e?.message ?? "unknown error"}) -- ` +
-                'refusing to write "Requested" without evidence of intent. The projection fields above are still confirmed landed; nothing was requested.',
-            };
-          }
-
-          if (attemptNoteOk) {
-            // Stage 2: the actual one-shot write -- redeems the attempt just
-            // durably recorded above. setContractDraftRequest NEVER throws
-            // (Jess Gate transport-outcome correction) -- it always returns
-            // a discriminated ContractDraftRequestWriteOutcome, classified
-            // below by the SAME pure function this module's own tests
-            // exercise against all six variants -- no ad hoc try/catch
-            // classification here that could re-collapse a transport
-            // exception or a readback failure into "failed".
-            const outcome = await ghl.opportunities.setContractDraftRequest(opportunityId, "Requested");
-            const classification = classifyContractDraftRequestOutcome(outcome);
-            const rawStatus = classification.status;
-
-            const resolvedAt = new Date().toISOString();
-            const resolutionRecord = buildContractDraftRequestResolutionRecord({
-              attempt: attemptRecord,
-              resolvedAt,
-              status: rawStatus,
-              sentValue: classification.sentValue,
-              observedValue: classification.observedValue,
-              providerStatus: classification.providerStatus,
-              failureReason: classification.failureReason,
-            });
-            const resolutionNote = formatContractProjectionSyncNote(resolutionRecord);
-
-            // Stage 3: the resolution note -- for the SAME attemptId. Never swallowed.
-            let resolutionNoteOk = false;
-            try {
-              await ghl.notes.create(contactId, resolutionNote);
-              setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: resolutionNote, dateAdded: resolutionRecord.at }]);
-              resolutionNoteOk = true;
-            } catch {
-              resolutionNoteOk = false;
-            }
-
-            // A successful write whose own evidence failed to land is
-            // reported exactly like an unconfirmed readback: indeterminate,
-            // never silently "accepted" -- item 6 of the corrected ruling.
-            const reportedStatus: "accepted" | "failed" | "indeterminate" =
-              rawStatus === "accepted" && !resolutionNoteOk ? "indeterminate" : rawStatus;
-
-            draftRequest = {
-              attempted: true,
-              transitionAllowed: true,
-              // The exact, kind-specific explanation classifyContractDraftRequestOutcome
-              // built -- never a generic fallback. null only for "accepted"
-              // (and downgraded to the resolution-note-missing message below
-              // when reportedStatus escalates a clean "accepted" to "indeterminate").
-              refusalReason:
-                reportedStatus === "accepted"
-                  ? null
-                  : resolutionRecord.failureReason ??
-                    'The write succeeded and read back correctly, but the resolution evidence note itself failed to record -- a draft may have been triggered without confirmed durable evidence.',
-              attemptNoteOk: true,
-              rawStatus,
-              resolutionNoteOk,
-              reportedStatus,
-              sentValue: resolutionRecord.sentValue,
-              observedValue: resolutionRecord.observedValue,
-            };
-          }
-        }
-      }
-
-      setSyncResult({
-        kind: "done",
-        ok: writeResult.ok,
-        entries: writeResult.entries.map((e) => ({ key: e.key, landed: e.landed })),
-        currentOfferCrossCheckOk,
-        draftRequest,
-        warnings: plan.warnings,
-      });
-    } catch (e: any) {
-      setSyncResult({ kind: "error", message: e?.message ?? "Couldn't synchronize the contract projection fields. Try again." });
-    } finally {
-      setSyncBusy(false);
-    }
-  }
 
   const bradAuthorizationRecord = useMemo(() => {
     if (screen.state !== "ready" || !notes) return null;
@@ -1035,9 +748,8 @@ export default function ContractWorkspace() {
   }
 
   /**
-   * B9-08 / INV-63 -- Contract Sent: e-signature sending via GHL Documents
-   * & Contracts, and recording Contract Sent only after verified provider
-   * acceptance.
+   * Historical Contract Sent evidence remains readable after V1 retires
+   * automated sending. This section does not initiate a provider request.
    *
    * `existingSend` is read fresh from notes every render, same "latest
    * wins scoped to one Opportunity" discipline as every other B9 carrier
@@ -1048,56 +760,6 @@ export default function ContractWorkspace() {
     if (screen.state !== "ready" || !notes) return null;
     return latestContractSendForOpportunity(notes, screen.opportunity.id);
   }, [screen, notes]);
-
-  const sendEligibility = useMemo(() => {
-    if (!contractDocumentPreview) return null;
-    return evaluateSendEligibility({
-      authRecord: bradAuthorizationRecord,
-      preview: contractDocumentPreview,
-      existingSend,
-      populationVerification: getRuntimeConfig().documentsContracts.populationVerification,
-    });
-  }, [contractDocumentPreview, bradAuthorizationRecord, existingSend]);
-
-  /**
-   * INV-63 correction round -- item 2 pre-flight drift check. Compares the
-   * locked, config-projected `templateId`/`expectedTemplateName` (never
-   * client-chosen; `ghl-proxy.ts`'s GATE 2 enforces the same id server-side
-   * regardless) against a live `listTemplates()` lookup, so a renamed,
-   * deleted, or missing GHL template surfaces BEFORE Send is offered,
-   * instead of only as an opaque provider failure. Runs once per mount
-   * (and again if the opportunity changes) -- a live template rename
-   * between this check and an actual click is still possible and is not
-   * claimed to be closed; the readback stage (`classifyDocumentReadback`)
-   * is the actual authoritative, send-time check.
-   */
-  const [templateDriftCheck, setTemplateDriftCheck] = useState<
-    { kind: "checking" } | { kind: "ok" } | { kind: "problem"; message: string }
-  >({ kind: "checking" });
-  useEffect(() => {
-    let cancelled = false;
-    setTemplateDriftCheck({ kind: "checking" });
-    const { templateId, expectedTemplateName } = getRuntimeConfig().documentsContracts;
-    ghl.proposals
-      .listTemplates({ name: expectedTemplateName })
-      .then((found) => {
-        if (cancelled) return;
-        const match = (found.data ?? []).find((t) => t.id === templateId);
-        if (!match) {
-          setTemplateDriftCheck({ kind: "problem", message: `The locked GHL template id (${templateId}) was not found in IAOS Test -- it may have been deleted or the Test location has changed. Sending is refused until this is resolved.` });
-        } else if (match.deleted) {
-          setTemplateDriftCheck({ kind: "problem", message: `The locked GHL template has been deleted in GHL. Sending is refused until a template is restored or the configuration is updated.` });
-        } else if (match.name !== expectedTemplateName) {
-          setTemplateDriftCheck({ kind: "problem", message: `The locked GHL template's name is now "${match.name}", not the expected "${expectedTemplateName}" -- this could mean the wrong template is configured. Verify in GHL before sending.` });
-        } else {
-          setTemplateDriftCheck({ kind: "ok" });
-        }
-      })
-      .catch((e: any) => {
-        if (!cancelled) setTemplateDriftCheck({ kind: "problem", message: e?.message ?? "Could not verify the GHL template's identity before offering Send." });
-      });
-    return () => { cancelled = true; };
-  }, [screen.state === "ready" ? screen.opportunity.id : null]);
 
   const contractSentEvidence = useMemo(() => {
     if (!contractDocumentPreview || screen.state !== "ready") return null;
@@ -1113,157 +775,6 @@ export default function ContractWorkspace() {
     if (!contractSentEvidence) return null;
     return evaluateContractSentEligibility(contractSentEvidence);
   }, [contractSentEvidence]);
-
-  const [sendExpirationDraft, setSendExpirationDraft] = useState("");
-  const [sendBusy, setSendBusy] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
-
-  /**
-   * The ONLY write path that reaches GHL Documents & Contracts. Correction
-   * round, 2026-09-11 -- now THREE stages instead of two:
-   *
-   * (1) RESERVE. The "in_progress" note is written via
-   *     `ghl.proposals.reserveSend()` -- a dedicated server-side function
-   *     that re-checks for a conflicting pending/accepted send against
-   *     FRESH notes before writing, closing (narrowing -- GHL's Notes API
-   *     has no compare-and-swap primitive) the two-tabs-both-send race a
-   *     purely client-side check could not (item 7). `ghl.notes.create()`
-   *     is never called directly for this note.
-   * (2) SEND. The provider POST. `templateId` is the LOCKED, config-
-   *     verified id (item 2 -- never a live name search); `contactId`/
-   *     `userId`/`templateId` are all still unconditionally overwritten
-   *     server-side by `ghl-proxy.ts`'s GATE 2 regardless of what is sent
-   *     here, and that same GATE refuses the call outright while template
-   *     population is unverified (see `sendEligibility`'s own
-   *     `TEMPLATE_POPULATION_NOT_VERIFIED` check, which mirrors it
-   *     client-side for an honest UI, but the server enforces it
-   *     independently). `classifyProviderSendResponse` can only ever
-   *     yield `"provider_accepted_pending_readback"`, never `"accepted"`
-   *     (item 5 -- "a successful POST response is not sufficient").
-   * (3) READBACK. Only reached if (2) provisionally succeeded: an
-   *     independent `GET /proposals/document` confirms the actual
-   *     created document -- its recipient, its sender, its environment,
-   *     and whether it carries any real fillable field at all
-   *     (`classifyDocumentReadback`). Contract Sent can only ever be
-   *     recorded from THIS stage's own "accepted" verdict.
-   */
-  async function handleSend() {
-    if (screen.state !== "ready" || !contractDocumentPreview || !sellerContractFactsReport) return;
-    setSendError(null);
-
-    const expirationAtIso = sendExpirationDraft ? new Date(sendExpirationDraft).toISOString() : "";
-    if (!sendExpirationDraft || Number.isNaN(new Date(sendExpirationDraft).getTime())) {
-      setSendError("An explicit expiration date/time is required before sending -- it is never assumed or defaulted.");
-      return;
-    }
-
-    const { templateId: requestedTemplateId } = getRuntimeConfig().documentsContracts;
-    const requestAt = new Date().toISOString();
-    const built = buildSendAttemptArgs({
-      opportunityId: screen.opportunity.id,
-      operator: null,
-      requestAt,
-      report: sellerContractFactsReport,
-      preview: contractDocumentPreview,
-      authRecord: bradAuthorizationRecord,
-      existingSend,
-      requestedTemplateId,
-      expirationAt: expirationAtIso,
-      populationVerification: getRuntimeConfig().documentsContracts.populationVerification,
-    });
-    if (!built.ok) {
-      setSendError(built.reasons.map((r) => r.message).join(" "));
-      return;
-    }
-
-    setSendBusy(true);
-    const attempt = built.value;
-    const attemptNote = formatContractSendNote(attempt);
-
-    // Stage 1: RESERVE, server-side, best-effort (NOT atomic --
-    // single-user V1 protection only, see ghl-contract-send-reserve.ts)
-    // check-then-write.
-    const reservation = await ghl.proposals.reserveSend({
-      contactId,
-      opportunityId: screen.opportunity.id,
-      versionRaw: JSON.stringify(attempt.version),
-      noteBody: attemptNote,
-    });
-    if (!reservation.ok) {
-      setSendError(
-        reservation.status === 409
-          ? "A pending or accepted send already exists for this exact revision (confirmed server-side just now) -- refusing to start a second one."
-          : `Couldn't reserve the send attempt (HTTP ${reservation.status}): ${reservation.reason} -- refusing to call the provider without a durable, server-confirmed in-progress record.`,
-      );
-      setSendBusy(false);
-      return;
-    }
-    setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attemptNote, dateAdded: attempt.at }]);
-
-    // Stage 2: SEND -- redeems the reservation ticket just created above.
-    // versionRaw/attemptId must be the EXACT SAME values the reservation
-    // note itself carries, so the server-side execute function's ticket
-    // lookup resolves to this same attempt.
-    const sendOutcome = await ghl.proposals.send({
-      templateId: requestedTemplateId,
-      opportunityId: screen.opportunity.id,
-      versionRaw: JSON.stringify(attempt.version),
-      attemptId: attempt.attemptId,
-    });
-    const postObservedAt = new Date().toISOString();
-    const postClassification = classifyProviderSendResponse(sendOutcome);
-    const provisionalArgs = buildSendResultArgs({ attempt, operator: null, observedAt: postObservedAt, classification: postClassification });
-    const provisionalNote = formatContractSendNote(provisionalArgs);
-    try {
-      await ghl.notes.create(contactId, provisionalNote);
-      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: provisionalNote, dateAdded: provisionalArgs.at }]);
-    } catch (e: any) {
-      setSendError(
-        `The provider call resolved (${postClassification.status}) but recording the result failed: ${e?.message ?? "unknown error"} -- reload and check GHL notes directly before retrying.`,
-      );
-      setSendBusy(false);
-      return;
-    }
-
-    if (postClassification.status !== "provider_accepted_pending_readback") {
-      setSendError(postClassification.failureReason ?? "The provider did not accept this send.");
-      setSendBusy(false);
-      return;
-    }
-
-    // Stage 3: READBACK -- the only path to "accepted" (item 5). Server-side
-    // (`ghl-contract-send-readback.ts`): the cross-checks against the TRUE
-    // expected sender/recipient require secrets this browser is never
-    // given, so classification happens there, never here.
-    const documentId = postClassification.summary?.documentId ?? "";
-    const readbackObservedAt = new Date().toISOString();
-    const readbackClassification = documentId
-      ? await ghl.proposals.readback({ documentId })
-      : { status: "ambiguous" as const, summary: null, failureReason: "The provider response carried no documentId to read back." };
-    const finalArgs = buildReadbackResultArgs({
-      attempt,
-      provisional: provisionalArgs,
-      operator: null,
-      observedAt: readbackObservedAt,
-      classification: readbackClassification,
-    });
-    const finalNote = formatContractSendNote(finalArgs);
-    try {
-      await ghl.notes.create(contactId, finalNote);
-      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: finalNote, dateAdded: finalArgs.at }]);
-      if (readbackClassification.status !== "accepted") {
-        setSendError(readbackClassification.failureReason ?? "Readback did not confirm acceptance.");
-      } else {
-        setSendExpirationDraft("");
-      }
-    } catch (e: any) {
-      setSendError(
-        `Readback resolved (${readbackClassification.status}) but recording the final result failed: ${e?.message ?? "unknown error"} -- reload and check GHL notes directly before retrying.`,
-      );
-    } finally {
-      setSendBusy(false);
-    }
-  }
 
   /**
    * B9-10 / INV-65 -- Verify full execution. Jess Gate repair round,
@@ -2492,7 +2003,7 @@ export default function ContractWorkspace() {
 
           <div data-testid="contract-next-action" style={{ fontSize: "12px", color: "#94A3B8" }}>
             {screen.readiness.ready
-              ? "Contract Ready. Sending the agreement for signature is not yet built in IAOS — no further action is available here."
+              ? "Contract Ready. Review the populated PDF, then upload and send it manually in GHL."
               : "Complete the checklist above to reach Contract Ready."}
           </div>
 
@@ -3129,88 +2640,6 @@ export default function ContractWorkspace() {
                 </div>
               </div>
 
-              {/* INV-67 / B9-12 contract-population repair -- Contract Workspace synchronization control. */}
-              <div data-testid="contract-projection-sync-section" style={{ ...groupCardStyle, marginBottom: "12px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>
-                  Sync contract fields to GHL (IAOS Test only)
-                </div>
-                <div style={{ fontSize: "10px", color: "#64748B", marginBottom: "8px" }}>
-                  Writes the populated preview above into the 48 narrowly-scoped GHL Opportunity fields, verifies every write by readback, then -- only if every field lands and the accepted price cross-checks -- sets Contract Draft Request to "Requested" for the future GHL workflow to pick up. Never creates or sends a document itself.
-                </div>
-
-                {latestProjectionSync ? (
-                  <div data-testid="contract-projection-sync-last-evidence" style={{ fontSize: "10px", color: "#64748B", marginBottom: "8px" }}>
-                    Last attempt: {new Date(latestProjectionSync.attemptId).toLocaleString()} ({latestProjectionSync.entriesLanded}/{latestProjectionSync.entriesAttempted} projection fields landed on that attempt) -- draft request {latestProjectionSync.status === "in_progress" ? "still in progress (no terminal resolution recorded)" : latestProjectionSync.status === "accepted" ? "Requested (confirmed)" : latestProjectionSync.status === "indeterminate" ? "INDETERMINATE -- a draft may have been triggered without confirmed evidence; check GHL directly" : `not requested -- ${latestProjectionSync.failureReason ?? "failed"}`}.
-                  </div>
-                ) : (
-                  <div data-testid="contract-projection-sync-no-evidence" style={{ fontSize: "10px", color: "#64748B", marginBottom: "8px" }}>No sync has been recorded for this opportunity yet.</div>
-                )}
-
-                <Btn
-                  testId="contract-projection-sync-button"
-                  onClick={handleSyncContractProjectionFields}
-                  busy={syncBusy}
-                  disabled={!contractDocumentPreview.previewComplete}
-                >
-                  Sync contract fields to GHL
-                </Btn>
-
-                {syncResult?.kind === "blocked" ? (
-                  <ul data-testid="contract-projection-sync-blocked" style={{ margin: "8px 0 0", padding: "0 0 0 18px", fontSize: "11px", color: "#F59E0B", lineHeight: 1.8 }}>
-                    {syncResult.blockingReasons.map((r, i) => <li key={i}>{r}</li>)}
-                  </ul>
-                ) : null}
-
-                {syncResult?.kind === "done" ? (
-                  <div data-testid="contract-projection-sync-result" style={{ marginTop: "8px", fontSize: "11px" }}>
-                    <div style={{ color: syncResult.ok ? "#22C55E" : "#F59E0B", fontWeight: 700 }}>
-                      {syncResult.ok ? "All 48 fields landed." : `${syncResult.entries.filter((e) => e.landed).length}/${syncResult.entries.length} fields landed.`}
-                    </div>
-                    {!syncResult.ok ? (
-                      <ul data-testid="contract-projection-sync-failed-keys" style={{ margin: "4px 0 0", padding: "0 0 0 18px", color: "#F59E0B" }}>
-                        {syncResult.entries.filter((e) => !e.landed).map((e) => <li key={e.key}>{e.key}</li>)}
-                      </ul>
-                    ) : null}
-                    <div style={{ color: "#94A3B8", marginTop: "4px" }}>
-                      Accepted-price cross-check: {syncResult.currentOfferCrossCheckOk ? "matches" : "MISMATCH"}.
-                    </div>
-                    <div
-                      data-testid="contract-projection-sync-draft-request"
-                      style={{
-                        color: syncResult.draftRequest.reportedStatus === "accepted" ? "#22C55E"
-                          : syncResult.draftRequest.reportedStatus === "indeterminate" ? "#EF4444"
-                          : "#94A3B8",
-                        marginTop: "4px",
-                      }}
-                    >
-                      {!syncResult.draftRequest.attempted
-                        ? "Draft request not attempted (field writes did not all land)."
-                        : syncResult.draftRequest.transitionAllowed === false
-                          ? `Draft not requested -- ${syncResult.draftRequest.refusalReason}`
-                          : syncResult.draftRequest.attemptNoteOk === false
-                            ? `Draft not requested -- ${syncResult.draftRequest.refusalReason}`
-                            : syncResult.draftRequest.reportedStatus === "accepted"
-                              ? "Contract Draft Request set to Requested (confirmed on readback, evidence recorded)."
-                              : syncResult.draftRequest.reportedStatus === "indeterminate"
-                                ? `INDETERMINATE -- a draft may have been triggered but IAOS could not confirm it (${syncResult.draftRequest.refusalReason ?? "no further detail was recorded"}). Do not retry; check GHL directly.`
-                                : `Draft request failed -- ${syncResult.draftRequest.refusalReason ?? "no further detail was recorded"}.`}
-                    </div>
-                    {syncResult.draftRequest.resolutionNoteOk === false ? (
-                      <div data-testid="contract-projection-sync-resolution-note-failed" style={{ color: "#EF4444", marginTop: "4px" }}>
-                        The resolution evidence note itself failed to record -- the outcome above is reported from this session's own observation only.
-                      </div>
-                    ) : null}
-                    {syncResult.warnings.length > 0 ? (
-                      <ul data-testid="contract-projection-sync-warnings" style={{ margin: "8px 0 0", padding: "0 0 0 18px", color: "#F59E0B" }}>
-                        {syncResult.warnings.map((w, i) => <li key={i}>{w}</li>)}
-                      </ul>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                <ErrorText testId="contract-projection-sync-error">{syncResult?.kind === "error" ? syncResult.message : null}</ErrorText>
-              </div>
-
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Differences from the last Brad-reviewed revision</div>
                 {differencesFromLastAuthorized === null ? (
@@ -3248,115 +2677,18 @@ export default function ContractWorkspace() {
           ) : null}
 
           {/* ================================================================ */}
-          {/* Contract Sent -- e-signature sending, GHL Documents & Contracts   */}
+          {/* Manual GHL upload/send notice and retained Contract Sent evidence */}
           {/* B9-08 / INV-63                                                    */}
           {/* ================================================================ */}
-          {contractDocumentPreview && sendEligibility && contractSentStatus ? (
-            <div data-testid="contract-send-section" style={{ marginTop: "24px" }}>
-              <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
-                Send via GHL Documents &amp; Contracts
-              </div>
-              <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
-                Sends the exact Brad-authorized agreement through GHL Documents &amp; Contracts (IAOS Test only). Contract Sent is recorded only after the provider affirmatively confirms acceptance -- never on request alone.
-              </div>
-
-              {templateDriftCheck.kind === "problem" ? (
-                <div data-testid="contract-send-template-drift-problem" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(239,68,68,0.35)", fontSize: "12px", color: "#EF4444" }}>
-                  {templateDriftCheck.message}
-                </div>
-              ) : null}
-
-              {(() => {
-                const status: string | null = existingSend && existingSend.status !== "in_progress"
-                  ? existingSend.status
-                  : null;
-                if (sendBusy) {
-                  return (
-                    <div data-testid="contract-send-state-sending" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(148,163,184,0.35)", color: "#94A3B8", fontSize: "12px", fontWeight: 700 }}>
-                      Sending...
-                    </div>
-                  );
-                }
-                if (status === "provider_accepted_pending_readback") {
-                  return (
-                    <div data-testid="contract-send-state-pending-readback" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(245,158,11,0.35)" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: "#F59E0B" }}>
-                        <ShieldAlert size={14} /> Provider responded -- readback verification incomplete
-                      </div>
-                      <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>
-                        The provider accepted the POST, but IAOS's own readback confirmation did not complete (e.g. this tab closed mid-flow). A real document may already exist at GHL -- verify directly in GHL before retrying.
-                      </div>
-                    </div>
-                  );
-                }
-                if (status === "accepted") {
-                  return (
-                    <div data-testid="contract-send-state-accepted" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(34,197,94,0.35)" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: "#22C55E" }}>
-                        <ShieldCheck size={14} /> Provider accepted -- Contract Sent
-                      </div>
-                      <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>
-                        {existingSend?.iaosObservedAcceptanceAt ? `Observed ${new Date(existingSend.iaosObservedAcceptanceAt).toLocaleString()}. ` : ""}
-                        {existingSend?.providerResponse?.documentId ? `Provider document id: ${existingSend.providerResponse.documentId}. ` : ""}
-                        Expires {new Date(existingSend!.expirationAt).toLocaleString()}.
-                      </div>
-                    </div>
-                  );
-                }
-                if (status === "failed") {
-                  return (
-                    <div data-testid="contract-send-state-failed" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(239,68,68,0.35)" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: "#EF4444" }}>
-                        <ShieldAlert size={14} /> Failed
-                      </div>
-                      <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>{existingSend?.failureReason ?? "The provider did not accept this send."} Retrying is allowed for this exact revision.</div>
-                    </div>
-                  );
-                }
-                if (status === "ambiguous") {
-                  return (
-                    <div data-testid="contract-send-state-ambiguous" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(245,158,11,0.35)" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: "#F59E0B" }}>
-                        <ShieldAlert size={14} /> Ambiguous -- manual verification required
-                      </div>
-                      <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>{existingSend?.failureReason ?? "The provider's response could not be confirmed as accepted."} Verify directly in GHL before retrying or treating this as sent.</div>
-                    </div>
-                  );
-                }
-                return null;
-              })()}
-
-              {!sendEligibility.eligible ? (
-                <div data-testid={sendEligibility.reasons.some((r) => r.code === "ALREADY_SENT" || r.code === "SEND_IN_PROGRESS") ? "contract-send-state-already-sent" : "contract-send-state-not-eligible"} style={{ marginBottom: "12px" }}>
-                  <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "12px", color: "#94A3B8", lineHeight: 1.8 }}>
-                    {sendEligibility.reasons.map((r) => <li key={r.code} data-testid={`contract-send-reason-${r.code}`}>{r.message}</li>)}
-                  </ul>
-                </div>
-              ) : (
-                <div data-testid="contract-send-state-eligible" style={{ marginBottom: "12px" }}>
-                  <label style={{ fontSize: "11px", color: "#94A3B8", display: "block", marginBottom: "4px" }}>
-                    Expiration date/time (explicit -- required before sending)
-                  </label>
-                  <input
-                    type="datetime-local"
-                    data-testid="contract-send-expiration-input"
-                    value={sendExpirationDraft}
-                    onChange={(e) => setSendExpirationDraft(e.target.value)}
-                    style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: "6px", color: "#E2E8F0", fontSize: "12px", padding: "6px 8px", marginBottom: "10px" }}
-                  />
-                  <div>
-                    <Btn testId="contract-send-button" onClick={handleSend} busy={sendBusy} disabled={sendExpirationDraft === "" || templateDriftCheck.kind !== "ok"}>
-                      Send via GHL Documents &amp; Contracts
-                    </Btn>
-                    {templateDriftCheck.kind === "checking" ? (
-                      <div style={{ fontSize: "10px", color: "#64748B", marginTop: "6px" }}>Verifying the GHL template's identity...</div>
-                    ) : null}
-                  </div>
-                </div>
-              )}
-
-              <ErrorText testId="contract-send-error">{sendError}</ErrorText>
-
+          {contractDocumentPreview && contractSentStatus ? (
+            <div data-testid="contract-manual-send-notice"
+              style={{ marginTop: "24px" }}>
+              <h3>Manual GHL upload and send</h3>
+              <p>Review the populated PDF, then upload it to GHL
+                Documents &amp; Contracts and send it manually.</p>
+              <p>IAOS V1 does not sync contract merge fields, request
+                a GHL template draft, or send contracts automatically.
+                This notice does not record a contract as sent.</p>
               <div style={{ ...groupCardStyle, marginTop: "12px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Contract Sent (state-machine evaluation)</div>
                 {contractSentStatus.eligible ? (

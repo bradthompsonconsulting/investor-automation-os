@@ -45,17 +45,6 @@ export function planWrite(operation: string, args: any, config: ReturnType<typeo
       if (!ASSIGNMENT_MODE_OPTIONS.some(([label]) => label === args.assignmentMode)) throw new Error("Invalid assignment mode");
       add(u.endBuyerMaxPrice, args.endBuyerMaxPrice); add(u.sellerMAO, args.sellerMAO); add(u.assignmentMode, args.assignmentMode); break;
     }
-    case "contract.projection": {
-      kind = "opportunity"; if (config.locationId !== getConfig("test").locationId) throw new Error("Test only operation");
-      exact(args, ["entries", "sellerCount"]);
-      if (!Array.isArray(args.entries) || !args.entries.length) throw new Error("Empty projection");
-      for (const e of args.entries) { exact(e, ["key", "text"]); text(e.text); if (typeof e.key !== "string" || !Object.prototype.hasOwnProperty.call(config.contractProjectionFields, e.key)) throw new Error("Unknown projection key"); add((config.contractProjectionFields as any)[e.key], e.text); }
-      if (args.sellerCount !== null) { if (!["One Seller", "Two Sellers"].includes(args.sellerCount)) throw new Error("Invalid seller count"); add(config.contractSellerCountField, args.sellerCount); } break;
-    }
-    case "contract.draftRequest": {
-      kind = "opportunity"; if (config.locationId !== getConfig("test").locationId) throw new Error("Test only operation");
-      if (single() !== "Requested") throw new Error("Only the approved Requested transition is available"); add(config.contractDraftRequest, "Requested"); break;
-    }
     default: throw new Error("Unknown write operation");
   }
   if (new Set(fields.map(f => f.id)).size !== fields.length) throw new Error("Duplicate configured fields");

@@ -136,7 +136,7 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('the data-fetching useEffect contains no ghl.notes.create call', /ghl\.notes\.create/.test(effectBody), false);
   check('the data-fetching useEffect contains no write of any kind (create/update/set)', /\.(create|update|set[A-Z])\(/.test(effectBody), false);
 
-  check('ghl.notes.create is called exactly nine times in the whole page (the checklist write, the ONE shared commitNote choke point every B9-05 group form routes through -- now also carrying the executed-terms attestation and the signer-mapping attestation writes, B9-07/INV-62\'s own handleAuthorize, B9-08/INV-63\'s own handleSend -- which writes TWO notes, the in_progress attempt and its resolution, for the same attemptId -- B9-10/INV-65\'s own handleCreateUnderContract, B9-11/INV-66\'s own handleStartDisposition, and INV-67/B9-12\'s own handleSyncContractProjectionFields -- Jess Gate audit-ordering correction, this now ALSO writes TWO notes, the in_progress draft-request attempt and its resolution, for the same attemptId, mirroring handleSend\'s own two-phase pattern exactly)', (contractTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 9);
+  check('five retained note-write sites; no send or projection notes', (contractTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 5);
   check('handleStartDisposition is the seventh call site, lives in its own dedicated handler (not commitNote), and requires dispositionEligibility.eligible before it can even write', (() => {
     const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
     return !!m && (m[0].match(/ghl\.notes\.create\(/g) || []).length === 1 && !/commitNote\(/.test(m[0]) && /!freshEligibility\.eligible/.test(m[0]);
@@ -180,25 +180,19 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   })(), true);
   check('handleCreateUnderContract requires EXACT equality via verifyReadbackMatchesWritten before ever reporting success', /verifyReadbackMatchesWritten\(candidate, matchingReadback\)/.test(contractTsxNoComments), true);
   check('handleCreateUnderContract reuses formatUnderContractNote/parseUnderContractNote (the canonical carrier), never composes or re-parses the note body inline', /formatUnderContractNote\(candidate\)/.test(contractTsxNoComments) && /parseUnderContractNote\(n\.body\)/.test(contractTsxNoComments), true);
-  check('the B9-08/INV-63 send write lives inside its own handleSend, never routed through commitNote', (() => {
-    const m = contractTsxNoComments.match(/async function handleSend\([\s\S]*?\n  \}/m);
-    return !!m && (m[0].match(/ghl\.notes\.create\(/g) || []).length === 2 && !/commitNote\(/.test(m[0]);
-  })(), true);
-  check('handleSend is wired to the Send button\'s onClick, and declared exactly once', (() => {
-    const onClickWiring = /onClick=\{handleSend\}/.test(contractTsx);
-    const declarations = (contractTsxNoComments.match(/async function handleSend\(/g) || []).length;
-    return onClickWiring && declarations === 1;
-  })(), true);
-  check('handleSend is never invoked from the data-fetching effect or on mount', /handleSend\(\)/.test(effectBody) === false, true);
-  check('handleSend reuses buildSendAttemptArgs/formatContractSendNote/classifyProviderSendResponse/buildSendResultArgs/buildReadbackResultArgs, never composes a send note body or a provider-response verdict inline', /const built = buildSendAttemptArgs\(/.test(contractTsxNoComments) && /classifyProviderSendResponse\(sendOutcome\)/.test(contractTsxNoComments) && /buildSendResultArgs\(/.test(contractTsxNoComments) && /buildReadbackResultArgs\(/.test(contractTsxNoComments), true);
-  check('handleSend never sets contactId/userId on the outbound send call -- ghl-contract-send-execute.ts resolves both server-side from config (Jess Gate correction round 2); templateId/opportunityId/versionRaw/attemptId are passed so the server can redeem the exact reservation ticket', /ghl\.proposals\.send\(\{\s*templateId: requestedTemplateId,\s*opportunityId: screen\.opportunity\.id,\s*versionRaw: JSON\.stringify\(attempt\.version\),\s*attemptId: attempt\.attemptId,\s*\}\)/.test(contractTsxNoComments), true);
-  check('handleSend correction round item 7 -- the in_progress note is reserved via the dedicated server-side reserveSend endpoint, NOT written via a direct ghl.notes.create call', /ghl\.proposals\.reserveSend\(\{/.test(contractTsxNoComments), true);
-  check('handleSend correction round item 5 -- the final accept/ambiguous/failed verdict comes from an independent server-side readback call, never classified client-side from the POST response alone', /ghl\.proposals\.readback\(\{ documentId \}\)/.test(contractTsxNoComments), true);
-  check('handleSend never classifies "accepted" directly from the POST response -- the provisional branch only checks for provider_accepted_pending_readback before proceeding to readback', /postClassification\.status !== "provider_accepted_pending_readback"/.test(contractTsxNoComments), true);
-  check('sendEligibility passes the non-secret populationVerification projection through to the pure model, never inventing its own eligibility check', /populationVerification: getRuntimeConfig\(\)\.documentsContracts\.populationVerification/.test(contractTsxNoComments), true);
-  check('buildSendAttemptArgs is called with the LOCKED, config-projected requestedTemplateId, never a live-searched value', /requestedTemplateId,?\s*$/m.test(contractTsxNoComments) || /requestedTemplateId(,|\s)/.test(contractTsxNoComments), true);
-  check('ContractWorkspace.tsx performs its own pre-flight template drift check via ghl.proposals.listTemplates before ever offering Send', /ghl\.proposals\s*\n?\s*\.listTemplates\(\{ name: expectedTemplateName \}\)/.test(contractTsxNoComments), true);
-  check('the Send button is disabled while the template drift check has not resolved to "ok"', /disabled=\{sendExpirationDraft === "" \|\| templateDriftCheck\.kind !== "ok"\}/.test(contractTsx), true);
+  // Twelve obsolete send-wiring assertions replaced by twelve V1 boundary assertions.
+  check('no automated Send handler', /async function handleSend/.test(contractTsx), false);
+  check('no automated Send button', /contract-send-button/.test(contractTsx), false);
+  check('no send reservation caller', /proposals\.reserveSend/.test(contractTsx), false);
+  check('no send execution caller', /proposals\.send\(/.test(contractTsx), false);
+  check('manual notice present', /contract-manual-send-notice/.test(contractTsx), true);
+  check('manual upload direction present', /upload it to GHL/.test(contractTsx), true);
+  check('manual send direction present', /send it manually/.test(contractTsx), true);
+  check('notice records no sent state', /does not record a contract as sent/.test(contractTsx), true);
+  check('no template preflight', /templateDriftCheck/.test(contractTsx), false);
+  check('no projection write control', /contract-projection-sync-button/.test(contractTsx), false);
+  check('no draft request handler', /handleSyncContractProjectionFields/.test(contractTsx), false);
+  check('document readback remains', /ghl\.proposals\.listDocuments/.test(contractTsx), true);
   check('the checklist write lives inside handleToggleChecklistItem', /async function handleToggleChecklistItem[\s\S]*?ghl\.notes\.create\(/.test(contractTsxNoComments), true);
   check('the B9-07/INV-62 authorization write lives inside its own handleAuthorize, never routed through commitNote', (() => {
     const m = contractTsxNoComments.match(/async function handleAuthorize\([\s\S]*?\n  \}/m);

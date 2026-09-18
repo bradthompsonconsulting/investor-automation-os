@@ -42,7 +42,7 @@ const ALLOW: Record<string, RegExp[]> = {
 
 };
 
-/** The two remaining GATE 2 paths (read-only discovery/readback) -- each requires the location assertion below. The one send-capable path is no longer reachable through this proxy at all -- see `ghl-contract-send-execute.ts`. */
+/** The two remaining GATE 2 paths (read-only discovery/readback) -- each requires the location assertion below. V1 has no automated template-send path; reserve/execute are refusal-only endpoints. */
 const PROPOSALS_PATH = new RegExp(`^/proposals/`);
 
 /**

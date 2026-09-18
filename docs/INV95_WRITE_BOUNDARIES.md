@@ -1,12 +1,13 @@
 # INV-95 — write boundary inventory and rollout gate
 
-Baseline: a32b4d165c8211e7a9a9c9c3e90eaea2e637e9cc, fetched and matched to origin refs/heads/main on 2026-09-18 UTC. The initial baseline was 2cb8d1b9da9c3f86b5ab35bf53d330af8d6609e0; the isolated branch was fast-forwarded after INV-67 merged. No INV-67 files were changed by this issue.
+Baseline: a32b4d165c8211e7a9a9c9c3e90eaea2e637e9cc, fetched and matched to origin refs/heads/main on 2026-09-18 UTC. The initial baseline was 2cb8d1b9da9c3f86b5ab35bf53d330af8d6609e0; the isolated branch was fast-forwarded after INV-67 merged. The initial security tranche did not change INV-67 files; the V1 correction
+below retires its obsolete runtime writers while preserving computation.
 
-Authority: AGENTS.md; INV-95 read directly from Linear including Brad's application identity and root webhook rulings; existing IAOS_PIPELINE_WRITE_SAFETY_AUDIT.md; Brad's explicit Test-only canonical TREC/template binding approval in this task. INV-95's narrow operation rulings govern this change; they do not authorize workflow or stage writes. Board #13 and voice authorization remain separate.
+Authority: AGENTS.md; INV-95 read directly from Linear including Brad's application identity and root webhook rulings; existing IAOS_PIPELINE_WRITE_SAFETY_AUDIT.md; Brad's 2026-09-18 V1 correction: direct PDF population and manual GHL upload/send. The earlier Test-template binding interpretation is superseded. INV-95's narrow operation rulings govern this change; they do not authorize workflow or stage writes. Board #13 and voice authorization remain separate.
 
 ## OBSERVED — runtime before/after inventory
 
-Sources: baseline app/src/lib/ghl.ts, app/src/pages/Pipeline.tsx, app/netlify/functions/ghl-proxy.ts, the three contract endpoints, ghl-disposition.ts, and root netlify/functions/*.ts. Current complete source scan: [write-path-scan.txt](evidence/inv95/write-path-scan.txt).
+Sources: baseline app/src/lib/ghl.ts, app/src/pages/Pipeline.tsx, app/netlify/functions/ghl-proxy.ts, the three contract endpoints, ghl-disposition.ts, and root netlify/functions/*.ts. Historical pre-correction source scan: [write-path-scan.txt](evidence/inv95/write-path-scan.txt).
 
 | Before | After named server operation | Allowed destination / guard |
 |---|---|---|
@@ -26,10 +27,10 @@ Sources: baseline app/src/lib/ghl.ts, app/src/pages/Pipeline.tsx, app/netlify/fu
 | Current Offer | opportunity.currentOffer | Only provisioned field; positive amount; Agreement Reached freezes it |
 | Assignment mode | opportunity.assignmentMode | Only existing exact option labels |
 | Underwriting batch | opportunity.underwriting | Only End Buyer Max Price, Seller MAO and Assignment Mode; per-field readback retained |
-| TREC projections and Seller Count | contract.projection | Test only; server resolves field IDs and recomputes exact canonical plan and seller count; no client field IDs |
-| Draft request | contract.draftRequest | Test only; Idle/absent to Requested; current canonical projection, accepted-price cross-check and server readback proof required; duplicate Requested rejected |
-| Contract reservation note endpoint | ghl-contract-send-reserve | Separate app identity; configured Test contact/template/sender/population gates; canonical authorization plus full content currency; atomic contact lock and fresh conflict check |
-| Contract send endpoint | ghl-contract-send-execute | Same Test gates; named immutable payload; single-use attempt receipt; independent document readback; uncertainty never reported confirmed |
+| TREC projections and Seller Count | Retired | No contract.projection writer; canonical computation retained for direct PDF population |
+| Draft request | Retired | No contract.draftRequest writer or workflow-request control |
+| Contract reservation note endpoint | Retired endpoint | POST requires app identity, then returns 410; no GHL or Blob access |
+| Contract send endpoint | Retired endpoint | POST requires app identity, then returns 410; no template-send request exists |
 | Contract send readback | ghl-contract-send-readback (read only) | App identity and Test gates; exact document/recipient/sender/location; duplicate identities refused |
 | Pipeline Move To / updateStage | Removed | No stage writer remains in browser or generic proxy |
 | Generic proxy POST/PUT forwarding | Removed | Proxy accepts allowlisted GET only, no body or extra envelope fields; all other methods rejected |
@@ -42,16 +43,31 @@ All app mutations use the distinct iaos-app-write session, not voice credentials
 
 Structured notes retain their existing carriers. System-derived authorization, send acceptance, provider lifecycle, execution and disposition handoff evidence is independently checked against fresh canonical GHL evidence. Human facts and the existing manual executed-PDF hash/visual-attestation bridge remain operator attestations; this change does not introduce document storage or claim server custody of PDF bytes. Corrections, rescissions and resend/decline records reuse existing model guards.
 
-Security receipts in the app's iaos-write-receipts Netlify Blob store contain hashes, field identifiers and request outcomes, not copied business records. GHL remains the business system of record. Atomic per-contact locks serialize application writes/reservations and disposition dedupe. A process interruption leaves a lock closed; it must not be expired or deleted blindly. Root score/phone operations retain convergent repeated assignments; their payloads have no event ID and this change does not invent one or change provider lookup behavior.
+Security receipts in the app's iaos-write-receipts Netlify Blob store contain hashes, field identifiers and request outcomes, not copied business records. GHL remains the business system of record. Atomic per-contact locks serialize retained application writes and disposition dedupe. A process interruption leaves a lock closed; it must not be expired or deleted blindly. Root score/phone operations retain convergent repeated assignments; their payloads have no event ID and this change does not invent one or change provider lookup behavior.
 
 ## OBSERVED — maintenance and non-GHL paths
 
 The source scan also includes manually invoked inert-proof scripts, INV-67 field provisioning scripts, INV-70 migration/proof scripts and rescore-all. They are not browser/runtime proxy entrypoints. None was executed. Historical scripts using proxy PUT now receive 403; they are not a bypass and require separately authorized future proof tooling. Direct administrative scripts retain their existing explicit mutation gates and credentials; they are outside the runtime implementation scope. Root/provider helpers and mailer-digest's email POST are not browser GHL forwarding. No mailer or voice files were changed.
 
-## Approved Test-only identity binding
+## V1 architecture ruling - 2026-09-18
 
-The canonical document name and source remain CONTRACT_DOCUMENT_TEMPLATE_NAME / CONTRACT_DOCUMENT_TEMPLATE_SOURCE from contract-document-model.ts. Brad explicitly authorized binding that canonical authorization to the already-configured Test GHL template ID. Reserve/execute verify the canonical name/source and content independently; requestedTemplateId must still equal the configured GHL template ID. The configured provider display name/source are not substituted for canonical authorization. Production, approved Test recipient, sender and population gates are unchanged. No configuration ID or template was edited.
+Brad retired contract.projection and contract.draftRequest as GHL writes.
+The canonical contract-ghl-projection-model.ts and buildContractProjectionPlan
+remain unchanged computation for direct PDF population. Their names do not
+authorize GHL merge-field writes or template binding.
 
+Automated template reserve/execute is structurally retired, not feature-flagged.
+The browser has no send/reserve or projection/draft writer. The workspace
+instructs the operator to review the populated PDF, upload it to GHL Documents
+& Contracts and send manually. The notice does not assert Contract Sent.
+
+Application authentication, GET-only proxy, non-contract named writes, generic
+receipts/locks, independent document readback, note validation, webhook auth
+and disposition hardening remain. Historical carriers and validation remain
+readable; their existence does not authorize the retired operations.
+
+No new PDF generation, manual-send ledger, provider integration, or rollout
+is introduced by this correction. No GHL/configuration mutation is authorized.
 ## Configuration/deployment plan — not executed; merge gate
 
 | Surface / caller | Required configuration | Proof required before merge or later authorized rollout |
@@ -74,3 +90,243 @@ UNKNOWN: current live caller registry, installed secrets/header values, Google o
 Run node app/scripts/test-inv95.cjs for affected offline suites; CI runs it in addition to all existing authoritative checks. Literal local outputs and exit codes are in evidence/inv95/. Mocked handler tests intercept every outbound call; no GHL, provider, Production or deployment call was made by these tests. The existing Windows exit-contract runtime limitation is not repaired; authoritative Ubuntu CI must provide that result.
 
 Use [skip netlify] in the commit message and PR title to suppress branch and preview deployment while GitHub CI runs, per [Netlify deploy controls](https://docs.netlify.com/deploy/manage-deploys/manage-deploys-overview/#skip-a-deploy). No deployment setting changes are part of this issue.
+
+## Historical provider-free Test checkpoint - superseded V1 scope
+
+The following two checkpoints preserve earlier observations, not current
+authorization. Template binding, merge-field population and automated send
+are retired by the V1 ruling above. The earlier cleanup statement applies
+only before the later provisioning checkpoint. No Test proof resumes here.
+
+Authority: Brad authorized a narrower provider-free Test gate in this task.
+This supersedes the earlier no-Test-configuration authorization statement only
+for isolated Test work. Production, provider access, successful contract send,
+Board 9/13 changes and merge remain prohibited. PR 78 remains draft.
+
+### 1. Proven offline (OBSERVED)
+
+Current origin/main was fetched and matched to the remote ref:
+`a32b4d165c8211e7a9a9c9c3e90eaea2e637e9cc`.
+Implementation head inspected: `480abc848f2a5ecc2c9ae983490f79b0d2c38af1`.
+The 22 affected suites passed again, with literal output and exit codes in
+[provider-free-offline.txt](evidence/inv95/provider-free-offline.txt).
+The run uses mocked Google, GHL, provider and Blob responses. Mocked phone
+success is not a live provider call or a deployed integration proof.
+
+Covered offline: application identity and audience rejection, absent config,
+expired sessions, Google claim/allowlist rejection, named operation contracts,
+identity/field/path/transition rejection, generic proxy write rejection,
+replay/duplicate handling, ambiguous/partial readback refusal, dedicated
+webhook authentication, canonical TREC binding and existing Test send gates.
+The receipt mock proves application handling of conditional-create results;
+it does not prove Netlify's deployed storage consistency or availability.
+Voice source, shared GHL config and both netlify.toml files are unchanged.
+The earlier CI-attachment claim was not verified during reconciliation;
+fresh Ubuntu CI for the correction remains required after an authorized push.
+
+### 2. Isolated Test runtime (OBSERVED / UNKNOWN)
+
+OBSERVED in the authenticated Netlify management UI, without revealing secrets:
+
+- Existing project: `iaos-app-test`, under team `brad-l9cfmku`.
+- Project URL: https://app.netlify.com/projects/iaos-app-test/overview
+- Its published main is a32b4d1. This is not the INV-95 runtime.
+- Deployment search filtered to `codex/inv-95-write-boundaries` returned
+  `No deploys found`. No PR 78 preview URL was returned or invoked.
+- Environment-variable inventory showed only IAOS_ENV and IAOS_VOICE_ENABLED.
+  IAOS_ENV's Deploy Previews value was explicitly observed as `test`.
+  The voice value was not revealed or changed.
+- GHL_PRIVATE_API_KEY and the three IAOS_APP_WRITE_* variables were absent
+  from that visible project inventory. No secret values were inspected.
+- The manual Trigger deploy menu offered Deploy project / without cache,
+  with no PR-specific selection. Neither action was invoked.
+- The repository is connected to multiple Netlify projects. The PR's
+  [skip netlify] marker was retained; removing it is not a Test-site-only
+  deployment control. No other project's configuration was accessed.
+
+INFERRED: the existing Test project's preview is a suitable candidate after
+safe deployment and configuration are established. It is not yet a proven
+runtime. The expected PR-number URL convention is not proof of a deploy.
+
+UNKNOWN: Google web-client identity and authorized preview origin, Brad's
+Google-verified email, deployed auth behavior, GHL Test credential binding,
+Blob availability/atomicity/strong readback, and live caller continuity.
+The Netlify account email is not proof of Brad's Google application identity.
+No live proof in the requested provider-free scope is claimed completed.
+
+The app preview deploys app/netlify/functions; root phone/score handlers live
+under netlify/functions. An app preview alone cannot prove those root
+endpoints. They need a separately isolated Test deployment for live negative
+webhook probes; never use the public marketing endpoint for this gate.
+
+### Blob isolation and safe resumption
+
+The code uses getStore("iaos-write-receipts"). Netlify documents getStore as
+site-wide, shared across deploy contexts, not a preview-isolated store:
+https://docs.netlify.com/build/data-and-storage/netlify-blobs/
+Thus do not use a preview on the Production app project for this proof.
+Use only the separate Test project, unique disposable request/contact IDs,
+and record each created receipt key for exact cleanup. Never empty a shared
+store or delete an unresolved contact lock without readback investigation.
+No Blob was created, read or deleted in this gate attempt.
+
+Required before resumption: establish an exact-head preview on iaos-app-test
+only, without triggering other projects; securely provision a GHL key limited
+to Test location SoTgVoaFGHtBdRFvXWQV and a separate Google web client with the
+verified preview origin; establish Brad's Google email. Configure only the
+preview context: IAOS_ENV=test, GHL_PRIVATE_API_KEY,
+IAOS_APP_WRITE_GOOGLE_CLIENT_ID, IAOS_APP_WRITE_SESSION_SECRET (32+ characters),
+IAOS_APP_WRITE_BRAD_EMAILS, and IAOS_WEBHOOK_SECRET for disposition proof.
+Do not paste secret values into the task or reuse voice authorization.
+
+App requests require Authorization: Bearer with audience iaos-app-write;
+webhook requests require X-IAOS-Secret. The isolated root Test runtime would
+also need GHL_API_TOKEN and its dedicated IAOS_MOTIVATION_WEBHOOK_SECRET /
+IAOS_PHONE_LOOKUP_WEBHOOK_SECRET. Successful phone lookup stays excluded.
+No provider credentials should be provisioned for this gate.
+
+Before any live write: verify location and disposable ownership, record exact
+before state, use an approved inert non-provider operation, independently
+read back, then restore/delete only the disposable proof records and exact
+receipts. Remove temporary preview secrets/capability afterward. No rollback
+may restore unauthenticated writes. No existing Test contact is automatically
+classified as disposable merely because it is in the Test location.
+
+### 3. Deferred integration proof: successful phone lookup
+
+Brad explicitly excluded live Twilio-backed success. Preserve provider
+behavior. This is a deferred integration proof, not a provider-free gate
+failure. Offline success and live authentication rejection are distinct.
+
+### 4. Historical deferred send proof - superseded, not a V1 gate
+
+Brad explicitly excluded successful sending pending Board 9 population
+promotion. POPULATION_NOT_VERIFIED and the fixed approved-recipient gate
+remain intact. Canonical TREC binding has offline proof; no live send is
+claimed. This is a deferred integration proof, not a provider-free failure.
+
+### Cleanup and disposition
+
+No deployment, environment mutation, GHL record creation/write, Blob mutation,
+provider call, Production access or credential exposure occurred. Cleanup and
+rollback are therefore not required. Only this report and offline evidence
+were changed. Missing runtime/configuration evidence keeps the provider-free
+gate incomplete independently of the two approved deferred integrations.
+Recommendation: Block review-ready promotion; keep PR 78 draft. Do not silently
+waive acceptance or caller-continuity requirements for either deferred proof.
+
+## Historical Test credential provisioning checkpoint - 2026-09-18 UTC
+
+This update supersedes the earlier unprovisioned configuration findings.
+Brad clarified that no voice OAuth project or client was ever provisioned:
+INV-93 stopped before operational provisioning. No existing voice client was
+reused or modified. The source voice authorization remains unchanged.
+
+OBSERVED in Google Cloud and Netlify UI:
+
+- Personal owner selected by Brad: bradt75@gmail.com.
+- Created project IAOS Test Authentication, ID iaos-test-authentication,
+  under No organization. No billing or free trial was activated.
+- Brad completed the Google API Services policy consent interactively.
+- OAuth audience is External, publishing status Testing, with exactly one
+  test user: brad@bradthompsonconsulting.com.
+- Created one Web client: IAOS Test Application Write - INV-95.
+- Its sole JavaScript origin is https://iaos-app-test.netlify.app, verified
+  from the existing Test project's Netlify management page. No redirect URI
+  was configured: app/public/app-write-login.js uses the GSI callback.
+- No PR-preview origin was guessed or added. An exact-head preview is still
+  required before adding its verified origin and proving live sign-in.
+- Stored IAOS_APP_WRITE_GOOGLE_CLIENT_ID, IAOS_APP_WRITE_BRAD_EMAILS and
+  IAOS_APP_WRITE_SESSION_SECRET in project iaos-app-test. Each was marked
+  secret, Functions scope only, with one value in Deploy Previews only.
+  Production, branch, local and agent-runner values were left unset.
+- Created GHL integration IAOS INV-95 Provider-Free Test Gate in Test
+  location SoTgVoaFGHtBdRFvXWQV, with only contacts.readonly and
+  contacts.write (2 of 162 scopes). No existing integration was altered.
+- Its token was transferred directly in memory into GHL_PRIVATE_API_KEY,
+  marked secret, Functions / Deploy Previews only on iaos-app-test.
+  No token, client ID or signing-secret value is included in this evidence.
+
+The OAuth client secret is not used by this Google ID-token callback flow.
+It was not transferred to Netlify, written to a file or emitted in output.
+Google creation-screen observations were suppressed and redacted before
+reporting; credential values were not included in screenshots or logs.
+
+Current fetched origin/main is now
+585ff6e9a29a0e4f13dfc8bb9abfdb091a269290 (merged INV-67 PR 79).
+INV-95 implementation head remains 480abc848f2a5ecc2c9ae983490f79b0d2c38af1.
+The worktree has only documentation/evidence changes at this checkpoint.
+
+UNKNOWN / remaining: exact-head Test deployment, deployed Google login,
+Blob proof, live disposable GHL boundary/readback proof and cleanup.
+No disposable business record or Blob has yet been created or mutated.
+The temporary Test integration and preview configuration are retained only
+while this authorized gate is actively in progress; revoke/remove after
+proof or record an explicit retention ruling. They are not a completed
+cleanup claim. PR 78 stays draft and both integration exclusions remain.
+
+## Correction preflight and evidence - 2026-09-18
+
+OBSERVED locally: codex/inv-95-write-boundaries at
+480abc848f2a5ecc2c9ae983490f79b0d2c38af1; local origin/main at
+585ff6e9a29a0e4f13dfc8bb9abfdb091a269290. Only the reconciled report
+and untracked provider-free-offline.txt preceded this correction.
+
+Authority: Brad accepted Jeff's immediately preceding independent remote
+verification of those SHAs and PR 78 OPEN/draft. Bones did not independently
+verify the remote: fetch failed on FETCH_HEAD permission (255), and ls-remote
+failed to connect to GitHub (128). No FETCH_HEAD permission change was made.
+
+Earlier offline output is preserved in provider-free-offline.txt. It records
+the obsolete path's pre-correction tests and is not current V1 acceptance.
+Correction output and per-command exit codes: v1-correction-local.txt.
+No live authenticated write, deployment, GHL mutation, or contract send is
+claimed. Runtime Test proof remains incomplete and paused.
+
+OBSERVED: the complete affected runner passed: INV-95 suites=26 failed=0,
+exit=0. This includes 75 named-boundary, 19 webhook, 12 ledger, 308 canonical
+projection, 21 reserve-retirement, 21 execute-retirement, 13 structural
+retirement and 8 independent readback checks, plus retained regressions.
+The first run found three obsolete UI assertions; that failed run is kept
+in the log before the corrected full rerun. No computation tests were removed.
+
+OBSERVED: app typecheck/build, root-function typecheck and all other local
+CI checks passed except the unchanged Windows exit-contract runtime check:
+checksRun=37 failures=6 floor=37, exit=1. Its POSIX-shell status failures
+match the already-recorded Windows limitation; Ubuntu confirmation is still
+required. Literal output: v1-correction-ci-local.txt.
+
+OBSERVED: contract-ghl-projection-model.ts is byte-unchanged from the starting
+head. App auth, note validation, webhook auth, disposition hardening, document
+readback and root handlers remain unchanged. Generic receipts/locks remain;
+only the retired projection-specific receipt helpers were removed.
+
+UNKNOWN: fresh remote main/head and Ubuntu CI for this correction. Push is
+pending remote verification; PR 78 remains last-known OPEN/draft.
+Recommendation: FAIL / not merge-ready until remote verification, push,
+fresh Ubuntu CI and the outstanding authorized rollout gates are satisfied.
+
+## Exact correction file inventory
+
+- app/netlify/functions/ghl-contract-send-execute.ts
+- app/netlify/functions/ghl-contract-send-reserve.ts
+- app/netlify/functions/ghl-proxy.ts
+- app/netlify/functions/ghl-write.ts
+- app/netlify/functions/lib/write-contracts.ts
+- app/netlify/functions/lib/write-receipts.ts
+- app/scripts/lib/test-retired-contract-endpoint.cjs
+- app/scripts/test-contract-draft-request.cjs
+- app/scripts/test-contract-ghl-projection.cjs
+- app/scripts/test-contract-send-canonical-carriers.cjs
+- app/scripts/test-contract-send-execute.cjs
+- app/scripts/test-contract-send-reserve.cjs
+- app/scripts/test-contract-workspace-wiring.cjs
+- app/scripts/test-ghl-seller-count-transport-write.cjs
+- app/scripts/test-inv95.cjs
+- app/scripts/test-write-boundaries.cjs
+- app/src/lib/ghl.ts
+- app/src/pages/ContractWorkspace.tsx
+- docs/INV95_WRITE_BOUNDARIES.md
+- docs/evidence/inv95/provider-free-offline.txt
+- docs/evidence/inv95/v1-correction-ci-local.txt
+- docs/evidence/inv95/v1-correction-local.txt
