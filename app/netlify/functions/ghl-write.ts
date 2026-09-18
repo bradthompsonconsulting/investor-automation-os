@@ -1,3 +1,4 @@
+import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { validateLedgerNote } from "./lib/write-note-guard";
 import { getConfig } from "../../shared/ghl-config";
 import { requireAppWriter } from "./lib/app-write-auth";
@@ -11,6 +12,9 @@ export const handler = async (event: any) => {
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
   let operator: string;
   try { operator = requireAppWriter(event); } catch { return json(401, { error: "Application write sign-in required" }); }
+  try { requireAppWriteOrigin(event); } catch {
+    return json(403, { error: "Application write origin refused" });
+  }
   let request: any; let plan: ReturnType<typeof planWrite>;
   const config = getConfig(process.env.IAOS_ENV);
   try {

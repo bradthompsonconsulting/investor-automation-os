@@ -22,6 +22,7 @@ Module._load = function(name, ...rest) {
 };
 process.env.IAOS_ENV = 'test';
 process.env.IAOS_APP_WRITE_GOOGLE_CLIENT_ID = 'offline-client';
+process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN = 'https://proof.example.invalid';
 process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid';
 process.env.IAOS_APP_WRITE_SESSION_SECRET = 'offline-fixture-only-not-a-real-secret';
 process.env.GHL_PRIVATE_API_KEY = 'offline-fixture';
@@ -54,7 +55,7 @@ const observed=load('contract-lifecycle-model').buildProviderObservationRecordFr
 const rows=load('contract-execution-model').extractProviderSignerRowsFromListDocumentsBody({body:{documents},expectedDocumentId:docId,expectedLocationId:config.locationId});assert.equal(rows.ok,true);
 const execution=load('contract-execution-model').buildVerifiedUnderContractRecord({opportunityId:opportunity.id,agreementAt:fixture.version.agreementAt,version:fixture.version,acceptedSend:send,requiredSigners:required,signerMappingAttestation:mapping.value,providerRecipients:rows.rows,lifecycleHistory:[observed.value],manualArtifactOutcome:{kind:'selected',sha256:hash,fileName:'fixture.pdf',mimeType:'application/pdf'},selectedForDocumentId:docId,selectedForVersion:fixture.version,executedTermsAttestation:attestation.value,iaosVerifiedAt:at,evidenceSummary:'Synthetic joint verification',relatedPriorRecordId:null});assert.equal(execution.ok,true,JSON.stringify(execution));
 let n=0,count=0;
-async function invoke(body){return handler({httpMethod:'POST',headers:{authorization:'Bearer '+auth.issueAppSession('brad@example.invalid').token},body:JSON.stringify({operation:'note.create',targetId:contact.id,args:{body},requestId:'ledger-'+(++n)})});}
+async function invoke(body){return handler({httpMethod:'POST',headers:{origin:process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN,authorization:'Bearer '+auth.issueAppSession('brad@example.invalid').token},body:JSON.stringify({operation:'note.create',targetId:contact.id,args:{body},requestId:'ledger-'+(++n)})});}
 async function check(name,fn){await fn();console.log('PASS '+name);count++;}
 (async()=>{
 await check('accepted send ledger requires fresh matching provider evidence',async()=>{const res=await invoke(sendNote(send));assert.equal(res.statusCode,200,res.body);});

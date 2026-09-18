@@ -8,6 +8,7 @@ const APP = path.resolve(__dirname, '..');
 const originalResolve = Module._resolveFilename;
 const originalLoad = Module._load;
 const receipts = new Map();
+let blobCalls = 0;
 Module._resolveFilename = function(name, parent, ...rest) {
   if (name.startsWith('.') && parent) {
     const candidate = path.resolve(path.dirname(parent.filename), name + '.ts');
@@ -17,11 +18,12 @@ Module._resolveFilename = function(name, parent, ...rest) {
 };
 Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
 Module._load = function(name, ...rest) {
-  if (name === '@netlify/blobs') return { getStore: () => ({ async get(key) { return receipts.get(key) ?? null; }, async delete(key) { receipts.delete(key); }, async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; } }) };
+  if (name === '@netlify/blobs') return { getStore: () => { blobCalls++; return ({ async get(key) { return receipts.get(key) ?? null; }, async delete(key) { receipts.delete(key); }, async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; } }); } };
   return originalLoad.call(this, name, ...rest);
 };
 process.env.IAOS_ENV = 'test';
 process.env.IAOS_APP_WRITE_GOOGLE_CLIENT_ID = 'offline-client';
+process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN = 'https://proof.example.invalid';
 process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid';
 process.env.IAOS_APP_WRITE_SESSION_SECRET = 'offline-fixture-only-not-a-real-secret';
 process.env.GHL_PRIVATE_API_KEY = 'offline-fixture';
@@ -62,9 +64,82 @@ let count = 0;
 function check(name, fn) { return Promise.resolve().then(fn).then(() => { count++; console.log('PASS ' + name); }); }
 let sequence = 0;
 function event(operation, targetId, args, requestId = `request-${++sequence}`) {
-  return { httpMethod: 'POST', headers: { authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ operation, targetId, args, requestId }) };
+  return { httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ operation, targetId, args, requestId }) };
 }
 (async () => {
+
+  // Origin failures must not instantiate Blob storage or call GHL.
+  const approvedOrigin = process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN;
+  for (const origin of [
+    undefined, '', 'null', 'https://wrong.example.invalid',
+    approvedOrigin + '.attacker.invalid', approvedOrigin + '/',
+    approvedOrigin + '/path', approvedOrigin + '?x=1',
+    approvedOrigin + '#fragment', approvedOrigin + ':443',
+    'http://proof.example.invalid', 'https://user@proof.example.invalid',
+    ' https://proof.example.invalid', approvedOrigin + ', ' + approvedOrigin,
+    ['https://proof.example.invalid'], 'not a URL',
+  ]) {
+    await check('Origin rejected: ' + JSON.stringify(origin), async () => {
+      const e = event('note.create', contact.id, {body:'must not write'});
+      if (origin === undefined) delete e.headers.origin;
+      else e.headers.origin = origin;
+      const before = [calls.length, blobCalls, writes];
+      assert.equal((await handler(e)).statusCode, 403);
+      assert.deepEqual([calls.length, blobCalls, writes], before);
+    });
+  }
+  for (const headers of [
+    {Origin: approvedOrigin},
+    {multi: {Origin:[approvedOrigin, approvedOrigin]}},
+    {multi: {origin:[approvedOrigin], Origin:[approvedOrigin]}},
+    {multi: {origin:[]}},
+  ]) await check('ambiguous Origin refused ' + JSON.stringify(headers), async()=>{
+    const e = event('note.create',contact.id,{body:'must not write'});
+    if (headers.multi) e.multiValueHeaders = headers.multi;
+    else Object.assign(e.headers,headers);
+    const before = [calls.length,blobCalls,writes];
+    assert.equal((await handler(e)).statusCode,403);
+    assert.deepEqual([calls.length,blobCalls,writes],before);
+  });
+  for (const setting of [undefined,'','*','https://*.example.invalid',
+    approvedOrigin+'/',approvedOrigin+',https://other.example.invalid']) {
+    await check('invalid origin configuration fails closed '+setting,async()=>{
+      const e=event('note.create',contact.id,{body:'must not write'});
+      if(setting===undefined)delete process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN;
+      else process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN=setting;
+      const before=[calls.length,blobCalls,writes];
+      try {
+        assert.equal((await handler(e)).statusCode,403);
+        assert.deepEqual([calls.length,blobCalls,writes],before);
+      } finally {process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN=approvedOrigin;}
+    });
+  }
+  for(const origin of [approvedOrigin,undefined,'https://wrong.example.invalid']){
+    await check('unauthenticated retains 401 with Origin '+origin,async()=>{
+      const e=event('note.create',contact.id,{body:'must not write'});
+      e.headers=origin?{origin}:{};
+      const before=[calls.length,blobCalls,writes];
+      assert.equal((await handler(e)).statusCode,401);
+      assert.deepEqual([calls.length,blobCalls,writes],before);
+    });
+  }
+  await check('approved Origin reaches payload gate without upstream access',async()=>{
+    const e=event('note.create',contact.id,{body:'must not write'});
+    e.body='{';
+    const before=[calls.length,blobCalls,writes];
+    assert.equal((await handler(e)).statusCode,400);
+    assert.deepEqual([calls.length,blobCalls,writes],before);
+  });
+  await check('capitalized Origin with consistent multi header writes note only',async()=>{
+    const e=event('note.create',contact.id,{body:'origin fixture'});
+    e.headers.Origin=e.headers.origin; delete e.headers.origin;
+    e.multiValueHeaders={Origin:[approvedOrigin]};
+    const before=calls.length;
+    assert.equal((await handler(e)).statusCode,200);
+    assert.deepEqual(calls.slice(before).filter(c=>c.method!=='GET'),
+      [{pathname:'/contacts/'+contact.id+'/notes',method:'POST'}]);
+  });
+
   await check('missing configuration fails closed', () => assert.throws(() => auth.appAuthConfig({})));
   await check('authorized application identity verifies', () => assert.equal(auth.requireAppWriter(event('', '', {})), 'brad@example.invalid'));
   await check('expired session refused', () => { const token = auth.issueAppSession('brad@example.invalid', process.env, Date.now() - 1000000).token; assert.throws(() => auth.requireAppWriter({ headers: { authorization: `Bearer ${token}` } })); });

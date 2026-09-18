@@ -330,3 +330,50 @@ fresh Ubuntu CI and the outstanding authorized rollout gates are satisfied.
 - docs/evidence/inv95/provider-free-offline.txt
 - docs/evidence/inv95/v1-correction-ci-local.txt
 - docs/evidence/inv95/v1-correction-local.txt
+
+## Origin boundary correction - local only
+
+Authenticated ghl-write POST requests now require one canonical HTTPS
+Origin exactly equal to IAOS_APP_WRITE_ALLOWED_ORIGIN. Authentication runs
+first to preserve 401 for unauthenticated callers; Origin failure returns
+403 before request parsing, GHL reads/writes or Blob access.
+There is no missing-Origin server exception. Host, Referer and forwarded
+headers are not trust fallbacks. Retired handlers remain unchanged.
+
+This proof's proposed configuration is Functions scope, exact branch only:
+IAOS_APP_WRITE_ALLOWED_ORIGIN =
+https://codex-inv-95-write-boundaries--iaos-app-test.netlify.app
+No configuration was changed. The deployed old head lacks this correction.
+
+Origin is a browser boundary, not a replacement for bearer identity:
+a non-browser client can forge Origin. No CORS permission is added.
+Absent/invalid configuration denies authenticated writes, including after
+future deployment, until the exact approved origin is provisioned.
+
+Prepared Chrome procedure:
+[Note-only proof](INV95_NOTE_ONLY_PROCEDURE.md).
+It requires a reviewed binding to the existing in-memory appWriteFetch;
+no token export, normal note control, or contact-field mutation.
+No live proof or cleanup was executed by this correction.
+
+### Local verification result
+
+OBSERVED: node app/scripts/test-inv95.cjs completed with
+INV-95 suites=26 failed=0, exit=0; 106 boundary checks passed.
+Literal suite output is retained in evidence/inv95/origin-boundary-local.txt.
+All outbound dependencies in these suites are mocked.
+
+OBSERVED: targeted TypeScript check of app-write-origin.ts passed (exit=0)
+from app/. Full application typecheck returned exit=2 because existing
+dependency modules are unavailable in this checkout; it is not claimed green.
+No dependency files were changed to bypass that failure.
+git diff --check passed (exit=0).
+
+OBSERVED: the prepared Chrome factory was evaluated only in a mocked Node
+VM. It made no calls at binding time, submitted only note.create to the
+designated contact, replayed byte-identical JSON, retained one note, and
+refused repeat initial execution and a wrong page origin (exit=0).
+This is not a live authenticated Chrome or Blob proof.
+
+Status: local uncommitted correction. No push, deployment, configuration
+change, live write, contact change, cleanup or merge.
