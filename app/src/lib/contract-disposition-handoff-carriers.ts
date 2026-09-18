@@ -17,7 +17,7 @@
  * an upstream module this carrier does not own the shape of
  * (`propertyLegalDescription`, `contract-facts-model.ts`'s own
  * `PropertyLegalDescriptionReport`), this carrier validates that each of
- * its six named keys is present and is a well-formed `FieldDisposition`
+ * its seven named keys is present and is a well-formed `FieldDisposition`
  * envelope (`kind` is one of the three real variants, with `value`/
  * `confirmedBy`/`at`/`note` shaped correctly for that `kind`) -- it does
  * NOT re-validate the internal shape of a `not_applicable`/`unresolved`-
@@ -27,6 +27,23 @@
  * drift from. This is a deliberate, narrower validation boundary than
  * this codebase's other single-purpose carriers, stated here rather than
  * silently assumed.
+ *
+ * SEVEN-KEY CORRECTION (Product Owner ruling, this session). INV-67 Phase
+ * 2A (`8e75497`, 2026-09-16) added `legalMunicipality` to
+ * `PropertyLegalDescriptionReport` three days after this carrier shipped
+ * (`5db1306`, 2026-09-13) with a six-key allowlist that was never updated.
+ * Because `hasExactKeys` requires an exact key-COUNT match, every
+ * authoritative write (which always serializes the current, real
+ * `PropertyLegalDescriptionReport`) was silently rejected on read --
+ * `parsePropertyLegalDescriptionJson` returned `null`, which discarded the
+ * ENTIRE disposition-handoff record, not just the legal-description field.
+ * Product Owner ruling: the six-key shape is OBSOLETE, not a legacy format
+ * to keep accepting -- it fails closed, exactly like any other malformed
+ * payload this carrier already rejects. No V1/V2 dispatch was added (unlike
+ * `seller-contract-facts-carriers.ts`'s own precedent for this same gap):
+ * any old IAOS Test handoff note written under the six-key shape must be
+ * regenerated from current authoritative facts, never accepted downstream
+ * with a null/unresolved `legalMunicipality` standing in for missing data.
  *
  * APPEND-ONLY, NEVER RESOLVED-TO-ONE, matching every sibling carrier's
  * own convention -- `allDispositionHandoffsForOpportunity` returns EVERY
@@ -137,7 +154,7 @@ function parseFieldDispositionJson<T>(raw: string): FieldDisposition<T> | null {
   return parsed.value as unknown as FieldDisposition<T>;
 }
 
-const PROPERTY_LEGAL_DESCRIPTION_KEYS = ["lot", "block", "addition", "county", "exclusions", "reservations"] as const;
+const PROPERTY_LEGAL_DESCRIPTION_KEYS = ["lot", "block", "addition", "county", "exclusions", "reservations", "legalMunicipality"] as const;
 function parsePropertyLegalDescriptionJson(raw: string): PropertyLegalDescriptionReport | null {
   const parsed = safeJsonParse(raw);
   if (!parsed.ok || !isPlainObject(parsed.value)) return null;
