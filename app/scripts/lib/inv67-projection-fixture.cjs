@@ -6,6 +6,21 @@
 // completeReport()/completePreview()/SELLER_READINESS_OK already use, copied
 // here (not re-derived) so this generator wires through the real model
 // instead of hand-typing synthetic strings per field.
+//
+// buildProjectionEntries(reportOverrides, previewTextOverrides) takes two
+// OPTIONAL params, both defaulting to {} (fully backward compatible with
+// every existing zero-arg call site). They let a caller drive the SAME real
+// buildContractProjectionPlan model with a genuinely different scenario's
+// facts -- e.g. inv67-pdf-generator.cjs's own tests, which must prove the
+// live-data generator against real-shaped canonical projection output
+// distinct from this file's own shipped synthetic scenario, never a second,
+// hand-typed field-by-field stand-in for the 133-key manifest (the same
+// "not hand-typed strings" discipline this file was originally built under).
+// reportOverrides is a per-group shallow patch (same shape completeReport()
+// already merges internally). previewTextOverrides is a flat key->text map
+// applied to completePreview()'s own documentLines, keyed exactly like
+// CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS (e.g.
+// "identity.propertyStreetAddress").
 
 const { execSync } = require('child_process');
 const fs = require('fs');
@@ -18,7 +33,7 @@ function cleanup() {
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {}
 }
 
-function buildProjectionEntries() {
+function buildProjectionEntries(reportOverrides, previewTextOverrides, opportunityId) {
   cleanup();
   fs.mkdirSync(TMP, { recursive: true });
   fs.writeFileSync(path.join(TMP, 'package.json'), JSON.stringify({ type: 'commonjs' }));
@@ -63,6 +78,14 @@ function buildProjectionEntries() {
     'earnestMoneyOption.escrowAgentAddress': '4521 Test Ridge Lane, Austin, TX 78701',
     'titleSurvey.titleCompanyName': 'Travis County Title Co.',
     'attorneyManualFields.specialProvisions': 'None.',
+    // PHASE B: previously unused by any converted placement (ordinal 108 was
+    // deferred throughout Phase A) -- without this override the fixture's
+    // generic "value for <key>" fallback would be drawn verbatim onto the
+    // printed PDF. `completeReport()`'s own `otherAddendaText` disposition is
+    // `not_applicable`, matching the sibling `specialProvisions` override's
+    // convention above and the manifest's own documented default ("Renders
+    // 'None.' when no other addenda apply").
+    'attorneyManualFields.otherAddendaText': 'None.',
     'noticeContact.buyerNoticeAddress': '4521 Test Ridge Lane, Austin, TX 78701',
     'noticeContact.buyerNoticePhone': '(512) 555-0101',
     'noticeContact.buyerNoticeEmail': 'buyer.test@example.com',
@@ -71,19 +94,21 @@ function buildProjectionEntries() {
     'noticeContact.sellerNoticeEmail': 'seller.test@example.com',
   };
 
-  function completePreview(overrides) {
+  function completePreview(overrides, previewTextOverrides) {
+    const textFor = (key, fallback) =>
+      previewTextOverrides && Object.prototype.hasOwnProperty.call(previewTextOverrides, key) ? previewTextOverrides[key] : fallback;
     const documentLines = [
-      line('identity', 'propertyStreetAddress', 'populated', '4521 Test Ridge Lane, Austin, TX 78701'),
-      line('parties', 'buyerEntityName', 'populated', 'Brad Thompson Consulting LLC'),
+      line('identity', 'propertyStreetAddress', 'populated', textFor('identity.propertyStreetAddress', '4521 Test Ridge Lane, Austin, TX 78701')),
+      line('parties', 'buyerEntityName', 'populated', textFor('parties.buyerEntityName', 'Brad Thompson Consulting LLC')),
       line('parties', 'buyerCapacity', 'populated', 'Principal, purchasing for its own account'),
       line('parties', 'buyerTexasLicenseStatus', 'populated', 'None'),
-      line('parties', 'sellerSigners', 'populated', 'Jane Seller (Owner)'),
-      line('salesPrice', 'cashPortion', 'populated', '$275,000.00'),
+      line('parties', 'sellerSigners', 'populated', textFor('parties.sellerSigners', 'Jane Seller (Owner)')),
+      line('salesPrice', 'cashPortion', 'populated', textFor('salesPrice.cashPortion', '$275,000.00')),
       line('salesPrice', 'financingSum', 'populated', '$0.00'),
-      line('salesPrice', 'salesPrice', 'populated', '$275,000.00'),
+      line('salesPrice', 'salesPrice', 'populated', textFor('salesPrice.salesPrice', '$275,000.00')),
       ...CONTRACT_PROJECTION_RETAINED_DOCUMENT_LINE_KEYS
         .filter((k) => !['identity.propertyStreetAddress', 'parties.buyerEntityName', 'parties.sellerSigners'].includes(k))
-        .map((k) => { const [g, f] = k.split('.'); return line(g, f, 'populated', PREVIEW_TEXT_OVERRIDES[k] || `value for ${k}`); }),
+        .map((k) => { const [g, f] = k.split('.'); return line(g, f, 'populated', textFor(k, PREVIEW_TEXT_OVERRIDES[k] || `value for ${k}`)); }),
     ];
     const additionalRequiredFacts = [line('sellerEquitableInterest', 'disposition', 'populated', 'Made at 2026-09-01T00:00:00.000Z.')];
     return {
@@ -178,9 +203,9 @@ function buildProjectionEntries() {
     return base;
   }
 
-  const preview = completePreview();
-  const report = completeReport();
-  const plan = buildContractProjectionPlan('OPP-1', preview, report, SELLER_READINESS_OK);
+  const preview = completePreview(undefined, previewTextOverrides);
+  const report = completeReport(reportOverrides);
+  const plan = buildContractProjectionPlan(opportunityId || 'OPP-1', preview, report, SELLER_READINESS_OK);
   cleanup();
   if (!plan.ok) {
     throw new Error('ABORT: synthetic fixture produced plan.ok=false: ' + JSON.stringify(plan.blockingReasons));
