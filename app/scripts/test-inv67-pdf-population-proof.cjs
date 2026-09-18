@@ -69,19 +69,45 @@ async function main() {
   const visualJudgmentOrdinals = new Set(visualJudgmentRows.map((r) => r.ordinal));
   const convertedVisualJudgment = converted.filter((f) => visualJudgmentOrdinals.has(f.ordinal));
   const convertedReady = converted.filter((f) => !visualJudgmentOrdinals.has(f.ordinal));
+
+  // Hardened exact-value accounting (Jess review correction, this session):
+  // the previous "at least 85 of 98 Ready rows" threshold would let a future
+  // regression that silently converts FEWER rows than today pass unnoticed.
+  // Every number below is pinned to the exact, currently-proven result --
+  // any deviation, in either direction, is a real accounting change that
+  // must be explained, not just a quantity to exceed.
+  check('converted total is exactly 91', converted.length === 91);
+  check('converted Ready rows total exactly 89', convertedReady.length === 89);
+
   // Every converted Visual-judgment-class row must be one of PR #75's own
   // 2 already-proven, hand-verified rows (19, 63) -- this pass must never
   // newly convert a Visual-judgment row itself.
   check(
-    'every converted Visual-judgment-class row is one of PR #75\'s 2 already-proven rows (19, 63), never a newly converted one',
+    'converted Visual-judgment rows are exactly the 2 already-proven ordinals from PR #75 (19, 63), never a newly converted one',
     convertedVisualJudgment.length === 2 && convertedVisualJudgment.every((f) => f.ordinal === 19 || f.ordinal === 63)
   );
+
+  const EXPECTED_DEFERRED_ORDINALS = [18, 68, 72, 74, 77, 79, 83, 102, 108];
+  check(
+    `deferred Ready rows are exactly the expected 9 ordinals (${EXPECTED_DEFERRED_ORDINALS.join(', ')})`,
+    deferred.length === EXPECTED_DEFERRED_ORDINALS.length
+      && EXPECTED_DEFERRED_ORDINALS.every((o) => deferredOrdinals.has(o))
+      && [...deferredOrdinals].every((o) => EXPECTED_DEFERRED_ORDINALS.includes(o))
+  );
+  check('every deferred row is a Ready-class row, never a Visual-judgment row', deferred.every((d) => !visualJudgmentOrdinals.has(d.ordinal)));
+  check(
+    'every deferred Ready row carries a nonempty structural reason',
+    deferred.length > 0 && deferred.every((d) => typeof d.reason === 'string' && d.reason.trim().length > 0)
+  );
+
   check(
     'converted Ready rows + deferred rows account for all 98 Ready rows exactly',
     convertedReady.length + deferred.length === 98
   );
-  check(`at least 85 of the 98 Ready rows were converted (observed: ${convertedReady.length})`, convertedReady.length >= 85);
-  check('total accounting: converted + deferred + untouched-visual-judgment == 133', converted.length + deferred.length + (visualJudgmentRows.length - 2) === 133);
+
+  const untouchedVisualJudgmentCount = visualJudgmentRows.length - convertedVisualJudgment.length;
+  check('untouched Visual-judgment rows total exactly 33', untouchedVisualJudgmentCount === 33);
+  check('total accounting: converted + deferred + untouched-visual-judgment == 133', converted.length + deferred.length + untouchedVisualJudgmentCount === 133);
 
   // 3. Source PDF hash and page-count preservation (via a fresh child-process run).
   execFileSync(process.execPath, [GENERATOR_SCRIPT_PATH], { stdio: 'inherit' });
