@@ -75,6 +75,47 @@
  * and explicitly named, never collapsed into a bare boolean, exactly
  * mirroring every other B9 `evaluate*` function's own
  * `TransitionReason`-shaped discipline.
+ *
+ * ARTIFACT BINDING (Board #9 Phase B, 2026-09-18; corrected same-day --
+ * see FAIL-CLOSED CORRECTION below). `contract-authorization-carriers.ts`'s
+ * schema v2 adds `artifactSha256`/`sourcePdfSha256`/`generatorVersion`/
+ * `manifestVersion` to every record this module builds -- REQUIRED at
+ * build time (`buildAuthorizationRecordArgs`'s `artifact` argument, itself
+ * shape-validated before anything is built) so a v2 record can never omit
+ * them. `evaluateBradAuthorizationCurrency` takes a REQUIRED third
+ * argument, `currentArtifactFacts`, comparing the record's own four
+ * artifact fields against the caller's freshest known ones and producing
+ * `ARTIFACT_CHANGED`/`SOURCE_PDF_CHANGED`/`GENERATOR_CHANGED`/
+ * `MANIFEST_CHANGED` on any mismatch. This module never computes or
+ * fetches those "current" values itself (no I/O, per this file's own
+ * discipline) -- the caller (a future generation endpoint or UI) supplies
+ * them, exactly like `currentVersion` already works for
+ * `evaluateAuthorizationEligibility`.
+ *
+ * FAIL-CLOSED CORRECTION (same day). An earlier pass of this function made
+ * `currentArtifactFacts` OPTIONAL, so a caller who simply omitted it still
+ * got a real `authorized: true` result based on content/version/template
+ * alone -- a real gap: nothing forced a v2, artifact-bound authorization
+ * to actually be checked against a specific artifact before being reported
+ * current. Corrected: the parameter is required, and even a malformed or
+ * `undefined` value at runtime (a non-TypeScript caller, or a bug) is
+ * shape-validated (`artifactFactsShapeReasons`, shared with
+ * `buildAuthorizationRecordArgs`'s own build-time check) and fails closed
+ * with `ARTIFACT_FACTS_INVALID` rather than silently skipping the artifact
+ * checks -- there is no code path in this function that reaches
+ * `authorized: true` without `currentArtifactFacts` having been validated
+ * and matched. This intentionally breaks every 2-argument call site that
+ * predates this correction (`contract-send-model.ts`,
+ * `ContractWorkspace.tsx`) -- expected and accepted; those callers are
+ * updated together in a later integration slice, not patched around here.
+ *
+ * A v1-shaped record can never satisfy currency for a generated PDF --
+ * not via a runtime special case here, but structurally: `contract-
+ * authorization-carriers.ts`'s CURRENT-schema parser
+ * (`parseBradContractAuthorizationNote`) does not recognize a v1 note's
+ * header at all, so `latestBradContractAuthorizationForOpportunity` never
+ * returns one, and this function never even sees a v1-shaped `record` to
+ * evaluate.
  */
 
 import {
@@ -93,6 +134,39 @@ import type {
 
 function isValidIsoInstant(at: string): boolean {
   return Number.isFinite(new Date(at).getTime());
+}
+
+function isNonEmptySha256(v: unknown): v is string {
+  return typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
+}
+
+/**
+ * Shape-only validation shared by BOTH `evaluateBradAuthorizationCurrency`
+ * (is the CALLER-supplied "current" bundle even usable to compare against)
+ * and `buildAuthorizationRecordArgs` (is the bundle being PERSISTED
+ * well-formed) -- one check, never two divergent copies. Never verifies a
+ * hash is ACTUALLY correct for any bytes -- this module has no I/O and
+ * never will; that belongs to whichever server-side caller independently
+ * regenerates and compares before accepting a write.
+ */
+function artifactFactsShapeReasons(artifact: CurrentArtifactFacts | null | undefined): BradAuthorizationReason[] {
+  if (!artifact || typeof artifact !== "object") {
+    return [{ code: "ARTIFACT_FACTS_INVALID", message: "No generated-artifact evidence was supplied." }];
+  }
+  const reasons: BradAuthorizationReason[] = [];
+  if (!isNonEmptySha256(artifact.artifactSha256)) {
+    reasons.push({ code: "ARTIFACT_FACTS_INVALID", message: "The supplied artifact SHA-256 is missing or malformed." });
+  }
+  if (!isNonEmptySha256(artifact.sourcePdfSha256)) {
+    reasons.push({ code: "ARTIFACT_FACTS_INVALID", message: "The supplied source-PDF SHA-256 is missing or malformed." });
+  }
+  if (typeof artifact.generatorVersion !== "string" || artifact.generatorVersion === "") {
+    reasons.push({ code: "ARTIFACT_FACTS_INVALID", message: "The supplied generator version is missing." });
+  }
+  if (typeof artifact.manifestVersion !== "string" || artifact.manifestVersion === "") {
+    reasons.push({ code: "ARTIFACT_FACTS_INVALID", message: "The supplied manifest version is missing." });
+  }
+  return reasons;
 }
 
 function toSnapshotLine(l: ContractDocumentLine): AuthorizedLineSnapshot {
@@ -180,7 +254,27 @@ export type BradAuthorizationReasonCode =
   | "REVISION_CHANGED"
   | "CONTENT_CHANGED"
   | "PREVIEW_NOT_COMPLETE"
-  | "PREVIEW_STALE";
+  | "PREVIEW_STALE"
+  | "ARTIFACT_CHANGED"
+  | "SOURCE_PDF_CHANGED"
+  | "GENERATOR_CHANGED"
+  | "MANIFEST_CHANGED"
+  | "ARTIFACT_FACTS_INVALID";
+
+/**
+ * The artifact facts a caller compares an authorization record against --
+ * either "what this generation run just reported" (evidence from
+ * `generatePopulatedContractPdf`) when building a NEW record, or "what we
+ * currently know to be pinned/authoritative, plus a candidate artifact's
+ * own hash" when checking an EXISTING record's currency. Same shape for
+ * both uses, deliberately -- one type, never a second divergent one.
+ */
+export type CurrentArtifactFacts = {
+  artifactSha256: string;
+  sourcePdfSha256: string;
+  generatorVersion: string;
+  manifestVersion: string;
+};
 
 export type BradAuthorizationReason = { code: BradAuthorizationReasonCode; message: string };
 
@@ -198,6 +292,7 @@ export type BradAuthorizationStatus =
 export function evaluateBradAuthorizationCurrency(
   record: ParsedBradContractAuthorization | null,
   currentPreview: ContractDocumentPreview,
+  currentArtifactFacts: CurrentArtifactFacts,
 ): BradAuthorizationStatus {
   if (!record) {
     return {
@@ -249,6 +344,31 @@ export function evaluateBradAuthorizationCurrency(
     });
   }
 
+  // FAILS CLOSED: currentArtifactFacts is REQUIRED, not optional, for a v2
+  // record. A caller cannot obtain `authorized: true` by omitting it, or by
+  // supplying a malformed bundle -- there is no code path here that skips
+  // straight to the final return without this check having run. Only when
+  // the bundle is well-formed do the four comparisons even attempt to run;
+  // a malformed bundle has nothing meaningful to compare against, so it
+  // reports ARTIFACT_FACTS_INVALID alone rather than also guessing at
+  // spurious ARTIFACT_CHANGED-style mismatches.
+  const artifactShapeReasons = artifactFactsShapeReasons(currentArtifactFacts);
+  reasons.push(...artifactShapeReasons);
+  if (artifactShapeReasons.length === 0) {
+    if (record.artifactSha256 !== currentArtifactFacts.artifactSha256) {
+      reasons.push({ code: "ARTIFACT_CHANGED", message: "The authorized artifact's own hash no longer matches the artifact currently in view -- it no longer covers these exact bytes." });
+    }
+    if (record.sourcePdfSha256 !== currentArtifactFacts.sourcePdfSha256) {
+      reasons.push({ code: "SOURCE_PDF_CHANGED", message: "The canonical source PDF has changed since this authorization was recorded." });
+    }
+    if (record.generatorVersion !== currentArtifactFacts.generatorVersion) {
+      reasons.push({ code: "GENERATOR_CHANGED", message: "The PDF generator has changed since this authorization was recorded -- it no longer covers output from the current generator." });
+    }
+    if (record.manifestVersion !== currentArtifactFacts.manifestVersion) {
+      reasons.push({ code: "MANIFEST_CHANGED", message: "The placement manifest has changed since this authorization was recorded -- it no longer covers output from the current manifest." });
+    }
+  }
+
   return reasons.length === 0 ? { authorized: true, record } : { authorized: false, record, reasons };
 }
 
@@ -289,6 +409,8 @@ export type BuildAuthorizationRecordArgs = {
   preview: ContractDocumentPreview;
   /** The caller's own freshest known revision identity -- see `evaluateAuthorizationEligibility`'s own doc comment. */
   currentVersion: ContractVersionIdentity;
+  /** The exact generated artifact this authorization binds to -- REQUIRED, per Board #9 Phase B. See module header's "ARTIFACT BINDING" note. */
+  artifact: CurrentArtifactFacts;
 };
 
 export type AuthorizationRecordToPersist = {
@@ -301,6 +423,10 @@ export type AuthorizationRecordToPersist = {
   templateSource: string;
   documentLines: AuthorizedLineSnapshot[];
   additionalRequiredFacts: AuthorizedLineSnapshot[];
+  artifactSha256: string;
+  sourcePdfSha256: string;
+  generatorVersion: string;
+  manifestVersion: string;
 };
 
 /**
@@ -313,13 +439,17 @@ export type AuthorizationRecordToPersist = {
  * anyone else). Never assumed from context, matching every other
  * Brad-only action in this codebase, e.g. Rescission. Re-checks
  * eligibility itself rather than trusting a caller who might have skipped
- * `evaluateAuthorizationEligibility` -- fails closed either way.
+ * `evaluateAuthorizationEligibility` -- fails closed either way. Also
+ * fails closed on missing/malformed artifact evidence (Board #9 Phase B)
+ * -- a v2 record can never be built without real generation evidence.
  */
 export function buildAuthorizationRecordArgs(
   args: BuildAuthorizationRecordArgs,
 ): { ok: true; value: AuthorizationRecordToPersist } | { ok: false; reasons: BradAuthorizationReason[] } {
   const eligibility = evaluateAuthorizationEligibility(args.preview, args.currentVersion);
-  if (!eligibility.eligible) return { ok: false, reasons: eligibility.reasons };
+  const artifactReasons = artifactFactsShapeReasons(args.artifact);
+  const reasons = [...(eligibility.eligible ? [] : eligibility.reasons), ...artifactReasons];
+  if (reasons.length > 0) return { ok: false, reasons };
   const snapshot = buildAuthorizedContentSnapshot(args.preview);
   return {
     ok: true,
@@ -333,6 +463,10 @@ export function buildAuthorizationRecordArgs(
       templateSource: args.preview.templateSource,
       documentLines: snapshot.documentLines,
       additionalRequiredFacts: snapshot.additionalRequiredFacts,
+      artifactSha256: args.artifact.artifactSha256,
+      sourcePdfSha256: args.artifact.sourcePdfSha256,
+      generatorVersion: args.artifact.generatorVersion,
+      manifestVersion: args.artifact.manifestVersion,
     },
   };
 }

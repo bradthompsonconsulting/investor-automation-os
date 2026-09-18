@@ -103,6 +103,17 @@ const RECIPIENT_ID = 'fixture-recipient-1';
 const SENDER_USER_ID = 'fixture-sender-1';
 const TEST_LOCATION_ID = 'fixture-location-test';
 const VERSION = B.initialVersionIdentity(AGREEMENT_AT);
+// Board #9 Phase B -- schema v2's required artifact-binding fields. This
+// suite is about send eligibility/attempt-building, not artifact currency
+// itself (see test-contract-authorization-v2.cjs for that) -- a fixed,
+// well-formed bundle here is all authorize() needs to keep producing a
+// real, buildable v2 authorization record.
+const SAMPLE_ARTIFACT = {
+  artifactSha256: 'a'.repeat(64),
+  sourcePdfSha256: '3f458518e9e01fc9c84cab420dcd0ce9793113c4b356ed5caf7a2fb1bdef2ca5',
+  generatorVersion: 'inv67-pdf-generator-v1',
+  manifestVersion: 'INV67_TEMPLATE_PLACEMENT_MANIFEST_V1',
+};
 function sendArgs(over) {
   return Object.assign({ requestedTemplateId: REQUESTED_TEMPLATE_ID, populationVerification: G.POPULATION_VERIFIED }, over || {});
 }
@@ -143,7 +154,7 @@ function buildCompleteReportAndPreview(opportunityId, version) {
 }
 
 function authorize(opportunityId, preview) {
-  const built = A.buildAuthorizationRecordArgs({ opportunityId, at: AUTH_AT, preview, currentVersion: preview.version });
+  const built = A.buildAuthorizationRecordArgs({ opportunityId, at: AUTH_AT, preview, currentVersion: preview.version, artifact: SAMPLE_ARTIFACT });
   const note = AC.formatBradContractAuthorizationNote(built.value);
   return AC.parseBradContractAuthorizationNote(note);
 }
@@ -245,7 +256,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
     l.group === 'parties' && l.field === 'sellerSigners' ? Object.assign({}, l, { status: 'unresolved', text: null }) : l,
   );
   const forcedPreview = Object.assign({}, noSignerPreview, { documentLines: forcedLines, previewComplete: true, blockingReasons: [] });
-  const forcedAuthBuilt = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AUTH_AT, preview: forcedPreview, currentVersion: VERSION });
+  const forcedAuthBuilt = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AUTH_AT, preview: forcedPreview, currentVersion: VERSION, artifact: SAMPLE_ARTIFACT });
   checkTrue('sanity: the forced-missing-signer preview can still be "authorized" at the model level (proves the eligibility check below is REAL, not just inherited from authorization)', forcedAuthBuilt.ok === true);
   const forcedAuthRecord = AC.parseBradContractAuthorizationNote(AC.formatBradContractAuthorizationNote(forcedAuthBuilt.value));
   const eligibility = S.evaluateSendEligibility({ authRecord: forcedAuthRecord, preview: forcedPreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
@@ -597,7 +608,7 @@ let acceptedSendRecord;
   // contract-send record.
   const ordinaryNote = C.formatClosingPossessionFactsNote({ opportunityId: OPP, at: SEND_AT, operator: 'brad', closingDate: AGREEMENT_AT, possessionElection: 'upon_closing_and_funding', possessionDetails: { kind: 'none' } });
   check('an ordinary closing/possession Save note does not parse as a contract-send record', K.parseContractSendNote(ordinaryNote), null);
-  const authNote = AC.formatBradContractAuthorizationNote(A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AUTH_AT, preview: completePreview, currentVersion: VERSION }).value);
+  const authNote = AC.formatBradContractAuthorizationNote(A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AUTH_AT, preview: completePreview, currentVersion: VERSION, artifact: SAMPLE_ARTIFACT }).value);
   check('a Brad authorization note does not parse as a contract-send record', K.parseContractSendNote(authNote), null);
 }
 

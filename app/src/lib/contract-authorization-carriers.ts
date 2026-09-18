@@ -1,5 +1,8 @@
 /**
- * Brad contract review authorization -- durable carrier. B9-07 / INV-62.
+ * Brad contract review authorization -- durable carrier. B9-07 / INV-62,
+ * extended to schema v2 by Board #9 Phase B (live-data PDF generation
+ * integration, 2026-09-18) to bind authorization to the exact generated
+ * artifact.
  *
  * Pure. No I/O, no React. One format/parse/latest triple, following the
  * SAME proven pattern every other B8/B9 carrier file in this codebase
@@ -33,6 +36,46 @@
  * (`RescissionRecord.authorizedBy` is a plain string at the type level;
  * `args.rescission.authorizedBy !== "brad"` is a MODEL-layer check, never
  * a carrier-layer one).
+ *
+ * SCHEMA V2 -- ARTIFACT BINDING (Phase B). Before Phase A's live-data PDF
+ * generator existed, "authorization" could only bind to the reviewed
+ * CONTENT (a document-line snapshot + version + template identity) --
+ * there was no PDF for it to bind to yet. Phase B's generator produces a
+ * real, hashable artifact, so a v1-shaped record (content/version/template
+ * only) is no longer sufficient to say "this exact generated PDF is
+ * authorized" -- nothing tied the note to specific bytes. V2 adds four new
+ * REQUIRED fields: `artifactSha256` (the generated PDF's own hash),
+ * `sourcePdfSha256` (the canonical TREC 20-19 source hash the generator
+ * verified against -- `inv67-pdf-render-core.cjs`'s own
+ * `PINNED_SOURCE_SHA256`, never a caller-substituted value, per that
+ * module's sealed-API guarantee), `generatorVersion` and `manifestVersion`
+ * (`inv67-pdf-generator.cjs`'s `GENERATOR_VERSION` /
+ * `inv67-pdf-render-core.cjs`'s `MANIFEST_VERSION` -- this file does not
+ * import those constants, by design: a pure `src/lib` carrier has no
+ * business depending on `app/scripts/` tooling; the CALLER, once a real
+ * generation endpoint exists, supplies the exact strings that specific
+ * generation run reported).
+ *
+ * LEGACY V1, PRESERVED BUT NEVER CURRENT. `BRAD_CONTRACT_AUTHORIZATION_
+ * LEDGER_VERSION` bumps to `-v2`, and the v2 header line changes
+ * accordingly -- a v1 note's header therefore never matches
+ * `matchPositionalSchema`'s exact-header check here, so
+ * `parseBradContractAuthorizationNote` (the CURRENT-schema parser) simply
+ * does not recognize a v1 note at all; `latestBradContractAuthorizationFor
+ * Opportunity` (which scans with that same parser) is correspondingly
+ * blind to v1 notes -- an opportunity with ONLY a v1 authorization on
+ * record reads as `NO_AUTHORIZATION_RECORDED`, never as "authorized."
+ * This is deliberate and is exactly what "never treat a v1 record as
+ * current authorization for a generated PDF" requires -- structurally,
+ * not by a runtime special case. NO EXISTING NOTE IS EVER REWRITTEN OR
+ * MIGRATED to reach this: the v1 shape/parser/formatter is preserved
+ * verbatim below under explicit LEGACY names (`parseBradContractAuthorization
+ * NoteLegacyV1`, `formatBradContractAuthorizationNoteLegacyV1`,
+ * `latestLegacyBradContractAuthorizationV1ForOpportunity`) purely so a
+ * historical v1 note already written to a real GHL Test location (from
+ * pre-Phase-B testing sessions) can still be safely recognized/displayed
+ * as "an old-format authorization exists, superseded" rather than reading
+ * as unparseable junk -- it is NEVER wired into currency evaluation.
  */
 
 function ledgerValue(value: string | number | null | undefined): string {
@@ -132,14 +175,23 @@ function parseLineSnapshotsJson(raw: string): AuthorizedLineSnapshot[] | null {
   return lines;
 }
 
-export const BRAD_CONTRACT_AUTHORIZATION_LEDGER_VERSION = "iaos-brad-contract-authorization-v1" as const;
-const HEADER = `IAOS BRAD CONTRACT AUTHORIZATION — ${BRAD_CONTRACT_AUTHORIZATION_LEDGER_VERSION}`;
-const LABELS = [
+// ============================================================
+// LEGACY V1 -- preserved verbatim (header/labels/shape/logic unchanged),
+// under explicit legacy names. NEVER written by any code going forward,
+// NEVER consulted by latestBradContractAuthorizationForOpportunity or
+// evaluateBradAuthorizationCurrency. Exists only so a real v1 note already
+// on a GHL Test location can still be safely recognized as "an old-format
+// authorization exists" rather than unparseable junk. See module header.
+// ============================================================
+
+export const BRAD_CONTRACT_AUTHORIZATION_LEDGER_VERSION_V1 = "iaos-brad-contract-authorization-v1" as const;
+const HEADER_V1 = `IAOS BRAD CONTRACT AUTHORIZATION — ${BRAD_CONTRACT_AUTHORIZATION_LEDGER_VERSION_V1}`;
+const LABELS_V1 = [
   "Recorded at", "Operator", "Opportunity", "Authorized by", "Version",
   "Template name", "Template source", "Document lines", "Additional required facts",
 ] as const;
 
-export type ParsedBradContractAuthorization = {
+export type ParsedBradContractAuthorizationV1 = {
   opportunityId: string;
   at: string;
   operator: string | null;
@@ -151,7 +203,7 @@ export type ParsedBradContractAuthorization = {
   additionalRequiredFacts: AuthorizedLineSnapshot[];
 };
 
-export function formatBradContractAuthorizationNote(args: {
+export function formatBradContractAuthorizationNoteLegacyV1(args: {
   opportunityId: string;
   at: string;
   operator: string | null;
@@ -163,21 +215,21 @@ export function formatBradContractAuthorizationNote(args: {
   additionalRequiredFacts: AuthorizedLineSnapshot[];
 }): string {
   return [
-    HEADER,
-    `${LABELS[0]}: ${args.at}`,
-    `${LABELS[1]}: ${ledgerValue(args.operator)}`,
-    `${LABELS[2]}: ${args.opportunityId}`,
-    `${LABELS[3]}: ${args.authorizedBy}`,
-    `${LABELS[4]}: ${formatVersionJson(args.version)}`,
-    `${LABELS[5]}: ${args.templateName}`,
-    `${LABELS[6]}: ${args.templateSource}`,
-    `${LABELS[7]}: ${formatLineSnapshotsJson(args.documentLines)}`,
-    `${LABELS[8]}: ${formatLineSnapshotsJson(args.additionalRequiredFacts)}`,
+    HEADER_V1,
+    `${LABELS_V1[0]}: ${args.at}`,
+    `${LABELS_V1[1]}: ${ledgerValue(args.operator)}`,
+    `${LABELS_V1[2]}: ${args.opportunityId}`,
+    `${LABELS_V1[3]}: ${args.authorizedBy}`,
+    `${LABELS_V1[4]}: ${formatVersionJson(args.version)}`,
+    `${LABELS_V1[5]}: ${args.templateName}`,
+    `${LABELS_V1[6]}: ${args.templateSource}`,
+    `${LABELS_V1[7]}: ${formatLineSnapshotsJson(args.documentLines)}`,
+    `${LABELS_V1[8]}: ${formatLineSnapshotsJson(args.additionalRequiredFacts)}`,
   ].join("\n");
 }
 
-export function parseBradContractAuthorizationNote(body: string): ParsedBradContractAuthorization | null {
-  const values = matchPositionalSchema(body, HEADER, LABELS);
+export function parseBradContractAuthorizationNoteLegacyV1(body: string): ParsedBradContractAuthorizationV1 | null {
+  const values = matchPositionalSchema(body, HEADER_V1, LABELS_V1);
   if (!values) return null;
   const [at, operatorRaw, opportunityId, authorizedBy, versionRaw, templateName, templateSource, docLinesRaw, additionalRaw] = values;
   if (opportunityId === "" || authorizedBy === "" || templateName === "" || templateSource === "") return null;
@@ -201,6 +253,122 @@ export function parseBradContractAuthorizationNote(body: string): ParsedBradCont
   };
 }
 
+/** Recognition only -- NEVER treated as current authorization for a generated PDF. See module header. */
+export function latestLegacyBradContractAuthorizationV1ForOpportunity(
+  notes: { body: string }[],
+  opportunityId: string,
+): ParsedBradContractAuthorizationV1 | null {
+  let latest: ParsedBradContractAuthorizationV1 | null = null;
+  for (const note of notes) {
+    const parsed = parseBradContractAuthorizationNoteLegacyV1(note.body);
+    if (!parsed || parsed.opportunityId !== opportunityId) continue;
+    if (!latest || new Date(parsed.at).getTime() > new Date(latest.at).getTime()) latest = parsed;
+  }
+  return latest;
+}
+
+// ============================================================
+// SCHEMA V2 -- current. Adds artifactSha256 / sourcePdfSha256 /
+// generatorVersion / manifestVersion, all REQUIRED. See module header.
+// ============================================================
+
+export const BRAD_CONTRACT_AUTHORIZATION_LEDGER_VERSION = "iaos-brad-contract-authorization-v2" as const;
+const HEADER = `IAOS BRAD CONTRACT AUTHORIZATION — ${BRAD_CONTRACT_AUTHORIZATION_LEDGER_VERSION}`;
+const LABELS = [
+  "Recorded at", "Operator", "Opportunity", "Authorized by", "Version",
+  "Template name", "Template source", "Document lines", "Additional required facts",
+  "Artifact SHA-256", "Source PDF SHA-256", "Generator version", "Manifest version",
+] as const;
+
+/** Exactly 64 lowercase hex characters -- the shape `sha256Hex` (inv67-pdf-render-core.cjs) always produces. Shape-only; this carrier never computes or verifies a hash itself. */
+function isSha256Hex(v: string): boolean {
+  return /^[0-9a-f]{64}$/.test(v);
+}
+
+export type ParsedBradContractAuthorization = {
+  opportunityId: string;
+  at: string;
+  operator: string | null;
+  authorizedBy: string;
+  version: ContractVersionIdentity;
+  templateName: string;
+  templateSource: string;
+  documentLines: AuthorizedLineSnapshot[];
+  additionalRequiredFacts: AuthorizedLineSnapshot[];
+  artifactSha256: string;
+  sourcePdfSha256: string;
+  generatorVersion: string;
+  manifestVersion: string;
+};
+
+export function formatBradContractAuthorizationNote(args: {
+  opportunityId: string;
+  at: string;
+  operator: string | null;
+  authorizedBy: string;
+  version: ContractVersionIdentity;
+  templateName: string;
+  templateSource: string;
+  documentLines: AuthorizedLineSnapshot[];
+  additionalRequiredFacts: AuthorizedLineSnapshot[];
+  artifactSha256: string;
+  sourcePdfSha256: string;
+  generatorVersion: string;
+  manifestVersion: string;
+}): string {
+  return [
+    HEADER,
+    `${LABELS[0]}: ${args.at}`,
+    `${LABELS[1]}: ${ledgerValue(args.operator)}`,
+    `${LABELS[2]}: ${args.opportunityId}`,
+    `${LABELS[3]}: ${args.authorizedBy}`,
+    `${LABELS[4]}: ${formatVersionJson(args.version)}`,
+    `${LABELS[5]}: ${args.templateName}`,
+    `${LABELS[6]}: ${args.templateSource}`,
+    `${LABELS[7]}: ${formatLineSnapshotsJson(args.documentLines)}`,
+    `${LABELS[8]}: ${formatLineSnapshotsJson(args.additionalRequiredFacts)}`,
+    `${LABELS[9]}: ${args.artifactSha256}`,
+    `${LABELS[10]}: ${args.sourcePdfSha256}`,
+    `${LABELS[11]}: ${args.generatorVersion}`,
+    `${LABELS[12]}: ${args.manifestVersion}`,
+  ].join("\n");
+}
+
+export function parseBradContractAuthorizationNote(body: string): ParsedBradContractAuthorization | null {
+  const values = matchPositionalSchema(body, HEADER, LABELS);
+  if (!values) return null;
+  const [
+    at, operatorRaw, opportunityId, authorizedBy, versionRaw, templateName, templateSource,
+    docLinesRaw, additionalRaw, artifactSha256, sourcePdfSha256, generatorVersion, manifestVersion,
+  ] = values;
+  if (opportunityId === "" || authorizedBy === "" || templateName === "" || templateSource === "") return null;
+  if (!isCanonicalIsoTimestamp(at)) return null;
+  if (!isSha256Hex(artifactSha256) || !isSha256Hex(sourcePdfSha256)) return null;
+  if (generatorVersion === "" || manifestVersion === "") return null;
+  const version = parseVersionJson(versionRaw);
+  if (!version) return null;
+  const documentLines = parseLineSnapshotsJson(docLinesRaw);
+  if (!documentLines) return null;
+  const additionalRequiredFacts = parseLineSnapshotsJson(additionalRaw);
+  if (!additionalRequiredFacts) return null;
+  return {
+    opportunityId,
+    at,
+    operator: operatorRaw === "UNAVAILABLE" ? null : operatorRaw,
+    authorizedBy,
+    version,
+    templateName,
+    templateSource,
+    documentLines,
+    additionalRequiredFacts,
+    artifactSha256,
+    sourcePdfSha256,
+    generatorVersion,
+    manifestVersion,
+  };
+}
+
+/** Scans with the CURRENT (v2) parser only -- a v1-only note is invisible here, never "latest." See module header. */
 export function latestBradContractAuthorizationForOpportunity(
   notes: { body: string }[],
   opportunityId: string,
