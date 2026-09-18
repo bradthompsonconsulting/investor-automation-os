@@ -70,44 +70,34 @@ async function main() {
   const convertedVisualJudgment = converted.filter((f) => visualJudgmentOrdinals.has(f.ordinal));
   const convertedReady = converted.filter((f) => !visualJudgmentOrdinals.has(f.ordinal));
 
-  // Hardened exact-value accounting (Jess review correction, this session):
-  // the previous "at least 85 of 98 Ready rows" threshold would let a future
-  // regression that silently converts FEWER rows than today pass unnoticed.
-  // Every number below is pinned to the exact, currently-proven result --
-  // any deviation, in either direction, is a real accounting change that
-  // must be explained, not just a quantity to exceed.
-  check('converted total is exactly 91', converted.length === 91);
-  check('converted Ready rows total exactly 89', convertedReady.length === 89);
-
-  // Every converted Visual-judgment-class row must be one of PR #75's own
-  // 2 already-proven, hand-verified rows (19, 63) -- this pass must never
-  // newly convert a Visual-judgment row itself.
+  // Hardened exact-value accounting (Jess review correction, PHASE A; totals
+  // updated for PHASE B). Every number below is pinned to the exact,
+  // currently-proven result -- any deviation, in either direction, is a real
+  // accounting change that must be explained, not just a quantity to exceed
+  // or a threshold to clear.
+  //
+  // PHASE B converted the remaining 42 rows: the 9 structurally-deferred
+  // Ready rows (via a new proportional font-metric estimation strategy for
+  // blanks rendered as underscores embedded in a single merged pdfjs text
+  // item, cross-validated against two different standard fonts) and all 33
+  // Visual-judgment rows (10 repeated address-header duplicates, the ¶9A
+  // closing-date year-suffix sub-blank, and the 22-key page-11 broker-text
+  // block), each individually derived and visually confirmed via a rendered
+  // screenshot before being accepted -- see the PR description for the full
+  // per-row account. Nothing was forced: every placement here was actually
+  // looked at, not merely computed.
+  check('converted total is exactly 133 -- every manifest row', converted.length === 133);
+  check('converted Ready rows total exactly 98 -- every Ready row', convertedReady.length === 98);
+  check('deferred total is exactly 0', deferred.length === 0);
   check(
-    'converted Visual-judgment rows are exactly the 2 already-proven ordinals from PR #75 (19, 63), never a newly converted one',
-    convertedVisualJudgment.length === 2 && convertedVisualJudgment.every((f) => f.ordinal === 19 || f.ordinal === 63)
-  );
-
-  const EXPECTED_DEFERRED_ORDINALS = [18, 68, 72, 74, 77, 79, 83, 102, 108];
-  check(
-    `deferred Ready rows are exactly the expected 9 ordinals (${EXPECTED_DEFERRED_ORDINALS.join(', ')})`,
-    deferred.length === EXPECTED_DEFERRED_ORDINALS.length
-      && EXPECTED_DEFERRED_ORDINALS.every((o) => deferredOrdinals.has(o))
-      && [...deferredOrdinals].every((o) => EXPECTED_DEFERRED_ORDINALS.includes(o))
-  );
-  check('every deferred row is a Ready-class row, never a Visual-judgment row', deferred.every((d) => !visualJudgmentOrdinals.has(d.ordinal)));
-  check(
-    'every deferred Ready row carries a nonempty structural reason',
-    deferred.length > 0 && deferred.every((d) => typeof d.reason === 'string' && d.reason.trim().length > 0)
-  );
-
-  check(
-    'converted Ready rows + deferred rows account for all 98 Ready rows exactly',
-    convertedReady.length + deferred.length === 98
+    'converted Visual-judgment rows are exactly all 35 -- every Visual-judgment row',
+    convertedVisualJudgment.length === 35 && visualJudgmentOrdinals.size === 35
   );
 
   const untouchedVisualJudgmentCount = visualJudgmentRows.length - convertedVisualJudgment.length;
-  check('untouched Visual-judgment rows total exactly 33', untouchedVisualJudgmentCount === 33);
+  check('untouched Visual-judgment rows total exactly 0', untouchedVisualJudgmentCount === 0);
   check('total accounting: converted + deferred + untouched-visual-judgment == 133', converted.length + deferred.length + untouchedVisualJudgmentCount === 133);
+  check('every one of the 133 manifest ordinals is accounted for exactly once (converted, none deferred, none untouched)', convertedOrdinals.size === 133);
 
   // 3. Source PDF hash and page-count preservation (via a fresh child-process run).
   execFileSync(process.execPath, [GENERATOR_SCRIPT_PATH], { stdio: 'inherit' });
@@ -144,13 +134,34 @@ async function main() {
   // 5. Extracted text spot-check: a sample of non-empty text-field values
   // (not checkbox marks, whose "X" glyph is not reliably isolatable as a
   // standalone pdftotext token) are actually present in the output.
+  //
+  // Strategy-F fields (`estimated: true`, PHASE B) overlay a printed
+  // underscore run pdf-lib cannot remove from the content stream. Their
+  // drawn characters and the original underscores occupy overlapping
+  // positions, so pdftotext's reading order interleaves them character by
+  // character (confirmed empirically this session, e.g. "Phone(s):_____"
+  // extracts as "Phone(s):_(5_1_2_)...") EVEN THOUGH a white background
+  // mask (see the generator) makes the RENDERED page genuinely clean --
+  // masking cannot change what a text-layer extraction reads, only what a
+  // viewer/printer shows. Exact-substring containment is therefore not a
+  // meaningful proof for this field class; strip underscores from the
+  // extraction before checking containment instead, which correctly
+  // verifies the actual drawn characters are present, in order, without
+  // conflating "real interleaving garbage" with "known, structural,
+  // visually-masked underscore interleaving."
   const extractedText = pdftotextAllPages(OUTPUT_PDF_PATH);
+  const extractedTextNoUnderscores = extractedText.replace(/_/g, '');
   const textSample = converted.filter((f) => f.value !== '' && f.align !== 'center');
-  const missing = textSample.filter((f) => !extractedText.includes(f.value));
+  const missing = textSample.filter((f) => {
+    const haystack = f.estimated ? extractedTextNoUnderscores : extractedText;
+    return !haystack.includes(f.value);
+  });
   check(`extracted text contains the value for every sampled non-empty text field (${textSample.length} sampled, 0 missing)`, missing.length === 0);
   if (missing.length > 0) {
     for (const m of missing) console.error(`  MISSING ordinal ${m.ordinal} (${m.fieldKey}): "${m.value}"`);
   }
+  const estimatedCount = converted.filter((f) => f.estimated).length;
+  check(`exactly 9 converted fields are marked "estimated" (Strategy-F proportional font-metric placements)`, estimatedCount === 9);
   check(
     'extracted text contains the As-Is checkbox "X" adjacent to its paragraph (technically extractable, exact token boundary not guaranteed by pdftotext reading order)',
     /q\s*X\s*\(2\)\s*Buyer accepts the Property As Is provided Seller/.test(extractedText)
@@ -194,8 +205,19 @@ async function main() {
     console.error('  ' + e.message);
   }
   check('every duplicate-key group (address, sales-price, lease/leaseback markers) shares byte-identical text across all its placements', duplicatesOk);
+  // PHASE B converted all 10 remaining repeated address-header duplicates
+  // (pages 3-12), so this group now covers all 12 approved physical
+  // placements (ordinal 8's primary paragraph-2A placement plus the
+  // repeated page-header duplicate on every one of pages 2-12).
+  const EXPECTED_ADDRESS_ORDINALS = [8, 19, 34, 47, 52, 62, 69, 80, 87, 109, 110, 133];
   const addressGroup = converted.filter((f) => f.fieldKey === 'identity.propertyStreetAddress');
-  check(`identity.propertyStreetAddress is converted at 2 physical placements (ordinals 8 and 19), sharing one value`, addressGroup.length === 2 && addressGroup.every((f) => f.value === addressGroup[0].value));
+  const addressOrdinals = new Set(addressGroup.map((f) => f.ordinal));
+  check(
+    `identity.propertyStreetAddress is converted at all 12 approved physical placements (ordinals ${EXPECTED_ADDRESS_ORDINALS.join(', ')}), sharing one value`,
+    addressGroup.length === 12
+      && EXPECTED_ADDRESS_ORDINALS.every((o) => addressOrdinals.has(o))
+      && addressGroup.every((f) => f.value === addressGroup[0].value)
+  );
   const salesPriceGroup = converted.filter((f) => f.fieldKey === 'sales_price_amount_text');
   check(`sales_price_amount_text is converted at 2 physical placements (ordinals 10 and 12), sharing one value`, salesPriceGroup.length === 2 && salesPriceGroup.every((f) => f.value === salesPriceGroup[0].value));
 
@@ -271,7 +293,7 @@ async function main() {
 
   console.log('');
   console.log(`Manifest totals: ${manifestRows.length} rows, ${readyRows.length} Ready, ${visualJudgmentRows.length} Visual judgment.`);
-  console.log(`Converted: ${converted.length} (${convertedReady.length} of 98 Ready rows + 2 already-proven Visual-judgment rows). Deferred: ${deferred.length}.`);
+  console.log(`Converted: ${converted.length} (${convertedReady.length} of 98 Ready rows + ${convertedVisualJudgment.length} of 35 Visual-judgment rows). Deferred: ${deferred.length}.`);
   console.log('');
   if (failures > 0) {
     console.error(`${failures} check(s) FAILED`);
