@@ -76,7 +76,7 @@ check('MASTER PROOF: no file under app/src references the identifier setEstimate
 const ghlSrc = fs.readFileSync(GHL, 'utf8');
 check('ghl.ts no longer defines contacts.setEstimatedRepairs', /setEstimatedRepairs:\s*\(/.test(stripComments(ghlSrc)), false);
 check('ghl.ts still defines the authoritative Opportunity writer, setRepairEstimate', /setRepairEstimate:\s*async/.test(ghlSrc), true);
-check('ghl.ts still defines _putMonetaryField, still used by the remaining setARV', /_putMonetaryField:\s*\(/.test(ghlSrc), true);
+check('INV-95 removes the arbitrary monetary helper; contact ARV remains a named command', /_putMonetaryField:\s*\(/.test(ghlSrc), false);
 
 const persistSrc = fs.readFileSync(PERSIST, 'utf8');
 check('persist.ts no longer exports persistApprovedRepairTotal (the Contact-targeted function)', /export async function persistApprovedRepairTotal\(/.test(persistSrc), false);

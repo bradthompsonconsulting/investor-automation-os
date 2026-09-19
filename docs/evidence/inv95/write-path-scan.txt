@@ -1,0 +1,125 @@
+Source scan (comments may also match; classified in docs/INV95_WRITE_BOUNDARIES.md). No scripts executed.
+app/src/pages/SellerCallWorkspace.tsx:855: `ghl.notes.create()`, one of AGENTS.md's three sanctioned writes,
+app/src/pages/SellerCallWorkspace.tsx:898: await ghl.notes.create(contactId, note);
+app/src/pages/SellerCallWorkspace.tsx:925: await ghl.notes.create(contactId, note);
+app/src/pages/SellerCallWorkspace.tsx:951: await ghl.notes.create(contactId, note);
+app/src/pages/SellerCallWorkspace.tsx:987: await ghl.notes.create(contactId, note);
+app/src/pages/SellerCallWorkspace.tsx:1043: await ghl.notes.create(contactId, note);
+app/src/pages/SellerCallWorkspace.tsx:1096: await ghl.notes.create(contactId, note);
+app/src/pages/SellerCallWorkspace.tsx:1136: await ghl.notes.create(contactId, note);
+app/src/pages/SellerCallWorkspace.tsx:1454: ghl.notes.create(contactId, note)
+app/src/pages/SellerCallWorkspace.tsx:1832: await ghl.notes.create(contactId, attempt.note);
+app/src/pages/SellerCallWorkspace.tsx:1834: await ghl.notes.create(contactId, attempt.note);
+app/src/pages/Dashboard.tsx:22: *   1. ghl.notes.create()               -> POST /contacts/{id}/notes
+app/src/pages/Dashboard.tsx:764: await ghl.notes.create(contactId, text);
+app/src/pages/ContractWorkspace.tsx:128: * sanctioned write, `ghl.notes.create()`, through that group's own
+app/src/pages/ContractWorkspace.tsx:597: await ghl.notes.create(contactId, note);
+app/src/pages/ContractWorkspace.tsx:890: await ghl.notes.create(contactId, attemptNote);
+app/src/pages/ContractWorkspace.tsx:930: await ghl.notes.create(contactId, resolutionNote);
+app/src/pages/ContractWorkspace.tsx:1010: * `ghl.notes.create()` write every other group on this page already uses.
+app/src/pages/ContractWorkspace.tsx:1028: await ghl.notes.create(contactId, note);
+app/src/pages/ContractWorkspace.tsx:1130: *     purely client-side check could not (item 7). `ghl.notes.create()`
+app/src/pages/ContractWorkspace.tsx:1218: await ghl.notes.create(contactId, provisionalNote);
+app/src/pages/ContractWorkspace.tsx:1252: await ghl.notes.create(contactId, finalNote);
+app/src/pages/ContractWorkspace.tsx:1554: * a new direct `ghl.notes.create()` call site. `buildExecutedTermsAttestationRecordArgs`
+app/src/pages/ContractWorkspace.tsx:1623: * append the one new note via the same sanctioned `ghl.notes.create()`
+app/src/pages/ContractWorkspace.tsx:1656: await ghl.notes.create(contactId, note);
+app/src/pages/ContractWorkspace.tsx:1810: * `ghl.notes.create()`; (4) perform an independent, fresh
+app/src/pages/ContractWorkspace.tsx:1872: await ghl.notes.create(contactId, note);
+app/src/pages/ContractWorkspace.tsx:2310: await ghl.notes.create(contactId, note);
+app/src/pages/ContactWorkspace.tsx:48: *   ghl.notes.create() + ghl.contacts.setLastCallAttempt() + ghl.contacts.setCallbackDatetime()
+app/src/pages/ContactWorkspace.tsx:1610: await ghl.notes.create(id, text);
+app/src/lib/write-command.ts:4: export async function writeCommand(operation: string, targetId: string, args: unknown): Promise<Response> {
+app/src/lib/write-command.ts:9: method: "POST", headers: { "Content-Type": "application/json" },
+app/src/lib/write-command.ts:20: export async function confirmedCommand(operation: string, targetId: string, args: unknown): Promise<any> {
+app/src/lib/write-command.ts:21: const response = await writeCommand(operation, targetId, args);
+app/src/lib/voice/call-session.ts:22: method: "POST",
+app/src/lib/seller-contract-facts-carriers.ts:9: * `ghl.notes.create()`, one of AGENTS.md's "three sanctioned writes, and
+app/src/lib/seller-call-readiness-carriers.ts:28: * (`SellerCallWorkspace.tsx`) is responsible for `ghl.notes.create()` --
+app/src/lib/seller-call-outcome.ts:6: * through the EXISTING, already-sanctioned `ghl.notes.create()` write --
+app/src/lib/seller-call-outcome.ts:117: * through the EXISTING `ghl.notes.create()` -- this function only builds
+app/src/lib/seller-call-negotiation-override-note.ts:73: * (`SellerCallWorkspace.tsx`) is responsible for `ghl.notes.create()` --
+app/src/lib/seller-call-negotiation-override-note.ts:122: * per line. Written through the EXISTING `ghl.notes.create()` -- this
+app/src/lib/ghl.ts:622: setLastCallAttempt: (contactId: string, iso: string) => confirmedCommand("contact.lastCallAttempt", contactId, { value: iso }),
+app/src/lib/ghl.ts:630: setCallbackDatetime: (contactId: string, iso: string | null) => confirmedCommand("contact.callback", contactId, { value: iso }),
+app/src/lib/ghl.ts:640: setPropertyNotes: (contactId: string, value: string) => confirmedCommand("contact.propertyNotes", contactId, { value }),
+app/src/lib/ghl.ts:656: confirmedCommand("contact.arv", contactId, { value }),
+app/src/lib/ghl.ts:690: confirmedCommand("contact.disposition", contactId, { value: value }),
+app/src/lib/ghl.ts:693: confirmedCommand("contact.routing", contactId, { value: value }),
+app/src/lib/ghl.ts:698: confirmedCommand("contact.dispositionAt", contactId, { value: iso }),
+app/src/lib/ghl.ts:731: confirmedCommand("contact.occupancy", contactId, { value }),
+app/src/lib/ghl.ts:738: confirmedCommand("note.create", contactId, { body }),
+app/src/lib/ghl.ts:859: const putRes = await writeCommand("opportunity.askingPrice", opportunityId, { value: sent });
+app/src/lib/ghl.ts:896: const putRes = await writeCommand("opportunity.arv", opportunityId, { value: sent });
+app/src/lib/ghl.ts:945: const putRes = await writeCommand("opportunity.repairs", opportunityId, { value: sent });
+app/src/lib/ghl.ts:1008: const putRes = await writeCommand("opportunity.currentOffer", opportunityId, { value: sent });
+app/src/lib/ghl.ts:1112: const putRes = await writeCommand("contract.projection", opportunityId, { entries, sellerCount: sellerCount?.text ?? null });
+app/src/lib/ghl.ts:1231: putRes = await writeCommand("contract.draftRequest", opportunityId, { value });
+app/src/lib/ghl.ts:1366: method: "POST",
+app/src/lib/ghl.ts:1397: method: "POST",
+app/src/lib/ghl.ts:1419: method: "POST",
+app/src/lib/ghl.ts:1503: confirmedCommand("task.complete", contactId, { taskId }),
+app/src/lib/ghl.ts:1615: const putRes = await writeCommand("opportunity.underwriting", opportunityId, { endBuyerMaxPrice: plan[0].value, sellerMAO: plan[1].value, assignmentMode: plan[2].value });
+app/src/lib/ghl.ts:1702: const putRes = await writeCommand("opportunity.assignmentMode", opportunityId, { value: optionLabel });
+app/src/lib/contract-signer-mapping-carriers.ts:10: * `ghl.notes.create()`, one of AGENTS.md's three sanctioned writes --
+app/src/lib/contract-send-carriers.ts:9: * note; the caller is responsible for `ghl.notes.create()`, one of
+app/src/lib/contract-projection-sync-carriers.ts:12: * `ghl.notes.create()` (AGENTS.md's three sanctioned writes); this module
+app/src/lib/contract-lifecycle-model.ts:7: * Pure. No I/O, no React, no writes, no fetch, no `ghl.notes.create()`.
+app/src/lib/contract-lifecycle-carriers.ts:11: * append-only note; the caller is responsible for `ghl.notes.create()`,
+app/src/lib/contract-execution-model.ts:8: * Pure. No I/O, no React, no fetch, no `ghl.notes.create()`. This module
+app/src/lib/contract-execution-model.ts:176: * module ever calls `ghl.notes.create()` or reads real GHL notes.
+app/src/lib/contract-execution-carriers.ts:14: * `ghl.notes.create()`, one of AGENTS.md's three sanctioned writes -- this
+app/src/lib/contract-executed-terms-attestation-carriers.ts:10: * `ghl.notes.create()`, one of AGENTS.md's three sanctioned writes --
+app/src/lib/contract-disposition-handoff-model.ts:5: * PURE. No I/O, no React, no `ghl.notes.create()`. This module performs
+app/src/lib/contract-disposition-handoff-carriers.ts:8: * The caller is responsible for `ghl.notes.create()`, one of AGENTS.md's
+app/src/lib/contract-authorization-carriers.ts:14: * deletes a prior one. The caller is responsible for `ghl.notes.create()`,
+app/src/lib/callbackWrite.ts:50: await ghl.notes.create(id, `Callback scheduled for ${formatCallbackTime(iso)}`); // the note asserts the callback
+app/src/lib/board9-contract-model.ts:6: * no `ghl.notes.create()` or any other write. This module performs no
+app/src/lib/arv-persist.ts:134: await client.notes.create(contactId, note);
+app/src/components/SellerCallVoiceControls.tsx:127: method: "POST",
+app/src/components/DispositionControl.tsx:216: try { await ghl.notes.create(contactId, noteBody); }
+app/netlify/functions/mailer-digest.ts:113: method: "POST",
+app/netlify/functions/ghl-contract-send-reserve.ts:27: * via `ghl.notes.create()`, evaluating eligibility (including "does a
+app/netlify/functions/ghl-contract-send-reserve.ts:48: * `POST /contacts/{id}/notes` -- AGENTS.md's `ghl.notes.create()`
+app/netlify/functions/ghl-contract-send-reserve.ts:280: const result = await configuredBoundary().note(contactId, noteBody);
+app/netlify/functions/ghl-contract-send-execute.ts:234: method: "POST",
+app/netlify/functions/ghl-disposition.ts:65: const result = await configuredBoundary(token).fields("contact", contactId, [
+app/netlify/functions/ghl-disposition.ts:73: await configuredBoundary(token).note(contactId, body);
+app/netlify/functions/ghl-write.ts:64: if (plan.kind === "note") return json(200, await boundary.note(targetId, plan.body!));
+app/netlify/functions/ghl-write.ts:74: const result = await boundary.fields(plan.kind, targetId, plan.fields);
+netlify/functions/phone-lookup.ts:45: const result = await boundary.fields("contact", contactId, [{ id: fields[0].id, field_value: phoneType }]);
+netlify/functions/motivation-score.ts:89: const result = await configuredBoundary(process.env.GHL_API_TOKEN).fields("contact", contactId, fields);
+netlify/functions/motivation-score.ts:96: method: "POST",
+netlify/functions/motivation-score.ts:106: method: "DELETE",
+app/scripts/inert-proof-opp-mao-a0-step4.cjs:231: method: "PUT",
+app/scripts/inert-proof-opp-mao-a0-step2.cjs:198: method: "PUT",
+app/scripts/inert-proof-opp-endbuyer-max-step4.cjs:217: method: "PUT",
+app/scripts/inert-proof-opp-endbuyer-max-step2.cjs:205: method: "PUT",
+app/scripts/inert-proof-opp-closing-costs-step4.cjs:208: method: "PUT",
+app/scripts/inert-proof-opp-closing-costs-step2.cjs:193: method: "PUT",
+app/scripts/inert-proof-opp-asking-price-step4.cjs:239: method: "PUT",
+app/scripts/inert-proof-opp-asking-price-step2.cjs:234: method: "PUT",
+app/scripts/inert-proof-arv-step4.cjs:147: try { putResp = await fetch(PROXY(`/contacts/${CONTACT_ID}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) }); }
+app/scripts/inert-proof-arv-step2.cjs:129: try { putResp = await fetch(PROXY(`/contacts/${CONTACT_ID}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) }); }
+app/scripts/inv70-repairs-migration.cjs:192: method: 'PUT',
+app/scripts/inv70-current-offer-inert-proof.cjs:106: method: 'PUT',
+app/scripts/inv70-create-current-offer-field.cjs:103: method: 'POST',
+app/scripts/inv67-create-transport-only-fields-batch4.cjs:368: method: 'POST',
+app/scripts/inv67-create-seller-count-field.cjs:345: method: 'POST',
+app/scripts/inv67-create-contract-projection-fields.cjs:153: method: 'POST',
+app/scripts/inv67-create-checkbox-text-fields-batch2.cjs:370: method: 'POST',
+app/scripts/inv67-create-checkbox-marker-fields-batch1.cjs:456: method: 'POST',
+app/scripts/inv67-create-broker-text-fields-batch3.cjs:403: method: 'POST',
+app/scripts/inv67-create-batch5-fields.cjs:392: method: 'POST',
+app/scripts/inert-proof-runner.cjs:286: try { putResp = await fetch(PROXY(`/contacts/${contactId}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) }); }
+app/scripts/inert-proof-runner.cjs:594: try { putResp = await fetch(PROXY(`/contacts/${contactId}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) }); }
+app/scripts/inert-proof-property-notes-step4.cjs:144: try { putResp = await fetch(PROXY(`/contacts/${CONTACT_ID}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) }); }
+app/scripts/inert-proof-property-notes-step2.cjs:138: try { putResp = await fetch(PROXY(`/contacts/${CONTACT_ID}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) }); }
+app/scripts/inert-proof-opp-payload-b-step4.cjs:306: method: "PUT",
+app/scripts/inert-proof-opp-payload-b-step2.cjs:276: method: "PUT",
+app/scripts/inert-proof-opp-mode-a-step4.cjs:255: method: "PUT",
+app/scripts/inert-proof-opp-mode-a-step2.cjs:232: method: "PUT",
+scripts/rescore-all.ts:300: method: "POST",
+scripts/import-propstream-csv.ts:647: method: "POST",
+scripts/import-propstream-csv.ts:684: method: "PUT",
+exit=0

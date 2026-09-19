@@ -502,25 +502,15 @@ function completeReport(overrides) {
 }
 
 {
-  // Structural proof (not a UI-level test -- ContractWorkspace.tsx itself is
-  // out of this suite's scope) that `plan.ok === false` for BOTH missing
-  // dispositions makes the downstream GHL write and the Contract Draft
-  // Request transition structurally unreachable: `ContractWorkspace.tsx`'s
-  // `handleSyncContractProjectionFields` reads `if (!plan.ok) { ...; return; }`
-  // BEFORE ever calling `ghl.opportunities.syncContractProjectionFields` or
-  // `evaluateContractDraftRequestTransition` -- both calls are gated
-  // entirely behind `plan.ok`, which is `false` here, so neither can run.
-  const workspaceSrc = fs.readFileSync(path.join(APP, 'src', 'pages', 'ContractWorkspace.tsx'), 'utf8');
-  const handlerStartIdx = workspaceSrc.indexOf('async function handleSyncContractProjectionFields');
-  checkTrue('ContractWorkspace.tsx still defines handleSyncContractProjectionFields', handlerStartIdx > -1);
-  // Search from the handler's own start (not the whole file) so the
-  // `evaluateContractDraftRequestTransition` import statement earlier in
-  // the file is never mistaken for its call site inside this handler.
-  const planOkCheckIdx = handlerStartIdx > -1 ? workspaceSrc.indexOf('if (!plan.ok)', handlerStartIdx) : -1;
-  const ghlWriteIdx = handlerStartIdx > -1 ? workspaceSrc.indexOf('ghl.opportunities.syncContractProjectionFields(', handlerStartIdx) : -1;
-  const draftRequestIdx = handlerStartIdx > -1 ? workspaceSrc.indexOf('evaluateContractDraftRequestTransition(', handlerStartIdx) : -1;
-  checkTrue('handleSyncContractProjectionFields checks `!plan.ok` and returns before the GHL write call site', planOkCheckIdx > -1 && ghlWriteIdx > -1 && planOkCheckIdx < ghlWriteIdx);
-  checkTrue('handleSyncContractProjectionFields checks `!plan.ok` and returns before the Contract Draft Request transition call site', planOkCheckIdx > -1 && draftRequestIdx > -1 && planOkCheckIdx < draftRequestIdx);
+  // The computation tests stay; V1 retires all downstream GHL writes.
+  const source = fs.readFileSync(path.join(APP,
+    'src/pages/ContractWorkspace.tsx'), 'utf8');
+  checkTrue('projection sync handler is retired',
+    !source.includes('handleSyncContractProjectionFields'));
+  checkTrue('projection GHL write is absent',
+    !source.includes('ghl.opportunities.syncContractProjectionFields'));
+  checkTrue('draft-request transition is absent',
+    !source.includes('evaluateContractDraftRequestTransition'));
 }
 
 /* ==================================================================== */

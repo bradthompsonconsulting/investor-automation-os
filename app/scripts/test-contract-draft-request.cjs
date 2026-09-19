@@ -56,7 +56,8 @@ const {
   classifyContractDraftRequestOutcome,
 } = require(path.join(TMP, 'contract-draft-request-model.js'));
 
-const FLOOR = 104;
+// 33 obsolete writer/wiring checks removed; 5 retirement checks added.
+const FLOOR = 76;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -377,105 +378,15 @@ const ATTEMPT_ARGS = {
 }
 
 /* ==================================================================== */
-/* STATIC -- ghl.ts's setContractDraftRequest never throws               */
-/* ==================================================================== */
-
+/* V1 retirement: historical pure model tests above remain. */
 {
-  const ghlSrc = fs.readFileSync(path.join(APP, 'src', 'lib', 'ghl.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-  const m = ghlSrc.match(/setContractDraftRequest: async \([\s\S]*?\n    \},\r?\n  \},/);
-  checkTrue('setContractDraftRequest was located in ghl.ts', !!m);
-  const body = m ? m[0] : '';
-
-  checkTrue('setContractDraftRequest contains no throw statement -- every failure mode returns a discriminated outcome', !/throw /.test(body));
-  checkTrue('the PUT fetch is wrapped in its own try/catch (put_transport_error)', /try \{[\s\S]*?putRes = await fetch\([\s\S]*?\} catch \(e: any\) \{[\s\S]*?put_transport_error/.test(body));
-  checkTrue('a non-ok PUT response returns put_failed (a CONFIRMED rejection), distinct from the transport-exception path', /if \(!putRes\.ok\)[\s\S]*?put_failed/.test(body));
-  checkTrue('the readback fetch is wrapped in its own try/catch (readback_failed)', /try \{[\s\S]*?readRes = await fetch\([\s\S]*?\} catch \(e: any\) \{[\s\S]*?readback_failed/.test(body));
-  checkTrue('a non-ok readback response also returns readback_failed', /if \(!readRes\.ok\)[\s\S]*?readback_failed/.test(body));
-  checkTrue('a malformed readback JSON body also returns readback_failed', /readBody = await readRes\.json\(\)[\s\S]*?\} catch \(e: any\) \{[\s\S]*?readback_failed/.test(body));
-  checkTrue('an exact-match readback returns confirmed; anything else returns readback_mismatch', /if \(observed !== value\)[\s\S]*?readback_mismatch[\s\S]*?return \{ kind: "confirmed"/.test(body));
-  check('setContractDraftRequest is declared exactly once in ghl.ts', (ghlSrc.match(/setContractDraftRequest: async \(/g) || []).length, 1);
-}
-
-/* ==================================================================== */
-/* STATIC -- ContractWorkspace.tsx source-order proofs                   */
-/* ==================================================================== */
-
-{
-  const src = fs.readFileSync(path.join(APP, 'src', 'pages', 'ContractWorkspace.tsx'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-  const m = src.match(/async function handleSyncContractProjectionFields\(\)[\s\S]*?\r?\n  \}\r?\n/);
-  checkTrue('handleSyncContractProjectionFields was located in the page source', !!m);
-  const body = m ? m[0] : '';
-
-  const attemptNoteIdx = body.indexOf('await ghl.notes.create(contactId, attemptNote)');
-  const setDraftRequestIdx = body.indexOf('ghl.opportunities.setContractDraftRequest(');
-  const resolutionNoteIdx = body.indexOf('await ghl.notes.create(contactId, resolutionNote)');
-
-  checkTrue('the attempt note is written before the "Requested" PUT is ever attempted', attemptNoteIdx !== -1 && setDraftRequestIdx !== -1 && attemptNoteIdx < setDraftRequestIdx);
-  checkTrue('the resolution note is written after the "Requested" PUT is attempted', resolutionNoteIdx !== -1 && setDraftRequestIdx < resolutionNoteIdx);
-  checkTrue(
-    'the "Requested" PUT is nested inside an "if (attemptNoteOk)" guard, not unconditional',
-    /if \(attemptNoteOk\) \{[\s\S]*?setContractDraftRequest\(/.test(body),
-  );
-  checkTrue(
-    'the attempt-note write is wrapped in its own try/catch that sets attemptNoteOk',
-    /let attemptNoteOk = false;[\s\S]*?try \{[\s\S]*?attemptNoteOk = true;[\s\S]*?\} catch/.test(body),
-  );
-  checkTrue(
-    'a failed attempt note refuses the transition WITHOUT ever calling setContractDraftRequest inside its own catch block',
-    (() => {
-      const catchMatch = body.match(/attemptNoteOk = true;[\s\S]*?\} catch \(e: any\) \{([\s\S]*?)\r?\n\s{12}\}/);
-      return !!catchMatch && !catchMatch[1].includes('setContractDraftRequest(');
-    })(),
-  );
-  checkTrue('attemptAt is generated fresh, inside the handler, via new Date().toISOString()', /const attemptAt = new Date\(\)\.toISOString\(\);/.test(body));
-  checkTrue('attemptAt is declared with const (never reassigned / never hoisted to a ref)', !/let attemptAt/.test(body));
-  checkTrue('the resolution note failure path never re-attempts the PUT (no second setContractDraftRequest call)', (body.match(/setContractDraftRequest\(/g) || []).length === 1);
-  checkTrue('a successful PUT whose resolution note fails is escalated to "indeterminate" (never silently "accepted")', /reportedStatus[\s\S]*?rawStatus === "accepted" && !resolutionNoteOk \? "indeterminate" : rawStatus/.test(body));
-
-  /* -------------------------------------------------------------------- */
-  /* INV-67 Phase 1 Jess re-gate correction -- the seller-readiness gate   */
-  /* must short-circuit BEFORE the Opportunity-field write AND before      */
-  /* setContractDraftRequest, with zero separate control flow of its own   */
-  /* -------------------------------------------------------------------- */
-
-  const preWriteIdx = body.indexOf('evaluateSellerSigningPreWriteReadiness(');
-  const buildPlanIdx = body.indexOf('buildContractProjectionPlan(');
-  const planNotOkIdx = body.indexOf('if (!plan.ok) {');
-  const syncWriteIdx = body.indexOf('ghl.opportunities.syncContractProjectionFields(');
-  const evidenceIdx = body.indexOf('buildSellerSigningAuditEvidence(');
-  const attemptRecordIdx = body.indexOf('buildContractDraftRequestAttemptRecord(');
-
-  checkTrue('evaluateSellerSigningPreWriteReadiness is called in the handler', preWriteIdx !== -1);
-  checkTrue('evaluateSellerSigningPreWriteReadiness is called BEFORE buildContractProjectionPlan', preWriteIdx !== -1 && buildPlanIdx !== -1 && preWriteIdx < buildPlanIdx);
-  checkTrue(
-    'buildContractProjectionPlan is called with the seller readiness result as its fourth argument',
-    /buildContractProjectionPlan\(opportunityId, contractDocumentPreview, sellerContractFactsReport, sellerReadiness\)/.test(body),
-  );
-  checkTrue('the "if (!plan.ok)" short-circuit appears BEFORE the Opportunity-field write (syncContractProjectionFields)', planNotOkIdx !== -1 && syncWriteIdx !== -1 && planNotOkIdx < syncWriteIdx);
-  checkTrue(
-    'the "if (!plan.ok)" block itself contains a "return;" -- an actual short-circuit, not merely a state update',
-    /if \(!plan\.ok\) \{\s*\n\s*setSyncResult\(\{ kind: "blocked", blockingReasons: plan\.blockingReasons \}\);\s*\n\s*return;\s*\n\s*\}/.test(body),
-  );
-  checkTrue('the Opportunity-field write happens BEFORE setContractDraftRequest is ever attempted', syncWriteIdx !== -1 && setDraftRequestIdx !== -1 && syncWriteIdx < setDraftRequestIdx);
-  checkTrue(
-    'a sentinel/unresolved seller readiness therefore short-circuits BEFORE BOTH the Opportunity-field write and setContractDraftRequest -- the SAME single "if (!plan.ok) return" already proven above covers both, structurally, with no second gate to drift out of sync',
-    planNotOkIdx !== -1 && planNotOkIdx < syncWriteIdx && syncWriteIdx < setDraftRequestIdx,
-  );
-  checkTrue('the Seller Count write is folded into the SAME syncContractProjectionFields call, never a second write call', (body.match(/ghl\.opportunities\.syncContractProjectionFields\(/g) || []).length === 1);
-  checkTrue('buildSellerSigningAuditEvidence is computed AFTER the write (it needs the write result) and BEFORE the attempt record is built', evidenceIdx !== -1 && syncWriteIdx < evidenceIdx && evidenceIdx < attemptRecordIdx);
-  checkTrue('the attempt record is built WITH the seller signing evidence', /buildContractDraftRequestAttemptRecord\(\{[\s\S]*?sellerSigningEvidence,/.test(body));
-  checkTrue('the Seller Count field id and sentinel are read from the SAME shared config every other sentinel check in this codebase uses, never a hardcoded/faked id', /getRuntimeConfig\(\)\.contractSellerCountField/.test(body) && /CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED/.test(body));
-  checkTrue('the pre-write gate never fakes/bypasses the field-provisioned check with a hardcoded non-sentinel id', !/sellerCountFieldId:\s*["'](?!getRuntimeConfig)/.test(body));
-
-  // Canonical Note remains authoritative -- the Seller Count TRANSPORT
-  // write's own observed value is never read back into the canonical
-  // SellerSigningModel carrier anywhere in this handler.
-  checkTrue(
-    'writeResult.sellerCount (the transport write/readback outcome) is never assigned into sellerSigningDisposition or fed into formatSellerSigningModelNote',
-    !/writeResult\.sellerCount[\s\S]{0,80}(sellerSigningDisposition|formatSellerSigningModelNote)/.test(body) &&
-      !/(sellerSigningDisposition|formatSellerSigningModelNote)[\s\S]{0,80}writeResult\.sellerCount/.test(body),
-  );
-  checkTrue('formatSellerSigningModelNote is never called from handleSyncContractProjectionFields (only handleSaveSellerSigning writes the canonical Note)', !/formatSellerSigningModelNote\(/.test(body));
+  const client = fs.readFileSync(path.join(APP, 'src/lib/ghl.ts'), 'utf8');
+  const page = fs.readFileSync(path.join(APP, 'src/pages/ContractWorkspace.tsx'), 'utf8');
+  checkTrue('draft writer removed', !client.includes('setContractDraftRequest'));
+  checkTrue('projection writer removed', !client.includes('syncContractProjectionFields'));
+  checkTrue('sync handler removed', !page.includes('handleSyncContractProjectionFields'));
+  checkTrue('sync control removed', !page.includes('contract-projection-sync-button'));
+  checkTrue('manual upload/send notice present', page.includes('contract-manual-send-notice'));
 }
 
 cleanup();
