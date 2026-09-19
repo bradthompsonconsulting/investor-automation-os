@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, GitBranch, Check, X } from "lucide-react";
+import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, GitBranch } from "lucide-react";
 import { ghl, type OpportunityRow, type PipelineStage } from "../lib/ghl";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -41,107 +41,6 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
   return dir === "asc" ? <ChevronUp size={12} /> : <ChevronDown size={12} />;
 }
 
-// ── Move-to control (the one write action in the app) ─────────────────────────
-
-function MoveToControl({
-  opportunity, stages, pipelineId, onMoved,
-}: {
-  opportunity: OpportunityRow;
-  stages: PipelineStage[];
-  pipelineId: string;
-  onMoved: (opportunityId: string, newStageId: string) => void;
-}) {
-  const [selected, setSelected]   = useState(opportunity.stageId);
-  const [confirming, setConfirming] = useState(false);
-  const [saving, setSaving]       = useState(false);
-  const [error, setError]         = useState<string | null>(null);
-
-  const currentStageName  = stages.find((s) => s.id === opportunity.stageId)?.name ?? "Unknown";
-  const selectedStageName = stages.find((s) => s.id === selected)?.name ?? "Unknown";
-  const isChanged = selected !== opportunity.stageId;
-
-  async function handleConfirm() {
-    setSaving(true);
-    setError(null);
-    try {
-      await ghl.opportunities.updateStage(opportunity.id, pipelineId, selected);
-      onMoved(opportunity.id, selected);
-      setConfirming(false);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (confirming) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-        <span style={{ fontSize: "12px", color: "#F1F5F9" }}>
-          Move <strong>{opportunity.contactName}</strong> to <strong>{selectedStageName}</strong>?
-        </span>
-        <button
-          onClick={handleConfirm}
-          disabled={saving}
-          style={{
-            display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", fontWeight: 600,
-            padding: "4px 9px", borderRadius: "6px", border: "1px solid rgba(34,197,94,0.4)",
-            background: "rgba(34,197,94,0.12)", color: "#22C55E", cursor: saving ? "default" : "pointer",
-            opacity: saving ? 0.6 : 1,
-          }}
-        >
-          <Check size={12} /> {saving ? "Moving…" : "Confirm"}
-        </button>
-        <button
-          onClick={() => { setConfirming(false); setSelected(opportunity.stageId); }}
-          disabled={saving}
-          style={{
-            display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", fontWeight: 600,
-            padding: "4px 9px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.15)",
-            background: "transparent", color: "#64748B", cursor: saving ? "default" : "pointer",
-          }}
-        >
-          <X size={12} /> Cancel
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-      <select
-        value={selected}
-        onChange={(e) => setSelected(e.target.value)}
-        style={{
-          fontSize: "12px", padding: "5px 8px", borderRadius: "6px",
-          background: "#0A0E1A", color: "#F1F5F9", border: "1px solid rgba(255,255,255,0.12)",
-        }}
-      >
-        {stages.map((s) => (
-          <option key={s.id} value={s.id}>{s.name}</option>
-        ))}
-      </select>
-      <button
-        onClick={() => setConfirming(true)}
-        disabled={!isChanged}
-        style={{
-          fontSize: "11px", fontWeight: 600, padding: "5px 10px", borderRadius: "6px",
-          border: "1px solid rgba(30,200,255,0.35)",
-          background: isChanged ? "rgba(30,200,255,0.12)" : "transparent",
-          color: isChanged ? "#1EC8FF" : "#334155",
-          cursor: isChanged ? "pointer" : "not-allowed",
-        }}
-      >
-        Execute
-      </button>
-      {error && <span style={{ fontSize: "11px", color: "#F87171" }}>{error}</span>}
-      {!error && !isChanged && (
-        <span style={{ fontSize: "11px", color: "#334155" }}>currently {currentStageName}</span>
-      )}
-    </div>
-  );
-}
-
 // ── Skeleton row ──────────────────────────────────────────────────────────────
 
 function SkeletonRow() {
@@ -162,7 +61,6 @@ function SkeletonRow() {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function Pipeline() {
-  const [pipelineId, setPipelineId]     = useState<string>("");
   const [stages, setStages]             = useState<PipelineStage[]>([]);
   const [opportunities, setOpportunities] = useState<OpportunityRow[]>([]);
   const [loading, setLoading]           = useState(true);
@@ -173,7 +71,6 @@ export default function Pipeline() {
   useEffect(() => {
     ghl.opportunities.listPipeline()
       .then((data) => {
-        setPipelineId(data.pipelineId);
         setStages(data.stages);
         setOpportunities(data.opportunities);
       })
@@ -214,11 +111,6 @@ export default function Pipeline() {
     }
   }
 
-  function handleMoved(opportunityId: string, newStageId: string) {
-    setOpportunities((rows) =>
-      rows.map((r) => (r.id === opportunityId ? { ...r, stageId: newStageId } : r))
-    );
-  }
 
   if (error) {
     return (
@@ -250,8 +142,7 @@ export default function Pipeline() {
       </div>
 
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 18px" }}>
-        Seller Leads Pipeline. "Move to" is the only write action in IAOS — it goes through GHL's
-        standard opportunity-update API, so GHL's own stage triggers (e.g. Seller 7 on Offer Sent) fire normally.
+        Seller Leads Pipeline — read-only. Stage changes are managed in GHL.
       </p>
 
       {/* Table card */}
@@ -298,7 +189,7 @@ export default function Pipeline() {
                   letterSpacing: "0.06em", textTransform: "uppercase", color: "#475569",
                   whiteSpace: "nowrap", background: "#07142E",
                 }}>
-                  Move To
+                  Access
                 </th>
               </tr>
             </thead>
@@ -325,12 +216,7 @@ export default function Pipeline() {
                       <StageBadge name={stageName.get(o.stageId) ?? "Unknown"} />
                     </td>
                     <td style={{ padding: "11px 16px" }}>
-                      <MoveToControl
-                        opportunity={o}
-                        stages={stages}
-                        pipelineId={pipelineId}
-                        onMoved={handleMoved}
-                      />
+                      <span>Read-only</span>
                     </td>
                   </tr>
                 ))

@@ -1,3 +1,5 @@
+import { writeCommand, confirmedCommand } from "./write-command";
+import { appWriteFetch } from "./app-write-session";
 /**
  * IAOS GHL Service Module — single entry point for all GHL data access.
  *
@@ -11,9 +13,7 @@
  * without refactoring once implemented.
  */
 
-import { getRuntimeConfig, CURRENT_OFFER_NOT_PROVISIONED, CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED } from "../../shared/ghl-config";
-import type { ContractProjectionFieldKey } from "./contract-ghl-projection-model";
-import type { ContractDraftRequestState, ContractDraftRequestWriteOutcome } from "./contract-draft-request-model";
+import { getRuntimeConfig, CURRENT_OFFER_NOT_PROVISIONED } from "../../shared/ghl-config";
 /* Board item #2C. The three option LABELS are declared once, in resolver-types,
    and this module reads them rather than retyping them. Retyping would create a
    second list that could drift from the one the resolver parses against, and a
@@ -499,7 +499,7 @@ export interface UnderwritingWriteResult {
 
 async function request<T = unknown>(
   path: string,
-  method: "GET" | "POST" | "PUT" | "DELETE" = "GET",
+  method: "GET" = "GET",
   body?: unknown,
 ): Promise<T> {
   const res = await fetch(`${PROXY}?path=${encodeURIComponent(path)}`, {
@@ -617,13 +617,7 @@ export const ghl = {
     // (TEXT) rides along in the same call as the exact value our own read path
     // uses. Called exactly once, right after a note saves — never on its own,
     // never from a Call click.
-    setLastCallAttempt: (contactId: string, iso: string) =>
-      request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [
-          { id: LAST_CALL_ATTEMPT_ID, field_value: iso },
-          { id: LAST_CALL_ATTEMPT_PRECISE_ID, field_value: iso },
-        ],
-      }),
+    setLastCallAttempt: (contactId: string, iso: string) => confirmedCommand("contact.lastCallAttempt", contactId, { value: iso }),
 
     // Dashboard Phase 3 — the schedule-callback control. Still ONE write
     // action: a single PUT carrying exactly these two customFields entries,
@@ -631,13 +625,7 @@ export const ghl = {
     // in GHL and truncates time-of-day, so callback_datetime_precise (TEXT)
     // rides along in the same call as the exact value our own read path uses.
     // Pass null (not "") to clear both — GHL silently ignores an empty string.
-    setCallbackDatetime: (contactId: string, iso: string | null) =>
-      request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [
-          { id: CALLBACK_DATETIME_ID, field_value: iso },
-          { id: CALLBACK_DATETIME_PRECISE_ID, field_value: iso },
-        ],
-      }),
+    setCallbackDatetime: (contactId: string, iso: string | null) => confirmedCommand("contact.callback", contactId, { value: iso }),
 
     // Phase B PB-D1 — the first authorized Class 1 app write and the fourth
     // named GHL write. ONE field per PUT: this body carries exactly one
@@ -647,29 +635,13 @@ export const ghl = {
     // customFields entirely (KEY_ABSENT, OBSERVED in the inert-proof). Do NOT
     // copy the null-to-clear pattern from setCallbackDatetime — that is
     // DATE-field behavior and does not apply to this field.
-    setPropertyNotes: (contactId: string, value: string) =>
-      request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [{ id: PROPERTY_NOTES_ID, field_value: value }],
-      }),
+    setPropertyNotes: (contactId: string, value: string) => confirmedCommand("contact.propertyNotes", contactId, { value }),
 
-    // PB-D16 — PRIVATE monetary transport BY CONVENTION, not by enforcement. It is
-    // exported and reachable as ghl.contacts._putMonetaryField; the underscore is the
-    // signal, not a barrier. The real guard is that no caller may use it except a
-    // named per-field setter, admitted by its own decision.
-    // §4.4 permits a private one-field PUT helper; a PUBLIC setter parameterized over
-    // field ID is forbidden, because dataType proves serialization, not field safety
-    // (§4.6: workflow triggers are per-field and not API-derivable). Each unlocked
-    // MONETORY field earns its own named public method below by its own decision.
-    // MONETORY write contract, OBSERVED 2026-07-28: an unquoted JS number is accepted
-    // and round-trips exactly; "" clears to KEY_ABSENT.
-    _putMonetaryField: (contactId: string, fieldId: string, value: number | "") =>
-      request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [{ id: fieldId, field_value: value }],
-      }),
+    // INV-95: all field IDs and GHL PUT bodies are owned by server operations.
 
     // PB-D16 — fifth named write. ARV only. Empty string is a real clear, not a skip.
     setARV: (contactId: string, value: number | "") =>
-      ghl.contacts._putMonetaryField(contactId, ARV_ID, value),
+      confirmedCommand("contact.arv", contactId, { value }),
 
     // INV-70 / B9-07A Phase 2 correction round 3 -- REMOVED
     // setEstimatedRepairs (Board item #2B's sixth named write). Family 3's
@@ -681,18 +653,7 @@ export const ghl = {
     // ContactWorkspace.tsx's general field-edit row, also converted to
     // read-only this round). ESTIMATED_REPAIRS_ID (below) remains -- it is
     // still needed to IDENTIFY the field for display/dispatch, just no
-    // longer to write it. _putMonetaryField stays, still used by setARV.
-
-    // Board 4 — PRIVATE string transport, the exact counterpart to
-    // _putMonetaryField above and permitted by the same §4.4 sentence: "a
-    // private one-field PUT helper" is allowed; a PUBLIC setter parameterized
-    // over field ID is not. Three named setters below each spend their own
-    // decision. setPropertyNotes predates this and is deliberately NOT
-    // converted — that would be a refactor, not this commit's business.
-    _putStringField: (contactId: string, fieldId: string, value: string) =>
-      request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [{ id: fieldId, field_value: value }],
-      }),
+    // longer to write it. The former generic helper is removed by INV-95.
 
     // Board 4 — the three carrier writes. Each is a named public method by its
     // own decision; none takes a field id from the caller.
@@ -706,15 +667,15 @@ export const ghl = {
     // "Stay in Cold Outreach" is an explicit value precisely so that clearing is
     // never required. Do not add a clear path on the assumption that it works.
     setCallDisposition: (contactId: string, value: string) =>
-      ghl.contacts._putStringField(contactId, CALL_DISPOSITION_ID, value),
+      confirmedCommand("contact.disposition", contactId, { value: value }),
 
     setCallRouting: (contactId: string, value: string) =>
-      ghl.contacts._putStringField(contactId, CALL_ROUTING_ID, value),
+      confirmedCommand("contact.routing", contactId, { value: value }),
 
     // The bell. An ISO instant, written LAST in the disposition sequence, and
     // the trigger the four migrated workflows watch. TEXT, not DATE.
     setDispositionAt: (contactId: string, iso: string) =>
-      ghl.contacts._putStringField(contactId, DISPOSITION_AT_ID, iso),
+      confirmedCommand("contact.dispositionAt", contactId, { value: iso }),
 
     /* Board #5 S3 — PRIVATE options transport, the counterpart to
        _putMonetaryField and _putStringField and permitted by the same PB-D16
@@ -727,10 +688,7 @@ export const ghl = {
        MULTIPLE_OPTIONS. A future multi-valued field would pass a longer array
        through this same helper and would need its OWN named setter and its OWN
        ruling. Do not add a `single` flag here and do not branch on dataType. */
-    _putOptionsField: (contactId: string, fieldId: string, value: string[] | "") =>
-      request<any>(`/contacts/${contactId}`, "PUT", {
-        customFields: [{ id: fieldId, field_value: value }],
-      }),
+
 
     /* Board #5 S3 — occupancy_status. A named method by its own decision; it
        takes no field id from the caller.
@@ -750,18 +708,14 @@ export const ghl = {
        single-option parameter is what keeps this setter inside what was
        measured. */
     setOccupancyStatus: (contactId: string, value: OccupancyStatus | "") =>
-      ghl.contacts._putOptionsField(
-        contactId,
-        OCCUPANCY_STATUS_ID,
-        value === "" ? "" : [value],
-      ),
+      confirmedCommand("contact.occupancy", contactId, { value }),
   },
 
   notes: {
     // Dashboard Phase 2 — the ONLY note-write path. Always a NEW note, never
     // an overwrite/edit of a prior one (GHL has no "edit" call site here).
     create: (contactId: string, body: string) =>
-      request<any>(`/contacts/${contactId}/notes`, "POST", { body }),
+      confirmedCommand("note.create", contactId, { body }),
 
     // Contact Workspace §8 step 2 — READ-ONLY note history. GET only; not a
     // write, does not touch the three-write invariant. Returns GHL's
@@ -812,8 +766,7 @@ export const ghl = {
     // opportunity-update API (PUT /opportunities/:id) so GHL's own stage-change
     // triggers fire exactly as they would from a manual move inside GHL — this
     // never bypasses those triggers.
-    updateStage: (opportunityId: string, pipelineId: string, pipelineStageId: string) =>
-      request<any>(`/opportunities/${opportunityId}`, "PUT", { pipelineId, pipelineStageId }),
+
 
     /**
      * Board #5 §4B — the Opportunity Asking Price setter. ONE FIELD, NAMED.
@@ -883,11 +836,7 @@ export const ghl = {
 
       const body = { customFields: [{ id: fieldId, field_value: sent }] };
 
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("opportunity.askingPrice", opportunityId, { value: sent });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();
@@ -924,11 +873,7 @@ export const ghl = {
 
       const sent = roundCurrency(value);
       const body = { customFields: [{ id: fieldId, field_value: sent }] };
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("opportunity.arv", opportunityId, { value: sent });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();
@@ -977,11 +922,7 @@ export const ghl = {
 
       const sent = roundCurrency(value);
       const body = { customFields: [{ id: fieldId, field_value: sent }] };
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("opportunity.repairs", opportunityId, { value: sent });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();
@@ -1044,11 +985,7 @@ export const ghl = {
 
       const sent = roundCurrency(value);
       const body = { customFields: [{ id: fieldId, field_value: sent }] };
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("opportunity.currentOffer", opportunityId, { value: sent });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();
@@ -1068,282 +1005,9 @@ export const ghl = {
       return { ok: entry !== null && observed === sent, putStatus, sent, observed };
     },
 
-    /**
-     * INV-67 / B9-12 contract-population repair. Writes every "projected"
-     * field in an already-built `ContractProjectionPlan` (48 narrowly-scoped
-     * Opportunity fields, `contract-ghl-projection-model.ts`) in ONE PUT,
-     * custom-fields-only -- the same invariant `saveUnderwritingFields`
-     * already establishes: a body carrying pipelineStageId, status, name,
-     * monetaryValue or tags forfeits the mechanism this write rests on (a
-     * custom-fields-only PUT cannot fire a stage trigger). Readback is the
-     * SAME singular GET / `readSingularFieldValue` pair every other named
-     * writer in this file uses -- never the list endpoint, whose shape
-     * varies by dataType. `ok` is true only when EVERY entry lands; a
-     * partial result is returned with per-key detail, never silently
-     * compensated (PB-D59's own no-compensating-write precedent).
-     *
-     * ALSO reads back `opportunityFacts.currentOffer` in the SAME response
-     * (no second network call) so the caller can run the price cross-check
-     * `contract-draft-request-model.ts`'s `evaluateContractDraftRequestTransition`
-     * requires, without a field of its own -- ¶3A/¶3C reuse that existing
-     * carrier rather than duplicating it (see
-     * `contract-ghl-projection-model.ts`'s module header).
-     *
-     * Refuses immediately, before any network call, if any configured id is
-     * missing or still the `CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED`
-     * sentinel -- the same fail-closed pattern `setCurrentOffer` already
-     * established.
-     *
-     * INV-67 Phase 1 Jess re-gate correction (this session). An OPTIONAL
-     * third argument, `sellerCount`, folds the Seller Count transport
-     * field's own write into this SAME PUT + SAME readback -- one atomic
-     * network round trip, never a second, independent write call. Its
-     * field id is resolved by the CALLER (`ContractWorkspace.tsx`, from
-     * `shared/ghl-config.ts`'s separate `contractSellerCountField` entry --
-     * NOT a member of `CONTRACT_PROJECTION_FIELD_KEYS`) and passed in
-     * directly; this function never reads that config entry itself, and
-     * never writes the observed value back into the canonical
-     * `SellerSigningModel` Note carrier -- transport only, exactly per the
-     * locked ruling. Refuses before any network call on the same missing/
-     * sentinel/duplicate-id conditions the 112 TREC fields already refuse
-     * on. `sellerCount: null` (the default) preserves this function's
-     * exact prior behavior and prior callers' exact prior contract.
-     */
-    syncContractProjectionFields: async (
-      opportunityId: string,
-      entries: { key: ContractProjectionFieldKey; text: string }[],
-      sellerCount: { fieldId: string; text: string } | null = null,
-    ): Promise<{
-      ok: boolean;
-      putStatus: number;
-      entries: { key: ContractProjectionFieldKey; sent: string; observed: string | number | null; landed: boolean }[];
-      currentOfferObserved: number | string | null;
-      /** `null` when no `sellerCount` argument was supplied. Its own `landed` boolean is folded into this result's top-level `ok`, exactly like every projection entry's `landed` already is. */
-      sellerCount: { sent: string; observed: string | number | null; landed: boolean } | null;
-    }> => {
-      const ids = CONFIG.contractProjectionFields;
-      const plan = entries.map((e) => {
-        const fieldId = ids[e.key];
-        if (!fieldId || fieldId === CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED) {
-          throw new Error(
-            `syncContractProjectionFields: no configured id for "${e.key}" (or not yet provisioned) -- refusing before any network call.`,
-          );
-        }
-        return { key: e.key, fieldId, value: e.text };
-      });
-      if (new Set(plan.map((p) => p.fieldId)).size !== plan.length) {
-        throw new Error("syncContractProjectionFields: two projected keys resolved to the same GHL field id -- refusing.");
-      }
-      if (sellerCount) {
-        if (!sellerCount.fieldId || sellerCount.fieldId === CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED) {
-          throw new Error(
-            "syncContractProjectionFields: no configured id for the Seller Count field (or not yet provisioned) -- refusing before any network call.",
-          );
-        }
-        if (plan.some((p) => p.fieldId === sellerCount.fieldId)) {
-          throw new Error("syncContractProjectionFields: the Seller Count field id collides with a projected TREC field id -- refusing.");
-        }
-      }
-
-      const body = {
-        customFields: [
-          ...plan.map((p) => ({ id: p.fieldId, field_value: p.value })),
-          ...(sellerCount ? [{ id: sellerCount.fieldId, field_value: sellerCount.text }] : []),
-        ],
-      };
-
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const putStatus = putRes.status;
-      if (!putRes.ok) {
-        const text = await putRes.text();
-        throw new Error(`syncContractProjectionFields PUT → ${putStatus}: ${text}`);
-      }
-
-      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
-      if (!readRes.ok) {
-        const text = await readRes.text();
-        throw new Error(`syncContractProjectionFields readback → ${readRes.status}: ${text}`);
-      }
-      const readBody = await readRes.json();
-      const opp = readBody.opportunity ?? readBody;
-      const byId = new Map<string, any>((opp.customFields ?? []).map((f: any) => [f.id, f]));
-
-      const results = plan.map((p) => {
-        const entry = byId.get(p.fieldId) ?? null;
-        const observed = entry === null ? null : readSingularFieldValue(entry);
-        return { key: p.key, sent: p.value, observed, landed: observed === p.value };
-      });
-
-      const sellerCountResult = sellerCount
-        ? (() => {
-            const entry = byId.get(sellerCount.fieldId) ?? null;
-            const observed = entry === null ? null : readSingularFieldValue(entry);
-            return { sent: sellerCount.text, observed, landed: observed === sellerCount.text };
-          })()
-        : null;
-
-      const currentOfferEntry = byId.get(CONFIG.opportunityFacts.currentOffer) ?? null;
-      const currentOfferObserved = currentOfferEntry === null ? null : readSingularFieldValue(currentOfferEntry);
-
-      return {
-        ok: results.every((r) => r.landed) && (sellerCountResult === null || sellerCountResult.landed),
-        putStatus,
-        entries: results,
-        currentOfferObserved,
-        sellerCount: sellerCountResult,
-      };
-    },
-
-    /**
-     * INV-67 / B9-12 -- READS the Contract Draft Request field fresh, via
-     * the singular GET (never cached). This is the ONE required precondition
-     * for `evaluateContractDraftRequestTransition`'s duplicate-request
-     * guard: the caller must pass THIS call's result as `currentRaw`, taken
-     * immediately before deciding, never a value read earlier in the same
-     * session.
-     */
-    readContractDraftRequest: async (opportunityId: string): Promise<string | null> => {
-      const fieldId = CONFIG.contractDraftRequest;
-      if (!fieldId || fieldId === CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED) {
-        throw new Error("readContractDraftRequest: no configured id (or not yet provisioned) -- refusing before any network call.");
-      }
-      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
-      if (!readRes.ok) {
-        const text = await readRes.text();
-        throw new Error(`readContractDraftRequest → ${readRes.status}: ${text}`);
-      }
-      const readBody = await readRes.json();
-      const opp = readBody.opportunity ?? readBody;
-      const entry = (opp.customFields ?? []).find((f: any) => f.id === fieldId) ?? null;
-      const observed = entry === null ? null : readSingularFieldValue(entry);
-      return typeof observed === "string" ? observed : null;
-    },
-
-    /**
-     * INV-67 / B9-12, Jess Gate TRANSPORT-OUTCOME correction (this session).
-     * The ONE writer for the one-shot Contract Draft Request control.
-     * CUSTOM-FIELDS-ONLY PUT, one field, value checked against the declared
-     * option labels BEFORE the request (GHL's picker will not store a
-     * string it does not offer). This writer NEVER decides whether the
-     * transition is allowed -- that is `evaluateContractDraftRequestTransition`'s
-     * job, called by the caller BEFORE this function, using a fresh
-     * `readContractDraftRequest` result. This writer also never touches
-     * pipelineStageId, status, name, monetaryValue, or tags -- it cannot
-     * trigger a stage-based workflow, and it never implies or performs a
-     * document send.
-     *
-     * NEVER THROWS. Every failure mode -- a config/value refusal before any
-     * network call, a confirmed non-success PUT response, a PUT transport
-     * exception with no conclusive response, a readback transport/HTTP
-     * failure after a successful PUT, or a readback that does not confirm
-     * the value -- is returned as its own `ContractDraftRequestWriteOutcome`
-     * variant, never collapsed into "thrown, therefore failed." The prior
-     * version threw for BOTH a confirmed-rejected PUT and a transport
-     * exception, which forced the caller to classify every thrown error as
-     * "failed" -- wrong for a transport exception or a post-PUT readback
-     * failure, either of which means GHL may already hold "Requested" with
-     * IAOS unable to confirm it. The six variants below are exactly the six
-     * cases the corrected ruling enumerates:
-     *   1. `refused`               -- never reached the network; no draft could have been triggered.
-     *   2. `put_failed`            -- a CONFIRMED non-success HTTP response (GHL responded and rejected it).
-     *   3. `put_transport_error`   -- the PUT's own transport failed before any response arrived; GHL may have received it.
-     *   4. `readback_failed`       -- the PUT succeeded, but the readback's own transport or HTTP response failed.
-     *   5. `readback_mismatch`     -- the PUT succeeded and the readback succeeded, but the observed value is not "Requested".
-     *   6. `confirmed`             -- the PUT succeeded and the readback exactly confirms "Requested".
-     * Only (1) and (2) are ever "failed" (a CONFIRMED non-event); (3), (4),
-     * and (5) are always "indeterminate" -- the caller must never fold them
-     * into "failed", which would wrongly assert the write is confirmed NOT
-     * to have happened.
-     */
-    setContractDraftRequest: async (
-      opportunityId: string,
-      value: ContractDraftRequestState,
-    ): Promise<ContractDraftRequestWriteOutcome> => {
-      const fieldId = CONFIG.contractDraftRequest;
-      if (!fieldId || fieldId === CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED) {
-        return { kind: "refused", reason: "No configured id for Contract Draft Request (or not yet provisioned) -- refusing before any network call." };
-      }
-      if (value !== "Idle" && value !== "Requested") {
-        return { kind: "refused", reason: `${JSON.stringify(value)} is not "Idle" or "Requested" -- refusing before any network call.` };
-      }
-
-      const body = { customFields: [{ id: fieldId, field_value: value }] };
-
-      let putRes: Response;
-      try {
-        putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-      } catch (e: any) {
-        // No HTTP response ever arrived -- the request may or may not have
-        // reached GHL. Never "failed": that would wrongly assert the write
-        // is confirmed NOT to have happened.
-        return { kind: "put_transport_error", message: e?.message ?? "network error before a response arrived" };
-      }
-
-      if (!putRes.ok) {
-        const responseBody = await putRes.text().catch(() => "");
-        // A CONFIRMED non-success response -- GHL was reached and rejected the request.
-        return { kind: "put_failed", putStatus: putRes.status, responseBody };
-      }
-      const putStatus = putRes.status;
-
-      let readRes: Response;
-      try {
-        readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
-      } catch (e: any) {
-        return { kind: "readback_failed", putStatus, readbackFailureReason: `readback transport failed: ${e?.message ?? "network error"}` };
-      }
-      if (!readRes.ok) {
-        const text = await readRes.text().catch(() => "");
-        return { kind: "readback_failed", putStatus, readbackFailureReason: `readback HTTP ${readRes.status}: ${text}` };
-      }
-
-      let readBody: any;
-      try {
-        readBody = await readRes.json();
-      } catch (e: any) {
-        return { kind: "readback_failed", putStatus, readbackFailureReason: `readback response was not valid JSON: ${e?.message ?? "parse error"}` };
-      }
-
-      const opp = readBody.opportunity ?? readBody;
-      const entry = (opp.customFields ?? []).find((f: any) => f.id === fieldId) ?? null;
-      const observed = entry === null ? null : readSingularFieldValue(entry);
-
-      if (observed !== value) {
-        return { kind: "readback_mismatch", putStatus, sent: value, observed };
-      }
-      return { kind: "confirmed", putStatus, sent: value, observed: value };
-    },
   },
 
-  /**
-   * GHL Documents & Contracts -- B9-08 / INV-63. The selected V1 e-sign
-   * provider (Product Owner ruling, reaffirmed; not reopened here).
-   * IAOS-Test-only: `ghl-proxy.ts`'s GATE 2 refuses every one of these
-   * paths unless the running deployment's own `LOCATION_ID` equals the
-   * TEST location, independent of anything this client sends.
-   *
-   * Shapes below are the DOCUMENTED request/response contracts, verified
-   * directly from GHL's own reference pages -- never live-called against
-   * a real GHL environment this session. Treat a live response's exact
-   * shape as unconfirmed until a real Test send has been observed once.
-   *
-   * TEMPLATE ID IS SERVER-ENFORCED, NEVER CLIENT-CHOSEN. `send()` still
-   * takes `templateId` as a defense-in-depth echo of what the caller
-   * resolved and validated, but `ghl-proxy.ts`'s GATE 2 unconditionally
-   * overwrites it (and `contactId`/`userId`) from `documentsContracts.
-   * templateId` regardless of what is sent here. `listTemplates()` exists
-   * ONLY for the client's own pre-flight NAME-drift check against the
-   * locked id (see `ContractWorkspace.tsx`) -- it never resolves the id
-   * used to send.
-   */
+  /** Read-only GHL document discovery and independent readback. */
   proposals: {
     // GET /proposals/templates -- read-only discovery. Used ONLY as a
     // pre-flight drift check: does the locked, config-verified templateId
@@ -1388,69 +1052,6 @@ export const ghl = {
       }
     },
 
-    // POST /.netlify/functions/ghl-contract-send-execute -- the ONLY path
-    // to GHL's actual send-capable /proposals/templates/send, Jess Gate
-    // correction round 2. Deliberately takes NO contactId and NO userId:
-    // the dedicated server-side function resolves both from config,
-    // never from this client. Requires attemptId/versionRaw so the
-    // server can look up and redeem the EXACT reservation ticket
-    // `reserveSend` below already created -- a caller cannot invoke this
-    // for an opportunity/revision it never reserved.
-    // Callers pass the raw HTTP outcome to contract-send-model.ts's
-    // `classifyProviderSendResponse` -- this method never classifies its own
-    // response, matching "no invented GHL behavior" for the success/failure
-    // boundary.
-    send: async (args: {
-      templateId: string;
-      opportunityId: string;
-      versionRaw: string;
-      attemptId: string;
-    }): Promise<
-      | { kind: "network_error"; message: string }
-      | { kind: "http_response"; status: number; body: unknown }
-    > => {
-      try {
-        const res = await fetch("/.netlify/functions/ghl-contract-send-execute", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(args),
-        });
-        const text = await res.text();
-        let parsed: unknown = null;
-        try {
-          parsed = text ? JSON.parse(text) : null;
-        } catch {
-          parsed = text;
-        }
-        return { kind: "http_response", status: res.status, body: parsed };
-      } catch (e: any) {
-        return { kind: "network_error", message: e?.message ?? "Network error calling GHL Documents & Contracts" };
-      }
-    },
-
-    // POST /.netlify/functions/ghl-contract-send-reserve -- the ONLY
-    // write path for the "in_progress" attempt note. NOT routed through
-    // ghl-proxy.ts's generic notes passthrough: this dedicated server-side
-    // function reads the contact's notes fresh and re-checks for a
-    // conflicting pending/accepted send BEFORE writing, narrowing (not
-    // eliminating -- GHL's Notes API has no compare-and-swap primitive)
-    // the two-tabs-both-send race this function exists to close.
-    reserveSend: async (args: {
-      contactId: string;
-      opportunityId: string;
-      versionRaw: string;
-      noteBody: string;
-    }): Promise<{ ok: true } | { ok: false; status: number; reason: string }> => {
-      const res = await fetch("/.netlify/functions/ghl-contract-send-reserve", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(args),
-      });
-      if (res.ok) return { ok: true };
-      const text = await res.text();
-      return { ok: false, status: res.status, reason: text };
-    },
-
     // POST /.netlify/functions/ghl-contract-send-readback -- the ONLY
     // path to a final "accepted" verdict. Server-side, not
     // client-classified: the cross-checks against the TRUE expected
@@ -1463,7 +1064,7 @@ export const ghl = {
       summary: { documentId: string | null; documentReference: string | null; documentRevision: number | null; recipientId: string | null; createdBy: string | null; readbackStatus: string | null; readbackLocationId: string | null; fillableFieldCount: number | null } | null;
       failureReason: string | null;
     }> => {
-      const res = await fetch("/.netlify/functions/ghl-contract-send-readback", {
+      const res = await appWriteFetch("/.netlify/functions/ghl-contract-send-readback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args),
@@ -1548,7 +1149,7 @@ export const ghl = {
     // so it cannot touch the task's title/dueDate/assignedTo, or any
     // contact/tag/pipeline field.
     completeTask: (contactId: string, taskId: string) =>
-      request<any>(`/contacts/${contactId}/tasks/${taskId}/completed`, "PUT", { completed: true }),
+      confirmedCommand("task.complete", contactId, { taskId }),
   },
 
   underwriting: {
@@ -1658,13 +1259,7 @@ export const ghl = {
         throw new Error("saveUnderwritingFields: the three carrier ids are not distinct");
       }
 
-      const body = { customFields: plan.map((p) => ({ id: p.fieldId, field_value: p.value })) };
-
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("opportunity.underwriting", opportunityId, { endBuyerMaxPrice: plan[0].value, sellerMAO: plan[1].value, assignmentMode: plan[2].value });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();
@@ -1751,11 +1346,7 @@ export const ghl = {
 
       const body = { customFields: [{ id: fieldId, field_value: optionLabel }] };
 
-      const putRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const putRes = await writeCommand("opportunity.assignmentMode", opportunityId, { value: optionLabel });
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();

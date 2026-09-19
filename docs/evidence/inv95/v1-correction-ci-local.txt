@@ -1,0 +1,635 @@
+LOCAL CI-equivalent checks; no deployment or live integration calls
+COMMAND: node app/node_modules/typescript/bin/tsc -b app
+exit=0
+COMMAND: node app/node_modules/vite/bin/vite.js build app
+vite v6.4.3 building for production...
+transforming...
+✓ 1710 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.74 kB │ gzip:   0.41 kB
+dist/assets/App-4jnwqq-N.css      1.59 kB │ gzip:   0.65 kB
+dist/assets/index-BqTFzHXV.css   14.68 kB │ gzip:   3.78 kB
+dist/assets/index-CTXuHGgq.js   203.16 kB │ gzip:  64.08 kB
+dist/assets/App-DxXaZkQs.js     819.24 kB │ gzip: 204.49 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 7.25s
+exit=0
+COMMAND: node app/node_modules/typescript/bin/tsc -p netlify/functions/tsconfig.json
+exit=0
+COMMAND: node app/scripts/test-underwriting-core.cjs
+PASS  golden status
+PASS  golden baseBuyerCapacity
+PASS  golden financingFactor
+PASS  golden endBuyerMaxPrice
+PASS  golden assignmentSpread
+PASS  golden sellerMAO
+PASS  golden warnings
+PASS  golden breakdown rows
+PASS  units selling costs
+PASS  units guard throws on 10 where 0.10 expected
+PASS  units guard names the field
+PASS  finite guard throws on NaN arv
+PASS  financing off status
+PASS  financing off k
+PASS  financing off endBuyerMax equals capacity
+PASS  financing off provenance
+PASS  financing off ltv provenance null
+PASS  financing unresolved status
+PASS  financing unresolved names financing
+PASS  financing missing ltv status
+PASS  financing missing ltv names it
+PASS  manual at minimum status
+PASS  manual at minimum spread
+PASS  manual at minimum no warning
+PASS  manual below minimum status
+PASS  manual below minimum warns
+PASS  manual below minimum code
+PASS  manual below minimum spread
+PASS  manual below minimum minimum
+PASS  profit share status
+PASS  profit share spread
+PASS  profit share provenance
+PASS  profit share floored status
+PASS  profit share floored spread
+PASS  profit share floored emits no warning
+PASS  profit share unresolved status
+PASS  profit share unresolved names pct
+PASS  standard ignores unresolved profitSharePct
+PASS  standard profitSharePct provenance null
+PASS  holding partial status
+PASS  holding partial names months
+PASS  holding partial does not name carry
+PASS  missing arv status
+PASS  missing arv names arv
+PASS  accumulate status
+PASS  accumulate count
+PASS  mixed provenance carry
+PASS  mixed provenance months
+PASS  mixed provenance selling
+PASS  position unknown
+PASS  position within
+PASS  position above
+PASS  position boundary equal is within
+PASS  golden requiredBuyerProfit
+PASS  golden standardMinimumAssignmentSpread
+PASS  golden standardMinimumLevel
+PASS  golden buyerProfitSharePct
+PASS  golden buyerProfitSharePctLevel
+PASS  standard mode figures.buyerProfitSharePct resolves
+PASS  standard mode provenance.profitSharePct stays null
+PASS  synthetic unresolved profitSharePct status stays resolved
+PASS  synthetic unresolved figures.buyerProfitSharePct is null
+PASS  synthetic unresolved figures.buyerProfitSharePctLevel is null
+
+checksRun=63 failures=0 floor=63
+OK
+exit=0
+COMMAND: node app/scripts/test-underwriting-resolver.cjs
+PASS  units selling 10 -> 0.10
+PASS  units profit 15 -> 0.15
+PASS  units ltv 70 -> 0.70
+PASS  units rate 12 -> 0.12
+PASS  units points 2 -> 0.02
+PASS  units share 25 -> 0.25
+PASS  dollars closing unconverted
+PASS  dollars carry unconverted
+PASS  count months unconverted
+PASS  dollars minimum unconverted
+PASS  valid policy raises no issues
+PASS  policy level is investor_policy
+PASS  absent policy unresolved
+PASS  absent policy raises no issue
+PASS  malformed carry unresolved
+PASS  malformed raises one issue
+PASS  issue names the key
+PASS  issue carries the raw value
+PASS  other ten still resolve
+PASS  pct over 100 unresolved
+PASS  pct over 100 raises issue
+PASS  pct over 100 not clamped
+PASS  financing On resolves true
+PASS  financing Off unresolved
+PASS  financing Off not false
+PASS  financing off unresolved
+PASS  financing off not false
+PASS  financing false unresolved
+PASS  financing false not false
+PASS  financing 0 unresolved
+PASS  financing 0 not false
+PASS  financing ON case-sensitive unresolved
+PASS  financing ON not false
+PASS  financing no unresolved
+PASS  financing no not false
+PASS  financing blank unresolved
+PASS  financing blank not false
+PASS  NUMERICAL under fieldValueString reads absent
+PASS  NUMERICAL under fieldValueNumber reads
+PASS  numeric string at the right key reads
+PASS  mode Standard Minimum
+PASS  mode 25% of Buyer Profit
+PASS  mode Manual
+PASS  unrecognized mode unresolved
+PASS  absent mode unresolved
+PASS  opportunity wins over contact
+PASS  contact seeds when opportunity absent
+PASS  both absent is unresolved
+PASS  reason names both sources
+PASS  absent mode -> assignment unresolved
+PASS  unrecognized mode -> assignment unresolved
+PASS  manual without amount -> assignment unresolved
+PASS  manual without amount reason names it
+PASS  unresolved assignment blocks the core
+PASS  core names assignmentMode
+PASS  override wins
+PASS  override level
+PASS  policy wins where no override
+PASS  policy level
+PASS  starter selling
+PASS  starter level
+PASS  starter closing
+PASS  starter months
+PASS  starter minimum
+PASS  mixed financing is on
+PASS  mixed switch level
+PASS  mixed ltv from policy
+PASS  mixed ltv value
+PASS  mixed rate falls to starter
+PASS  mixed rate value
+PASS  mixed points from override
+PASS  mixed points value
+PASS  mixed financing computes
+PASS  mixed provenance ltv
+PASS  mixed provenance rate
+PASS  mixed provenance points
+PASS  mixed provenance switch
+PASS  switch falls to starter when policy unrecognized
+PASS  switch starter level
+PASS  end-to-end resolved
+PASS  end-to-end arv from contact seed
+PASS  end-to-end baseBuyerCapacity
+PASS  end-to-end financingFactor
+PASS  end-to-end endBuyerMaxPrice
+PASS  end-to-end assignmentSpread
+PASS  end-to-end sellerMAO
+PASS  end-to-end no warnings
+PASS  vm loading wins
+PASS  vm fetch_error state
+PASS  vm fetch_error message
+PASS  vm no_opportunity
+PASS  vm awaiting_selection
+PASS  vm awaiting_selection candidates
+PASS  vm one candidate unselected is awaiting_selection
+PASS  vm one candidate count
+PASS  vm selection precedes compute error
+PASS  vm configuration_error state
+PASS  vm configuration_error field
+PASS  vm configuration_error names opportunity
+PASS  vm orchestration_error state
+PASS  vm orchestration_error is not fetch_error
+PASS  vm unresolved state
+PASS  vm unresolved names missing
+PASS  vm unresolved names opportunity
+PASS  vm unresolved labels are operator language
+PASS  vm unresolved labels drop raw keys
+PASS  vm known-facts precondition is unresolved
+PASS  vm known arv survives unresolved
+PASS  vm known repairs survives unresolved
+PASS  vm unresolved blocker is assignment mode
+PASS  vm assignment mode label
+PASS  vm unmapped key count preserved
+PASS  vm unmapped key falls back raw
+PASS  vm resolved state
+PASS  vm resolved position unknown
+PASS  vm resolved sellerMAO
+PASS  vm resolved no warnings
+PASS  vm resolved known arv
+PASS  vm resolved known repairs
+PASS  vm within_range
+PASS  vm within_range cushion
+PASS  vm within_range known ask
+PASS  vm above_range
+PASS  vm above_range gap
+PASS  vm NaN ask does not throw
+PASS  vm NaN ask is configuration_error
+PASS  vm NaN ask names askingPrice
+PASS  vm banner precondition: one issue
+PASS  vm issues still resolved
+PASS  vm issues position unknown
+PASS  vm issues preserved on banner
+PASS  vm issues name the key
+PASS  vm malformed carry fell through to starter
+PASS  vm approve default is idle
+PASS  vm approve rides on resolved
+PASS  vm approve in_flight survives
+PASS  vm in_flight still resolved
+PASS  vm approve succeeded survives
+PASS  vm succeeded still resolved
+PASS  vm approve failed status
+PASS  vm approve failed message
+PASS  vm failed still resolved
+PASS  vm approve partial status
+PASS  vm partial is not failed
+PASS  vm partial names how many landed
+PASS  vm partial carries per-carrier detail
+PASS  vm partial names the carrier that did not land
+PASS  vm partial still resolved
+PASS  vm approve does not move sellerMAO
+PASS  vm approve does not move endBuyerMaxPrice
+PASS  vm approve does not move the breakdown
+PASS  vm approve does not move provenance
+PASS  vm approve does not move position
+PASS  vm resolved carries assignment
+PASS  vm assignment is not a wire label
+PASS  vm profit_share precondition resolves
+PASS  vm profit_share survives as itself
+PASS  vm profit_share still resolved
+PASS  vm resolved plus unresolved assignment is orchestration_error
+PASS  vm that error does not masquerade as resolved
+PASS  vm resolved plus null assignment is orchestration_error
+PASS  vm unresolved precondition
+PASS  vm unresolved has no approve
+PASS  vm no_opportunity precondition
+PASS  vm no_opportunity has no approve
+PASS  vm awaiting_selection precondition
+PASS  vm awaiting_selection has no approve
+PASS  vm awaiting_selection has no assignment
+PASS  vm unresolved has no assignment
+
+checksRun=169 failures=0 floor=169
+OK
+exit=0
+COMMAND: node app/scripts/test-rail.cjs
+PASS  no emitted require() resolves to ghl
+PASS  rail.js DOES require its real runtime deps
+PASS  case2 deal resolves
+PASS  case2 ask value is the OPPORTUNITY value
+PASS  case2 provenance says Opportunity
+PASS  case2 renders the opportunity figure
+PASS  case2 tone is a value, not waiting
+PASS  case2 the contact figure appears nowhere
+PASS  4A opportunity branch names the selected deal
+PASS  4C opportunity branch offers the SEEDED in-place editor
+PASS  4B opportunity branch no longer carries an authority note
+PASS  4A mao provenance also names the deal
+PASS  4A mao offers no route either
+PASS  4A contact branch states WHY the contact value governs
+PASS  4A contact branch OFFERS the route
+PASS  4A contact branch adds no authority note
+PASS  4A waiting states carry no route
+PASS  4A waiting states carry no authority note
+PASS  4A carrier-less cells carry no route
+PASS  4B resolved deal carries the selected opportunityId
+PASS  4B multi-candidate exposes NO opportunityId to write to
+PASS  4B no rail cell value is a function
+PASS  4B error state offers no edit route
+PASS  4C opportunity branch offers no NAVIGATION route
+PASS  4C contact-fallback branch offers origination with NO seed
+PASS  4C resolved with no ask anywhere still offers origination
+PASS  4C only a resolved deal exposes an editor
+PASS  4C the ask cell is exactly these fields, both branches
+PASS  4C reconciled when the Opportunity carries exactly the confirmed write
+PASS  4C NOT reconciled while the Contact fallback still governs
+PASS  4C NOT reconciled when the Opportunity carries a DIFFERENT value
+PASS  4C NOT reconciled in any unresolved state
+PASS  4C no confirmed write means nothing to reconcile
+PASS  case3 ask value is the CONTACT value
+PASS  case3 provenance says Contact fallback
+PASS  case3 renders the contact figure
+PASS  case3 tone is a value
+PASS  case3 provenance is NOT Opportunity
+PASS  case4 ask is null
+PASS  case4 states what is missing
+PASS  case4 tone is waiting
+PASS  case4 no provenance to disclose
+PASS  case4 never renders a zero
+PASS  case4 never renders a dash
+PASS  case4 is not blank
+PASS  case4 null detail also yields no ask
+PASS  case4 null detail states the same thing
+PASS  case5 mao is the opportunity value
+PASS  case5 renders the figure
+PASS  case5 provenance says Opportunity
+PASS  case5 tone is a value
+PASS  case6 mao is null
+PASS  case6 states not yet approved
+PASS  case6 tone is waiting
+PASS  case6 no provenance
+PASS  case6 NO contact fallback -- 165000 is not picked up
+PASS  case6 never renders a zero
+PASS  case6 a stored 0 is a VALUE, not absence
+PASS  case6 a stored 0 carries Opportunity provenance
+PASS  case7 loading: position keeps its carrier state
+PASS  case7 loading: offer keeps its carrier state
+PASS  case7 error: position keeps its carrier state
+PASS  case7 error: offer keeps its carrier state
+PASS  case7 no_opportunity: position keeps its carrier state
+PASS  case7 no_opportunity: offer keeps its carrier state
+PASS  case7 awaiting_selection: position keeps its carrier state
+PASS  case7 awaiting_selection: offer keeps its carrier state
+PASS  case7 resolved: position keeps its carrier state
+PASS  case7 resolved: offer keeps its carrier state
+PASS  case7 position is always waiting tone
+PASS  case7 offer is always waiting tone
+PASS  case7 position never discloses a provenance
+PASS  loading state names itself
+PASS  loading ask cell reads reading Opportunity
+PASS  error state carries the message
+PASS  no_opportunity is its own state, not a late number
+PASS  awaiting_selection names the count
+PASS  awaiting_selection did NOT pick the first opportunity
+PASS  cells are always four, in order
+PASS  case8 resolved + Opportunity Ask -> not authoritative
+PASS  case8 resolved + Contact Ask -> governing fallback
+PASS  case8 resolved + no Ask on either carrier -> no value
+PASS  case8 loading -> authority not determined
+PASS  case8 error -> authority not determined
+PASS  case8 awaiting_selection -> authority not determined
+PASS  case8 no_opportunity -> contact value only
+PASS  money 210000 -> $210,000
+PASS  money 950 -> no separator
+PASS  money 1000 -> separator appears
+PASS  money 1234567 -> two separators
+PASS  money 210000.4 rounds down, no decimals
+PASS  money 210000.6 rounds up, no decimals
+PASS  money 0 -> $0
+PASS  money never shows a decimal point
+
+checksRun=94 failures=0 floor=94
+OK
+exit=0
+COMMAND: node app/scripts/test-voice-foundation.cjs
+PASS  all locked lifecycle states are present
+PASS  every valid and invalid state transition matches the locked matrix
+PASS  stale ringing after connected is ignored
+PASS  conflicting terminal callback becomes unknown
+PASS  ring timeout uses provider-reported no-answer, not a separate state
+PASS  provider terminal outcomes retain their locked mappings
+PASS  two-tab authorization has exactly one winner
+PASS  double-click emits exactly one provider Dial authority
+PASS  out-of-order callback cannot regress connected
+PASS  conflicting terminal evidence fails to provider-unknown
+PASS  provider-unknown blocks blind retry
+PASS  exact duplicate callback is idempotent and performs no store write
+PASS  same-sequence conflicting callback becomes provider-unknown
+PASS  provider callbacks preserve busy, no-answer, failed, and disconnected outcomes
+PASS  pre-origination rejection remains a distinct terminal outcome
+PASS  missing authoritative provider communication maps to provider-unknown
+PASS  transport timeout blocks duplicate origination until reconciliation
+PASS  late callback cannot silently overwrite an uncertain timeout outcome
+PASS  provider call identity conflict fails closed to provider-unknown
+PASS  explicit inactive Call DND is eligible
+PASS  missing suppression authority fails closed
+PASS  active voice DND is suppressed
+PASS  invalid seller phone fails closed
+PASS  incorrect-number authority fails closed
+PASS  wrong contact identity fails closed
+PASS  wrong GHL location fails closed
+PASS  missing contact rejects authorization
+PASS  voice-disabled configuration fails closed
+PASS  non-Test environment fails closed
+PASS  Google token verification normalizes Brad allowlist identity
+PASS  audience-scoped server session verifies
+PASS  tampered session is rejected
+PASS  expired operator authentication fails closed
+PASS  wrong Google identity is rejected
+PASS  wrong Google audience is rejected
+PASS  unverified Google identity is rejected
+PASS  missing operator bearer session is rejected
+PASS  provider token TTL is five minutes
+PASS  provider token has outgoing grant only
+PASS  provider token carries no incoming permission
+PASS  invalid Twilio signature is rejected
+PASS  client double-click shares one connect operation
+PASS  client double-click receives one shared connection
+PASS  refresh restores the server attempt envelope
+PASS  refresh and resume never originate another browser call
+PASS  expired provider capability fails closed before connect
+PASS  TwiML explicitly disables recording
+PASS  TwiML contains one Number verb
+PASS  INV-92 preserves provider-controlled ring duration
+PASS  browser passes contact binding, never destination or caller ID
+PASS  provider completion creates zero GHL writes, notes, callbacks, or dispositions
+PASS  provider callback rejects signature before capability or attempt access
+PASS  no Seller Call UI file is modified by harness scope
+
+INV-90 voice foundation: 53/53 checks passed
+exit=0
+COMMAND: node app/scripts/test-seller-call-voice-controls.cjs
+PASS  formatted authoritative phone normalizes to E.164
+PASS  already-normalized US phone remains stable
+PASS  non-US or malformed phone fails closed
+PASS  every lifecycle state has an operator label
+PASS  desktop unsupported browser keeps IAOS mode visible but disabled
+PASS  mobile unsupported browser hides IAOS mode
+PASS  supported mobile browser exposes IAOS mode
+PASS  Dial requires enabled authenticated idle state
+PASS  Dial remains disabled before Brad authentication
+PASS  connected state exposes Mute and Hang Up only
+PASS  uncertain provider state exposes no call action
+PASS  authorizing attempt blocks closing or retrying
+PASS  cell mode uses authoritative normalized number for clipboard
+PASS  mobile cell mode prefills native dialer without initiating it
+PASS  both modes display seller identity
+PASS  IAOS mode checks SDK, secure context, and microphone capability
+PASS  Brad authentication uses Google identity and server session endpoint
+PASS  operator session is memory-only
+PASS  softphone exposes accessible Dial, Mute, and Hang Up controls
+PASS  lifecycle and failure text are announced
+PASS  ending a call leaves disposition and callback manual
+PASS  component contains no GHL write path
+PASS  component contains no automatic retry loop
+PASS  cell fallback remains outside every IAOS capability and authentication gate
+PASS  Seller Call mounts controls with exact contact identity and primary phone
+PASS  voice controls precede and preserve resume context
+PASS  existing script and outcome surfaces remain present
+PASS  call lifecycle remains isolated from script navigation state
+PASS  existing notes, callbacks, dispositions, and GHL handoffs remain owned by Seller Call
+PASS  responsive layout switches to one column on mobile
+PASS  public bootstrap returns only enablement and Google client ID
+
+INV-91 Seller Call voice controls: 31/31 checks passed
+exit=0
+COMMAND: node scripts/netlify-status.test.cjs
+PASS  deployed-composite  got=DEPLOYED want=DEPLOYED
+PASS  deployed-severity  got=healthy want=healthy
+PASS  deployed-retryable  got=false want=false
+PASS  deployed-q1  got=DEPLOYED
+PASS  deployed-q2  got=PUBLISH_CURRENT
+PASS  deployed-ignores-preview-decoy  got=d-tip-ready — a deploy-preview carrying the same commit must never answer Q1
+PASS  intentional-skip-composite  got=EXPECTED_BEHIND want=EXPECTED_BEHIND
+PASS  intentional-skip-severity  got=healthy want=healthy
+PASS  intentional-skip-retryable  got=false want=false
+PASS  skip-q1  got=INTENTIONAL_SKIP
+PASS  skip-q2  got=PUBLISH_CURRENT
+PASS  skip-no-warning  got=0 — a routine skip must be silent
+PASS  build-failure-composite  got=DEPLOY_FAILURE_CANDIDATE want=DEPLOY_FAILURE_CANDIDATE
+PASS  build-failure-severity  got=unhealthy want=unhealthy
+PASS  build-failure-retryable  got=false want=false
+PASS  build-failure-q1  got=DEPLOY_FAILURE_CANDIDATE
+PASS  unknown-state-composite  got=UNKNOWN_STATE want=UNKNOWN_STATE
+PASS  unknown-state-severity  got=cannot_observe want=cannot_observe
+PASS  unknown-state-retryable  got=false want=false
+PASS  unknown-state-q1  got=UNKNOWN_STATE
+PASS  in-flight-composite  got=IN_FLIGHT want=IN_FLIGHT
+PASS  in-flight-severity  got=indeterminate want=indeterminate
+PASS  in-flight-retryable  got=true want=true
+PASS  in-flight-q1  got=IN_FLIGHT
+PASS  publish-lagging-composite  got=PUBLISH_LAGGING want=PUBLISH_LAGGING
+PASS  publish-lagging-severity  got=unhealthy want=unhealthy
+PASS  publish-lagging-retryable  got=false want=false
+PASS  publish-lagging-q1  got=DEPLOYED — Q1 alone reads healthy here, which is why Q2 is independent
+PASS  publish-lagging-q2  got=PUBLISH_LAGGING
+PASS  no-record-within-grace-composite  got=NOT_YET_SEEN want=NOT_YET_SEEN
+PASS  no-record-within-grace-severity  got=indeterminate want=indeterminate
+PASS  no-record-within-grace-retryable  got=true want=true
+PASS  within-grace-q1  got=NOT_YET_SEEN
+PASS  within-grace-window-not-full  a short window always reaches back
+PASS  no-record-past-grace-composite  got=NOT_SEEN_STALE want=NOT_SEEN_STALE
+PASS  no-record-past-grace-severity  got=unhealthy want=unhealthy
+PASS  no-record-past-grace-retryable  got=false want=false
+PASS  past-grace-q1  got=NOT_SEEN_STALE
+PASS  past-grace-window-is-full  the pin is worthless unless this fixture's window is actually full
+PASS  past-grace-full-window-still-reaches-back  oldest deploy predates the tip, so the absence of a record is a FACT
+PASS  pagination-truncated-composite  got=PAGINATION_TRUNCATED want=PAGINATION_TRUNCATED
+PASS  pagination-truncated-severity  got=cannot_observe want=cannot_observe
+PASS  pagination-truncated-retryable  got=false want=false
+PASS  truncated-q1  got=PAGINATION_TRUNCATED — a full page that does not reach back proves nothing
+PASS  truncated-window-does-not-reach-back  oldest deploy is NEWER than the tip, so older deploys may exist unseen
+PASS  skip-with-deploy-time-composite  got=EXPECTED_BEHIND want=EXPECTED_BEHIND
+PASS  skip-with-deploy-time-severity  got=healthy want=healthy
+PASS  skip-with-deploy-time-retryable  got=false want=false
+PASS  timed-skip-q1  got=INTENTIONAL_SKIP — the message is the sole V1 predicate
+PASS  timed-skip-warns  got=1 warnings
+PASS  timed-skip-warning-text  the never-before-seen case must reach a human, not be absorbed silently
+PASS  publish-unknown-composite  got=PUBLISH_UNKNOWN want=PUBLISH_UNKNOWN
+PASS  publish-unknown-severity  got=cannot_observe want=cannot_observe
+PASS  publish-unknown-retryable  got=false want=false
+PASS  publish-unknown-q2  got=PUBLISH_UNKNOWN
+PASS  duplicate-tip-deploys-composite  got=DEPLOYED want=DEPLOYED
+PASS  duplicate-tip-deploys-severity  got=healthy want=healthy
+PASS  duplicate-tip-deploys-retryable  got=false want=false
+PASS  duplicate-newest-wins  got=d-tip-retry-ready
+PASS  duplicate-warns  got=1 — contradictory records must be announced
+PASS  classify-does-not-mutate-input  classify must be pure — a mutating classifier cannot be replayed
+PASS  classify-is-deterministic  same input must give the same verdict
+PASS  precedence-unhealthy-beats-cannot-observe  a real failure must ALERT rather than be masked by an unreadable site
+PASS  precedence-cannot-observe-beats-indeterminate  
+PASS  precedence-indeterminate-beats-healthy  
+PASS  exit-healthy-0  got=0
+PASS  exit-unhealthy-1  got=1
+PASS  exit-cannot-observe-2  got=2
+PASS  exit-indeterminate-3  got=3
+PASS  green-run-exit-0  got=0
+PASS  warnings-surface-on-a-green-run  healthy-but-notable is invisible otherwise, which defeats distinguishing it
+PASS  human-agrees-with-json-exit  human text is rendered FROM the canonical object, so it cannot disagree
+PASS  human-agrees-with-json-verdict  
+PASS  mixed-run-takes-worst-site  got=1 — one healthy site must not mask a failing one
+PASS  schema-version-present  got=1
+PASS  tip-time-source-recorded  the grace clock's provenance must be in the record
+PASS  json-round-trips  the canonical object must be pure JSON
+PASS  exactly-one-fetch-call-site  got=1 — getJson() must be the only network call site
+PASS  no-http-client-imports  a second HTTP client would be a second, unaudited call site
+PASS  method-hardcoded-get  the HTTP method must be a literal, never a variable
+PASS  no-write-verbs-anywhere  no write verb may appear in this file at all
+PASS  never-calls-accounts-env  /accounts/{slug}/env returns secret VALUES and must never be requested
+PASS  gh-invoked-without-method-override  gh api with no -X and no --method is a GET
+PASS  token-read-from-env  the token must come from the environment
+PASS  token-never-assigned-from-argv  argv is world-readable in the process list
+PASS  token-interpolated-once-only  got=1 — the Authorization header is the only place the token may appear
+checksRun=86 failures=0 floor=86
+NETLIFY-STATUS OFFLINE GREEN
+exit=0
+COMMAND: node scripts/test-identifier-boundary.cjs
+PASS  no-identifiers-in-app/src  clean — no identifier literal outside app/shared/ghl-config.ts
+PASS  no-identifiers-in-app/netlify  clean — no identifier literal outside app/shared/ghl-config.ts
+PASS  no-identifiers-in-app/shared  clean — no identifier literal outside app/shared/ghl-config.ts
+PASS  no-identifiers-in-netlify/functions  clean — no identifier literal outside app/shared/ghl-config.ts
+PASS  no-identifiers-in-client/src  clean — no identifier literal outside app/shared/ghl-config.ts
+PASS  no-identifiers-in-shared  clean — no identifier literal outside app/shared/ghl-config.ts
+PASS  exclusion-list-is-exactly-as-authored  got [app/src/pages/MaoCalculator.tsx] want [app/src/pages/MaoCalculator.tsx]
+PASS  mao-calculator-exclusion-not-yet-void  app/src/App.tsx does not reference MaoCalculator — page still unrouted
+PASS  matcher-detects-and-does-not-overreach  5 positives detected, 11 near-misses rejected
+PASS  exempt-literals-precise-real-id-and-unknown-token-still-caught  found ["attorneyManualFieldz", "supersedesVersionSez", "jmHG4B8RdzwpfqruNf68"] — want exactly ["attorneyManualFieldz", "supersedesVersionSez", "jmHG4B8RdzwpfqruNf68"]
+checksRun=10 failures=0 floor=10
+IDENTIFIER BOUNDARY GREEN
+exit=0
+COMMAND: node scripts/test-exit-contract-static.cjs
+PASS  corpus-present  32 files, 729 exit sites
+PASS  ambient-credential-eliminated  scripts/import-propstream-csv.ts reads process.env 0 times — the credential comes only from --credential-file
+PASS  one-fail-implementation  1 distinct fail() body across 25 files — a fork would split diagnostics
+PASS  PROPERTY A — fail() prints its declared code  every fail() wrapper interpolates ${code}
+PASS  two-finish-emitters  2 finish() definitions in inert-proof-runner.cjs
+PASS  PROPERTY A — finish() prints outcome and code  both emitters interpolate ${outcome} and ${code}
+PASS  finish() does not claim a refusal at code 0  both emitters branch on code === 0 — finish() serves success paths too
+PASS  finish-args-are-literal  all 27 finish() call sites pass literals
+PASS  PROPERTY B1 — every fail() CAUSE is distinguishable, code excluded  412 fail() causes, 0 collisions
+PASS  PROPERTY B2 — every refusal's operator line is distinguishable  701 refusal sites, 0 collisions
+checksRun=10 failures=0 floor=10
+EXIT CONTRACT STATIC GREEN
+exit=0
+COMMAND: node scripts/test-exit-contract-runtime.cjs
+provenance-fixture OK  C:\Users\brad\AppData\Local\Temp\inert-proof-property-notes-step1.json  parses, no environment stamp -> refusal is guaranteed
+PASS  fail-nontruncating-carrier-only / exits non-zero  observed=30
+PASS  fail-nontruncating-carrier-only / emits something  ABORT [refusal 30] — cannot read step 1 evidence: ENOENT: no…
+PASS  fail-nontruncating-carrier-only / declared code resolvable from source  declared=30
+PASS  fail-nontruncating-carrier-only / direct-spawn status === declared  declared=30 observed=30 expected=30 platform=win32
+FAIL  fail-nontruncating-carrier-only / posix-shell status === declared & 255  declared=30 shell=0 expected=30
+FAIL  fail-nontruncating-carrier-only / channels agree as the platform dictates  direct=30 shell=0 — an operator sees a different number depending on how they ran it
+PASS  fail-nontruncating-carrier-only / emitted text carries the declared code  text and status agree at 30
+PASS  fail-nontruncating-second-code / exits non-zero  observed=50
+PASS  fail-nontruncating-second-code / emits something  ABORT [refusal 50] — cannot read step 1 evidence: ENOENT: no…
+PASS  fail-nontruncating-second-code / declared code resolvable from source  declared=50
+PASS  fail-nontruncating-second-code / direct-spawn status === declared  declared=50 observed=50 expected=50 platform=win32
+FAIL  fail-nontruncating-second-code / posix-shell status === declared & 255  declared=50 shell=0 expected=50
+FAIL  fail-nontruncating-second-code / channels agree as the platform dictates  direct=50 shell=0 — an operator sees a different number depending on how they ran it
+PASS  fail-nontruncating-second-code / emitted text carries the declared code  text and status agree at 50
+PASS  direct-exit-no-wrapper / exits non-zero  observed=4
+PASS  direct-exit-no-wrapper / emits something  ABORT — carrier has no fixtureRecords.opportunities.iaosUnde…
+PASS  direct-exit-no-wrapper / observed matches expected  observed=4 expected=4
+PASS  fail-TRUNCATING-260 / exits non-zero  observed=260
+PASS  fail-TRUNCATING-260 / emits something  ABORT [refusal 260] — cannot read step 1 evidence: ENOENT: n…
+PASS  fail-TRUNCATING-260 / declared code resolvable from source  declared=260
+PASS  fail-TRUNCATING-260 / direct-spawn status === declared  declared=260 observed=260 expected=260 platform=win32
+FAIL  fail-TRUNCATING-260 / posix-shell status === declared & 255  declared=260 shell=0 expected=4  [TRUNCATES — the shell cannot show the declared value]
+PASS  fail-TRUNCATING-260 / channels DIVERGE as the platform dictates  direct=260 shell=0 — an operator sees a different number depending on how they ran it
+PASS  fail-TRUNCATING-260 / emitted text carries the declared code  text says 260, shell says 260
+PASS  fail-TRUNCATING-520-next-range / exits non-zero  observed=520
+PASS  fail-TRUNCATING-520-next-range / emits something  ABORT [refusal 520] — cannot read step 1 evidence: ENOENT: n…
+PASS  fail-TRUNCATING-520-next-range / declared code resolvable from source  declared=520
+PASS  fail-TRUNCATING-520-next-range / direct-spawn status === declared  declared=520 observed=520 expected=520 platform=win32
+FAIL  fail-TRUNCATING-520-next-range / posix-shell status === declared & 255  declared=520 shell=0 expected=8  [TRUNCATES — the shell cannot show the declared value]
+PASS  fail-TRUNCATING-520-next-range / channels DIVERGE as the platform dictates  direct=520 shell=0 — an operator sees a different number depending on how they ran it
+PASS  fail-TRUNCATING-520-next-range / emitted text carries the declared code  text says 520, shell says 520
+PASS  assertEnvironment-provenance-refusal / exits non-zero  observed=6
+PASS  assertEnvironment-provenance-refusal / emits something  REFUSED: step-1 evidence carries no environment stamp. It pr…
+PASS  assertEnvironment-provenance-refusal / observed matches expected  observed=6 expected=6
+PASS  assertEnvironment-provenance-refusal / reached the INTENDED provenance refusal  missing=[] first-line="REFUSED: step-1 evidence carries no environment stamp. It predates the environment provena"
+PASS  corpus covers a TRUNCATING site  declared>255 observed — the & 255 assertion is not vacuous
+PASS  corpus covers a NON-TRUNCATING site  declared<=255 observed — both sides of the boundary exercised
+checksRun=37 failures=6 floor=37
+EXIT CONTRACT RUNTIME RED
+exit=1
+FINAL BUILD after sync-only UI state removal
+COMMAND: node app/node_modules/vite/bin/vite.js build app
+vite v6.4.3 building for production...
+transforming...
+✓ 1710 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.74 kB │ gzip:   0.41 kB
+dist/assets/App-4jnwqq-N.css      1.59 kB │ gzip:   0.65 kB
+dist/assets/index-BqTFzHXV.css   14.68 kB │ gzip:   3.78 kB
+dist/assets/index-XjJKMEAE.js   203.16 kB │ gzip:  64.08 kB
+dist/assets/App-CgkKnFyN.js     819.01 kB │ gzip: 204.41 kB
+✓ built in 3.15s
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+exit=0

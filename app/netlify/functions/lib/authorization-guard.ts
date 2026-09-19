@@ -1,66 +1,6 @@
-/**
- * Server-side Brad authorization currency check — B9-08 / INV-63, Jess
- * Gate correction round, 2026-09-12 ("the server must independently
- * verify... Brad/operator authorization exists; authorization applies to
- * this exact opportunity and contract revision/version; authorization
- * has not expired, been superseded, revoked, or already consumed").
- *
- * DELIBERATELY IMPORTS the real carrier/model functions from `src/lib`
- * rather than duplicating them — the SAME precedent
- * `ghl-contract-send-readback.ts` already established for
- * `classifyDocumentReadback` ("~80 lines of branching, evolving
- * classification logic -- duplicating it here would risk two copies
- * silently diverging"). `latestBradContractAuthorizationForOpportunity`
- * and `isSameContractVersion` are equally evolving, equally risky to
- * fork, and equally PURE (no I/O, no React) -- importing them is reading
- * evolving logic once, not a second write path.
- *
- * WHAT THIS DOES NOT CHECK, DISCLOSED, NOT HIDDEN. Full authorization
- * currency (`contract-authorization-model.ts`'s
- * `evaluateBradAuthorizationCurrency`) also compares the LIVE current
- * preview's full populated content against the content snapshotted at
- * authorization time (`CONTENT_CHANGED`) -- catching a material change
- * to a fact that does NOT bump `ContractVersionIdentity` (closing date,
- * earnest money, a signer, an addendum, attorney text --
- * `contract-authorization-model.ts`'s own header: "CONTENT-LEVEL
- * REVOCATION, NOT JUST VERSION-LEVEL"). Reproducing that check here
- * would require reconstructing the ENTIRE current `ContractDocumentPreview`
- * server-side -- ARV, comps, seller facts, every populated field -- an
- * enormous, disproportionate scope increase for a security-hardening
- * correction, and this codebase's own "do so narrowly" instruction for
- * this round governs. What THIS function verifies instead, exactly and
- * only: a Brad/operator authorization record exists, for the EXACT
- * `ContractVersionIdentity` being sent (closing REVISION_CHANGED and,
- * as a consequence of `latestBradContractAuthorizationForOpportunity`
- * always resolving to the newest record, effectively closing "an OLDER,
- * superseded-by-a-newer-authorization record was presented" too), by
- * the recognized authorizer, against the configured template identity.
- * A content-only change with no version bump AND no new authorization
- * remains a real, REPORTED gap -- exactly the kind of thing
- * `contract-authorization-model.ts`'s own review-screen UI exists to
- * surface to a human before authorizing, and exactly why this check is
- * repeated at BOTH the reservation and the send-execution boundary
- * (narrowing, not eliminating, the window between "Brad authorized" and
- * "the provider call actually fires").
- *
- * NOT AUTHENTICATED IDENTITY -- PRODUCT OWNER SINGLE-USER V1 RULING,
- * 2026-09-12. This function confirms that a GHL Note exists with the
- * exact expected SHAPE and CONTENT (author fields reading "brad",
- * matching revision, matching template) -- it does NOT confirm that a
- * real, authenticated Brad wrote it. `contact.notes` are written through
- * `ghl-proxy.ts`'s generic, unauthenticated `POST /contacts/{id}/notes`
- * path; nothing in this application binds "brad" to a login, session,
- * or credential of any kind. Brad has accepted this as a named residual
- * risk for single-user V1, where he is presently the only operator with
- * access to the deployed application at all -- IAOS V1 does NOT add
- * authentication, and this check must never be described as
- * "authenticated" or "cryptographically verified" authorization. It is
- * accurately described only as: a same-shape, same-content GHL Note
- * check. Authentication is a REQUIRED, NOT YET BUILT gate before
- * multi-user access, automation, or commercial customer use -- see
- * `ghl-contract-send-reserve.ts`'s own "FUTURE PRODUCTION GATE" note.
- */
-
+/** INV-95: identity/version check. Callers also authenticate Brad and recompute full content currency.
+ * Brad approved the explicit canonical TREC -> configured Test GHL template binding.
+ * The request template ID and all Test-only gates remain independently enforced. */
 import { latestBradContractAuthorizationForOpportunity } from "../../../src/lib/contract-authorization-carriers";
 import { isSameContractVersion, type ContractVersionIdentity } from "../../../src/lib/board9-contract-model";
 
@@ -103,6 +43,7 @@ export function verifyAuthorizationNoteCurrency(args: {
   /** The raw JSON version string the caller declared -- parsed HERE, never trusted pre-parsed, so a malformed/tampered string fails closed rather than being coerced by a caller-side parse. */
   declaredVersionRaw: string;
   expectedTemplateName: string;
+  expectedTemplateSource?: string;
 }): AuthorizationNoteCheck {
   const declaredVersion = parseVersionRaw(args.declaredVersionRaw);
   if (!declaredVersion) {
@@ -121,7 +62,7 @@ export function verifyAuthorizationNoteCurrency(args: {
   if (!isSameContractVersion(record.version as ContractVersionIdentity, declaredVersion)) {
     return { ok: false, reason: "REVISION_CHANGED_OR_SUPERSEDED", message: "The latest recorded authorization does not cover the exact revision being sent -- it has changed or been superseded." };
   }
-  if (record.templateName !== args.expectedTemplateName) {
+  if (record.templateName !== args.expectedTemplateName || (args.expectedTemplateSource !== undefined && record.templateSource !== args.expectedTemplateSource)) {
     return { ok: false, reason: "TEMPLATE_CHANGED", message: "The recorded authorization's template does not match the configured template." };
   }
   return { ok: true };

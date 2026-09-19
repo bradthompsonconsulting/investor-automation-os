@@ -1,3 +1,5 @@
+import { requireAppWriter } from "./lib/app-write-auth";
+import { exact, identifier } from "./lib/write-contracts";
 /**
  * Contract-send READBACK — B9-08 / INV-63 correction round, 2026-09-11
  * (item 5: "a successful POST response is not sufficient... perform
@@ -55,13 +57,18 @@ export const handler = async (event: any) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: CORS, body: "" };
   if (event.httpMethod !== "POST") return { statusCode: 405, headers: CORS, body: "Method Not Allowed" };
 
+  try { requireAppWriter(event); } catch { return { statusCode: 401, headers: CORS, body: JSON.stringify({ error: "Application write sign-in required" }) }; }
+
   if (LOCATION_ID !== TEST_LOCATION_ID) {
     return { statusCode: 403, headers: CORS, body: JSON.stringify({ error: "Forbidden", by: "iaos-contract-send-readback-test-only" }) };
   }
 
   let payload: Record<string, unknown>;
   try {
+    if (event.isBase64Encoded || Object.keys(event.queryStringParameters ?? {}).length) throw new Error("Unexpected request envelope");
     payload = event.body ? JSON.parse(event.body) : {};
+    exact(payload, ["documentId"]);
+    identifier(payload.documentId);
   } catch {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "Malformed JSON body" }) };
   }
@@ -97,6 +104,7 @@ export const handler = async (event: any) => {
     const text = await res.text();
     let body: unknown = null;
     try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    if (body && typeof body === "object" && Array.isArray((body as any).documents) && (body as any).documents.filter((d: any)=>d?.documentId===documentId).length > 1) body = null;
     outcome = { kind: "http_response", status: res.status, body };
   } catch (e: any) {
     outcome = { kind: "network_error", message: e?.message ?? "Network error reading back the document" };

@@ -295,10 +295,10 @@ async function fetchAllIds(token: string): Promise<ContactMeta[]> {
   return all;
 }
 
-async function score(contact: ContactMeta): Promise<any> {
+async function score(contact: ContactMeta, webhookSecret: string): Promise<any> {
   const res = await fetch(SCORE_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-IAOS-Secret": webhookSecret },
     body: JSON.stringify({ contactId: contact.id }),
   });
   if (!res.ok) {
@@ -343,6 +343,12 @@ async function score(contact: ContactMeta): Promise<any> {
   }
 
   const fileVars = parseEnvFile(envText);
+  // INV-95: resolve the dedicated caller credential from the same explicit file.
+  const webhookSecret = fileVars.IAOS_MOTIVATION_WEBHOOK_SECRET?.trim() ?? "";
+  if (!IS_PREVIEW && webhookSecret.length < 32) {
+    console.error("ERROR: IAOS_MOTIVATION_WEBHOOK_SECRET is missing or invalid in the named credential file. No request was issued.");
+    process.exit(2);
+  }
   const token = fileVars.GHL_PRIVATE_API_KEY;
   if (token === undefined) {
     console.error(
@@ -474,7 +480,7 @@ async function score(contact: ContactMeta): Promise<any> {
   }> = [];
 
   for (const c of contacts) {
-    const res = await score(c);
+    const res = await score(c, webhookSecret);
     const name = `${c.firstName} ${c.lastName}`.trim() || c.id;
     if (res.error) {
       rows.push({ name, motivation: 0, deal: 0, combined: 0, completeness: 0, bucketTag: "?", suppressed: false, error: res.error });

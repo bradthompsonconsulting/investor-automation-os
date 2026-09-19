@@ -1,3 +1,4 @@
+const { authorizedModule, resetClaims, targetRead } = require("./write-auth-fixture.cjs");
 /**
  * Contract-send READBACK endpoint -- limit-boundary and pagination-honesty
  * proof. B9-08/INV-63 (implementation), B9-10/INV-65 Jess Gate repair
@@ -44,7 +45,7 @@ const SOURCES = [
 try {
   execSync(
     'npx tsc ' + SOURCES.map((s) => '"' + s + '"').join(' ') +
-    ' --outDir "' + TMP + '" --rootDir "' + APP + '" --module commonjs --target es2020 --strict',
+    ' --outDir "' + TMP + '" --rootDir "' + APP + '" --module commonjs --target es2020 --strict --skipLibCheck',
     { cwd: APP, stdio: 'inherit' },
   );
 } catch (_) {
@@ -75,9 +76,10 @@ const READBACK_JS = path.join(TMP, 'netlify', 'functions', 'ghl-contract-send-re
 const CONFIG_JS = path.join(TMP, 'shared', 'ghl-config.js');
 const configModule = require(CONFIG_JS);
 const testConfig = configModule.getConfig('test');
-const readback = require(READBACK_JS);
+const readback = authorizedModule(READBACK_JS);
 
 function makeMockFetch(responses) {
+  resetClaims();
   const calls = [];
   let i = 0;
   const fn = async (url, init) => {
