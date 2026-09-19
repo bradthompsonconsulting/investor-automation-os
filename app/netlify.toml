@@ -28,6 +28,30 @@
 [functions."mailer-digest"]
   schedule = "0 13 * * 5"
 
+# Board #9 Phase B packaging correction. Both functions transitively load
+# the INV-67 PDF runtime (ghl-write.ts only for an authorization-note
+# write, via write-note-guard -> write-derived-note -> write-contract-
+# context; generate-contract-pdf.ts directly), which resolves the
+# canonical TREC 20-19 source PDF from disk relative to the bundled
+# function's own directory.
+#
+# ONE canonical PDF, not a packaged duplicate: docs/TREC Resale Home
+# Contract.pdf at the repo root -- one level ABOVE this site's base
+# directory (app/, see the header above) -- is packaged directly.
+# `included_files` paths are relative to the base directory, so `../docs/`
+# resolves to that exact repo-root file; Netlify's function bundler places
+# an included file that originates from outside the base directory
+# alongside the OTHER bundled functions, one directory level above each
+# function's own bundle -- exactly inv67-pdf-render-core.cjs's own
+# documented candidate #3 (`__dirname/../docs/...`), not candidate #2.
+# See test-inv67-pdf-packaging.cjs, which builds the real esbuild artifact
+# and proves this exact layout resolves, without a second, independently
+# drifting original ever being committed.
+[functions."ghl-write"]
+  included_files = ["../docs/TREC Resale Home Contract.pdf"]
+[functions."generate-contract-pdf"]
+  included_files = ["../docs/TREC Resale Home Contract.pdf"]
+
 # SPA catch-all — client-side router handles all paths
 [[redirects]]
   from = "/*"

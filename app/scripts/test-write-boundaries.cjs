@@ -279,7 +279,17 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   process.env.IAOS_ENV = 'test';
   await check('canonical projection computation remains available',
     () => assert.equal(context.projection.ok, true));
-  const authorization=require('../src/lib/contract-authorization-carriers.ts').formatBradContractAuthorizationNote(fixture.authorization);
+  // Board #9 Phase B correction: the server now INDEPENDENTLY regenerates
+  // the PDF from `context` to verify authorization currency (see
+  // write-derived-note.ts / write-contract-context.ts), so a note claiming
+  // a synthetic/fabricated artifact hash (the fixture's own placeholder)
+  // can never pass. Build this note's claimed artifact facts from a REAL
+  // regeneration against the same canonical context the server itself will
+  // recompute, so this test still proves genuine end-to-end currency.
+  const realArtifactFacts = await require('../netlify/functions/lib/write-contract-context.ts').currentGeneratedArtifactFacts(context);
+  const realAuthorization = require('../src/lib/contract-authorization-model.ts').buildAuthorizationRecordArgs({opportunityId: opportunity.id, at: context.version.agreementAt, preview: context.preview, currentVersion: context.version, artifact: realArtifactFacts});
+  assert.equal(realAuthorization.ok, true, JSON.stringify(realAuthorization));
+  const authorization=require('../src/lib/contract-authorization-carriers.ts').formatBradContractAuthorizationNote(realAuthorization.value);
   await check('retained canonical Brad authorization',async()=>{const res=await handler(event('note.create',contact.id,{body:authorization}));assert.equal(res.statusCode,200,res.body);});
   await check('reject stale authorization content',async()=>{const before=writes;const res=await handler(event('note.create',contact.id,{body:authorization.replace('Jane Seller','Other Seller')}));assert.equal(res.statusCode,409);assert.equal(writes,before);});
   await check('freeze Current Offer after agreement',async()=>{const before=writes;assert.equal((await handler(event('opportunity.currentOffer',opportunity.id,{value:195000}))).statusCode,409);assert.equal(writes,before);});

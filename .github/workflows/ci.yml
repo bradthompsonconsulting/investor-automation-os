@@ -193,6 +193,17 @@ jobs:
       - name: INV-67 PDF geometry cache validation
         run: node app/scripts/test-inv67-pdf-geometry-cache.cjs
 
+      # Board #9 Phase B packaging correction. Bundles ghl-write.ts and
+      # generate-contract-pdf.ts with esbuild (mirroring Netlify's own
+      # function bundler) and executes the REAL packaged artifact -- not
+      # the TypeScript require shim every other suite here uses. Catches
+      # exactly the class of regression that shipped past every other
+      # check in this workflow: a module-scope require of the PDF runtime
+      # 502'd ghl-write.ts on every request, including unauthenticated
+      # ones, in a real deploy-preview.
+      - name: Board #9 Phase B PDF runtime packaging validation
+        run: node app/scripts/test-inv67-pdf-packaging.cjs
+
       - name: Typecheck and build
         run: pnpm --dir app build
 

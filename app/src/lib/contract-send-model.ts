@@ -92,8 +92,39 @@ import {
 import {
   evaluateBradAuthorizationCurrency,
   type BradAuthorizationReason,
+  type CurrentArtifactFacts,
 } from "./contract-authorization-model";
 import type { ParsedBradContractAuthorization } from "./contract-authorization-carriers";
+
+/**
+ * Board #9 Phase B correction. This module serves the automated
+ * template-send flow, now fully retired and unreachable
+ * (ghl-contract-send-execute.ts / ghl-contract-send-reserve.ts both return
+ * 410 before ever calling anything in this file). `evaluateBrad
+ * AuthorizationCurrency`'s `currentArtifactFacts` argument is required --
+ * this module must NEVER invent or echo back "current" facts that could
+ * coincidentally (or by construction) match a real record. An earlier
+ * pass of this file compared a record's own claimed artifact fields
+ * against themselves, which is worse than useless: it looks like a check
+ * but always passes vacuously. Corrected: this sentinel is guaranteed to
+ * fail `evaluateBradAuthorizationCurrency`'s own shape validation (schema
+ * v2 requires 64-hex hashes and non-empty version strings; empty strings
+ * satisfy neither), so every call through this module reports
+ * `ARTIFACT_FACTS_INVALID` and NEVER `authorized: true` -- structurally
+ * incapable of claiming current authorization on the artifact dimension,
+ * honestly reflecting that this module has no way to independently verify
+ * an artifact (it is PURE, no I/O, imported by browser code -- see this
+ * file's own header -- and serves a path with no live write left to gate
+ * anyway). The REAL currency checks this function has always performed
+ * (previewComplete / TEMPLATE_CHANGED / REVISION_CHANGED / CONTENT_CHANGED)
+ * are completely unaffected.
+ */
+const RETIRED_PATH_NEVER_MATCHES_ARTIFACT_FACTS: CurrentArtifactFacts = {
+  artifactSha256: "",
+  sourcePdfSha256: "",
+  generatorVersion: "",
+  manifestVersion: "",
+};
 import type {
   ParsedContractSend,
   SignerSnapshot,
@@ -136,7 +167,7 @@ export type EvaluateSendEligibilityArgs = {
 };
 
 export function evaluateSendEligibility(args: EvaluateSendEligibilityArgs): SendEligibility {
-  const authStatus = evaluateBradAuthorizationCurrency(args.authRecord, args.preview);
+  const authStatus = evaluateBradAuthorizationCurrency(args.authRecord, args.preview, RETIRED_PATH_NEVER_MATCHES_ARTIFACT_FACTS);
   if (!authStatus.authorized) {
     return { eligible: false, reasons: authStatus.reasons };
   }
@@ -614,7 +645,7 @@ export type BuildContractSentEvidenceArgs = {
  * Contract Sent" / "TRANSMISSION_NOT_CONFIRMED" failure behavior.
  */
 export function buildContractSentEvidence(args: BuildContractSentEvidenceArgs): ContractSentEvidence {
-  const authStatus = evaluateBradAuthorizationCurrency(args.authRecord, args.currentPreview);
+  const authStatus = evaluateBradAuthorizationCurrency(args.authRecord, args.currentPreview, RETIRED_PATH_NEVER_MATCHES_ARTIFACT_FACTS);
   const bradSendAuthorization =
     authStatus.authorized
       ? {

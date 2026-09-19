@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 108;
+const FLOOR = 177;
 let failures = 0;
 let checks = 0;
 
@@ -118,9 +118,9 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('ContractWorkspace reads via ghl.opportunities.listPipeline (existing read)', /ghl\.opportunities\.listPipeline\(\)/.test(contractTsx), true);
   check('ContractWorkspace reads via ghl.notes.list (existing read)', /ghl\.notes\.list\(contactId\)/.test(contractTsx), true);
   check('ContractWorkspace selects the opportunity via the SAME shared helpers as the other workspaces', /import \{ opportunitiesForContact, opportunityCandidates, selectOpportunity \} from "\.\.\/lib\/underwriting\/selectOpportunity"/.test(contractTsx), true);
-  check('ContractWorkspace does not call any other ghl.* namespace than contacts/opportunities/notes/proposals (B9-08/INV-63 adds the sole sanctioned e-sign-provider namespace)', (() => {
+  check('ContractWorkspace does not call any other ghl.* namespace than contacts/opportunities/notes/proposals/contracts (B9-08/INV-63 adds the sole sanctioned e-sign-provider namespace; Board #9 Phase B adds the sole sanctioned live-PDF-generation namespace)', (() => {
     const calls = contractTsxNoComments.match(/ghl\.[a-zA-Z]+\./g) || [];
-    return calls.every((c) => c === 'ghl.contacts.' || c === 'ghl.opportunities.' || c === 'ghl.notes.' || c === 'ghl.proposals.');
+    return calls.every((c) => c === 'ghl.contacts.' || c === 'ghl.opportunities.' || c === 'ghl.notes.' || c === 'ghl.proposals.' || c === 'ghl.contracts.');
   })(), true);
 }
 
@@ -363,6 +363,324 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check(
     'ContractWorkspace.tsx\'s own FIELD_LABELS carries the Legal Municipality entry (same "group.field" key contract-document-model.ts uses)',
     /"propertyLegalDescription\.legalMunicipality": "Legal municipality \(¶2A City of\)"/.test(contractTsx),
+    true,
+  );
+}
+
+// ============================================================
+// Board #9 Phase B correction -- Brad must generate the CURRENT artifact
+// before authorizing it, and any prior generation is invalidated the
+// instant relevant canonical facts change underneath it (stale UI
+// evidence can never authorize). Proven here by source wiring, matching
+// this file's own no-render convention (see header).
+// ============================================================
+{
+  const generateEffectMatch = contractTsxNoComments.match(/useEffect\(\(\) => \{\s*setGeneratedArtifact\(null\);[\s\S]*?\}, \[contractDocumentPreview\]\);/);
+  check('an invalidation useEffect exists that clears generatedArtifact whenever contractDocumentPreview changes', !!generateEffectMatch, true);
+  check('that same invalidation effect also clears any stale generateError', /setGenerateError\(null\);/.test(generateEffectMatch ? generateEffectMatch[0] : ''), true);
+  check('the invalidation effect is keyed ONLY on contractDocumentPreview (the canonical, live-derived facts), not on an unrelated or broader dependency', /\}, \[contractDocumentPreview\]\);/.test(generateEffectMatch ? generateEffectMatch[0] : ''), true);
+
+  check('the display evaluator (bradAuthorizationStatus) is fed currentArtifactFactsForDisplay, never a self-referential record field', /evaluateBradAuthorizationCurrency\(bradAuthorizationRecord, contractDocumentPreview, currentArtifactFactsForDisplay\)/.test(contractTsxNoComments), true);
+  check('currentArtifactFactsForDisplay falls back to an all-empty (structurally invalid) bundle when nothing has been generated yet, never a placeholder that could pass shape validation', /if \(!generatedArtifact\) \{\s*return \{ artifactSha256: "", sourcePdfSha256: "", generatorVersion: "", manifestVersion: "" \};/.test(contractTsxNoComments), true);
+  check('currentArtifactFactsForDisplay is recomputed from generatedArtifact alone (useMemo dependency), so it goes stale-safe the instant generatedArtifact is cleared', /\}, \[generatedArtifact\]\);/.test(contractTsxNoComments), true);
+
+  check('handleAuthorize refuses to proceed when no artifact has been generated', /if \(!generatedArtifact\) \{\s*setAuthorizeError\(/.test(contractTsxNoComments), true);
+  check('handleAuthorize passes the SAME generated artifact facts into buildAuthorizationRecordArgs (never a stored/claimed value)', /buildAuthorizationRecordArgs\(\{[\s\S]{0,400}artifact: \{\s*artifactSha256: generatedArtifact\.outputSha256,\s*sourcePdfSha256: generatedArtifact\.sourceSha256,\s*generatorVersion: generatedArtifact\.generatorVersion,\s*manifestVersion: generatedArtifact\.manifestVersion,/.test(contractTsxNoComments), true);
+  check('the Authorize button is disabled whenever no artifact has been generated yet, in addition to the pre-existing eligibility gate', /disabled=\{!authorizationEligibility\.eligible \|\| !generatedArtifact\}/.test(contractTsx), true);
+}
+
+// ============================================================
+// Closing-date readback off-by-one fix (display-only). Brad entered
+// 2026-10-15 and the confirmed green readback showed "10/14/2026" --
+// `renderFieldValue`'s closingPossession.closingDate case formatted the
+// stored UTC-midnight instant with `toLocaleDateString()` and no
+// `timeZone` option, so it rendered in the browser's LOCAL zone, rolling
+// the displayed day back by one for any timezone behind UTC. The stored
+// note, the parser, and the PDF/projection path (closingDateMonthDayTransport,
+// contract-ghl-transport-formatting.ts) were all already UTC-safe and are
+// UNCHANGED here -- this was a single-line, display-only defect.
+//
+// Proven two ways, matching this file's own no-render convention (source
+// wiring) plus a direct, locale-independent behavioral check of the exact
+// Date/Intl call the fixed line now makes (no component rendering).
+// ============================================================
+{
+  check(
+    'the closingPossession.closingDate case now formats with an explicit UTC timeZone (matches the already-established closingDateMonthDayTransport pattern)',
+    /case "closingPossession\.closingDate":[\s\S]{0,700}toLocaleDateString\(undefined, \{ timeZone: "UTC" \}\)/.test(contractTsxNoComments),
+    true,
+  );
+
+  // Locale-independent: reads the formatted day-of-month directly via
+  // Intl's own parts API rather than parsing a locale-formatted string.
+  function dayOfMonthInZone(iso, timeZone) {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone, day: 'numeric' }).formatToParts(new Date(iso));
+    return Number(parts.find((p) => p.type === 'day').value);
+  }
+  check(
+    'the fixed call (explicit UTC) reads day 15 for 2026-10-15T00:00:00.000Z -- exactly what Brad entered, regardless of the runtime\'s local timezone',
+    dayOfMonthInZone('2026-10-15T00:00:00.000Z', 'UTC'),
+    15,
+  );
+  check(
+    'the SAME instant, formatted in a timezone behind UTC (America/Chicago) with no explicit timeZone override, reads day 14 -- proving the timeZone option is load-bearing, not cosmetic, and reproducing the exact bug Brad observed',
+    dayOfMonthInZone('2026-10-15T00:00:00.000Z', 'America/Chicago') === 14,
+    true,
+  );
+}
+
+// ============================================================
+// Generated-PDF download mechanism, and concise operator-neutral
+// authorization UI copy. Brad's generate-and-authorize flow generated and
+// authorized an artifact but never exposed the bytes to the browser's own
+// download machinery -- `generatedArtifact.pdfBase64` was read into
+// `currentArtifactFactsForDisplay`/`handleAuthorize` (hashes only) and
+// displayed as a truncated hash, but no <a download>/Blob/object-URL path
+// existed anywhere. Added `handleDownloadArtifact`, built directly from the
+// SAME in-memory `generatedArtifact.pdfBase64` bytes already used by
+// authorization -- no new fetch, no new generation, so the downloaded
+// file's SHA-256 can never diverge from the recorded `artifactSha256`.
+// Proven by source wiring, matching this file's own no-render convention.
+// ============================================================
+{
+  const downloadHandlerMatch = contractTsxNoComments.match(/function handleDownloadArtifact\(\)[\s\S]*?(?=\n\s*const bradAuthorizationStatus = useMemo)/);
+  const downloadHandlerSrc = downloadHandlerMatch ? downloadHandlerMatch[0] : '';
+  check('handleDownloadArtifact exists, immediately preceding bradAuthorizationStatus', !!downloadHandlerMatch, true);
+
+  // ---- Blob built from the SAME generated artifact bytes, never a re-fetch ----
+  check(
+    'the download handler decodes the base64 bytes from generatedArtifact.pdfBase64 -- the SAME in-memory generation result authorization already binds to',
+    /atob\(generatedArtifact\.pdfBase64\)/.test(downloadHandlerSrc),
+    true,
+  );
+  check(
+    'the download handler wraps those bytes in a Blob typed application/pdf',
+    /new Blob\(\[bytes\], \{ type: "application\/pdf" \}\)/.test(downloadHandlerSrc),
+    true,
+  );
+  check(
+    'the download handler performs NO network call of its own (no fetch(, no ghl. call, no re-generation) -- proves the download can never diverge from what was already generated and hashed',
+    !/fetch\(|ghl\.\w+\.\w+\(/.test(downloadHandlerSrc),
+    true,
+  );
+  check(
+    'the download filename embeds the exact generated artifact\'s own outputSha256 prefix -- the same hash value bound into the authorization record',
+    /generatedArtifact\.outputSha256\.slice\(0, 12\)/.test(downloadHandlerSrc) && /\.pdf`/.test(downloadHandlerSrc),
+    true,
+  );
+  check(
+    'handleDownloadArtifact is a no-op when no artifact has been generated yet (fails closed, never downloads a stale/absent file)',
+    /if \(!generatedArtifact\) return;/.test(downloadHandlerSrc),
+    true,
+  );
+
+  // ---- Object-URL cleanup ----
+  check(
+    'the download handler revokes the object URL it creates (no dangling blob: URL survives the download)',
+    /URL\.revokeObjectURL\(/.test(downloadHandlerSrc),
+    true,
+  );
+  check(
+    'a construction failure sets the download-preparation error rather than leaving a silently broken download button',
+    /catch \{[\s\S]*?setDownloadError\("Could not prepare the PDF\. Generate it again before saving authorization\."\);[\s\S]*?\}/.test(downloadHandlerSrc),
+    true,
+  );
+
+  // ---- Download button visibility and filename wiring in the JSX ----
+  check(
+    'a "Download PDF" button exists, gated on generatedArtifact existing, wired to handleDownloadArtifact',
+    /<Btn testId="contract-generated-artifact-download" onClick=\{handleDownloadArtifact\} busy=\{false\} disabled=\{!generatedArtifact\}>\s*Download PDF\s*<\/Btn>/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the download-preparation error is rendered via the same ErrorText pattern every other group error already uses',
+    /<ErrorText testId="contract-download-error">\{downloadError\}<\/ErrorText>/.test(contractTsxNoComments),
+    true,
+  );
+
+  // ---- Authorization button remains gated on a generated artifact (unchanged logic, only its label changed) ----
+  check(
+    'the authorize/save button is STILL disabled whenever no artifact has been generated yet (unchanged gating logic)',
+    /disabled=\{!authorizationEligibility\.eligible \|\| !generatedArtifact\}/.test(contractTsx),
+    true,
+  );
+  check(
+    'the authorize/save button\'s visible label is the new concise "Save authorization" copy',
+    /testId="contract-authorization-authorize-button"[\s\S]{0,300}>\s*Save authorization\s*</.test(contractTsx),
+    true,
+  );
+
+  // ---- Concise operator-neutral copy -- every new string present verbatim ----
+  const requiredCopy = [
+    'Authorization saved for this version.',
+    'Generate the PDF, review it, then save authorization.',
+    'The contract changed. Generate the updated PDF and save authorization again.',
+    'Changes since authorization',
+    'No changes since authorization was saved.',
+    'Download PDF',
+    'Save authorization',
+    'Could not prepare the PDF. Generate it again before saving authorization.',
+  ];
+  for (const text of requiredCopy) {
+    check('required concise copy is present verbatim: "' + text + '"', contractTsx.includes(text), true);
+  }
+  check('the three-state status labels ("Saved" / "Not saved" / "Unsaved changes") are all present', ['"Saved"', '"Not saved"', '"Unsaved changes"'].every((s) => contractTsx.includes(s)), true);
+
+  // ---- Hardcoded "Brad" removed from user-facing instructional/status copy ----
+  const removedBradCopy = [
+    'Brad-authorized',
+    'Not Brad-authorized',
+    'Authorize this exact revision',
+    'Differences from the last Brad-reviewed revision',
+    'No differences -- this is exactly the revision Brad last authorized.',
+    "Requires Brad's explicit action for this exact revision",
+    "Only Brad's own explicit action, for this exact document revision",
+    '(Brad authorization, confirmed provider transmission',
+  ];
+  for (const text of removedBradCopy) {
+    check('operator-specific copy no longer present: "' + text + '"', contractTsx.includes(text), false);
+  }
+
+  // ---- Legitimate contract data and durable authorization schema/identifiers UNCHANGED ----
+  // (this page never hardcodes "Brad Thompson" itself -- it is real GHL note
+  // data rendered dynamically via l.text -- so there is nothing to find or
+  // preserve here beyond the identifiers below.)
+  const preservedIdentifiers = [
+    'evaluateBradAuthorizationCurrency',
+    'formatBradContractAuthorizationNote',
+    'latestBradContractAuthorizationForOpportunity',
+    'bradAuthorizationRecord',
+    'bradAuthorizationStatus',
+  ];
+  for (const id of preservedIdentifiers) {
+    check('durable authorization identifier untouched: ' + id, contractTsx.includes(id), true);
+  }
+  // Durable proof the note SCHEMA itself is untouched -- read directly from
+  // contract-authorization-carriers.ts's own current source, never a git
+  // diff (which only has signal for this one session's uncommitted state
+  // and would pass vacuously forever after this change is committed). Any
+  // future accidental edit to the v2 header or its positional labels fails
+  // this the same way it would today.
+  const authCarriersSrc = readSrc('src/lib/contract-authorization-carriers.ts');
+  check(
+    'the durable v2 authorization note header is exactly unchanged',
+    /const HEADER = `IAOS BRAD CONTRACT AUTHORIZATION — \$\{BRAD_CONTRACT_AUTHORIZATION_LEDGER_VERSION\}`;/.test(authCarriersSrc),
+    true,
+  );
+  check(
+    'the durable v2 authorization note ledger version string is exactly unchanged',
+    /BRAD_CONTRACT_AUTHORIZATION_LEDGER_VERSION = "iaos-brad-contract-authorization-v2" as const;/.test(authCarriersSrc),
+    true,
+  );
+  check(
+    'the durable "brad" authorizedBy/operator literal is exactly unchanged (V1 permits no other authorizer)',
+    /record\.authorizedBy !== "brad"/.test(readSrc('src/lib/contract-authorization-model.ts')) &&
+      /record\.operator !== "brad"/.test(readSrc('src/lib/contract-authorization-model.ts')),
+    true,
+  );
+}
+
+// ============================================================
+// Saved-fact form hydration. A refresh previously reset every group's
+// draft to INITIAL_DRAFTS regardless of what was actually saved -- the
+// green "saved" panels read the canonical report directly and were
+// always correct, but the editable inputs read `drafts`, which was never
+// populated from canonical state. Editing one field (e.g. County) then
+// submitted every OTHER field in that group at its blank default,
+// either failing that group's own "every field needs a value"
+// validation outright (Property Legal Description) or resetting a
+// previously-made explicit choice (Seller Signing Model's "Select
+// One Seller or Two Sellers"). Fixed with `draftsFromReport` -- the
+// exact inverse of each handleSaveX below -- plus a hydration effect
+// gated to run exactly ONCE per opportunity. Proven by source wiring,
+// matching this file's own no-render convention.
+// ============================================================
+{
+  const hydrationFnMatch = contractTsxNoComments.match(/function draftsFromReport\(report: SellerContractFactsReport \| null, signingModel: SellerSigningModel \| null\): Drafts \{[\s\S]*?(?=export default function ContractWorkspace)/);
+  const hydrationFnSrc = hydrationFnMatch ? hydrationFnMatch[0] : '';
+  check('draftsFromReport exists, immediately preceding the component (function declaration order)', !!hydrationFnMatch, true);
+
+  // ---- The hydration effect fires exactly once per opportunity, never on every report recompute ----
+  const effectMatch = contractTsxNoComments.match(/const hydratedOpportunityId = useRef<string \| null>\(null\);\s*\n\s*useEffect\(\(\) => \{[\s\S]*?\}, \[screen, sellerContractFactsReport, latestSellerSigningModel\]\);/);
+  const effectSrc = effectMatch ? effectMatch[0] : '';
+  check('a hydration effect exists, tracking a per-opportunity hydratedOpportunityId ref', !!effectMatch, true);
+  check(
+    'the effect returns early (never re-hydrates) once the CURRENT opportunity is already hydrated -- proves a one-field edit mid-session is never overwritten by a later, unrelated report recompute',
+    /if \(hydratedOpportunityId\.current === screen\.opportunity\.id\) return;/.test(effectSrc),
+    true,
+  );
+  check(
+    'the effect calls setDrafts(draftsFromReport(...)) using the live report and signing model, never a second/invented hydration source',
+    /setDrafts\(draftsFromReport\(sellerContractFactsReport, latestSellerSigningModel\?\.model \?\? null\)\)/.test(effectSrc),
+    true,
+  );
+  check(
+    'the effect\'s dependency array does NOT include drafts/setDrafts -- proves it cannot loop or re-fire on its own write',
+    !/\[screen, sellerContractFactsReport, latestSellerSigningModel, drafts\]/.test(contractTsxNoComments) && /\[screen, sellerContractFactsReport, latestSellerSigningModel\]/.test(effectSrc),
+    true,
+  );
+
+  // ---- Property Legal Description: ALL SIX sub-fields hydrate, not just County -- the exact
+  // property Brad's report demonstrated failing ("every field needs a value") ----
+  const legalDescFields = ['lot', 'block', 'addition', 'county', 'exclusions'];
+  for (const f of legalDescFields) {
+    check(
+      `draftsFromReport hydrates legalDesc.${f} from legal.${f}'s populated ValueOrNone`,
+      new RegExp(`${f}: legal\\.${f}\\.kind === "populated" \\? valueOrNoneToDraft\\(legal\\.${f}\\.value\\) : d\\.legalDesc\\.${f}`).test(hydrationFnSrc),
+      true,
+    );
+  }
+  check('draftsFromReport hydrates legalDesc.reservationsKind/reservationsNote from legal.reservations', /reservationsKind: legal\.reservations\.kind === "populated"/.test(hydrationFnSrc) && /reservationsNote: legal\.reservations\.kind === "populated" && legal\.reservations\.value\.kind === "applies"/.test(hydrationFnSrc), true);
+  check('draftsFromReport hydrates legalDesc.municipalityKind/municipalityName from legal.legalMunicipality', /municipalityKind: legal\.legalMunicipality\.kind === "populated"/.test(hydrationFnSrc) && /municipalityName: legal\.legalMunicipality\.kind === "populated" && legal\.legalMunicipality\.value\.kind === "municipality"/.test(hydrationFnSrc), true);
+
+  // ---- Seller Signing Model: the exact second reported symptom ----
+  check(
+    'draftsFromReport hydrates sellerSigning.count/seller1Capacity from the parsed signing model, never leaving it at "unset" when a model was actually saved',
+    /count: signingModel\.kind === "one_seller" \? 1 : 2,/.test(hydrationFnSrc) && /seller1Capacity: signingModel\.seller1Capacity,/.test(hydrationFnSrc),
+    true,
+  );
+  check(
+    'draftsFromReport falls back to the unchanged INITIAL_DRAFTS sellerSigning shape when no signing model has ever been recorded (never invents a count)',
+    /sellerSigning: signingModel\s*\?\s*\{[\s\S]*?\}\s*:\s*d\.sellerSigning,/.test(hydrationFnSrc),
+    true,
+  );
+
+  // ---- A field with NO canonical record stays at its INITIAL_DRAFTS default -- never invented ----
+  check(
+    'an unresolved field explicitly falls back to the SAME INITIAL_DRAFTS default (d.*), never a guessed/invented value, for every hydrated group',
+    (() => {
+      const groups = ['legalDesc', 'lease', 'earnest', 'titleSurvey', 'propertyCondition', 'closingPossession', 'settlement', 'addenda', 'sellerEquitable', 'buyerBusinessConfig', 'sellerNotice'];
+      return groups.every((g) => new RegExp('d\\.' + g + '\\.').test(hydrationFnSrc));
+    })(),
+    true,
+  );
+
+  // ---- Two disclosed, deliberate, pre-existing gaps -- not introduced by this fix, and documented as such ----
+  // The next two checks read the JSDoc comment directly above draftsFromReport,
+  // which contractTsxNoComments strips -- checked against contractTsx (WITH
+  // comments) instead, the only place this documentation lives.
+  check('buyerOverride is explicitly never hydrated (its audit-only "reason" text cannot be recovered from the aggregated report) -- documented, not silently dropped', /buyerOverride: d\.buyerOverride,/.test(hydrationFnSrc) && /audit-only `reason` text/.test(contractTsx), true);
+  check('the pre-existing attorney "will draft" vs "never recorded" ambiguity is documented as inherited, not introduced, by this fix', /inherits that same, pre-existing ambiguity/.test(contractTsx), true);
+
+  // ---- "intermediary" representation has no draft shape -- correctly excluded, never silently miscoerced ----
+  check(
+    'representation hydration explicitly excludes "intermediary" (the draft type has no shape for it) rather than passing it through and producing a type/runtime mismatch',
+    /rep\.kind === "populated" && rep\.value\.kind !== "intermediary" \? repFactToDraft\(rep\.value\) : d\.representation,/.test(hydrationFnSrc),
+    true,
+  );
+
+  // ---- The save handlers themselves are UNCHANGED -- they still read straight from `drafts`,
+  // which is now correctly pre-populated. This is why "refresh -> edit one field -> save"
+  // preserves every other saved value: hydration fills drafts, save reads drafts, nothing
+  // in between re-blanks the untouched fields. ----
+  check(
+    'handleSaveLegalDesc is unchanged -- still validates/reads lot/block/addition/county/exclusions straight from drafts.legalDesc',
+    /const lot = valueOrNoneToFact\(drafts\.legalDesc\.lot\);[\s\S]{0,400}if \(!lot \|\| !block \|\| !addition \|\| !county \|\| !exclusions\)/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'handleSaveSellerSigning is unchanged -- still reads drafts.sellerSigning.count/seller1Capacity straight from drafts',
+    /if \(drafts\.sellerSigning\.count === "unset"\)/.test(contractTsxNoComments) && /model = \{ kind: "one_seller", seller1Capacity: drafts\.sellerSigning\.seller1Capacity \};/.test(contractTsxNoComments),
     true,
   );
 }

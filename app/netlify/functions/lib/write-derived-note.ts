@@ -3,7 +3,7 @@ import { matchingArvApprovalForOpportunity } from "../../../src/lib/arv-approval
 /** INV-95: recompute system-derived ledger authority from fresh GHL evidence. */
 import { isDeepStrictEqual } from "node:util";
 import { getConfig } from "../../../shared/ghl-config";
-import { currentContractContext } from "./write-contract-context";
+import { currentContractContext, currentGeneratedArtifactFacts } from "./write-contract-context";
 import type { GhlBoundary } from "./ghl-write-boundary";
 import { parseBradContractAuthorizationNote } from "../../../src/lib/contract-authorization-carriers";
 import { evaluateBradAuthorizationCurrency } from "../../../src/lib/contract-authorization-model";
@@ -28,7 +28,10 @@ export async function validateDerivedNote(boundary: GhlBoundary, body: string) {
   if (!record) return;
   const context = await currentContractContext(boundary, record.opportunityId);
   if (authorization) {
-    if (!evaluateBradAuthorizationCurrency(authorization, context.preview).authorized) throw new Error("Authorization differs from current canonical document");
+    // Independently regenerated, never the note's own claim -- see
+    // currentGeneratedArtifactFacts's own header.
+    const currentArtifactFacts = await currentGeneratedArtifactFacts(context);
+    if (!evaluateBradAuthorizationCurrency(authorization, context.preview, currentArtifactFacts).authorized) throw new Error("Authorization differs from current canonical document");
     return;
   }
   const history = allContractLifecycleRecordsForOpportunity(context.notes, record.opportunityId);
