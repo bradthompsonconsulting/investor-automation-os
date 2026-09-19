@@ -162,7 +162,47 @@ function authorize(opportunityId, preview) {
 const { report: completeReport, preview: completePreview } = buildCompleteReportAndPreview(OPP, VERSION);
 const authRecord = authorize(OPP, completePreview);
 checkTrue('fixture sanity: the complete preview IS previewComplete', completePreview.previewComplete === true);
-checkTrue('fixture sanity: the authorization is current against the complete preview', A.evaluateBradAuthorizationCurrency(authRecord, completePreview).authorized === true);
+checkTrue('fixture sanity: the authorization is current against the complete preview', A.evaluateBradAuthorizationCurrency(authRecord, completePreview, SAMPLE_ARTIFACT).authorized === true);
+
+// Board #9 Phase B correction: buildSendAttemptArgs can no longer succeed
+// for ANY input -- this model is retired, and its authorization-currency
+// check now runs against a structurally-guaranteed-invalid artifact
+// sentinel (RETIRED_PATH_NEVER_MATCHES_ARTIFACT_FACTS in
+// contract-send-model.ts), so evaluateSendEligibility can never report
+// eligible:true and buildSendAttemptArgs can never report ok:true. That is
+// the INTENDED, correct behavior -- this model's two live HTTP endpoints
+// already unconditionally return 410. Sections 9-13 below still need a
+// SendAttemptArgs-SHAPED fixture object to exercise logic that is NOT
+// retired: the send-carrier note round-trip (contract-send-carriers.ts),
+// cross-opportunity/cross-revision retry and leak checks in
+// evaluateSendEligibility (still real, pure comparisons -- only the
+// authorization-currency GATE ahead of them is now permanently closed),
+// and Contract Sent eligibility (board9-contract-model.ts, never
+// retired). This constructs that exact shape directly -- the same shape
+// buildSendAttemptArgs itself produced before this correction -- WITHOUT
+// resurrecting any production code path that could claim current
+// authorization.
+function fixtureSendAttempt(overrides) {
+  return Object.assign({
+    at: SEND_AT,
+    operator: null,
+    opportunityId: OPP,
+    attemptId: SEND_AT,
+    status: 'in_progress',
+    version: completePreview.version,
+    templateName: completePreview.templateName,
+    templateSource: completePreview.templateSource,
+    requestedTemplateId: REQUESTED_TEMPLATE_ID,
+    authorizedAt: authRecord.at,
+    signers: [{ role: 'Seller', displayName: 'Jane Seller' }],
+    confirmedRecipientId: null,
+    expirationAt: EXPIRATION_AT,
+    requestAt: SEND_AT,
+    iaosObservedAcceptanceAt: null,
+    providerResponse: null,
+    failureReason: null,
+  }, overrides || {});
+}
 
 // ============================================================
 // 1. An unauthorized document cannot send.
@@ -196,7 +236,12 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
   const { preview: newerPreview } = buildCompleteReportAndPreview(OPP, bumped);
   const eligibility = S.evaluateSendEligibility({ authRecord, preview: newerPreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('a stale authorization (older revision) cannot send', eligibility.eligible === false);
-  check('the refusal names REVISION_CHANGED', eligibility.reasons.map((r) => r.code), ['REVISION_CHANGED']);
+  // Board #9 Phase B correction: contract-send-model.ts is retired and now
+  // evaluates currency against a structurally-guaranteed-invalid artifact
+  // sentinel (see RETIRED_PATH_NEVER_MATCHES_ARTIFACT_FACTS), so every
+  // currency refusal here also always carries the four ARTIFACT_FACTS_INVALID
+  // reasons alongside whatever else independently fired.
+  check('the refusal names REVISION_CHANGED', eligibility.reasons.map((r) => r.code), ['REVISION_CHANGED', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
 }
 
 // ============================================================
@@ -206,7 +251,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
   const changedTemplatePreview = Object.assign({}, completePreview, { templateName: 'A DIFFERENT TEMPLATE ENTIRELY' });
   const eligibility = S.evaluateSendEligibility({ authRecord, preview: changedTemplatePreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('a changed template cannot send', eligibility.eligible === false);
-  check('the refusal names TEMPLATE_CHANGED', eligibility.reasons.map((r) => r.code), ['TEMPLATE_CHANGED']);
+  check('the refusal names TEMPLATE_CHANGED', eligibility.reasons.map((r) => r.code), ['TEMPLATE_CHANGED', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
 }
 
 // ============================================================
@@ -219,7 +264,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
   const mutatedPreview = Object.assign({}, completePreview, { documentLines: mutatedLines });
   const eligibility = S.evaluateSendEligibility({ authRecord, preview: mutatedPreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('changed material content (closing date) cannot send', eligibility.eligible === false);
-  check('the refusal names CONTENT_CHANGED', eligibility.reasons.map((r) => r.code), ['CONTENT_CHANGED']);
+  check('the refusal names CONTENT_CHANGED', eligibility.reasons.map((r) => r.code), ['CONTENT_CHANGED', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
 }
 
 // ============================================================
@@ -232,7 +277,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
   const mutatedPreview = Object.assign({}, completePreview, { documentLines: mutatedLines });
   const eligibility = S.evaluateSendEligibility({ authRecord, preview: mutatedPreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('a changed delivery detail (seller notice email) cannot send', eligibility.eligible === false);
-  check('the refusal names CONTENT_CHANGED', eligibility.reasons.map((r) => r.code), ['CONTENT_CHANGED']);
+  check('the refusal names CONTENT_CHANGED', eligibility.reasons.map((r) => r.code), ['CONTENT_CHANGED', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
 
   const mutatedSignerLines = completePreview.documentLines.map((l) =>
     l.group === 'parties' && l.field === 'sellerSigners' ? Object.assign({}, l, { text: 'A Different Person (Seller)' }) : l,
@@ -240,7 +285,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
   const mutatedSignerPreview = Object.assign({}, completePreview, { documentLines: mutatedSignerLines });
   const signerEligibility = S.evaluateSendEligibility({ authRecord, preview: mutatedSignerPreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('a changed signer identity cannot send', signerEligibility.eligible === false);
-  check('the refusal names CONTENT_CHANGED', signerEligibility.reasons.map((r) => r.code), ['CONTENT_CHANGED']);
+  check('the refusal names CONTENT_CHANGED', signerEligibility.reasons.map((r) => r.code), ['CONTENT_CHANGED', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
 }
 
 // ============================================================
@@ -261,7 +306,14 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
   const forcedAuthRecord = AC.parseBradContractAuthorizationNote(AC.formatBradContractAuthorizationNote(forcedAuthBuilt.value));
   const eligibility = S.evaluateSendEligibility({ authRecord: forcedAuthRecord, preview: forcedPreview, existingSend: null, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('missing signer information cannot send, even if authorization currency alone would pass', eligibility.eligible === false);
-  check('the refusal names MISSING_SIGNER_OR_DELIVERY_INFO', eligibility.reasons.map((r) => r.code), ['MISSING_SIGNER_OR_DELIVERY_INFO']);
+  // Board #9 Phase B correction: this path is now structurally retired --
+  // evaluateSendEligibility's authorization-currency check can never
+  // return authorized:true (RETIRED_PATH_NEVER_MATCHES_ARTIFACT_FACTS is
+  // guaranteed shape-invalid), so its early return always fires first and
+  // the MISSING_SIGNER_OR_DELIVERY_INFO defense-in-depth branch below it is
+  // now permanently unreachable through this retired model -- itself
+  // further proof the retired path cannot claim current authorization.
+  check('the refusal names ARTIFACT_FACTS_INVALID (the defense-in-depth signer check is now unreachable, since this retired path can never report authorized:true)', eligibility.reasons.map((r) => r.code), ['ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
 
   const builtAttempt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: noSignerReport, preview: forcedPreview, authRecord: forcedAuthRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('building a send attempt with missing signer information is refused', builtAttempt.ok === false);
@@ -362,8 +414,9 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
 // 9. A provider failure does not record Contract Sent.
 // ============================================================
 {
-  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
-  checkTrue('sanity: the attempt builds successfully for the complete, authorized preview', attemptBuilt.ok === true);
+  const retiredBuildAttempt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
+  checkTrue('the retired send model can never build an attempt, even for an otherwise complete/current/authorized preview (structurally fail-closed)', retiredBuildAttempt.ok === false);
+  const attemptBuilt = { ok: true, value: fixtureSendAttempt() };
 
   const failedClassification = S.classifyProviderSendResponse({ kind: 'network_error', message: 'ECONNRESET' });
   const failedResult = S.buildSendResultArgs({ attempt: attemptBuilt.value, operator: null, observedAt: SEND_AT, classification: failedClassification });
@@ -384,7 +437,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
 // 10. An ambiguous response does not record Contract Sent.
 // ============================================================
 {
-  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
+  const attemptBuilt = { ok: true, value: fixtureSendAttempt() };
   const ambiguousClassification = S.classifyProviderSendResponse({ kind: 'http_response', status: 200, body: { success: true, links: [] } });
   const ambiguousResult = S.buildSendResultArgs({ attempt: attemptBuilt.value, operator: null, observedAt: SEND_AT, classification: ambiguousClassification });
   check('an ambiguous send result is persisted with status "ambiguous"', ambiguousResult.status, 'ambiguous');
@@ -394,9 +447,15 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
   const sentEligibility = B.evaluateContractSentEligibility(evidence);
   checkTrue('Contract Sent is NOT reached after an ambiguous provider response', sentEligibility.eligible === false);
 
-  // Ambiguous/failed sends for the SAME revision do not block a retry.
+  // Board #9 Phase B correction: evaluateSendEligibility's authorization-
+  // currency gate now always fails first (this model is retired), so it
+  // can never reach the existingSend-status branch below it that used to
+  // prove an ambiguous/failed prior attempt does NOT block a retry. That
+  // specific business rule is no longer independently observable through
+  // this retired path -- only the blanket, always-on refusal is.
   const retryEligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: parsedAmbiguous, populationVerification: G.POPULATION_VERIFIED });
-  checkTrue('an ambiguous prior attempt for the SAME revision does not block a retry', retryEligibility.eligible === true);
+  checkTrue('the retired model refuses even this would-have-been-eligible retry, solely via the structural artifact-facts gate', retryEligibility.eligible === false);
+  check('the refusal is ONLY the structural gate, never the (now-unreachable) prior-attempt business rule', retryEligibility.reasons.map((r) => r.code), ['ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
 }
 
 // ============================================================
@@ -407,7 +466,7 @@ checkTrue('fixture sanity: the authorization is current against the complete pre
 // ============================================================
 let acceptedSendRecord;
 {
-  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
+  const attemptBuilt = { ok: true, value: fixtureSendAttempt() };
   const attemptNote = K.formatContractSendNote(attemptBuilt.value);
   const parsedAttempt = K.parseContractSendNote(attemptNote);
   check('the in_progress attempt round-trips with status in_progress', parsedAttempt.status, 'in_progress');
@@ -426,11 +485,15 @@ let acceptedSendRecord;
   const parsedProvisional = K.parseContractSendNote(provisionalNote);
   check('the provisional note round-trips with status provider_accepted_pending_readback', parsedProvisional.status, 'provider_accepted_pending_readback');
 
-  // A pending-readback record BLOCKS a retry -- a real provider-side send
-  // already went out; retrying here would risk a genuine duplicate.
+  // A pending-readback record would have BLOCKED a retry under the old,
+  // live send flow -- a real provider-side send already went out, so
+  // retrying would risk a genuine duplicate. Board #9 Phase B correction:
+  // that specific business reason (READBACK_VERIFICATION_INCOMPLETE) is
+  // now permanently unreachable through this retired model -- the
+  // authorization-currency gate ahead of it always fails first.
   const pendingReadbackEligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: parsedProvisional, populationVerification: G.POPULATION_VERIFIED });
-  checkTrue('a provider_accepted_pending_readback record for the SAME revision blocks a retry', pendingReadbackEligibility.eligible === false);
-  check('the refusal names READBACK_VERIFICATION_INCOMPLETE', pendingReadbackEligibility.reasons.map((r) => r.code), ['READBACK_VERIFICATION_INCOMPLETE']);
+  checkTrue('a provider_accepted_pending_readback record for the SAME revision is still refused (via the structural gate, not the retired business rule)', pendingReadbackEligibility.eligible === false);
+  check('the refusal names ARTIFACT_FACTS_INVALID, never READBACK_VERIFICATION_INCOMPLETE (that branch is now unreachable)', pendingReadbackEligibility.reasons.map((r) => r.code), ['ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
 
   const readbackClassification = S.classifyDocumentReadback({
     expectedDocumentId: 'doc-1', expectedRecipientId: RECIPIENT_ID, expectedSenderUserId: SENDER_USER_ID, expectedLocationId: TEST_LOCATION_ID,
@@ -453,9 +516,18 @@ let acceptedSendRecord;
   check('the resolved record carries the real provider documentId', resolved.providerResponse.documentId, 'doc-1');
   check('the resolved record carries the readback-confirmed fillableFieldCount', resolved.providerResponse.fillableFieldCount, 1);
 
+  // Board #9 Phase B correction: buildContractSentEvidence's own
+  // `bradSendAuthorization` is derived via evaluateBradAuthorizationCurrency
+  // against the same structurally-invalid retired-path sentinel, so it can
+  // never carry a current authorization fact anymore -- Contract Sent can
+  // no longer be reached through this retired evidence-builder, even given
+  // a fully verified, readback-confirmed provider acceptance. This is the
+  // correct, intended consequence: "Contract Sent" was a milestone of the
+  // now fully-retired automated send flow.
   const evidence = S.buildContractSentEvidence({ contractReady: true, authRecord, currentPreview: completePreview, send: resolved });
   const sentEligibility = B.evaluateContractSentEligibility(evidence);
-  checkTrue('Contract Sent IS reached after a verified, readback-confirmed provider acceptance', sentEligibility.eligible === true);
+  checkTrue('Contract Sent can no longer be reached through the retired evidence-builder, even for an otherwise fully verified acceptance', sentEligibility.eligible === false);
+  checkTrue('the refusal reflects the absent authorization fact (bradSendAuthorization is now always null via this retired path)', evidence.bradSendAuthorization === null);
 
   // "Exactly once": a second, independent evaluation against the SAME
   // evidence produces the SAME result -- evaluateContractSentEligibility
@@ -473,7 +545,7 @@ let acceptedSendRecord;
 //      forever, even though the provider's POST looked completely clean.
 // ============================================================
 {
-  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: '2026-09-11T13:00:00.000Z', report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
+  const attemptBuilt = { ok: true, value: fixtureSendAttempt({ at: '2026-09-11T13:00:00.000Z', attemptId: '2026-09-11T13:00:00.000Z', requestAt: '2026-09-11T13:00:00.000Z' }) };
   const postClassification = S.classifyProviderSendResponse({
     kind: 'http_response', status: 200,
     body: { success: true, links: [{ documentId: 'doc-blank-1', recipientId: RECIPIENT_ID, createdBy: SENDER_USER_ID }] },
@@ -498,35 +570,52 @@ let acceptedSendRecord;
 {
   const eligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: null, populationVerification: G.POPULATION_NOT_VERIFIED });
   checkTrue('sending is refused while populationVerification is not POPULATION_VERIFIED', eligibility.eligible === false);
-  check('the refusal names TEMPLATE_POPULATION_NOT_VERIFIED', eligibility.reasons.map((r) => r.code), ['TEMPLATE_POPULATION_NOT_VERIFIED']);
+  // Board #9 Phase B correction: the structural authorization-currency gate
+  // always fires first now, so TEMPLATE_POPULATION_NOT_VERIFIED (below it)
+  // is permanently unreachable through this retired model.
+  check('the refusal names ARTIFACT_FACTS_INVALID, never TEMPLATE_POPULATION_NOT_VERIFIED (that branch is now unreachable)', eligibility.reasons.map((r) => r.code), ['ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
   const builtWhileUnverified = S.buildSendAttemptArgs(sendArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_NOT_VERIFIED }));
   checkTrue('building a send attempt is refused while template population is not verified', builtWhileUnverified.ok === false);
 }
 
 // ============================================================
 // 12. A retry cannot create a duplicate provider transaction.
+//
+// Board #9 Phase B correction: every evaluateSendEligibility call in this
+// section previously exercised the existingSend-status branch
+// (ALREADY_SENT / SEND_IN_PROGRESS) and the "a newer revision is not
+// blocked" business rule. The authorization-currency gate ahead of that
+// branch now always fails first (this model is retired -- see
+// RETIRED_PATH_NEVER_MATCHES_ARTIFACT_FACTS), so those specific business
+// reasons are permanently unreachable through this file; only the
+// blanket ARTIFACT_FACTS_INVALID refusal remains observable. The
+// buildSendAttemptArgs assertions below are unaffected -- they already
+// expected ok:false.
 // ============================================================
 {
   const retryEligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: acceptedSendRecord, populationVerification: G.POPULATION_VERIFIED });
-  checkTrue('retrying against an already-accepted send for the SAME revision is refused', retryEligibility.eligible === false);
-  check('the refusal names ALREADY_SENT', retryEligibility.reasons.map((r) => r.code), ['ALREADY_SENT']);
+  checkTrue('retrying against an already-accepted send for the SAME revision is still refused (via the structural gate)', retryEligibility.eligible === false);
+  check('the refusal names ARTIFACT_FACTS_INVALID, never ALREADY_SENT (that branch is now unreachable)', retryEligibility.reasons.map((r) => r.code), ['ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
 
   const retryBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: '2026-09-11T12:00:00.000Z', report: completeReport, preview: completePreview, authRecord, existingSend: acceptedSendRecord, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
   checkTrue('building a second send attempt against an already-accepted revision is refused', retryBuilt.ok === false);
 
   // An in-progress (not yet resolved) attempt also blocks a concurrent retry.
-  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
+  const attemptBuilt = { ok: true, value: fixtureSendAttempt() };
   const inProgressRecord = K.parseContractSendNote(K.formatContractSendNote(attemptBuilt.value));
   const concurrentEligibility = S.evaluateSendEligibility({ authRecord, preview: completePreview, existingSend: inProgressRecord, populationVerification: G.POPULATION_VERIFIED });
-  checkTrue('a concurrent attempt while one is already in_progress for the SAME revision is refused', concurrentEligibility.eligible === false);
-  check('the refusal names SEND_IN_PROGRESS', concurrentEligibility.reasons.map((r) => r.code), ['SEND_IN_PROGRESS']);
+  checkTrue('a concurrent attempt while one is already in_progress for the SAME revision is still refused (via the structural gate)', concurrentEligibility.eligible === false);
+  check('the refusal names ARTIFACT_FACTS_INVALID, never SEND_IN_PROGRESS (that branch is now unreachable)', concurrentEligibility.reasons.map((r) => r.code), ['ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
 
-  // A NEWER revision is never blocked by an older revision's accepted send.
+  // A NEWER revision would NOT have been blocked by an older revision's
+  // accepted send under the old, live send flow -- but it too is now
+  // uniformly refused by the structural gate, regardless of revision.
   const bumped = B.nextVersionIdentity(VERSION, { kind: 'same_agreement_reentry' }, null).value;
   const { preview: newerPreview } = buildCompleteReportAndPreview(OPP, bumped);
   const newerAuthRecord = authorize(OPP, newerPreview);
   const newerEligibility = S.evaluateSendEligibility({ authRecord: newerAuthRecord, preview: newerPreview, existingSend: acceptedSendRecord, populationVerification: G.POPULATION_VERIFIED });
-  checkTrue('a NEWER revision is not blocked by an older revision\'s accepted send', newerEligibility.eligible === true);
+  checkTrue('a NEWER revision is ALSO refused now -- the structural gate applies uniformly, independent of revision', newerEligibility.eligible === false);
+  check('the refusal is ONLY the structural gate', newerEligibility.reasons.map((r) => r.code), ['ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
 }
 
 // ============================================================
@@ -536,7 +625,7 @@ let acceptedSendRecord;
   const { report: otherReport, preview: otherPreview } = buildCompleteReportAndPreview(OTHER_OPP, VERSION);
   const otherAuthRecord = authorize(OTHER_OPP, otherPreview);
 
-  const attemptBuilt = S.buildSendAttemptArgs({ opportunityId: OPP, operator: null, requestAt: SEND_AT, report: completeReport, preview: completePreview, authRecord, existingSend: null, requestedTemplateId: REQUESTED_TEMPLATE_ID, expirationAt: EXPIRATION_AT, populationVerification: G.POPULATION_VERIFIED });
+  const attemptBuilt = { ok: true, value: fixtureSendAttempt() };
   const attemptNote = K.formatContractSendNote(attemptBuilt.value);
   const acceptedClassification = S.classifyProviderSendResponse({ kind: 'http_response', status: 200, body: { success: true, links: [{ documentId: 'doc-1' }] } });
   const acceptedResult = S.buildSendResultArgs({ attempt: attemptBuilt.value, operator: null, observedAt: SEND_AT, classification: acceptedClassification });
@@ -546,8 +635,14 @@ let acceptedSendRecord;
   check('a send recorded for OPP is found when reading OPP', K.latestContractSendForOpportunity(combinedNotes, OPP) !== null, true);
   check('a send recorded for OPP is NEVER found when reading a DIFFERENT opportunity', K.latestContractSendForOpportunity(combinedNotes, OTHER_OPP), null);
 
+  // Board #9 Phase B correction: the other opportunity WOULD have remained
+  // independently eligible under the old, live send flow (no cross-
+  // opportunity leak in the existingSend lookup) -- but it too is now
+  // uniformly refused by the structural authorization-currency gate,
+  // independent of which opportunity it is for.
   const otherEligibility = S.evaluateSendEligibility({ authRecord: otherAuthRecord, preview: otherPreview, existingSend: K.latestContractSendForOpportunity(combinedNotes, OTHER_OPP), populationVerification: G.POPULATION_VERIFIED });
-  checkTrue('the other opportunity remains independently eligible -- no cross-opportunity leak', otherEligibility.eligible === true);
+  checkTrue('the other opportunity is ALSO refused now -- the structural gate applies uniformly, independent of opportunity', otherEligibility.eligible === false);
+  check('the refusal is ONLY the structural gate, never a cross-opportunity leak artifact', otherEligibility.reasons.map((r) => r.code), ['ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID', 'ARTIFACT_FACTS_INVALID']);
 }
 
 // ============================================================
@@ -571,12 +666,19 @@ let acceptedSendRecord;
 // 15. Contract Sent does not create Under Contract.
 // ============================================================
 {
+  // Board #9 Phase B correction: buildContractSentEvidence can no longer
+  // produce Contract Sent eligibility through this retired path (see
+  // section 11's own note) -- but THIS section's real subject is
+  // evaluateUnderContractEligibility (board9-contract-model.ts, never
+  // retired), proving Contract Sent alone is insufficient for Under
+  // Contract. That claim is only meaningful when contractSent is actually
+  // true, so it is supplied directly here rather than derived through the
+  // now-permanently-false retired evidence-builder.
   const evidence = S.buildContractSentEvidence({ contractReady: true, authRecord, currentPreview: completePreview, send: acceptedSendRecord });
-  const sentEligibility = B.evaluateContractSentEligibility(evidence);
-  checkTrue('sanity: Contract Sent IS reached', sentEligibility.eligible === true);
+  checkTrue('sanity: the retired evidence-builder itself can no longer claim Contract Sent', B.evaluateContractSentEligibility(evidence).eligible === false);
 
   const underContractEvidence = {
-    contractSent: sentEligibility.eligible,
+    contractSent: true,
     requirements: [{ role: 'Seller', displayName: 'Jane Seller', signingAuthorityNote: null }],
     execution: { signers: [], providerReportedCompletionAt: null, preservedDocument: null },
     currentVersion: VERSION,

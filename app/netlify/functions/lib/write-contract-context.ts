@@ -4,12 +4,23 @@ import { latestOutcomeNoteForOpportunity } from "../../../src/lib/seller-call-ou
 import { initialVersionIdentity } from "../../../src/lib/board9-contract-model";
 import { computeSellerContractFactsReport } from "../../../src/lib/contract-facts-model";
 import { buildContractDocumentPreview } from "../../../src/lib/contract-document-model";
-import { buildContractProjectionPlan } from "../../../src/lib/contract-ghl-projection-model";
+import { buildContractProjectionPlan, type ContractProjectionPlan } from "../../../src/lib/contract-ghl-projection-model";
 import { latestSellerSigningModelForOpportunity } from "../../../src/lib/seller-contract-facts-carriers";
 import { evaluateSellerSigningPreWriteReadiness, resolveSeller1FromOpportunity, sellerCountTransportValue } from "../../../src/lib/contract-seller-signing-model";
 import { latestBradContractAuthorizationForOpportunity } from "../../../src/lib/contract-authorization-carriers";
-import { evaluateBradAuthorizationCurrency } from "../../../src/lib/contract-authorization-model";
+import { evaluateBradAuthorizationCurrency, type CurrentArtifactFacts } from "../../../src/lib/contract-authorization-model";
 import type { GhlBoundary } from "./ghl-write-boundary";
+
+// require(), not import -- this is a CommonJS module (app/scripts/lib/),
+// the same interop pattern generate-contract-pdf-adapter.ts already uses.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { generatePopulatedContractPdf } = require("../../../scripts/lib/inv67-pdf-generator.cjs") as {
+  generatePopulatedContractPdf: (args: { projectionPlan: ContractProjectionPlan; opportunityId?: string }) => Promise<{
+    outputBytes: Uint8Array;
+    evidence: { outputSha256: string; sourceSha256: string; generatorVersion: string; manifestVersion: string; [k: string]: unknown };
+  }>;
+};
+
 export async function currentContractContext(boundary: GhlBoundary, opportunityId: string) {
   const opportunity = await boundary.opportunity(opportunityId);
   const contact = await boundary.contact(opportunity.contactId);
@@ -32,9 +43,49 @@ export async function currentContractContext(boundary: GhlBoundary, opportunityI
   const projection = buildContractProjectionPlan(opportunityId, preview, report, sellerReadiness);
   return {opportunity,contact,notes,agreement,version,report,preview,projection,propertyAddress,sellerCount:signing?sellerCountTransportValue(signing.model):null};
 }
+export type ContractContext = Awaited<ReturnType<typeof currentContractContext>>;
+
+/**
+ * Board #9 Phase B correction. Independently regenerates the CURRENT
+ * populated PDF from FRESH canonical facts (`context.projection`, itself
+ * built from a live GHL read inside `currentContractContext` -- never
+ * from a stored authorization note) using the merged PR #81 runtime
+ * generator, unmodified. Returns the bytes plus the generator's own
+ * evidence -- callers never see or trust a caller-supplied hash of any
+ * kind. Fails closed (throws) if the projection is incomplete or
+ * generation itself fails; there is no fallback value and no partial
+ * result -- an error here must propagate and refuse whatever write or
+ * authorization check depends on it.
+ */
+export async function generateCurrentContractPdf(context: ContractContext): Promise<{ outputBytes: Uint8Array; evidence: { outputSha256: string; sourceSha256: string; generatorVersion: string; manifestVersion: string; [k: string]: unknown } }> {
+  if (!context.projection.ok) {
+    throw new Error("Cannot generate: canonical contract facts do not currently produce a complete projection (" + context.projection.blockingReasons.join(", ") + ").");
+  }
+  return generatePopulatedContractPdf({ projectionPlan: context.projection, opportunityId: context.opportunity.id });
+}
+
+/**
+ * The four `CurrentArtifactFacts` fields, ALL independently sourced from a
+ * fresh regeneration -- never from the stored authorization record being
+ * evaluated. This is the one and only source of "current" artifact truth
+ * this codebase uses; nothing here echoes a caller's or a record's own
+ * claim back at itself.
+ */
+export async function currentGeneratedArtifactFacts(context: ContractContext): Promise<CurrentArtifactFacts> {
+  const { evidence } = await generateCurrentContractPdf(context);
+  return {
+    artifactSha256: evidence.outputSha256,
+    sourcePdfSha256: evidence.sourceSha256,
+    generatorVersion: evidence.generatorVersion,
+    manifestVersion: evidence.manifestVersion,
+  };
+}
+
 export async function requireCurrentContractAuthorization(boundary: GhlBoundary, opportunityId: string) {
   const context = await currentContractContext(boundary, opportunityId);
-  const authority = evaluateBradAuthorizationCurrency(latestBradContractAuthorizationForOpportunity(context.notes, opportunityId), context.preview);
+  const record = latestBradContractAuthorizationForOpportunity(context.notes, opportunityId);
+  const currentArtifactFacts = await currentGeneratedArtifactFacts(context);
+  const authority = evaluateBradAuthorizationCurrency(record, context.preview, currentArtifactFacts);
   if (!authority.authorized) throw new Error("Contract authorization refused: " + authority.reasons.map(r=>r.code).join(","));
   return context;
 }

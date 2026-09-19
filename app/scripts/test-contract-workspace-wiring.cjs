@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 108;
+const FLOOR = 117;
 let failures = 0;
 let checks = 0;
 
@@ -118,9 +118,9 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('ContractWorkspace reads via ghl.opportunities.listPipeline (existing read)', /ghl\.opportunities\.listPipeline\(\)/.test(contractTsx), true);
   check('ContractWorkspace reads via ghl.notes.list (existing read)', /ghl\.notes\.list\(contactId\)/.test(contractTsx), true);
   check('ContractWorkspace selects the opportunity via the SAME shared helpers as the other workspaces', /import \{ opportunitiesForContact, opportunityCandidates, selectOpportunity \} from "\.\.\/lib\/underwriting\/selectOpportunity"/.test(contractTsx), true);
-  check('ContractWorkspace does not call any other ghl.* namespace than contacts/opportunities/notes/proposals (B9-08/INV-63 adds the sole sanctioned e-sign-provider namespace)', (() => {
+  check('ContractWorkspace does not call any other ghl.* namespace than contacts/opportunities/notes/proposals/contracts (B9-08/INV-63 adds the sole sanctioned e-sign-provider namespace; Board #9 Phase B adds the sole sanctioned live-PDF-generation namespace)', (() => {
     const calls = contractTsxNoComments.match(/ghl\.[a-zA-Z]+\./g) || [];
-    return calls.every((c) => c === 'ghl.contacts.' || c === 'ghl.opportunities.' || c === 'ghl.notes.' || c === 'ghl.proposals.');
+    return calls.every((c) => c === 'ghl.contacts.' || c === 'ghl.opportunities.' || c === 'ghl.notes.' || c === 'ghl.proposals.' || c === 'ghl.contracts.');
   })(), true);
 }
 
@@ -365,6 +365,28 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     /"propertyLegalDescription\.legalMunicipality": "Legal municipality \(¶2A City of\)"/.test(contractTsx),
     true,
   );
+}
+
+// ============================================================
+// Board #9 Phase B correction -- Brad must generate the CURRENT artifact
+// before authorizing it, and any prior generation is invalidated the
+// instant relevant canonical facts change underneath it (stale UI
+// evidence can never authorize). Proven here by source wiring, matching
+// this file's own no-render convention (see header).
+// ============================================================
+{
+  const generateEffectMatch = contractTsxNoComments.match(/useEffect\(\(\) => \{\s*setGeneratedArtifact\(null\);[\s\S]*?\}, \[contractDocumentPreview\]\);/);
+  check('an invalidation useEffect exists that clears generatedArtifact whenever contractDocumentPreview changes', !!generateEffectMatch, true);
+  check('that same invalidation effect also clears any stale generateError', /setGenerateError\(null\);/.test(generateEffectMatch ? generateEffectMatch[0] : ''), true);
+  check('the invalidation effect is keyed ONLY on contractDocumentPreview (the canonical, live-derived facts), not on an unrelated or broader dependency', /\}, \[contractDocumentPreview\]\);/.test(generateEffectMatch ? generateEffectMatch[0] : ''), true);
+
+  check('the display evaluator (bradAuthorizationStatus) is fed currentArtifactFactsForDisplay, never a self-referential record field', /evaluateBradAuthorizationCurrency\(bradAuthorizationRecord, contractDocumentPreview, currentArtifactFactsForDisplay\)/.test(contractTsxNoComments), true);
+  check('currentArtifactFactsForDisplay falls back to an all-empty (structurally invalid) bundle when nothing has been generated yet, never a placeholder that could pass shape validation', /if \(!generatedArtifact\) \{\s*return \{ artifactSha256: "", sourcePdfSha256: "", generatorVersion: "", manifestVersion: "" \};/.test(contractTsxNoComments), true);
+  check('currentArtifactFactsForDisplay is recomputed from generatedArtifact alone (useMemo dependency), so it goes stale-safe the instant generatedArtifact is cleared', /\}, \[generatedArtifact\]\);/.test(contractTsxNoComments), true);
+
+  check('handleAuthorize refuses to proceed when no artifact has been generated', /if \(!generatedArtifact\) \{\s*setAuthorizeError\(/.test(contractTsxNoComments), true);
+  check('handleAuthorize passes the SAME generated artifact facts into buildAuthorizationRecordArgs (never a stored/claimed value)', /buildAuthorizationRecordArgs\(\{[\s\S]{0,400}artifact: \{\s*artifactSha256: generatedArtifact\.outputSha256,\s*sourcePdfSha256: generatedArtifact\.sourceSha256,\s*generatorVersion: generatedArtifact\.generatorVersion,\s*manifestVersion: generatedArtifact\.manifestVersion,/.test(contractTsxNoComments), true);
+  check('the Authorize button is disabled whenever no artifact has been generated yet, in addition to the pre-existing eligibility gate', /disabled=\{!authorizationEligibility\.eligible \|\| !generatedArtifact\}/.test(contractTsx), true);
 }
 
 console.log('');

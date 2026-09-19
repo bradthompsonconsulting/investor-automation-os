@@ -1077,6 +1077,32 @@ export const ghl = {
     },
   },
 
+  contracts: {
+    // POST /.netlify/functions/generate-contract-pdf -- Board #9 Phase B.
+    // The ONLY client entry point for generating the current populated
+    // TREC 20-19 PDF. Takes ONLY an opportunityId; the server fetches live
+    // canonical facts and generates itself -- this client never computes,
+    // claims, or supplies a hash of any kind, and never sends facts of its
+    // own. Returns the generator's own evidence record plus the PDF bytes
+    // (base64) -- callers bind authorization to `evidence`'s own fields,
+    // never to a value this client derived independently.
+    generatePdf: async (args: { opportunityId: string }): Promise<{
+      pdfBase64: string;
+      evidence: { outputSha256: string; sourceSha256: string; generatorVersion: string; manifestVersion: string; manifestTotals: { totalRows: number; convertedCount: number; deferredCount: number } };
+    }> => {
+      const res = await appWriteFetch("/.netlify/functions/generate-contract-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`generate-contract-pdf → ${res.status}: ${text}`);
+      }
+      return res.json();
+    },
+  },
+
   conversations: {
     // Dashboard §2.1 — conversations whose last message is inbound with no
     // outbound reply since, oldest first. Read-only: GET /conversations/search.

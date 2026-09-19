@@ -696,10 +696,75 @@ export default function ContractWorkspace() {
     return latestBradContractAuthorizationForOpportunity(notes, screen.opportunity.id);
   }, [screen, notes]);
 
+  /**
+   * Board #9 Phase B. The CURRENT generated artifact, if Brad has
+   * generated one in this session -- `null` means none exists yet (or a
+   * prior one was invalidated because canonical facts changed underneath
+   * it). Holds ONLY what `generate-contract-pdf` independently returned;
+   * nothing here is computed or claimed client-side. `pdfBase64` lives
+   * only in this component's own memory for exactly as long as this page
+   * is open -- no persistence, no server custody (see that endpoint's own
+   * header).
+   */
+  const [generatedArtifact, setGeneratedArtifact] = useState<{
+    pdfBase64: string;
+    outputSha256: string;
+    sourceSha256: string;
+    generatorVersion: string;
+    manifestVersion: string;
+  } | null>(null);
+  const [generateBusy, setGenerateBusy] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+
+  // Invalidates any prior generation the instant the canonical, live-derived
+  // preview changes underneath it -- Brad must re-generate before
+  // authorizing against changed facts. Fires on mount too (generatedArtifact
+  // is already null then, so this is a harmless no-op), and on every
+  // genuine recompute of contractDocumentPreview (a new object each time
+  // its own dependencies change).
+  useEffect(() => {
+    setGeneratedArtifact(null);
+    setGenerateError(null);
+  }, [contractDocumentPreview]);
+
+  /** The ONLY source of "current" artifact facts this page ever uses for display or authorization -- never a self-reference to the stored record, never invented. Absent a fresh generation, this is a bundle guaranteed to fail `evaluateBradAuthorizationCurrency`'s own shape validation (empty strings can never be a real 64-hex hash), so the page can never claim "currently authorized" without a real, current generation backing it. */
+  const currentArtifactFactsForDisplay = useMemo(() => {
+    if (!generatedArtifact) {
+      return { artifactSha256: "", sourcePdfSha256: "", generatorVersion: "", manifestVersion: "" };
+    }
+    return {
+      artifactSha256: generatedArtifact.outputSha256,
+      sourcePdfSha256: generatedArtifact.sourceSha256,
+      generatorVersion: generatedArtifact.generatorVersion,
+      manifestVersion: generatedArtifact.manifestVersion,
+    };
+  }, [generatedArtifact]);
+
+  async function handleGenerateArtifact() {
+    if (screen.state !== "ready") return;
+    setGenerateError(null);
+    setGenerateBusy(true);
+    try {
+      const result = await ghl.contracts.generatePdf({ opportunityId: screen.opportunity.id });
+      setGeneratedArtifact({
+        pdfBase64: result.pdfBase64,
+        outputSha256: result.evidence.outputSha256,
+        sourceSha256: result.evidence.sourceSha256,
+        generatorVersion: result.evidence.generatorVersion,
+        manifestVersion: result.evidence.manifestVersion,
+      });
+    } catch (e: any) {
+      setGeneratedArtifact(null);
+      setGenerateError(e?.message ?? "Could not generate the contract PDF. Try again.");
+    } finally {
+      setGenerateBusy(false);
+    }
+  }
+
   const bradAuthorizationStatus = useMemo(() => {
     if (!contractDocumentPreview) return null;
-    return evaluateBradAuthorizationCurrency(bradAuthorizationRecord, contractDocumentPreview);
-  }, [bradAuthorizationRecord, contractDocumentPreview]);
+    return evaluateBradAuthorizationCurrency(bradAuthorizationRecord, contractDocumentPreview, currentArtifactFactsForDisplay);
+  }, [bradAuthorizationRecord, contractDocumentPreview, currentArtifactFactsForDisplay]);
 
   const authorizationEligibility = useMemo(() => {
     if (!contractDocumentPreview || !documentVersion) return null;
@@ -725,11 +790,21 @@ export default function ContractWorkspace() {
   async function handleAuthorize() {
     if (screen.state !== "ready" || !contractDocumentPreview || !documentVersion) return;
     setAuthorizeError(null);
+    if (!generatedArtifact) {
+      setAuthorizeError("Generate the current contract PDF before authorizing it.");
+      return;
+    }
     const built = buildAuthorizationRecordArgs({
       opportunityId: screen.opportunity.id,
       at: new Date().toISOString(),
       preview: contractDocumentPreview,
       currentVersion: documentVersion,
+      artifact: {
+        artifactSha256: generatedArtifact.outputSha256,
+        sourcePdfSha256: generatedArtifact.sourceSha256,
+        generatorVersion: generatedArtifact.generatorVersion,
+        manifestVersion: generatedArtifact.manifestVersion,
+      },
     });
     if (!built.ok) {
       setAuthorizeError(built.reasons.map((r) => r.message).join(" "));
@@ -2657,18 +2732,41 @@ export default function ContractWorkspace() {
                 )}
               </div>
 
+              <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Current generated artifact</div>
+                {generatedArtifact ? (
+                  <div data-testid="contract-generated-artifact-current" style={{ fontSize: "11px", color: "#22C55E" }}>
+                    Generated -- SHA-256 {generatedArtifact.outputSha256.slice(0, 12)}…
+                  </div>
+                ) : (
+                  <div data-testid="contract-generated-artifact-none" style={{ fontSize: "11px", color: "#94A3B8" }}>
+                    Not yet generated for this revision -- generate before authorizing.
+                  </div>
+                )}
+                <div style={{ marginTop: "8px" }}>
+                  <Btn testId="contract-generate-button" onClick={handleGenerateArtifact} busy={generateBusy} disabled={!authorizationEligibility.eligible}>
+                    Generate current contract PDF
+                  </Btn>
+                </div>
+                <ErrorText testId="contract-generate-error">{generateError}</ErrorText>
+              </div>
+
               <div>
                 <Btn
                   testId="contract-authorization-authorize-button"
                   onClick={handleAuthorize}
                   busy={authorizeBusy}
-                  disabled={!authorizationEligibility.eligible}
+                  disabled={!authorizationEligibility.eligible || !generatedArtifact}
                 >
                   Authorize this exact revision
                 </Btn>
                 {!authorizationEligibility.eligible ? (
                   <div data-testid="contract-authorization-ineligible-reasons" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "8px" }}>
                     {authorizationEligibility.reasons.map((r) => <div key={r.code}>{r.message}</div>)}
+                  </div>
+                ) : authorizationEligibility.eligible && !generatedArtifact ? (
+                  <div data-testid="contract-authorization-needs-generation" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "8px" }}>
+                    Generate the current contract PDF above before authorizing it.
                   </div>
                 ) : null}
                 <ErrorText testId="contract-authorization-error">{authorizeError}</ErrorText>
