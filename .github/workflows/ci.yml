@@ -180,6 +180,19 @@ jobs:
       - name: Install app dependencies
         run: pnpm install --dir app --frozen-lockfile
 
+      - name: Install and verify PDF text extraction
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes poppler-utils
+          command -v pdftotext
+          pdftotext -v
+
+      - name: PDF adapter offline validation
+        run: node app/scripts/test-generate-contract-pdf-adapter.cjs
+
+      - name: INV-67 PDF geometry cache validation
+        run: node app/scripts/test-inv67-pdf-geometry-cache.cjs
+
       - name: Typecheck and build
         run: pnpm --dir app build
 

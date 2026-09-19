@@ -1,3 +1,4 @@
+import { connectLambda } from "@netlify/blobs";
 import { lockContact } from "./lib/write-receipts";
 import { configuredBoundary } from "./lib/ghl-write-boundary";
 import { identifier, dispositions } from "./lib/write-contracts";
@@ -176,7 +177,7 @@ export const handler = async (event: any) => {
 
   let result: WriteResult;
   let release: (() => Promise<void>) | undefined;
-  try { release = await lockContact(contactId); result = await writeDisposition(token, contactId, noteBody); }
+  try { connectLambda(event); release = await lockContact(contactId); result = await writeDisposition(token, contactId, noteBody); }
   catch { return json(409, { error: "Disposition deduplication unavailable; no blind retry write" }); }
   finally { if (release) await release(); }
 

@@ -68,22 +68,62 @@ readable; their existence does not authorize the retired operations.
 
 No new PDF generation, manual-send ledger, provider integration, or rollout
 is introduced by this correction. No GHL/configuration mutation is authorized.
-## Configuration/deployment plan — not executed; merge gate
+## Caller continuity: pre-merge plan and mandatory pre-rollout verification
 
-| Surface / caller | Required configuration | Proof required before merge or later authorized rollout |
-|---|---|---|
-| App Google write sign-in | IAOS_APP_WRITE_GOOGLE_CLIENT_ID, IAOS_APP_WRITE_SESSION_SECRET (at least 32 characters), IAOS_APP_WRITE_BRAD_EMAILS | Confirm Brad-owned allowlist, Google web client and authorized app origin; distinct audience iaos-app-write; voice settings unchanged; absent/invalid configuration denies writes |
-| Root motivation-score | IAOS_MOTIVATION_WEBHOOK_SECRET (at least 32 characters), existing GHL_API_TOKEN and IAOS_ENV | Inventory every authorized caller; provision a distinct secret through approved secret management; each caller supplies X-IAOS-Secret before endpoint enforcement is deployed |
-| Root phone-lookup | IAOS_PHONE_LOOKUP_WEBHOOK_SECRET (at least 32 characters), existing GHL_API_TOKEN / IAOS_ENV and unchanged provider configuration | CONTACT_WORKSPACE_SPEC_v2.md §5.6 documents Phone Type Validation's Contact Created caller and canonical contactId/phone body, historically unauthenticated. Verify current caller and header capability; coordinated secret/header rollout is mandatory |
-| rescore-all | IAOS_MOTIVATION_WEBHOOK_SECRET in its explicitly named credential file | New preflight prevents a partial bulk run caused by a missing secret; do not run until separately authorized; dry-run semantics preserved |
-| App disposition | Existing IAOS_WEBHOOK_SECRET and GHL_PRIVATE_API_KEY / IAOS_ENV | Existing caller header remains compatible; new app session cannot authorize it |
-| App security receipts | Netlify Blob runtime binding for iaos-write-receipts | Verify runtime availability in an authorized isolated environment; conditional-create and strong-read support; root phone/score have no new Blob dependency |
+Authority: Brad's September 18, 2026 Product Owner scope ruling in the
+PR #78 correction task supersedes the earlier merge/deployment coupling.
+Before code merge, the compatibility/configuration plan below must be complete
+and affected code/regression checks must pass. Actual live caller/header
+pairing is required before an affected endpoint is operationally enabled or
+deployed into its normal Test/Production path; it is not a code-merge gate.
+Production access, credentials, webhook edits, caller activation and operational
+rollout remain unauthorized. The isolated Test branch verification does not
+activate these callers. No rollback may reopen unauthenticated writes.
 
-Rollout sequence, requiring separate authorization: (1) inspect caller registry and configuration names without exposing values; (2) provision each root secret and caller header first, while old handler tolerates the added header; (3) provision app auth and receipt runtime bindings; (4) prove caller/header/target pairing in an authorized isolated test without real-contact effects; (5) record caller owners, endpoint, environment, exact payload, header-present evidence and validation time; (6) only then approve merge/deployment. This task authorizes neither these operational changes nor a deployment. Do not temporarily accept unauthenticated calls as a migration fallback.
+Owners below identify implementation/account responsibility. Current live
+workflow maintainers and any delegated operators remain UNKNOWN until the
+rollout inventory records them. Brad owns operational authorization;
+engineering prepares and verifies the rollout without exposing secret values.
 
-If no safe test mechanism exists for a caller, merge stays blocked pending an authorized rollout window. Never log secret values or tokens. For a crashed write lock, first identify the request, inspect GHL readback and ledger evidence, determine whether an irreversible send occurred, then obtain specific operational authorization before releasing that security lock. Rolling code back must not be used to reopen unauthenticated writes.
+| Caller / owner | Endpoint / environment | Payload and required identity | Current evidence / classification | Ordering and mandatory pre-rollout verification |
+|---|---|---|---|---|
+| App write controls: Dashboard, Contact/Seller Call/Contract workspaces, disposition/callback controls, opportunity editors, Mailers; engineering, Brad operator | ghl-write; isolated Test proven, normal Test/Production not enabled by this task | POST {operation,targetId,requestId,args}; Bearer iaos-app-write session plus exact allowed Origin; Google client, Brad allowlist, session secret and IAOS_APP_WRITE_ALLOWED_ORIGIN | OBSERVED repository callers use writeCommand/appWriteFetch; accepted exact-head Test note proof. New authentication/Origin contract implemented | Configure authorized origin/identity and Blob binding before enabling new bundle; pair page, audience, operator and target in isolated Test; verify refusal/readback/replay before normal rollout. Old loaded bundles must reload; old proxy writes fail closed |
+| Sign-in popup; engineering, Brad operator | app-write-session; same app environment | GET public login configuration; POST {googleIdToken}; Google verification, configured allowlist and distinct audience | OBSERVED Test sign-in passed; voice identity unchanged | Verify Google authorized origin and operator allowlist for each destination before enabling writes; never export session tokens |
+| Contract readback; engineering | ghl-contract-send-readback; Test only | Existing readback body via appWriteFetch; app identity and target/document checks; no new write authority | OBSERVED migrated call site; retained offline regressions; read-only | Verify destination app identity and Test target binding before use; no send activation |
+| Browser/maintenance GET readers; engineering | ghl-proxy; app Test/Production destinations | Allowlisted GET, path query only, no body; no new write identity for reads | OBSERVED compatible retained reads; bodyless encoding correction proven | Check actual caller paths against allowlist before rollout; mutation callers must use sanctioned named operations |
+| Historical proxy PUT proof scripts, stage control and contract projection/draft/reserve/send; engineering | ghl-proxy and retired contract endpoints | Generic writes refused; reserve/execute POST requires identity then returns 410; other methods 405 | OBSERVED retired/refused paths, not continuing authorized runtime writes | Do not activate old scripts or send paths; separately authorize replacement proof tooling if needed. No live send proof required |
+| Seller 0 scoring workflow; Brad account owner, live maintainer UNKNOWN | /api/motivation-score on root marketing deployment; current live environment/configuration UNKNOWN | POST exactly {contactId}; X-IAOS-Secret matching IAOS_MOTIVATION_WEBHOOK_SECRET (at least 32 characters); existing GHL_API_TOKEN and IAOS_ENV | OBSERVED historical wiring in architecture reference line 95 and authenticated offline tests; live payload/header/secret pairing UNKNOWN | Inventory current workflow and all scoring callers first; provision destination secret and caller header while old handler tolerates extra header; verify exact payload, owner, endpoint, environment and target pairing in authorized isolation before deploying enforcement |
+| rescore-all operator; Brad authorization, engineering tooling | fixed deployed motivation-score URL in scripts/rescore-all.ts; enumeration environment is not proof of scorer environment | {contactId}; dedicated X-IAOS-Secret from explicitly named credential file; existing mutation/environment gates | OBSERVED migrated code; missing/short secret refuses before network; live secret and scorer pairing UNKNOWN | Verify credential file and scorer destination pairing before any separately authorized bulk run. No bulk run is needed for code merge; dry-run does not prove write pairing |
+| Phone Type Validation workflow 4ed31e4a-8c95-45f9-bb3b-0376eb0927ef; Brad account owner, live maintainer UNKNOWN | /api/phone-lookup on root deployment; current live environment/configuration UNKNOWN | POST exactly {contactId,phone}; X-IAOS-Secret matching IAOS_PHONE_LOOKUP_WEBHOOK_SECRET (at least 32 characters); existing GHL_API_TOKEN/IAOS_ENV/provider config | OBSERVED historical Contact Created caller in CONTACT_WORKSPACE_SPEC_v2 section 5.6; previously no auth; offline contract passes. Current headers/capability/pairing UNKNOWN | Inventory current payload/header capability; stage secret/header before enforcement; verify destination and contact/phone pairing in authorized isolation. No provider activity or workflow edits authorized here; provider integration remains separately deferred |
+| Disposition workflow; Brad account owner, live maintainer UNKNOWN | ghl-disposition; app deployment, current live pairing UNKNOWN | POST customData {contact_id,disposition,duration}; existing X-IAOS-Secret / IAOS_WEBHOOK_SECRET; GHL_PRIVATE_API_KEY/IAOS_ENV; Blob runtime | OBSERVED historical live workflow evidence, current offline contract and real-SDK regression. Authentication/payload remain compatible; current live configuration UNKNOWN | Retain existing header and secret, verify exact allowed customData and location; establish Blob context/lock/retry availability and isolated caller pairing before normal deployment. No live disposition run authorized here |
+| Any unenumerated external server/webhook caller; owner UNKNOWN | Affected root/app endpoints and actual environment UNKNOWN | Must map to named contract and correct dedicated S2S or app identity; no generic fallback | UNKNOWN; repository scan cannot enumerate external systems | Before any normal rollout, inspect authorized caller registry/workflow configuration and available request metadata; record or explicitly retire each caller. An unresolved caller blocks that endpoint's rollout |
 
-UNKNOWN: current live caller registry, installed secrets/header values, Google origin setup, and deployed Blob binding availability. Repository evidence cannot prove those live settings. The plan establishes a fail-closed pre-merge gate; it is not a claim that missing-secret rollout continuity has already been proven.
+The per-endpoint rollout record must contain owner, exact URL, environment,
+payload keys, header-present evidence (never value), destination config-name
+presence, isolated target pairing result, validation time and approver.
+If header capability or safe testing is unavailable, hold that endpoint's
+rollout for an authorized window; do not disable authentication or hold a
+code-safe PR solely for this operational work. Inventory unknown callers
+before enabling enforcement; abort rollout on mismatch or ambiguous results.
+
+Rollout order (separate authorization): inventory callers and destination;
+prepare secrets and caller headers while old handlers tolerate the header;
+prepare app identity/Origin and Blob bindings; prove pairing in authorized
+isolation without real-contact effects; authorize normal deployment/activation
+only after every applicable row passes. Confirm the intended merge does not
+implicitly deploy either site before those gates: repository build-ignore
+rules do not constitute an operational deployment hold, and the PR title's
+skip marker alone is not proof of the eventual merge commit behavior.
+
+For an unresolved lock, inspect request, GHL readback and security evidence,
+then obtain specific authorization before releasing it. No lock deletion or
+credential/configuration change is part of this correction.
+
+OBSERVED: the preserved isolated Test note proof established Google identity,
+exact allowed Origin, one note, independent readback, identical-replay refusal
+and receipt persistence; approved cleanup verified note/receipt absence and
+no listed lock. This does not establish current motivation-score, phone-lookup
+or disposition live pairing, nor an exhaustive external caller registry.
 
 ## Verification
 
@@ -444,3 +484,50 @@ app tsc/Vite build, root-function typecheck, and CI offline/security
 checks green. Runtime exit contract: 37/37 with Git Bash on process PATH.
 Initial tooling failures remain in the literal evidence; no configuration
 was changed to resolve them. This correction is local only.
+
+## Disposition Lambda context correction — September 18, 2026
+
+OBSERVED code correction: ghl-disposition initializes connectLambda(event)
+after method, authentication, payload and target-location validation, before
+lockContact accesses Blob storage. Existing locking, note-to-attempt ordering,
+readback, recovery and fail-closed responses are preserved.
+
+The focused test-disposition-blob-context.cjs uses the installed real Blob SDK
+and intercepts HTTP transport only. A fresh-process negative control removes
+initialization in memory and must fail its 200 assertion with 409. The corrected
+handler must pass with real SDK conditional-create and delete requests.
+Coverage includes early method/auth/payload/location refusal, invalid/missing
+context (including prior invocation context), lock contention, note/attempt
+ordering and attempt-failure retry without duplicate notes. No live requests.
+The existing mocked webhook suite remains for its broader contract cases;
+the focused real-SDK suite is also included in the INV-95 runner.
+
+The Product Owner ruling above supersedes historical statements in this
+report that coupled code merge to live rollout. Historical local-only,
+CI-pending and live-proof-pending checkpoints remain as dated evidence,
+not current gate status. Current publication/test results are reported with
+the correction commit; no live disposition success is claimed.
+
+### Correction validation and accepted Windows limitations
+
+OBSERVED local validation: INV-95 suites=27 failed=0; the real-SDK
+context regression reports 13 checks passed, including the expected
+fresh-process negative control (409 instead of 200 without initialization).
+Existing CI offline/security suites and static/runtime exit contracts pass
+(runtime checksRun=37 failures=0). Geometry reports ALL CHECKS PASSED in a
+disposable source copy, preserving the reviewed worktree's tracked artifacts.
+Direct installed TypeScript tsc -b, Vite build, root-function typecheck and
+git diff --check each exit 0. Existing workflow steps are unchanged; Ubuntu
+now explicitly installs poppler-utils, verifies pdftotext and runs both PDF
+adapter and geometry checks. New-head Ubuntu results remain a publication gate.
+
+Preserved Windows failure: FAIL Error: spawnSync pdftotext ENOENT; exit=1.
+Brad accepted this as an environment limitation; no software was installed.
+The local pnpm wrapper also stopped with ERR_PNPM_IGNORED_BUILDS for esbuild
+and generated an untracked app/pnpm-workspace.yaml placeholder. Under Brad's
+specific recovery approval, its exact content and absence from HEAD and
+origin/main were verified before deleting only that placeholder. No dependency
+approval, policy change, lockfile edit or reinstall was used for recovery;
+the already-installed compiler and bundler passed directly. Full literal logs
+are preserved in the task's INV95-final-correction-validation.txt,
+INV95-six-file-validation.txt and INV95-direct-build-validation.txt artifacts.

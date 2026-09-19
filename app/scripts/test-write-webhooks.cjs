@@ -17,7 +17,7 @@ Module._resolveFilename = function(name, parent, ...rest) {
 };
 Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
 Module._load = function(name, ...rest) {
-  if (name === '@netlify/blobs') return { getStore: () => ({ async get(key) { return receipts.get(key) ?? null; }, async delete(key) { receipts.delete(key); }, async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; } }) };
+  if (name === '@netlify/blobs') return { connectLambda: () => {}, getStore: () => ({ async get(key) { return receipts.get(key) ?? null; }, async delete(key) { receipts.delete(key); }, async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; } }) };
   return originalLoad.call(this, name, ...rest);
 };
 process.env.IAOS_ENV = 'test';
