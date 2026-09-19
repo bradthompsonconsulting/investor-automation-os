@@ -767,10 +767,59 @@ export default function ContractWorkspace() {
     }
   }
 
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  /**
+   * Builds the downloaded file from the SAME `generatedArtifact.pdfBase64`
+   * bytes already held in memory -- no network call, no new generation, no
+   * second copy of the artifact. This is why the downloaded file's SHA-256
+   * can never differ from `generatedArtifact.outputSha256`, the same value
+   * `handleAuthorize` below binds the authorization record to: both read
+   * the one in-memory generation result, never two independent fetches.
+   */
+  function handleDownloadArtifact() {
+    if (!generatedArtifact) return;
+    setDownloadError(null);
+    let url: string | null = null;
+    try {
+      const bytes = Uint8Array.from(atob(generatedArtifact.pdfBase64), (c) => c.charCodeAt(0));
+      url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `contract-${screen.state === "ready" ? screen.opportunity.id : "draft"}-${generatedArtifact.outputSha256.slice(0, 12)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch {
+      setDownloadError("Could not prepare the PDF. Generate it again before saving authorization.");
+    } finally {
+      // Deferred, not immediate -- revoking synchronously right after click()
+      // can race the browser's own download-start in some engines. Revoked
+      // either way: on success (once the download has started) and on
+      // failure (the URL, if it was created before the throw, is never left
+      // dangling).
+      if (url) { const revoke = url; setTimeout(() => URL.revokeObjectURL(revoke), 0); }
+    }
+  }
+
   const bradAuthorizationStatus = useMemo(() => {
     if (!contractDocumentPreview) return null;
     return evaluateBradAuthorizationCurrency(bradAuthorizationRecord, contractDocumentPreview, currentArtifactFactsForDisplay);
   }, [bradAuthorizationRecord, contractDocumentPreview, currentArtifactFactsForDisplay]);
+
+  /**
+   * Display-only derivation from `bradAuthorizationStatus` -- never a
+   * second authorization computation. "saved" = currently authorized.
+   * "unsaved_changes" = a PRIOR authorization exists (`record !== null`)
+   * but currency now fails (something changed since). "not_saved" = no
+   * authorization has ever been recorded for this revision at all.
+   */
+  const authorizationDisplayState: "saved" | "unsaved_changes" | "not_saved" =
+    bradAuthorizationStatus?.authorized
+      ? "saved"
+      : bradAuthorizationStatus && bradAuthorizationStatus.record
+      ? "unsaved_changes"
+      : "not_saved";
 
   const authorizationEligibility = useMemo(() => {
     if (!contractDocumentPreview || !documentVersion) return null;
@@ -2620,7 +2669,7 @@ export default function ContractWorkspace() {
                 Contract Review &amp; Send-Authorization
               </div>
               <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
-                No agreement becomes eligible for delivery merely because IAOS generated, populated, or displayed it. Only Brad's own explicit action, for this exact document revision, can authorize it -- and any material change since revokes that authorization.
+                No agreement becomes eligible for delivery merely because IAOS generated, populated, or displayed it. Only the authorized operator's own explicit action, for this exact document revision, can authorize it -- and any material change since revokes that authorization.
               </div>
 
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
@@ -2648,18 +2697,20 @@ export default function ContractWorkspace() {
                     Population/preview completeness only -- never authorization to send.
                   </div>
                 </div>
-                <div data-testid="contract-authorization-brad-authorized" style={{
+                <div data-testid="contract-authorization-save-status" style={{
                   ...groupCardStyle, flex: "1 1 220px",
-                  borderColor: bradAuthorizationStatus.authorized ? "rgba(34,197,94,0.35)" : "rgba(148,163,184,0.35)",
+                  borderColor: authorizationDisplayState === "saved" ? "rgba(34,197,94,0.35)" : authorizationDisplayState === "unsaved_changes" ? "rgba(245,158,11,0.35)" : "rgba(148,163,184,0.35)",
                 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: bradAuthorizationStatus.authorized ? "#22C55E" : "#94A3B8" }}>
-                    {bradAuthorizationStatus.authorized ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />}
-                    {bradAuthorizationStatus.authorized ? "Brad-authorized" : "Not Brad-authorized"}
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: authorizationDisplayState === "saved" ? "#22C55E" : authorizationDisplayState === "unsaved_changes" ? "#F59E0B" : "#94A3B8" }}>
+                    {authorizationDisplayState === "saved" ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />}
+                    {authorizationDisplayState === "saved" ? "Saved" : authorizationDisplayState === "unsaved_changes" ? "Unsaved changes" : "Not saved"}
                   </div>
                   <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>
-                    {bradAuthorizationStatus.authorized
-                      ? `Authorized ${new Date(bradAuthorizationStatus.record.at).toLocaleString()} for this exact revision.`
-                      : "Requires Brad's explicit action for this exact revision -- never assumed, never a side effect of saving a fact."}
+                    {authorizationDisplayState === "saved"
+                      ? "Authorization saved for this version."
+                      : authorizationDisplayState === "unsaved_changes"
+                      ? "The contract changed. Generate the updated PDF and save authorization again."
+                      : "Generate the PDF, review it, then save authorization."}
                   </div>
                 </div>
               </div>
@@ -2722,11 +2773,11 @@ export default function ContractWorkspace() {
               </div>
 
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Differences from the last Brad-reviewed revision</div>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Changes since authorization</div>
                 {differencesFromLastAuthorized === null ? (
                   <div data-testid="contract-authorization-diff-none-recorded" style={{ fontSize: "11px", color: "#64748B" }}>No prior authorization exists to compare against.</div>
                 ) : differencesFromLastAuthorized.length === 0 ? (
-                  <div data-testid="contract-authorization-diff-unchanged" style={{ fontSize: "11px", color: "#22C55E" }}>No differences -- this is exactly the revision Brad last authorized.</div>
+                  <div data-testid="contract-authorization-diff-unchanged" style={{ fontSize: "11px", color: "#22C55E" }}>No changes since authorization was saved.</div>
                 ) : (
                   <ul data-testid="contract-authorization-diff-list" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#F59E0B", lineHeight: 1.8 }}>
                     {differencesFromLastAuthorized.map((d) => (
@@ -2749,12 +2800,16 @@ export default function ContractWorkspace() {
                     Not yet generated for this revision -- generate before authorizing.
                   </div>
                 )}
-                <div style={{ marginTop: "8px" }}>
+                <div style={{ marginTop: "8px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
                   <Btn testId="contract-generate-button" onClick={handleGenerateArtifact} busy={generateBusy} disabled={!authorizationEligibility.eligible}>
                     Generate current contract PDF
                   </Btn>
+                  <Btn testId="contract-generated-artifact-download" onClick={handleDownloadArtifact} busy={false} disabled={!generatedArtifact}>
+                    Download PDF
+                  </Btn>
                 </div>
                 <ErrorText testId="contract-generate-error">{generateError}</ErrorText>
+                <ErrorText testId="contract-download-error">{downloadError}</ErrorText>
               </div>
 
               <div>
@@ -2764,7 +2819,7 @@ export default function ContractWorkspace() {
                   busy={authorizeBusy}
                   disabled={!authorizationEligibility.eligible || !generatedArtifact}
                 >
-                  Authorize this exact revision
+                  Save authorization
                 </Btn>
                 {!authorizationEligibility.eligible ? (
                   <div data-testid="contract-authorization-ineligible-reasons" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "8px" }}>
@@ -2796,7 +2851,7 @@ export default function ContractWorkspace() {
               <div style={{ ...groupCardStyle, marginTop: "12px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Contract Sent (state-machine evaluation)</div>
                 {contractSentStatus.eligible ? (
-                  <div data-testid="contract-sent-true" style={{ fontSize: "12px", color: "#22C55E" }}>Contract Sent -- all three locked facts are present (Brad authorization, confirmed provider transmission, explicit expiration).</div>
+                  <div data-testid="contract-sent-true" style={{ fontSize: "12px", color: "#22C55E" }}>Contract Sent -- all three locked facts are present (operator authorization, confirmed provider transmission, explicit expiration).</div>
                 ) : (
                   <ul data-testid="contract-sent-false-reasons" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
                     {contractSentStatus.reasons.map((r) => <li key={r.code}>{r.message}</li>)}

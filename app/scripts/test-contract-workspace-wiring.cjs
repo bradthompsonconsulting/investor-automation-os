@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 120;
+const FLOOR = 157;
 let failures = 0;
 let checks = 0;
 
@@ -425,6 +425,157 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check(
     'the SAME instant, formatted in a timezone behind UTC (America/Chicago) with no explicit timeZone override, reads day 14 -- proving the timeZone option is load-bearing, not cosmetic, and reproducing the exact bug Brad observed',
     dayOfMonthInZone('2026-10-15T00:00:00.000Z', 'America/Chicago') === 14,
+    true,
+  );
+}
+
+// ============================================================
+// Generated-PDF download mechanism, and concise operator-neutral
+// authorization UI copy. Brad's generate-and-authorize flow generated and
+// authorized an artifact but never exposed the bytes to the browser's own
+// download machinery -- `generatedArtifact.pdfBase64` was read into
+// `currentArtifactFactsForDisplay`/`handleAuthorize` (hashes only) and
+// displayed as a truncated hash, but no <a download>/Blob/object-URL path
+// existed anywhere. Added `handleDownloadArtifact`, built directly from the
+// SAME in-memory `generatedArtifact.pdfBase64` bytes already used by
+// authorization -- no new fetch, no new generation, so the downloaded
+// file's SHA-256 can never diverge from the recorded `artifactSha256`.
+// Proven by source wiring, matching this file's own no-render convention.
+// ============================================================
+{
+  const downloadHandlerMatch = contractTsxNoComments.match(/function handleDownloadArtifact\(\)[\s\S]*?(?=\n\s*const bradAuthorizationStatus = useMemo)/);
+  const downloadHandlerSrc = downloadHandlerMatch ? downloadHandlerMatch[0] : '';
+  check('handleDownloadArtifact exists, immediately preceding bradAuthorizationStatus', !!downloadHandlerMatch, true);
+
+  // ---- Blob built from the SAME generated artifact bytes, never a re-fetch ----
+  check(
+    'the download handler decodes the base64 bytes from generatedArtifact.pdfBase64 -- the SAME in-memory generation result authorization already binds to',
+    /atob\(generatedArtifact\.pdfBase64\)/.test(downloadHandlerSrc),
+    true,
+  );
+  check(
+    'the download handler wraps those bytes in a Blob typed application/pdf',
+    /new Blob\(\[bytes\], \{ type: "application\/pdf" \}\)/.test(downloadHandlerSrc),
+    true,
+  );
+  check(
+    'the download handler performs NO network call of its own (no fetch(, no ghl. call, no re-generation) -- proves the download can never diverge from what was already generated and hashed',
+    !/fetch\(|ghl\.\w+\.\w+\(/.test(downloadHandlerSrc),
+    true,
+  );
+  check(
+    'the download filename embeds the exact generated artifact\'s own outputSha256 prefix -- the same hash value bound into the authorization record',
+    /generatedArtifact\.outputSha256\.slice\(0, 12\)/.test(downloadHandlerSrc) && /\.pdf`/.test(downloadHandlerSrc),
+    true,
+  );
+  check(
+    'handleDownloadArtifact is a no-op when no artifact has been generated yet (fails closed, never downloads a stale/absent file)',
+    /if \(!generatedArtifact\) return;/.test(downloadHandlerSrc),
+    true,
+  );
+
+  // ---- Object-URL cleanup ----
+  check(
+    'the download handler revokes the object URL it creates (no dangling blob: URL survives the download)',
+    /URL\.revokeObjectURL\(/.test(downloadHandlerSrc),
+    true,
+  );
+  check(
+    'a construction failure sets the download-preparation error rather than leaving a silently broken download button',
+    /catch \{[\s\S]*?setDownloadError\("Could not prepare the PDF\. Generate it again before saving authorization\."\);[\s\S]*?\}/.test(downloadHandlerSrc),
+    true,
+  );
+
+  // ---- Download button visibility and filename wiring in the JSX ----
+  check(
+    'a "Download PDF" button exists, gated on generatedArtifact existing, wired to handleDownloadArtifact',
+    /<Btn testId="contract-generated-artifact-download" onClick=\{handleDownloadArtifact\} busy=\{false\} disabled=\{!generatedArtifact\}>\s*Download PDF\s*<\/Btn>/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the download-preparation error is rendered via the same ErrorText pattern every other group error already uses',
+    /<ErrorText testId="contract-download-error">\{downloadError\}<\/ErrorText>/.test(contractTsxNoComments),
+    true,
+  );
+
+  // ---- Authorization button remains gated on a generated artifact (unchanged logic, only its label changed) ----
+  check(
+    'the authorize/save button is STILL disabled whenever no artifact has been generated yet (unchanged gating logic)',
+    /disabled=\{!authorizationEligibility\.eligible \|\| !generatedArtifact\}/.test(contractTsx),
+    true,
+  );
+  check(
+    'the authorize/save button\'s visible label is the new concise "Save authorization" copy',
+    /testId="contract-authorization-authorize-button"[\s\S]{0,300}>\s*Save authorization\s*</.test(contractTsx),
+    true,
+  );
+
+  // ---- Concise operator-neutral copy -- every new string present verbatim ----
+  const requiredCopy = [
+    'Authorization saved for this version.',
+    'Generate the PDF, review it, then save authorization.',
+    'The contract changed. Generate the updated PDF and save authorization again.',
+    'Changes since authorization',
+    'No changes since authorization was saved.',
+    'Download PDF',
+    'Save authorization',
+    'Could not prepare the PDF. Generate it again before saving authorization.',
+  ];
+  for (const text of requiredCopy) {
+    check('required concise copy is present verbatim: "' + text + '"', contractTsx.includes(text), true);
+  }
+  check('the three-state status labels ("Saved" / "Not saved" / "Unsaved changes") are all present', ['"Saved"', '"Not saved"', '"Unsaved changes"'].every((s) => contractTsx.includes(s)), true);
+
+  // ---- Hardcoded "Brad" removed from user-facing instructional/status copy ----
+  const removedBradCopy = [
+    'Brad-authorized',
+    'Not Brad-authorized',
+    'Authorize this exact revision',
+    'Differences from the last Brad-reviewed revision',
+    'No differences -- this is exactly the revision Brad last authorized.',
+    "Requires Brad's explicit action for this exact revision",
+    "Only Brad's own explicit action, for this exact document revision",
+    '(Brad authorization, confirmed provider transmission',
+  ];
+  for (const text of removedBradCopy) {
+    check('operator-specific copy no longer present: "' + text + '"', contractTsx.includes(text), false);
+  }
+
+  // ---- Legitimate contract data and durable authorization schema/identifiers UNCHANGED ----
+  // (this page never hardcodes "Brad Thompson" itself -- it is real GHL note
+  // data rendered dynamically via l.text -- so there is nothing to find or
+  // preserve here beyond the identifiers below.)
+  const preservedIdentifiers = [
+    'evaluateBradAuthorizationCurrency',
+    'formatBradContractAuthorizationNote',
+    'latestBradContractAuthorizationForOpportunity',
+    'bradAuthorizationRecord',
+    'bradAuthorizationStatus',
+  ];
+  for (const id of preservedIdentifiers) {
+    check('durable authorization identifier untouched: ' + id, contractTsx.includes(id), true);
+  }
+  // Durable proof the note SCHEMA itself is untouched -- read directly from
+  // contract-authorization-carriers.ts's own current source, never a git
+  // diff (which only has signal for this one session's uncommitted state
+  // and would pass vacuously forever after this change is committed). Any
+  // future accidental edit to the v2 header or its positional labels fails
+  // this the same way it would today.
+  const authCarriersSrc = readSrc('src/lib/contract-authorization-carriers.ts');
+  check(
+    'the durable v2 authorization note header is exactly unchanged',
+    /const HEADER = `IAOS BRAD CONTRACT AUTHORIZATION — \$\{BRAD_CONTRACT_AUTHORIZATION_LEDGER_VERSION\}`;/.test(authCarriersSrc),
+    true,
+  );
+  check(
+    'the durable v2 authorization note ledger version string is exactly unchanged',
+    /BRAD_CONTRACT_AUTHORIZATION_LEDGER_VERSION = "iaos-brad-contract-authorization-v2" as const;/.test(authCarriersSrc),
+    true,
+  );
+  check(
+    'the durable "brad" authorizedBy/operator literal is exactly unchanged (V1 permits no other authorizer)',
+    /record\.authorizedBy !== "brad"/.test(readSrc('src/lib/contract-authorization-model.ts')) &&
+      /record\.operator !== "brad"/.test(readSrc('src/lib/contract-authorization-model.ts')),
     true,
   );
 }
