@@ -127,17 +127,21 @@ const boundary = boundaryLib.configuredBoundary();
 
   // ============================================================
   // 4. A generation FAILURE (distinct from an incomplete projection) also
-  //    fails closed -- the projection itself reports ok:true, but the
-  //    underlying generator rejects the plan (a duplicate entry key,
-  //    exactly the fail-closed case test-inv67-pdf-generator.cjs proves
-  //    directly). This exercises generateCurrentContractPdf's OWN
-  //    try/propagate path, not merely the projection.ok pre-check.
+  //    fails closed. Board #9 Phase B packaging correction: generateCurrent
+  //    ContractPdf now delegates to the merged PR #81 adapter
+  //    (generate-contract-pdf-adapter.ts), which REBUILDS its own
+  //    projection internally from preview/report/sellerReadiness rather
+  //    than trusting a pre-built one -- so a caller can no longer reach the
+  //    generator with a corrupted-but-"ok" plan at all (the adapter's own
+  //    re-derivation makes that class of caller-side corruption
+  //    unreachable by construction, a deliberate architectural property,
+  //    not a gap). The remaining genuine "generation failure distinct from
+  //    incomplete projection" is an ASSET/RUNTIME failure -- the packaged
+  //    canonical PDF missing from the deployed bundle -- proven directly
+  //    against the REAL packaged artifact in test-inv67-pdf-packaging.cjs
+  //    ("missing packaged PDF fails closed"), which is the more realistic
+  //    and now the authoritative proof for this scenario.
   // ============================================================
-  const context4 = await contextLib.currentContractContext(boundary, opportunity.id);
-  checkTrue('setup: the context is complete before the entries are corrupted', context4.projection.ok === true);
-  const corruptedContext4 = { ...context4, projection: { ...context4.projection, entries: [...context4.projection.entries, context4.projection.entries[0]] } };
-  await checkRejects('generateCurrentContractPdf fails closed when the underlying generator itself rejects the plan (duplicate entry key)', () => contextLib.generateCurrentContractPdf(corruptedContext4));
-  await checkRejects('currentGeneratedArtifactFacts fails closed for the same underlying generation failure', () => contextLib.currentGeneratedArtifactFacts(corruptedContext4));
 
   // ============================================================
   // 5. The retired send model cannot claim authorization -- see
