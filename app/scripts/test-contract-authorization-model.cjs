@@ -80,6 +80,16 @@ const AGREEMENT_AT = '2026-09-06T15:00:00.000Z';
 const AT = '2026-09-11T10:00:00.000Z';
 const VERSION = B.initialVersionIdentity(AGREEMENT_AT);
 const POPULATED_ADDRESS = { kind: 'populated', value: '123 Main St, Austin, TX, 78701', authority: 'operator_attested', recordedAt: AGREEMENT_AT };
+// Board #9 Phase B -- schema v2's required artifact-binding fields. A
+// generic, valid bundle every buildAuthorizationRecordArgs call below
+// supplies; changed-artifact/source/generator/manifest scenarios are
+// covered by the dedicated test-contract-authorization-v2.cjs, not here.
+const SAMPLE_ARTIFACT = {
+  artifactSha256: 'a'.repeat(64),
+  sourcePdfSha256: '3f458518e9e01fc9c84cab420dcd0ce9793113c4b356ed5caf7a2fb1bdef2ca5',
+  generatorVersion: 'inv67-pdf-generator-v1',
+  manifestVersion: 'INV67_TEMPLATE_PLACEMENT_MANIFEST_V1',
+};
 
 function baseFactsArgs(over) {
   return Object.assign({
@@ -127,7 +137,7 @@ checkTrue('fixture sanity: the empty fixture is NOT previewComplete', incomplete
 // 1. A complete/current preview begins UNAUTHORIZED.
 // ============================================================
 {
-  const status = A.evaluateBradAuthorizationCurrency(null, completePreview);
+  const status = A.evaluateBradAuthorizationCurrency(null, completePreview, SAMPLE_ARTIFACT);
   checkTrue('a complete, never-authorized preview begins unauthorized', status.authorized === false);
   check('the reason names no recorded authorization', status.reasons.map((r) => r.code), ['NO_AUTHORIZATION_RECORDED']);
   check('no record is attached', status.record, null);
@@ -142,23 +152,23 @@ checkTrue('fixture sanity: the empty fixture is NOT previewComplete', incomplete
 let authorizedNoteBody;
 let authorizedRecord;
 {
-  const built = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AT, preview: completePreview, currentVersion: VERSION });
+  const built = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AT, preview: completePreview, currentVersion: VERSION, artifact: SAMPLE_ARTIFACT });
   checkTrue('building the authorization record args succeeds for a complete, current preview', built.ok === true);
   check('the built record asserts authorizedBy as the literal "brad", never caller-supplied', built.value.authorizedBy, 'brad');
   check('the built record ALSO asserts operator as the literal "brad" -- there is no parameter through which a caller could supply anything else', built.value.operator, 'brad');
-  checkTrue('BuildAuthorizationRecordArgs accepts no operator field at all (structural: the built value has exactly the documented keys)', Object.keys(built.value).sort().join(',') === ['opportunityId', 'at', 'operator', 'authorizedBy', 'version', 'templateName', 'templateSource', 'documentLines', 'additionalRequiredFacts'].sort().join(','));
+  checkTrue('BuildAuthorizationRecordArgs accepts no operator field at all (structural: the built value has exactly the documented v2 keys)', Object.keys(built.value).sort().join(',') === ['opportunityId', 'at', 'operator', 'authorizedBy', 'version', 'templateName', 'templateSource', 'documentLines', 'additionalRequiredFacts', 'artifactSha256', 'sourcePdfSha256', 'generatorVersion', 'manifestVersion'].sort().join(','));
   check('the built record carries the preview\'s own version verbatim', built.value.version, completePreview.version);
 
   authorizedNoteBody = K.formatBradContractAuthorizationNote(built.value);
   authorizedRecord = K.parseBradContractAuthorizationNote(authorizedNoteBody);
   checkTrue('the formatted note parses back successfully', authorizedRecord !== null);
 
-  const status = A.evaluateBradAuthorizationCurrency(authorizedRecord, completePreview);
+  const status = A.evaluateBradAuthorizationCurrency(authorizedRecord, completePreview, SAMPLE_ARTIFACT);
   checkTrue('after explicit authorization, the SAME exact revision IS authorized', status.authorized === true);
 
   const bumped = B.nextVersionIdentity(VERSION, { kind: 'same_agreement_reentry' }, null).value;
   const differentRevisionPreview = buildCompletePreview(OPP, bumped);
-  const statusDifferentRevision = A.evaluateBradAuthorizationCurrency(authorizedRecord, differentRevisionPreview);
+  const statusDifferentRevision = A.evaluateBradAuthorizationCurrency(authorizedRecord, differentRevisionPreview, SAMPLE_ARTIFACT);
   checkTrue('the SAME authorization does NOT cover a DIFFERENT revision', statusDifferentRevision.authorized === false);
   check('the different-revision refusal names REVISION_CHANGED', statusDifferentRevision.reasons.map((r) => r.code), ['REVISION_CHANGED']);
 }
@@ -179,7 +189,7 @@ let authorizedRecord;
   // the same GHL note) must reach the identical authorized conclusion.
   const secondReadback = K.parseBradContractAuthorizationNote(authorizedNoteBody);
   check('a second independent readback is byte-for-byte identical to the first', secondReadback, authorizedRecord);
-  const secondStatus = A.evaluateBradAuthorizationCurrency(secondReadback, completePreview);
+  const secondStatus = A.evaluateBradAuthorizationCurrency(secondReadback, completePreview, SAMPLE_ARTIFACT);
   checkTrue('the second readback still evaluates as authorized', secondStatus.authorized === true);
 }
 
@@ -196,14 +206,14 @@ let authorizedRecord;
   );
   const mutatedPreview = Object.assign({}, completePreview, { documentLines: mutatedLines });
 
-  const status = A.evaluateBradAuthorizationCurrency(authorizedRecord, mutatedPreview);
+  const status = A.evaluateBradAuthorizationCurrency(authorizedRecord, mutatedPreview, SAMPLE_ARTIFACT);
   checkTrue('changing a single material fact (closing date) revokes authorization', status.authorized === false);
   check('the revocation names CONTENT_CHANGED', status.reasons.map((r) => r.code), ['CONTENT_CHANGED']);
 
   // The UNMUTATED preview is, of course, unaffected -- proving the
   // revocation is specific to the actual content change, not a blanket
   // invalidation.
-  const unmutatedStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, completePreview);
+  const unmutatedStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, completePreview, SAMPLE_ARTIFACT);
   checkTrue('the original, unmutated preview remains authorized', unmutatedStatus.authorized === true);
 
   // A change to additionalRequiredFacts (sellerEquitableInterest, not a
@@ -211,7 +221,7 @@ let authorizedRecord;
   // paragraph-blank-level.
   const mutatedAdditional = completePreview.additionalRequiredFacts.map((l) => Object.assign({}, l, { text: 'Not yet made.', status: 'populated' }));
   const mutatedAdditionalPreview = Object.assign({}, completePreview, { additionalRequiredFacts: mutatedAdditional });
-  const additionalStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, mutatedAdditionalPreview);
+  const additionalStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, mutatedAdditionalPreview, SAMPLE_ARTIFACT);
   checkTrue('changing an additional-required-fact (not a template blank) ALSO revokes authorization', additionalStatus.authorized === false);
 }
 
@@ -228,14 +238,14 @@ let authorizedRecord;
   checkTrue('a preview that is stale relative to the current revision is NOT eligible for authorization', eligibility.eligible === false);
   check('the ineligibility names PREVIEW_STALE', eligibility.reasons.map((r) => r.code), ['PREVIEW_STALE']);
 
-  const attemptedBuild = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AT, preview: completePreview, currentVersion: bumped });
+  const attemptedBuild = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AT, preview: completePreview, currentVersion: bumped, artifact: SAMPLE_ARTIFACT });
   checkTrue('building an authorization record from a stale preview is refused', attemptedBuild.ok === false);
 
   // Cannot REMAIN eligible: an already-authorized revision, once a newer
   // revision exists, is no longer current (restated explicitly here from
   // section 2 for direct evidence-mapping to this requirement).
   const newerPreview = buildCompletePreview(OPP, bumped);
-  const staleAuthorizationStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, newerPreview);
+  const staleAuthorizationStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, newerPreview, SAMPLE_ARTIFACT);
   checkTrue('an authorization for a now-superseded revision does not remain eligible', staleAuthorizationStatus.authorized === false);
 }
 
@@ -247,12 +257,12 @@ let authorizedRecord;
   checkTrue('an incomplete preview is NOT eligible for authorization', eligibility.eligible === false);
   check('the ineligibility names PREVIEW_NOT_COMPLETE', eligibility.reasons.map((r) => r.code), ['PREVIEW_NOT_COMPLETE']);
 
-  const built = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AT, preview: incompletePreview, currentVersion: VERSION });
+  const built = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AT, preview: incompletePreview, currentVersion: VERSION, artifact: SAMPLE_ARTIFACT });
   checkTrue('building an authorization record from an incomplete preview is refused', built.ok === false);
 
   // Even a HYPOTHETICAL hand-crafted authorization record against an
   // incomplete preview must never read as authorized/current.
-  const hypotheticalStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, incompletePreview);
+  const hypotheticalStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, incompletePreview, SAMPLE_ARTIFACT);
   checkTrue('an incomplete current preview can never remain authorized, even against a real prior authorization record', hypotheticalStatus.authorized === false);
   checkTrue('the incompleteness reason is present among the refusal reasons', hypotheticalStatus.reasons.some((r) => r.code === 'PREVIEW_NOT_COMPLETE'));
 }
@@ -262,14 +272,14 @@ let authorizedRecord;
 // ============================================================
 {
   const otherPreview = buildCompletePreview(OTHER_OPP, VERSION);
-  const builtForOpp = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AT, preview: completePreview, currentVersion: VERSION });
+  const builtForOpp = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AT, preview: completePreview, currentVersion: VERSION, artifact: SAMPLE_ARTIFACT });
   const noteForOpp = K.formatBradContractAuthorizationNote(builtForOpp.value);
 
   const combinedNotes = [{ body: noteForOpp }];
   check('an authorization recorded for OPP is found when reading OPP', K.latestBradContractAuthorizationForOpportunity(combinedNotes, OPP) !== null, true);
   check('an authorization recorded for OPP is NEVER found when reading a DIFFERENT opportunity', K.latestBradContractAuthorizationForOpportunity(combinedNotes, OTHER_OPP), null);
 
-  const otherStatus = A.evaluateBradAuthorizationCurrency(K.latestBradContractAuthorizationForOpportunity(combinedNotes, OTHER_OPP), otherPreview);
+  const otherStatus = A.evaluateBradAuthorizationCurrency(K.latestBradContractAuthorizationForOpportunity(combinedNotes, OTHER_OPP), otherPreview, SAMPLE_ARTIFACT);
   checkTrue('the other opportunity\'s preview is correctly unauthorized -- no cross-opportunity leak', otherStatus.authorized === false);
 }
 
@@ -281,7 +291,7 @@ let authorizedRecord;
   // produces or implies an authorization record.
   for (let i = 0; i < 3; i++) {
     const p = buildCompletePreview(OPP, VERSION);
-    const status = A.evaluateBradAuthorizationCurrency(null, p);
+    const status = A.evaluateBradAuthorizationCurrency(null, p, SAMPLE_ARTIFACT);
     checkTrue(`building preview #${i + 1} alone still begins unauthorized`, status.authorized === false);
   }
 
@@ -326,16 +336,16 @@ let authorizedRecord;
   checkTrue('sanity: the authorized record\'s template identity matches the preview it was authorized against', authorizedRecord.templateName === completePreview.templateName && authorizedRecord.templateSource === completePreview.templateSource);
 
   const changedTemplateNamePreview = Object.assign({}, completePreview, { templateName: 'A DIFFERENT TEMPLATE ENTIRELY' });
-  const changedNameStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, changedTemplateNamePreview);
+  const changedNameStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, changedTemplateNamePreview, SAMPLE_ARTIFACT);
   checkTrue('a changed templateName revokes authorization', changedNameStatus.authorized === false);
   check('the revocation names TEMPLATE_CHANGED', changedNameStatus.reasons.map((r) => r.code), ['TEMPLATE_CHANGED']);
 
   const changedTemplateSourcePreview = Object.assign({}, completePreview, { templateSource: 'docs/some-other-template.pdf (hypothetical)' });
-  const changedSourceStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, changedTemplateSourcePreview);
+  const changedSourceStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, changedTemplateSourcePreview, SAMPLE_ARTIFACT);
   checkTrue('a changed templateSource ALSO revokes authorization', changedSourceStatus.authorized === false);
   check('the revocation also names TEMPLATE_CHANGED', changedSourceStatus.reasons.map((r) => r.code), ['TEMPLATE_CHANGED']);
 
-  const unchangedStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, completePreview);
+  const unchangedStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, completePreview, SAMPLE_ARTIFACT);
   checkTrue('with template identity UNCHANGED, authorization remains current', unchangedStatus.authorized === true);
 }
 
@@ -347,12 +357,12 @@ let authorizedRecord;
   // The UI-created path (buildAuthorizationRecordArgs) records Brad in
   // BOTH fields -- already asserted in section 2 above; restated here
   // for direct evidence-mapping to this specific requirement.
-  const built = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AT, preview: completePreview, currentVersion: VERSION });
+  const built = A.buildAuthorizationRecordArgs({ opportunityId: OPP, at: AT, preview: completePreview, currentVersion: VERSION, artifact: SAMPLE_ARTIFACT });
   check('the UI-created record identifies Brad as authorizedBy', built.value.authorizedBy, 'brad');
   check('the UI-created record identifies Brad as operator', built.value.operator, 'brad');
   const uiNote = K.formatBradContractAuthorizationNote(built.value);
   const uiRecord = K.parseBradContractAuthorizationNote(uiNote);
-  const uiStatus = A.evaluateBradAuthorizationCurrency(uiRecord, completePreview);
+  const uiStatus = A.evaluateBradAuthorizationCurrency(uiRecord, completePreview, SAMPLE_ARTIFACT);
   checkTrue('the UI-created, readback record IS current Brad authorization', uiStatus.authorized === true);
 
   // A record with a NULL operator (e.g. a malformed or historical note
@@ -362,7 +372,7 @@ let authorizedRecord;
   // exactly as a corrupted/hand-crafted note would.
   const nullOperatorNote = K.formatBradContractAuthorizationNote(Object.assign({}, built.value, { operator: null }));
   const nullOperatorRecord = K.parseBradContractAuthorizationNote(nullOperatorNote);
-  const nullOperatorStatus = A.evaluateBradAuthorizationCurrency(nullOperatorRecord, completePreview);
+  const nullOperatorStatus = A.evaluateBradAuthorizationCurrency(nullOperatorRecord, completePreview, SAMPLE_ARTIFACT);
   checkTrue('a record with a NULL operator does NOT produce current Brad authorization', nullOperatorStatus.authorized === false);
   check('the refusal names OPERATOR_NOT_BRAD', nullOperatorStatus.reasons.map((r) => r.code), ['OPERATOR_NOT_BRAD']);
 
@@ -371,7 +381,7 @@ let authorizedRecord;
   // agree, never just one of them.
   const wrongOperatorNote = K.formatBradContractAuthorizationNote(Object.assign({}, built.value, { operator: 'jess' }));
   const wrongOperatorRecord = K.parseBradContractAuthorizationNote(wrongOperatorNote);
-  const wrongOperatorStatus = A.evaluateBradAuthorizationCurrency(wrongOperatorRecord, completePreview);
+  const wrongOperatorStatus = A.evaluateBradAuthorizationCurrency(wrongOperatorRecord, completePreview, SAMPLE_ARTIFACT);
   checkTrue('a record with a NON-BRAD operator does NOT produce current Brad authorization, even though authorizedBy still says "brad"', wrongOperatorStatus.authorized === false);
   check('the refusal names OPERATOR_NOT_BRAD', wrongOperatorStatus.reasons.map((r) => r.code), ['OPERATOR_NOT_BRAD']);
 
@@ -379,7 +389,7 @@ let authorizedRecord;
   // must also fail closed -- both fields are independently required.
   const wrongAuthorizedByNote = K.formatBradContractAuthorizationNote(Object.assign({}, built.value, { authorizedBy: 'jess' }));
   const wrongAuthorizedByRecord = K.parseBradContractAuthorizationNote(wrongAuthorizedByNote);
-  const wrongAuthorizedByStatus = A.evaluateBradAuthorizationCurrency(wrongAuthorizedByRecord, completePreview);
+  const wrongAuthorizedByStatus = A.evaluateBradAuthorizationCurrency(wrongAuthorizedByRecord, completePreview, SAMPLE_ARTIFACT);
   checkTrue('a record with a NON-BRAD authorizedBy does NOT produce current Brad authorization, even with a correct Brad operator', wrongAuthorizedByStatus.authorized === false);
   check('the refusal names NOT_BRAD', wrongAuthorizedByStatus.reasons.map((r) => r.code), ['NOT_BRAD']);
 

@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ArrowRight } from "lucide-react";
 import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
@@ -335,7 +335,13 @@ function renderFieldValue(group: string, field: string, d: FieldDisposition<unkn
       return { text: `Exempt — no well, no pond/lake/tank, no surface water certificate, no severed mineral rights; water source: ${w.waterSource}`, color: "#22C55E" };
     }
     case "closingPossession.closingDate":
-      return { text: new Date(v as string).toLocaleDateString(), color: "#22C55E" };
+      // UTC-explicit -- the stored value is a calendar-only fact (midnight
+      // UTC), and without this option `toLocaleDateString()` renders in the
+      // browser's LOCAL timezone, rolling the displayed day back by one for
+      // any timezone behind UTC. Matches the already-established
+      // `closingDateMonthDayTransport` pattern (contract-ghl-transport-
+      // formatting.ts), which derives the same instant the same way.
+      return { text: new Date(v as string).toLocaleDateString(undefined, { timeZone: "UTC" }), color: "#22C55E" };
     case "closingPossession.possessionElection":
       return { text: v === "upon_closing_and_funding" ? "Upon closing and funding" : "Leaseback", color: "#22C55E" };
     case "settlementExpense.sellerPaysBuyerBroker":
@@ -550,6 +556,215 @@ const INITIAL_DRAFTS: Drafts = {
   sellerSigning: { count: "unset", seller1Capacity: "unresolved", seller2LegalName: "", seller2Email: "", seller2Capacity: "unresolved" },
 };
 
+/* ==================================================================== */
+/* Saved-fact form hydration -- the exact inverse of each handleSaveX     */
+/* below. A refresh previously reset every group's draft to              */
+/* INITIAL_DRAFTS regardless of what was actually saved, so a one-field  */
+/* correction (e.g. County) submitted every OTHER field in that group at */
+/* its blank default, overwriting real saved values, or failing the      */
+/* group's own "every field needs a value" validation outright.          */
+/* ==================================================================== */
+
+function valueOrNoneToDraft(f: ValueOrNone): VNDraft {
+  return f.kind === "none" ? { mode: "none", text: "" } : { mode: "value", text: f.value };
+}
+
+function numberDispositionToAmountDraft(disp: FieldDisposition<number>): AONDraft {
+  if (disp.kind === "populated") return { mode: "amount", text: String(disp.value) };
+  if (disp.kind === "not_applicable") return { mode: "none", text: "" };
+  return AON_UNSET;
+}
+
+function numberDispositionToDaysDraft(disp: FieldDisposition<number>): DONDraft {
+  if (disp.kind === "populated") return { mode: "days", text: String(disp.value) };
+  if (disp.kind === "not_applicable") return { mode: "none", text: "" };
+  return DON_UNSET;
+}
+
+function brokerInfoToDraft(b: BrokerInfo): BrokerDraft {
+  return {
+    firmName: b.firmName, licenseNo: b.licenseNo, associateName: b.associateName, associateLicenseNo: b.associateLicenseNo,
+    email: b.email, phone: b.phone,
+    address: valueOrNoneToDraft(b.address), teamName: valueOrNoneToDraft(b.teamName),
+    supervisorName: valueOrNoneToDraft(b.supervisorName), supervisorPhone: valueOrNoneToDraft(b.supervisorPhone),
+    supervisorLicenseNo: valueOrNoneToDraft(b.supervisorLicenseNo),
+  };
+}
+
+/**
+ * `"intermediary"` is a real `RepresentationFact` kind (INV-67 checkbox-
+ * marker / broker-model repair) that `Drafts["representation"]` has no
+ * shape for at all -- it was never editable through this form before this
+ * fix and remains not editable now; the caller below never invokes this
+ * for that kind. Adding intermediary support to the draft type would be a
+ * real feature change, out of this hydration fix's scope.
+ */
+function repFactToDraft(f: RepresentationFact & { kind: "none" | "represented" }): Drafts["representation"] {
+  if (f.kind === "none") return { kind: "none", sellerAgentPresent: false, sellerAgent: BROKER_DRAFT_EMPTY, buyerAgentPresent: false, buyerAgent: BROKER_DRAFT_EMPTY };
+  return {
+    kind: "represented",
+    sellerAgentPresent: f.sellerAgent !== null, sellerAgent: f.sellerAgent ? brokerInfoToDraft(f.sellerAgent) : BROKER_DRAFT_EMPTY,
+    buyerAgentPresent: f.buyerAgent !== null, buyerAgent: f.buyerAgent ? brokerInfoToDraft(f.buyerAgent) : BROKER_DRAFT_EMPTY,
+  };
+}
+
+/**
+ * Builds a full `Drafts` object from the currently-resolved canonical
+ * report (and the separately-parsed seller signing model) -- the exact
+ * inverse of each handleSaveX below, field for field. Called ONCE per
+ * opportunity by the hydration effect inside the component, never on
+ * every report recompute (which would silently overwrite in-progress,
+ * unsaved typing every time an unrelated group's save appends a note).
+ *
+ * A field with no canonical record (`unresolved`) is left at its
+ * INITIAL_DRAFTS default -- never invented, never inferred, matching
+ * every existing "no default" ruling already encoded in the save
+ * handlers below (legal municipality, seller count, additional earnest
+ * money, ...).
+ *
+ * Two disclosed, deliberate gaps, neither introduced by this fix:
+ * (1) `buyerOverride` is never hydrated -- its audit-only `reason` text
+ * is not part of the aggregated report (only `parties.buyerEntityName`,
+ * a bare string, survives into it), so there is nothing lossless to
+ * reconstruct; re-entering an override, on the rare deal that needs one,
+ * is unchanged from today. (2) `attorneySpecial`/`attorneyOther` cannot
+ * distinguish a previously-recorded "attorney will draft" from "never
+ * recorded" -- `contract-facts-model.ts`'s own aggregation deliberately
+ * collapses both to `unresolved` (see that file's header); hydration
+ * inherits that same, pre-existing ambiguity rather than resolving it by
+ * re-reading raw notes here, which is out of this fix's scope.
+ */
+function draftsFromReport(report: SellerContractFactsReport | null, signingModel: SellerSigningModel | null): Drafts {
+  const d = INITIAL_DRAFTS;
+  if (!report) return d;
+
+  const signer = report.parties.sellerSigners.kind === "populated" && report.parties.sellerSigners.value.length > 0
+    ? report.parties.sellerSigners.value[0]
+    : null;
+  const legal = report.propertyLegalDescription;
+  const lease = report.leaseDisclosure;
+  const earnest = report.earnestMoneyOption;
+  const title = report.titleSurvey;
+  const condition = report.propertyCondition;
+  const closing = report.closingPossession;
+  const settlement = report.settlementExpense;
+  const rep = report.representation.representation;
+  const addenda = report.addendaApplicability;
+  const equitable = report.sellerEquitableInterest.disposition;
+  const attorneySpecial = report.attorneyManualFields.specialProvisions;
+  const attorneyOther = report.attorneyManualFields.otherAddendaText;
+  const notice = report.noticeContact;
+
+  return {
+    buyerOverride: d.buyerOverride,
+    signer: signer
+      ? { role: signer.role, displayName: signer.displayName ?? "", signingAuthorityNote: signer.signingAuthorityNote ?? "" }
+      : d.signer,
+    legalDesc: {
+      lot: legal.lot.kind === "populated" ? valueOrNoneToDraft(legal.lot.value) : d.legalDesc.lot,
+      block: legal.block.kind === "populated" ? valueOrNoneToDraft(legal.block.value) : d.legalDesc.block,
+      addition: legal.addition.kind === "populated" ? valueOrNoneToDraft(legal.addition.value) : d.legalDesc.addition,
+      county: legal.county.kind === "populated" ? valueOrNoneToDraft(legal.county.value) : d.legalDesc.county,
+      exclusions: legal.exclusions.kind === "populated" ? valueOrNoneToDraft(legal.exclusions.value) : d.legalDesc.exclusions,
+      reservationsKind: legal.reservations.kind === "populated" ? legal.reservations.value.kind : d.legalDesc.reservationsKind,
+      reservationsNote: legal.reservations.kind === "populated" && legal.reservations.value.kind === "applies" ? legal.reservations.value.addendumNote : d.legalDesc.reservationsNote,
+      municipalityKind: legal.legalMunicipality.kind === "populated" ? legal.legalMunicipality.value.kind : d.legalDesc.municipalityKind,
+      municipalityName: legal.legalMunicipality.kind === "populated" && legal.legalMunicipality.value.kind === "municipality" ? legal.legalMunicipality.value.name : d.legalDesc.municipalityName,
+    },
+    lease: {
+      residentialLeases: lease.residentialLeases.kind === "populated" ? lease.residentialLeases.value : d.lease.residentialLeases,
+      fixtureLeases: lease.fixtureLeases.kind === "populated" ? lease.fixtureLeases.value : d.lease.fixtureLeases,
+      naturalKind: lease.naturalResourceLeases.kind === "populated" ? lease.naturalResourceLeases.value.kind : d.lease.naturalKind,
+      naturalDays: lease.naturalResourceLeases.kind === "populated" && lease.naturalResourceLeases.value.kind === "not_yet_delivered" ? String(lease.naturalResourceLeases.value.terminateWithinDays) : d.lease.naturalDays,
+    },
+    earnest: {
+      escrowAgentName: earnest.escrowAgentName.kind === "populated" ? earnest.escrowAgentName.value : d.earnest.escrowAgentName,
+      escrowAgentAddress: earnest.escrowAgentAddress.kind === "populated" ? earnest.escrowAgentAddress.value : d.earnest.escrowAgentAddress,
+      earnestMoney: numberDispositionToAmountDraft(earnest.earnestMoney),
+      optionFee: numberDispositionToAmountDraft(earnest.optionFee),
+      optionPeriodDays: numberDispositionToDaysDraft(earnest.optionPeriodDays),
+      additionalKind: earnest.additionalEarnestMoney.kind === "populated" ? "value" : earnest.additionalEarnestMoney.kind === "not_applicable" ? "none" : d.earnest.additionalKind,
+      // The report only ever wraps the "value" variant in `populated` --
+      // "none" resolves to `not_applicable` instead (contract-facts-model.ts) --
+      // but `AdditionalEarnestMoneyFact` itself still admits both, so this
+      // narrows explicitly rather than assuming the disposition wrapper's
+      // own construction discipline.
+      additionalAmount: earnest.additionalEarnestMoney.kind === "populated" && earnest.additionalEarnestMoney.value.kind === "value" ? String(earnest.additionalEarnestMoney.value.amount) : d.earnest.additionalAmount,
+      additionalWithinDays: earnest.additionalEarnestMoney.kind === "populated" && earnest.additionalEarnestMoney.value.kind === "value" ? String(earnest.additionalEarnestMoney.value.withinDays) : d.earnest.additionalWithinDays,
+    },
+    titleSurvey: {
+      titlePolicyExpenseParty: title.titlePolicyExpenseParty.kind === "populated" ? title.titlePolicyExpenseParty.value : d.titleSurvey.titlePolicyExpenseParty,
+      titleCompanyName: title.titleCompanyName.kind === "populated" ? title.titleCompanyName.value : d.titleSurvey.titleCompanyName,
+      shortageKind: title.shortageAmendmentElection.kind === "populated" ? title.shortageAmendmentElection.value.kind : d.titleSurvey.shortageKind,
+      shortageExpenseParty: title.shortageAmendmentElection.kind === "populated" && title.shortageAmendmentElection.value.kind === "amended" ? title.shortageAmendmentElection.value.expenseParty : d.titleSurvey.shortageExpenseParty,
+      surveyOption: title.surveyElection.kind === "populated" ? title.surveyElection.value.option : d.titleSurvey.surveyOption,
+      sellerFurnishDays: title.surveyElection.kind === "populated" && (title.surveyElection.value.option === "seller_existing_survey" || title.surveyElection.value.option === "seller_new_survey") ? String(title.surveyElection.value.sellerFurnishDays) : d.titleSurvey.sellerFurnishDays,
+      buyerObtainDays: title.surveyElection.kind === "populated" && title.surveyElection.value.option === "buyer_new_survey" ? String(title.surveyElection.value.buyerObtainDays) : d.titleSurvey.buyerObtainDays,
+      ifRejectedExpenseParty: title.surveyElection.kind === "populated" && title.surveyElection.value.option === "seller_existing_survey" ? title.surveyElection.value.ifRejectedExpenseParty : d.titleSurvey.ifRejectedExpenseParty,
+      objectionsText: title.objectionsText.kind === "populated" ? valueOrNoneToDraft(title.objectionsText.value) : d.titleSurvey.objectionsText,
+      objectionsDays: title.objectionsDays.kind === "populated" ? String(title.objectionsDays.value) : d.titleSurvey.objectionsDays,
+      poaMembership: title.poaMembership.kind === "populated" ? title.poaMembership.value : d.titleSurvey.poaMembership,
+    },
+    propertyCondition: {
+      disclosureKind: condition.sellerDisclosureNotice.kind === "populated" ? condition.sellerDisclosureNotice.value.kind : d.propertyCondition.disclosureKind,
+      disclosureDays: condition.sellerDisclosureNotice.kind === "populated" && condition.sellerDisclosureNotice.value.kind === "not_yet_received" ? String(condition.sellerDisclosureNotice.value.deliverWithinDays) : d.propertyCondition.disclosureDays,
+      asIsKind: condition.asIsElection.kind === "populated" ? condition.asIsElection.value.kind : d.propertyCondition.asIsKind,
+      repairsText: condition.asIsElection.kind === "populated" && condition.asIsElection.value.kind === "as_is_with_repairs" ? condition.asIsElection.value.repairsText : d.propertyCondition.repairsText,
+      serviceContractCap: condition.serviceContractCap.kind === "populated" ? valueOrNoneToDraft(condition.serviceContractCap.value) : d.propertyCondition.serviceContractCap,
+      waterKind: condition.waterDisclosure.kind === "populated" ? condition.waterDisclosure.value.kind : d.propertyCondition.waterKind,
+      waterDays: condition.waterDisclosure.kind === "populated" && condition.waterDisclosure.value.kind === "not_yet_received" ? String(condition.waterDisclosure.value.deliverWithinDays) : d.propertyCondition.waterDays,
+      waterSource: condition.waterDisclosure.kind === "populated" && condition.waterDisclosure.value.kind === "exempt" ? condition.waterDisclosure.value.waterSource : d.propertyCondition.waterSource,
+    },
+    closingPossession: {
+      // The stored value is already a canonical UTC-midnight ISO instant
+      // (`YYYY-MM-DDT00:00:00.000Z`) -- slicing the string is UTC-safe by
+      // construction, no Date/local-timezone conversion of any kind, same
+      // discipline as the closing-date display fix earlier on this page.
+      closingDate: closing.closingDate.kind === "populated" ? closing.closingDate.value.slice(0, 10) : d.closingPossession.closingDate,
+      possessionElection: closing.possessionElection.kind === "populated" ? closing.possessionElection.value : d.closingPossession.possessionElection,
+      possessionDetails: closing.possessionDetails.kind === "populated" ? valueOrNoneToDraft(closing.possessionDetails.value) : d.closingPossession.possessionDetails,
+    },
+    settlement: {
+      sellerCreditCap: settlement.sellerCreditCap.kind === "populated" ? valueOrNoneToDraft(settlement.sellerCreditCap.value) : d.settlement.sellerCreditCap,
+      sellerPaysKind: settlement.sellerPaysBuyerBroker.kind === "populated" ? settlement.sellerPaysBuyerBroker.value.kind : d.settlement.sellerPaysKind,
+      sellerPaysAmount: settlement.sellerPaysBuyerBroker.kind === "populated" && settlement.sellerPaysBuyerBroker.value.kind === "dollar" ? String(settlement.sellerPaysBuyerBroker.value.amount) : d.settlement.sellerPaysAmount,
+      sellerPaysPercent: settlement.sellerPaysBuyerBroker.kind === "populated" && settlement.sellerPaysBuyerBroker.value.kind === "percent" ? String(settlement.sellerPaysBuyerBroker.value.percent) : d.settlement.sellerPaysPercent,
+      buyerPaysKind: settlement.buyerPaysSellerBroker.kind === "populated" ? settlement.buyerPaysSellerBroker.value.kind : d.settlement.buyerPaysKind,
+      buyerPaysAmount: settlement.buyerPaysSellerBroker.kind === "populated" && settlement.buyerPaysSellerBroker.value.kind === "dollar" ? String(settlement.buyerPaysSellerBroker.value.amount) : d.settlement.buyerPaysAmount,
+      buyerPaysPercent: settlement.buyerPaysSellerBroker.kind === "populated" && settlement.buyerPaysSellerBroker.value.kind === "percent" ? String(settlement.buyerPaysSellerBroker.value.percent) : d.settlement.buyerPaysPercent,
+    },
+    representation: rep.kind === "populated" && rep.value.kind !== "intermediary" ? repFactToDraft(rep.value) : d.representation,
+    addenda: {
+      items: addenda.items.kind === "populated" ? { ...addenda.items.value } : d.addenda.items,
+      districtNotices: addenda.districtNotices.kind === "populated" ? valueOrNoneToDraft(addenda.districtNotices.value) : d.addenda.districtNotices,
+    },
+    sellerEquitable: { kind: equitable.kind === "populated" ? equitable.value.kind : d.sellerEquitable.kind },
+    attorneySpecial: attorneySpecial.kind === "populated" ? { kind: "provided_verbatim", text: attorneySpecial.value.text } : attorneySpecial.kind === "not_applicable" ? { kind: "not_applicable", text: "" } : d.attorneySpecial,
+    attorneyOther: attorneyOther.kind === "populated" ? { kind: "provided_verbatim", text: attorneyOther.value.text } : attorneyOther.kind === "not_applicable" ? { kind: "not_applicable", text: "" } : d.attorneyOther,
+    buyerBusinessConfig: {
+      noticeAddress: notice.buyerNoticeAddress.kind === "populated" ? notice.buyerNoticeAddress.value : d.buyerBusinessConfig.noticeAddress,
+      noticePhone: notice.buyerNoticePhone.kind === "populated" ? notice.buyerNoticePhone.value : d.buyerBusinessConfig.noticePhone,
+      noticeEmail: notice.buyerNoticeEmail.kind === "populated" ? notice.buyerNoticeEmail.value : d.buyerBusinessConfig.noticeEmail,
+      signerName: notice.buyerSignerName.kind === "populated" ? notice.buyerSignerName.value : d.buyerBusinessConfig.signerName,
+      signerRole: notice.buyerSignerRole.kind === "populated" ? notice.buyerSignerRole.value : d.buyerBusinessConfig.signerRole,
+    },
+    sellerNotice: {
+      noticeAddress: notice.sellerNoticeAddress.kind === "populated" ? notice.sellerNoticeAddress.value : d.sellerNotice.noticeAddress,
+      noticePhone: notice.sellerNoticePhone.kind === "populated" ? { mode: "value", text: notice.sellerNoticePhone.value } : notice.sellerNoticePhone.kind === "not_applicable" ? { mode: "none", text: "" } : d.sellerNotice.noticePhone,
+      noticeEmail: notice.sellerNoticeEmail.kind === "populated" ? { mode: "value", text: notice.sellerNoticeEmail.value } : notice.sellerNoticeEmail.kind === "not_applicable" ? { mode: "none", text: "" } : d.sellerNotice.noticeEmail,
+    },
+    sellerSigning: signingModel
+      ? {
+          count: signingModel.kind === "one_seller" ? 1 : 2,
+          seller1Capacity: signingModel.seller1Capacity,
+          seller2LegalName: signingModel.kind === "two_sellers" ? signingModel.seller2.legalName : d.sellerSigning.seller2LegalName,
+          seller2Email: signingModel.kind === "two_sellers" ? signingModel.seller2.email : d.sellerSigning.seller2Email,
+          seller2Capacity: signingModel.kind === "two_sellers" ? signingModel.seller2Capacity : d.sellerSigning.seller2Capacity,
+        }
+      : d.sellerSigning,
+  };
+}
+
 export default function ContractWorkspace() {
   const { id } = useParams<{ id: string }>();
   const contactId = id ?? "";
@@ -661,6 +876,26 @@ export default function ContractWorkspace() {
   }, [screen, notes]);
 
   /**
+   * Saved-fact form hydration. Populates every group's draft from the
+   * currently-resolved canonical report EXACTLY ONCE per opportunity --
+   * the instant canonical data first becomes available for it -- never on
+   * every subsequent recompute of `sellerContractFactsReport`/
+   * `latestSellerSigningModel` (both produce a new object reference on
+   * every notes change, including a DIFFERENT group's own save; hydrating
+   * on every recompute would silently overwrite an operator's in-progress,
+   * unsaved keystrokes mid-session). `hydratedOpportunityId` tracks which
+   * opportunity's drafts are already hydrated; switching opportunities
+   * naturally re-triggers exactly one fresh hydration for the new one.
+   */
+  const hydratedOpportunityId = useRef<string | null>(null);
+  useEffect(() => {
+    if (screen.state !== "ready" || !sellerContractFactsReport) return;
+    if (hydratedOpportunityId.current === screen.opportunity.id) return;
+    hydratedOpportunityId.current = screen.opportunity.id;
+    setDrafts(draftsFromReport(sellerContractFactsReport, latestSellerSigningModel?.model ?? null));
+  }, [screen, sellerContractFactsReport, latestSellerSigningModel]);
+
+  /**
    * B9-07 / INV-62 -- Contract Review & Send-Authorization Gate.
    *
    * `documentVersion` is `initialVersionIdentity(agreementAt)` -- no
@@ -696,10 +931,124 @@ export default function ContractWorkspace() {
     return latestBradContractAuthorizationForOpportunity(notes, screen.opportunity.id);
   }, [screen, notes]);
 
+  /**
+   * Board #9 Phase B. The CURRENT generated artifact, if Brad has
+   * generated one in this session -- `null` means none exists yet (or a
+   * prior one was invalidated because canonical facts changed underneath
+   * it). Holds ONLY what `generate-contract-pdf` independently returned;
+   * nothing here is computed or claimed client-side. `pdfBase64` lives
+   * only in this component's own memory for exactly as long as this page
+   * is open -- no persistence, no server custody (see that endpoint's own
+   * header).
+   */
+  const [generatedArtifact, setGeneratedArtifact] = useState<{
+    pdfBase64: string;
+    outputSha256: string;
+    sourceSha256: string;
+    generatorVersion: string;
+    manifestVersion: string;
+  } | null>(null);
+  const [generateBusy, setGenerateBusy] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+
+  // Invalidates any prior generation the instant the canonical, live-derived
+  // preview changes underneath it -- Brad must re-generate before
+  // authorizing against changed facts. Fires on mount too (generatedArtifact
+  // is already null then, so this is a harmless no-op), and on every
+  // genuine recompute of contractDocumentPreview (a new object each time
+  // its own dependencies change).
+  useEffect(() => {
+    setGeneratedArtifact(null);
+    setGenerateError(null);
+  }, [contractDocumentPreview]);
+
+  /** The ONLY source of "current" artifact facts this page ever uses for display or authorization -- never a self-reference to the stored record, never invented. Absent a fresh generation, this is a bundle guaranteed to fail `evaluateBradAuthorizationCurrency`'s own shape validation (empty strings can never be a real 64-hex hash), so the page can never claim "currently authorized" without a real, current generation backing it. */
+  const currentArtifactFactsForDisplay = useMemo(() => {
+    if (!generatedArtifact) {
+      return { artifactSha256: "", sourcePdfSha256: "", generatorVersion: "", manifestVersion: "" };
+    }
+    return {
+      artifactSha256: generatedArtifact.outputSha256,
+      sourcePdfSha256: generatedArtifact.sourceSha256,
+      generatorVersion: generatedArtifact.generatorVersion,
+      manifestVersion: generatedArtifact.manifestVersion,
+    };
+  }, [generatedArtifact]);
+
+  async function handleGenerateArtifact() {
+    if (screen.state !== "ready") return;
+    setGenerateError(null);
+    setGenerateBusy(true);
+    try {
+      const result = await ghl.contracts.generatePdf({ opportunityId: screen.opportunity.id });
+      setGeneratedArtifact({
+        pdfBase64: result.pdfBase64,
+        outputSha256: result.evidence.outputSha256,
+        sourceSha256: result.evidence.sourceSha256,
+        generatorVersion: result.evidence.generatorVersion,
+        manifestVersion: result.evidence.manifestVersion,
+      });
+    } catch (e: any) {
+      setGeneratedArtifact(null);
+      setGenerateError(e?.message ?? "Could not generate the contract PDF. Try again.");
+    } finally {
+      setGenerateBusy(false);
+    }
+  }
+
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  /**
+   * Builds the downloaded file from the SAME `generatedArtifact.pdfBase64`
+   * bytes already held in memory -- no network call, no new generation, no
+   * second copy of the artifact. This is why the downloaded file's SHA-256
+   * can never differ from `generatedArtifact.outputSha256`, the same value
+   * `handleAuthorize` below binds the authorization record to: both read
+   * the one in-memory generation result, never two independent fetches.
+   */
+  function handleDownloadArtifact() {
+    if (!generatedArtifact) return;
+    setDownloadError(null);
+    let url: string | null = null;
+    try {
+      const bytes = Uint8Array.from(atob(generatedArtifact.pdfBase64), (c) => c.charCodeAt(0));
+      url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `contract-${screen.state === "ready" ? screen.opportunity.id : "draft"}-${generatedArtifact.outputSha256.slice(0, 12)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch {
+      setDownloadError("Could not prepare the PDF. Generate it again before saving authorization.");
+    } finally {
+      // Deferred, not immediate -- revoking synchronously right after click()
+      // can race the browser's own download-start in some engines. Revoked
+      // either way: on success (once the download has started) and on
+      // failure (the URL, if it was created before the throw, is never left
+      // dangling).
+      if (url) { const revoke = url; setTimeout(() => URL.revokeObjectURL(revoke), 0); }
+    }
+  }
+
   const bradAuthorizationStatus = useMemo(() => {
     if (!contractDocumentPreview) return null;
-    return evaluateBradAuthorizationCurrency(bradAuthorizationRecord, contractDocumentPreview);
-  }, [bradAuthorizationRecord, contractDocumentPreview]);
+    return evaluateBradAuthorizationCurrency(bradAuthorizationRecord, contractDocumentPreview, currentArtifactFactsForDisplay);
+  }, [bradAuthorizationRecord, contractDocumentPreview, currentArtifactFactsForDisplay]);
+
+  /**
+   * Display-only derivation from `bradAuthorizationStatus` -- never a
+   * second authorization computation. "saved" = currently authorized.
+   * "unsaved_changes" = a PRIOR authorization exists (`record !== null`)
+   * but currency now fails (something changed since). "not_saved" = no
+   * authorization has ever been recorded for this revision at all.
+   */
+  const authorizationDisplayState: "saved" | "unsaved_changes" | "not_saved" =
+    bradAuthorizationStatus?.authorized
+      ? "saved"
+      : bradAuthorizationStatus && bradAuthorizationStatus.record
+      ? "unsaved_changes"
+      : "not_saved";
 
   const authorizationEligibility = useMemo(() => {
     if (!contractDocumentPreview || !documentVersion) return null;
@@ -725,11 +1074,21 @@ export default function ContractWorkspace() {
   async function handleAuthorize() {
     if (screen.state !== "ready" || !contractDocumentPreview || !documentVersion) return;
     setAuthorizeError(null);
+    if (!generatedArtifact) {
+      setAuthorizeError("Generate the current contract PDF before authorizing it.");
+      return;
+    }
     const built = buildAuthorizationRecordArgs({
       opportunityId: screen.opportunity.id,
       at: new Date().toISOString(),
       preview: contractDocumentPreview,
       currentVersion: documentVersion,
+      artifact: {
+        artifactSha256: generatedArtifact.outputSha256,
+        sourcePdfSha256: generatedArtifact.sourceSha256,
+        generatorVersion: generatedArtifact.generatorVersion,
+        manifestVersion: generatedArtifact.manifestVersion,
+      },
     });
     if (!built.ok) {
       setAuthorizeError(built.reasons.map((r) => r.message).join(" "));
@@ -2539,7 +2898,7 @@ export default function ContractWorkspace() {
                 Contract Review &amp; Send-Authorization
               </div>
               <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
-                No agreement becomes eligible for delivery merely because IAOS generated, populated, or displayed it. Only Brad's own explicit action, for this exact document revision, can authorize it -- and any material change since revokes that authorization.
+                No agreement becomes eligible for delivery merely because IAOS generated, populated, or displayed it. Only the authorized operator's own explicit action, for this exact document revision, can authorize it -- and any material change since revokes that authorization.
               </div>
 
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
@@ -2567,18 +2926,20 @@ export default function ContractWorkspace() {
                     Population/preview completeness only -- never authorization to send.
                   </div>
                 </div>
-                <div data-testid="contract-authorization-brad-authorized" style={{
+                <div data-testid="contract-authorization-save-status" style={{
                   ...groupCardStyle, flex: "1 1 220px",
-                  borderColor: bradAuthorizationStatus.authorized ? "rgba(34,197,94,0.35)" : "rgba(148,163,184,0.35)",
+                  borderColor: authorizationDisplayState === "saved" ? "rgba(34,197,94,0.35)" : authorizationDisplayState === "unsaved_changes" ? "rgba(245,158,11,0.35)" : "rgba(148,163,184,0.35)",
                 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: bradAuthorizationStatus.authorized ? "#22C55E" : "#94A3B8" }}>
-                    {bradAuthorizationStatus.authorized ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />}
-                    {bradAuthorizationStatus.authorized ? "Brad-authorized" : "Not Brad-authorized"}
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 700, color: authorizationDisplayState === "saved" ? "#22C55E" : authorizationDisplayState === "unsaved_changes" ? "#F59E0B" : "#94A3B8" }}>
+                    {authorizationDisplayState === "saved" ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />}
+                    {authorizationDisplayState === "saved" ? "Saved" : authorizationDisplayState === "unsaved_changes" ? "Unsaved changes" : "Not saved"}
                   </div>
                   <div style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>
-                    {bradAuthorizationStatus.authorized
-                      ? `Authorized ${new Date(bradAuthorizationStatus.record.at).toLocaleString()} for this exact revision.`
-                      : "Requires Brad's explicit action for this exact revision -- never assumed, never a side effect of saving a fact."}
+                    {authorizationDisplayState === "saved"
+                      ? "Authorization saved for this version."
+                      : authorizationDisplayState === "unsaved_changes"
+                      ? "The contract changed. Generate the updated PDF and save authorization again."
+                      : "Generate the PDF, review it, then save authorization."}
                   </div>
                 </div>
               </div>
@@ -2641,11 +3002,11 @@ export default function ContractWorkspace() {
               </div>
 
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Differences from the last Brad-reviewed revision</div>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Changes since authorization</div>
                 {differencesFromLastAuthorized === null ? (
                   <div data-testid="contract-authorization-diff-none-recorded" style={{ fontSize: "11px", color: "#64748B" }}>No prior authorization exists to compare against.</div>
                 ) : differencesFromLastAuthorized.length === 0 ? (
-                  <div data-testid="contract-authorization-diff-unchanged" style={{ fontSize: "11px", color: "#22C55E" }}>No differences -- this is exactly the revision Brad last authorized.</div>
+                  <div data-testid="contract-authorization-diff-unchanged" style={{ fontSize: "11px", color: "#22C55E" }}>No changes since authorization was saved.</div>
                 ) : (
                   <ul data-testid="contract-authorization-diff-list" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#F59E0B", lineHeight: 1.8 }}>
                     {differencesFromLastAuthorized.map((d) => (
@@ -2657,18 +3018,45 @@ export default function ContractWorkspace() {
                 )}
               </div>
 
+              <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Current generated artifact</div>
+                {generatedArtifact ? (
+                  <div data-testid="contract-generated-artifact-current" style={{ fontSize: "11px", color: "#22C55E" }}>
+                    Generated -- SHA-256 {generatedArtifact.outputSha256.slice(0, 12)}…
+                  </div>
+                ) : (
+                  <div data-testid="contract-generated-artifact-none" style={{ fontSize: "11px", color: "#94A3B8" }}>
+                    Not yet generated for this revision -- generate before authorizing.
+                  </div>
+                )}
+                <div style={{ marginTop: "8px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  <Btn testId="contract-generate-button" onClick={handleGenerateArtifact} busy={generateBusy} disabled={!authorizationEligibility.eligible}>
+                    Generate current contract PDF
+                  </Btn>
+                  <Btn testId="contract-generated-artifact-download" onClick={handleDownloadArtifact} busy={false} disabled={!generatedArtifact}>
+                    Download PDF
+                  </Btn>
+                </div>
+                <ErrorText testId="contract-generate-error">{generateError}</ErrorText>
+                <ErrorText testId="contract-download-error">{downloadError}</ErrorText>
+              </div>
+
               <div>
                 <Btn
                   testId="contract-authorization-authorize-button"
                   onClick={handleAuthorize}
                   busy={authorizeBusy}
-                  disabled={!authorizationEligibility.eligible}
+                  disabled={!authorizationEligibility.eligible || !generatedArtifact}
                 >
-                  Authorize this exact revision
+                  Save authorization
                 </Btn>
                 {!authorizationEligibility.eligible ? (
                   <div data-testid="contract-authorization-ineligible-reasons" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "8px" }}>
                     {authorizationEligibility.reasons.map((r) => <div key={r.code}>{r.message}</div>)}
+                  </div>
+                ) : authorizationEligibility.eligible && !generatedArtifact ? (
+                  <div data-testid="contract-authorization-needs-generation" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "8px" }}>
+                    Generate the current contract PDF above before authorizing it.
                   </div>
                 ) : null}
                 <ErrorText testId="contract-authorization-error">{authorizeError}</ErrorText>
@@ -2692,7 +3080,7 @@ export default function ContractWorkspace() {
               <div style={{ ...groupCardStyle, marginTop: "12px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Contract Sent (state-machine evaluation)</div>
                 {contractSentStatus.eligible ? (
-                  <div data-testid="contract-sent-true" style={{ fontSize: "12px", color: "#22C55E" }}>Contract Sent -- all three locked facts are present (Brad authorization, confirmed provider transmission, explicit expiration).</div>
+                  <div data-testid="contract-sent-true" style={{ fontSize: "12px", color: "#22C55E" }}>Contract Sent -- all three locked facts are present (operator authorization, confirmed provider transmission, explicit expiration).</div>
                 ) : (
                   <ul data-testid="contract-sent-false-reasons" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
                     {contractSentStatus.reasons.map((r) => <li key={r.code}>{r.message}</li>)}

@@ -27,7 +27,16 @@ exports.contractFixture = function(load, opportunityId, AGREEMENT_AT = '2026-09-
   const version=load('board9-contract-model').initialVersionIdentity(AGREEMENT_AT);
   const report=load('contract-facts-model').computeSellerContractFactsReport({opportunityId,notes,agreedPrice:190000,agreementAt:AGREEMENT_AT,propertyAddress:'123 Main St, Austin, TX, 78701'});
   const preview=load('contract-document-model').buildContractDocumentPreview({opportunityId,version,report,propertyStreetAddress:{kind:'populated',value:'123 Main St, Austin, TX, 78701',authority:'operator_attested',recordedAt:null}});
-  const auth=load('contract-authorization-model').buildAuthorizationRecordArgs({opportunityId,at:AGREEMENT_AT,preview,currentVersion:version});
+  // Board #9 Phase B reconciliation -- schema v2's required artifact-binding
+  // fields. A generic, valid, synthetic bundle: this fixture backs offline
+  // write-boundary/ledger tests, never a live artifact.
+  const artifact = {
+    artifactSha256: 'a'.repeat(64),
+    sourcePdfSha256: '3f458518e9e01fc9c84cab420dcd0ce9793113c4b356ed5caf7a2fb1bdef2ca5',
+    generatorVersion: 'inv67-pdf-generator-v1',
+    manifestVersion: 'INV67_TEMPLATE_PLACEMENT_MANIFEST_V1',
+  };
+  const auth=load('contract-authorization-model').buildAuthorizationRecordArgs({opportunityId,at:AGREEMENT_AT,preview,currentVersion:version,artifact});
   if(!auth.ok)throw Error('Invalid complete fixture: '+JSON.stringify(auth.reasons));
   return {notes,version,report,preview,authorization:auth.value};
 };
