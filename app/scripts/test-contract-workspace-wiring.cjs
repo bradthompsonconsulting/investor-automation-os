@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 117;
+const FLOOR = 120;
 let failures = 0;
 let checks = 0;
 
@@ -387,6 +387,46 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('handleAuthorize refuses to proceed when no artifact has been generated', /if \(!generatedArtifact\) \{\s*setAuthorizeError\(/.test(contractTsxNoComments), true);
   check('handleAuthorize passes the SAME generated artifact facts into buildAuthorizationRecordArgs (never a stored/claimed value)', /buildAuthorizationRecordArgs\(\{[\s\S]{0,400}artifact: \{\s*artifactSha256: generatedArtifact\.outputSha256,\s*sourcePdfSha256: generatedArtifact\.sourceSha256,\s*generatorVersion: generatedArtifact\.generatorVersion,\s*manifestVersion: generatedArtifact\.manifestVersion,/.test(contractTsxNoComments), true);
   check('the Authorize button is disabled whenever no artifact has been generated yet, in addition to the pre-existing eligibility gate', /disabled=\{!authorizationEligibility\.eligible \|\| !generatedArtifact\}/.test(contractTsx), true);
+}
+
+// ============================================================
+// Closing-date readback off-by-one fix (display-only). Brad entered
+// 2026-10-15 and the confirmed green readback showed "10/14/2026" --
+// `renderFieldValue`'s closingPossession.closingDate case formatted the
+// stored UTC-midnight instant with `toLocaleDateString()` and no
+// `timeZone` option, so it rendered in the browser's LOCAL zone, rolling
+// the displayed day back by one for any timezone behind UTC. The stored
+// note, the parser, and the PDF/projection path (closingDateMonthDayTransport,
+// contract-ghl-transport-formatting.ts) were all already UTC-safe and are
+// UNCHANGED here -- this was a single-line, display-only defect.
+//
+// Proven two ways, matching this file's own no-render convention (source
+// wiring) plus a direct, locale-independent behavioral check of the exact
+// Date/Intl call the fixed line now makes (no component rendering).
+// ============================================================
+{
+  check(
+    'the closingPossession.closingDate case now formats with an explicit UTC timeZone (matches the already-established closingDateMonthDayTransport pattern)',
+    /case "closingPossession\.closingDate":[\s\S]{0,700}toLocaleDateString\(undefined, \{ timeZone: "UTC" \}\)/.test(contractTsxNoComments),
+    true,
+  );
+
+  // Locale-independent: reads the formatted day-of-month directly via
+  // Intl's own parts API rather than parsing a locale-formatted string.
+  function dayOfMonthInZone(iso, timeZone) {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone, day: 'numeric' }).formatToParts(new Date(iso));
+    return Number(parts.find((p) => p.type === 'day').value);
+  }
+  check(
+    'the fixed call (explicit UTC) reads day 15 for 2026-10-15T00:00:00.000Z -- exactly what Brad entered, regardless of the runtime\'s local timezone',
+    dayOfMonthInZone('2026-10-15T00:00:00.000Z', 'UTC'),
+    15,
+  );
+  check(
+    'the SAME instant, formatted in a timezone behind UTC (America/Chicago) with no explicit timeZone override, reads day 14 -- proving the timeZone option is load-bearing, not cosmetic, and reproducing the exact bug Brad observed',
+    dayOfMonthInZone('2026-10-15T00:00:00.000Z', 'America/Chicago') === 14,
+    true,
+  );
 }
 
 console.log('');

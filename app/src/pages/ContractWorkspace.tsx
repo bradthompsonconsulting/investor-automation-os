@@ -335,7 +335,13 @@ function renderFieldValue(group: string, field: string, d: FieldDisposition<unkn
       return { text: `Exempt — no well, no pond/lake/tank, no surface water certificate, no severed mineral rights; water source: ${w.waterSource}`, color: "#22C55E" };
     }
     case "closingPossession.closingDate":
-      return { text: new Date(v as string).toLocaleDateString(), color: "#22C55E" };
+      // UTC-explicit -- the stored value is a calendar-only fact (midnight
+      // UTC), and without this option `toLocaleDateString()` renders in the
+      // browser's LOCAL timezone, rolling the displayed day back by one for
+      // any timezone behind UTC. Matches the already-established
+      // `closingDateMonthDayTransport` pattern (contract-ghl-transport-
+      // formatting.ts), which derives the same instant the same way.
+      return { text: new Date(v as string).toLocaleDateString(undefined, { timeZone: "UTC" }), color: "#22C55E" };
     case "closingPossession.possessionElection":
       return { text: v === "upon_closing_and_funding" ? "Upon closing and funding" : "Leaseback", color: "#22C55E" };
     case "settlementExpense.sellerPaysBuyerBroker":
