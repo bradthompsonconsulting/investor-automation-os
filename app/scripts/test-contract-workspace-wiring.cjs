@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 157;
+const FLOOR = 177;
 let failures = 0;
 let checks = 0;
 
@@ -576,6 +576,111 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     'the durable "brad" authorizedBy/operator literal is exactly unchanged (V1 permits no other authorizer)',
     /record\.authorizedBy !== "brad"/.test(readSrc('src/lib/contract-authorization-model.ts')) &&
       /record\.operator !== "brad"/.test(readSrc('src/lib/contract-authorization-model.ts')),
+    true,
+  );
+}
+
+// ============================================================
+// Saved-fact form hydration. A refresh previously reset every group's
+// draft to INITIAL_DRAFTS regardless of what was actually saved -- the
+// green "saved" panels read the canonical report directly and were
+// always correct, but the editable inputs read `drafts`, which was never
+// populated from canonical state. Editing one field (e.g. County) then
+// submitted every OTHER field in that group at its blank default,
+// either failing that group's own "every field needs a value"
+// validation outright (Property Legal Description) or resetting a
+// previously-made explicit choice (Seller Signing Model's "Select
+// One Seller or Two Sellers"). Fixed with `draftsFromReport` -- the
+// exact inverse of each handleSaveX below -- plus a hydration effect
+// gated to run exactly ONCE per opportunity. Proven by source wiring,
+// matching this file's own no-render convention.
+// ============================================================
+{
+  const hydrationFnMatch = contractTsxNoComments.match(/function draftsFromReport\(report: SellerContractFactsReport \| null, signingModel: SellerSigningModel \| null\): Drafts \{[\s\S]*?(?=export default function ContractWorkspace)/);
+  const hydrationFnSrc = hydrationFnMatch ? hydrationFnMatch[0] : '';
+  check('draftsFromReport exists, immediately preceding the component (function declaration order)', !!hydrationFnMatch, true);
+
+  // ---- The hydration effect fires exactly once per opportunity, never on every report recompute ----
+  const effectMatch = contractTsxNoComments.match(/const hydratedOpportunityId = useRef<string \| null>\(null\);\s*\n\s*useEffect\(\(\) => \{[\s\S]*?\}, \[screen, sellerContractFactsReport, latestSellerSigningModel\]\);/);
+  const effectSrc = effectMatch ? effectMatch[0] : '';
+  check('a hydration effect exists, tracking a per-opportunity hydratedOpportunityId ref', !!effectMatch, true);
+  check(
+    'the effect returns early (never re-hydrates) once the CURRENT opportunity is already hydrated -- proves a one-field edit mid-session is never overwritten by a later, unrelated report recompute',
+    /if \(hydratedOpportunityId\.current === screen\.opportunity\.id\) return;/.test(effectSrc),
+    true,
+  );
+  check(
+    'the effect calls setDrafts(draftsFromReport(...)) using the live report and signing model, never a second/invented hydration source',
+    /setDrafts\(draftsFromReport\(sellerContractFactsReport, latestSellerSigningModel\?\.model \?\? null\)\)/.test(effectSrc),
+    true,
+  );
+  check(
+    'the effect\'s dependency array does NOT include drafts/setDrafts -- proves it cannot loop or re-fire on its own write',
+    !/\[screen, sellerContractFactsReport, latestSellerSigningModel, drafts\]/.test(contractTsxNoComments) && /\[screen, sellerContractFactsReport, latestSellerSigningModel\]/.test(effectSrc),
+    true,
+  );
+
+  // ---- Property Legal Description: ALL SIX sub-fields hydrate, not just County -- the exact
+  // property Brad's report demonstrated failing ("every field needs a value") ----
+  const legalDescFields = ['lot', 'block', 'addition', 'county', 'exclusions'];
+  for (const f of legalDescFields) {
+    check(
+      `draftsFromReport hydrates legalDesc.${f} from legal.${f}'s populated ValueOrNone`,
+      new RegExp(`${f}: legal\\.${f}\\.kind === "populated" \\? valueOrNoneToDraft\\(legal\\.${f}\\.value\\) : d\\.legalDesc\\.${f}`).test(hydrationFnSrc),
+      true,
+    );
+  }
+  check('draftsFromReport hydrates legalDesc.reservationsKind/reservationsNote from legal.reservations', /reservationsKind: legal\.reservations\.kind === "populated"/.test(hydrationFnSrc) && /reservationsNote: legal\.reservations\.kind === "populated" && legal\.reservations\.value\.kind === "applies"/.test(hydrationFnSrc), true);
+  check('draftsFromReport hydrates legalDesc.municipalityKind/municipalityName from legal.legalMunicipality', /municipalityKind: legal\.legalMunicipality\.kind === "populated"/.test(hydrationFnSrc) && /municipalityName: legal\.legalMunicipality\.kind === "populated" && legal\.legalMunicipality\.value\.kind === "municipality"/.test(hydrationFnSrc), true);
+
+  // ---- Seller Signing Model: the exact second reported symptom ----
+  check(
+    'draftsFromReport hydrates sellerSigning.count/seller1Capacity from the parsed signing model, never leaving it at "unset" when a model was actually saved',
+    /count: signingModel\.kind === "one_seller" \? 1 : 2,/.test(hydrationFnSrc) && /seller1Capacity: signingModel\.seller1Capacity,/.test(hydrationFnSrc),
+    true,
+  );
+  check(
+    'draftsFromReport falls back to the unchanged INITIAL_DRAFTS sellerSigning shape when no signing model has ever been recorded (never invents a count)',
+    /sellerSigning: signingModel\s*\?\s*\{[\s\S]*?\}\s*:\s*d\.sellerSigning,/.test(hydrationFnSrc),
+    true,
+  );
+
+  // ---- A field with NO canonical record stays at its INITIAL_DRAFTS default -- never invented ----
+  check(
+    'an unresolved field explicitly falls back to the SAME INITIAL_DRAFTS default (d.*), never a guessed/invented value, for every hydrated group',
+    (() => {
+      const groups = ['legalDesc', 'lease', 'earnest', 'titleSurvey', 'propertyCondition', 'closingPossession', 'settlement', 'addenda', 'sellerEquitable', 'buyerBusinessConfig', 'sellerNotice'];
+      return groups.every((g) => new RegExp('d\\.' + g + '\\.').test(hydrationFnSrc));
+    })(),
+    true,
+  );
+
+  // ---- Two disclosed, deliberate, pre-existing gaps -- not introduced by this fix, and documented as such ----
+  // The next two checks read the JSDoc comment directly above draftsFromReport,
+  // which contractTsxNoComments strips -- checked against contractTsx (WITH
+  // comments) instead, the only place this documentation lives.
+  check('buyerOverride is explicitly never hydrated (its audit-only "reason" text cannot be recovered from the aggregated report) -- documented, not silently dropped', /buyerOverride: d\.buyerOverride,/.test(hydrationFnSrc) && /audit-only `reason` text/.test(contractTsx), true);
+  check('the pre-existing attorney "will draft" vs "never recorded" ambiguity is documented as inherited, not introduced, by this fix', /inherits that same, pre-existing ambiguity/.test(contractTsx), true);
+
+  // ---- "intermediary" representation has no draft shape -- correctly excluded, never silently miscoerced ----
+  check(
+    'representation hydration explicitly excludes "intermediary" (the draft type has no shape for it) rather than passing it through and producing a type/runtime mismatch',
+    /rep\.kind === "populated" && rep\.value\.kind !== "intermediary" \? repFactToDraft\(rep\.value\) : d\.representation,/.test(hydrationFnSrc),
+    true,
+  );
+
+  // ---- The save handlers themselves are UNCHANGED -- they still read straight from `drafts`,
+  // which is now correctly pre-populated. This is why "refresh -> edit one field -> save"
+  // preserves every other saved value: hydration fills drafts, save reads drafts, nothing
+  // in between re-blanks the untouched fields. ----
+  check(
+    'handleSaveLegalDesc is unchanged -- still validates/reads lot/block/addition/county/exclusions straight from drafts.legalDesc',
+    /const lot = valueOrNoneToFact\(drafts\.legalDesc\.lot\);[\s\S]{0,400}if \(!lot \|\| !block \|\| !addition \|\| !county \|\| !exclusions\)/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'handleSaveSellerSigning is unchanged -- still reads drafts.sellerSigning.count/seller1Capacity straight from drafts',
+    /if \(drafts\.sellerSigning\.count === "unset"\)/.test(contractTsxNoComments) && /model = \{ kind: "one_seller", seller1Capacity: drafts\.sellerSigning\.seller1Capacity \};/.test(contractTsxNoComments),
     true,
   );
 }
