@@ -1322,6 +1322,7 @@ export default function ContractWorkspace() {
     return verifyBuyerSignerIdentity({
       buyerSignerRole: requiredSignerSetResult.buyerRole,
       authorizedBuyerName: requiredSignerSetResult.buyerDisplayName,
+      authorizedBuyerEmail: requiredSignerSetResult.buyerEmail,
       mappings: signerMappingCurrencyResult.mappings,
       providerRecipients: providerSignerRowsResult.rows,
     });
@@ -1545,6 +1546,7 @@ export default function ContractWorkspace() {
       requiredSigners,
       buyerSignerRole: requiredSignerSetResult.buyerRole,
       authorizedBuyerName: requiredSignerSetResult.buyerDisplayName,
+      authorizedBuyerEmail: requiredSignerSetResult.buyerEmail,
       signerMappingAttestation: existingSignerMappingAttestation,
       providerRecipients: providerSignerRowsResult.rows,
       lifecycleHistory: [lifecycleObservationRecord],

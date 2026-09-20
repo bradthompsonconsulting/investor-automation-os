@@ -114,11 +114,23 @@ export function validateRequiredSignerSet(
  * (or may) infer the buyer from `signers[0]`/array position. Array order
  * is an implementation detail of how this function happens to assemble
  * `signers` today, never a contract callers may rely on.
+ *
+ * `buyerEmail` (B9-13/INV-96 email-fallback correction) is the SAME kind
+ * of explicit, authoritative resolution, for the Product Owner's
+ * email-fallback identity rule: "IAOS may accept either a case-
+ * insensitive canonical human-name match, or a case-insensitive
+ * canonical signer-email match when GHL reports the recipient as
+ * email-only." Sourced from `noticeContact.buyerNoticeEmail` -- the same
+ * durable `IAOS BUYER BUSINESS CONFIG FACTS` note Brad already records
+ * `buyerSignerName`/`buyerSignerRole` in. Unlike name/role, a missing
+ * buyer email never fails this function closed -- it is optional
+ * fallback identity evidence, not a required signer fact; `null` when
+ * unresolved or blank.
  */
 export function buildRequiredSignerSet(
   report: SellerContractFactsReport,
-): { ok: true; signers: readonly RequiredSigner[]; buyerRole: string; buyerDisplayName: string } | { ok: false; reasons: RequiredSignerSetReason[] } {
-  const { buyerSignerName, buyerSignerRole } = report.noticeContact;
+): { ok: true; signers: readonly RequiredSigner[]; buyerRole: string; buyerDisplayName: string; buyerEmail: string | null } | { ok: false; reasons: RequiredSignerSetReason[] } {
+  const { buyerSignerName, buyerSignerRole, buyerNoticeEmail } = report.noticeContact;
   const sellerSigners = report.parties.sellerSigners;
 
   const reasons: RequiredSignerSetReason[] = [];
@@ -150,7 +162,8 @@ export function buildRequiredSignerSet(
   ];
   const validated = validateRequiredSignerSet(signers);
   if (!validated.ok) return validated;
-  return { ok: true, signers, buyerRole: buyerSignerRole.value, buyerDisplayName: buyerSignerName.value };
+  const buyerEmail = buyerNoticeEmail.kind === "populated" && buyerNoticeEmail.value.trim() !== "" ? buyerNoticeEmail.value : null;
+  return { ok: true, signers, buyerRole: buyerSignerRole.value, buyerDisplayName: buyerSignerName.value, buyerEmail };
 }
 
 /* ==================================================================== */
