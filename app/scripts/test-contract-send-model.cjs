@@ -194,6 +194,7 @@ function fixtureSendAttempt(overrides) {
     templateSource: completePreview.templateSource,
     requestedTemplateId: REQUESTED_TEMPLATE_ID,
     authorizedAt: authRecord.at,
+    authorizedArtifactSha256: authRecord.artifactSha256,
     signers: [{ role: 'Seller', displayName: 'Jane Seller' }],
     confirmedRecipientId: null,
     expirationAt: EXPIRATION_AT,
@@ -660,6 +661,55 @@ let acceptedSendRecord;
   check('readback preserves the confirmed sender (createdBy)', acceptedSendRecord.providerResponse.createdBy, SENDER_USER_ID);
   check('readback preserves the explicit expiration fact', acceptedSendRecord.expirationAt, EXPIRATION_AT);
   checkTrue('readback\'s acceptance timestamp is IAOS\'s OWN observed time AT THE READBACK STAGE, not the earlier POST-response time, and not claimed as a provider-reported time', acceptedSendRecord.iaosObservedAcceptanceAt === READBACK_AT);
+}
+
+// ============================================================
+// 14b. Backward compatibility -- a real, already-durable schema v2 note
+//      (no Authorized artifact SHA-256 field, expiration always present)
+//      must remain readable. B9-13/INV-96.
+// ============================================================
+{
+  function legacyLedgerValue(v) { return (v === null || v === undefined || v === '') ? 'UNAVAILABLE' : String(v); }
+  function formatLegacySendV2Note(r) {
+    return [
+      'IAOS CONTRACT SEND — iaos-contract-send-v2',
+      `Recorded at: ${r.at}`,
+      `Operator: ${legacyLedgerValue(r.operator)}`,
+      `Opportunity: ${r.opportunityId}`,
+      `Attempt id: ${r.attemptId}`,
+      `Status: ${r.status}`,
+      `Version: ${JSON.stringify(r.version)}`,
+      `Template name: ${r.templateName}`,
+      `Template source: ${r.templateSource}`,
+      `Requested template id: ${r.requestedTemplateId}`,
+      `Authorized at: ${r.authorizedAt}`,
+      `Signers: ${JSON.stringify(r.signers)}`,
+      `Confirmed recipient id: ${legacyLedgerValue(r.confirmedRecipientId)}`,
+      `Expiration at: ${r.expirationAt}`,
+      `Request at: ${r.requestAt}`,
+      `IAOS observed acceptance at: ${legacyLedgerValue(r.iaosObservedAcceptanceAt)}`,
+      `Provider response: ${r.providerResponse ? JSON.stringify(r.providerResponse) : 'UNAVAILABLE'}`,
+      `Failure reason: ${legacyLedgerValue(r.failureReason)}`,
+    ].join('\n');
+  }
+  const legacyNote = formatLegacySendV2Note(acceptedSendRecord);
+  const parsedLegacy = K.parseContractSendNote(legacyNote);
+  checkTrue('a real, hand-built schema v2 note (no Authorized artifact SHA-256 field) still parses -- never stranded', parsedLegacy !== null);
+  check('the legacy-parsed record carries authorizedArtifactSha256: null (honestly, never fabricated)', parsedLegacy.authorizedArtifactSha256, null);
+  check(
+    'every OTHER field of the legacy-parsed record matches the original exactly',
+    JSON.stringify(Object.assign({}, parsedLegacy, { authorizedArtifactSha256: undefined })),
+    JSON.stringify(Object.assign({}, acceptedSendRecord, { authorizedArtifactSha256: undefined })),
+  );
+  // A fresh v3 write still round-trips exactly, artifact hash included -- the dual-read never degrades the current schema's own fidelity.
+  const v3Note = K.formatContractSendNote(acceptedSendRecord);
+  checkTrue('a v3 note header names the CURRENT schema version', v3Note.startsWith('IAOS CONTRACT SEND — iaos-contract-send-v3'));
+  const parsedV3 = K.parseContractSendNote(v3Note);
+  check('a freshly-written v3 note still round-trips byte-for-byte, authorized artifact hash included', JSON.stringify(parsedV3), JSON.stringify(acceptedSendRecord));
+  // expirationAt may now be null on a fresh manual-bridge send -- also round-trips exactly.
+  const noExpiration = Object.assign({}, acceptedSendRecord, { expirationAt: null });
+  const noExpirationNote = K.formatContractSendNote(noExpiration);
+  check('a null expirationAt (no GHL-reported expiration) round-trips as null, never fabricated', K.parseContractSendNote(noExpirationNote).expirationAt, null);
 }
 
 // ============================================================

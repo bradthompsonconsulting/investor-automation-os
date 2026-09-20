@@ -207,25 +207,51 @@ function completedLifecycleObservation(over) {
   return built.value;
 }
 
-// A REAL PDF file signature ("%PDF-") followed by non-sensitive synthetic
-// text -- never a real PDF, never real content.
+// A REAL, structurally valid, minimal one-page PDF (no xref table --
+// pdf-lib's own repair scanner recovers it, verified directly against the
+// real library before this fixture was written) carrying the synthetic
+// marker as a PDF comment line -- a real PDF file signature AND a real,
+// pdf-lib-parseable page, but never a real PDF's actual content.
 const SYNTHETIC_MARKER = 'IAOS-SYNTHETIC-FIXTURE-MARKER-7f3a9c';
-const SYNTHETIC_PDF_BYTES = Buffer.concat([
-  Buffer.from('%PDF-1.4\n', 'ascii'),
-  Buffer.from(SYNTHETIC_MARKER + ' -- not a real PDF, not real content.', 'utf8'),
-]);
+const SYNTHETIC_PDF_BYTES = Buffer.from(
+  '%PDF-1.4\n' +
+  '% ' + SYNTHETIC_MARKER + ' -- not a real PDF, not real content.\n' +
+  '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
+  '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +
+  '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n' +
+  'trailer\n<< /Size 4 /Root 1 0 R >>\n%%EOF',
+  'ascii',
+);
+// A second, TWO-page real PDF, same construction, for page-count-specific assertions.
+const SYNTHETIC_TWO_PAGE_PDF_BYTES = Buffer.from(
+  '%PDF-1.4\n' +
+  '% ' + SYNTHETIC_MARKER + ' (two-page fixture) -- not a real PDF, not real content.\n' +
+  '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
+  '2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>\nendobj\n' +
+  '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n' +
+  '4 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n' +
+  'trailer\n<< /Size 5 /Root 1 0 R >>\n%%EOF',
+  'ascii',
+);
 const NON_PDF_BYTES = Buffer.from('this is plainly not a pdf file at all', 'utf8');
 
-/** Simulates the exact two-step flow the browser will perform: classify bytes, then hash (here via Node crypto, standing in for Web Crypto -- see test-browser-artifact-hash.cjs for the real browser-path proof). */
-function selectAndHash(bytes, fileName, mimeType) {
+/** Simulates the exact two-step flow the browser will perform: classify bytes, then hash (here via Node crypto, standing in for Web Crypto -- see test-browser-artifact-hash.cjs for the real browser-path proof), then read the real page count via the SAME `countPdfPages` (pdf-lib) the browser path uses. Async -- `countPdfPages` genuinely parses the PDF. */
+async function selectAndHash(bytes, fileName, mimeType) {
   const bytesOutcome = E.classifySelectedFileBytes({ fileName: fileName ?? 'executed.pdf', mimeType: mimeType ?? 'application/pdf', bytes });
   if (bytesOutcome.kind !== 'valid_bytes') return bytesOutcome;
   const sha256 = crypto.createHash('sha256').update(Buffer.from(bytesOutcome.bytes)).digest('hex');
-  return { kind: 'selected', sha256, fileName: bytesOutcome.fileName, mimeType: bytesOutcome.mimeType };
+  const pageCount = await E.countPdfPages(bytesOutcome.bytes);
+  return { kind: 'selected', sha256, fileName: bytesOutcome.fileName, mimeType: bytesOutcome.mimeType, pageCount };
 }
 
+// Precomputed ONCE, asynchronously, at the top of the async main() below --
+// `validManualOutcome()` itself stays a plain synchronous function (it is
+// called from dozens of synchronous fixture-builder call sites throughout
+// this file) and simply returns the cached result.
+let CACHED_VALID_MANUAL_OUTCOME = null;
 function validManualOutcome() {
-  return selectAndHash(SYNTHETIC_PDF_BYTES, 'executed.pdf', 'application/pdf');
+  if (CACHED_VALID_MANUAL_OUTCOME === null) throw new Error('validManualOutcome() called before the async bootstrap populated its cache.');
+  return CACHED_VALID_MANUAL_OUTCOME;
 }
 
 // WHO must sign -- ASSEMBLED, never derived from acceptedSend.signers.
@@ -237,6 +263,16 @@ function requiredSignerFixtureSingle() {
 function requiredSignerFixtureTwo() {
   return [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Spouse', displayName: 'John Seller' }];
 }
+
+// B9-13/INV-96 correction: `buyerSignerRole`/`authorizedBuyerName` are
+// EXPLICIT fixture constants, named directly -- never read via array
+// position (`requiredSignerFixtureSingle()[0]`) -- proving the pipeline
+// itself takes these as independent caller-supplied facts, exactly as
+// `buildRequiredSignerSet`'s own `buyerRole`/`buyerDisplayName` would
+// supply them in production, regardless of where the buyer happens to
+// fall in the `requiredSigners` array.
+const BUYER_ROLE_FIXTURE = 'Seller';
+const BUYER_NAME_FIXTURE = 'Jane Seller';
 
 /** Brad's own manual, one-to-one recipient-mapping attestation -- built via the REAL builder, never hand-constructed. Defaults to the single-signer/single-recipient (r1) case. */
 function signerMappingAttestationFixture(over) {
@@ -268,6 +304,8 @@ function baseArgs(over) {
     version: V1,
     acceptedSend: acceptedSendFixture({}),
     requiredSigners: requiredSignerFixtureSingle(),
+    buyerSignerRole: BUYER_ROLE_FIXTURE,
+    authorizedBuyerName: BUYER_NAME_FIXTURE,
     signerMappingAttestation: signerMappingAttestationFixture({}),
     providerRecipients: providerRecipientSingleComplete(),
     lifecycleHistory: [completedLifecycleObservation({})],
@@ -307,6 +345,15 @@ function validAttestationFixture(over) {
   if (!built.ok) throw new Error('fixture validAttestationFixture failed: ' + JSON.stringify(built.reasons));
   return built.value;
 }
+
+// B9-13/INV-96: countPdfPages is genuinely async (pdf-lib parses the real
+// PDF bytes) -- the whole remainder of this file runs inside one async
+// main(), starting with the one bootstrap await that populates
+// CACHED_VALID_MANUAL_OUTCOME before any synchronous fixture builder
+// (baseArgs, etc.) reads it.
+(async () => {
+
+CACHED_VALID_MANUAL_OUTCOME = await selectAndHash(SYNTHETIC_PDF_BYTES, 'executed.pdf', 'application/pdf');
 
 /* ====================================================================== */
 /* 1. Material-term boundary -- Under Contract remains BLOCKED without a  */
@@ -414,7 +461,7 @@ function validAttestationFixture(over) {
   checkTrue('a valid manual selection produces a real 64-hex-char SHA-256, passed through unchanged', result.ok && /^[0-9a-f]{64}$/.test(result.sha256));
 }
 {
-  const otherOutcome = selectAndHash(Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from('entirely different synthetic content')]));
+  const otherOutcome = await selectAndHash(Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from('entirely different synthetic content')]));
   checkTrue('different selected bytes produce a different hash', validManualOutcome().sha256 !== otherOutcome.sha256);
 }
 {
@@ -538,6 +585,88 @@ function validAttestationFixture(over) {
   }));
   checkFalse('multiple seller signers, fully mapped and completed, still reach (and are blocked only by) executed_terms -- multi-signer IS now supported end to end', result.ok);
   check('failure stage is executed_terms for the multi-signer case', result.failure.stage, 'executed_terms');
+}
+
+/* ====================================================================== */
+/* 3b. Buyer signer identity -- BLOCKING, case-insensitive, NEVER by      */
+/*     array position. B9-13 / INV-96 correction.                         */
+/* ====================================================================== */
+{
+  // The buyer is the SECOND element of requiredSigners here (never first)
+  // -- proves buildVerifiedUnderContractRecord resolves the buyer ONLY
+  // from the explicit buyerSignerRole/authorizedBuyerName args, never
+  // from requiredSigners[0].
+  const twoSigners = [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Buyer Rep', displayName: 'Robert Thompson' }];
+  const twoMapping = signerMappingAttestationFixture({ requiredSigners: twoSigners, availableProviderRecipientIds: ['r1', 'r2'] });
+  const twoRecipients = providerRecipientsTwoComplete({ 1: { reportedContactName: 'Robert Thompson' } });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({
+    requiredSigners: twoSigners,
+    buyerSignerRole: 'Buyer Rep',
+    authorizedBuyerName: 'Robert Thompson',
+    signerMappingAttestation: twoMapping,
+    providerRecipients: twoRecipients,
+  }));
+  checkFalse('buyer as the SECOND required signer still passes buyer_signer_identity (reaches, and is blocked only by, executed_terms)', result.ok);
+  check('failure stage is executed_terms, never buyer_signer_identity, when the buyer is not first in requiredSigners', result.failure.stage, 'executed_terms');
+}
+{
+  // Case-INSENSITIVE match: GHL-reported name differs only in case.
+  const twoSigners = [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Buyer Rep', displayName: 'Robert Thompson' }];
+  const twoMapping = signerMappingAttestationFixture({ requiredSigners: twoSigners, availableProviderRecipientIds: ['r1', 'r2'] });
+  const twoRecipients = providerRecipientsTwoComplete({ 1: { reportedContactName: 'ROBERT thompson' } });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({
+    requiredSigners: twoSigners,
+    buyerSignerRole: 'Buyer Rep',
+    authorizedBuyerName: 'Robert Thompson',
+    signerMappingAttestation: twoMapping,
+    providerRecipients: twoRecipients,
+  }));
+  checkFalse('a case-different but otherwise identical buyer name still passes (reaches executed_terms)', result.ok);
+  check('failure stage is executed_terms, proving buyer_signer_identity passed case-insensitively', result.failure.stage, 'executed_terms');
+}
+{
+  // A genuine mismatch BLOCKS at buyer_signer_identity, before signers/provider_completion/artifact/executed_terms are ever reached.
+  const twoSigners = [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Buyer Rep', displayName: 'Robert Thompson' }];
+  const twoMapping = signerMappingAttestationFixture({ requiredSigners: twoSigners, availableProviderRecipientIds: ['r1', 'r2'] });
+  const twoRecipients = providerRecipientsTwoComplete({ 1: { reportedContactName: 'Someone Else Entirely' } });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({
+    requiredSigners: twoSigners,
+    buyerSignerRole: 'Buyer Rep',
+    authorizedBuyerName: 'Robert Thompson',
+    signerMappingAttestation: twoMapping,
+    providerRecipients: twoRecipients,
+  }));
+  checkFalse('a genuine buyer name mismatch blocks Under Contract', result.ok);
+  check('failure stage is buyer_signer_identity', result.failure.stage, 'buyer_signer_identity');
+  check('failure names BUYER_NAME_MISMATCH', result.failure.reasons[0].code, 'BUYER_NAME_MISMATCH');
+}
+{
+  // Direct unit tests of verifyBuyerSignerIdentity itself.
+  const mappings = [{ role: 'Buyer Rep', displayName: 'Robert Thompson', providerRecipientId: 'r1' }];
+  const recipients = [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Robert Thompson' }];
+  checkTrue('verifyBuyerSignerIdentity: exact match passes', E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', mappings, providerRecipients: recipients }).ok);
+  checkTrue('verifyBuyerSignerIdentity: case-insensitive, whitespace-trimmed match passes', E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: '  ROBERT THOMPSON  ', mappings, providerRecipients: recipients }).ok);
+  const blankRole = E.verifyBuyerSignerIdentity({ buyerSignerRole: '', authorizedBuyerName: 'Robert Thompson', mappings, providerRecipients: recipients });
+  checkFalse('verifyBuyerSignerIdentity: blank buyerSignerRole fails closed', blankRole.ok);
+  check('failure names BUYER_SIGNER_ROLE_BLANK', blankRole.reasons[0].code, 'BUYER_SIGNER_ROLE_BLANK');
+  const blankName = E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: '', mappings, providerRecipients: recipients });
+  checkFalse('verifyBuyerSignerIdentity: blank authorizedBuyerName fails closed', blankName.ok);
+  check('failure names BUYER_AUTHORIZED_NAME_BLANK', blankName.reasons[0].code, 'BUYER_AUTHORIZED_NAME_BLANK');
+  const noMapping = E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Nonexistent Role', authorizedBuyerName: 'Robert Thompson', mappings, providerRecipients: recipients });
+  checkFalse('verifyBuyerSignerIdentity: no mapping for the buyer role fails closed', noMapping.ok);
+  check('failure names BUYER_MAPPING_NOT_FOUND', noMapping.reasons[0].code, 'BUYER_MAPPING_NOT_FOUND');
+  const noRecipient = E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', mappings, providerRecipients: [] });
+  checkFalse('verifyBuyerSignerIdentity: mapped recipient absent from readback fails closed', noRecipient.ok);
+  check('failure names BUYER_RECIPIENT_NOT_FOUND', noRecipient.reasons[0].code, 'BUYER_RECIPIENT_NOT_FOUND');
+  checkTrue(
+    'verifyBuyerSignerIdentity: the mapping record\'s own displayName is IGNORED -- only the explicit authorizedBuyerName argument governs',
+    E.verifyBuyerSignerIdentity({
+      buyerSignerRole: 'Buyer Rep',
+      authorizedBuyerName: 'Robert Thompson',
+      mappings: [{ role: 'Buyer Rep', displayName: 'A Completely Different Stale Name', providerRecipientId: 'r1' }],
+      providerRecipients: recipients,
+    }).ok,
+  );
 }
 {
   const dupRole = [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Seller', displayName: 'Someone Else' }];
@@ -917,6 +1046,48 @@ function reportFixture(over) {
 }
 
 /* ====================================================================== */
+/* 8b. Page count is REQUIRED preserved evidence -- an undetermined count */
+/*     BLOCKS Under Contract, never silently permitted through.           */
+/*     B9-13 / INV-96 correction.                                         */
+/* ====================================================================== */
+{
+  // A real PDF pdf-lib genuinely CANNOT parse (magic bytes only, no real
+  // structure) -- countPdfPages honestly returns null, and the pipeline
+  // fails closed rather than silently treating it as page-count-unknown-
+  // but-fine.
+  const unparseableBytes = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from('not a real pdf structure at all, just the magic bytes')]);
+  const unparseableOutcome = await selectAndHash(unparseableBytes, 'executed.pdf', 'application/pdf');
+  check('countPdfPages honestly returns null for bytes that carry the PDF signature but no real PDF structure', unparseableOutcome.pageCount, null);
+  const verifyResult = E.verifyManualArtifactSelection({
+    outcome: unparseableOutcome, confirmedProviderDocumentId: DOC_ID, selectedForDocumentId: DOC_ID, selectedForVersion: V1, expectedVersion: V1,
+  });
+  checkFalse('an undetermined page count fails verifyManualArtifactSelection closed', verifyResult.ok);
+  checkTrue('failure names ARTIFACT_PAGE_COUNT_UNDETERMINED', verifyResult.reasons.some((r) => r.code === 'ARTIFACT_PAGE_COUNT_UNDETERMINED'));
+  const fullResult = E.buildVerifiedUnderContractRecord(baseArgs({ manualArtifactOutcome: unparseableOutcome }));
+  checkFalse('an undetermined page count blocks Under Contract end to end', fullResult.ok);
+  check('failure stage is artifact', fullResult.failure.stage, 'artifact');
+}
+{
+  // A REAL, pdf-lib-parseable two-page PDF produces a real pageCount: 2,
+  // and it is NOT gated on (only its presence/validity is) -- the
+  // pipeline still reaches (and is blocked only by) executed_terms.
+  const twoPageOutcome = await selectAndHash(SYNTHETIC_TWO_PAGE_PDF_BYTES, 'executed.pdf', 'application/pdf');
+  check('a real two-page PDF produces pageCount: 2', twoPageOutcome.pageCount, 2);
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ manualArtifactOutcome: twoPageOutcome }));
+  checkFalse('a real, determined page count (2, not 1) still reaches (and is blocked only by) executed_terms', result.ok);
+  check('failure stage is executed_terms, never artifact, for a genuinely determined page count', result.failure.stage, 'executed_terms');
+}
+{
+  // A verified, unanimous attestation genuinely unlocks Under Contract end
+  // to end WITH a real page count preserved on the final record.
+  const twoPageOutcome = await selectAndHash(SYNTHETIC_TWO_PAGE_PDF_BYTES, 'executed.pdf', 'application/pdf');
+  const attestation = validAttestationFixture({ selectedArtifactSha256: twoPageOutcome.sha256 });
+  const result = E.buildVerifiedUnderContractRecord(baseArgs({ manualArtifactOutcome: twoPageOutcome, executedTermsAttestation: attestation }));
+  checkTrue('a real page count does not block genuine end-to-end success', result.ok);
+  check('the final Under Contract record preserves the real, determined page count', result.ok && result.value.pageCount, 2);
+}
+
+/* ====================================================================== */
 /* 9. Every required signer must complete                                 */
 /* ====================================================================== */
 
@@ -1034,6 +1205,7 @@ function fixtureEligibleRecord() {
       { role: 'Spouse', displayName: 'John Seller', providerRecipientId: 'r2', providerCompletedAt: SIGNED_DATE_SPOUSE },
     ],
     artifactSha256: crypto.createHash('sha256').update(SYNTHETIC_PDF_BYTES).digest('hex'),
+    pageCount: null,
     executedTermsConflictCount: 0,
     iaosVerifiedAt: VERIFIED_AT,
     authority: 'system_derived',
@@ -1065,6 +1237,49 @@ function fixtureEligibleRecord() {
   const parsed = EC.parseUnderContractNote(note);
   checkTrue('the note round-trips to a non-null record', parsed !== null);
   check('round-trip is byte-for-byte field-equal to the original', JSON.stringify(parsed), JSON.stringify(record));
+}
+/* ====================================================================== */
+/* 13b. Backward compatibility -- a real, already-durable schema v1 note  */
+/*      (no Page count field) must remain readable. B9-13/INV-96.         */
+/* ====================================================================== */
+{
+  function legacyLedgerValue(v) { return (v === null || v === undefined || v === '') ? 'UNAVAILABLE' : String(v); }
+  function formatLegacyUnderContractV1Note(record) {
+    return [
+      'IAOS UNDER CONTRACT — iaos-under-contract-v1',
+      `Recorded at: ${record.iaosVerifiedAt}`,
+      `Opportunity: ${record.opportunityId}`,
+      `Agreement Reached at: ${record.agreementAt}`,
+      `Version: ${JSON.stringify(record.version)}`,
+      `Accepted send attempt id: ${record.acceptedSendAttemptId}`,
+      `Provider document id: ${record.providerDocumentId}`,
+      `Provider document reference: ${legacyLedgerValue(record.providerDocumentReference)}`,
+      `Provider document revision: ${legacyLedgerValue(record.providerDocumentRevision)}`,
+      `Provider reported completion at: ${record.providerReportedCompletionAt}`,
+      `Signers: ${JSON.stringify(record.signers)}`,
+      `Artifact SHA-256: ${record.artifactSha256}`,
+      'Executed terms conflicts: []',
+      `Authority: ${record.authority}`,
+      `Evidence summary: ${record.evidenceSummary}`,
+      `Related prior record id: ${legacyLedgerValue(record.relatedPriorRecordId)}`,
+    ].join('\n');
+  }
+  const record = fixtureEligibleRecord();
+  const legacyNote = formatLegacyUnderContractV1Note(record);
+  const parsedLegacy = EC.parseUnderContractNote(legacyNote);
+  checkTrue('a real, hand-built schema v1 note (no Page count field) still parses -- never stranded', parsedLegacy !== null);
+  check('the legacy-parsed record carries pageCount: null (honestly, never fabricated)', parsedLegacy.pageCount, null);
+  check(
+    'every OTHER field of the legacy-parsed record matches the original exactly',
+    JSON.stringify(Object.assign({}, parsedLegacy, { pageCount: undefined })),
+    JSON.stringify(Object.assign({}, record, { pageCount: undefined })),
+  );
+  // A fresh v2 write (WITH a real, non-null page count) still round-trips exactly -- the dual-read never degrades the current schema's own fidelity.
+  const v2Record = Object.assign({}, fixtureEligibleRecord(), { pageCount: 12 });
+  const v2Note = EC.formatUnderContractNote(v2Record);
+  checkTrue('a v2 note header names the CURRENT schema version', v2Note.startsWith('IAOS UNDER CONTRACT — iaos-under-contract-v2'));
+  const parsedV2 = EC.parseUnderContractNote(v2Note);
+  check('a freshly-written v2 note still round-trips byte-for-byte, page count included', JSON.stringify(parsedV2), JSON.stringify(v2Record));
 }
 {
   const recordA = fixtureEligibleRecord();
@@ -1457,3 +1672,9 @@ console.log(checks + ' checks, ' + failures + ' failures.');
 console.log('No contract send, provider mutation, network call, or GHL/Production write occurred in this run -- every fixture above is an in-memory object, and all artifact bytes are synthetic, non-sensitive fixture text carrying only the real PDF magic-byte signature.');
 cleanup();
 process.exit(failures === 0 ? 0 : 1);
+
+})().catch((e) => {
+  console.error('ABORT (uncaught error in async test body):', e && e.stack || e);
+  cleanup();
+  process.exit(10);
+});

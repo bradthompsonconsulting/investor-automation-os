@@ -71,6 +71,7 @@ function note(status, at, attemptId) {
   return K.formatContractSendNote({
     opportunityId: OPP, at, operator: null, attemptId: attemptId || at, status, version: VERSION,
     templateName: 'x', templateSource: 'x', requestedTemplateId: 'fixture-template-1', authorizedAt: '2026-09-11T10:00:00.000Z',
+    authorizedArtifactSha256: 'a'.repeat(64),
     signers: [{ role: 'Seller', displayName: 'Jane Seller' }], confirmedRecipientId: null, expirationAt: '2026-09-18T23:59:59.000Z',
     requestAt: attemptId || at, iaosObservedAcceptanceAt: null, providerResponse: null, failureReason: null,
   });

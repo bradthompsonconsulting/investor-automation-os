@@ -30,10 +30,13 @@ import { buildProviderObservationRecordFromReadback, type LifecycleRecord } from
 import {
   classifySelectedFileBytes, verifyRequiredSigners, verifyProviderCompletion,
   verifyManualArtifactSelection, buildVerifiedUnderContractRecord,
-  extractProviderSignerRowsFromListDocumentsBody,
-  isDuplicateUnderContractRecord, verifyReadbackMatchesWritten,
+  extractProviderSignerRowsFromListDocumentsBody, verifyBuyerSignerIdentity,
+  isDuplicateUnderContractRecord, verifyReadbackMatchesWritten, countPdfPages,
   type ManualArtifactSelectionOutcome, type UnderContractRecordEntry,
 } from "../lib/contract-execution-model";
+import { buildManualContractSendRecordArgs } from "../lib/contract-manual-send-model";
+import { formatContractSendNote } from "../lib/contract-send-carriers";
+import { getRuntimeConfig } from "../../shared/ghl-config";
 import { computeManualArtifactSha256Hex } from "../lib/browser-artifact-hash";
 import {
   buildExecutedTermsChecklist, buildExecutedTermsAttestationRecordArgs,
@@ -1136,6 +1139,61 @@ export default function ContractWorkspace() {
   }, [contractSentEvidence]);
 
   /**
+   * B9-13 / INV-96 -- Record GHL Send (the manual bridge). Brad manually
+   * uploads/sends the authorized PDF himself, in GHL's own UI, then comes
+   * back here and enters exactly what he sees: the provider document id/
+   * reference/revision, GHL's own displayed expiration, and the moment he
+   * actually sent it. `buildManualContractSendRecordArgs` validates this
+   * against the CURRENT `bradAuthorizationRecord` (a stale/cross-version
+   * authorization refuses to build) and against IAOS's own required
+   * signer set (never free-typed recipient names) before this handler
+   * writes anything. This is the ONE missing link that otherwise leaves
+   * `existingSend` always `null` and blocks every already-shipped
+   * downstream verification stage below.
+   */
+  const [manualSendForm, setManualSendForm] = useState({
+    providerDocumentId: "",
+    providerDocumentReference: "",
+    providerDocumentRevision: "",
+    requestAt: "",
+    expirationAt: "",
+  });
+  const [manualSendBuildError, setManualSendBuildError] = useState<string | null>(null);
+
+  async function handleRecordManualSend() {
+    if (screen.state !== "ready" || !documentVersion || requiredSigners.length === 0) return;
+    setManualSendBuildError(null);
+    const runtimeConfig = getRuntimeConfig();
+    const requestAtIso = manualSendForm.requestAt ? new Date(manualSendForm.requestAt).toISOString() : "";
+    // B9-13/INV-96 correction: GHL may report no explicit expiration for a
+    // manually-sent document -- never fabricated, never required.
+    const expirationAtIso = manualSendForm.expirationAt ? new Date(manualSendForm.expirationAt).toISOString() : null;
+    const built = buildManualContractSendRecordArgs({
+      opportunityId: screen.opportunity.id,
+      agreementAt: screen.economics.agreementAt,
+      version: documentVersion,
+      requestAt: requestAtIso,
+      expirationAt: expirationAtIso,
+      providerDocumentId: manualSendForm.providerDocumentId.trim(),
+      providerDocumentReference: manualSendForm.providerDocumentReference.trim() || null,
+      providerDocumentRevision: manualSendForm.providerDocumentRevision.trim() === "" ? null : Number(manualSendForm.providerDocumentRevision),
+      recipients: requiredSigners.map((s) => ({ role: s.role, displayName: s.displayName })),
+      authorizedRecord: bradAuthorizationRecord,
+      templateName: runtimeConfig.documentsContracts.expectedTemplateName,
+      requestedTemplateId: runtimeConfig.documentsContracts.templateId,
+      readbackLocationId: runtimeConfig.locationId,
+      operator: "brad",
+      recordedAt: new Date().toISOString(),
+    });
+    if (!built.ok) {
+      setManualSendBuildError(built.reasons.map((r) => r.message).join(" "));
+      return;
+    }
+    const note = formatContractSendNote(built.value);
+    await commitNote("manual-contract-send", note);
+  }
+
+  /**
    * B9-10 / INV-65 -- Verify full execution. Jess Gate repair round,
    * 2026-09-13, items 1-2.
    *
@@ -1252,6 +1310,24 @@ export default function ContractWorkspace() {
   }, [signerMappingCurrencyResult, providerSignerRowsResult]);
 
   /**
+   * B9-13 / INV-96 -- blocking, case-insensitive check that the buyer's
+   * mapped provider recipient's GHL-reported name matches the authorized
+   * legal buyer name. Live as soon as Brad's own mapping currency check
+   * passes, same dependency shape as `signerVerificationResult` above --
+   * this never selects or suggests a mapping itself, only verifies one
+   * already made.
+   */
+  const buyerSignerIdentityResult = useMemo(() => {
+    if (!signerMappingCurrencyResult || !signerMappingCurrencyResult.ok || !providerSignerRowsResult || !providerSignerRowsResult.ok || !requiredSignerSetResult || !requiredSignerSetResult.ok) return null;
+    return verifyBuyerSignerIdentity({
+      buyerSignerRole: requiredSignerSetResult.buyerRole,
+      authorizedBuyerName: requiredSignerSetResult.buyerDisplayName,
+      mappings: signerMappingCurrencyResult.mappings,
+      providerRecipients: providerSignerRowsResult.rows,
+    });
+  }, [signerMappingCurrencyResult, providerSignerRowsResult, requiredSignerSetResult]);
+
+  /**
    * Brad's own manual, one-to-one recipient-mapping assignment -- NEVER
    * auto-paired by array order, GHL's generic role string, or a guessed
    * name/email match. `mappingAssignments` is keyed by required-signer
@@ -1336,7 +1412,8 @@ export default function ContractWorkspace() {
         return;
       }
       const sha256 = await computeManualArtifactSha256Hex(bytesOutcome.bytes);
-      setManualFileOutcome({ kind: "selected", sha256, fileName: bytesOutcome.fileName, mimeType: bytesOutcome.mimeType });
+      const pageCount = await countPdfPages(bytesOutcome.bytes);
+      setManualFileOutcome({ kind: "selected", sha256, fileName: bytesOutcome.fileName, mimeType: bytesOutcome.mimeType, pageCount });
     } catch (err: any) {
       setManualFileOutcome({ kind: "unreadable", message: err?.message ?? "The file could not be read." });
     } finally {
@@ -1457,7 +1534,8 @@ export default function ContractWorkspace() {
     if (
       screen.state !== "ready" || !existingSend || existingSend.status !== "accepted" ||
       !providerSignerRowsResult || !providerSignerRowsResult.ok || !lifecycleObservationRecord ||
-      !manualFileOutcome || !providerDocumentId || requiredSigners.length === 0
+      !manualFileOutcome || !providerDocumentId || requiredSigners.length === 0 ||
+      !requiredSignerSetResult || !requiredSignerSetResult.ok
     ) return null;
     return buildVerifiedUnderContractRecord({
       opportunityId: screen.opportunity.id,
@@ -1465,6 +1543,8 @@ export default function ContractWorkspace() {
       version: existingSend.version,
       acceptedSend: existingSend,
       requiredSigners,
+      buyerSignerRole: requiredSignerSetResult.buyerRole,
+      authorizedBuyerName: requiredSignerSetResult.buyerDisplayName,
       signerMappingAttestation: existingSignerMappingAttestation,
       providerRecipients: providerSignerRowsResult.rows,
       lifecycleHistory: [lifecycleObservationRecord],
@@ -1476,7 +1556,7 @@ export default function ContractWorkspace() {
       evidenceSummary: "Manual in-browser verification: live GHL readback (signer completion, provider completion), Brad's own recorded signer-recipient mapping, a manually selected executed-artifact hash, and Brad's own recorded executed-terms attestation.",
       relatedPriorRecordId: null,
     });
-  }, [screen, existingSend, providerSignerRowsResult, lifecycleObservationRecord, manualFileOutcome, providerDocumentId, requiredSigners, existingSignerMappingAttestation, existingAttestation]);
+  }, [screen, existingSend, providerSignerRowsResult, lifecycleObservationRecord, manualFileOutcome, providerDocumentId, requiredSigners, requiredSignerSetResult, existingSignerMappingAttestation, existingAttestation]);
 
   /**
    * B9-10 / INV-65, ruling item 4 -- Under Contract persistence. THE ONLY
@@ -3244,6 +3324,26 @@ export default function ContractWorkspace() {
               </div>
 
               {/* -------------------------------------------------------------- */}
+              {/* 3. Buyer signer identity -- B9-13/INV-96, BLOCKING, case-       */}
+              {/* insensitive, never a mapping mechanism (see this file's own    */}
+              {/* verifyBuyerSignerIdentity header).                              */}
+              {/* -------------------------------------------------------------- */}
+              <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>3. Buyer signer identity</div>
+                {!buyerSignerIdentityResult ? (
+                  <div data-testid="contract-execution-buyer-identity-awaiting-mapping" style={{ fontSize: "11px", color: "#64748B" }}>Map the buyer's provider recipient above to check this.</div>
+                ) : buyerSignerIdentityResult.ok ? (
+                  <div data-testid="contract-execution-buyer-identity-verified" style={{ fontSize: "12px", color: "#22C55E" }}>
+                    The buyer's mapped provider recipient's reported name matches the authorized legal buyer name.
+                  </div>
+                ) : (
+                  <ul data-testid="contract-execution-buyer-identity-mismatch" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
+                    {buyerSignerIdentityResult.reasons.map((r) => <li key={r.code} data-testid={`contract-execution-buyer-identity-reason-${r.code}`}>{r.message}</li>)}
+                  </ul>
+                )}
+              </div>
+
+              {/* -------------------------------------------------------------- */}
               {/* 2. Provider completion -- reuses INV-64's own chronology        */}
               {/* -------------------------------------------------------------- */}
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
@@ -3288,6 +3388,9 @@ export default function ContractWorkspace() {
                   manualArtifactVerificationResult.ok ? (
                     <div data-testid="contract-execution-artifact-verified" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
                       Verified. SHA-256: <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{manualArtifactVerificationResult.sha256}</span>
+                      <div data-testid="contract-execution-artifact-page-count" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "2px" }}>
+                        Page count: {manualArtifactVerificationResult.pageCount ?? "could not be determined"}
+                      </div>
                     </div>
                   ) : (
                     <ul data-testid="contract-execution-artifact-not-verified" style={{ margin: "8px 0 0", padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
@@ -3431,6 +3534,69 @@ export default function ContractWorkspace() {
                   <div style={{ fontSize: "11px", color: "#64748B" }}>Fetch the live readback, map signers to recipients, and select the executed PDF above to see exactly which stage this evidence reaches.</div>
                 )}
               </div>
+            </div>
+          ) : screen.state === "ready" && bradAuthorizationRecord ? (
+            <div data-testid="contract-manual-send-section" style={{ marginTop: "24px" }}>
+              <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
+                Record GHL Send
+              </div>
+              <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
+                After you manually upload the authorized PDF to GHL Documents &amp; Contracts and send it, enter exactly what GHL shows you below. IAOS validates this against the currently-authorized PDF's revision and hash before recording it -- nothing is sent to GHL from here.
+              </div>
+              <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <label style={{ display: "block", fontSize: "11px", color: "#94A3B8", marginBottom: "10px" }}>
+                  Provider document id
+                  <input
+                    data-testid="contract-manual-send-document-id"
+                    value={manualSendForm.providerDocumentId}
+                    onChange={(e) => setManualSendForm((prev) => ({ ...prev, providerDocumentId: e.target.value }))}
+                    style={{ display: "block", width: "100%", marginTop: "4px" }}
+                  />
+                </label>
+                <label style={{ display: "block", fontSize: "11px", color: "#94A3B8", marginBottom: "10px" }}>
+                  Provider document reference (optional)
+                  <input
+                    data-testid="contract-manual-send-document-reference"
+                    value={manualSendForm.providerDocumentReference}
+                    onChange={(e) => setManualSendForm((prev) => ({ ...prev, providerDocumentReference: e.target.value }))}
+                    style={{ display: "block", width: "100%", marginTop: "4px" }}
+                  />
+                </label>
+                <label style={{ display: "block", fontSize: "11px", color: "#94A3B8", marginBottom: "10px" }}>
+                  Provider document revision (optional)
+                  <input
+                    data-testid="contract-manual-send-document-revision"
+                    value={manualSendForm.providerDocumentRevision}
+                    onChange={(e) => setManualSendForm((prev) => ({ ...prev, providerDocumentRevision: e.target.value }))}
+                    style={{ display: "block", width: "100%", marginTop: "4px" }}
+                  />
+                </label>
+                <label style={{ display: "block", fontSize: "11px", color: "#94A3B8", marginBottom: "10px" }}>
+                  When you actually sent it in GHL
+                  <input
+                    type="datetime-local"
+                    data-testid="contract-manual-send-request-at"
+                    value={manualSendForm.requestAt}
+                    onChange={(e) => setManualSendForm((prev) => ({ ...prev, requestAt: e.target.value }))}
+                    style={{ display: "block", width: "100%", marginTop: "4px" }}
+                  />
+                </label>
+                <label style={{ display: "block", fontSize: "11px", color: "#94A3B8" }}>
+                  GHL's own displayed expiration for this document (optional -- leave blank if GHL shows none)
+                  <input
+                    type="datetime-local"
+                    data-testid="contract-manual-send-expiration-at"
+                    value={manualSendForm.expirationAt}
+                    onChange={(e) => setManualSendForm((prev) => ({ ...prev, expirationAt: e.target.value }))}
+                    style={{ display: "block", width: "100%", marginTop: "4px" }}
+                  />
+                </label>
+              </div>
+              <Btn testId="contract-manual-send-record-button" onClick={handleRecordManualSend} busy={busyGroup === "manual-contract-send"}>
+                Record GHL Send
+              </Btn>
+              <ErrorText testId="contract-manual-send-build-error">{manualSendBuildError}</ErrorText>
+              <ErrorText testId="contract-manual-send-save-error">{groupErrors["manual-contract-send"] ?? null}</ErrorText>
             </div>
           ) : null}
 

@@ -239,6 +239,7 @@ export type ContractSendAttemptToPersist = {
   templateSource: string;
   requestedTemplateId: string;
   authorizedAt: string;
+  authorizedArtifactSha256: string;
   signers: SignerSnapshot[];
   /** Always `null` on the attempt note -- see contract-send-carriers.ts's module header on `confirmedRecipientId`. */
   confirmedRecipientId: null;
@@ -330,6 +331,7 @@ export function buildSendAttemptArgs(
       templateSource: args.preview.templateSource,
       requestedTemplateId: args.requestedTemplateId,
       authorizedAt: authRecord.at,
+      authorizedArtifactSha256: authRecord.artifactSha256,
       signers,
       confirmedRecipientId: null,
       expirationAt: args.expirationAt,
@@ -431,6 +433,7 @@ export type ContractSendResultToPersist = {
   templateSource: string;
   requestedTemplateId: string;
   authorizedAt: string;
+  authorizedArtifactSha256: string;
   signers: SignerSnapshot[];
   confirmedRecipientId: string | null;
   expirationAt: string;
@@ -460,6 +463,7 @@ export function buildSendResultArgs(args: BuildSendResultArgs): ContractSendResu
     templateSource: args.attempt.templateSource,
     requestedTemplateId: args.attempt.requestedTemplateId,
     authorizedAt: args.attempt.authorizedAt,
+    authorizedArtifactSha256: args.attempt.authorizedArtifactSha256,
     signers: args.attempt.signers,
     confirmedRecipientId: args.classification.summary?.recipientId ?? null,
     expirationAt: args.attempt.expirationAt,
@@ -612,6 +616,7 @@ export function buildReadbackResultArgs(args: BuildReadbackResultArgs): Contract
     templateSource: args.attempt.templateSource,
     requestedTemplateId: args.attempt.requestedTemplateId,
     authorizedAt: args.attempt.authorizedAt,
+    authorizedArtifactSha256: args.attempt.authorizedArtifactSha256,
     signers: args.attempt.signers,
     confirmedRecipientId: args.classification.summary?.recipientId ?? args.provisional.confirmedRecipientId,
     expirationAt: args.attempt.expirationAt,
@@ -671,7 +676,11 @@ export function buildContractSentEvidence(args: BuildContractSentEvidenceArgs): 
       ? String(args.send!.providerResponse.documentRevision)
       : null;
 
-  const expiration = sendIsCurrentAndAccepted ? { at: args.send!.expirationAt } : null;
+  // B9-13/INV-96 correction: expirationAt is now nullable on ParsedContractSend
+  // (the manual bridge has no reliable expiration signal) -- a null
+  // expiration reads as "no expiration fact", same absence pattern used
+  // for providerTransmission/currentDocumentRevision above.
+  const expiration = sendIsCurrentAndAccepted && args.send!.expirationAt !== null ? { at: args.send!.expirationAt } : null;
 
   return {
     contractReady: args.contractReady,

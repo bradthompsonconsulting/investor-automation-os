@@ -818,6 +818,18 @@ function isValidSha256(value: string): boolean {
  * incapable of ever reaching Under Contract, exactly the failure mode
  * Contract Sent's own correction already fixed for `documentRevision`
  * there.
+ *
+ * `pageCount` (B9-13/INV-96) is a real, structural read of the selected
+ * executed PDF's own page count (`contract-execution-model.ts`'s
+ * `countPdfPages`, via `pdf-lib`), never an interpretation of the
+ * document's content. `contract-execution-model.ts`'s
+ * `verifyManualArtifactSelection` REQUIRES a determined, positive integer
+ * page count before a NEW Under Contract record can ever be built --
+ * `null` is never silently permitted into freshly-built evidence. This
+ * field stays nullable at the TYPE level only because an already-durable
+ * record parsed from a pre-B9-13 (schema v1) Under Contract note
+ * genuinely carries no page count -- that historical fact is preserved
+ * exactly as recorded, never retroactively invalidated or backfilled.
  */
 export type PreservedDocumentEvidence = {
   sha256: string;
@@ -825,6 +837,7 @@ export type PreservedDocumentEvidence = {
   completionTime: string;
   boundVersion: ContractVersionIdentity | null;
   providerDocumentRevision: string | null;
+  pageCount: number | null;
 };
 
 export type ExecutionEvidence = {
