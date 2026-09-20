@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 193;
+const FLOOR = 195;
 let failures = 0;
 let checks = 0;
 
@@ -715,6 +715,10 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('the Record GHL Send button is wired to handleRecordManualSend', /testId="contract-manual-send-record-button" onClick=\{handleRecordManualSend\}/.test(contractTsx), true);
   check('renders a live buyer-signer-identity verified/mismatch display', /data-testid="contract-execution-buyer-identity-verified"/.test(contractTsx) && /data-testid="contract-execution-buyer-identity-mismatch"/.test(contractTsx), true);
   check('renders the executed artifact\'s page count', /data-testid="contract-execution-artifact-page-count"/.test(contractTsx), true);
+
+  // B9-13/INV-96 correction round 2 -- email-only GHL identity fallback.
+  check('fullVerificationResult ALSO passes authorizedBuyerEmail (requiredSignerSetResult.buyerEmail), never a hardcoded/guessed value', /buyerSignerRole: requiredSignerSetResult\.buyerRole,\s*\n\s*authorizedBuyerName: requiredSignerSetResult\.buyerDisplayName,\s*\n\s*authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail,/.test(contractTsxNoComments), true);
+  check('buyerSignerIdentityResult ALSO passes authorizedBuyerEmail (requiredSignerSetResult.buyerEmail)', /buyerSignerRole: requiredSignerSetResult\.buyerRole,\s*\n\s*authorizedBuyerName: requiredSignerSetResult\.buyerDisplayName,\s*\n\s*authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail,/.test(contractTsxNoComments) && (contractTsxNoComments.match(/authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail,/g) || []).length === 2, true);
 }
 
 console.log('');

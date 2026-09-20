@@ -306,6 +306,7 @@ function baseArgs(over) {
     requiredSigners: requiredSignerFixtureSingle(),
     buyerSignerRole: BUYER_ROLE_FIXTURE,
     authorizedBuyerName: BUYER_NAME_FIXTURE,
+    authorizedBuyerEmail: null,
     signerMappingAttestation: signerMappingAttestationFixture({}),
     providerRecipients: providerRecipientSingleComplete(),
     lifecycleHistory: [completedLifecycleObservation({})],
@@ -638,35 +639,85 @@ CACHED_VALID_MANUAL_OUTCOME = await selectAndHash(SYNTHETIC_PDF_BYTES, 'executed
   }));
   checkFalse('a genuine buyer name mismatch blocks Under Contract', result.ok);
   check('failure stage is buyer_signer_identity', result.failure.stage, 'buyer_signer_identity');
-  check('failure names BUYER_NAME_MISMATCH', result.failure.reasons[0].code, 'BUYER_NAME_MISMATCH');
+  check('failure names BUYER_IDENTITY_MISMATCH', result.failure.reasons[0].code, 'BUYER_IDENTITY_MISMATCH');
 }
 {
   // Direct unit tests of verifyBuyerSignerIdentity itself.
   const mappings = [{ role: 'Buyer Rep', displayName: 'Robert Thompson', providerRecipientId: 'r1' }];
-  const recipients = [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Robert Thompson' }];
-  checkTrue('verifyBuyerSignerIdentity: exact match passes', E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', mappings, providerRecipients: recipients }).ok);
-  checkTrue('verifyBuyerSignerIdentity: case-insensitive, whitespace-trimmed match passes', E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: '  ROBERT THOMPSON  ', mappings, providerRecipients: recipients }).ok);
-  const blankRole = E.verifyBuyerSignerIdentity({ buyerSignerRole: '', authorizedBuyerName: 'Robert Thompson', mappings, providerRecipients: recipients });
+  const recipients = [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Robert Thompson', reportedEmail: 'robert@example.com' }];
+  checkTrue('verifyBuyerSignerIdentity: exact name match passes', E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: 'robert@example.com', mappings, providerRecipients: recipients }).ok);
+  checkTrue('verifyBuyerSignerIdentity: case-insensitive, whitespace-trimmed name match passes', E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: '  ROBERT THOMPSON  ', authorizedBuyerEmail: null, mappings, providerRecipients: recipients }).ok);
+  const blankRole = E.verifyBuyerSignerIdentity({ buyerSignerRole: '', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null, mappings, providerRecipients: recipients });
   checkFalse('verifyBuyerSignerIdentity: blank buyerSignerRole fails closed', blankRole.ok);
   check('failure names BUYER_SIGNER_ROLE_BLANK', blankRole.reasons[0].code, 'BUYER_SIGNER_ROLE_BLANK');
-  const blankName = E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: '', mappings, providerRecipients: recipients });
-  checkFalse('verifyBuyerSignerIdentity: blank authorizedBuyerName fails closed', blankName.ok);
-  check('failure names BUYER_AUTHORIZED_NAME_BLANK', blankName.reasons[0].code, 'BUYER_AUTHORIZED_NAME_BLANK');
-  const noMapping = E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Nonexistent Role', authorizedBuyerName: 'Robert Thompson', mappings, providerRecipients: recipients });
+  const blankIdentity = E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: '', authorizedBuyerEmail: null, mappings, providerRecipients: recipients });
+  checkFalse('verifyBuyerSignerIdentity: blank authorizedBuyerName AND null authorizedBuyerEmail fails closed', blankIdentity.ok);
+  check('failure names BUYER_AUTHORIZED_IDENTITY_MISSING', blankIdentity.reasons[0].code, 'BUYER_AUTHORIZED_IDENTITY_MISSING');
+  const noMapping = E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Nonexistent Role', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null, mappings, providerRecipients: recipients });
   checkFalse('verifyBuyerSignerIdentity: no mapping for the buyer role fails closed', noMapping.ok);
   check('failure names BUYER_MAPPING_NOT_FOUND', noMapping.reasons[0].code, 'BUYER_MAPPING_NOT_FOUND');
-  const noRecipient = E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', mappings, providerRecipients: [] });
+  const noRecipient = E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null, mappings, providerRecipients: [] });
   checkFalse('verifyBuyerSignerIdentity: mapped recipient absent from readback fails closed', noRecipient.ok);
   check('failure names BUYER_RECIPIENT_NOT_FOUND', noRecipient.reasons[0].code, 'BUYER_RECIPIENT_NOT_FOUND');
   checkTrue(
-    'verifyBuyerSignerIdentity: the mapping record\'s own displayName is IGNORED -- only the explicit authorizedBuyerName argument governs',
+    'verifyBuyerSignerIdentity: the mapping record\'s own displayName is IGNORED -- only the explicit authorizedBuyerName/authorizedBuyerEmail arguments govern',
     E.verifyBuyerSignerIdentity({
       buyerSignerRole: 'Buyer Rep',
       authorizedBuyerName: 'Robert Thompson',
+      authorizedBuyerEmail: null,
       mappings: [{ role: 'Buyer Rep', displayName: 'A Completely Different Stale Name', providerRecipientId: 'r1' }],
       providerRecipients: recipients,
     }).ok,
   );
+
+  // ---- B9-13/INV-96 correction round 2: email-only GHL identity fallback ----
+  // Live evidence shape: GHL reports the recipient with NO name at all
+  // (blank firstName/lastName), contactName falling back to the bare
+  // email -- proving a real completed document this pipeline must still
+  // be able to verify.
+  const emailOnlyRecipient = [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'brad@veteraninvestoros.com', reportedEmail: 'brad@veteraninvestoros.com' }];
+  const emailOnlyPass = E.verifyBuyerSignerIdentity({
+    buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: 'brad@veteraninvestoros.com',
+    mappings, providerRecipients: emailOnlyRecipient,
+  });
+  checkTrue('email-only GHL identity: canonical email match passes even though the canonical NAME does not match the (email-fallback) reported name', emailOnlyPass.ok);
+  checkTrue(
+    'email-only GHL identity: case-insensitive, whitespace-trimmed email match passes',
+    E.verifyBuyerSignerIdentity({
+      buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: '  BRAD@VeteranInvestorOS.com  ',
+      mappings, providerRecipients: emailOnlyRecipient,
+    }).ok,
+  );
+  const differentEmail = E.verifyBuyerSignerIdentity({
+    buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: 'someone-else@example.com',
+    mappings, providerRecipients: emailOnlyRecipient,
+  });
+  checkFalse('a different canonical email (and non-matching name) fails closed', differentEmail.ok);
+  check('failure names BUYER_IDENTITY_MISMATCH for the different-email case', differentEmail.reasons[0].code, 'BUYER_IDENTITY_MISMATCH');
+  checkTrue(
+    'name match still passes on its own when authorizedBuyerEmail is null -- existing name-match behavior preserved',
+    E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null, mappings, providerRecipients: recipients }).ok,
+  );
+  checkTrue(
+    'a real NAME mismatch still passes when the EMAIL matches -- the OR, not requiring both',
+    E.verifyBuyerSignerIdentity({
+      buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: 'brad@veteraninvestoros.com',
+      mappings, providerRecipients: [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'a totally different displayed name', reportedEmail: 'brad@veteraninvestoros.com' }],
+    }).ok,
+  );
+  // Full end-to-end: the email-only live-evidence shape reaches (and is blocked only by) executed_terms, exactly like the name-match path.
+  const emailFallbackMapping = signerMappingAttestationFixture({ requiredSigners: [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Buyer Rep', displayName: 'Robert Thompson' }], availableProviderRecipientIds: ['r1', 'r2'] });
+  const emailFallbackRecipients = providerRecipientsTwoComplete({ 1: { reportedContactName: 'brad@veteraninvestoros.com', reportedEmail: 'brad@veteraninvestoros.com' } });
+  const emailFallbackResult = E.buildVerifiedUnderContractRecord(baseArgs({
+    requiredSigners: [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Buyer Rep', displayName: 'Robert Thompson' }],
+    buyerSignerRole: 'Buyer Rep',
+    authorizedBuyerName: 'Robert Thompson',
+    authorizedBuyerEmail: 'brad@veteraninvestoros.com',
+    signerMappingAttestation: emailFallbackMapping,
+    providerRecipients: emailFallbackRecipients,
+  }));
+  checkFalse('end to end: an email-only GHL recipient (real live-evidence shape) reaches, and is blocked only by, executed_terms', emailFallbackResult.ok);
+  check('failure stage is executed_terms, never buyer_signer_identity, for the email-fallback path', emailFallbackResult.failure.stage, 'executed_terms');
 }
 {
   const dupRole = [{ role: 'Seller', displayName: 'Jane Seller' }, { role: 'Seller', displayName: 'Someone Else' }];
@@ -699,7 +750,7 @@ CACHED_VALID_MANUAL_OUTCOME = await selectAndHash(SYNTHETIC_PDF_BYTES, 'executed
 function populatedDisposition(value) { return { kind: 'populated', value, authority: 'operator_attested', recordedAt: null }; }
 function reportFixture(over) {
   return Object.assign({
-    noticeContact: { buyerSignerName: populatedDisposition('Brad Thompson'), buyerSignerRole: populatedDisposition('Manager, BTC LLC') },
+    noticeContact: { buyerSignerName: populatedDisposition('Brad Thompson'), buyerSignerRole: populatedDisposition('Manager, BTC LLC'), buyerNoticeEmail: { kind: 'unresolved' } },
     parties: { sellerSigners: populatedDisposition([{ role: 'Seller', displayName: 'Jane Seller', signingAuthorityNote: null }]) },
   }, over || {});
 }
@@ -710,7 +761,24 @@ function reportFixture(over) {
     check('exactly 2 required signers: the buyer signer + the one seller signer', result.signers.length, 2);
     checkTrue('the buyer signer is present', result.signers.some((s) => s.role === 'Manager, BTC LLC' && s.displayName === 'Brad Thompson'));
     checkTrue('the seller signer is present', result.signers.some((s) => s.role === 'Seller' && s.displayName === 'Jane Seller'));
+    check('buyerRole is exposed explicitly', result.buyerRole, 'Manager, BTC LLC');
+    check('buyerDisplayName is exposed explicitly', result.buyerDisplayName, 'Brad Thompson');
+    check('buyerEmail is null when noticeContact.buyerNoticeEmail is unresolved -- never fails the build closed', result.buyerEmail, null);
   }
+}
+{
+  // B9-13/INV-96 correction round 2 -- buyerEmail sourced from noticeContact.buyerNoticeEmail.
+  const withEmail = SM.buildRequiredSignerSet(reportFixture({
+    noticeContact: { buyerSignerName: populatedDisposition('Brad Thompson'), buyerSignerRole: populatedDisposition('Manager, BTC LLC'), buyerNoticeEmail: populatedDisposition('brad@veteraninvestoros.com') },
+  }));
+  checkTrue('buyer email present -- builds successfully', withEmail.ok);
+  if (withEmail.ok) check('buyerEmail is sourced from noticeContact.buyerNoticeEmail', withEmail.buyerEmail, 'brad@veteraninvestoros.com');
+
+  const blankEmail = SM.buildRequiredSignerSet(reportFixture({
+    noticeContact: { buyerSignerName: populatedDisposition('Brad Thompson'), buyerSignerRole: populatedDisposition('Manager, BTC LLC'), buyerNoticeEmail: populatedDisposition('   ') },
+  }));
+  checkTrue('a blank (whitespace-only) buyer email still builds successfully', blankEmail.ok);
+  if (blankEmail.ok) check('a blank buyer email normalizes to null, never an empty string', blankEmail.buyerEmail, null);
 }
 {
   // Multiple seller signers -- every one required, plus the buyer.

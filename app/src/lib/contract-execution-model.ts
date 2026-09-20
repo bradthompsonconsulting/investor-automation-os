@@ -224,10 +224,10 @@ function isValidIsoInstant(at: string): boolean {
 
 export type BuyerSignerIdentityReasonCode =
   | "BUYER_SIGNER_ROLE_BLANK"
-  | "BUYER_AUTHORIZED_NAME_BLANK"
+  | "BUYER_AUTHORIZED_IDENTITY_MISSING"
   | "BUYER_MAPPING_NOT_FOUND"
   | "BUYER_RECIPIENT_NOT_FOUND"
-  | "BUYER_NAME_MISMATCH";
+  | "BUYER_IDENTITY_MISMATCH";
 
 export type BuyerSignerIdentityReason = { code: BuyerSignerIdentityReasonCode; message: string };
 
@@ -236,35 +236,54 @@ export type BuyerSignerIdentityReason = { code: BuyerSignerIdentityReasonCode; m
  * model.ts` -- never touched by this function) has assigned the buyer
  * role to a provider recipient id, this independently verifies that the
  * recipient GHL reports for that id carries the authorized legal buyer
- * name, case-insensitively. This is a BLOCKING VERIFICATION check on top
- * of an already-made manual pick -- it never selects, suggests, or auto-
- * pairs a mapping itself (Product Owner ruling, 2026-09-13, preserved in
- * full: "NEVER auto-paired by... a guessed name/email match").
+ * identity, case-insensitively. This is a BLOCKING VERIFICATION check on
+ * top of an already-made manual pick -- it never selects, suggests, or
+ * auto-pairs a mapping itself (Product Owner ruling, 2026-09-13,
+ * preserved in full: "NEVER auto-paired by... a guessed name/email
+ * match").
  *
- * B9-13/INV-96 correction: `buyerSignerRole` and `authorizedBuyerName`
- * are BOTH supplied explicitly by the caller, sourced fresh from
- * `buildRequiredSignerSet`'s own `buyerRole`/`buyerDisplayName`
- * (`contract-signer-mapping-model.ts`) -- i.e. directly from canonical
- * IAOS contract facts (`noticeContact.buyerSignerRole`/`buyerSignerName`),
- * NEVER by array position (`requiredSigners[0]` is not necessarily the
- * buyer) and NEVER by trusting the mapping record's own `displayName` as
- * the sole authority (that field is merely a carried-through label from
- * when the mapping was built, not re-derived here). `mappings` is used
- * ONLY to find which provider recipient id Brad picked for the buyer
- * role -- the identity comparison itself is always against the fresh
- * `authorizedBuyerName` argument.
+ * B9-13/INV-96 correction: `buyerSignerRole`, `authorizedBuyerName`, and
+ * `authorizedBuyerEmail` are ALL supplied explicitly by the caller,
+ * sourced fresh from `buildRequiredSignerSet`'s own `buyerRole`/
+ * `buyerDisplayName`/`buyerEmail` (`contract-signer-mapping-model.ts`)
+ * -- i.e. directly from canonical IAOS contract facts, NEVER by array
+ * position (`requiredSigners[0]` is not necessarily the buyer) and NEVER
+ * by trusting the mapping record's own `displayName` as the sole
+ * authority (that field is merely a carried-through label from when the
+ * mapping was built, not re-derived here). `mappings` is used ONLY to
+ * find which provider recipient id Brad picked for the buyer role -- the
+ * identity comparison itself is always against the fresh
+ * `authorizedBuyerName`/`authorizedBuyerEmail` arguments.
+ *
+ * EMAIL-ONLY GHL EVIDENCE FALLBACK (B9-13/INV-96 correction round 2,
+ * live-evidence-driven Product Owner ruling): live GHL Test evidence
+ * showed a real completed document whose buyer recipient carries no
+ * human name at all -- `firstName`/`lastName` blank, `contactName`
+ * falling back to the bare email. A pure name-only check can never pass
+ * for that real evidence shape. This function now passes when the
+ * mapped recipient's reported name matches the authorized buyer name
+ * OR its reported email matches the authorized buyer email,
+ * case-insensitively -- an OR, not an AND, and never a THIRD, weaker
+ * check (e.g. partial match). Missing canonical evidence on BOTH sides
+ * (`authorizedBuyerName` blank AND `authorizedBuyerEmail` null/blank)
+ * fails closed by name (`BUYER_AUTHORIZED_IDENTITY_MISSING`) before any
+ * comparison is attempted; a real mismatch on both sides fails closed as
+ * `BUYER_IDENTITY_MISMATCH`.
  */
 export function verifyBuyerSignerIdentity(args: {
   buyerSignerRole: string;
   authorizedBuyerName: string;
+  authorizedBuyerEmail: string | null;
   mappings: readonly SignerRecipientMapping[];
   providerRecipients: readonly ProviderSignerRow[];
 }): { ok: true } | { ok: false; reasons: BuyerSignerIdentityReason[] } {
   if (args.buyerSignerRole.trim() === "") {
     return { ok: false, reasons: [{ code: "BUYER_SIGNER_ROLE_BLANK", message: "The buyer signer role is blank." }] };
   }
-  if (args.authorizedBuyerName.trim() === "") {
-    return { ok: false, reasons: [{ code: "BUYER_AUTHORIZED_NAME_BLANK", message: "The authorized legal buyer signer name is blank." }] };
+  const authorizedName = args.authorizedBuyerName.trim().toLowerCase();
+  const authorizedEmail = (args.authorizedBuyerEmail ?? "").trim().toLowerCase();
+  if (authorizedName === "" && authorizedEmail === "") {
+    return { ok: false, reasons: [{ code: "BUYER_AUTHORIZED_IDENTITY_MISSING", message: "Neither an authorized legal buyer signer name nor a canonical buyer signer email is available to verify against." }] };
   }
   const buyerMapping = args.mappings.find((m) => m.role === args.buyerSignerRole);
   if (!buyerMapping) {
@@ -275,13 +294,15 @@ export function verifyBuyerSignerIdentity(args: {
     return { ok: false, reasons: [{ code: "BUYER_RECIPIENT_NOT_FOUND", message: "The buyer's mapped provider recipient id was not found in the live provider readback." }] };
   }
   const reportedName = (buyerRecipient.reportedContactName ?? "").trim().toLowerCase();
-  const authorizedName = args.authorizedBuyerName.trim().toLowerCase();
-  if (reportedName === "" || reportedName !== authorizedName) {
+  const reportedEmail = (buyerRecipient.reportedEmail ?? "").trim().toLowerCase();
+  const nameMatches = authorizedName !== "" && reportedName !== "" && reportedName === authorizedName;
+  const emailMatches = authorizedEmail !== "" && reportedEmail !== "" && reportedEmail === authorizedEmail;
+  if (!nameMatches && !emailMatches) {
     return {
       ok: false,
       reasons: [{
-        code: "BUYER_NAME_MISMATCH",
-        message: `The buyer's mapped provider recipient's reported name ("${buyerRecipient.reportedContactName ?? "none"}") does not match the authorized legal buyer name ("${args.authorizedBuyerName}"), case-insensitively.`,
+        code: "BUYER_IDENTITY_MISMATCH",
+        message: `The buyer's mapped provider recipient's reported name ("${buyerRecipient.reportedContactName ?? "none"}") and email ("${buyerRecipient.reportedEmail ?? "none"}") match neither the authorized legal buyer name ("${args.authorizedBuyerName}") nor the canonical buyer signer email ("${args.authorizedBuyerEmail ?? "none"}"), case-insensitively.`,
       }],
     };
   }
@@ -302,6 +323,13 @@ export function verifyBuyerSignerIdentity(args: {
  * literal `"signer"` for every recipient on the one completed document
  * observed, never a contract-specific role, and NEVER consulted by
  * `verifyRequiredSigners` below.
+ *
+ * `reportedEmail` (B9-13/INV-96 correction round 2): live GHL Test
+ * evidence confirmed `email` is a real field on every recipient object,
+ * including one whose `contactName` was itself only the bare email
+ * (blank `firstName`/`lastName`) -- carried through here so
+ * `verifyBuyerSignerIdentity` can fall back to a case-insensitive email
+ * match when GHL reports no human name at all.
  */
 export type ProviderSignerRow = {
   providerRecipientId: string;
@@ -309,6 +337,7 @@ export type ProviderSignerRow = {
   signedDate: string | null;
   reportedRole: string | null;
   reportedContactName: string | null;
+  reportedEmail: string | null;
 };
 
 export type ProviderSignerRowExtractionResult =
@@ -368,6 +397,7 @@ export function extractProviderSignerRowsFromListDocumentsBody(args: {
       signedDate: typeof row.signedDate === "string" ? row.signedDate : null,
       reportedRole: typeof row.role === "string" ? row.role : null,
       reportedContactName: typeof row.contactName === "string" ? row.contactName : null,
+      reportedEmail: typeof row.email === "string" ? row.email : null,
     });
   }
   return { ok: true, rows };
@@ -809,6 +839,8 @@ export type BuildVerifiedExecutionArgs = {
   buyerSignerRole: string;
   /** B9-13/INV-96 -- the authorized legal buyer signer name `verifyBuyerSignerIdentity` compares against, case-insensitively. Sourced by the caller from `buildRequiredSignerSet`'s own `buyerDisplayName` -- NEVER from the mapping record's own carried-through `displayName` alone. */
   authorizedBuyerName: string;
+  /** B9-13/INV-96 correction round 2 -- the canonical buyer signer email `verifyBuyerSignerIdentity` falls back to when GHL reports the mapped recipient with no human name. Sourced by the caller from `buildRequiredSignerSet`'s own `buyerEmail`. `null` when no canonical email has been recorded -- the email-fallback path then never contributes a pass. */
+  authorizedBuyerEmail: string | null;
   /** Brad's own manual, one-to-one recipient-mapping attestation -- currency-verified at the `signer_mapping` stage against this exact opportunity/version/document/revision/accepted-send/required-signer-set. `null` when none has been recorded yet; fails closed either way. There is no separate caller-supplied mapping parameter -- the mapping used by `verifyRequiredSigners` below comes ONLY from this currency-verified record. */
   signerMappingAttestation: SignerMappingAttestationRecord | null;
   providerRecipients: readonly ProviderSignerRow[];
@@ -912,6 +944,7 @@ export function buildVerifiedUnderContractRecord(
   const buyerIdentityResult = verifyBuyerSignerIdentity({
     buyerSignerRole: args.buyerSignerRole,
     authorizedBuyerName: args.authorizedBuyerName,
+    authorizedBuyerEmail: args.authorizedBuyerEmail,
     mappings: mappingResult.mappings,
     providerRecipients: args.providerRecipients,
   });
