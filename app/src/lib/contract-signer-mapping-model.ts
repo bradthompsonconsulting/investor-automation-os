@@ -105,9 +105,19 @@ export function validateRequiredSignerSet(
  * sources combined -- ambiguous (a duplicate role, e.g. a seller signer
  * accidentally recorded under the same role string as the buyer).
  */
+/**
+ * `buyerRole`/`buyerDisplayName` (B9-13/INV-96 correction) are the ONE
+ * authoritative resolution of "which required signer is the buyer" --
+ * sourced here, directly from the same canonical
+ * `noticeContact.buyerSignerRole`/`buyerSignerName` facts used to build
+ * `signers[0]` below, and returned EXPLICITLY so no caller ever has to
+ * (or may) infer the buyer from `signers[0]`/array position. Array order
+ * is an implementation detail of how this function happens to assemble
+ * `signers` today, never a contract callers may rely on.
+ */
 export function buildRequiredSignerSet(
   report: SellerContractFactsReport,
-): { ok: true; signers: readonly RequiredSigner[] } | { ok: false; reasons: RequiredSignerSetReason[] } {
+): { ok: true; signers: readonly RequiredSigner[]; buyerRole: string; buyerDisplayName: string } | { ok: false; reasons: RequiredSignerSetReason[] } {
   const { buyerSignerName, buyerSignerRole } = report.noticeContact;
   const sellerSigners = report.parties.sellerSigners;
 
@@ -140,7 +150,7 @@ export function buildRequiredSignerSet(
   ];
   const validated = validateRequiredSignerSet(signers);
   if (!validated.ok) return validated;
-  return { ok: true, signers };
+  return { ok: true, signers, buyerRole: buyerSignerRole.value, buyerDisplayName: buyerSignerName.value };
 }
 
 /* ==================================================================== */

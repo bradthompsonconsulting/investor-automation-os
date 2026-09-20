@@ -33,18 +33,20 @@
  * automatically, by design.
  */
 
-const HEADER = "IAOS CONTRACT SEND — iaos-contract-send-v2";
-const LABEL_COUNT = 17;
+const HEADER = "IAOS CONTRACT SEND — iaos-contract-send-v3";
+const LABEL_COUNT = 18;
 // Index within the note body's lines (line 0 is the header) of each field
 // this guard actually needs -- mirrors contract-send-carriers.ts's LABELS
 // array positions, not re-declared here since only the index, not the
-// label text, is used for parsing.
+// label text, is used for parsing. B9-13/INV-96 schema v3 inserted
+// "Authorized artifact SHA-256" at index 10, shifting every index after it
+// by one -- this file's own header requires this edit be made by hand.
 const IDX_OPPORTUNITY = 2;
 const IDX_ATTEMPT_ID = 3;
 const IDX_STATUS = 4;
 const IDX_VERSION = 5;
 const IDX_REQUESTED_TEMPLATE_ID = 8;
-const IDX_CONFIRMED_RECIPIENT_ID = 11;
+const IDX_CONFIRMED_RECIPIENT_ID = 12;
 
 const PENDING_OR_ACCEPTED = new Set(["in_progress", "provider_accepted_pending_readback", "accepted"]);
 

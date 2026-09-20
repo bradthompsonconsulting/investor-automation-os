@@ -218,6 +218,77 @@ function isValidIsoInstant(at: string): boolean {
 }
 
 /* ==================================================================== */
+/* 0. Buyer signer identity -- a BLOCKING check, never a mapping         */
+/*    mechanism. B9-13 / INV-96.                                         */
+/* ==================================================================== */
+
+export type BuyerSignerIdentityReasonCode =
+  | "BUYER_SIGNER_ROLE_BLANK"
+  | "BUYER_AUTHORIZED_NAME_BLANK"
+  | "BUYER_MAPPING_NOT_FOUND"
+  | "BUYER_RECIPIENT_NOT_FOUND"
+  | "BUYER_NAME_MISMATCH";
+
+export type BuyerSignerIdentityReason = { code: BuyerSignerIdentityReasonCode; message: string };
+
+/**
+ * Once Brad's OWN manual, ID-based mapping (`contract-signer-mapping-
+ * model.ts` -- never touched by this function) has assigned the buyer
+ * role to a provider recipient id, this independently verifies that the
+ * recipient GHL reports for that id carries the authorized legal buyer
+ * name, case-insensitively. This is a BLOCKING VERIFICATION check on top
+ * of an already-made manual pick -- it never selects, suggests, or auto-
+ * pairs a mapping itself (Product Owner ruling, 2026-09-13, preserved in
+ * full: "NEVER auto-paired by... a guessed name/email match").
+ *
+ * B9-13/INV-96 correction: `buyerSignerRole` and `authorizedBuyerName`
+ * are BOTH supplied explicitly by the caller, sourced fresh from
+ * `buildRequiredSignerSet`'s own `buyerRole`/`buyerDisplayName`
+ * (`contract-signer-mapping-model.ts`) -- i.e. directly from canonical
+ * IAOS contract facts (`noticeContact.buyerSignerRole`/`buyerSignerName`),
+ * NEVER by array position (`requiredSigners[0]` is not necessarily the
+ * buyer) and NEVER by trusting the mapping record's own `displayName` as
+ * the sole authority (that field is merely a carried-through label from
+ * when the mapping was built, not re-derived here). `mappings` is used
+ * ONLY to find which provider recipient id Brad picked for the buyer
+ * role -- the identity comparison itself is always against the fresh
+ * `authorizedBuyerName` argument.
+ */
+export function verifyBuyerSignerIdentity(args: {
+  buyerSignerRole: string;
+  authorizedBuyerName: string;
+  mappings: readonly SignerRecipientMapping[];
+  providerRecipients: readonly ProviderSignerRow[];
+}): { ok: true } | { ok: false; reasons: BuyerSignerIdentityReason[] } {
+  if (args.buyerSignerRole.trim() === "") {
+    return { ok: false, reasons: [{ code: "BUYER_SIGNER_ROLE_BLANK", message: "The buyer signer role is blank." }] };
+  }
+  if (args.authorizedBuyerName.trim() === "") {
+    return { ok: false, reasons: [{ code: "BUYER_AUTHORIZED_NAME_BLANK", message: "The authorized legal buyer signer name is blank." }] };
+  }
+  const buyerMapping = args.mappings.find((m) => m.role === args.buyerSignerRole);
+  if (!buyerMapping) {
+    return { ok: false, reasons: [{ code: "BUYER_MAPPING_NOT_FOUND", message: `No recorded mapping assigns a provider recipient to the buyer signer role "${args.buyerSignerRole}".` }] };
+  }
+  const buyerRecipient = args.providerRecipients.find((r) => r.providerRecipientId === buyerMapping.providerRecipientId);
+  if (!buyerRecipient) {
+    return { ok: false, reasons: [{ code: "BUYER_RECIPIENT_NOT_FOUND", message: "The buyer's mapped provider recipient id was not found in the live provider readback." }] };
+  }
+  const reportedName = (buyerRecipient.reportedContactName ?? "").trim().toLowerCase();
+  const authorizedName = args.authorizedBuyerName.trim().toLowerCase();
+  if (reportedName === "" || reportedName !== authorizedName) {
+    return {
+      ok: false,
+      reasons: [{
+        code: "BUYER_NAME_MISMATCH",
+        message: `The buyer's mapped provider recipient's reported name ("${buyerRecipient.reportedContactName ?? "none"}") does not match the authorized legal buyer name ("${args.authorizedBuyerName}"), case-insensitively.`,
+      }],
+    };
+  }
+  return { ok: true };
+}
+
+/* ==================================================================== */
 /* 1. Signer-level provider verification -- provider recipient id is the */
 /*    PRIMARY join; GHL's own generic "role" is audit-only, never trusted */
 /* ==================================================================== */
@@ -492,7 +563,35 @@ export type ManualArtifactSelectionOutcome =
   | { kind: "invalid_file_type"; mimeType: string | null; fileName: string | null }
   | { kind: "empty_file" }
   | { kind: "unreadable"; message: string }
-  | { kind: "selected"; sha256: string; fileName: string; mimeType: string };
+  | { kind: "selected"; sha256: string; fileName: string; mimeType: string; pageCount: number | null };
+
+/**
+ * B9-13/INV-96 correction: a raw regex scan for `/Type /Page` cannot see
+ * into a compressed object stream or cross-reference stream (routine in
+ * any PDF produced by a modern generator, GHL's own executed documents
+ * included) and would silently undercount or miss pages entirely -- not
+ * trustworthy enough to preserve as final signed-artifact evidence. This
+ * instead loads the selected bytes through `pdf-lib` (already a project
+ * dependency, browser-compatible, used elsewhere in this codebase's own
+ * PDF generation pipeline) and reads its own real, fully-parsed page
+ * count via `getPageCount()` -- structural metadata only, still never an
+ * interpretation of the document's textual/visual content (module
+ * header, item 1). Returns `null`, never a guessed or fabricated value,
+ * when the bytes cannot be parsed as a PDF at all -- the caller
+ * (`verifyManualArtifactSelection`) fails closed on `null` rather than
+ * silently permitting an undetermined page count into Under Contract
+ * evidence.
+ */
+export async function countPdfPages(bytes: Uint8Array): Promise<number | null> {
+  try {
+    const { PDFDocument } = await import("pdf-lib");
+    const doc = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+    const count = doc.getPageCount();
+    return Number.isInteger(count) && count > 0 ? count : null;
+  } catch {
+    return null;
+  }
+}
 
 export type ArtifactReasonCode =
   | "NO_FILE_SELECTED"
@@ -500,7 +599,8 @@ export type ArtifactReasonCode =
   | "FILE_EMPTY"
   | "FILE_UNREADABLE"
   | "ARTIFACT_DOCUMENT_MISMATCH"
-  | "ARTIFACT_VERSION_MISMATCH";
+  | "ARTIFACT_VERSION_MISMATCH"
+  | "ARTIFACT_PAGE_COUNT_UNDETERMINED";
 
 export type ArtifactReason = { code: ArtifactReasonCode; message: string };
 
@@ -525,7 +625,7 @@ export function verifyManualArtifactSelection(args: {
   selectedForDocumentId: string;
   selectedForVersion: ContractVersionIdentity;
   expectedVersion: ContractVersionIdentity;
-}): { ok: true; sha256: string } | { ok: false; reasons: ArtifactReason[] } {
+}): { ok: true; sha256: string; pageCount: number } | { ok: false; reasons: ArtifactReason[] } {
   if (args.outcome.kind === "no_file") {
     return { ok: false, reasons: [{ code: "NO_FILE_SELECTED", message: "No file was selected." }] };
   }
@@ -555,8 +655,18 @@ export function verifyManualArtifactSelection(args: {
       message: "The selected file is not confirmed bound to the exact contract version under verification.",
     });
   }
+  // B9-13/INV-96 correction: page count is REQUIRED preserved evidence for
+  // the final signed artifact -- an undetermined count is never silently
+  // permitted through as Under Contract evidence. Fails closed here, by
+  // name, rather than deferring to a later, easier-to-miss stage.
+  if (args.outcome.pageCount === null || !Number.isInteger(args.outcome.pageCount) || args.outcome.pageCount < 1) {
+    reasons.push({
+      code: "ARTIFACT_PAGE_COUNT_UNDETERMINED",
+      message: "The selected PDF's page count could not be reliably determined -- refusing to treat it as preserved executed-artifact evidence without it.",
+    });
+  }
   if (reasons.length > 0) return { ok: false, reasons };
-  return { ok: true, sha256: args.outcome.sha256 };
+  return { ok: true, sha256: args.outcome.sha256, pageCount: args.outcome.pageCount as number };
 }
 
 /* ==================================================================== */
@@ -670,6 +780,8 @@ export type UnderContractRecordEntry = {
   artifactSha256: string;
   /** Always `0` -- a record is only ever built once `evaluateUnderContractEligibility` has already confirmed no conflict exists; carried explicitly so a reader never has to trust that claim without a corroborating field. */
   executedTermsConflictCount: 0;
+  /** B9-13/INV-96 -- see `PreservedDocumentEvidence.pageCount`'s own header (board9-contract-model.ts): nullable, audit-only, never gated on. */
+  pageCount: number | null;
   iaosVerifiedAt: string;
   /** Reuses `board9-contract-model.ts`'s own `ContractFactAuthority` vocabulary -- `"system_derived"` names exactly what this fact is: IAOS's own joint verification of multiple independently-sourced facts, never a bare provider report or a bare human attestation. */
   authority: "system_derived";
@@ -677,7 +789,7 @@ export type UnderContractRecordEntry = {
   relatedPriorRecordId: string | null;
 };
 
-export type VerificationStage = "input" | "binding" | "required_signers" | "signer_mapping" | "signers" | "provider_completion" | "artifact" | "executed_terms" | "eligibility";
+export type VerificationStage = "input" | "binding" | "required_signers" | "signer_mapping" | "buyer_signer_identity" | "signers" | "provider_completion" | "artifact" | "executed_terms" | "eligibility";
 
 export type VerifiedExecutionFailure = {
   stage: VerificationStage;
@@ -693,6 +805,10 @@ export type BuildVerifiedExecutionArgs = {
   acceptedSend: ParsedContractSend;
   /** WHO must sign -- assembled by `buildRequiredSignerSet` (`contract-signer-mapping-model.ts`) from IAOS's own authoritative contract facts, NEVER from `acceptedSend.signers`. Re-validated here at the `required_signers` stage as defense in depth (Product Owner ruling, 2026-09-13). */
   requiredSigners: readonly RequiredSigner[];
+  /** B9-13/INV-96 -- the required signer role identifying the buyer, used ONLY to look up which mapping `verifyBuyerSignerIdentity` checks at the `buyer_signer_identity` stage. Sourced by the caller from `buildRequiredSignerSet`'s own `buyerRole` (`contract-signer-mapping-model.ts`) -- NEVER by array position within `requiredSigners`. */
+  buyerSignerRole: string;
+  /** B9-13/INV-96 -- the authorized legal buyer signer name `verifyBuyerSignerIdentity` compares against, case-insensitively. Sourced by the caller from `buildRequiredSignerSet`'s own `buyerDisplayName` -- NEVER from the mapping record's own carried-through `displayName` alone. */
+  authorizedBuyerName: string;
   /** Brad's own manual, one-to-one recipient-mapping attestation -- currency-verified at the `signer_mapping` stage against this exact opportunity/version/document/revision/accepted-send/required-signer-set. `null` when none has been recorded yet; fails closed either way. There is no separate caller-supplied mapping parameter -- the mapping used by `verifyRequiredSigners` below comes ONLY from this currency-verified record. */
   signerMappingAttestation: SignerMappingAttestationRecord | null;
   providerRecipients: readonly ProviderSignerRow[];
@@ -789,6 +905,18 @@ export function buildVerifiedUnderContractRecord(
   });
   if (!mappingResult.ok) return fail("signer_mapping", mappingResult.reasons);
 
+  // B9-13/INV-96 -- blocking case-insensitive buyer-signer identity
+  // check, on top of Brad's own already-made manual mapping. Never a
+  // mapping mechanism itself; see this function's own header, item 2b,
+  // and `verifyBuyerSignerIdentity`'s own header.
+  const buyerIdentityResult = verifyBuyerSignerIdentity({
+    buyerSignerRole: args.buyerSignerRole,
+    authorizedBuyerName: args.authorizedBuyerName,
+    mappings: mappingResult.mappings,
+    providerRecipients: args.providerRecipients,
+  });
+  if (!buyerIdentityResult.ok) return fail("buyer_signer_identity", buyerIdentityResult.reasons);
+
   const signerResult = verifyRequiredSigners({
     mappings: mappingResult.mappings,
     providerRecipients: args.providerRecipients,
@@ -831,6 +959,7 @@ export function buildVerifiedUnderContractRecord(
     completionTime: completion.completedAt,
     boundVersion: args.version,
     providerDocumentRevision: binding.value.providerDocumentRevision !== null ? String(binding.value.providerDocumentRevision) : null,
+    pageCount: artifact.pageCount,
   };
 
   const executionEvidence: ExecutionEvidence = {
@@ -865,6 +994,7 @@ export function buildVerifiedUnderContractRecord(
       signers: signerResult.matches,
       artifactSha256: artifact.sha256,
       executedTermsConflictCount: 0,
+      pageCount: artifact.pageCount,
       iaosVerifiedAt: args.iaosVerifiedAt,
       authority: "system_derived",
       evidenceSummary: args.evidenceSummary,
@@ -897,7 +1027,8 @@ export function isDuplicateUnderContractRecord(a: UnderContractRecordEntry, b: U
     a.providerDocumentRevision === b.providerDocumentRevision &&
     a.providerReportedCompletionAt === b.providerReportedCompletionAt &&
     JSON.stringify(a.signers) === JSON.stringify(b.signers) &&
-    a.artifactSha256 === b.artifactSha256
+    a.artifactSha256 === b.artifactSha256 &&
+    a.pageCount === b.pageCount
   );
 }
 

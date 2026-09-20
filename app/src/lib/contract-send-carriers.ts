@@ -47,6 +47,21 @@
  * note -- there is nothing true to record yet -- and is populated ONLY
  * from the PROVIDER'S OWN echoed `recipientId` once a response exists,
  * never from IAOS's own intended value.
+ *
+ * SCHEMA V3 (B9-13/INV-96): `authorizedArtifactSha256` -- the exact
+ * `artifactSha256` from the `ParsedBradContractAuthorization` this send is
+ * bound to, REQUIRED on every send record. `formatContractSendNote`/
+ * `parseContractSendNote` remain the ONE shared schema for both the
+ * automated-attempt path (`contract-send-model.ts`, not live in V1 --
+ * `ghl-proxy.ts` GATE 2 unconditionally refuses the send) and the manual
+ * bridge this round adds (`contract-manual-send-model.ts`, the actual V1
+ * path). `version` alone already pins the agreement/revision; this field
+ * additionally preserves the authorized PDF's own hash directly on the
+ * send record itself, satisfying "preserve authorized revision/hash"
+ * durably at the moment of send, not only by cross-referencing a separate
+ * note. `expirationAt` stays REQUIRED, unchanged -- Brad reads GHL's own
+ * displayed expiration for the manual bridge, exactly as he already reads
+ * the provider document id.
  */
 
 function ledgerValue(value: string | number | null | undefined): string {
@@ -204,13 +219,35 @@ export type ContractSendStatus =
 const PENDING_RANK: Record<string, number> = { in_progress: 0, provider_accepted_pending_readback: 1 };
 const TERMINAL_STATUSES = new Set(["accepted", "failed", "ambiguous"]);
 
-export const CONTRACT_SEND_LEDGER_VERSION = "iaos-contract-send-v2" as const;
+export const CONTRACT_SEND_LEDGER_VERSION = "iaos-contract-send-v3" as const;
 const HEADER = `IAOS CONTRACT SEND — ${CONTRACT_SEND_LEDGER_VERSION}`;
 const LABELS = [
+  "Recorded at", "Operator", "Opportunity", "Attempt id", "Status", "Version",
+  "Template name", "Template source", "Requested template id", "Authorized at", "Authorized artifact SHA-256", "Signers", "Confirmed recipient id",
+  "Expiration at", "Request at", "IAOS observed acceptance at", "Provider response", "Failure reason",
+] as const;
+
+/**
+ * SCHEMA V2 (RETAINED, READ-ONLY). B9-13/INV-96 correction: schema v3
+ * inserted "Authorized artifact SHA-256" and made "Expiration at"
+ * nullable -- a real, already-durable v2 note (17 lines, no artifact-hash
+ * field, an always-present expiration) must remain readable, never
+ * stranded. This module never WRITES a v2 note again (`formatContractSendNote`
+ * only ever produces v3), but `parseContractSendNote` tries v3 first, then
+ * falls back to this exact original shape -- see that function's own
+ * header for the dual-read discipline.
+ */
+const LEGACY_V2_LEDGER_VERSION = "iaos-contract-send-v2" as const;
+const LEGACY_V2_HEADER = `IAOS CONTRACT SEND — ${LEGACY_V2_LEDGER_VERSION}`;
+const LEGACY_V2_LABELS = [
   "Recorded at", "Operator", "Opportunity", "Attempt id", "Status", "Version",
   "Template name", "Template source", "Requested template id", "Authorized at", "Signers", "Confirmed recipient id",
   "Expiration at", "Request at", "IAOS observed acceptance at", "Provider response", "Failure reason",
 ] as const;
+
+function isValidSha256(value: string): boolean {
+  return /^[0-9a-fA-F]{64}$/.test(value);
+}
 
 export type ParsedContractSend = {
   opportunityId: string;
@@ -224,10 +261,13 @@ export type ParsedContractSend = {
   /** The verified, config-locked GHL templateId requested for this attempt -- item 2/6 of the INV-63 correction round: never resolved by a live name search, and the server (ghl-proxy.ts GATE 2) enforces this same value regardless of what any caller supplies. */
   requestedTemplateId: string;
   authorizedAt: string;
+  /** Schema v3 (B9-13/INV-96) -- see module header. The exact `artifactSha256` of the `ParsedBradContractAuthorization` this send is bound to; REQUIRED on every NEWLY WRITTEN send record (`formatContractSendNote` always supplies one). `null` ONLY when this record was parsed from a legacy schema-v2 note, which never carried this fact -- an irrecoverable historical gap, not a defect in this read. */
+  authorizedArtifactSha256: string | null;
   signers: SignerSnapshot[];
   /** The provider's OWN echoed recipient id -- null until a provider response exists. Never IAOS's own intended value; see module header. */
   confirmedRecipientId: string | null;
-  expirationAt: string;
+  /** Schema v3 -- nullable (`"UNAVAILABLE"` sentinel on write; a legacy v2 note's own real, always-present expiration parses through non-null). B9-13/INV-96 correction: the manual bridge has no reliable provider-reported expiration signal for every send, and requiring a fabricated value would misstate evidence IAOS does not actually have. */
+  expirationAt: string | null;
   requestAt: string;
   /** OBSERVED-BY-IAOS acceptance time -- never claimed as the provider's own reported transmission time (that field is undocumented; see contract-send-model.ts header). */
   iaosObservedAcceptanceAt: string | null;
@@ -246,9 +286,10 @@ export function formatContractSendNote(args: {
   templateSource: string;
   requestedTemplateId: string;
   authorizedAt: string;
+  authorizedArtifactSha256: string;
   signers: SignerSnapshot[];
   confirmedRecipientId: string | null;
-  expirationAt: string;
+  expirationAt: string | null;
   requestAt: string;
   iaosObservedAcceptanceAt: string | null;
   providerResponse: ProviderResponseSummary | null;
@@ -266,19 +307,69 @@ export function formatContractSendNote(args: {
     `${LABELS[7]}: ${args.templateSource}`,
     `${LABELS[8]}: ${args.requestedTemplateId}`,
     `${LABELS[9]}: ${args.authorizedAt}`,
-    `${LABELS[10]}: ${formatSignersJson(args.signers)}`,
-    `${LABELS[11]}: ${ledgerValue(args.confirmedRecipientId)}`,
-    `${LABELS[12]}: ${args.expirationAt}`,
-    `${LABELS[13]}: ${args.requestAt}`,
-    `${LABELS[14]}: ${ledgerValue(args.iaosObservedAcceptanceAt)}`,
-    `${LABELS[15]}: ${args.providerResponse ? formatProviderResponseJson(args.providerResponse) : "UNAVAILABLE"}`,
-    `${LABELS[16]}: ${ledgerValue(args.failureReason)}`,
+    `${LABELS[10]}: ${args.authorizedArtifactSha256}`,
+    `${LABELS[11]}: ${formatSignersJson(args.signers)}`,
+    `${LABELS[12]}: ${ledgerValue(args.confirmedRecipientId)}`,
+    `${LABELS[13]}: ${ledgerValue(args.expirationAt)}`,
+    `${LABELS[14]}: ${args.requestAt}`,
+    `${LABELS[15]}: ${ledgerValue(args.iaosObservedAcceptanceAt)}`,
+    `${LABELS[16]}: ${args.providerResponse ? formatProviderResponseJson(args.providerResponse) : "UNAVAILABLE"}`,
+    `${LABELS[17]}: ${ledgerValue(args.failureReason)}`,
   ].join("\n");
 }
 
-export function parseContractSendNote(body: string): ParsedContractSend | null {
-  const values = matchPositionalSchema(body, HEADER, LABELS);
-  if (!values) return null;
+function buildParsedFromV3Values(values: string[]): ParsedContractSend | null {
+  const [
+    at, operatorRaw, opportunityId, attemptId, statusRaw, versionRaw, templateName, templateSource, requestedTemplateId,
+    authorizedAt, authorizedArtifactSha256, signersRaw, confirmedRecipientIdRaw, expirationAtRaw, requestAt, acceptedAtRaw, providerResponseRaw, failureReasonRaw,
+  ] = values;
+  if (opportunityId === "" || attemptId === "" || templateName === "" || templateSource === "" || requestedTemplateId === "") return null;
+  if (!isCanonicalIsoTimestamp(at)) return null;
+  if (!isCanonicalIsoTimestamp(attemptId)) return null;
+  if (
+    statusRaw !== "in_progress" &&
+    statusRaw !== "provider_accepted_pending_readback" &&
+    statusRaw !== "accepted" &&
+    statusRaw !== "failed" &&
+    statusRaw !== "ambiguous"
+  ) return null;
+  const version = parseVersionJson(versionRaw);
+  if (!version) return null;
+  if (!isCanonicalIsoTimestamp(authorizedAt)) return null;
+  if (!isValidSha256(authorizedArtifactSha256)) return null;
+  const signers = parseSignersJson(signersRaw);
+  if (!signers) return null;
+  const expirationAt = expirationAtRaw === "UNAVAILABLE" ? null : expirationAtRaw;
+  if (expirationAt !== null && !isCanonicalIsoTimestamp(expirationAt)) return null;
+  if (!isCanonicalIsoTimestamp(requestAt)) return null;
+  const iaosObservedAcceptanceAt = acceptedAtRaw === "UNAVAILABLE" ? null : acceptedAtRaw;
+  if (iaosObservedAcceptanceAt !== null && !isCanonicalIsoTimestamp(iaosObservedAcceptanceAt)) return null;
+  const providerResponse = providerResponseRaw === "UNAVAILABLE" ? null : parseProviderResponseJson(providerResponseRaw);
+  if (providerResponseRaw !== "UNAVAILABLE" && !providerResponse) return null;
+  return {
+    opportunityId,
+    at,
+    operator: operatorRaw === "UNAVAILABLE" ? null : operatorRaw,
+    attemptId,
+    status: statusRaw,
+    version,
+    templateName,
+    templateSource,
+    requestedTemplateId,
+    authorizedAt,
+    authorizedArtifactSha256,
+    signers,
+    confirmedRecipientId: confirmedRecipientIdRaw === "UNAVAILABLE" ? null : confirmedRecipientIdRaw,
+    expirationAt,
+    requestAt,
+    iaosObservedAcceptanceAt,
+    providerResponse,
+    failureReason: failureReasonRaw === "UNAVAILABLE" ? null : failureReasonRaw,
+  };
+}
+
+/** Parses the ORIGINAL, pre-B9-13 schema v2 shape (one fewer field, no `authorizedArtifactSha256`, `expirationAt` always required) -- `authorizedArtifactSha256` is always `null` on the result, honestly, since a v2 note never carried it. */
+function buildParsedFromLegacyV2Values(values: string[]): ParsedContractSend | null {
   const [
     at, operatorRaw, opportunityId, attemptId, statusRaw, versionRaw, templateName, templateSource, requestedTemplateId,
     authorizedAt, signersRaw, confirmedRecipientIdRaw, expirationAt, requestAt, acceptedAtRaw, providerResponseRaw, failureReasonRaw,
@@ -315,6 +406,7 @@ export function parseContractSendNote(body: string): ParsedContractSend | null {
     templateSource,
     requestedTemplateId,
     authorizedAt,
+    authorizedArtifactSha256: null,
     signers,
     confirmedRecipientId: confirmedRecipientIdRaw === "UNAVAILABLE" ? null : confirmedRecipientIdRaw,
     expirationAt,
@@ -323,6 +415,15 @@ export function parseContractSendNote(body: string): ParsedContractSend | null {
     providerResponse,
     failureReason: failureReasonRaw === "UNAVAILABLE" ? null : failureReasonRaw,
   };
+}
+
+/** Dual-read (B9-13/INV-96): tries the CURRENT schema (v3) first; only when a note's header/line-count does not match v3 at all does it try the exact original schema v2 shape. A note matching neither is `null`, same as always -- this never "best-effort" parses a malformed or unrelated note. */
+export function parseContractSendNote(body: string): ParsedContractSend | null {
+  const v3Values = matchPositionalSchema(body, HEADER, LABELS);
+  if (v3Values) return buildParsedFromV3Values(v3Values);
+  const v2Values = matchPositionalSchema(body, LEGACY_V2_HEADER, LEGACY_V2_LABELS);
+  if (v2Values) return buildParsedFromLegacyV2Values(v2Values);
+  return null;
 }
 
 /** The single most recent send ATTEMPT for this opportunity, resolved to its own latest note (by `at`) -- i.e. an "in_progress" note is superseded by its own later "accepted"/"failed"/"ambiguous" note for the SAME `attemptId`, but a different, older `attemptId`'s notes never resolve into a newer attempt's status. */

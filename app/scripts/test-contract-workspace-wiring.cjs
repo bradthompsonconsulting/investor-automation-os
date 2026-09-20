@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 177;
+const FLOOR = 193;
 let failures = 0;
 let checks = 0;
 
@@ -683,6 +683,38 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     /if \(drafts\.sellerSigning\.count === "unset"\)/.test(contractTsxNoComments) && /model = \{ kind: "one_seller", seller1Capacity: drafts\.sellerSigning\.seller1Capacity \};/.test(contractTsxNoComments),
     true,
   );
+}
+
+// ==========================================================================
+// B9-13 / INV-96 -- the manual GHL send record, blocking buyer-signer
+// identity check, and executed-artifact page count. Source-text wiring
+// only (this repo's own established, no-browser-rendering convention).
+// ==========================================================================
+{
+  check('imports buildManualContractSendRecordArgs from the new manual-send model', /import \{ buildManualContractSendRecordArgs \} from "\.\.\/lib\/contract-manual-send-model";/.test(contractTsx), true);
+  check('imports formatContractSendNote from contract-send-carriers', /formatContractSendNote/.test(contractTsx), true);
+  check('imports verifyBuyerSignerIdentity and countPdfPages from contract-execution-model', /verifyBuyerSignerIdentity/.test(contractTsx) && /countPdfPages/.test(contractTsx), true);
+  check('imports getRuntimeConfig from shared ghl-config', /import \{ getRuntimeConfig \} from "\.\.\/\.\.\/shared\/ghl-config";/.test(contractTsx), true);
+
+  check('handleRecordManualSend calls buildManualContractSendRecordArgs', /async function handleRecordManualSend\(\) \{[\s\S]{0,2000}buildManualContractSendRecordArgs\(\{/.test(contractTsxNoComments), true);
+  check('handleRecordManualSend writes through the SAME shared commitNote helper every other group-form Save button uses', /await commitNote\("manual-contract-send", note\);/.test(contractTsxNoComments), true);
+  check('handleRecordManualSend sources templateName/requestedTemplateId/readbackLocationId from getRuntimeConfig(), never hand-typed', /runtimeConfig\.documentsContracts\.expectedTemplateName/.test(contractTsxNoComments) && /runtimeConfig\.documentsContracts\.templateId/.test(contractTsxNoComments) && /runtimeConfig\.locationId/.test(contractTsxNoComments), true);
+  check('a blank expiration input is sent as null, never fabricated', /expirationAtIso = manualSendForm\.expirationAt \? new Date\(manualSendForm\.expirationAt\)\.toISOString\(\) : null;/.test(contractTsxNoComments), true);
+
+  check('handleManualFileSelected awaits countPdfPages (a real, async pdf-lib parse)', /const pageCount = await countPdfPages\(bytesOutcome\.bytes\);/.test(contractTsxNoComments), true);
+
+  check(
+    'the buyer signer role/name are sourced from requiredSignerSetResult.buyerRole/buyerDisplayName, NEVER from requiredSigners[0] (array position)',
+    /requiredSignerSetResult\.buyerRole/.test(contractTsxNoComments) && /requiredSignerSetResult\.buyerDisplayName/.test(contractTsxNoComments) && !/requiredSigners\[0\]/.test(contractTsxNoComments),
+    true,
+  );
+  check('fullVerificationResult passes both buyerSignerRole and authorizedBuyerName to buildVerifiedUnderContractRecord', /buyerSignerRole: requiredSignerSetResult\.buyerRole,[\s\S]{0,80}authorizedBuyerName: requiredSignerSetResult\.buyerDisplayName,/.test(contractTsxNoComments), true);
+  check('buyerSignerIdentityResult passes both buyerSignerRole and authorizedBuyerName to verifyBuyerSignerIdentity', /buyerSignerRole: requiredSignerSetResult\.buyerRole,[\s\S]{0,80}authorizedBuyerName: requiredSignerSetResult\.buyerDisplayName,[\s\S]{0,80}mappings: signerMappingCurrencyResult\.mappings,/.test(contractTsxNoComments), true);
+
+  check('renders the Record GHL Send section, gated on no accepted send existing yet', /data-testid="contract-manual-send-section"/.test(contractTsx), true);
+  check('the Record GHL Send button is wired to handleRecordManualSend', /testId="contract-manual-send-record-button" onClick=\{handleRecordManualSend\}/.test(contractTsx), true);
+  check('renders a live buyer-signer-identity verified/mismatch display', /data-testid="contract-execution-buyer-identity-verified"/.test(contractTsx) && /data-testid="contract-execution-buyer-identity-mismatch"/.test(contractTsx), true);
+  check('renders the executed artifact\'s page count', /data-testid="contract-execution-artifact-page-count"/.test(contractTsx), true);
 }
 
 console.log('');

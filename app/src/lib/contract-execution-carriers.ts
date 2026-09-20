@@ -40,6 +40,13 @@
  * one-line-per-field contract on read-back -- `formatUnderContractNote`
  * replaces any `\n` with a single space before writing, so a note this
  * module writes always round-trips through its own parser.
+ *
+ * SCHEMA V2 (B9-13/INV-96): adds `pageCount` -- see
+ * `UnderContractRecordEntry.pageCount`'s own header
+ * (`contract-execution-model.ts`) and `PreservedDocumentEvidence.
+ * pageCount`'s (`board9-contract-model.ts`). Nullable (`"UNAVAILABLE"`
+ * sentinel, same convention as `providerDocumentReference`/
+ * `providerDocumentRevision`), audit-only, never gated on.
  */
 
 function ledgerValue(value: string | number | null | undefined): string {
@@ -156,9 +163,38 @@ function parseConflictsJson(raw: string): [] | null {
   return parsed.value.length === 0 ? [] : null;
 }
 
-export const UNDER_CONTRACT_LEDGER_VERSION = "iaos-under-contract-v1" as const;
+export const UNDER_CONTRACT_LEDGER_VERSION = "iaos-under-contract-v2" as const;
 const HEADER = `IAOS UNDER CONTRACT — ${UNDER_CONTRACT_LEDGER_VERSION}`;
 const LABELS = [
+  "Recorded at",
+  "Opportunity",
+  "Agreement Reached at",
+  "Version",
+  "Accepted send attempt id",
+  "Provider document id",
+  "Provider document reference",
+  "Provider document revision",
+  "Provider reported completion at",
+  "Signers",
+  "Artifact SHA-256",
+  "Page count",
+  "Executed terms conflicts",
+  "Authority",
+  "Evidence summary",
+  "Related prior record id",
+] as const;
+
+/**
+ * SCHEMA V1 (RETAINED, READ-ONLY). B9-13/INV-96 correction: schema v2
+ * inserted "Page count" -- a real, already-durable v1 note (15 lines, no
+ * page-count field) must remain readable, never stranded. This module
+ * never WRITES a v1 note again (`formatUnderContractNote` only ever
+ * produces v2), but `parseUnderContractNote` tries v2 first, then falls
+ * back to this exact original shape.
+ */
+const LEGACY_V1_LEDGER_VERSION = "iaos-under-contract-v1" as const;
+const LEGACY_V1_HEADER = `IAOS UNDER CONTRACT — ${LEGACY_V1_LEDGER_VERSION}`;
+const LEGACY_V1_LABELS = [
   "Recorded at",
   "Opportunity",
   "Agreement Reached at",
@@ -191,21 +227,77 @@ export function formatUnderContractNote(record: UnderContractRecordEntry): strin
     `${LABELS[8]}: ${record.providerReportedCompletionAt}`,
     `${LABELS[9]}: ${formatSignersJson(record.signers)}`,
     `${LABELS[10]}: ${record.artifactSha256}`,
-    `${LABELS[11]}: []`,
-    `${LABELS[12]}: ${record.authority}`,
-    `${LABELS[13]}: ${singleLine(record.evidenceSummary)}`,
-    `${LABELS[14]}: ${ledgerValue(record.relatedPriorRecordId)}`,
+    `${LABELS[11]}: ${ledgerValue(record.pageCount)}`,
+    `${LABELS[12]}: []`,
+    `${LABELS[13]}: ${record.authority}`,
+    `${LABELS[14]}: ${singleLine(record.evidenceSummary)}`,
+    `${LABELS[15]}: ${ledgerValue(record.relatedPriorRecordId)}`,
   ].join("\n");
 }
 
-/**
- * Parses ONE Under Contract note back into its exact `UnderContractRecordEntry`
- * -- returns `null` (never a best-effort partial record) for anything
- * malformed, incomplete, mixed-version, or authority-confused.
- */
-export function parseUnderContractNote(body: string): UnderContractRecordEntry | null {
-  const values = matchPositionalSchema(body, HEADER, LABELS);
-  if (!values) return null;
+function buildParsedUnderContractFromV2Values(values: string[]): UnderContractRecordEntry | null {
+  const [
+    at, opportunityId, agreementAt, versionRaw, acceptedSendAttemptId, providerDocumentIdRaw,
+    providerDocumentReferenceRaw, providerDocumentRevisionRaw, providerReportedCompletionAt,
+    signersRaw, artifactSha256, pageCountRaw, conflictsRaw, authorityRaw, evidenceSummary, relatedPriorRecordIdRaw,
+  ] = values;
+
+  if (opportunityId === "" || providerDocumentIdRaw === "" || evidenceSummary === "") return null;
+  if (!isCanonicalIsoTimestamp(at)) return null;
+  if (!isCanonicalIsoTimestamp(agreementAt)) return null;
+  if (!isCanonicalIsoTimestamp(acceptedSendAttemptId)) return null;
+  if (!isCanonicalIsoTimestamp(providerReportedCompletionAt)) return null;
+
+  const version = parseVersionJson(versionRaw);
+  if (!version) return null;
+  // Mixed-version rejection: the top-level Agreement Reached identity must
+  // agree with the version's OWN agreementAt -- never two disagreeing
+  // identities in the same record.
+  if (agreementAt !== version.agreementAt) return null;
+
+  if (authorityRaw !== "system_derived") return null;
+
+  const providerDocumentId = providerDocumentIdRaw;
+  const providerDocumentReference = providerDocumentReferenceRaw === "UNAVAILABLE" ? null : providerDocumentReferenceRaw;
+  const providerDocumentRevisionParsed = providerDocumentRevisionRaw === "UNAVAILABLE" ? null : Number(providerDocumentRevisionRaw);
+  if (providerDocumentRevisionRaw !== "UNAVAILABLE" && (!Number.isFinite(providerDocumentRevisionParsed) || !Number.isInteger(providerDocumentRevisionParsed))) return null;
+
+  const signers = parseSignersJson(signersRaw);
+  if (!signers) return null;
+
+  if (!isValidSha256(artifactSha256)) return null;
+
+  const pageCount = pageCountRaw === "UNAVAILABLE" ? null : Number(pageCountRaw);
+  if (pageCountRaw !== "UNAVAILABLE" && (!Number.isFinite(pageCount) || !Number.isInteger(pageCount) || (pageCount as number) < 1)) return null;
+
+  const conflicts = parseConflictsJson(conflictsRaw);
+  if (conflicts === null) return null;
+
+  const relatedPriorRecordId = relatedPriorRecordIdRaw === "UNAVAILABLE" ? null : relatedPriorRecordIdRaw;
+
+  return {
+    kind: "under_contract",
+    opportunityId,
+    agreementAt,
+    version,
+    acceptedSendAttemptId,
+    providerDocumentId,
+    providerDocumentReference,
+    providerDocumentRevision: providerDocumentRevisionParsed,
+    providerReportedCompletionAt,
+    signers,
+    artifactSha256,
+    pageCount,
+    executedTermsConflictCount: 0,
+    iaosVerifiedAt: at,
+    authority: "system_derived",
+    evidenceSummary,
+    relatedPriorRecordId,
+  };
+}
+
+/** Parses the ORIGINAL, pre-B9-13 schema v1 shape (one fewer field, no `pageCount`) -- `pageCount` is always `null` on the result, honestly, since a v1 note never carried it. */
+function buildParsedUnderContractFromLegacyV1Values(values: string[]): UnderContractRecordEntry | null {
   const [
     at, opportunityId, agreementAt, versionRaw, acceptedSendAttemptId, providerDocumentIdRaw,
     providerDocumentReferenceRaw, providerDocumentRevisionRaw, providerReportedCompletionAt,
@@ -220,9 +312,6 @@ export function parseUnderContractNote(body: string): UnderContractRecordEntry |
 
   const version = parseVersionJson(versionRaw);
   if (!version) return null;
-  // Mixed-version rejection: the top-level Agreement Reached identity must
-  // agree with the version's OWN agreementAt -- never two disagreeing
-  // identities in the same record.
   if (agreementAt !== version.agreementAt) return null;
 
   if (authorityRaw !== "system_derived") return null;
@@ -254,12 +343,27 @@ export function parseUnderContractNote(body: string): UnderContractRecordEntry |
     providerReportedCompletionAt,
     signers,
     artifactSha256,
+    pageCount: null,
     executedTermsConflictCount: 0,
     iaosVerifiedAt: at,
     authority: "system_derived",
     evidenceSummary,
     relatedPriorRecordId,
   };
+}
+
+/**
+ * Dual-read (B9-13/INV-96): tries the CURRENT schema (v2) first; only
+ * when a note's header/line-count does not match v2 at all does it try
+ * the exact original schema v1 shape. A note matching neither is `null`
+ * (never a best-effort partial record), same as always.
+ */
+export function parseUnderContractNote(body: string): UnderContractRecordEntry | null {
+  const v2Values = matchPositionalSchema(body, HEADER, LABELS);
+  if (v2Values) return buildParsedUnderContractFromV2Values(v2Values);
+  const v1Values = matchPositionalSchema(body, LEGACY_V1_HEADER, LEGACY_V1_LABELS);
+  if (v1Values) return buildParsedUnderContractFromLegacyV1Values(v1Values);
+  return null;
 }
 
 /**
