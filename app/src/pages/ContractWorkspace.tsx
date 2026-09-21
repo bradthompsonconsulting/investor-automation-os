@@ -3349,7 +3349,7 @@ export default function ContractWorkspace() {
                 Verify Execution &amp; Under Contract
               </div>
               <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
-                Verifies, in this browser only, whether the three locked Under Contract facts actually hold: every signer completed (by provider recipient id, never GHL's generic role), the provider independently reports completion, and a manually-selected executed PDF is present and hashed. Nothing here is uploaded, persisted, logged, or written to GHL.
+                Verifies whether the three locked Under Contract facts actually hold: every signer completed (by provider recipient id, never GHL's generic role), the provider independently reports completion, and a manually-selected executed PDF is present and hashed. Fetching the live readback above is read-only against GHL, and selecting/hashing the PDF happens locally in this browser. But clicking Record signer mapping or Record attestation below DOES write a durable IAOS note in GHL -- only when that button is clicked, never automatically. Neither of those two steps uploads the PDF file itself; Preserve executed PDF, further below, is a separate action that DOES upload and durably store the actual PDF bytes.
               </div>
 
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
@@ -3595,7 +3595,7 @@ export default function ContractWorkspace() {
                         const label = item.kind === "property_identity" ? "Property identity"
                           : item.kind === "purchase_price" ? "Purchase price"
                           : item.kind === "buyer_identity" ? "Buyer identity"
-                          : item.kind === "signing_party" ? `Signing party: ${item.signerRole}`
+                          : item.kind === "signing_party" ? `Signing party: ${item.authoritativeLabel}`
                           : "Other material terms";
                         const current = checklistResponses[key];
                         return (

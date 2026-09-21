@@ -93,8 +93,14 @@ export function buildExecutedTermsChecklist(args: {
     { kind: "purchase_price", signerRole: null, authoritativeLabel: formatUsd(args.agreement.price) },
     { kind: "buyer_identity", signerRole: null, authoritativeLabel: args.buyerIdentity },
   ];
+  // Gate-review closure -- Finding H, Product Owner ruling: "Manager" is
+  // IAOS's own internal authority/capacity metadata (preserved on
+  // `signerRole` below for the durable signer mapping) and is never
+  // printed beside a signature on the executed PDF. The operator is
+  // asked to verify the printed PERSONAL identity only -- never asked to
+  // attest that an internal capacity label appears on the document.
   for (const s of args.expectedSigners) {
-    items.push({ kind: "signing_party", signerRole: s.role, authoritativeLabel: `${s.role}: ${s.displayName}` });
+    items.push({ kind: "signing_party", signerRole: s.role, authoritativeLabel: s.displayName });
   }
   items.push({
     kind: "other_material_terms",

@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 230;
+const FLOOR = 236;
 let failures = 0;
 let checks = 0;
 
@@ -870,6 +870,41 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check(
     'no OTHER call site anywhere in ghl.ts invokes the opportunity.underContractStage operation string -- exactly one, named, non-parameterized wrapper',
     (ghlTsxNoComments.match(/opportunity\.underContractStage/g) || []).length === 1,
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure -- Finding H. The signing-party checklist label
+  // and the execution-section disclosure text.
+  // ============================================================
+  check(
+    'the signing_party checklist title is built from item.authoritativeLabel (the printed personal name), never item.signerRole (the internal capacity label)',
+    contractTsx.includes('`Signing party: ${item.authoritativeLabel}`'),
+    true,
+  );
+  check(
+    'the OLD role-labeled signing_party title is gone',
+    contractTsx.includes('`Signing party: ${item.signerRole}`'),
+    false,
+  );
+  check(
+    'the false blanket disclosure ("Nothing here is uploaded, persisted, logged, or written to GHL") is removed',
+    contractTsx.includes('Nothing here is uploaded, persisted, logged, or written to GHL.'),
+    false,
+  );
+  check(
+    'the corrected disclosure discloses the live readback fetch is read-only against GHL',
+    contractTsx.includes('Fetching the live readback above is read-only against GHL'),
+    true,
+  );
+  check(
+    'the corrected disclosure discloses that Record signer mapping / Record attestation DO write a durable IAOS note in GHL, only on click',
+    contractTsx.includes('DOES write a durable IAOS note in GHL -- only when that button is clicked, never automatically'),
+    true,
+  );
+  check(
+    'the corrected disclosure does not claim the PDF is uploaded by the two attestation steps, and does not imply Preserve executed PDF is local-only',
+    contractTsx.includes('Preserve executed PDF, further below, is a separate action that DOES upload and durably store the actual PDF bytes'),
     true,
   );
 

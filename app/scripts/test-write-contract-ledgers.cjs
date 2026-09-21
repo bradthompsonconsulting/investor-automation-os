@@ -262,6 +262,13 @@ await check('manual send: readback failure -- live provider fetch itself errors,
   const v2 = B9c.nextVersionIdentity(v1, { kind: 'same_agreement_reentry' }, null).value;
   const v3 = B9c.nextVersionIdentity(v2, { kind: 'same_agreement_reentry' }, null).value;
   const v4 = B9c.nextVersionIdentity(v3, { kind: 'same_agreement_reentry' }, null).value;
+  const v5 = B9c.nextVersionIdentity(v4, { kind: 'same_agreement_reentry' }, null).value;
+  const v6 = B9c.nextVersionIdentity(v5, { kind: 'same_agreement_reentry' }, null).value;
+  function captureConsoleError(run) {
+    const calls = []; const original = console.error;
+    console.error = (...args) => { calls.push(args); };
+    return Promise.resolve().then(run).finally(() => { console.error = original; }).then(() => calls);
+  }
   const authFor = (v) => Object.assign({}, fixture.authorization, { version: v });
   const buildManualFor = (v, over) => load('contract-manual-send-model').buildManualContractSendRecordArgs(Object.assign({
     opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: v, requestAt: over.requestAt, expirationAt: null,
@@ -334,6 +341,34 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     assert.equal((await invoke(sendNote(missing.value))).statusCode, 409);
     assert.equal(writes, before);
   });
+
+  // ============================================================
+  // Gate-review closure -- Finding H, requirement 5. A provider HTTP
+  // failure (401/403/...) must be classified explicitly, never collapsed
+  // into "Ambiguous document readback". The client-facing response body
+  // is unchanged (still the same generic 409) -- the distinction is
+  // proven via the diagnostic log's own errorMessage field.
+  // ============================================================
+  for (const status of [401, 403]) {
+    await check(`manual send readback: provider HTTP ${status} is classified explicitly, never collapsed into "Ambiguous document readback"`, async () => {
+      const before = writes; const savedFetch = global.fetch;
+      global.fetch = async (url) => { const u = new URL(url); if (u.pathname === '/proposals/document') return { ok: false, status, json: async () => ({ message: 'refused' }), text: async () => '{"message":"refused"}' }; return savedFetch(url); };
+      try {
+        const built = buildManualFor(status === 401 ? v5 : v6, { requestAt: `2026-09-21T21:0${status === 401 ? 5 : 6}:00.000Z` });
+        assert.equal(built.ok, true, JSON.stringify(built));
+        const logCalls = await captureConsoleError(async () => {
+          const res = await invoke(sendNote(built.value));
+          assert.equal(res.statusCode, 409, res.body);
+        });
+        assert.equal(logCalls.length, 1, 'exactly one diagnostic log entry');
+        const logged = JSON.parse(logCalls[0][1]);
+        assert.equal(logged.errorMessage, `Provider document readback failed (HTTP ${status})`);
+        assert.notEqual(logged.errorMessage, 'Ambiguous document readback');
+        assert.equal(JSON.stringify(logged).includes('refused'), false, 'the provider response body is never logged');
+      } finally { global.fetch = savedFetch; }
+      assert.equal(writes, before);
+    });
+  }
 }
 
 // ============================================================
@@ -700,6 +735,26 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     } finally {
       documents.pop();
     }
+  });
+
+  await check('stage transition readback: provider HTTP 403 is classified explicitly, never collapsed into "Ambiguous document readback"', async () => {
+    const savedFetch = global.fetch;
+    global.fetch = async (url) => { const u = new URL(url); if (u.pathname === '/proposals/document') return { ok: false, status: 403, json: async () => ({ message: 'refused' }), text: async () => '{"message":"refused"}' }; return savedFetch(url); };
+    const originalConsoleError = console.error;
+    const logCalls = [];
+    console.error = (...args) => { logCalls.push(args); };
+    try {
+      const res = await invokeOp('opportunity.underContractStage', opportunity.id, { agreementAt: fixture.version.agreementAt, version: fixture.version });
+      assert.equal(res.statusCode, 409, res.body);
+    } finally {
+      console.error = originalConsoleError;
+      global.fetch = savedFetch;
+    }
+    assert.equal(logCalls.length, 1, 'exactly one diagnostic log entry');
+    const logged = JSON.parse(logCalls[0][1]);
+    assert.equal(logged.errorMessage, 'Provider document readback failed (HTTP 403)');
+    assert.notEqual(logged.errorMessage, 'Ambiguous document readback');
+    assert.equal(JSON.stringify(logged).includes('refused'), false, 'the provider response body is never logged');
   });
 
   await check('stage transition: wrong-environment (opportunity belongs to a different pipeline) refused', async () => {

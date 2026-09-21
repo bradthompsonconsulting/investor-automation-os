@@ -270,6 +270,19 @@ export type BuyerSignerIdentityReason = { code: BuyerSignerIdentityReasonCode; m
  * comparison is attempted; a real mismatch on both sides fails closed as
  * `BUYER_IDENTITY_MISMATCH`.
  */
+/**
+ * Gate-review closure -- Finding H. Case-insensitive, whitespace-tolerant
+ * ONLY: leading/trailing whitespace trimmed, repeated internal whitespace
+ * collapsed to one space (so "Robert  Thompson" and "Robert Thompson"
+ * are the same identity), then lowercased. Deliberately NOT fuzzy: no
+ * substring matching, no token-reordering, no partial-name matching --
+ * two names that differ by anything other than whitespace shape or case
+ * remain genuinely different identities and must still fail closed.
+ */
+function normalizeSignerIdentityValue(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 export function verifyBuyerSignerIdentity(args: {
   buyerSignerRole: string;
   authorizedBuyerName: string;
@@ -280,8 +293,8 @@ export function verifyBuyerSignerIdentity(args: {
   if (args.buyerSignerRole.trim() === "") {
     return { ok: false, reasons: [{ code: "BUYER_SIGNER_ROLE_BLANK", message: "The buyer signer role is blank." }] };
   }
-  const authorizedName = args.authorizedBuyerName.trim().toLowerCase();
-  const authorizedEmail = (args.authorizedBuyerEmail ?? "").trim().toLowerCase();
+  const authorizedName = normalizeSignerIdentityValue(args.authorizedBuyerName);
+  const authorizedEmail = normalizeSignerIdentityValue(args.authorizedBuyerEmail ?? "");
   if (authorizedName === "" && authorizedEmail === "") {
     return { ok: false, reasons: [{ code: "BUYER_AUTHORIZED_IDENTITY_MISSING", message: "Neither an authorized legal buyer signer name nor a canonical buyer signer email is available to verify against." }] };
   }
@@ -293,8 +306,8 @@ export function verifyBuyerSignerIdentity(args: {
   if (!buyerRecipient) {
     return { ok: false, reasons: [{ code: "BUYER_RECIPIENT_NOT_FOUND", message: "The buyer's mapped provider recipient id was not found in the live provider readback." }] };
   }
-  const reportedName = (buyerRecipient.reportedContactName ?? "").trim().toLowerCase();
-  const reportedEmail = (buyerRecipient.reportedEmail ?? "").trim().toLowerCase();
+  const reportedName = normalizeSignerIdentityValue(buyerRecipient.reportedContactName ?? "");
+  const reportedEmail = normalizeSignerIdentityValue(buyerRecipient.reportedEmail ?? "");
   const nameMatches = authorizedName !== "" && reportedName !== "" && reportedName === authorizedName;
   const emailMatches = authorizedEmail !== "" && reportedEmail !== "" && reportedEmail === authorizedEmail;
   if (!nameMatches && !emailMatches) {

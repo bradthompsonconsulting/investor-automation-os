@@ -121,6 +121,13 @@ export async function validateDerivedNote(boundary: GhlBoundary, body: string) {
   const providerOutcome = async (expectedDocumentId: string) => {
     if (config.locationId !== getConfig("test").locationId || context.contact.id !== config.documentsContracts.approvedTestContactId) throw new Error("Contract provider evidence is Test-only");
     const response = await boundary.fetcher("https://services.leadconnectorhq.com/proposals/document?" + new URLSearchParams({locationId:config.locationId,limit:"21"}), {headers:{Authorization:"Bearer "+boundary.token,Version:"v3"}});
+    // Gate-review closure -- the HTTP status is checked BEFORE any body
+    // parsing/shape check below. A provider failure (401/403/5xx/...) is
+    // a distinct, attributable condition, never collapsed into "Ambiguous
+    // document readback" -- that error is reserved for a genuinely
+    // malformed or non-unique 2xx body. The thrown message names only the
+    // HTTP status; it never carries the response body or any credential.
+    if (!response.ok) throw new Error(`Provider document readback failed (HTTP ${response.status})`);
     const body = await response.json();
     if (!Array.isArray(body?.documents)) throw new Error("Ambiguous document readback");
     if (body.documents.filter((d:any)=>d?.documentId===expectedDocumentId).length > 1) throw new Error("Ambiguous document readback");
@@ -225,10 +232,12 @@ export async function verifyUnderContractStageTransitionReady(
     "https://services.leadconnectorhq.com/proposals/document?" + new URLSearchParams({ locationId: config.locationId, limit: "21" }),
     { headers: { Authorization: "Bearer " + boundary.token, Version: "v3" } },
   );
-  const responseBody = await response.json();
   // Gate-review closure -- PR #85 attempt #3 (mirrors providerOutcome's own
   // fix above, same rationale: scoped to the one document actually being
-  // re-verified, never the whole listing).
+  // re-verified, never the whole listing; HTTP status checked before any
+  // body parsing so a provider failure is never collapsed into "Ambiguous").
+  if (!response.ok) throw new Error(`Provider document readback failed (HTTP ${response.status})`);
+  const responseBody = await response.json();
   if (!Array.isArray(responseBody?.documents)) throw new Error("Ambiguous document readback");
   if (responseBody.documents.filter((d: any) => d?.documentId === documentId).length > 1) throw new Error("Ambiguous document readback");
   const outcome = { kind: "http_response" as const, status: response.status, body: responseBody };

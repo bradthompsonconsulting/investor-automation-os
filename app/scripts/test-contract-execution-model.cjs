@@ -647,6 +647,45 @@ CACHED_VALID_MANUAL_OUTCOME = await selectAndHash(SYNTHETIC_PDF_BYTES, 'executed
   const recipients = [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Robert Thompson', reportedEmail: 'robert@example.com' }];
   checkTrue('verifyBuyerSignerIdentity: exact name match passes', E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: 'robert@example.com', mappings, providerRecipients: recipients }).ok);
   checkTrue('verifyBuyerSignerIdentity: case-insensitive, whitespace-trimmed name match passes', E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: '  ROBERT THOMPSON  ', authorizedBuyerEmail: null, mappings, providerRecipients: recipients }).ok);
+  // Gate-review closure -- Finding H, requirement 3: prove the exact case
+  // GHL's own live readback returns (all-lowercase) matches the
+  // configured capitalization, and that internal whitespace is collapsed
+  // (not merely trimmed at the edges), while a genuinely different name
+  // still refuses -- never fuzzy, substring, or reordered matching.
+  checkTrue(
+    'verifyBuyerSignerIdentity: GHL\'s lowercase "robert thompson" matches the configured "Robert Thompson"',
+    E.verifyBuyerSignerIdentity({
+      buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null,
+      mappings, providerRecipients: [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'robert thompson', reportedEmail: null }],
+    }).ok,
+  );
+  checkTrue(
+    'verifyBuyerSignerIdentity: repeated internal whitespace is collapsed, not just trimmed at the edges',
+    E.verifyBuyerSignerIdentity({
+      buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert   Thompson', authorizedBuyerEmail: null,
+      mappings, providerRecipients: [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Robert Thompson', reportedEmail: null }],
+    }).ok,
+  );
+  const genuinelyDifferentName = E.verifyBuyerSignerIdentity({
+    buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null,
+    mappings, providerRecipients: [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Robert Thompsonx', reportedEmail: null }],
+  });
+  checkFalse('verifyBuyerSignerIdentity: a genuinely different name (not merely whitespace/case) still fails closed -- no fuzzy matching', genuinelyDifferentName.ok);
+  check('failure names BUYER_IDENTITY_MISMATCH for the genuinely-different-name case', genuinelyDifferentName.reasons[0].code, 'BUYER_IDENTITY_MISMATCH');
+  checkFalse(
+    'verifyBuyerSignerIdentity: reordered names ("Thompson Robert") never match -- no token-reordering tolerance',
+    E.verifyBuyerSignerIdentity({
+      buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null,
+      mappings, providerRecipients: [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Thompson Robert', reportedEmail: null }],
+    }).ok,
+  );
+  checkFalse(
+    'verifyBuyerSignerIdentity: a substring of the authorized name never matches -- no substring tolerance',
+    E.verifyBuyerSignerIdentity({
+      buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null,
+      mappings, providerRecipients: [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Robert', reportedEmail: null }],
+    }).ok,
+  );
   const blankRole = E.verifyBuyerSignerIdentity({ buyerSignerRole: '', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null, mappings, providerRecipients: recipients });
   checkFalse('verifyBuyerSignerIdentity: blank buyerSignerRole fails closed', blankRole.ok);
   check('failure names BUYER_SIGNER_ROLE_BLANK', blankRole.reasons[0].code, 'BUYER_SIGNER_ROLE_BLANK');
@@ -1499,6 +1538,30 @@ function listDocumentsBodyFixture(over) {
   check('buyer_identity carries the real authoritative buyer', items[2].authoritativeLabel, 'BTC LLC');
   check('one signing_party item exists per expected signer, each naming its own role', items.filter((i) => i.kind === 'signing_party').map((i) => i.signerRole), ['Seller', 'Spouse']);
   checkTrue('every non-signing_party item has a null signerRole', items.filter((i) => i.kind !== 'signing_party').every((i) => i.signerRole === null));
+  // Gate-review closure -- Finding H, requirement 1: the operator-facing
+  // authoritativeLabel is the printed PERSONAL name only, never the
+  // internal capacity/role label -- role is preserved on `signerRole`
+  // (internal metadata) but never concatenated into the displayed text.
+  check('signing_party authoritativeLabel is the printed personal name only, never role-prefixed', items.filter((i) => i.kind === 'signing_party').map((i) => i.authoritativeLabel), ['Jane Seller', 'John Seller']);
+}
+{
+  // Finding H exact scenario: buyer entity Brad Thompson Consulting LLC,
+  // required signer role "Manager", printed personal identity "Robert
+  // Thompson". The operator must be asked to verify "Robert Thompson",
+  // never "Manager: Robert Thompson" or "Manager" alone -- while the
+  // internal signerRole still carries "Manager" for the durable mapping.
+  const items = AT.buildExecutedTermsChecklist({
+    agreement: { price: 190000, propertyAddress: '123 Main St', parties: [] },
+    buyerIdentity: 'Brad Thompson Consulting LLC',
+    expectedSigners: [{ role: 'Manager', displayName: 'Robert Thompson' }],
+  });
+  const signingItem = items.find((i) => i.kind === 'signing_party');
+  check('Finding H: signing_party authoritativeLabel names Robert Thompson exactly', signingItem.authoritativeLabel, 'Robert Thompson');
+  check('Finding H: internal signerRole still preserves "Manager" (never displayed)', signingItem.signerRole, 'Manager');
+  checkFalse('Finding H: authoritativeLabel never contains the internal role word "Manager"', signingItem.authoritativeLabel.includes('Manager'));
+  const buyerItem = items.find((i) => i.kind === 'buyer_identity');
+  check('Finding H: buyer entity remains its own separate, distinct item', buyerItem.authoritativeLabel, 'Brad Thompson Consulting LLC');
+  checkTrue('Finding H: buyer_identity and signing_party are two distinct checklist items', buyerItem !== signingItem);
 }
 {
   // ruling item 3: ONLY unanimous MATCHES may satisfy verification.
