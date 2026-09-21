@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 228;
+const FLOOR = 230;
 let failures = 0;
 let checks = 0;
 
@@ -912,6 +912,22 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check(
     'a screen that is not "ready" resets opportunityStageSnapshot to null -- the gate fails closed rather than holding a stale snapshot from a previous opportunity',
     /if \(screen\.state !== "ready"\) \{ setOpportunityStageSnapshot\(null\); return; \}/.test(contractTsxNoComments),
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure -- send-time UTC disclosure. The datetime-local
+  // input's conversion behavior is unchanged; the label now explicitly
+  // discloses that the operator enters LOCAL time and IAOS stores UTC.
+  // ============================================================
+  check(
+    'the "When you actually sent it in GHL" field discloses local-entry/UTC-storage directly beneath its label, immediately before the datetime-local input',
+    /When you actually sent it in GHL\s*\n\s*<div data-testid="contract-manual-send-request-at-helper"[^>]*>\s*\n\s*Enter this in your OWN local date and time, exactly as GHL displayed it to you -- IAOS converts and stores it as UTC\.\s*\n\s*<\/div>\s*\n\s*<input\s*\n\s*type="datetime-local"\s*\n\s*data-testid="contract-manual-send-request-at"/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the underlying local-to-UTC conversion (new Date(value).toISOString()) is unchanged -- only the disclosure was added',
+    /requestAtIso = manualSendForm\.requestAt \? new Date\(manualSendForm\.requestAt\)\.toISOString\(\) : ""/.test(contractTsxNoComments),
     true,
   );
 }

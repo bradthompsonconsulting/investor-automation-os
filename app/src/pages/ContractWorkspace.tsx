@@ -3800,6 +3800,9 @@ export default function ContractWorkspace() {
                 </label>
                 <label style={{ display: "block", fontSize: "11px", color: "#94A3B8", marginBottom: "10px" }}>
                   When you actually sent it in GHL
+                  <div data-testid="contract-manual-send-request-at-helper" style={{ fontSize: "10px", color: "#64748B", marginTop: "2px" }}>
+                    Enter this in your OWN local date and time, exactly as GHL displayed it to you -- IAOS converts and stores it as UTC.
+                  </div>
                   <input
                     type="datetime-local"
                     data-testid="contract-manual-send-request-at"

@@ -146,6 +146,22 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
     'http://proof.example.invalid', 'https://user@proof.example.invalid',
     ' https://proof.example.invalid', approvedOrigin + ', ' + approvedOrigin,
     ['https://proof.example.invalid'], 'not a URL',
+    // Gate-review closure, PR #85 deploy-preview origin repair -- sibling
+    // Netlify sites, lookalike hostnames, and malformed variants of the
+    // deploy-preview pattern must all still refuse.
+    'https://deploy-preview-85--iaos-app.netlify.app',
+    'https://deploy-preview-85--investor-automation-os.netlify.app',
+    'https://deploy-preview-85--iaos-app-test.netlify.app.attacker.invalid',
+    'https://deploy-preview-85--iaos-app-test.netlify.app/',
+    'https://deploy-preview-85--iaos-app-test.netlify.app:443',
+    'http://deploy-preview-85--iaos-app-test.netlify.app',
+    'https://deploy-preview-85--iaos-app-testx.netlify.app',
+    'https://xdeploy-preview-85--iaos-app-test.netlify.app',
+    'https://deploy-preview-0--iaos-app-test.netlify.app',
+    'https://deploy-preview-01--iaos-app-test.netlify.app',
+    'https://deploy-preview---iaos-app-test.netlify.app',
+    'https://deploy-preview-85-iaos-app-test.netlify.app',
+    'https://branch-deploy--iaos-app-test.netlify.app',
   ]) {
     await check('Origin rejected: ' + JSON.stringify(origin), async () => {
       const e = event('note.create', contact.id, {body:'must not write'});
@@ -156,6 +172,49 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
       assert.deepEqual([calls.length, blobCalls, writes, blobConnections], before);
     });
   }
+
+  // ============================================================
+  // Gate-review closure -- PR #85 deploy-preview origin repair. The
+  // narrow, reusable exception: the `iaos-app-test` site's own deploy
+  // previews, Test-only, full end-to-end through the real handler
+  // (process.env.IAOS_ENV is already "test" throughout this file).
+  // ============================================================
+  for (const previewOrigin of [
+    'https://deploy-preview-85--iaos-app-test.netlify.app', // the exact PR #85 origin that was observed refused
+    'https://deploy-preview-42--iaos-app-test.netlify.app', // a different numeric preview, proving the pattern is reusable, not a one-off literal
+  ]) {
+    await check('Origin accepted (Test-only deploy preview): ' + previewOrigin, async () => {
+      const e = event('note.create', contact.id, { body: 'deploy preview write' });
+      e.headers.origin = previewOrigin;
+      const before = writes;
+      assert.equal((await handler(e)).statusCode, 200);
+      assert.equal(writes, before + 1);
+    });
+  }
+
+  {
+    const { requireAppWriteOrigin, IAOS_APP_TEST_DEPLOY_PREVIEW_ORIGIN } = require('../netlify/functions/lib/app-write-origin.ts');
+    const previewOrigin = 'https://deploy-preview-85--iaos-app-test.netlify.app';
+    const baseEnv = { IAOS_APP_WRITE_ALLOWED_ORIGIN: approvedOrigin, IAOS_ENV: 'test' };
+    const eventWithOrigin = (origin) => ({ headers: { origin } });
+
+    await check('IAOS_APP_TEST_DEPLOY_PREVIEW_ORIGIN matches the exact PR #85 origin', async () => {
+      assert.equal(IAOS_APP_TEST_DEPLOY_PREVIEW_ORIGIN.test(previewOrigin), true);
+    });
+    await check('requireAppWriteOrigin accepts the deploy-preview origin directly when IAOS_ENV=test', async () => {
+      requireAppWriteOrigin(eventWithOrigin(previewOrigin), baseEnv); // must not throw
+    });
+    await check('requireAppWriteOrigin refuses the SAME deploy-preview origin OUTSIDE Test (IAOS_ENV=production)', async () => {
+      assert.throws(() => requireAppWriteOrigin(eventWithOrigin(previewOrigin), { ...baseEnv, IAOS_ENV: 'production' }), /Write origin refused/);
+    });
+    await check('requireAppWriteOrigin refuses the SAME deploy-preview origin when IAOS_ENV is unset', async () => {
+      assert.throws(() => requireAppWriteOrigin(eventWithOrigin(previewOrigin), { IAOS_APP_WRITE_ALLOWED_ORIGIN: approvedOrigin }), /Write origin refused/);
+    });
+    await check('requireAppWriteOrigin still accepts the explicitly configured origin when IAOS_ENV=test (existing behavior fully preserved)', async () => {
+      requireAppWriteOrigin(eventWithOrigin(approvedOrigin), baseEnv); // must not throw
+    });
+  }
+
   for (const headers of [
     {Origin: approvedOrigin},
     {multi: {Origin:[approvedOrigin, approvedOrigin]}},
