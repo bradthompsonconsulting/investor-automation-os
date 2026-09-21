@@ -134,6 +134,13 @@ await check('accepted send ledger requires fresh matching provider evidence',asy
 notesAtAcceptedSend=[...notes,authNote];
 await check('signer mapping attestation retained',async()=>{const res=await invoke(load('contract-signer-mapping-carriers').formatSignerMappingAttestationNote(mapping.value));assert.equal(res.statusCode,200,res.body);});
 await check('executed terms attestation retained',async()=>{const res=await invoke(load('contract-executed-terms-attestation-carriers').formatExecutedTermsAttestationNote(attestation.value));assert.equal(res.statusCode,200,res.body);});
+// Gate-review closure -- narrow post-attestation safety repair. DEFECT:
+// a second click of "Record attestation" had nothing server-side
+// stopping a duplicate durable write for the exact same evidence. A
+// fresh requestId each call (see invoke()) means claimWrite's own
+// per-requestId idempotency cannot be what refuses this -- only the new
+// write-note-guard.ts duplicate-evidence check can.
+await check('duplicate executed-terms attestation for the exact same evidence is refused -- no second note written',async()=>{const before=writes;const res=await invoke(load('contract-executed-terms-attestation-carriers').formatExecutedTermsAttestationNote(attestation.value));assert.equal(res.statusCode,409,res.body);assert.equal(writes,before);});
 await check('provider lifecycle observation independently confirmed',async()=>{const res=await invoke(load('contract-lifecycle-carriers').formatContractLifecycleNote(observed.value));assert.equal(res.statusCode,200,res.body);});
 await check('duplicate document identity refuses provider evidence',async()=>{documents.push({...documents[0]});const before=writes;assert.equal((await invoke(load('contract-lifecycle-carriers').formatContractLifecycleNote(observed.value))).statusCode,409);assert.equal(writes,before);documents.pop();});
 await check('fabricated provider completion rejected',async()=>{const before=writes;const forged={...observed.value,providerReportedAt:'2026-09-19T00:00:00.000Z'};assert.equal((await invoke(load('contract-lifecycle-carriers').formatContractLifecycleNote(forged))).statusCode,409);assert.equal(writes,before);});

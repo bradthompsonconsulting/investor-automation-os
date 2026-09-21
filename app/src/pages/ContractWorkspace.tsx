@@ -3501,7 +3501,7 @@ export default function ContractWorkspace() {
                   <div data-testid="contract-execution-buyer-identity-awaiting-mapping" style={{ fontSize: "11px", color: "#64748B" }}>Map the buyer's provider recipient above to check this.</div>
                 ) : buyerSignerIdentityResult.ok ? (
                   <div data-testid="contract-execution-buyer-identity-verified" style={{ fontSize: "12px", color: "#22C55E" }}>
-                    The buyer's mapped provider recipient's reported name matches the authorized legal buyer name.
+                    The buyer's mapped provider recipient's reported name matches the authorized buyer signer name.
                   </div>
                 ) : (
                   <ul data-testid="contract-execution-buyer-identity-mismatch" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
@@ -3628,7 +3628,7 @@ export default function ContractWorkspace() {
                         testId="contract-execution-terms-record-button"
                         onClick={handleRecordAttestation}
                         busy={busyGroup === "executed-terms-attestation"}
-                        disabled={!allChecklistItemsAnswered || !manualArtifactVerificationResult || !manualArtifactVerificationResult.ok}
+                        disabled={!allChecklistItemsAnswered || !manualArtifactVerificationResult || !manualArtifactVerificationResult.ok || (attestationCurrencyResult?.ok ?? false)}
                       >
                         Record attestation
                       </Btn>

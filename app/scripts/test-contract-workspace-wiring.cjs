@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 236;
+const FLOOR = 240;
 let failures = 0;
 let checks = 0;
 
@@ -906,6 +906,33 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     'the corrected disclosure does not claim the PDF is uploaded by the two attestation steps, and does not imply Preserve executed PDF is local-only',
     contractTsx.includes('Preserve executed PDF, further below, is a separate action that DOES upload and durably store the actual PDF bytes'),
     true,
+  );
+
+  // ============================================================
+  // Gate-review closure -- narrow post-attestation safety repair.
+  // DEFECT: immediately after a successful save, "Record attestation"
+  // remained enabled, risking a second click attempting a duplicate
+  // durable write.
+  // ============================================================
+  check(
+    'the Record attestation button\'s disabled expression ALSO checks attestationCurrencyResult -- disabled both immediately after a successful save (the new note becomes current) and whenever a hydrated attestation is already current for the exact evidence',
+    contractTsx.includes('disabled={!allChecklistItemsAnswered || !manualArtifactVerificationResult || !manualArtifactVerificationResult.ok || (attestationCurrencyResult?.ok ?? false)}'),
+    true,
+  );
+  check(
+    'the Record signer mapping button is unaffected by this repair -- its own disabled expression is untouched',
+    contractTsx.includes('disabled={!allSignersAssigned}'),
+    true,
+  );
+  check(
+    'the corrected buyer-signer-identity success wording reads "authorized buyer signer name", never "authorized legal buyer name"',
+    contractTsx.includes('The buyer\'s mapped provider recipient\'s reported name matches the authorized buyer signer name.'),
+    true,
+  );
+  check(
+    'the OLD "authorized legal buyer name" success wording is gone from the rendered UI text',
+    contractTsx.includes('matches the authorized legal buyer name.'),
+    false,
   );
 
   // ============================================================

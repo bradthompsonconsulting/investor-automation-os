@@ -76,4 +76,24 @@ export async function validateLedgerNote(boundary: GhlBoundary, contactId: strin
       throw new Error("No matching send reservation");
     }
   }
+  // Gate-review closure -- narrow post-attestation safety repair. A
+  // second "Record attestation" click (before the client's own hydrated
+  // currency check could disable the button) previously had nothing
+  // stopping a second, duplicate durable note for the SAME exact
+  // evidence -- unlike `send` above, this note kind had no server-side
+  // duplicate guard at all. "Same exact evidence" mirrors
+  // `verifyExecutedTermsAttestationCurrency`'s own definition of current:
+  // opportunity, contract version, provider document, its revision, and
+  // the selected artifact hash, all identical.
+  const executedTermsAttestation = parseExecutedTermsAttestationNote(body);
+  if (executedTermsAttestation) {
+    const existing = notes.map(n => parseExecutedTermsAttestationNote(n.body)).filter(Boolean);
+    if (existing.some(n =>
+      n!.opportunityId === executedTermsAttestation.opportunityId &&
+      isSameContractVersion(n!.version, executedTermsAttestation.version) &&
+      n!.providerDocumentId === executedTermsAttestation.providerDocumentId &&
+      n!.providerDocumentRevision === executedTermsAttestation.providerDocumentRevision &&
+      n!.selectedArtifactSha256 === executedTermsAttestation.selectedArtifactSha256
+    )) throw new Error("An executed-terms attestation already exists for this exact evidence");
+  }
 }

@@ -1564,6 +1564,51 @@ function listDocumentsBodyFixture(over) {
   checkTrue('Finding H: buyer_identity and signing_party are two distinct checklist items', buyerItem !== signingItem);
 }
 {
+  // ============================================================
+  // Gate-review closure -- narrow post-attestation safety repair,
+  // requirement 4: `verifyExecutedTermsAttestationCurrency` is the exact
+  // function ContractWorkspace.tsx's "Record attestation" disable logic
+  // depends on for both "disables immediately after success" (the newly
+  // written note becomes the hydrated `existingAttestation`, and this
+  // function then reports it current) and "stays disabled once hydrated
+  // as current on load". Proven directly here, at the model layer.
+  // ============================================================
+  const items = AT.buildExecutedTermsChecklist({ agreement: { price: 1, propertyAddress: 'x', parties: [] }, buyerIdentity: 'BTC LLC', expectedSigners: [{ role: 'Seller', displayName: 'Jane Seller' }] });
+  const allMatches = items.map((i) => ({ kind: i.kind, signerRole: i.signerRole, result: 'MATCHES' }));
+  const recordedAttestation = AT.buildExecutedTermsAttestationRecordArgs({
+    opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    selectedArtifactSha256: 'a'.repeat(64), attestedAt: VERIFIED_AT, requiredItems: items, responses: allMatches, evidenceSummary: 'x',
+  });
+  checkTrue('fixture attestation builds successfully', recordedAttestation.ok);
+  const currentEvidence = { opportunityId: OPP, version: V1, providerDocumentId: DOC_ID, providerDocumentRevision: 1, selectedArtifactSha256: 'a'.repeat(64) };
+
+  checkTrue(
+    'verifyExecutedTermsAttestationCurrency: a just-recorded attestation is current for the exact same evidence -- proves "disables immediately after a successful save"',
+    AT.verifyExecutedTermsAttestationCurrency(Object.assign({ attestation: recordedAttestation.value }, currentEvidence)).ok,
+  );
+  checkFalse('verifyExecutedTermsAttestationCurrency: no attestation at all is never current', AT.verifyExecutedTermsAttestationCurrency(Object.assign({ attestation: null }, currentEvidence)).ok);
+  const missing = AT.verifyExecutedTermsAttestationCurrency(Object.assign({ attestation: null }, currentEvidence));
+  check('failure names ATTESTATION_MISSING', missing.reasons[0].code, 'ATTESTATION_MISSING');
+
+  // Changed/stale evidence must NOT incorrectly count as current -- one
+  // real-world axis changed at a time, everything else held fixed.
+  const changedDocument = AT.verifyExecutedTermsAttestationCurrency(Object.assign({}, { attestation: recordedAttestation.value }, currentEvidence, { providerDocumentId: 'a-different-document-id' }));
+  checkFalse('changed providerDocumentId is never treated as current evidence', changedDocument.ok);
+  check('failure names ATTESTATION_DOCUMENT_MISMATCH', changedDocument.reasons[0].code, 'ATTESTATION_DOCUMENT_MISMATCH');
+
+  const changedRevision = AT.verifyExecutedTermsAttestationCurrency(Object.assign({}, { attestation: recordedAttestation.value }, currentEvidence, { providerDocumentRevision: 2 }));
+  checkFalse('changed providerDocumentRevision is never treated as current evidence', changedRevision.ok);
+  check('failure names ATTESTATION_REVISION_MISMATCH', changedRevision.reasons[0].code, 'ATTESTATION_REVISION_MISMATCH');
+
+  const changedHash = AT.verifyExecutedTermsAttestationCurrency(Object.assign({}, { attestation: recordedAttestation.value }, currentEvidence, { selectedArtifactSha256: 'b'.repeat(64) }));
+  checkFalse('a different selected artifact hash (a re-selected PDF) is never treated as current evidence', changedHash.ok);
+  check('failure names ATTESTATION_ARTIFACT_HASH_MISMATCH', changedHash.reasons[0].code, 'ATTESTATION_ARTIFACT_HASH_MISMATCH');
+
+  const changedVersion = AT.verifyExecutedTermsAttestationCurrency(Object.assign({}, { attestation: recordedAttestation.value }, currentEvidence, { version: { agreementAt: AGREEMENT_AT, versionSeq: 99, supersedesVersionSeq: null, replacesAgreementAt: null } }));
+  checkFalse('a different contract version is never treated as current evidence -- stale attestation never silently reused', changedVersion.ok);
+  check('failure names ATTESTATION_VERSION_MISMATCH', changedVersion.reasons[0].code, 'ATTESTATION_VERSION_MISMATCH');
+}
+{
   // ruling item 3: ONLY unanimous MATCHES may satisfy verification.
   const items = AT.buildExecutedTermsChecklist({ agreement: { price: 1, propertyAddress: 'x', parties: [] }, buyerIdentity: 'BTC LLC', expectedSigners: [{ role: 'Seller', displayName: 'Jane Seller' }] });
   const allMatches = items.map((i) => ({ kind: i.kind, signerRole: i.signerRole, result: 'MATCHES' }));
