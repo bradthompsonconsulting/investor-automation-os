@@ -244,6 +244,99 @@ await check('manual send: readback failure -- live provider fetch itself errors,
 });
 
 // ============================================================
+// Gate-review closure -- PR #85 live-Test proof, attempt #3. The exact
+// "Ambiguous document readback" condition, proven and repaired:
+// `providerOutcome`'s uniqueness check used to scan the ENTIRE
+// `/proposals/document` listing for ANY duplicate (or any entry missing
+// a) documentId, unrelated to the document actually being verified --
+// so an unrelated pair of documents elsewhere in the location's history
+// could block confirmation of a completely unambiguous target. Fixed to
+// scope the uniqueness check to exactly the submitted providerDocumentId
+// (write-derived-note.ts). These checks use FRESH contract versions
+// (chained off manualVersion) so each is isolated from the
+// already-accepted send at manualVersion above.
+// ============================================================
+{
+  const B9c = load('board9-contract-model');
+  const v1 = B9c.nextVersionIdentity(manualVersion, { kind: 'same_agreement_reentry' }, null).value;
+  const v2 = B9c.nextVersionIdentity(v1, { kind: 'same_agreement_reentry' }, null).value;
+  const v3 = B9c.nextVersionIdentity(v2, { kind: 'same_agreement_reentry' }, null).value;
+  const v4 = B9c.nextVersionIdentity(v3, { kind: 'same_agreement_reentry' }, null).value;
+  const authFor = (v) => Object.assign({}, fixture.authorization, { version: v });
+  const buildManualFor = (v, over) => load('contract-manual-send-model').buildManualContractSendRecordArgs(Object.assign({
+    opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: v, requestAt: over.requestAt, expirationAt: null,
+    providerDocumentId: manualDocId, providerDocumentReference: null, providerDocumentRevision: 1, recipients: required,
+    authorizedRecord: authFor(v), templateName: config.documentsContracts.expectedTemplateName,
+    requestedTemplateId: config.documentsContracts.templateId, readbackLocationId: config.locationId, operator: 'brad', recordedAt: over.requestAt,
+  }, over));
+
+  await check('manual send readback: two UNRELATED documents elsewhere in the listing sharing one id does not block confirmation of the actual (uniquely-identified) target', async () => {
+    documents.push({ documentId: 'unrelated-duplicate-id', locationId: config.locationId, status: 'completed', documentRevision: 1, updatedAt: at, deleted: false, recipients: [], links: [], fillableFields: [{ isRequired: true }] });
+    documents.push({ documentId: 'unrelated-duplicate-id', locationId: config.locationId, status: 'completed', documentRevision: 1, updatedAt: at, deleted: false, recipients: [], links: [], fillableFields: [{ isRequired: true }] });
+    try {
+      const built = buildManualFor(v1, { requestAt: '2026-09-21T21:00:00.000Z' });
+      assert.equal(built.ok, true, JSON.stringify(built));
+      const res = await invoke(sendNote(built.value));
+      assert.equal(res.statusCode, 200, res.body);
+    } finally {
+      documents.splice(documents.length - 2, 2);
+    }
+  });
+
+  await check('manual send readback: several older, unrelated completed documents (all distinct ids) do not interfere with the target', async () => {
+    const injected = [
+      { documentId: 'older-completed-1', locationId: config.locationId, status: 'completed', documentRevision: 1, updatedAt: at, deleted: false, recipients: [], links: [], fillableFields: [{ isRequired: true }] },
+      { documentId: 'older-completed-2', locationId: config.locationId, status: 'completed', documentRevision: 1, updatedAt: at, deleted: false, recipients: [], links: [], fillableFields: [{ isRequired: true }] },
+      { documentId: 'older-draft-1', locationId: config.locationId, status: 'draft', documentRevision: 1, updatedAt: at, deleted: false, recipients: [], links: [], fillableFields: [] },
+    ];
+    documents.push(...injected);
+    try {
+      const built = buildManualFor(v2, { requestAt: '2026-09-21T21:01:00.000Z' });
+      assert.equal(built.ok, true, JSON.stringify(built));
+      const res = await invoke(sendNote(built.value));
+      assert.equal(res.statusCode, 200, res.body);
+    } finally {
+      documents.splice(documents.length - injected.length, injected.length);
+    }
+  });
+
+  await check('manual send readback: TWO entries sharing the exact submitted providerDocumentId is a genuine conflict, fails closed', async () => {
+    const dup = documents.find((d) => d.documentId === manualDocId);
+    documents.push(Object.assign({}, dup));
+    try {
+      const before = writes;
+      const built = buildManualFor(v3, { requestAt: '2026-09-21T21:02:00.000Z' });
+      assert.equal(built.ok, true, JSON.stringify(built));
+      const res = await invoke(sendNote(built.value));
+      assert.equal(res.statusCode, 409, res.body);
+      assert.equal(writes, before);
+    } finally {
+      documents.pop();
+    }
+  });
+
+  await check('manual send readback: a non-array documents[] in the provider response still fails closed', async () => {
+    const before = writes; const savedFetch = global.fetch;
+    global.fetch = async (url) => { const u = new URL(url); if (u.pathname === '/proposals/document') return { ok: true, status: 200, json: async () => ({ documents: 'not-an-array' }), text: async () => '{}' }; return savedFetch(url); };
+    try {
+      const built = buildManualFor(v4, { requestAt: '2026-09-21T21:03:00.000Z' });
+      assert.equal(built.ok, true, JSON.stringify(built));
+      const res = await invoke(sendNote(built.value));
+      assert.equal(res.statusCode, 409, res.body);
+    } finally { global.fetch = savedFetch; }
+    assert.equal(writes, before);
+  });
+
+  await check('manual send readback: existing exact-id-absent refusal is unchanged by the scoped fix', async () => {
+    const before = writes;
+    const missing = buildManualFor(v1, { requestAt: '2026-09-21T21:04:00.000Z', providerDocumentId: 'document-that-was-never-sent-either' });
+    assert.equal(missing.ok, true, JSON.stringify(missing));
+    assert.equal((await invoke(sendNote(missing.value))).statusCode, 409);
+    assert.equal(writes, before);
+  });
+}
+
+// ============================================================
 // Board #9 Phase B (B9-13) -- executed-PDF chunked preservation, server
 // level. Uses `fixture.version` -- by this point in the file it already
 // carries a durably-written, server-verified Under Contract record
@@ -582,6 +675,31 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     const res = await invokeOp('opportunity.underContractStage', opportunity.id, { agreementAt: fixture.version.agreementAt, version: fixture.version });
     assert.equal(res.statusCode, 200, res.body);
     assert.equal(JSON.parse(res.body).alreadyInStage, true);
+  });
+
+  // Gate-review closure -- PR #85 attempt #3, same scoped-uniqueness fix
+  // mirrored in verifyUnderContractStageTransitionReady's own inline copy
+  // of the readback check.
+  await check('stage transition readback: an unrelated duplicate id elsewhere in the listing does not block re-verification of the real accepted-send document', async () => {
+    documents.push({ documentId: 'stage-unrelated-dup', locationId: config.locationId, status: 'completed', documentRevision: 1, updatedAt: at, deleted: false, recipients: [], links: [], fillableFields: [{ isRequired: true }] });
+    documents.push({ documentId: 'stage-unrelated-dup', locationId: config.locationId, status: 'completed', documentRevision: 1, updatedAt: at, deleted: false, recipients: [], links: [], fillableFields: [{ isRequired: true }] });
+    try {
+      const res = await invokeOp('opportunity.underContractStage', opportunity.id, { agreementAt: fixture.version.agreementAt, version: fixture.version });
+      assert.equal(res.statusCode, 200, res.body);
+    } finally {
+      documents.splice(documents.length - 2, 2);
+    }
+  });
+
+  await check('stage transition readback: TWO entries sharing the exact accepted-send documentId is a genuine conflict, fails closed', async () => {
+    const dup = documents.find((d) => d.documentId === docId);
+    documents.push(Object.assign({}, dup));
+    try {
+      const res = await invokeOp('opportunity.underContractStage', opportunity.id, { agreementAt: fixture.version.agreementAt, version: fixture.version });
+      assert.equal(res.statusCode, 409, res.body);
+    } finally {
+      documents.pop();
+    }
   });
 
   await check('stage transition: wrong-environment (opportunity belongs to a different pipeline) refused', async () => {

@@ -101,11 +101,29 @@ export async function validateDerivedNote(boundary: GhlBoundary, body: string) {
   }
   const acceptedSend = latestContractSendForOpportunity(context.notes, record.opportunityId);
   const config = getConfig(process.env.IAOS_ENV);
-  const providerOutcome = async () => {
+  /**
+   * Gate-review closure -- PR #85 live-Test proof, attempt #3. The
+   * uniqueness check used to scan `body.documents` for ANY duplicate
+   * `documentId` (or any entry missing one at all -- `Set` collapses
+   * multiple `undefined`s into one member, so two unrelated malformed
+   * rows tripped it too) across the ENTIRE listing, unrelated documents
+   * included. Every downstream consumer of this outcome (`classifyDocumentReadback`,
+   * `classifyManualSendReadback`, `extractProviderSignerRowsFromListDocumentsBody`)
+   * already scopes its own lookup to ONE `expectedDocumentId` and never
+   * reads any other row, so the whole-array check was strictly broader
+   * than anything it protected: an unrelated pair of documents sharing
+   * (or both lacking) an id anywhere else in the location's history could
+   * block confirmation of a completely unambiguous, uniquely-identified
+   * target document. Scoped to exactly the document actually being
+   * verified -- the shape check (a genuine, unscoped precondition) stays
+   * unscoped; only the uniqueness check is narrowed.
+   */
+  const providerOutcome = async (expectedDocumentId: string) => {
     if (config.locationId !== getConfig("test").locationId || context.contact.id !== config.documentsContracts.approvedTestContactId) throw new Error("Contract provider evidence is Test-only");
     const response = await boundary.fetcher("https://services.leadconnectorhq.com/proposals/document?" + new URLSearchParams({locationId:config.locationId,limit:"21"}), {headers:{Authorization:"Bearer "+boundary.token,Version:"v3"}});
     const body = await response.json();
-    if (!Array.isArray(body?.documents) || new Set(body.documents.map((d:any)=>d?.documentId)).size !== body.documents.length) throw new Error("Ambiguous document readback");
+    if (!Array.isArray(body?.documents)) throw new Error("Ambiguous document readback");
+    if (body.documents.filter((d:any)=>d?.documentId===expectedDocumentId).length > 1) throw new Error("Ambiguous document readback");
     return {kind:"http_response" as const,status:response.status,body};
   };
   if (send) {
@@ -119,10 +137,10 @@ export async function validateDerivedNote(boundary: GhlBoundary, body: string) {
         // Independently confirmed instead: the exact document/revision Brad
         // named genuinely exists, live, in the Test location, undeleted,
         // not a draft, and carries a real required fillable field.
-        const verified=classifyManualSendReadback({expectedDocumentId:id,expectedLocationId:config.locationId,expectedDocumentRevision:send.providerResponse?.documentRevision??null,outcome:await providerOutcome()});
+        const verified=classifyManualSendReadback({expectedDocumentId:id,expectedLocationId:config.locationId,expectedDocumentRevision:send.providerResponse?.documentRevision??null,outcome:await providerOutcome(id)});
         if(verified.status!=="accepted")throw new Error("Manual send could not be independently confirmed against live provider evidence: "+(verified.failureReason??"unknown"));
       } else {
-        const verified=classifyDocumentReadback({expectedDocumentId:id,expectedRecipientId:context.contact.id,expectedSenderUserId:config.documentsContracts.senderUserId,expectedLocationId:config.locationId,outcome:await providerOutcome()});
+        const verified=classifyDocumentReadback({expectedDocumentId:id,expectedRecipientId:context.contact.id,expectedSenderUserId:config.documentsContracts.senderUserId,expectedLocationId:config.locationId,outcome:await providerOutcome(id)});
         if(verified.status!=="accepted" || !isDeepStrictEqual(verified.summary,send.providerResponse))throw new Error("Send resolution differs from provider evidence");
       }
     }
@@ -143,7 +161,7 @@ export async function validateDerivedNote(boundary: GhlBoundary, body: string) {
   }
   if(!acceptedSend || acceptedSend.status!=="accepted" || !acceptedSend.providerResponse?.documentId)throw new Error("Accepted send evidence required");
   const documentId=acceptedSend.providerResponse.documentId;
-  const outcome=await providerOutcome();
+  const outcome=await providerOutcome(documentId);
   const observed=buildProviderObservationRecordFromReadback({opportunityId:record.opportunityId,version:acceptedSend.version,expectedDocumentId:documentId,expectedLocationId:config.locationId,acceptedSend,outcome,iaosObservedAt:lifecycle?.iaosObservedAt ?? execution!.iaosVerifiedAt,evidenceSummary:lifecycle?.evidenceSummary ?? execution!.evidenceSummary,relatedPriorRecordId:lifecycle ? lifecycle.relatedPriorRecordId : execution!.relatedPriorRecordId});
   if(!observed.ok)throw new Error("Provider observation refused");
   if(lifecycle) {if(!isDeepStrictEqual(observed.value,lifecycle))throw new Error("Provider observation differs from fresh evidence");return;}
@@ -208,9 +226,11 @@ export async function verifyUnderContractStageTransitionReady(
     { headers: { Authorization: "Bearer " + boundary.token, Version: "v3" } },
   );
   const responseBody = await response.json();
-  if (!Array.isArray(responseBody?.documents) || new Set(responseBody.documents.map((d: any) => d?.documentId)).size !== responseBody.documents.length) {
-    throw new Error("Ambiguous document readback");
-  }
+  // Gate-review closure -- PR #85 attempt #3 (mirrors providerOutcome's own
+  // fix above, same rationale: scoped to the one document actually being
+  // re-verified, never the whole listing).
+  if (!Array.isArray(responseBody?.documents)) throw new Error("Ambiguous document readback");
+  if (responseBody.documents.filter((d: any) => d?.documentId === documentId).length > 1) throw new Error("Ambiguous document readback");
   const outcome = { kind: "http_response" as const, status: response.status, body: responseBody };
 
   const history = allContractLifecycleRecordsForOpportunity(context.notes, opportunityId);
