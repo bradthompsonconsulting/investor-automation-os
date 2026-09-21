@@ -21,6 +21,7 @@ import { getRuntimeConfig, CURRENT_OFFER_NOT_PROVISIONED } from "../../shared/gh
    unresolved deal with no explanation. Import direction is one-way: nothing
    under lib/underwriting imports this module. */
 import { ASSIGNMENT_MODE_OPTIONS } from "./underwriting/resolver-types";
+import { type ContractVersionIdentity } from "./board9-contract-model";
 
 // PB-D51 — location id and every field id below resolve from the shared config,
 // once at module scope. Values are unchanged; only their source moved.
@@ -767,6 +768,21 @@ export const ghl = {
     // triggers fire exactly as they would from a manual move inside GHL — this
     // never bypasses those triggers.
 
+    /**
+     * Board #9 Phase B (B9-13) -- the Under Contract stage transition.
+     * NAMED, not a generalized "set any stage" setter -- same PB-D16 §4.4
+     * discipline as `setAskingPrice` below. The server-side operation
+     * contract (`write-contracts.ts` / `ghl-write.ts`) hard-codes the ONE
+     * target stage (`config.stages.underContract`) and unconditionally
+     * refuses the ONE forbidden stage (`config.stages.sellerClosedWon`);
+     * this call site supplies only `agreementAt`/`version`, identifying
+     * WHICH already-verified execution to transition for -- never a
+     * stage id, never a pipeline id. The server independently re-derives
+     * both the Under Contract evidence AND the preserved executed
+     * artifact from fresh evidence before ever attempting the write.
+     */
+    transitionToUnderContractStage: (opportunityId: string, agreementAt: string, version: ContractVersionIdentity) =>
+      confirmedCommand("opportunity.underContractStage", opportunityId, { agreementAt, version }),
 
     /**
      * Board #5 §4B — the Opportunity Asking Price setter. ONE FIELD, NAMED.

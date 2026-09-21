@@ -157,6 +157,15 @@ export interface GhlConfig {
     sellerCallCompleted: string;
     sellerFollowUp: string;
     sellerOfferSent: string;
+    /**
+     * Board #9 Phase B (B9-13). Created Test-only, 2026-09-21, by explicit
+     * Product Owner ruling -- positioned after sellerOfferSent and before
+     * sellerClosedWon in the live Seller Leads Pipeline. Production is
+     * unconditionally sentinel-filled, exactly like every Documents &
+     * Contracts identifier above: this stage does not exist in Production
+     * and no code may transition a Production opportunity into it.
+     */
+    underContract: string;
     sellerClosedWon: string;
     longTermNurture: string;
     lostNotInterested: string;
@@ -559,6 +568,7 @@ const PRODUCTION: GhlConfig = {
     sellerCallCompleted: "3ac16587-0db8-48ca-9ec0-536e67db9963",
     sellerFollowUp:      "71227a30-2303-4165-aa58-e56860146959",
     sellerOfferSent:     "a0f01076-5019-4abc-b809-7f4b0218dd35",
+    underContract:       "PRODUCTION_UNDER_CONTRACT_NOT_PROVISIONED",
     sellerClosedWon:     "0c45ee3d-7be7-4651-97a4-6df53f53481b",
     longTermNurture:     "a7436df7-e05a-4bf0-bd29-70f7066ec0bd",
     lostNotInterested:   "f1960b50-8aa2-4a69-ba58-a7a0dc66ce82",
@@ -907,6 +917,12 @@ const TEST: GhlConfig = {
     sellerCallCompleted: "7928e9a0-e59a-4e71-bf36-e8022e733d3a",
     sellerFollowUp:      "38b6498e-dc4a-42f0-9081-7e59eb05447f",
     sellerOfferSent:     "9f9ad696-6760-4233-af87-fa8f1dd122e1",
+    // Board #9 Phase B (B9-13). Created and independently read back live,
+    // 2026-09-21 -- PUT /opportunities/pipelines/wdvKMdPMxs38qoA6lkUa,
+    // HTTP 200, all ten prior stage ids/values preserved, no other GHL
+    // object changed. Position 7: immediately after Seller Offer Sent,
+    // immediately before Seller Closed-Won.
+    underContract:       "b5d059c8-7b11-4885-b761-024d5c067cb6",
     sellerClosedWon:     "bfca8a93-5f24-4064-9317-bc6ba1cca3af",
     longTermNurture:     "c44d504e-cb1b-4a7f-b077-74117e92d91a",
     lostNotInterested:   "08b4d86d-7cdb-48fa-b195-a72b52d0ab8c",
@@ -1025,11 +1041,15 @@ function firstIncompleteKey(entries: Array<[string, string]>): string | null {
  * and the browser VALIDATES against it, so the served shape and the checked
  * shape cannot drift apart.
  *
- * These are the keys the four frontend call sites actually consume, and nothing
- * else. Deliberately absent: pipelines (server-only, ghl-opportunities),
- * customValues.mailerDigestRecipient (server-only, mailer-digest), and the seven
- * contact fields no browser code reads. Nothing here is a secret; adding a key
- * that is means this comment is now wrong.
+ * These are the keys the frontend call sites actually consume, and nothing
+ * else. `pipelines.sellerLeads` (B9-13 gate-review closure) is the one
+ * exception to "pipelines are server-only" -- `ContractWorkspace.tsx`
+ * needs it to confirm an opportunity's live `pipelineId` before treating
+ * Board #9 as disposition-ready, and it is not a secret, only an
+ * identifier. Still deliberately absent: `customValues.mailerDigestRecipient`
+ * (server-only, mailer-digest) and the seven contact fields no browser
+ * code reads. Nothing here is a secret; adding a key that is means this
+ * comment is now wrong.
  *
  * `documentsContracts.populationVerification` / `templateId` /
  * `expectedTemplateName` (B9-08 / INV-63) are exceptions to that group's
@@ -1094,7 +1114,24 @@ const RUNTIME_GROUPS = {
    * other id this object already exposes.
    */
   contractProjectionFields: CONTRACT_PROJECTION_FIELD_KEYS,
-  stages: ["sellerClosedWon", "lostNotInterested", "sellerFollowUp"],
+  /**
+   * Board #9 Phase B (B9-13), gate-review closure -- `underContract`
+   * added so `ContractWorkspace.tsx` can derive a DURABLE
+   * `underContractStageConfirmed` condition (Start Disposition's real
+   * gate) from the freshly-loaded opportunity's own `pipelineStageId`,
+   * never from browser-local `stageTransitionState` (which resets on
+   * reload and proves nothing). Same risk class as the three stage ids
+   * already exposed here -- a real GHL identifier, not a secret; the
+   * actual transition write is independently re-verified server-side
+   * regardless of what the browser displays.
+   */
+  stages: ["sellerClosedWon", "lostNotInterested", "sellerFollowUp", "underContract"],
+  /**
+   * Board #9 Phase B (B9-13), gate-review closure -- the ONE pipeline id
+   * `underContractStageConfirmed` compares the opportunity's own
+   * `pipelineId` against. Same exposure rationale as `stages` above.
+   */
+  pipelines: ["sellerLeads"],
   documentsContracts: ["populationVerification", "templateId", "expectedTemplateName"],
 } as const;
 
@@ -1126,8 +1163,9 @@ export interface RuntimeConfig {
   contractSellerCountField: string;
   stages: Pick<
     GhlConfig["stages"],
-    "sellerClosedWon" | "lostNotInterested" | "sellerFollowUp"
+    "sellerClosedWon" | "lostNotInterested" | "sellerFollowUp" | "underContract"
   >;
+  pipelines: Pick<GhlConfig["pipelines"], "sellerLeads">;
   documentsContracts: Pick<GhlConfig["documentsContracts"], "populationVerification" | "templateId" | "expectedTemplateName">;
 }
 

@@ -72,7 +72,7 @@ const C = require(path.join(LIB_OUT, 'seller-contract-facts-carriers.js'));
 const B = require(path.join(LIB_OUT, 'board9-contract-model.js'));
 const G = require(path.join(TMP, 'shared', 'ghl-config.js'));
 
-const FLOOR = 114;
+const FLOOR = 138;
 let failures = 0;
 let checks = 0;
 
@@ -409,6 +409,52 @@ function fixtureSendAttempt(overrides) {
   check('the accepted readback carries the confirmed fillableFieldCount', fullyValid.summary.fillableFieldCount, 2);
   check('the accepted readback carries the confirmed readbackStatus', fullyValid.summary.readbackStatus, 'sent');
   check('the accepted readback carries the confirmed readbackLocationId', fullyValid.summary.readbackLocationId, TEST_LOCATION_ID);
+}
+
+// ============================================================
+// 8c. classifyManualSendReadback -- B9-13/INV-96 manual GHL send bridge.
+//     Same live-document rigor as 8b, but never requires a specific
+//     recipient/sender identity (a manual send was never dispatched by
+//     IAOS's own configured sender), and additionally cross-checks a
+//     manually-entered document revision when Brad supplied one.
+// ============================================================
+{
+  const baseDoc = { documentId: 'doc-1', deleted: false, locationId: TEST_LOCATION_ID, status: 'completed', documentRevision: 1, recipients: [{ id: 'whoever-brad-actually-sent-to' }], links: [{ createdBy: 'brads-own-human-ghl-user-id' }] };
+  const readArgs = (over) => Object.assign({ expectedDocumentId: 'doc-1', expectedLocationId: TEST_LOCATION_ID, expectedDocumentRevision: null }, over || {});
+
+  const netErr = S.classifyManualSendReadback(readArgs({ outcome: { kind: 'network_error', message: 'ECONNRESET' } }));
+  check('manual readback network error classifies as failed', netErr.status, 'failed');
+
+  const notFound = S.classifyManualSendReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [] } } }));
+  check('manual readback that does not return the expected document classifies as ambiguous', notFound.status, 'ambiguous');
+
+  const deletedDoc = S.classifyManualSendReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { deleted: true, fillableFields: [] })] } } }));
+  check('manual readback reporting the document deleted classifies as failed', deletedDoc.status, 'failed');
+
+  const wrongLocation = S.classifyManualSendReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { locationId: 'some-other-location', fillableFields: [] })] } } }));
+  check('manual readback with a mismatched locationId classifies as ambiguous -- never crosses into another environment', wrongLocation.status, 'ambiguous');
+
+  const stillDraft = S.classifyManualSendReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { status: 'draft', fillableFields: [{ isRequired: true }] })] } } }));
+  check('manual readback reporting the document still a draft classifies as ambiguous -- never actually dispatched', stillDraft.status, 'ambiguous');
+
+  const revisionMismatch = S.classifyManualSendReadback(readArgs({ expectedDocumentRevision: 2, outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { fillableFields: [{ isRequired: true }] })] } } }));
+  check('manual readback whose live revision differs from the entered revision classifies as ambiguous', revisionMismatch.status, 'ambiguous');
+  check('a revision mismatch carries no summary -- never a partial/misleading confirmation', revisionMismatch.summary, null);
+
+  const zeroFields = S.classifyManualSendReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { fillableFields: [] })] } } }));
+  check('manual readback confirming the document but with 0 fillableFields classifies as ambiguous', zeroFields.status, 'ambiguous');
+
+  const fieldsButNoneRequired = S.classifyManualSendReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { fillableFields: [{ isRequired: false }] })] } } }));
+  check('manual readback with fields present but none required classifies as ambiguous', fieldsButNoneRequired.status, 'ambiguous');
+
+  const fullyValidNoRevisionEntered = S.classifyManualSendReadback(readArgs({ outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { fillableFields: [{ isRequired: true }] })] } } }));
+  check('manual readback confirming environment, non-draft status, and a required fillable field classifies as accepted even with no revision entered', fullyValidNoRevisionEntered.status, 'accepted');
+  check('accepted manual readback never claims a recipientId it cannot confirm', fullyValidNoRevisionEntered.summary.recipientId, null);
+  check('accepted manual readback never claims a createdBy it cannot confirm', fullyValidNoRevisionEntered.summary.createdBy, null);
+  check('accepted manual readback still carries the live documentRevision as durable evidence', fullyValidNoRevisionEntered.summary.documentRevision, 1);
+
+  const fullyValidRevisionMatches = S.classifyManualSendReadback(readArgs({ expectedDocumentRevision: 1, outcome: { kind: 'http_response', status: 200, body: { documents: [Object.assign({}, baseDoc, { fillableFields: [{ isRequired: true }] })] } } }));
+  check('manual readback whose entered revision matches the live revision classifies as accepted', fullyValidRevisionMatches.status, 'accepted');
 }
 
 // ============================================================

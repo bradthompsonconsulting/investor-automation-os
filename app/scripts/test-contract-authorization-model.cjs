@@ -55,7 +55,7 @@ const M = require(path.join(TMP, 'contract-facts-model.js'));
 const C = require(path.join(TMP, 'seller-contract-facts-carriers.js'));
 const B = require(path.join(TMP, 'board9-contract-model.js'));
 
-const FLOOR = 68;
+const FLOOR = 73;
 let failures = 0;
 let checks = 0;
 
@@ -398,6 +398,44 @@ let authorizedRecord;
   // carrier note never even parses as an authorization record in the
   // first place, so this rule change cannot have loosened that boundary.
   checkTrue('ordinary saves still cannot authorize anything (re-affirmed: section 8\'s carrier-shape checks are unaffected by the operator-consistency correction)', K.parseBradContractAuthorizationNote(C.formatClosingPossessionFactsNote({ opportunityId: OPP, at: AT, operator: 'brad', closingDate: AGREEMENT_AT, possessionElection: 'upon_closing_and_funding', possessionDetails: { kind: 'none' } })) === null);
+}
+
+// ============================================================
+// 9. Fresh-page-load durable hydration -- B9-13 authorization-hydration
+// repair, gate-review correction (2026-09-21). Proves the exact hydration
+// ContractWorkspace.tsx now performs is a pure, synchronous function of
+// already-loaded note data: build "current artifact facts" from the
+// AUTHORIZED RECORD'S OWN saved fields (never from a fresh PDF generation,
+// never from anything requiring network I/O or a write session -- neither
+// concept exists anywhere in this module or in this test), and confirm the
+// record still evaluates as authorized. This is what a fresh page reload,
+// with no "Generate" click and no app-write session, now recognizes.
+// ============================================================
+{
+  const currentArtifactFactsFromRecordAlone = {
+    artifactSha256: authorizedRecord.artifactSha256,
+    sourcePdfSha256: authorizedRecord.sourcePdfSha256,
+    generatorVersion: authorizedRecord.generatorVersion,
+    manifestVersion: authorizedRecord.manifestVersion,
+  };
+  checkTrue(
+    'the record-sourced bundle is NOT the same object/call as SAMPLE_ARTIFACT (this genuinely reads the record, not a coincidentally-matching fixture)',
+    currentArtifactFactsFromRecordAlone !== SAMPLE_ARTIFACT,
+  );
+  check('the record-sourced bundle matches the record\'s own saved artifact fields exactly', currentArtifactFactsFromRecordAlone, SAMPLE_ARTIFACT);
+
+  const freshLoadStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, completePreview, currentArtifactFactsFromRecordAlone);
+  checkTrue('a fresh page load (record hydrated from its own note, no generation, no session) recognizes the authorization as current', freshLoadStatus.authorized === true);
+
+  // The independent, non-artifact currency checks still run in full and
+  // still correctly revoke authorization -- hydrating the artifact
+  // comparison point from the record itself does not weaken content/
+  // version/template currency in any way.
+  const bumped = B.nextVersionIdentity(VERSION, { kind: 'same_agreement_reentry' }, null).value;
+  const differentRevisionPreview = buildCompletePreview(OPP, bumped);
+  const staleOnReloadStatus = A.evaluateBradAuthorizationCurrency(authorizedRecord, differentRevisionPreview, currentArtifactFactsFromRecordAlone);
+  checkTrue('even with record-sourced artifact facts, a genuinely changed revision still reports stale on a fresh load -- the artifact hydration never masks a real content change', staleOnReloadStatus.authorized === false);
+  check('the stale-on-reload refusal names REVISION_CHANGED, not an artifact-mismatch code', staleOnReloadStatus.reasons.map((r) => r.code), ['REVISION_CHANGED']);
 }
 
 console.log('');

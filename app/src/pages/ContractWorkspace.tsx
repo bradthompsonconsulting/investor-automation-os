@@ -7,7 +7,10 @@ import {
   formatContractReadyChecklistNote,
   CONTRACT_READY_ITEM_KEYS, type ContractReadyItemKey, type ContractReadyItems,
 } from "../lib/seller-call-readiness-carriers";
-import { computeContractScreenState, type ContractScreenState } from "../lib/contract-workspace-view";
+import {
+  computeContractScreenState, showRecordGhlSendControl, showVerifyExecutionControl, showDispositionHandoffControl, showStartDispositionControl,
+  type ContractScreenState,
+} from "../lib/contract-workspace-view";
 import { CONTRACT_STATE_MEANING, initialVersionIdentity, evaluateContractSentEligibility, isSameContractVersion, type MaterialTermSnapshot } from "../lib/board9-contract-model";
 import {
   computeSellerContractFactsReport, computeSellerContractFactsReadiness,
@@ -63,6 +66,9 @@ import {
   verifyHandoffMatchesUnderContract,
   type DispositionHandoffRecord, type DocumentReference,
 } from "../lib/contract-disposition-handoff-model";
+import { CHUNK_SIZE_BYTES } from "../lib/contract-executed-artifact-storage-model";
+import { latestPreservedExecutedArtifactForVersion } from "../lib/contract-executed-artifact-carriers";
+import { appWriteFetch } from "../lib/app-write-session";
 import {
   formatDispositionHandoffNote, parseDispositionHandoffNote, allDispositionHandoffsForOpportunity,
 } from "../lib/contract-disposition-handoff-carriers";
@@ -965,18 +971,50 @@ export default function ContractWorkspace() {
     setGenerateError(null);
   }, [contractDocumentPreview]);
 
-  /** The ONLY source of "current" artifact facts this page ever uses for display or authorization -- never a self-reference to the stored record, never invented. Absent a fresh generation, this is a bundle guaranteed to fail `evaluateBradAuthorizationCurrency`'s own shape validation (empty strings can never be a real 64-hex hash), so the page can never claim "currently authorized" without a real, current generation backing it. */
+  /**
+   * B9-13 authorization-hydration repair (gate-review correction,
+   * 2026-09-21). The "current" artifact facts `evaluateBradAuthorizationCurrency`
+   * compares the saved record against. A fresh in-session generation (the
+   * operator's own explicit "Generate" click) is always preferred when one
+   * exists -- it is independently, freshly computed evidence, and if the
+   * operator changed something that alters the generator's OUTPUT bytes
+   * without changing the tracked content/version/template snapshot (a
+   * generator or manifest upgrade, for instance), this is what actually
+   * catches it.
+   *
+   * Absent a fresh generation -- true on every ordinary page load/reopen,
+   * where `generatedArtifact` is always initially `null` -- there is no
+   * new artifact to compare the record against, so this falls back to the
+   * record's OWN saved artifact identity. This is not circular: it makes
+   * `evaluateBradAuthorizationCurrency`'s four artifact-specific checks
+   * (ARTIFACT_CHANGED/SOURCE_PDF_CHANGED/GENERATOR_CHANGED/MANIFEST_CHANGED)
+   * correctly report "nothing to disagree with yet" while its INDEPENDENT
+   * content/version/template/operator checks -- computed fresh from the
+   * live `currentPreview` every time, never from this bundle -- still run
+   * in full and still correctly revoke authorization the instant a real
+   * contract fact changes underneath it. No PDF is generated, no write
+   * session is required, and no network call of any kind happens here --
+   * this is a pure, synchronous read of already-loaded note data.
+   */
   const currentArtifactFactsForDisplay = useMemo(() => {
-    if (!generatedArtifact) {
-      return { artifactSha256: "", sourcePdfSha256: "", generatorVersion: "", manifestVersion: "" };
+    if (generatedArtifact) {
+      return {
+        artifactSha256: generatedArtifact.outputSha256,
+        sourcePdfSha256: generatedArtifact.sourceSha256,
+        generatorVersion: generatedArtifact.generatorVersion,
+        manifestVersion: generatedArtifact.manifestVersion,
+      };
     }
-    return {
-      artifactSha256: generatedArtifact.outputSha256,
-      sourcePdfSha256: generatedArtifact.sourceSha256,
-      generatorVersion: generatedArtifact.generatorVersion,
-      manifestVersion: generatedArtifact.manifestVersion,
-    };
-  }, [generatedArtifact]);
+    if (bradAuthorizationRecord) {
+      return {
+        artifactSha256: bradAuthorizationRecord.artifactSha256,
+        sourcePdfSha256: bradAuthorizationRecord.sourcePdfSha256,
+        generatorVersion: bradAuthorizationRecord.generatorVersion,
+        manifestVersion: bradAuthorizationRecord.manifestVersion,
+      };
+    }
+    return { artifactSha256: "", sourcePdfSha256: "", generatorVersion: "", manifestVersion: "" };
+  }, [generatedArtifact, bradAuthorizationRecord]);
 
   async function handleGenerateArtifact() {
     if (screen.state !== "ready") return;
@@ -1646,6 +1684,126 @@ export default function ContractWorkspace() {
 
     setUnderContractWriteState({ kind: "success", record: candidate });
   }
+
+  /**
+   * Board #9 Phase B (B9-13) -- executed-PDF durable preservation.
+   * Product Owner ruling, 2026-09-21: GHL exposes no supported retrieval
+   * path for the executed document's bytes, so Brad downloads the
+   * completed PDF from GHL himself and uploads it here. Chunked through
+   * the existing Netlify Function architecture (never an Edge Function) --
+   * `CHUNK_SIZE_BYTES` keeps each request's base64-encoded body safely
+   * under Netlify's ~4.5 MB effective binary-payload ceiling for classic
+   * Functions. The server independently reassembles, validates, hashes,
+   * stores, and re-reads the bytes before ever recording durable
+   * metadata -- this handler only drives that sequence, it never claims
+   * success on its own say-so.
+   */
+  const preservedArtifactRecord = useMemo(() => {
+    if (screen.state !== "ready" || !notes || !documentVersion) return null;
+    return latestPreservedExecutedArtifactForVersion(notes, screen.opportunity.id, screen.economics.agreementAt, documentVersion);
+  }, [screen, notes, documentVersion]);
+
+  const [preserveUploadState, setPreserveUploadState] = useState<
+    | { kind: "idle" }
+    | { kind: "uploading"; chunkIndex: number; chunkCount: number }
+    | { kind: "success"; alreadyPreserved: boolean; sha256: string; byteCount: number; pageCount: number | null }
+    | { kind: "failed"; message: string }
+  >({ kind: "idle" });
+
+  async function handlePreserveExecutedArtifact(file: File) {
+    if (screen.state !== "ready" || !documentVersion || !existingSend?.providerResponse?.documentId) return;
+    const providerDocumentId = existingSend.providerResponse.documentId;
+    setPreserveUploadState({ kind: "uploading", chunkIndex: 0, chunkCount: 1 });
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const chunkCount = Math.max(1, Math.ceil(bytes.length / CHUNK_SIZE_BYTES));
+      const uploadId = (globalThis.crypto && "randomUUID" in globalThis.crypto) ? globalThis.crypto.randomUUID() : `${screen.opportunity.id}-${Date.now()}`;
+      const call = async (body: unknown) => {
+        const res = await appWriteFetch("/.netlify/functions/ghl-executed-artifact-upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const parsed = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(parsed.error ?? "Preservation request refused");
+        return parsed;
+      };
+      for (let i = 0; i < chunkCount; i++) {
+        setPreserveUploadState({ kind: "uploading", chunkIndex: i, chunkCount });
+        const slice = bytes.subarray(i * CHUNK_SIZE_BYTES, Math.min(bytes.length, (i + 1) * CHUNK_SIZE_BYTES));
+        let binary = "";
+        for (let j = 0; j < slice.length; j++) binary += String.fromCharCode(slice[j]);
+        await call({
+          phase: "chunk", opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion,
+          uploadId, chunkIndex: i, chunkCount, totalByteCount: bytes.length, originalFileName: file.name, chunkBase64: btoa(binary),
+        });
+      }
+      const finalized = await call({
+        phase: "finalize", opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion,
+        uploadId, providerDocumentId,
+      });
+      setPreserveUploadState({ kind: "success", alreadyPreserved: !!finalized.alreadyPreserved, sha256: finalized.sha256, byteCount: finalized.byteCount, pageCount: finalized.pageCount ?? null });
+    } catch (e: any) {
+      setPreserveUploadState({ kind: "failed", message: e?.message ?? "Preservation failed unexpectedly" });
+    }
+  }
+
+  /**
+   * Board #9 Phase B (B9-13) -- the Under Contract GHL opportunity-stage
+   * transition. Offered ONLY once both a durable Under Contract record
+   * AND a durable preserved-artifact record exist for this exact
+   * opportunity/version -- the server independently re-verifies both
+   * from fresh evidence before it will ever attempt the write; this
+   * handler adds no shortcut of its own.
+   */
+  const [stageTransitionState, setStageTransitionState] = useState<
+    | { kind: "idle" }
+    | { kind: "busy" }
+    | { kind: "success"; alreadyInStage: boolean }
+    | { kind: "failed"; message: string }
+  >({ kind: "idle" });
+
+  async function handleTransitionUnderContractStage() {
+    if (screen.state !== "ready" || !documentVersion) return;
+    setStageTransitionState({ kind: "busy" });
+    try {
+      const result = await ghl.opportunities.transitionToUnderContractStage(screen.opportunity.id, screen.economics.agreementAt, documentVersion);
+      setStageTransitionState({ kind: "success", alreadyInStage: !!result.alreadyInStage });
+    } catch (e: any) {
+      setStageTransitionState({ kind: "failed", message: e?.message ?? "Stage transition failed unexpectedly" });
+    }
+  }
+
+  /**
+   * Board #9 Phase B (B9-13), gate-review §5 ruling -- Start Disposition's
+   * REAL gate must be durable, never `stageTransitionState` (browser-local,
+   * resets on reload and proves nothing on its own). This is a fresh,
+   * independent GHL read of the opportunity's own live `pipelineId`/
+   * `pipelineStageId` -- never the transition call's own claimed readback,
+   * never a note's claim. Refetched on every fresh load AND again after a
+   * successful transition (`stageTransitionState.kind` in the dependency
+   * array), so the durable GHL state -- not local success state -- is what
+   * actually makes Start Disposition appear, exactly as ruled.
+   */
+  const [opportunityStageSnapshot, setOpportunityStageSnapshot] = useState<{ pipelineId: string; pipelineStageId: string } | null>(null);
+
+  useEffect(() => {
+    if (screen.state !== "ready") { setOpportunityStageSnapshot(null); return; }
+    let cancelled = false;
+    const opportunityId = screen.opportunity.id;
+    ghl.opportunities.get(opportunityId).then((res: any) => {
+      if (cancelled) return;
+      const opp = res?.opportunity ?? res;
+      if (opp && typeof opp.pipelineId === "string" && typeof opp.pipelineStageId === "string") {
+        setOpportunityStageSnapshot({ pipelineId: opp.pipelineId, pipelineStageId: opp.pipelineStageId });
+      } else {
+        setOpportunityStageSnapshot(null);
+      }
+    }).catch(() => { if (!cancelled) setOpportunityStageSnapshot(null); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen.state, screen.state === "ready" ? screen.opportunity.id : null, stageTransitionState.kind]);
+
+  const underContractStageConfirmed =
+    opportunityStageSnapshot !== null &&
+    opportunityStageSnapshot.pipelineId === getRuntimeConfig().pipelines.sellerLeads &&
+    opportunityStageSnapshot.pipelineStageId === getRuntimeConfig().stages.underContract;
 
   /**
    * B9-11 / INV-66 -- the no-reentry handoff to Board #10 Buyer
@@ -3159,16 +3317,23 @@ export default function ContractWorkspace() {
               <p>IAOS V1 does not sync contract merge fields, request
                 a GHL template draft, or send contracts automatically.
                 This notice does not record a contract as sent.</p>
-              <div style={{ ...groupCardStyle, marginTop: "12px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Contract Sent (state-machine evaluation)</div>
-                {contractSentStatus.eligible ? (
-                  <div data-testid="contract-sent-true" style={{ fontSize: "12px", color: "#22C55E" }}>Contract Sent -- all three locked facts are present (operator authorization, confirmed provider transmission, explicit expiration).</div>
-                ) : (
-                  <ul data-testid="contract-sent-false-reasons" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
-                    {contractSentStatus.reasons.map((r) => <li key={r.code}>{r.message}</li>)}
-                  </ul>
-                )}
-              </div>
+              {/*
+                B9-13 authorization-hydration repair: the retired
+                automated-path "Contract Sent (state-machine evaluation)"
+                display (`contractSentStatus`) is deliberately removed from
+                this operator-facing UI. That evaluator can structurally
+                never report eligible in V1 (RETIRED_PATH_NEVER_MATCHES_ARTIFACT_FACTS,
+                board9-contract-model.ts / contract-send-model.ts) -- it was
+                showing a permanent, misleading "not eligible" reason list
+                (including a stale "Brad has not explicitly authorized"
+                reason) regardless of the REAL, current authorization state,
+                which read as a direct contradiction against the real
+                authorization-currency status above. The underlying pure
+                computation (`contractSentEvidence`/`contractSentStatus`)
+                is left in place, unused by any render -- retained for
+                historical/audit reuse per contract-send-model.ts's own
+                header, never claimed as a live operator signal again.
+              */}
             </div>
           ) : null}
 
@@ -3178,7 +3343,7 @@ export default function ContractWorkspace() {
           {/* nothing. Under Contract stays BLOCKED in V1 regardless of what    */}
           {/* this section observes -- see EXECUTED_TERMS_EVIDENCE_UNAVAILABLE. */}
           {/* ================================================================ */}
-          {existingSend && existingSend.status === "accepted" ? (
+          {showVerifyExecutionControl(existingSend) ? (
             <div data-testid="contract-execution-section" style={{ marginTop: "24px" }}>
               <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
                 Verify Execution &amp; Under Contract
@@ -3523,6 +3688,66 @@ export default function ContractWorkspace() {
                           {underContractWriteState.message}
                         </div>
                       ) : null}
+
+                      {(underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded") ? (
+                        <div style={{ ...groupCardStyle, marginTop: "16px" }}>
+                          <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Preserve executed PDF</div>
+                          <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "10px" }}>
+                            GHL exposes no supported retrieval path for the executed document's bytes. Download the completed executed PDF from GHL yourself, then upload it here -- IAOS stores the actual bytes durably and independently re-verifies them before Under Contract can proceed.
+                          </div>
+                          {preservedArtifactRecord ? (
+                            <div data-testid="contract-execution-artifact-preserved" style={{ fontSize: "12px", color: "#22C55E" }}>
+                              Preserved: {preservedArtifactRecord.originalFileName} -- {preservedArtifactRecord.byteCount.toLocaleString()} bytes, SHA-256 {preservedArtifactRecord.sha256.slice(0, 12)}…, {preservedArtifactRecord.pageCount ?? "unknown"} page(s).
+                            </div>
+                          ) : (
+                            <>
+                              <input
+                                data-testid="contract-execution-artifact-file-input"
+                                type="file"
+                                accept="application/pdf"
+                                disabled={preserveUploadState.kind === "uploading"}
+                                onChange={(e) => { const f = e.target.files?.[0]; if (f) void handlePreserveExecutedArtifact(f); }}
+                              />
+                              {preserveUploadState.kind === "uploading" ? (
+                                <div data-testid="contract-execution-artifact-uploading" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>
+                                  Uploading chunk {preserveUploadState.chunkIndex + 1} of {preserveUploadState.chunkCount}…
+                                </div>
+                              ) : preserveUploadState.kind === "success" ? (
+                                <div data-testid="contract-execution-artifact-upload-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "6px" }}>
+                                  {preserveUploadState.alreadyPreserved ? "Already preserved -- identical bytes, no duplicate written." : "Preserved and independently re-verified by fresh readback."}
+                                </div>
+                              ) : preserveUploadState.kind === "failed" ? (
+                                <div data-testid="contract-execution-artifact-upload-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "6px" }}>
+                                  {preserveUploadState.message}
+                                </div>
+                              ) : null}
+                            </>
+                          )}
+                        </div>
+                      ) : null}
+
+                      {preservedArtifactRecord ? (
+                        <div style={{ ...groupCardStyle, marginTop: "16px" }}>
+                          <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Transition to Under Contract</div>
+                          <Btn
+                            testId="contract-execution-transition-under-contract-button"
+                            onClick={handleTransitionUnderContractStage}
+                            busy={stageTransitionState.kind === "busy"}
+                            disabled={stageTransitionState.kind === "success"}
+                          >
+                            Transition GHL stage to Under Contract
+                          </Btn>
+                          {stageTransitionState.kind === "success" ? (
+                            <div data-testid="contract-execution-stage-transition-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
+                              {stageTransitionState.alreadyInStage ? "Already in the Under Contract stage." : "Transitioned and confirmed by fresh readback -- pipeline and stage both verified exact."}
+                            </div>
+                          ) : stageTransitionState.kind === "failed" ? (
+                            <div data-testid="contract-execution-stage-transition-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
+                              {stageTransitionState.message}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
                   ) : (
                     <div data-testid="contract-execution-full-result" style={{ fontSize: "11px", color: "#94A3B8" }}>
@@ -3537,7 +3762,7 @@ export default function ContractWorkspace() {
                 )}
               </div>
             </div>
-          ) : screen.state === "ready" && bradAuthorizationRecord ? (
+          ) : showRecordGhlSendControl(screen, bradAuthorizationRecord, existingSend) ? (
             <div data-testid="contract-manual-send-section" style={{ marginTop: "24px" }}>
               <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
                 Record GHL Send
@@ -3603,11 +3828,19 @@ export default function ContractWorkspace() {
           ) : null}
 
           {/* ================================================================ */}
-          {/* Start Disposition -- B9-11 / INV-66. Shown ONLY once a genuine,   */}
-          {/* canonical-carrier-parsed Under Contract record exists. Writes     */}
-          {/* nothing until Brad's own explicit click.                         */}
+          {/* Start Disposition -- B9-11 / INV-66, gate-review §5 ruling        */}
+          {/* (2026-09-21). Shown ONLY once ALL THREE of the durable Board #9   */}
+          {/* completion facts independently hold: a genuine, canonical-        */}
+          {/* carrier-parsed Under Contract record; a genuine preserved-        */}
+          {/* artifact record for this exact agreement/version; AND a fresh,    */}
+          {/* live GHL read confirming the opportunity is actually in the       */}
+          {/* exact Seller Leads Pipeline / Under Contract stage. Never gated   */}
+          {/* on `stageTransitionState` -- that is browser-local and resets on  */}
+          {/* reload, proving nothing by itself; `underContractStageConfirmed`  */}
+          {/* is re-derived from a fresh GHL read every time this page loads.   */}
+          {/* Writes nothing until Brad's own explicit click.                   */}
           {/* ================================================================ */}
-          {currentUnderContractRecord ? (
+          {showStartDispositionControl(currentUnderContractRecord, preservedArtifactRecord, underContractStageConfirmed) ? (
             <div data-testid="disposition-handoff-section" style={{ marginTop: "24px" }}>
               <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
                 Start Disposition -- hand off to Board #10

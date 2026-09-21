@@ -552,8 +552,11 @@ export type ManualFileBytesOutcome =
 
 const PDF_MAGIC_BYTES = [0x25, 0x50, 0x44, 0x46, 0x2d]; // literal ASCII "%PDF-", the real PDF file-format signature
 
-/** Content-based, not label-based -- a spoofable `mimeType`/filename string is never trusted alone; the actual leading bytes are checked, matching this codebase's own "verify the real underlying fact, not a label" discipline. */
-function looksLikePdfContent(bytes: Uint8Array): boolean {
+/**
+ * Content-based, not label-based -- a spoofable `mimeType`/filename string is never trusted alone; the actual leading bytes are checked, matching this codebase's own "verify the real underlying fact, not a label" discipline.
+ * Exported (B9-13 Phase B) so `ghl-executed-artifact-upload.ts` can apply the SAME real-bytes check server-side to a reassembled chunked upload, never a second, divergent implementation.
+ */
+export function looksLikePdfContent(bytes: Uint8Array): boolean {
   if (bytes.length < PDF_MAGIC_BYTES.length) return false;
   return PDF_MAGIC_BYTES.every((b, i) => bytes[i] === b);
 }

@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 195;
+const FLOOR = 228;
 let failures = 0;
 let checks = 0;
 
@@ -100,7 +100,7 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('contract-workspace-view.ts does not declare its own competing deriveInheritedEconomics function', /\b(function|const)\s+deriveInheritedEconomics\s*[=(]/.test(viewTsNoComments.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
   check('contract-workspace-view.ts does not declare its own competing evaluateContractReady function', /\b(function|const)\s+evaluateContractReady\s*[=(]/.test(viewTsNoComments.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
 
-  check('ContractWorkspace.tsx imports computeContractScreenState from the pure view module', /import \{ computeContractScreenState,[\s\S]*\} from "\.\.\/lib\/contract-workspace-view"/.test(contractTsx), true);
+  check('ContractWorkspace.tsx imports computeContractScreenState from the pure view module', /import \{\s*\n\s*computeContractScreenState,[\s\S]*\} from "\.\.\/lib\/contract-workspace-view"/.test(contractTsx), true);
   check('ContractWorkspace.tsx does not import deriveInheritedEconomics itself (consumed one level down, via the tested view module)', /deriveInheritedEconomics/.test(contractTsxNoComments), false);
   check('ContractWorkspace.tsx does not import evaluateContractReady itself (consumed one level down, via the tested view module)', /evaluateContractReady/.test(contractTsxNoComments), false);
   check('ContractWorkspace.tsx does not declare a second CONTRACT_READY_ITEM_KEYS-shaped array of its own five item KEYS (imports the existing one)', /import \{[\s\S]*CONTRACT_READY_ITEM_KEYS[\s\S]*\} from "\.\.\/lib\/seller-call-readiness-carriers"/.test(contractTsx), true);
@@ -163,7 +163,7 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     return !!m && /JSON\.stringify\(r\) === JSON\.stringify\(candidate\)/.test(m[0]) && /matchingReadback === null/.test(m[0]);
   })(), true);
   check('handleStartDisposition reuses formatDispositionHandoffNote/parseDispositionHandoffNote (the canonical carrier), never composes or re-parses the note body inline', /formatDispositionHandoffNote\(candidate\)/.test(contractTsxNoComments) && /parseDispositionHandoffNote\(n\.body\)/.test(contractTsxNoComments), true);
-  check('Start Disposition is gated on a genuinely parsed Under Contract record (currentUnderContractRecord), never inferred from pipeline stage or document status alone', /\{currentUnderContractRecord \? \(/.test(contractTsxNoComments), true);
+  check('Start Disposition is gated on a genuinely parsed Under Contract record (currentUnderContractRecord) -- required, though (gate-review §5 ruling) no longer sufficient alone: the live pipeline/stage confirmation and the preserved artifact are now ALSO required, never a substitute for the record itself', /\{showStartDispositionControl\(currentUnderContractRecord, preservedArtifactRecord, underContractStageConfirmed\) \? \(/.test(contractTsxNoComments), true);
   check('handleCreateUnderContract is the sixth call site, lives in its own dedicated handler (not commitNote), and requires fullVerificationResult.ok before it can even be invoked', (() => {
     const m = contractTsxNoComments.match(/async function handleCreateUnderContract\([\s\S]*?\n  \}/m);
     return !!m && (m[0].match(/ghl\.notes\.create\(/g) || []).length === 1 && !/commitNote\(/.test(m[0]) && /!fullVerificationResult\.ok/.test(m[0]);
@@ -381,8 +381,11 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('the invalidation effect is keyed ONLY on contractDocumentPreview (the canonical, live-derived facts), not on an unrelated or broader dependency', /\}, \[contractDocumentPreview\]\);/.test(generateEffectMatch ? generateEffectMatch[0] : ''), true);
 
   check('the display evaluator (bradAuthorizationStatus) is fed currentArtifactFactsForDisplay, never a self-referential record field', /evaluateBradAuthorizationCurrency\(bradAuthorizationRecord, contractDocumentPreview, currentArtifactFactsForDisplay\)/.test(contractTsxNoComments), true);
-  check('currentArtifactFactsForDisplay falls back to an all-empty (structurally invalid) bundle when nothing has been generated yet, never a placeholder that could pass shape validation', /if \(!generatedArtifact\) \{\s*return \{ artifactSha256: "", sourcePdfSha256: "", generatorVersion: "", manifestVersion: "" \};/.test(contractTsxNoComments), true);
-  check('currentArtifactFactsForDisplay is recomputed from generatedArtifact alone (useMemo dependency), so it goes stale-safe the instant generatedArtifact is cleared', /\}, \[generatedArtifact\]\);/.test(contractTsxNoComments), true);
+  check(
+    'currentArtifactFactsForDisplay falls back to an all-empty (structurally invalid) bundle only when NEITHER a fresh generation NOR a durable authorization record exists, never a placeholder that could pass shape validation',
+    /return \{ artifactSha256: "", sourcePdfSha256: "", generatorVersion: "", manifestVersion: "" \};/.test(contractTsxNoComments),
+    true,
+  );
 
   check('handleAuthorize refuses to proceed when no artifact has been generated', /if \(!generatedArtifact\) \{\s*setAuthorizeError\(/.test(contractTsxNoComments), true);
   check('handleAuthorize passes the SAME generated artifact facts into buildAuthorizationRecordArgs (never a stored/claimed value)', /buildAuthorizationRecordArgs\(\{[\s\S]{0,400}artifact: \{\s*artifactSha256: generatedArtifact\.outputSha256,\s*sourcePdfSha256: generatedArtifact\.sourceSha256,\s*generatorVersion: generatedArtifact\.generatorVersion,\s*manifestVersion: generatedArtifact\.manifestVersion,/.test(contractTsxNoComments), true);
@@ -719,6 +722,198 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   // B9-13/INV-96 correction round 2 -- email-only GHL identity fallback.
   check('fullVerificationResult ALSO passes authorizedBuyerEmail (requiredSignerSetResult.buyerEmail), never a hardcoded/guessed value', /buyerSignerRole: requiredSignerSetResult\.buyerRole,\s*\n\s*authorizedBuyerName: requiredSignerSetResult\.buyerDisplayName,\s*\n\s*authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail,/.test(contractTsxNoComments), true);
   check('buyerSignerIdentityResult ALSO passes authorizedBuyerEmail (requiredSignerSetResult.buyerEmail)', /buyerSignerRole: requiredSignerSetResult\.buyerRole,\s*\n\s*authorizedBuyerName: requiredSignerSetResult\.buyerDisplayName,\s*\n\s*authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail,/.test(contractTsxNoComments) && (contractTsxNoComments.match(/authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail,/g) || []).length === 2, true);
+
+  // B9-13 authorization-hydration repair, gate-review correction (2026-09-21).
+  check(
+    'does NOT import hasAppWriteSession -- recognizing a durable authorization no longer depends on an app-write session at all',
+    !/hasAppWriteSession/.test(contractTsx),
+    true,
+  );
+  check(
+    'no useEffect anywhere in this component calls handleGenerateArtifact -- generation happens ONLY on the operator\'s own explicit Generate click, never automatically on page load',
+    (contractTsxNoComments.match(/handleGenerateArtifact/g) || []).length === 2 &&
+    /async function handleGenerateArtifact\(\) \{/.test(contractTsxNoComments) &&
+    /onClick=\{handleGenerateArtifact\}/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'currentArtifactFactsForDisplay prefers a fresh in-session generation when one exists',
+    /const currentArtifactFactsForDisplay = useMemo\(\(\) => \{\s*\n\s*if \(generatedArtifact\) \{/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'absent a fresh generation, currentArtifactFactsForDisplay hydrates from the durable bradAuthorizationRecord\'s own artifact fields -- no Generate call, no write session, no network I/O',
+    /if \(bradAuthorizationRecord\) \{\s*\n\s*return \{\s*\n\s*artifactSha256: bradAuthorizationRecord\.artifactSha256,\s*\n\s*sourcePdfSha256: bradAuthorizationRecord\.sourcePdfSha256,\s*\n\s*generatorVersion: bradAuthorizationRecord\.generatorVersion,\s*\n\s*manifestVersion: bradAuthorizationRecord\.manifestVersion,/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'currentArtifactFactsForDisplay depends on bradAuthorizationRecord (re-hydrates when a fresh/different record loads)',
+    /\[generatedArtifact, bradAuthorizationRecord\]\);/.test(contractTsxNoComments),
+    true,
+  );
+  check('imports the named downstream-control gate predicates from contract-workspace-view (now four, including showStartDispositionControl)', /showRecordGhlSendControl, showVerifyExecutionControl, showDispositionHandoffControl, showStartDispositionControl,/.test(contractTsx), true);
+  check(
+    'the Record GHL Send section render gate calls the named predicate, not an inline re-derived expression',
+    /\) : showRecordGhlSendControl\(screen, bradAuthorizationRecord, existingSend\) \? \(/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the Verify Execution & Under Contract section render gate calls the named predicate',
+    /\{showVerifyExecutionControl\(existingSend\) \? \(/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the Disposition Handoff section render gate calls the named predicate (now combined with the two additional durable §5-ruling conditions, never in place of it)',
+    /\{showStartDispositionControl\(currentUnderContractRecord, preservedArtifactRecord, underContractStageConfirmed\) \? \(/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the retired, always-ineligible Contract Sent state-machine display is removed from the operator UI',
+    !/data-testid="contract-sent-true"/.test(contractTsx) && !/data-testid="contract-sent-false-reasons"/.test(contractTsx),
+    true,
+  );
+  check(
+    'the underlying contractSentStatus computation is preserved (not deleted), just no longer rendered',
+    /const contractSentStatus = useMemo/.test(contractTsxNoComments),
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure, requirement 1 -- client wiring proof for the
+  // executed-artifact preservation UI and the stage-transition control.
+  // ============================================================
+
+  check(
+    'the executed-PDF file input is gated behind BOTH fullVerificationResult.ok and a genuinely-recorded Under Contract write state (success or already_recorded) -- never offered before verified execution/Under Contract evidence exists',
+    /\{\(underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded"\) \? \(\s*\n\s*<div style=\{\{ \.\.\.groupCardStyle, marginTop: "16px" \}\}>\s*\n\s*<div[^>]*>Preserve executed PDF<\/div>/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'that gate sits textually AFTER (nested inside) the fullVerificationResult.ok branch, never a sibling reachable independently of it',
+    (() => {
+      const okIdx = contractTsxNoComments.indexOf('fullVerificationResult.ok ? (');
+      const gateIdx = contractTsxNoComments.indexOf('underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded") ? (');
+      return okIdx !== -1 && gateIdx !== -1 && gateIdx > okIdx;
+    })(),
+    true,
+  );
+  check(
+    'the file input itself only renders in the else-branch of `preservedArtifactRecord ?` -- once an artifact is already preserved, the input disappears rather than allowing a second silent upload',
+    /\{preservedArtifactRecord \? \(\s*\n\s*<div data-testid="contract-execution-artifact-preserved"/.test(contractTsxNoComments) &&
+    /<input\s*\n\s*data-testid="contract-execution-artifact-file-input"/.test(contractTsxNoComments),
+    true,
+  );
+
+  check('upload PROGRESS state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "uploading"', /preserveUploadState\.kind === "uploading" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-uploading"/.test(contractTsxNoComments), true);
+  check('upload SUCCESS state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "success"', /preserveUploadState\.kind === "success" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-upload-success"/.test(contractTsxNoComments), true);
+  check('upload FAILURE state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "failed"', /preserveUploadState\.kind === "failed" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-upload-failed"/.test(contractTsxNoComments), true);
+  check('the file input is disabled while an upload is already in flight', /disabled=\{preserveUploadState\.kind === "uploading"\}/.test(contractTsxNoComments), true);
+
+  check(
+    'the stage-transition control (button) renders ONLY inside `{preservedArtifactRecord ? (` -- it cannot appear before a matching preserved-artifact record exists',
+    (() => {
+      const m = contractTsxNoComments.match(/\{preservedArtifactRecord \? \(\s*\n\s*<div style=\{\{ \.\.\.groupCardStyle, marginTop: "16px" \}\}>\s*\n\s*<div[^>]*>Transition to Under Contract<\/div>\s*\n\s*<Btn\s*\n\s*testId="contract-execution-transition-under-contract-button"/);
+      return !!m;
+    })(),
+    true,
+  );
+  check(
+    'that same block sits inside the outer Under-Contract-write-state gate too -- it cannot appear before the Under Contract record itself exists, only "preservedArtifactRecord" additionally',
+    (() => {
+      const ucGateIdx = contractTsxNoComments.indexOf('underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded") ? (');
+      const transitionBtnIdx = contractTsxNoComments.indexOf('testId="contract-execution-transition-under-contract-button"');
+      return ucGateIdx !== -1 && transitionBtnIdx !== -1 && transitionBtnIdx > ucGateIdx;
+    })(),
+    true,
+  );
+
+  check('the transition control\'s onClick calls ONLY handleTransitionUnderContractStage, never an inline write', /onClick=\{handleTransitionUnderContractStage\}/.test(contractTsxNoComments), true);
+  check(
+    'handleTransitionUnderContractStage calls ONLY ghl.opportunities.transitionToUnderContractStage, never a second/direct write call site',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleTransitionUnderContractStage\(\)[\s\S]*?\n  \}/);
+      return !!m && (m[0].match(/ghl\.opportunities\.transitionToUnderContractStage\(/g) || []).length === 1 && !/confirmedCommand\(|writeCommand\(|ghl\.notes\.create\(/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'handleTransitionUnderContractStage passes ONLY opportunityId, agreementAt, and the current documentVersion -- never a stage id, pipeline id, or literal operation string of its own',
+    /ghl\.opportunities\.transitionToUnderContractStage\(screen\.opportunity\.id, screen\.economics\.agreementAt, documentVersion\)/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'handleTransitionUnderContractStage itself contains no literal reference to a GHL pipeline or stage id -- the args it actually sends carry none (config.pipelines/config.stages are read elsewhere, ONLY for the read-only durable-gate derivation below, never inside this handler)',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleTransitionUnderContractStage\(\)[\s\S]*?\n  \}/);
+      return !!m && !/config\.pipelines|config\.stages|getRuntimeConfig\(\)\.pipelines|getRuntimeConfig\(\)\.stages/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'the ONLY other place ContractWorkspace.tsx reads config.pipelines/config.stages is the read-only underContractStageConfirmed derivation -- a live GHL opportunity is compared against them for DISPLAY/GATING, never sent anywhere',
+    /const underContractStageConfirmed =\s*\n\s*opportunityStageSnapshot !== null &&\s*\n\s*opportunityStageSnapshot\.pipelineId === getRuntimeConfig\(\)\.pipelines\.sellerLeads &&\s*\n\s*opportunityStageSnapshot\.pipelineStageId === getRuntimeConfig\(\)\.stages\.underContract;/.test(contractTsxNoComments),
+    true,
+  );
+
+  const ghlTsx = readSrc('src/lib/ghl.ts');
+  const ghlTsxNoComments = ghlTsx.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  check(
+    'ghl.ts\'s transitionToUnderContractStage wrapper takes EXACTLY (opportunityId, agreementAt, version) -- no pipelineId/stageId parameter exists for a caller to ever supply',
+    /transitionToUnderContractStage: \(opportunityId: string, agreementAt: string, version: ContractVersionIdentity\) =>/.test(ghlTsxNoComments),
+    true,
+  );
+  check(
+    'ghl.ts\'s transitionToUnderContractStage wrapper sends EXACTLY { agreementAt, version } as the operation args -- no pipelineId/stageId field in the request body the browser constructs',
+    /confirmedCommand\("opportunity\.underContractStage", opportunityId, \{ agreementAt, version \}\)/.test(ghlTsxNoComments),
+    true,
+  );
+  check(
+    'no OTHER call site anywhere in ghl.ts invokes the opportunity.underContractStage operation string -- exactly one, named, non-parameterized wrapper',
+    (ghlTsxNoComments.match(/opportunity\.underContractStage/g) || []).length === 1,
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure, §5 ruling -- Start Disposition's durable
+  // three-part gate. Supersedes the earlier (now-superseded) single-
+  // condition assertion: the note alone is no longer sufficient.
+  // ============================================================
+  check(
+    'Start Disposition\'s render gate requires ALL THREE durable facts: the Under Contract record, the preserved artifact record, AND a freshly-confirmed live GHL stage -- never fewer',
+    /\{showStartDispositionControl\(currentUnderContractRecord, preservedArtifactRecord, underContractStageConfirmed\) \? \(/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the gate is NEVER widened to also accept stageTransitionState.kind === "success" as a substitute for the live-confirmed condition',
+    !/showDispositionHandoffControl\(currentUnderContractRecord\)[\s\S]{0,120}stageTransitionState/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'underContractStageConfirmed is derived from opportunityStageSnapshot (a fresh GHL read), never from stageTransitionState',
+    (() => {
+      const m = contractTsxNoComments.match(/const underContractStageConfirmed =[\s\S]*?;/);
+      return !!m && /opportunityStageSnapshot/.test(m[0]) && !/stageTransitionState/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'opportunityStageSnapshot is refetched from a real GHL read (ghl.opportunities.get) on every fresh load of a ready screen',
+    /ghl\.opportunities\.get\(opportunityId\)\.then/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the refetch effect also depends on stageTransitionState.kind -- so a successful transition triggers a FRESH durable readback, never trusting the transition call\'s own local success state directly',
+    (() => {
+      const m = contractTsxNoComments.match(/\}, \[screen\.state, screen\.state === "ready" \? screen\.opportunity\.id : null, stageTransitionState\.kind\]\);/);
+      return !!m;
+    })(),
+    true,
+  );
+  check(
+    'a screen that is not "ready" resets opportunityStageSnapshot to null -- the gate fails closed rather than holding a stale snapshot from a previous opportunity',
+    /if \(screen\.state !== "ready"\) \{ setOpportunityStageSnapshot\(null\); return; \}/.test(contractTsxNoComments),
+    true,
+  );
 }
 
 console.log('');

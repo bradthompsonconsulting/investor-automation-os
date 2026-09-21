@@ -1,6 +1,7 @@
 import { connectLambda } from "@netlify/blobs";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { validateLedgerNote } from "./lib/write-note-guard";
+import { verifyUnderContractStageTransitionReady } from "./lib/write-derived-note";
 import { getConfig } from "../../shared/ghl-config";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { exact, identifier, planWrite, dispositions, routings } from "./lib/write-contracts";
@@ -29,10 +30,11 @@ export const handler = async (event: any) => {
     connectLambda(event);
     const boundary = configuredBoundary();
     const { targetId, operation, args, requestId } = request;
-    let target = plan.kind === "opportunity" ? await boundary.opportunity(targetId) : await boundary.contact(targetId);
-    const contactId = plan.kind === "opportunity" ? target.contactId : targetId;
+    const isOpportunityTargeted = plan.kind === "opportunity" || plan.kind === "opportunity_stage";
+    let target = isOpportunityTargeted ? await boundary.opportunity(targetId) : await boundary.contact(targetId);
+    const contactId = isOpportunityTargeted ? target.contactId : targetId;
     release = await lockContact(contactId);
-    target = plan.kind === "opportunity" ? await boundary.opportunity(targetId) : await boundary.contact(targetId);
+    target = isOpportunityTargeted ? await boundary.opportunity(targetId) : await boundary.contact(targetId);
     if (operation === "opportunity.currentOffer") {
       const outcome = latestOutcomeNoteForOpportunity(await boundary.notes(contactId), targetId);
       if (currentOfferWriteGate({ value: args.value, agreementAlreadyReached: outcome?.kind === "accept" }).kind !== "allowed") return json(409, { error: "Current Offer is frozen or invalid" });
@@ -57,6 +59,17 @@ export const handler = async (event: any) => {
       const after = await boundary.call(path); const readback = after.task ?? after;
       if (readback.id !== plan.taskId || readback.completed !== true) throw new WriteUncertain("Task completion readback is ambiguous");
       return json(200, { confirmed: true });
+    }
+    if (plan.kind === "opportunity_stage") {
+      // Board #9 Phase B (B9-13). Independent re-verification (both the
+      // Under Contract execution AND the preserved executed artifact)
+      // happens INSIDE this call -- never trusted from the caller's claim
+      // that either was already confirmed elsewhere.
+      await verifyUnderContractStageTransitionReady(boundary, targetId, plan.agreementAt!, plan.version!);
+      const targetStageId = config.stages.underContract;
+      const forbiddenStageIds = [config.stages.sellerClosedWon];
+      const result = await boundary.transitionOpportunityStage(targetId, config.pipelines.sellerLeads, targetStageId, forbiddenStageIds);
+      return json(200, { confirmed: true, alreadyInStage: result.alreadyInStage, readback: { id: result.readback.id, pipelineId: result.readback.pipelineId, pipelineStageId: result.readback.pipelineStageId } });
     }
     const result = await boundary.fields(plan.kind, targetId, plan.fields);
     // A deterministic partial readback is not a successful write. Existing clients

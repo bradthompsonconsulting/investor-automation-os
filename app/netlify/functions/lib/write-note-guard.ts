@@ -14,6 +14,8 @@ import { parseUnderContractNote } from "../../../src/lib/contract-execution-carr
 import { parseContractProjectionSyncNote } from "../../../src/lib/contract-projection-sync-carriers";
 import { parseContractSendNote } from "../../../src/lib/contract-send-carriers";
 import { parseSignerMappingAttestationNote } from "../../../src/lib/contract-signer-mapping-carriers";
+import { MANUAL_SEND_TEMPLATE_SOURCE } from "../../../src/lib/contract-manual-send-model";
+import { isSameContractVersion } from "../../../src/lib/board9-contract-model";
 import { identifier } from "./write-contracts";
 import { fieldValue, type GhlBoundary } from "./ghl-write-boundary";
 import { getConfig } from "../../../shared/ghl-config";
@@ -46,10 +48,32 @@ export async function validateLedgerNote(boundary: GhlBoundary, contactId: strin
   const send = parseContractSendNote(body);
   if (send) {
     if (send.status === "in_progress") throw new Error("Send reservations require the dedicated server operation");
-    await requireSendOutcome(send.attemptId,send.status,send.providerResponse?.documentId??null);
+    const isManualBridge = send.templateSource === MANUAL_SEND_TEMPLATE_SOURCE;
+    if (isManualBridge) {
+      // The manual bridge writes directly at status "accepted" -- Brad's
+      // own attestation that he already completed the upload/send GHL
+      // performed himself. It has no separate POST/readback pair to stage
+      // through (see contract-manual-send-model.ts's own header), so
+      // neither a server send receipt (requireSendOutcome, which exists to
+      // bind a ledger claim to IAOS's OWN automated POST attempt) nor an
+      // `in_progress` reservation note (which exists to prevent a second
+      // concurrent AUTOMATED attempt) applies to it.
+      if (send.status !== "accepted") throw new Error("The manual GHL send bridge records only a completed (accepted) send");
+    } else {
+      await requireSendOutcome(send.attemptId,send.status,send.providerResponse?.documentId??null);
+    }
     const existing = notes.map(n => parseContractSendNote(n.body)).filter(Boolean);
     if (existing.some(n=>n!.attemptId===send.attemptId && n!.status==="accepted")) throw new Error("Accepted send cannot be overwritten or duplicated");
     if (send.requestedTemplateId !== getConfig(process.env.IAOS_ENV).documentsContracts.templateId) throw new Error("Wrong send template");
-    if (!existing.some(n => n!.attemptId === send.attemptId && n!.opportunityId === send.opportunityId && n!.status === "in_progress")) throw new Error("No matching send reservation");
+    if (isManualBridge) {
+      // A second, DIFFERENT attemptId accepted for the same exact contract
+      // version is a genuine conflicting duplicate -- refuse it, the same
+      // idempotency guarantee the automated path's reservation gives it.
+      if (existing.some(n => n!.opportunityId === send.opportunityId && n!.attemptId !== send.attemptId && n!.status === "accepted" && isSameContractVersion(n!.version, send.version))) {
+        throw new Error("An accepted send already exists for this exact contract version");
+      }
+    } else if (!existing.some(n => n!.attemptId === send.attemptId && n!.opportunityId === send.opportunityId && n!.status === "in_progress")) {
+      throw new Error("No matching send reservation");
+    }
   }
 }

@@ -39,6 +39,39 @@ export class GhlBoundary {
     catch { throw new WriteUncertain("Write submitted; field readback is ambiguous"); }
     return { response, readback, confirmed: results.every(r => r.landed), results };
   }
+  /**
+   * Board #9 Phase B (B9-13) -- the Under Contract stage transition.
+   * Never called except from the dedicated, independently-re-verified
+   * "opportunity.underContractStage" write operation (`ghl-write.ts` ->
+   * `write-derived-note.ts`), which itself refuses unless a genuine
+   * Under Contract record and a genuine preserved-artifact record both
+   * re-derive from fresh evidence. This method adds its own,
+   * non-bypassable checks on top -- it never trusts a caller to have
+   * already refused the forbidden stage or the wrong pipeline/location.
+   *
+   * Idempotent: if the opportunity's live current stage already matches
+   * `targetStageId`, this returns success with `alreadyInStage: true` and
+   * performs NO write -- never a redundant PUT.
+   */
+  async transitionOpportunityStage(opportunityId: string, expectedPipelineId: string, targetStageId: string, forbiddenStageIds: readonly string[]) {
+    if (forbiddenStageIds.includes(targetStageId)) throw new Error("Refusing to transition to a forbidden stage");
+    if (!targetStageId || targetStageId.startsWith("PRODUCTION_")) throw new Error("Target stage is not provisioned for this environment");
+    const before = await this.opportunity(opportunityId);
+    if (before.pipelineId !== expectedPipelineId) throw new Error("Opportunity is not in the expected pipeline");
+    if (before.pipelineStageId === targetStageId) {
+      return { response: null as unknown, readback: before, alreadyInStage: true as const };
+    }
+    let response: any;
+    try { response = await this.call(`/opportunities/${opportunityId}`, "PUT", { pipelineStageId: targetStageId }); }
+    catch { throw new WriteUncertain("Stage transition was not confirmed; independently read back before retrying"); }
+    let readback: any;
+    try { readback = await this.opportunity(opportunityId); }
+    catch { throw new WriteUncertain("Stage transition submitted; readback unavailable. Do not retry blindly"); }
+    if (readback.pipelineId !== expectedPipelineId || readback.pipelineStageId !== targetStageId) {
+      throw new WriteUncertain("Stage transition readback does not confirm the exact expected pipeline/stage");
+    }
+    return { response, readback, alreadyInStage: false as const };
+  }
   async note(id: string, body: string) {
     await this.contact(id);
     let response: any;
