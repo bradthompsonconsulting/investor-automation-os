@@ -118,6 +118,91 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
     });
     assert.deepEqual({writes, receipts:[...receipts]}, before);
   });
+
+  // ============================================================
+  // Gate-review closure -- PR #85 unattributable-409 diagnostics. The
+  // response shapes/status codes asserted above and below must remain
+  // byte-identical; this block additionally proves the new
+  // console.error side channel fires on both 409 branches, carries only
+  // correlation/error metadata, and never leaks the request body, note
+  // contents, or the bearer token.
+  // ============================================================
+  {
+    const originalConsoleError = console.error;
+    function captureConsoleError(run) {
+      const calls = [];
+      console.error = (...args) => { calls.push(args); };
+      return Promise.resolve().then(run)
+        .finally(() => { console.error = originalConsoleError; })
+        .then(() => calls);
+    }
+    function parsedLog(logCalls) {
+      assert.equal(logCalls.length, 1, 'exactly one console.error call, got ' + logCalls.length);
+      const [prefix, payload] = logCalls[0];
+      assert.equal(prefix, '[ghl-write]');
+      return JSON.parse(payload);
+    }
+
+    await check('generic Error 409 is logged with correlation/error metadata, response unchanged', async () => {
+      realBlobs.connectLambda(event('note.create', contact.id, {body:'seed'}));
+      const secretNoteBody = 'must-not-appear-in-logs — sensitive note contents';
+      const e = event('note.create', contact.id, {body: secretNoteBody}, 'diagnostics-generic-request');
+      delete e.blobs;
+      const before = {writes, receipts:[...receipts]};
+      const logCalls = await captureConsoleError(async () => {
+        const result = await handler(e);
+        assert.equal(result.statusCode, 409);
+        assert.deepEqual(JSON.parse(result.body), {error:'Write refused or unconfirmed; refresh and inspect before retrying'});
+      });
+      assert.deepEqual({writes, receipts:[...receipts]}, before);
+      const logged = parsedLog(logCalls);
+      assert.equal(logged.requestId, 'diagnostics-generic-request');
+      assert.equal(logged.operation, 'note.create');
+      assert.equal(logged.isWriteUncertain, false);
+      assert.equal(typeof logged.errorName, 'string');
+      assert.equal(typeof logged.errorMessage, 'string');
+      const serialized = JSON.stringify(logged);
+      assert.equal(serialized.includes(secretNoteBody), false);
+      assert.equal(serialized.includes(e.headers.authorization), false);
+      assert.equal(serialized.toLowerCase().includes('bearer'), false);
+    });
+
+    await check('WriteUncertain 409 is logged with correlation/error metadata, response unchanged', async () => {
+      const release = await boundaryLib.lockContact(contact.id);
+      const secretValue = 'must-not-appear-in-logs-either';
+      const e = event('contact.propertyNotes', contact.id, {value: secretValue}, 'diagnostics-writeuncertain-request');
+      const before = writes;
+      let logCalls;
+      try {
+        logCalls = await captureConsoleError(async () => {
+          const result = await handler(e);
+          assert.equal(result.statusCode, 409);
+          const body = JSON.parse(result.body);
+          assert.equal(body.outcome, 'indeterminate');
+          assert.equal(typeof body.error, 'string');
+        });
+      } finally { await release(); }
+      assert.equal(writes, before);
+      const logged = parsedLog(logCalls);
+      assert.equal(logged.requestId, 'diagnostics-writeuncertain-request');
+      assert.equal(logged.operation, 'contact.propertyNotes');
+      assert.equal(logged.isWriteUncertain, true);
+      assert.equal(typeof logged.errorName, 'string');
+      assert.equal(typeof logged.errorMessage, 'string');
+      const serialized = JSON.stringify(logged);
+      assert.equal(serialized.includes(secretValue), false);
+    });
+
+    await check('successful write logs nothing', async () => {
+      const e = event('note.create', contact.id, {body:'quiet success fixture'});
+      const logCalls = await captureConsoleError(async () => {
+        const result = await handler(e);
+        assert.equal(result.statusCode, 200, result.body);
+      });
+      assert.deepEqual(logCalls, []);
+    });
+  }
+
   for (const [label, status, mutate] of [
     ['method', 405, e => { e.httpMethod = 'GET'; }],
     ['auth', 401, e => { delete e.headers.authorization; }],

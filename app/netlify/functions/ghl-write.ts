@@ -10,6 +10,57 @@ import { claimWrite, lockContact } from "./lib/write-receipts";
 import { latestOutcomeNoteForOpportunity } from "../../src/lib/seller-call-outcome";
 import { currentOfferWriteGate } from "../../src/lib/current-offer-carrier";
 const json = (statusCode: number, data: unknown) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(data) });
+
+/**
+ * Gate-review closure -- PR #85 live-Test proof found a manual-send 409
+ * that was unattributable after the fact: this file threw generic 409s
+ * without ever logging the original caught error. Diagnostics only --
+ * the client-facing response shape and status codes below are UNCHANGED;
+ * this only makes the NEXT such failure attributable from Netlify's own
+ * function logs.
+ *
+ * Never throws on its own, regardless of what was actually thrown --
+ * `error` is `unknown` here, and this codebase's own convention is to
+ * throw only `Error`/`WriteUncertain` instances with hand-written literal
+ * messages (never one built from a request body, a header, or a
+ * credential), but a non-Error thrown value must still be describable
+ * safely, without risking a second exception inside a catch block.
+ */
+function describeCaughtError(error: unknown): { name: string; message: string; stack: string | null; isWriteUncertain: boolean } {
+  const isWriteUncertain = error instanceof WriteUncertain;
+  if (error instanceof Error) {
+    return {
+      name: typeof error.name === "string" ? error.name : "Error",
+      message: typeof error.message === "string" ? error.message : "",
+      stack: typeof error.stack === "string" ? error.stack : null,
+      isWriteUncertain,
+    };
+  }
+  let message: string;
+  try { message = String(error); } catch { message = "[unloggable thrown value]"; }
+  return { name: "NonErrorThrow", message, stack: null, isWriteUncertain };
+}
+
+/**
+ * Logs ONLY correlation and error metadata -- requestId, operation
+ * (both plain strings already validated by `identifier()`/`exact()`
+ * upstream, never free text), and the description above. NEVER the
+ * request body/args, note contents, `event.headers` (which carries the
+ * bearer token), any GHL contact/document data, cookies, or environment
+ * values -- none of those are referenced here at all, structurally, not
+ * merely filtered out.
+ */
+function logWriteFailure(request: any, error: unknown): void {
+  const described = describeCaughtError(error);
+  console.error("[ghl-write]", JSON.stringify({
+    requestId: typeof request?.requestId === "string" ? request.requestId : null,
+    operation: typeof request?.operation === "string" ? request.operation : null,
+    errorName: described.name,
+    errorMessage: described.message,
+    stack: described.stack,
+    isWriteUncertain: described.isWriteUncertain,
+  }));
+}
 export const handler = async (event: any) => {
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
   let operator: string;
@@ -76,6 +127,7 @@ export const handler = async (event: any) => {
     // receive per-field evidence and retain their partial-recovery path.
     return json(200, { ...result.response, confirmed: result.confirmed, readback: result.readback, results: result.results });
   } catch (error) {
+    logWriteFailure(request, error);
     if (error instanceof WriteUncertain) return json(409, { outcome: "indeterminate", error: error.message });
     return json(409, { error: "Write refused or unconfirmed; refresh and inspect before retrying" });
   } finally { if (release) await release(); }
