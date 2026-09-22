@@ -418,6 +418,25 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     assert.equal(body.artifact.providerDocumentId, docId);
   });
 
+  // Gate-review closure -- PR #85 preservation-sequencing repair,
+  // requirements 8-9. This point in the file already carries a durably-
+  // written, server-verified Under Contract record for fixture.version,
+  // written BEFORE this preservation just now (out-of-order, mirroring
+  // the real live Test note JzKxKVFS5GxYiuWHpfTD). Preservation landing
+  // AFTER it must reconcile the exact evidence without ever writing a
+  // second Under Contract note -- the server never enforced write
+  // ordering between these two note kinds to begin with, so this proves
+  // the existing historical-evidence note is genuinely untouched.
+  await check('preservation-sequencing repair: an existing (out-of-order) Under Contract record reconciles with LATER-recorded preservation, never duplicated', async () => {
+    const B9d = load('board9-contract-model');
+    const ucRecords = load('contract-execution-carriers').allUnderContractRecordsForOpportunity(notes, opportunity.id)
+      .filter((r) => r.agreementAt === fixture.version.agreementAt && B9d.isSameContractVersion(r.version, fixture.version));
+    assert.equal(ucRecords.length, 1, 'exactly one Under Contract record for this exact evidence, never duplicated by a later preservation');
+    assert.equal(ucRecords[0].iaosVerifiedAt, execution.value.iaosVerifiedAt, 'the pre-existing Under Contract record itself is untouched -- same verified-at identity as originally written');
+    const preserved = load('contract-executed-artifact-carriers').latestPreservedExecutedArtifactForVersion(notes, opportunity.id, fixture.version.agreementAt, fixture.version);
+    assert.equal(preserved !== null, true, 'the preservation record now also exists for this exact evidence -- sequence-complete');
+  });
+
   await check('artifact upload: identical re-upload (same bytes, same version) is a no-op success -- no duplicate note written', async () => {
     const before = writes;
     await uploadChunks('upload-2', pdfBytes, 'executed.pdf');

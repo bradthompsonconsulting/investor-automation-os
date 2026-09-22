@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 250;
+const FLOOR = 256;
 let failures = 0;
 let checks = 0;
 
@@ -258,8 +258,8 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     true,
   );
   check(
-    'Create Under Contract\'s disabled expression is unchanged -- it already covers BOTH "success" (post-write) and "already_recorded" (now also reload-hydrated) states',
-    /disabled=\{underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded"\}/.test(contractTsxNoComments),
+    'Create Under Contract\'s disabled expression still covers BOTH "success" (post-write) and "already_recorded" (reload-hydrated) states -- gate-review closure, PR #85 preservation-sequencing repair additionally requires a current preservedArtifactRecord',
+    /disabled=\{underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded" \|\| !preservedArtifactRecord\}/.test(contractTsxNoComments),
     true,
   );
   // Twelve obsolete send-wiring assertions replaced by twelve V1 boundary assertions.
@@ -861,50 +861,92 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   );
 
   // ============================================================
-  // Gate-review closure, requirement 1 -- client wiring proof for the
-  // executed-artifact preservation UI and the stage-transition control.
+  // Gate-review closure -- PR #85 executed-PDF preservation UX and
+  // sequencing repair. File selection is local-only (no upload); only
+  // an explicit "Preserve executed PDF" button starts the durable
+  // upload; Preserve executed PDF now happens BEFORE Under Contract
+  // (Board #9's accepted finish line), not after.
   // ============================================================
 
   check(
-    'the executed-PDF file input is gated behind BOTH fullVerificationResult.ok and a genuinely-recorded Under Contract write state (success or already_recorded) -- never offered before verified execution/Under Contract evidence exists',
-    /\{\(underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded"\) \? \(\s*\n\s*<div style=\{\{ \.\.\.groupCardStyle, marginTop: "16px" \}\}>\s*\n\s*<div[^>]*>Preserve executed PDF<\/div>/.test(contractTsxNoComments),
-    true,
-  );
-  check(
-    'that gate sits textually AFTER (nested inside) the fullVerificationResult.ok branch, never a sibling reachable independently of it',
+    'handlePreservePdfFileSelected (the file <input>\'s onChange) makes NO network/upload request -- it only reads bytes, classifies, hashes, and counts pages, exactly like handleManualFileSelected\'s own established local-only pattern',
     (() => {
-      const okIdx = contractTsxNoComments.indexOf('fullVerificationResult.ok ? (');
-      const gateIdx = contractTsxNoComments.indexOf('underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded") ? (');
-      return okIdx !== -1 && gateIdx !== -1 && gateIdx > okIdx;
+      const m = contractTsxNoComments.match(/async function handlePreservePdfFileSelected\([\s\S]*?\n  \}/m);
+      return !!m && !/appWriteFetch\(|ghl\.notes\.create\(|handlePreserveExecutedArtifact\(/.test(m[0]) && /classifySelectedFileBytes\(/.test(m[0]) && /computeManualArtifactSha256Hex\(/.test(m[0]) && /countPdfPages\(/.test(m[0]);
     })(),
     true,
   );
   check(
-    'the file input itself only renders in the else-branch of `preservedArtifactRecord ?` -- once an artifact is already preserved, the input disappears rather than allowing a second silent upload',
+    'the file <input> is wired to handlePreservePdfFileSelected (selection), never directly to handlePreserveExecutedArtifact (upload)',
+    /data-testid="contract-execution-artifact-file-input"[\s\S]{0,300}onChange=\{handlePreservePdfFileSelected\}/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the explicit "Preserve executed PDF" button only fires the upload when a file has actually been locally selected, and is wired exactly once',
+    /onClick=\{\(\) => \{ if \(preserveSelectedFile\) void handlePreserveExecutedArtifact\(preserveSelectedFile\); \}\}/.test(contractTsxNoComments) &&
+    (contractTsxNoComments.match(/void handlePreserveExecutedArtifact\(/g) || []).length === 1,
+    true,
+  );
+  check(
+    'the Preserve executed PDF button disables with no selection, while uploading, and after success -- never re-triggerable mid-flight or after a completed upload',
+    /testId="contract-execution-artifact-preserve-button"[\s\S]{0,300}disabled=\{!preserveSelectedFile \|\| preserveUploadState\.kind === "uploading" \|\| preserveUploadState\.kind === "success"\}/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the file input itself only renders in the else-branch of `preservedArtifactRecord ?` -- once an artifact is already preserved (hydrated or just uploaded), the input disappears rather than allowing a second silent upload',
     /\{preservedArtifactRecord \? \(\s*\n\s*<div data-testid="contract-execution-artifact-preserved"/.test(contractTsxNoComments) &&
     /<input\s*\n\s*data-testid="contract-execution-artifact-file-input"/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'a successful upload immediately re-fetches notes so preservedArtifactRecord hydrates within the SAME session, never requiring a reload to unlock Create Under Contract',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handlePreserveExecutedArtifact\(file: File\)[\s\S]*?\n  \}/m);
+      const successIdx = m ? m[0].indexOf('kind: "success"') : -1;
+      const refetchIdx = m ? m[0].indexOf('ghl.notes.list(contactId)') : -1;
+      return !!m && successIdx !== -1 && refetchIdx !== -1 && refetchIdx > successIdx;
+    })(),
     true,
   );
 
   check('upload PROGRESS state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "uploading"', /preserveUploadState\.kind === "uploading" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-uploading"/.test(contractTsxNoComments), true);
   check('upload SUCCESS state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "success"', /preserveUploadState\.kind === "success" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-upload-success"/.test(contractTsxNoComments), true);
   check('upload FAILURE state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "failed"', /preserveUploadState\.kind === "failed" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-upload-failed"/.test(contractTsxNoComments), true);
-  check('the file input is disabled while an upload is already in flight', /disabled=\{preserveUploadState\.kind === "uploading"\}/.test(contractTsxNoComments), true);
+  check('the file input is disabled while its own local selection is being read/hashed, or while an upload is already in flight', /disabled=\{preserveFileBusy \|\| preserveUploadState\.kind === "uploading"\}/.test(contractTsxNoComments), true);
 
   check(
-    'the stage-transition control (button) renders ONLY inside `{preservedArtifactRecord ? (` -- it cannot appear before a matching preserved-artifact record exists',
+    'the Preserve executed PDF card now sits BEFORE section "7. Under Contract" -- Board #9\'s accepted finish line is preserved artifact THEN Under Contract, never the reverse',
     (() => {
-      const m = contractTsxNoComments.match(/\{preservedArtifactRecord \? \(\s*\n\s*<div style=\{\{ \.\.\.groupCardStyle, marginTop: "16px" \}\}>\s*\n\s*<div[^>]*>Transition to Under Contract<\/div>\s*\n\s*<Btn\s*\n\s*testId="contract-execution-transition-under-contract-button"/);
-      return !!m;
+      const preserveIdx = contractTsxNoComments.indexOf('<div>Preserve executed PDF</div>'.replace('<div>', '').replace('</div>', ''));
+      const preserveHeadingIdx = contractTsxNoComments.indexOf('>Preserve executed PDF<');
+      const section7Idx = contractTsxNoComments.indexOf('>7. Under Contract<');
+      return preserveHeadingIdx !== -1 && section7Idx !== -1 && preserveHeadingIdx < section7Idx;
     })(),
     true,
   );
   check(
-    'that same block sits inside the outer Under-Contract-write-state gate too -- it cannot appear before the Under Contract record itself exists, only "preservedArtifactRecord" additionally',
+    'the "awaiting preservation" notice appears ONLY while preservation is missing AND the write has not already succeeded/hydrated -- it can never mask an existing already_recorded/success status',
+    /\{\(!preservedArtifactRecord && underContractWriteState\.kind !== "success" && underContractWriteState\.kind !== "already_recorded"\) \? \(\s*\n\s*<div data-testid="contract-execution-under-contract-awaiting-preservation"/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'gate-review closure, PR #85 preservation-sequencing repair, requirements 8-9: the "already_recorded"/"success" Under Contract status messages sit DIRECTLY after the Create Under Contract button, never wrapped in a preservedArtifactRecord condition -- an existing, hydrated Under Contract record (such as historical Test evidence JzKxKVFS5GxYiuWHpfTD) always still displays as recorded, regardless of whether preservation has happened yet, and the same evidence reconciles once preservation later lands without ever attempting a second write',
+    /<\/Btn>\s*\n\s*\{underContractWriteState\.kind === "success" \? \(/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'handleCreateUnderContract itself refuses to run without a current preservedArtifactRecord -- never only a client-side button-disable',
     (() => {
-      const ucGateIdx = contractTsxNoComments.indexOf('underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded") ? (');
-      const transitionBtnIdx = contractTsxNoComments.indexOf('testId="contract-execution-transition-under-contract-button"');
-      return ucGateIdx !== -1 && transitionBtnIdx !== -1 && transitionBtnIdx > ucGateIdx;
+      const m = contractTsxNoComments.match(/async function handleCreateUnderContract\(\)[\s\S]*?\n    setUnderContractWriteState\(\{ kind: "busy" \}\);/m);
+      return !!m && /!preservedArtifactRecord\) return;/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'the stage-transition control (button) renders ONLY once preservedArtifactRecord exists AND Under Contract itself has already been created/hydrated as recorded -- it cannot appear before either',
+    (() => {
+      const m = contractTsxNoComments.match(/\{\(preservedArtifactRecord && \(underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded"\)\) \? \(\s*\n\s*<div style=\{\{ \.\.\.groupCardStyle, marginTop: "16px" \}\}>\s*\n\s*<div[^>]*>Transition to Under Contract<\/div>\s*\n\s*<Btn\s*\n\s*testId="contract-execution-transition-under-contract-button"/);
+      return !!m;
     })(),
     true,
   );

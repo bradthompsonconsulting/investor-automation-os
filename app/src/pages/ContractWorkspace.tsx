@@ -1629,7 +1629,12 @@ export default function ContractWorkspace() {
   >({ kind: "idle" });
 
   async function handleCreateUnderContract() {
-    if (screen.state !== "ready" || !fullVerificationResult || !fullVerificationResult.ok || !notes) return;
+    // Gate-review closure -- PR #85 sequencing repair. Board #9's accepted
+    // finish line: verified execution -> executed contract preserved ->
+    // Under Contract -> disposition handoff. `preservedArtifactRecord` is
+    // a durable, freshly-parsed receipt (never local upload state) --
+    // Create Under Contract can never fire without one already existing.
+    if (screen.state !== "ready" || !fullVerificationResult || !fullVerificationResult.ok || !notes || !preservedArtifactRecord) return;
     setUnderContractWriteState({ kind: "busy" });
     const candidate = fullVerificationResult.value;
 
@@ -1710,6 +1715,48 @@ export default function ContractWorkspace() {
     | { kind: "failed"; message: string }
   >({ kind: "idle" });
 
+  /**
+   * Gate-review closure -- PR #85 executed-PDF preservation UX repair.
+   * Selecting a file must remain local only: read the bytes, classify
+   * and hash them, count pages -- exactly the SAME local-only pattern
+   * `handleManualFileSelected` already uses (reused, not reinvented) --
+   * and stop there. The chosen `File` handle is retained in
+   * `preserveSelectedFile` ONLY so the explicit "Preserve executed PDF"
+   * button below can later read it; nothing here makes a network
+   * request or calls `handlePreserveExecutedArtifact`.
+   */
+  const [preserveFileOutcome, setPreserveFileOutcome] = useState<ManualArtifactSelectionOutcome | null>(null);
+  const [preserveSelectedFile, setPreserveSelectedFile] = useState<File | null>(null);
+  const [preserveFileBusy, setPreserveFileBusy] = useState(false);
+
+  async function handlePreservePdfFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    setPreserveUploadState({ kind: "idle" });
+    if (!file) { setPreserveFileOutcome({ kind: "no_file" }); setPreserveSelectedFile(null); return; }
+    setPreserveFileBusy(true);
+    try {
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      const bytesOutcome = classifySelectedFileBytes({ fileName: file.name, mimeType: file.type || null, bytes });
+      if (bytesOutcome.kind !== "valid_bytes") {
+        setPreserveFileOutcome(bytesOutcome);
+        setPreserveSelectedFile(null);
+        return;
+      }
+      const sha256 = await computeManualArtifactSha256Hex(bytesOutcome.bytes);
+      const pageCount = await countPdfPages(bytesOutcome.bytes);
+      setPreserveFileOutcome({ kind: "selected", sha256, fileName: bytesOutcome.fileName, mimeType: bytesOutcome.mimeType, pageCount });
+      setPreserveSelectedFile(file);
+    } catch (err: any) {
+      setPreserveFileOutcome({ kind: "unreadable", message: err?.message ?? "The file could not be read." });
+      setPreserveSelectedFile(null);
+    } finally {
+      setPreserveFileBusy(false);
+    }
+  }
+
+  /** Only ever called from the explicit "Preserve executed PDF" button's onClick -- never from file selection. */
   async function handlePreserveExecutedArtifact(file: File) {
     if (screen.state !== "ready" || !documentVersion || !existingSend?.providerResponse?.documentId) return;
     const providerDocumentId = existingSend.providerResponse.documentId;
@@ -1739,6 +1786,16 @@ export default function ContractWorkspace() {
         uploadId, providerDocumentId,
       });
       setPreserveUploadState({ kind: "success", alreadyPreserved: !!finalized.alreadyPreserved, sha256: finalized.sha256, byteCount: finalized.byteCount, pageCount: finalized.pageCount ?? null });
+      // Gate-review closure -- immediate hydration. A fresh notes readback
+      // (never trusting local state) so preservedArtifactRecord -- and the
+      // Create Under Contract gate that now requires it -- reflect this
+      // success within the SAME session, never requiring a reload. The
+      // preservation itself already succeeded regardless of this refetch;
+      // a failure here is not reported as an upload failure.
+      try {
+        const freshResult = await ghl.notes.list(contactId);
+        setNotes(freshResult.notes ?? []);
+      } catch { /* self-heals on next natural notes load */ }
     } catch (e: any) {
       setPreserveUploadState({ kind: "failed", message: e?.message ?? "Preservation failed unexpectedly" });
     }
@@ -3713,9 +3770,78 @@ export default function ContractWorkspace() {
               </div>
 
               {/* -------------------------------------------------------------- */}
+              {/* Preserve executed PDF -- Board #9 Phase B (B9-13). Gate-review  */}
+              {/* closure: this must happen BEFORE Under Contract, never after   */}
+              {/* -- Board #9's accepted finish line is verified execution ->    */}
+              {/* executed contract preserved -> Under Contract -> disposition   */}
+              {/* handoff. Selecting a file is LOCAL ONLY (filename/byte size/   */}
+              {/* page count/SHA-256, no request); only the explicit button      */}
+              {/* below may start the durable chunked upload.                    */}
+              {/* -------------------------------------------------------------- */}
+              <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Preserve executed PDF</div>
+                <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "10px" }}>
+                  GHL exposes no supported retrieval path for the executed document's bytes. Download the completed executed PDF from GHL yourself, then select it below -- selecting only computes its filename, byte size, page count, and SHA-256 locally in this browser; nothing is uploaded until you click Preserve executed PDF. Create Under Contract requires a current durable preservation receipt for this exact evidence first.
+                </div>
+                {preservedArtifactRecord ? (
+                  <div data-testid="contract-execution-artifact-preserved" style={{ fontSize: "12px", color: "#22C55E" }}>
+                    Preserved: {preservedArtifactRecord.originalFileName} -- {preservedArtifactRecord.byteCount.toLocaleString()} bytes, SHA-256 {preservedArtifactRecord.sha256.slice(0, 12)}…, {preservedArtifactRecord.pageCount ?? "unknown"} page(s).
+                  </div>
+                ) : (
+                  <>
+                    <input
+                      data-testid="contract-execution-artifact-file-input"
+                      type="file"
+                      accept="application/pdf"
+                      disabled={preserveFileBusy || preserveUploadState.kind === "uploading"}
+                      onChange={handlePreservePdfFileSelected}
+                    />
+                    {preserveFileBusy ? (
+                      <div data-testid="contract-execution-artifact-selection-busy" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>Reading and hashing selected file...</div>
+                    ) : preserveFileOutcome && preserveFileOutcome.kind === "selected" ? (
+                      <div data-testid="contract-execution-artifact-selected" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>
+                        Selected locally (not yet uploaded): {preserveFileOutcome.fileName}, SHA-256 <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{preserveFileOutcome.sha256}</span>, {preserveFileOutcome.pageCount ?? "unknown"} page(s).
+                      </div>
+                    ) : preserveFileOutcome ? (
+                      <div data-testid="contract-execution-artifact-selection-rejected" style={{ fontSize: "11px", color: "#F59E0B", marginTop: "6px" }}>
+                        {preserveFileOutcome.kind === "no_file" ? "No file was selected."
+                          : preserveFileOutcome.kind === "invalid_file_type" ? "The selected file is not a real PDF (its content does not begin with the PDF signature)."
+                          : preserveFileOutcome.kind === "empty_file" ? "The selected file is empty."
+                          : preserveFileOutcome.message}
+                      </div>
+                    ) : null}
+                    <div style={{ marginTop: "10px" }}>
+                      <Btn
+                        testId="contract-execution-artifact-preserve-button"
+                        onClick={() => { if (preserveSelectedFile) void handlePreserveExecutedArtifact(preserveSelectedFile); }}
+                        busy={preserveUploadState.kind === "uploading"}
+                        disabled={!preserveSelectedFile || preserveUploadState.kind === "uploading" || preserveUploadState.kind === "success"}
+                      >
+                        Preserve executed PDF
+                      </Btn>
+                    </div>
+                    {preserveUploadState.kind === "uploading" ? (
+                      <div data-testid="contract-execution-artifact-uploading" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>
+                        Uploading chunk {preserveUploadState.chunkIndex + 1} of {preserveUploadState.chunkCount}…
+                      </div>
+                    ) : preserveUploadState.kind === "success" ? (
+                      <div data-testid="contract-execution-artifact-upload-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "6px" }}>
+                        {preserveUploadState.alreadyPreserved ? "Already preserved -- identical bytes, no duplicate written." : "Preserved and independently re-verified by fresh readback."}
+                      </div>
+                    ) : preserveUploadState.kind === "failed" ? (
+                      <div data-testid="contract-execution-artifact-upload-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "6px" }}>
+                        {preserveUploadState.message}
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </div>
+
+              {/* -------------------------------------------------------------- */}
               {/* 7. Final eligibility + Under Contract persistence -- reflects   */}
               {/* the REAL pipeline result; the write action below is reachable  */}
-              {/* ONLY once every INV-65 gate above independently passes         */}
+              {/* ONLY once every INV-65 gate above independently passes AND a   */}
+              {/* current durable preservation receipt already exists            */}
               {/* -------------------------------------------------------------- */}
               <div style={{ ...groupCardStyle, borderColor: fullVerificationResult?.ok ? "rgba(34,197,94,0.35)" : "rgba(239,68,68,0.35)" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>7. Under Contract</div>
@@ -3725,11 +3851,16 @@ export default function ContractWorkspace() {
                       <div data-testid="contract-execution-under-contract-eligible" style={{ fontSize: "12px", color: "#22C55E", fontWeight: 700, marginBottom: "10px" }}>
                         Every INV-65 requirement passes for this exact evidence.
                       </div>
+                      {(!preservedArtifactRecord && underContractWriteState.kind !== "success" && underContractWriteState.kind !== "already_recorded") ? (
+                        <div data-testid="contract-execution-under-contract-awaiting-preservation" style={{ fontSize: "12px", color: "#F59E0B", marginBottom: "10px" }}>
+                          Create Under Contract requires a current durable preservation receipt for the executed PDF first -- preserve it above.
+                        </div>
+                      ) : null}
                       <Btn
                         testId="contract-execution-create-under-contract-button"
                         onClick={handleCreateUnderContract}
                         busy={underContractWriteState.kind === "busy"}
-                        disabled={underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded"}
+                        disabled={underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded" || !preservedArtifactRecord}
                       >
                         Create Under Contract
                       </Btn>
@@ -3747,66 +3878,29 @@ export default function ContractWorkspace() {
                         </div>
                       ) : null}
 
-                      {(underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded") ? (
-                        <div style={{ ...groupCardStyle, marginTop: "16px" }}>
-                          <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Preserve executed PDF</div>
-                          <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "10px" }}>
-                            GHL exposes no supported retrieval path for the executed document's bytes. Download the completed executed PDF from GHL yourself, then upload it here -- IAOS stores the actual bytes durably and independently re-verifies them before Under Contract can proceed.
+                      {(preservedArtifactRecord && (underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded")) ? (
+                          <div style={{ ...groupCardStyle, marginTop: "16px" }}>
+                            <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Transition to Under Contract</div>
+                            <Btn
+                              testId="contract-execution-transition-under-contract-button"
+                              onClick={handleTransitionUnderContractStage}
+                              busy={stageTransitionState.kind === "busy"}
+                              disabled={stageTransitionState.kind === "success"}
+                            >
+                              Transition GHL stage to Under Contract
+                            </Btn>
+                            {stageTransitionState.kind === "success" ? (
+                              <div data-testid="contract-execution-stage-transition-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
+                                {stageTransitionState.alreadyInStage ? "Already in the Under Contract stage." : "Transitioned and confirmed by fresh readback -- pipeline and stage both verified exact."}
+                              </div>
+                            ) : stageTransitionState.kind === "failed" ? (
+                              <div data-testid="contract-execution-stage-transition-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
+                                {stageTransitionState.message}
+                              </div>
+                            ) : null}
                           </div>
-                          {preservedArtifactRecord ? (
-                            <div data-testid="contract-execution-artifact-preserved" style={{ fontSize: "12px", color: "#22C55E" }}>
-                              Preserved: {preservedArtifactRecord.originalFileName} -- {preservedArtifactRecord.byteCount.toLocaleString()} bytes, SHA-256 {preservedArtifactRecord.sha256.slice(0, 12)}…, {preservedArtifactRecord.pageCount ?? "unknown"} page(s).
-                            </div>
-                          ) : (
-                            <>
-                              <input
-                                data-testid="contract-execution-artifact-file-input"
-                                type="file"
-                                accept="application/pdf"
-                                disabled={preserveUploadState.kind === "uploading"}
-                                onChange={(e) => { const f = e.target.files?.[0]; if (f) void handlePreserveExecutedArtifact(f); }}
-                              />
-                              {preserveUploadState.kind === "uploading" ? (
-                                <div data-testid="contract-execution-artifact-uploading" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>
-                                  Uploading chunk {preserveUploadState.chunkIndex + 1} of {preserveUploadState.chunkCount}…
-                                </div>
-                              ) : preserveUploadState.kind === "success" ? (
-                                <div data-testid="contract-execution-artifact-upload-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "6px" }}>
-                                  {preserveUploadState.alreadyPreserved ? "Already preserved -- identical bytes, no duplicate written." : "Preserved and independently re-verified by fresh readback."}
-                                </div>
-                              ) : preserveUploadState.kind === "failed" ? (
-                                <div data-testid="contract-execution-artifact-upload-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "6px" }}>
-                                  {preserveUploadState.message}
-                                </div>
-                              ) : null}
-                            </>
-                          )}
-                        </div>
-                      ) : null}
-
-                      {preservedArtifactRecord ? (
-                        <div style={{ ...groupCardStyle, marginTop: "16px" }}>
-                          <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Transition to Under Contract</div>
-                          <Btn
-                            testId="contract-execution-transition-under-contract-button"
-                            onClick={handleTransitionUnderContractStage}
-                            busy={stageTransitionState.kind === "busy"}
-                            disabled={stageTransitionState.kind === "success"}
-                          >
-                            Transition GHL stage to Under Contract
-                          </Btn>
-                          {stageTransitionState.kind === "success" ? (
-                            <div data-testid="contract-execution-stage-transition-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
-                              {stageTransitionState.alreadyInStage ? "Already in the Under Contract stage." : "Transitioned and confirmed by fresh readback -- pipeline and stage both verified exact."}
-                            </div>
-                          ) : stageTransitionState.kind === "failed" ? (
-                            <div data-testid="contract-execution-stage-transition-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
-                              {stageTransitionState.message}
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
+                        ) : null}
+                      </div>
                   ) : (
                     <div data-testid="contract-execution-full-result" style={{ fontSize: "11px", color: "#94A3B8" }}>
                       <div style={{ color: "#EF4444", fontWeight: 700, marginBottom: "6px" }}>BLOCKED -- stage: <span style={{ fontFamily: "monospace" }}>{fullVerificationResult.failure.stage}</span></div>
