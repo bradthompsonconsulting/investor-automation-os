@@ -7,7 +7,10 @@ import {
   formatContractReadyChecklistNote,
   CONTRACT_READY_ITEM_KEYS, type ContractReadyItemKey, type ContractReadyItems,
 } from "../lib/seller-call-readiness-carriers";
-import { computeContractScreenState, type ContractScreenState } from "../lib/contract-workspace-view";
+import {
+  computeContractScreenState, showRecordGhlSendControl, showVerifyExecutionControl, showDispositionHandoffControl, showStartDispositionControl,
+  type ContractScreenState,
+} from "../lib/contract-workspace-view";
 import { CONTRACT_STATE_MEANING, initialVersionIdentity, evaluateContractSentEligibility, isSameContractVersion, type MaterialTermSnapshot } from "../lib/board9-contract-model";
 import {
   computeSellerContractFactsReport, computeSellerContractFactsReadiness,
@@ -31,7 +34,7 @@ import {
   classifySelectedFileBytes, verifyRequiredSigners, verifyProviderCompletion,
   verifyManualArtifactSelection, buildVerifiedUnderContractRecord,
   extractProviderSignerRowsFromListDocumentsBody, verifyBuyerSignerIdentity,
-  isDuplicateUnderContractRecord, verifyReadbackMatchesWritten, countPdfPages,
+  isDuplicateUnderContractRecord, verifyReadbackMatchesWritten, matchesUnderContractEvidenceIdentity, countPdfPages,
   type ManualArtifactSelectionOutcome, type UnderContractRecordEntry,
 } from "../lib/contract-execution-model";
 import { buildManualContractSendRecordArgs } from "../lib/contract-manual-send-model";
@@ -63,6 +66,9 @@ import {
   verifyHandoffMatchesUnderContract,
   type DispositionHandoffRecord, type DocumentReference,
 } from "../lib/contract-disposition-handoff-model";
+import { CHUNK_SIZE_BYTES } from "../lib/contract-executed-artifact-storage-model";
+import { latestPreservedExecutedArtifactForVersion } from "../lib/contract-executed-artifact-carriers";
+import { appWriteFetch } from "../lib/app-write-session";
 import {
   formatDispositionHandoffNote, parseDispositionHandoffNote, allDispositionHandoffsForOpportunity,
 } from "../lib/contract-disposition-handoff-carriers";
@@ -965,18 +971,50 @@ export default function ContractWorkspace() {
     setGenerateError(null);
   }, [contractDocumentPreview]);
 
-  /** The ONLY source of "current" artifact facts this page ever uses for display or authorization -- never a self-reference to the stored record, never invented. Absent a fresh generation, this is a bundle guaranteed to fail `evaluateBradAuthorizationCurrency`'s own shape validation (empty strings can never be a real 64-hex hash), so the page can never claim "currently authorized" without a real, current generation backing it. */
+  /**
+   * B9-13 authorization-hydration repair (gate-review correction,
+   * 2026-09-21). The "current" artifact facts `evaluateBradAuthorizationCurrency`
+   * compares the saved record against. A fresh in-session generation (the
+   * operator's own explicit "Generate" click) is always preferred when one
+   * exists -- it is independently, freshly computed evidence, and if the
+   * operator changed something that alters the generator's OUTPUT bytes
+   * without changing the tracked content/version/template snapshot (a
+   * generator or manifest upgrade, for instance), this is what actually
+   * catches it.
+   *
+   * Absent a fresh generation -- true on every ordinary page load/reopen,
+   * where `generatedArtifact` is always initially `null` -- there is no
+   * new artifact to compare the record against, so this falls back to the
+   * record's OWN saved artifact identity. This is not circular: it makes
+   * `evaluateBradAuthorizationCurrency`'s four artifact-specific checks
+   * (ARTIFACT_CHANGED/SOURCE_PDF_CHANGED/GENERATOR_CHANGED/MANIFEST_CHANGED)
+   * correctly report "nothing to disagree with yet" while its INDEPENDENT
+   * content/version/template/operator checks -- computed fresh from the
+   * live `currentPreview` every time, never from this bundle -- still run
+   * in full and still correctly revoke authorization the instant a real
+   * contract fact changes underneath it. No PDF is generated, no write
+   * session is required, and no network call of any kind happens here --
+   * this is a pure, synchronous read of already-loaded note data.
+   */
   const currentArtifactFactsForDisplay = useMemo(() => {
-    if (!generatedArtifact) {
-      return { artifactSha256: "", sourcePdfSha256: "", generatorVersion: "", manifestVersion: "" };
+    if (generatedArtifact) {
+      return {
+        artifactSha256: generatedArtifact.outputSha256,
+        sourcePdfSha256: generatedArtifact.sourceSha256,
+        generatorVersion: generatedArtifact.generatorVersion,
+        manifestVersion: generatedArtifact.manifestVersion,
+      };
     }
-    return {
-      artifactSha256: generatedArtifact.outputSha256,
-      sourcePdfSha256: generatedArtifact.sourceSha256,
-      generatorVersion: generatedArtifact.generatorVersion,
-      manifestVersion: generatedArtifact.manifestVersion,
-    };
-  }, [generatedArtifact]);
+    if (bradAuthorizationRecord) {
+      return {
+        artifactSha256: bradAuthorizationRecord.artifactSha256,
+        sourcePdfSha256: bradAuthorizationRecord.sourcePdfSha256,
+        generatorVersion: bradAuthorizationRecord.generatorVersion,
+        manifestVersion: bradAuthorizationRecord.manifestVersion,
+      };
+    }
+    return { artifactSha256: "", sourcePdfSha256: "", generatorVersion: "", manifestVersion: "" };
+  }, [generatedArtifact, bradAuthorizationRecord]);
 
   async function handleGenerateArtifact() {
     if (screen.state !== "ready") return;
@@ -1591,7 +1629,12 @@ export default function ContractWorkspace() {
   >({ kind: "idle" });
 
   async function handleCreateUnderContract() {
-    if (screen.state !== "ready" || !fullVerificationResult || !fullVerificationResult.ok || !notes) return;
+    // Gate-review closure -- PR #85 sequencing repair. Board #9's accepted
+    // finish line: verified execution -> executed contract preserved ->
+    // Under Contract -> disposition handoff. `preservedArtifactRecord` is
+    // a durable, freshly-parsed receipt (never local upload state) --
+    // Create Under Contract can never fire without one already existing.
+    if (screen.state !== "ready" || !fullVerificationResult || !fullVerificationResult.ok || !notes || !preservedArtifactRecord) return;
     setUnderContractWriteState({ kind: "busy" });
     const candidate = fullVerificationResult.value;
 
@@ -1633,7 +1676,7 @@ export default function ContractWorkspace() {
     const parsedCandidates = freshNotes
       .map((n) => parseUnderContractNote(n.body))
       .filter((r): r is UnderContractRecordEntry => r !== null);
-    const matchingReadback = parsedCandidates.find((r) => JSON.stringify(r) === JSON.stringify(candidate)) ?? null;
+    const matchingReadback = parsedCandidates.find((r) => matchesUnderContractEvidenceIdentity(r, candidate)) ?? null;
     const readbackCheck = verifyReadbackMatchesWritten(candidate, matchingReadback);
     if (!readbackCheck.ok) {
       setUnderContractWriteState({
@@ -1646,6 +1689,201 @@ export default function ContractWorkspace() {
 
     setUnderContractWriteState({ kind: "success", record: candidate });
   }
+
+  /**
+   * Board #9 Phase B (B9-13) -- executed-PDF durable preservation.
+   * Product Owner ruling, 2026-09-21: GHL exposes no supported retrieval
+   * path for the executed document's bytes, so Brad downloads the
+   * completed PDF from GHL himself and uploads it here. Chunked through
+   * the existing Netlify Function architecture (never an Edge Function) --
+   * `CHUNK_SIZE_BYTES` keeps each request's base64-encoded body safely
+   * under Netlify's ~4.5 MB effective binary-payload ceiling for classic
+   * Functions. The server independently reassembles, validates, hashes,
+   * stores, and re-reads the bytes before ever recording durable
+   * metadata -- this handler only drives that sequence, it never claims
+   * success on its own say-so.
+   */
+  const preservedArtifactRecord = useMemo(() => {
+    if (screen.state !== "ready" || !notes || !documentVersion) return null;
+    return latestPreservedExecutedArtifactForVersion(notes, screen.opportunity.id, screen.economics.agreementAt, documentVersion);
+  }, [screen, notes, documentVersion]);
+
+  const [preserveUploadState, setPreserveUploadState] = useState<
+    | { kind: "idle" }
+    | { kind: "uploading"; chunkIndex: number; chunkCount: number }
+    | { kind: "success"; alreadyPreserved: boolean; sha256: string; byteCount: number; pageCount: number | null }
+    | { kind: "failed"; message: string }
+  >({ kind: "idle" });
+
+  /**
+   * Gate-review closure -- PR #85 executed-PDF preservation UX repair.
+   * Selecting a file must remain local only: read the bytes, classify
+   * and hash them, count pages -- exactly the SAME local-only pattern
+   * `handleManualFileSelected` already uses (reused, not reinvented) --
+   * and stop there. The chosen `File` handle is retained in
+   * `preserveSelectedFile` ONLY so the explicit "Preserve executed PDF"
+   * button below can later read it; nothing here makes a network
+   * request or calls `handlePreserveExecutedArtifact`.
+   */
+  const [preserveFileOutcome, setPreserveFileOutcome] = useState<ManualArtifactSelectionOutcome | null>(null);
+  const [preserveSelectedFile, setPreserveSelectedFile] = useState<File | null>(null);
+  const [preserveFileBusy, setPreserveFileBusy] = useState(false);
+
+  async function handlePreservePdfFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    setPreserveUploadState({ kind: "idle" });
+    if (!file) { setPreserveFileOutcome({ kind: "no_file" }); setPreserveSelectedFile(null); return; }
+    setPreserveFileBusy(true);
+    try {
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      const bytesOutcome = classifySelectedFileBytes({ fileName: file.name, mimeType: file.type || null, bytes });
+      if (bytesOutcome.kind !== "valid_bytes") {
+        setPreserveFileOutcome(bytesOutcome);
+        setPreserveSelectedFile(null);
+        return;
+      }
+      const sha256 = await computeManualArtifactSha256Hex(bytesOutcome.bytes);
+      const pageCount = await countPdfPages(bytesOutcome.bytes);
+      setPreserveFileOutcome({ kind: "selected", sha256, fileName: bytesOutcome.fileName, mimeType: bytesOutcome.mimeType, pageCount });
+      setPreserveSelectedFile(file);
+    } catch (err: any) {
+      setPreserveFileOutcome({ kind: "unreadable", message: err?.message ?? "The file could not be read." });
+      setPreserveSelectedFile(null);
+    } finally {
+      setPreserveFileBusy(false);
+    }
+  }
+
+  /** Only ever called from the explicit "Preserve executed PDF" button's onClick -- never from file selection. */
+  async function handlePreserveExecutedArtifact(file: File, expectedFullSha256: string) {
+    if (screen.state !== "ready" || !documentVersion || !existingSend?.providerResponse?.documentId) return;
+    const providerDocumentId = existingSend.providerResponse.documentId;
+    const opportunityId = screen.opportunity.id;
+    const agreementAt = screen.economics.agreementAt;
+    const version = documentVersion;
+    setPreserveUploadState({ kind: "uploading", chunkIndex: 0, chunkCount: 1 });
+    const uploadId = (globalThis.crypto && "randomUUID" in globalThis.crypto) ? globalThis.crypto.randomUUID() : `${opportunityId}-${Date.now()}`;
+    const call = async (body: unknown) => {
+      const res = await appWriteFetch("/.netlify/functions/ghl-executed-artifact-upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const parsed = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // Gate-review closure, requirement 2 -- surface the server's own
+        // safe (structural, never bytes/tokens/PII) reason detail to the
+        // operator, not merely the generic "Chunk refused"/"Not all
+        // chunks received" headline.
+        const reasonDetail = Array.isArray(parsed.reasons) && parsed.reasons.length > 0 && typeof parsed.reasons[0]?.message === "string" ? `: ${parsed.reasons[0].message}` : "";
+        throw new Error((parsed.error ?? "Preservation request refused") + reasonDetail);
+      }
+      return parsed;
+    };
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const chunkCount = Math.max(1, Math.ceil(bytes.length / CHUNK_SIZE_BYTES));
+      for (let i = 0; i < chunkCount; i++) {
+        setPreserveUploadState({ kind: "uploading", chunkIndex: i, chunkCount });
+        const slice = bytes.subarray(i * CHUNK_SIZE_BYTES, Math.min(bytes.length, (i + 1) * CHUNK_SIZE_BYTES));
+        let binary = "";
+        for (let j = 0; j < slice.length; j++) binary += String.fromCharCode(slice[j]);
+        await call({
+          phase: "chunk", opportunityId, agreementAt, version,
+          uploadId, chunkIndex: i, chunkCount, totalByteCount: bytes.length, originalFileName: file.name, expectedFullSha256, chunkBase64: btoa(binary),
+        });
+      }
+      const finalized = await call({
+        phase: "finalize", opportunityId, agreementAt, version,
+        uploadId, providerDocumentId, chunkCount, totalByteCount: bytes.length, originalFileName: file.name, expectedFullSha256,
+      });
+      setPreserveUploadState({ kind: "success", alreadyPreserved: !!finalized.alreadyPreserved, sha256: finalized.sha256, byteCount: finalized.byteCount, pageCount: finalized.pageCount ?? null });
+      // Gate-review closure -- immediate hydration. A fresh notes readback
+      // (never trusting local state) so preservedArtifactRecord -- and the
+      // Create Under Contract gate that now requires it -- reflect this
+      // success within the SAME session, never requiring a reload. The
+      // preservation itself already succeeded regardless of this refetch;
+      // a failure here is not reported as an upload failure.
+      try {
+        const freshResult = await ghl.notes.list(contactId);
+        setNotes(freshResult.notes ?? []);
+      } catch { /* self-heals on next natural notes load */ }
+    } catch (e: any) {
+      setPreserveUploadState({ kind: "failed", message: e?.message ?? "Preservation failed unexpectedly" });
+      // Gate-review closure, requirement 8 -- bounded cleanup for the
+      // partial session this failed attempt may have left pending. Never
+      // touches finalized evidence (a completely separate key
+      // namespace); best-effort only, its own failure is swallowed so it
+      // never masks the real error already reported above. No automatic
+      // retry of the upload itself (requirement 9) -- the operator must
+      // explicitly select and click Preserve executed PDF again.
+      try {
+        await appWriteFetch("/.netlify/functions/ghl-executed-artifact-upload", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phase: "abort", opportunityId, agreementAt, version, uploadId }),
+        });
+      } catch { /* best-effort cleanup only */ }
+    }
+  }
+
+  /**
+   * Board #9 Phase B (B9-13) -- the Under Contract GHL opportunity-stage
+   * transition. Offered ONLY once both a durable Under Contract record
+   * AND a durable preserved-artifact record exist for this exact
+   * opportunity/version -- the server independently re-verifies both
+   * from fresh evidence before it will ever attempt the write; this
+   * handler adds no shortcut of its own.
+   */
+  const [stageTransitionState, setStageTransitionState] = useState<
+    | { kind: "idle" }
+    | { kind: "busy" }
+    | { kind: "success"; alreadyInStage: boolean }
+    | { kind: "failed"; message: string }
+  >({ kind: "idle" });
+
+  async function handleTransitionUnderContractStage() {
+    if (screen.state !== "ready" || !documentVersion) return;
+    setStageTransitionState({ kind: "busy" });
+    try {
+      const result = await ghl.opportunities.transitionToUnderContractStage(screen.opportunity.id, screen.economics.agreementAt, documentVersion);
+      setStageTransitionState({ kind: "success", alreadyInStage: !!result.alreadyInStage });
+    } catch (e: any) {
+      setStageTransitionState({ kind: "failed", message: e?.message ?? "Stage transition failed unexpectedly" });
+    }
+  }
+
+  /**
+   * Board #9 Phase B (B9-13), gate-review §5 ruling -- Start Disposition's
+   * REAL gate must be durable, never `stageTransitionState` (browser-local,
+   * resets on reload and proves nothing on its own). This is a fresh,
+   * independent GHL read of the opportunity's own live `pipelineId`/
+   * `pipelineStageId` -- never the transition call's own claimed readback,
+   * never a note's claim. Refetched on every fresh load AND again after a
+   * successful transition (`stageTransitionState.kind` in the dependency
+   * array), so the durable GHL state -- not local success state -- is what
+   * actually makes Start Disposition appear, exactly as ruled.
+   */
+  const [opportunityStageSnapshot, setOpportunityStageSnapshot] = useState<{ pipelineId: string; pipelineStageId: string } | null>(null);
+
+  useEffect(() => {
+    if (screen.state !== "ready") { setOpportunityStageSnapshot(null); return; }
+    let cancelled = false;
+    const opportunityId = screen.opportunity.id;
+    ghl.opportunities.get(opportunityId).then((res: any) => {
+      if (cancelled) return;
+      const opp = res?.opportunity ?? res;
+      if (opp && typeof opp.pipelineId === "string" && typeof opp.pipelineStageId === "string") {
+        setOpportunityStageSnapshot({ pipelineId: opp.pipelineId, pipelineStageId: opp.pipelineStageId });
+      } else {
+        setOpportunityStageSnapshot(null);
+      }
+    }).catch(() => { if (!cancelled) setOpportunityStageSnapshot(null); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen.state, screen.state === "ready" ? screen.opportunity.id : null, stageTransitionState.kind]);
+
+  const underContractStageConfirmed =
+    opportunityStageSnapshot !== null &&
+    opportunityStageSnapshot.pipelineId === getRuntimeConfig().pipelines.sellerLeads &&
+    opportunityStageSnapshot.pipelineStageId === getRuntimeConfig().stages.underContract;
 
   /**
    * B9-11 / INV-66 -- the no-reentry handoff to Board #10 Buyer
@@ -1662,6 +1900,23 @@ export default function ContractWorkspace() {
     return all.find((r) => r.agreementAt === screen.economics.agreementAt && isSameContractVersion(r.version, documentVersion)) ?? null;
   }, [screen, notes, documentVersion]);
 
+  /**
+   * Gate-review closure -- PR #85 live-Test proof, requirement 5: on a
+   * page reload, `underContractWriteState` starts back at `{kind:
+   * "idle"}` (it is plain component state, not durable) even when a
+   * verified Under Contract record already exists in `notes` -- the
+   * button previously stayed enabled until clicked once more. Hydrates
+   * from the SAME durable, freshly-parsed `currentUnderContractRecord`
+   * the rest of this page already uses for gating (Start Disposition,
+   * etc.), never a second/different lookup. Only ever transitions FROM
+   * "idle" -- never overrides an in-flight "busy" write or a "failed"
+   * result the operator still needs to see.
+   */
+  useEffect(() => {
+    if (underContractWriteState.kind !== "idle" || !currentUnderContractRecord) return;
+    setUnderContractWriteState({ kind: "already_recorded", record: currentUnderContractRecord });
+  }, [currentUnderContractRecord, underContractWriteState.kind]);
+
   const dispositionLifecycleHistory = useMemo(() => {
     if (screen.state !== "ready" || !notes) return [];
     return allContractLifecycleRecordsForOpportunity(notes, screen.opportunity.id);
@@ -1671,6 +1926,21 @@ export default function ContractWorkspace() {
     if (screen.state !== "ready" || !notes) return [];
     return allDispositionHandoffsForOpportunity(notes, screen.opportunity.id);
   }, [screen, notes]);
+
+  /**
+   * Gate-review closure -- PR #85 preventive repair, same pattern as
+   * `currentUnderContractRecord`'s own reload-hydration. The durable,
+   * freshly-parsed handoff that is genuinely CURRENT for the CURRENT
+   * Under Contract evidence -- never merely "the latest handoff note
+   * that happens to exist" (a superseded/stale handoff for a prior
+   * version must never be mistaken for current).
+   */
+  const currentDispositionHandoff: DispositionHandoffRecord | null = useMemo(() => {
+    if (screen.state !== "ready" || !documentVersion || !currentUnderContractRecord) return null;
+    return existingDispositionHandoffs.find((h) => verifyHandoffMatchesUnderContract({
+      handoff: h, opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion, underContract: currentUnderContractRecord,
+    }).ok) ?? null;
+  }, [screen, documentVersion, currentUnderContractRecord, existingDispositionHandoffs]);
 
   const dispositionEligibility = useMemo(() => {
     if (screen.state !== "ready" || !documentVersion) return null;
@@ -1753,6 +2023,20 @@ export default function ContractWorkspace() {
     | { kind: "already_recorded"; record: DispositionHandoffRecord }
     | { kind: "failed"; message: string; writeMayHaveOccurred: boolean }
   >({ kind: "idle" });
+
+  /**
+   * Gate-review closure -- PR #85 preventive repair, same pattern as
+   * `underContractWriteState`'s own reload-hydration effect. On a page
+   * reload `dispositionWriteState` starts back at `{kind: "idle"}` even
+   * when a durable, current handoff already exists -- Start Disposition
+   * previously stayed enabled until clicked once more. Only ever
+   * transitions FROM "idle" -- never overrides an in-flight "busy" write
+   * or a "failed" result the operator still needs to see.
+   */
+  useEffect(() => {
+    if (dispositionWriteState.kind !== "idle" || !currentDispositionHandoff) return;
+    setDispositionWriteState({ kind: "already_recorded", record: currentDispositionHandoff });
+  }, [currentDispositionHandoff, dispositionWriteState.kind]);
 
   /**
    * THE ONLY write this section performs. On Brad's explicit click only:
@@ -1848,7 +2132,19 @@ export default function ContractWorkspace() {
     const parsedCandidates = freshNotes
       .map((n) => parseDispositionHandoffNote(n.body))
       .filter((r): r is DispositionHandoffRecord => r !== null);
-    const matchingReadback = parsedCandidates.find((r) => JSON.stringify(r) === JSON.stringify(candidate)) ?? null;
+    // Gate-review closure -- PR #85 preventive repair. The same fragile
+    // whole-object JSON.stringify equality proven to false-fail on the
+    // Under Contract readback (a live GHL round trip is not guaranteed
+    // byte-identical to an in-memory format/parse round trip) applied
+    // here too. Reuses the SAME narrow, canonical-identity check this
+    // handler already trusts for the PRE-write duplicate refusal above
+    // (`verifyHandoffMatchesUnderContract`) -- never provider/free-text
+    // fields GHL could reformat, exactly the opportunity/agreement/
+    // version/Under-Contract-verification identity that makes one
+    // handoff durably distinct from any other for this opportunity.
+    const matchingReadback = parsedCandidates.find((r) => verifyHandoffMatchesUnderContract({
+      handoff: r, opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion, underContract: freshUnderContract,
+    }).ok) ?? null;
     if (matchingReadback === null) {
       setDispositionWriteState({
         kind: "failed",
@@ -3159,16 +3455,23 @@ export default function ContractWorkspace() {
               <p>IAOS V1 does not sync contract merge fields, request
                 a GHL template draft, or send contracts automatically.
                 This notice does not record a contract as sent.</p>
-              <div style={{ ...groupCardStyle, marginTop: "12px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Contract Sent (state-machine evaluation)</div>
-                {contractSentStatus.eligible ? (
-                  <div data-testid="contract-sent-true" style={{ fontSize: "12px", color: "#22C55E" }}>Contract Sent -- all three locked facts are present (operator authorization, confirmed provider transmission, explicit expiration).</div>
-                ) : (
-                  <ul data-testid="contract-sent-false-reasons" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
-                    {contractSentStatus.reasons.map((r) => <li key={r.code}>{r.message}</li>)}
-                  </ul>
-                )}
-              </div>
+              {/*
+                B9-13 authorization-hydration repair: the retired
+                automated-path "Contract Sent (state-machine evaluation)"
+                display (`contractSentStatus`) is deliberately removed from
+                this operator-facing UI. That evaluator can structurally
+                never report eligible in V1 (RETIRED_PATH_NEVER_MATCHES_ARTIFACT_FACTS,
+                board9-contract-model.ts / contract-send-model.ts) -- it was
+                showing a permanent, misleading "not eligible" reason list
+                (including a stale "Brad has not explicitly authorized"
+                reason) regardless of the REAL, current authorization state,
+                which read as a direct contradiction against the real
+                authorization-currency status above. The underlying pure
+                computation (`contractSentEvidence`/`contractSentStatus`)
+                is left in place, unused by any render -- retained for
+                historical/audit reuse per contract-send-model.ts's own
+                header, never claimed as a live operator signal again.
+              */}
             </div>
           ) : null}
 
@@ -3178,13 +3481,13 @@ export default function ContractWorkspace() {
           {/* nothing. Under Contract stays BLOCKED in V1 regardless of what    */}
           {/* this section observes -- see EXECUTED_TERMS_EVIDENCE_UNAVAILABLE. */}
           {/* ================================================================ */}
-          {existingSend && existingSend.status === "accepted" ? (
+          {showVerifyExecutionControl(existingSend) ? (
             <div data-testid="contract-execution-section" style={{ marginTop: "24px" }}>
               <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
                 Verify Execution &amp; Under Contract
               </div>
               <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
-                Verifies, in this browser only, whether the three locked Under Contract facts actually hold: every signer completed (by provider recipient id, never GHL's generic role), the provider independently reports completion, and a manually-selected executed PDF is present and hashed. Nothing here is uploaded, persisted, logged, or written to GHL.
+                Verifies whether the three locked Under Contract facts actually hold: every signer completed (by provider recipient id, never GHL's generic role), the provider independently reports completion, and a manually-selected executed PDF is present and hashed. Fetching the live readback above is read-only against GHL, and selecting/hashing the PDF happens locally in this browser. But clicking Record signer mapping or Record attestation below DOES write a durable IAOS note in GHL -- only when that button is clicked, never automatically. Neither of those two steps uploads the PDF file itself; Preserve executed PDF, further below, is a separate action that DOES upload and durably store the actual PDF bytes.
               </div>
 
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
@@ -3336,7 +3639,7 @@ export default function ContractWorkspace() {
                   <div data-testid="contract-execution-buyer-identity-awaiting-mapping" style={{ fontSize: "11px", color: "#64748B" }}>Map the buyer's provider recipient above to check this.</div>
                 ) : buyerSignerIdentityResult.ok ? (
                   <div data-testid="contract-execution-buyer-identity-verified" style={{ fontSize: "12px", color: "#22C55E" }}>
-                    The buyer's mapped provider recipient's reported name matches the authorized legal buyer name.
+                    The buyer's mapped provider recipient's reported name matches the authorized buyer signer name.
                   </div>
                 ) : (
                   <ul data-testid="contract-execution-buyer-identity-mismatch" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
@@ -3430,7 +3733,7 @@ export default function ContractWorkspace() {
                         const label = item.kind === "property_identity" ? "Property identity"
                           : item.kind === "purchase_price" ? "Purchase price"
                           : item.kind === "buyer_identity" ? "Buyer identity"
-                          : item.kind === "signing_party" ? `Signing party: ${item.signerRole}`
+                          : item.kind === "signing_party" ? `Signing party: ${item.authoritativeLabel}`
                           : "Other material terms";
                         const current = checklistResponses[key];
                         return (
@@ -3463,7 +3766,7 @@ export default function ContractWorkspace() {
                         testId="contract-execution-terms-record-button"
                         onClick={handleRecordAttestation}
                         busy={busyGroup === "executed-terms-attestation"}
-                        disabled={!allChecklistItemsAnswered || !manualArtifactVerificationResult || !manualArtifactVerificationResult.ok}
+                        disabled={!allChecklistItemsAnswered || !manualArtifactVerificationResult || !manualArtifactVerificationResult.ok || (attestationCurrencyResult?.ok ?? false)}
                       >
                         Record attestation
                       </Btn>
@@ -3490,9 +3793,98 @@ export default function ContractWorkspace() {
               </div>
 
               {/* -------------------------------------------------------------- */}
+              {/* Preserve executed PDF -- Board #9 Phase B (B9-13). Gate-review  */}
+              {/* closure: this must happen BEFORE Under Contract, never after   */}
+              {/* -- Board #9's accepted finish line is verified execution ->    */}
+              {/* executed contract preserved -> Under Contract -> disposition   */}
+              {/* handoff. Selecting a file is LOCAL ONLY (filename/byte size/   */}
+              {/* page count/SHA-256, no request); only the explicit button      */}
+              {/* below may start the durable chunked upload.                    */}
+              {/* -------------------------------------------------------------- */}
+              <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Preserve executed PDF</div>
+                <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "10px" }}>
+                  GHL exposes no supported retrieval path for the executed document's bytes. Download the completed executed PDF from GHL yourself, then select it below -- selecting only computes its filename, byte size, page count, and SHA-256 locally in this browser; nothing is uploaded until you click Preserve executed PDF. Create Under Contract requires a current durable preservation receipt for this exact evidence first.
+                </div>
+                {preservedArtifactRecord ? (
+                  <div data-testid="contract-execution-artifact-preserved" style={{ fontSize: "12px", color: "#22C55E" }}>
+                    Preserved: {preservedArtifactRecord.originalFileName} -- {preservedArtifactRecord.byteCount.toLocaleString()} bytes, SHA-256 {preservedArtifactRecord.sha256.slice(0, 12)}…, {preservedArtifactRecord.pageCount ?? "unknown"} page(s).
+                  </div>
+                ) : (
+                  <>
+                    <input
+                      data-testid="contract-execution-artifact-file-input"
+                      type="file"
+                      accept="application/pdf"
+                      disabled={preserveFileBusy || preserveUploadState.kind === "uploading"}
+                      onChange={handlePreservePdfFileSelected}
+                    />
+                    {preserveFileBusy ? (
+                      <div data-testid="contract-execution-artifact-selection-busy" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>Reading and hashing selected file...</div>
+                    ) : preserveFileOutcome && preserveFileOutcome.kind === "selected" ? (
+                      <div data-testid="contract-execution-artifact-selected" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>
+                        Selected locally (not yet uploaded): {preserveFileOutcome.fileName} -- {(preserveSelectedFile?.size ?? 0).toLocaleString()} bytes, SHA-256 <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{preserveFileOutcome.sha256}</span>, {preserveFileOutcome.pageCount ?? "unknown"} page(s).
+                      </div>
+                    ) : preserveFileOutcome ? (
+                      <div data-testid="contract-execution-artifact-selection-rejected" style={{ fontSize: "11px", color: "#F59E0B", marginTop: "6px" }}>
+                        {preserveFileOutcome.kind === "no_file" ? "No file was selected."
+                          : preserveFileOutcome.kind === "invalid_file_type" ? "The selected file is not a real PDF (its content does not begin with the PDF signature)."
+                          : preserveFileOutcome.kind === "empty_file" ? "The selected file is empty."
+                          : preserveFileOutcome.message}
+                      </div>
+                    ) : null}
+                    <div style={{ marginTop: "10px" }}>
+                      <Btn
+                        testId="contract-execution-artifact-preserve-button"
+                        onClick={() => { if (preserveSelectedFile && preserveFileOutcome && preserveFileOutcome.kind === "selected") void handlePreserveExecutedArtifact(preserveSelectedFile, preserveFileOutcome.sha256); }}
+                        busy={preserveUploadState.kind === "uploading"}
+                        disabled={!preserveSelectedFile || preserveUploadState.kind === "uploading" || preserveUploadState.kind === "success" || preserveUploadState.kind === "failed"}
+                      >
+                        Preserve executed PDF
+                      </Btn>
+                    </div>
+                    {preserveUploadState.kind === "uploading" ? (
+                      <div data-testid="contract-execution-artifact-uploading" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>
+                        Uploading chunk {preserveUploadState.chunkIndex + 1} of {preserveUploadState.chunkCount}…
+                      </div>
+                    ) : preserveUploadState.kind === "success" ? (
+                      <div data-testid="contract-execution-artifact-upload-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "6px" }}>
+                        {preserveUploadState.alreadyPreserved ? "Already preserved -- identical bytes, no duplicate written." : "Preserved and independently re-verified by fresh readback."}
+                      </div>
+                    ) : preserveUploadState.kind === "failed" ? (
+                      <>
+                        <div data-testid="contract-execution-artifact-upload-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "6px" }}>
+                          {preserveUploadState.message}
+                        </div>
+                        {/*
+                          Gate-review closure, requirement 11 -- after a
+                          failure, Preserve stays disabled (above) until
+                          the operator EXPLICITLY reselects the file (the
+                          input's own onChange already resets
+                          preserveUploadState to idle) or explicitly
+                          resets this failed attempt here -- never
+                          re-clickable on its own.
+                        */}
+                        <div style={{ marginTop: "6px" }}>
+                          <Btn
+                            testId="contract-execution-artifact-reset-button"
+                            onClick={() => setPreserveUploadState({ kind: "idle" })}
+                            busy={false}
+                          >
+                            Reset failed attempt
+                          </Btn>
+                        </div>
+                      </>
+                    ) : null}
+                  </>
+                )}
+              </div>
+
+              {/* -------------------------------------------------------------- */}
               {/* 7. Final eligibility + Under Contract persistence -- reflects   */}
               {/* the REAL pipeline result; the write action below is reachable  */}
-              {/* ONLY once every INV-65 gate above independently passes         */}
+              {/* ONLY once every INV-65 gate above independently passes AND a   */}
+              {/* current durable preservation receipt already exists            */}
               {/* -------------------------------------------------------------- */}
               <div style={{ ...groupCardStyle, borderColor: fullVerificationResult?.ok ? "rgba(34,197,94,0.35)" : "rgba(239,68,68,0.35)" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>7. Under Contract</div>
@@ -3502,11 +3894,16 @@ export default function ContractWorkspace() {
                       <div data-testid="contract-execution-under-contract-eligible" style={{ fontSize: "12px", color: "#22C55E", fontWeight: 700, marginBottom: "10px" }}>
                         Every INV-65 requirement passes for this exact evidence.
                       </div>
+                      {(!preservedArtifactRecord && underContractWriteState.kind !== "success" && underContractWriteState.kind !== "already_recorded") ? (
+                        <div data-testid="contract-execution-under-contract-awaiting-preservation" style={{ fontSize: "12px", color: "#F59E0B", marginBottom: "10px" }}>
+                          Create Under Contract requires a current durable preservation receipt for the executed PDF first -- preserve it above.
+                        </div>
+                      ) : null}
                       <Btn
                         testId="contract-execution-create-under-contract-button"
                         onClick={handleCreateUnderContract}
                         busy={underContractWriteState.kind === "busy"}
-                        disabled={underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded"}
+                        disabled={underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded" || !preservedArtifactRecord}
                       >
                         Create Under Contract
                       </Btn>
@@ -3523,7 +3920,30 @@ export default function ContractWorkspace() {
                           {underContractWriteState.message}
                         </div>
                       ) : null}
-                    </div>
+
+                      {(preservedArtifactRecord && (underContractWriteState.kind === "success" || underContractWriteState.kind === "already_recorded")) ? (
+                          <div style={{ ...groupCardStyle, marginTop: "16px" }}>
+                            <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Transition to Under Contract</div>
+                            <Btn
+                              testId="contract-execution-transition-under-contract-button"
+                              onClick={handleTransitionUnderContractStage}
+                              busy={stageTransitionState.kind === "busy"}
+                              disabled={stageTransitionState.kind === "success"}
+                            >
+                              Transition GHL stage to Under Contract
+                            </Btn>
+                            {stageTransitionState.kind === "success" ? (
+                              <div data-testid="contract-execution-stage-transition-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
+                                {stageTransitionState.alreadyInStage ? "Already in the Under Contract stage." : "Transitioned and confirmed by fresh readback -- pipeline and stage both verified exact."}
+                              </div>
+                            ) : stageTransitionState.kind === "failed" ? (
+                              <div data-testid="contract-execution-stage-transition-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
+                                {stageTransitionState.message}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
                   ) : (
                     <div data-testid="contract-execution-full-result" style={{ fontSize: "11px", color: "#94A3B8" }}>
                       <div style={{ color: "#EF4444", fontWeight: 700, marginBottom: "6px" }}>BLOCKED -- stage: <span style={{ fontFamily: "monospace" }}>{fullVerificationResult.failure.stage}</span></div>
@@ -3537,7 +3957,7 @@ export default function ContractWorkspace() {
                 )}
               </div>
             </div>
-          ) : screen.state === "ready" && bradAuthorizationRecord ? (
+          ) : showRecordGhlSendControl(screen, bradAuthorizationRecord, existingSend) ? (
             <div data-testid="contract-manual-send-section" style={{ marginTop: "24px" }}>
               <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
                 Record GHL Send
@@ -3575,6 +3995,9 @@ export default function ContractWorkspace() {
                 </label>
                 <label style={{ display: "block", fontSize: "11px", color: "#94A3B8", marginBottom: "10px" }}>
                   When you actually sent it in GHL
+                  <div data-testid="contract-manual-send-request-at-helper" style={{ fontSize: "10px", color: "#64748B", marginTop: "2px" }}>
+                    Enter this in your OWN local date and time, exactly as GHL displayed it to you -- IAOS converts and stores it as UTC.
+                  </div>
                   <input
                     type="datetime-local"
                     data-testid="contract-manual-send-request-at"
@@ -3603,11 +4026,19 @@ export default function ContractWorkspace() {
           ) : null}
 
           {/* ================================================================ */}
-          {/* Start Disposition -- B9-11 / INV-66. Shown ONLY once a genuine,   */}
-          {/* canonical-carrier-parsed Under Contract record exists. Writes     */}
-          {/* nothing until Brad's own explicit click.                         */}
+          {/* Start Disposition -- B9-11 / INV-66, gate-review §5 ruling        */}
+          {/* (2026-09-21). Shown ONLY once ALL THREE of the durable Board #9   */}
+          {/* completion facts independently hold: a genuine, canonical-        */}
+          {/* carrier-parsed Under Contract record; a genuine preserved-        */}
+          {/* artifact record for this exact agreement/version; AND a fresh,    */}
+          {/* live GHL read confirming the opportunity is actually in the       */}
+          {/* exact Seller Leads Pipeline / Under Contract stage. Never gated   */}
+          {/* on `stageTransitionState` -- that is browser-local and resets on  */}
+          {/* reload, proving nothing by itself; `underContractStageConfirmed`  */}
+          {/* is re-derived from a fresh GHL read every time this page loads.   */}
+          {/* Writes nothing until Brad's own explicit click.                   */}
           {/* ================================================================ */}
-          {currentUnderContractRecord ? (
+          {showStartDispositionControl(currentUnderContractRecord, preservedArtifactRecord, underContractStageConfirmed) ? (
             <div data-testid="disposition-handoff-section" style={{ marginTop: "24px" }}>
               <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
                 Start Disposition -- hand off to Board #10

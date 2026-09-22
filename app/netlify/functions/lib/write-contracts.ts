@@ -1,6 +1,7 @@
 /** INV-95 exact operation contracts. No caller-supplied GHL path, method or field ID. */
 import { getConfig, CURRENT_OFFER_NOT_PROVISIONED, CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED } from "../../../shared/ghl-config";
 import { ASSIGNMENT_MODE_OPTIONS } from "../../../src/lib/underwriting/resolver-types";
+import { type ContractVersionIdentity } from "../../../src/lib/board9-contract-model";
 export const dispositions = ["No Answer", "Voicemail", "Follow Up", "Requested Appointment", "Not Interested", "Incorrect Number"];
 export const routings = ["Stay in Cold Outreach", "Long-Term Nurture"];
 export function exact(value: any, keys: string[]) {
@@ -11,7 +12,11 @@ function text(value: unknown): asserts value is string { if (typeof value !== "s
 function number(value: unknown): asserts value is number { if (typeof value !== "number" || !Number.isFinite(value)) throw new Error("Expected finite number"); }
 function iso(value: unknown) { if (typeof value !== "string" || !/^\d{4}-\d\d-\d\dT/.test(value) || !Number.isFinite(Date.parse(value))) throw new Error("Expected ISO instant"); }
 export type FieldWrite = { id: string; field_value: string | number | string[] | null; date?: boolean };
-export type WritePlan = { kind: "contact" | "opportunity" | "note" | "task"; fields: FieldWrite[]; body?: string; taskId?: string };
+export type WritePlan = {
+  kind: "contact" | "opportunity" | "note" | "task" | "opportunity_stage";
+  fields: FieldWrite[]; body?: string; taskId?: string;
+  agreementAt?: string; version?: ContractVersionIdentity;
+};
 export function planWrite(operation: string, args: any, config: ReturnType<typeof getConfig>): WritePlan {
   const c = config.fields, f = config.opportunityFacts, u = config.opportunityFields;
   const fields: FieldWrite[] = [];
@@ -40,6 +45,12 @@ export function planWrite(operation: string, args: any, config: ReturnType<typeo
       add(operation === "opportunity.arv" ? f.arv : operation === "opportunity.repairs" ? f.repairs : f.currentOffer, v); break;
     }
     case "opportunity.assignmentMode": { kind = "opportunity"; const v = single(); if (!ASSIGNMENT_MODE_OPTIONS.some(([label]) => label === v)) throw new Error("Invalid assignment mode"); add(u.assignmentMode, v); break; }
+    case "opportunity.underContractStage": {
+      exact(args, ["agreementAt", "version"]);
+      iso(args.agreementAt);
+      if (typeof args.version !== "object" || args.version === null || typeof args.version.agreementAt !== "string" || typeof args.version.versionSeq !== "number") throw new Error("Invalid contract version");
+      return { kind: "opportunity_stage", fields: [], agreementAt: args.agreementAt, version: args.version };
+    }
     case "opportunity.underwriting": {
       kind = "opportunity"; exact(args, ["endBuyerMaxPrice", "sellerMAO", "assignmentMode"]); number(args.endBuyerMaxPrice); number(args.sellerMAO);
       if (!ASSIGNMENT_MODE_OPTIONS.some(([label]) => label === args.assignmentMode)) throw new Error("Invalid assignment mode");

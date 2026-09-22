@@ -276,6 +276,37 @@ function validHandoffFixture(over) {
   checkFalse('a handoff bound to a DIFFERENT Under Contract verification identity fails currency', wrongDoc.ok);
   checkTrue('failure names HANDOFF_UNDER_CONTRACT_MISMATCH', wrongDoc.reasons.some((r) => r.code === 'HANDOFF_UNDER_CONTRACT_MISMATCH'));
 }
+{
+  // ====================================================================
+  // Gate-review closure -- PR #85 preventive disposition-handoff readback
+  // repair. ContractWorkspace.tsx's post-write readback match now reuses
+  // THIS SAME function (never whole-object JSON.stringify), so it must
+  // be immune to key order and free-text reformatting -- exactly the
+  // class of live GHL round-trip issue proven to false-fail the
+  // analogous Under Contract check -- while stale/different evidence
+  // must still correctly refuse.
+  // ====================================================================
+  const handoff = validHandoffFixture({});
+  const reorderedKeys = {};
+  for (const k of Object.keys(handoff).reverse()) reorderedKeys[k] = handoff[k];
+  const reorderedResult = H.verifyHandoffMatchesUnderContract({ handoff: reorderedKeys, opportunityId: OPP, agreementAt: AGREEMENT_AT, version: V1, underContract: underContractFixture({}) });
+  checkTrue('a key-order-reversed but value-identical handoff readback still verifies current', reorderedResult.ok);
+
+  const reformattedFreeText = Object.assign({}, handoff, {
+    evidenceSummary: handoff.evidenceSummary + '  ',
+    documentReferencesNote: 'a-differently-worded note GHL might have reformatted',
+  });
+  const reformattedResult = H.verifyHandoffMatchesUnderContract({ handoff: reformattedFreeText, opportunityId: OPP, agreementAt: AGREEMENT_AT, version: V1, underContract: underContractFixture({}) });
+  checkTrue('differing free-text fields (evidenceSummary, documentReferencesNote) never break currency -- never part of the evidence identity', reformattedResult.ok);
+
+  const staleVersion = H.verifyHandoffMatchesUnderContract({ handoff, opportunityId: OPP, agreementAt: AGREEMENT_AT, version: V2, underContract: underContractFixture({}) });
+  checkFalse('a stale/different contract version never counts as current', staleVersion.ok);
+  checkTrue('failure names HANDOFF_VERSION_MISMATCH', staleVersion.reasons.some((r) => r.code === 'HANDOFF_VERSION_MISMATCH'));
+
+  const staleOpportunity = H.verifyHandoffMatchesUnderContract({ handoff, opportunityId: 'a-different-opportunity', agreementAt: AGREEMENT_AT, version: V1, underContract: underContractFixture({}) });
+  checkFalse('a different opportunityId never counts as current', staleOpportunity.ok);
+  checkTrue('failure names HANDOFF_OPPORTUNITY_MISMATCH', staleOpportunity.reasons.some((r) => r.code === 'HANDOFF_OPPORTUNITY_MISMATCH'));
+}
 
 /* ====================================================================== */
 /* 3. Stale, corrected, rescinded, malformed, or conflicting evidence      */

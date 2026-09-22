@@ -17,7 +17,51 @@ import { latestSignerMappingAttestationForOpportunity } from "../../../src/lib/c
 import { latestExecutedTermsAttestationForOpportunity } from "../../../src/lib/contract-executed-terms-attestation-carriers";
 import { buildVerifiedUnderContractRecord, extractProviderSignerRowsFromListDocumentsBody, isDuplicateUnderContractRecord } from "../../../src/lib/contract-execution-model";
 import { latestContractSendForOpportunity, parseContractSendNote } from "../../../src/lib/contract-send-carriers";
-import { classifyDocumentReadback } from "../../../src/lib/contract-send-model";
+import { classifyDocumentReadback, classifyManualSendReadback } from "../../../src/lib/contract-send-model";
+import { MANUAL_SEND_TEMPLATE_SOURCE } from "../../../src/lib/contract-manual-send-model";
+import { latestPreservedExecutedArtifactForVersion, type PreservedExecutedArtifact } from "../../../src/lib/contract-executed-artifact-carriers";
+import { getStore } from "@netlify/blobs";
+import { createHash } from "node:crypto";
+
+/**
+ * Board #9 Phase B (B9-13), gate-review closure -- shared by the
+ * stage-transition gate AND the disposition-handoff gate below. Finds
+ * the durable preserved-artifact record for this EXACT opportunity/
+ * agreement/version and re-reads its stored bytes from Blobs, never
+ * trusting the note's own claim: byte count and SHA-256 are both
+ * independently recomputed from what is actually stored right now.
+ * Missing metadata, missing bytes, or a mismatch on either check all
+ * throw -- never treated as a verified preserved artifact.
+ */
+async function reverifyPreservedArtifact(
+  notes: { body: string }[],
+  opportunityId: string,
+  agreementAt: string,
+  version: import("../../../src/lib/board9-contract-model").ContractVersionIdentity,
+): Promise<PreservedExecutedArtifact> {
+  const preserved = latestPreservedExecutedArtifactForVersion(notes, opportunityId, agreementAt, version);
+  if (!preserved) throw new Error("No independently re-verifiable preserved executed-artifact record exists for this exact opportunity/version");
+  const artifactBytes = await getStore("iaos-executed-artifacts").get(preserved.blobKey, { type: "arrayBuffer" });
+  if (!artifactBytes) throw new Error("Preserved artifact bytes could not be read back for re-verification");
+  const artifactBuffer = Buffer.from(artifactBytes);
+  if (artifactBuffer.byteLength !== preserved.byteCount) throw new Error("Preserved artifact byte count no longer matches its durable record");
+  if (createHash("sha256").update(artifactBuffer).digest("hex") !== preserved.sha256) throw new Error("Preserved artifact hash no longer matches its durable record");
+  return preserved;
+}
+
+/**
+ * Board #9 Phase B (B9-13), gate-review closure -- a FRESH GHL read
+ * (never a note's claim, never browser-local `stageTransitionState`,
+ * which resets on reload) confirming the opportunity is durably in the
+ * exact Seller Leads Pipeline AND the exact Under Contract stage.
+ */
+async function requireUnderContractStageConfirmed(boundary: GhlBoundary, opportunityId: string, config: ReturnType<typeof getConfig>): Promise<void> {
+  const opportunity = await boundary.opportunity(opportunityId);
+  if (opportunity.pipelineId !== config.pipelines.sellerLeads || opportunity.pipelineStageId !== config.stages.underContract) {
+    throw new Error("Opportunity is not durably confirmed in the exact Seller Leads Pipeline / Under Contract stage");
+  }
+}
+
 export async function validateDerivedNote(boundary: GhlBoundary, body: string) {
   const authorization = parseBradContractAuthorizationNote(body);
   const execution = parseUnderContractNote(body);
@@ -39,6 +83,14 @@ export async function validateDerivedNote(boundary: GhlBoundary, body: string) {
     const underContract = allUnderContractRecordsForOpportunity(context.notes, record.opportunityId).find(u=>u.iaosVerifiedAt===handoff.underContract.verifiedAt) ?? null;
     const args = { opportunityId:record.opportunityId, agreementAt:context.agreement.at, version:context.version, underContract, lifecycleHistory:history, existingHandoffsForOpportunity:allDispositionHandoffsForOpportunity(context.notes,record.opportunityId).map(h=>({agreementAt:h.agreementAt,version:h.version,underContractVerifiedAt:h.underContract.verifiedAt})) };
     if (!evaluateDispositionHandoffEligibility(args).eligible || !underContract || !verifyHandoffMatchesUnderContract({...args,underContract,handoff}).ok) throw new Error("Handoff transition refused");
+    // Gate-review closure (§5 ruling) -- Start Disposition's durable,
+    // server-side gate: the SAME three conditions the client independently
+    // derives (never trusted from the client alone). A stale note
+    // resubmitted after a rescission or a since-corrupted artifact must
+    // never be allowed to write a disposition handoff.
+    const config = getConfig(process.env.IAOS_ENV);
+    await reverifyPreservedArtifact(context.notes, record.opportunityId, context.agreement.at, context.version);
+    await requireUnderContractStageConfirmed(boundary, record.opportunityId, config);
     const required = buildRequiredSignerSet(context.report);
     if (!required.ok) throw new Error("Required signers unavailable");
     const economics = context.agreement.snapshot;
@@ -49,18 +101,55 @@ export async function validateDerivedNote(boundary: GhlBoundary, body: string) {
   }
   const acceptedSend = latestContractSendForOpportunity(context.notes, record.opportunityId);
   const config = getConfig(process.env.IAOS_ENV);
-  const providerOutcome = async () => {
+  /**
+   * Gate-review closure -- PR #85 live-Test proof, attempt #3. The
+   * uniqueness check used to scan `body.documents` for ANY duplicate
+   * `documentId` (or any entry missing one at all -- `Set` collapses
+   * multiple `undefined`s into one member, so two unrelated malformed
+   * rows tripped it too) across the ENTIRE listing, unrelated documents
+   * included. Every downstream consumer of this outcome (`classifyDocumentReadback`,
+   * `classifyManualSendReadback`, `extractProviderSignerRowsFromListDocumentsBody`)
+   * already scopes its own lookup to ONE `expectedDocumentId` and never
+   * reads any other row, so the whole-array check was strictly broader
+   * than anything it protected: an unrelated pair of documents sharing
+   * (or both lacking) an id anywhere else in the location's history could
+   * block confirmation of a completely unambiguous, uniquely-identified
+   * target document. Scoped to exactly the document actually being
+   * verified -- the shape check (a genuine, unscoped precondition) stays
+   * unscoped; only the uniqueness check is narrowed.
+   */
+  const providerOutcome = async (expectedDocumentId: string) => {
     if (config.locationId !== getConfig("test").locationId || context.contact.id !== config.documentsContracts.approvedTestContactId) throw new Error("Contract provider evidence is Test-only");
     const response = await boundary.fetcher("https://services.leadconnectorhq.com/proposals/document?" + new URLSearchParams({locationId:config.locationId,limit:"21"}), {headers:{Authorization:"Bearer "+boundary.token,Version:"v3"}});
+    // Gate-review closure -- the HTTP status is checked BEFORE any body
+    // parsing/shape check below. A provider failure (401/403/5xx/...) is
+    // a distinct, attributable condition, never collapsed into "Ambiguous
+    // document readback" -- that error is reserved for a genuinely
+    // malformed or non-unique 2xx body. The thrown message names only the
+    // HTTP status; it never carries the response body or any credential.
+    if (!response.ok) throw new Error(`Provider document readback failed (HTTP ${response.status})`);
     const body = await response.json();
-    if (!Array.isArray(body?.documents) || new Set(body.documents.map((d:any)=>d?.documentId)).size !== body.documents.length) throw new Error("Ambiguous document readback");
+    if (!Array.isArray(body?.documents)) throw new Error("Ambiguous document readback");
+    if (body.documents.filter((d:any)=>d?.documentId===expectedDocumentId).length > 1) throw new Error("Ambiguous document readback");
     return {kind:"http_response" as const,status:response.status,body};
   };
   if (send) {
     if (send.status === "accepted") {
       const id=send.providerResponse?.documentId; if(!id)throw new Error("Document identity missing");
-      const verified=classifyDocumentReadback({expectedDocumentId:id,expectedRecipientId:context.contact.id,expectedSenderUserId:config.documentsContracts.senderUserId,expectedLocationId:config.locationId,outcome:await providerOutcome()});
-      if(verified.status!=="accepted" || !isDeepStrictEqual(verified.summary,send.providerResponse))throw new Error("Send resolution differs from provider evidence");
+      if (send.templateSource === MANUAL_SEND_TEMPLATE_SOURCE) {
+        // The manual bridge records Brad's own attestation that he already
+        // completed an upload/send GHL performed himself -- it was never
+        // dispatched by IAOS's own sender identity, so it cannot be
+        // deep-equal-recomputed the way the automated path's fields are.
+        // Independently confirmed instead: the exact document/revision Brad
+        // named genuinely exists, live, in the Test location, undeleted,
+        // not a draft, and carries a real required fillable field.
+        const verified=classifyManualSendReadback({expectedDocumentId:id,expectedLocationId:config.locationId,expectedDocumentRevision:send.providerResponse?.documentRevision??null,outcome:await providerOutcome(id)});
+        if(verified.status!=="accepted")throw new Error("Manual send could not be independently confirmed against live provider evidence: "+(verified.failureReason??"unknown"));
+      } else {
+        const verified=classifyDocumentReadback({expectedDocumentId:id,expectedRecipientId:context.contact.id,expectedSenderUserId:config.documentsContracts.senderUserId,expectedLocationId:config.locationId,outcome:await providerOutcome(id)});
+        if(verified.status!=="accepted" || !isDeepStrictEqual(verified.summary,send.providerResponse))throw new Error("Send resolution differs from provider evidence");
+      }
     }
     return;
   }
@@ -79,7 +168,7 @@ export async function validateDerivedNote(boundary: GhlBoundary, body: string) {
   }
   if(!acceptedSend || acceptedSend.status!=="accepted" || !acceptedSend.providerResponse?.documentId)throw new Error("Accepted send evidence required");
   const documentId=acceptedSend.providerResponse.documentId;
-  const outcome=await providerOutcome();
+  const outcome=await providerOutcome(documentId);
   const observed=buildProviderObservationRecordFromReadback({opportunityId:record.opportunityId,version:acceptedSend.version,expectedDocumentId:documentId,expectedLocationId:config.locationId,acceptedSend,outcome,iaosObservedAt:lifecycle?.iaosObservedAt ?? execution!.iaosVerifiedAt,evidenceSummary:lifecycle?.evidenceSummary ?? execution!.evidenceSummary,relatedPriorRecordId:lifecycle ? lifecycle.relatedPriorRecordId : execution!.relatedPriorRecordId});
   if(!observed.ok)throw new Error("Provider observation refused");
   if(lifecycle) {if(!isDeepStrictEqual(observed.value,lifecycle))throw new Error("Provider observation differs from fresh evidence");return;}
@@ -91,4 +180,93 @@ export async function validateDerivedNote(boundary: GhlBoundary, body: string) {
     if(!result.ok || !isDeepStrictEqual(result.value,execution))throw new Error("Under Contract evidence is not independently confirmed");
     if(allUnderContractRecordsForOpportunity(context.notes,record.opportunityId).some(r=>isDuplicateUnderContractRecord(r,execution)))throw new Error("Duplicate execution evidence");
   }
+}
+
+/**
+ * Board #9 Phase B (B9-13) -- the Under Contract GHL opportunity-stage
+ * transition's own independent re-verification. Never called from a note
+ * body (there is no note being written); called directly by the
+ * "opportunity.underContractStage" operation in `ghl-write.ts` BEFORE it
+ * is permitted to call `GhlBoundary.transitionOpportunityStage`.
+ *
+ * Mirrors `validateDerivedNote`'s own Under Contract re-derivation above
+ * exactly, retargeted: instead of comparing fresh evidence against an
+ * INCOMING note body, it finds the ALREADY-DURABLE Under Contract record
+ * for this exact opportunity/agreement/version and requires fresh
+ * evidence to STILL independently re-derive it byte-for-byte. A stage
+ * transition can never be requested from a stale or since-invalidated
+ * Under Contract record -- this is what actually confirms that, not
+ * merely that a note with the right shape exists somewhere.
+ */
+export async function verifyUnderContractStageTransitionReady(
+  boundary: GhlBoundary,
+  opportunityId: string,
+  agreementAt: string,
+  version: import("../../../src/lib/board9-contract-model").ContractVersionIdentity,
+) {
+  const context = await currentContractContext(boundary, opportunityId);
+  if (context.agreement.at !== agreementAt) throw new Error("Agreement has changed since this transition was requested");
+  if (!isSameContractVersion(context.version, version)) throw new Error("Contract version has changed since this transition was requested");
+  const existing = allUnderContractRecordsForOpportunity(context.notes, opportunityId).find(
+    (r) => r.agreementAt === agreementAt && isSameContractVersion(r.version, version),
+  );
+  if (!existing) throw new Error("No durable Under Contract record exists for this exact opportunity/version");
+
+  // Pinned to the EXACT send this Under Contract record was built from
+  // (`existing.acceptedSendAttemptId`) -- NEVER "whatever send is
+  // currently latest for this opportunity". An opportunity can carry
+  // sends for more than one contract version over its lifetime (a manual
+  // re-entry, a correction); `latestContractSendForOpportunity` resolves
+  // across ALL of them, which is correct for the note-WRITE guard above
+  // (it is always validating a note about the send that just happened)
+  // but wrong here, where a LATER, unrelated send for a different
+  // version must never silently substitute for this one.
+  const acceptedSend = context.notes
+    .map((n) => parseContractSendNote(n.body))
+    .find((s): s is NonNullable<typeof s> => s !== null && s.opportunityId === opportunityId && s.attemptId === existing.acceptedSendAttemptId && s.status === "accepted");
+  if (!acceptedSend || !acceptedSend.providerResponse?.documentId) throw new Error("Accepted send evidence required");
+  const config = getConfig(process.env.IAOS_ENV);
+  if (config.locationId !== getConfig("test").locationId || context.contact.id !== config.documentsContracts.approvedTestContactId) throw new Error("Contract provider evidence is Test-only");
+  const documentId = acceptedSend.providerResponse.documentId;
+  const response = await boundary.fetcher(
+    "https://services.leadconnectorhq.com/proposals/document?" + new URLSearchParams({ locationId: config.locationId, limit: "21" }),
+    { headers: { Authorization: "Bearer " + boundary.token, Version: "v3" } },
+  );
+  // Gate-review closure -- PR #85 attempt #3 (mirrors providerOutcome's own
+  // fix above, same rationale: scoped to the one document actually being
+  // re-verified, never the whole listing; HTTP status checked before any
+  // body parsing so a provider failure is never collapsed into "Ambiguous").
+  if (!response.ok) throw new Error(`Provider document readback failed (HTTP ${response.status})`);
+  const responseBody = await response.json();
+  if (!Array.isArray(responseBody?.documents)) throw new Error("Ambiguous document readback");
+  if (responseBody.documents.filter((d: any) => d?.documentId === documentId).length > 1) throw new Error("Ambiguous document readback");
+  const outcome = { kind: "http_response" as const, status: response.status, body: responseBody };
+
+  const history = allContractLifecycleRecordsForOpportunity(context.notes, opportunityId);
+  const observed = buildProviderObservationRecordFromReadback({
+    opportunityId, version: acceptedSend.version, expectedDocumentId: documentId, expectedLocationId: config.locationId,
+    acceptedSend, outcome, iaosObservedAt: existing.iaosVerifiedAt, evidenceSummary: existing.evidenceSummary, relatedPriorRecordId: existing.relatedPriorRecordId,
+  });
+  if (!observed.ok) throw new Error("Provider observation refused");
+
+  const signers = buildRequiredSignerSet(context.report);
+  const recipients = extractProviderSignerRowsFromListDocumentsBody({ body: outcome.body, expectedDocumentId: documentId, expectedLocationId: config.locationId });
+  if (!signers.ok || !recipients.ok) throw new Error("Signer evidence unavailable");
+  const result = buildVerifiedUnderContractRecord({
+    opportunityId, agreementAt: context.agreement.at, version: context.version, acceptedSend,
+    requiredSigners: signers.signers, buyerSignerRole: signers.buyerRole, authorizedBuyerName: signers.buyerDisplayName, authorizedBuyerEmail: signers.buyerEmail,
+    signerMappingAttestation: latestSignerMappingAttestationForOpportunity(context.notes, opportunityId),
+    providerRecipients: recipients.rows, lifecycleHistory: [...history, observed.value],
+    manualArtifactOutcome: { kind: "selected", sha256: existing.artifactSha256, fileName: "operator-selected.pdf", mimeType: "application/pdf", pageCount: existing.pageCount },
+    selectedForDocumentId: documentId, selectedForVersion: existing.version,
+    executedTermsAttestation: latestExecutedTermsAttestationForOpportunity(context.notes, opportunityId),
+    iaosVerifiedAt: existing.iaosVerifiedAt, evidenceSummary: existing.evidenceSummary, relatedPriorRecordId: existing.relatedPriorRecordId,
+  });
+  if (!result.ok || !isDeepStrictEqual(result.value, existing)) throw new Error("Under Contract evidence is not independently re-confirmed");
+
+  // Board #9 Phase B, requirement 15 -- the transition also requires the
+  // preserved executed-artifact to independently re-verify.
+  await reverifyPreservedArtifact(context.notes, opportunityId, agreementAt, version);
+
+  return existing;
 }

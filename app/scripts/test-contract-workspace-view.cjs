@@ -50,11 +50,13 @@ if (!fs.existsSync(viewPath)) {
   process.exit(11);
 }
 
-const { computeContractScreenState } = require(viewPath);
+const {
+  computeContractScreenState, showRecordGhlSendControl, showVerifyExecutionControl, showDispositionHandoffControl, showStartDispositionControl,
+} = require(viewPath);
 const { formatOutcomeNote } = require(path.join(TMP, 'seller-call-outcome.js'));
 const { formatContractReadyChecklistNote } = require(path.join(TMP, 'seller-call-readiness-carriers.js'));
 
-const FLOOR = 37;
+const FLOOR = 54;
 let failures = 0;
 let checks = 0;
 
@@ -258,6 +260,69 @@ const partialChecklistItems = { ...fullChecklistItems, liens_title: false };
   check('revised: staleInfo names the SUPERSEDED agreement\'s own price', revised.staleInfo.priorPrice, 190000);
   check('revised: staleInfo names the superseded agreementAt', revised.staleInfo.priorAgreementAt, acceptAt);
   check('revised: checklistItems reset to all-false for the new agreement (never inherits stale checkmarks)', revised.checklistItems, { legal_owners: false, closing_timeline: false, occupancy_possession: false, liens_title: false, delivery_signing: false });
+
+  // ============================================================
+  // Downstream post-send control visibility -- B9-13 authorization-
+  // hydration repair, gate-review correction (2026-09-21). `complete`
+  // above is a real, computed "ready" screen state (not a hand-typed
+  // stand-in), reused here exactly as ContractWorkspace.tsx itself would
+  // supply it to each predicate. Record/send/Under-Contract objects are
+  // intentionally minimal, structural stand-ins -- these predicates read
+  // only the fields named in their own signatures.
+  // ============================================================
+  const notReady = { state: 'loading' };
+  const someRecord = { schema: 'iaos-brad-contract-authorization-v2' };
+  const acceptedSend = { status: 'accepted' };
+  const pendingSend = { status: 'pending' };
+  const someUnderContractRecord = { opportunityId: OPP.id };
+
+  // 1. Record GHL Send -- the FIRST post-send control. Visible once a
+  // durable authorization exists and the agreement is ready, for as long
+  // as no send has yet been recorded as accepted.
+  check('Record GHL Send: ready + durable authorization + no send yet -> shown', showRecordGhlSendControl(complete, someRecord, null), true);
+  check('Record GHL Send: ready + durable authorization + a PENDING (not accepted) send -> still shown', showRecordGhlSendControl(complete, someRecord, pendingSend), true);
+  check('Record GHL Send: not ready -> never shown, regardless of authorization', showRecordGhlSendControl(notReady, someRecord, null), false);
+  check('Record GHL Send: ready but no authorization record -> not shown', showRecordGhlSendControl(complete, null, null), false);
+  check('Record GHL Send: once a send is ACCEPTED, this control steps aside for Verify Execution', showRecordGhlSendControl(complete, someRecord, acceptedSend), false);
+
+  // 2. Verify Execution & Under Contract -- visible once, and only once,
+  // a manually-recorded send is accepted.
+  check('Verify Execution: an accepted send -> shown', showVerifyExecutionControl(acceptedSend), true);
+  check('Verify Execution: no send recorded yet -> not shown', showVerifyExecutionControl(null), false);
+  check('Verify Execution: a send recorded but not yet accepted -> not shown', showVerifyExecutionControl(pendingSend), false);
+
+  // 3. Start Disposition -- visible only once a genuine, parsed Under
+  // Contract record exists (independent of the two controls above, which
+  // by design never themselves determine this one).
+  check('Disposition Handoff: a parsed Under Contract record exists -> shown', showDispositionHandoffControl(someUnderContractRecord), true);
+  check('Disposition Handoff: no Under Contract record -> not shown', showDispositionHandoffControl(null), false);
+
+  // ============================================================
+  // 4. Start Disposition -- gate-review §5 ruling. The REAL, durable
+  // three-part gate: a genuine Under Contract record, a genuine preserved
+  // executed-artifact record, AND a freshly-confirmed live GHL stage.
+  // "Reload proof": every case below is expressed purely in terms of
+  // what a completely FRESH page load would compute these three inputs
+  // to be -- there is no session/transition state involved anywhere in
+  // this function's signature, which is itself the proof that a reload
+  // (browser-local `stageTransitionState` resetting to "idle") can never
+  // hide a genuinely, durably complete Board #9.
+  // ============================================================
+  const somePreservedArtifactRecord = { opportunityId: OPP.id, sha256: 'a'.repeat(64) };
+
+  check('Start Disposition: fresh load, ONLY the Under Contract record exists -> remains hidden', showStartDispositionControl(someUnderContractRecord, null, false), false);
+  check('Start Disposition: fresh load, record + preserved PDF exist, but live stage not yet confirmed -> remains hidden', showStartDispositionControl(someUnderContractRecord, somePreservedArtifactRecord, false), false);
+  check('Start Disposition: fresh load, record + live stage confirmed, but NO preserved PDF -> remains hidden', showStartDispositionControl(someUnderContractRecord, null, true), false);
+  check('Start Disposition: fresh load, preserved PDF + live stage confirmed, but NO Under Contract record -> remains hidden', showStartDispositionControl(null, somePreservedArtifactRecord, true), false);
+  check('Start Disposition: fresh load, opportunity confirmed in the WRONG pipeline or stage (underContractStageConfirmed computed false) -> remains hidden even with record + PDF both present', showStartDispositionControl(someUnderContractRecord, somePreservedArtifactRecord, false), false);
+  check('Start Disposition: fresh load, ALL THREE durable facts hold (record + preserved PDF + exact live GHL stage) -> appears', showStartDispositionControl(someUnderContractRecord, somePreservedArtifactRecord, true), true);
+  // The function takes no session/transition-state parameter at all --
+  // calling it with the exact same three durable facts always yields the
+  // exact same result, whether or not a stage transition was ever
+  // attempted THIS session, and regardless of any browser-local state
+  // having since reset. This is the "remains available after
+  // stageTransitionState resets" proof: the gate was never reading it.
+  check('Start Disposition: identical durable facts yield an identical result independent of any transition/session state (the function has no such parameter to reset)', showStartDispositionControl(someUnderContractRecord, somePreservedArtifactRecord, true), true);
 }
 
 cleanup();

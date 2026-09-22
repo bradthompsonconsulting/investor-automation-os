@@ -595,6 +595,107 @@ export function classifyDocumentReadback(args: {
   return { status: "accepted", summary, failureReason: null };
 }
 
+/**
+ * B9-13/INV-96 manual GHL send bridge -- independent server-side
+ * confirmation for an ALREADY-COMPLETED, Brad-performed manual upload/
+ * send, read from the SAME `GET /proposals/document` readback
+ * `classifyDocumentReadback` uses above. Deliberately narrower: a manual
+ * send was never dispatched by IAOS's own configured sender identity and
+ * its recipient was never IAOS's own contact-id claim, so
+ * `expectedSenderUserId`/`expectedRecipientId` do not apply -- WHO signed
+ * is independently re-verified downstream at `buildVerifiedUnderContractRecord`'s
+ * own `buyer_signer_identity`/`signers` stages, never by this function.
+ *
+ * What this DOES confirm, from GHL's own live data, never from the note's
+ * own claim: the document exists in the expected (Test) location, is not
+ * deleted, is not still a draft, carries the SAME revision Brad entered
+ * (when he entered one), and -- same rigor as the automated path -- is
+ * actually a signable document (at least one required fillable field).
+ *
+ * The returned `summary` intentionally carries `recipientId`/`createdBy`
+ * as `null` (never guessed) and a LIVE `readbackStatus`/`fillableFieldCount`
+ * -- a caller must NOT deep-equal this against the manual builder's own
+ * `providerResponse` (which never claimed those two live-only fields);
+ * see `write-derived-note.ts`'s own manual-bridge branch for the correct,
+ * narrower comparison this function is meant to support.
+ */
+export function classifyManualSendReadback(args: {
+  expectedDocumentId: string;
+  expectedLocationId: string;
+  expectedDocumentRevision: number | null;
+  outcome: DocumentReadbackOutcome;
+}): ReadbackClassification {
+  const { outcome } = args;
+  if (outcome.kind === "network_error") {
+    return { status: "failed", summary: null, failureReason: `Readback network error: ${outcome.message}` };
+  }
+  if (outcome.status < 200 || outcome.status >= 300) {
+    return { status: "failed", summary: null, failureReason: `Readback returned HTTP ${outcome.status}` };
+  }
+  const body = outcome.body;
+  if (typeof body !== "object" || body === null) {
+    return { status: "ambiguous", summary: null, failureReason: "Readback response was not a JSON object." };
+  }
+  const documents = (body as Record<string, unknown>).documents;
+  if (!Array.isArray(documents)) {
+    return { status: "ambiguous", summary: null, failureReason: "Readback response carried no documents[] array." };
+  }
+  const match = documents.find(
+    (d) => typeof d === "object" && d !== null && (d as Record<string, unknown>).documentId === args.expectedDocumentId,
+  ) as Record<string, unknown> | undefined;
+  if (!match) {
+    return { status: "ambiguous", summary: null, failureReason: "Readback did not return this document -- it cannot be confirmed." };
+  }
+  if (match.deleted === true) {
+    return { status: "failed", summary: null, failureReason: "Readback reports the document as deleted." };
+  }
+  if (typeof match.locationId !== "string" || match.locationId !== args.expectedLocationId) {
+    return { status: "ambiguous", summary: null, failureReason: "Readback's own locationId does not match the expected Test environment -- environment could not be confirmed exact." };
+  }
+  if (typeof match.status === "string" && match.status === "draft") {
+    return { status: "ambiguous", summary: null, failureReason: "Readback reports the document is still a draft -- it was never actually dispatched." };
+  }
+  const liveRevision = typeof match.documentRevision === "number" ? match.documentRevision : null;
+  if (args.expectedDocumentRevision !== null && liveRevision !== args.expectedDocumentRevision) {
+    return {
+      status: "ambiguous",
+      summary: null,
+      failureReason: `The recorded document revision (${args.expectedDocumentRevision}) does not match the document's current live revision (${liveRevision ?? "unknown"}).`,
+    };
+  }
+  const fillableFields = Array.isArray(match.fillableFields) ? match.fillableFields : [];
+  const fillableFieldCount = fillableFields.length;
+  const hasRequiredField = fillableFields.some(
+    (f) => typeof f === "object" && f !== null && (f as Record<string, unknown>).isRequired === true,
+  );
+  const readbackStatus = typeof match.status === "string" ? match.status : null;
+  const summary: ProviderResponseSummary = {
+    documentId: args.expectedDocumentId,
+    documentReference: null,
+    documentRevision: liveRevision,
+    recipientId: null,
+    createdBy: null,
+    readbackStatus,
+    readbackLocationId: typeof match.locationId === "string" ? match.locationId : null,
+    fillableFieldCount,
+  };
+  if (fillableFieldCount === 0) {
+    return {
+      status: "ambiguous",
+      summary,
+      failureReason: "Readback confirms the document but reports 0 fillable fields -- the delivered document is blank/unpopulated and carries no signature, initial, date, or value fields.",
+    };
+  }
+  if (!hasRequiredField) {
+    return {
+      status: "ambiguous",
+      summary,
+      failureReason: `Readback confirms ${fillableFieldCount} fillable field(s), but none are marked required -- cannot confirm a real signature/initial/date field is present.`,
+    };
+  }
+  return { status: "accepted", summary, failureReason: null };
+}
+
 export type BuildReadbackResultArgs = {
   attempt: ContractSendAttemptToPersist;
   provisional: ContractSendResultToPersist;

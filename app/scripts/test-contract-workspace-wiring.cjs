@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 195;
+const FLOOR = 266;
 let failures = 0;
 let checks = 0;
 
@@ -100,7 +100,7 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('contract-workspace-view.ts does not declare its own competing deriveInheritedEconomics function', /\b(function|const)\s+deriveInheritedEconomics\s*[=(]/.test(viewTsNoComments.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
   check('contract-workspace-view.ts does not declare its own competing evaluateContractReady function', /\b(function|const)\s+evaluateContractReady\s*[=(]/.test(viewTsNoComments.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
 
-  check('ContractWorkspace.tsx imports computeContractScreenState from the pure view module', /import \{ computeContractScreenState,[\s\S]*\} from "\.\.\/lib\/contract-workspace-view"/.test(contractTsx), true);
+  check('ContractWorkspace.tsx imports computeContractScreenState from the pure view module', /import \{\s*\n\s*computeContractScreenState,[\s\S]*\} from "\.\.\/lib\/contract-workspace-view"/.test(contractTsx), true);
   check('ContractWorkspace.tsx does not import deriveInheritedEconomics itself (consumed one level down, via the tested view module)', /deriveInheritedEconomics/.test(contractTsxNoComments), false);
   check('ContractWorkspace.tsx does not import evaluateContractReady itself (consumed one level down, via the tested view module)', /evaluateContractReady/.test(contractTsxNoComments), false);
   check('ContractWorkspace.tsx does not declare a second CONTRACT_READY_ITEM_KEYS-shaped array of its own five item KEYS (imports the existing one)', /import \{[\s\S]*CONTRACT_READY_ITEM_KEYS[\s\S]*\} from "\.\.\/lib\/seller-call-readiness-carriers"/.test(contractTsx), true);
@@ -158,12 +158,12 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
     return !!m && /await ghl\.notes\.list\(contactId\)/.test(m[0]);
   })(), true);
-  check('handleStartDisposition requires an EXACT-equality match on fresh readback before ever reporting success -- never success from the POST alone', (() => {
+  check('handleStartDisposition requires a canonical-identity match on fresh readback before ever reporting success -- never success from the POST alone (gate-review closure -- PR #85 preventive repair: no longer whole-object JSON.stringify equality)', (() => {
     const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
-    return !!m && /JSON\.stringify\(r\) === JSON\.stringify\(candidate\)/.test(m[0]) && /matchingReadback === null/.test(m[0]);
+    return !!m && /verifyHandoffMatchesUnderContract\(\{\s*\n\s*handoff: r,/.test(m[0]) && /matchingReadback === null/.test(m[0]);
   })(), true);
   check('handleStartDisposition reuses formatDispositionHandoffNote/parseDispositionHandoffNote (the canonical carrier), never composes or re-parses the note body inline', /formatDispositionHandoffNote\(candidate\)/.test(contractTsxNoComments) && /parseDispositionHandoffNote\(n\.body\)/.test(contractTsxNoComments), true);
-  check('Start Disposition is gated on a genuinely parsed Under Contract record (currentUnderContractRecord), never inferred from pipeline stage or document status alone', /\{currentUnderContractRecord \? \(/.test(contractTsxNoComments), true);
+  check('Start Disposition is gated on a genuinely parsed Under Contract record (currentUnderContractRecord) -- required, though (gate-review §5 ruling) no longer sufficient alone: the live pipeline/stage confirmation and the preserved artifact are now ALSO required, never a substitute for the record itself', /\{showStartDispositionControl\(currentUnderContractRecord, preservedArtifactRecord, underContractStageConfirmed\) \? \(/.test(contractTsxNoComments), true);
   check('handleCreateUnderContract is the sixth call site, lives in its own dedicated handler (not commitNote), and requires fullVerificationResult.ok before it can even be invoked', (() => {
     const m = contractTsxNoComments.match(/async function handleCreateUnderContract\([\s\S]*?\n  \}/m);
     return !!m && (m[0].match(/ghl\.notes\.create\(/g) || []).length === 1 && !/commitNote\(/.test(m[0]) && /!fullVerificationResult\.ok/.test(m[0]);
@@ -180,6 +180,88 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   })(), true);
   check('handleCreateUnderContract requires EXACT equality via verifyReadbackMatchesWritten before ever reporting success', /verifyReadbackMatchesWritten\(candidate, matchingReadback\)/.test(contractTsxNoComments), true);
   check('handleCreateUnderContract reuses formatUnderContractNote/parseUnderContractNote (the canonical carrier), never composes or re-parses the note body inline', /formatUnderContractNote\(candidate\)/.test(contractTsxNoComments) && /parseUnderContractNote\(n\.body\)/.test(contractTsxNoComments), true);
+
+  // ============================================================
+  // Gate-review closure -- PR #85 live-Test proof: Under Contract
+  // post-write confirmation/hydration repair. The fragile whole-object
+  // JSON.stringify equality is gone from handleCreateUnderContract.
+  // (The disposition-handoff handler's own copy of the same pattern is
+  // fixed separately, below -- it was originally left untouched as
+  // Board #10 work, but a follow-up ruling brought it into Board #9's
+  // scope since it is the handoff-to-disposition confirmation itself.)
+  // ============================================================
+  check(
+    'handleCreateUnderContract no longer uses whole-object JSON.stringify equality to find the just-written readback',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleCreateUnderContract\([\s\S]*?\n  \}/m);
+      return !!m && !/JSON\.stringify\(r\) === JSON\.stringify\(candidate\)/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'handleCreateUnderContract instead matches the fresh readback via matchesUnderContractEvidenceIdentity -- the canonical evidence identity, not whole-object equality',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleCreateUnderContract\([\s\S]*?\n  \}/m);
+      return !!m && /matchesUnderContractEvidenceIdentity\(r, candidate\)/.test(m[0]);
+    })(),
+    true,
+  );
+  // ============================================================
+  // Gate-review closure -- PR #85 preventive disposition-handoff
+  // readback repair. The Board #9 finish line includes the handoff-to-
+  // disposition confirmation itself, even though downstream disposition
+  // EXECUTION belongs to Board #10 -- so the same fragile whole-object
+  // JSON.stringify equality identified in handleStartDisposition is
+  // fixed here too, reusing the SAME narrow canonical-identity check
+  // (verifyHandoffMatchesUnderContract) this handler already trusted
+  // for its pre-write duplicate refusal.
+  // ============================================================
+  check(
+    'handleStartDisposition no longer uses whole-object JSON.stringify equality to find the just-written readback',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
+      return !!m && !/JSON\.stringify\(r\) === JSON\.stringify\(candidate\)/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'handleStartDisposition instead matches the fresh readback via verifyHandoffMatchesUnderContract -- the same canonical identity already used for its own pre-write duplicate refusal, never whole-object equality',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
+      return !!m && (m[0].match(/verifyHandoffMatchesUnderContract\(/g) || []).length === 2;
+    })(),
+    true,
+  );
+  check(
+    'a reload-hydration effect recognizes an already-durable currentDispositionHandoff and syncs dispositionWriteState to "already_recorded" WITHOUT requiring another write -- only from "idle", never overriding an in-flight or failed state',
+    /if \(dispositionWriteState\.kind !== "idle" \|\| !currentDispositionHandoff\) return;\s*\n\s*setDispositionWriteState\(\{ kind: "already_recorded", record: currentDispositionHandoff \}\);/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'currentDispositionHandoff is derived via verifyHandoffMatchesUnderContract against currentUnderContractRecord -- never merely "the latest handoff note", so a stale/superseded handoff is never mistaken for current',
+    /const currentDispositionHandoff: DispositionHandoffRecord \| null = useMemo\(\(\) => \{\s*\n\s*if \(screen\.state !== "ready" \|\| !documentVersion \|\| !currentUnderContractRecord\) return null;\s*\n\s*return existingDispositionHandoffs\.find\(\(h\) => verifyHandoffMatchesUnderContract\(/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'Start Disposition\'s disabled expression is unchanged -- it already covers BOTH "success" (post-write) and "already_recorded" (now also reload-hydrated) states',
+    /disabled=\{\s*\n\s*dispositionWriteState\.kind === "success" \|\| dispositionWriteState\.kind === "already_recorded" \|\|\s*\n\s*!dispositionEligibility \|\| !dispositionEligibility\.eligible\s*\n\s*\}/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'matchesUnderContractEvidenceIdentity is imported from contract-execution-model',
+    /isDuplicateUnderContractRecord, verifyReadbackMatchesWritten, matchesUnderContractEvidenceIdentity, countPdfPages,/.test(contractTsx),
+    true,
+  );
+  check(
+    'a reload-hydration effect recognizes an already-durable currentUnderContractRecord and syncs underContractWriteState to "already_recorded" WITHOUT requiring another write -- only from "idle", never overriding an in-flight or failed state',
+    /if \(underContractWriteState\.kind !== "idle" \|\| !currentUnderContractRecord\) return;\s*\n\s*setUnderContractWriteState\(\{ kind: "already_recorded", record: currentUnderContractRecord \}\);/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'Create Under Contract\'s disabled expression still covers BOTH "success" (post-write) and "already_recorded" (reload-hydrated) states -- gate-review closure, PR #85 preservation-sequencing repair additionally requires a current preservedArtifactRecord',
+    /disabled=\{underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded" \|\| !preservedArtifactRecord\}/.test(contractTsxNoComments),
+    true,
+  );
   // Twelve obsolete send-wiring assertions replaced by twelve V1 boundary assertions.
   check('no automated Send handler', /async function handleSend/.test(contractTsx), false);
   check('no automated Send button', /contract-send-button/.test(contractTsx), false);
@@ -381,8 +463,11 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('the invalidation effect is keyed ONLY on contractDocumentPreview (the canonical, live-derived facts), not on an unrelated or broader dependency', /\}, \[contractDocumentPreview\]\);/.test(generateEffectMatch ? generateEffectMatch[0] : ''), true);
 
   check('the display evaluator (bradAuthorizationStatus) is fed currentArtifactFactsForDisplay, never a self-referential record field', /evaluateBradAuthorizationCurrency\(bradAuthorizationRecord, contractDocumentPreview, currentArtifactFactsForDisplay\)/.test(contractTsxNoComments), true);
-  check('currentArtifactFactsForDisplay falls back to an all-empty (structurally invalid) bundle when nothing has been generated yet, never a placeholder that could pass shape validation', /if \(!generatedArtifact\) \{\s*return \{ artifactSha256: "", sourcePdfSha256: "", generatorVersion: "", manifestVersion: "" \};/.test(contractTsxNoComments), true);
-  check('currentArtifactFactsForDisplay is recomputed from generatedArtifact alone (useMemo dependency), so it goes stale-safe the instant generatedArtifact is cleared', /\}, \[generatedArtifact\]\);/.test(contractTsxNoComments), true);
+  check(
+    'currentArtifactFactsForDisplay falls back to an all-empty (structurally invalid) bundle only when NEITHER a fresh generation NOR a durable authorization record exists, never a placeholder that could pass shape validation',
+    /return \{ artifactSha256: "", sourcePdfSha256: "", generatorVersion: "", manifestVersion: "" \};/.test(contractTsxNoComments),
+    true,
+  );
 
   check('handleAuthorize refuses to proceed when no artifact has been generated', /if \(!generatedArtifact\) \{\s*setAuthorizeError\(/.test(contractTsxNoComments), true);
   check('handleAuthorize passes the SAME generated artifact facts into buildAuthorizationRecordArgs (never a stored/claimed value)', /buildAuthorizationRecordArgs\(\{[\s\S]{0,400}artifact: \{\s*artifactSha256: generatedArtifact\.outputSha256,\s*sourcePdfSha256: generatedArtifact\.sourceSha256,\s*generatorVersion: generatedArtifact\.generatorVersion,\s*manifestVersion: generatedArtifact\.manifestVersion,/.test(contractTsxNoComments), true);
@@ -719,6 +804,416 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   // B9-13/INV-96 correction round 2 -- email-only GHL identity fallback.
   check('fullVerificationResult ALSO passes authorizedBuyerEmail (requiredSignerSetResult.buyerEmail), never a hardcoded/guessed value', /buyerSignerRole: requiredSignerSetResult\.buyerRole,\s*\n\s*authorizedBuyerName: requiredSignerSetResult\.buyerDisplayName,\s*\n\s*authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail,/.test(contractTsxNoComments), true);
   check('buyerSignerIdentityResult ALSO passes authorizedBuyerEmail (requiredSignerSetResult.buyerEmail)', /buyerSignerRole: requiredSignerSetResult\.buyerRole,\s*\n\s*authorizedBuyerName: requiredSignerSetResult\.buyerDisplayName,\s*\n\s*authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail,/.test(contractTsxNoComments) && (contractTsxNoComments.match(/authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail,/g) || []).length === 2, true);
+
+  // B9-13 authorization-hydration repair, gate-review correction (2026-09-21).
+  check(
+    'does NOT import hasAppWriteSession -- recognizing a durable authorization no longer depends on an app-write session at all',
+    !/hasAppWriteSession/.test(contractTsx),
+    true,
+  );
+  check(
+    'no useEffect anywhere in this component calls handleGenerateArtifact -- generation happens ONLY on the operator\'s own explicit Generate click, never automatically on page load',
+    (contractTsxNoComments.match(/handleGenerateArtifact/g) || []).length === 2 &&
+    /async function handleGenerateArtifact\(\) \{/.test(contractTsxNoComments) &&
+    /onClick=\{handleGenerateArtifact\}/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'currentArtifactFactsForDisplay prefers a fresh in-session generation when one exists',
+    /const currentArtifactFactsForDisplay = useMemo\(\(\) => \{\s*\n\s*if \(generatedArtifact\) \{/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'absent a fresh generation, currentArtifactFactsForDisplay hydrates from the durable bradAuthorizationRecord\'s own artifact fields -- no Generate call, no write session, no network I/O',
+    /if \(bradAuthorizationRecord\) \{\s*\n\s*return \{\s*\n\s*artifactSha256: bradAuthorizationRecord\.artifactSha256,\s*\n\s*sourcePdfSha256: bradAuthorizationRecord\.sourcePdfSha256,\s*\n\s*generatorVersion: bradAuthorizationRecord\.generatorVersion,\s*\n\s*manifestVersion: bradAuthorizationRecord\.manifestVersion,/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'currentArtifactFactsForDisplay depends on bradAuthorizationRecord (re-hydrates when a fresh/different record loads)',
+    /\[generatedArtifact, bradAuthorizationRecord\]\);/.test(contractTsxNoComments),
+    true,
+  );
+  check('imports the named downstream-control gate predicates from contract-workspace-view (now four, including showStartDispositionControl)', /showRecordGhlSendControl, showVerifyExecutionControl, showDispositionHandoffControl, showStartDispositionControl,/.test(contractTsx), true);
+  check(
+    'the Record GHL Send section render gate calls the named predicate, not an inline re-derived expression',
+    /\) : showRecordGhlSendControl\(screen, bradAuthorizationRecord, existingSend\) \? \(/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the Verify Execution & Under Contract section render gate calls the named predicate',
+    /\{showVerifyExecutionControl\(existingSend\) \? \(/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the Disposition Handoff section render gate calls the named predicate (now combined with the two additional durable §5-ruling conditions, never in place of it)',
+    /\{showStartDispositionControl\(currentUnderContractRecord, preservedArtifactRecord, underContractStageConfirmed\) \? \(/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the retired, always-ineligible Contract Sent state-machine display is removed from the operator UI',
+    !/data-testid="contract-sent-true"/.test(contractTsx) && !/data-testid="contract-sent-false-reasons"/.test(contractTsx),
+    true,
+  );
+  check(
+    'the underlying contractSentStatus computation is preserved (not deleted), just no longer rendered',
+    /const contractSentStatus = useMemo/.test(contractTsxNoComments),
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure -- PR #85 executed-PDF preservation UX and
+  // sequencing repair. File selection is local-only (no upload); only
+  // an explicit "Preserve executed PDF" button starts the durable
+  // upload; Preserve executed PDF now happens BEFORE Under Contract
+  // (Board #9's accepted finish line), not after.
+  // ============================================================
+
+  check(
+    'handlePreservePdfFileSelected (the file <input>\'s onChange) makes NO network/upload request -- it only reads bytes, classifies, hashes, and counts pages, exactly like handleManualFileSelected\'s own established local-only pattern',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handlePreservePdfFileSelected\([\s\S]*?\n  \}/m);
+      return !!m && !/appWriteFetch\(|ghl\.notes\.create\(|handlePreserveExecutedArtifact\(/.test(m[0]) && /classifySelectedFileBytes\(/.test(m[0]) && /computeManualArtifactSha256Hex\(/.test(m[0]) && /countPdfPages\(/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'the file <input> is wired to handlePreservePdfFileSelected (selection), never directly to handlePreserveExecutedArtifact (upload)',
+    /data-testid="contract-execution-artifact-file-input"[\s\S]{0,300}onChange=\{handlePreservePdfFileSelected\}/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the explicit "Preserve executed PDF" button only fires the upload when a file has actually been locally selected (and its client-computed SHA-256 outcome is present), and is wired exactly once',
+    /onClick=\{\(\) => \{ if \(preserveSelectedFile && preserveFileOutcome && preserveFileOutcome\.kind === "selected"\) void handlePreserveExecutedArtifact\(preserveSelectedFile, preserveFileOutcome\.sha256\); \}\}/.test(contractTsxNoComments) &&
+    (contractTsxNoComments.match(/void handlePreserveExecutedArtifact\(/g) || []).length === 1,
+    true,
+  );
+  check(
+    'the Preserve executed PDF button disables with no selection, while uploading, after success, AND after a failure -- gate-review closure, requirement 11: a failed attempt is never re-triggerable without an explicit reset or reselection',
+    /testId="contract-execution-artifact-preserve-button"[\s\S]{0,500}disabled=\{!preserveSelectedFile \|\| preserveUploadState\.kind === "uploading" \|\| preserveUploadState\.kind === "success" \|\| preserveUploadState\.kind === "failed"\}/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the file input itself only renders in the else-branch of `preservedArtifactRecord ?` -- once an artifact is already preserved (hydrated or just uploaded), the input disappears rather than allowing a second silent upload',
+    /\{preservedArtifactRecord \? \(\s*\n\s*<div data-testid="contract-execution-artifact-preserved"/.test(contractTsxNoComments) &&
+    /<input\s*\n\s*data-testid="contract-execution-artifact-file-input"/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'gate-review closure, requirement 6 -- the selected-file display shows filename, byte count (read directly from the retained File handle), page count, AND SHA-256, all locally computed before any upload',
+    (() => {
+      const m = contractTsxNoComments.match(/data-testid="contract-execution-artifact-selected"[\s\S]{0,400}/);
+      return !!m && /preserveFileOutcome\.fileName/.test(m[0]) && /preserveSelectedFile\?\.size/.test(m[0]) && /preserveFileOutcome\.sha256/.test(m[0]) && /preserveFileOutcome\.pageCount/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'a successful upload immediately re-fetches notes so preservedArtifactRecord hydrates within the SAME session, never requiring a reload to unlock Create Under Contract',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handlePreserveExecutedArtifact\(file: File, expectedFullSha256: string\)[\s\S]*?\n  \}/m);
+      const successIdx = m ? m[0].indexOf('kind: "success"') : -1;
+      const refetchIdx = m ? m[0].indexOf('ghl.notes.list(contactId)') : -1;
+      return !!m && successIdx !== -1 && refetchIdx !== -1 && refetchIdx > successIdx;
+    })(),
+    true,
+  );
+
+  check('upload PROGRESS state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "uploading"', /preserveUploadState\.kind === "uploading" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-uploading"/.test(contractTsxNoComments), true);
+  check('upload SUCCESS state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "success"', /preserveUploadState\.kind === "success" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-upload-success"/.test(contractTsxNoComments), true);
+  check('upload FAILURE state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "failed" (now inside a fragment alongside the Reset control)', /preserveUploadState\.kind === "failed" \? \(\s*\n\s*<>\s*\n\s*<div data-testid="contract-execution-artifact-upload-failed"/.test(contractTsxNoComments), true);
+  check('the file input is disabled while its own local selection is being read/hashed, or while an upload is already in flight', /disabled=\{preserveFileBusy \|\| preserveUploadState\.kind === "uploading"\}/.test(contractTsxNoComments), true);
+
+  // ============================================================
+  // Gate-review closure -- PR #85 chunked Blobs upload consistency and
+  // failed-session handling repair.
+  // ============================================================
+  check(
+    'gate-review closure, requirement 2 -- a failed chunk/finalize request surfaces the server\'s own safe reason detail (never a bare generic message) in the thrown Error the operator sees',
+    (() => {
+      const m = contractTsxNoComments.match(/const call = async \(body: unknown\) => \{[\s\S]*?\n    \};/m);
+      return !!m && /Array\.isArray\(parsed\.reasons\)/.test(m[0]) && /parsed\.reasons\[0\]\?\.message/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'gate-review closure, requirement 8 -- a failed upload attempts a best-effort abort of its OWN uploadId for bounded cleanup, wrapped so its own failure never masks the real error already reported, and never automatically retries the upload itself (requirement 9)',
+    (() => {
+      const m = contractTsxNoComments.match(/\} catch \(e: any\) \{\s*\n\s*setPreserveUploadState\(\{ kind: "failed", message: e\?\.message[\s\S]*?\n    \}\s*\n  \}/m);
+      return !!m && /phase: "abort"/.test(m[0]) && !/void handlePreserveExecutedArtifact\(/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'uploadId, opportunityId, agreementAt, and version are hoisted OUTSIDE the try block so the catch block\'s best-effort abort can reference the SAME identifiers the failed attempt actually used',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handlePreserveExecutedArtifact\(file: File, expectedFullSha256: string\)[\s\S]*?\n  \}/m);
+      if (!m) return false;
+      const uploadIdDeclIdx = m[0].indexOf('const uploadId =');
+      const tryIdx = m[0].indexOf('try {');
+      return uploadIdDeclIdx !== -1 && tryIdx !== -1 && uploadIdDeclIdx < tryIdx;
+    })(),
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure -- PR #85 chunk-ingestion redesign. Every
+  // chunk/finalize request now carries its own complete, immutable
+  // description, including the client-computed expectedFullSha256 --
+  // eliminating the prior design's cross-invocation manifest-read
+  // dependency entirely (requirement 1/2 of the redesign).
+  // ============================================================
+  check(
+    'handlePreserveExecutedArtifact accepts the client-computed expectedFullSha256 as an explicit parameter -- never recomputed or re-derived mid-upload',
+    /async function handlePreserveExecutedArtifact\(file: File, expectedFullSha256: string\)/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'every chunk request body includes expectedFullSha256, chunkCount, totalByteCount, and originalFileName -- immutable, self-describing metadata, no shared manifest of any kind',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handlePreserveExecutedArtifact\(file: File, expectedFullSha256: string\)[\s\S]*?\n  \}/m);
+      const chunkCallMatch = m ? m[0].match(/phase: "chunk",[\s\S]{0,400}/) : null;
+      const chunkCall = chunkCallMatch ? chunkCallMatch[0] : '';
+      return !!chunkCall && /chunkCount/.test(chunkCall) && /totalByteCount: bytes\.length/.test(chunkCall) && /originalFileName: file\.name/.test(chunkCall) && /expectedFullSha256,/.test(chunkCall);
+    })(),
+    true,
+  );
+  check(
+    'the finalize request body also includes chunkCount, totalByteCount, originalFileName, and expectedFullSha256 -- finalize is the sole place completeness/consistency is judged, per requirement 5',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handlePreserveExecutedArtifact\(file: File, expectedFullSha256: string\)[\s\S]*?\n  \}/m);
+      const finalizeCallMatch = m ? m[0].match(/phase: "finalize",[\s\S]{0,400}/) : null;
+      const finalizeCall = finalizeCallMatch ? finalizeCallMatch[0] : '';
+      return !!finalizeCall && /chunkCount/.test(finalizeCall) && /totalByteCount: bytes\.length/.test(finalizeCall) && /originalFileName: file\.name/.test(finalizeCall) && /expectedFullSha256,/.test(finalizeCall);
+    })(),
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure, requirement 11 -- after a failure, Preserve
+  // stays disabled until the operator EITHER reselects the file OR
+  // explicitly resets the failed attempt.
+  // ============================================================
+  check(
+    'a dedicated "Reset failed attempt" control exists, rendered only inside the failed-upload branch',
+    /preserveUploadState\.kind === "failed" \? \(\s*\n\s*<>/.test(contractTsxNoComments) &&
+    /testId="contract-execution-artifact-reset-button"/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the reset control clears preserveUploadState back to idle directly (no network call, no re-upload triggered)',
+    /testId="contract-execution-artifact-reset-button"[\s\S]{0,120}onClick=\{\(\) => setPreserveUploadState\(\{ kind: "idle" \}\)\}/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'reselecting the file (the input\'s own onChange, handlePreservePdfFileSelected) ALSO resets preserveUploadState to idle -- the second of the two satisfying paths for requirement 11',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handlePreservePdfFileSelected\([\s\S]*?\n  \}/m);
+      return !!m && /setPreserveUploadState\(\{ kind: "idle" \}\)/.test(m[0]);
+    })(),
+    true,
+  );
+
+  check(
+    'the Preserve executed PDF card now sits BEFORE section "7. Under Contract" -- Board #9\'s accepted finish line is preserved artifact THEN Under Contract, never the reverse',
+    (() => {
+      const preserveIdx = contractTsxNoComments.indexOf('<div>Preserve executed PDF</div>'.replace('<div>', '').replace('</div>', ''));
+      const preserveHeadingIdx = contractTsxNoComments.indexOf('>Preserve executed PDF<');
+      const section7Idx = contractTsxNoComments.indexOf('>7. Under Contract<');
+      return preserveHeadingIdx !== -1 && section7Idx !== -1 && preserveHeadingIdx < section7Idx;
+    })(),
+    true,
+  );
+  check(
+    'the "awaiting preservation" notice appears ONLY while preservation is missing AND the write has not already succeeded/hydrated -- it can never mask an existing already_recorded/success status',
+    /\{\(!preservedArtifactRecord && underContractWriteState\.kind !== "success" && underContractWriteState\.kind !== "already_recorded"\) \? \(\s*\n\s*<div data-testid="contract-execution-under-contract-awaiting-preservation"/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'gate-review closure, PR #85 preservation-sequencing repair, requirements 8-9: the "already_recorded"/"success" Under Contract status messages sit DIRECTLY after the Create Under Contract button, never wrapped in a preservedArtifactRecord condition -- an existing, hydrated Under Contract record (such as historical Test evidence JzKxKVFS5GxYiuWHpfTD) always still displays as recorded, regardless of whether preservation has happened yet, and the same evidence reconciles once preservation later lands without ever attempting a second write',
+    /<\/Btn>\s*\n\s*\{underContractWriteState\.kind === "success" \? \(/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'handleCreateUnderContract itself refuses to run without a current preservedArtifactRecord -- never only a client-side button-disable',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleCreateUnderContract\(\)[\s\S]*?\n    setUnderContractWriteState\(\{ kind: "busy" \}\);/m);
+      return !!m && /!preservedArtifactRecord\) return;/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'the stage-transition control (button) renders ONLY once preservedArtifactRecord exists AND Under Contract itself has already been created/hydrated as recorded -- it cannot appear before either',
+    (() => {
+      const m = contractTsxNoComments.match(/\{\(preservedArtifactRecord && \(underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded"\)\) \? \(\s*\n\s*<div style=\{\{ \.\.\.groupCardStyle, marginTop: "16px" \}\}>\s*\n\s*<div[^>]*>Transition to Under Contract<\/div>\s*\n\s*<Btn\s*\n\s*testId="contract-execution-transition-under-contract-button"/);
+      return !!m;
+    })(),
+    true,
+  );
+
+  check('the transition control\'s onClick calls ONLY handleTransitionUnderContractStage, never an inline write', /onClick=\{handleTransitionUnderContractStage\}/.test(contractTsxNoComments), true);
+  check(
+    'handleTransitionUnderContractStage calls ONLY ghl.opportunities.transitionToUnderContractStage, never a second/direct write call site',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleTransitionUnderContractStage\(\)[\s\S]*?\n  \}/);
+      return !!m && (m[0].match(/ghl\.opportunities\.transitionToUnderContractStage\(/g) || []).length === 1 && !/confirmedCommand\(|writeCommand\(|ghl\.notes\.create\(/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'handleTransitionUnderContractStage passes ONLY opportunityId, agreementAt, and the current documentVersion -- never a stage id, pipeline id, or literal operation string of its own',
+    /ghl\.opportunities\.transitionToUnderContractStage\(screen\.opportunity\.id, screen\.economics\.agreementAt, documentVersion\)/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'handleTransitionUnderContractStage itself contains no literal reference to a GHL pipeline or stage id -- the args it actually sends carry none (config.pipelines/config.stages are read elsewhere, ONLY for the read-only durable-gate derivation below, never inside this handler)',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleTransitionUnderContractStage\(\)[\s\S]*?\n  \}/);
+      return !!m && !/config\.pipelines|config\.stages|getRuntimeConfig\(\)\.pipelines|getRuntimeConfig\(\)\.stages/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'the ONLY other place ContractWorkspace.tsx reads config.pipelines/config.stages is the read-only underContractStageConfirmed derivation -- a live GHL opportunity is compared against them for DISPLAY/GATING, never sent anywhere',
+    /const underContractStageConfirmed =\s*\n\s*opportunityStageSnapshot !== null &&\s*\n\s*opportunityStageSnapshot\.pipelineId === getRuntimeConfig\(\)\.pipelines\.sellerLeads &&\s*\n\s*opportunityStageSnapshot\.pipelineStageId === getRuntimeConfig\(\)\.stages\.underContract;/.test(contractTsxNoComments),
+    true,
+  );
+
+  const ghlTsx = readSrc('src/lib/ghl.ts');
+  const ghlTsxNoComments = ghlTsx.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  check(
+    'ghl.ts\'s transitionToUnderContractStage wrapper takes EXACTLY (opportunityId, agreementAt, version) -- no pipelineId/stageId parameter exists for a caller to ever supply',
+    /transitionToUnderContractStage: \(opportunityId: string, agreementAt: string, version: ContractVersionIdentity\) =>/.test(ghlTsxNoComments),
+    true,
+  );
+  check(
+    'ghl.ts\'s transitionToUnderContractStage wrapper sends EXACTLY { agreementAt, version } as the operation args -- no pipelineId/stageId field in the request body the browser constructs',
+    /confirmedCommand\("opportunity\.underContractStage", opportunityId, \{ agreementAt, version \}\)/.test(ghlTsxNoComments),
+    true,
+  );
+  check(
+    'no OTHER call site anywhere in ghl.ts invokes the opportunity.underContractStage operation string -- exactly one, named, non-parameterized wrapper',
+    (ghlTsxNoComments.match(/opportunity\.underContractStage/g) || []).length === 1,
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure -- Finding H. The signing-party checklist label
+  // and the execution-section disclosure text.
+  // ============================================================
+  check(
+    'the signing_party checklist title is built from item.authoritativeLabel (the printed personal name), never item.signerRole (the internal capacity label)',
+    contractTsx.includes('`Signing party: ${item.authoritativeLabel}`'),
+    true,
+  );
+  check(
+    'the OLD role-labeled signing_party title is gone',
+    contractTsx.includes('`Signing party: ${item.signerRole}`'),
+    false,
+  );
+  check(
+    'the false blanket disclosure ("Nothing here is uploaded, persisted, logged, or written to GHL") is removed',
+    contractTsx.includes('Nothing here is uploaded, persisted, logged, or written to GHL.'),
+    false,
+  );
+  check(
+    'the corrected disclosure discloses the live readback fetch is read-only against GHL',
+    contractTsx.includes('Fetching the live readback above is read-only against GHL'),
+    true,
+  );
+  check(
+    'the corrected disclosure discloses that Record signer mapping / Record attestation DO write a durable IAOS note in GHL, only on click',
+    contractTsx.includes('DOES write a durable IAOS note in GHL -- only when that button is clicked, never automatically'),
+    true,
+  );
+  check(
+    'the corrected disclosure does not claim the PDF is uploaded by the two attestation steps, and does not imply Preserve executed PDF is local-only',
+    contractTsx.includes('Preserve executed PDF, further below, is a separate action that DOES upload and durably store the actual PDF bytes'),
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure -- narrow post-attestation safety repair.
+  // DEFECT: immediately after a successful save, "Record attestation"
+  // remained enabled, risking a second click attempting a duplicate
+  // durable write.
+  // ============================================================
+  check(
+    'the Record attestation button\'s disabled expression ALSO checks attestationCurrencyResult -- disabled both immediately after a successful save (the new note becomes current) and whenever a hydrated attestation is already current for the exact evidence',
+    contractTsx.includes('disabled={!allChecklistItemsAnswered || !manualArtifactVerificationResult || !manualArtifactVerificationResult.ok || (attestationCurrencyResult?.ok ?? false)}'),
+    true,
+  );
+  check(
+    'the Record signer mapping button is unaffected by this repair -- its own disabled expression is untouched',
+    contractTsx.includes('disabled={!allSignersAssigned}'),
+    true,
+  );
+  check(
+    'the corrected buyer-signer-identity success wording reads "authorized buyer signer name", never "authorized legal buyer name"',
+    contractTsx.includes('The buyer\'s mapped provider recipient\'s reported name matches the authorized buyer signer name.'),
+    true,
+  );
+  check(
+    'the OLD "authorized legal buyer name" success wording is gone from the rendered UI text',
+    contractTsx.includes('matches the authorized legal buyer name.'),
+    false,
+  );
+
+  // ============================================================
+  // Gate-review closure, §5 ruling -- Start Disposition's durable
+  // three-part gate. Supersedes the earlier (now-superseded) single-
+  // condition assertion: the note alone is no longer sufficient.
+  // ============================================================
+  check(
+    'Start Disposition\'s render gate requires ALL THREE durable facts: the Under Contract record, the preserved artifact record, AND a freshly-confirmed live GHL stage -- never fewer',
+    /\{showStartDispositionControl\(currentUnderContractRecord, preservedArtifactRecord, underContractStageConfirmed\) \? \(/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the gate is NEVER widened to also accept stageTransitionState.kind === "success" as a substitute for the live-confirmed condition',
+    !/showDispositionHandoffControl\(currentUnderContractRecord\)[\s\S]{0,120}stageTransitionState/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'underContractStageConfirmed is derived from opportunityStageSnapshot (a fresh GHL read), never from stageTransitionState',
+    (() => {
+      const m = contractTsxNoComments.match(/const underContractStageConfirmed =[\s\S]*?;/);
+      return !!m && /opportunityStageSnapshot/.test(m[0]) && !/stageTransitionState/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'opportunityStageSnapshot is refetched from a real GHL read (ghl.opportunities.get) on every fresh load of a ready screen',
+    /ghl\.opportunities\.get\(opportunityId\)\.then/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the refetch effect also depends on stageTransitionState.kind -- so a successful transition triggers a FRESH durable readback, never trusting the transition call\'s own local success state directly',
+    (() => {
+      const m = contractTsxNoComments.match(/\}, \[screen\.state, screen\.state === "ready" \? screen\.opportunity\.id : null, stageTransitionState\.kind\]\);/);
+      return !!m;
+    })(),
+    true,
+  );
+  check(
+    'a screen that is not "ready" resets opportunityStageSnapshot to null -- the gate fails closed rather than holding a stale snapshot from a previous opportunity',
+    /if \(screen\.state !== "ready"\) \{ setOpportunityStageSnapshot\(null\); return; \}/.test(contractTsxNoComments),
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure -- send-time UTC disclosure. The datetime-local
+  // input's conversion behavior is unchanged; the label now explicitly
+  // discloses that the operator enters LOCAL time and IAOS stores UTC.
+  // ============================================================
+  check(
+    'the "When you actually sent it in GHL" field discloses local-entry/UTC-storage directly beneath its label, immediately before the datetime-local input',
+    /When you actually sent it in GHL\s*\n\s*<div data-testid="contract-manual-send-request-at-helper"[^>]*>\s*\n\s*Enter this in your OWN local date and time, exactly as GHL displayed it to you -- IAOS converts and stores it as UTC\.\s*\n\s*<\/div>\s*\n\s*<input\s*\n\s*type="datetime-local"\s*\n\s*data-testid="contract-manual-send-request-at"/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the underlying local-to-UTC conversion (new Date(value).toISOString()) is unchanged -- only the disclosure was added',
+    /requestAtIso = manualSendForm\.requestAt \? new Date\(manualSendForm\.requestAt\)\.toISOString\(\) : ""/.test(contractTsxNoComments),
+    true,
+  );
 }
 
 console.log('');

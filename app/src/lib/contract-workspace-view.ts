@@ -206,3 +206,65 @@ export function computeContractScreenState(args: {
         : null,
   };
 }
+
+/**
+ * Board #9 Phase B gate-review correction, 2026-09-21. The exact
+ * post-send-sequence control visibility, extracted as named, independently
+ * testable predicates -- the SAME boolean `ContractWorkspace.tsx` now
+ * calls at each JSX gate, rather than an inline expression re-derived in
+ * the component and left unverified by any test. Parameter shapes are
+ * structural (not imported from the send/execution carriers), matching
+ * this module's own "pure, no I/O, minimal dependencies" discipline --
+ * each predicate reads only the one or two fields it actually needs.
+ *
+ * The sequence these three predicates encode, in order: an authorized
+ * agreement offers "Record GHL Send" until a send is actually recorded as
+ * accepted; an accepted send then offers "Verify Execution & Under
+ * Contract" (which further, independently, gates Under Contract itself on
+ * `fullVerificationResult.ok` -- structurally unreachable in V1, see that
+ * section's own header, so it is not a fourth predicate here); and a real,
+ * parsed Under Contract record then offers "Start Disposition." Nothing
+ * here changes that sequence -- this only names each link in it so it can
+ * be asserted directly instead of trusted by inspection.
+ */
+export function showRecordGhlSendControl<R>(
+  screen: ContractScreenState,
+  bradAuthorizationRecord: R | null,
+  existingSend: { status: string } | null,
+): boolean {
+  return screen.state === "ready" && bradAuthorizationRecord !== null && !(existingSend !== null && existingSend.status === "accepted");
+}
+
+/** A generic type guard (not a plain boolean predicate) so a caller narrows its OWN `existingSend` variable to non-null at the call site -- exactly what an accepted-send-only JSX branch needs to read `existingSend.providerResponse` without a redundant/unsafe re-check or a non-null assertion. */
+export function showVerifyExecutionControl<S extends { status: string }>(existingSend: S | null): existingSend is S {
+  return existingSend !== null && existingSend.status === "accepted";
+}
+
+/** Also a type guard, for the same reason -- the Disposition Handoff branch reads fields off `currentUnderContractRecord` directly. */
+export function showDispositionHandoffControl<U>(currentUnderContractRecord: U | null): currentUnderContractRecord is U {
+  return currentUnderContractRecord !== null;
+}
+
+/**
+ * Board #9 Phase B (B9-13), gate-review §5 ruling -- Start Disposition's
+ * REAL, durable gate. Composes `showDispositionHandoffControl` (a
+ * genuinely parsed Under Contract record must exist) with two ADDITIONAL
+ * durable facts that must ALSO independently hold: a matching preserved
+ * executed-artifact record, and a freshly-read live GHL opportunity
+ * confirmed in the exact Seller Leads Pipeline / Under Contract stage.
+ *
+ * `underContractStageConfirmed` is taken as an already-computed boolean,
+ * never re-derived here -- this module is pure and knows nothing about
+ * `ghl.opportunities.get`, Netlify, or React state. The caller (`ContractWorkspace.tsx`)
+ * is responsible for deriving it from a FRESH GHL read on every load,
+ * never from browser-local `stageTransitionState` (which resets on
+ * reload and proves nothing about durable GHL state on its own) -- see
+ * that module's own header for the full rationale.
+ */
+export function showStartDispositionControl<U, A>(
+  currentUnderContractRecord: U | null,
+  preservedArtifactRecord: A | null,
+  underContractStageConfirmed: boolean,
+): boolean {
+  return showDispositionHandoffControl(currentUnderContractRecord) && preservedArtifactRecord !== null && underContractStageConfirmed;
+}

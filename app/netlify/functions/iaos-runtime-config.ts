@@ -14,8 +14,12 @@
  * RETURNS ONLY WHAT THE BROWSER CONSUMES. The payload is projected through
  * RUNTIME_GROUPS in shared/ghl-config.ts, which is the same shape the browser
  * validates against, so the served and checked shapes cannot drift. No token,
- * no secret, no server-only key: pipelines, customValues.mailerDigestRecipient
- * and the seven unread contact fields are all deliberately excluded.
+ * no secret, no server-only key: `customValues.mailerDigestRecipient` and the
+ * seven unread contact fields are deliberately excluded.
+ * `pipelines.sellerLeads` is exposed (B9-13 gate-review closure) so
+ * `ContractWorkspace.tsx` can confirm an opportunity's live pipeline before
+ * treating Board #9 as disposition-ready -- see RUNTIME_GROUPS's own
+ * doc comment for the full rationale; it is an identifier, not a secret.
  *
  * PB-D57: browser-facing, read-only, positive allowlist of non-secret and
  * non-personal data. This response contains configuration identifiers only —

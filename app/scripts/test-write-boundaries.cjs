@@ -8,6 +8,11 @@ const APP = path.resolve(__dirname, '..');
 const originalResolve = Module._resolveFilename;
 const originalLoad = Module._load;
 const receipts = new Map();
+// Gate-review closure -- PR #85 live failure. A SEPARATE map for raw
+// artifact-upload bytes, additive only: ghl-write.ts's own receipt
+// usage (JSON via setJSON/get) is completely untouched below.
+const rawBlobs = new Map();
+const rawBlobsMetadata = new Map();
 let blobCalls = 0, blobConnections = 0;
 const realBlobs = require('@netlify/blobs');
 delete process.env.NETLIFY_BLOBS_CONTEXT;
@@ -28,7 +33,27 @@ Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
 Module._load = function(name, ...rest) {
   if (name === '@netlify/blobs') return {
     connectLambda: event => { blobConnections++; realBlobs.connectLambda(event); },
-    getStore: () => { blobCalls++; realBlobs.getStore('iaos-write-receipts'); return ({ async get(key) { return receipts.get(key) ?? null; }, async delete(key) { receipts.delete(key); }, async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; } }); } };
+    getStore: () => { blobCalls++; realBlobs.getStore('iaos-write-receipts'); return ({
+      async get(key, options) {
+        if (options?.type === 'arrayBuffer') { const v = rawBlobs.get(key); return v ? v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) : null; }
+        return receipts.get(key) ?? null;
+      },
+      async set(key, value, options) { rawBlobs.set(key, Buffer.isBuffer(value) ? value : Buffer.from(value)); if (options?.metadata) rawBlobsMetadata.set(key, options.metadata); },
+      async delete(key) { receipts.delete(key); rawBlobs.delete(key); rawBlobsMetadata.delete(key); },
+      async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; },
+      async getMetadata(key) { if (!rawBlobs.has(key)) return null; return { etag: 'fixture-etag', metadata: rawBlobsMetadata.get(key) ?? {} }; },
+      async getWithMetadata(key, options) {
+        if (!rawBlobs.has(key)) return null;
+        const v = rawBlobs.get(key);
+        const data = options?.type === 'arrayBuffer' ? v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) : v;
+        return { data, etag: 'fixture-etag', metadata: rawBlobsMetadata.get(key) ?? {} };
+      },
+      async list(options) {
+        const prefix = options?.prefix ?? '';
+        const blobs = [...rawBlobs.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key, etag: 'fixture-etag' }));
+        return { blobs, directories: [] };
+      },
+    }); } };
   return originalLoad.call(this, name, ...rest);
 };
 process.env.IAOS_ENV = 'test';
@@ -70,6 +95,7 @@ global.fetch = async (url, init = {}) => {
   return reply(object === contact ? { contact } : { opportunity });
 };
 const handler = require('../netlify/functions/ghl-write.ts').handler;
+const uploadHandler = require('../netlify/functions/ghl-executed-artifact-upload.ts').handler;
 let count = 0;
 function check(name, fn) { return Promise.resolve().then(fn).then(() => { count++; console.log('PASS ' + name); }); }
 let sequence = 0;
@@ -118,6 +144,91 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
     });
     assert.deepEqual({writes, receipts:[...receipts]}, before);
   });
+
+  // ============================================================
+  // Gate-review closure -- PR #85 unattributable-409 diagnostics. The
+  // response shapes/status codes asserted above and below must remain
+  // byte-identical; this block additionally proves the new
+  // console.error side channel fires on both 409 branches, carries only
+  // correlation/error metadata, and never leaks the request body, note
+  // contents, or the bearer token.
+  // ============================================================
+  {
+    const originalConsoleError = console.error;
+    function captureConsoleError(run) {
+      const calls = [];
+      console.error = (...args) => { calls.push(args); };
+      return Promise.resolve().then(run)
+        .finally(() => { console.error = originalConsoleError; })
+        .then(() => calls);
+    }
+    function parsedLog(logCalls) {
+      assert.equal(logCalls.length, 1, 'exactly one console.error call, got ' + logCalls.length);
+      const [prefix, payload] = logCalls[0];
+      assert.equal(prefix, '[ghl-write]');
+      return JSON.parse(payload);
+    }
+
+    await check('generic Error 409 is logged with correlation/error metadata, response unchanged', async () => {
+      realBlobs.connectLambda(event('note.create', contact.id, {body:'seed'}));
+      const secretNoteBody = 'must-not-appear-in-logs — sensitive note contents';
+      const e = event('note.create', contact.id, {body: secretNoteBody}, 'diagnostics-generic-request');
+      delete e.blobs;
+      const before = {writes, receipts:[...receipts]};
+      const logCalls = await captureConsoleError(async () => {
+        const result = await handler(e);
+        assert.equal(result.statusCode, 409);
+        assert.deepEqual(JSON.parse(result.body), {error:'Write refused or unconfirmed; refresh and inspect before retrying'});
+      });
+      assert.deepEqual({writes, receipts:[...receipts]}, before);
+      const logged = parsedLog(logCalls);
+      assert.equal(logged.requestId, 'diagnostics-generic-request');
+      assert.equal(logged.operation, 'note.create');
+      assert.equal(logged.isWriteUncertain, false);
+      assert.equal(typeof logged.errorName, 'string');
+      assert.equal(typeof logged.errorMessage, 'string');
+      const serialized = JSON.stringify(logged);
+      assert.equal(serialized.includes(secretNoteBody), false);
+      assert.equal(serialized.includes(e.headers.authorization), false);
+      assert.equal(serialized.toLowerCase().includes('bearer'), false);
+    });
+
+    await check('WriteUncertain 409 is logged with correlation/error metadata, response unchanged', async () => {
+      const release = await boundaryLib.lockContact(contact.id);
+      const secretValue = 'must-not-appear-in-logs-either';
+      const e = event('contact.propertyNotes', contact.id, {value: secretValue}, 'diagnostics-writeuncertain-request');
+      const before = writes;
+      let logCalls;
+      try {
+        logCalls = await captureConsoleError(async () => {
+          const result = await handler(e);
+          assert.equal(result.statusCode, 409);
+          const body = JSON.parse(result.body);
+          assert.equal(body.outcome, 'indeterminate');
+          assert.equal(typeof body.error, 'string');
+        });
+      } finally { await release(); }
+      assert.equal(writes, before);
+      const logged = parsedLog(logCalls);
+      assert.equal(logged.requestId, 'diagnostics-writeuncertain-request');
+      assert.equal(logged.operation, 'contact.propertyNotes');
+      assert.equal(logged.isWriteUncertain, true);
+      assert.equal(typeof logged.errorName, 'string');
+      assert.equal(typeof logged.errorMessage, 'string');
+      const serialized = JSON.stringify(logged);
+      assert.equal(serialized.includes(secretValue), false);
+    });
+
+    await check('successful write logs nothing', async () => {
+      const e = event('note.create', contact.id, {body:'quiet success fixture'});
+      const logCalls = await captureConsoleError(async () => {
+        const result = await handler(e);
+        assert.equal(result.statusCode, 200, result.body);
+      });
+      assert.deepEqual(logCalls, []);
+    });
+  }
+
   for (const [label, status, mutate] of [
     ['method', 405, e => { e.httpMethod = 'GET'; }],
     ['auth', 401, e => { delete e.headers.authorization; }],
@@ -146,6 +257,22 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
     'http://proof.example.invalid', 'https://user@proof.example.invalid',
     ' https://proof.example.invalid', approvedOrigin + ', ' + approvedOrigin,
     ['https://proof.example.invalid'], 'not a URL',
+    // Gate-review closure, PR #85 deploy-preview origin repair -- sibling
+    // Netlify sites, lookalike hostnames, and malformed variants of the
+    // deploy-preview pattern must all still refuse.
+    'https://deploy-preview-85--iaos-app.netlify.app',
+    'https://deploy-preview-85--investor-automation-os.netlify.app',
+    'https://deploy-preview-85--iaos-app-test.netlify.app.attacker.invalid',
+    'https://deploy-preview-85--iaos-app-test.netlify.app/',
+    'https://deploy-preview-85--iaos-app-test.netlify.app:443',
+    'http://deploy-preview-85--iaos-app-test.netlify.app',
+    'https://deploy-preview-85--iaos-app-testx.netlify.app',
+    'https://xdeploy-preview-85--iaos-app-test.netlify.app',
+    'https://deploy-preview-0--iaos-app-test.netlify.app',
+    'https://deploy-preview-01--iaos-app-test.netlify.app',
+    'https://deploy-preview---iaos-app-test.netlify.app',
+    'https://deploy-preview-85-iaos-app-test.netlify.app',
+    'https://branch-deploy--iaos-app-test.netlify.app',
   ]) {
     await check('Origin rejected: ' + JSON.stringify(origin), async () => {
       const e = event('note.create', contact.id, {body:'must not write'});
@@ -156,6 +283,49 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
       assert.deepEqual([calls.length, blobCalls, writes, blobConnections], before);
     });
   }
+
+  // ============================================================
+  // Gate-review closure -- PR #85 deploy-preview origin repair. The
+  // narrow, reusable exception: the `iaos-app-test` site's own deploy
+  // previews, Test-only, full end-to-end through the real handler
+  // (process.env.IAOS_ENV is already "test" throughout this file).
+  // ============================================================
+  for (const previewOrigin of [
+    'https://deploy-preview-85--iaos-app-test.netlify.app', // the exact PR #85 origin that was observed refused
+    'https://deploy-preview-42--iaos-app-test.netlify.app', // a different numeric preview, proving the pattern is reusable, not a one-off literal
+  ]) {
+    await check('Origin accepted (Test-only deploy preview): ' + previewOrigin, async () => {
+      const e = event('note.create', contact.id, { body: 'deploy preview write' });
+      e.headers.origin = previewOrigin;
+      const before = writes;
+      assert.equal((await handler(e)).statusCode, 200);
+      assert.equal(writes, before + 1);
+    });
+  }
+
+  {
+    const { requireAppWriteOrigin, IAOS_APP_TEST_DEPLOY_PREVIEW_ORIGIN } = require('../netlify/functions/lib/app-write-origin.ts');
+    const previewOrigin = 'https://deploy-preview-85--iaos-app-test.netlify.app';
+    const baseEnv = { IAOS_APP_WRITE_ALLOWED_ORIGIN: approvedOrigin, IAOS_ENV: 'test' };
+    const eventWithOrigin = (origin) => ({ headers: { origin } });
+
+    await check('IAOS_APP_TEST_DEPLOY_PREVIEW_ORIGIN matches the exact PR #85 origin', async () => {
+      assert.equal(IAOS_APP_TEST_DEPLOY_PREVIEW_ORIGIN.test(previewOrigin), true);
+    });
+    await check('requireAppWriteOrigin accepts the deploy-preview origin directly when IAOS_ENV=test', async () => {
+      requireAppWriteOrigin(eventWithOrigin(previewOrigin), baseEnv); // must not throw
+    });
+    await check('requireAppWriteOrigin refuses the SAME deploy-preview origin OUTSIDE Test (IAOS_ENV=production)', async () => {
+      assert.throws(() => requireAppWriteOrigin(eventWithOrigin(previewOrigin), { ...baseEnv, IAOS_ENV: 'production' }), /Write origin refused/);
+    });
+    await check('requireAppWriteOrigin refuses the SAME deploy-preview origin when IAOS_ENV is unset', async () => {
+      assert.throws(() => requireAppWriteOrigin(eventWithOrigin(previewOrigin), { IAOS_APP_WRITE_ALLOWED_ORIGIN: approvedOrigin }), /Write origin refused/);
+    });
+    await check('requireAppWriteOrigin still accepts the explicitly configured origin when IAOS_ENV=test (existing behavior fully preserved)', async () => {
+      requireAppWriteOrigin(eventWithOrigin(approvedOrigin), baseEnv); // must not throw
+    });
+  }
+
   for (const headers of [
     {Origin: approvedOrigin},
     {multi: {Origin:[approvedOrigin, approvedOrigin]}},
@@ -365,5 +535,81 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   const {requireWebhook}=require('../netlify/functions/lib/write-webhook-auth.ts');
   await check('root webhook does not inherit app session',()=>assert.throws(()=>requireWebhook(event('', '', {}),'IAOS_PHONE_LOOKUP_WEBHOOK_SECRET')));
   await check('root webhook exact dedicated secret accepted',()=>{requireWebhook({headers:{'x-iaos-secret':'offline-webhook-fixture-only-long-secret'}},'IAOS_PHONE_LOOKUP_WEBHOOK_SECRET',{IAOS_PHONE_LOOKUP_WEBHOOK_SECRET:'offline-webhook-fixture-only-long-secret'});});
+
+  // ============================================================
+  // Gate-review closure -- PR #85 live failure. ghl-executed-artifact-
+  // upload.ts's own Netlify Blobs initialization, proven against the
+  // REAL @netlify/blobs SDK's connectLambda/getStore (the SAME mock this
+  // file already uses to prove ghl-write.ts's own Lambda-context
+  // handling above -- getStore() here calls the real SDK's getStore for
+  // its validation side effect before returning the fixture store, so a
+  // missing/malformed Lambda Blobs context genuinely throws exactly as
+  // it would in the real Netlify runtime).
+  // ============================================================
+  {
+    const uploadVersion = { agreementAt: '2026-09-06T15:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: null };
+    const uploadPdfBytes = Buffer.from('%PDF-1.4\n' + 'B'.repeat(200) + '\n%%EOF');
+    const uploadExpectedFullSha256 = require('node:crypto').createHash('sha256').update(uploadPdfBytes).digest('hex');
+    function uploadEvent(body, overrides = {}) {
+      return {
+        blobs: lambdaBlobs, httpMethod: 'POST',
+        headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` },
+        body: JSON.stringify(body),
+        ...overrides,
+      };
+    }
+
+    await check('artifact upload source: connectLambda(event) is called before any getStore( call in the handler', () => {
+      const src = fs.readFileSync(path.join(APP, 'netlify/functions/ghl-executed-artifact-upload.ts'), 'utf8');
+      const connectIdx = src.indexOf('connectLambda(event)');
+      const firstGetStoreIdx = src.indexOf('getStore(');
+      assert.notEqual(connectIdx, -1, 'connectLambda(event) must be called somewhere in the handler');
+      assert.notEqual(firstGetStoreIdx, -1, 'getStore( must be called somewhere in the handler');
+      assert.equal(connectIdx < firstGetStoreIdx, true, 'connectLambda(event) must appear before the first getStore( call');
+    });
+
+    await check('artifact upload: chunk 0 succeeds under a genuinely valid Lambda-compatible environment (real connectLambda + real getStore validation, never only a mocked store)', async () => {
+      const before = blobConnections;
+      const res = await uploadHandler(uploadEvent({
+        phase: 'chunk', opportunityId: opportunity.id, agreementAt: uploadVersion.agreementAt, version: uploadVersion,
+        uploadId: 'boundary-upload-1', chunkIndex: 0, chunkCount: 1, totalByteCount: uploadPdfBytes.length,
+        originalFileName: 'executed.pdf', expectedFullSha256: uploadExpectedFullSha256, chunkBase64: uploadPdfBytes.toString('base64'),
+      }));
+      assert.equal(res.statusCode, 200, res.body);
+      assert.equal(blobConnections, before + 1, 'connectLambda was actually invoked for this request');
+    });
+
+    await check('artifact upload: a missing Lambda Blobs context on chunk 0 is refused safely (409) -- never an uncaught crash/502, and no chunk is stored', async () => {
+      const e = uploadEvent({
+        phase: 'chunk', opportunityId: opportunity.id, agreementAt: uploadVersion.agreementAt, version: uploadVersion,
+        uploadId: 'boundary-upload-missing-context', chunkIndex: 0, chunkCount: 1, totalByteCount: uploadPdfBytes.length,
+        originalFileName: 'executed.pdf', expectedFullSha256: uploadExpectedFullSha256, chunkBase64: uploadPdfBytes.toString('base64'),
+      });
+      delete e.blobs;
+      const originalConsoleError = console.error;
+      const logCalls = [];
+      console.error = (...args) => { logCalls.push(args); };
+      let res;
+      try {
+        res = await uploadHandler(e);
+      } finally {
+        console.error = originalConsoleError;
+      }
+      assert.equal(res.statusCode, 409, res.body);
+      assert.deepEqual(JSON.parse(res.body), { error: 'Write refused or unconfirmed; refresh and inspect before retrying' });
+      assert.equal(logCalls.length, 1, 'exactly one safe diagnostic log entry');
+      const [prefix, payload] = logCalls[0];
+      assert.equal(prefix, '[ghl-executed-artifact-upload]');
+      const logged = JSON.parse(payload);
+      assert.equal(logged.phase, 'chunk');
+      assert.equal(logged.uploadId, 'boundary-upload-missing-context');
+      assert.equal(typeof logged.errorName, 'string');
+      assert.equal(typeof logged.errorMessage, 'string');
+      const serialized = JSON.stringify(logged);
+      assert.equal(serialized.includes(uploadPdfBytes.toString('base64')), false, 'chunk bytes are never logged');
+      assert.equal(serialized.toLowerCase().includes('bearer'), false, 'no token/credential is ever logged');
+    });
+  }
+
   console.log(`${count} offline boundary checks passed`);
 })().catch(error=>{console.error(error);process.exitCode=1;});

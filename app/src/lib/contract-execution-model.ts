@@ -270,6 +270,19 @@ export type BuyerSignerIdentityReason = { code: BuyerSignerIdentityReasonCode; m
  * comparison is attempted; a real mismatch on both sides fails closed as
  * `BUYER_IDENTITY_MISMATCH`.
  */
+/**
+ * Gate-review closure -- Finding H. Case-insensitive, whitespace-tolerant
+ * ONLY: leading/trailing whitespace trimmed, repeated internal whitespace
+ * collapsed to one space (so "Robert  Thompson" and "Robert Thompson"
+ * are the same identity), then lowercased. Deliberately NOT fuzzy: no
+ * substring matching, no token-reordering, no partial-name matching --
+ * two names that differ by anything other than whitespace shape or case
+ * remain genuinely different identities and must still fail closed.
+ */
+function normalizeSignerIdentityValue(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 export function verifyBuyerSignerIdentity(args: {
   buyerSignerRole: string;
   authorizedBuyerName: string;
@@ -280,8 +293,8 @@ export function verifyBuyerSignerIdentity(args: {
   if (args.buyerSignerRole.trim() === "") {
     return { ok: false, reasons: [{ code: "BUYER_SIGNER_ROLE_BLANK", message: "The buyer signer role is blank." }] };
   }
-  const authorizedName = args.authorizedBuyerName.trim().toLowerCase();
-  const authorizedEmail = (args.authorizedBuyerEmail ?? "").trim().toLowerCase();
+  const authorizedName = normalizeSignerIdentityValue(args.authorizedBuyerName);
+  const authorizedEmail = normalizeSignerIdentityValue(args.authorizedBuyerEmail ?? "");
   if (authorizedName === "" && authorizedEmail === "") {
     return { ok: false, reasons: [{ code: "BUYER_AUTHORIZED_IDENTITY_MISSING", message: "Neither an authorized legal buyer signer name nor a canonical buyer signer email is available to verify against." }] };
   }
@@ -293,8 +306,8 @@ export function verifyBuyerSignerIdentity(args: {
   if (!buyerRecipient) {
     return { ok: false, reasons: [{ code: "BUYER_RECIPIENT_NOT_FOUND", message: "The buyer's mapped provider recipient id was not found in the live provider readback." }] };
   }
-  const reportedName = (buyerRecipient.reportedContactName ?? "").trim().toLowerCase();
-  const reportedEmail = (buyerRecipient.reportedEmail ?? "").trim().toLowerCase();
+  const reportedName = normalizeSignerIdentityValue(buyerRecipient.reportedContactName ?? "");
+  const reportedEmail = normalizeSignerIdentityValue(buyerRecipient.reportedEmail ?? "");
   const nameMatches = authorizedName !== "" && reportedName !== "" && reportedName === authorizedName;
   const emailMatches = authorizedEmail !== "" && reportedEmail !== "" && reportedEmail === authorizedEmail;
   if (!nameMatches && !emailMatches) {
@@ -552,8 +565,11 @@ export type ManualFileBytesOutcome =
 
 const PDF_MAGIC_BYTES = [0x25, 0x50, 0x44, 0x46, 0x2d]; // literal ASCII "%PDF-", the real PDF file-format signature
 
-/** Content-based, not label-based -- a spoofable `mimeType`/filename string is never trusted alone; the actual leading bytes are checked, matching this codebase's own "verify the real underlying fact, not a label" discipline. */
-function looksLikePdfContent(bytes: Uint8Array): boolean {
+/**
+ * Content-based, not label-based -- a spoofable `mimeType`/filename string is never trusted alone; the actual leading bytes are checked, matching this codebase's own "verify the real underlying fact, not a label" discipline.
+ * Exported (B9-13 Phase B) so `ghl-executed-artifact-upload.ts` can apply the SAME real-bytes check server-side to a reassembled chunked upload, never a second, divergent implementation.
+ */
+export function looksLikePdfContent(bytes: Uint8Array): boolean {
   if (bytes.length < PDF_MAGIC_BYTES.length) return false;
   return PDF_MAGIC_BYTES.every((b, i) => bytes[i] === b);
 }
@@ -1066,14 +1082,47 @@ export function isDuplicateUnderContractRecord(a: UnderContractRecordEntry, b: U
 }
 
 /**
- * "IAOS reads the written record back and confirms exact equality before
- * reporting success." A pure function has no I/O -- this is the equality
- * check a FUTURE write+readback call site (not built by this issue; see
- * the module header) must use: `written` is the exact record this module
- * built and asked to be persisted; `readback` is whatever that call site
- * re-parsed from GHL immediately afterward (`null` if the write or the
- * subsequent read failed, or if parsing failed). Field-for-field equality
- * is required -- not merely "a record exists."
+ * Gate-review closure -- PR #85 live-Test proof. Live GHL round-trips are
+ * NOT guaranteed byte-identical to an in-memory format/parse round-trip:
+ * GHL's own note storage can reformat free-text fields (evidence
+ * summaries, references) in ways a pure in-process test never exercises,
+ * so the whole-object `JSON.stringify` equality this used to require
+ * (both for finding the just-written note among a fresh readback, and
+ * for confirming it) could fail even when the SAME evidence was
+ * genuinely, durably persisted -- reporting "no record was read back"
+ * for a write that had actually succeeded.
+ *
+ * The fix is to confirm identity on exactly the fields that make this
+ * ONE Under Contract record durably distinct from any other: the
+ * opportunity, the contract version, the accepted send this execution
+ * was verified against, the provider document and its revision, and the
+ * executed artifact's own hash. These are all structured, machine-
+ * generated values (timestamps, hashes, ids) -- never free text GHL
+ * could reformat -- so they are safe to compare for exact string/number
+ * equality. Free-text/carried-through fields (`evidenceSummary`,
+ * `providerDocumentReference`, `signers[].displayName`, `pageCount`) are
+ * deliberately NOT part of this comparison; they can differ cosmetically
+ * without the underlying evidence being any less current.
+ */
+export function matchesUnderContractEvidenceIdentity(a: UnderContractRecordEntry, b: UnderContractRecordEntry): boolean {
+  return (
+    a.opportunityId === b.opportunityId &&
+    isSameContractVersion(a.version, b.version) &&
+    a.acceptedSendAttemptId === b.acceptedSendAttemptId &&
+    a.providerDocumentId === b.providerDocumentId &&
+    a.providerDocumentRevision === b.providerDocumentRevision &&
+    a.artifactSha256 === b.artifactSha256
+  );
+}
+
+/**
+ * "IAOS reads the written record back and confirms it carries the same
+ * canonical evidence identity before reporting success." A pure function
+ * has no I/O -- this is the check a write+readback call site must use:
+ * `written` is the exact record this module built and asked to be
+ * persisted; `readback` is whatever that call site re-parsed from GHL
+ * immediately afterward (`null` if the write or the subsequent read
+ * failed, or if parsing failed, or if nothing matching was found).
  */
 export function verifyReadbackMatchesWritten(
   written: UnderContractRecordEntry,
@@ -1082,8 +1131,8 @@ export function verifyReadbackMatchesWritten(
   if (readback === null) {
     return { ok: false, reason: "No Under Contract record was read back after the write -- the write, the read, or the read's own parse failed." };
   }
-  if (JSON.stringify(written) !== JSON.stringify(readback)) {
-    return { ok: false, reason: "The read-back Under Contract record does not exactly equal the record that was written." };
+  if (!matchesUnderContractEvidenceIdentity(written, readback)) {
+    return { ok: false, reason: "The read-back Under Contract record does not carry the same canonical evidence identity as the record that was written." };
   }
   return { ok: true };
 }

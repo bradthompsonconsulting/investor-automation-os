@@ -647,6 +647,45 @@ CACHED_VALID_MANUAL_OUTCOME = await selectAndHash(SYNTHETIC_PDF_BYTES, 'executed
   const recipients = [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Robert Thompson', reportedEmail: 'robert@example.com' }];
   checkTrue('verifyBuyerSignerIdentity: exact name match passes', E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: 'robert@example.com', mappings, providerRecipients: recipients }).ok);
   checkTrue('verifyBuyerSignerIdentity: case-insensitive, whitespace-trimmed name match passes', E.verifyBuyerSignerIdentity({ buyerSignerRole: 'Buyer Rep', authorizedBuyerName: '  ROBERT THOMPSON  ', authorizedBuyerEmail: null, mappings, providerRecipients: recipients }).ok);
+  // Gate-review closure -- Finding H, requirement 3: prove the exact case
+  // GHL's own live readback returns (all-lowercase) matches the
+  // configured capitalization, and that internal whitespace is collapsed
+  // (not merely trimmed at the edges), while a genuinely different name
+  // still refuses -- never fuzzy, substring, or reordered matching.
+  checkTrue(
+    'verifyBuyerSignerIdentity: GHL\'s lowercase "robert thompson" matches the configured "Robert Thompson"',
+    E.verifyBuyerSignerIdentity({
+      buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null,
+      mappings, providerRecipients: [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'robert thompson', reportedEmail: null }],
+    }).ok,
+  );
+  checkTrue(
+    'verifyBuyerSignerIdentity: repeated internal whitespace is collapsed, not just trimmed at the edges',
+    E.verifyBuyerSignerIdentity({
+      buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert   Thompson', authorizedBuyerEmail: null,
+      mappings, providerRecipients: [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Robert Thompson', reportedEmail: null }],
+    }).ok,
+  );
+  const genuinelyDifferentName = E.verifyBuyerSignerIdentity({
+    buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null,
+    mappings, providerRecipients: [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Robert Thompsonx', reportedEmail: null }],
+  });
+  checkFalse('verifyBuyerSignerIdentity: a genuinely different name (not merely whitespace/case) still fails closed -- no fuzzy matching', genuinelyDifferentName.ok);
+  check('failure names BUYER_IDENTITY_MISMATCH for the genuinely-different-name case', genuinelyDifferentName.reasons[0].code, 'BUYER_IDENTITY_MISMATCH');
+  checkFalse(
+    'verifyBuyerSignerIdentity: reordered names ("Thompson Robert") never match -- no token-reordering tolerance',
+    E.verifyBuyerSignerIdentity({
+      buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null,
+      mappings, providerRecipients: [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Thompson Robert', reportedEmail: null }],
+    }).ok,
+  );
+  checkFalse(
+    'verifyBuyerSignerIdentity: a substring of the authorized name never matches -- no substring tolerance',
+    E.verifyBuyerSignerIdentity({
+      buyerSignerRole: 'Buyer Rep', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null,
+      mappings, providerRecipients: [{ providerRecipientId: 'r1', hasCompleted: true, signedDate: SIGNED_DATE_SELLER, reportedRole: 'signer', reportedContactName: 'Robert', reportedEmail: null }],
+    }).ok,
+  );
   const blankRole = E.verifyBuyerSignerIdentity({ buyerSignerRole: '', authorizedBuyerName: 'Robert Thompson', authorizedBuyerEmail: null, mappings, providerRecipients: recipients });
   checkFalse('verifyBuyerSignerIdentity: blank buyerSignerRole fails closed', blankRole.ok);
   check('failure names BUYER_SIGNER_ROLE_BLANK', blankRole.reasons[0].code, 'BUYER_SIGNER_ROLE_BLANK');
@@ -1306,6 +1345,68 @@ function fixtureEligibleRecord() {
   checkTrue('the note round-trips to a non-null record', parsed !== null);
   check('round-trip is byte-for-byte field-equal to the original', JSON.stringify(parsed), JSON.stringify(record));
 }
+
+/* ====================================================================== */
+/* 13c. Gate-review closure -- PR #85 live-Test proof. The post-write     */
+/*      readback previously required whole-object JSON.stringify         */
+/*      equality, which a genuine live GHL round-trip is not guaranteed   */
+/*      to preserve (free-text reformatting) even when the SAME evidence  */
+/*      is durably persisted. Confirmation now uses ONLY the canonical    */
+/*      evidence identity: opportunity, version, accepted send attempt,   */
+/*      provider document id/revision, artifact SHA-256.                  */
+/* ====================================================================== */
+{
+  const record = fixtureEligibleRecord();
+  // A key-ORDER-reversed, but value-identical, object -- what a
+  // differently-constructed parse implementation (or a JS engine with no
+  // guaranteed key-insertion order) could legitimately produce. The OLD
+  // JSON.stringify comparison is order-sensitive and would have failed
+  // this; identity comparison must not care about key order at all.
+  const reorderedKeys = {};
+  for (const k of Object.keys(record).reverse()) reorderedKeys[k] = record[k];
+  checkTrue(
+    'matchesUnderContractEvidenceIdentity: a key-order-reversed but value-identical readback still matches',
+    E.matchesUnderContractEvidenceIdentity(record, reorderedKeys),
+  );
+  checkTrue(
+    'verifyReadbackMatchesWritten: the same key-order-reversed readback still confirms the transition',
+    E.verifyReadbackMatchesWritten(record, reorderedKeys).ok,
+  );
+
+  // The exact live-observed failure mode: GHL's own note storage
+  // reformats a free-text field (evidenceSummary) on a genuine round
+  // trip, even though the durable evidence identity is unchanged.
+  const reformattedFreeText = Object.assign({}, record, {
+    evidenceSummary: record.evidenceSummary + '  ', // trailing whitespace GHL could add/strip
+    providerDocumentReference: 'a-differently-cased-Reference-1',
+    pageCount: null, // GHL round-trip losing an optional, non-identity field
+  });
+  checkTrue(
+    'matchesUnderContractEvidenceIdentity: differing free-text fields (evidenceSummary, providerDocumentReference, pageCount) never break the match -- they are not part of the evidence identity',
+    E.matchesUnderContractEvidenceIdentity(record, reformattedFreeText),
+  );
+  checkTrue(
+    'verifyReadbackMatchesWritten: a readback with reformatted free text but the SAME canonical identity still confirms the transition -- this is the exact live PR #85 defect, now fixed',
+    E.verifyReadbackMatchesWritten(record, reformattedFreeText).ok,
+  );
+
+  // Stale/different evidence must NOT be incorrectly treated as current --
+  // one canonical identity field changed at a time.
+  for (const [field, value] of [
+    ['opportunityId', 'a-different-opportunity'],
+    ['acceptedSendAttemptId', '2099-01-01T00:00:00.000Z'],
+    ['providerDocumentId', 'a-different-document-id'],
+    ['providerDocumentRevision', 99],
+    ['artifactSha256', 'f'.repeat(64)],
+  ]) {
+    const changed = Object.assign({}, record, { [field]: value });
+    checkFalse(`matchesUnderContractEvidenceIdentity: a changed ${field} is never treated as the same evidence`, E.matchesUnderContractEvidenceIdentity(record, changed));
+    checkFalse(`verifyReadbackMatchesWritten: a changed ${field} never confirms the transition`, E.verifyReadbackMatchesWritten(record, changed).ok);
+  }
+  const changedVersion = Object.assign({}, record, { version: { agreementAt: record.version.agreementAt, versionSeq: 99, supersedesVersionSeq: null, replacesAgreementAt: null } });
+  checkFalse('matchesUnderContractEvidenceIdentity: a changed contract version is never treated as the same evidence', E.matchesUnderContractEvidenceIdentity(record, changedVersion));
+  checkFalse('verifyReadbackMatchesWritten: a changed contract version never confirms the transition', E.verifyReadbackMatchesWritten(record, changedVersion).ok);
+}
 /* ====================================================================== */
 /* 13b. Backward compatibility -- a real, already-durable schema v1 note  */
 /*      (no Page count field) must remain readable. B9-13/INV-96.         */
@@ -1499,6 +1600,75 @@ function listDocumentsBodyFixture(over) {
   check('buyer_identity carries the real authoritative buyer', items[2].authoritativeLabel, 'BTC LLC');
   check('one signing_party item exists per expected signer, each naming its own role', items.filter((i) => i.kind === 'signing_party').map((i) => i.signerRole), ['Seller', 'Spouse']);
   checkTrue('every non-signing_party item has a null signerRole', items.filter((i) => i.kind !== 'signing_party').every((i) => i.signerRole === null));
+  // Gate-review closure -- Finding H, requirement 1: the operator-facing
+  // authoritativeLabel is the printed PERSONAL name only, never the
+  // internal capacity/role label -- role is preserved on `signerRole`
+  // (internal metadata) but never concatenated into the displayed text.
+  check('signing_party authoritativeLabel is the printed personal name only, never role-prefixed', items.filter((i) => i.kind === 'signing_party').map((i) => i.authoritativeLabel), ['Jane Seller', 'John Seller']);
+}
+{
+  // Finding H exact scenario: buyer entity Brad Thompson Consulting LLC,
+  // required signer role "Manager", printed personal identity "Robert
+  // Thompson". The operator must be asked to verify "Robert Thompson",
+  // never "Manager: Robert Thompson" or "Manager" alone -- while the
+  // internal signerRole still carries "Manager" for the durable mapping.
+  const items = AT.buildExecutedTermsChecklist({
+    agreement: { price: 190000, propertyAddress: '123 Main St', parties: [] },
+    buyerIdentity: 'Brad Thompson Consulting LLC',
+    expectedSigners: [{ role: 'Manager', displayName: 'Robert Thompson' }],
+  });
+  const signingItem = items.find((i) => i.kind === 'signing_party');
+  check('Finding H: signing_party authoritativeLabel names Robert Thompson exactly', signingItem.authoritativeLabel, 'Robert Thompson');
+  check('Finding H: internal signerRole still preserves "Manager" (never displayed)', signingItem.signerRole, 'Manager');
+  checkFalse('Finding H: authoritativeLabel never contains the internal role word "Manager"', signingItem.authoritativeLabel.includes('Manager'));
+  const buyerItem = items.find((i) => i.kind === 'buyer_identity');
+  check('Finding H: buyer entity remains its own separate, distinct item', buyerItem.authoritativeLabel, 'Brad Thompson Consulting LLC');
+  checkTrue('Finding H: buyer_identity and signing_party are two distinct checklist items', buyerItem !== signingItem);
+}
+{
+  // ============================================================
+  // Gate-review closure -- narrow post-attestation safety repair,
+  // requirement 4: `verifyExecutedTermsAttestationCurrency` is the exact
+  // function ContractWorkspace.tsx's "Record attestation" disable logic
+  // depends on for both "disables immediately after success" (the newly
+  // written note becomes the hydrated `existingAttestation`, and this
+  // function then reports it current) and "stays disabled once hydrated
+  // as current on load". Proven directly here, at the model layer.
+  // ============================================================
+  const items = AT.buildExecutedTermsChecklist({ agreement: { price: 1, propertyAddress: 'x', parties: [] }, buyerIdentity: 'BTC LLC', expectedSigners: [{ role: 'Seller', displayName: 'Jane Seller' }] });
+  const allMatches = items.map((i) => ({ kind: i.kind, signerRole: i.signerRole, result: 'MATCHES' }));
+  const recordedAttestation = AT.buildExecutedTermsAttestationRecordArgs({
+    opportunityId: OPP, version: V1, agreementAt: AGREEMENT_AT, providerDocumentId: DOC_ID, providerDocumentRevision: 1,
+    selectedArtifactSha256: 'a'.repeat(64), attestedAt: VERIFIED_AT, requiredItems: items, responses: allMatches, evidenceSummary: 'x',
+  });
+  checkTrue('fixture attestation builds successfully', recordedAttestation.ok);
+  const currentEvidence = { opportunityId: OPP, version: V1, providerDocumentId: DOC_ID, providerDocumentRevision: 1, selectedArtifactSha256: 'a'.repeat(64) };
+
+  checkTrue(
+    'verifyExecutedTermsAttestationCurrency: a just-recorded attestation is current for the exact same evidence -- proves "disables immediately after a successful save"',
+    AT.verifyExecutedTermsAttestationCurrency(Object.assign({ attestation: recordedAttestation.value }, currentEvidence)).ok,
+  );
+  checkFalse('verifyExecutedTermsAttestationCurrency: no attestation at all is never current', AT.verifyExecutedTermsAttestationCurrency(Object.assign({ attestation: null }, currentEvidence)).ok);
+  const missing = AT.verifyExecutedTermsAttestationCurrency(Object.assign({ attestation: null }, currentEvidence));
+  check('failure names ATTESTATION_MISSING', missing.reasons[0].code, 'ATTESTATION_MISSING');
+
+  // Changed/stale evidence must NOT incorrectly count as current -- one
+  // real-world axis changed at a time, everything else held fixed.
+  const changedDocument = AT.verifyExecutedTermsAttestationCurrency(Object.assign({}, { attestation: recordedAttestation.value }, currentEvidence, { providerDocumentId: 'a-different-document-id' }));
+  checkFalse('changed providerDocumentId is never treated as current evidence', changedDocument.ok);
+  check('failure names ATTESTATION_DOCUMENT_MISMATCH', changedDocument.reasons[0].code, 'ATTESTATION_DOCUMENT_MISMATCH');
+
+  const changedRevision = AT.verifyExecutedTermsAttestationCurrency(Object.assign({}, { attestation: recordedAttestation.value }, currentEvidence, { providerDocumentRevision: 2 }));
+  checkFalse('changed providerDocumentRevision is never treated as current evidence', changedRevision.ok);
+  check('failure names ATTESTATION_REVISION_MISMATCH', changedRevision.reasons[0].code, 'ATTESTATION_REVISION_MISMATCH');
+
+  const changedHash = AT.verifyExecutedTermsAttestationCurrency(Object.assign({}, { attestation: recordedAttestation.value }, currentEvidence, { selectedArtifactSha256: 'b'.repeat(64) }));
+  checkFalse('a different selected artifact hash (a re-selected PDF) is never treated as current evidence', changedHash.ok);
+  check('failure names ATTESTATION_ARTIFACT_HASH_MISMATCH', changedHash.reasons[0].code, 'ATTESTATION_ARTIFACT_HASH_MISMATCH');
+
+  const changedVersion = AT.verifyExecutedTermsAttestationCurrency(Object.assign({}, { attestation: recordedAttestation.value }, currentEvidence, { version: { agreementAt: AGREEMENT_AT, versionSeq: 99, supersedesVersionSeq: null, replacesAgreementAt: null } }));
+  checkFalse('a different contract version is never treated as current evidence -- stale attestation never silently reused', changedVersion.ok);
+  check('failure names ATTESTATION_VERSION_MISMATCH', changedVersion.reasons[0].code, 'ATTESTATION_VERSION_MISMATCH');
 }
 {
   // ruling item 3: ONLY unanimous MATCHES may satisfy verification.
