@@ -99,7 +99,7 @@ export const handler = async (event: any) => {
       if (!dispositions.includes(d)) return json(409, { error: "A valid disposition must be confirmed first" });
       if (d === "Follow Up" && !fieldValue(target.customFields, config.fields.callbackDatetimePrecise, "contact").value) return json(409, { error: "Follow Up requires a confirmed callback" });
     }
-    if (plan.kind === "note") await validateLedgerNote(boundary, targetId, plan.body!);
+    if (plan.kind === "note") await validateLedgerNote(boundary, targetId, plan.body!, operator);
     await claimWrite(`${operator}:${operation}:${targetId}`, requestId, request);
     if (plan.kind === "note") return json(200, await boundary.note(targetId, plan.body!));
     if (plan.kind === "task") {
@@ -116,7 +116,7 @@ export const handler = async (event: any) => {
       // Under Contract execution AND the preserved executed artifact)
       // happens INSIDE this call -- never trusted from the caller's claim
       // that either was already confirmed elsewhere.
-      await verifyUnderContractStageTransitionReady(boundary, targetId, plan.agreementAt!, plan.version!);
+      await verifyUnderContractStageTransitionReady(boundary, targetId, plan.agreementAt!, plan.version!, operator);
       const targetStageId = config.stages.underContract;
       const forbiddenStageIds = [config.stages.sellerClosedWon];
       const result = await boundary.transitionOpportunityStage(targetId, config.pipelines.sellerLeads, targetStageId, forbiddenStageIds);

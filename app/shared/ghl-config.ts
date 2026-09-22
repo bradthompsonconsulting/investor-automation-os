@@ -138,6 +138,21 @@ export interface GhlConfig {
    * transport-projected field in this codebase.
    */
   contractSellerCountField: string;
+  /**
+   * INV-98 Phase 1 -- the ONE explicit, non-sentinel switch that decides
+   * whether ANY Production contract-path action (PDF generation, provider
+   * evidence, Under Contract stage transition, disposition handoff) may
+   * even be attempted. `contract-production-readiness.ts` fails closed on
+   * this value before evaluating anything else Production-specific.
+   * PRODUCTION carries `CONTRACT_PRODUCTION_NOT_ENABLED` throughout this
+   * phase -- flipping it to `CONTRACT_PRODUCTION_ENABLED` is a
+   * deliberately separate, later, reviewed config-only commit, never
+   * toggled at runtime and never implied by any other field being
+   * provisioned. TEST is unconditionally unaffected by this flag (its own
+   * approved-contact pin governs it exactly as before) and carries a
+   * fixed, documentation-only value that no code path ever reads.
+   */
+  contractProductionEnabled: string;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -271,6 +286,32 @@ export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVIS
  * this sentinel -- the same fail-closed pattern already established.
  */
 export const CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED = "CONTRACT_PROJECTION_FIELD_NOT_YET_PROVISIONED" as const;
+
+/**
+ * INV-98 Phase 1 -- the exact Production Under Contract stage sentinel,
+ * exported so `contract-production-readiness.ts` (and its tests) never
+ * hardcode this literal a second time. Value UNCHANGED from what
+ * `PRODUCTION.stages.underContract` already carried before this phase --
+ * this is a pure refactor (named export replacing an inline literal),
+ * never a behavior change. Stays in effect until Brad creates the real
+ * Production stage and replaces this value with it, as its own separate,
+ * reviewed config-only commit.
+ */
+export const UNDER_CONTRACT_STAGE_NOT_PROVISIONED = "UNDER_CONTRACT_STAGE_NOT_PROVISIONED" as const;
+
+/**
+ * INV-98 Phase 1 -- `contractProductionEnabled`'s two possible values.
+ * `CONTRACT_PRODUCTION_ENABLED` is the ONE value that permits ANY
+ * Production contract-path check past `contract-production-readiness.ts`'s
+ * own first gate -- exactly like `POPULATION_VERIFIED` above, there is no
+ * partial/staged value. `CONTRACT_PRODUCTION_NOT_ENABLED` is what
+ * `PRODUCTION` carries throughout this phase and every phase before Brad
+ * separately authorizes flipping it.
+ */
+export const CONTRACT_PRODUCTION_ENABLED = "CONTRACT_PRODUCTION_ENABLED" as const;
+export const CONTRACT_PRODUCTION_NOT_ENABLED = "CONTRACT_PRODUCTION_NOT_ENABLED" as const;
+/** TEST's own fixed value for `contractProductionEnabled` -- documentation only; no code path reads it, since Test's readiness is governed entirely by its own approved-contact pin, unconditionally, regardless of this flag. */
+export const CONTRACT_TEST_ALWAYS_ENABLED = "CONTRACT_TEST_ALWAYS_ENABLED" as const;
 
 /**
  * INV-67 checkbox-marker / broker-model repair, extended by the INV-67
@@ -557,6 +598,12 @@ const PRODUCTION: GhlConfig = {
   // unconditionally sentinel-filled, exactly like every other
   // Documents & Contracts / contract-projection identifier above.
   contractSellerCountField: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
+  // INV-98 Phase 1 -- Production contract paths remain disabled throughout
+  // this phase. Flipping this is a separate, later, reviewed config-only
+  // commit, performed only after the external actions this phase's own
+  // report names (real Under Contract stage created, write-session/origin
+  // environment confirmed, supervised proof scheduled).
+  contractProductionEnabled: CONTRACT_PRODUCTION_NOT_ENABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -568,7 +615,7 @@ const PRODUCTION: GhlConfig = {
     sellerCallCompleted: "3ac16587-0db8-48ca-9ec0-536e67db9963",
     sellerFollowUp:      "71227a30-2303-4165-aa58-e56860146959",
     sellerOfferSent:     "a0f01076-5019-4abc-b809-7f4b0218dd35",
-    underContract:       "PRODUCTION_UNDER_CONTRACT_NOT_PROVISIONED",
+    underContract:       UNDER_CONTRACT_STAGE_NOT_PROVISIONED,
     sellerClosedWon:     "0c45ee3d-7be7-4651-97a4-6df53f53481b",
     longTermNurture:     "a7436df7-e05a-4bf0-bd29-70f7066ec0bd",
     lostNotInterested:   "f1960b50-8aa2-4a69-ba58-a7a0dc66ce82",
@@ -906,6 +953,10 @@ const TEST: GhlConfig = {
   // not by itself authorize a write, a draft, or a send, and it is not
   // read back into the canonical `SellerSigningModel` Note carrier.
   contractSellerCountField: "gW6eD1ZgbS4UOhPWVyMm",
+  // INV-98 Phase 1 -- documentation-only in TEST; no code path reads this
+  // flag for Test, which is governed unconditionally by its own approved-
+  // contact pin below, exactly as before this phase.
+  contractProductionEnabled: CONTRACT_TEST_ALWAYS_ENABLED,
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },
@@ -989,6 +1040,7 @@ export function getConfig(selector: string | undefined): GhlConfig {
     ),
     ["contractDraftRequest", config.contractDraftRequest],
     ["contractSellerCountField", config.contractSellerCountField],
+    ["contractProductionEnabled", config.contractProductionEnabled],
     ...Object.entries(config.pipelines).map(
       ([k, v]): [string, string] => [`pipelines.${k}`, v],
     ),
