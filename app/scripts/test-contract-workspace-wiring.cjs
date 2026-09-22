@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 266;
+const FLOOR = 275;
 let failures = 0;
 let checks = 0;
 
@@ -247,6 +247,68 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     /disabled=\{\s*\n\s*dispositionWriteState\.kind === "success" \|\| dispositionWriteState\.kind === "already_recorded" \|\|\s*\n\s*!dispositionEligibility \|\| !dispositionEligibility\.eligible\s*\n\s*\}/.test(contractTsxNoComments),
     true,
   );
+
+  // ============================================================
+  // Gate-review closure -- false disposition-conflict repair. A
+  // successful Start Disposition write refreshes `notes`, which makes
+  // `dispositionEligibility` recompute HANDOFF_ALREADY_EXISTS for the
+  // handoff JUST durably recorded (the only case that reason code can
+  // ever fire on). The "Blocking conflicts" card must never render for
+  // that benign case -- only for a genuine conflict (missing/mismatched/
+  // rescinded Under Contract record), none of which require a matching
+  // handoff to exist.
+  // ============================================================
+  check(
+    'the "Blocking conflicts" card is suppressed whenever currentDispositionHandoff (the exact-evidence match) is non-null -- never shown alongside a durable success/already-recorded status',
+    /\{dispositionEligibility && !dispositionEligibility\.eligible && !currentDispositionHandoff \? \(\s*\n\s*<div data-testid="disposition-handoff-blocked"/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'evaluateDispositionHandoffEligibility\'s shared boolean contract is untouched by the false-conflict repair -- ContractWorkspace.tsx does not redefine or wrap its return shape',
+    /\b(function|const)\s+evaluateDispositionHandoffEligibility\s*[=(]/.test(contractTsxNoComments.replace(/import[\s\S]*?from\s*"[^"]+";/g, "")),
+    false,
+  );
+  check(
+    'the pre-write duplicate refusal inside handleStartDisposition (verifyHandoffMatchesUnderContract against freshHandoffs, BEFORE any write) is untouched by the false-conflict repair',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
+      return !!m && /const duplicate = freshHandoffs\.find\(/.test(m[0]) && /setDispositionWriteState\(\{ kind: "already_recorded", record: duplicate \}\);/.test(m[0]);
+    })(),
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure -- stage-transition hydration repair.
+  // `stageTransitionState` previously had no reload-hydration
+  // counterpart -- after a fresh mount it always started at "idle",
+  // making the Transition button render as freshly clickable even when
+  // the opportunity is already durably confirmed in the exact Under
+  // Contract stage. Never fabricates success for a non-matching stage.
+  // ============================================================
+  check(
+    'a reload-hydration effect recognizes an already-durable underContractStageConfirmed (a fresh, independent GHL read) and syncs stageTransitionState to "success" WITHOUT requiring another transition call -- only from "idle", never overriding an in-flight or failed state',
+    /if \(stageTransitionState\.kind !== "idle" \|\| !underContractStageConfirmed\) return;\s*\n\s*setStageTransitionState\(\{ kind: "success", alreadyInStage: true \}\);/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the stage-transition hydration effect depends on underContractStageConfirmed (never opportunityStageSnapshot directly, never a note claim, never stageTransitionState\'s own prior success) -- so it re-derives from a fresh live read every time, never fabricating success for a non-matching stage',
+    /\}, \[underContractStageConfirmed, stageTransitionState\.kind\]\);/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the Transition button remains disabled once hydrated to "success" -- the SAME pre-existing disabled expression (stageTransitionState.kind === "success"), not a new/separate condition',
+    /testId="contract-execution-transition-under-contract-button"[\s\S]{0,200}disabled=\{stageTransitionState\.kind === "success"\}/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the server operation\'s existing idempotency is untouched -- handleTransitionUnderContractStage still calls ONLY ghl.opportunities.transitionToUnderContractStage, no new/duplicate call site added by the hydration repair',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleTransitionUnderContractStage\(\)[\s\S]*?\n  \}/m);
+      return !!m && (m[0].match(/ghl\.opportunities\.transitionToUnderContractStage\(/g) || []).length === 1;
+    })(),
+    true,
+  );
+
   check(
     'matchesUnderContractEvidenceIdentity is imported from contract-execution-model',
     /isDuplicateUnderContractRecord, verifyReadbackMatchesWritten, matchesUnderContractEvidenceIdentity, countPdfPages,/.test(contractTsx),
@@ -258,8 +320,16 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     true,
   );
   check(
-    'Create Under Contract\'s disabled expression still covers BOTH "success" (post-write) and "already_recorded" (reload-hydrated) states -- gate-review closure, PR #85 preservation-sequencing repair additionally requires a current preservedArtifactRecord',
-    /disabled=\{underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded" \|\| !preservedArtifactRecord\}/.test(contractTsxNoComments),
+    // Gate-review closure -- Section 7 durable-hydration repair. The
+    // "success"/"already_recorded" states are no longer covered by this
+    // button's OWN disabled expression -- they are handled one level up,
+    // by an entirely separate branch that renders the durable
+    // already-recorded display (see the two checks immediately below)
+    // WITHOUT rendering this button at all. This button is only ever
+    // reached in the "not yet durably recorded" branch, so its own
+    // disabled expression correctly narrows to just the preservation gate.
+    'Create Under Contract\'s disabled expression requires a current preservedArtifactRecord -- the success/already_recorded states are handled one level up, in the durable-hydration branch, where this button is not even rendered',
+    /disabled=\{!preservedArtifactRecord\}/.test(contractTsxNoComments),
     true,
   );
   // Twelve obsolete send-wiring assertions replaced by twelve V1 boundary assertions.
@@ -1022,14 +1092,47 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     })(),
     true,
   );
+  // ============================================================
+  // Gate-review closure -- Section 7 durable-hydration repair. The
+  // "success"/"already_recorded" branch is now evaluated FIRST,
+  // unconditionally, before the ephemeral `fullVerificationResult` gate
+  // -- so a fresh mount with an already-durable Under Contract record
+  // never requires local PDF reselection or signer-dropdown re-entry to
+  // display it. The "not yet recorded" branch (Create Under Contract
+  // button, awaiting-preservation notice, BLOCKED display, placeholder)
+  // is reached ONLY when underContractWriteState is NOT already
+  // success/already_recorded -- fullVerificationResult is UNCHANGED and
+  // still required there, and handleCreateUnderContract's own internal
+  // guard is untouched.
+  // ============================================================
   check(
-    'the "awaiting preservation" notice appears ONLY while preservation is missing AND the write has not already succeeded/hydrated -- it can never mask an existing already_recorded/success status',
-    /\{\(!preservedArtifactRecord && underContractWriteState\.kind !== "success" && underContractWriteState\.kind !== "already_recorded"\) \? \(\s*\n\s*<div data-testid="contract-execution-under-contract-awaiting-preservation"/.test(contractTsxNoComments),
+    'Section 7 evaluates durable already-recorded status (underContractWriteState success/already_recorded) BEFORE the ephemeral fullVerificationResult gate -- a fresh mount can show it without any local re-entry',
+    /\{\(underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded"\) \? \(/.test(contractTsxNoComments),
     true,
   );
   check(
-    'gate-review closure, PR #85 preservation-sequencing repair, requirements 8-9: the "already_recorded"/"success" Under Contract status messages sit DIRECTLY after the Create Under Contract button, never wrapped in a preservedArtifactRecord condition -- an existing, hydrated Under Contract record (such as historical Test evidence JzKxKVFS5GxYiuWHpfTD) always still displays as recorded, regardless of whether preservation has happened yet, and the same evidence reconciles once preservation later lands without ever attempting a second write',
-    /<\/Btn>\s*\n\s*\{underContractWriteState\.kind === "success" \? \(/.test(contractTsxNoComments),
+    'the durable already-recorded branch renders the success/already_recorded status messages directly, with no dependency on fullVerificationResult, preserveFileOutcome, or signer-mapping state anywhere in its own body',
+    (() => {
+      const m = contractTsxNoComments.match(/\{\(underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded"\) \? \(\s*\n\s*<div>([\s\S]*?)\n\s*\) : fullVerificationResult \? \(/);
+      if (!m) return false;
+      const body = m[1];
+      return /contract-execution-under-contract-write-success/.test(body) && /contract-execution-under-contract-already-recorded/.test(body) &&
+        !/fullVerificationResult/.test(body) && !/manualFileOutcome/.test(body) && !/signerMappingCurrencyResult/.test(body);
+    })(),
+    true,
+  );
+  check(
+    'the stage-transition control, nested inside the durable already-recorded branch, renders on preservedArtifactRecord alone -- it no longer needs its own repeated underContractWriteState check (already guaranteed by the enclosing branch)',
+    (() => {
+      const m = contractTsxNoComments.match(/\{\(underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded"\) \? \(\s*\n\s*<div>([\s\S]*?)\n\s*\) : fullVerificationResult \? \(/);
+      if (!m) return false;
+      return /\{preservedArtifactRecord \? \(\s*\n\s*<div style=\{\{ \.\.\.groupCardStyle, marginTop: "16px" \}\}>\s*\n\s*<div[^>]*>Transition to Under Contract<\/div>\s*\n\s*<Btn\s*\n\s*testId="contract-execution-transition-under-contract-button"/.test(m[1]);
+    })(),
+    true,
+  );
+  check(
+    'the "awaiting preservation" notice, now scoped inside the fullVerificationResult.ok (not-yet-recorded) branch, is simply gated on !preservedArtifactRecord -- the enclosing branch already guarantees underContractWriteState is not success/already_recorded',
+    /\{!preservedArtifactRecord \? \(\s*\n\s*<div data-testid="contract-execution-under-contract-awaiting-preservation"/.test(contractTsxNoComments),
     true,
   );
   check(
@@ -1041,10 +1144,10 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     true,
   );
   check(
-    'the stage-transition control (button) renders ONLY once preservedArtifactRecord exists AND Under Contract itself has already been created/hydrated as recorded -- it cannot appear before either',
+    'handleCreateUnderContract still refuses to run without fullVerificationResult.ok -- a genuinely NEW Under Contract write still requires the complete fresh manual-verification pass, untouched by the durable-hydration repair',
     (() => {
-      const m = contractTsxNoComments.match(/\{\(preservedArtifactRecord && \(underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded"\)\) \? \(\s*\n\s*<div style=\{\{ \.\.\.groupCardStyle, marginTop: "16px" \}\}>\s*\n\s*<div[^>]*>Transition to Under Contract<\/div>\s*\n\s*<Btn\s*\n\s*testId="contract-execution-transition-under-contract-button"/);
-      return !!m;
+      const m = contractTsxNoComments.match(/async function handleCreateUnderContract\(\)[\s\S]*?\n    setUnderContractWriteState\(\{ kind: "busy" \}\);/m);
+      return !!m && /!fullVerificationResult \|\| !fullVerificationResult\.ok/.test(m[0]);
     })(),
     true,
   );
