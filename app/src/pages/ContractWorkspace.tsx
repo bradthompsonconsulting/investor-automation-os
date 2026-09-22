@@ -3800,7 +3800,7 @@ export default function ContractWorkspace() {
                       <div data-testid="contract-execution-artifact-selection-busy" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>Reading and hashing selected file...</div>
                     ) : preserveFileOutcome && preserveFileOutcome.kind === "selected" ? (
                       <div data-testid="contract-execution-artifact-selected" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>
-                        Selected locally (not yet uploaded): {preserveFileOutcome.fileName}, SHA-256 <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{preserveFileOutcome.sha256}</span>, {preserveFileOutcome.pageCount ?? "unknown"} page(s).
+                        Selected locally (not yet uploaded): {preserveFileOutcome.fileName} -- {(preserveSelectedFile?.size ?? 0).toLocaleString()} bytes, SHA-256 <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{preserveFileOutcome.sha256}</span>, {preserveFileOutcome.pageCount ?? "unknown"} page(s).
                       </div>
                     ) : preserveFileOutcome ? (
                       <div data-testid="contract-execution-artifact-selection-rejected" style={{ fontSize: "11px", color: "#F59E0B", marginTop: "6px" }}>

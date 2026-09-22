@@ -8,6 +8,10 @@ const APP = path.resolve(__dirname, '..');
 const originalResolve = Module._resolveFilename;
 const originalLoad = Module._load;
 const receipts = new Map();
+// Gate-review closure -- PR #85 live failure. A SEPARATE map for raw
+// artifact-upload bytes, additive only: ghl-write.ts's own receipt
+// usage (JSON via setJSON/get) is completely untouched below.
+const rawBlobs = new Map();
 let blobCalls = 0, blobConnections = 0;
 const realBlobs = require('@netlify/blobs');
 delete process.env.NETLIFY_BLOBS_CONTEXT;
@@ -28,7 +32,15 @@ Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
 Module._load = function(name, ...rest) {
   if (name === '@netlify/blobs') return {
     connectLambda: event => { blobConnections++; realBlobs.connectLambda(event); },
-    getStore: () => { blobCalls++; realBlobs.getStore('iaos-write-receipts'); return ({ async get(key) { return receipts.get(key) ?? null; }, async delete(key) { receipts.delete(key); }, async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; } }); } };
+    getStore: () => { blobCalls++; realBlobs.getStore('iaos-write-receipts'); return ({
+      async get(key, options) {
+        if (options?.type === 'arrayBuffer') { const v = rawBlobs.get(key); return v ? v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) : null; }
+        return receipts.get(key) ?? null;
+      },
+      async set(key, value) { rawBlobs.set(key, Buffer.isBuffer(value) ? value : Buffer.from(value)); },
+      async delete(key) { receipts.delete(key); rawBlobs.delete(key); },
+      async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; },
+    }); } };
   return originalLoad.call(this, name, ...rest);
 };
 process.env.IAOS_ENV = 'test';
@@ -70,6 +82,7 @@ global.fetch = async (url, init = {}) => {
   return reply(object === contact ? { contact } : { opportunity });
 };
 const handler = require('../netlify/functions/ghl-write.ts').handler;
+const uploadHandler = require('../netlify/functions/ghl-executed-artifact-upload.ts').handler;
 let count = 0;
 function check(name, fn) { return Promise.resolve().then(fn).then(() => { count++; console.log('PASS ' + name); }); }
 let sequence = 0;
@@ -509,5 +522,80 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   const {requireWebhook}=require('../netlify/functions/lib/write-webhook-auth.ts');
   await check('root webhook does not inherit app session',()=>assert.throws(()=>requireWebhook(event('', '', {}),'IAOS_PHONE_LOOKUP_WEBHOOK_SECRET')));
   await check('root webhook exact dedicated secret accepted',()=>{requireWebhook({headers:{'x-iaos-secret':'offline-webhook-fixture-only-long-secret'}},'IAOS_PHONE_LOOKUP_WEBHOOK_SECRET',{IAOS_PHONE_LOOKUP_WEBHOOK_SECRET:'offline-webhook-fixture-only-long-secret'});});
+
+  // ============================================================
+  // Gate-review closure -- PR #85 live failure. ghl-executed-artifact-
+  // upload.ts's own Netlify Blobs initialization, proven against the
+  // REAL @netlify/blobs SDK's connectLambda/getStore (the SAME mock this
+  // file already uses to prove ghl-write.ts's own Lambda-context
+  // handling above -- getStore() here calls the real SDK's getStore for
+  // its validation side effect before returning the fixture store, so a
+  // missing/malformed Lambda Blobs context genuinely throws exactly as
+  // it would in the real Netlify runtime).
+  // ============================================================
+  {
+    const uploadVersion = { agreementAt: '2026-09-06T15:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: null };
+    const uploadPdfBytes = Buffer.from('%PDF-1.4\n' + 'B'.repeat(200) + '\n%%EOF');
+    function uploadEvent(body, overrides = {}) {
+      return {
+        blobs: lambdaBlobs, httpMethod: 'POST',
+        headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` },
+        body: JSON.stringify(body),
+        ...overrides,
+      };
+    }
+
+    await check('artifact upload source: connectLambda(event) is called before any getStore( call in the handler', () => {
+      const src = fs.readFileSync(path.join(APP, 'netlify/functions/ghl-executed-artifact-upload.ts'), 'utf8');
+      const connectIdx = src.indexOf('connectLambda(event)');
+      const firstGetStoreIdx = src.indexOf('getStore(');
+      assert.notEqual(connectIdx, -1, 'connectLambda(event) must be called somewhere in the handler');
+      assert.notEqual(firstGetStoreIdx, -1, 'getStore( must be called somewhere in the handler');
+      assert.equal(connectIdx < firstGetStoreIdx, true, 'connectLambda(event) must appear before the first getStore( call');
+    });
+
+    await check('artifact upload: chunk 0 succeeds under a genuinely valid Lambda-compatible environment (real connectLambda + real getStore validation, never only a mocked store)', async () => {
+      const before = blobConnections;
+      const res = await uploadHandler(uploadEvent({
+        phase: 'chunk', opportunityId: opportunity.id, agreementAt: uploadVersion.agreementAt, version: uploadVersion,
+        uploadId: 'boundary-upload-1', chunkIndex: 0, chunkCount: 1, totalByteCount: uploadPdfBytes.length,
+        originalFileName: 'executed.pdf', chunkBase64: uploadPdfBytes.toString('base64'),
+      }));
+      assert.equal(res.statusCode, 200, res.body);
+      assert.equal(blobConnections, before + 1, 'connectLambda was actually invoked for this request');
+    });
+
+    await check('artifact upload: a missing Lambda Blobs context on chunk 0 is refused safely (409) -- never an uncaught crash/502, and no chunk is stored', async () => {
+      const e = uploadEvent({
+        phase: 'chunk', opportunityId: opportunity.id, agreementAt: uploadVersion.agreementAt, version: uploadVersion,
+        uploadId: 'boundary-upload-missing-context', chunkIndex: 0, chunkCount: 1, totalByteCount: uploadPdfBytes.length,
+        originalFileName: 'executed.pdf', chunkBase64: uploadPdfBytes.toString('base64'),
+      });
+      delete e.blobs;
+      const originalConsoleError = console.error;
+      const logCalls = [];
+      console.error = (...args) => { logCalls.push(args); };
+      let res;
+      try {
+        res = await uploadHandler(e);
+      } finally {
+        console.error = originalConsoleError;
+      }
+      assert.equal(res.statusCode, 409, res.body);
+      assert.deepEqual(JSON.parse(res.body), { error: 'Write refused or unconfirmed; refresh and inspect before retrying' });
+      assert.equal(logCalls.length, 1, 'exactly one safe diagnostic log entry');
+      const [prefix, payload] = logCalls[0];
+      assert.equal(prefix, '[ghl-executed-artifact-upload]');
+      const logged = JSON.parse(payload);
+      assert.equal(logged.phase, 'chunk');
+      assert.equal(logged.uploadId, 'boundary-upload-missing-context');
+      assert.equal(typeof logged.errorName, 'string');
+      assert.equal(typeof logged.errorMessage, 'string');
+      const serialized = JSON.stringify(logged);
+      assert.equal(serialized.includes(uploadPdfBytes.toString('base64')), false, 'chunk bytes are never logged');
+      assert.equal(serialized.toLowerCase().includes('bearer'), false, 'no token/credential is ever logged');
+    });
+  }
+
   console.log(`${count} offline boundary checks passed`);
 })().catch(error=>{console.error(error);process.exitCode=1;});

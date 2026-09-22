@@ -21,7 +21,7 @@
  * input, per the Product Owner's explicit ruling.
  */
 
-import { getStore } from "@netlify/blobs";
+import { connectLambda, getStore } from "@netlify/blobs";
 import { createHash } from "node:crypto";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
@@ -38,6 +38,40 @@ import {
 } from "../../src/lib/contract-executed-artifact-carriers";
 
 const json = (statusCode: number, data: unknown) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(data) });
+
+/**
+ * Gate-review closure -- PR #85 live failure (Blobs initialization).
+ * Mirrors ghl-write.ts's own describeCaughtError/logWriteFailure pair --
+ * never throws on its own, regardless of what was actually thrown. Logs
+ * ONLY correlation and error metadata (phase, uploadId -- both plain
+ * client-supplied session identifiers, never free text) plus the error's
+ * own name/message/stack. NEVER the request body/chunk bytes, PDF
+ * content, tokens, or any GHL contact/document data -- none of those are
+ * referenced here at all, structurally, not merely filtered out.
+ */
+function describeCaughtError(error: unknown): { name: string; message: string; stack: string | null } {
+  if (error instanceof Error) {
+    return {
+      name: typeof error.name === "string" ? error.name : "Error",
+      message: typeof error.message === "string" ? error.message : "",
+      stack: typeof error.stack === "string" ? error.stack : null,
+    };
+  }
+  let message: string;
+  try { message = String(error); } catch { message = "[unloggable thrown value]"; }
+  return { name: "NonErrorThrow", message, stack: null };
+}
+
+function logUploadFailure(phase: unknown, uploadId: unknown, error: unknown): void {
+  const described = describeCaughtError(error);
+  console.error("[ghl-executed-artifact-upload]", JSON.stringify({
+    phase: typeof phase === "string" ? phase : null,
+    uploadId: typeof uploadId === "string" ? uploadId : null,
+    errorName: described.name,
+    errorMessage: described.message,
+    stack: described.stack,
+  }));
+}
 
 function isValidVersion(v: any): v is ContractVersionIdentity {
   return typeof v === "object" && v !== null && typeof v.agreementAt === "string" && typeof v.versionSeq === "number";
@@ -106,10 +140,19 @@ export const handler = async (event: any) => {
     return json(400, { error: "Missing or invalid opportunityId/agreementAt/version" });
   }
 
-  const uploads = getStore("iaos-executed-artifact-uploads");
-  const artifacts = getStore("iaos-executed-artifacts");
-
   try {
+    // Gate-review closure -- PR #85 live failure. This Lambda-style
+    // handler must call connectLambda(event) BEFORE any getStore() call,
+    // exactly like ghl-write.ts's own established pattern -- the SDK has
+    // no other supported way to discover the Blobs context in Netlify's
+    // real runtime (the offline test harness's own @netlify/blobs mock
+    // never exercised this, which is why the gap went unnoticed until a
+    // live Test attempt hit HTTP 502/MissingBlobsEnvironmentError).
+    // Wrapped inside this try so a genuine initialization failure is a
+    // safe, logged, controlled 409 -- never an uncaught 502.
+    connectLambda(event);
+    const uploads = getStore("iaos-executed-artifact-uploads");
+    const artifacts = getStore("iaos-executed-artifacts");
     const boundary = configuredBoundary();
     const opportunity = await boundary.opportunity(opportunityId);
     const contactId = opportunity.contactId;
@@ -279,7 +322,8 @@ export const handler = async (event: any) => {
     }
 
     return json(400, { error: "Unknown phase" });
-  } catch {
+  } catch (error) {
+    logUploadFailure(phase, request?.uploadId, error);
     return json(409, { error: "Write refused or unconfirmed; refresh and inspect before retrying" });
   }
 };

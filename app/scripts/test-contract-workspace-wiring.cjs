@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 256;
+const FLOOR = 257;
 let failures = 0;
 let checks = 0;
 
@@ -896,6 +896,14 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     'the file input itself only renders in the else-branch of `preservedArtifactRecord ?` -- once an artifact is already preserved (hydrated or just uploaded), the input disappears rather than allowing a second silent upload',
     /\{preservedArtifactRecord \? \(\s*\n\s*<div data-testid="contract-execution-artifact-preserved"/.test(contractTsxNoComments) &&
     /<input\s*\n\s*data-testid="contract-execution-artifact-file-input"/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'gate-review closure, requirement 6 -- the selected-file display shows filename, byte count (read directly from the retained File handle), page count, AND SHA-256, all locally computed before any upload',
+    (() => {
+      const m = contractTsxNoComments.match(/data-testid="contract-execution-artifact-selected"[\s\S]{0,400}/);
+      return !!m && /preserveFileOutcome\.fileName/.test(m[0]) && /preserveSelectedFile\?\.size/.test(m[0]) && /preserveFileOutcome\.sha256/.test(m[0]) && /preserveFileOutcome\.pageCount/.test(m[0]);
+    })(),
     true,
   );
   check(
