@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 257;
+const FLOOR = 260;
 let failures = 0;
 let checks = 0;
 
@@ -921,6 +921,38 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('upload SUCCESS state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "success"', /preserveUploadState\.kind === "success" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-upload-success"/.test(contractTsxNoComments), true);
   check('upload FAILURE state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "failed"', /preserveUploadState\.kind === "failed" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-upload-failed"/.test(contractTsxNoComments), true);
   check('the file input is disabled while its own local selection is being read/hashed, or while an upload is already in flight', /disabled=\{preserveFileBusy \|\| preserveUploadState\.kind === "uploading"\}/.test(contractTsxNoComments), true);
+
+  // ============================================================
+  // Gate-review closure -- PR #85 chunked Blobs upload consistency and
+  // failed-session handling repair.
+  // ============================================================
+  check(
+    'gate-review closure, requirement 2 -- a failed chunk/finalize request surfaces the server\'s own safe reason detail (never a bare generic message) in the thrown Error the operator sees',
+    (() => {
+      const m = contractTsxNoComments.match(/const call = async \(body: unknown\) => \{[\s\S]*?\n    \};/m);
+      return !!m && /Array\.isArray\(parsed\.reasons\)/.test(m[0]) && /parsed\.reasons\[0\]\?\.message/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'gate-review closure, requirement 8 -- a failed upload attempts a best-effort abort of its OWN uploadId for bounded cleanup, wrapped so its own failure never masks the real error already reported, and never automatically retries the upload itself (requirement 9)',
+    (() => {
+      const m = contractTsxNoComments.match(/\} catch \(e: any\) \{\s*\n\s*setPreserveUploadState\(\{ kind: "failed", message: e\?\.message[\s\S]*?\n    \}\s*\n  \}/m);
+      return !!m && /phase: "abort"/.test(m[0]) && !/void handlePreserveExecutedArtifact\(/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'uploadId, opportunityId, agreementAt, and version are hoisted OUTSIDE the try block so the catch block\'s best-effort abort can reference the SAME identifiers the failed attempt actually used',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handlePreserveExecutedArtifact\(file: File\)[\s\S]*?\n  \}/m);
+      if (!m) return false;
+      const uploadIdDeclIdx = m[0].indexOf('const uploadId =');
+      const tryIdx = m[0].indexOf('try {');
+      return uploadIdDeclIdx !== -1 && tryIdx !== -1 && uploadIdDeclIdx < tryIdx;
+    })(),
+    true,
+  );
 
   check(
     'the Preserve executed PDF card now sits BEFORE section "7. Under Contract" -- Board #9\'s accepted finish line is preserved artifact THEN Under Contract, never the reverse',

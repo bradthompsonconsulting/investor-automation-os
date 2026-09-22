@@ -113,8 +113,58 @@ async function safeCleanupSession(uploads: ReturnType<typeof getStore>, opportun
  * -- never trusts that a successful `.set()` sometime in the past still
  * holds.
  */
+/**
+ * Gate-review closure, requirements 3-6 -- each chunk (and finalize) is a
+ * SEPARATE Lambda invocation; the in-process `lockContact` mutex cannot
+ * coordinate across them, and Netlify Blobs' default ("eventual")
+ * consistency does not guarantee chunk N's read of the session manifest
+ * observes chunk (N-1)'s write immediately. Two independent layers:
+ *
+ *   1. `consistency: "strong"` is requested on every read below --
+ *      genuinely supported by the installed SDK (`GetOptions.consistency`),
+ *      but it requires an `uncachedEdgeURL` in the environment context
+ *      that `connectLambda(event)` does not supply (confirmed by reading
+ *      the SDK's own source: connectLambda sets only `{deployID,
+ *      edgeURL, siteID, token}`). Requesting it costs nothing when
+ *      unsupported -- the SDK's own `BlobsConsistencyError` is caught
+ *      here and the read is retried at the default consistency, never a
+ *      new crash in place of the old race.
+ *   2. A short, bounded retry for reads that GENUINELY expect a prior
+ *      write to already be visible (a later chunk's or finalize's own
+ *      manifest read -- never chunk 0, which correctly expects no
+ *      session yet) -- the actual, environment-independent guarantee
+ *      that a real prior write becomes visible before this request is
+ *      refused as out-of-order/missing, regardless of whether strong
+ *      consistency ends up available in this deployment.
+ */
+const MANIFEST_READ_RETRY_DELAYS_MS = [50, 150, 300];
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getWithConsistencyFallback(store: ReturnType<typeof getStore>, key: string, type: "json" | "arrayBuffer"): Promise<any> {
+  try {
+    return await store.get(key, { type, consistency: "strong" } as any);
+  } catch (e: any) {
+    if (e?.name !== "BlobsConsistencyError") throw e;
+    return store.get(key, { type } as any);
+  }
+}
+
+async function readManifest(uploads: ReturnType<typeof getStore>, mKey: string, expectExisting: boolean): Promise<UploadSessionManifest | null> {
+  let manifest = (await getWithConsistencyFallback(uploads, mKey, "json")) as UploadSessionManifest | null;
+  if (manifest !== null || !expectExisting) return manifest;
+  for (const waitMs of MANIFEST_READ_RETRY_DELAYS_MS) {
+    await delay(waitMs);
+    manifest = (await getWithConsistencyFallback(uploads, mKey, "json")) as UploadSessionManifest | null;
+    if (manifest !== null) return manifest;
+  }
+  return manifest;
+}
+
 async function reverifyStoredArtifactBytes(artifacts: ReturnType<typeof getStore>, blobKey: string, expectedSha256: string, expectedByteCount: number): Promise<Buffer> {
-  const raw = await artifacts.get(blobKey, { type: "arrayBuffer" });
+  const raw = await getWithConsistencyFallback(artifacts, blobKey, "arrayBuffer");
   if (!raw) throw new Error("Preserved artifact metadata exists but its stored bytes could not be read");
   const buffer = Buffer.from(raw);
   if (buffer.byteLength !== expectedByteCount) throw new Error("Stored artifact byte count no longer matches its durable metadata -- refusing to treat it as verified");
@@ -169,13 +219,19 @@ export const handler = async (event: any) => {
       const release = await lockContact(contactId);
       try {
         const mKey = manifestKey(opportunityId, version, uploadId);
-        const existingSession = (await uploads.get(mKey, { type: "json" })) as UploadSessionManifest | null;
+        const existingSession = await readManifest(uploads, mKey, chunkIndex > 0);
         const evaluation = evaluateChunkAcceptance({
           incoming: { opportunityId, agreementAt, version, uploadId, chunkIndex, chunkCount, totalByteCount, originalFileName, chunkByteLength: chunkBytes.byteLength, chunkSha256 },
           isSameVersion: isSameContractVersion,
           existingSession,
         });
-        if (!evaluation.ok) return json(409, { error: "Chunk refused", reasons: evaluation.reasons });
+        if (!evaluation.ok) {
+          // Gate-review closure, requirement 2 -- a safe reason code
+          // (structural, never bytes/tokens/PII) reaches both the
+          // diagnostic log and the client's own error display.
+          logUploadFailure(phase, uploadId, new Error("Chunk refused: " + evaluation.reasons.map((r) => r.code).join(", ")));
+          return json(409, { error: "Chunk refused", reasons: evaluation.reasons });
+        }
         if (evaluation.kind === "duplicate_identical") {
           // An ordinary retry of the same bytes -- already stored, never re-stored, never an error.
           return json(200, { accepted: true, duplicate: true, receivedChunkIndexes: existingSession!.receivedChunkIndexes });
@@ -194,7 +250,7 @@ export const handler = async (event: any) => {
       const { uploadId } = request;
       if (typeof uploadId !== "string") return json(400, { error: "Missing uploadId" });
       const mKey = manifestKey(opportunityId, version, uploadId);
-      const session = (await uploads.get(mKey, { type: "json" })) as UploadSessionManifest | null;
+      const session = await readManifest(uploads, mKey, false);
       if (session) await safeCleanupSession(uploads, opportunityId, version, uploadId, session.receivedChunkIndexes);
       return json(200, { aborted: true });
     }
@@ -207,17 +263,23 @@ export const handler = async (event: any) => {
       const release = await lockContact(contactId);
       try {
         const mKey = manifestKey(opportunityId, version, uploadId);
-        const session = (await uploads.get(mKey, { type: "json" })) as UploadSessionManifest | null;
-        if (!session) return json(409, { error: "No such upload session" });
+        const session = await readManifest(uploads, mKey, true);
+        if (!session) {
+          logUploadFailure(phase, uploadId, new Error("No such upload session"));
+          return json(409, { error: "No such upload session" });
+        }
         if (session.opportunityId !== opportunityId || session.agreementAt !== agreementAt || !isSameContractVersion(session.version, version)) {
           return json(409, { error: "Session does not match the requested opportunity/agreement/version" });
         }
         const readiness = evaluateFinalizeReadiness(session);
-        if (!readiness.ok) return json(409, { error: "Not all chunks received", reasons: readiness.reasons });
+        if (!readiness.ok) {
+          logUploadFailure(phase, uploadId, new Error("Not all chunks received: " + readiness.reasons.map((r) => r.code).join(", ")));
+          return json(409, { error: "Not all chunks received", reasons: readiness.reasons });
+        }
 
         const parts: Buffer[] = [];
         for (let i = 0; i < session.chunkCount; i++) {
-          const part = await uploads.get(chunkKey(opportunityId, version, uploadId, i), { type: "arrayBuffer" });
+          const part = await getWithConsistencyFallback(uploads, chunkKey(opportunityId, version, uploadId, i), "arrayBuffer");
           if (!part) return json(409, { error: `Chunk ${i} is missing from storage` });
           parts.push(Buffer.from(part));
         }
@@ -260,7 +322,7 @@ export const handler = async (event: any) => {
         const aKey = artifactKey(opportunityId, version);
         await artifacts.set(aKey, reconstructed);
         // Re-read independently -- never trust the write call's own success alone.
-        const readBack = await artifacts.get(aKey, { type: "arrayBuffer" });
+        const readBack = await getWithConsistencyFallback(artifacts, aKey, "arrayBuffer");
         if (!readBack) throw new Error("Artifact write was not confirmed by readback");
         const readBackBuffer = Buffer.from(readBack);
         if (readBackBuffer.byteLength !== reconstructed.byteLength) throw new Error("Readback byte count differs from what was written");

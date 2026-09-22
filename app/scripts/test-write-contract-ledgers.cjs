@@ -15,6 +15,12 @@ const blobsData = new Map();
 // Gate-review closure -- failure-injection toggles, all default to "no
 // injected failure" and are reset by each test that uses them.
 let failNextBlobDelete = false;
+// Gate-review closure -- PR #85 chunked-upload consistency repair.
+// Simulates the exact cross-invocation eventual-consistency race: a
+// manifest write from one invocation not yet visible to a read from a
+// DIFFERENT invocation. Counts down on manifest-shaped keys only, then
+// self-resets to 0 -- never affects any other test.
+let staleManifestReadsRemaining = 0;
 Module._resolveFilename = function(name, parent, ...rest) {
   if (name.startsWith('.') && parent) {
     const candidate = path.resolve(path.dirname(parent.filename), name + '.ts');
@@ -32,6 +38,10 @@ Module._load = function(name, ...rest) {
           const v = blobsData.get(key);
           if (!v) return null;
           return v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength);
+        }
+        if (staleManifestReadsRemaining > 0 && key.includes('/manifest.json')) {
+          staleManifestReadsRemaining--;
+          return null;
         }
         return receipts.get(key) ?? null;
       },
@@ -435,6 +445,76 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     assert.equal(ucRecords[0].iaosVerifiedAt, execution.value.iaosVerifiedAt, 'the pre-existing Under Contract record itself is untouched -- same verified-at identity as originally written');
     const preserved = load('contract-executed-artifact-carriers').latestPreservedExecutedArtifactForVersion(notes, opportunity.id, fixture.version.agreementAt, fixture.version);
     assert.equal(preserved !== null, true, 'the preservation record now also exists for this exact evidence -- sequence-complete');
+  });
+
+  // ============================================================
+  // Gate-review closure -- PR #85 chunked Blobs upload consistency and
+  // failed-session handling repair. Each chunk is a SEPARATE Lambda
+  // invocation; the LIVE 409 "Chunk refused" on chunk 1 (immediately
+  // after chunk 0's own 200) is reproduced and proven here to be the
+  // exact OUT_OF_ORDER_CHUNK path in evaluateChunkAcceptance, caused by
+  // a manifest read that has not yet observed the prior chunk's write
+  // (Netlify Blobs' default eventual consistency across invocations,
+  // never coordinated by the in-process lockContact mutex).
+  // ============================================================
+  await check('consistency repair: chunk 1 succeeds even when its manifest read is stale for the first two attempts -- the bounded retry observes chunk 0\'s write within budget, simulating separate-invocation eventual consistency', async () => {
+    const chunks = splitChunks(pdfBytes, CHUNK);
+    const c0 = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'stale-manifest-race', chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[0].toString('base64') });
+    assert.equal(c0.statusCode, 200, c0.body);
+    staleManifestReadsRemaining = 2; // chunk 1's manifest read returns null on its first two attempts (the exact cross-invocation race), then the genuine manifest
+    try {
+      const c1 = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'stale-manifest-race', chunkIndex: 1, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[1].toString('base64') });
+      assert.equal(c1.statusCode, 200, c1.body);
+    } finally {
+      assert.equal(staleManifestReadsRemaining, 0, 'the injected staleness was genuinely exercised by the retry loop, never skipped');
+    }
+    await invokeUpload({ phase: 'abort', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'stale-manifest-race' });
+  });
+
+  await check('consistency repair: a genuinely missing session on chunk 1 still refuses (after exhausting the bounded retry) with the exact safe reason OUT_OF_ORDER_CHUNK -- proving the live 409\'s precise root cause, surfaced in both the diagnostic log and the response', async () => {
+    const chunks = splitChunks(pdfBytes, CHUNK);
+    const originalConsoleError = console.error;
+    const logCalls = [];
+    console.error = (...args) => { logCalls.push(args); };
+    let res;
+    try {
+      res = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'genuinely-missing-session', chunkIndex: 1, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[1].toString('base64') });
+    } finally {
+      console.error = originalConsoleError;
+    }
+    assert.equal(res.statusCode, 409, res.body);
+    const body = JSON.parse(res.body);
+    assert.equal(body.error, 'Chunk refused');
+    assert.equal(Array.isArray(body.reasons), true);
+    assert.equal(body.reasons[0].code, 'OUT_OF_ORDER_CHUNK');
+    assert.equal(typeof body.reasons[0].message, 'string');
+    assert.equal(logCalls.length, 1, 'exactly one safe diagnostic log entry for this refusal');
+    const [prefix, payload] = logCalls[0];
+    assert.equal(prefix, '[ghl-executed-artifact-upload]');
+    const logged = JSON.parse(payload);
+    assert.equal(logged.phase, 'chunk');
+    assert.equal(logged.uploadId, 'genuinely-missing-session');
+    assert.equal(logged.errorMessage.includes('OUT_OF_ORDER_CHUNK'), true);
+    const serialized = JSON.stringify(logged);
+    assert.equal(serialized.includes(chunks[1].toString('base64')), false, 'chunk bytes are never logged');
+  });
+
+  await check('abandoned session: an orphaned partial upload (chunk 0 only, never finalized or aborted) never counts as preserved evidence and never blocks a fresh attempt under a new uploadId', async () => {
+    const chunks = splitChunks(pdfBytes, CHUNK);
+    const orphanRes = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'abandoned-orphan-session', chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[0].toString('base64') });
+    assert.equal(orphanRes.statusCode, 200, orphanRes.body);
+    // Preserved evidence is resolved ONLY from durable notes -- an orphaned
+    // pending session in the uploads store can never be mistaken for it.
+    const preserved = load('contract-executed-artifact-carriers').latestPreservedExecutedArtifactForVersion(notes, opportunity.id, fixture.version.agreementAt, fixture.version);
+    assert.equal(preserved !== null, true, 'the earlier, genuine preservation for fixture.version is unaffected by the orphan');
+    // A completely fresh attempt under a NEW uploadId is entirely unaffected.
+    const freshFirstChunk = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'fresh-after-orphan', chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[0].toString('base64') });
+    assert.equal(freshFirstChunk.statusCode, 200, freshFirstChunk.body);
+    // Bounded cleanup: the abort phase safely discards an abandoned session's pending data.
+    const abortRes = await invokeUpload({ phase: 'abort', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'abandoned-orphan-session' });
+    assert.equal(abortRes.statusCode, 200, abortRes.body);
+    assert.equal(JSON.parse(abortRes.body).aborted, true);
+    await invokeUpload({ phase: 'abort', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'fresh-after-orphan' });
   });
 
   await check('artifact upload: identical re-upload (same bytes, same version) is a no-op success -- no duplicate note written', async () => {

@@ -1760,29 +1760,39 @@ export default function ContractWorkspace() {
   async function handlePreserveExecutedArtifact(file: File) {
     if (screen.state !== "ready" || !documentVersion || !existingSend?.providerResponse?.documentId) return;
     const providerDocumentId = existingSend.providerResponse.documentId;
+    const opportunityId = screen.opportunity.id;
+    const agreementAt = screen.economics.agreementAt;
+    const version = documentVersion;
     setPreserveUploadState({ kind: "uploading", chunkIndex: 0, chunkCount: 1 });
+    const uploadId = (globalThis.crypto && "randomUUID" in globalThis.crypto) ? globalThis.crypto.randomUUID() : `${opportunityId}-${Date.now()}`;
+    const call = async (body: unknown) => {
+      const res = await appWriteFetch("/.netlify/functions/ghl-executed-artifact-upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const parsed = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // Gate-review closure, requirement 2 -- surface the server's own
+        // safe (structural, never bytes/tokens/PII) reason detail to the
+        // operator, not merely the generic "Chunk refused"/"Not all
+        // chunks received" headline.
+        const reasonDetail = Array.isArray(parsed.reasons) && parsed.reasons.length > 0 && typeof parsed.reasons[0]?.message === "string" ? `: ${parsed.reasons[0].message}` : "";
+        throw new Error((parsed.error ?? "Preservation request refused") + reasonDetail);
+      }
+      return parsed;
+    };
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const chunkCount = Math.max(1, Math.ceil(bytes.length / CHUNK_SIZE_BYTES));
-      const uploadId = (globalThis.crypto && "randomUUID" in globalThis.crypto) ? globalThis.crypto.randomUUID() : `${screen.opportunity.id}-${Date.now()}`;
-      const call = async (body: unknown) => {
-        const res = await appWriteFetch("/.netlify/functions/ghl-executed-artifact-upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        const parsed = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(parsed.error ?? "Preservation request refused");
-        return parsed;
-      };
       for (let i = 0; i < chunkCount; i++) {
         setPreserveUploadState({ kind: "uploading", chunkIndex: i, chunkCount });
         const slice = bytes.subarray(i * CHUNK_SIZE_BYTES, Math.min(bytes.length, (i + 1) * CHUNK_SIZE_BYTES));
         let binary = "";
         for (let j = 0; j < slice.length; j++) binary += String.fromCharCode(slice[j]);
         await call({
-          phase: "chunk", opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion,
+          phase: "chunk", opportunityId, agreementAt, version,
           uploadId, chunkIndex: i, chunkCount, totalByteCount: bytes.length, originalFileName: file.name, chunkBase64: btoa(binary),
         });
       }
       const finalized = await call({
-        phase: "finalize", opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion,
+        phase: "finalize", opportunityId, agreementAt, version,
         uploadId, providerDocumentId,
       });
       setPreserveUploadState({ kind: "success", alreadyPreserved: !!finalized.alreadyPreserved, sha256: finalized.sha256, byteCount: finalized.byteCount, pageCount: finalized.pageCount ?? null });
@@ -1798,6 +1808,19 @@ export default function ContractWorkspace() {
       } catch { /* self-heals on next natural notes load */ }
     } catch (e: any) {
       setPreserveUploadState({ kind: "failed", message: e?.message ?? "Preservation failed unexpectedly" });
+      // Gate-review closure, requirement 8 -- bounded cleanup for the
+      // partial session this failed attempt may have left pending. Never
+      // touches finalized evidence (a completely separate key
+      // namespace); best-effort only, its own failure is swallowed so it
+      // never masks the real error already reported above. No automatic
+      // retry of the upload itself (requirement 9) -- the operator must
+      // explicitly select and click Preserve executed PDF again.
+      try {
+        await appWriteFetch("/.netlify/functions/ghl-executed-artifact-upload", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phase: "abort", opportunityId, agreementAt, version, uploadId }),
+        });
+      } catch { /* best-effort cleanup only */ }
     }
   }
 
