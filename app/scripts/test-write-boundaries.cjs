@@ -12,6 +12,7 @@ const receipts = new Map();
 // artifact-upload bytes, additive only: ghl-write.ts's own receipt
 // usage (JSON via setJSON/get) is completely untouched below.
 const rawBlobs = new Map();
+const rawBlobsMetadata = new Map();
 let blobCalls = 0, blobConnections = 0;
 const realBlobs = require('@netlify/blobs');
 delete process.env.NETLIFY_BLOBS_CONTEXT;
@@ -37,9 +38,21 @@ Module._load = function(name, ...rest) {
         if (options?.type === 'arrayBuffer') { const v = rawBlobs.get(key); return v ? v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) : null; }
         return receipts.get(key) ?? null;
       },
-      async set(key, value) { rawBlobs.set(key, Buffer.isBuffer(value) ? value : Buffer.from(value)); },
-      async delete(key) { receipts.delete(key); rawBlobs.delete(key); },
+      async set(key, value, options) { rawBlobs.set(key, Buffer.isBuffer(value) ? value : Buffer.from(value)); if (options?.metadata) rawBlobsMetadata.set(key, options.metadata); },
+      async delete(key) { receipts.delete(key); rawBlobs.delete(key); rawBlobsMetadata.delete(key); },
       async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; },
+      async getMetadata(key) { if (!rawBlobs.has(key)) return null; return { etag: 'fixture-etag', metadata: rawBlobsMetadata.get(key) ?? {} }; },
+      async getWithMetadata(key, options) {
+        if (!rawBlobs.has(key)) return null;
+        const v = rawBlobs.get(key);
+        const data = options?.type === 'arrayBuffer' ? v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) : v;
+        return { data, etag: 'fixture-etag', metadata: rawBlobsMetadata.get(key) ?? {} };
+      },
+      async list(options) {
+        const prefix = options?.prefix ?? '';
+        const blobs = [...rawBlobs.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key, etag: 'fixture-etag' }));
+        return { blobs, directories: [] };
+      },
     }); } };
   return originalLoad.call(this, name, ...rest);
 };
@@ -536,6 +549,7 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   {
     const uploadVersion = { agreementAt: '2026-09-06T15:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: null };
     const uploadPdfBytes = Buffer.from('%PDF-1.4\n' + 'B'.repeat(200) + '\n%%EOF');
+    const uploadExpectedFullSha256 = require('node:crypto').createHash('sha256').update(uploadPdfBytes).digest('hex');
     function uploadEvent(body, overrides = {}) {
       return {
         blobs: lambdaBlobs, httpMethod: 'POST',
@@ -559,7 +573,7 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
       const res = await uploadHandler(uploadEvent({
         phase: 'chunk', opportunityId: opportunity.id, agreementAt: uploadVersion.agreementAt, version: uploadVersion,
         uploadId: 'boundary-upload-1', chunkIndex: 0, chunkCount: 1, totalByteCount: uploadPdfBytes.length,
-        originalFileName: 'executed.pdf', chunkBase64: uploadPdfBytes.toString('base64'),
+        originalFileName: 'executed.pdf', expectedFullSha256: uploadExpectedFullSha256, chunkBase64: uploadPdfBytes.toString('base64'),
       }));
       assert.equal(res.statusCode, 200, res.body);
       assert.equal(blobConnections, before + 1, 'connectLambda was actually invoked for this request');
@@ -569,7 +583,7 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
       const e = uploadEvent({
         phase: 'chunk', opportunityId: opportunity.id, agreementAt: uploadVersion.agreementAt, version: uploadVersion,
         uploadId: 'boundary-upload-missing-context', chunkIndex: 0, chunkCount: 1, totalByteCount: uploadPdfBytes.length,
-        originalFileName: 'executed.pdf', chunkBase64: uploadPdfBytes.toString('base64'),
+        originalFileName: 'executed.pdf', expectedFullSha256: uploadExpectedFullSha256, chunkBase64: uploadPdfBytes.toString('base64'),
       });
       delete e.blobs;
       const originalConsoleError = console.error;

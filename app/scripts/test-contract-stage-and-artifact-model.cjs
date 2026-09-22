@@ -38,7 +38,7 @@ const A = require(path.join(TMP, 'contract-executed-artifact-storage-model.js'))
 const C = require(path.join(TMP, 'contract-executed-artifact-carriers.js'));
 const B = require(path.join(TMP, 'board9-contract-model.js'));
 
-const FLOOR = 60;
+const FLOOR = 71;
 let failures = 0;
 let checks = 0;
 function check(name, actual, expected) {
@@ -62,58 +62,83 @@ const OPP = { id: 'opp-1', pipelineId: 'pipe-1', pipelineStageId: 'stage-new-lea
 }
 
 // ============================================================
-// 2. evaluateChunkAcceptance
+// 2. evaluateChunkAcceptance -- gate-review closure, PR #85 chunk-
+//    ingestion redesign. Each chunk is evaluated ENTIRELY independently
+//    against only a record ALREADY stored at its OWN deterministic key
+//    (never a shared "session"/manifest another chunk wrote) -- so there
+//    is no more ordering requirement of any kind.
 // ============================================================
 {
   const HASH_0 = 'a'.repeat(64), HASH_1 = 'b'.repeat(64), HASH_1_DIFFERENT = 'c'.repeat(64);
-  const base = { opportunityId: 'opp-1', agreementAt: VERSION.agreementAt, version: VERSION, uploadId: 'up-1', chunkIndex: 0, chunkCount: 3, totalByteCount: 300, originalFileName: 'a.pdf', chunkByteLength: 100, chunkSha256: HASH_0 };
+  const FULL_SHA = 'd'.repeat(64), OTHER_FULL_SHA = 'e'.repeat(64);
+  const base = { opportunityId: 'opp-1', agreementAt: VERSION.agreementAt, version: VERSION, uploadId: 'up-1', chunkIndex: 0, chunkCount: 3, totalByteCount: 300, originalFileName: 'a.pdf', expectedFullSha256: FULL_SHA, chunkByteLength: 100, chunkSha256: HASH_0 };
   const isSame = B.isSameContractVersion;
   const okKind = (r) => r.ok ? r.kind : false;
 
-  check('first chunk of a new session (index 0, no existing session) is accepted as new', okKind(A.evaluateChunkAcceptance({ incoming: base, isSameVersion: isSame, existingSession: null })), 'new');
-  checkTrue('first chunk with a non-zero index is refused (must start at 0)', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 1 }, isSameVersion: isSame, existingSession: null }).ok);
-  check('the out-of-order-first-chunk refusal names OUT_OF_ORDER_CHUNK', A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 1 }, isSameVersion: isSame, existingSession: null }).reasons.map(r=>r.code), ['OUT_OF_ORDER_CHUNK']);
+  check('chunk 0 with no existing record at its own key is accepted as new', okKind(A.evaluateChunkAcceptance({ incoming: base, isSameVersion: isSame, existingChunk: null })), 'new');
+  // Gate-review closure -- the actual proof requirement 13 asks for:
+  // chunks 1, 2, and 3 (any non-zero index) succeed with NO existing
+  // record at their own key -- no manifest, no chunk 0 required first.
+  for (const idx of [1, 2, 3]) {
+    check(`chunk ${idx} with no existing record at its own key is accepted as new -- no prior chunk required, no ordering enforced`, okKind(A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: idx, chunkCount: 4 }, isSameVersion: isSame, existingChunk: null })), 'new');
+  }
 
-  checkTrue('blank opportunityId refused', !A.evaluateChunkAcceptance({ incoming: { ...base, opportunityId: '' }, isSameVersion: isSame, existingSession: null }).ok);
-  checkTrue('blank uploadId refused', !A.evaluateChunkAcceptance({ incoming: { ...base, uploadId: '' }, isSameVersion: isSame, existingSession: null }).ok);
-  checkTrue('negative chunkIndex refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: -1 }, isSameVersion: isSame, existingSession: null }).ok);
-  checkTrue('zero chunkCount refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkCount: 0 }, isSameVersion: isSame, existingSession: null }).ok);
-  checkTrue('zero totalByteCount refused', !A.evaluateChunkAcceptance({ incoming: { ...base, totalByteCount: 0 }, isSameVersion: isSame, existingSession: null }).ok);
-  checkTrue('oversized totalByteCount refused', !A.evaluateChunkAcceptance({ incoming: { ...base, totalByteCount: A.MAX_TOTAL_BYTES + 1 }, isSameVersion: isSame, existingSession: null }).ok);
-  check('the oversized refusal names TOTAL_BYTE_COUNT_OVERSIZED', A.evaluateChunkAcceptance({ incoming: { ...base, totalByteCount: A.MAX_TOTAL_BYTES + 1 }, isSameVersion: isSame, existingSession: null }).reasons.map(r=>r.code), ['TOTAL_BYTE_COUNT_OVERSIZED']);
-  checkTrue('a chunk exceeding CHUNK_SIZE_BYTES is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkByteLength: A.CHUNK_SIZE_BYTES + 1 }, isSameVersion: isSame, existingSession: null }).ok);
-  checkTrue('chunkIndex >= chunkCount is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 3, chunkCount: 3 }, isSameVersion: isSame, existingSession: null }).ok);
+  checkTrue('blank opportunityId refused', !A.evaluateChunkAcceptance({ incoming: { ...base, opportunityId: '' }, isSameVersion: isSame, existingChunk: null }).ok);
+  checkTrue('blank uploadId refused', !A.evaluateChunkAcceptance({ incoming: { ...base, uploadId: '' }, isSameVersion: isSame, existingChunk: null }).ok);
+  checkTrue('negative chunkIndex refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: -1 }, isSameVersion: isSame, existingChunk: null }).ok);
+  checkTrue('zero chunkCount refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkCount: 0 }, isSameVersion: isSame, existingChunk: null }).ok);
+  checkTrue('zero totalByteCount refused', !A.evaluateChunkAcceptance({ incoming: { ...base, totalByteCount: 0 }, isSameVersion: isSame, existingChunk: null }).ok);
+  checkTrue('oversized totalByteCount refused', !A.evaluateChunkAcceptance({ incoming: { ...base, totalByteCount: A.MAX_TOTAL_BYTES + 1 }, isSameVersion: isSame, existingChunk: null }).ok);
+  check('the oversized refusal names TOTAL_BYTE_COUNT_OVERSIZED', A.evaluateChunkAcceptance({ incoming: { ...base, totalByteCount: A.MAX_TOTAL_BYTES + 1 }, isSameVersion: isSame, existingChunk: null }).reasons.map(r=>r.code), ['TOTAL_BYTE_COUNT_OVERSIZED']);
+  checkTrue('a chunk exceeding CHUNK_SIZE_BYTES is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkByteLength: A.CHUNK_SIZE_BYTES + 1 }, isSameVersion: isSame, existingChunk: null }).ok);
+  checkTrue('chunkIndex >= chunkCount is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 3, chunkCount: 3 }, isSameVersion: isSame, existingChunk: null }).ok);
+  checkTrue('a malformed (non-64-hex) expectedFullSha256 is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, expectedFullSha256: 'not-a-hash' }, isSameVersion: isSame, existingChunk: null }).ok);
+  check('the malformed-expected-hash refusal names INVALID_EXPECTED_FULL_SHA256', A.evaluateChunkAcceptance({ incoming: { ...base, expectedFullSha256: 'not-a-hash' }, isSameVersion: isSame, existingChunk: null }).reasons.map(r=>r.code), ['INVALID_EXPECTED_FULL_SHA256']);
 
-  const session = { opportunityId: 'opp-1', agreementAt: VERSION.agreementAt, version: VERSION, uploadId: 'up-1', chunkCount: 3, totalByteCount: 300, originalFileName: 'a.pdf', receivedChunkIndexes: [0], receivedChunkHashes: { 0: HASH_0 } };
-  check('the next in-order chunk (index 1) is accepted as new against an existing session', okKind(A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 1, chunkSha256: HASH_1 }, isSameVersion: isSame, existingSession: session })), 'new');
+  const existingChunk = { opportunityId: 'opp-1', agreementAt: VERSION.agreementAt, version: VERSION, uploadId: 'up-1', chunkCount: 3, totalByteCount: 300, originalFileName: 'a.pdf', expectedFullSha256: FULL_SHA, chunkSha256: HASH_0 };
 
-  // Gate-review closure, requirement 3 -- content-aware chunk retry.
-  check('an IDENTICAL retry of an already-received chunk index (same content hash) is idempotent, never re-stored, never an error', okKind(A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 0, chunkSha256: HASH_0 }, isSameVersion: isSame, existingSession: session })), 'duplicate_identical');
-  checkTrue('a DIFFERENT-content retry at an already-received chunk index is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 0, chunkSha256: HASH_1_DIFFERENT }, isSameVersion: isSame, existingSession: session }).ok);
-  check('the different-content-at-same-index refusal names DUPLICATE_CHUNK', A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 0, chunkSha256: HASH_1_DIFFERENT }, isSameVersion: isSame, existingSession: session }).reasons.map(r=>r.code), ['DUPLICATE_CHUNK']);
+  // Gate-review closure, requirement 4 -- content-aware idempotency.
+  check('an IDENTICAL retry (same content hash AND same declared metadata) of an already-stored chunk index is idempotent, never re-stored, never an error', okKind(A.evaluateChunkAcceptance({ incoming: { ...base, chunkSha256: HASH_0 }, isSameVersion: isSame, existingChunk })), 'duplicate_identical');
+  checkTrue('a DIFFERENT-content retry at an already-stored chunk index is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkSha256: HASH_1_DIFFERENT }, isSameVersion: isSame, existingChunk }).ok);
+  check('the different-content-at-same-index refusal names DUPLICATE_CHUNK', A.evaluateChunkAcceptance({ incoming: { ...base, chunkSha256: HASH_1_DIFFERENT }, isSameVersion: isSame, existingChunk }).reasons.map(r=>r.code), ['DUPLICATE_CHUNK']);
 
-  checkTrue('a reordered chunk (skipping ahead to index 2) is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 2, chunkSha256: HASH_1 }, isSameVersion: isSame, existingSession: session }).ok);
-  check('the reordered-chunk refusal names OUT_OF_ORDER_CHUNK', A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 2, chunkSha256: HASH_1 }, isSameVersion: isSame, existingSession: session }).reasons.map(r=>r.code), ['OUT_OF_ORDER_CHUNK']);
-
-  checkTrue('a chunk claiming a DIFFERENT version than the session is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 1, version: OTHER_VERSION }, isSameVersion: isSame, existingSession: session }).ok);
-  check('the cross-version refusal names CROSS_OPPORTUNITY_OR_VERSION', A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 1, version: OTHER_VERSION }, isSameVersion: isSame, existingSession: session }).reasons.map(r=>r.code), ['CROSS_OPPORTUNITY_OR_VERSION']);
-  checkTrue('a chunk claiming a DIFFERENT opportunityId than the session is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 1, opportunityId: 'opp-2' }, isSameVersion: isSame, existingSession: session }).ok);
-  check('the cross-opportunity refusal also names CROSS_OPPORTUNITY_OR_VERSION', A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 1, opportunityId: 'opp-2' }, isSameVersion: isSame, existingSession: session }).reasons.map(r=>r.code), ['CROSS_OPPORTUNITY_OR_VERSION']);
-  checkTrue('a chunk claiming a DIFFERENT chunkCount than the session is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 1, chunkCount: 9 }, isSameVersion: isSame, existingSession: session }).ok);
-  check('the chunk-count-mismatch refusal names CHUNK_COUNT_MISMATCH', A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 1, chunkCount: 9 }, isSameVersion: isSame, existingSession: session }).reasons.map(r=>r.code), ['CHUNK_COUNT_MISMATCH']);
-  checkTrue('a chunk claiming a DIFFERENT totalByteCount than the session is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 1, totalByteCount: 999 }, isSameVersion: isSame, existingSession: session }).ok);
-  checkTrue('a chunk claiming a DIFFERENT originalFileName than the session is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkIndex: 1, originalFileName: 'other.pdf' }, isSameVersion: isSame, existingSession: session }).ok);
+  checkTrue('a chunk claiming a DIFFERENT version than the record already stored at this key is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, version: OTHER_VERSION }, isSameVersion: isSame, existingChunk }).ok);
+  check('the cross-version refusal names CROSS_OPPORTUNITY_OR_VERSION', A.evaluateChunkAcceptance({ incoming: { ...base, version: OTHER_VERSION }, isSameVersion: isSame, existingChunk }).reasons.map(r=>r.code), ['CROSS_OPPORTUNITY_OR_VERSION']);
+  checkTrue('a chunk claiming a DIFFERENT opportunityId than the record already stored at this key is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, opportunityId: 'opp-2' }, isSameVersion: isSame, existingChunk }).ok);
+  check('the cross-opportunity refusal also names CROSS_OPPORTUNITY_OR_VERSION', A.evaluateChunkAcceptance({ incoming: { ...base, opportunityId: 'opp-2' }, isSameVersion: isSame, existingChunk }).reasons.map(r=>r.code), ['CROSS_OPPORTUNITY_OR_VERSION']);
+  checkTrue('a chunk claiming a DIFFERENT chunkCount than the record already stored at this key is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, chunkCount: 9 }, isSameVersion: isSame, existingChunk }).ok);
+  check('the chunk-count-mismatch refusal names CHUNK_COUNT_MISMATCH', A.evaluateChunkAcceptance({ incoming: { ...base, chunkCount: 9 }, isSameVersion: isSame, existingChunk }).reasons.map(r=>r.code), ['CHUNK_COUNT_MISMATCH']);
+  checkTrue('a chunk claiming a DIFFERENT totalByteCount than the record already stored at this key is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, totalByteCount: 999 }, isSameVersion: isSame, existingChunk }).ok);
+  checkTrue('a chunk claiming a DIFFERENT originalFileName than the record already stored at this key is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, originalFileName: 'other.pdf' }, isSameVersion: isSame, existingChunk }).ok);
+  checkTrue('a chunk claiming a DIFFERENT expectedFullSha256 than the record already stored at this key is refused', !A.evaluateChunkAcceptance({ incoming: { ...base, expectedFullSha256: OTHER_FULL_SHA }, isSameVersion: isSame, existingChunk }).ok);
+  check('the expected-hash mismatch refusal names EXPECTED_HASH_MISMATCH', A.evaluateChunkAcceptance({ incoming: { ...base, expectedFullSha256: OTHER_FULL_SHA }, isSameVersion: isSame, existingChunk }).reasons.map(r=>r.code), ['EXPECTED_HASH_MISMATCH']);
 }
 
 // ============================================================
-// 3. evaluateFinalizeReadiness
+// 3. evaluateFinalizeReadiness -- gate-review closure, PR #85: finalize,
+//    and ONLY finalize, ever judges completeness/consistency, from
+//    whatever chunks were actually found (never a manifest's own claim).
 // ============================================================
 {
-  const complete = { opportunityId: 'opp-1', agreementAt: VERSION.agreementAt, version: VERSION, uploadId: 'up-1', chunkCount: 3, totalByteCount: 300, originalFileName: 'a.pdf', receivedChunkIndexes: [0, 1, 2] };
-  checkTrue('finalize is ready once every chunk index is present', A.evaluateFinalizeReadiness(complete).ok);
-  const partial = { ...complete, receivedChunkIndexes: [0, 1] };
-  checkTrue('finalize is NOT ready with a missing chunk', !A.evaluateFinalizeReadiness(partial).ok);
-  check('the missing-chunks refusal names MISSING_CHUNKS', A.evaluateFinalizeReadiness(partial).reasons.map(r=>r.code), ['MISSING_CHUNKS']);
+  const isSame = B.isSameContractVersion;
+  const FULL_SHA = 'd'.repeat(64);
+  const expected = { opportunityId: 'opp-1', agreementAt: VERSION.agreementAt, version: VERSION, chunkCount: 3, totalByteCount: 300, originalFileName: 'a.pdf', expectedFullSha256: FULL_SHA };
+  const chunkRecord = (chunkIndex, over) => Object.assign({ chunkIndex, opportunityId: 'opp-1', agreementAt: VERSION.agreementAt, version: VERSION, uploadId: 'up-1', chunkCount: 3, totalByteCount: 300, originalFileName: 'a.pdf', expectedFullSha256: FULL_SHA, chunkSha256: 'a'.repeat(64) }, over || {});
+  const complete = [chunkRecord(0), chunkRecord(1), chunkRecord(2)];
+
+  checkTrue('finalize is ready once every chunk index is found', A.evaluateFinalizeReadiness({ expected, isSameVersion: isSame, foundChunks: complete }).ok);
+  // Gate-review closure, requirement -- found chunks arriving in ANY
+  // order (reflecting genuinely out-of-order arrival) are still ready.
+  checkTrue('finalize is ready regardless of the ORDER chunks were found in', A.evaluateFinalizeReadiness({ expected, isSameVersion: isSame, foundChunks: [chunkRecord(2), chunkRecord(0), chunkRecord(1)] }).ok);
+
+  const partial = [chunkRecord(0), chunkRecord(1)];
+  checkTrue('finalize is NOT ready with a missing chunk', !A.evaluateFinalizeReadiness({ expected, isSameVersion: isSame, foundChunks: partial }).ok);
+  check('the missing-chunks refusal names MISSING_CHUNKS', A.evaluateFinalizeReadiness({ expected, isSameVersion: isSame, foundChunks: partial }).reasons.map(r=>r.code), ['MISSING_CHUNKS']);
+  check('the missing-chunks message names the exact missing index', A.evaluateFinalizeReadiness({ expected, isSameVersion: isSame, foundChunks: partial }).reasons[0].message.includes('missing: 2'), true);
+
+  const inconsistent = [chunkRecord(0), chunkRecord(1), chunkRecord(2, { totalByteCount: 999 })];
+  checkTrue('finalize refuses when a found chunk\'s own declared metadata disagrees with this finalize request', !A.evaluateFinalizeReadiness({ expected, isSameVersion: isSame, foundChunks: inconsistent }).ok);
+  check('the metadata-inconsistency refusal names INCONSISTENT_CHUNK_METADATA', A.evaluateFinalizeReadiness({ expected, isSameVersion: isSame, foundChunks: inconsistent }).reasons.map(r=>r.code), ['INCONSISTENT_CHUNK_METADATA']);
 }
 
 // ============================================================

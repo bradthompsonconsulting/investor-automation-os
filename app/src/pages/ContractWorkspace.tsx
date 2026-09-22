@@ -1757,7 +1757,7 @@ export default function ContractWorkspace() {
   }
 
   /** Only ever called from the explicit "Preserve executed PDF" button's onClick -- never from file selection. */
-  async function handlePreserveExecutedArtifact(file: File) {
+  async function handlePreserveExecutedArtifact(file: File, expectedFullSha256: string) {
     if (screen.state !== "ready" || !documentVersion || !existingSend?.providerResponse?.documentId) return;
     const providerDocumentId = existingSend.providerResponse.documentId;
     const opportunityId = screen.opportunity.id;
@@ -1788,12 +1788,12 @@ export default function ContractWorkspace() {
         for (let j = 0; j < slice.length; j++) binary += String.fromCharCode(slice[j]);
         await call({
           phase: "chunk", opportunityId, agreementAt, version,
-          uploadId, chunkIndex: i, chunkCount, totalByteCount: bytes.length, originalFileName: file.name, chunkBase64: btoa(binary),
+          uploadId, chunkIndex: i, chunkCount, totalByteCount: bytes.length, originalFileName: file.name, expectedFullSha256, chunkBase64: btoa(binary),
         });
       }
       const finalized = await call({
         phase: "finalize", opportunityId, agreementAt, version,
-        uploadId, providerDocumentId,
+        uploadId, providerDocumentId, chunkCount, totalByteCount: bytes.length, originalFileName: file.name, expectedFullSha256,
       });
       setPreserveUploadState({ kind: "success", alreadyPreserved: !!finalized.alreadyPreserved, sha256: finalized.sha256, byteCount: finalized.byteCount, pageCount: finalized.pageCount ?? null });
       // Gate-review closure -- immediate hydration. A fresh notes readback
@@ -3836,9 +3836,9 @@ export default function ContractWorkspace() {
                     <div style={{ marginTop: "10px" }}>
                       <Btn
                         testId="contract-execution-artifact-preserve-button"
-                        onClick={() => { if (preserveSelectedFile) void handlePreserveExecutedArtifact(preserveSelectedFile); }}
+                        onClick={() => { if (preserveSelectedFile && preserveFileOutcome && preserveFileOutcome.kind === "selected") void handlePreserveExecutedArtifact(preserveSelectedFile, preserveFileOutcome.sha256); }}
                         busy={preserveUploadState.kind === "uploading"}
-                        disabled={!preserveSelectedFile || preserveUploadState.kind === "uploading" || preserveUploadState.kind === "success"}
+                        disabled={!preserveSelectedFile || preserveUploadState.kind === "uploading" || preserveUploadState.kind === "success" || preserveUploadState.kind === "failed"}
                       >
                         Preserve executed PDF
                       </Btn>
@@ -3852,9 +3852,29 @@ export default function ContractWorkspace() {
                         {preserveUploadState.alreadyPreserved ? "Already preserved -- identical bytes, no duplicate written." : "Preserved and independently re-verified by fresh readback."}
                       </div>
                     ) : preserveUploadState.kind === "failed" ? (
-                      <div data-testid="contract-execution-artifact-upload-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "6px" }}>
-                        {preserveUploadState.message}
-                      </div>
+                      <>
+                        <div data-testid="contract-execution-artifact-upload-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "6px" }}>
+                          {preserveUploadState.message}
+                        </div>
+                        {/*
+                          Gate-review closure, requirement 11 -- after a
+                          failure, Preserve stays disabled (above) until
+                          the operator EXPLICITLY reselects the file (the
+                          input's own onChange already resets
+                          preserveUploadState to idle) or explicitly
+                          resets this failed attempt here -- never
+                          re-clickable on its own.
+                        */}
+                        <div style={{ marginTop: "6px" }}>
+                          <Btn
+                            testId="contract-execution-artifact-reset-button"
+                            onClick={() => setPreserveUploadState({ kind: "idle" })}
+                            busy={false}
+                          >
+                            Reset failed attempt
+                          </Btn>
+                        </div>
+                      </>
                     ) : null}
                   </>
                 )}

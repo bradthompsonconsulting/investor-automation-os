@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 260;
+const FLOOR = 266;
 let failures = 0;
 let checks = 0;
 
@@ -882,14 +882,14 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     true,
   );
   check(
-    'the explicit "Preserve executed PDF" button only fires the upload when a file has actually been locally selected, and is wired exactly once',
-    /onClick=\{\(\) => \{ if \(preserveSelectedFile\) void handlePreserveExecutedArtifact\(preserveSelectedFile\); \}\}/.test(contractTsxNoComments) &&
+    'the explicit "Preserve executed PDF" button only fires the upload when a file has actually been locally selected (and its client-computed SHA-256 outcome is present), and is wired exactly once',
+    /onClick=\{\(\) => \{ if \(preserveSelectedFile && preserveFileOutcome && preserveFileOutcome\.kind === "selected"\) void handlePreserveExecutedArtifact\(preserveSelectedFile, preserveFileOutcome\.sha256\); \}\}/.test(contractTsxNoComments) &&
     (contractTsxNoComments.match(/void handlePreserveExecutedArtifact\(/g) || []).length === 1,
     true,
   );
   check(
-    'the Preserve executed PDF button disables with no selection, while uploading, and after success -- never re-triggerable mid-flight or after a completed upload',
-    /testId="contract-execution-artifact-preserve-button"[\s\S]{0,300}disabled=\{!preserveSelectedFile \|\| preserveUploadState\.kind === "uploading" \|\| preserveUploadState\.kind === "success"\}/.test(contractTsxNoComments),
+    'the Preserve executed PDF button disables with no selection, while uploading, after success, AND after a failure -- gate-review closure, requirement 11: a failed attempt is never re-triggerable without an explicit reset or reselection',
+    /testId="contract-execution-artifact-preserve-button"[\s\S]{0,500}disabled=\{!preserveSelectedFile \|\| preserveUploadState\.kind === "uploading" \|\| preserveUploadState\.kind === "success" \|\| preserveUploadState\.kind === "failed"\}/.test(contractTsxNoComments),
     true,
   );
   check(
@@ -909,7 +909,7 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check(
     'a successful upload immediately re-fetches notes so preservedArtifactRecord hydrates within the SAME session, never requiring a reload to unlock Create Under Contract',
     (() => {
-      const m = contractTsxNoComments.match(/async function handlePreserveExecutedArtifact\(file: File\)[\s\S]*?\n  \}/m);
+      const m = contractTsxNoComments.match(/async function handlePreserveExecutedArtifact\(file: File, expectedFullSha256: string\)[\s\S]*?\n  \}/m);
       const successIdx = m ? m[0].indexOf('kind: "success"') : -1;
       const refetchIdx = m ? m[0].indexOf('ghl.notes.list(contactId)') : -1;
       return !!m && successIdx !== -1 && refetchIdx !== -1 && refetchIdx > successIdx;
@@ -919,7 +919,7 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
 
   check('upload PROGRESS state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "uploading"', /preserveUploadState\.kind === "uploading" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-uploading"/.test(contractTsxNoComments), true);
   check('upload SUCCESS state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "success"', /preserveUploadState\.kind === "success" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-upload-success"/.test(contractTsxNoComments), true);
-  check('upload FAILURE state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "failed"', /preserveUploadState\.kind === "failed" \? \(\s*\n\s*<div data-testid="contract-execution-artifact-upload-failed"/.test(contractTsxNoComments), true);
+  check('upload FAILURE state is wired -- a dedicated data-testid rendered only while preserveUploadState.kind === "failed" (now inside a fragment alongside the Reset control)', /preserveUploadState\.kind === "failed" \? \(\s*\n\s*<>\s*\n\s*<div data-testid="contract-execution-artifact-upload-failed"/.test(contractTsxNoComments), true);
   check('the file input is disabled while its own local selection is being read/hashed, or while an upload is already in flight', /disabled=\{preserveFileBusy \|\| preserveUploadState\.kind === "uploading"\}/.test(contractTsxNoComments), true);
 
   // ============================================================
@@ -945,11 +945,69 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check(
     'uploadId, opportunityId, agreementAt, and version are hoisted OUTSIDE the try block so the catch block\'s best-effort abort can reference the SAME identifiers the failed attempt actually used',
     (() => {
-      const m = contractTsxNoComments.match(/async function handlePreserveExecutedArtifact\(file: File\)[\s\S]*?\n  \}/m);
+      const m = contractTsxNoComments.match(/async function handlePreserveExecutedArtifact\(file: File, expectedFullSha256: string\)[\s\S]*?\n  \}/m);
       if (!m) return false;
       const uploadIdDeclIdx = m[0].indexOf('const uploadId =');
       const tryIdx = m[0].indexOf('try {');
       return uploadIdDeclIdx !== -1 && tryIdx !== -1 && uploadIdDeclIdx < tryIdx;
+    })(),
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure -- PR #85 chunk-ingestion redesign. Every
+  // chunk/finalize request now carries its own complete, immutable
+  // description, including the client-computed expectedFullSha256 --
+  // eliminating the prior design's cross-invocation manifest-read
+  // dependency entirely (requirement 1/2 of the redesign).
+  // ============================================================
+  check(
+    'handlePreserveExecutedArtifact accepts the client-computed expectedFullSha256 as an explicit parameter -- never recomputed or re-derived mid-upload',
+    /async function handlePreserveExecutedArtifact\(file: File, expectedFullSha256: string\)/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'every chunk request body includes expectedFullSha256, chunkCount, totalByteCount, and originalFileName -- immutable, self-describing metadata, no shared manifest of any kind',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handlePreserveExecutedArtifact\(file: File, expectedFullSha256: string\)[\s\S]*?\n  \}/m);
+      const chunkCallMatch = m ? m[0].match(/phase: "chunk",[\s\S]{0,400}/) : null;
+      const chunkCall = chunkCallMatch ? chunkCallMatch[0] : '';
+      return !!chunkCall && /chunkCount/.test(chunkCall) && /totalByteCount: bytes\.length/.test(chunkCall) && /originalFileName: file\.name/.test(chunkCall) && /expectedFullSha256,/.test(chunkCall);
+    })(),
+    true,
+  );
+  check(
+    'the finalize request body also includes chunkCount, totalByteCount, originalFileName, and expectedFullSha256 -- finalize is the sole place completeness/consistency is judged, per requirement 5',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handlePreserveExecutedArtifact\(file: File, expectedFullSha256: string\)[\s\S]*?\n  \}/m);
+      const finalizeCallMatch = m ? m[0].match(/phase: "finalize",[\s\S]{0,400}/) : null;
+      const finalizeCall = finalizeCallMatch ? finalizeCallMatch[0] : '';
+      return !!finalizeCall && /chunkCount/.test(finalizeCall) && /totalByteCount: bytes\.length/.test(finalizeCall) && /originalFileName: file\.name/.test(finalizeCall) && /expectedFullSha256,/.test(finalizeCall);
+    })(),
+    true,
+  );
+
+  // ============================================================
+  // Gate-review closure, requirement 11 -- after a failure, Preserve
+  // stays disabled until the operator EITHER reselects the file OR
+  // explicitly resets the failed attempt.
+  // ============================================================
+  check(
+    'a dedicated "Reset failed attempt" control exists, rendered only inside the failed-upload branch',
+    /preserveUploadState\.kind === "failed" \? \(\s*\n\s*<>/.test(contractTsxNoComments) &&
+    /testId="contract-execution-artifact-reset-button"/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the reset control clears preserveUploadState back to idle directly (no network call, no re-upload triggered)',
+    /testId="contract-execution-artifact-reset-button"[\s\S]{0,120}onClick=\{\(\) => setPreserveUploadState\(\{ kind: "idle" \}\)\}/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'reselecting the file (the input\'s own onChange, handlePreservePdfFileSelected) ALSO resets preserveUploadState to idle -- the second of the two satisfying paths for requirement 11',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handlePreservePdfFileSelected\([\s\S]*?\n  \}/m);
+      return !!m && /setPreserveUploadState\(\{ kind: "idle" \}\)/.test(m[0]);
     })(),
     true,
   );

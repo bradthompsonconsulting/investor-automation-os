@@ -12,15 +12,21 @@ const receipts = new Map();
 // chunks, the permanent executed-artifact bytes), keyed independently of
 // `receipts` (which only ever held small write-receipt JSON before this).
 const blobsData = new Map();
+// Gate-review closure -- PR #85 chunk-ingestion redesign. Each chunk's
+// own self-describing metadata, attached via the SDK's own `.set(key,
+// data, {metadata})` -- keyed the SAME as blobsData, populated only when
+// `.set()` is called with a `metadata` option (an artifact `.set()` call
+// carries none).
+const blobsMetadata = new Map();
 // Gate-review closure -- failure-injection toggles, all default to "no
 // injected failure" and are reset by each test that uses them.
 let failNextBlobDelete = false;
-// Gate-review closure -- PR #85 chunked-upload consistency repair.
-// Simulates the exact cross-invocation eventual-consistency race: a
-// manifest write from one invocation not yet visible to a read from a
-// DIFFERENT invocation. Counts down on manifest-shaped keys only, then
-// self-resets to 0 -- never affects any other test.
-let staleManifestReadsRemaining = 0;
+// Gate-review closure -- PR #85 chunk-ingestion redesign. Simulates a
+// SPECIFIC key not yet being visible to a read for a bounded number of
+// attempts (a genuine eventual-consistency delay) -- keyed per blob key,
+// never dependent on which OTHER key was written when. Counts down to 0
+// and self-resets; never affects any other key or test.
+const staleReadKeysRemaining = new Map();
 Module._resolveFilename = function(name, parent, ...rest) {
   if (name.startsWith('.') && parent) {
     const candidate = path.resolve(path.dirname(parent.filename), name + '.ts');
@@ -35,22 +41,38 @@ Module._load = function(name, ...rest) {
     getStore: () => ({
       async get(key, options) {
         if (options?.type === 'arrayBuffer') {
+          if ((staleReadKeysRemaining.get(key) ?? 0) > 0) { staleReadKeysRemaining.set(key, staleReadKeysRemaining.get(key) - 1); return null; }
           const v = blobsData.get(key);
           if (!v) return null;
           return v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength);
         }
-        if (staleManifestReadsRemaining > 0 && key.includes('/manifest.json')) {
-          staleManifestReadsRemaining--;
-          return null;
-        }
         return receipts.get(key) ?? null;
       },
-      async set(key, value) { blobsData.set(key, Buffer.isBuffer(value) ? value : Buffer.from(value)); },
+      async getMetadata(key) {
+        if (!blobsData.has(key)) return null;
+        return { etag: 'fixture-etag', metadata: blobsMetadata.get(key) ?? {} };
+      },
+      async getWithMetadata(key, options) {
+        if ((staleReadKeysRemaining.get(key) ?? 0) > 0) { staleReadKeysRemaining.set(key, staleReadKeysRemaining.get(key) - 1); return null; }
+        const v = blobsData.get(key);
+        if (!v) return null;
+        const data = options?.type === 'arrayBuffer' ? v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) : v;
+        return { data, etag: 'fixture-etag', metadata: blobsMetadata.get(key) ?? {} };
+      },
+      async set(key, value, options) {
+        blobsData.set(key, Buffer.isBuffer(value) ? value : Buffer.from(value));
+        if (options?.metadata) blobsMetadata.set(key, options.metadata);
+      },
       async delete(key) {
         if (failNextBlobDelete) { failNextBlobDelete = false; throw new Error('simulated transient delete failure'); }
-        receipts.delete(key); blobsData.delete(key);
+        receipts.delete(key); blobsData.delete(key); blobsMetadata.delete(key);
       },
       async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; },
+      async list(options) {
+        const prefix = options?.prefix ?? '';
+        const keys = [...blobsData.keys()].filter((k) => k.startsWith(prefix));
+        return { blobs: keys.map((key) => ({ key, etag: 'fixture-etag' })), directories: [] };
+      },
     }),
   };
   return originalLoad.call(this, name, ...rest);
@@ -401,29 +423,41 @@ await check('manual send: readback failure -- live provider fetch itself errors,
   const pdfBytes = Buffer.from('%PDF-1.4\n' + 'A'.repeat(500) + '\n%%EOF');
   const CHUNK = 137; // small and deliberate -- forces a real multi-chunk reassembly for a ~514-byte fixture, without needing a multi-MB test payload.
   const splitChunks = (buf, size) => { const out = []; for (let i = 0; i < buf.length; i += size) out.push(buf.subarray(i, i + size)); return out; };
-  const uploadChunks = async (uploadId, buf, fileName) => {
+  const sha256Hex = (buf) => cryptoMod.createHash('sha256').update(buf).digest('hex');
+  // Gate-review closure -- PR #85 chunk-ingestion redesign. Every chunk
+  // (and finalize) request now carries its own complete, immutable
+  // description of the upload it belongs to -- including the FULL
+  // file's expected SHA-256, computed here exactly as the real client
+  // computes it during local selection, before any chunk is ever sent.
+  const uploadChunks = async (uploadId, buf, fileName, version) => {
+    version = version || fixture.version;
     const chunks = splitChunks(buf, CHUNK);
+    const expectedFullSha256 = sha256Hex(buf);
     for (let i = 0; i < chunks.length; i++) {
-      const res = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: i, chunkCount: chunks.length, totalByteCount: buf.length, originalFileName: fileName, chunkBase64: chunks[i].toString('base64') });
+      const res = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version, uploadId, chunkIndex: i, chunkCount: chunks.length, totalByteCount: buf.length, originalFileName: fileName, expectedFullSha256, chunkBase64: chunks[i].toString('base64') });
       if (res.statusCode !== 200) throw new Error('chunk ' + i + ' rejected: ' + res.body);
     }
     return chunks.length;
   };
+  const finalizeArgs = (uploadId, buf, fileName, version, providerDocumentId, overrides) => Object.assign({
+    phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: version || fixture.version,
+    uploadId, providerDocumentId, chunkCount: splitChunks(buf, CHUNK).length, totalByteCount: buf.length, originalFileName: fileName, expectedFullSha256: sha256Hex(buf),
+  }, overrides || {});
 
   await check('artifact upload: unauthenticated request refused before any chunk is touched', async () => {
-    const res = await uploadHandler({ blobs: Buffer.from(JSON.stringify({ url: 'https://blobs.example.invalid', token: 'offline-blob-fixture' })).toString('base64'), httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN }, body: JSON.stringify({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'unauth', chunkIndex: 0, chunkCount: 1, totalByteCount: 1, originalFileName: 'x.pdf', chunkBase64: 'AA==' }) });
+    const res = await uploadHandler({ blobs: Buffer.from(JSON.stringify({ url: 'https://blobs.example.invalid', token: 'offline-blob-fixture' })).toString('base64'), httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN }, body: JSON.stringify({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'unauth', chunkIndex: 0, chunkCount: 1, totalByteCount: 1, originalFileName: 'x.pdf', expectedFullSha256: 'a'.repeat(64), chunkBase64: 'AA==' }) });
     assert.equal(res.statusCode, 401, res.body);
   });
 
-  await check('artifact upload: success -- all chunks accepted in order, finalize reassembles, hashes, stores, and independently re-reads/re-verifies before recording metadata', async () => {
+  await check('artifact upload: success -- all chunks accepted, finalize locates every one independently, reassembles, hashes, stores, and independently re-reads/re-verifies before recording metadata', async () => {
     await uploadChunks('upload-1', pdfBytes, 'executed.pdf');
-    const res = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-1', providerDocumentId: docId });
+    const res = await invokeUpload(finalizeArgs('upload-1', pdfBytes, 'executed.pdf', fixture.version, docId));
     assert.equal(res.statusCode, 200, res.body);
     const body = JSON.parse(res.body);
     assert.equal(body.preserved, true);
     assert.equal(body.alreadyPreserved, false);
     assert.equal(body.byteCount, pdfBytes.length);
-    assert.equal(body.sha256, cryptoMod.createHash('sha256').update(pdfBytes).digest('hex'));
+    assert.equal(body.sha256, sha256Hex(pdfBytes));
     assert.equal(body.artifact.originalFileName, 'executed.pdf');
     assert.equal(body.artifact.providerDocumentId, docId);
   });
@@ -448,79 +482,90 @@ await check('manual send: readback failure -- live provider fetch itself errors,
   });
 
   // ============================================================
-  // Gate-review closure -- PR #85 chunked Blobs upload consistency and
-  // failed-session handling repair. Each chunk is a SEPARATE Lambda
-  // invocation; the LIVE 409 "Chunk refused" on chunk 1 (immediately
-  // after chunk 0's own 200) is reproduced and proven here to be the
-  // exact OUT_OF_ORDER_CHUNK path in evaluateChunkAcceptance, caused by
-  // a manifest read that has not yet observed the prior chunk's write
-  // (Netlify Blobs' default eventual consistency across invocations,
-  // never coordinated by the in-process lockContact mutex).
+  // Gate-review closure -- PR #85 chunk-ingestion redesign. The prior
+  // (already-repaired) bounded-retry design still required chunk N to
+  // read a manifest chunk N-1 had just written and raced Netlify Blobs'
+  // eventual consistency in the real Test environment (proven live:
+  // chunk 1 refused OUT_OF_ORDER_CHUNK immediately after chunk 0's own
+  // 200, THREE separate times, invocation 140cf61f among them). This
+  // redesign removes that dependency structurally: a chunk is accepted
+  // purely against its OWN deterministic key, with no ordering
+  // requirement of any kind.
   // ============================================================
-  await check('consistency repair: chunk 1 succeeds even when its manifest read is stale for the first two attempts -- the bounded retry observes chunk 0\'s write within budget, simulating separate-invocation eventual consistency', async () => {
-    const chunks = splitChunks(pdfBytes, CHUNK);
-    const c0 = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'stale-manifest-race', chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[0].toString('base64') });
-    assert.equal(c0.statusCode, 200, c0.body);
-    staleManifestReadsRemaining = 2; // chunk 1's manifest read returns null on its first two attempts (the exact cross-invocation race), then the genuine manifest
-    try {
-      const c1 = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'stale-manifest-race', chunkIndex: 1, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[1].toString('base64') });
-      assert.equal(c1.statusCode, 200, c1.body);
-    } finally {
-      assert.equal(staleManifestReadsRemaining, 0, 'the injected staleness was genuinely exercised by the retry loop, never skipped');
+  await check('chunk-ingestion redesign: chunks 1, 2, and 3 each succeed with NO prior chunk ever sent and no manifest of any kind readable -- proving requirement 1/13 directly', async () => {
+    const chunks = splitChunks(pdfBytes, CHUNK); // 4 chunks for this fixture
+    const expectedFullSha256 = sha256Hex(pdfBytes);
+    for (const i of [1, 2, 3]) {
+      const res = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'no-chunk-0-ever-sent', chunkIndex: i, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[i].toString('base64') });
+      assert.equal(res.statusCode, 200, res.body);
+      assert.equal(JSON.parse(res.body).duplicate, false);
     }
-    await invokeUpload({ phase: 'abort', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'stale-manifest-race' });
+    await invokeUpload({ phase: 'abort', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'no-chunk-0-ever-sent' });
   });
 
-  await check('consistency repair: a genuinely missing session on chunk 1 still refuses (after exhausting the bounded retry) with the exact safe reason OUT_OF_ORDER_CHUNK -- proving the live 409\'s precise root cause, surfaced in both the diagnostic log and the response', async () => {
+  await check('chunk-ingestion redesign: out-of-order arrival (3, 1, 0, 2) is entirely safe -- finalize still locates and reassembles every chunk correctly regardless of arrival order', async () => {
+    const uploadId = 'out-of-order-arrival';
     const chunks = splitChunks(pdfBytes, CHUNK);
-    const originalConsoleError = console.error;
-    const logCalls = [];
-    console.error = (...args) => { logCalls.push(args); };
-    let res;
-    try {
-      res = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'genuinely-missing-session', chunkIndex: 1, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[1].toString('base64') });
-    } finally {
-      console.error = originalConsoleError;
+    const expectedFullSha256 = sha256Hex(pdfBytes);
+    for (const i of [3, 1, 0, 2]) {
+      const res = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: i, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[i].toString('base64') });
+      assert.equal(res.statusCode, 200, res.body);
     }
-    assert.equal(res.statusCode, 409, res.body);
-    const body = JSON.parse(res.body);
-    assert.equal(body.error, 'Chunk refused');
-    assert.equal(Array.isArray(body.reasons), true);
-    assert.equal(body.reasons[0].code, 'OUT_OF_ORDER_CHUNK');
-    assert.equal(typeof body.reasons[0].message, 'string');
-    assert.equal(logCalls.length, 1, 'exactly one safe diagnostic log entry for this refusal');
-    const [prefix, payload] = logCalls[0];
-    assert.equal(prefix, '[ghl-executed-artifact-upload]');
-    const logged = JSON.parse(payload);
-    assert.equal(logged.phase, 'chunk');
-    assert.equal(logged.uploadId, 'genuinely-missing-session');
-    assert.equal(logged.errorMessage.includes('OUT_OF_ORDER_CHUNK'), true);
-    const serialized = JSON.stringify(logged);
-    assert.equal(serialized.includes(chunks[1].toString('base64')), false, 'chunk bytes are never logged');
+    const res = await invokeUpload(finalizeArgs(uploadId, pdfBytes, 'executed.pdf', fixture.version, docId));
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(JSON.parse(res.body).alreadyPreserved, true); // fixture.version already preserved above; still a correct, verified no-op
+  });
+
+  await check('chunk-ingestion redesign: finalization waits for/handles a chunk not yet visible -- bounded visibility handling resolves a simulated delayed-visibility chunk without needing any ordering guarantee', async () => {
+    const uploadId = 'finalize-bounded-visibility';
+    const chunks = splitChunks(pdfBytes, CHUNK);
+    const expectedFullSha256 = sha256Hex(pdfBytes);
+    const chunkKeys = [];
+    const B9k = load('board9-contract-model');
+    for (let i = 0; i < chunks.length; i++) {
+      const res = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: i, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[i].toString('base64') });
+      assert.equal(res.statusCode, 200, res.body);
+    }
+    // Simulate the LAST chunk's own key not yet being visible to finalize's
+    // own read for its first two attempts -- a genuine eventual-consistency
+    // delay, never dependent on any OTHER chunk or a shared manifest.
+    const lastChunkKey = `sessions/${opportunity.id}/${load('contract-executed-artifact-storage-model').contractVersionStorageKey(fixture.version)}/${uploadId}/chunk-${chunks.length - 1}`;
+    staleReadKeysRemaining.set(lastChunkKey, 2);
+    try {
+      const res = await invokeUpload(finalizeArgs(uploadId, pdfBytes, 'executed.pdf', fixture.version, docId));
+      assert.equal(res.statusCode, 200, res.body);
+    } finally {
+      assert.equal(staleReadKeysRemaining.get(lastChunkKey), 0, 'the injected delayed visibility was genuinely exercised by the bounded retry, never skipped');
+    }
   });
 
   await check('abandoned session: an orphaned partial upload (chunk 0 only, never finalized or aborted) never counts as preserved evidence and never blocks a fresh attempt under a new uploadId', async () => {
     const chunks = splitChunks(pdfBytes, CHUNK);
-    const orphanRes = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'abandoned-orphan-session', chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[0].toString('base64') });
+    const expectedFullSha256 = sha256Hex(pdfBytes);
+    const orphanRes = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'abandoned-orphan-session', chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[0].toString('base64') });
     assert.equal(orphanRes.statusCode, 200, orphanRes.body);
     // Preserved evidence is resolved ONLY from durable notes -- an orphaned
     // pending session in the uploads store can never be mistaken for it.
     const preserved = load('contract-executed-artifact-carriers').latestPreservedExecutedArtifactForVersion(notes, opportunity.id, fixture.version.agreementAt, fixture.version);
     assert.equal(preserved !== null, true, 'the earlier, genuine preservation for fixture.version is unaffected by the orphan');
     // A completely fresh attempt under a NEW uploadId is entirely unaffected.
-    const freshFirstChunk = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'fresh-after-orphan', chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[0].toString('base64') });
+    const freshFirstChunk = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'fresh-after-orphan', chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[0].toString('base64') });
     assert.equal(freshFirstChunk.statusCode, 200, freshFirstChunk.body);
-    // Bounded cleanup: the abort phase safely discards an abandoned session's pending data.
+    // Bounded cleanup: the abort phase discovers (by listing this
+    // uploadId's own key prefix, never a manifest) and safely discards an
+    // abandoned session's pending data.
     const abortRes = await invokeUpload({ phase: 'abort', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'abandoned-orphan-session' });
     assert.equal(abortRes.statusCode, 200, abortRes.body);
     assert.equal(JSON.parse(abortRes.body).aborted, true);
+    const chunk0Key = `sessions/${opportunity.id}/${load('contract-executed-artifact-storage-model').contractVersionStorageKey(fixture.version)}/abandoned-orphan-session/chunk-0`;
+    assert.equal(blobsData.has(chunk0Key), false, 'abort genuinely removed this orphaned chunk\'s stored bytes');
     await invokeUpload({ phase: 'abort', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'fresh-after-orphan' });
   });
 
   await check('artifact upload: identical re-upload (same bytes, same version) is a no-op success -- no duplicate note written', async () => {
     const before = writes;
     await uploadChunks('upload-2', pdfBytes, 'executed.pdf');
-    const res = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-2', providerDocumentId: docId });
+    const res = await invokeUpload(finalizeArgs('upload-2', pdfBytes, 'executed.pdf', fixture.version, docId));
     assert.equal(res.statusCode, 200, res.body);
     assert.equal(JSON.parse(res.body).alreadyPreserved, true);
     assert.equal(writes, before);
@@ -530,34 +575,30 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     const differentPdf = Buffer.from('%PDF-1.4\n' + 'B'.repeat(500) + '\n%%EOF');
     const before = writes;
     await uploadChunks('upload-3', differentPdf, 'executed.pdf');
-    const res = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-3', providerDocumentId: docId });
+    const res = await invokeUpload(finalizeArgs('upload-3', differentPdf, 'executed.pdf', fixture.version, docId));
     assert.equal(res.statusCode, 409, res.body);
     assert.equal(writes, before);
   });
 
-  await check('artifact upload: missing chunks -- finalize before every chunk has arrived is refused', async () => {
+  await check('artifact upload: a missing chunk at finalization returns a safe, specific reason (MISSING_CHUNKS) and creates no receipt', async () => {
     const chunks = splitChunks(pdfBytes, CHUNK);
-    await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-4', chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[0].toString('base64') });
-    const res = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-4', providerDocumentId: docId });
+    const expectedFullSha256 = sha256Hex(pdfBytes);
+    await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-4', chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[0].toString('base64') });
+    const before = writes;
+    const res = await invokeUpload(finalizeArgs('upload-4', pdfBytes, 'executed.pdf', fixture.version, docId));
     assert.equal(res.statusCode, 409, res.body);
-  });
-
-  await check('artifact upload: a reordered chunk (index 1 sent before index 0) refused', async () => {
-    const chunks = splitChunks(pdfBytes, CHUNK);
-    const res = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-5', chunkIndex: 1, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[1].toString('base64') });
-    assert.equal(res.statusCode, 409, res.body);
-  });
-
-  await check('artifact upload: a chunk claiming a DIFFERENT contract version than its own session is refused', async () => {
-    const chunks = splitChunks(pdfBytes, CHUNK);
-    await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-6', chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[0].toString('base64') });
-    const differentVersion = load('board9-contract-model').nextVersionIdentity(fixture.version, { kind: 'same_agreement_reentry' }, null).value;
-    const res = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: differentVersion, uploadId: 'upload-6', chunkIndex: 1, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[1].toString('base64') });
-    assert.equal(res.statusCode, 409, res.body);
+    const body = JSON.parse(res.body);
+    assert.equal(body.error, 'Not all chunks received');
+    assert.equal(Array.isArray(body.reasons), true);
+    assert.equal(body.reasons[0].code, 'MISSING_CHUNKS');
+    assert.equal(typeof body.reasons[0].message, 'string');
+    assert.equal(writes, before, 'no receipt/note was created');
+    const afterFailure = load('contract-executed-artifact-carriers').latestPreservedExecutedArtifactForVersion(notes, opportunity.id, fixture.version.agreementAt, fixture.version);
+    assert.equal(afterFailure.sha256, sha256Hex(pdfBytes), 'the EXISTING fixture.version artifact (from an earlier test) is unaffected -- never a NEW/different one created');
   });
 
   await check('artifact upload: an oversized declared total is refused before any chunk touches storage', async () => {
-    const res = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-7', chunkIndex: 0, chunkCount: 1, totalByteCount: 999999999, originalFileName: 'executed.pdf', chunkBase64: Buffer.from('x').toString('base64') });
+    const res = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-7', chunkIndex: 0, chunkCount: 1, totalByteCount: 999999999, originalFileName: 'executed.pdf', expectedFullSha256: 'a'.repeat(64), chunkBase64: Buffer.from('x').toString('base64') });
     assert.equal(res.statusCode, 409, res.body);
   });
 
@@ -575,47 +616,56 @@ await check('manual send: readback failure -- live provider fetch itself errors,
   // already cover.
   // ============================================================
 
-  await check('artifact upload: a same-uploadId chunk claiming a DIFFERENT opportunity never continues or corrupts the original opportunity\'s in-progress session -- session storage is scoped by opportunityId, so this structurally addresses a disconnected, empty session of its own', async () => {
+  await check('artifact upload: a same-uploadId chunk claiming a DIFFERENT opportunity is a completely independent, isolated key namespace -- both succeed on their own, neither can continue, corrupt, or borrow the other\'s data', async () => {
     const chunks = splitChunks(pdfBytes, CHUNK);
+    const expectedFullSha256 = sha256Hex(pdfBytes);
     const sharedUploadId = 'cross-opportunity-reuse-attempt';
-    const first = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: sharedUploadId, chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[0].toString('base64') });
+    const first = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: sharedUploadId, chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[0].toString('base64') });
     assert.equal(first.statusCode, 200, first.body);
-    // The SAME uploadId, claiming opportunity2 instead -- this must be
-    // treated as chunkIndex 1 of a session that has received NOTHING
-    // (opportunity A's chunk 0 is invisible to it), so it is refused as
-    // out-of-order, never silently accepted as "continuing" A's upload.
-    const reused = await invokeUpload({ phase: 'chunk', opportunityId: opportunity2.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: sharedUploadId, chunkIndex: 1, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[1].toString('base64') });
-    assert.equal(reused.statusCode, 409, reused.body);
+    // The SAME uploadId AND chunkIndex, claiming opportunity2 instead --
+    // this computes a COMPLETELY DIFFERENT deterministic key (opportunityId
+    // is part of the key itself), so it is accepted as its OWN, genuinely
+    // independent chunk 0 -- never silently merged with, nor blocked by,
+    // opportunity A's own chunk 0 under the same uploadId.
+    const isolated = await invokeUpload({ phase: 'chunk', opportunityId: opportunity2.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: sharedUploadId, chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[0].toString('base64') });
+    assert.equal(isolated.statusCode, 200, isolated.body);
     // opportunity A's own session is completely unaffected -- its next
-    // real chunk (index 1) is still accepted normally.
-    const legit = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: sharedUploadId, chunkIndex: 1, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[1].toString('base64') });
-    assert.equal(legit.statusCode, 200, legit.body);
-    // Clean up this session (opportunity2 never accepted chunk 0, so
-    // aborting it is a no-op; opportunity A's session is real and finished).
+    // chunk is still accepted normally, and a retry of ITS OWN chunk 0 is
+    // still recognized as an identical, idempotent no-op (never disturbed
+    // by opportunity2's own same-index write).
+    const legitNext = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: sharedUploadId, chunkIndex: 1, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[1].toString('base64') });
+    assert.equal(legitNext.statusCode, 200, legitNext.body);
+    const legitRetry = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: sharedUploadId, chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[0].toString('base64') });
+    assert.equal(legitRetry.statusCode, 200, legitRetry.body);
+    assert.equal(JSON.parse(legitRetry.body).duplicate, true);
+    // Clean up both isolated sessions.
     await invokeUpload({ phase: 'abort', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: sharedUploadId });
+    await invokeUpload({ phase: 'abort', opportunityId: opportunity2.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: sharedUploadId });
   });
 
-  await check('artifact upload: invalid PDF magic bytes -- valid chunk sequence, but reassembled content is not a PDF, refused at finalize', async () => {
+  await check('artifact upload: invalid PDF magic bytes -- valid chunk set, but reassembled content is not a PDF, refused at finalize', async () => {
     const notAPdf = Buffer.from('This is definitely not a PDF file, just plain text.'.repeat(10));
     const before = writes;
     await uploadChunks('upload-not-pdf', notAPdf, 'not-a-pdf.pdf');
-    const res = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-not-pdf', providerDocumentId: docId });
+    const res = await invokeUpload(finalizeArgs('upload-not-pdf', notAPdf, 'not-a-pdf.pdf', fixture.version, docId));
     assert.equal(res.statusCode, 409, res.body);
     assert.equal(writes, before);
   });
 
   await check('artifact upload: declared total-byte-count does not match the ACTUAL reassembled size, refused at finalize', async () => {
-    // All declared chunks present and self-consistent, but the declared
+    // All declared chunks present and self-consistent with EACH OTHER
+    // (and with finalize's own declared total), but the declared
     // totalByteCount understates what was actually sent -- finalize must
     // catch this from the real reassembled length, never trust the claim.
     const uploadId = 'upload-bytecount-mismatch';
     const chunks = splitChunks(pdfBytes, CHUNK);
     const falseTotal = pdfBytes.length - 50;
+    const expectedFullSha256 = sha256Hex(pdfBytes); // well-formed; the byte-count check is reached and fails BEFORE the hash check either way
     for (let i = 0; i < chunks.length; i++) {
-      await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: i, chunkCount: chunks.length, totalByteCount: falseTotal, originalFileName: 'executed.pdf', chunkBase64: chunks[i].toString('base64') });
+      await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: i, chunkCount: chunks.length, totalByteCount: falseTotal, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[i].toString('base64') });
     }
     const before = writes;
-    const res = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, providerDocumentId: docId });
+    const res = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, providerDocumentId: docId, chunkCount: chunks.length, totalByteCount: falseTotal, originalFileName: 'executed.pdf', expectedFullSha256 });
     assert.equal(res.statusCode, 409, res.body);
     assert.equal(writes, before);
   });
@@ -623,24 +673,26 @@ await check('manual send: readback failure -- live provider fetch itself errors,
   await check('artifact upload: an IDENTICAL retry of an already-uploaded chunk (same bytes, same index) is idempotent -- accepted, not re-stored, not an error', async () => {
     const uploadId = 'upload-idempotent-chunk-retry';
     const chunks = splitChunks(pdfBytes, CHUNK);
-    const first = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[0].toString('base64') });
+    const expectedFullSha256 = sha256Hex(pdfBytes);
+    const first = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[0].toString('base64') });
     assert.equal(first.statusCode, 200, first.body);
     assert.equal(JSON.parse(first.body).duplicate, false);
-    const retry = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[0].toString('base64') });
+    const retry = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[0].toString('base64') });
     assert.equal(retry.statusCode, 200, retry.body);
     assert.equal(JSON.parse(retry.body).duplicate, true);
-    assert.equal(JSON.parse(retry.body).receivedChunkIndexes.length, 1); // never double-appended
     await invokeUpload({ phase: 'abort', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId });
   });
 
   await check('artifact upload: DIFFERENT bytes retried at the SAME chunk index are refused -- an index is never silently overwritten with new content', async () => {
     const uploadId = 'upload-different-bytes-same-index';
     const chunks = splitChunks(pdfBytes, CHUNK);
-    const first = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[0].toString('base64') });
+    const expectedFullSha256 = sha256Hex(pdfBytes);
+    const first = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[0].toString('base64') });
     assert.equal(first.statusCode, 200, first.body);
     const differentChunk0 = Buffer.from('DIFFERENT CONTENT AT INDEX 0'.padEnd(chunks[0].length, 'x'));
-    const overwriteAttempt = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: differentChunk0.toString('base64') });
+    const overwriteAttempt = await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: 0, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: differentChunk0.toString('base64') });
     assert.equal(overwriteAttempt.statusCode, 409, overwriteAttempt.body);
+    assert.equal(JSON.parse(overwriteAttempt.body).reasons[0].code, 'DUPLICATE_CHUNK');
     await invokeUpload({ phase: 'abort', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId });
   });
 
@@ -657,11 +709,12 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     // from, the server's own derived key.
     const uploadId = 'upload-injected-blobkey-attempt';
     const chunks = splitChunks(pdfBytes, CHUNK);
+    const expectedFullSha256 = sha256Hex(pdfBytes);
     for (let i = 0; i < chunks.length; i++) {
-      await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: i, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[i].toString('base64'), blobKey: '../../attacker/controlled/path' });
+      await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, chunkIndex: i, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', expectedFullSha256, chunkBase64: chunks[i].toString('base64'), blobKey: '../../attacker/controlled/path' });
     }
     const before = writes;
-    const res = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId, providerDocumentId: docId, blobKey: '../../attacker/controlled/path' });
+    const res = await invokeUpload(finalizeArgs(uploadId, pdfBytes, 'executed.pdf', fixture.version, docId, { blobKey: '../../attacker/controlled/path' }));
     // Same bytes as the already-preserved fixture.version artifact -> a
     // no-op success, exactly as an ordinary identical re-upload would be
     // (the injected field changed nothing about which key was used).
@@ -682,13 +735,10 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     const B9 = load('board9-contract-model');
     const freshVersion = B9.nextVersionIdentity(B9.nextVersionIdentity(fixture.version, { kind: 'same_agreement_reentry' }, null).value, { kind: 'same_agreement_reentry' }, null).value;
     const uploadId = 'upload-note-write-fails';
-    const chunks = splitChunks(pdfBytes, CHUNK);
-    for (let i = 0; i < chunks.length; i++) {
-      await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: freshVersion, uploadId, chunkIndex: i, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[i].toString('base64') });
-    }
+    await uploadChunks(uploadId, pdfBytes, 'executed.pdf', freshVersion);
     failNextNotePost = true;
     const before = writes;
-    const failedFinalize = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: freshVersion, uploadId, providerDocumentId: docId });
+    const failedFinalize = await invokeUpload(finalizeArgs(uploadId, pdfBytes, 'executed.pdf', freshVersion, docId));
     assert.equal(failedFinalize.statusCode, 409, failedFinalize.body);
     assert.equal(writes, before); // the note truly never landed
     const afterFailure = load('contract-executed-artifact-carriers').latestPreservedExecutedArtifactForVersion(notes, opportunity.id, fixture.version.agreementAt, freshVersion);
@@ -698,10 +748,8 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     // the deterministic blob key is safely overwritten with the same
     // bytes, and the note write is attempted again.
     const retryUploadId = 'upload-note-write-retry';
-    for (let i = 0; i < chunks.length; i++) {
-      await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: freshVersion, uploadId: retryUploadId, chunkIndex: i, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[i].toString('base64') });
-    }
-    const retryRes = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: freshVersion, uploadId: retryUploadId, providerDocumentId: docId });
+    await uploadChunks(retryUploadId, pdfBytes, 'executed.pdf', freshVersion);
+    const retryRes = await invokeUpload(finalizeArgs(retryUploadId, pdfBytes, 'executed.pdf', freshVersion, docId));
     assert.equal(retryRes.statusCode, 200, retryRes.body);
     assert.equal(JSON.parse(retryRes.body).alreadyPreserved, false);
   });
@@ -714,7 +762,7 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     try {
       const before = writes;
       await uploadChunks('upload-missing-bytes-reverify', pdfBytes, 'executed.pdf');
-      const res = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-missing-bytes-reverify', providerDocumentId: docId });
+      const res = await invokeUpload(finalizeArgs('upload-missing-bytes-reverify', pdfBytes, 'executed.pdf', fixture.version, docId));
       assert.equal(res.statusCode, 409, res.body);
       assert.equal(writes, before);
     } finally {
@@ -729,7 +777,7 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     try {
       const before = writes;
       await uploadChunks('upload-corrupted-bytes-reverify', pdfBytes, 'executed.pdf');
-      const res = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'upload-corrupted-bytes-reverify', providerDocumentId: docId });
+      const res = await invokeUpload(finalizeArgs('upload-corrupted-bytes-reverify', pdfBytes, 'executed.pdf', fixture.version, docId));
       assert.equal(res.statusCode, 409, res.body);
       assert.equal(writes, before);
     } finally {
@@ -769,12 +817,9 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     const step3 = B9b.nextVersionIdentity(step2, { kind: 'same_agreement_reentry' }, null).value;
     const freshVersion2 = B9b.nextVersionIdentity(step3, { kind: 'same_agreement_reentry' }, null).value;
     const uploadId = 'upload-cleanup-partial-failure';
-    const chunks = splitChunks(pdfBytes, CHUNK);
-    for (let i = 0; i < chunks.length; i++) {
-      await invokeUpload({ phase: 'chunk', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: freshVersion2, uploadId, chunkIndex: i, chunkCount: chunks.length, totalByteCount: pdfBytes.length, originalFileName: 'executed.pdf', chunkBase64: chunks[i].toString('base64') });
-    }
+    await uploadChunks(uploadId, pdfBytes, 'executed.pdf', freshVersion2);
     failNextBlobDelete = true; // fires on the FIRST cleanup delete call, which happens strictly after the note write above has already succeeded
-    const res = await invokeUpload({ phase: 'finalize', opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: freshVersion2, uploadId, providerDocumentId: docId });
+    const res = await invokeUpload(finalizeArgs(uploadId, pdfBytes, 'executed.pdf', freshVersion2, docId));
     assert.equal(res.statusCode, 200, res.body);
     assert.equal(JSON.parse(res.body).preserved, true);
     const recorded = load('contract-executed-artifact-carriers').latestPreservedExecutedArtifactForVersion(notes, opportunity.id, fixture.version.agreementAt, freshVersion2);
