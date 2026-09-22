@@ -1069,16 +1069,31 @@ export const ghl = {
     },
 
     // POST /.netlify/functions/ghl-contract-send-readback -- the ONLY
-    // path to a final "accepted" verdict. Server-side, not
-    // client-classified: the cross-checks against the TRUE expected
-    // sender/recipient require secrets this client is never given
-    // (`documentsContracts.senderUserId`/`approvedTestContactId`).
-    // Returns `contract-send-model.ts`'s own `ReadbackClassification`
-    // shape verbatim -- this client never reinterprets it.
-    readback: async (args: { documentId: string }): Promise<{
+    // path to live provider readback. INV-98 gate-review hardening round:
+    // takes ONLY an opportunityId (never a documentId -- the server
+    // independently derives the accepted send's own document identity,
+    // never trusts a caller claim). Server-side, not client-classified:
+    // the cross-checks against the TRUE expected sender/recipient require
+    // secrets this client is never given, AND the server now performs
+    // signer-completion/buyer-identity verification itself so that no
+    // raw GHL document row, recipient object, or sender/recipient
+    // metadata is ever returned to this client -- only the normalized
+    // verdict fields below. This client never reinterprets or trusts a
+    // browser-supplied document identity.
+    readback: async (args: { opportunityId: string }): Promise<{
       status: "accepted" | "failed" | "ambiguous";
-      summary: { documentId: string | null; documentReference: string | null; documentRevision: number | null; recipientId: string | null; createdBy: string | null; readbackStatus: string | null; readbackLocationId: string | null; fillableFieldCount: number | null } | null;
       failureReason: string | null;
+      providerDocumentId: string | null;
+      documentStatus: string | null;
+      documentRevision: number | null;
+      providerCompletion:
+        | { ok: true; completedAt: string }
+        | { ok: false; reasons: { code: string; message: string }[] };
+      availableProviderRecipientIds: string[];
+      signerCompletion:
+        | { ok: true; matches: { role: string; displayName: string; providerRecipientId: string; providerCompletedAt: string | null }[] }
+        | { ok: false; reasons: { code: string; message: string }[] };
+      buyerIdentity: { ok: boolean; reasons: { code: string; message: string }[] };
     }> => {
       const res = await appWriteFetch("/.netlify/functions/ghl-contract-send-readback", {
         method: "POST",
@@ -1087,7 +1102,7 @@ export const ghl = {
       });
       if (!res.ok) {
         const text = await res.text();
-        return { status: "failed", summary: null, failureReason: `Readback endpoint returned HTTP ${res.status}: ${text}` };
+        throw new Error(`ghl-contract-send-readback → ${res.status}: ${text}`);
       }
       return res.json();
     },
