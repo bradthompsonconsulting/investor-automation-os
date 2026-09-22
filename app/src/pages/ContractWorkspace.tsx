@@ -4085,105 +4085,119 @@ export default function ContractWorkspace() {
               </div>
 
               {/*
-                Gate-review closure -- false-conflict repair. A successful
-                write refreshes `notes`, which makes `dispositionEligibility`
-                recompute and (correctly, per its own contract) report
-                HANDOFF_ALREADY_EXISTS for the handoff that was JUST durably
-                recorded -- the exact-evidence match this reason code can
-                ONLY ever fire on. `currentDispositionHandoff` (below) uses
-                the SAME exact-evidence match, so suppressing this card
-                whenever it is non-null suppresses ONLY that benign case --
-                it can never mask UNDER_CONTRACT_MISSING/mismatch/rescission
-                reasons, none of which require a matching handoff to exist.
-                `evaluateDispositionHandoffEligibility`'s own boolean
-                contract, and both its write-time consumers (this handler's
-                own pre-write duplicate check, and the server's), are
-                untouched.
+                Gate-review closure -- disposition durable-hydration repair,
+                round 2. The first repair suppressed ONLY the "Blocking
+                conflicts" card; `dispositionPackagePreview` independently
+                consumes the SAME raw `dispositionEligibility` (it is
+                passed as `eligibility` into buildDispositionHandoffRecordArgs,
+                whose own NOT_ELIGIBLE check fires on the identical
+                exact-evidence "already exists" case), producing a SECOND,
+                unguarded "Missing essential data" card and trapping the
+                already-recorded success message inside a branch
+                (`dispositionPackagePreview.ok`) that could never become
+                true once a matching handoff already exists.
+
+                Mirrors Section 7's own durable-first pattern: durable
+                already-recorded status (`dispositionWriteState`, hydrated
+                purely from `currentDispositionHandoff`, a fresh note
+                parse -- see the hydration effect above) is evaluated
+                FIRST, unconditionally, with NO dependency on
+                `dispositionEligibility` or `dispositionPackagePreview`.
+                Only when NOT already durably recorded does rendering fall
+                through to the existing eligibility/package-preview-gated
+                branches below -- completely unchanged in their own logic,
+                inputs, and fail-closed behavior for a genuine missing/
+                mismatched/rescinded record.
               */}
-              {dispositionEligibility && !dispositionEligibility.eligible && !currentDispositionHandoff ? (
-                <div data-testid="disposition-handoff-blocked" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(239,68,68,0.35)" }}>
-                  <div style={{ fontSize: "11px", fontWeight: 700, color: "#EF4444", marginBottom: "6px" }}>Blocking conflicts</div>
-                  <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
-                    {dispositionEligibility.reasons.map((r) => <li key={r.code} data-testid={`disposition-handoff-blocked-reason-${r.code}`}>{r.message}</li>)}
-                  </ul>
+              {(dispositionWriteState.kind === "success" || dispositionWriteState.kind === "already_recorded") ? (
+                <div style={{ marginBottom: "12px" }}>
+                  {dispositionWriteState.kind === "success" ? (
+                    <div data-testid="disposition-handoff-write-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
+                      Recorded and verified by fresh readback -- the written note round-trips exactly. Board #10 may now consume handoff id <span style={{ fontFamily: "monospace" }}>{dispositionWriteState.record.handoffId}</span>.
+                    </div>
+                  ) : (
+                    <div data-testid="disposition-handoff-already-recorded" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "8px" }}>
+                      Already recorded for this exact verified execution (handoff id <span style={{ fontFamily: "monospace" }}>{dispositionWriteState.record.handoffId}</span>, created {new Date(dispositionWriteState.record.createdAt).toLocaleString()}) -- refusing to append a duplicate.
+                    </div>
+                  )}
                 </div>
-              ) : null}
-
-              {dispositionPackagePreview && !dispositionPackagePreview.ok ? (
-                <div data-testid="disposition-handoff-essential-missing" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(239,68,68,0.35)" }}>
-                  <div style={{ fontSize: "11px", fontWeight: 700, color: "#EF4444", marginBottom: "6px" }}>Missing essential data -- blocks handoff creation</div>
-                  <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
-                    {dispositionPackagePreview.reasons.map((r) => <li key={r.code} data-testid={`disposition-handoff-essential-reason-${r.code}`}>{r.message}</li>)}
-                  </ul>
-                </div>
-              ) : null}
-
-              {dispositionPackagePreview && dispositionPackagePreview.ok ? (() => {
-                const pkg = dispositionPackagePreview.value;
-                const optionalItems: { label: string; fd: { kind: string } }[] = [
-                  { label: "Closing date", fd: pkg.closingDate },
-                  { label: "Possession details", fd: pkg.possessionDetails },
-                  { label: "Access/showing information", fd: pkg.accessShowingInformation },
-                  { label: "Seller notice address", fd: pkg.sellerContact.noticeAddress },
-                  { label: "Seller notice phone", fd: pkg.sellerContact.noticePhone },
-                  { label: "Seller notice email", fd: pkg.sellerContact.noticeEmail },
-                ];
-                const missingOptional = optionalItems.filter((i) => i.fd.kind !== "populated");
-                return (
-                  <>
-                    <div data-testid="disposition-handoff-preview-authoritative" style={{ ...groupCardStyle, marginBottom: "12px" }}>
-                      <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Authoritative data (reused verbatim, never recalculated)</div>
-                      <ul style={{ margin: 0, padding: 0, listStyle: "none", fontSize: "12px", color: "#E2E8F0", lineHeight: 1.9 }}>
-                        <li>Property: {pkg.propertyAddress.kind === "populated" ? pkg.propertyAddress.value : "unconfirmed"}</li>
-                        <li>Seller contract price: {money(pkg.sellerContractPrice)}</li>
-                        <li>Approved ARV: {money(pkg.approvedArv.amount)} {pkg.approvedArv.approvalEvidenceState ? `(${pkg.approvedArv.approvalEvidenceState}, ${pkg.approvedArv.approvalDecision})` : "(no matching approval-ledger entry)"}</li>
-                        <li>Approved repairs: {money(pkg.approvedRepairs)}</li>
-                        <li>Required signers: {pkg.requiredSigners.map((s) => `${s.role} (${s.displayName})`).join(", ")}</li>
-                        <li>Provider document: {pkg.underContract.providerDocumentId} (revision {pkg.underContract.providerDocumentRevision ?? "unavailable"})</li>
-                        <li>Artifact SHA-256: <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{pkg.underContract.artifactSha256}</span></li>
-                        <li>Execution verified at: {new Date(pkg.underContract.verifiedAt).toLocaleString()}</li>
+              ) : (
+                <>
+                  {dispositionEligibility && !dispositionEligibility.eligible && !currentDispositionHandoff ? (
+                    <div data-testid="disposition-handoff-blocked" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(239,68,68,0.35)" }}>
+                      <div style={{ fontSize: "11px", fontWeight: 700, color: "#EF4444", marginBottom: "6px" }}>Blocking conflicts</div>
+                      <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
+                        {dispositionEligibility.reasons.map((r) => <li key={r.code} data-testid={`disposition-handoff-blocked-reason-${r.code}`}>{r.message}</li>)}
                       </ul>
                     </div>
+                  ) : null}
 
-                    {missingOptional.length > 0 ? (
-                      <div data-testid="disposition-handoff-preview-missing-optional" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(245,158,11,0.35)" }}>
-                        <div style={{ fontSize: "11px", fontWeight: 700, color: "#F59E0B", marginBottom: "6px" }}>Missing optional data (disclosed honestly, never fabricated)</div>
-                        <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
-                          {missingOptional.map((i) => <li key={i.label}>{i.label}: not yet recorded.</li>)}
-                          <li>Photos/documents: {pkg.documentReferencesNote}</li>
-                        </ul>
-                      </div>
-                    ) : null}
-
-                    <div style={{ marginBottom: "12px" }}>
-                      <Btn
-                        testId="disposition-handoff-start-button"
-                        onClick={handleStartDisposition}
-                        busy={dispositionWriteState.kind === "busy"}
-                        disabled={
-                          dispositionWriteState.kind === "success" || dispositionWriteState.kind === "already_recorded" ||
-                          !dispositionEligibility || !dispositionEligibility.eligible
-                        }
-                      >
-                        Start Disposition
-                      </Btn>
-                      {dispositionWriteState.kind === "success" ? (
-                        <div data-testid="disposition-handoff-write-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
-                          Recorded and verified by fresh readback -- the written note round-trips exactly. Board #10 may now consume handoff id <span style={{ fontFamily: "monospace" }}>{dispositionWriteState.record.handoffId}</span>.
-                        </div>
-                      ) : dispositionWriteState.kind === "already_recorded" ? (
-                        <div data-testid="disposition-handoff-already-recorded" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "8px" }}>
-                          Already recorded for this exact verified execution (handoff id <span style={{ fontFamily: "monospace" }}>{dispositionWriteState.record.handoffId}</span>, created {new Date(dispositionWriteState.record.createdAt).toLocaleString()}) -- refusing to append a duplicate.
-                        </div>
-                      ) : dispositionWriteState.kind === "failed" ? (
-                        <div data-testid="disposition-handoff-write-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
-                          {dispositionWriteState.message}
-                        </div>
-                      ) : null}
+                  {dispositionPackagePreview && !dispositionPackagePreview.ok && !currentDispositionHandoff ? (
+                    <div data-testid="disposition-handoff-essential-missing" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(239,68,68,0.35)" }}>
+                      <div style={{ fontSize: "11px", fontWeight: 700, color: "#EF4444", marginBottom: "6px" }}>Missing essential data -- blocks handoff creation</div>
+                      <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
+                        {dispositionPackagePreview.reasons.map((r) => <li key={r.code} data-testid={`disposition-handoff-essential-reason-${r.code}`}>{r.message}</li>)}
+                      </ul>
                     </div>
-                  </>
-                );
-              })() : null}
+                  ) : null}
+
+                  {dispositionPackagePreview && dispositionPackagePreview.ok ? (() => {
+                    const pkg = dispositionPackagePreview.value;
+                    const optionalItems: { label: string; fd: { kind: string } }[] = [
+                      { label: "Closing date", fd: pkg.closingDate },
+                      { label: "Possession details", fd: pkg.possessionDetails },
+                      { label: "Access/showing information", fd: pkg.accessShowingInformation },
+                      { label: "Seller notice address", fd: pkg.sellerContact.noticeAddress },
+                      { label: "Seller notice phone", fd: pkg.sellerContact.noticePhone },
+                      { label: "Seller notice email", fd: pkg.sellerContact.noticeEmail },
+                    ];
+                    const missingOptional = optionalItems.filter((i) => i.fd.kind !== "populated");
+                    return (
+                      <>
+                        <div data-testid="disposition-handoff-preview-authoritative" style={{ ...groupCardStyle, marginBottom: "12px" }}>
+                          <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Authoritative data (reused verbatim, never recalculated)</div>
+                          <ul style={{ margin: 0, padding: 0, listStyle: "none", fontSize: "12px", color: "#E2E8F0", lineHeight: 1.9 }}>
+                            <li>Property: {pkg.propertyAddress.kind === "populated" ? pkg.propertyAddress.value : "unconfirmed"}</li>
+                            <li>Seller contract price: {money(pkg.sellerContractPrice)}</li>
+                            <li>Approved ARV: {money(pkg.approvedArv.amount)} {pkg.approvedArv.approvalEvidenceState ? `(${pkg.approvedArv.approvalEvidenceState}, ${pkg.approvedArv.approvalDecision})` : "(no matching approval-ledger entry)"}</li>
+                            <li>Approved repairs: {money(pkg.approvedRepairs)}</li>
+                            <li>Required signers: {pkg.requiredSigners.map((s) => `${s.role} (${s.displayName})`).join(", ")}</li>
+                            <li>Provider document: {pkg.underContract.providerDocumentId} (revision {pkg.underContract.providerDocumentRevision ?? "unavailable"})</li>
+                            <li>Artifact SHA-256: <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{pkg.underContract.artifactSha256}</span></li>
+                            <li>Execution verified at: {new Date(pkg.underContract.verifiedAt).toLocaleString()}</li>
+                          </ul>
+                        </div>
+
+                        {missingOptional.length > 0 ? (
+                          <div data-testid="disposition-handoff-preview-missing-optional" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(245,158,11,0.35)" }}>
+                            <div style={{ fontSize: "11px", fontWeight: 700, color: "#F59E0B", marginBottom: "6px" }}>Missing optional data (disclosed honestly, never fabricated)</div>
+                            <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
+                              {missingOptional.map((i) => <li key={i.label}>{i.label}: not yet recorded.</li>)}
+                              <li>Photos/documents: {pkg.documentReferencesNote}</li>
+                            </ul>
+                          </div>
+                        ) : null}
+
+                        <div style={{ marginBottom: "12px" }}>
+                          <Btn
+                            testId="disposition-handoff-start-button"
+                            onClick={handleStartDisposition}
+                            busy={dispositionWriteState.kind === "busy"}
+                            disabled={!dispositionEligibility || !dispositionEligibility.eligible}
+                          >
+                            Start Disposition
+                          </Btn>
+                          {dispositionWriteState.kind === "failed" ? (
+                            <div data-testid="disposition-handoff-write-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
+                              {dispositionWriteState.message}
+                            </div>
+                          ) : null}
+                        </div>
+                      </>
+                    );
+                  })() : null}
+                </>
+              )}
             </div>
           ) : null}
         </>

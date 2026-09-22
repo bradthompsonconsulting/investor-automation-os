@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 275;
+const FLOOR = 285;
 let failures = 0;
 let checks = 0;
 
@@ -243,8 +243,16 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     true,
   );
   check(
-    'Start Disposition\'s disabled expression is unchanged -- it already covers BOTH "success" (post-write) and "already_recorded" (now also reload-hydrated) states',
-    /disabled=\{\s*\n\s*dispositionWriteState\.kind === "success" \|\| dispositionWriteState\.kind === "already_recorded" \|\|\s*\n\s*!dispositionEligibility \|\| !dispositionEligibility\.eligible\s*\n\s*\}/.test(contractTsxNoComments),
+    // Gate-review closure -- disposition durable-hydration repair, round
+    // 2. The "success"/"already_recorded" states are no longer covered
+    // by this button's OWN disabled expression -- they are handled one
+    // level up, by an entirely separate branch (see the durable-hydration
+    // checks below) that renders the already-recorded display WITHOUT
+    // rendering this button at all. This button is only ever reached in
+    // the "not yet durably recorded" branch, so its own disabled
+    // expression correctly narrows to just the eligibility gate.
+    'Start Disposition\'s disabled expression requires dispositionEligibility.eligible -- the success/already_recorded states are handled one level up, in the durable-hydration branch, where this button is not even rendered',
+    /disabled=\{!dispositionEligibility \|\| !dispositionEligibility\.eligible\}/.test(contractTsxNoComments),
     true,
   );
 
@@ -275,6 +283,107 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
       return !!m && /const duplicate = freshHandoffs\.find\(/.test(m[0]) && /setDispositionWriteState\(\{ kind: "already_recorded", record: duplicate \}\);/.test(m[0]);
     })(),
     true,
+  );
+
+  // ============================================================
+  // Gate-review closure -- disposition durable-hydration repair, round 2.
+  // The first repair suppressed ONLY the "Blocking conflicts" card;
+  // `dispositionPackagePreview` independently consumed the SAME raw
+  // `dispositionEligibility` (passed as `eligibility` into
+  // buildDispositionHandoffRecordArgs, whose own NOT_ELIGIBLE check fires
+  // on the identical exact-evidence "already exists" case), producing a
+  // second, unguarded "Missing essential data" card and trapping the
+  // already-recorded success message inside a branch that could never
+  // become true once a matching handoff already exists. Mirrors Section
+  // 7's own durable-first pattern: durable status evaluated first,
+  // unconditionally, with no dependency on dispositionEligibility or
+  // dispositionPackagePreview.
+  // ============================================================
+  check(
+    'durable success/already_recorded status is evaluated BEFORE the genuine-conflict and missing-essential-data branches -- its condition appears earlier in the source than both',
+    (() => {
+      const durableIdx = contractTsxNoComments.indexOf('{(dispositionWriteState.kind === "success" || dispositionWriteState.kind === "already_recorded") ? (');
+      const blockedIdx = contractTsxNoComments.indexOf('dispositionEligibility && !dispositionEligibility.eligible && !currentDispositionHandoff');
+      const essentialIdx = contractTsxNoComments.indexOf('dispositionPackagePreview && !dispositionPackagePreview.ok && !currentDispositionHandoff');
+      return durableIdx !== -1 && blockedIdx !== -1 && essentialIdx !== -1 && durableIdx < blockedIdx && durableIdx < essentialIdx;
+    })(),
+    true,
+  );
+  check(
+    'the durable branch has NO dependency on dispositionEligibility or dispositionPackagePreview anywhere in its own body',
+    (() => {
+      const m = contractTsxNoComments.match(/\{\(dispositionWriteState\.kind === "success" \|\| dispositionWriteState\.kind === "already_recorded"\) \? \(\s*\n\s*<div style=\{\{ marginBottom: "12px" \}\}>([\s\S]*?)\n {16}<\/div>\s*\n {14}\) : \(/);
+      if (!m) return false;
+      const body = m[1];
+      return !/dispositionEligibility/.test(body) && !/dispositionPackagePreview/.test(body);
+    })(),
+    true,
+  );
+  check(
+    'the durable branch displays the correct success message (post-write) via disposition-handoff-write-success',
+    (() => {
+      const m = contractTsxNoComments.match(/\{\(dispositionWriteState\.kind === "success" \|\| dispositionWriteState\.kind === "already_recorded"\) \? \(\s*\n\s*<div style=\{\{ marginBottom: "12px" \}\}>([\s\S]*?)\n {16}<\/div>\s*\n {14}\) : \(/);
+      return !!m && /disposition-handoff-write-success/.test(m[1]) && /dispositionWriteState\.record\.handoffId/.test(m[1]);
+    })(),
+    true,
+  );
+  check(
+    'the durable branch displays the correct already-recorded message (reload-hydrated) via disposition-handoff-already-recorded',
+    (() => {
+      const m = contractTsxNoComments.match(/\{\(dispositionWriteState\.kind === "success" \|\| dispositionWriteState\.kind === "already_recorded"\) \? \(\s*\n\s*<div style=\{\{ marginBottom: "12px" \}\}>([\s\S]*?)\n {16}<\/div>\s*\n {14}\) : \(/);
+      return !!m && /disposition-handoff-already-recorded/.test(m[1]) && /refusing to append a duplicate/.test(m[1]);
+    })(),
+    true,
+  );
+  check(
+    'Start Disposition (disposition-handoff-start-button) is NOT rendered inside the durable branch',
+    (() => {
+      const m = contractTsxNoComments.match(/\{\(dispositionWriteState\.kind === "success" \|\| dispositionWriteState\.kind === "already_recorded"\) \? \(\s*\n\s*<div style=\{\{ marginBottom: "12px" \}\}>([\s\S]*?)\n {16}<\/div>\s*\n {14}\) : \(/);
+      return !!m && !/disposition-handoff-start-button/.test(m[1]);
+    })(),
+    true,
+  );
+  check(
+    '"Blocking conflicts" (disposition-handoff-blocked) is NOT rendered inside the durable branch',
+    (() => {
+      const m = contractTsxNoComments.match(/\{\(dispositionWriteState\.kind === "success" \|\| dispositionWriteState\.kind === "already_recorded"\) \? \(\s*\n\s*<div style=\{\{ marginBottom: "12px" \}\}>([\s\S]*?)\n {16}<\/div>\s*\n {14}\) : \(/);
+      return !!m && !/disposition-handoff-blocked/.test(m[1]);
+    })(),
+    true,
+  );
+  check(
+    '"Missing essential data" (disposition-handoff-essential-missing) is NOT rendered inside the durable branch',
+    (() => {
+      const m = contractTsxNoComments.match(/\{\(dispositionWriteState\.kind === "success" \|\| dispositionWriteState\.kind === "already_recorded"\) \? \(\s*\n\s*<div style=\{\{ marginBottom: "12px" \}\}>([\s\S]*?)\n {16}<\/div>\s*\n {14}\) : \(/);
+      return !!m && !/disposition-handoff-essential-missing/.test(m[1]);
+    })(),
+    true,
+  );
+  check(
+    'when no current matching handoff exists, a genuine "Missing essential data" still renders -- the essential-data card\'s own !currentDispositionHandoff guard only ever suppresses the benign already-satisfied case, never a genuine missing-data reason',
+    /\{dispositionPackagePreview && !dispositionPackagePreview\.ok && !currentDispositionHandoff \? \(\s*\n\s*<div data-testid="disposition-handoff-essential-missing"/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'the Start Disposition control remains reachable ONLY through a valid new-handoff preview (dispositionPackagePreview.ok), nested inside the "not yet durably recorded" branch -- never through the durable branch, never unconditionally',
+    (() => {
+      const durableMatch = contractTsxNoComments.match(/\{\(dispositionWriteState\.kind === "success" \|\| dispositionWriteState\.kind === "already_recorded"\) \? \(\s*\n\s*<div style=\{\{ marginBottom: "12px" \}\}>[\s\S]*?\n {16}<\/div>\s*\n {14}\) : \(/);
+      if (!durableMatch) return false;
+      // notYetIdx anchors to the END of the durable branch's own match (its
+      // closing "notYetIdx) : (" is the SAME text this regex already ends
+      // on) -- never a bare, potentially-ambiguous ") : (" search elsewhere
+      // in this 4000+ line file.
+      const notYetIdx = durableMatch.index + durableMatch[0].length;
+      const okIdx = contractTsxNoComments.indexOf('{dispositionPackagePreview && dispositionPackagePreview.ok ? (() => {');
+      const buttonIdx = contractTsxNoComments.indexOf('testId="disposition-handoff-start-button"');
+      return okIdx !== -1 && buttonIdx !== -1 && notYetIdx <= okIdx && okIdx < buttonIdx;
+    })(),
+    true,
+  );
+  check(
+    'buildDispositionHandoffRecordArgs\'s shared contract is untouched by the durable-hydration repair -- ContractWorkspace.tsx does not redefine or wrap its return shape',
+    /\b(function|const)\s+buildDispositionHandoffRecordArgs\s*[=(]/.test(contractTsxNoComments.replace(/import[\s\S]*?from\s*"[^"]+";/g, "")),
+    false,
   );
 
   // ============================================================
