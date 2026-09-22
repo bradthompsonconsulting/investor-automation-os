@@ -116,7 +116,18 @@ const failResponse=(status,body)=>({ok:false,status,json:async()=>body,text:asyn
 let stagePutMode='apply';
 let putIssuedThisAttempt=false;
 let failNextNotePost=false;
+// Gate-review closure -- fresh stage-reverification-before-disposition-
+// write repair, Required Test item 8 ("missing opportunity, or failed
+// read creates no handoff note"). Targets requireUnderContractStageConfirmed's
+// OWN fresh read specifically (the SECOND GET of this opportunity within
+// one validateDerivedNote call -- the FIRST is currentContractContext's
+// own earlier, unrelated read), never a PUT, so it never interferes with
+// the stage-transition PUT/readback tests above (their own stagePutMode
+// toggle) or with currentContractContext's own read succeeding normally.
+let opportunityGetCallCount=0;
+let failOpportunityGetCallNumber=0;
 global.fetch=async(url,init={})=>{const u=new URL(url);assert.equal(u.origin,'https://services.leadconnectorhq.com');if(u.pathname==='/proposals/document')return reply({documents});if(u.pathname==='/opportunities/'+opportunity.id){
+  if(init.method!=='PUT'){opportunityGetCallCount++;if(opportunityGetCallCount===failOpportunityGetCallNumber)return failResponse(503,{error:'simulated transient GHL outage'});}
   if(init.method==='PUT'){
     putIssuedThisAttempt=true;
     if(stagePutMode==='reject')return failResponse(500,{error:'simulated GHL failure'});
@@ -1092,6 +1103,35 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     assert.equal(res.statusCode, 409, res.body);
     assert.equal(writes, before);
     opportunity.pipelineId = saved;
+  });
+
+  // Gate-review closure -- fresh stage-reverification-before-disposition-
+  // write repair, Required Test item 8. `requireUnderContractStageConfirmed`
+  // (write-derived-note.ts) issues a genuinely fresh `boundary.opportunity()`
+  // read immediately before a disposition note may be created -- distinct
+  // from the "wrong pipeline"/"wrong stage" cases above (a PRESENT but
+  // incorrect opportunity), this proves a failed/unavailable read is ALSO
+  // fail-closed, with no note created, never silently treated as confirmed.
+  await check('disposition refused: the fresh authoritative stage read itself fails (GHL unavailable) -- fails closed, never silently treated as confirmed', async () => {
+    // THREE opportunity GETs occur for a disposition-handoff write, in
+    // order: (1) validateLedgerNote's own contactId-ownership check,
+    // (2) currentContractContext's (inside validateDerivedNote), and
+    // (3) requireUnderContractStageConfirmed's OWN fresh read -- the one
+    // under test here. The first two are left to succeed normally so
+    // this failure is attributable specifically to the stage-
+    // reverification call this repair is about.
+    opportunityGetCallCount = 0;
+    failOpportunityGetCallNumber = 3;
+    const before = writes;
+    let res;
+    try {
+      res = await invoke(load('contract-disposition-handoff-carriers').formatDispositionHandoffNote(handoff.value));
+    } finally {
+      failOpportunityGetCallNumber = 0;
+    }
+    assert.equal(res.statusCode, 409, res.body);
+    assert.equal(writes, before);
+    assert.equal(opportunityGetCallCount >= 3, true, 'requireUnderContractStageConfirmed\'s own fresh read must actually have been attempted');
   });
 
   await check('canonical disposition handoff retained -- only once execution, preserved artifact, AND live Under Contract stage all independently re-verify', async () => {
