@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 285;
+const FLOOR = 295;
 let failures = 0;
 let checks = 0;
 
@@ -453,7 +453,12 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('no template preflight', /templateDriftCheck/.test(contractTsx), false);
   check('no projection write control', /contract-projection-sync-button/.test(contractTsx), false);
   check('no draft request handler', /handleSyncContractProjectionFields/.test(contractTsx), false);
-  check('document readback remains', /ghl\.proposals\.listDocuments/.test(contractTsx), true);
+  // INV-98 gate-review hardening round -- provider document readback now
+  // goes through the authenticated, scoped, data-minimized server
+  // endpoint (ghl-contract-send-readback.ts), never the raw, unscoped
+  // ghl-proxy.ts passthrough.
+  check('document readback calls the authenticated ghl.proposals.readback endpoint, with an opportunityId', /ghl\.proposals\.readback\(\{\s*opportunityId:/.test(contractTsx), true);
+  check('document readback no longer calls the raw, unauthenticated ghl.proposals.listDocuments proxy path', /ghl\.proposals\.listDocuments/.test(contractTsx), false);
   check('the checklist write lives inside handleToggleChecklistItem', /async function handleToggleChecklistItem[\s\S]*?ghl\.notes\.create\(/.test(contractTsxNoComments), true);
   check('the B9-07/INV-62 authorization write lives inside its own handleAuthorize, never routed through commitNote', (() => {
     const m = contractTsxNoComments.match(/async function handleAuthorize\([\s\S]*?\n  \}/m);
@@ -957,7 +962,27 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
 {
   check('imports buildManualContractSendRecordArgs from the new manual-send model', /import \{ buildManualContractSendRecordArgs \} from "\.\.\/lib\/contract-manual-send-model";/.test(contractTsx), true);
   check('imports formatContractSendNote from contract-send-carriers', /formatContractSendNote/.test(contractTsx), true);
-  check('imports verifyBuyerSignerIdentity and countPdfPages from contract-execution-model', /verifyBuyerSignerIdentity/.test(contractTsx) && /countPdfPages/.test(contractTsx), true);
+  check('imports countPdfPages from contract-execution-model', /countPdfPages/.test(contractTsx), true);
+  // INV-98 gate-review hardening round -- verifyBuyerSignerIdentity now
+  // runs ONLY server-side (ghl-contract-send-readback.ts), against the
+  // one server-verified matched document; this component never imports
+  // or calls it, and never constructs buyerSignerRole/authorizedBuyerName/
+  // authorizedBuyerEmail args of its own (those are consumed only by the
+  // server endpoint, never by this file).
+  check('does NOT import verifyBuyerSignerIdentity -- buyer-identity verification runs only server-side now', /verifyBuyerSignerIdentity/.test(contractTsxNoComments), false);
+  check('does NOT import extractProviderSignerRowsFromListDocumentsBody -- no client-side raw-recipient-row extraction remains', /extractProviderSignerRowsFromListDocumentsBody/.test(contractTsxNoComments), false);
+  check('does NOT import verifyRequiredSigners -- per-signer completion verification runs only server-side now', /verifyRequiredSigners/.test(contractTsxNoComments), false);
+  check('does NOT import verifyProviderCompletion -- provider-completion verification runs only server-side now', /\bverifyProviderCompletion\b/.test(contractTsxNoComments), false);
+  check('does NOT import buildProviderObservationRecordFromReadback -- lifecycle-observation construction from a live readback runs only server-side now', /buildProviderObservationRecordFromReadback/.test(contractTsxNoComments), false);
+  check(
+    'the browser display/preview for signer completion, buyer identity, and provider completion reads directly from providerReadback.result (the server\'s own normalized verdicts), never from a client recomputation',
+    /providerReadback\.result\.signerCompletion/.test(contractTsxNoComments) &&
+    /providerReadback\.result\.buyerIdentity/.test(contractTsxNoComments) &&
+    /providerReadback\.result\.providerCompletion/.test(contractTsxNoComments),
+    true,
+  );
+  check('does NOT construct a buyerSignerRole: ...,\\n authorizedBuyerName: ... call of its own', /buyerSignerRole: requiredSignerSetResult\.buyerRole/.test(contractTsxNoComments), false);
+  check('does NOT construct an authorizedBuyerEmail: requiredSignerSetResult.buyerEmail call of its own', /authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail/.test(contractTsxNoComments), false);
   check('imports getRuntimeConfig from shared ghl-config', /import \{ getRuntimeConfig \} from "\.\.\/\.\.\/shared\/ghl-config";/.test(contractTsx), true);
 
   check('handleRecordManualSend calls buildManualContractSendRecordArgs', /async function handleRecordManualSend\(\) \{[\s\S]{0,2000}buildManualContractSendRecordArgs\(\{/.test(contractTsxNoComments), true);
@@ -968,12 +993,21 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('handleManualFileSelected awaits countPdfPages (a real, async pdf-lib parse)', /const pageCount = await countPdfPages\(bytesOutcome\.bytes\);/.test(contractTsxNoComments), true);
 
   check(
-    'the buyer signer role/name are sourced from requiredSignerSetResult.buyerRole/buyerDisplayName, NEVER from requiredSigners[0] (array position)',
-    /requiredSignerSetResult\.buyerRole/.test(contractTsxNoComments) && /requiredSignerSetResult\.buyerDisplayName/.test(contractTsxNoComments) && !/requiredSigners\[0\]/.test(contractTsxNoComments),
+    'never sources any buyer/signer identity from requiredSigners[0] (array position) anywhere in this file',
+    !/requiredSigners\[0\]/.test(contractTsxNoComments),
     true,
   );
-  check('fullVerificationResult passes both buyerSignerRole and authorizedBuyerName to buildVerifiedUnderContractRecord', /buyerSignerRole: requiredSignerSetResult\.buyerRole,[\s\S]{0,80}authorizedBuyerName: requiredSignerSetResult\.buyerDisplayName,/.test(contractTsxNoComments), true);
-  check('buyerSignerIdentityResult passes both buyerSignerRole and authorizedBuyerName to verifyBuyerSignerIdentity', /buyerSignerRole: requiredSignerSetResult\.buyerRole,[\s\S]{0,80}authorizedBuyerName: requiredSignerSetResult\.buyerDisplayName,[\s\S]{0,80}mappings: signerMappingCurrencyResult\.mappings,/.test(contractTsxNoComments), true);
+  // INV-98 gate-review hardening round -- fullVerificationResult's
+  // buyer_signer_identity/signers/provider_completion stages now consume
+  // the server's own already-verified verdicts directly, never raw
+  // provider data and never a second, independently-defined copy of
+  // verifyBuyerSignerIdentity/verifyRequiredSigners/verifyProviderCompletion's
+  // own rules.
+  check('fullVerificationResult\'s buyer_signer_identity stage consumes the server-verified buyerIdentityResult, never recomputes it', /if \(!buyerIdentityResult\.ok\) return \{ ok: false, failure: \{ stage: "buyer_signer_identity", reasons: buyerIdentityResult\.reasons \} \};/.test(contractTsxNoComments), true);
+  check('fullVerificationResult\'s signers stage consumes the server-verified signerCompletionResult, never recomputes it', /if \(!signerCompletionResult\.ok\) return \{ ok: false, failure: \{ stage: "signers", reasons: signerCompletionResult\.reasons \} \};/.test(contractTsxNoComments), true);
+  check('fullVerificationResult\'s provider_completion stage consumes the server-verified providerCompletionResult, never recomputes it', /if \(!providerCompletionResult\.ok\) return \{ ok: false, failure: \{ stage: "provider_completion", reasons: providerCompletionResult\.reasons \} \};/.test(contractTsxNoComments), true);
+  check('fullVerificationResult\'s binding/required_signers/executed_terms/eligibility stages reuse the SAME shared pure functions the real write gate is built on, never a duplicated copy', /verifyAcceptedSendBinding\(/.test(contractTsxNoComments) && /validateRequiredSignerSet\(/.test(contractTsxNoComments) && /verifyExecutedTermsAttestationCurrency\(/.test(contractTsxNoComments) && /evaluateUnderContractEligibility\(/.test(contractTsxNoComments), true);
+  check('fullVerificationResult is informational only -- its own header discloses that write-derived-note.ts independently re-verifies everything and never trusts this preview', /write-derived-note\.ts.{0,400}never trusts anything this preview claims/s.test(contractTsx), true);
 
   check('renders the Record GHL Send section, gated on no accepted send existing yet', /data-testid="contract-manual-send-section"/.test(contractTsx), true);
   check('the Record GHL Send button is wired to handleRecordManualSend', /testId="contract-manual-send-record-button" onClick=\{handleRecordManualSend\}/.test(contractTsx), true);
@@ -981,8 +1015,12 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   check('renders the executed artifact\'s page count', /data-testid="contract-execution-artifact-page-count"/.test(contractTsx), true);
 
   // B9-13/INV-96 correction round 2 -- email-only GHL identity fallback.
-  check('fullVerificationResult ALSO passes authorizedBuyerEmail (requiredSignerSetResult.buyerEmail), never a hardcoded/guessed value', /buyerSignerRole: requiredSignerSetResult\.buyerRole,\s*\n\s*authorizedBuyerName: requiredSignerSetResult\.buyerDisplayName,\s*\n\s*authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail,/.test(contractTsxNoComments), true);
-  check('buyerSignerIdentityResult ALSO passes authorizedBuyerEmail (requiredSignerSetResult.buyerEmail)', /buyerSignerRole: requiredSignerSetResult\.buyerRole,\s*\n\s*authorizedBuyerName: requiredSignerSetResult\.buyerDisplayName,\s*\n\s*authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail,/.test(contractTsxNoComments) && (contractTsxNoComments.match(/authorizedBuyerEmail: requiredSignerSetResult\.buyerEmail,/g) || []).length === 2, true);
+  // INV-98 gate-review hardening round: this wiring (buyerSignerRole/
+  // authorizedBuyerName/authorizedBuyerEmail passed to
+  // verifyBuyerSignerIdentity) now lives entirely server-side in
+  // ghl-contract-send-readback.ts, not in this component -- see that
+  // endpoint's own suite (test-contract-send-readback.cjs) for the
+  // equivalent assertion.
 
   // B9-13 authorization-hydration repair, gate-review correction (2026-09-21).
   check(
@@ -1359,8 +1397,8 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     true,
   );
   check(
-    'the corrected buyer-signer-identity success wording reads "authorized buyer signer name", never "authorized legal buyer name"',
-    contractTsx.includes('The buyer\'s mapped provider recipient\'s reported name matches the authorized buyer signer name.'),
+    'the buyer-signer-identity success wording reads "authorized buyer signer name", never "authorized legal buyer name", and never claims a reported NAME this component no longer receives',
+    contractTsx.includes('The buyer\'s mapped provider recipient\'s reported identity matches the authorized buyer signer name.'),
     true,
   );
   check(

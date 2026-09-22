@@ -318,7 +318,13 @@ function enabledProductionConfig(overrides = {}) {
   const workspaceSrc = fs.readFileSync(path.join(APP, 'src', 'pages', 'ContractWorkspace.tsx'), 'utf8');
   check('ContractWorkspace.tsx still has no handleSyncContractProjectionFields handler', /handleSyncContractProjectionFields/.test(workspaceSrc), false);
   check('ContractWorkspace.tsx still has no contract-projection-sync-button control', /contract-projection-sync-button/.test(workspaceSrc), false);
-  check('ContractWorkspace.tsx still never calls ghl.proposals.readback', /proposals\.readback\(/.test(workspaceSrc), false);
+  // INV-98 gate-review hardening round -- this is now the CORRECT, intended
+  // behavior, not dead code: ContractWorkspace.tsx now calls the
+  // authenticated, scoped, data-minimized ghl-contract-send-readback.ts
+  // endpoint (via ghl.proposals.readback({opportunityId})) instead of the
+  // raw, unauthenticated ghl-proxy.ts /proposals/document passthrough.
+  check('ContractWorkspace.tsx now calls the authenticated ghl.proposals.readback({opportunityId}) endpoint (no longer dead code)', /ghl\.proposals\.readback\(\{\s*opportunityId:/.test(workspaceSrc), true);
+  check('ContractWorkspace.tsx no longer calls the raw, unauthenticated ghl.proposals.listDocuments proxy path', /ghl\.proposals\.listDocuments/.test(workspaceSrc), false);
   check('ContractWorkspace.tsx still never calls proposals.reserveSend or proposals.send (automated send)', /proposals\.reserveSend|proposals\.send\(/.test(workspaceSrc), false);
 
   const contextSrc = fs.readFileSync(path.join(APP, 'netlify', 'functions', 'lib', 'write-contract-context.ts'), 'utf8');
