@@ -1082,14 +1082,47 @@ export function isDuplicateUnderContractRecord(a: UnderContractRecordEntry, b: U
 }
 
 /**
- * "IAOS reads the written record back and confirms exact equality before
- * reporting success." A pure function has no I/O -- this is the equality
- * check a FUTURE write+readback call site (not built by this issue; see
- * the module header) must use: `written` is the exact record this module
- * built and asked to be persisted; `readback` is whatever that call site
- * re-parsed from GHL immediately afterward (`null` if the write or the
- * subsequent read failed, or if parsing failed). Field-for-field equality
- * is required -- not merely "a record exists."
+ * Gate-review closure -- PR #85 live-Test proof. Live GHL round-trips are
+ * NOT guaranteed byte-identical to an in-memory format/parse round-trip:
+ * GHL's own note storage can reformat free-text fields (evidence
+ * summaries, references) in ways a pure in-process test never exercises,
+ * so the whole-object `JSON.stringify` equality this used to require
+ * (both for finding the just-written note among a fresh readback, and
+ * for confirming it) could fail even when the SAME evidence was
+ * genuinely, durably persisted -- reporting "no record was read back"
+ * for a write that had actually succeeded.
+ *
+ * The fix is to confirm identity on exactly the fields that make this
+ * ONE Under Contract record durably distinct from any other: the
+ * opportunity, the contract version, the accepted send this execution
+ * was verified against, the provider document and its revision, and the
+ * executed artifact's own hash. These are all structured, machine-
+ * generated values (timestamps, hashes, ids) -- never free text GHL
+ * could reformat -- so they are safe to compare for exact string/number
+ * equality. Free-text/carried-through fields (`evidenceSummary`,
+ * `providerDocumentReference`, `signers[].displayName`, `pageCount`) are
+ * deliberately NOT part of this comparison; they can differ cosmetically
+ * without the underlying evidence being any less current.
+ */
+export function matchesUnderContractEvidenceIdentity(a: UnderContractRecordEntry, b: UnderContractRecordEntry): boolean {
+  return (
+    a.opportunityId === b.opportunityId &&
+    isSameContractVersion(a.version, b.version) &&
+    a.acceptedSendAttemptId === b.acceptedSendAttemptId &&
+    a.providerDocumentId === b.providerDocumentId &&
+    a.providerDocumentRevision === b.providerDocumentRevision &&
+    a.artifactSha256 === b.artifactSha256
+  );
+}
+
+/**
+ * "IAOS reads the written record back and confirms it carries the same
+ * canonical evidence identity before reporting success." A pure function
+ * has no I/O -- this is the check a write+readback call site must use:
+ * `written` is the exact record this module built and asked to be
+ * persisted; `readback` is whatever that call site re-parsed from GHL
+ * immediately afterward (`null` if the write or the subsequent read
+ * failed, or if parsing failed, or if nothing matching was found).
  */
 export function verifyReadbackMatchesWritten(
   written: UnderContractRecordEntry,
@@ -1098,8 +1131,8 @@ export function verifyReadbackMatchesWritten(
   if (readback === null) {
     return { ok: false, reason: "No Under Contract record was read back after the write -- the write, the read, or the read's own parse failed." };
   }
-  if (JSON.stringify(written) !== JSON.stringify(readback)) {
-    return { ok: false, reason: "The read-back Under Contract record does not exactly equal the record that was written." };
+  if (!matchesUnderContractEvidenceIdentity(written, readback)) {
+    return { ok: false, reason: "The read-back Under Contract record does not carry the same canonical evidence identity as the record that was written." };
   }
   return { ok: true };
 }

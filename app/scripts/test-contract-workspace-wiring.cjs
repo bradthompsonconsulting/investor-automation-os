@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 240;
+const FLOOR = 246;
 let failures = 0;
 let checks = 0;
 
@@ -180,6 +180,53 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   })(), true);
   check('handleCreateUnderContract requires EXACT equality via verifyReadbackMatchesWritten before ever reporting success', /verifyReadbackMatchesWritten\(candidate, matchingReadback\)/.test(contractTsxNoComments), true);
   check('handleCreateUnderContract reuses formatUnderContractNote/parseUnderContractNote (the canonical carrier), never composes or re-parses the note body inline', /formatUnderContractNote\(candidate\)/.test(contractTsxNoComments) && /parseUnderContractNote\(n\.body\)/.test(contractTsxNoComments), true);
+
+  // ============================================================
+  // Gate-review closure -- PR #85 live-Test proof: Under Contract
+  // post-write confirmation/hydration repair. The fragile whole-object
+  // JSON.stringify equality is gone from handleCreateUnderContract
+  // specifically (the disposition-handoff handler above is untouched,
+  // deliberately -- Board #10 work, out of this repair's narrow scope).
+  // ============================================================
+  check(
+    'handleCreateUnderContract no longer uses whole-object JSON.stringify equality to find the just-written readback',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleCreateUnderContract\([\s\S]*?\n  \}/m);
+      return !!m && !/JSON\.stringify\(r\) === JSON\.stringify\(candidate\)/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'handleCreateUnderContract instead matches the fresh readback via matchesUnderContractEvidenceIdentity -- the canonical evidence identity, not whole-object equality',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleCreateUnderContract\([\s\S]*?\n  \}/m);
+      return !!m && /matchesUnderContractEvidenceIdentity\(r, candidate\)/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'the disposition-handoff handler (Board #10 handoff, out of this repair\'s scope) still uses its own prior JSON.stringify comparison, deliberately unchanged',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
+      return !!m && /JSON\.stringify\(r\) === JSON\.stringify\(candidate\)/.test(m[0]);
+    })(),
+    true,
+  );
+  check(
+    'matchesUnderContractEvidenceIdentity is imported from contract-execution-model',
+    /isDuplicateUnderContractRecord, verifyReadbackMatchesWritten, matchesUnderContractEvidenceIdentity, countPdfPages,/.test(contractTsx),
+    true,
+  );
+  check(
+    'a reload-hydration effect recognizes an already-durable currentUnderContractRecord and syncs underContractWriteState to "already_recorded" WITHOUT requiring another write -- only from "idle", never overriding an in-flight or failed state',
+    /if \(underContractWriteState\.kind !== "idle" \|\| !currentUnderContractRecord\) return;\s*\n\s*setUnderContractWriteState\(\{ kind: "already_recorded", record: currentUnderContractRecord \}\);/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'Create Under Contract\'s disabled expression is unchanged -- it already covers BOTH "success" (post-write) and "already_recorded" (now also reload-hydrated) states',
+    /disabled=\{underContractWriteState\.kind === "success" \|\| underContractWriteState\.kind === "already_recorded"\}/.test(contractTsxNoComments),
+    true,
+  );
   // Twelve obsolete send-wiring assertions replaced by twelve V1 boundary assertions.
   check('no automated Send handler', /async function handleSend/.test(contractTsx), false);
   check('no automated Send button', /contract-send-button/.test(contractTsx), false);

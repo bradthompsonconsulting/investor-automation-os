@@ -34,7 +34,7 @@ import {
   classifySelectedFileBytes, verifyRequiredSigners, verifyProviderCompletion,
   verifyManualArtifactSelection, buildVerifiedUnderContractRecord,
   extractProviderSignerRowsFromListDocumentsBody, verifyBuyerSignerIdentity,
-  isDuplicateUnderContractRecord, verifyReadbackMatchesWritten, countPdfPages,
+  isDuplicateUnderContractRecord, verifyReadbackMatchesWritten, matchesUnderContractEvidenceIdentity, countPdfPages,
   type ManualArtifactSelectionOutcome, type UnderContractRecordEntry,
 } from "../lib/contract-execution-model";
 import { buildManualContractSendRecordArgs } from "../lib/contract-manual-send-model";
@@ -1671,7 +1671,7 @@ export default function ContractWorkspace() {
     const parsedCandidates = freshNotes
       .map((n) => parseUnderContractNote(n.body))
       .filter((r): r is UnderContractRecordEntry => r !== null);
-    const matchingReadback = parsedCandidates.find((r) => JSON.stringify(r) === JSON.stringify(candidate)) ?? null;
+    const matchingReadback = parsedCandidates.find((r) => matchesUnderContractEvidenceIdentity(r, candidate)) ?? null;
     const readbackCheck = verifyReadbackMatchesWritten(candidate, matchingReadback);
     if (!readbackCheck.ok) {
       setUnderContractWriteState({
@@ -1819,6 +1819,23 @@ export default function ContractWorkspace() {
     const all = allUnderContractRecordsForOpportunity(notes, screen.opportunity.id);
     return all.find((r) => r.agreementAt === screen.economics.agreementAt && isSameContractVersion(r.version, documentVersion)) ?? null;
   }, [screen, notes, documentVersion]);
+
+  /**
+   * Gate-review closure -- PR #85 live-Test proof, requirement 5: on a
+   * page reload, `underContractWriteState` starts back at `{kind:
+   * "idle"}` (it is plain component state, not durable) even when a
+   * verified Under Contract record already exists in `notes` -- the
+   * button previously stayed enabled until clicked once more. Hydrates
+   * from the SAME durable, freshly-parsed `currentUnderContractRecord`
+   * the rest of this page already uses for gating (Start Disposition,
+   * etc.), never a second/different lookup. Only ever transitions FROM
+   * "idle" -- never overrides an in-flight "busy" write or a "failed"
+   * result the operator still needs to see.
+   */
+  useEffect(() => {
+    if (underContractWriteState.kind !== "idle" || !currentUnderContractRecord) return;
+    setUnderContractWriteState({ kind: "already_recorded", record: currentUnderContractRecord });
+  }, [currentUnderContractRecord, underContractWriteState.kind]);
 
   const dispositionLifecycleHistory = useMemo(() => {
     if (screen.state !== "ready" || !notes) return [];

@@ -1345,6 +1345,68 @@ function fixtureEligibleRecord() {
   checkTrue('the note round-trips to a non-null record', parsed !== null);
   check('round-trip is byte-for-byte field-equal to the original', JSON.stringify(parsed), JSON.stringify(record));
 }
+
+/* ====================================================================== */
+/* 13c. Gate-review closure -- PR #85 live-Test proof. The post-write     */
+/*      readback previously required whole-object JSON.stringify         */
+/*      equality, which a genuine live GHL round-trip is not guaranteed   */
+/*      to preserve (free-text reformatting) even when the SAME evidence  */
+/*      is durably persisted. Confirmation now uses ONLY the canonical    */
+/*      evidence identity: opportunity, version, accepted send attempt,   */
+/*      provider document id/revision, artifact SHA-256.                  */
+/* ====================================================================== */
+{
+  const record = fixtureEligibleRecord();
+  // A key-ORDER-reversed, but value-identical, object -- what a
+  // differently-constructed parse implementation (or a JS engine with no
+  // guaranteed key-insertion order) could legitimately produce. The OLD
+  // JSON.stringify comparison is order-sensitive and would have failed
+  // this; identity comparison must not care about key order at all.
+  const reorderedKeys = {};
+  for (const k of Object.keys(record).reverse()) reorderedKeys[k] = record[k];
+  checkTrue(
+    'matchesUnderContractEvidenceIdentity: a key-order-reversed but value-identical readback still matches',
+    E.matchesUnderContractEvidenceIdentity(record, reorderedKeys),
+  );
+  checkTrue(
+    'verifyReadbackMatchesWritten: the same key-order-reversed readback still confirms the transition',
+    E.verifyReadbackMatchesWritten(record, reorderedKeys).ok,
+  );
+
+  // The exact live-observed failure mode: GHL's own note storage
+  // reformats a free-text field (evidenceSummary) on a genuine round
+  // trip, even though the durable evidence identity is unchanged.
+  const reformattedFreeText = Object.assign({}, record, {
+    evidenceSummary: record.evidenceSummary + '  ', // trailing whitespace GHL could add/strip
+    providerDocumentReference: 'a-differently-cased-Reference-1',
+    pageCount: null, // GHL round-trip losing an optional, non-identity field
+  });
+  checkTrue(
+    'matchesUnderContractEvidenceIdentity: differing free-text fields (evidenceSummary, providerDocumentReference, pageCount) never break the match -- they are not part of the evidence identity',
+    E.matchesUnderContractEvidenceIdentity(record, reformattedFreeText),
+  );
+  checkTrue(
+    'verifyReadbackMatchesWritten: a readback with reformatted free text but the SAME canonical identity still confirms the transition -- this is the exact live PR #85 defect, now fixed',
+    E.verifyReadbackMatchesWritten(record, reformattedFreeText).ok,
+  );
+
+  // Stale/different evidence must NOT be incorrectly treated as current --
+  // one canonical identity field changed at a time.
+  for (const [field, value] of [
+    ['opportunityId', 'a-different-opportunity'],
+    ['acceptedSendAttemptId', '2099-01-01T00:00:00.000Z'],
+    ['providerDocumentId', 'a-different-document-id'],
+    ['providerDocumentRevision', 99],
+    ['artifactSha256', 'f'.repeat(64)],
+  ]) {
+    const changed = Object.assign({}, record, { [field]: value });
+    checkFalse(`matchesUnderContractEvidenceIdentity: a changed ${field} is never treated as the same evidence`, E.matchesUnderContractEvidenceIdentity(record, changed));
+    checkFalse(`verifyReadbackMatchesWritten: a changed ${field} never confirms the transition`, E.verifyReadbackMatchesWritten(record, changed).ok);
+  }
+  const changedVersion = Object.assign({}, record, { version: { agreementAt: record.version.agreementAt, versionSeq: 99, supersedesVersionSeq: null, replacesAgreementAt: null } });
+  checkFalse('matchesUnderContractEvidenceIdentity: a changed contract version is never treated as the same evidence', E.matchesUnderContractEvidenceIdentity(record, changedVersion));
+  checkFalse('verifyReadbackMatchesWritten: a changed contract version never confirms the transition', E.verifyReadbackMatchesWritten(record, changedVersion).ok);
+}
 /* ====================================================================== */
 /* 13b. Backward compatibility -- a real, already-durable schema v1 note  */
 /*      (no Page count field) must remain readable. B9-13/INV-96.         */
