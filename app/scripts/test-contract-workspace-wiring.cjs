@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 246;
+const FLOOR = 250;
 let failures = 0;
 let checks = 0;
 
@@ -158,9 +158,9 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
     return !!m && /await ghl\.notes\.list\(contactId\)/.test(m[0]);
   })(), true);
-  check('handleStartDisposition requires an EXACT-equality match on fresh readback before ever reporting success -- never success from the POST alone', (() => {
+  check('handleStartDisposition requires a canonical-identity match on fresh readback before ever reporting success -- never success from the POST alone (gate-review closure -- PR #85 preventive repair: no longer whole-object JSON.stringify equality)', (() => {
     const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
-    return !!m && /JSON\.stringify\(r\) === JSON\.stringify\(candidate\)/.test(m[0]) && /matchingReadback === null/.test(m[0]);
+    return !!m && /verifyHandoffMatchesUnderContract\(\{\s*\n\s*handoff: r,/.test(m[0]) && /matchingReadback === null/.test(m[0]);
   })(), true);
   check('handleStartDisposition reuses formatDispositionHandoffNote/parseDispositionHandoffNote (the canonical carrier), never composes or re-parses the note body inline', /formatDispositionHandoffNote\(candidate\)/.test(contractTsxNoComments) && /parseDispositionHandoffNote\(n\.body\)/.test(contractTsxNoComments), true);
   check('Start Disposition is gated on a genuinely parsed Under Contract record (currentUnderContractRecord) -- required, though (gate-review §5 ruling) no longer sufficient alone: the live pipeline/stage confirmation and the preserved artifact are now ALSO required, never a substitute for the record itself', /\{showStartDispositionControl\(currentUnderContractRecord, preservedArtifactRecord, underContractStageConfirmed\) \? \(/.test(contractTsxNoComments), true);
@@ -184,9 +184,11 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   // ============================================================
   // Gate-review closure -- PR #85 live-Test proof: Under Contract
   // post-write confirmation/hydration repair. The fragile whole-object
-  // JSON.stringify equality is gone from handleCreateUnderContract
-  // specifically (the disposition-handoff handler above is untouched,
-  // deliberately -- Board #10 work, out of this repair's narrow scope).
+  // JSON.stringify equality is gone from handleCreateUnderContract.
+  // (The disposition-handoff handler's own copy of the same pattern is
+  // fixed separately, below -- it was originally left untouched as
+  // Board #10 work, but a follow-up ruling brought it into Board #9's
+  // scope since it is the handoff-to-disposition confirmation itself.)
   // ============================================================
   check(
     'handleCreateUnderContract no longer uses whole-object JSON.stringify equality to find the just-written readback',
@@ -204,12 +206,45 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     })(),
     true,
   );
+  // ============================================================
+  // Gate-review closure -- PR #85 preventive disposition-handoff
+  // readback repair. The Board #9 finish line includes the handoff-to-
+  // disposition confirmation itself, even though downstream disposition
+  // EXECUTION belongs to Board #10 -- so the same fragile whole-object
+  // JSON.stringify equality identified in handleStartDisposition is
+  // fixed here too, reusing the SAME narrow canonical-identity check
+  // (verifyHandoffMatchesUnderContract) this handler already trusted
+  // for its pre-write duplicate refusal.
+  // ============================================================
   check(
-    'the disposition-handoff handler (Board #10 handoff, out of this repair\'s scope) still uses its own prior JSON.stringify comparison, deliberately unchanged',
+    'handleStartDisposition no longer uses whole-object JSON.stringify equality to find the just-written readback',
     (() => {
       const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
-      return !!m && /JSON\.stringify\(r\) === JSON\.stringify\(candidate\)/.test(m[0]);
+      return !!m && !/JSON\.stringify\(r\) === JSON\.stringify\(candidate\)/.test(m[0]);
     })(),
+    true,
+  );
+  check(
+    'handleStartDisposition instead matches the fresh readback via verifyHandoffMatchesUnderContract -- the same canonical identity already used for its own pre-write duplicate refusal, never whole-object equality',
+    (() => {
+      const m = contractTsxNoComments.match(/async function handleStartDisposition\([\s\S]*?\n  \}/m);
+      return !!m && (m[0].match(/verifyHandoffMatchesUnderContract\(/g) || []).length === 2;
+    })(),
+    true,
+  );
+  check(
+    'a reload-hydration effect recognizes an already-durable currentDispositionHandoff and syncs dispositionWriteState to "already_recorded" WITHOUT requiring another write -- only from "idle", never overriding an in-flight or failed state',
+    /if \(dispositionWriteState\.kind !== "idle" \|\| !currentDispositionHandoff\) return;\s*\n\s*setDispositionWriteState\(\{ kind: "already_recorded", record: currentDispositionHandoff \}\);/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'currentDispositionHandoff is derived via verifyHandoffMatchesUnderContract against currentUnderContractRecord -- never merely "the latest handoff note", so a stale/superseded handoff is never mistaken for current',
+    /const currentDispositionHandoff: DispositionHandoffRecord \| null = useMemo\(\(\) => \{\s*\n\s*if \(screen\.state !== "ready" \|\| !documentVersion \|\| !currentUnderContractRecord\) return null;\s*\n\s*return existingDispositionHandoffs\.find\(\(h\) => verifyHandoffMatchesUnderContract\(/.test(contractTsxNoComments),
+    true,
+  );
+  check(
+    'Start Disposition\'s disabled expression is unchanged -- it already covers BOTH "success" (post-write) and "already_recorded" (now also reload-hydrated) states',
+    /disabled=\{\s*\n\s*dispositionWriteState\.kind === "success" \|\| dispositionWriteState\.kind === "already_recorded" \|\|\s*\n\s*!dispositionEligibility \|\| !dispositionEligibility\.eligible\s*\n\s*\}/.test(contractTsxNoComments),
     true,
   );
   check(

@@ -1847,6 +1847,21 @@ export default function ContractWorkspace() {
     return allDispositionHandoffsForOpportunity(notes, screen.opportunity.id);
   }, [screen, notes]);
 
+  /**
+   * Gate-review closure -- PR #85 preventive repair, same pattern as
+   * `currentUnderContractRecord`'s own reload-hydration. The durable,
+   * freshly-parsed handoff that is genuinely CURRENT for the CURRENT
+   * Under Contract evidence -- never merely "the latest handoff note
+   * that happens to exist" (a superseded/stale handoff for a prior
+   * version must never be mistaken for current).
+   */
+  const currentDispositionHandoff: DispositionHandoffRecord | null = useMemo(() => {
+    if (screen.state !== "ready" || !documentVersion || !currentUnderContractRecord) return null;
+    return existingDispositionHandoffs.find((h) => verifyHandoffMatchesUnderContract({
+      handoff: h, opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion, underContract: currentUnderContractRecord,
+    }).ok) ?? null;
+  }, [screen, documentVersion, currentUnderContractRecord, existingDispositionHandoffs]);
+
   const dispositionEligibility = useMemo(() => {
     if (screen.state !== "ready" || !documentVersion) return null;
     return evaluateDispositionHandoffEligibility({
@@ -1928,6 +1943,20 @@ export default function ContractWorkspace() {
     | { kind: "already_recorded"; record: DispositionHandoffRecord }
     | { kind: "failed"; message: string; writeMayHaveOccurred: boolean }
   >({ kind: "idle" });
+
+  /**
+   * Gate-review closure -- PR #85 preventive repair, same pattern as
+   * `underContractWriteState`'s own reload-hydration effect. On a page
+   * reload `dispositionWriteState` starts back at `{kind: "idle"}` even
+   * when a durable, current handoff already exists -- Start Disposition
+   * previously stayed enabled until clicked once more. Only ever
+   * transitions FROM "idle" -- never overrides an in-flight "busy" write
+   * or a "failed" result the operator still needs to see.
+   */
+  useEffect(() => {
+    if (dispositionWriteState.kind !== "idle" || !currentDispositionHandoff) return;
+    setDispositionWriteState({ kind: "already_recorded", record: currentDispositionHandoff });
+  }, [currentDispositionHandoff, dispositionWriteState.kind]);
 
   /**
    * THE ONLY write this section performs. On Brad's explicit click only:
@@ -2023,7 +2052,19 @@ export default function ContractWorkspace() {
     const parsedCandidates = freshNotes
       .map((n) => parseDispositionHandoffNote(n.body))
       .filter((r): r is DispositionHandoffRecord => r !== null);
-    const matchingReadback = parsedCandidates.find((r) => JSON.stringify(r) === JSON.stringify(candidate)) ?? null;
+    // Gate-review closure -- PR #85 preventive repair. The same fragile
+    // whole-object JSON.stringify equality proven to false-fail on the
+    // Under Contract readback (a live GHL round trip is not guaranteed
+    // byte-identical to an in-memory format/parse round trip) applied
+    // here too. Reuses the SAME narrow, canonical-identity check this
+    // handler already trusts for the PRE-write duplicate refusal above
+    // (`verifyHandoffMatchesUnderContract`) -- never provider/free-text
+    // fields GHL could reformat, exactly the opportunity/agreement/
+    // version/Under-Contract-verification identity that makes one
+    // handoff durably distinct from any other for this opportunity.
+    const matchingReadback = parsedCandidates.find((r) => verifyHandoffMatchesUnderContract({
+      handoff: r, opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion, underContract: freshUnderContract,
+    }).ok) ?? null;
     if (matchingReadback === null) {
       setDispositionWriteState({
         kind: "failed",
