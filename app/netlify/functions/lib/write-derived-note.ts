@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import { getConfig } from "../../../shared/ghl-config";
 import { currentContractContext, currentGeneratedArtifactFacts } from "./write-contract-context";
 import type { GhlBoundary } from "./ghl-write-boundary";
+import { requireContractProviderEvidenceReadiness } from "./contract-production-readiness";
 import { parseBradContractAuthorizationNote } from "../../../src/lib/contract-authorization-carriers";
 import { evaluateBradAuthorizationCurrency } from "../../../src/lib/contract-authorization-model";
 import { parseUnderContractNote, allUnderContractRecordsForOpportunity } from "../../../src/lib/contract-execution-carriers";
@@ -62,7 +63,7 @@ async function requireUnderContractStageConfirmed(boundary: GhlBoundary, opportu
   }
 }
 
-export async function validateDerivedNote(boundary: GhlBoundary, body: string) {
+export async function validateDerivedNote(boundary: GhlBoundary, body: string, operatorEmail: string) {
   const authorization = parseBradContractAuthorizationNote(body);
   const execution = parseUnderContractNote(body);
   const handoff = parseDispositionHandoffNote(body);
@@ -119,7 +120,7 @@ export async function validateDerivedNote(boundary: GhlBoundary, body: string) {
    * unscoped; only the uniqueness check is narrowed.
    */
   const providerOutcome = async (expectedDocumentId: string) => {
-    if (config.locationId !== getConfig("test").locationId || context.contact.id !== config.documentsContracts.approvedTestContactId) throw new Error("Contract provider evidence is Test-only");
+    requireContractProviderEvidenceReadiness({ config, contact: context.contact, opportunity: context.opportunity, operatorEmail });
     const response = await boundary.fetcher("https://services.leadconnectorhq.com/proposals/document?" + new URLSearchParams({locationId:config.locationId,limit:"21"}), {headers:{Authorization:"Bearer "+boundary.token,Version:"v3"}});
     // Gate-review closure -- the HTTP status is checked BEFORE any body
     // parsing/shape check below. A provider failure (401/403/5xx/...) is
@@ -203,6 +204,7 @@ export async function verifyUnderContractStageTransitionReady(
   opportunityId: string,
   agreementAt: string,
   version: import("../../../src/lib/board9-contract-model").ContractVersionIdentity,
+  operatorEmail: string,
 ) {
   const context = await currentContractContext(boundary, opportunityId);
   if (context.agreement.at !== agreementAt) throw new Error("Agreement has changed since this transition was requested");
@@ -226,7 +228,7 @@ export async function verifyUnderContractStageTransitionReady(
     .find((s): s is NonNullable<typeof s> => s !== null && s.opportunityId === opportunityId && s.attemptId === existing.acceptedSendAttemptId && s.status === "accepted");
   if (!acceptedSend || !acceptedSend.providerResponse?.documentId) throw new Error("Accepted send evidence required");
   const config = getConfig(process.env.IAOS_ENV);
-  if (config.locationId !== getConfig("test").locationId || context.contact.id !== config.documentsContracts.approvedTestContactId) throw new Error("Contract provider evidence is Test-only");
+  requireContractProviderEvidenceReadiness({ config, contact: context.contact, opportunity: context.opportunity, operatorEmail });
   const documentId = acceptedSend.providerResponse.documentId;
   const response = await boundary.fetcher(
     "https://services.leadconnectorhq.com/proposals/document?" + new URLSearchParams({ locationId: config.locationId, limit: "21" }),

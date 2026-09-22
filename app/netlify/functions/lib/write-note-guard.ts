@@ -21,7 +21,7 @@ import { fieldValue, type GhlBoundary } from "./ghl-write-boundary";
 import { getConfig } from "../../../shared/ghl-config";
 import { latestOutcomeNoteForOpportunity } from "../../../src/lib/seller-call-outcome";
 const parsers: ((body: string) => any)[] = [parseArvApprovalNote, parseOutcomeNote, parsePropertyIdentityConfirmationNote, parseTransactionAssumptionsNote, parseSellerPricePositionNote, parseReadinessHumanActionNote, parseReadinessDecisionInvalidationNote, parseContractReadyChecklistNote, parseNegotiationOverrideNote, parseBuyerEntityOverrideNote, parsePartySignerFactsNote, parsePropertyLegalDescriptionFactsNote, parseLeaseDisclosureFactsNote, parseEarnestMoneyOptionFactsNote, parseTitleSurveyFactsNote, parsePropertyConditionFactsNote, parseClosingPossessionFactsNote, parseSettlementExpenseFactsNote, parseRepresentationFactsNote, parseAddendaApplicabilityFactsNote, parseSellerEquitableInterestDisclosureNote, parseAttorneyManualFieldDispositionNote, parseSellerNoticeConfirmationFactsNote, parseBuyerBusinessConfigFactsNote, parseSellerSigningModelNote, parseBradContractAuthorizationNote, parseDispositionHandoffNote, parseExecutedTermsAttestationNote, parseContractLifecycleNote, parseUnderContractNote, parseContractProjectionSyncNote, parseContractSendNote, parseSignerMappingAttestationNote];
-export async function validateLedgerNote(boundary: GhlBoundary, contactId: string, body: string) {
+export async function validateLedgerNote(boundary: GhlBoundary, contactId: string, body: string, operatorEmail: string) {
   const record = parsers.map(parse => parse(body)).find(Boolean);
   if (!record) {
     if (/^IAOS (?:ARV|OFFER|CONTRACT|BRAD|SELLER|PROPERTY|TRANSACTION|READINESS|UNDER|DISPOSITION|EXECUTED|SIGNER|NEGOTIATION|BUYER|PARTY|LEASE|EARNEST|TITLE|CLOSING|SETTLEMENT|REPRESENTATION|ADDENDA|ATTORNEY)/.test(body)) throw new Error("Malformed or undeclared ledger note");
@@ -44,7 +44,7 @@ export async function validateLedgerNote(boundary: GhlBoundary, contactId: strin
       if (typeof value !== "number" || value <= 0 || outcome.snapshot.currentOffer !== value) throw new Error("Accepted price must match confirmed Current Offer");
     }
   }
-  await validateDerivedNote(boundary, body);
+  await validateDerivedNote(boundary, body, operatorEmail);
   const send = parseContractSendNote(body);
   if (send) {
     if (send.status === "in_progress") throw new Error("Send reservations require the dedicated server operation");

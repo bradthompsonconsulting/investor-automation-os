@@ -177,20 +177,59 @@ function event(overrides) {
   }
 
   // ============================================================
-  // 7. Test-location restriction remains intact -- confirmed both by the
-  // static guard's presence (this codebase's own established convention
-  // for endpoints whose LOCATION_ID/TEST_LOCATION_ID are resolved once at
-  // module load, e.g. ghl-contract-send-readback.ts, rather than
-  // per-request -- see that file's own test for the same pattern) and by
-  // this file's own successful request above only succeeding because this
-  // test process's IAOS_ENV='test' resolves to the SAME location as
-  // getConfig('test').
+  // 7. INV-98 Phase 1 -- the hardcoded Test-only guard is now the shared
+  // `contract-production-readiness.ts` policy. Confirmed both by the
+  // static guard's presence (source-wiring, this codebase's own
+  // established convention) and by this file's own successful request
+  // above only succeeding because this test process's IAOS_ENV='test'
+  // resolves to the SAME location as getConfig('test').
   // ============================================================
   const endpointSrc = fs.readFileSync(path.join(APP, 'netlify', 'functions', 'generate-contract-pdf.ts'), 'utf8');
-  check('the Test-location guard is present and returns 403 for a non-Test location', /LOCATION_ID !== TEST_LOCATION_ID\)\s*\{\s*return json\(403,/.test(endpointSrc), true);
-  check('the Test-location guard runs BEFORE any body parsing or GHL access (textually precedes the JSON.parse call)', endpointSrc.indexOf('LOCATION_ID !== TEST_LOCATION_ID') < endpointSrc.indexOf('JSON.parse(event.body'), true);
+  check('the shared environment-readiness guard is present and returns 403 for an unready environment', /!evaluateContractEnvironment\(CONFIG\)\.ok\)\s*\{\s*return json\(403,/.test(endpointSrc), true);
+  check('the environment-readiness guard runs BEFORE any body parsing or GHL access (textually precedes the JSON.parse call)', endpointSrc.indexOf('evaluateContractEnvironment(CONFIG)') < endpointSrc.indexOf('JSON.parse(event.body'), true);
   check('requireAppWriteOrigin is imported from the shared PR #78 helper, never reimplemented', /import \{ requireAppWriteOrigin \} from "\.\/lib\/app-write-origin"/.test(endpointSrc), true);
-  check('the Origin check textually precedes the Test-location check (auth -> Origin -> location -> body -> GHL, matching ghl-write.ts\'s own established order)', endpointSrc.indexOf('requireAppWriteOrigin(event)') < endpointSrc.indexOf('LOCATION_ID !== TEST_LOCATION_ID'), true);
+  check('the Origin check textually precedes the environment-readiness check (auth -> Origin -> environment -> body -> GHL, matching ghl-write.ts\'s own established order)', endpointSrc.indexOf('requireAppWriteOrigin(event)') < endpointSrc.indexOf('evaluateContractEnvironment(CONFIG)'), true);
+  check('the shared policy is imported from contract-production-readiness.ts, never reimplemented inline', /import \{ evaluateContractEnvironment, requireContractProviderEvidenceReadiness \} from "\.\/lib\/contract-production-readiness"/.test(endpointSrc), true);
+  check('the full context-aware readiness check runs after context fetch, before any PDF bytes are generated (textually precedes the generateCurrentContractPdf call)', endpointSrc.indexOf('requireContractProviderEvidenceReadiness(') < endpointSrc.indexOf('generateCurrentContractPdf('), true);
+
+  // ============================================================
+  // 8. Gate-review closure -- the authorized operator identity is obtained
+  // EXACTLY ONCE, threaded unchanged into the shared readiness policy, and
+  // never accepted from anywhere caller-controlled. Source-text proof
+  // (never a runtime behavioral proxy) because the property being proven is
+  // "how many times is this called / what literal value is passed", which a
+  // single successful request cannot distinguish from a version that calls
+  // requireAppWriter twice and discards the first result.
+  // ============================================================
+  const requireAppWriterCallSites = endpointSrc.match(/requireAppWriter\(event\)/g) || [];
+  check('requireAppWriter(event) is called exactly once in the endpoint source (no throwaway first call)', requireAppWriterCallSites.length, 1);
+  check('the single call site assigns directly to `operator` (operator = requireAppWriter(event);), never a discarded/renamed intermediate', /\boperator\s*=\s*requireAppWriter\(event\)/.test(endpointSrc), true);
+  check('the SAME `operator` binding (no reassignment anywhere in the file) is what is passed as operatorEmail into the shared readiness policy', /operatorEmail:\s*operator\b/.test(endpointSrc), true);
+  check('`operator` is never reassigned anywhere in the file after its one declaration (no second `operator =` or `operator:` binding)', (endpointSrc.match(/\boperator\s*=/g) || []).length, 1);
+
+  // No operator/email is ever read from the parsed request body -- the body
+  // schema is provably exactly one field, opportunityId, nothing else.
+  check('the request body schema accepts exactly one field, opportunityId (Object.keys(payload).length !== 1 check present)', /Object\.keys\(payload\)\.length !== 1/.test(endpointSrc), true);
+  check('the body schema explicitly names opportunityId as the sole accepted field', /typeof payload\.opportunityId !== "string"/.test(endpointSrc), true);
+  check('no operator/email/user field is ever read off the parsed `payload` object anywhere in the file', /payload\.(operator|email|user|operatorEmail|sub|actor)\b/i.test(endpointSrc), false);
+  check('no operator/email is ever read off the raw `event` object other than through requireAppWriter (no event.body/.headers email/operator extraction)', /event\.(headers|body)[^\n]*\b(email|operator)\b/i.test(endpointSrc), false);
+
+  // Authentication and exact-origin checks both textually precede body
+  // parsing, any GHL access, and PDF generation.
+  const idx = {
+    requireAppWriter: endpointSrc.indexOf('requireAppWriter(event)'),
+    requireAppWriteOrigin: endpointSrc.indexOf('requireAppWriteOrigin(event)'),
+    jsonParse: endpointSrc.indexOf('JSON.parse(event.body'),
+    ghlAccess: endpointSrc.indexOf('currentContractContext('),
+    pdfGeneration: endpointSrc.indexOf('generateCurrentContractPdf('),
+  };
+  check('requireAppWriter (authentication) textually precedes body parsing', idx.requireAppWriter < idx.jsonParse, true);
+  check('requireAppWriter (authentication) textually precedes any GHL access', idx.requireAppWriter < idx.ghlAccess, true);
+  check('requireAppWriter (authentication) textually precedes PDF generation', idx.requireAppWriter < idx.pdfGeneration, true);
+  check('requireAppWriteOrigin (exact-origin) textually precedes body parsing', idx.requireAppWriteOrigin < idx.jsonParse, true);
+  check('requireAppWriteOrigin (exact-origin) textually precedes any GHL access', idx.requireAppWriteOrigin < idx.ghlAccess, true);
+  check('requireAppWriteOrigin (exact-origin) textually precedes PDF generation', idx.requireAppWriteOrigin < idx.pdfGeneration, true);
+  check('authentication itself textually precedes the exact-origin check (auth -> Origin, matching this endpoint\'s own established order)', idx.requireAppWriter < idx.requireAppWriteOrigin, true);
 
   console.log('');
   console.log(checks + ' checks, ' + failures + ' failures.');
