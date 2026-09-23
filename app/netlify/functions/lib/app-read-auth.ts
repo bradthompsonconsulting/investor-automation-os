@@ -18,7 +18,6 @@
  * redeploy) is the only way to invalidate every outstanding read session.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { verifyGoogleIdToken } from "./google-identity";
 
 export const READ_AUDIENCE = "iaos-app-read";
 export const READ_SESSION_SECONDS = 8 * 60 * 60;

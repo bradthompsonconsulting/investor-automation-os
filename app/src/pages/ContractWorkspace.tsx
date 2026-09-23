@@ -1714,6 +1714,9 @@ export default function ContractWorkspace() {
     // a durable, freshly-parsed receipt (never local upload state) --
     // Create Under Contract can never fire without one already existing.
     if (screen.state !== "ready" || !fullVerificationResult || !fullVerificationResult.ok || !notes || !preservedArtifactRecord) return;
+    // READ-AUTH: a confirmed-but-unverified note stays locked until a reload
+    // re-reads it; a re-click would only produce a confusing refusal.
+    if (underContractWriteState.kind === "saved_unverified") return;
     setUnderContractWriteState({ kind: "busy" });
     const candidate = fullVerificationResult.value;
 
@@ -2157,6 +2160,7 @@ export default function ContractWorkspace() {
    */
   async function handleStartDisposition() {
     if (screen.state !== "ready" || !documentVersion || !notes) return;
+    if (dispositionWriteState.kind === "saved_unverified") return; // READ-AUTH: see handleCreateUnderContract
     setDispositionWriteState({ kind: "busy" });
 
     // Re-evaluate eligibility against the CURRENT notes, not a stale memo.
@@ -4058,7 +4062,7 @@ export default function ContractWorkspace() {
                         testId="contract-execution-create-under-contract-button"
                         onClick={handleCreateUnderContract}
                         busy={underContractWriteState.kind === "busy"}
-                        disabled={!preservedArtifactRecord}
+                        disabled={!preservedArtifactRecord || underContractWriteState.kind === "saved_unverified"}
                       >
                         Create Under Contract
                       </Btn>
@@ -4275,7 +4279,7 @@ export default function ContractWorkspace() {
                             testId="disposition-handoff-start-button"
                             onClick={handleStartDisposition}
                             busy={dispositionWriteState.kind === "busy"}
-                            disabled={!dispositionEligibility || !dispositionEligibility.eligible}
+                            disabled={!dispositionEligibility || !dispositionEligibility.eligible || dispositionWriteState.kind === "saved_unverified"}
                           >
                             Start Disposition
                           </Btn>
