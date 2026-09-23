@@ -17,6 +17,16 @@ export async function writeCommand(operation: string, targetId: string, args: un
   if (operation.startsWith("opportunity.") && outcome?.outcome === "indeterminate") return new Response(JSON.stringify(outcome), { status: 202, headers: { "Content-Type": "application/json" } });
   return response;
 }
+/**
+ * Forget the requestId held for an UNRESOLVED (indeterminate) write, so the
+ * next attempt is a new request rather than the server refusing it as a
+ * duplicate. Call ONLY after a fresh, independent GHL read has shown the
+ * earlier attempt did not take effect. Used by the Under Contract stage
+ * recovery path alone; every other write keeps its existing behavior.
+ */
+export function releasePendingWrite(operation: string, targetId: string, args: unknown): void {
+  pending.delete(JSON.stringify([operation,targetId,args]));
+}
 export async function confirmedCommand(operation: string, targetId: string, args: unknown): Promise<any> {
   const response = await writeCommand(operation, targetId, args);
   const result = await response.json();

@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect, useRef } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ArrowRight } from "lucide-react";
 import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
+import { STAGE_TRANSITION_UNCERTAIN_MESSAGE } from "../lib/contract-stage-transition-model";
 import { ReadUnavailableError } from "../lib/read-session";
 import { opportunitiesForContact, opportunityCandidates, selectOpportunity } from "../lib/underwriting/selectOpportunity";
 import {
@@ -1925,18 +1926,39 @@ export default function ContractWorkspace() {
     | { kind: "idle" }
     | { kind: "busy" }
     | { kind: "success"; alreadyInStage: boolean }
-    | { kind: "failed"; message: string }
+    /** Rejected before any GHL call (sign-in, origin, bad request): a retry is safe. */
+    | { kind: "refused"; message: string }
+    /** INV-98: the stage may or may not have changed. Transition stays locked
+     *  until a fresh, independent GHL read settles it -- never success, never
+     *  a blind retry. */
+    | { kind: "uncertain"; message: string }
+    | { kind: "rechecking" }
+    /** A fresh GHL read showed the opportunity is NOT in the stage. */
+    | { kind: "retry_allowed"; message: string }
   >({ kind: "idle" });
 
   async function handleTransitionUnderContractStage() {
     if (screen.state !== "ready" || !documentVersion) return;
+    if (stageTransitionState.kind === "uncertain" || stageTransitionState.kind === "rechecking") return;
     setStageTransitionState({ kind: "busy" });
     try {
       const result = await ghl.opportunities.transitionToUnderContractStage(screen.opportunity.id, screen.economics.agreementAt, documentVersion);
-      setStageTransitionState({ kind: "success", alreadyInStage: !!result.alreadyInStage });
-    } catch (e: any) {
-      setStageTransitionState({ kind: "failed", message: e?.message ?? "Stage transition failed unexpectedly" });
+      if (result.kind === "confirmed") setStageTransitionState({ kind: "success", alreadyInStage: result.alreadyInStage });
+      else setStageTransitionState(result);
+    } catch {
+      // Unexpected client failure after the request may have left: uncertain, never "failed".
+      setStageTransitionState({ kind: "uncertain", message: STAGE_TRANSITION_UNCERTAIN_MESSAGE });
     }
+  }
+
+  /** INV-98 -- a fresh, independent GHL READ that settles an uncertain transition. Never writes. */
+  async function handleRecheckUnderContractStage() {
+    if (screen.state !== "ready" || !documentVersion || stageTransitionState.kind !== "uncertain") return;
+    setStageTransitionState({ kind: "rechecking" });
+    const resolution = await ghl.opportunities.recheckUnderContractStage(screen.opportunity.id, screen.economics.agreementAt, documentVersion);
+    if (resolution === "in_target_stage") setStageTransitionState({ kind: "success", alreadyInStage: true });
+    else if (resolution === "not_in_target") setStageTransitionState({ kind: "retry_allowed", message: "A fresh GHL read shows this opportunity is NOT in the Under Contract stage. You may try the transition again." });
+    else setStageTransitionState({ kind: "uncertain", message: "The fresh GHL read did not succeed, so the stage is still unknown. " + STAGE_TRANSITION_UNCERTAIN_MESSAGE });
   }
 
   /**
@@ -4031,7 +4053,7 @@ export default function ContractWorkspace() {
                           testId="contract-execution-transition-under-contract-button"
                           onClick={handleTransitionUnderContractStage}
                           busy={stageTransitionState.kind === "busy"}
-                          disabled={stageTransitionState.kind === "success"}
+                          disabled={stageTransitionState.kind === "success" || stageTransitionState.kind === "uncertain" || stageTransitionState.kind === "rechecking"}
                         >
                           Transition GHL stage to Under Contract
                         </Btn>
@@ -4039,8 +4061,26 @@ export default function ContractWorkspace() {
                           <div data-testid="contract-execution-stage-transition-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
                             {stageTransitionState.alreadyInStage ? "Already in the Under Contract stage." : "Transitioned and confirmed by fresh readback -- pipeline and stage both verified exact."}
                           </div>
-                        ) : stageTransitionState.kind === "failed" ? (
-                          <div data-testid="contract-execution-stage-transition-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
+                        ) : stageTransitionState.kind === "refused" ? (
+                          <div data-testid="contract-execution-stage-transition-refused" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
+                            {stageTransitionState.message}
+                          </div>
+                        ) : stageTransitionState.kind === "uncertain" || stageTransitionState.kind === "rechecking" ? (
+                          <div data-testid="contract-execution-stage-transition-uncertain" style={{ fontSize: "12px", color: "#F59E0B", marginTop: "8px" }}>
+                            {stageTransitionState.kind === "uncertain" ? stageTransitionState.message : "Reading the opportunity from GHL..."}
+                            <div style={{ marginTop: "8px" }}>
+                              <Btn
+                                testId="contract-execution-stage-transition-recheck-button"
+                                onClick={handleRecheckUnderContractStage}
+                                busy={stageTransitionState.kind === "rechecking"}
+                                disabled={stageTransitionState.kind !== "uncertain"}
+                              >
+                                Read GHL again
+                              </Btn>
+                            </div>
+                          </div>
+                        ) : stageTransitionState.kind === "retry_allowed" ? (
+                          <div data-testid="contract-execution-stage-transition-retry-allowed" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "8px" }}>
                             {stageTransitionState.message}
                           </div>
                         ) : null}
