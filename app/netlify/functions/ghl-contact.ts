@@ -10,6 +10,7 @@
  */
 
 import { parseContact } from "./lib/contact-parse";
+import { ghlReadContained } from "./lib/ghl-read-containment";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 
@@ -23,6 +24,10 @@ function headers(token: string) {
 }
 
 export const handler = async (event: any) => {
+  // SECURITY CONTAINMENT: ghlReadContained() always returns a refusal, so no
+  // request reaches GHL below. See lib/ghl-read-containment.ts.
+  const contained = ghlReadContained();
+  if (contained) return contained;
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: CORS, body: "" };
   if (event.httpMethod !== "GET") return { statusCode: 405, headers: CORS, body: "Method Not Allowed" };
 

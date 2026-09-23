@@ -469,7 +469,10 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
 
 
   const proxy=require('../netlify/functions/ghl-proxy.ts').handler;
-  for(const method of ['POST','PUT','PATCH','DELETE'])await check('generic proxy refuses '+method,async()=>{const before=calls.length;assert.equal((await proxy({httpMethod:method,queryStringParameters:{path:`/contacts/${contact.id}`},body:'{}'})).statusCode,403);assert.equal(calls.length,before);});
+  // SECURITY CONTAINMENT: ghl-proxy refuses every request with 503 before
+  // any GHL call (lib/ghl-read-containment.ts; test-ghl-read-containment.cjs).
+  const CONTAINED=require('../netlify/functions/lib/ghl-read-containment.ts').GHL_READ_CONTAINMENT_MARKER;
+  for(const method of ['POST','PUT','PATCH','DELETE'])await check('generic proxy refuses '+method,async()=>{const before=calls.length;assert.equal((await proxy({httpMethod:method,queryStringParameters:{path:`/contacts/${contact.id}`},body:'{}'})).statusCode,503);assert.equal(calls.length,before);});
   // Encoding metadata alone never turns a bodyless GET into a write.
   for (const suffix of ['', '/notes']) {
     const pathname = '/contacts/' + contact.id + suffix;
@@ -483,9 +486,9 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
           if (body !== undefined) input.body = body;
           if (flag !== undefined) input.isBase64Encoded = flag;
           const result = await proxy(input);
-          assert.equal(result.statusCode, 200, result.body);
-          assert.deepEqual(calls.slice(before.calls),
-            [{pathname, method:'GET'}]);
+          assert.equal(result.statusCode, 503, result.body);
+          assert.equal(JSON.parse(result.body).by, CONTAINED);
+          assert.deepEqual(calls.slice(before.calls), []);
           assert.equal(writes, before.writes);
           assert.equal(blobCalls, before.blobCalls);
         });
@@ -495,8 +498,8 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
       await check('proxy refuses ' + suffix + ' ' + label, async () => {
         const before = {calls:calls.length, writes, blobCalls};
         const result = await proxy({...base, ...extra});
-        assert.equal(result.statusCode, 403, result.body);
-        assert.equal(JSON.parse(result.body).by, 'iaos-proxy-allowlist');
+        assert.equal(result.statusCode, 503, result.body);
+        assert.equal(JSON.parse(result.body).by, CONTAINED);
         assert.deepEqual({calls:calls.length, writes, blobCalls}, before);
       });
     }
@@ -528,7 +531,7 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
       const before = {calls:calls.length, writes, blobCalls};
       const result = await proxy({httpMethod:'GET', body:'',
         isBase64Encoded:true, queryStringParameters:{path:pathname}});
-      assert.equal(result.statusCode, 403);
+      assert.equal(result.statusCode, 503);
       assert.deepEqual({calls:calls.length, writes, blobCalls}, before);
     });
   }
