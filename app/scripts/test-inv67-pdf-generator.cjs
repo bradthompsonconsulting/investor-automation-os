@@ -17,8 +17,9 @@
 // Offline, deterministic, no network, no GHL, no Production data.
 
 const fs = require('fs');
+const zlib = require('zlib');
 const { execFileSync } = require('child_process');
-const { PDFDocument, StandardFonts } = require('pdf-lib');
+const { PDFDocument, PDFName, StandardFonts } = require('pdf-lib');
 const { buildProjectionEntries } = require('./lib/inv67-projection-fixture.cjs');
 const {
   GENERATOR_VERSION,
@@ -29,8 +30,52 @@ const {
   PINNED_SOURCE_SHA256,
   EXPECTED_SOURCE_PAGE_COUNT,
   MANIFEST_VERSION,
+  SOURCE_PDF_PATH,
   sha256Hex,
 } = require('./lib/inv67-pdf-render-core.cjs');
+
+// Gate S -- exact centering formula the generator itself uses, duplicated
+// here ONLY as the independent expected value a test computes and checks
+// against, never imported from the generator (an imported constant would
+// let the generator and its own test silently drift together).
+const GATE_S_SCALE = 0.95;
+const GATE_S_CENTER_FACTOR = 0.025;
+
+/**
+ * Decodes one content-stream object's raw (FlateDecode-compressed) bytes
+ * via Node's own zlib -- never pdf-lib's internal stream-decoding
+ * machinery, which is undocumented/unstable to reach into from outside
+ * the library. Ground truth: read directly with the same tool the PDF
+ * spec itself defines for this filter, independent of anything pdf-lib
+ * or this generator claims about its own output.
+ */
+function decodePageContentStreams(page) {
+  const contentsObj = page.node.Contents();
+  const refs = contentsObj.array ? contentsObj.array : [contentsObj];
+  return refs
+    .map((ref) => {
+      const obj = page.node.context.lookup(ref);
+      const raw = Buffer.from(obj.getContents());
+      try {
+        return zlib.inflateSync(raw).toString('latin1');
+      } catch {
+        return raw.toString('latin1');
+      }
+    })
+    .join('\n');
+}
+
+/** The one embedded Form XObject a Gate S output page carries -- its Subtype (must be /Form, never /Image, structural proof of no rasterization) and its BBox (must equal the full original page, structural proof of no cropping). */
+function embeddedFormXObjectInfo(page) {
+  const resources = page.node.Resources();
+  const xobjects = resources.lookup(PDFName.of('XObject'));
+  const keys = xobjects.keys();
+  if (keys.length !== 1) throw new Error(`Expected exactly one XObject on this page, found ${keys.length}`);
+  const xobj = page.node.context.lookup(xobjects.get(keys[0]));
+  const subtype = xobj.dict.get(PDFName.of('Subtype')).toString();
+  const bbox = xobj.dict.get(PDFName.of('BBox')).asArray().map((n) => n.asNumber());
+  return { subtype, bbox };
+}
 
 let failures = 0;
 function check(label, condition) {
@@ -128,6 +173,34 @@ async function main() {
   // facts (not the shipped fixture's) are actually present in it.
   const outputDoc = await PDFDocument.load(outputBytes);
   check('generated output has the expected page count', outputDoc.getPageCount() === EXPECTED_SOURCE_PAGE_COUNT);
+
+  // 3a. Gate S -- per-page geometry, read from the PINNED SOURCE document
+  // itself (never a global assumption), and checked against ground truth
+  // read directly from the output's own raw PDF bytes (zlib-decoded content
+  // streams, raw XObject dict) -- never inferred, never trusted from the
+  // generator's own claims about itself.
+  const sourceDoc = await PDFDocument.load(fs.readFileSync(SOURCE_PDF_PATH));
+  check('source document itself is exactly 12 pages (unaffected by Gate S)', sourceDoc.getPageCount() === EXPECTED_SOURCE_PAGE_COUNT);
+  for (let i = 0; i < EXPECTED_SOURCE_PAGE_COUNT; i++) {
+    const sourcePage = sourceDoc.getPage(i);
+    const outputPage = outputDoc.getPage(i);
+    const sourceSize = sourcePage.getSize();
+    const outputSize = outputPage.getSize();
+    check(`page ${i + 1}: final page dimensions match that page's own original source dimensions exactly`, outputSize.width === sourceSize.width && outputSize.height === sourceSize.height);
+
+    const { subtype, bbox } = embeddedFormXObjectInfo(outputPage);
+    check(`page ${i + 1}: the embedded page is a vector Form XObject, never an Image (structural proof of no rasterization)`, subtype === '/Form');
+    check(`page ${i + 1}: the embedded Form's BBox equals the full original page (0,0,${sourceSize.width},${sourceSize.height}) -- proves no cropping bounding box was applied`, bbox[0] === 0 && bbox[1] === 0 && bbox[2] === sourceSize.width && bbox[3] === sourceSize.height);
+
+    const contentText = decodePageContentStreams(outputPage);
+    const expectedXOffset = sourceSize.width * GATE_S_CENTER_FACTOR;
+    const expectedYOffset = sourceSize.height * GATE_S_CENTER_FACTOR;
+    const expectedTranslateOp = `1 0 0 1 ${expectedXOffset} ${expectedYOffset} cm`;
+    const expectedScaleOp = `${GATE_S_SCALE} 0 0 ${GATE_S_SCALE} 0 0 cm`;
+    check(`page ${i + 1}: content stream contains the exact expected centering translate (${expectedTranslateOp})`, contentText.includes(expectedTranslateOp));
+    check(`page ${i + 1}: content stream contains the exact expected 95% scale (${expectedScaleOp})`, contentText.includes(expectedScaleOp));
+  }
+
   const extracted = pdftotextAllPages(outputBytes);
   check('generated output contains the distinct scenario\'s property address', extracted.includes(LIVE_ADDRESS));
   // The printed form's own "$" precedes the blank (blankAfterDollarSign) --

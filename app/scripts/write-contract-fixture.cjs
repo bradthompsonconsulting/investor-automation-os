@@ -33,7 +33,12 @@ exports.contractFixture = function(load, opportunityId, AGREEMENT_AT = '2026-09-
   const artifact = {
     artifactSha256: 'a'.repeat(64),
     sourcePdfSha256: '3f458518e9e01fc9c84cab420dcd0ce9793113c4b356ed5caf7a2fb1bdef2ca5',
-    generatorVersion: 'inv67-pdf-generator-v1',
+    // Gate S -- bumped alongside inv67-pdf-generator.cjs's own GENERATOR_VERSION.
+    // This fixture's own currency as a "currently authorized" baseline
+    // depends on this value matching the real generator's live constant --
+    // see test-contract-authorization-model.cjs's own GENERATOR_CHANGED
+    // case for the deliberate staleness this fixture must NOT exhibit.
+    generatorVersion: 'inv67-pdf-generator-v2',
     manifestVersion: 'INV67_TEMPLATE_PLACEMENT_MANIFEST_V1',
   };
   const auth=load('contract-authorization-model').buildAuthorizationRecordArgs({opportunityId,at:AGREEMENT_AT,preview,currentVersion:version,artifact});
