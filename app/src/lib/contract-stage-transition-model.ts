@@ -118,3 +118,90 @@ export function evaluateUnderContractStageTransitionEligibility(args: {
 export function isAlreadyInTargetStage(opportunity: OpportunityStageSnapshot, targetStageId: string): boolean {
   return opportunity.pipelineStageId === targetStageId;
 }
+
+/**
+ * SECURITY / INV-98 -- what the browser may SAY about one Under Contract
+ * stage-transition request. The server owns the write, its exact
+ * pipeline/stage readback and its already-in-stage idempotence; this only
+ * classifies the response it got back.
+ *
+ *  - confirmed: HTTP 200, `confirmed === true`, AND the server's own readback
+ *    shows THIS opportunity in the expected pipeline and target stage. All
+ *    three, or it is not confirmed.
+ *  - refused:   rejected before any GHL call (bad request, sign-in, origin,
+ *    method) -- nothing was sent to GHL, so a retry is safe.
+ *  - uncertain: everything else -- 202 indeterminate, a missing or false
+ *    `confirmed`, a missing or mismatched readback, 409, 5xx, a network
+ *    failure. The stage may or may not have changed. Never success, never
+ *    a retry until a fresh, independent GHL read settles it.
+ */
+export type StageTransitionResult =
+  | { kind: "confirmed"; alreadyInStage: boolean }
+  | { kind: "refused"; message: string }
+  | { kind: "uncertain"; message: string };
+
+export const STAGE_TRANSITION_UNCERTAIN_MESSAGE =
+  "The Under Contract stage change was NOT confirmed -- it may or may not have happened in GHL. Do not retry. Get a fresh, independent read of this opportunity from GHL before any further action.";
+
+/** Statuses ghl-write returns before it dispatches anything to GHL. */
+const REFUSED_BEFORE_DISPATCH = new Set([400, 401, 403, 405]);
+
+export function classifyStageTransitionResponse(args: {
+  status: number;
+  body: unknown;
+  opportunityId: string;
+  expectedPipelineId: string;
+  targetStageId: string;
+}): StageTransitionResult {
+  const body = (args.body ?? null) as { confirmed?: unknown; alreadyInStage?: unknown; error?: unknown; readback?: { id?: unknown; pipelineId?: unknown; pipelineStageId?: unknown } } | null;
+  const readback = body?.readback;
+  if (
+    args.status === 200 && body?.confirmed === true && readback &&
+    readback.id === args.opportunityId &&
+    readback.pipelineId === args.expectedPipelineId &&
+    readback.pipelineStageId === args.targetStageId
+  ) {
+    return { kind: "confirmed", alreadyInStage: body.alreadyInStage === true };
+  }
+  if (REFUSED_BEFORE_DISPATCH.has(args.status)) {
+    return { kind: "refused", message: typeof body?.error === "string" ? body.error : `Stage transition refused before any GHL call (HTTP ${args.status}).` };
+  }
+  return { kind: "uncertain", message: STAGE_TRANSITION_UNCERTAIN_MESSAGE };
+}
+
+/**
+ * What a FRESH, independent GHL read OBSERVES about an opportunity after an
+ * uncertain transition. It is an observation of GHL's current state, never a
+ * verdict on the original request:
+ *  - observed_in_target_stage: the read shows the expected pipeline AND the
+ *    Under Contract stage. It does not prove the original request succeeded.
+ *  - observed_not_in_target:   the read shows it elsewhere. That does NOT prove
+ *    the original request failed or has finished -- it may still be in
+ *    flight -- so the result stays uncertain and no retry may be offered.
+ *  - read_failed:              no usable read; nothing is known.
+ */
+export type FreshStageReadResolution = "observed_in_target_stage" | "observed_not_in_target" | "read_failed";
+
+export const STAGE_OBSERVED_IN_TARGET_MESSAGE =
+  "A fresh GHL read shows this opportunity is now in the Under Contract stage. That is what GHL shows now; it does not confirm the earlier request itself succeeded.";
+export const STAGE_OBSERVED_NOT_IN_TARGET_MESSAGE =
+  "A fresh GHL read shows this opportunity is still NOT in the Under Contract stage. That does not prove the earlier request failed or has finished -- it may still be in progress. Do not retry until the outcome is authoritatively resolved.";
+export const STAGE_READ_FAILED_MESSAGE =
+  "The fresh GHL read did not succeed, so the stage is still unknown. Do not retry until the outcome is authoritatively resolved.";
+
+export function resolveUncertainStageTransition(args: {
+  fresh: unknown;
+  opportunityId: string;
+  expectedPipelineId: string;
+  targetStageId: string;
+}): FreshStageReadResolution {
+  const raw = args.fresh as { opportunity?: unknown } | null | undefined;
+  const opp = (raw && typeof raw === "object" && "opportunity" in raw ? raw.opportunity : raw) as { id?: unknown; pipelineId?: unknown; pipelineStageId?: unknown } | null | undefined;
+  if (!opp || typeof opp !== "object" || opp.id !== args.opportunityId ||
+      typeof opp.pipelineId !== "string" || typeof opp.pipelineStageId !== "string") {
+    return "read_failed";
+  }
+  return opp.pipelineId === args.expectedPipelineId && opp.pipelineStageId === args.targetStageId
+    ? "observed_in_target_stage"
+    : "observed_not_in_target";
+}

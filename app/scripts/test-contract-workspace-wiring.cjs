@@ -406,7 +406,7 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   );
   check(
     'the Transition button remains disabled once hydrated to "success" -- the SAME pre-existing disabled expression (stageTransitionState.kind === "success"), not a new/separate condition',
-    /testId="contract-execution-transition-under-contract-button"[\s\S]{0,200}disabled=\{stageTransitionState\.kind === "success"\}/.test(contractTsxNoComments),
+    /testId="contract-execution-transition-under-contract-button"[\s\S]{0,200}disabled=\{stageTransitionState\.kind === "success" \|\| stageTransitionState\.kind === "uncertain" \|\| stageTransitionState\.kind === "rechecking" \|\| stageTransitionState\.kind === "observed_in_stage"\}/.test(contractTsxNoComments),
     true,
   );
   check(
@@ -1336,7 +1336,8 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   );
   check(
     'ghl.ts\'s transitionToUnderContractStage wrapper sends EXACTLY { agreementAt, version } as the operation args -- no pipelineId/stageId field in the request body the browser constructs',
-    /confirmedCommand\("opportunity\.underContractStage", opportunityId, \{ agreementAt, version \}\)/.test(ghlTsxNoComments),
+    /const UNDER_CONTRACT_STAGE_OPERATION = "opportunity\.underContractStage";/.test(ghlTsxNoComments) &&
+      /writeCommand\(UNDER_CONTRACT_STAGE_OPERATION, opportunityId, \{ agreementAt, version \}\)/.test(ghlTsxNoComments),
     true,
   );
   check(

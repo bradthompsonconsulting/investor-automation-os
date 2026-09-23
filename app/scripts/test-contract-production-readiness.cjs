@@ -293,7 +293,7 @@ function enabledProductionConfig(overrides = {}) {
 {
   const ghlWriteSrc = fs.readFileSync(path.join(APP, 'netlify', 'functions', 'ghl-write.ts'), 'utf8');
   check('the opportunity_stage dispatch still names config.stages.sellerClosedWon as a forbidden target, unconditionally', /forbiddenStageIds = \[config\.stages\.sellerClosedWon\]/.test(ghlWriteSrc), true);
-  check('the forbidden-stage list is passed to transitionOpportunityStage on every call (this phase never touched that call site)', /boundary\.transitionOpportunityStage\(targetId, config\.pipelines\.sellerLeads, targetStageId, forbiddenStageIds\)/.test(ghlWriteSrc), true);
+  check('the forbidden-stage list is passed to transitionOpportunityStage on every call (this phase never touched that call site)', /boundary\.transitionOpportunityStage\(targetId, config\.pipelines\.sellerLeads, targetStageId, forbiddenStageIds, \{\s*beforePut: \(\) => claimStageTransition\(targetId, requestId, operator\),\s*afterConfirmed: \(\) => clearStageTransition\(targetId\),\s*\}\)/.test(ghlWriteSrc), true);
 }
 
 // ============================================================

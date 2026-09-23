@@ -1,5 +1,5 @@
 import { writeCommand, confirmedCommand } from "./write-command";
-import { appWriteFetch } from "./app-write-session";
+import { appWriteFetch, AppWriteSignInRequired } from "./app-write-session";
 import { isReadAuthRefusal, readFetch, ReadUnavailableError } from "./read-session";
 /**
  * IAOS GHL Service Module — single entry point for all GHL data access.
@@ -23,6 +23,10 @@ import { getRuntimeConfig, CURRENT_OFFER_NOT_PROVISIONED } from "../../shared/gh
    under lib/underwriting imports this module. */
 import { ASSIGNMENT_MODE_OPTIONS } from "./underwriting/resolver-types";
 import { type ContractVersionIdentity } from "./board9-contract-model";
+import {
+  classifyStageTransitionResponse, resolveUncertainStageTransition, STAGE_TRANSITION_UNCERTAIN_MESSAGE,
+  type FreshStageReadResolution, type StageTransitionResult,
+} from "./contract-stage-transition-model";
 
 // PB-D51 — location id and every field id below resolve from the shared config,
 // once at module scope. Values are unchanged; only their source moved.
@@ -533,6 +537,51 @@ async function request<T = unknown>(
  *    readback -- is uncertain: nothing is claimed saved, and the caller gets a
  *    ReadUnavailableError telling Brad to sign in, refresh and inspect.
  */
+/** The ONE Under Contract stage operation. Named once; never parameterized over a stage. */
+const UNDER_CONTRACT_STAGE_OPERATION = "opportunity.underContractStage";
+
+/**
+ * INV-98 -- one Under Contract stage-transition request, classified.
+ *
+ * Deliberately NOT confirmedCommand: that helper treats writeCommand's 202
+ * "indeterminate" response, and any 2xx body without `confirmed: false`, as
+ * success. For this write only an explicit, exact confirmation counts
+ * (classifyStageTransitionResponse). Anything uncertain -- including a
+ * network failure after the request may have left -- is returned as
+ * "uncertain", never thrown and never shown as success. The pending
+ * requestId is kept, so the server refuses a blind re-send as a duplicate.
+ */
+async function transitionUnderContractStage(opportunityId: string, agreementAt: string, version: ContractVersionIdentity): Promise<StageTransitionResult> {
+  let res: Response;
+  try {
+    res = await writeCommand(UNDER_CONTRACT_STAGE_OPERATION, opportunityId, { agreementAt, version });
+  } catch (e) {
+    if (e instanceof AppWriteSignInRequired) return { kind: "refused", message: e.message };
+    return { kind: "uncertain", message: STAGE_TRANSITION_UNCERTAIN_MESSAGE };
+  }
+  const body = await res.json().catch(() => null);
+  return classifyStageTransitionResponse({
+    status: res.status, body, opportunityId,
+    expectedPipelineId: CONFIG.pipelines.sellerLeads, targetStageId: CONFIG.stages.underContract,
+  });
+}
+
+/**
+ * INV-98 -- a FRESH, independent GHL read after an uncertain transition (a
+ * read, never a write). It reports what GHL shows now and settles nothing
+ * about the original request: the held requestId is NEVER released here, so
+ * any re-send is still refused by the server as a duplicate.
+ */
+async function recheckUnderContractStage(opportunityId: string, agreementAt: string, version: ContractVersionIdentity): Promise<FreshStageReadResolution> {
+  let fresh: unknown;
+  try { fresh = await request<any>(`/opportunities/${opportunityId}`); }
+  catch { return "read_failed"; }
+  return resolveUncertainStageTransition({
+    fresh, opportunityId,
+    expectedPipelineId: CONFIG.pipelines.sellerLeads, targetStageId: CONFIG.stages.underContract,
+  });
+}
+
 async function readbackOpportunity(label: string, opportunityId: string, putRes: Response): Promise<any> {
   const readRes = await readFetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
   if (readRes.ok) {
@@ -816,7 +865,10 @@ export const ghl = {
      * artifact from fresh evidence before ever attempting the write.
      */
     transitionToUnderContractStage: (opportunityId: string, agreementAt: string, version: ContractVersionIdentity) =>
-      confirmedCommand("opportunity.underContractStage", opportunityId, { agreementAt, version }),
+      transitionUnderContractStage(opportunityId, agreementAt, version),
+    /** Fresh, independent GHL read that settles an uncertain transition. Never writes. */
+    recheckUnderContractStage: (opportunityId: string, agreementAt: string, version: ContractVersionIdentity) =>
+      recheckUnderContractStage(opportunityId, agreementAt, version),
 
     /**
      * Board #5 §4B — the Opportunity Asking Price setter. ONE FIELD, NAMED.

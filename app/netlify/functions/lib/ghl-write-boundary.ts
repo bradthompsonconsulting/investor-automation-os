@@ -53,7 +53,14 @@ export class GhlBoundary {
    * `targetStageId`, this returns success with `alreadyInStage: true` and
    * performs NO write -- never a redundant PUT.
    */
-  async transitionOpportunityStage(opportunityId: string, expectedPipelineId: string, targetStageId: string, forbiddenStageIds: readonly string[]) {
+  async transitionOpportunityStage(
+    opportunityId: string, expectedPipelineId: string, targetStageId: string, forbiddenStageIds: readonly string[],
+    // INV-98: beforePut runs after every pre-write refusal and the
+    // already-in-stage check, immediately before the PUT; afterConfirmed runs
+    // only after the exact pipeline/stage readback. Anything thrown in between
+    // (or an interrupted function) skips afterConfirmed.
+    hooks: { beforePut?: () => Promise<void>; afterConfirmed?: () => Promise<void> } = {},
+  ) {
     if (forbiddenStageIds.includes(targetStageId)) throw new Error("Refusing to transition to a forbidden stage");
     if (!targetStageId || targetStageId === UNDER_CONTRACT_STAGE_NOT_PROVISIONED) throw new Error("Target stage is not provisioned for this environment");
     const before = await this.opportunity(opportunityId);
@@ -61,6 +68,7 @@ export class GhlBoundary {
     if (before.pipelineStageId === targetStageId) {
       return { response: null as unknown, readback: before, alreadyInStage: true as const };
     }
+    await hooks.beforePut?.();
     let response: any;
     try { response = await this.call(`/opportunities/${opportunityId}`, "PUT", { pipelineStageId: targetStageId }); }
     catch { throw new WriteUncertain("Stage transition was not confirmed; independently read back before retrying"); }
@@ -70,6 +78,7 @@ export class GhlBoundary {
     if (readback.pipelineId !== expectedPipelineId || readback.pipelineStageId !== targetStageId) {
       throw new WriteUncertain("Stage transition readback does not confirm the exact expected pipeline/stage");
     }
+    await hooks.afterConfirmed?.();
     return { response, readback, alreadyInStage: false as const };
   }
   async note(id: string, body: string) {
