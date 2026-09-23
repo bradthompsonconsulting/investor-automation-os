@@ -37,9 +37,12 @@ process.env.GHL_PRIVATE_API_KEY = 'offline-fixture';
 process.env.GHL_API_TOKEN = 'offline-fixture';
 
 const load = (name) => require('../src/lib/' + name + '.ts');
-const config = require('../shared/ghl-config.ts').getConfig('test');
+const ghlConfigModule = require('../shared/ghl-config.ts');
+const config = ghlConfigModule.getConfig('test');
 const auth = require('../netlify/functions/lib/app-write-auth.ts');
 const { handler } = require('../netlify/functions/generate-contract-pdf.ts');
+const { configuredBoundary } = require('../netlify/functions/lib/ghl-write-boundary.ts');
+const { currentContractContext, currentGeneratedArtifactFacts } = require('../netlify/functions/lib/write-contract-context.ts');
 
 let checks = 0, failures = 0;
 function check(name, actual, expected) {
@@ -230,6 +233,139 @@ function event(overrides) {
   check('requireAppWriteOrigin (exact-origin) textually precedes any GHL access', idx.requireAppWriteOrigin < idx.ghlAccess, true);
   check('requireAppWriteOrigin (exact-origin) textually precedes PDF generation', idx.requireAppWriteOrigin < idx.pdfGeneration, true);
   check('authentication itself textually precedes the exact-origin check (auth -> Origin, matching this endpoint\'s own established order)', idx.requireAppWriter < idx.requireAppWriteOrigin, true);
+
+  // ============================================================
+  // 9. INV-98 B1 -- seller-count canonical-gate fix. write-contract-context.ts
+  // now computes sellerReadiness via evaluateSellerSigningCanonicalReadiness
+  // (gates 1-13, the seller MODEL itself) instead of
+  // evaluateSellerSigningPreWriteReadiness (which also enforced gate 14,
+  // "is the Seller Count GHL transport field provisioned"). Production
+  // carries contractSellerCountField as CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED
+  // permanently (that field is retired as a GHL write target -- see the
+  // INV-98 B1 ruling); this section proves PDF generation and current-
+  // artifact regeneration are no longer blocked by that sentinel, while
+  // every genuine canonical defect (cardinality, capacity, identity,
+  // printed-party mismatch) still blocks exactly as before.
+  //
+  // Every temporary mutation below (contractSellerCountField, notes,
+  // contact) is restored in its own finally block, with an explicit
+  // post-restoration assertion so a failed restore cannot silently
+  // contaminate a later section.
+  // ============================================================
+  {
+    const originalSellerCountFieldId = config.contractSellerCountField;
+    const SENTINEL = ghlConfigModule.CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED;
+    const originalNotes = [...notes];
+    const originalContact = { firstName: contact.firstName, lastName: contact.lastName, email: contact.email };
+    const C = load('seller-contract-facts-carriers');
+    const AGREEMENT_AT = '2026-09-12T00:00:00.000Z';
+
+    function resetNotes() { notes.length = 0; notes.push(...originalNotes); }
+    function resetContact() { contact.firstName = originalContact.firstName; contact.lastName = originalContact.lastName; contact.email = originalContact.email; }
+
+    config.contractSellerCountField = SENTINEL;
+    try {
+      // 9.1 -- the real PDF endpoint succeeds for otherwise-valid canonical
+      // facts despite the sentinel, and returns genuine generated-PDF evidence.
+      {
+        const res = await handler(event());
+        check('with contractSellerCountField sentinel-filled, the PDF endpoint still succeeds (200)', res.statusCode, 200);
+        const body = JSON.parse(res.body);
+        check('  -- the success response still carries real generator evidence under the sentinel (not a placeholder)', /^[0-9a-f]{64}$/.test(body.evidence.outputSha256), true);
+      }
+
+      // 9.2 -- currentGeneratedArtifactFacts, the exact function write-derived-note.ts's
+      // authorization-note validation branch calls, is exercised DIRECTLY
+      // (never only transitively through the PDF endpoint above) and
+      // confirmed to succeed and produce the facts authorization requires.
+      {
+        const boundary = configuredBoundary();
+        const context = await currentContractContext(boundary, opportunity.id);
+        const facts = await currentGeneratedArtifactFacts(context);
+        check(
+          'currentGeneratedArtifactFacts succeeds directly under the sentinel and produces real artifact/source/generator/manifest facts',
+          /^[0-9a-f]{64}$/.test(facts.artifactSha256) &&
+          /^[0-9a-f]{64}$/.test(facts.sourcePdfSha256) &&
+          typeof facts.generatorVersion === 'string' && facts.generatorVersion.length > 0 &&
+          typeof facts.manifestVersion === 'string' && facts.manifestVersion.length > 0,
+          true,
+        );
+      }
+
+      // 9.3 -- canonical defects still block, sentinel notwithstanding.
+      // (a) unresolved cardinality -- no SellerSigningModel note at all.
+      {
+        notes.length = 0;
+        notes.push(...originalNotes.slice(0, -2), originalNotes[originalNotes.length - 1]);
+        try {
+          const res = await handler(event());
+          check('unresolved seller cardinality (no SellerSigningModel note) still blocks (409) even with the sentinel present', res.statusCode, 409);
+        } finally { resetNotes(); }
+      }
+      check('  -- notes restored to their original count after the cardinality case', notes.length, originalNotes.length);
+
+      // (b) unresolved/invalid signing capacity.
+      {
+        const badModelNotes = [...originalNotes];
+        badModelNotes[badModelNotes.length - 2] = {
+          body: C.formatSellerSigningModelNote({ opportunityId: opportunity.id, at: AGREEMENT_AT, operator: 'brad', model: { kind: 'one_seller', seller1Capacity: 'unresolved' } }),
+        };
+        notes.length = 0;
+        notes.push(...badModelNotes);
+        try {
+          const res = await handler(event());
+          check('unresolved Seller 1 signing capacity still blocks (409) even with the sentinel present', res.statusCode, 409);
+        } finally { resetNotes(); }
+      }
+      check('  -- notes restored to their original count after the capacity case', notes.length, originalNotes.length);
+
+      // (c) unresolved Seller 1 identity -- blank contact email.
+      {
+        contact.email = '';
+        try {
+          const res = await handler(event());
+          check('unresolved Seller 1 identity (blank contact email) still blocks (409) even with the sentinel present', res.statusCode, 409);
+        } finally { resetContact(); }
+      }
+      check('  -- contact email restored after the identity case', contact.email, originalContact.email);
+
+      // (d) printed-party mismatch -- Seller 1's resolved name disagrees
+      // with the printed contract's own Seller name.
+      {
+        contact.firstName = 'Robert';
+        contact.lastName = 'WrongName';
+        try {
+          const res = await handler(event());
+          check('printed-party mismatch (Seller 1 name disagrees with the printed contract name) still blocks (409) even with the sentinel present', res.statusCode, 409);
+        } finally { resetContact(); }
+      }
+      check('  -- contact name restored after the printed-party-mismatch case', contact.firstName + ' ' + contact.lastName, originalContact.firstName + ' ' + originalContact.lastName);
+    } finally {
+      config.contractSellerCountField = originalSellerCountFieldId;
+    }
+    check('contractSellerCountField restored to its original Test value after the sentinel section', config.contractSellerCountField, originalSellerCountFieldId);
+
+    // Final sanity: the baseline success path (section 5/6 above) still
+    // works identically after every mutation in this section has been
+    // restored -- proves nothing here leaked into later/earlier state.
+    {
+      const res = await handler(event());
+      check('the baseline request still succeeds (200) after every temporary mutation in this section has been restored', res.statusCode, 200);
+    }
+  }
+
+  // ============================================================
+  // 9.4 -- wiring regression: write-contract-context.ts computes
+  // sellerReadiness via evaluateSellerSigningCanonicalReadiness, never via
+  // evaluateSellerSigningPreWriteReadiness (which also enforced the now-
+  // retired Seller Count transport-field gate).
+  // ============================================================
+  {
+    const wcCtxSrc = fs.readFileSync(path.join(APP, 'netlify', 'functions', 'lib', 'write-contract-context.ts'), 'utf8');
+    check('write-contract-context.ts imports evaluateSellerSigningCanonicalReadiness', /evaluateSellerSigningCanonicalReadiness/.test(wcCtxSrc), true);
+    check('write-contract-context.ts no longer imports or references evaluateSellerSigningPreWriteReadiness anywhere', /evaluateSellerSigningPreWriteReadiness/.test(wcCtxSrc), false);
+    check('the sellerReadiness assignment itself calls evaluateSellerSigningCanonicalReadiness', /const sellerReadiness = evaluateSellerSigningCanonicalReadiness\(\{/.test(wcCtxSrc), true);
+  }
 
   console.log('');
   console.log(checks + ' checks, ' + failures + ' failures.');

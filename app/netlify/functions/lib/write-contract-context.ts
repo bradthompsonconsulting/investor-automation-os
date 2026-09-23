@@ -6,7 +6,7 @@ import { computeSellerContractFactsReport } from "../../../src/lib/contract-fact
 import { buildContractDocumentPreview } from "../../../src/lib/contract-document-model";
 import { buildContractProjectionPlan } from "../../../src/lib/contract-ghl-projection-model";
 import { latestSellerSigningModelForOpportunity } from "../../../src/lib/seller-contract-facts-carriers";
-import { evaluateSellerSigningPreWriteReadiness, resolveSeller1FromOpportunity, sellerCountTransportValue } from "../../../src/lib/contract-seller-signing-model";
+import { evaluateSellerSigningCanonicalReadiness, resolveSeller1FromOpportunity, sellerCountTransportValue } from "../../../src/lib/contract-seller-signing-model";
 import { latestBradContractAuthorizationForOpportunity } from "../../../src/lib/contract-authorization-carriers";
 import { evaluateBradAuthorizationCurrency, type CurrentArtifactFacts } from "../../../src/lib/contract-authorization-model";
 import type { GhlBoundary } from "./ghl-write-boundary";
@@ -25,7 +25,7 @@ export async function currentContractContext(boundary: GhlBoundary, opportunityI
   const preview = buildContractDocumentPreview({ opportunityId, version, report, propertyStreetAddress: propertyAddress ? { kind: "populated", value: propertyAddress, authority: "operator_attested", recordedAt: null } : { kind: "unresolved" } });
   const signing = latestSellerSigningModelForOpportunity(notes, opportunityId);
   const config = getConfig(process.env.IAOS_ENV);
-  const sellerReadiness = evaluateSellerSigningPreWriteReadiness({
+  const sellerReadiness = evaluateSellerSigningCanonicalReadiness({
     disposition: signing ? {kind:"populated",value:signing.model} : {kind:"unresolved"},
     seller1: resolveSeller1FromOpportunity({contactId:contact.id,contactName:[contact.firstName,contact.lastName].filter(Boolean).join(" ") || contact.name || "",email:contact.email}),
     printedSellerSigners: report.parties.sellerSigners.kind === "populated" ? report.parties.sellerSigners.value.map(s=>({displayName:s.displayName})) : [],
