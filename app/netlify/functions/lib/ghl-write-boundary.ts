@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { getConfig } from "../../../shared/ghl-config";
+import { getConfig, UNDER_CONTRACT_STAGE_NOT_PROVISIONED } from "../../../shared/ghl-config";
 import type { FieldWrite } from "./write-contracts";
 export function digest(value: string) { return createHash("sha256").update(value).digest("hex"); }
 export class WriteUncertain extends Error {}
@@ -55,7 +55,7 @@ export class GhlBoundary {
    */
   async transitionOpportunityStage(opportunityId: string, expectedPipelineId: string, targetStageId: string, forbiddenStageIds: readonly string[]) {
     if (forbiddenStageIds.includes(targetStageId)) throw new Error("Refusing to transition to a forbidden stage");
-    if (!targetStageId || targetStageId.startsWith("PRODUCTION_")) throw new Error("Target stage is not provisioned for this environment");
+    if (!targetStageId || targetStageId === UNDER_CONTRACT_STAGE_NOT_PROVISIONED) throw new Error("Target stage is not provisioned for this environment");
     const before = await this.opportunity(opportunityId);
     if (before.pipelineId !== expectedPipelineId) throw new Error("Opportunity is not in the expected pipeline");
     if (before.pipelineStageId === targetStageId) {
