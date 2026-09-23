@@ -87,6 +87,7 @@ process.env.GHL_API_TOKEN = 'offline-fixture';
 
 const load=name=>require('../src/lib/'+name+'.ts');
 const config=require('../shared/ghl-config.ts').getConfig('test');
+const { UNDER_CONTRACT_STAGE_NOT_PROVISIONED } = require('../shared/ghl-config.ts');
 const auth=require('../netlify/functions/lib/app-write-auth.ts');
 const handler=require('../netlify/functions/ghl-write.ts').handler;
 const uploadHandler=require('../netlify/functions/ghl-executed-artifact-upload.ts').handler;
@@ -855,6 +856,41 @@ await check('manual send: readback failure -- live provider fetch itself errors,
       boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.sellerClosedWon, [config.stages.sellerClosedWon]),
       /forbidden/,
     );
+  });
+
+  // Gate-review closure -- INV-98 stage-sentinel defense repair. The
+  // Production Under Contract stage sentinel (UNDER_CONTRACT_STAGE_NOT_PROVISIONED)
+  // was previously renamed (INV-98 Phase 1, PR #87) from its old
+  // PRODUCTION_-prefixed literal without updating this file's own
+  // sentinel-shape check, which silently degraded to a no-op for the
+  // current sentinel value -- OBSERVED directly by re-reading the source
+  // during the INV-98 B9-14 read-only preflight; no prior test anywhere in
+  // this repository exercised this exact path. This is a direct regression
+  // test for that exact drift, proving the code itself refuses BEFORE any
+  // GHL call is ever attempted -- never relying on GHL's own API rejection
+  // of a malformed stage id as the only defense.
+  await check('GhlBoundary.transitionOpportunityStage refuses the exact current Production Under Contract stage sentinel, before any GHL network call', async () => {
+    const { configuredBoundary } = require('../netlify/functions/lib/ghl-write-boundary.ts');
+    const boundary = configuredBoundary();
+    const savedFetch = global.fetch;
+    global.fetch = async () => { throw new Error('transitionOpportunityStage must never reach the network for an unprovisioned sentinel stage'); };
+    try {
+      await assert.rejects(
+        boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, UNDER_CONTRACT_STAGE_NOT_PROVISIONED, []),
+        /not provisioned/i,
+      );
+    } finally {
+      global.fetch = savedFetch;
+    }
+  });
+
+  // Regression sanity assertion -- documents WHY the prior check silently
+  // stopped working: the current sentinel does not begin with the obsolete
+  // "PRODUCTION_" prefix the old check compared against. If this ever
+  // becomes false again (a future rename), it is a signal the equality
+  // check above must be re-verified against the new literal value.
+  await check('the current Production Under Contract stage sentinel does not begin with the obsolete "PRODUCTION_" prefix (documents why the old prefix check was silently inert)', () => {
+    assert.equal(UNDER_CONTRACT_STAGE_NOT_PROVISIONED.startsWith('PRODUCTION_'), false);
   });
 
   await check('stage transition: success -- transitions to the exact Under Contract stage id, readback confirms pipeline AND stage', async () => {
