@@ -438,6 +438,49 @@ let authorizedRecord;
   check('the stale-on-reload refusal names REVISION_CHANGED, not an artifact-mismatch code', staleOnReloadStatus.reasons.map((r) => r.code), ['REVISION_CHANGED']);
 }
 
+// ============================================================
+// Gate S -- the shared write-contract-fixture.cjs's own baked-in
+// generatorVersion must represent a CURRENT authorization baseline
+// against the REAL, live generator this codebase actually runs --
+// otherwise every OTHER test that relies on this fixture for
+// "authorization is current" scaffolding (not specifically testing
+// staleness) would silently start testing staleness instead. Reuses
+// this file's own already-compiled module set (write-contract-fixture.cjs
+// needs nothing beyond what SOURCES above already compiles) -- no new
+// compilation target, no production-code seam, no third file.
+//
+// test-contract-authorization-v2.cjs already proves the MODEL's own
+// GENERATOR_CHANGED behavior with a fully synthetic, hand-typed pair of
+// version strings -- this section proves the SAME behavior against the
+// REAL, live GENERATOR_VERSION constant inv67-pdf-generator.cjs actually
+// exports, and proves the fixture's own value is synchronized with it,
+// which is a distinct, non-duplicated concern neither existing suite covers.
+{
+  const load = (name) => require(path.join(TMP, name + '.js'));
+  const { GENERATOR_VERSION } = require('./lib/inv67-pdf-generator.cjs');
+  const gateSFixture = require('./write-contract-fixture.cjs').contractFixture(load, 'gate-s-fixture-currency-opp');
+
+  check(
+    'write-contract-fixture.cjs\'s own generatorVersion matches the real, live generator\'s current GENERATOR_VERSION exactly (the fixture represents a CURRENT authorization baseline, not a stale one)',
+    gateSFixture.authorization.generatorVersion,
+    GENERATOR_VERSION,
+  );
+
+  const currentArtifactFactsFromRealGenerator = {
+    artifactSha256: gateSFixture.authorization.artifactSha256,
+    sourcePdfSha256: gateSFixture.authorization.sourcePdfSha256,
+    generatorVersion: GENERATOR_VERSION,
+    manifestVersion: gateSFixture.authorization.manifestVersion,
+  };
+  const currentStatus = A.evaluateBradAuthorizationCurrency(gateSFixture.authorization, gateSFixture.preview, currentArtifactFactsFromRealGenerator);
+  checkTrue('the fixture\'s own authorization record evaluates as CURRENT against the real, live GENERATOR_VERSION (no GENERATOR_CHANGED, no false staleness)', currentStatus.authorized === true);
+
+  const staleRecord = Object.assign({}, gateSFixture.authorization, { generatorVersion: 'inv67-pdf-generator-v1' });
+  const staleStatus = A.evaluateBradAuthorizationCurrency(staleRecord, gateSFixture.preview, currentArtifactFactsFromRealGenerator);
+  checkTrue('an authorization record carrying the OLD generatorVersion evaluates as stale against the real, live GENERATOR_VERSION', staleStatus.authorized === false);
+  check('the staleness is named exactly GENERATOR_CHANGED, against the real generator constant', staleStatus.reasons.map((r) => r.code), ['GENERATOR_CHANGED']);
+}
+
 console.log('');
 console.log(checks + ' checks, ' + failures + ' failures.');
 if (checks < FLOOR) {

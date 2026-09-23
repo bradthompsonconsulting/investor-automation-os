@@ -55,6 +55,7 @@
 // already-computed projection plan in memory and returns PDF bytes + an
 // evidence record. It does not fetch, authorize, send, or persist anything.
 
+const { PDFDocument } = require('pdf-lib');
 const { buildFieldPlanFromCache } = require('./inv67-pdf-runtime-field-plan.cjs');
 const {
   MANIFEST_VERSION,
@@ -66,6 +67,22 @@ const {
   stampDeterministicMetadata,
   renderFieldsOntoPdf,
 } = require('./inv67-pdf-render-core.cjs');
+
+// Gate S -- deterministic post-population page scale. Every populated
+// page is embedded as a full-page vector Form XObject (pdf-lib's own
+// embedPage/drawPage mechanism -- never rasterized; the embedded page's
+// own content stream, including every text-drawing operator, is carried
+// through unchanged) onto a NEW page sized to match that ORIGINAL page's
+// own actual dimensions (read per-page via getSize(), never assumed from
+// a global constant -- see the render-core's own PAGE_WIDTH_PT/
+// PAGE_HEIGHT_PT, which remain the FIELD-PLACEMENT geometry pin, never
+// reused here as an output-page assumption), drawn at exactly 95% scale
+// and centered. xOffset/yOffset = originalDimension * 0.025 is
+// algebraically identical to the standard centering formula
+// (originalDimension - originalDimension * 0.95) / 2 -- both compute the
+// same offset, this is the form Brad's own ruling specified.
+const GATE_S_SCALE = 0.95;
+const GATE_S_CENTER_FACTOR = 0.025;
 
 // Sealed to the pinned canonical TREC 20-19 source -- the generator's public
 // API takes NO source-path/hash/page-count override of any kind. A caller
@@ -80,7 +97,7 @@ const CANONICAL_SOURCE_DISPLAY_PATH = 'docs/TREC Resale Home Contract.pdf';
 
 // Bump when ROW_DERIVATIONS, the render core, or this module's own contract
 // changes in a way that could change generated output for the same input.
-const GENERATOR_VERSION = 'inv67-pdf-generator-v1';
+const GENERATOR_VERSION = 'inv67-pdf-generator-v2';
 
 class ContractPdfGenerationError extends Error {
   constructor(message, reasons) {
@@ -198,7 +215,50 @@ async function generatePopulatedContractPdf(args) {
 
   const drawnFields = await renderFieldsOntoPdf(pdfDoc, converted);
 
-  const outputBytes = await pdfDoc.save();
+  // Gate S -- pdf-lib's own embedFont() (used above, inside
+  // renderFieldsOntoPdf) registers fonts LAZILY; they are only fully
+  // materialized into pdfDoc's own object graph when flush() runs
+  // (normally invoked implicitly by pdfDoc.save() -- see pdf-lib's own
+  // flush() doc comment: "the save and saveAsBase64 methods will
+  // automatically ensure that all embedded assets are flushed before
+  // serializing"). This generator never calls pdfDoc.save() at all -- only
+  // scaledDoc.save() -- so flush() must be called explicitly here, BEFORE
+  // embedPages() copies each page's own /Resources (including its font
+  // dictionary) into scaledDoc's context. OBSERVED directly: omitting this
+  // call reproduces a genuine, reproducible defect (not merely a test
+  // artifact) -- pdftotext reports "Unknown font tag" and "font resource is
+  // not a dictionary" against the resulting output, and the populated text
+  // is not extractable. This is the exact failure the "text remains
+  // extractable, proving no rasterization" requirement exists to catch.
+  await pdfDoc.flush();
+
+  // Embed each now-populated page, full and uncropped (no boundingBox
+  // argument to embedPages -- pdf-lib defaults to the source page's own
+  // complete MediaBox), onto a fresh page sized to match that SAME
+  // original page's own dimensions, scaled 95% and centered.
+  const scaledDoc = await PDFDocument.create();
+  const populatedPageCount = pdfDoc.getPageCount();
+  for (let i = 0; i < populatedPageCount; i++) {
+    const originalPage = pdfDoc.getPage(i);
+    const { width: originalWidth, height: originalHeight } = originalPage.getSize();
+    const [embeddedPage] = await scaledDoc.embedPages([originalPage]);
+    const newPage = scaledDoc.addPage([originalWidth, originalHeight]);
+    const xOffset = originalWidth * GATE_S_CENTER_FACTOR;
+    const yOffset = originalHeight * GATE_S_CENTER_FACTOR;
+    newPage.drawPage(embeddedPage, { x: xOffset, y: yOffset, xScale: GATE_S_SCALE, yScale: GATE_S_SCALE });
+  }
+
+  // Re-stamp deterministic metadata on the NEW document -- stamping the
+  // original pdfDoc above (still required, so IT never picks up a live
+  // timestamp either, even though only scaledDoc is ultimately saved) does
+  // NOT carry forward to this second, separately-created PDFDocument; its
+  // own info dict and updateInfoDict hook are independent state.
+  stampDeterministicMetadata(scaledDoc, {
+    producer: 'IAOS Board #9 live contract generator (pdf-lib)',
+    creator: 'IAOS Board #9 live contract generator (pdf-lib)',
+  });
+
+  const outputBytes = await scaledDoc.save();
   const outputSha256 = sha256Hex(outputBytes);
 
   const evidence = {
