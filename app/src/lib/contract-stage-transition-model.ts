@@ -170,13 +170,24 @@ export function classifyStageTransitionResponse(args: {
 }
 
 /**
- * Settles an uncertain transition from a FRESH, independent GHL read of the
- * opportunity -- never from the uncertain response itself.
- *  - in_target_stage:  the read shows the expected pipeline AND target stage.
- *  - not_in_target:    a usable read shows it is not there; a retry may be offered.
- *  - still_uncertain:  no usable read; nothing may be offered.
+ * What a FRESH, independent GHL read OBSERVES about an opportunity after an
+ * uncertain transition. It is an observation of GHL's current state, never a
+ * verdict on the original request:
+ *  - observed_in_target_stage: the read shows the expected pipeline AND the
+ *    Under Contract stage. It does not prove the original request succeeded.
+ *  - observed_not_in_target:   the read shows it elsewhere. That does NOT prove
+ *    the original request failed or has finished -- it may still be in
+ *    flight -- so the result stays uncertain and no retry may be offered.
+ *  - read_failed:              no usable read; nothing is known.
  */
-export type FreshStageReadResolution = "in_target_stage" | "not_in_target" | "still_uncertain";
+export type FreshStageReadResolution = "observed_in_target_stage" | "observed_not_in_target" | "read_failed";
+
+export const STAGE_OBSERVED_IN_TARGET_MESSAGE =
+  "A fresh GHL read shows this opportunity is now in the Under Contract stage. That is what GHL shows now; it does not confirm the earlier request itself succeeded.";
+export const STAGE_OBSERVED_NOT_IN_TARGET_MESSAGE =
+  "A fresh GHL read shows this opportunity is still NOT in the Under Contract stage. That does not prove the earlier request failed or has finished -- it may still be in progress. Do not retry until the outcome is authoritatively resolved.";
+export const STAGE_READ_FAILED_MESSAGE =
+  "The fresh GHL read did not succeed, so the stage is still unknown. Do not retry until the outcome is authoritatively resolved.";
 
 export function resolveUncertainStageTransition(args: {
   fresh: unknown;
@@ -188,9 +199,9 @@ export function resolveUncertainStageTransition(args: {
   const opp = (raw && typeof raw === "object" && "opportunity" in raw ? raw.opportunity : raw) as { id?: unknown; pipelineId?: unknown; pipelineStageId?: unknown } | null | undefined;
   if (!opp || typeof opp !== "object" || opp.id !== args.opportunityId ||
       typeof opp.pipelineId !== "string" || typeof opp.pipelineStageId !== "string") {
-    return "still_uncertain";
+    return "read_failed";
   }
   return opp.pipelineId === args.expectedPipelineId && opp.pipelineStageId === args.targetStageId
-    ? "in_target_stage"
-    : "not_in_target";
+    ? "observed_in_target_stage"
+    : "observed_not_in_target";
 }

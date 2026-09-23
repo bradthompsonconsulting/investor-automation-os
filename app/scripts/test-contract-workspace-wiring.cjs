@@ -406,7 +406,7 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   );
   check(
     'the Transition button remains disabled once hydrated to "success" -- the SAME pre-existing disabled expression (stageTransitionState.kind === "success"), not a new/separate condition',
-    /testId="contract-execution-transition-under-contract-button"[\s\S]{0,200}disabled=\{stageTransitionState\.kind === "success" \|\| stageTransitionState\.kind === "uncertain" \|\| stageTransitionState\.kind === "rechecking"\}/.test(contractTsxNoComments),
+    /testId="contract-execution-transition-under-contract-button"[\s\S]{0,200}disabled=\{stageTransitionState\.kind === "success" \|\| stageTransitionState\.kind === "uncertain" \|\| stageTransitionState\.kind === "rechecking" \|\| stageTransitionState\.kind === "observed_in_stage"\}/.test(contractTsxNoComments),
     true,
   );
   check(

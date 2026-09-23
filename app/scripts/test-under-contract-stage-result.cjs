@@ -91,13 +91,23 @@ async function transitionWith(writeResponse, version = nextVersion()) {
     assert.match(model.STAGE_TRANSITION_UNCERTAIN_MESSAGE, /Do not retry/);
     assert.match(model.STAGE_TRANSITION_UNCERTAIN_MESSAGE, /fresh, independent read of this opportunity from GHL/);
   });
-  await check('model: fresh-read resolution', () => {
+  await check('model: a fresh read yields an OBSERVATION, never a verdict on the original request', () => {
     const r = (fresh) => model.resolveUncertainStageTransition({ fresh, ...expected });
-    assert.equal(r({ opportunity: readback() }), 'in_target_stage');
-    assert.equal(r(readback()), 'in_target_stage');
-    assert.equal(r({ opportunity: readback({ pipelineStageId: 'seller-offer-sent' }) }), 'not_in_target');
-    assert.equal(r({ opportunity: readback({ pipelineId: 'other' }) }), 'not_in_target');
-    for (const bad of [null, undefined, {}, { opportunity: null }, { opportunity: readback({ id: 'other' }) }, { opportunity: { id: OPP } }]) assert.equal(r(bad), 'still_uncertain');
+    assert.equal(r({ opportunity: readback() }), 'observed_in_target_stage');
+    assert.equal(r(readback()), 'observed_in_target_stage');
+    assert.equal(r({ opportunity: readback({ pipelineStageId: 'seller-offer-sent' }) }), 'observed_not_in_target');
+    assert.equal(r({ opportunity: readback({ pipelineId: 'other' }) }), 'observed_not_in_target');
+    for (const bad of [null, undefined, {}, { opportunity: null }, { opportunity: readback({ id: 'other' }) }, { opportunity: { id: OPP } }]) assert.equal(r(bad), 'read_failed');
+  });
+  await check('model: observation messages -- old stage stays "do not retry"; Under Contract is reported without claiming the request succeeded', () => {
+    assert.match(model.STAGE_OBSERVED_NOT_IN_TARGET_MESSAGE, /does not prove the earlier request failed or has finished/);
+    assert.match(model.STAGE_OBSERVED_NOT_IN_TARGET_MESSAGE, /Do not retry until the outcome is authoritatively resolved/);
+    assert.match(model.STAGE_READ_FAILED_MESSAGE, /Do not retry until the outcome is authoritatively resolved/);
+    assert.match(model.STAGE_OBSERVED_IN_TARGET_MESSAGE, /is now in the Under Contract stage/);
+    assert.match(model.STAGE_OBSERVED_IN_TARGET_MESSAGE, /does not confirm the earlier request itself succeeded/);
+    for (const m of [model.STAGE_OBSERVED_NOT_IN_TARGET_MESSAGE, model.STAGE_READ_FAILED_MESSAGE, model.STAGE_OBSERVED_IN_TARGET_MESSAGE]) {
+      assert.doesNotMatch(m, /try the transition again|you may retry|confirmed by fresh readback/i);
+    }
   });
 
   // ---- 2. the real browser writer ----------------------------------------------------
@@ -155,34 +165,37 @@ async function transitionWith(writeResponse, version = nextVersion()) {
     await transitionWith(indeterminate, v);
     assert.equal(writes()[0].body.requestId, first);
   });
-  await check('recovery: fresh read shows the stage landed -> in_target_stage; only a GET, no write', async () => {
+  await check('fresh read shows Under Contract -> observed_in_target_stage; only a GET, no write, requestId still held', async () => {
     const v = nextVersion();
     await transitionWith(indeterminate, v);
+    const held = writes()[0].body.requestId;
     calls = []; route = () => json({ opportunity: readback() });
-    assert.equal(await ghl.opportunities.recheckUnderContractStage(OPP, AGREEMENT, v), 'in_target_stage');
+    assert.equal(await ghl.opportunities.recheckUnderContractStage(OPP, AGREEMENT, v), 'observed_in_target_stage');
     route = null;
     assert.equal(writes().length, 0);
     assert.equal(reads().length, 1);
     assert.equal(reads()[0].method, 'GET');
+    await transitionWith(indeterminate, v);
+    assert.equal(writes()[0].body.requestId, held);
   });
-  await check('recovery: fresh read shows NOT in stage -> not_in_target, and the next deliberate attempt is a NEW request', async () => {
+  await check('fresh read shows the OLD stage -> observed_not_in_target, and the requestId stays HELD (a re-send is still the same request)', async () => {
     const v = nextVersion();
     await transitionWith(indeterminate, v);
     const held = writes()[0].body.requestId;
     calls = []; route = () => json({ opportunity: readback({ pipelineStageId: 'seller-offer-sent' }) });
-    assert.equal(await ghl.opportunities.recheckUnderContractStage(OPP, AGREEMENT, v), 'not_in_target');
+    assert.equal(await ghl.opportunities.recheckUnderContractStage(OPP, AGREEMENT, v), 'observed_not_in_target');
     route = null;
-    const result = await transitionWith(json({ confirmed: true, alreadyInStage: false, readback: readback() }), v);
-    assert.notEqual(writes()[0].body.requestId, held);
-    assert.equal(result.kind, 'confirmed');
+    assert.equal(writes().length, 0);
+    await transitionWith(indeterminate, v);
+    assert.equal(writes()[0].body.requestId, held);
   });
-  await check('recovery: a failed fresh read settles nothing -> still_uncertain, and the requestId stays held', async () => {
+  await check('a failed fresh read settles nothing -> read_failed, and the requestId stays held', async () => {
     const v = nextVersion();
     await transitionWith(indeterminate, v);
     const held = writes()[0].body.requestId;
     for (const failure of [() => json({ message: 'boom' }, 500), () => json({ error: 'Sign in to read IAOS data', by: 'iaos-app-read-auth' }, 401), () => json({ opportunity: readback({ id: 'someone-else' }) })]) {
       calls = []; route = failure;
-      assert.equal(await ghl.opportunities.recheckUnderContractStage(OPP, AGREEMENT, v), 'still_uncertain');
+      assert.equal(await ghl.opportunities.recheckUnderContractStage(OPP, AGREEMENT, v), 'read_failed');
       route = null;
     }
     await transitionWith(indeterminate, v);
@@ -201,31 +214,35 @@ async function transitionWith(writeResponse, version = nextVersion()) {
     assert.match(handler, /catch \{[\s\S]*?setStageTransitionState\(\{ kind: "uncertain", message: STAGE_TRANSITION_UNCERTAIN_MESSAGE \}\);/);
     assert.doesNotMatch(cw, /stageTransitionState\.kind === "failed"|setStageTransitionState\(\{ kind: "failed"/);
   });
-  await check('UI: the Transition button is disabled while uncertain or rechecking, and the handler refuses too', () => {
-    assert.match(cw, /testId="contract-execution-transition-under-contract-button"[\s\S]{0,200}disabled=\{stageTransitionState\.kind === "success" \|\| stageTransitionState\.kind === "uncertain" \|\| stageTransitionState\.kind === "rechecking"\}/);
-    assert.match(handler, /if \(stageTransitionState\.kind === "uncertain" \|\| stageTransitionState\.kind === "rechecking"\) return;\s*setStageTransitionState\(\{ kind: "busy" \}\);/);
+  await check('UI: the Transition button is disabled while uncertain, rechecking or observed-in-stage, and the handler refuses too', () => {
+    assert.match(cw, /testId="contract-execution-transition-under-contract-button"[\s\S]{0,200}disabled=\{stageTransitionState\.kind === "success" \|\| stageTransitionState\.kind === "uncertain" \|\| stageTransitionState\.kind === "rechecking" \|\| stageTransitionState\.kind === "observed_in_stage"\}/);
+    assert.match(handler, /if \(stageTransitionState\.kind === "uncertain" \|\| stageTransitionState\.kind === "rechecking" \|\| stageTransitionState\.kind === "observed_in_stage"\) return;\s*setStageTransitionState\(\{ kind: "busy" \}\);/);
   });
-  await check('UI: "Read GHL again" performs only the fresh read and settles the state from it', () => {
+  await check('UI: "Read GHL again" performs only a read; the old stage stays uncertain; Under Contract is an observation, not success', () => {
     assert.match(cw, /testId="contract-execution-stage-transition-recheck-button"\s*onClick=\{handleRecheckUnderContractStage\}/);
     assert.match(recheck, /ghl\.opportunities\.recheckUnderContractStage\(screen\.opportunity\.id, screen\.economics\.agreementAt, documentVersion\)/);
     assert.doesNotMatch(recheck, /transitionToUnderContractStage|writeCommand|confirmedCommand|notes\.create/);
-    assert.match(recheck, /resolution === "in_target_stage"\) setStageTransitionState\(\{ kind: "success", alreadyInStage: true \}\)/);
-    assert.match(recheck, /resolution === "not_in_target"\) setStageTransitionState\(\{ kind: "retry_allowed"/);
-    assert.match(recheck, /else setStageTransitionState\(\{ kind: "uncertain"/);
+    assert.match(recheck, /resolution === "observed_in_target_stage"\) setStageTransitionState\(\{ kind: "observed_in_stage", message: STAGE_OBSERVED_IN_TARGET_MESSAGE \}\)/);
+    assert.match(recheck, /resolution === "observed_not_in_target"\) setStageTransitionState\(\{ kind: "uncertain", message: STAGE_OBSERVED_NOT_IN_TARGET_MESSAGE \}\)/);
+    assert.match(recheck, /else setStageTransitionState\(\{ kind: "uncertain", message: STAGE_READ_FAILED_MESSAGE \}\)/);
+    assert.doesNotMatch(recheck, /kind: "success"/);
+    assert.doesNotMatch(cw, /retry_allowed/);
+    assert.match(cw, /data-testid="contract-execution-stage-transition-observed-in-stage"/);
   });
   await check('UI: uncertain is rendered in amber with its own test id; refused keeps a red notice', () => {
     assert.match(cw, /data-testid="contract-execution-stage-transition-uncertain" style=\{\{ fontSize: "12px", color: "#F59E0B"/);
     assert.match(cw, /data-testid="contract-execution-stage-transition-refused"/);
   });
-  await check('scope: confirmedCommand is unchanged and releasePendingWrite is used only by the stage recheck', () => {
+  await check('scope: write-command.ts is unchanged -- no requestId is ever released, confirmedCommand untouched', () => {
     const wc = fs.readFileSync(path.join(APP, 'src', 'lib', 'write-command.ts'), 'utf8');
     assert.match(wc, /if \(!response\.ok \|\| result\.confirmed === false\) throw new Error/);
-    const users = ['src/lib/ghl.ts', 'src/pages/ContractWorkspace.tsx', 'src/lib/write-command.ts']
-      .filter(rel => /releasePendingWrite\(/.test(fs.readFileSync(path.join(APP, rel), 'utf8').replace(/export function releasePendingWrite/, '')));
-    assert.deepEqual(users, ['src/lib/ghl.ts']);
-    const ghlSrc = fs.readFileSync(path.join(APP, 'src', 'lib', 'ghl.ts'), 'utf8');
-    assert.equal((ghlSrc.match(/releasePendingWrite\(/g) || []).length, 1);
-    assert.doesNotMatch(ghlSrc, /confirmedCommand\("opportunity\.underContractStage"/);
+    assert.doesNotMatch(wc, /releasePendingWrite/);
+    // writeCommand still keeps an indeterminate write's requestId (main's own rule).
+    assert.match(wc, /if \(outcome\?\.outcome !== "indeterminate"\) pending\.delete\(key\);/);
+    for (const rel of ['src/lib/ghl.ts', 'src/pages/ContractWorkspace.tsx']) {
+      assert.doesNotMatch(fs.readFileSync(path.join(APP, rel), 'utf8'), /releasePendingWrite|pending\.delete/, rel);
+    }
+    assert.doesNotMatch(fs.readFileSync(path.join(APP, 'src', 'lib', 'ghl.ts'), 'utf8'), /confirmedCommand\("opportunity\.underContractStage"/);
   });
 
   console.log('Under Contract stage result: passed=' + passed + ' failed=' + failed);

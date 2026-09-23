@@ -1,4 +1,4 @@
-import { writeCommand, confirmedCommand, releasePendingWrite } from "./write-command";
+import { writeCommand, confirmedCommand } from "./write-command";
 import { appWriteFetch, AppWriteSignInRequired } from "./app-write-session";
 import { isReadAuthRefusal, readFetch, ReadUnavailableError } from "./read-session";
 /**
@@ -567,21 +567,19 @@ async function transitionUnderContractStage(opportunityId: string, agreementAt: 
 }
 
 /**
- * INV-98 -- settle an uncertain transition from a FRESH, independent GHL read
- * (a read, never a write). Only when that read shows the opportunity is NOT
- * in the Under Contract stage is the held requestId released, so Brad's next
- * deliberate attempt is a new request. A failed read settles nothing.
+ * INV-98 -- a FRESH, independent GHL read after an uncertain transition (a
+ * read, never a write). It reports what GHL shows now and settles nothing
+ * about the original request: the held requestId is NEVER released here, so
+ * any re-send is still refused by the server as a duplicate.
  */
 async function recheckUnderContractStage(opportunityId: string, agreementAt: string, version: ContractVersionIdentity): Promise<FreshStageReadResolution> {
   let fresh: unknown;
   try { fresh = await request<any>(`/opportunities/${opportunityId}`); }
-  catch { return "still_uncertain"; }
-  const resolution = resolveUncertainStageTransition({
+  catch { return "read_failed"; }
+  return resolveUncertainStageTransition({
     fresh, opportunityId,
     expectedPipelineId: CONFIG.pipelines.sellerLeads, targetStageId: CONFIG.stages.underContract,
   });
-  if (resolution === "not_in_target") releasePendingWrite(UNDER_CONTRACT_STAGE_OPERATION, opportunityId, { agreementAt, version });
-  return resolution;
 }
 
 async function readbackOpportunity(label: string, opportunityId: string, putRes: Response): Promise<any> {
