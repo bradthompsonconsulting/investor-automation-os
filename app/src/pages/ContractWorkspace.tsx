@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect, useRef } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ArrowRight } from "lucide-react";
 import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
+import { ReadUnavailableError } from "../lib/read-session";
 import { opportunitiesForContact, opportunityCandidates, selectOpportunity } from "../lib/underwriting/selectOpportunity";
 import {
   formatContractReadyChecklistNote,
@@ -1702,6 +1703,7 @@ export default function ContractWorkspace() {
     | { kind: "busy" }
     | { kind: "success"; record: UnderContractRecordEntry }
     | { kind: "already_recorded"; record: UnderContractRecordEntry }
+    | { kind: "saved_unverified"; message: string }
     | { kind: "failed"; message: string; writeMayHaveOccurred: boolean }
   >({ kind: "idle" });
 
@@ -1712,6 +1714,9 @@ export default function ContractWorkspace() {
     // a durable, freshly-parsed receipt (never local upload state) --
     // Create Under Contract can never fire without one already existing.
     if (screen.state !== "ready" || !fullVerificationResult || !fullVerificationResult.ok || !notes || !preservedArtifactRecord) return;
+    // READ-AUTH: a confirmed-but-unverified note stays locked until a reload
+    // re-reads it; a re-click would only produce a confusing refusal.
+    if (underContractWriteState.kind === "saved_unverified") return;
     setUnderContractWriteState({ kind: "busy" });
     const candidate = fullVerificationResult.value;
 
@@ -1741,6 +1746,13 @@ export default function ContractWorkspace() {
       const freshResult = await ghl.notes.list(contactId);
       freshNotes = freshResult.notes ?? [];
     } catch (e: any) {
+      // READ-AUTH: ghl.notes.create above only returns once ghl-write has
+      // confirmed this exact note server-side, so a sign-in refusal on the
+      // readback is never reported as a failed write.
+      if (e instanceof ReadUnavailableError) {
+        setUnderContractWriteState({ kind: "saved_unverified", message: "The note write was confirmed by IAOS, but it cannot be read back right now because read sign-in is required. Sign in to read and reload to verify; do not create it again." });
+        return;
+      }
       setUnderContractWriteState({
         kind: "failed",
         message: `The write may have succeeded, but the readback fetch itself failed: ${e?.message ?? "unknown error"} -- verify directly in GHL before retrying; this action does not retry automatically.`,
@@ -2116,6 +2128,7 @@ export default function ContractWorkspace() {
     | { kind: "busy" }
     | { kind: "success"; record: DispositionHandoffRecord }
     | { kind: "already_recorded"; record: DispositionHandoffRecord }
+    | { kind: "saved_unverified"; message: string }
     | { kind: "failed"; message: string; writeMayHaveOccurred: boolean }
   >({ kind: "idle" });
 
@@ -2147,6 +2160,7 @@ export default function ContractWorkspace() {
    */
   async function handleStartDisposition() {
     if (screen.state !== "ready" || !documentVersion || !notes) return;
+    if (dispositionWriteState.kind === "saved_unverified") return; // READ-AUTH: see handleCreateUnderContract
     setDispositionWriteState({ kind: "busy" });
 
     // Re-evaluate eligibility against the CURRENT notes, not a stale memo.
@@ -2215,6 +2229,13 @@ export default function ContractWorkspace() {
       const freshResult = await ghl.notes.list(contactId);
       freshNotes = freshResult.notes ?? [];
     } catch (e: any) {
+      // READ-AUTH: ghl.notes.create above only returns once ghl-write has
+      // confirmed this exact note server-side, so a sign-in refusal on the
+      // readback is never reported as a failed write.
+      if (e instanceof ReadUnavailableError) {
+        setDispositionWriteState({ kind: "saved_unverified", message: "The note write was confirmed by IAOS, but it cannot be read back right now because read sign-in is required. Sign in to read and reload to verify; do not create it again." });
+        return;
+      }
       setDispositionWriteState({
         kind: "failed",
         message: `The write may have succeeded, but the readback fetch itself failed: ${e?.message ?? "unknown error"} -- verify directly in GHL before retrying; this action does not retry automatically.`,
@@ -4041,10 +4062,15 @@ export default function ContractWorkspace() {
                         testId="contract-execution-create-under-contract-button"
                         onClick={handleCreateUnderContract}
                         busy={underContractWriteState.kind === "busy"}
-                        disabled={!preservedArtifactRecord}
+                        disabled={!preservedArtifactRecord || underContractWriteState.kind === "saved_unverified"}
                       >
                         Create Under Contract
                       </Btn>
+                      {underContractWriteState.kind === "saved_unverified" ? (
+                        <div data-testid="contract-execution-under-contract-saved-unverified" style={{ fontSize: "12px", color: "#F59E0B", marginTop: "8px" }}>
+                          {underContractWriteState.message}
+                        </div>
+                      ) : null}
                       {underContractWriteState.kind === "failed" ? (
                         <div data-testid="contract-execution-under-contract-write-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
                           {underContractWriteState.message}
@@ -4253,10 +4279,15 @@ export default function ContractWorkspace() {
                             testId="disposition-handoff-start-button"
                             onClick={handleStartDisposition}
                             busy={dispositionWriteState.kind === "busy"}
-                            disabled={!dispositionEligibility || !dispositionEligibility.eligible}
+                            disabled={!dispositionEligibility || !dispositionEligibility.eligible || dispositionWriteState.kind === "saved_unverified"}
                           >
                             Start Disposition
                           </Btn>
+                          {dispositionWriteState.kind === "saved_unverified" ? (
+                            <div data-testid="disposition-handoff-saved-unverified" style={{ fontSize: "12px", color: "#F59E0B", marginTop: "8px" }}>
+                              {dispositionWriteState.message}
+                            </div>
+                          ) : null}
                           {dispositionWriteState.kind === "failed" ? (
                             <div data-testid="disposition-handoff-write-failed" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
                               {dispositionWriteState.message}

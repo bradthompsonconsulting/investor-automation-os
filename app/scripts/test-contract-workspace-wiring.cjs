@@ -252,7 +252,7 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     // the "not yet durably recorded" branch, so its own disabled
     // expression correctly narrows to just the eligibility gate.
     'Start Disposition\'s disabled expression requires dispositionEligibility.eligible -- the success/already_recorded states are handled one level up, in the durable-hydration branch, where this button is not even rendered',
-    /disabled=\{!dispositionEligibility \|\| !dispositionEligibility\.eligible\}/.test(contractTsxNoComments),
+    /disabled=\{!dispositionEligibility \|\| !dispositionEligibility\.eligible \|\| dispositionWriteState\.kind === "saved_unverified"\}/.test(contractTsxNoComments),
     true,
   );
 
@@ -438,7 +438,7 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
     // reached in the "not yet durably recorded" branch, so its own
     // disabled expression correctly narrows to just the preservation gate.
     'Create Under Contract\'s disabled expression requires a current preservedArtifactRecord -- the success/already_recorded states are handled one level up, in the durable-hydration branch, where this button is not even rendered',
-    /disabled=\{!preservedArtifactRecord\}/.test(contractTsxNoComments),
+    /disabled=\{!preservedArtifactRecord \|\| underContractWriteState\.kind === "saved_unverified"\}/.test(contractTsxNoComments),
     true,
   );
   // Twelve obsolete send-wiring assertions replaced by twelve V1 boundary assertions.

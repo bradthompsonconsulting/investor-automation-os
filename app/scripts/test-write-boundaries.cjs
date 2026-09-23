@@ -63,6 +63,11 @@ process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid';
 process.env.IAOS_APP_WRITE_SESSION_SECRET = 'offline-fixture-only-not-a-real-secret';
 process.env.GHL_PRIVATE_API_KEY = 'offline-fixture';
 process.env.GHL_API_TOKEN = 'offline-fixture';
+// Read authority (lib/app-read-auth.ts): its own settings, never the write ones.
+process.env.IAOS_APP_READ_GOOGLE_CLIENT_ID = 'offline-read-client';
+process.env.IAOS_APP_READ_SESSION_SECRET = 'offline-read-fixture-only-not-a-real-secret';
+process.env.IAOS_APP_READ_BRAD_EMAILS = 'brad@example.invalid';
+process.env.IAOS_APP_READ_ALLOWED_ORIGIN = 'https://proof.example.invalid';
 const auth = require('../netlify/functions/lib/app-write-auth.ts');
 const contracts = require('../netlify/functions/lib/write-contracts.ts');
 const { getConfig } = require('../shared/ghl-config.ts');
@@ -468,11 +473,15 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   await check('retained projection reservation note',async()=>{const res=await handler(event('note.create',contact.id,{body:syncBody}));assert.equal(res.statusCode,200,res.body);});
 
 
-  const proxy=require('../netlify/functions/ghl-proxy.ts').handler;
-  // SECURITY CONTAINMENT: ghl-proxy refuses every request with 503 before
-  // any GHL call (lib/ghl-read-containment.ts; test-ghl-read-containment.cjs).
-  const CONTAINED=require('../netlify/functions/lib/ghl-read-containment.ts').GHL_READ_CONTAINMENT_MARKER;
-  for(const method of ['POST','PUT','PATCH','DELETE'])await check('generic proxy refuses '+method,async()=>{const before=calls.length;assert.equal((await proxy({httpMethod:method,queryStringParameters:{path:`/contacts/${contact.id}`},body:'{}'})).statusCode,503);assert.equal(calls.length,before);});
+  const rawProxy=require('../netlify/functions/ghl-proxy.ts').handler;
+  // Every allowlist check below runs WITH a valid read session, so it proves
+  // the proxy's own boundary; read-auth itself is test-app-read-auth.cjs.
+  const readAuth=require('../netlify/functions/lib/app-read-auth.ts');
+  const readCookie=readAuth.READ_COOKIE+'='+readAuth.issueReadSession('brad@example.invalid',readAuth.appReadConfig()).token;
+  const proxy=(input)=>rawProxy({...input,headers:{...(input.headers||{}),cookie:readCookie}});
+  await check('proxy refuses a request with no read session before any GHL call',async()=>{const before=calls.length;const res=await rawProxy({httpMethod:'GET',queryStringParameters:{path:`/contacts/${contact.id}`}});assert.equal(res.statusCode,401);assert.equal(JSON.parse(res.body).by,'iaos-app-read-auth');assert.equal(calls.length,before);});
+  await check('proxy refuses an application WRITE session as a read session',async()=>{const before=calls.length;const res=await rawProxy({httpMethod:'GET',headers:{authorization:`Bearer ${auth.issueAppSession('brad@example.invalid').token}`},queryStringParameters:{path:`/contacts/${contact.id}`}});assert.equal(res.statusCode,401);assert.equal(calls.length,before);});
+  for(const method of ['POST','PUT','PATCH','DELETE'])await check('generic proxy refuses '+method,async()=>{const before=calls.length;assert.equal((await proxy({httpMethod:method,queryStringParameters:{path:`/contacts/${contact.id}`},body:'{}'})).statusCode,403);assert.equal(calls.length,before);});
   // Encoding metadata alone never turns a bodyless GET into a write.
   for (const suffix of ['', '/notes']) {
     const pathname = '/contacts/' + contact.id + suffix;
@@ -486,9 +495,9 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
           if (body !== undefined) input.body = body;
           if (flag !== undefined) input.isBase64Encoded = flag;
           const result = await proxy(input);
-          assert.equal(result.statusCode, 503, result.body);
-          assert.equal(JSON.parse(result.body).by, CONTAINED);
-          assert.deepEqual(calls.slice(before.calls), []);
+          assert.equal(result.statusCode, 200, result.body);
+          assert.deepEqual(calls.slice(before.calls),
+            [{pathname, method:'GET'}]);
           assert.equal(writes, before.writes);
           assert.equal(blobCalls, before.blobCalls);
         });
@@ -498,8 +507,8 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
       await check('proxy refuses ' + suffix + ' ' + label, async () => {
         const before = {calls:calls.length, writes, blobCalls};
         const result = await proxy({...base, ...extra});
-        assert.equal(result.statusCode, 503, result.body);
-        assert.equal(JSON.parse(result.body).by, CONTAINED);
+        assert.equal(result.statusCode, 403, result.body);
+        assert.equal(JSON.parse(result.body).by, 'iaos-proxy-allowlist');
         assert.deepEqual({calls:calls.length, writes, blobCalls}, before);
       });
     }
@@ -531,7 +540,7 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
       const before = {calls:calls.length, writes, blobCalls};
       const result = await proxy({httpMethod:'GET', body:'',
         isBase64Encoded:true, queryStringParameters:{path:pathname}});
-      assert.equal(result.statusCode, 503);
+      assert.equal(result.statusCode, 403);
       assert.deepEqual({calls:calls.length, writes, blobCalls}, before);
     });
   }

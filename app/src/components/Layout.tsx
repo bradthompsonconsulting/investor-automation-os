@@ -2,6 +2,7 @@ import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
 import AppWriteAccess from "./AppWriteAccess";
+import ReadAccess from "./ReadAccess";
 
 export default function Layout() {
   return (
@@ -22,7 +23,9 @@ export default function Layout() {
 
         <AppWriteAccess />
         <main className="flex-1 overflow-auto p-6" style={{ background: "#0A0E1A" }}>
-          <Outlet />
+          <ReadAccess>
+            <Outlet />
+          </ReadAccess>
         </main>
       </div>
     </div>

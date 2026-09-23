@@ -5,6 +5,7 @@ import {
   type StorageLike,
 } from "../lib/dispositionOverride";
 import { formatCallbackTime } from "../lib/callbackWrite";
+import { ReadUnavailableError } from "../lib/read-session";
 
 /**
  * Board 4 Tranche A — the native disposition control.
@@ -74,7 +75,10 @@ type Submit =
   | { status: "idle" }
   | { status: "in_flight"; label: string }
   | { status: "done"; label: string }
-  | { status: "partial"; label: string; message: string };
+  | { status: "partial"; label: string; message: string }
+  /** READ-AUTH: the writes were confirmed by ghl-write, but the readback was
+   *  refused for read sign-in. Never shown as failed; never invites a retry. */
+  | { status: "saved_unverified"; label: string; message: string };
 
 type Routing =
   | { status: "idle" }
@@ -82,7 +86,14 @@ type Routing =
   | { status: "done" }
   /** Persistent, NOT a dismissible toast — it is the only notice that will
    *  ever exist for this failure. See LIMIT 1 below. */
-  | { status: "failed"; stage: "write" | "readback" | "bell"; message: string };
+  | { status: "failed"; stage: "write" | "readback" | "bell"; message: string }
+  /** READ-AUTH: the routing write was confirmed, the readback was refused. */
+  | { status: "saved_unverified"; message: string };
+
+/** Both writes above a readback go through confirmedCommand, which returns only
+ *  once ghl-write has confirmed them server-side; an uncertain write throws
+ *  BEFORE the readback and keeps its existing handling. */
+const VERIFY_UNAVAILABLE = "can't be verified because read sign-in is required. Sign in to reads and reload the page -- do not retry.";
 
 function storage(): StorageLike | null {
   try { return typeof sessionStorage === "undefined" ? null : sessionStorage; } catch { return null; }
@@ -173,7 +184,16 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
       // ── 3 · read back every carrier THIS PATH requires ────────────────
       const required = [{ id: CALL_DISPOSITION_ID, value: label, key: "disposition" }];
       if (unanswered) required.push({ id: CALL_ROUTING_ID, value: ROUTING_STAY, key: "routing" });
-      const confirmed = await confirmCarriers(contactId, required);
+      let confirmed: { ok: boolean; missing: string[] };
+      try { confirmed = await confirmCarriers(contactId, required); }
+      catch (e) {
+        if (!(e instanceof ReadUnavailableError)) throw e;
+        setSubmit({
+          status: "saved_unverified", label,
+          message: `Saved -- IAOS confirmed the write, but it ${VERIFY_UNAVAILABLE} Nothing further was signalled to GHL.`,
+        });
+        return;                            // BELL WITHHELD -- nothing further without a readback
+      }
       if (!confirmed.ok) {
         setSubmit({
           status: "partial", label,
@@ -262,9 +282,17 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
     setRouting({ status: "in_flight" });
     try {
       await ghl.contacts.setCallRouting(contactId, ROUTING_LTN);
-      const confirmed = await confirmCarriers(contactId, [
-        { id: CALL_ROUTING_ID, value: ROUTING_LTN, key: "routing" },
-      ]);
+      let confirmed: { ok: boolean; missing: string[] };
+      try {
+        confirmed = await confirmCarriers(contactId, [
+          { id: CALL_ROUTING_ID, value: ROUTING_LTN, key: "routing" },
+        ]);
+      } catch (e) {
+        if (!(e instanceof ReadUnavailableError)) throw e;
+        setRouting({ status: "saved_unverified", message: `Routing saved -- IAOS confirmed the move to Long-Term Nurture, but it ${VERIFY_UNAVAILABLE}` });
+        setPromptOpen(false);
+        return;
+      }
       if (!confirmed.ok) {
         setRouting({ status: "failed", stage: "readback", message: "GHL did not confirm the new routing." });
         return;
@@ -343,6 +371,9 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
         {submit.status === "done" ? (
           <span data-testid="disposition-saved" style={{ color: "#94A3B8" }}>Recorded — {submit.label}.</span>
         ) : null}
+        {submit.status === "saved_unverified" ? (
+          <span data-testid="disposition-saved-unverified" style={{ color: "#F59E0B" }}>{submit.label}: {submit.message}</span>
+        ) : null}
         {submit.status === "partial" ? (
           <span data-testid="disposition-partial" style={{ color: "#F87171" }}>{submit.label}: {submit.message}</span>
         ) : null}
@@ -364,6 +395,12 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
           >
             Move to Long-Term Nurture
           </button>
+        </div>
+      ) : null}
+
+      {routing.status === "saved_unverified" ? (
+        <div data-testid="routing-saved-unverified" style={{ marginTop: "8px", fontSize: "12px", color: "#F59E0B" }}>
+          {routing.message}
         </div>
       ) : null}
 
