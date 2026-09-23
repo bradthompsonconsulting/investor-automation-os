@@ -1177,5 +1177,178 @@ await check('manual send: readback failure -- live provider fetch itself errors,
   await check('duplicate handoff refused', async () => { const before = writes; assert.equal((await invoke(load('contract-disposition-handoff-carriers').formatDispositionHandoffNote(handoff.value))).statusCode, 409); assert.equal(writes, before); });
 }
 
+// ============================================================
+// INV-98 -- durable "Under Contract stage transition unresolved" marker.
+// ============================================================
+{
+  const receiptsLib = require('../netlify/functions/lib/write-receipts.ts');
+  const { configuredBoundary } = require('../netlify/functions/lib/ghl-write-boundary.ts');
+  const markerKey = receiptsLib.stageTransitionMarkerKey(opportunity.id);
+  const stageArgs = () => ({ agreementAt: fixture.version.agreementAt, version: fixture.version });
+  const resetStage = (stage) => { opportunity.pipelineStageId = stage; stagePutMode = 'apply'; putIssuedThisAttempt = false; receipts.delete(markerKey); };
+  async function invokeOpAs(email, operation, targetId, args) {
+    return handler({blobs:Buffer.from(JSON.stringify({url:'https://blobs.example.invalid',token:'offline-blob-fixture'})).toString('base64'),httpMethod:'POST',
+      headers:{'x-nf-site-id':'offline-site','x-nf-deploy-id':'offline-deploy',origin:process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN,authorization:'Bearer '+auth.issueAppSession(email).token},
+      body:JSON.stringify({operation,targetId,args,requestId:'marker-'+(++n)})});
+  }
+  // Counts every outbound GHL request made while fn runs.
+  async function countingGhl(fn) {
+    const inner = global.fetch; let ghlCalls = 0;
+    global.fetch = async (url, init) => { ghlCalls++; return inner(url, init); };
+    try { return { result: await fn(), ghlCalls: () => ghlCalls }; } finally { global.fetch = inner; }
+  }
+
+  await check('marker key: one per opportunity in this env+location; independent of operator, session and requestId; carries no raw id', async () => {
+    assert.equal(receiptsLib.stageTransitionMarkerKey(opportunity.id), markerKey);
+    assert.ok(markerKey.startsWith(receiptsLib.STAGE_UNRESOLVED_PREFIX));
+    assert.ok(!markerKey.includes(opportunity.id));
+    assert.notEqual(receiptsLib.stageTransitionMarkerKey(opportunity2.id), markerKey);
+    assert.notEqual(receiptsLib.stageTransitionMarkerKey(opportunity.id, { ...process.env, IAOS_ENV: 'production' }), markerKey);
+    assert.equal(receiptsLib.claimStageTransition.length, 3, 'operator and requestId are recorded as digests, never part of the key');
+  });
+
+  await check('claim point: never claimed on a pre-write refusal or when already in the stage', async () => {
+    const boundary = configuredBoundary();
+    let claims = 0; const hooks = { beforePut: async () => { claims++; } };
+    resetStage(config.stages.sellerOfferSent);
+    await assert.rejects(boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.sellerClosedWon, [config.stages.sellerClosedWon], hooks));
+    await assert.rejects(boundary.transitionOpportunityStage(opportunity.id, 'some-other-pipeline', config.stages.underContract, [config.stages.sellerClosedWon], hooks));
+    resetStage(config.stages.underContract);
+    const idem = await boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon], hooks);
+    assert.equal(idem.alreadyInStage, true);
+    assert.equal(claims, 0);
+    assert.equal(receipts.has(markerKey), false);
+  });
+
+  await check('claim point: claimed immediately BEFORE the PUT, confirmed hook only AFTER the exact readback', async () => {
+    const boundary = configuredBoundary(); const order = [];
+    resetStage(config.stages.sellerOfferSent);
+    await boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon], {
+      beforePut: async () => { order.push('claim:putIssued=' + putIssuedThisAttempt); },
+      afterConfirmed: async () => { order.push('confirmed:stage=' + (opportunity.pipelineStageId === config.stages.underContract)); },
+    });
+    assert.deepEqual(order, ['claim:putIssued=false', 'confirmed:stage=true']);
+    resetStage(config.stages.underContract);
+  });
+
+  await check('an interrupted function leaves the marker: claimed, PUT never returns, nothing clears it', async () => {
+    resetStage(config.stages.sellerOfferSent);
+    const inner = global.fetch;
+    global.fetch = async (url, init) => (init?.method === 'PUT' ? new Promise(() => {}) : inner(url, init));
+    const boundary = configuredBoundary();
+    const pending = boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon], {
+      beforePut: () => receiptsLib.claimStageTransition(opportunity.id, 'interrupted-request', 'brad@example.invalid'),
+      afterConfirmed: () => receiptsLib.clearStageTransition(opportunity.id),
+    });
+    for (let i = 0; i < 20 && !receipts.has(markerKey); i++) await new Promise((r) => setImmediate(r));
+    global.fetch = inner;
+    assert.equal(receipts.has(markerKey), true, 'the marker must already be durable while the PUT is still outstanding');
+    const stored = receipts.get(markerKey);
+    assert.deepEqual(Object.keys(stored).sort(), ['claimedAt', 'kind', 'operatorDigest', 'requestIdDigest']);
+    assert.ok(!JSON.stringify(stored).includes('brad@example.invalid') && !JSON.stringify(stored).includes('interrupted-request'));
+    void pending; // deliberately never settles: models the platform killing the function
+    resetStage(config.stages.underContract);
+  });
+
+  await check('exact confirmation through ghl-write clears the marker', async () => {
+    resetStage(config.stages.sellerOfferSent);
+    const res = await invokeOp('opportunity.underContractStage', opportunity.id, stageArgs());
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(JSON.parse(res.body).confirmed, true);
+    assert.equal(opportunity.pipelineStageId, config.stages.underContract);
+    assert.equal(receipts.has(markerKey), false);
+  });
+
+  for (const [mode, label] of [['reject', 'the GHL PUT fails'], ['ignore', 'readback still shows the prior stage'], ['wrong-stage', 'readback shows Seller Closed-Won'], ['wrong-pipeline', 'readback shows another pipeline']]) {
+    await check('uncertain outcome leaves the marker: ' + label, async () => {
+      resetStage(config.stages.sellerOfferSent); stagePutMode = mode;
+      const res = await invokeOp('opportunity.underContractStage', opportunity.id, stageArgs());
+      assert.equal(res.statusCode, 409, res.body);
+      assert.equal(JSON.parse(res.body).outcome, 'indeterminate');
+      assert.equal(receipts.has(markerKey), true);
+      resetStage(config.stages.underContract);
+    });
+  }
+
+  await check('an exception after the claim (confirm hook itself fails) leaves the marker and is never success', async () => {
+    resetStage(config.stages.sellerOfferSent);
+    failNextBlobDelete = true;
+    const res = await invokeOp('opportunity.underContractStage', opportunity.id, stageArgs());
+    failNextBlobDelete = false;
+    assert.equal(res.statusCode, 409, res.body);
+    assert.equal(JSON.parse(res.body).confirmed, undefined);
+    assert.equal(receipts.has(markerKey), true);
+    resetStage(config.stages.underContract);
+  });
+
+  await check('while unresolved: a later request with a NEW requestId is refused before ANY GHL call', async () => {
+    resetStage(config.stages.sellerOfferSent); stagePutMode = 'reject';
+    await invokeOp('opportunity.underContractStage', opportunity.id, stageArgs());
+    assert.equal(receipts.has(markerKey), true);
+    stagePutMode = 'apply';
+    const { result: res, ghlCalls } = await countingGhl(() => invokeOp('opportunity.underContractStage', opportunity.id, stageArgs()));
+    assert.equal(res.statusCode, 409, res.body);
+    assert.deepEqual(JSON.parse(res.body).by, 'iaos-stage-transition-unresolved');
+    assert.equal(JSON.parse(res.body).outcome, 'indeterminate');
+    assert.equal(ghlCalls(), 0);
+    assert.equal(opportunity.pipelineStageId, config.stages.sellerOfferSent);
+  });
+
+  await check('while unresolved: another allowlisted operator is refused the same way, before any GHL call', async () => {
+    const saved = process.env.IAOS_APP_WRITE_BRAD_EMAILS;
+    process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid,second-operator@example.invalid';
+    try {
+      const { result: res, ghlCalls } = await countingGhl(() => invokeOpAs('second-operator@example.invalid', 'opportunity.underContractStage', opportunity.id, stageArgs()));
+      assert.equal(res.statusCode, 409, res.body);
+      assert.equal(JSON.parse(res.body).by, 'iaos-stage-transition-unresolved');
+      assert.equal(ghlCalls(), 0);
+    } finally { process.env.IAOS_APP_WRITE_BRAD_EMAILS = saved; }
+  });
+
+  await check('while unresolved: refused even when GHL now shows Under Contract -- a later read never settles the marker', async () => {
+    opportunity.pipelineStageId = config.stages.underContract;
+    const { result: res, ghlCalls } = await countingGhl(() => invokeOp('opportunity.underContractStage', opportunity.id, stageArgs()));
+    assert.equal(res.statusCode, 409, res.body);
+    assert.equal(JSON.parse(res.body).by, 'iaos-stage-transition-unresolved');
+    assert.equal(ghlCalls(), 0);
+    assert.equal(receipts.has(markerKey), true);
+  });
+
+  await check('the marker blocks ONLY this opportunity\'s stage transition: other writes and other opportunities are unaffected', async () => {
+    assert.equal(receipts.has(markerKey), true);
+    assert.equal(await receiptsLib.stageTransitionUnresolved(opportunity2.id), false);
+    resetStage(config.stages.underContract);
+  });
+
+  await check('concurrent claims: exactly one wins, the other is StageTransitionUnresolved', async () => {
+    receipts.delete(markerKey);
+    const results = await Promise.allSettled([
+      receiptsLib.claimStageTransition(opportunity.id, 'request-a', 'brad@example.invalid'),
+      receiptsLib.claimStageTransition(opportunity.id, 'request-b', 'second-operator@example.invalid'),
+    ]);
+    assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
+    const lost = results.find((r) => r.status === 'rejected');
+    assert.ok(lost.reason instanceof receiptsLib.StageTransitionUnresolved);
+    receipts.delete(markerKey);
+  });
+
+  await check('concurrent attempts at the boundary: exactly ONE PUT is issued', async () => {
+    resetStage(config.stages.sellerOfferSent);
+    const inner = global.fetch; let puts = 0;
+    global.fetch = async (url, init) => { if (init?.method === 'PUT') puts++; return inner(url, init); };
+    try {
+      const attempt = (rid) => configuredBoundary().transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon], {
+        beforePut: () => receiptsLib.claimStageTransition(opportunity.id, rid, 'brad@example.invalid'),
+        afterConfirmed: () => receiptsLib.clearStageTransition(opportunity.id),
+      });
+      const results = await Promise.allSettled([attempt('concurrent-a'), attempt('concurrent-b')]);
+      assert.equal(puts, 1);
+      assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
+      assert.ok(results.find((r) => r.status === 'rejected').reason instanceof receiptsLib.StageTransitionUnresolved);
+    } finally { global.fetch = inner; }
+    resetStage(config.stages.underContract);
+  });
+}
+
 console.log(count+' offline contract ledger checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

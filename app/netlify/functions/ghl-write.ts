@@ -6,7 +6,7 @@ import { getConfig } from "../../shared/ghl-config";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { exact, identifier, planWrite, dispositions, routings } from "./lib/write-contracts";
 import { configuredBoundary, fieldValue, WriteUncertain } from "./lib/ghl-write-boundary";
-import { claimWrite, lockContact } from "./lib/write-receipts";
+import { claimWrite, lockContact, stageTransitionUnresolved, claimStageTransition, clearStageTransition } from "./lib/write-receipts";
 import { latestOutcomeNoteForOpportunity } from "../../src/lib/seller-call-outcome";
 import { currentOfferWriteGate } from "../../src/lib/current-offer-carrier";
 const json = (statusCode: number, data: unknown) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(data) });
@@ -79,6 +79,11 @@ export const handler = async (event: any) => {
   let release: (() => Promise<void>) | undefined;
   try {
     connectLambda(event);
+    // INV-98: an unresolved earlier Under Contract attempt blocks every later
+    // one -- any browser, operator or requestId -- before any GHL call.
+    if (plan.kind === "opportunity_stage" && await stageTransitionUnresolved(request.targetId)) {
+      return json(409, { outcome: "indeterminate", by: "iaos-stage-transition-unresolved", error: "An earlier Under Contract stage transition for this opportunity is unresolved. Do not retry; inspect GHL first." });
+    }
     const boundary = configuredBoundary();
     const { targetId, operation, args, requestId } = request;
     const isOpportunityTargeted = plan.kind === "opportunity" || plan.kind === "opportunity_stage";
@@ -119,7 +124,10 @@ export const handler = async (event: any) => {
       await verifyUnderContractStageTransitionReady(boundary, targetId, plan.agreementAt!, plan.version!, operator);
       const targetStageId = config.stages.underContract;
       const forbiddenStageIds = [config.stages.sellerClosedWon];
-      const result = await boundary.transitionOpportunityStage(targetId, config.pipelines.sellerLeads, targetStageId, forbiddenStageIds);
+      const result = await boundary.transitionOpportunityStage(targetId, config.pipelines.sellerLeads, targetStageId, forbiddenStageIds, {
+        beforePut: () => claimStageTransition(targetId, requestId, operator),
+        afterConfirmed: () => clearStageTransition(targetId),
+      });
       return json(200, { confirmed: true, alreadyInStage: result.alreadyInStage, readback: { id: result.readback.id, pipelineId: result.readback.pipelineId, pipelineStageId: result.readback.pipelineStageId } });
     }
     const result = await boundary.fields(plan.kind, targetId, plan.fields);
