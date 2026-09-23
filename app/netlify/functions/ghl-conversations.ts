@@ -11,16 +11,15 @@
  */
 
 import { getConfig } from "../../shared/ghl-config";
-import { ghlReadContained } from "./lib/ghl-read-containment";
+import { readAuthRefusal } from "./lib/app-read-auth";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
 const { locationId: LOCATION_ID } = getConfig(process.env.IAOS_ENV);
 
-const CORS = {
-  "Access-Control-Allow-Origin":  "*",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
+// Same-origin only: no CORS grant. Reads are authorized by the SameSite=Strict
+// read-session cookie, and personal data is never cached.
+const RESPONSE_HEADERS = { "Cache-Control": "no-store" };
 
 function headers(token: string) {
   return { Authorization: `Bearer ${token}`, Version: "2021-07-28" };
@@ -81,16 +80,17 @@ export interface ThreadRow {
 }
 
 export const handler = async (event: any) => {
-  // SECURITY CONTAINMENT: ghlReadContained() always returns a refusal, so no
-  // request reaches GHL below. See lib/ghl-read-containment.ts.
-  const contained = ghlReadContained();
-  if (contained) return contained;
-  if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: CORS, body: "" };
-  if (event.httpMethod !== "GET") return { statusCode: 405, headers: CORS, body: "Method Not Allowed" };
+  // SECURITY: Brad's application read session is required before any GHL
+  // request. Missing read configuration answers 503; a missing or invalid
+  // session answers 401. See lib/app-read-auth.ts.
+  const refused = readAuthRefusal(event);
+  if (refused) return refused;
+  if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: RESPONSE_HEADERS, body: "" };
+  if (event.httpMethod !== "GET") return { statusCode: 405, headers: RESPONSE_HEADERS, body: "Method Not Allowed" };
 
   const token = process.env.GHL_PRIVATE_API_KEY;
   if (!token) {
-    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
+    return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
   }
 
   try {
@@ -116,7 +116,7 @@ export const handler = async (event: any) => {
         .sort((a, b) => b.lastMessageDate - a.lastMessageDate); // newest first (inbox)
       return {
         statusCode: 200,
-        headers: { ...CORS, "Content-Type": "application/json" },
+        headers: { ...RESPONSE_HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify(threads),
       };
     }
@@ -141,14 +141,14 @@ export const handler = async (event: any) => {
 
     return {
       statusCode: 200,
-      headers: { ...CORS, "Content-Type": "application/json" },
+      headers: { ...RESPONSE_HEADERS, "Content-Type": "application/json" },
       body: JSON.stringify(rows),
     };
   } catch (err: any) {
     console.error("[ghl-conversations]", err);
     return {
       statusCode: 500,
-      headers: CORS,
+      headers: RESPONSE_HEADERS,
       body: JSON.stringify({ error: err.message ?? "Internal error" }),
     };
   }

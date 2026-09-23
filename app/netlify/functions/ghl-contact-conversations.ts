@@ -22,17 +22,16 @@
  */
 
 import { getConfig } from "../../shared/ghl-config";
-import { ghlReadContained } from "./lib/ghl-read-containment";
+import { readAuthRefusal } from "./lib/app-read-auth";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
 const { locationId: LOCATION_ID } = getConfig(process.env.IAOS_ENV);
 const MESSAGE_CAP = 500; // bound the transcript; sellers won't exceed this in practice
 
-const CORS = {
-  "Access-Control-Allow-Origin":  "*",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
+// Same-origin only: no CORS grant. Reads are authorized by the SameSite=Strict
+// read-session cookie, and personal data is never cached.
+const RESPONSE_HEADERS = { "Cache-Control": "no-store" };
 
 function headers(token: string) {
   return { Authorization: `Bearer ${token}`, Version: "2021-07-28" };
@@ -85,18 +84,19 @@ async function messagesFor(token: string, conversationId: string): Promise<any[]
 }
 
 export const handler = async (event: any) => {
-  // SECURITY CONTAINMENT: ghlReadContained() always returns a refusal, so no
-  // request reaches GHL below. See lib/ghl-read-containment.ts.
-  const contained = ghlReadContained();
-  if (contained) return contained;
-  if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: CORS, body: "" };
-  if (event.httpMethod !== "GET")     return { statusCode: 405, headers: CORS, body: "Method Not Allowed" };
+  // SECURITY: Brad's application read session is required before any GHL
+  // request. Missing read configuration answers 503; a missing or invalid
+  // session answers 401. See lib/app-read-auth.ts.
+  const refused = readAuthRefusal(event);
+  if (refused) return refused;
+  if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: RESPONSE_HEADERS, body: "" };
+  if (event.httpMethod !== "GET")     return { statusCode: 405, headers: RESPONSE_HEADERS, body: "Method Not Allowed" };
 
   const id = event.queryStringParameters?.id;
-  if (!id) return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "missing ?id" }) };
+  if (!id) return { statusCode: 400, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "missing ?id" }) };
 
   const token = process.env.GHL_PRIVATE_API_KEY;
-  if (!token) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
+  if (!token) return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
 
   try {
     // 1) Conversation(s) for THIS contact — scoped by explicit contactId.
@@ -113,7 +113,7 @@ export const handler = async (event: any) => {
     if (conversations.length > 0 && withoutId.length > 0) {
       return {
         statusCode: 502,
-        headers: { ...CORS, "Content-Type": "application/json" },
+        headers: { ...RESPONSE_HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify({
           error: "conversation returned without an id — cannot scope messages reliably",
           conversationCount: conversations.length,
@@ -149,9 +149,9 @@ export const handler = async (event: any) => {
       conversationCount: conversations.length,
       messages:          rows,
     };
-    return { statusCode: 200, headers: { ...CORS, "Content-Type": "application/json" }, body: JSON.stringify(result) };
+    return { statusCode: 200, headers: { ...RESPONSE_HEADERS, "Content-Type": "application/json" }, body: JSON.stringify(result) };
   } catch (err: any) {
     console.error("[ghl-contact-conversations]", err);
-    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: err.message ?? "Internal error" }) };
+    return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: err.message ?? "Internal error" }) };
   }
 };

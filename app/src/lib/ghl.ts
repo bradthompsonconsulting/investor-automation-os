@@ -1,5 +1,6 @@
 import { writeCommand, confirmedCommand } from "./write-command";
 import { appWriteFetch } from "./app-write-session";
+import { isReadAuthRefusal, readFetch, ReadUnavailableError } from "./read-session";
 /**
  * IAOS GHL Service Module — single entry point for all GHL data access.
  *
@@ -503,16 +504,49 @@ async function request<T = unknown>(
   method: "GET" = "GET",
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch(`${PROXY}?path=${encodeURIComponent(path)}`, {
+  const res = await readFetch(`${PROXY}?path=${encodeURIComponent(path)}`, {
     method,
     headers: body != null ? { "Content-Type": "application/json" } : {},
     body: body != null ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
+    if (await isReadAuthRefusal(res)) throw new ReadUnavailableError(res.status, `GHL ${method} ${path}`);
     const text = await res.text();
     throw new Error(`GHL ${method} ${path} → ${res.status}: ${text}`);
   }
   return res.json() as Promise<T>;
+}
+
+/**
+ * READ-AUTH -- the independent Opportunity readback each named writer performs
+ * after its write was accepted. Returns the opportunity record the writer
+ * compares against, exactly as before.
+ *
+ * When the read session is missing or expired the browser readback is refused
+ * (never an upstream GHL failure -- see isReadAuthRefusal). The write's OWN
+ * response then decides what may be said:
+ *  - ghl-write answered 200 with its server-side readback of THIS opportunity
+ *    (singular GET, location-checked in ghl-write-boundary.ts): that is real
+ *    observed state, so the writer's comparison runs against it. A landed write
+ *    is never reported as failed merely because the browser could not read.
+ *  - anything else -- the indeterminate path (202) or no usable server
+ *    readback -- is uncertain: nothing is claimed saved, and the caller gets a
+ *    ReadUnavailableError telling Brad to sign in, refresh and inspect.
+ */
+async function readbackOpportunity(label: string, opportunityId: string, putRes: Response): Promise<any> {
+  const readRes = await readFetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
+  if (readRes.ok) {
+    const readBody = await readRes.json();
+    return readBody.opportunity ?? readBody;
+  }
+  if (await isReadAuthRefusal(readRes)) {
+    const write = putRes.status === 200 ? await putRes.clone().json().catch(() => null) : null;
+    const server = write?.readback;
+    if (server && server.id === opportunityId && Array.isArray(server.customFields)) return server;
+    throw new ReadUnavailableError(readRes.status, `${label}: the save was NOT confirmed and cannot be read back -- inspect in GHL before retrying`);
+  }
+  const text = await readRes.text();
+  throw new Error(`${label} readback → ${readRes.status}: ${text}`);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -524,7 +558,7 @@ export const ghl = {
     // (CONTACT_WORKSPACE_SPEC_v2.md §11). Prefer getOne() when you need one
     // contact fresh (e.g. right after a write).
     listAll: async (): Promise<ContactRow[]> => {
-      const res = await fetch("/.netlify/functions/ghl-contacts");
+      const res = await readFetch("/.netlify/functions/ghl-contacts");
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`ghl-contacts → ${res.status}: ${text}`);
@@ -537,7 +571,7 @@ export const ghl = {
     // identical. Used by the Contact Workspace so a reload right after a write
     // shows fresh data.
     getOne: async (id: string): Promise<ContactRow> => {
-      const res = await fetch(`/.netlify/functions/ghl-contact?id=${encodeURIComponent(id)}`);
+      const res = await readFetch(`/.netlify/functions/ghl-contact?id=${encodeURIComponent(id)}`);
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`ghl-contact → ${res.status}: ${text}`);
@@ -755,7 +789,7 @@ export const ghl = {
 
     // Returns Seller Leads Pipeline opportunities + stage list, paged server-side
     listPipeline: async (): Promise<PipelineData> => {
-      const res = await fetch("/.netlify/functions/ghl-opportunities");
+      const res = await readFetch("/.netlify/functions/ghl-opportunities");
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`ghl-opportunities → ${res.status}: ${text}`);
@@ -859,13 +893,7 @@ export const ghl = {
         throw new Error(`setAskingPrice PUT → ${putStatus}: ${text}`);
       }
 
-      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
-      if (!readRes.ok) {
-        const text = await readRes.text();
-        throw new Error(`setAskingPrice readback → ${readRes.status}: ${text}`);
-      }
-      const readBody = await readRes.json();
-      const opp = readBody.opportunity ?? readBody;
+      const opp = await readbackOpportunity("setAskingPrice", opportunityId, putRes);
       /* STRUCTURAL absence -- the id gone from the array -- never a parser
          returning undefined. A mis-shaped parser cannot manufacture absence
          out of a key that is present, which is the whole protection. */
@@ -896,13 +924,7 @@ export const ghl = {
         throw new Error(`setApprovedArv PUT → ${putStatus}: ${text}`);
       }
 
-      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
-      if (!readRes.ok) {
-        const text = await readRes.text();
-        throw new Error(`setApprovedArv readback → ${readRes.status}: ${text}`);
-      }
-      const readBody = await readRes.json();
-      const opportunity = readBody.opportunity ?? readBody;
+      const opportunity = await readbackOpportunity("setApprovedArv", opportunityId, putRes);
       const entry = (opportunity.customFields ?? [])
         .find((field: any) => field.id === fieldId) ?? null;
       const observed = entry === null ? null : readSingularFieldValue(entry);
@@ -945,13 +967,7 @@ export const ghl = {
         throw new Error(`setRepairEstimate PUT → ${putStatus}: ${text}`);
       }
 
-      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
-      if (!readRes.ok) {
-        const text = await readRes.text();
-        throw new Error(`setRepairEstimate readback → ${readRes.status}: ${text}`);
-      }
-      const readBody = await readRes.json();
-      const opportunity = readBody.opportunity ?? readBody;
+      const opportunity = await readbackOpportunity("setRepairEstimate", opportunityId, putRes);
       const entry = (opportunity.customFields ?? [])
         .find((field: any) => field.id === fieldId) ?? null;
       const observed = entry === null ? null : readSingularFieldValue(entry);
@@ -1008,13 +1024,7 @@ export const ghl = {
         throw new Error(`setCurrentOffer PUT → ${putStatus}: ${text}`);
       }
 
-      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
-      if (!readRes.ok) {
-        const text = await readRes.text();
-        throw new Error(`setCurrentOffer readback → ${readRes.status}: ${text}`);
-      }
-      const readBody = await readRes.json();
-      const opportunity = readBody.opportunity ?? readBody;
+      const opportunity = await readbackOpportunity("setCurrentOffer", opportunityId, putRes);
       const entry = (opportunity.customFields ?? [])
         .find((field: any) => field.id === fieldId) ?? null;
       const observed = entry === null ? null : readSingularFieldValue(entry);
@@ -1054,7 +1064,7 @@ export const ghl = {
       if (params.status) qs.set("status", params.status);
       if (params.limit) qs.set("limit", String(params.limit));
       try {
-        const res = await fetch(`${PROXY}?path=${encodeURIComponent(`/proposals/document?${qs.toString()}`)}`);
+        const res = await readFetch(`${PROXY}?path=${encodeURIComponent(`/proposals/document?${qs.toString()}`)}`);
         const text = await res.text();
         let parsed: unknown = null;
         try {
@@ -1138,7 +1148,7 @@ export const ghl = {
     // Dashboard §2.1 — conversations whose last message is inbound with no
     // outbound reply since, oldest first. Read-only: GET /conversations/search.
     unansweredInbound: async (): Promise<UnansweredInboundRow[]> => {
-      const res = await fetch("/.netlify/functions/ghl-conversations");
+      const res = await readFetch("/.netlify/functions/ghl-conversations");
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`ghl-conversations → ${res.status}: ${text}`);
@@ -1150,7 +1160,7 @@ export const ghl = {
     // read-only. Opts into the unfiltered branch via ?scope=all on the SAME
     // function; no new endpoint (default stays unanswered-filtered above).
     threads: async (): Promise<ThreadRow[]> => {
-      const res = await fetch("/.netlify/functions/ghl-conversations?scope=all");
+      const res = await readFetch("/.netlify/functions/ghl-conversations?scope=all");
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`ghl-conversations?scope=all → ${res.status}: ${text}`);
@@ -1163,7 +1173,7 @@ export const ghl = {
     // by contactId → that conversation's messages); never the contacts list
     // endpoint, so it does not inherit §11's listAll lag/drop. No writes.
     forContact: async (contactId: string): Promise<ContactConversations> => {
-      const res = await fetch(`/.netlify/functions/ghl-contact-conversations?id=${encodeURIComponent(contactId)}`);
+      const res = await readFetch(`/.netlify/functions/ghl-contact-conversations?id=${encodeURIComponent(contactId)}`);
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`ghl-contact-conversations → ${res.status}: ${text}`);
@@ -1181,7 +1191,7 @@ export const ghl = {
       if (startTime != null) qs.set("startTime", String(startTime));
       if (endTime   != null) qs.set("endTime",   String(endTime));
       const url = `/.netlify/functions/ghl-calendar-events${qs.toString() ? `?${qs}` : ""}`;
-      const res = await fetch(url);
+      const res = await readFetch(url);
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`ghl-calendar-events → ${res.status}: ${text}`);
@@ -1193,7 +1203,7 @@ export const ghl = {
   mailers: {
     // Shared query — this-week-ready / business-flagged / overdue / no-address
     list: async (): Promise<MailerDigest> => {
-      const res = await fetch("/.netlify/functions/ghl-mailers");
+      const res = await readFetch("/.netlify/functions/ghl-mailers");
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`ghl-mailers → ${res.status}: ${text}`);
@@ -1224,7 +1234,7 @@ export const ghl = {
     // Underwriting mutations are exposed separately through explicitly
     // named methods in this namespace -- see saveUnderwritingFields below.
     policy: async (): Promise<PolicyValuesResponse> => {
-      const res = await fetch("/.netlify/functions/ghl-underwriting-policy");
+      const res = await readFetch("/.netlify/functions/ghl-underwriting-policy");
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`ghl-underwriting-policy → ${res.status}: ${text}`);
@@ -1325,13 +1335,7 @@ export const ghl = {
 
       // Readback on the SINGULAR GET, parsing fieldValue. Not the list
       // endpoint, whose shape varies by dataType.
-      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
-      if (!readRes.ok) {
-        const text = await readRes.text();
-        throw new Error(`saveUnderwritingFields readback → ${readRes.status}: ${text}`);
-      }
-      const readBody = await readRes.json();
-      const opp = readBody.opportunity ?? readBody;
+      const opp = await readbackOpportunity("saveUnderwritingFields", opportunityId, putRes);
       const byId = new Map<string, any>((opp.customFields ?? []).map((f: any) => [f.id, f]));
 
       const carriers: CarrierReadback[] = plan.map((p) => {
@@ -1410,13 +1414,7 @@ export const ghl = {
         throw new Error(`setAssignmentMode PUT → ${putStatus}: ${text}`);
       }
 
-      const readRes = await fetch(`${PROXY}?path=${encodeURIComponent(`/opportunities/${opportunityId}`)}`);
-      if (!readRes.ok) {
-        const text = await readRes.text();
-        throw new Error(`setAssignmentMode readback → ${readRes.status}: ${text}`);
-      }
-      const readBody = await readRes.json();
-      const opp = readBody.opportunity ?? readBody;
+      const opp = await readbackOpportunity("setAssignmentMode", opportunityId, putRes);
       const entry = (opp.customFields ?? []).find((f: any) => f.id === fieldId) ?? null;
       const observed = entry === null ? null : readSingularFieldValue(entry);
 

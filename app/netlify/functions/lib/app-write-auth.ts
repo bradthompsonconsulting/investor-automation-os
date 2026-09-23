@@ -1,5 +1,6 @@
 /** INV-95: independent application-write authority. Never accepts voice sessions. */
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { verifyGoogleIdToken } from "./google-identity";
 const audience = "iaos-app-write";
 export function appAuthConfig(env = process.env) {
   const clientId = env.IAOS_APP_WRITE_GOOGLE_CLIENT_ID?.trim();
@@ -36,11 +37,5 @@ export function requireAppWriter(event: any, env = process.env, now = Date.now()
 }
 export async function googleAppIdentity(idToken: string, fetcher: typeof fetch = fetch, env = process.env, now = Date.now()) {
   const config = appAuthConfig(env);
-  const response = await fetcher(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
-  if (!response.ok) throw new Error("Google identity verification failed");
-  const c = await response.json();
-  const email = typeof c.email === "string" ? c.email.toLowerCase() : "";
-  if (!["accounts.google.com", "https://accounts.google.com"].includes(c.iss) || c.aud !== config.clientId || String(c.email_verified) !== "true" ||
-      !Number.isFinite(Number(c.exp)) || Number(c.exp) <= now / 1000 || !config.emails.includes(email)) throw new Error("Google identity is not authorized");
-  return email;
+  return verifyGoogleIdToken(idToken, config.clientId, config.emails, fetcher, now);
 }
