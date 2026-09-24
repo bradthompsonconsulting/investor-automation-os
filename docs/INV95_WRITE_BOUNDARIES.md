@@ -3,7 +3,7 @@
 Baseline: a32b4d165c8211e7a9a9c9c3e90eaea2e637e9cc, fetched and matched to origin refs/heads/main on 2026-09-18 UTC. The initial baseline was 2cb8d1b9da9c3f86b5ab35bf53d330af8d6609e0; the isolated branch was fast-forwarded after INV-67 merged. The initial security tranche did not change INV-67 files; the V1 correction
 below retires its obsolete runtime writers while preserving computation.
 
-Authority: AGENTS.md; INV-95 read directly from Linear including Brad's application identity and root webhook rulings; existing IAOS_PIPELINE_WRITE_SAFETY_AUDIT.md; Brad's 2026-09-18 V1 correction: direct PDF population and manual GHL upload/send. The earlier Test-template binding interpretation is superseded. INV-95's narrow operation rulings govern this change; they do not authorize workflow or stage writes. Board #13 and voice authorization remain separate.
+Authority: AGENTS.md; INV-95 read directly from Linear including Brad's application identity and root webhook rulings; `docs/FUNCTION_SURFACE_AUDIT.md` (2026-08-06), which recorded that GHL write restrictions such as avoiding pipeline stage moves were enforced in client code and not by the proxy; Brad's 2026-09-18 V1 correction: direct PDF population and manual GHL upload/send. The earlier Test-template binding interpretation is superseded. INV-95's narrow operation rulings govern this change; they do not authorize workflow or stage writes. Board #13 and voice authorization remain separate.
 
 ## OBSERVED — runtime before/after inventory
 
@@ -32,14 +32,15 @@ Sources: baseline app/src/lib/ghl.ts, app/src/pages/Pipeline.tsx, app/netlify/fu
 | Contract reservation note endpoint | Retired endpoint | POST requires app identity, then returns 410; no GHL or Blob access |
 | Contract send endpoint | Retired endpoint | POST requires app identity, then returns 410; no template-send request exists |
 | Contract send readback | ghl-contract-send-readback (read only) | App identity and Test gates; exact document/recipient/sender/location; duplicate identities refused |
-| Pipeline Move To / updateStage | Removed | No stage writer remains in browser or generic proxy |
+| Pipeline Move To / updateStage | Removed | No generic stage writer remains in browser or generic proxy; the only stage write is `opportunity.underContractStage` (row below) |
+| Under Contract stage transition (added 2026-09-24, INV-98) | opportunity.underContractStage | Seller Leads opportunity → configured Under Contract stage only; fresh re-verified execution and preserved artifact; Closed-Won forbidden; sentinel refuses; exact pipeline+stage readback; idempotent when already in stage; durable per-opportunity unresolved marker claimed immediately before the PUT, cleared only by that attempt's exact confirmation, refusing every later request before any GHL call; Production also requires prerequisites P1 and P2; governed by CONTACTS_OPPORTUNITIES_SPEC.md §4.1a |
 | Generic proxy POST/PUT forwarding | Removed | Proxy accepts allowlisted GET only, no body or extra envelope fields; all other methods rejected |
 | Root motivation-score | Dedicated S2S authenticated score operation | Only motivation_score, deal_score, combined_score, data_completeness_score plus hot/warm/low add/remove; fresh target; four-field and bucket readback; scoring algorithm unchanged |
 | Root phone-lookup | Dedicated S2S authenticated lookup-result operation | Existing provider lookup/mapping behavior; exact fresh contact phone match; unique phone_type field definition; only that field and exact readback |
 | App ghl-disposition webhook | Existing dedicated S2S disposition operation | Existing customData contract, six dispositions, known contact; serialized dedupe, exact note and timestamp-pair readback; note-success/attempt-failure retry retained |
 | scripts/rescore-all.ts caller | Dedicated score secret header | Explicit credential file only; missing/short secret refuses before network in write mode; existing target/mutation/dry-run gates retained |
 
-All app mutations use the distinct iaos-app-write session, not voice credentials. Each operation has exact envelope/argument keys. Generic field, method, path, workflow, tags (outside scoring), stage and do_not_mail mutation are unavailable. Authentication/allowlist configuration fails closed.
+All app mutations use the distinct iaos-app-write session, not voice credentials. Each operation has exact envelope/argument keys. Generic field, method, path, workflow, tags (outside scoring), stage (except `opportunity.underContractStage`, CONTACTS_OPPORTUNITIES_SPEC.md §4.1a) and do_not_mail mutation are unavailable. Authentication/allowlist configuration fails closed.
 
 Structured notes retain their existing carriers. System-derived authorization, send acceptance, provider lifecycle, execution and disposition handoff evidence is independently checked against fresh canonical GHL evidence. Human facts and the existing manual executed-PDF hash/visual-attestation bridge remain operator attestations; this change does not introduce document storage or claim server custody of PDF bytes. Corrections, rescissions and resend/decline records reuse existing model guards.
 

@@ -219,6 +219,14 @@ these states even if a carrier gap analysis recommended it** — this is a
 hard boundary this document restates, not a gap B9-03 is free to close by
 adding a stage-move write.
 
+**Superseded in part (2026-09-24, INV-98):** the Under Contract state now
+has one guarded stage write — `CONTACTS_OPPORTUNITIES_SPEC.md` §4.1a. The
+prohibition above still holds for Agreement Reached, Contract Ready,
+Contract Sent and every other stage. The observations above, including "no
+stage corresponds to Under Contract", are the dated 2026-09 Test snapshot
+and remain as history; Test has since gained a configured Under Contract
+stage, and Production's is not yet provisioned.
+
 **Contact custom fields — OBSERVED live, Test location, 2026-09.** `GET
 /locations/SoTgVoaFGHtBdRFvXWQV/customFields` returns exactly 109 fields,
 **all** `model: "contact"` (`d.customFields.every(f => f.model ===
