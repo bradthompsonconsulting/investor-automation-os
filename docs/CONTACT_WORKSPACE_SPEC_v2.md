@@ -89,7 +89,7 @@ The Dashboard's three-write invariant carries forward unchanged. The Workspace a
 2. `ghl.contacts.setLastCallAttempt()` → PUT, carries `last_call_attempt` (`lGoNXM9Wrte4m7ShwQPT`) + `last_call_attempt_precise` (`2vz1igGMxF3wv7HaWm97`) in ONE call
 3. `ghl.contacts.setCallbackDatetime()` → PUT, carries `callback_datetime` (`JeQWtwpwUbvPA50UfuPU`) + `callback_datetime_precise` (`7qRUkZQK8bi2HNo7zDHd`) in ONE call
 
-**HARD NO, unchanged:** tags, pipeline stage, `offer_` fields, workflow triggers. IAOS never fires a workflow.
+**HARD NO, unchanged:** tags, pipeline stage, `offer_` fields, workflow triggers. This surface moves no stage and writes no tag or `offer_` field; it reaches GHL workflows only through Board #4's reviewed disposition and routing fields. The governing rule, its intentional workflow inputs and the single guarded Board #9 stage exception (not reachable from this surface) are `CONTACTS_OPPORTUNITIES_SPEC.md` §4.1 / §4.1a (ruled 2026-09-24).
 
 **`last_call_attempt` is what greys; `setLastCallAttempt` is the only thing that sets it (§6 MECHANISM).** Every write path that should grey pairs `notes.create` with `setLastCallAttempt` (the note is the record; the attempt greys). The Call button does neither — it does not grey a row. Callback scheduling now writes both, in gated order (locked this session — see §6).
 
@@ -181,7 +181,7 @@ Consequences of dropping Path B:
 
 A GHL Workflow of the shape **Custom Disposition trigger -> Webhook action -> IAOS endpoint** does **NOT** violate the workflows-are-a-hard-No invariant.
 
-Reasoning: the invariant governs what **IAOS writes** — that IAOS never triggers workflows, moves stages, or re-tags as a side effect. A disposition webhook is the opposite direction: GHL-side config that IAOS does not trigger and only *receives* from. It moves nothing, tags nothing, mails nothing. It is a read mechanism shaped like a workflow. Workflows already exist in this account (mailer track, Seller pipeline bridge, Phone Type Validation); the rule was never "no workflows exist," it was "IAOS doesn't touch them."
+Reasoning: the invariant governs what **IAOS writes** — IAOS does not move stages, re-tag, or start workflows as a side effect; it reaches GHL workflows only through reviewed, intentional inputs (`CONTACTS_OPPORTUNITIES_SPEC.md` §4.1), and its one guarded stage write is §4.1a. A disposition webhook is the opposite direction: GHL-side config that IAOS does not trigger and only *receives* from. It moves nothing, tags nothing, mails nothing. It is a read mechanism shaped like a workflow. Workflows already exist in this account (mailer track, Seller pipeline bridge, Phone Type Validation); the rule was never "no workflows exist," it was that IAOS feeds them only through reviewed, intentional inputs.
 
 ### 5.6 THE RECEIVE PATH ALREADY EXISTS IN PRODUCTION
 

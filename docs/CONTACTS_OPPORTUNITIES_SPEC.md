@@ -87,9 +87,29 @@ The Dashboard/Workspace three sanctioned write actions are untouched by this sur
 
 ### 4.1 HARD NO — Workspace §4 set, extended 2026-07-27
 
-**Tags, pipeline stage, `offer_` fields, workflow triggers.** IAOS never fires a workflow. This is unchanged from `CONTACT_WORKSPACE_SPEC_v2.md` §4 and is NOT relaxed by any write class below. Editing a contact field is not a licence to touch a tag, move a stage, or set an offer field.
+**Tags, pipeline stage, `offer_` fields, workflow triggers.** This is unchanged from `CONTACT_WORKSPACE_SPEC_v2.md` §4 and is NOT relaxed by any write class below. Editing a contact field is not a licence to touch a tag, move a stage, or set an offer field. IAOS writes reach GHL workflows only through reviewed, intentional inputs: Board #4's reviewed disposition and routing fields, and the separately governed scoring tags (hot/warm/low; `INV95_WRITE_BOUNDARIES.md`, root motivation-score). The single guarded stage exception is §4.1a; it permits no additional or unintended workflow enrollment.
 
 **Do Not Mail** (`contact.do_not_mail` / `BDu234KJVQAP5MiXTQx3` / TEXT / Reachability). Added 2026-07-27, not from Workspace §4. It gates real physical mail to real sellers. Never editable in IAOS under any write class.
+
+### 4.1a The one guarded exception — Board #9 Under Contract stage (ruled 2026-09-24, INV-98)
+
+The §4.1 pipeline-stage prohibition has exactly one exception. It is not a write class, not a precedent, and extends to no other stage, pipeline, tag or field. IAOS may move one Seller Leads Pipeline opportunity into the configured Under Contract stage (`stages.underContract`), only through the named operation `opportunity.underContractStage`, and only when every condition below holds at the moment of the write:
+
+1. **Target only.** A fresh read shows the opportunity in this location's configured Seller Leads Pipeline. The only permitted target is `stages.underContract`. Every other stage, including Seller Closed-Won, is refused, and an unprovisioned (sentinel) stage id is refused before any GHL call.
+2. **Fresh verified execution.** A durable Under Contract record exists for the exact agreement and contract version, and the server independently rebuilds it from fresh GHL evidence before the write. Any mismatch refuses.
+3. **Preserved artifact.** The preserved executed-artifact record for that agreement and version independently re-verifies.
+4. **Exact readback.** Success is reported only when this attempt's fresh readback shows exactly the expected pipeline and stage. An opportunity already in that stage is not written again.
+5. **No blind retry (durable).** Immediately before the stage write, the server atomically records an unresolved-transition marker for that opportunity, independent of browser, operator and request. It is cleared only by that same attempt's exact confirmed readback. An uncertain result, exception or interrupted function leaves it in place, and while it exists every later Under Contract request for that opportunity is refused before any GHL call. A later read showing either stage does not clear it. Clearing a stuck marker requires a separately reviewed procedure, which does not yet exist.
+6. **Authorization.** An authenticated, allowlisted Brad application-write session. Production additionally requires explicit Production enablement and a provisioned Under Contract stage.
+
+The transition permits no additional or unintended workflow enrollment.
+
+**Production prerequisites — both required before the first Production transition:**
+
+- **P1 — Entry audit (exists; reconfirmation required).** Spock has performed a read-only audit of the Production location's GHL workflow builder (triggers are not API-derivable, §4.6); it is not stored in this repository. Because the Production Under Contract stage is not yet provisioned, that audit must be reconfirmed — read-only, from the builder — after the stage is provisioned and before the first Production transition. The reconfirmation must find no published workflow that fires on entry into Under Contract (no pipeline-stage-changed trigger filtered to Under Contract or unfiltered, no opportunity-changed or status trigger, and no other trigger the move satisfies), and it is recorded before that first transition.
+- **P2 — Exit guards (not built, not proven).** The three Find-based Seller workflows — `Seller - Follow Up`, `Seller - Not Interested` and `Seller - Route to Long-Term Nurture` — each find a Seller Leads opportunity and update its stage (Spock inspected the Production Find → Update path of `Seller - Route to Long-Term Nurture`). Each must have a reviewed guard that prevents it from later moving an opportunity out of Under Contract. These guards are not yet built or proven, and the first Production transition waits for them.
+
+This section makes no claim about any Test-location audit.
 
 ### 4.2 Why classification, not a blanket field-edit toggle
 

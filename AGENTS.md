@@ -89,8 +89,14 @@ Stated here rather than by reference, because a reference is one skipped
 read away from a violation that review cannot undo.
 
 **HARD NO** — `CONTACTS_OPPORTUNITIES_SPEC.md` §4.1. Tags, pipeline stage,
-`offer_` fields, workflow triggers. IAOS never fires a workflow. No write
-class relaxes this.
+`offer_` fields, workflow triggers. No write class relaxes this. IAOS
+writes reach GHL workflows only through reviewed, intentional inputs: Board
+#4's reviewed disposition and routing fields, and the separately governed
+scoring tags (hot/warm/low; `docs/INV95_WRITE_BOUNDARIES.md`). **Exactly
+one guarded stage exception exists:** the Board #9 Under Contract
+transition, `CONTACTS_OPPORTUNITIES_SPEC.md` §4.1a (ruled 2026-09-24). It
+is not a write class or a precedent, extends to no other stage, pipeline,
+tag or field, and permits no additional or unintended workflow enrollment.
 
 **`contact.do_not_mail` is never editable in IAOS, under any write class.**
 It gates physical mail to real sellers.
@@ -99,8 +105,13 @@ It gates physical mail to real sellers.
 fires a GHL workflow is not API-derivable, so no field is writable on
 assumption. `dataType` proves serialization; it does not prove safety.
 
-**The three sanctioned writes, and no fourth:** `ghl.notes.create()`,
-`ghl.contacts.setLastCallAttempt()`, `ghl.contacts.setCallbackDatetime()`.
+**Writes are limited to named, reviewed operations.** The original three
+sanctioned writes — `ghl.notes.create()`,
+`ghl.contacts.setLastCallAttempt()`, `ghl.contacts.setCallbackDatetime()`
+— carry forward unchanged (`CONTACTS_OPPORTUNITIES_SPEC.md` §4.0). Every
+other permitted write is a named operation enumerated, with its limits, in
+`docs/INV95_WRITE_BOUNDARIES.md`. A write absent from that table is not
+permitted, and no generic, parameterized or pass-through write is.
 
 **GHL is the sole system of record.** No app-side shadow copy. Inspect the
 wire before designing the screen.
