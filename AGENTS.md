@@ -91,12 +91,14 @@ read away from a violation that review cannot undo.
 **HARD NO** — `CONTACTS_OPPORTUNITIES_SPEC.md` §4.1. Tags, pipeline stage,
 `offer_` fields, workflow triggers. No write class relaxes this. IAOS
 writes reach GHL workflows only through reviewed, intentional inputs: Board
-#4's reviewed disposition and routing fields, and the separately governed
-scoring tags (hot/warm/low; `docs/INV95_WRITE_BOUNDARIES.md`). **Exactly
-one guarded stage exception exists:** the Board #9 Under Contract
-transition, `CONTACTS_OPPORTUNITIES_SPEC.md` §4.1a (ruled 2026-09-24). It
-is not a write class or a precedent, extends to no other stage, pipeline,
-tag or field, and permits no additional or unintended workflow enrollment.
+#4's reviewed disposition and routing fields, the separately governed
+scoring tags (hot/warm/low; `docs/INV95_WRITE_BOUNDARIES.md`), and the one
+guarded stage exception, whose only permitted entry workflow is the named,
+reviewed `Seller - Under Contract Exit`. **Exactly one guarded stage
+exception exists:** the Board #9 Under Contract transition,
+`CONTACTS_OPPORTUNITIES_SPEC.md` §4.1a (ruled 2026-09-24). It is not a
+write class or a precedent, extends to no other stage, pipeline, tag or
+field, and permits no other workflow enrollment.
 
 **`contact.do_not_mail` is never editable in IAOS, under any write class.**
 It gates physical mail to real sellers.
