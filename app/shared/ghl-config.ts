@@ -634,12 +634,13 @@ const PRODUCTION: GhlConfig = {
   // unconditionally sentinel-filled, exactly like every other
   // Documents & Contracts / contract-projection identifier above.
   contractSellerCountField: CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED,
-  // INV-98 Phase 1 -- Production contract paths remain disabled throughout
-  // this phase. Flipping this is a separate, later, reviewed config-only
-  // commit, performed only after the external actions this phase's own
-  // report names (real Under Contract stage created, write-session/origin
-  // environment confirmed, supervised proof scheduled).
-  contractProductionEnabled: CONTRACT_PRODUCTION_NOT_ENABLED,
+  // INV-98 -- ENABLED for the supervised Production synthetic contract proof
+  // only, after the external actions named here were completed (real Under
+  // Contract stage provisioned, write-session/origin environment deployed).
+  // Every Production write is still confined by `productionProofScope` below
+  // to the one pinned synthetic contact/opportunity. Reverting this commit
+  // restores CONTRACT_PRODUCTION_NOT_ENABLED.
+  contractProductionEnabled: CONTRACT_PRODUCTION_ENABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -667,13 +668,14 @@ const PRODUCTION: GhlConfig = {
     expectedTemplateName: "PRODUCTION_SEND_NOT_AUTHORIZED_NO_TEMPLATE_CONFIGURED",
     populationVerification: POPULATION_NOT_VERIFIED,
   },
-  // INV-98 Board #9 Production proof write scope. DISABLED, with the
-  // synthetic fixture pinned (contact/opportunity verified by API readback
-  // 2026-09-25): while `enabled` is not PRODUCTION_PROOF_SCOPE_ENABLED every
-  // IAOS_APP_WRITE_* Production write is refused. See the interface
-  // doc comment and netlify/functions/lib/production-write-scope.ts.
+  // INV-98 Board #9 Production proof write scope. ENABLED and pinned to the
+  // synthetic fixture (contact/opportunity verified by API readback
+  // 2026-09-25): only the named synthetic-contract operations, and only on
+  // these two ids, are permitted; every other IAOS_APP_WRITE_* Production
+  // write is refused. See the interface doc comment and
+  // netlify/functions/lib/production-write-scope.ts.
   productionProofScope: {
-    enabled: PRODUCTION_PROOF_SCOPE_NOT_ENABLED,
+    enabled: PRODUCTION_PROOF_SCOPE_ENABLED,
     contactId: "T3t5AZ3Z5lak0BmZawvP",
     opportunityId: "44hLQ4PD4a4HBVLPr4nl",
   },
