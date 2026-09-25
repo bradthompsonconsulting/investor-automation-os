@@ -73,9 +73,14 @@ function makeGhl(options = {}) {
 
 let seq = 0;
 function newEvidence() { return path.join(TMP, `evidence-${++seq}.jsonl`); }
-async function mode(ghl, evidence, m, extra = []) {
+// A controllable clock: every mode() call advances it past the hold by
+// default, so ordinary sequences satisfy the S1/S2 holds; hold tests pass
+// an explicit, shorter advance.
+const clock = { t: Date.parse('2026-09-25T12:00:00.000Z') };
+async function mode(ghl, evidence, m, extra = [], opts = {}) {
   const out = [], err = [];
-  const code = await proof.run(['--mode', m, '--credential-file', CRED, '--evidence', evidence, ...extra], { fetch: ghl.fetch, stdout: (s) => out.push(s), stderr: (s) => err.push(s), sleep: async () => {}, pollDelayMs: 0 });
+  clock.t += opts.advanceMs === undefined ? proof.HOLD_MS + 1000 : opts.advanceMs;
+  const code = await proof.run(['--mode', m, '--credential-file', CRED, '--evidence', evidence, ...extra], { fetch: ghl.fetch, stdout: (s) => out.push(s), stderr: (s) => err.push(s), sleep: async () => {}, pollDelayMs: 0, now: () => new Date(clock.t).toISOString() });
   const text = out.join('\n') + '\n' + err.join('\n');
   assert.ok(!text.includes(TOKEN), 'credential never printed');
   if (fs.existsSync(evidence)) assert.ok(!fs.readFileSync(evidence, 'utf8').includes(TOKEN), 'credential never in evidence');
@@ -152,7 +157,7 @@ async function check(name, fn) {
     assert.ok(!fs.readFileSync(ev, 'utf8').includes('PRIVATE BODY'), 'message bodies are never recorded');
     assert.equal(ghl.puts().length, 0);
     assert.ok(ghl.calls.every((c) => c.auth === 'Bearer ' + TOKEN));
-    assert.match(r.out, /HANDOFF: Spock UI snapshot S0/);
+    assert.equal(r.out.includes(proof.HANDOFF.S0), true);
   });
   await check('precheck (present start 250000): temp 999999; (present start 999999): temp 999998', async () => {
     let ghl = makeGhl({ start: 250000 }); let ev = newEvidence();
@@ -197,7 +202,8 @@ async function check(name, fn) {
     const ghl = makeGhl(); ghl.state.conversationsStatus = 401; const ev = newEvidence();
     const r = await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']);
     assert.equal(r.code, 0); assert.equal(lines(ev)[1].start.conversations.readable, false);
-    assert.match(r.err, /message-attempt evidence must come from Spock/);
+    assert.match(r.err, /MESSAGE VERIFICATION WILL BE INCOMPLETE/);
+    assert.equal(lines(ev)[1].messageVerification, 'incomplete');
   });
 
   // ===== Mode ordering (each refusal still leaves a record, and sends nothing).
@@ -215,22 +221,29 @@ async function check(name, fn) {
   });
 
   // ===== Happy path, absent start.
-  await check('full sequence (absent start): one write PUT, one restore PUT, exact bodies, clean final', async () => {
+  await check('full procedure (absent start): write, verify x2 across the S1 hold, restore, final x2 across the S2 hold -> qualified DATA CHECKS PASSED', async () => {
     const ghl = makeGhl(); const ev = newEvidence();
     let sawBeforeRecordAtPut = [];
-    ghl.hooks.onPut = (body, { applyPut, state, reply }) => { sawBeforeRecordAtPut.push(phases(ev).at(-1)); applyPut(body); return reply(200, { opportunity: state.opportunity }); };
+    ghl.hooks.onPut = (body, { applyPut, state, reply }) => { sawBeforeRecordAtPut.push(phases(ev).at(-1)); applyPut(body); state.opportunity.updatedAt = new Date(clock.t).toISOString(); return reply(200, { opportunity: state.opportunity }); };
     assert.equal((await mode(ghl, ev, 'precheck', ['--expect-field', 'absent'])).code, 0);
     assert.equal((await mode(ghl, ev, 'write')).code, 0);
-    const v = await mode(ghl, ev, 'verify'); assert.equal(v.code, 0, v.err); assert.match(v.out, /S1/);
+    const v1 = await mode(ghl, ev, 'verify'); assert.equal(v1.code, 0, v1.err); assert.equal(v1.out.includes(proof.HANDOFF.S1), true);
+    const v2 = await mode(ghl, ev, 'verify'); assert.equal(v2.code, 0, v2.err); assert.match(v2.out, /Next: --mode restore/);
     assert.equal((await mode(ghl, ev, 'restore')).code, 0);
-    const f = await mode(ghl, ev, 'final'); assert.equal(f.code, 0, f.err); assert.match(f.out, /S2/);
+    const f1 = await mode(ghl, ev, 'final'); assert.equal(f1.code, 0, f1.err); assert.equal(f1.out.includes(proof.HANDOFF.S2), true);
+    const f2 = await mode(ghl, ev, 'final'); assert.equal(f2.code, 0, f2.err);
+    assert.match(f2.out, /DATA CHECKS PASSED \(script evidence only\)/);
+    assert.equal(f2.out.includes(proof.HANDOFF.PASS), true, 'never an unqualified pass');
     const puts = ghl.puts();
     assert.equal(puts.length, 2);
     assert.deepEqual(JSON.parse(puts[0].body), { customFields: [{ id: C.CURRENT_OFFER_FIELD_ID, field_value: 999999 }] });
     assert.deepEqual(JSON.parse(puts[1].body), { customFields: [{ id: C.CURRENT_OFFER_FIELD_ID, field_value: '' }] });
     assert.deepEqual(sawBeforeRecordAtPut, ['write:put_before', 'restore:put_before'], 'durable record exists BEFORE each PUT');
-    assert.deepEqual(phases(ev), ['precheck:before', 'precheck:after', 'write:before', 'write:put_before', 'write:after', 'verify:before', 'verify:after', 'restore:before', 'restore:put_before', 'restore:after', 'final:before', 'final:after']);
-    assert.equal(lines(ev).at(-1).result, 'restored_clean');
+    assert.deepEqual(phases(ev), ['precheck:before', 'precheck:after', 'write:before', 'write:put_before', 'write:after', 'verify:before', 'verify:after', 'verify:before', 'verify:after', 'restore:before', 'restore:put_before', 'restore:after', 'final:before', 'final:after', 'final:before', 'final:after']);
+    const last = lines(ev).at(-1);
+    assert.equal(last.result, 'restored_clean'); assert.equal(last.pass, 2);
+    assert.deepEqual(last.verdict, { verdict: 'DATA_CHECKS_PASSED', reasons: [] });
+    assert.notEqual(last.observed.chronology.opportunityUpdatedAt, lines(ev)[1].start.chronology.opportunityUpdatedAt, 'updatedAt changed and was NOT treated as a failure');
     assert.deepEqual(ghl.state.opportunity.customFields, [{ id: 'otherOppField00000001', fieldValue: 'keep' }]);
     assert.ok(ghl.calls.every((c) => c.method === 'GET' || c.method === 'PUT'));
   });
@@ -337,7 +350,13 @@ async function check(name, fn) {
     assert.equal(lines(ev).filter((x) => x.mode === 'final' && x.phase === 'after').at(-1).result, 'start_not_restored');
     ghl.hooks.onPut = null;
     assert.equal((await mode(ghl, ev, 'restore')).code, 0);
-    assert.equal((await mode(ghl, ev, 'final')).code, 0);
+    // The separately invoked restore landed, but the run's DATA verdict still
+    // fails: a final pass was start_not_restored and only one verify ran.
+    const f2 = await mode(ghl, ev, 'final');
+    assert.equal(f2.code, proof.EXIT.CHECK_FAILED); assert.match(f2.err, /DATA CHECKS FAILED/);
+    const last = lines(ev).filter((x) => x.mode === 'final' && x.phase === 'after').at(-1);
+    assert.equal(last.result, 'restored_clean'); assert.equal(last.verdict.verdict, 'FAILED');
+    assert.deepEqual(ghl.state.opportunity.customFields, [{ id: 'otherOppField00000001', fieldValue: 'keep' }]);
     assert.equal(ghl.puts().length, 3);
   });
   await check('ambiguous restore (network error, not applied): recorded ambiguous, final fails', async () => {
@@ -358,6 +377,179 @@ async function check(name, fn) {
     assert.equal((await mode(failing, ev, 'write')).code, proof.EXIT.READ_FAILED);
     assert.deepEqual(phases(ev).slice(-2), ['write:before', 'write:error']);
     assert.equal(ghl.puts().length, 0);
+  });
+
+  // ===== (1) Baseline drift since precheck refuses the write.
+  const drifts = [
+    ['a contact tag', (s) => { s.contact.tags.push('added-later'); }, 'contact tags changed'],
+    ['per-channel DND', (s) => { s.contact.dndSettings = { SMS: { status: 'active' } }; }, 'contact dndSettings changed'],
+    ['contact followers', (s) => { s.contact.followers = ['user-2']; }, 'contact followers changed'],
+    ['another opportunity field', (s) => { s.opportunity.customFields[0].fieldValue = 'changed'; }, 'another opportunity custom field changed'],
+    ['lastStageChangeAt', (s) => { s.opportunity.lastStageChangeAt = '2026-09-25T13:00:00.000Z'; }, 'opportunity lastStageChangeAt changed'],
+    ['opportunity source', (s) => { s.opportunity.source = 'changed'; }, 'opportunity source changed'],
+    ['a new message', (s) => { s.conversations[0].messages.push({ id: 'm-late', messageType: 'TYPE_SMS', direction: 'outbound', status: 'failed' }); }, 'conversations/messages changed (possible message attempt)'],
+  ];
+  for (const [label, mutate, expected] of drifts) {
+    await check('write refused (nothing sent) on baseline drift since precheck: ' + label, async () => {
+      const ghl = makeGhl(); const ev = newEvidence();
+      await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']);
+      mutate(ghl.state);
+      const w = await mode(ghl, ev, 'write');
+      assert.equal(w.code, proof.EXIT.REFUSED);
+      assert.ok(lines(ev).find((r) => r.mode === 'write' && r.phase === 'refused').problems.includes('baseline drift since precheck: ' + expected));
+      assert.equal(ghl.puts().length, 0);
+    });
+  }
+
+  // ===== (2) Timestamps, chronology, source/followers/DND, UNKNOWN.
+  await check('keys the API does not return are recorded as UNKNOWN; returned ones are captured', async () => {
+    const ghl = makeGhl(); const ev = newEvidence();
+    Object.assign(ghl.state.opportunity, { lastStageChangeAt: '2026-09-24T12:18:00.000Z', lastStatusChangeAt: '2026-09-20T00:00:00.000Z', source: 'IAOS proof', updatedAt: '2026-09-24T12:18:00.000Z' });
+    Object.assign(ghl.state.contact, { source: 'manual', followers: ['user-b', 'user-a'], dateUpdated: '2026-09-24T12:00:00.000Z' });
+    await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']);
+    const s = lines(ev)[1].start;
+    assert.equal(s.opportunity.lastStageChangeAt, '2026-09-24T12:18:00.000Z');
+    assert.equal(s.opportunity.lastStatusChangeAt, '2026-09-20T00:00:00.000Z');
+    assert.equal(s.opportunity.source, 'IAOS proof');
+    assert.equal(s.opportunity.followers, 'UNKNOWN');
+    assert.equal(s.contact.source, 'manual');
+    assert.deepEqual(s.contact.followers, ['user-a', 'user-b']);
+    assert.equal(s.contact.dndSettings, 'UNKNOWN');
+    assert.equal(s.contact.dnd, false);
+    assert.deepEqual(s.chronology, { opportunityUpdatedAt: '2026-09-24T12:18:00.000Z', contactDateUpdated: '2026-09-24T12:00:00.000Z' });
+  });
+  await check('a status-change timestamp moving during the write is a side effect', async () => {
+    const ghl = makeGhl(); const ev = newEvidence();
+    ghl.state.opportunity.lastStatusChangeAt = '2026-09-20T00:00:00.000Z';
+    await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']);
+    ghl.hooks.onPut = (body, { applyPut, state, reply }) => { applyPut(body); state.opportunity.lastStatusChangeAt = '2026-09-25T12:30:00.000Z'; return reply(200, {}); };
+    await mode(ghl, ev, 'write');
+    assert.equal((await mode(ghl, ev, 'verify')).code, proof.EXIT.CHECK_FAILED);
+    assert.ok(lines(ev).find((r) => r.mode === 'verify' && r.phase === 'after').diffs.includes('opportunity lastStatusChangeAt changed'));
+  });
+  await check('updatedAt/dateUpdated changing is chronology only, never a failure', async () => {
+    const ghl = makeGhl(); const ev = newEvidence();
+    Object.assign(ghl.state.opportunity, { updatedAt: '2026-09-24T00:00:00.000Z' }); Object.assign(ghl.state.contact, { dateUpdated: '2026-09-24T00:00:00.000Z' });
+    await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']);
+    ghl.hooks.onPut = (body, { applyPut, state, reply }) => { applyPut(body); state.opportunity.updatedAt = '2026-09-25T12:31:00.000Z'; state.contact.dateUpdated = '2026-09-25T12:31:00.000Z'; return reply(200, {}); };
+    await mode(ghl, ev, 'write');
+    assert.equal((await mode(ghl, ev, 'verify')).code, 0);
+    assert.deepEqual(lines(ev).find((r) => r.mode === 'verify' && r.phase === 'after').diffs, []);
+  });
+
+  // ===== (3) Second verify / second final only after the holds.
+  await check('verify pass 2 before the S1 hold is refused and reads nothing', async () => {
+    const ghl = makeGhl(); const ev = newEvidence();
+    await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']); await mode(ghl, ev, 'write'); await mode(ghl, ev, 'verify');
+    const gets = ghl.calls.length;
+    const v2 = await mode(ghl, ev, 'verify', [], { advanceMs: 60 * 1000 });
+    assert.equal(v2.code, proof.EXIT.REFUSED); assert.match(v2.err, /verify pass 2 refused/);
+    assert.equal(ghl.calls.length, gets, 'no GHL read during a refused pass 2');
+    assert.equal((await mode(ghl, ev, 'verify', [], { advanceMs: proof.HOLD_MS })).code, 0, 'allowed once the hold has elapsed');
+  });
+  await check('final pass 2 before the S2 hold is refused and reads nothing', async () => {
+    const ghl = makeGhl(); const ev = newEvidence();
+    await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']); await mode(ghl, ev, 'write'); await mode(ghl, ev, 'verify'); await mode(ghl, ev, 'verify');
+    await mode(ghl, ev, 'restore'); await mode(ghl, ev, 'final');
+    const gets = ghl.calls.length;
+    const f2 = await mode(ghl, ev, 'final', [], { advanceMs: 4 * 60 * 1000 });
+    assert.equal(f2.code, proof.EXIT.REFUSED); assert.equal(ghl.calls.length, gets);
+    const ok = await mode(ghl, ev, 'final', [], { advanceMs: proof.HOLD_MS });
+    assert.equal(ok.code, 0); assert.match(ok.out, /DATA CHECKS PASSED/);
+  });
+  await check('a data verdict with only ONE verify pass is FAILED, never a pass', async () => {
+    const ghl = makeGhl(); const ev = newEvidence();
+    await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']); await mode(ghl, ev, 'write'); await mode(ghl, ev, 'verify');
+    await mode(ghl, ev, 'restore'); await mode(ghl, ev, 'final');
+    const f2 = await mode(ghl, ev, 'final');
+    assert.equal(f2.code, proof.EXIT.CHECK_FAILED); assert.match(f2.err, /fewer than two verify passes/);
+    assert.ok(!/DATA CHECKS PASSED/.test(f2.out));
+  });
+  await check('verify is refused once a restore was attempted', async () => {
+    const ghl = makeGhl(); const ev = newEvidence();
+    await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']); await mode(ghl, ev, 'write'); await mode(ghl, ev, 'verify'); await mode(ghl, ev, 'restore');
+    assert.equal((await mode(ghl, ev, 'verify')).code, proof.EXIT.REFUSED);
+  });
+  await check('handoff names the fixture\'s own workflow history, message-attempt view and the six opportunity-trigger workflows', () => {
+    assert.match(proof.HANDOFF.S0, /OWN workflow history/); assert.match(proof.HANDOFF.S0, /OWN message-attempt view/);
+    assert.match(proof.HANDOFF.S0, /six opportunity-trigger workflows/);
+    for (const w of ['Seller - Under Contract Exit', 'Seller - Follow Up', 'Seller - Not Interested', 'Seller - Route to Long-Term Nurture', 'Seller 6', 'Seller 7', 'Seller 8', 'Phone Type Validation']) assert.ok(proof.HANDOFF.S0.includes(w), w);
+    assert.match(proof.HANDOFF.PASS, /ONLY if/);
+  });
+
+  // ===== (4) Conversation reads failing -> INCOMPLETE, never a clean pass.
+  await check('conversations unreadable throughout: every verify/final and the verdict are INCOMPLETE (exit 7), never "DATA CHECKS PASSED"', async () => {
+    const ghl = makeGhl(); ghl.state.conversationsStatus = 403; const ev = newEvidence();
+    await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']); await mode(ghl, ev, 'write');
+    const runs = [await mode(ghl, ev, 'verify'), await mode(ghl, ev, 'verify')];
+    assert.equal((await mode(ghl, ev, 'restore')).code, 0);
+    runs.push(await mode(ghl, ev, 'final'), await mode(ghl, ev, 'final'));
+    for (const r of runs) { assert.equal(r.code, proof.EXIT.INCOMPLETE); assert.ok(!/DATA CHECKS PASSED/.test(r.out + r.err)); }
+    assert.match(runs[3].err, /DATA CHECKS INCOMPLETE/); assert.match(runs[3].err, /NOT a clean pass/);
+    const afters = lines(ev).filter((r) => (r.mode === 'verify' || r.mode === 'final') && r.phase === 'after');
+    assert.ok(afters.every((r) => r.messageVerification === 'incomplete'));
+    assert.equal(afters.at(-1).verdict.verdict, 'INCOMPLETE');
+  });
+  await check('conversations readable at precheck but failing at verify: a side effect (readability changed), not silently skipped', async () => {
+    const ghl = makeGhl(); const ev = newEvidence();
+    await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']); await mode(ghl, ev, 'write');
+    ghl.state.conversationsStatus = 500;
+    assert.equal((await mode(ghl, ev, 'verify')).code, proof.EXIT.CHECK_FAILED);
+    const rec = lines(ev).find((r) => r.mode === 'verify' && r.phase === 'after');
+    assert.equal(rec.messageVerification, 'incomplete'); assert.ok(rec.diffs.includes('conversation readability changed between observations'));
+  });
+
+  // ===== (5) Present but non-numeric Current Offer is refused, never coerced.
+  for (const [label, raw, expect] of [['empty string, expect 0', '', '0'], ['empty string, expect absent', '', 'absent'], ['text', 'abc', '0'], ['null', null, '0'], ['negative text', '-5', '0']]) {
+    await check('precheck refuses a present non-numeric Current Offer: ' + label, async () => {
+      const ghl = makeGhl({ start: raw }); const ev = newEvidence();
+      const r = await mode(ghl, ev, 'precheck', ['--expect-field', expect]);
+      assert.equal(r.code, proof.EXIT.REFUSED); assert.match(r.err, /present but not numeric/);
+      assert.equal(ghl.puts().length, 0);
+    });
+  }
+  await check('a numeric string start is accepted and compared strictly', async () => {
+    const ghl = makeGhl({ start: '250000' }); const ev = newEvidence();
+    assert.equal((await mode(ghl, ev, 'precheck', ['--expect-field', '250000'])).code, 0);
+    assert.equal((await mode(makeGhl({ start: '250000' }), newEvidence(), 'precheck', ['--expect-field', '0'])).code, proof.EXIT.REFUSED);
+  });
+
+  // ===== (6) Exclusive lock.
+  await check('an existing lock refuses the run: no read, no write, no evidence append, lock left for a human', async () => {
+    const ghl = makeGhl(); const ev = newEvidence();
+    await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']);
+    fs.writeFileSync(ev + '.lock', 'held by another run\n');
+    const before = fs.readFileSync(ev, 'utf8'); const calls = ghl.calls.length;
+    const r = await mode(ghl, ev, 'write');
+    assert.equal(r.code, proof.EXIT.LOCKED); assert.match(r.err, /delete the lock file by hand/);
+    assert.equal(ghl.calls.length, calls); assert.equal(fs.readFileSync(ev, 'utf8'), before);
+    assert.equal(fs.readFileSync(ev + '.lock', 'utf8'), 'held by another run\n');
+    fs.unlinkSync(ev + '.lock');
+    assert.equal((await mode(ghl, ev, 'write')).code, 0);
+  });
+  await check('two concurrent runs on one evidence file: the second is refused while the first holds the lock', async () => {
+    const ghl = makeGhl(); const ev = newEvidence();
+    let releaseGate; const gate = new Promise((r) => { releaseGate = r; });
+    const slow = { ...ghl, fetch: async (url, init) => { await gate; return ghl.fetch(url, init); } };
+    const first = mode(slow, ev, 'precheck', ['--expect-field', 'absent']);
+    await new Promise((r) => setImmediate(r));
+    assert.ok(fs.existsSync(ev + '.lock'), 'first run holds the lock');
+    const second = await mode(ghl, ev, 'precheck', ['--expect-field', 'absent']);
+    assert.equal(second.code, proof.EXIT.LOCKED);
+    releaseGate();
+    assert.equal((await first).code, 0);
+    assert.ok(!fs.existsSync(ev + '.lock'), 'lock released after the run');
+    assert.deepEqual(phases(ev), ['precheck:before', 'precheck:after']);
+  });
+  await check('the lock is released after a refused run and after a failed run', async () => {
+    const ghl = makeGhl(); const ev = newEvidence();
+    assert.equal((await mode(ghl, ev, 'write')).code, proof.EXIT.REFUSED);
+    assert.ok(!fs.existsSync(ev + '.lock'));
+    const ev2 = newEvidence();
+    await mode(ghl, ev2, 'precheck', ['--expect-field', 'absent']);
+    ghl.hooks.onPut = () => { throw new Error('ECONNRESET'); };
+    assert.equal((await mode(ghl, ev2, 'write')).code, proof.EXIT.WRITE_NOT_CONFIRMED);
+    assert.ok(!fs.existsSync(ev2 + '.lock'));
   });
 
   fs.rmSync(TMP, { recursive: true, force: true });
