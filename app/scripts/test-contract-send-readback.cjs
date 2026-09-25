@@ -154,12 +154,31 @@ function allKeys(value, out = new Set()) {
     // any GHL call, with valid auth and Origin.
     delete require.cache[require.resolve('../netlify/functions/ghl-contract-send-readback.ts')];
     const prodHandler = require('../netlify/functions/ghl-contract-send-readback.ts').handler;
-    const before = calls;
-    const res = await prodHandler(event());
-    check('Production (disabled, committed config): refused before any GHL call', res.statusCode, 403);
-    check('  -- zero GHL calls occurred', calls, before);
-    let body; try { body = JSON.parse(res.body); } catch { body = null; }
-    check('  -- refusal names the environment-not-ready reason', body && body.by, 'iaos-contract-send-readback-environment-not-ready');
+    // INV-98 enable commit: the committed Production config is now ENABLED for
+    // the pinned synthetic proof, so the DISABLED case sets the flag EXPLICITLY
+    // on the shared Production config object the handler holds, then restores it.
+    const G = require('../shared/ghl-config.ts');
+    const PRODUCTION_LIVE = G.getConfig('production');
+    const committedFlag = PRODUCTION_LIVE.contractProductionEnabled;
+    PRODUCTION_LIVE.contractProductionEnabled = G.CONTRACT_PRODUCTION_NOT_ENABLED;
+    try {
+      const before = calls;
+      const res = await prodHandler(event());
+      check('Production (disabled, explicitly set): refused before any GHL call', res.statusCode, 403);
+      check('  -- zero GHL calls occurred', calls, before);
+      let body; try { body = JSON.parse(res.body); } catch { body = null; }
+      check('  -- refusal names the environment-not-ready reason', body && body.by, 'iaos-contract-send-readback-environment-not-ready');
+    } finally {
+      PRODUCTION_LIVE.contractProductionEnabled = committedFlag;
+    }
+    check('Production committed config is ENABLED (supervised proof) and restored after the disabled case', PRODUCTION_LIVE.contractProductionEnabled, G.CONTRACT_PRODUCTION_ENABLED);
+    // The committed ENABLED config still refuses an opportunity that is not the
+    // pinned synthetic fixture -- never a successful readback.
+    {
+      const res = await prodHandler(event());
+      check('Production (enabled, committed): a NON-pinned opportunity is never read back successfully', res.statusCode !== 200, true);
+      check('  -- no provider document data is returned', /documentId|recipients/.test(String(res.body)), false);
+    }
     process.env.IAOS_ENV = savedEnv;
     delete require.cache[require.resolve('../netlify/functions/ghl-contract-send-readback.ts')];
   }

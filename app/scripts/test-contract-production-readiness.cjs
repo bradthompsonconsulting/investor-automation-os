@@ -52,6 +52,10 @@ const {
 
 const TEST_CONFIG = getConfig('test');
 const PRODUCTION_CONFIG = getConfig('production');
+// INV-98 enable commit: the COMMITTED Production config now has both flags ON
+// with the proof scope pinned. Every test of the DISABLED Production state uses
+// this explicit copy (both flags OFF) -- none relies on the committed values.
+const DISABLED_PRODUCTION_CONFIG = { ...PRODUCTION_CONFIG, contractProductionEnabled: CONTRACT_PRODUCTION_NOT_ENABLED, productionProofScope: { ...PRODUCTION_CONFIG.productionProofScope, enabled: 'PRODUCTION_PROOF_SCOPE_NOT_ENABLED' } };
 const APPROVED_BRAD_EMAIL = 'brad@example.invalid';
 
 let checks = 0, failures = 0;
@@ -73,6 +77,9 @@ function enabledProductionConfig(overrides = {}) {
   return {
     ...PRODUCTION_CONFIG,
     contractProductionEnabled: CONTRACT_PRODUCTION_ENABLED,
+    // The proof scope is kept explicitly OFF here, so these fixtures test the
+    // "no permanent synthetic-contact allowlist" ruling, not the pin.
+    productionProofScope: { ...PRODUCTION_CONFIG.productionProofScope, enabled: 'PRODUCTION_PROOF_SCOPE_NOT_ENABLED' },
     stages: { ...PRODUCTION_CONFIG.stages, underContract: 'fixtureRealLookingStageId123', ...(overrides.stages ?? {}) },
     ...overrides,
   };
@@ -118,15 +125,15 @@ function enabledProductionConfig(overrides = {}) {
 // 3. Production refuses while enablement is false.
 // ============================================================
 {
-  check('PRODUCTION.contractProductionEnabled is CONTRACT_PRODUCTION_NOT_ENABLED (committed config, this phase)', PRODUCTION_CONFIG.contractProductionEnabled, CONTRACT_PRODUCTION_NOT_ENABLED);
-  const result = evaluateContractEnvironment(PRODUCTION_CONFIG);
+  check('the explicit DISABLED Production copy carries CONTRACT_PRODUCTION_NOT_ENABLED', DISABLED_PRODUCTION_CONFIG.contractProductionEnabled, CONTRACT_PRODUCTION_NOT_ENABLED);
+  const result = evaluateContractEnvironment(DISABLED_PRODUCTION_CONFIG);
   check('Production refuses while enablement is false', result.ok, false);
   // The committed stage is now the real, provisioned Production stage, so the
   // committed config refuses on the enablement flag alone.
   check('refusal names PRODUCTION_CONTRACTS_DISABLED', result.ok ? [] : result.reasons.map((r) => r.code), ['PRODUCTION_CONTRACTS_DISABLED']);
   // Coverage preserved: a Production config with the stage placeholder set
   // EXPLICITLY still names BOTH refusal reasons.
-  const stagePlaceholder = { ...PRODUCTION_CONFIG, stages: { ...PRODUCTION_CONFIG.stages, underContract: UNDER_CONTRACT_STAGE_NOT_PROVISIONED } };
+  const stagePlaceholder = { ...DISABLED_PRODUCTION_CONFIG, stages: { ...PRODUCTION_CONFIG.stages, underContract: UNDER_CONTRACT_STAGE_NOT_PROVISIONED } };
   const placeholderResult = evaluateContractEnvironment(stagePlaceholder);
   check('disabled Production with the stage placeholder set explicitly refuses', placeholderResult.ok, false);
   check('  -- and names PRODUCTION_CONTRACTS_DISABLED and UNDER_CONTRACT_STAGE_NOT_PROVISIONED', placeholderResult.ok ? [] : placeholderResult.reasons.map((r) => r.code), ['PRODUCTION_CONTRACTS_DISABLED', 'UNDER_CONTRACT_STAGE_NOT_PROVISIONED']);
@@ -149,7 +156,7 @@ function enabledProductionConfig(overrides = {}) {
   const enabledButMalformedStage = enabledProductionConfig({ stages: { ...PRODUCTION_CONFIG.stages, underContract: '../../path-traversal-shaped' } });
   check('enabled Production with a MALFORMED (path-shaped) stage id refuses', evaluateContractEnvironment(enabledButMalformedStage).ok, false);
 
-  const wellFormedButDisabled = { ...PRODUCTION_CONFIG, stages: { ...PRODUCTION_CONFIG.stages, underContract: 'fixtureRealLookingStageId123' } };
+  const wellFormedButDisabled = { ...DISABLED_PRODUCTION_CONFIG, stages: { ...PRODUCTION_CONFIG.stages, underContract: 'fixtureRealLookingStageId123' } };
   check('a well-formed stage id ALONE, still disabled, still refuses (enablement is checked independently)', evaluateContractEnvironment(wellFormedButDisabled).ok, false);
   check('  -- reason is exactly PRODUCTION_CONTRACTS_DISABLED once the stage is well-formed', reasonCodes(evaluateContractEnvironment(wellFormedButDisabled)), ['PRODUCTION_CONTRACTS_DISABLED']);
 }
@@ -353,8 +360,8 @@ function enabledProductionConfig(overrides = {}) {
   let getConfigThrew = false;
   try { getConfig('production'); } catch { getConfigThrew = true; }
   check('getConfig("production") itself does NOT throw -- every sentinel is a non-empty string, so its own completeness check alone is insufficient to protect Production', getConfigThrew, false);
-  check('evaluateContractEnvironment(getConfig("production")) STILL correctly refuses, despite getConfig\'s own check passing', evaluateContractEnvironment(PRODUCTION_CONFIG).ok, false);
-  check('the refusal is specifically the named-sentinel-equality checks (PRODUCTION_CONTRACTS_DISABLED / UNDER_CONTRACT_STAGE_NOT_PROVISIONED), never a generic "incomplete configuration" message', reasonCodes(evaluateContractEnvironment(PRODUCTION_CONFIG)).every((c) => c === 'PRODUCTION_CONTRACTS_DISABLED' || c === 'UNDER_CONTRACT_STAGE_NOT_PROVISIONED'), true);
+  check('a DISABLED Production config STILL correctly refuses, despite getConfig\'s own check passing', evaluateContractEnvironment(DISABLED_PRODUCTION_CONFIG).ok, false);
+  check('the refusal is specifically the named-sentinel-equality checks (PRODUCTION_CONTRACTS_DISABLED / UNDER_CONTRACT_STAGE_NOT_PROVISIONED), never a generic "incomplete configuration" message', reasonCodes(evaluateContractEnvironment(DISABLED_PRODUCTION_CONFIG)).every((c) => c === 'PRODUCTION_CONTRACTS_DISABLED' || c === 'UNDER_CONTRACT_STAGE_NOT_PROVISIONED'), true);
 }
 
 // ============================================================
@@ -362,11 +369,20 @@ function enabledProductionConfig(overrides = {}) {
 // most load-bearing assertion in this whole file.
 // ============================================================
 {
-  check('PRODUCTION.contractProductionEnabled is committed as CONTRACT_PRODUCTION_NOT_ENABLED, not CONTRACT_PRODUCTION_ENABLED', PRODUCTION_CONFIG.contractProductionEnabled === CONTRACT_PRODUCTION_NOT_ENABLED && PRODUCTION_CONFIG.contractProductionEnabled !== CONTRACT_PRODUCTION_ENABLED, true);
+  // INV-98 enable commit: the committed Production config is ENABLED for the
+  // supervised synthetic proof only, pinned to one contact/opportunity.
+  check('PRODUCTION.contractProductionEnabled is committed as CONTRACT_PRODUCTION_ENABLED (supervised proof)', PRODUCTION_CONFIG.contractProductionEnabled, CONTRACT_PRODUCTION_ENABLED);
   check('PRODUCTION.stages.underContract is the real, provisioned Production stage id (not the sentinel)', PRODUCTION_CONFIG.stages.underContract, 'bf17076b-3830-4479-94bb-b8af70fe9163');
-  check('PRODUCTION.productionProofScope stays NOT ENABLED while pinned to the synthetic fixture', PRODUCTION_CONFIG.productionProofScope, { enabled: 'PRODUCTION_PROOF_SCOPE_NOT_ENABLED', contactId: 'T3t5AZ3Z5lak0BmZawvP', opportunityId: '44hLQ4PD4a4HBVLPr4nl' });
+  check('PRODUCTION.productionProofScope is ENABLED and pinned to the synthetic fixture', PRODUCTION_CONFIG.productionProofScope, { enabled: 'PRODUCTION_PROOF_SCOPE_ENABLED', contactId: 'T3t5AZ3Z5lak0BmZawvP', opportunityId: '44hLQ4PD4a4HBVLPr4nl' });
   check('PRODUCTION.documentsContracts.approvedTestContactId was not populated with a real id this phase', /^PRODUCTION_SEND_NOT_AUTHORIZED/.test(PRODUCTION_CONFIG.documentsContracts.approvedTestContactId), true);
-  check('a real request against the actual, committed PRODUCTION_CONFIG (not the synthetic enabled fixture above) is refused end to end', evaluateContractEnvironment(PRODUCTION_CONFIG).ok, false);
+  const committedEnv = evaluateContractEnvironment(PRODUCTION_CONFIG);
+  check('the committed PRODUCTION_CONFIG passes the environment gate as "production"', committedEnv.ok && committedEnv.environment, 'production');
+  const readinessFor = (contactId, opportunityId, operatorEmail) => evaluateContractProviderEvidenceReadiness({ config: PRODUCTION_CONFIG, contact: { id: contactId }, opportunity: { id: opportunityId, contactId }, operatorEmail });
+  const codesOf = (r) => (r.ok ? [] : r.reasons.map((x) => x.code));
+  check('committed config: the pinned synthetic contact/opportunity with an allowed operator is ready', readinessFor('T3t5AZ3Z5lak0BmZawvP', '44hLQ4PD4a4HBVLPr4nl', APPROVED_BRAD_EMAIL), { ok: true });
+  check('committed config: ANY other contact/opportunity is refused with PRODUCTION_PROOF_SCOPE_MISMATCH', codesOf(readinessFor('someRealContact00001', 'someRealOpportunity1', APPROVED_BRAD_EMAIL)), ['PRODUCTION_PROOF_SCOPE_MISMATCH']);
+  check('committed config: the pinned contact with a DIFFERENT opportunity is refused with PRODUCTION_PROOF_SCOPE_MISMATCH', codesOf(readinessFor('T3t5AZ3Z5lak0BmZawvP', 'someRealOpportunity1', APPROVED_BRAD_EMAIL)), ['PRODUCTION_PROOF_SCOPE_MISMATCH']);
+  check('committed config: the pinned fixture with a non-allowed operator is refused (OPERATOR_NOT_AUTHORIZED)', codesOf(readinessFor('T3t5AZ3Z5lak0BmZawvP', '44hLQ4PD4a4HBVLPr4nl', 'not-brad@example.invalid')), ['OPERATOR_NOT_AUTHORIZED']);
 }
 
 console.log('');
