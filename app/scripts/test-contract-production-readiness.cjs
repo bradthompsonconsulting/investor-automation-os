@@ -121,7 +121,15 @@ function enabledProductionConfig(overrides = {}) {
   check('PRODUCTION.contractProductionEnabled is CONTRACT_PRODUCTION_NOT_ENABLED (committed config, this phase)', PRODUCTION_CONFIG.contractProductionEnabled, CONTRACT_PRODUCTION_NOT_ENABLED);
   const result = evaluateContractEnvironment(PRODUCTION_CONFIG);
   check('Production refuses while enablement is false', result.ok, false);
-  check('refusal names PRODUCTION_CONTRACTS_DISABLED', result.ok ? [] : result.reasons.map((r) => r.code), ['PRODUCTION_CONTRACTS_DISABLED', 'UNDER_CONTRACT_STAGE_NOT_PROVISIONED']);
+  // The committed stage is now the real, provisioned Production stage, so the
+  // committed config refuses on the enablement flag alone.
+  check('refusal names PRODUCTION_CONTRACTS_DISABLED', result.ok ? [] : result.reasons.map((r) => r.code), ['PRODUCTION_CONTRACTS_DISABLED']);
+  // Coverage preserved: a Production config with the stage placeholder set
+  // EXPLICITLY still names BOTH refusal reasons.
+  const stagePlaceholder = { ...PRODUCTION_CONFIG, stages: { ...PRODUCTION_CONFIG.stages, underContract: UNDER_CONTRACT_STAGE_NOT_PROVISIONED } };
+  const placeholderResult = evaluateContractEnvironment(stagePlaceholder);
+  check('disabled Production with the stage placeholder set explicitly refuses', placeholderResult.ok, false);
+  check('  -- and names PRODUCTION_CONTRACTS_DISABLED and UNDER_CONTRACT_STAGE_NOT_PROVISIONED', placeholderResult.ok ? [] : placeholderResult.reasons.map((r) => r.code), ['PRODUCTION_CONTRACTS_DISABLED', 'UNDER_CONTRACT_STAGE_NOT_PROVISIONED']);
 }
 
 // ============================================================
@@ -355,7 +363,8 @@ function enabledProductionConfig(overrides = {}) {
 // ============================================================
 {
   check('PRODUCTION.contractProductionEnabled is committed as CONTRACT_PRODUCTION_NOT_ENABLED, not CONTRACT_PRODUCTION_ENABLED', PRODUCTION_CONFIG.contractProductionEnabled === CONTRACT_PRODUCTION_NOT_ENABLED && PRODUCTION_CONFIG.contractProductionEnabled !== CONTRACT_PRODUCTION_ENABLED, true);
-  check('PRODUCTION.stages.underContract is still the sentinel, not a real stage id', PRODUCTION_CONFIG.stages.underContract, UNDER_CONTRACT_STAGE_NOT_PROVISIONED);
+  check('PRODUCTION.stages.underContract is the real, provisioned Production stage id (not the sentinel)', PRODUCTION_CONFIG.stages.underContract, 'bf17076b-3830-4479-94bb-b8af70fe9163');
+  check('PRODUCTION.productionProofScope stays NOT ENABLED while pinned to the synthetic fixture', PRODUCTION_CONFIG.productionProofScope, { enabled: 'PRODUCTION_PROOF_SCOPE_NOT_ENABLED', contactId: 'T3t5AZ3Z5lak0BmZawvP', opportunityId: '44hLQ4PD4a4HBVLPr4nl' });
   check('PRODUCTION.documentsContracts.approvedTestContactId was not populated with a real id this phase', /^PRODUCTION_SEND_NOT_AUTHORIZED/.test(PRODUCTION_CONFIG.documentsContracts.approvedTestContactId), true);
   check('a real request against the actual, committed PRODUCTION_CONFIG (not the synthetic enabled fixture above) is refused end to end', evaluateContractEnvironment(PRODUCTION_CONFIG).ok, false);
 }

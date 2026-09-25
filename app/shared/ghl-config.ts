@@ -175,10 +175,11 @@ export interface GhlConfig {
     /**
      * Board #9 Phase B (B9-13). Created Test-only, 2026-09-21, by explicit
      * Product Owner ruling -- positioned after sellerOfferSent and before
-     * sellerClosedWon in the live Seller Leads Pipeline. Production is
-     * unconditionally sentinel-filled, exactly like every Documents &
-     * Contracts identifier above: this stage does not exist in Production
-     * and no code may transition a Production opportunity into it.
+     * sellerClosedWon in the live Seller Leads Pipeline. INV-98: the
+     * Production stage was provisioned 2026-09-24 in the same position and
+     * verified by API readback (`bf17076b-...`). Its presence permits nothing
+     * by itself: `contractProductionEnabled` and `productionProofScope` must
+     * both be separately enabled before any Production transition.
      */
     underContract: string;
     sellerClosedWon: string;
@@ -650,7 +651,7 @@ const PRODUCTION: GhlConfig = {
     sellerCallCompleted: "3ac16587-0db8-48ca-9ec0-536e67db9963",
     sellerFollowUp:      "71227a30-2303-4165-aa58-e56860146959",
     sellerOfferSent:     "a0f01076-5019-4abc-b809-7f4b0218dd35",
-    underContract:       UNDER_CONTRACT_STAGE_NOT_PROVISIONED,
+    underContract:       "bf17076b-3830-4479-94bb-b8af70fe9163",
     sellerClosedWon:     "0c45ee3d-7be7-4651-97a4-6df53f53481b",
     longTermNurture:     "a7436df7-e05a-4bf0-bd29-70f7066ec0bd",
     lostNotInterested:   "f1960b50-8aa2-4a69-ba58-a7a0dc66ce82",
@@ -666,13 +667,15 @@ const PRODUCTION: GhlConfig = {
     expectedTemplateName: "PRODUCTION_SEND_NOT_AUTHORIZED_NO_TEMPLATE_CONFIGURED",
     populationVerification: POPULATION_NOT_VERIFIED,
   },
-  // INV-98 Board #9 Production proof write scope. Disabled and unpinned:
-  // every IAOS_APP_WRITE_* Production write is refused. See the interface
+  // INV-98 Board #9 Production proof write scope. DISABLED, with the
+  // synthetic fixture pinned (contact/opportunity verified by API readback
+  // 2026-09-25): while `enabled` is not PRODUCTION_PROOF_SCOPE_ENABLED every
+  // IAOS_APP_WRITE_* Production write is refused. See the interface
   // doc comment and netlify/functions/lib/production-write-scope.ts.
   productionProofScope: {
     enabled: PRODUCTION_PROOF_SCOPE_NOT_ENABLED,
-    contactId: PRODUCTION_PROOF_CONTACT_NOT_PINNED,
-    opportunityId: PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED,
+    contactId: "T3t5AZ3Z5lak0BmZawvP",
+    opportunityId: "44hLQ4PD4a4HBVLPr4nl",
   },
 };
 

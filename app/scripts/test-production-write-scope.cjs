@@ -76,14 +76,21 @@ const PIN_OPP = 'offline-proof-opportunity';
 const OTHER_CONTACT = 'offline-real-contact';
 const OTHER_OPP = 'offline-real-opportunity';
 const FAKE_STAGE = 'offline-under-contract-stage';
+// The synthetic fixture committed in PRODUCTION.productionProofScope (verified by read-only GET 2026-09-25).
+const COMMITTED_FIXTURE_CONTACT = 'T3t5AZ3Z5lak0BmZawvP';
+const COMMITTED_FIXTURE_OPP = '44hLQ4PD4a4HBVLPr4nl';
 
 /** Production config variants. Each is a deep copy; `apply` also mutates the live object for handler checks. */
+// `default` is the COMMITTED Production config exactly as it deploys (real
+// Under Contract stage, real synthetic-fixture pins, both flags OFF). Every
+// other state sets stage, pins and flags EXPLICITLY -- none inherits the
+// committed values -- so each simulates exactly one condition.
 const STATES = {
   default: () => ({}),
-  enabled_unpinned: () => ({ productionProofScope: { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED, contactId: G.PRODUCTION_PROOF_CONTACT_NOT_PINNED, opportunityId: G.PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED } }),
+  enabled_unpinned: () => ({ productionProofScope: { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED, contactId: G.PRODUCTION_PROOF_CONTACT_NOT_PINNED, opportunityId: G.PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED }, contractProductionEnabled: G.CONTRACT_PRODUCTION_ENABLED, stages: { underContract: FAKE_STAGE } }),
   pinned_not_enabled: () => ({ productionProofScope: { enabled: G.PRODUCTION_PROOF_SCOPE_NOT_ENABLED, contactId: PIN_CONTACT, opportunityId: PIN_OPP }, contractProductionEnabled: G.CONTRACT_PRODUCTION_ENABLED, stages: { underContract: FAKE_STAGE } }),
-  pinned_contracts_disabled: () => ({ productionProofScope: { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED, contactId: PIN_CONTACT, opportunityId: PIN_OPP } }),
-  pinned_stage_unprovisioned: () => ({ productionProofScope: { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED, contactId: PIN_CONTACT, opportunityId: PIN_OPP }, contractProductionEnabled: G.CONTRACT_PRODUCTION_ENABLED }),
+  pinned_contracts_disabled: () => ({ productionProofScope: { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED, contactId: PIN_CONTACT, opportunityId: PIN_OPP }, contractProductionEnabled: G.CONTRACT_PRODUCTION_NOT_ENABLED, stages: { underContract: FAKE_STAGE } }),
+  pinned_stage_unprovisioned: () => ({ productionProofScope: { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED, contactId: PIN_CONTACT, opportunityId: PIN_OPP }, contractProductionEnabled: G.CONTRACT_PRODUCTION_ENABLED, stages: { underContract: G.UNDER_CONTRACT_STAGE_NOT_PROVISIONED } }),
   ready: () => ({ productionProofScope: { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED, contactId: PIN_CONTACT, opportunityId: PIN_OPP }, contractProductionEnabled: G.CONTRACT_PRODUCTION_ENABLED, stages: { underContract: FAKE_STAGE } }),
 };
 function variant(state) {
@@ -364,12 +371,30 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     } finally { ghlRoute = null; }
   });
   applyLive('default');
-  await check('live Production config is restored to the committed default (disabled, unpinned)', () => {
+  await check('live Production config is restored to the committed default (both flags OFF, synthetic fixture pinned, real stage)', () => {
     assert.deepEqual(JSON.parse(JSON.stringify(PRODUCTION)), PRODUCTION_ORIGINAL);
     assert.equal(PRODUCTION_ORIGINAL.productionProofScope.enabled, G.PRODUCTION_PROOF_SCOPE_NOT_ENABLED);
-    assert.equal(PRODUCTION_ORIGINAL.productionProofScope.contactId, G.PRODUCTION_PROOF_CONTACT_NOT_PINNED);
-    assert.equal(PRODUCTION_ORIGINAL.productionProofScope.opportunityId, G.PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED);
     assert.equal(PRODUCTION_ORIGINAL.contractProductionEnabled, G.CONTRACT_PRODUCTION_NOT_ENABLED);
+    assert.equal(PRODUCTION_ORIGINAL.productionProofScope.contactId, COMMITTED_FIXTURE_CONTACT);
+    assert.equal(PRODUCTION_ORIGINAL.productionProofScope.opportunityId, COMMITTED_FIXTURE_OPP);
+    assert.equal(PRODUCTION_ORIGINAL.stages.underContract, 'bf17076b-3830-4479-94bb-b8af70fe9163');
+  });
+
+  // ===== 5b. The COMMITTED config refuses every write -- even to the real pinned fixture -- while disabled.
+  const fixtureNoteBody = require('./write-contract-fixture.cjs').contractFixture(load, COMMITTED_FIXTURE_OPP).notes.find((n) => !factsCarriers.parseRepresentationFactsNote(n.body)).body;
+  const committedArgs = (op) => (op === 'note.create' ? { body: fixtureNoteBody } : VALID_ARGS[op]);
+  const committedTarget = (op) => (op.startsWith('opportunity.') ? COMMITTED_FIXTURE_OPP : COMMITTED_FIXTURE_CONTACT);
+  for (const op of Object.keys(VALID_ARGS)) {
+    await check(`committed config: ${op} on the REAL pinned fixture -> PRODUCTION_WRITES_DISABLED`, () => {
+      assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(PRODUCTION, { operation: op, targetId: committedTarget(op), args: committedArgs(op) }), { ok: false, code: 'PRODUCTION_WRITES_DISABLED' });
+    });
+    await assertRefusedClean(`handler committed config: ghl-write ${op} on the REAL pinned fixture refused, zero Blob/GHL`, () => writeHandler(writeEvent(op, committedTarget(op), committedArgs(op))), 'PRODUCTION_WRITES_DISABLED');
+  }
+  for (const phase of ['chunk', 'finalize']) {
+    await assertRefusedClean(`handler committed config: upload ${phase} for the REAL pinned opportunity refused, zero Blob/GHL`, () => uploadHandler(uploadEvent(phase, COMMITTED_FIXTURE_OPP)), 'PRODUCTION_WRITES_DISABLED');
+  }
+  await check('committed config: readiness adds no pin reason while the scope is OFF, and contract paths still refuse (PRODUCTION_CONTRACTS_DISABLED)', () => {
+    assert.deepEqual(readiness.evaluateContractEnvironment(PRODUCTION), { ok: false, reasons: [{ code: 'PRODUCTION_CONTRACTS_DISABLED', message: 'Production contract paths are not enabled.' }] });
   });
 
   // ===== 6. Readiness pin (PDF generation, readback, derived notes, transition).
@@ -380,7 +405,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     assert.equal(r.ok, false); assert.deepEqual(r.reasons.map((x) => x.code), ['PRODUCTION_PROOF_SCOPE_MISMATCH']);
   });
   await check('readiness: scope ENABLED but pins still placeholders -> PRODUCTION_PROOF_SCOPE_NOT_PINNED', () => {
-    const c = variant('ready'); c.productionProofScope = Object.assign({}, PRODUCTION_ORIGINAL.productionProofScope, { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED });
+    const c = variant('ready'); c.productionProofScope = { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED, contactId: G.PRODUCTION_PROOF_CONTACT_NOT_PINNED, opportunityId: G.PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED };
     const r = evidence(c, PIN_CONTACT, PIN_OPP);
     assert.equal(r.ok, false); assert.deepEqual(r.reasons.map((x) => x.code), ['PRODUCTION_PROOF_SCOPE_NOT_PINNED']);
   });
