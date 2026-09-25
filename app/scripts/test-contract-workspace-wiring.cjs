@@ -21,7 +21,7 @@ const APP = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(APP, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 295;
+const FLOOR = 296;
 let failures = 0;
 let checks = 0;
 
@@ -987,7 +987,15 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
 
   check('handleRecordManualSend calls buildManualContractSendRecordArgs', /async function handleRecordManualSend\(\) \{[\s\S]{0,2000}buildManualContractSendRecordArgs\(\{/.test(contractTsxNoComments), true);
   check('handleRecordManualSend writes through the SAME shared commitNote helper every other group-form Save button uses', /await commitNote\("manual-contract-send", note\);/.test(contractTsxNoComments), true);
-  check('handleRecordManualSend sources templateName/requestedTemplateId/readbackLocationId from getRuntimeConfig(), never hand-typed', /runtimeConfig\.documentsContracts\.expectedTemplateName/.test(contractTsxNoComments) && /runtimeConfig\.documentsContracts\.templateId/.test(contractTsxNoComments) && /runtimeConfig\.locationId/.test(contractTsxNoComments), true);
+  // INV-98 manual-send evidence correction: a manual GHL upload used no GHL
+  // template, so the workspace passes NO template identity -- the builder
+  // records MANUAL_SEND_NO_GHL_TEMPLATE itself. readbackLocationId is still
+  // sourced from getRuntimeConfig(), never hand-typed.
+  {
+    const manualCall = (contractTsxNoComments.match(/async function handleRecordManualSend\(\) \{[\s\S]*?buildManualContractSendRecordArgs\(\{[\s\S]*?\}\);/) || [''])[0];
+    check('handleRecordManualSend sources readbackLocationId from getRuntimeConfig(), never hand-typed', /readbackLocationId: runtimeConfig\.locationId/.test(manualCall), true);
+    check('handleRecordManualSend passes NO template identity (no templateName / requestedTemplateId)', manualCall !== '' && !/templateName:|requestedTemplateId:/.test(manualCall), true);
+  }
   check('a blank expiration input is sent as null, never fabricated', /expirationAtIso = manualSendForm\.expirationAt \? new Date\(manualSendForm\.expirationAt\)\.toISOString\(\) : null;/.test(contractTsxNoComments), true);
 
   check('handleManualFileSelected awaits countPdfPages (a real, async pdf-lib parse)', /const pageCount = await countPdfPages\(bytesOutcome\.bytes\);/.test(contractTsxNoComments), true);
