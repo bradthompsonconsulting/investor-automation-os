@@ -250,6 +250,27 @@ export interface GhlConfig {
     expectedTemplateName: string;
     populationVerification: string;
   };
+  /**
+   * INV-98 Board #9 Production proof write scope. SERVER-SIDE ONLY --
+   * never added to RUNTIME_GROUPS. Read ONLY by
+   * `netlify/functions/lib/production-write-scope.ts` and
+   * `contract-production-readiness.ts`, and only for a PRODUCTION
+   * deployment: TEST carries fixed, documentation-only values no code path
+   * reads, so Test behavior is unchanged.
+   *
+   * While `enabled` is anything other than `PRODUCTION_PROOF_SCOPE_ENABLED`,
+   * or either pinned id is still its placeholder, EVERY
+   * `IAOS_APP_WRITE_*`-authenticated Production write is refused before any
+   * Blob access or GHL call. When enabled AND pinned, only the named
+   * synthetic-contract operations are permitted, and only against these
+   * two ids. Enabling or pinning is a separate, reviewed config-only
+   * commit -- never toggled at runtime.
+   */
+  productionProofScope: {
+    enabled: string;
+    contactId: string;
+    opportunityId: string;
+  };
 }
 
 /** GATE 2 / B9-08 -- the literal placeholder value for an unconfigured `senderUserId`. Exported so ghl-proxy.ts can refuse a send while it is in effect, without hardcoding the sentinel a second time. */
@@ -312,6 +333,20 @@ export const CONTRACT_PRODUCTION_ENABLED = "CONTRACT_PRODUCTION_ENABLED" as cons
 export const CONTRACT_PRODUCTION_NOT_ENABLED = "CONTRACT_PRODUCTION_NOT_ENABLED" as const;
 /** TEST's own fixed value for `contractProductionEnabled` -- documentation only; no code path reads it, since Test's readiness is governed entirely by its own approved-contact pin, unconditionally, regardless of this flag. */
 export const CONTRACT_TEST_ALWAYS_ENABLED = "CONTRACT_TEST_ALWAYS_ENABLED" as const;
+
+/**
+ * INV-98 Board #9 Production proof write scope -- `productionProofScope.enabled`'s
+ * two values, and the pinned-id placeholders. There is no partial value:
+ * only `PRODUCTION_PROOF_SCOPE_ENABLED` plus two real (non-placeholder) ids
+ * permits any Production write. The scope check refuses each placeholder
+ * by exact comparison, never by shape alone.
+ */
+export const PRODUCTION_PROOF_SCOPE_ENABLED = "PRODUCTION_PROOF_SCOPE_ENABLED" as const;
+export const PRODUCTION_PROOF_SCOPE_NOT_ENABLED = "PRODUCTION_PROOF_SCOPE_NOT_ENABLED" as const;
+export const PRODUCTION_PROOF_CONTACT_NOT_PINNED = "PRODUCTION_PROOF_CONTACT_NOT_PINNED" as const;
+export const PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED = "PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED" as const;
+/** TEST's fixed, documentation-only value for every `productionProofScope` key -- no code path reads it. */
+export const PRODUCTION_PROOF_SCOPE_NOT_APPLICABLE_IN_TEST = "PRODUCTION_PROOF_SCOPE_NOT_APPLICABLE_IN_TEST" as const;
 
 /**
  * INV-67 checkbox-marker / broker-model repair, extended by the INV-67
@@ -630,6 +665,14 @@ const PRODUCTION: GhlConfig = {
     templateId: "PRODUCTION_SEND_NOT_AUTHORIZED_NO_TEMPLATE_CONFIGURED",
     expectedTemplateName: "PRODUCTION_SEND_NOT_AUTHORIZED_NO_TEMPLATE_CONFIGURED",
     populationVerification: POPULATION_NOT_VERIFIED,
+  },
+  // INV-98 Board #9 Production proof write scope. Disabled and unpinned:
+  // every IAOS_APP_WRITE_* Production write is refused. See the interface
+  // doc comment and netlify/functions/lib/production-write-scope.ts.
+  productionProofScope: {
+    enabled: PRODUCTION_PROOF_SCOPE_NOT_ENABLED,
+    contactId: PRODUCTION_PROOF_CONTACT_NOT_PINNED,
+    opportunityId: PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED,
   },
 };
 
@@ -996,6 +1039,13 @@ const TEST: GhlConfig = {
     // unconditionally while this is not POPULATION_VERIFIED.
     populationVerification: POPULATION_NOT_VERIFIED,
   },
+  // Documentation only -- the Production proof write scope never applies
+  // to a Test deployment.
+  productionProofScope: {
+    enabled: PRODUCTION_PROOF_SCOPE_NOT_APPLICABLE_IN_TEST,
+    contactId: PRODUCTION_PROOF_SCOPE_NOT_APPLICABLE_IN_TEST,
+    opportunityId: PRODUCTION_PROOF_SCOPE_NOT_APPLICABLE_IN_TEST,
+  },
 };
 
 export function getConfig(selector: string | undefined): GhlConfig {
@@ -1049,6 +1099,9 @@ export function getConfig(selector: string | undefined): GhlConfig {
     ),
     ...Object.entries(config.documentsContracts).map(
       ([k, v]): [string, string] => [`documentsContracts.${k}`, v],
+    ),
+    ...Object.entries(config.productionProofScope).map(
+      ([k, v]): [string, string] => [`productionProofScope.${k}`, v],
     ),
   ];
 

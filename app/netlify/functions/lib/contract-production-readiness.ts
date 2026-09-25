@@ -37,7 +37,7 @@
  * same convention `evaluateDispositionHandoffEligibility` and every other
  * Board #9 evaluator already established.
  */
-import { getConfig, CONTRACT_PRODUCTION_ENABLED, UNDER_CONTRACT_STAGE_NOT_PROVISIONED } from "../../../shared/ghl-config";
+import { getConfig, CONTRACT_PRODUCTION_ENABLED, UNDER_CONTRACT_STAGE_NOT_PROVISIONED, PRODUCTION_PROOF_SCOPE_ENABLED, PRODUCTION_PROOF_CONTACT_NOT_PINNED, PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED } from "../../../shared/ghl-config";
 import type { GhlConfig } from "../../../shared/ghl-config";
 import { appAuthConfig } from "./app-write-auth";
 
@@ -94,7 +94,9 @@ export type ContractProviderEvidenceReasonCode =
   | "TEST_CONTACT_MISMATCH"
   | "OPERATOR_NOT_AUTHORIZED"
   | "CONTACT_OPPORTUNITY_MISMATCH"
-  | "MALFORMED_IDENTITY";
+  | "MALFORMED_IDENTITY"
+  | "PRODUCTION_PROOF_SCOPE_NOT_PINNED"
+  | "PRODUCTION_PROOF_SCOPE_MISMATCH";
 
 export type ContractProviderEvidenceReason = { code: ContractProviderEvidenceReasonCode; message: string };
 
@@ -160,6 +162,26 @@ export function evaluateContractProviderEvidenceReadiness(args: ContractProvider
     const emails = appAuthConfig().emails;
     if (!args.operatorEmail || !emails.includes(args.operatorEmail)) {
       reasons.push({ code: "OPERATOR_NOT_AUTHORIZED", message: "Production contract provider evidence requires an authenticated, currently-allowed Brad operator." });
+    }
+    // INV-98 Board #9 Production proof write scope -- WHILE it is enabled,
+    // every contract-path read/check (PDF generation, provider readback,
+    // derived-note and stage-transition re-verification) is held to the
+    // SAME pinned synthetic contact/opportunity the write gate
+    // (`production-write-scope.ts`) enforces. When the scope is not
+    // enabled this check adds nothing, so the "no permanent synthetic-
+    // contact allowlist" ruling above still holds: the pin exists only for
+    // the supervised proof. (The write gate itself refuses every
+    // Production write while the scope is not enabled.)
+    const scope = args.config.productionProofScope;
+    if (scope.enabled === PRODUCTION_PROOF_SCOPE_ENABLED) {
+      if (
+        !looksLikeRealGhlId(scope.contactId, PRODUCTION_PROOF_CONTACT_NOT_PINNED) ||
+        !looksLikeRealGhlId(scope.opportunityId, PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED)
+      ) {
+        reasons.push({ code: "PRODUCTION_PROOF_SCOPE_NOT_PINNED", message: "The Production proof scope is enabled but not pinned." });
+      } else if (args.contact.id !== scope.contactId || args.opportunity.id !== scope.opportunityId) {
+        reasons.push({ code: "PRODUCTION_PROOF_SCOPE_MISMATCH", message: "This contact/opportunity is not the pinned Production proof contact/opportunity." });
+      }
     }
   }
 
