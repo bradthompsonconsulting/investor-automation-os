@@ -9,6 +9,7 @@ import { configuredBoundary, fieldValue, WriteUncertain } from "./lib/ghl-write-
 import { claimWrite, lockContact, stageTransitionUnresolved, claimStageTransition, clearStageTransition } from "./lib/write-receipts";
 import { latestOutcomeNoteForOpportunity } from "../../src/lib/seller-call-outcome";
 import { currentOfferWriteGate } from "../../src/lib/current-offer-carrier";
+import { evaluateProductionGhlWriteScope, PRODUCTION_WRITE_SCOPE_REFUSAL } from "./lib/production-write-scope";
 const json = (statusCode: number, data: unknown) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(data) });
 
 /**
@@ -76,6 +77,11 @@ export const handler = async (event: any) => {
     identifier(request.targetId); identifier(request.requestId);
     plan = planWrite(request.operation, request.args, config);
   } catch { return json(400, { error: "Invalid named write request" }); }
+  // INV-98 Board #9 Production proof write scope -- before connectLambda,
+  // any Blob store, the contact lock, the write claim, or any GHL call.
+  // Test deployments are unaffected (always ok).
+  const scope = evaluateProductionGhlWriteScope(config, { operation: request.operation, targetId: request.targetId, args: request.args });
+  if (!scope.ok) return json(403, { error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: scope.code });
   let release: (() => Promise<void>) | undefined;
   try {
     connectLambda(event);

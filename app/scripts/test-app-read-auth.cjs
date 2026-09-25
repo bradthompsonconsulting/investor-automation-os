@@ -538,7 +538,9 @@ function assertNoCors(res) {
     assert.match(src, /<ReadAccess>\s*<Outlet \/>\s*<\/ReadAccess>/);
   });
   await check('no unreviewed function holds the GHL credential', () => {
-    const reviewed = ['ghl-contract-send-readback', 'ghl-disposition', 'mailer-digest'];
+    // ghl-documents-capability (INV-98): read-session-gated, GET-only, status-only;
+    // reviewed in test-ghl-documents-capability.cjs.
+    const reviewed = ['ghl-contract-send-readback', 'ghl-disposition', 'ghl-documents-capability', 'mailer-digest'];
     const holders = fs.readdirSync(FUNCTIONS).filter(f => f.endsWith('.ts'))
       .filter(f => /leadconnectorhq|GHL_PRIVATE_API_KEY/.test(fs.readFileSync(path.join(FUNCTIONS, f), 'utf8')))
       .map(f => f.slice(0, -3)).filter(n => !NINE.includes(n)).sort();

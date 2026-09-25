@@ -1223,8 +1223,8 @@ export default function ContractWorkspace() {
       providerDocumentRevision: manualSendForm.providerDocumentRevision.trim() === "" ? null : Number(manualSendForm.providerDocumentRevision),
       recipients: requiredSigners.map((s) => ({ role: s.role, displayName: s.displayName })),
       authorizedRecord: bradAuthorizationRecord,
-      templateName: runtimeConfig.documentsContracts.expectedTemplateName,
-      requestedTemplateId: runtimeConfig.documentsContracts.templateId,
+      // No template identity: a manual GHL upload uses no GHL template, and
+      // the builder records MANUAL_SEND_NO_GHL_TEMPLATE itself.
       readbackLocationId: runtimeConfig.locationId,
       operator: "brad",
       recordedAt: new Date().toISOString(),

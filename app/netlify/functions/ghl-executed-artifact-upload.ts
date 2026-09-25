@@ -47,6 +47,8 @@ import { requireAppWriter } from "./lib/app-write-auth";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { configuredBoundary } from "./lib/ghl-write-boundary";
 import { lockContact } from "./lib/write-receipts";
+import { getConfig } from "../../shared/ghl-config";
+import { evaluateProductionArtifactUploadScope, evaluateProductionArtifactContactScope, PRODUCTION_WRITE_SCOPE_REFUSAL } from "./lib/production-write-scope";
 import { isSameContractVersion, type ContractVersionIdentity } from "../../src/lib/board9-contract-model";
 import { looksLikePdfContent, countPdfPages } from "../../src/lib/contract-execution-model";
 import {
@@ -242,6 +244,12 @@ export const handler = async (event: any) => {
     return json(400, { error: "Missing or invalid opportunityId/agreementAt/version" });
   }
 
+  // INV-98 Board #9 Production proof write scope -- before connectLambda,
+  // any Blob store, or any GHL call. Test deployments are unaffected.
+  const config = getConfig(process.env.IAOS_ENV);
+  const scope = evaluateProductionArtifactUploadScope(config, opportunityId);
+  if (!scope.ok) return json(403, { error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: scope.code });
+
   try {
     // Gate-review closure -- PR #85 live failure. This Lambda-style
     // handler must call connectLambda(event) BEFORE any getStore() call,
@@ -254,6 +262,10 @@ export const handler = async (event: any) => {
     const boundary = configuredBoundary();
     const opportunity = await boundary.opportunity(opportunityId);
     const contactId = opportunity.contactId;
+    // Defense in depth, still before any Blob read or write: the pinned
+    // opportunity must still belong to the pinned contact.
+    const contactScope = evaluateProductionArtifactContactScope(config, contactId);
+    if (!contactScope.ok) return json(403, { error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: contactScope.code });
 
     if (phase === "chunk") {
       // Gate-review closure, requirement 1-2/7 -- each chunk is evaluated

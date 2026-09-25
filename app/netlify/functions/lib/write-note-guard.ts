@@ -14,7 +14,7 @@ import { parseUnderContractNote } from "../../../src/lib/contract-execution-carr
 import { parseContractProjectionSyncNote } from "../../../src/lib/contract-projection-sync-carriers";
 import { parseContractSendNote } from "../../../src/lib/contract-send-carriers";
 import { parseSignerMappingAttestationNote } from "../../../src/lib/contract-signer-mapping-carriers";
-import { MANUAL_SEND_TEMPLATE_SOURCE } from "../../../src/lib/contract-manual-send-model";
+import { MANUAL_SEND_TEMPLATE_SOURCE, MANUAL_SEND_NO_GHL_TEMPLATE } from "../../../src/lib/contract-manual-send-model";
 import { isSameContractVersion } from "../../../src/lib/board9-contract-model";
 import { identifier } from "./write-contracts";
 import { fieldValue, type GhlBoundary } from "./ghl-write-boundary";
@@ -64,7 +64,12 @@ export async function validateLedgerNote(boundary: GhlBoundary, contactId: strin
     }
     const existing = notes.map(n => parseContractSendNote(n.body)).filter(Boolean);
     if (existing.some(n=>n!.attemptId===send.attemptId && n!.status==="accepted")) throw new Error("Accepted send cannot be overwritten or duplicated");
-    if (send.requestedTemplateId !== getConfig(process.env.IAOS_ENV).documentsContracts.templateId) throw new Error("Wrong send template");
+    // INV-98 manual-send evidence correction: a manual GHL upload used no
+    // GHL template, so its record must say exactly that. The automated
+    // path keeps its configured-template check unchanged.
+    if (isManualBridge) {
+      if (send.requestedTemplateId !== MANUAL_SEND_NO_GHL_TEMPLATE || send.templateName !== MANUAL_SEND_NO_GHL_TEMPLATE) throw new Error("Wrong send template");
+    } else if (send.requestedTemplateId !== getConfig(process.env.IAOS_ENV).documentsContracts.templateId) throw new Error("Wrong send template");
     if (isManualBridge) {
       // A second, DIFFERENT attemptId accepted for the same exact contract
       // version is a genuine conflicting duplicate -- refuse it, the same

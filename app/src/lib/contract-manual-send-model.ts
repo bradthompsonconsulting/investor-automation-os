@@ -58,6 +58,19 @@ function isCanonicalIsoTimestamp(at: string): boolean {
 /** The manual bridge's own template-source marker -- audit-only, never gated on by any verification stage (`verifyAcceptedSendBinding` reads only `status`/`providerResponse.documentId`/`opportunityId`/`version`). */
 export const MANUAL_SEND_TEMPLATE_SOURCE = "manual_ghl_upload" as const;
 
+/**
+ * INV-98 manual-send evidence correction. A manual GHL upload uses NO GHL
+ * Documents & Contracts template, so the durable Contract Sent record's
+ * `requestedTemplateId` and `templateName` state that explicitly -- never a
+ * configured template id (Test) or the Production send-not-authorized
+ * placeholder, either of which would read as a template claim. The builder
+ * below always writes this value and accepts no caller-supplied template
+ * identity; `write-note-guard.ts` refuses a manual send carrying anything
+ * else. Existing notes are unaffected: `parseContractSendNote` still
+ * round-trips any non-empty value they carry.
+ */
+export const MANUAL_SEND_NO_GHL_TEMPLATE = "NONE_MANUAL_GHL_UPLOAD" as const;
+
 export type ManualSendBuildReasonCode =
   | "OPPORTUNITY_ID_BLANK"
   | "AGREEMENT_VERSION_MISMATCH"
@@ -71,7 +84,6 @@ export type ManualSendBuildReasonCode =
   | "AUTHORIZATION_MISSING"
   | "AUTHORIZATION_VERSION_MISMATCH"
   | "AUTHORIZATION_HASH_INVALID"
-  | "TEMPLATE_NAME_BLANK"
   | "LOCATION_ID_BLANK";
 
 export type ManualSendBuildReason = { code: ManualSendBuildReasonCode; message: string };
@@ -122,8 +134,6 @@ export function buildManualContractSendRecordArgs(args: {
   providerDocumentRevision: number | null;
   recipients: readonly SignerSnapshot[];
   authorizedRecord: ParsedBradContractAuthorization | null;
-  templateName: string;
-  requestedTemplateId: string;
   readbackLocationId: string;
   operator: string | null;
   recordedAt: string;
@@ -140,7 +150,6 @@ export function buildManualContractSendRecordArgs(args: {
     reasons.push({ code: "EXPIRATION_AT_INVALID", message: "expirationAt, when supplied, is not a valid canonical ISO instant." });
   }
   if (args.providerDocumentId.trim() === "") reasons.push({ code: "PROVIDER_DOCUMENT_ID_BLANK", message: "providerDocumentId is blank -- read the document id GHL shows for the sent document." });
-  if (args.templateName.trim() === "") reasons.push({ code: "TEMPLATE_NAME_BLANK", message: "templateName is blank." });
   if (args.readbackLocationId.trim() === "") reasons.push({ code: "LOCATION_ID_BLANK", message: "readbackLocationId is blank." });
 
   if (args.recipients.length === 0) {
@@ -180,9 +189,9 @@ export function buildManualContractSendRecordArgs(args: {
       attemptId: args.requestAt,
       status: "accepted",
       version: args.version,
-      templateName: args.templateName,
+      templateName: MANUAL_SEND_NO_GHL_TEMPLATE,
       templateSource: MANUAL_SEND_TEMPLATE_SOURCE,
-      requestedTemplateId: args.requestedTemplateId,
+      requestedTemplateId: MANUAL_SEND_NO_GHL_TEMPLATE,
       authorizedAt: authorizedRecord.at,
       authorizedArtifactSha256: authorizedRecord.artifactSha256,
       signers: args.recipients.map((r) => ({ role: r.role, displayName: r.displayName })),
