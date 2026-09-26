@@ -172,12 +172,35 @@ function allKeys(value, out = new Set()) {
       PRODUCTION_LIVE.contractProductionEnabled = committedFlag;
     }
     check('Production committed config is ENABLED (supervised proof) and restored after the disabled case', PRODUCTION_LIVE.contractProductionEnabled, G.CONTRACT_PRODUCTION_ENABLED);
-    // The committed ENABLED config still refuses an opportunity that is not the
-    // pinned synthetic fixture -- never a successful readback.
+    // The committed ENABLED config refuses an opportunity that is not the pinned
+    // synthetic fixture AT THE PIN CHECK. The mocked GHL objects here are real
+    // Production-location objects (non-pinned contact/opportunity, full contract
+    // notes), so the request passes the environment gate, location/identity
+    // reads and currentContractContext, and is refused by
+    // requireContractProviderEvidenceReadiness -- before any provider document
+    // is fetched.
     {
-      const res = await prodHandler(event());
-      check('Production (enabled, committed): a NON-pinned opportunity is never read back successfully', res.statusCode !== 200, true);
-      check('  -- no provider document data is returned', /documentId|recipients/.test(String(res.body)), false);
+      const PROD_LOCATION = PRODUCTION_LIVE.locationId;
+      const NON_PINNED_CONTACT = 'nonPinnedProdContact1';
+      const prodOpportunity = { id: opportunity.id, contactId: NON_PINNED_CONTACT, locationId: PROD_LOCATION, customFields: [] };
+      const prodContact = { ...contact, id: NON_PINNED_CONTACT, locationId: PROD_LOCATION };
+      const savedFetch = global.fetch;
+      const prodCalls = [];
+      global.fetch = async (url) => {
+        const u = new URL(url);
+        prodCalls.push(u.pathname);
+        assert.equal(u.origin, 'https://services.leadconnectorhq.com', 'no external network');
+        if (u.pathname === '/opportunities/' + prodOpportunity.id) return reply({ opportunity: prodOpportunity });
+        if (u.pathname === '/contacts/' + NON_PINNED_CONTACT) return reply({ contact: prodContact });
+        if (u.pathname === '/contacts/' + NON_PINNED_CONTACT + '/notes') return reply({ notes: notesWithSendAndMapping });
+        throw new Error('Unexpected mocked request ' + u.pathname);
+      };
+      let res;
+      try { res = await prodHandler(event()); } finally { global.fetch = savedFetch; }
+      check('Production (enabled, committed): a NON-pinned Production opportunity is refused with 409', res.statusCode, 409);
+      check('  -- the refusal is exactly the proof-scope pin mismatch', JSON.parse(res.body), { error: 'Production contract provider evidence is not currently authorized: PRODUCTION_PROOF_SCOPE_MISMATCH' });
+      check('  -- refused BEFORE any provider document fetch (no /proposals/ call)', prodCalls.some((p) => p.startsWith('/proposals/')), false);
+      check('  -- only read-only identity/context reads occurred', prodCalls.every((p) => p === '/opportunities/' + prodOpportunity.id || p.startsWith('/contacts/' + NON_PINNED_CONTACT)), true);
     }
     process.env.IAOS_ENV = savedEnv;
     delete require.cache[require.resolve('../netlify/functions/ghl-contract-send-readback.ts')];

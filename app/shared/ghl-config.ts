@@ -638,8 +638,10 @@ const PRODUCTION: GhlConfig = {
   // only, after the external actions named here were completed (real Under
   // Contract stage provisioned, write-session/origin environment deployed).
   // Every Production write is still confined by `productionProofScope` below
-  // to the one pinned synthetic contact/opportunity. Reverting this commit
-  // restores CONTRACT_PRODUCTION_NOT_ENABLED.
+  // to the one pinned synthetic contact/opportunity. Disabling by code
+  // rollback requires reverting the ENTIRE PR #100 merge (this config AND the
+  // accompanying tests, which assert the enabled state) and redeploying;
+  // reverting this config commit alone would leave CI red.
   contractProductionEnabled: CONTRACT_PRODUCTION_ENABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
