@@ -82,11 +82,13 @@ const COMMITTED_FIXTURE_OPP = '44hLQ4PD4a4HBVLPr4nl';
 
 /** Production config variants. Each is a deep copy; `apply` also mutates the live object for handler checks. */
 // `default` is the COMMITTED Production config exactly as it deploys (real
-// Under Contract stage, real synthetic-fixture pins, both flags OFF). Every
-// other state sets stage, pins and flags EXPLICITLY -- none inherits the
-// committed values -- so each simulates exactly one condition.
+// Under Contract stage, real synthetic-fixture pins, and -- since the INV-98
+// enable commit -- BOTH flags ON). Every other state sets stage, pins and
+// flags EXPLICITLY -- none inherits the committed values -- so each
+// simulates exactly one condition. `disabled` is both flags OFF.
 const STATES = {
   default: () => ({}),
+  disabled: () => ({ productionProofScope: { enabled: G.PRODUCTION_PROOF_SCOPE_NOT_ENABLED, contactId: PIN_CONTACT, opportunityId: PIN_OPP }, contractProductionEnabled: G.CONTRACT_PRODUCTION_NOT_ENABLED, stages: { underContract: FAKE_STAGE } }),
   enabled_unpinned: () => ({ productionProofScope: { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED, contactId: G.PRODUCTION_PROOF_CONTACT_NOT_PINNED, opportunityId: G.PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED }, contractProductionEnabled: G.CONTRACT_PRODUCTION_ENABLED, stages: { underContract: FAKE_STAGE } }),
   pinned_not_enabled: () => ({ productionProofScope: { enabled: G.PRODUCTION_PROOF_SCOPE_NOT_ENABLED, contactId: PIN_CONTACT, opportunityId: PIN_OPP }, contractProductionEnabled: G.CONTRACT_PRODUCTION_ENABLED, stages: { underContract: FAKE_STAGE } }),
   pinned_contracts_disabled: () => ({ productionProofScope: { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED, contactId: PIN_CONTACT, opportunityId: PIN_OPP }, contractProductionEnabled: G.CONTRACT_PRODUCTION_NOT_ENABLED, stages: { underContract: FAKE_STAGE } }),
@@ -108,7 +110,7 @@ function applyLive(state) {
   PRODUCTION.stages.underContract = c.stages.underContract;
 }
 const EXPECTED_PRE = {
-  default: 'PRODUCTION_WRITES_DISABLED',
+  disabled: 'PRODUCTION_WRITES_DISABLED',
   enabled_unpinned: 'PRODUCTION_PROOF_NOT_PINNED',
   pinned_not_enabled: 'PRODUCTION_WRITES_DISABLED',
   pinned_contracts_disabled: 'PRODUCTION_CONTRACTS_NOT_READY',
@@ -371,30 +373,77 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     } finally { ghlRoute = null; }
   });
   applyLive('default');
-  await check('live Production config is restored to the committed default (both flags OFF, synthetic fixture pinned, real stage)', () => {
+  await check('live Production config is restored to the committed default (both flags ON, pinned to the real synthetic fixture, real stage)', () => {
     assert.deepEqual(JSON.parse(JSON.stringify(PRODUCTION)), PRODUCTION_ORIGINAL);
-    assert.equal(PRODUCTION_ORIGINAL.productionProofScope.enabled, G.PRODUCTION_PROOF_SCOPE_NOT_ENABLED);
-    assert.equal(PRODUCTION_ORIGINAL.contractProductionEnabled, G.CONTRACT_PRODUCTION_NOT_ENABLED);
+    assert.equal(PRODUCTION_ORIGINAL.productionProofScope.enabled, G.PRODUCTION_PROOF_SCOPE_ENABLED);
+    assert.equal(PRODUCTION_ORIGINAL.contractProductionEnabled, G.CONTRACT_PRODUCTION_ENABLED);
     assert.equal(PRODUCTION_ORIGINAL.productionProofScope.contactId, COMMITTED_FIXTURE_CONTACT);
     assert.equal(PRODUCTION_ORIGINAL.productionProofScope.opportunityId, COMMITTED_FIXTURE_OPP);
     assert.equal(PRODUCTION_ORIGINAL.stages.underContract, 'bf17076b-3830-4479-94bb-b8af70fe9163');
   });
 
-  // ===== 5b. The COMMITTED config refuses every write -- even to the real pinned fixture -- while disabled.
-  const fixtureNoteBody = require('./write-contract-fixture.cjs').contractFixture(load, COMMITTED_FIXTURE_OPP).notes.find((n) => !factsCarriers.parseRepresentationFactsNote(n.body)).body;
-  const committedArgs = (op) => (op === 'note.create' ? { body: fixtureNoteBody } : VALID_ARGS[op]);
+  // ===== 5b. The COMMITTED config (INV-98 enable commit): BOTH flags ON, pinned to the REAL synthetic fixture.
+  // Only the three permitted operations on the pinned ids pass; every other operation, target, note kind and
+  // upload is refused before any Blob access or GHL call.
+  const fixtureNotes = require('./write-contract-fixture.cjs').contractFixture(load, COMMITTED_FIXTURE_OPP).notes.filter((n) => !factsCarriers.parseRepresentationFactsNote(n.body));
+  const committedArgs = (op) => (op === 'note.create' ? { body: fixtureNotes[0].body } : VALID_ARGS[op]);
   const committedTarget = (op) => (op.startsWith('opportunity.') ? COMMITTED_FIXTURE_OPP : COMMITTED_FIXTURE_CONTACT);
+  const committedOther = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_CONTACT);
   for (const op of Object.keys(VALID_ARGS)) {
-    await check(`committed config: ${op} on the REAL pinned fixture -> PRODUCTION_WRITES_DISABLED`, () => {
-      assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(PRODUCTION, { operation: op, targetId: committedTarget(op), args: committedArgs(op) }), { ok: false, code: 'PRODUCTION_WRITES_DISABLED' });
+    const allowed = ALLOWED_OPERATIONS.includes(op);
+    await check(`committed config: ${op} on the REAL pinned fixture -> ${allowed ? 'ok' : 'OPERATION_NOT_PERMITTED'}`, () => {
+      assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(PRODUCTION, { operation: op, targetId: committedTarget(op), args: committedArgs(op) }), allowed ? { ok: true } : { ok: false, code: 'OPERATION_NOT_PERMITTED' });
     });
-    await assertRefusedClean(`handler committed config: ghl-write ${op} on the REAL pinned fixture refused, zero Blob/GHL`, () => writeHandler(writeEvent(op, committedTarget(op), committedArgs(op))), 'PRODUCTION_WRITES_DISABLED');
+    await check(`committed config: ${op} on ANY other target -> ${allowed ? 'TARGET_NOT_PINNED' : 'OPERATION_NOT_PERMITTED'}`, () => {
+      assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(PRODUCTION, { operation: op, targetId: committedOther(op), args: committedArgs(op) }), { ok: false, code: allowed ? 'TARGET_NOT_PINNED' : 'OPERATION_NOT_PERMITTED' });
+    });
+    if (allowed) await assertRefusedClean(`handler committed config: ghl-write ${op} on another target refused, zero Blob/GHL`, () => writeHandler(writeEvent(op, committedOther(op), committedArgs(op))), 'TARGET_NOT_PINNED');
+    else await assertRefusedClean(`handler committed config: ghl-write ${op} on the REAL pinned fixture refused, zero Blob/GHL`, () => writeHandler(writeEvent(op, committedTarget(op), committedArgs(op))), 'OPERATION_NOT_PERMITTED');
   }
+  await check('committed config: every minimal-set note naming the REAL pinned opportunity is permitted on the REAL pinned contact', () => {
+    assert.equal(fixtureNotes.length, 16);
+    for (const n of fixtureNotes) assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(PRODUCTION, { operation: 'note.create', targetId: COMMITTED_FIXTURE_CONTACT, args: { body: n.body } }), { ok: true });
+  });
+  await assertRefusedClean('handler committed config: a refused note kind (representation) on the REAL pinned contact refused, zero Blob/GHL', () => writeHandler(writeEvent('note.create', COMMITTED_FIXTURE_CONTACT, { body: REPRESENTATION_BODY })), 'NOTE_NOT_PERMITTED');
+  await assertRefusedClean('handler committed config: a plain note on the REAL pinned contact refused, zero Blob/GHL', () => writeHandler(writeEvent('note.create', COMMITTED_FIXTURE_CONTACT, { body: 'plain note' })), 'NOTE_NOT_PERMITTED');
+  await assertRefusedClean('handler committed config: a permitted note kind naming ANOTHER opportunity refused, zero Blob/GHL', () => writeHandler(writeEvent('note.create', COMMITTED_FIXTURE_CONTACT, { body: MINIMAL_NOTES[0].body })), 'TARGET_NOT_PINNED');
   for (const phase of ['chunk', 'finalize']) {
-    await assertRefusedClean(`handler committed config: upload ${phase} for the REAL pinned opportunity refused, zero Blob/GHL`, () => uploadHandler(uploadEvent(phase, COMMITTED_FIXTURE_OPP)), 'PRODUCTION_WRITES_DISABLED');
+    await assertRefusedClean(`handler committed config: upload ${phase} for another opportunity refused, zero Blob/GHL`, () => uploadHandler(uploadEvent(phase, OTHER_OPP)), 'TARGET_NOT_PINNED');
   }
-  await check('committed config: readiness adds no pin reason while the scope is OFF, and contract paths still refuse (PRODUCTION_CONTRACTS_DISABLED)', () => {
-    assert.deepEqual(readiness.evaluateContractEnvironment(PRODUCTION), { ok: false, reasons: [{ code: 'PRODUCTION_CONTRACTS_DISABLED', message: 'Production contract paths are not enabled.' }] });
+  for (const op of ALLOWED_OPERATIONS) {
+    await check(`handler committed config: ${op} on the REAL pinned fixture passes the scope gate (reaches Blob/GHL)`, async () => {
+      const before = snapshot();
+      const res = await writeHandler(writeEvent(op, committedTarget(op), committedArgs(op)));
+      assert.notEqual(JSON.parse(res.body).by, 'iaos-production-write-scope');
+      assert.ok(blob.connections > before.connections, 'connectLambda reached after the gate');
+    });
+  }
+  const committedOwnedBy = (contactId) => (url) => {
+    const p = new URL(url).pathname;
+    if (p === `/opportunities/${COMMITTED_FIXTURE_OPP}`) return new Response(JSON.stringify({ opportunity: { id: COMMITTED_FIXTURE_OPP, contactId, locationId: PRODUCTION.locationId, customFields: [] } }), { status: 200 });
+    if (p === `/contacts/${contactId}`) return new Response(JSON.stringify({ contact: { id: contactId, locationId: PRODUCTION.locationId, customFields: [] } }), { status: 200 });
+    throw new Error('unexpected mocked request ' + p);
+  };
+  await check('handler committed config: upload for the REAL pinned opportunity owned by ANOTHER contact refused before any Blob read/write', async () => {
+    ghlRoute = committedOwnedBy(OTHER_CONTACT);
+    try {
+      const before = snapshot();
+      const res = await uploadHandler(uploadEvent('chunk', COMMITTED_FIXTURE_OPP));
+      assert.equal(res.statusCode, 403, res.body); assert.equal(JSON.parse(res.body).code, 'TARGET_NOT_PINNED');
+      assert.equal(blob.reads, before.reads); assert.equal(blob.writes, before.writes);
+      assert.ok(ghlCalls.slice(before.ghl).every((c) => c.method === 'GET'), 'only read-only identity GETs');
+    } finally { ghlRoute = null; }
+  });
+  await check('handler committed config: upload for the REAL pinned opportunity owned by the REAL pinned contact passes the scope gate', async () => {
+    ghlRoute = committedOwnedBy(COMMITTED_FIXTURE_CONTACT);
+    try { const res = await uploadHandler(uploadEvent('chunk', COMMITTED_FIXTURE_OPP)); assert.notEqual(JSON.parse(res.body).by, 'iaos-production-write-scope'); } finally { ghlRoute = null; }
+  });
+  await check('committed config: contract environment passes, and readiness is pinned to the REAL fixture', () => {
+    assert.deepEqual(readiness.evaluateContractEnvironment(PRODUCTION), { ok: true, environment: 'production' });
+    const r = (contactId, opportunityId) => readiness.evaluateContractProviderEvidenceReadiness({ config: PRODUCTION, contact: { id: contactId }, opportunity: { id: opportunityId, contactId }, operatorEmail: 'brad@example.invalid' });
+    assert.deepEqual(r(COMMITTED_FIXTURE_CONTACT, COMMITTED_FIXTURE_OPP), { ok: true });
+    const other = r(OTHER_CONTACT, OTHER_OPP);
+    assert.equal(other.ok, false); assert.deepEqual(other.reasons.map((x) => x.code), ['PRODUCTION_PROOF_SCOPE_MISMATCH']);
   });
 
   // ===== 6. Readiness pin (PDF generation, readback, derived notes, transition).
@@ -410,7 +459,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     assert.equal(r.ok, false); assert.deepEqual(r.reasons.map((x) => x.code), ['PRODUCTION_PROOF_SCOPE_NOT_PINNED']);
   });
   await check('readiness: scope NOT enabled adds no pin reason (no permanent allowlist; the write gate still refuses every write)', () => {
-    const c = variant('ready'); c.productionProofScope = PRODUCTION_ORIGINAL.productionProofScope;
+    const c = variant('ready'); c.productionProofScope = { enabled: G.PRODUCTION_PROOF_SCOPE_NOT_ENABLED, contactId: PIN_CONTACT, opportunityId: PIN_OPP };
     assert.deepEqual(evidence(c, OTHER_CONTACT, OTHER_OPP), { ok: true });
     assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(c, { operation: 'opportunity.underContractStage', targetId: OTHER_OPP, args: VALID_ARGS['opportunity.underContractStage'] }), { ok: false, code: 'PRODUCTION_WRITES_DISABLED' });
   });
