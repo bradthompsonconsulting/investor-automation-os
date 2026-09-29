@@ -265,21 +265,28 @@ const FIELD_ID = 'opp-field-under-test';
   const pageSrc = fs.readFileSync(PAGE, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
   check('the page calls acceptedPriceFreezeValue with the snapshot used for the note, not a fresh read',
     /acceptedPriceFreezeValue\(snapshot\.currentOffer\)/.test(pageSrc), true);
-  check('the Current Offer write happens BEFORE ghl.notes.create, never after (reversed from the prior design)',
+  // INV-98 (Bones REVISE item 2): the accept writes now live in
+  // lib/seller-call-accept-writes.ts (behaviour-tested in
+  // test-seller-call-accept-writes.cjs). These checks pin the same ordering
+  // and fail-closed guarantees to the page's delegation and the module.
+  const acceptSrc = fs.readFileSync(path.join(path.dirname(PAGE), '..', 'lib', 'seller-call-accept-writes.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  check('the Current Offer write happens BEFORE the accept note, never after (reversed from the prior design)',
     (() => {
-      const noteIdx = pageSrc.indexOf('await ghl.notes.create(contactId, attempt.note)');
-      const freezeWriteIdx = pageSrc.indexOf('await ghl.opportunities.setCurrentOffer(screen.opportunity.id, freeze.value)');
-      return noteIdx !== -1 && freezeWriteIdx !== -1 && freezeWriteIdx < noteIdx;
+      const offerIdx = acceptSrc.indexOf('await client.setCurrentOffer(args.opportunityId, args.offerValue)');
+      const noteIdx = acceptSrc.indexOf('await client.createNote(args.contactId, args.note)');
+      const pageDelegates = /await runConfirmAcceptWrites\([\s\S]{0,600}offerValue: freeze\.value, note: attempt\.note/.test(pageSrc);
+      return offerIdx !== -1 && noteIdx !== -1 && offerIdx < noteIdx && pageDelegates;
     })(),
     true);
   check('a BLOCKED freeze value (acceptedPriceFreezeValue) returns before any write is attempted, never reaching the Note',
     /if \(freeze\.kind === "blocked"\) \{\s*setOutcomeActionError\(`Cannot record acceptance -- \$\{freeze\.reason\}\.`\);\s*return;\s*\}/.test(pageSrc),
     true);
   check('a THROWN error from the Current Offer write returns before the Note is ever attempted',
-    /catch \(e: any\) \{\s*setOutcomeActionError\(\s*`Cannot record acceptance -- the accepted price could not be saved[\s\S]{0,120}\);\s*return;\s*\}/.test(pageSrc),
+    /catch \(e\) \{\s*return \{ stage: "offer_failed", acceptanceRecorded: false, message: `Cannot record acceptance -- the accepted price could not be saved/.test(acceptSrc)
+      && /if \(result\.stage === "offer_failed" \|\| result\.stage === "offer_unconfirmed"\) \{\s*setOutcomeActionError\(result\.message\);\s*return;\s*\}/.test(pageSrc),
     true);
   check('a result.ok === false from the Current Offer write ALSO returns before the Note is ever attempted (checked identically to a thrown error)',
-    /if \(!freezeResult\.ok\) \{\s*setOutcomeActionError\(\s*"Cannot record acceptance -- the accepted price was sent but could not be confirmed[\s\S]{0,80}"\s*,?\s*\);\s*return;\s*\}/.test(pageSrc),
+    /if \(!offer\.ok\) \{\s*return \{ stage: "offer_unconfirmed", acceptanceRecorded: false, message: "Cannot record acceptance -- the accepted price was sent but could not be confirmed/.test(acceptSrc),
     true);
   check('the soft-warning, non-blocking freeze-write-failure path is REMOVED (no currentOfferWriteState "error" write inside the accept branch\'s old catch)',
     /Agreement Reached was recorded, but freezing Current Offer failed/.test(pageSrc),

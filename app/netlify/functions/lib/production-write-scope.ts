@@ -30,6 +30,23 @@
  * unresolved, and the contract-path notes, artifact upload and stage
  * transition. `test-production-write-scope.cjs` proves the facts subset is
  * both sufficient and minimal against the real `currentContractContext`.
+ *
+ * Walkthrough allowances (INV-98, Board #9, 2026-09-29). The derivation
+ * above covered what the SERVER requires, not what the supported UI writers
+ * require on the pinned walkthrough. Six more writes are permitted, each only
+ * on the pinned pair and only while both Production flags are enabled:
+ *   - `opportunity.arv`, value exactly 485000 (number, strict equality);
+ *   - `opportunity.repairs`, value exactly 52000 (number, strict equality);
+ *   - the ARV approval ledger note, decision OVERRIDE, approved ARV 485000;
+ *   - `contact.lastCallAttempt` on the pinned contact (Confirm Accept's
+ *     final write);
+ *   - the OVERRIDDEN readiness decision note ("approved" stays refused);
+ *   - the disposition handoff note, which must also name the pinned contact.
+ * The three field writes are additionally gated in `ghl-write.ts`, under the
+ * contact lock and before the write claim or any PUT, by
+ * `evaluateProductionPairedOwnership`: the pinned opportunity, read fresh,
+ * must still belong to the pinned contact and sit in Seller Leads.
+ * The Contract Ready checklist stays refused: no walkthrough step gates on it.
  */
 import { getConfig, PRODUCTION_PROOF_SCOPE_ENABLED, PRODUCTION_PROOF_CONTACT_NOT_PINNED, PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED } from "../../../shared/ghl-config";
 import type { GhlConfig } from "../../../shared/ghl-config";
@@ -69,7 +86,7 @@ export type ProductionWriteScopeResult = { ok: true } | { ok: false; code: Produ
  * silently permitted or silently unclassified.
  */
 export const PRODUCTION_OPERATION_SCOPE = {
-  "contact.lastCallAttempt": "refused",
+  "contact.lastCallAttempt": "pinned_contact",
   "contact.callback": "refused",
   "contact.propertyNotes": "refused",
   "contact.arv": "refused",
@@ -80,13 +97,27 @@ export const PRODUCTION_OPERATION_SCOPE = {
   "note.create": "pinned_contact_note",
   "task.complete": "refused",
   "opportunity.askingPrice": "refused",
-  "opportunity.arv": "refused",
-  "opportunity.repairs": "refused",
+  "opportunity.arv": "pinned_opportunity_value",
+  "opportunity.repairs": "pinned_opportunity_value",
   "opportunity.currentOffer": "pinned_opportunity",
   "opportunity.assignmentMode": "refused",
   "opportunity.underContractStage": "pinned_opportunity",
   "opportunity.underwriting": "refused",
-} as const satisfies Record<string, "refused" | "pinned_opportunity" | "pinned_contact_note">;
+} as const satisfies Record<string, "refused" | "pinned_opportunity" | "pinned_opportunity_value" | "pinned_contact" | "pinned_contact_note">;
+
+/**
+ * The only values a `pinned_opportunity_value` write may carry: Brad's
+ * approved synthetic economics for the pinned fixture. Compared with strict
+ * `===` against a number -- a string, a near value or a coerced value is
+ * refused.
+ */
+export const PRODUCTION_PINNED_VALUES: Readonly<Record<string, number>> = Object.freeze({
+  "opportunity.arv": 485000,
+  "opportunity.repairs": 52000,
+});
+
+/** Operations whose handler must prove, under the contact lock, that the pinned opportunity still belongs to the pinned contact in Seller Leads. */
+export const PRODUCTION_PAIRED_OPERATIONS: ReadonlySet<string> = new Set(["opportunity.arv", "opportunity.repairs", "contact.lastCallAttempt"]);
 
 type ParsedRecord = { opportunityId?: unknown; [key: string]: unknown };
 
@@ -99,6 +130,10 @@ type ParsedRecord = { opportunityId?: unknown; [key: string]: unknown };
 export const PRODUCTION_NOTE_SCOPE: ReadonlyArray<{ parse: (body: string) => unknown; allow: ((record: ParsedRecord) => boolean) | null }> = [
   // Prerequisites -- the accepted agreement and the fifteen required facts.
   { parse: parseOutcomeNote, allow: (r) => r.kind === "accept" },
+  // Walkthrough: Seller Call's accept gate (OVERRIDDEN only) and the ARV
+  // Override ledger entry for the pinned synthetic value only.
+  { parse: parseReadinessHumanActionNote, allow: (r) => r.kind === "overridden" },
+  { parse: parseArvApprovalNote, allow: (r) => r.decision === "OVERRIDE" && r.approvedArv === PRODUCTION_PINNED_VALUES["opportunity.arv"] },
   { parse: parseSellerSigningModelNote, allow: () => true },
   { parse: parsePartySignerFactsNote, allow: () => true },
   { parse: parsePropertyLegalDescriptionFactsNote, allow: () => true },
@@ -119,18 +154,17 @@ export const PRODUCTION_NOTE_SCOPE: ReadonlyArray<{ parse: (body: string) => unk
   { parse: parseSignerMappingAttestationNote, allow: () => true },
   { parse: parseExecutedTermsAttestationNote, allow: () => true },
   { parse: parseUnderContractNote, allow: () => true },
+  // Start Disposition. classifyNote also requires contactId === pinned contact.
+  { parse: parseDispositionHandoffNote, allow: () => true },
   // Refused in Production -- not needed for the synthetic contract.
-  { parse: parseArvApprovalNote, allow: null },
   { parse: parsePropertyIdentityConfirmationNote, allow: null },
   { parse: parseTransactionAssumptionsNote, allow: null },
   { parse: parseSellerPricePositionNote, allow: null },
-  { parse: parseReadinessHumanActionNote, allow: null },
   { parse: parseReadinessDecisionInvalidationNote, allow: null },
   { parse: parseContractReadyChecklistNote, allow: null },
   { parse: parseNegotiationOverrideNote, allow: null },
   { parse: parseBuyerEntityOverrideNote, allow: null },
   { parse: parseRepresentationFactsNote, allow: null },
-  { parse: parseDispositionHandoffNote, allow: null },
   { parse: parseContractLifecycleNote, allow: null },
   { parse: parseContractProjectionSyncNote, allow: null },
 ];
@@ -141,7 +175,7 @@ function isPinned(value: unknown, placeholder: string): value is string {
   return typeof value === "string" && value !== placeholder && GHL_ID_SHAPE.test(value);
 }
 
-function isTestDeployment(config: GhlConfig): boolean {
+export function isTestDeployment(config: GhlConfig): boolean {
   return config.locationId === getConfig("test").locationId;
 }
 
@@ -162,7 +196,7 @@ function productionPreconditions(config: GhlConfig): ProductionWriteScopeResult 
  * allowed parser also recognizes it, and a body no parser recognizes --
  * a plain note -- is refused.
  */
-function classifyNote(body: string, pinnedOpportunityId: string): ProductionWriteScopeResult {
+function classifyNote(body: string, pinnedOpportunityId: string, pinnedContactId: string): ProductionWriteScopeResult {
   const matches: Array<{ allow: ((record: ParsedRecord) => boolean) | null; record: ParsedRecord }> = [];
   for (const entry of PRODUCTION_NOTE_SCOPE) {
     let record: unknown = null;
@@ -173,6 +207,9 @@ function classifyNote(body: string, pinnedOpportunityId: string): ProductionWrit
   const [{ allow, record }] = matches;
   if (allow === null || !allow(record)) return { ok: false, code: "NOTE_NOT_PERMITTED" };
   if (record.opportunityId !== pinnedOpportunityId) return { ok: false, code: "TARGET_NOT_PINNED" };
+  // Only the disposition handoff carrier names a contact today; any permitted
+  // note that names one must name the pinned contact.
+  if (Object.prototype.hasOwnProperty.call(record, "contactId") && record.contactId !== pinnedContactId) return { ok: false, code: "TARGET_NOT_PINNED" };
   return { ok: true };
 }
 
@@ -185,13 +222,42 @@ export function evaluateProductionGhlWriteScope(config: GhlConfig, request: { op
   if (scope === "pinned_opportunity") {
     return request.targetId === pre.opportunityId ? { ok: true } : { ok: false, code: "TARGET_NOT_PINNED" };
   }
+  if (scope === "pinned_opportunity_value") {
+    if (request.targetId !== pre.opportunityId) return { ok: false, code: "TARGET_NOT_PINNED" };
+    const value = (request.args as { value?: unknown } | null)?.value;
+    return typeof value === "number" && value === PRODUCTION_PINNED_VALUES[request.operation] ? { ok: true } : { ok: false, code: "OPERATION_NOT_PERMITTED" };
+  }
+  if (scope === "pinned_contact") {
+    return request.targetId === pre.contactId ? { ok: true } : { ok: false, code: "TARGET_NOT_PINNED" };
+  }
   if (scope === "pinned_contact_note") {
     if (request.targetId !== pre.contactId) return { ok: false, code: "TARGET_NOT_PINNED" };
     const body = (request.args as { body?: unknown } | null)?.body;
     if (typeof body !== "string") return { ok: false, code: "NOTE_NOT_PERMITTED" };
-    return classifyNote(body, pre.opportunityId!);
+    return classifyNote(body, pre.opportunityId!, pre.contactId!);
   }
   return { ok: false, code: "OPERATION_NOT_PERMITTED" };
+}
+
+/** True when `ghl-write.ts` must run `evaluateProductionPairedOwnership` for this operation (never in Test). */
+export function requiresProductionPairedOwnership(config: GhlConfig, operation: string): boolean {
+  return !isTestDeployment(config) && PRODUCTION_PAIRED_OPERATIONS.has(operation);
+}
+
+/**
+ * `ghl-write.ts` -- for `PRODUCTION_PAIRED_OPERATIONS` only, under the contact
+ * lock and before the write claim or any PUT. The pinned opportunity, read
+ * fresh, must be the pinned id, owned by the pinned contact, in the Seller
+ * Leads pipeline.
+ */
+export function evaluateProductionPairedOwnership(config: GhlConfig, opportunity: { id?: unknown; contactId?: unknown; pipelineId?: unknown } | null | undefined): ProductionWriteScopeResult {
+  if (isTestDeployment(config)) return { ok: true };
+  const pre = productionPreconditions(config);
+  if (!pre.ok) return pre;
+  if (!opportunity || opportunity.id !== pre.opportunityId || opportunity.contactId !== pre.contactId || opportunity.pipelineId !== config.pipelines.sellerLeads) {
+    return { ok: false, code: "TARGET_NOT_PINNED" };
+  }
+  return { ok: true };
 }
 
 /** `ghl-executed-artifact-upload.ts` -- evaluated after request validation, before `connectLambda`. */

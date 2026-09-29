@@ -9,7 +9,7 @@ import { configuredBoundary, fieldValue, WriteUncertain } from "./lib/ghl-write-
 import { claimWrite, lockContact, stageTransitionUnresolved, claimStageTransition, clearStageTransition } from "./lib/write-receipts";
 import { latestOutcomeNoteForOpportunity } from "../../src/lib/seller-call-outcome";
 import { currentOfferWriteGate } from "../../src/lib/current-offer-carrier";
-import { evaluateProductionGhlWriteScope, PRODUCTION_WRITE_SCOPE_REFUSAL } from "./lib/production-write-scope";
+import { evaluateProductionGhlWriteScope, evaluateProductionPairedOwnership, requiresProductionPairedOwnership, PRODUCTION_WRITE_SCOPE_REFUSAL } from "./lib/production-write-scope";
 const json = (statusCode: number, data: unknown) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(data) });
 
 /**
@@ -95,8 +95,21 @@ export const handler = async (event: any) => {
     const isOpportunityTargeted = plan.kind === "opportunity" || plan.kind === "opportunity_stage";
     let target = isOpportunityTargeted ? await boundary.opportunity(targetId) : await boundary.contact(targetId);
     const contactId = isOpportunityTargeted ? target.contactId : targetId;
-    release = await lockContact(contactId);
+    // INV-98 walkthrough (Bones): a paired Production opportunity write locks
+    // the CONFIGURED pinned contact, never whichever owner the first,
+    // unlocked read happened to report. The fresh ownership check below then
+    // runs under that lock. Test and every other operation are unchanged.
+    const pairedProduction = requiresProductionPairedOwnership(config, operation);
+    release = await lockContact(pairedProduction && isOpportunityTargeted ? config.productionProofScope.contactId : contactId);
     target = isOpportunityTargeted ? await boundary.opportunity(targetId) : await boundary.contact(targetId);
+    // INV-98 walkthrough: under the contact lock, before the write claim or
+    // any PUT, the pinned opportunity (read fresh) must still belong to the
+    // pinned contact in Seller Leads. Production only; Test is unaffected.
+    if (pairedProduction) {
+      const pinnedOpportunity = isOpportunityTargeted ? target : await boundary.opportunity(config.productionProofScope.opportunityId);
+      const ownership = evaluateProductionPairedOwnership(config, pinnedOpportunity);
+      if (!ownership.ok) return json(403, { error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: ownership.code });
+    }
     if (operation === "opportunity.currentOffer") {
       const outcome = latestOutcomeNoteForOpportunity(await boundary.notes(contactId), targetId);
       if (currentOfferWriteGate({ value: args.value, agreementAlreadyReached: outcome?.kind === "accept" }).kind !== "allowed") return json(409, { error: "Current Offer is frozen or invalid" });

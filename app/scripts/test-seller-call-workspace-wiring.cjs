@@ -451,8 +451,10 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
     // Jess Gate correction, second round, 2026-09-08: a tenth call site --
     // the durable-invalidation write inside the write-on-detect effect --
     // is a real, deliberate addition, still exactly ghl.notes.create.
-    'ghl.notes.create now has exactly ten call sites in the actual code, never an eleventh',
-    (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 10,
+    // INV-98 (Bones REVISE item 2): an eleventh -- the Confirm Accept adapter
+    // handed to lib/seller-call-accept-writes.ts, still exactly ghl.notes.create.
+    'ghl.notes.create now has exactly eleven call sites in the actual code, never a twelfth',
+    (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 11,
   );
   const forbiddenAlwaysForOverride = [
     'setApprovedArv', 'setEstimatedRepairs', 'saveUnderwritingFields', 'setAskingPrice',
