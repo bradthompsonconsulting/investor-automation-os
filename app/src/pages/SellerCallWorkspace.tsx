@@ -58,6 +58,7 @@ import { scheduleCallbackGated } from "../lib/callbackWrite";
    Reached" is provable without a network call, mirroring how
    `seller-call-negotiation.ts`'s pure functions already work. */
 import { currentOfferWriteGate, acceptedPriceFreezeValue, readCurrentOfferFromOpportunity, checkCurrentOfferIntegrity } from "../lib/current-offer-carrier";
+import { runConfirmAcceptWrites, confirmAcceptOffered, recoverLastCallAttempt } from "../lib/seller-call-accept-writes";
 
 /**
  * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49,
@@ -551,6 +552,10 @@ export default function SellerCallWorkspace() {
   const [showOutcomeForm, setShowOutcomeForm] = useState<CallOutcomeKind | null>(null);
   const [recordingOutcome, setRecordingOutcome] = useState<CallOutcomeKind | null>(null);
   const [outcomeActionError, setOutcomeActionError] = useState<string | null>(null);
+  /* INV-98 (Bones REVISE item 2): set only when Confirm Accept recorded the
+     acceptance but its final call-timestamp write could not be confirmed. */
+  const [timestampRecovery, setTimestampRecovery] = useState<{ pendingTimestamp: string } | null>(null);
+  const [timestampRecoveryBusy, setTimestampRecoveryBusy] = useState(false);
   const [followUpAtInput, setFollowUpAtInput] = useState("");
   const [passReasonInput, setPassReasonInput] = useState("");
 
@@ -1800,27 +1805,41 @@ export default function SellerCallWorkspace() {
           setOutcomeActionError(`Cannot record acceptance -- ${freeze.reason}.`);
           return;
         }
-        let freezeResult: { ok: boolean };
-        try {
-          freezeResult = await ghl.opportunities.setCurrentOffer(screen.opportunity.id, freeze.value);
-        } catch (e: any) {
-          setOutcomeActionError(
-            `Cannot record acceptance -- the accepted price could not be saved to the opportunity (${e?.message ?? "unknown error"}). Nothing was recorded; you may retry.`,
-          );
+        /* INV-98 (Bones REVISE item 2): the three writes -- Current Offer,
+           accept note, call timestamp, in that order -- and every failure
+           message live in lib/seller-call-accept-writes.ts, where they are
+           tested directly. */
+        const result = await runConfirmAcceptWrites(
+          {
+            setCurrentOffer: (opportunityId, value) => ghl.opportunities.setCurrentOffer(opportunityId, value),
+            createNote: (id, body) => ghl.notes.create(id, body),
+            setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso),
+          },
+          { contactId, opportunityId: screen.opportunity.id, offerValue: freeze.value, note: attempt.note, at: nowIso },
+        );
+        if (result.stage === "offer_failed" || result.stage === "offer_unconfirmed") {
+          setOutcomeActionError(result.message);
           return;
         }
-        if (!freezeResult.ok) {
-          setOutcomeActionError(
-            "Cannot record acceptance -- the accepted price was sent but could not be confirmed on the opportunity. Nothing was recorded; you may retry.",
-          );
-          return;
-        }
-        // Confirmed authoritative. Not yet frozen -- freezing is this
-        // deal's NEXT render observing the Note written below, per the
-        // header's outcome (3). Recorded as already-written so an
-        // untouched blur before that next render issues no redundant PUT.
+        // The Current Offer is confirmed from here on. Recorded as
+        // already-written so an untouched blur issues no redundant PUT.
         lastWrittenCurrentOfferRef.current = freeze.value;
         setCurrentOfferWriteState({ status: "idle" });
+        if (result.stage === "note_failed") {
+          setOutcomeActionError(result.message);
+          return;
+        }
+        // The acceptance IS recorded (complete or timestamp_failed): show
+        // Agreement Reached now, so Confirm Accept is not offered again.
+        setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: result.note, dateAdded: nowIso }]);
+        setShowOutcomeForm(null);
+        if (result.stage === "timestamp_failed") {
+          setTimestampRecovery({ pendingTimestamp: result.pendingTimestamp });
+          setOutcomeActionError(result.message);
+        } else {
+          setTimestampRecovery(null);
+        }
+        return;
       }
 
       if (kind === "follow_up") {
@@ -1842,6 +1861,38 @@ export default function SellerCallWorkspace() {
       setOutcomeActionError(e?.message ?? "Couldn't record this outcome.");
     } finally {
       setRecordingOutcome(null);
+    }
+  }
+
+  /* INV-98 (Bones REVISE item 2): recover ONLY the call timestamp after an
+     acceptance was recorded. Reads BOTH saved last-call fields first
+     (lib/seller-call-accept-writes.ts decides); never touches the
+     acceptance. */
+  async function handleRecoverCallTimestamp() {
+    if (!timestampRecovery || timestampRecoveryBusy) return;
+    setTimestampRecoveryBusy(true);
+    try {
+      const recovered = await recoverLastCallAttempt(
+        {
+          readLastCallFields: async (id) => (await ghl.contacts.getDetail(id)).customFields,
+          setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso),
+        },
+        {
+          contactId, pendingTimestamp: timestampRecovery.pendingTimestamp, now: new Date().toISOString(),
+          fieldIds: { date: CONFIG.fields.lastCallAttempt, precise: CONFIG.fields.lastCallAttemptPrecise },
+        },
+      );
+      if (recovered.kind === "confirmed" || recovered.kind === "written") {
+        setTimestampRecovery(null);
+        setOutcomeActionError(null);
+      } else {
+        // Keep the warning, and keep as pending exactly the timestamp the
+        // module says is unconfirmed (the attempted one after a failed write).
+        setTimestampRecovery({ pendingTimestamp: recovered.pendingTimestamp });
+        setOutcomeActionError(recovered.message);
+      }
+    } finally {
+      setTimestampRecoveryBusy(false);
     }
   }
 
@@ -2443,6 +2494,11 @@ export default function SellerCallWorkspace() {
           >
             <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Record Call Outcome</div>
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              {!confirmAcceptOffered(latestOutcome?.kind) ? (
+                <span data-testid="call-outcome-accept-recorded" style={{ fontSize: "12px", color: "#22C55E", alignSelf: "center" }}>
+                  Agreement Reached is recorded -- Confirm Accept is not offered again.
+                </span>
+              ) : (
               <button
                 data-testid="call-outcome-accept-toggle"
                 onClick={() => setShowOutcomeForm(showOutcomeForm === "accept" ? null : "accept")}
@@ -2458,6 +2514,7 @@ export default function SellerCallWorkspace() {
               >
                 Accept
               </button>
+              )}
               <button
                 data-testid="call-outcome-follow-up-toggle"
                 onClick={() => setShowOutcomeForm(showOutcomeForm === "follow_up" ? null : "follow_up")}
@@ -2476,7 +2533,7 @@ export default function SellerCallWorkspace() {
               </button>
             </div>
 
-            {showOutcomeForm === "accept" ? (
+            {showOutcomeForm === "accept" && confirmAcceptOffered(latestOutcome?.kind) ? (
               <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
                 {currentOffer === null ? (
                   <div style={{ fontSize: "12px", color: "#F59E0B" }}>
@@ -2570,6 +2627,16 @@ export default function SellerCallWorkspace() {
 
             {outcomeActionError ? (
               <div data-testid="call-outcome-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{outcomeActionError}</div>
+            ) : null}
+            {timestampRecovery ? (
+              <button
+                data-testid="call-timestamp-recover"
+                onClick={() => { void handleRecoverCallTimestamp(); }}
+                disabled={timestampRecoveryBusy}
+                style={{ ...COMPACT_BUTTON_STYLE, marginTop: "8px" }}
+              >
+                {timestampRecoveryBusy ? <Loader2 size={12} className="animate-spin" /> : null} Check &amp; retry call timestamp
+              </button>
             ) : null}
           </div>
 

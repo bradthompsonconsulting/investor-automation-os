@@ -1063,6 +1063,62 @@ await check('manual send: readback failure -- live provider fetch itself errors,
 
   await check('fabricated handoff price refused', async () => { const before = writes; assert.equal((await invoke(load('contract-disposition-handoff-carriers').formatDispositionHandoffNote({ ...handoff.value, sellerContractPrice: 1 }))).statusCode, 409); assert.equal(writes, before); });
 
+  // INV-98 Board #9 review package -- further altered-snapshot, stale-lifecycle
+  // and stale-agreement refusals, each against the SAME real canonical body,
+  // with only the one condition under test broken.
+  const handoffCarriers = load('contract-disposition-handoff-carriers');
+  for (const [label, altered] of [
+    ['approved repairs altered', { ...handoff.value, approvedRepairs: handoff.value.approvedRepairs + 1 }],
+    ['approved ARV amount altered', { ...handoff.value, approvedArv: { ...handoff.value.approvedArv, amount: handoff.value.approvedArv.amount + 1 } }],
+    ['contact altered', { ...handoff.value, contactId: 'fixture-other-contact' }],
+    ['agreement timestamp altered', { ...handoff.value, agreementAt: '2026-09-01T00:00:00.000Z' }],
+  ]) {
+    await check('altered handoff snapshot refused: ' + label, async () => {
+      const before = writes;
+      const res = await invoke(handoffCarriers.formatDispositionHandoffNote(altered));
+      assert.equal(res.statusCode, 409, res.body); assert.equal(writes, before);
+    });
+  }
+  await check('disposition refused: a Rescission lifecycle record exists for this exact contract version (stale lifecycle)', async () => {
+    const lifecycleModel = load('contract-lifecycle-model');
+    const rescission = lifecycleModel.buildRescissionRecord({ opportunityId: opportunity.id, version: fixture.version, reason: 'Synthetic rescission for the refusal proof', authorizedBy: 'brad', authorizedAt: '2026-09-18T02:00:00.000Z', acceptedSend: send, iaosObservedAt: '2026-09-18T02:00:00.000Z', evidenceSummary: 'Synthetic rescission', relatedPriorRecordId: null });
+    assert.equal(rescission.ok, true, JSON.stringify(rescission));
+    const injected = { id: 'injected-rescission', body: load('contract-lifecycle-carriers').formatContractLifecycleNote(rescission.value) };
+    notes.push(injected);
+    try {
+      const before = writes;
+      const res = await invoke(handoffCarriers.formatDispositionHandoffNote(handoff.value));
+      assert.equal(res.statusCode, 409, res.body); assert.equal(writes, before);
+    } finally { notes.splice(notes.indexOf(injected), 1); }
+  });
+  await check('disposition refused: a NEWER accepted agreement supersedes the one the handoff names (stale agreement)', async () => {
+    const outcomeLib = load('seller-call-outcome');
+    const original = fixture.notes.map((n) => outcomeLib.parseOutcomeNote(n.body)).find((r) => r && r.kind === 'accept' && r.opportunityId === opportunity.id);
+    assert.ok(original, 'the fixture carries an accept outcome');
+    const injected = { id: 'injected-newer-accept', body: outcomeLib.formatOutcomeNote({ opportunityId: opportunity.id, at: '2026-09-18T03:00:00.000Z', operator: 'brad', kind: 'accept', reason: null, followUpAt: null, snapshot: original.snapshot }) };
+    notes.push(injected);
+    try {
+      const before = writes;
+      const res = await invoke(handoffCarriers.formatDispositionHandoffNote(handoff.value));
+      assert.equal(res.statusCode, 409, res.body); assert.equal(writes, before);
+    } finally { notes.splice(notes.indexOf(injected), 1); }
+  });
+  // The same real canonical body against the Production proof write scope --
+  // the gate ghl-write.ts evaluates first, before these server checks run.
+  await check('Production scope gate: the real canonical handoff body passes only for the pinned pair, and a foreign contact is refused', () => {
+    const G = require('../shared/ghl-config.ts');
+    const scopeLib = require('../netlify/functions/lib/production-write-scope.ts');
+    const prod = JSON.parse(JSON.stringify(G.getConfig('production')));
+    prod.contractProductionEnabled = G.CONTRACT_PRODUCTION_ENABLED;
+    prod.productionProofScope = { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED, contactId: contact.id, opportunityId: opportunity.id };
+    const decide = (config, targetId, value) => scopeLib.evaluateProductionGhlWriteScope(config, { operation: 'note.create', targetId, args: { body: handoffCarriers.formatDispositionHandoffNote(value) } });
+    assert.deepEqual(decide(prod, contact.id, handoff.value), { ok: true });
+    assert.deepEqual(decide(prod, contact.id, { ...handoff.value, contactId: 'fixture-other-contact' }), { ok: false, code: 'TARGET_NOT_PINNED' });
+    const otherPins = { ...prod, productionProofScope: { ...prod.productionProofScope, opportunityId: 'fixture-other-opportunity' } };
+    assert.deepEqual(decide(otherPins, contact.id, handoff.value), { ok: false, code: 'TARGET_NOT_PINNED' });
+    assert.deepEqual(decide(G.getConfig('production'), contact.id, handoff.value), { ok: false, code: 'PRODUCTION_WRITES_DISABLED' }, 'the committed Production config stays disabled');
+  });
+
   // ============================================================
   // Gate-review closure, requirement 6 -- server refusal proof. Each
   // refuses BEFORE the canonical "success" case below establishes the
