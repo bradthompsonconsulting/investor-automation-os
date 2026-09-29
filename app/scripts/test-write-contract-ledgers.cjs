@@ -1116,7 +1116,9 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     assert.deepEqual(decide(prod, contact.id, { ...handoff.value, contactId: 'fixture-other-contact' }), { ok: false, code: 'TARGET_NOT_PINNED' });
     const otherPins = { ...prod, productionProofScope: { ...prod.productionProofScope, opportunityId: 'fixture-other-opportunity' } };
     assert.deepEqual(decide(otherPins, contact.id, handoff.value), { ok: false, code: 'TARGET_NOT_PINNED' });
-    assert.deepEqual(decide(G.getConfig('production'), contact.id, handoff.value), { ok: false, code: 'PRODUCTION_WRITES_DISABLED' }, 'the committed Production config stays disabled');
+    // INV-98 Board #9 enable commit: the committed Production config is ENABLED but pinned to the REAL
+    // synthetic fixture, so this suite's Test-fixture pair is refused as not pinned.
+    assert.deepEqual(decide(G.getConfig('production'), contact.id, handoff.value), { ok: false, code: 'TARGET_NOT_PINNED' }, 'the committed Production config admits only its own pinned pair');
   });
 
   // ============================================================
