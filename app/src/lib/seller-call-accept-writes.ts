@@ -98,12 +98,17 @@ export function readLastCallFields(
   const dateEntries = customFields.filter((f) => f.id === fieldIds.date);
   const preciseEntries = customFields.filter((f) => f.id === fieldIds.precise);
   if (dateEntries.length > 1 || preciseEntries.length > 1) return { kind: "malformed", detail: "a last-call field appears more than once" };
-  const date = dateEntries[0]?.value;
-  const precise = preciseEntries[0]?.value;
-  if (date === undefined && precise === undefined) return { kind: "absent" };
-  if (date !== undefined && (typeof date !== "string" || !DAY.test(date) || !Number.isFinite(Date.parse(date.slice(0, 10))))) return { kind: "malformed", detail: "the last-call date is not a YYYY-MM-DD date" };
-  if (precise !== undefined && (typeof precise !== "string" || !ISO_INSTANT.test(precise) || !Number.isFinite(Date.parse(precise)))) return { kind: "malformed", detail: "the precise last-call time is not an ISO instant" };
-  if (date === undefined || precise === undefined) return { kind: "partial", detail: date === undefined ? "the precise time is saved but the date is not" : "the date is saved but the precise time is not" };
+  // Presence is the ENTRY, never its value: an entry whose value is missing,
+  // null or empty is malformed evidence (the server's own fieldValue refuses
+  // it), not an absent field that recovery may write over.
+  const dateEntry = dateEntries[0];
+  const preciseEntry = preciseEntries[0];
+  if (!dateEntry && !preciseEntry) return { kind: "absent" };
+  const date = dateEntry?.value;
+  const precise = preciseEntry?.value;
+  if (dateEntry && (typeof date !== "string" || !DAY.test(date) || !Number.isFinite(Date.parse(date.slice(0, 10))))) return { kind: "malformed", detail: "the last-call date entry has no valid YYYY-MM-DD value" };
+  if (preciseEntry && (typeof precise !== "string" || !ISO_INSTANT.test(precise) || !Number.isFinite(Date.parse(precise)))) return { kind: "malformed", detail: "the precise last-call entry has no valid ISO instant value" };
+  if (!dateEntry || !preciseEntry) return { kind: "partial", detail: !dateEntry ? "the precise time is saved but the date is not" : "the date is saved but the precise time is not" };
   if ((date as string).slice(0, 10) !== (precise as string).slice(0, 10)) return { kind: "partial", detail: "the saved date and precise time disagree" };
   return { kind: "complete", precise: precise as string, date: (date as string).slice(0, 10) };
 }

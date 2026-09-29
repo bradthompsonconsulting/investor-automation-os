@@ -199,6 +199,15 @@ function client(behaviour = {}) {
     ['a date that is not YYYY-MM-DD', [{ id: D, value: '09/29/2026' }, { id: P, value: T0 }]],
     ['a precise time that is not an ISO instant', [{ id: D, value: '2026-09-29' }, { id: P, value: 'yesterday' }]],
     ['a precise time without the Z (not the server serialization)', [{ id: D, value: '2026-09-29' }, { id: P, value: '2026-09-29T13:00:00.000' }]],
+    // Bones: a missing value is malformed evidence, never an absent field.
+    ['a precise entry whose value is undefined', [{ id: P, value: undefined }]],
+    ['a precise entry with no value key at all', [{ id: P }]],
+    ['a date entry with no value key at all', [{ id: D }]],
+    ['both entries present with no values', [{ id: D }, { id: P }]],
+    ['a valueless date entry beside the pending precise time', [{ id: D }, { id: P, value: T0 }]],
+    ['a null precise value', [{ id: D, value: '2026-09-29' }, { id: P, value: null }]],
+    ['an empty-string precise value', [{ id: D, value: '2026-09-29' }, { id: P, value: '' }]],
+    ['an empty-string date value', [{ id: D, value: '' }, { id: P, value: T0 }]],
   ]) {
     await check(`malformed evidence (${label}) -> warning kept, NO write`, async () => {
       const g = ghlFields(fields);
