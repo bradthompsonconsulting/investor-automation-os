@@ -270,3 +270,72 @@ approved and merged.
 
 Spec §4.1a P2-X item 4 is clarified to match. The exclusion takes effect
 only once that clarification is approved and merged.
+
+---
+
+## 5. P2-X transition and monitoring (2026-09-30) — IN PROGRESS
+
+The one P2-X transition of opportunity `44hLQ4PD4a4HBVLPr4nl` (contact
+`T3t5AZ3Z5lak0BmZawvP`). Each entry names who observed it, how, and the
+limits of that observation. Items without source text in hand are marked
+**PENDING**; nothing is filled in on anyone's behalf.
+
+### 5a. Preflight (spec §4.1a P2-X, as clarified by §4)
+
+- **Items 1 and 2 (Jeff; Netlify API, git and GHL GETs), final run
+  2026-09-30T18:07:54Z–18:07:58Z:**
+  - live deploy `6abd1e656bc9fe0008243a42` (`main@eab3133`), locked;
+  - both IAOS Production flags ON at that commit;
+  - fixture: sole opportunity, Seller Leads / New Lead - Seller / open,
+    `lastStageChangeAt` 2026-09-25T20:11:38.476Z, no tags, 27 notes, latest
+    `leqBHiwRRtV0hqVwHWjE`;
+  - all identical to the preceding readbacks. PASS.
+- **Item 3 (Spock):** the enrollment snapshot for this final window —
+  **PENDING** relay of Spock's text. (An earlier item 3, at about 11:06 AM
+  CDT, was relayed as a PASS; it belonged to an earlier, expired window.)
+- **Item 4 (Brad, Contract Workspace):** the six named checks —
+  **PENDING** relay of what Brad observed in this window.
+
+### 5b. IAOS transition result
+
+- **Reported (relayed to Jeff, 2026-09-30):** the transition was confirmed
+  in IAOS.
+- **Exact displayed result text:** **PENDING** relay from Brad.
+- **Limit:** Jeff cannot read the `ghl-write` function log or the Blob
+  store. A confirmed success emits no `[ghl-write]` log line and clears
+  the stage-unresolved marker by design; neither was independently
+  observed by Jeff.
+
+### 5c. GHL readbacks (Jeff; GHL API GETs with the repository-root Production token)
+
+**Limits, for every row below:** these GETs cover the opportunity,
+contact, tags, notes, tasks and appointments only. Conversations return
+HTTP 401 with this token, so **messages are not observed here**.
+Workflow enrollment is not observable through the API.
+
+| Snapshot | Observed (UTC) | After stage change | Result |
+|---|---|---|---|
+| Immediate (baseline) | 2026-09-30T18:11:03Z–18:11:05Z | +40s | Seller Leads / **Under Contract** (`bf17076b-3830-4479-94bb-b8af70fe9163`) / open. `lastStageChangeAt` **2026-09-30T18:10:23.466Z**, `updatedAt` 18:10:23.552Z, `lastStatusChangeAt` unchanged (2026-09-25T20:11:38.476Z). Sole opportunity. No tags. 27 notes (none new). 0 tasks, 0 appointments. ARV 485000, repairs 52000, Current Offer 250000. Contact `dateUpdated` unchanged (02:02:56.379Z), `lastActivity` null. |
+| Early check — **does not count as +15m** | 2026-09-30T18:14:35Z | +4m12s | 18/18 unchanged from the baseline. Recorded for completeness only. |
+| **+15 minutes** | **2026-09-30T18:30:25.991Z** | +20m02s | **18/18 unchanged from the baseline: PASS.** |
+| +24 hours | **PENDING** (at or after 2026-10-01T18:10:23Z) | — | — |
+
+The 18 compared items: owner, pipeline, stage, status,
+`lastStageChangeAt`, `lastStatusChangeAt`, opportunity `updatedAt`, ARV,
+repairs, Current Offer, sole opportunity, contact tags, contact
+`dateUpdated`, contact `lastActivity`, note count, latest note, tasks,
+appointments.
+
+### 5d. Workflow and message snapshots (Spock, GHL UI)
+
+- **Immediate:** **PENDING** relay of Spock's text, verbatim.
+- **+15 minutes:** **PENDING** relay of Spock's text, verbatim.
+- **`Seller - Under Contract Exit` execution entry for this contact:**
+  **PENDING** (spec: "as seen by Spock").
+- **+24 hours:** **PENDING**.
+
+### 5e. Closing statement and ruling
+
+**OPEN.** Awaits the +24-hour snapshots (5c, 5d), the pending items
+above, and Jess's ruling. The 24-hour close proves only the observed
+window (spec §4.1a P2-X).
