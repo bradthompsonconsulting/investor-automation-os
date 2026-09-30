@@ -264,6 +264,13 @@ export const handler = async (event: any) => {
       const reasons: ReasonPair[] = [{ code: "SIGNER_ROWS_UNAVAILABLE", message: rowsResult.reason }];
       signerCompletion = { ok: false, reasons };
       buyerIdentity = { ok: false, reasons };
+    } else if (classified.status !== "accepted") {
+      // The provider document itself is not confirmed (e.g. its live
+      // revision no longer matches the recorded send): fail closed before
+      // any mapping is consulted.
+      const reasons: ReasonPair[] = [{ code: "PROVIDER_DOCUMENT_NOT_CONFIRMED", message: classified.failureReason ?? "The provider document could not be confirmed." }];
+      signerCompletion = { ok: false, reasons };
+      buyerIdentity = { ok: false, reasons };
     } else {
       const attestation = latestSignerMappingAttestationForOpportunity(context.notes, opportunityId);
       const mappingCurrency = verifySignerMappingAttestationCurrency({
@@ -271,7 +278,12 @@ export const handler = async (event: any) => {
         opportunityId,
         version: context.version,
         providerDocumentId: documentId,
-        providerDocumentRevision: classified.summary?.documentRevision ?? null,
+        // INV-98 Board #9: the revision the mapping was bound to -- the
+        // accepted send's own, exactly as ContractWorkspace.tsx and
+        // contract-execution-model.ts bind it. A manual send recorded
+        // without a revision is null there; comparing against the live
+        // number refused every such mapping. Drift is refused above.
+        providerDocumentRevision: acceptedSend.providerResponse?.documentRevision ?? null,
         acceptedSendAttemptId: acceptedSend.attemptId,
         requiredSigners: requiredSignerSetResult.signers,
       });
