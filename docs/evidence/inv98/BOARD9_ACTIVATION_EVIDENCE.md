@@ -273,7 +273,7 @@ only once that clarification is approved and merged.
 
 ---
 
-## 5. P2-X transition and monitoring (2026-09-30) — IN PROGRESS
+## 5. P2-X transition and monitoring (2026-09-30) — COMPLETE (Brad ruling, §5f)
 
 The one P2-X transition of opportunity `44hLQ4PD4a4HBVLPr4nl` (contact
 `T3t5AZ3Z5lak0BmZawvP`). Each entry names who observed it, how, and the
@@ -318,7 +318,7 @@ Workflow enrollment is not observable through the API.
 | Immediate (baseline) | 2026-09-30T18:11:03Z–18:11:05Z | +40s | Seller Leads / **Under Contract** (`bf17076b-3830-4479-94bb-b8af70fe9163`) / open. `lastStageChangeAt` **2026-09-30T18:10:23.466Z**, `updatedAt` 18:10:23.552Z, `lastStatusChangeAt` unchanged (2026-09-25T20:11:38.476Z). Sole opportunity. No tags. 27 notes (none new). 0 tasks, 0 appointments. ARV 485000, repairs 52000, Current Offer 250000. Contact `dateUpdated` unchanged (02:02:56.379Z), `lastActivity` null. |
 | Early check — **does not count as +15m** | 2026-09-30T18:14:35Z | +4m12s | 18/18 unchanged from the baseline. Recorded for completeness only. |
 | **+15 minutes** | **2026-09-30T18:30:25.991Z** | +20m02s | **18/18 unchanged from the baseline: PASS.** |
-| +24 hours | **PENDING** (at or after 2026-10-01T18:10:23Z) | — | — |
+| +24 hours | **CANCELED** by Brad's ruling (§5f); not taken | — | — |
 
 The 18 compared items: owner, pipeline, stage, status,
 `lastStageChangeAt`, `lastStatusChangeAt`, opportunity `updatedAt`, ARV,
@@ -332,10 +332,27 @@ appointments.
 - **+15 minutes:** **PENDING** relay of Spock's text, verbatim.
 - **`Seller - Under Contract Exit` execution entry for this contact:**
   **PENDING** (spec: "as seen by Spock").
-- **+24 hours:** **PENDING**.
+- **+24 hours:** **CANCELED** by Brad's ruling (§5f).
 
 ### 5e. Closing statement and ruling
 
-**OPEN.** Awaits the +24-hour snapshots (5c, 5d), the pending items
-above, and Jess's ruling. The 24-hour close proves only the observed
-window (spec §4.1a P2-X).
+**Superseded by §5f.** No closing statement is made here beyond what was
+observed: Jeff's GHL readbacks (5c) found nothing in the P2-X stop list
+through the +15-minute snapshot (2026-09-30T18:30:25.991Z). Nothing after
+that time was observed by Jeff.
+
+### 5f. Ruling — walkthrough complete; +24-hour checkpoint canceled (Brad, 2026-09-30, as relayed)
+
+- **Ruling (Brad, Product Owner):** the Board #9 Production walkthrough is
+  complete.
+- **Start Disposition (reported by Brad):** recorded, and verified by fresh
+  readback in IAOS. Jeff did not independently read back the handoff note.
+- **The +24-hour checkpoint:** canceled by Brad. It is **not a gate**, and
+  the +24-hour GHL and Spock snapshots were not taken.
+- **Relationship to the spec:** spec §4.1a P2-X, as merged, lists a
+  +24-hour snapshot in its monitoring requirement. This ruling departs from
+  that text for this one transition, and is recorded here as Brad's ruling.
+  It is not a spec change.
+- **Still-open evidence slots:** the items marked PENDING above (5a items
+  3-4 for the final window, the exact 5b result text, and the 5d Spock
+  snapshots) remain unrelayed. The walkthrough is closed without them.
