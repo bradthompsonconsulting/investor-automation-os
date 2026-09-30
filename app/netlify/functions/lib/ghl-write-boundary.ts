@@ -17,6 +17,11 @@ export class GhlBoundary {
   }
   async opportunity(id: string) {
     const data = await this.call(`/opportunities/${id}`); const opportunity = data.opportunity ?? data;
+    // INV-98 Board #9: GHL omits `customFields` entirely on an opportunity with
+    // no custom values set yet (observed live on the pinned Production fixture,
+    // 2026-09-29). Omission alone is an empty field list. A present value that
+    // is not an array (null, object, string) is still malformed and refused.
+    if (opportunity && typeof opportunity === "object" && !Object.prototype.hasOwnProperty.call(opportunity, "customFields")) opportunity.customFields = [];
     if (opportunity.id !== id || opportunity.locationId !== this.locationId || typeof opportunity.contactId !== "string" || !Array.isArray(opportunity.customFields)) throw new Error("Opportunity identity or field readback is ambiguous");
     await this.contact(opportunity.contactId);
     return opportunity;

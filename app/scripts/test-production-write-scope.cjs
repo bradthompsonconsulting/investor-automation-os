@@ -505,7 +505,11 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
           if (opts.failOppGetAt && oppGets >= opts.failOppGetAt) return res(500, { message: 'unavailable' });
           // Ownership that changes between reads: the Nth opportunity GET reports ownerSequence[N-1] (the last entry repeats).
           if (opts.ownerSequence) world.opportunity.contactId = opts.ownerSequence[Math.min(oppGets, opts.ownerSequence.length) - 1];
-          return res(200, { opportunity: JSON.parse(JSON.stringify(world.opportunity)) });
+          const copy = JSON.parse(JSON.stringify(world.opportunity));
+          // Live GHL omits `customFields` entirely while an opportunity has no custom values.
+          if (opts.omitEmptyOppFields && copy.customFields.length === 0) delete copy.customFields;
+          if (Object.prototype.hasOwnProperty.call(opts, 'oppCustomFieldsRaw')) copy.customFields = opts.oppCustomFieldsRaw;
+          return res(200, { opportunity: copy });
         }
         if (method === 'PUT') {
           if (opts.putFails === 'throw') throw new Error('socket hang up');
@@ -584,6 +588,41 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
         assert.equal(claims(ev).length, 0, 'no write claim'); assert.equal(puts(ev).length, 0, 'no PUT');
         assert.ok(ev.filter((e) => e.kind === 'ghl').every((e) => e.method === 'GET'), 'only read-only GETs');
         assert.ok(lockReleased(ev) && noLockHeld(), 'lock released');
+      });
+    }
+  }
+  // INV-98 Board #9 first-write 409 (2026-09-29): the pinned Production
+  // opportunity had no custom values, so GHL's GET omitted `customFields`
+  // and the boundary refused it as ambiguous before the lock. Omission is an
+  // empty field list; identity, ownership and malformed values still refuse.
+  for (const [op, value] of [['opportunity.arv', 485000], ['opportunity.repairs', 52000]]) {
+    await check(`${op}: GET omits customFields on a new opportunity -> 200, one PUT, confirmed readback, lock released`, async () => {
+      const world = makeGhlWorld({ omitEmptyOppFields: true });
+      const { res, body, ev } = await runWorld(world, fixedEvent(op, PIN_OPP, { value }, `omitted-${op}`));
+      assert.equal(res.statusCode, 200, res.body);
+      assert.equal(body.confirmed, true);
+      assert.equal(puts(ev).length, 1); assert.equal(claims(ev).length, 1);
+      assert.equal(world.opportunity.customFields.find((f) => f.id === (op === 'opportunity.arv' ? F.arv : F.repairs)).fieldValue, value);
+      assert.ok(lockReleased(ev) && noLockHeld(), 'lock released');
+    });
+    for (const [label, opts] of [['owned by ANOTHER contact', { owner: OTHER_CONTACT }], ['in ANOTHER pipeline', { pipelineId: 'offline-other-pipeline' }]]) {
+      await check(`${op}: GET omits customFields AND the pinned opportunity is ${label} -> 403 TARGET_NOT_PINNED, no claim, no PUT`, async () => {
+        const world = makeGhlWorld(Object.assign({ omitEmptyOppFields: true }, opts));
+        const { res, body, ev } = await runWorld(world, fixedEvent(op, PIN_OPP, { value }, `omitted-own-${op}-${label}`));
+        assert.equal(res.statusCode, 403, res.body);
+        assert.equal(body.code, 'TARGET_NOT_PINNED');
+        assert.equal(claims(ev).length, 0); assert.equal(puts(ev).length, 0);
+        assert.ok(noLockHeld(), 'no lock left held');
+      });
+    }
+    for (const [label, raw] of [['null', null], ['an object', {}], ['a string', 'x'], ['a number', 0]]) {
+      await check(`${op}: customFields present but ${label} -> still refused as ambiguous (409), no claim, no PUT, no lock held`, async () => {
+        const world = makeGhlWorld({ oppCustomFieldsRaw: raw });
+        const { res, body, ev } = await runWorld(world, fixedEvent(op, PIN_OPP, { value }, `malformed-${op}-${label}`));
+        assert.equal(res.statusCode, 409, res.body);
+        assert.deepEqual(body, { error: 'Write refused or unconfirmed; refresh and inspect before retrying' });
+        assert.equal(claims(ev).length, 0); assert.equal(puts(ev).length, 0);
+        assert.ok(noLockHeld(), 'no lock left held');
       });
     }
   }

@@ -427,6 +427,23 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   await check('partial write is explicit and never confirmed',async()=>{omitReadback=true;const res=await handler(event('opportunity.repairs',opportunity.id,{value:999}));assert.equal(JSON.parse(res.body).confirmed,false);omitReadback=false;});
   await check('duplicate readback field rejected',()=>assert.throws(()=>boundaryLib.fieldValue([{id:'x',value:1},{id:'x',value:1}],'x','contact')));
   await check('wrong field representation rejected',()=>assert.throws(()=>boundaryLib.fieldValue([{id:'x',fieldValueNumber:1}],'x','opportunity')));
+  // INV-98 Board #9: GHL omits `customFields` on an opportunity with no custom values.
+  const oppBoundary=(opp)=>new boundaryLib.GhlBoundary('offline-token',config.locationId,async(url)=>{
+    const p=new URL(url).pathname;
+    if(p===`/contacts/${contact.id}`)return reply({contact});
+    if(p==='/opportunities/omitted-opp')return reply({opportunity:opp});
+    throw new Error('Unexpected mocked request: '+p);
+  });
+  const omitted={id:'omitted-opp',contactId:contact.id,locationId:config.locationId};
+  await check('opportunity read: omitted customFields is an empty field list, identity preserved',async()=>{
+    const read=await oppBoundary(omitted).opportunity('omitted-opp');
+    assert.deepEqual(read.customFields,[]);assert.equal(read.id,'omitted-opp');assert.equal(read.contactId,contact.id);assert.equal(read.locationId,config.locationId);
+    assert.deepEqual(boundaryLib.fieldValue(read.customFields,config.opportunityFacts.arv,'opportunity'),{present:false,value:null});
+  });
+  for(const [label,opp] of [['wrong id',{...omitted,id:'other-opp'}],['wrong location',{...omitted,locationId:'other-location'}],['missing contactId',{id:omitted.id,locationId:config.locationId}],['non-string contactId',{...omitted,contactId:7}]])
+    await check('opportunity read with omitted customFields still refuses '+label,()=>assert.rejects(oppBoundary(opp).opportunity('omitted-opp'),/Opportunity identity or field readback is ambiguous/));
+  for(const [label,raw] of [['null',null],['an object',{}],['a string','x'],['a number',0],['false',false]])
+    await check('opportunity read refuses customFields present as '+label,()=>assert.rejects(oppBoundary({...omitted,customFields:raw}).opportunity('omitted-opp'),/Opportunity identity or field readback is ambiguous/));
   await check('Production contract projection fails closed',()=>assert.throws(()=>contracts.planWrite('contract.projection',{entries:[{key:Object.keys(config.contractProjectionFields)[0],text:'synthetic'}],sellerCount:'One Seller'},getConfig('production'))));
   const fixture = require('./write-contract-fixture.cjs').contractFixture(name=>require('../src/lib/'+name+'.ts'), opportunity.id);
   Object.assign(contact,{firstName:'Jane',lastName:'Seller',email:'seller@example.com',address1:'123 Main St',city:'Austin',state:'TX',postalCode:'78701'});
