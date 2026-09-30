@@ -125,7 +125,7 @@ The transition permits no workflow enrollment other than the one named, reviewed
   - **Before the click, all required:**
     - this amendment approved by Jess and merged;
     - P1 recorded as PASS in `docs/evidence/inv98/BOARD9_ACTIVATION_EVIDENCE.md` (done 2026-09-30);
-    - Brad's written acceptance of "Risk Brad accepts" below, recorded verbatim in that file with its date and time.
+    - Brad's written acceptance of "Risk Brad accepts" below, recorded in that file. He may write the statement out, or write a short acceptance that directly refers to it. The record gives his exact words, their date and time, and the exact risk text they refer to, with the PR head it was read at. A reference acceptance is not presented as Brad having typed the risk text.
   - **Preflight, read-only, within 30 minutes before the click.** Any mismatch stops the walkthrough.
     1. **Deploy:** the live deploy ID, commit and lock match the approved build, and both IAOS Production flags are ON at that commit.
     2. **Fixture:** a fresh GHL GET shows the pinned opportunity as the contact's only opportunity, in Seller Leads Pipeline / New Lead - Seller / Open, with `lastStageChangeAt` unchanged and no tags on the contact. The note count and latest note match the last recorded readback.
@@ -155,7 +155,7 @@ The transition permits no workflow enrollment other than the one named, reviewed
     - `Seller - Under Contract Exit`'s execution entry for this contact, as seen by Spock;
     - the three snapshots;
     - a closing statement that nothing in the stop list occurred.
-  - **Risk Brad accepts** (verbatim text for his written acceptance): "For the one INV-98 Board #9 synthetic Under Contract transition of Production opportunity `44hLQ4PD4a4HBVLPr4nl` (contact `T3t5AZ3Z5lak0BmZawvP`) only, I accept these risks:
+  - **Risk Brad accepts** (the exact text his written acceptance covers, whether written out or directly referred to): "For the one INV-98 Board #9 synthetic Under Contract transition of Production opportunity `44hLQ4PD4a4HBVLPr4nl` (contact `T3t5AZ3Z5lak0BmZawvP`) only, I accept these risks:
     - `Seller - Follow Up`, `Seller - Not Interested`, `Seller - Route to Long-Term Nurture`, `Seller 6` and `Seller 7` have no built or proven Under Contract guard in Production. If any of them, or any other Seller Leads stage writer, is triggered for this contact while the opportunity is Under Contract, it may move the opportunity out of Under Contract and may enroll the contact or send messages to the fixture's contact details.
     - External listeners on stage-change events (Make.com, Netlify, Marketplace apps) are not visible in the workflow builder, and are not audited.
     - P1's 'no change since Sep 29' rests on the builder list's Last-updated column.

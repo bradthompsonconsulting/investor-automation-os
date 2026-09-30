@@ -174,8 +174,39 @@ pinned synthetic transition is in §4.1a, **P2-X**.
 
 ---
 
-## 3. Written risk acceptance (Brad) — PENDING
+## 3. Written risk acceptance (Brad) — RECORDED 2026-09-30
 
-**Not yet given.** P2-X requires Brad's written acceptance of the exact risk
-statement in §4.1a P2-X, "Risk Brad accepts", recorded here verbatim with
-its date and time before the transition.
+**Brad's exact words:** `I accept this risk.`
+
+**When:** Sep 30, 2026, 10:45 AM CDT (2026-09-30T15:45 UTC). Relayed to Jeff by
+Brad.
+
+**Context, as relayed:** Brad's written response directly followed Jess's
+plain-language explanation of the one synthetic transition, and the detailed
+"Risk Brad accepts" text in PR #108.
+
+**Form of acceptance: by direct reference.** Brad wrote the five words above.
+He did **not** type the risk statement below; it is the text his words refer
+to. Spec §4.1a P2-X allows this form of acceptance. The statement is
+reproduced below from `docs/CONTACTS_OPPORTUNITIES_SPEC.md` §4.1a P2-X,
+"Risk Brad accepts", as it stood at PR #108 head
+`ab5be60b00e87d9c04339b560d25f95cf0e2e9b9`. That head was committed at
+10:39 AM CDT and was current at 10:45 AM CDT. The statement text is
+identical at every PR #108 head (`a494754`, `a250fa0`, `ab5be60`) and in
+this commit. It is quoted as Markdown source.
+
+**Risk statement the acceptance refers to:**
+
+```markdown
+"For the one INV-98 Board #9 synthetic Under Contract transition of Production opportunity `44hLQ4PD4a4HBVLPr4nl` (contact `T3t5AZ3Z5lak0BmZawvP`) only, I accept these risks:
+    - `Seller - Follow Up`, `Seller - Not Interested`, `Seller - Route to Long-Term Nurture`, `Seller 6` and `Seller 7` have no built or proven Under Contract guard in Production. If any of them, or any other Seller Leads stage writer, is triggered for this contact while the opportunity is Under Contract, it may move the opportunity out of Under Contract and may enroll the contact or send messages to the fixture's contact details.
+    - External listeners on stage-change events (Make.com, Netlify, Marketplace apps) are not visible in the workflow builder, and are not audited.
+    - P1's 'no change since Sep 29' rests on the builder list's Last-updated column.
+
+    This acceptance covers no other contact, opportunity or transition, and it is not a finding that the guards exist."
+```
+
+**Scope reminder:** this acceptance does not satisfy P2 for any ordinary
+Production transition, and it is not a finding that the P2 guards exist.
+It satisfies only the P2-X acceptance precondition, and only once P2-X is
+approved and merged.
