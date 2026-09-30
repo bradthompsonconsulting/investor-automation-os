@@ -3,19 +3,21 @@
 **INV-71 · B10-01.** "Lock Buyer Disposition V1 contract, state machine,
 qualification rules, and finish line."
 
-**Status: DRAFT for Jess's review. It is a design contract only.** It
-authorizes no code, no GHL write, no outreach and no Production change.
-Every record kind named here is a **proposal** until reviewed. Each needs its
-own named write operation (`docs/INV95_WRITE_BOUNDARIES.md`) before anything
-may write it.
+**Status: DRAFT, revision 2, after Jess's REQUEST CHANGES of 2026-09-30.**
+It is a design contract only. It authorizes no code, no GHL write, no
+message send and no Production change. Every record kind and operation
+named here is a **proposal** until reviewed. Each needs its own named
+write operation (`docs/INV95_WRITE_BOUNDARIES.md`) and Production scope
+review before anything may perform it.
 
-**Source of scope.** Jess's relay of INV-71 (2026-09-30). Jeff could not read
-Linear directly: the MCP connection needed re-authentication. The INV-71
-issue and the Board #10 project are to be re-read as the source once that
-connection returns. Linear's Board #10 "paused pending Board #9" text is
-stale: Brad signed off the Board #9 Production walkthrough on 2026-09-30,
-after the verified Start Disposition handoff
-(`docs/evidence/inv98/BOARD9_ACTIVATION_EVIDENCE.md` §5f).
+**Source of scope.** Jess's relays of INV-71 and her review of revision 1
+(2026-09-30). Jeff could not read Linear directly: the MCP connection needed
+re-authentication. **The full INV-71 issue and the Board #10 project must
+be rechecked against this draft once that connection returns.** Linear's
+Board #10 "paused pending Board #9" text is stale: Brad signed off the
+Board #9 Production walkthrough on 2026-09-30, after the verified Start
+Disposition handoff (`docs/evidence/inv98/BOARD9_ACTIVATION_EVIDENCE.md`
+§5f).
 
 Claims are classified per `FOUNDATIONAL_PRINCIPLES.md` §I: **OBSERVED**
 (with its source), **INFERRED**, or **UNKNOWN**. Proposed design is labelled
@@ -25,44 +27,60 @@ Claims are classified per `FOUNDATIONAL_PRINCIPLES.md` §I: **OBSERVED**
 
 ## 1. Scope and hard boundaries
 
-**In scope:** from the verified Board #9 disposition handoff, up to and
-including **Buyer Selected**, the V1 finish line.
+**In scope:** from the verified Board #9 disposition handoff, through
+acceptance into **Disposition Ready**, up to and including **Buyer
+Selected**, the V1 finish line.
 
-**Out of scope, and excluded by this contract:**
+**Rules this contract sets:**
 - **Brad alone selects the buyer.** No automatic selection, ranking, AI
   score, recommendation or "best buyer" signal, in any form.
-- **No outreach.** IAOS sends nothing to any buyer: no email, SMS, call,
-  workflow enrollment or document. Contact with buyers happens outside
-  IAOS, by Brad. IAOS only records facts Brad enters about it.
+- **Outreach: Brad-authorized only; autonomous outreach is prohibited.**
+  IAOS may send a message to a buyer only as an explicit Brad action
+  (T5). Brad picks that one buyer, that channel and that exact content,
+  for that one send. Prohibited:
+  - any send IAOS decides on its own;
+  - bulk or list sends;
+  - scheduled, delayed or follow-up sequences;
+  - triggered sends;
+  - any send through workflow enrollment, tags or pipeline movement (the
+    HARD NO in `AGENTS.md` is unchanged);
+  - any content Brad has not approved verbatim.
 - **No Production mutation** by this contract.
 - **No Board #11 work.** Nothing past Buyer Selected: no assignment
-  contract, assignment fee collection, title or escrow coordination, or
-  closing.
-- **The hard constraints in `AGENTS.md` still apply.** No tag, pipeline
-  stage, `offer_` field or workflow-trigger writes. The Board #9 stage
-  exception extends to nothing here. There are only named, reviewed writes,
-  and no field write without its own inert-proof. GHL is the sole system
-  of record, with no app-side shadow copy.
+  contract, assignment fee, title or escrow coordination, or closing.
+- **The `AGENTS.md` hard constraints still apply.** No tag, pipeline stage,
+  `offer_` field or workflow-trigger writes. The Board #9 stage exception
+  extends to nothing here. There are only named, reviewed writes, and no
+  field write without its own inert-proof. GHL is the sole system of
+  record, with no app-side shadow copy.
 
 **Current state of the code (OBSERVED, repository search at
 `main@618c1a8`):**
-- No buyer, match, engagement, qualification, offer, proof-of-funds or
-  selection carrier exists in `app/src/lib`.
+- No buyer, match, engagement, outreach, qualification, offer,
+  proof-of-funds or selection carrier exists in `app/src/lib`.
 - There is no mention of proof of funds in `app/src` or `docs/`.
 - The only Board #10 artifact is Board #9's input contract: the disposition
-  handoff record (`app/src/lib/contract-disposition-handoff-model.ts`,
+  handoff record (`contract-disposition-handoff-model.ts`,
   `contract-disposition-handoff-carriers.ts`; INV-66).
 
-## 2. Entry condition — the verified Board #9 handoff
+## 2. Deal identity and the entry gate
 
-Board #10 begins only from a **disposition handoff record**. This is the
-existing `iaos-disposition-handoff` note, written by Board #9's Start
-Disposition and verified by fresh readback.
+**Deal identity (PROPOSED):** `(opportunityId, agreementAt, version)`. These
+are exactly the identity fields of the Board #9 Under Contract record and
+disposition handoff. Every Board #10 record names the deal identity it
+belongs to. A different `agreementAt` or `version` is a different deal
+identity.
 
-**What the handoff guarantees (OBSERVED from its model, INV-66):**
-- A verified Under Contract record for the exact agreement and version.
-- No rescission lifecycle evidence for that version.
-- No equivalent handoff already existed.
+**The handoff does not open Board #10 by itself.** A disposition handoff
+note proves that Board #9 produced its output. It opens nothing. Board #10
+opens a deal identity only through **B10-02's acceptance** of that handoff
+(T1). Acceptance independently re-verifies the handoff and moves the deal
+to **Disposition Ready**.
+
+**What the handoff carries (OBSERVED from its model, INV-66):**
+- A verified Under Contract record for the exact identity.
+- No rescission for that version.
+- No equivalent handoff for it.
 - A frozen snapshot of:
   - the property address and legal description;
   - the seller contract price;
@@ -71,162 +89,216 @@ Disposition and verified by fresh readback.
   - the closing date and possession;
   - the seller notice contact;
   - the required signers.
-
-  Each field is copied from canonical upstream sources and never
-  recomputed.
 - Access/showing information is honestly `unresolved`, and document
-  references are an honestly empty list. No upstream carrier exists for
-  either.
+  references are an honestly empty list.
 
 **How Board #10 uses it (PROPOSED):**
-- It **reads** the handoff and never re-derives, edits or supersedes it.
-- Deal facts Board #10 shows or compares come from the handoff snapshot
-  only, never from live opportunity fields.
-- If the handoff is later invalidated (a rescission lifecycle record for
-  that version), the deal moves to `disposition_halted` (T14).
+- It reads the handoff and never re-derives or edits it.
+- The deal facts Board #10 compares or shows come from the **accepted**
+  handoff's snapshot only, never from live opportunity fields.
 
-## 3. Six status dimensions — kept separate
+## 3. Status dimensions — kept separate
 
-**No dimension is ever derived from, or collapsed into, another.** A buyer
-can be `matched` and `unqualified`. A buyer can be `qualified` and have
-made no offer. An offer can exist from an unqualified buyer, but it can't
-be selected (§5).
+**No dimension is derived from, or collapsed into, another.** A buyer can
+be `criteria_fit` and not qualified. A buyer can be qualified with no
+offer. An offer can exist from an unqualified buyer, but it can't be
+selected.
 
 | Dimension | Scope | Values (PROPOSED) |
 |---|---|---|
-| **Deal disposition** | per deal (opportunity + agreement + version) | `disposition_open` · `buyer_selected` · `disposition_halted` |
+| **Deal disposition** | per deal identity | `handoff_unaccepted` · `disposition_ready` · `buyer_selected` · `disposition_frozen` · `disposition_superseded` · `disposition_halted` |
 | **Match** | per buyer × deal | `candidate` · `criteria_fit` · `criteria_misfit` · `criteria_insufficient` · `candidate_removed` |
-| **Engagement** | per buyer × deal | `not_engaged` · `engaged` · `interested` · `not_interested` · `unresponsive` |
-| **Qualification** | per buyer × deal (funds must cover *this* deal) | `unqualified` · `qualified` · `disqualified` · `qualification_expired` |
-| **Offer** | per offer, from buyer × deal | `offer_received` · `offer_superseded` · `offer_withdrawn` · `offer_declined` · `offer_selected` |
-| **Selection** | per deal | `no_selection` · `selected` |
+| **Engagement** | per buyer × deal | `not_engaged` · `contacted` · `responded` · `interested` · `not_interested` · `unresponsive` |
+| **Qualification** | per buyer × deal | `unqualified` · `qualified` · `qualification_lapsed` · `disqualified` |
+| **Offer** | per offer | `offer_received` · `offer_superseded` · `offer_withdrawn` · `offer_declined` · `offer_selected` |
+| **Selection** | per deal identity | `no_selection` · `selected` · `selection_frozen` · `selection_superseded` · `selection_void` |
 
 **What each dimension means:**
 - **Match** is a deterministic comparison of the buyer's *stated* buy-box
-  criteria against the handoff's deal facts. It says the deal fits what the
-  buyer says they want. It is **not** qualification, and never a score.
-- **Engagement** records what Brad reports about his own contact with the
-  buyer outside IAOS. IAOS never initiates it.
+  criteria against the accepted handoff's deal facts. It is **not**
+  qualification, and never a score.
+- **Engagement** records Brad-authorized IAOS sends (`contacted`) and the
+  facts Brad records about responses (`responded`, `interested`, and so
+  on).
 
-## 4. Claims, evidence and decisions — the qualification vocabulary
+## 4. Claims, evidence, decisions — and the qualification gates
 
 Every qualification-relevant fact carries exactly one **provenance**:
 
-- **`buyer_claim`:** something the buyer *said*. For example: "I have cash",
-  "I close in 10 days", "I've done 30 deals", "I buy in 78701", a stated
-  maximum price. Recorded verbatim with its date and channel. **A claim
-  never satisfies a qualification requirement by itself**, and is never
-  promoted to evidence.
+- **`buyer_claim`:** something the buyer said. For example: cash
+  available, a closing timeline, deal history, buy-box criteria, a stated
+  price. Recorded verbatim with its date and channel. **A claim never
+  satisfies a gate by itself**, and is never promoted to evidence.
 - **`evidence_received`:** a document or record Brad received, identified
   by a stable reference (proposed: its SHA-256 and file name) and received
-  time. For example, a proof-of-funds letter or statement. **Receipt is not
-  acceptance.**
-- **`brad_decision`:** Brad's explicit, recorded judgment on evidence or on
-  the buyer. For example: POF accepted or rejected, identity confirmed,
-  qualified or disqualified, selected. Always recorded with its time,
-  `operator: brad`, and a reason where the table requires one.
+  time. **Receipt is not acceptance.**
+- **`brad_decision`:** Brad's explicit, recorded judgment. Always recorded
+  with its time, `operator: brad`, and the basis or reason the table
+  requires.
 
-**POF received vs POF accepted:**
+**POF received ≠ POF accepted:**
 - `pof_received` records that a document arrived: the reference, the
-  stated amount, the issuing institution as shown, the document date, and
-  the received time.
+  stated amount, the issuer as shown, the document date, and the received
+  time.
 - `pof_accepted` is a separate `brad_decision`. It records Brad's
-  determination that the document is authentic enough to rely on, is in the
-  buyer's (or the buyer entity's) name, is dated within the freshness
-  window, and shows available funds of at least the **required funds** for
-  this deal.
-- A `pof_rejected` decision (with reason) is equally valid, and ends that
-  document's use.
+  determination that the document is reliable, is in the buyer's (or the
+  buyer entity's) name, is dated within the freshness window, and shows
+  available funds of at least the required funds for this deal.
+- `pof_rejected` (with reason) ends that document's use.
 
-**Qualified Buyer (conservative definition, PROPOSED).** A buyer is
-`qualified` for a deal **only** when every one of these holds at the moment
-of evaluation:
+**Qualification gates (PROPOSED).** Each is checked on a fresh read, both
+when the qualification decision is recorded and again at every later read.
 
-1. **Identity established** (`brad_decision`): the legal buyer name or
-   entity, and the name and role of the person who will sign. Confirmed by
-   Brad from evidence, not from a claim.
-2. **POF accepted** (`brad_decision` on `evidence_received`):
-   - the accepted POF's amount is at least the **required funds** for this
-     deal;
-   - its document date is within the **freshness window**;
-   - both are checked again at read time. If the window lapses, the result
-     derives `qualification_expired` and the buyer is no longer qualified.
-     No write is needed.
-3. **Acquisition path compatible:** the buyer's recorded intent is a cash
-   purchase consistent with Board #9's supported path ("Cash Acquisition /
-   Assignment Exit"). Financing-contingent intent does **not** qualify in
-   V1.
-4. **No disqualifying decision** is recorded for this buyer on this deal.
-5. **Brad's explicit qualification decision** is recorded after conditions
-   1–4 were met. The system gates the decision (it refuses to record
-   `qualified` unless 1–4 hold). **It never makes it.**
+| Gate | Requirement | Provenance that can satisfy it |
+|---|---|---|
+| **G1 Usable buyer contact** | The buyer's GHL contact has at least one contact method that isn't DND for its channel. Brad has recorded that the buyer was actually reached and responded on it (a T6 `responded` fact) | `brad_decision` on engagement facts |
+| **G2 Deal-criteria fit** | Match is `criteria_fit` against the **accepted** handoff snapshot for this deal identity | System derivation from the buyer's claim and deal facts. Fit is necessary, never sufficient |
+| **G3 Identity** | The legal buyer name or entity, and the signer's name and role, confirmed by Brad from named evidence | `brad_decision` |
+| **G4 Funds** | An accepted POF covers the required funds for this deal, and its document date is inside the freshness window | `brad_decision` on `evidence_received` |
+| **G5 Ability to meet closing** | Brad has decided the buyer can close by the seller contract's closing date. The buyer's committed closing date is **on or before** the handoff's `closingDate`, and that date is not `unresolved` | `brad_decision`, based on the buyer's recorded commitment plus G4. A timeline claim alone never passes |
+| **G6 Acquisition path** | Cash purchase, consistent with Board #9's supported "Cash Acquisition / Assignment Exit" path. Financing-contingent intent fails in V1 | `brad_decision` on the buyer's recorded intent |
+| **G7 Nothing adverse** | No disqualification, and no outstanding revocation of any record G1–G6 relies on | System derivation |
 
-Anything short of all five is `unqualified`. Buyer claims, a match, a
-received but unaccepted POF, engagement or an offer contribute **nothing**
-toward qualification.
+**Qualified Buyer (the fix for revision 1's circularity).**
+- **The decision is the result, not one of the gates.** A buyer is
+  `qualified` for a deal identity when **Brad's qualification decision
+  (T11) was recorded while G1–G7 all passed**, that decision has not been
+  revoked, and **G1–G7 still pass on the current read**.
+- The system refuses to record the decision unless G1–G7 pass. It never
+  records the decision on its own.
+- If a gate later fails, qualification derives `qualification_lapsed` (T12)
+  without any write. For example: the POF ages out, the contact becomes
+  DND, or a superseding criteria claim changes the fit.
+- Claims, a match alone, a received but unaccepted POF, an outreach send or
+  an offer contribute nothing.
 
-## 5. Transition table — handoff to Buyer Selected (PROPOSED)
+## 5. Transition table (PROPOSED)
 
 **Common rules for every row:**
 - **Authority** is either **System** or **Brad**.
-  - **System** means a deterministic, read-time derivation from recorded
+  - **System** means a deterministic derivation at read time from recorded
     facts. It writes nothing and is recomputed on every read.
   - **Brad** means an explicit action by the authenticated, allowlisted
     Brad application-write session. No other operator, no automation, no AI.
 - **Every Brad transition appends exactly one record.** Records are never
-  edited or deleted. A correction is a new record that supersedes the
-  earlier one by reference (the PB-D43 convention).
+  edited or deleted.
 - **Every Brad transition:**
-  - re-derives its preconditions from a fresh read before writing;
+  - re-derives its preconditions from a fresh read;
   - refuses a duplicate equivalent record before writing;
-  - verifies the new record by fresh readback, as Board #9's handoff does.
-- **Failure writes nothing and names the failed precondition.** An
-  uncertain write result is reported as uncertain. It is never retried
-  blindly and never shown as success.
+  - verifies its own record by fresh readback.
+- **Failure writes nothing and names each failed precondition.** An
+  uncertain result is reported as uncertain. It is never retried blindly
+  and never shown as success.
 
 | # | Current state | Event | Authority | Evidence required | Next state | Failure behavior | Append-only audit record |
 |---|---|---|---|---|---|---|---|
-| T0 | (none) | A verified disposition handoff exists | System | The handoff note parses, and matches the current Under Contract record and version; no rescission for the version | Deal `disposition_open`; Selection `no_selection` | Invalid or missing handoff: no Board #10 state is shown, and the reason is named | None new. The existing handoff note is the record |
-| T1 | Deal `disposition_open`; no match for this buyer | Brad adds a buyer as a candidate | Brad | The buyer is an existing GHL contact in this location, is not the seller contact, and is not already a candidate on this deal | Match `candidate`; Engagement `not_engaged`; Qualification `unqualified` | Refuses a duplicate, the seller as buyer, or a deal that isn't open | `buyer-candidate-added` (deal, buyer contact, at, operator) |
-| T2 | Match `candidate`, `criteria_*` | Brad records the buyer's stated buy-box criteria | Brad | The criteria as stated, marked `buyer_claim`, with date and channel | (inputs to T3) | Refuses an empty criteria set, or a claim without date or channel | `buyer-criteria-claim` (verbatim) |
-| T3 | Match `candidate` or `criteria_*` | The criteria or deal facts are read | System | The latest `buyer-criteria-claim` compared with the handoff snapshot | `criteria_fit` / `criteria_misfit` / `criteria_insufficient` | Missing data gives `criteria_insufficient`, never a guess | None. Derived; inputs are recorded |
-| T4 | Any match except `candidate_removed` | Brad records an engagement fact about his own contact | Brad | Brad attestation: date, channel, and outcome (engaged / interested / not interested / unresponsive) | Engagement per the outcome | Refuses a date in the future, or a missing channel or outcome | `buyer-engagement` (attested) |
-| T5 | Any qualification except `disqualified` | Brad records a proof-of-funds document received | Brad | The document reference (SHA-256 and file name), stated amount, issuer as shown, document date, received time: `evidence_received` | Qualification unchanged (receipt is not acceptance) | Refuses a missing reference, amount or document date | `pof-received` |
-| T6 | A `pof-received` record exists and has no decision | Brad accepts or rejects that POF | Brad | Brad's review. Accept only if the amount covers the required funds, the date is within the freshness window, and the name matches the buyer or entity; otherwise reject, with reason | Qualification unchanged; the POF is `accepted` or `rejected` | Refuses acceptance when amount, window or name fails. Refuses a decision on an already-decided POF | `pof-decision` (`accepted`/`rejected`, reason) |
-| T7 | Any qualification except `disqualified` | Brad confirms the buyer's identity and signer | Brad | The legal name or entity, and the signer's name and role, from evidence Brad names | Qualification unchanged | Refuses a missing entity or signer | `buyer-identity-confirmed` |
-| T8 | Qualification `unqualified` or `qualification_expired` | Brad marks the buyer qualified for this deal | Brad (system-gated) | All five §4 conditions hold on a fresh read | Qualification `qualified` | Refuses, naming each unmet condition | `buyer-qualification-decision` (`qualified`, with the POF and identity record references) |
-| T9 | Any qualification | Brad disqualifies the buyer for this deal | Brad | A reason | Qualification `disqualified` (terminal for this buyer × deal in V1) | Refuses a missing reason | `buyer-qualification-decision` (`disqualified`, reason) |
-| T10 | Qualification `qualified` | The accepted POF's freshness window lapses | System | The read-time date check | `qualification_expired` | None | None. Derived |
-| T11 | Match not `candidate_removed`; deal `disposition_open` | Brad records a buyer offer | Brad | The buyer's price, terms, closing timing, earnest money as stated (`buyer_claim`), and the date and channel | Offer `offer_received`. A prior open offer from the same buyer becomes `offer_superseded` | Refuses if the deal isn't open, or any required field is missing | `buyer-offer` (verbatim terms; the superseded offer is referenced) |
-| T12 | Offer `offer_received` | The buyer withdraws, or Brad declines | Brad | Brad attestation (withdrawn) or decision (declined), with reason | `offer_withdrawn` / `offer_declined` | Refuses a missing reason | `buyer-offer-status` |
-| T13 | Deal `disposition_open`; Selection `no_selection` | **Brad selects the buyer** | **Brad only** | On a fresh read: the buyer is `qualified` (not expired); that buyer has a current `offer_received`; the deal is open; the handoff is still valid | Deal `buyer_selected`; Selection `selected`; that offer `offer_selected` | Refuses, naming each unmet precondition. Never auto-selects or suggests | `buyer-selection` (deal, buyer, offer reference, POF and qualification references, at, operator `brad`) |
-| T14 | Any deal state | Rescission lifecycle evidence for this agreement and version | System | The Board #9 lifecycle record, as `evaluateDispositionHandoffEligibility` already reads it | Deal `disposition_halted`. No further Brad transitions are accepted | None | None new. The Board #9 lifecycle record is the record |
+| T0 | (none) | A disposition handoff note exists for a deal identity | System | The handoff parses and matches its Under Contract record | Deal `handoff_unaccepted` (Board #10 is **not** open) | Invalid handoff: no Board #10 state; the reason is named | None new. The handoff note is Board #9's record |
+| T1 | `handoff_unaccepted` | **B10-02: accept the handoff** | Brad initiates; System re-verifies | Fresh independent re-checks: the handoff matches the current Under Contract record; a fresh GHL read shows Seller Leads / Under Contract; the preserved executed artifact re-verifies; no rescission or pending correction (T18) for this identity; no current acceptance already exists | Deal `disposition_ready` | Refuses, naming each failed check. Nothing opens | `disposition-acceptance` (deal identity, handoff note ref, check results, at, operator) |
+| T2 | Deal `disposition_ready` | Brad adds a buyer candidate | Brad | The buyer is an existing GHL contact in this location, is not the seller contact, and is not already a candidate for this deal identity | Match `candidate`; Engagement `not_engaged`; Qualification `unqualified` | Refuses a duplicate, the seller as buyer, or a deal that isn't `disposition_ready` | `buyer-candidate-added` |
+| T3 | Match `candidate`, `criteria_*` | Brad records the buyer's stated buy-box criteria | Brad | The criteria verbatim (`buyer_claim`), with date and channel. A newer claim supersedes the older by reference | (input to T4) | Refuses an empty claim, or a missing date or channel | `buyer-criteria-claim` |
+| T4 | Match `candidate` or `criteria_*` | Criteria or deal facts are read | System | The latest un-superseded criteria claim compared with the accepted handoff snapshot | `criteria_fit` / `criteria_misfit` / `criteria_insufficient` | Missing data gives `criteria_insufficient`, never a guess | None. Derived |
+| T5 | Deal `disposition_ready`; Match not `candidate_removed` | **Brad-authorized outreach: one send** | **Brad only** | Brad selects this buyer, channel and exact content for this one send. The channel's contact method exists and isn't DND. The provider accepts the send, verified by fresh readback | Engagement `contacted` | Refuses any missing selection, DND, a removed candidate or a deal that isn't ready. Provider uncertainty is reported as uncertain, never auto-retried, never sent twice | `buyer-outreach` (buyer, channel, verbatim content, provider message ref, at, operator `brad`) |
+| T6 | Any engagement | Brad records an engagement fact | Brad | Brad attestation: date, channel, and outcome (`responded`, `interested`, `not_interested`, `unresponsive`) | Engagement per the outcome | Refuses a future date, or a missing channel or outcome | `buyer-engagement` |
+| T7 | Qualification not `disqualified` | Brad records a POF received | Brad | The reference (SHA-256 and file name), stated amount, issuer as shown, document date, received time | Qualification unchanged | Refuses a missing reference, amount or date | `pof-received` |
+| T8 | A `pof-received` record with no decision | Brad accepts or rejects that POF | Brad | Accept only if it covers the required funds, is inside the freshness window, and the name matches the buyer or entity; otherwise reject, with reason | That POF is `accepted` or `rejected` | Refuses an acceptance that fails any test, or a second decision on the same POF | `pof-decision` |
+| T9 | Qualification not `disqualified` | Brad confirms identity and signer | Brad | The legal name or entity, and the signer's name and role, from named evidence | (gate G3) | Refuses a missing entity or signer | `buyer-identity-confirmed` |
+| T10 | Qualification not `disqualified` | Brad records ability to meet closing | Brad | The buyer's committed closing date (`buyer_claim`) plus Brad's decision and basis. Requires the date to be on or before the handoff `closingDate` | (gate G5) | Refuses if `closingDate` is `unresolved`, the committed date is later, or the basis is missing | `buyer-closing-capability` |
+| T11 | Qualification `unqualified` or `qualification_lapsed` | **Brad records the qualification decision** | Brad (system-gated) | G1–G7 all pass on a fresh read | Qualification `qualified` | Refuses, naming each failing gate. Never records on its own | `buyer-qualification-decision` (`qualified`, with references to every gate-satisfying record) |
+| T12 | Qualification `qualified` | A relied-on gate stops passing | System | Read-time re-check of G1–G7 | `qualification_lapsed` | None | None. Derived |
+| T13 | Any qualification | Brad disqualifies the buyer | Brad | A reason | `disqualified` (terminal for this buyer × deal identity) | Refuses a missing reason | `buyer-qualification-decision` (`disqualified`) |
+| T14 | Any | **Brad revokes one of his own decisions** | Brad | The exact record being revoked (disposition acceptance, POF decision, identity, closing capability, qualification, or selection), and a reason | States re-derive without the revoked record. Revoking a selection returns the deal to `disposition_ready`, the selection to `no_selection`, and the offer to `offer_received`. Revoking the acceptance returns the deal to `handoff_unaccepted` | Refuses a missing reason or target, or an already-revoked target | `decision-revocation` (target ref, reason) |
+| T15 | Deal `disposition_ready`; Match not `candidate_removed` | Brad records a buyer offer | Brad | Price, terms, closing timing and earnest money as stated (`buyer_claim`), with date and channel | `offer_received`. A prior open offer from the same buyer becomes `offer_superseded` | Refuses a deal that isn't ready, or a missing field | `buyer-offer` (the superseded offer is referenced) |
+| T16 | `offer_received` | The buyer withdraws, or Brad declines | Brad | Attestation (withdrawn) or decision (declined), with reason | `offer_withdrawn` / `offer_declined` | Refuses a missing reason | `buyer-offer-status` |
+| T17 | Deal `disposition_ready`; Selection `no_selection` | **Brad selects the buyer** | **Brad only** | On a fresh read: the acceptance (T1) is current and unrevoked; no T18 condition; the buyer is `qualified` with G1–G7 passing now; that buyer's current offer is `offer_received` | Deal `buyer_selected`; Selection `selected`; that offer `offer_selected` | Refuses, naming each unmet precondition. Never auto-selects or suggests | `buyer-selection` (deal identity, buyer, offer ref, qualification ref, acceptance ref, at, operator `brad`) |
+| T18 | `disposition_ready` or `buyer_selected` | **A Board #9 correction is pending** for this deal identity (§6) | System | A Board #9 correction lifecycle record, or a new Agreement Reached for the opportunity, that has not reached verified Under Contract | Deal `disposition_frozen`. An existing selection becomes `selection_frozen` (not void) | T17 and T15 are refused while frozen; T2–T13 remain available. Nothing opens or selects | None new. Board #9's records |
+| T19 | Frozen or not | **The replacement reaches verified Under Contract** (§6) | System | A Board #9 Under Contract record for a new version or a new `agreementAt` on the same opportunity | This identity: `disposition_superseded`, with a selection becoming `selection_superseded`. The new identity: `handoff_unaccepted` once its own handoff exists (T0) | None | None new. Board #9's records |
+| T20 | Any | **Rescission** recorded by Brad in Board #9 for this agreement/version | System | The Board #9 rescission lifecycle record | Deal `disposition_halted` (terminal); a selection becomes `selection_void` | All Board #10 transitions for this identity are refused | None new. Board #9's rescission record |
+| T21 | New identity `handoff_unaccepted` | **Controlled re-entry** (§6) | Brad (via T1) | T1's full re-verification for the **new** identity | New identity `disposition_ready` | As T1 | `disposition-acceptance` for the new identity, referencing the superseded identity |
 
-**Finish line (V1).** The deal is `buyer_selected`, with its
-`buyer-selection` record verified by fresh readback. Board #10 V1 ends
-there. Anything after it is Board #11.
+**Finish line (V1).** A deal identity is `buyer_selected`, its
+`buyer-selection` record is verified by fresh readback, and no T14, T18,
+T19 or T20 condition applies to it. Board #10 V1 ends there. Anything after
+it is Board #11. Board #11 must not proceed on a frozen, superseded, void or
+revoked selection.
 
-## 6. Open decisions (for Brad or Jess; not decided here)
+## 6. Revocation, supersession, re-entry and Board #9 corrections
 
-1. **Carrier and location.**
-   - Which GHL record holds each proposed record, and in what form. For
-     example: deal-level records on the seller contact (where the Board #9
-     ledger lives), and buyer-level records on the buyer's contact.
-   - Each needs a named write operation and scope review. Notes are the
-     only sanctioned general write today (`AGENTS.md`).
-2. **Identifying a buyer contact.** How a GHL contact is known to be a
-   buyer, given that IAOS may not write tags (HARD NO). Reading an existing
-   GHL marker is possible; writing one is not.
-3. **Required funds.** The formula POF must cover. For example: the
-   buyer's offer price plus the buyer's closing costs, or the offer price
-   alone. The seller contract price is the floor.
-4. **The POF freshness window.** The number of days.
-5. **An offer below the seller contract price.** Refuse it at selection, or
+**Revocation (T14).**
+- Brad may revoke any of his own Board #10 decisions with a reason, by an
+  append-only `decision-revocation` that references the exact record.
+- The revoked record is preserved, and state re-derives as if it were
+  absent.
+- Records that are facts, not decisions, are **not** revoked. They are
+  superseded by newer facts. These are buyer claims, `pof-received`,
+  engagement facts and outreach sends.
+- A revocation is never inferred. Only Brad records one.
+
+**Supersession.**
+- A newer record of the same kind, for the same buyer and the same deal
+  identity, supersedes the older **by reference**. This applies to
+  criteria claims, offers, closing capability and identity confirmations.
+- The latest un-superseded, unrevoked record governs, and superseded
+  records are preserved.
+- A selection references the exact offer and qualification records. If
+  either is later superseded or revoked, the selection no longer holds,
+  and Brad must re-select (T17) or revoke (T14). It is never re-pointed
+  silently.
+
+**Controlled re-entry (T21).**
+- **The only ways back into Disposition Ready:**
+  - a revoked selection or acceptance on the **same** identity (T14);
+  - a **new** deal identity entering through its own handoff and B10-02
+    acceptance (T0 → T1 / T21).
+- **After a new identity (PROPOSED carry-over):**
+  - Buyer-level evidence may be **referenced**, never copied, when it is
+    still valid for the new identity. That covers a confirmed identity, and
+    an accepted POF if it's inside the window and covers the new required
+    funds.
+  - Match is re-derived against the new snapshot.
+  - Engagement history remains visible.
+  - Qualification decisions, closing capability, offers and selection do
+    **not** carry over. They must be recorded again for the new identity.
+    Price, dates or terms may have changed.
+
+**Effect of later Board #9 events** (`SELLER_CONTRACT_STATE_MACHINE_V1.md`,
+"Corrected" and "Rescinded").
+
+| Board #9 event | Board #9 rule (OBSERVED) | Board #10 effect (PROPOSED) |
+|---|---|---|
+| **Correction, case 3:** metadata only | Outside Corrected; no new contract cycle | **None** |
+| **Correction, case 2:** wording fix, same `agreementAt`, new version | The prior executed version stays authoritative until the replacement reaches verified full execution, or Brad records a Rescission | While pending: **frozen** (T18). Selection and new offers are blocked, qualification work may continue, and an existing selection is `selection_frozen`. When the replacement is verified Under Contract: the prior identity is **superseded** (T19); re-entry is through the new version's handoff and acceptance (T21) |
+| **Correction, case 1:** a material term differs, so a new Agreement Reached with a new `agreementAt` | A different accepted deal; the prior version stays authoritative on the same terms as case 2 | The same as case 2: frozen, then superseded, then re-entry for the new identity. No qualification, offer or selection carries over, because price or terms changed |
+| **Rescission** of this agreement/version | Brad-only; this agreement is terminal | **Halted** (T20), terminal for the identity; any selection is `selection_void` in IAOS. Buyer communication about it is a separate Brad-authorized send (T5), never automatic |
+| **Expired / Declined** | Pre-execution outcomes | **Not applicable.** They cannot follow a verified Under Contract for the same version (INFERRED from the state order; confirm with Jess) |
+
+**IAOS makes no legal determination.** As in Board #9, these states govern
+IAOS's own downstream behavior only. They never declare a buyer arrangement
+legally void or superseded.
+
+## 7. Open decisions (for Brad or Jess; not decided here)
+
+1. **Carriers and locations.** Which GHL record holds each proposed record,
+   and in what form. Each needs a named write operation and scope review.
+   `ghl.notes.create()` is the only sanctioned general write today.
+2. **The outreach send mechanism (T5).** Which GHL send path is used, and
+   its named operation, Production scope and proof. Is a send in Board #10
+   V1, or only recorded?
+3. **Identifying a buyer contact,** given that IAOS may not write tags.
+4. **Required funds (G4).** The formula POF must cover. The seller contract
+   price is the floor.
+5. **The POF freshness window (G4).** The number of days.
+6. **The closing margin (G5).** Whether a buffer before the seller closing
+   date is required.
+7. **An offer below the seller contract price.** Refuse it at selection, or
    allow it with Brad's recorded override.
-6. **Withdrawing a selection in V1.** Whether Brad may undo `buyer_selected`
-   back to `disposition_open` with a reason, or whether that is Board #11.
-7. **POF document preservation.** Whether POF bytes are preserved like
-   Board #9's executed artifact, or referenced by hash only.
-8. **Offer before qualification.** Whether an offer from an unqualified
-   buyer may be recorded at all. This draft allows recording it, but not
+8. **POF document preservation.** Preserved bytes, like Board #9's executed
+   artifact, or a hash reference only.
+9. **Offer before qualification.** Revision 2 allows recording it, but not
    selecting it.
+10. **B10-02 acceptance authority.** Brad-initiated as drafted (T1), or
+    system-performed on handoff readback.
+11. **An abandoned Board #9 correction.** How Board #9 records one that will
+    never execute, and so how a T18 freeze lifts without a replacement.
+    UNKNOWN: Board #9 defines no such record today.
+12. **Recheck the full INV-71 issue and the Board #10 project** against this
+    draft once Jeff's Linear connection returns.
