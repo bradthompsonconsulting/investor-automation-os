@@ -129,7 +129,7 @@ The transition permits no workflow enrollment other than the one named, reviewed
   - **Preflight, read-only, within 30 minutes before the click.** Any mismatch stops the walkthrough.
     1. **Deploy:** the live deploy ID, commit and lock match the approved build, and both IAOS Production flags are ON at that commit.
     2. **Fixture:** a fresh GHL GET shows the pinned opportunity as the contact's only opportunity, in Seller Leads Pipeline / New Lead - Seller / Open, with `lastStageChangeAt` unchanged and no tags on the contact. The note count and latest note match the last recorded readback.
-    3. **Enrollments (Spock):** a pre-transition snapshot shows the pinned contact enrolled in none of the five P2 workflows and none of `Seller 6`, `Seller 7` or `Seller 8`. Any other active enrollment is recorded, and stops the walkthrough unless Jess clears it.
+    3. **Enrollments (Spock):** a pre-transition snapshot shows the pinned contact enrolled in none of the five P2 workflows and none of `Seller 6`, `Seller 7` or `Seller 8`. Any other active enrollment is recorded and stops this attempt. P2-X can't be used while it exists. Proceeding would need a separately reviewed amendment.
     4. **IAOS:** Contract Workspace shows every contract check green, and the transition button enabled after a fresh reload.
   - **During the monitoring window,** from the click until the last post-transition snapshot below:
     - no action on the pinned contact or opportunity in GHL or IAOS: no disposition, routing, tag, note, call, message, form or manual stage change;
@@ -139,6 +139,8 @@ The transition permits no workflow enrollment other than the one named, reviewed
     - immediately after the click;
     - 15 minutes after;
     - 24 hours after.
+
+    Closing the window at 24 hours proves only what was observed during it. It does not establish that the unguarded workflows are safe for this record afterward, or for any other record. P2's guards remain required.
   - **Stop immediately, no retry, no manual correction, report to Jess** on any of these:
     - The transition result is anything but a confirmed success. The §4.1a item 5 marker rules apply.
     - Any enrollment other than `Seller - Under Contract Exit`.

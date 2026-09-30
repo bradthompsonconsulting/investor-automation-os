@@ -1,17 +1,23 @@
 # INV-98 Board #9 — Production activation evidence
 
 This file is the Board #9 activation evidence named in
-`docs/CONTACTS_OPPORTUNITIES_SPEC.md` §4.1a. Each entry reproduces its source
-verbatim, followed by any dated clarification. Clarifications never edit
+`docs/CONTACTS_OPPORTUNITIES_SPEC.md` §4.1a. Each entry states exactly how faithfully it reproduces its source,
+followed by any dated clarification. Clarifications never edit
 the source text.
 
 ---
 
 ## 1. P1 — Production entry reconfirmation (Spock, read-only)
 
-**Source:** Spock's report, relayed by Brad on 2026-09-30. Reproduced
-verbatim below, including its correction and limitations. Nothing has been
-added or inferred.
+**Source:** Spock's report, relayed by Brad on 2026-09-30.
+
+**Evidence record (1b below).** Spock's P1 evidence block, preserved exactly as Brad relayed it: from "BOARD #9 — PRODUCTION P1 RECONFIRMATION" through "RULING: PASS. Production flags remain OFF." It includes the 38-workflow correction and the limitations. It was compared character by character against the relayed message and matches. That establishes fidelity to the relayed text only, not to anything upstream of Brad's relay.
+
+**Context (1a below).** Spock's narration around the block, as relayed. The relay may have normalized its formatting, so it is **not** claimed to be exact, and it is not part of the evidence record. The block is the record.
+
+Nothing has been added to or inferred in either.
+
+### 1a. Accompanying narration (context only; as relayed, possibly normalized)
 
 ```text
 Going straight to Seller - Under Contract Exit (e6a4de9d-34aa-4e6e-981a-094b91c156b1) to read its trigger and action. After that, the workflow list to confirm nothing has been added or changed since yesterday's 36-workflow inventory.
@@ -25,7 +31,11 @@ One correction to yesterday's report: the Production list has 38 Published workf
 I can't write to the Board #9 activation evidence record from here. The block below is formatted to be pasted into it.
 
 This goes to Jess:
+```
 
+### 1b. P1 evidence block (exactly as relayed)
+
+```text
 BOARD #9 — PRODUCTION P1 RECONFIRMATION — READ-ONLY — PASS
 Location jmHG4B8RdzwpfqruNf68 · Observed Sep 30, 2026, from 9:56 AM CDT
 Method: GHL workflow builder UI. Panels opened and closed via Cancel. Nothing edited,
@@ -80,7 +90,7 @@ OBSERVED, NOT INVESTIGATED
 RULING: PASS. Production flags remain OFF.
 ```
 
-### 1a. Clarification — IAOS Production code flags (Jeff, 2026-09-30)
+### 1c. Clarification — IAOS Production code flags (Jeff, 2026-09-30)
 
 The source's last line, "Production flags remain OFF", does not match the IAOS
 Production code flags at the time of this record.
@@ -102,7 +112,7 @@ If it meant something else, name it: for example, a GHL-side setting, or the
 three P2 mover filters, which are absent in Production. This record will add
 his answer as a further dated clarification. It will not edit the source.
 
-### 1b. Clarification — the document Spock flagged (Jeff, 2026-09-30)
+### 1d. Clarification — the document Spock flagged (Jeff, 2026-09-30)
 
 These are IAOS ledger facts, read from the pinned contact's notes (GET only).
 They are recorded for Jess's confirmation, not as a substitute for it.
