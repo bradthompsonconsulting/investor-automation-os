@@ -117,6 +117,51 @@ The transition permits no workflow enrollment other than the one named, reviewed
 
   Each of the five must have a reviewed guard that prevents it from moving an opportunity out of Under Contract. These guards are not yet built or proven, and the first Production transition waits for all five. P2 is separate from P1: `Seller - Under Contract Exit` removes enrollments on entry; it does not guard any of these five against a later exit move.
 
+- **P2-X — One-time exception for the INV-98 Board #9 synthetic walkthrough (proposed 2026-09-30; not in effect until approved and merged).** P2 is unchanged for every ordinary Production transition: each still waits for all five guards to be built and proven. This exception builds no guard and proves none. It accepts, in writing, the risk that the five unguarded workflows pose to one synthetic record.
+  - **Scope, and nothing else.**
+    - **The record:** Production location `jmHG4B8RdzwpfqruNf68`, pinned contact `T3t5AZ3Z5lak0BmZawvP`, pinned opportunity `44hLQ4PD4a4HBVLPr4nl`. These are the synthetic fixture pinned in `productionProofScope`.
+    - **The action:** one Under Contract transition through `opportunity.underContractStage`, for the Board #9 walkthrough only.
+    - **Expiry:** after that single attempt, whatever its outcome. It covers no retry, no other opportunity, no later transition and no real seller. It is not a precedent.
+  - **Before the click, all required:**
+    - this amendment approved by Jess and merged;
+    - P1 recorded as PASS in `docs/evidence/inv98/BOARD9_ACTIVATION_EVIDENCE.md` (done 2026-09-30);
+    - Brad's written acceptance of "Risk Brad accepts" below, recorded in that file. He may write the statement out, or write a short acceptance that directly refers to it. The record gives his exact words, their date and time, and the exact risk text they refer to, with the PR head it was read at. A reference acceptance is not presented as Brad having typed the risk text.
+  - **Preflight, read-only, within 30 minutes before the click.** Any mismatch stops the walkthrough.
+    1. **Deploy:** the live deploy ID, commit and lock match the approved build, and both IAOS Production flags are ON at that commit.
+    2. **Fixture:** a fresh GHL GET shows the pinned opportunity as the contact's only opportunity, in Seller Leads Pipeline / New Lead - Seller / Open, with `lastStageChangeAt` unchanged and no tags on the contact. The note count and latest note match the last recorded readback.
+    3. **Enrollments (Spock):** a pre-transition snapshot shows the pinned contact enrolled in none of the five P2 workflows and none of `Seller 6`, `Seller 7` or `Seller 8`. Any other active enrollment is recorded and stops this attempt. P2-X can't be used while it exists. Proceeding would need a separately reviewed amendment.
+    4. **IAOS:** Contract Workspace shows every contract check green, and the transition button enabled after a fresh reload.
+  - **During the monitoring window,** from the click until the last post-transition snapshot below:
+    - no action on the pinned contact or opportunity in GHL or IAOS: no disposition, routing, tag, note, call, message, form or manual stage change;
+    - no reply from the fixture's seller mailbox;
+    - Start Disposition waits until the window closes.
+  - **Monitoring:** a GHL GET of the pinned opportunity, contact, tags and notes, plus a Spock snapshot of the contact's enrollments and message attempts, at each of three times:
+    - immediately after the click;
+    - 15 minutes after;
+    - 24 hours after.
+
+    Closing the window at 24 hours proves only what was observed during it. It does not establish that the unguarded workflows are safe for this record afterward, or for any other record. P2's guards remain required.
+  - **Stop immediately, no retry, no manual correction, report to Jess** on any of these:
+    - The transition result is anything but a confirmed success. The §4.1a item 5 marker rules apply.
+    - Any enrollment other than `Seller - Under Contract Exit`.
+    - Any stage or status change after entry to Under Contract.
+    - Any message attempt, tag, task or appointment on the contact.
+    - Any drift in deploy, lock or flags.
+
+    If a legacy workflow moves the opportunity out of Under Contract, it is **not** moved back by hand. The state is recorded, and any correction needs its own reviewed plan.
+  - **Post-transition evidence,** recorded in the activation evidence file:
+    - IAOS's confirmed transition result;
+    - the GHL readbacks;
+    - `Seller - Under Contract Exit`'s execution entry for this contact, as seen by Spock;
+    - the three snapshots;
+    - a closing statement that nothing in the stop list occurred.
+  - **Risk Brad accepts** (the exact text his written acceptance covers, whether written out or directly referred to): "For the one INV-98 Board #9 synthetic Under Contract transition of Production opportunity `44hLQ4PD4a4HBVLPr4nl` (contact `T3t5AZ3Z5lak0BmZawvP`) only, I accept these risks:
+    - `Seller - Follow Up`, `Seller - Not Interested`, `Seller - Route to Long-Term Nurture`, `Seller 6` and `Seller 7` have no built or proven Under Contract guard in Production. If any of them, or any other Seller Leads stage writer, is triggered for this contact while the opportunity is Under Contract, it may move the opportunity out of Under Contract and may enroll the contact or send messages to the fixture's contact details.
+    - External listeners on stage-change events (Make.com, Netlify, Marketplace apps) are not visible in the workflow builder, and are not audited.
+    - P1's 'no change since Sep 29' rests on the builder list's Last-updated column.
+
+    This acceptance covers no other contact, opportunity or transition, and it is not a finding that the guards exist."
+
 This section records no Test-location entry-trigger audit. The Test evidence under P1 is an execution proof of `Seller - Under Contract Exit`'s Remove action, not an audit of which workflows fire on entry in Test.
 
 ### 4.2 Why classification, not a blanket field-edit toggle
