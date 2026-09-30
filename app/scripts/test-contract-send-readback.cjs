@@ -330,6 +330,59 @@ function allKeys(value, out = new Set()) {
   }
 
   // ============================================================
+  // 8b. INV-98 Board #9: mapping currency uses the revision the mapping
+  //     was bound to -- the accepted send's own -- never the live number;
+  //     a changed provider document still fails closed.
+  // ============================================================
+  {
+    function notesFor(sendRevision, mappingRevision) {
+      const send = load('contract-manual-send-model').buildManualContractSendRecordArgs({
+        opportunityId: opportunity.id, agreementAt: fixture.version.agreementAt, version: fixture.version, requestAt: AT, expirationAt: null,
+        providerDocumentId: MANUAL_DOC_ID, providerDocumentReference: null, providerDocumentRevision: sendRevision, recipients: required,
+        authorizedRecord: fixture.authorization, templateName: config.documentsContracts.expectedTemplateName,
+        requestedTemplateId: config.documentsContracts.templateId, readbackLocationId: config.locationId, operator: 'brad', recordedAt: AT,
+      });
+      assert.equal(send.ok, true, JSON.stringify(send));
+      const mapping = load('contract-signer-mapping-model').buildSignerMappingAttestationRecordArgs({
+        opportunityId: opportunity.id, version: fixture.version, agreementAt: fixture.version.agreementAt,
+        providerDocumentId: MANUAL_DOC_ID, providerDocumentRevision: mappingRevision, acceptedSendAttemptId: AT, attestedAt: AT,
+        requiredSigners: required, availableProviderRecipientIds: goodRecipients.map((r) => r.id),
+        assignments: required.map((s, i) => ({ role: s.role, providerRecipientId: goodRecipients[i].id })),
+        evidenceSummary: 'Synthetic operator mapping.',
+      });
+      assert.equal(mapping.ok, true, JSON.stringify(mapping));
+      return [...fixture.notes,
+        { body: load('contract-send-carriers').formatContractSendNote(send.value) },
+        { body: load('contract-signer-mapping-carriers').formatSignerMappingAttestationNote(mapping.value) }];
+    }
+    async function readback(sendRevision, mappingRevision, liveRevision) {
+      activeNotes = notesFor(sendRevision, mappingRevision);
+      documents = [documentRow(MANUAL_DOC_ID, { documentRevision: liveRevision })];
+      try { const res = await handler(event()); return { res, body: JSON.parse(res.body) }; }
+      finally { activeNotes = notesWithSendAndMapping; documents = [documentRow(MANUAL_DOC_ID)]; }
+    }
+    const codes = (v) => (v.ok ? 'ok' : v.reasons.map((r) => r.code));
+
+    const blank = await readback(null, null, 1);
+    check('revision-source: manual send recorded WITHOUT a revision, mapping bound to it (null), live revision 1 -> 200', blank.res.statusCode, 200);
+    check('  -- readback status accepted', blank.body.status, 'accepted');
+    check('  -- the live revision is still reported', blank.body.documentRevision, 1);
+    check('  -- signerCompletion ok (no false revision mismatch)', codes(blank.body.signerCompletion), 'ok');
+    check('  -- buyerIdentity ok (no false revision mismatch)', codes(blank.body.buyerIdentity), 'ok');
+
+    const changed = await readback(1, 1, 2);
+    check('revision-source: document changed after send (send 1, mapping 1, live 2) -> readback not accepted', changed.body.status === 'accepted', false);
+    check('  -- signerCompletion fails closed: PROVIDER_DOCUMENT_NOT_CONFIRMED', codes(changed.body.signerCompletion), ['PROVIDER_DOCUMENT_NOT_CONFIRMED']);
+    check('  -- buyerIdentity fails closed: PROVIDER_DOCUMENT_NOT_CONFIRMED', codes(changed.body.buyerIdentity), ['PROVIDER_DOCUMENT_NOT_CONFIRMED']);
+
+    for (const mappingRevision of [null, 2]) {
+      const other = await readback(1, mappingRevision, 1);
+      check(`revision-source: mapping bound to a different revision (send 1, live 1, mapping ${mappingRevision}) -> still refused`, codes(other.body.signerCompletion), ['MAPPING_ATTESTATION_REVISION_MISMATCH']);
+      check('  -- buyerIdentity refused with the same reason', codes(other.body.buyerIdentity), ['MAPPING_ATTESTATION_REVISION_MISMATCH']);
+    }
+  }
+
+  // ============================================================
   // 9. Source-wiring: ghl-contract-send-readback.ts imports the shared
   //    INV-98 policy and requireAppWriteOrigin, never reimplements
   //    either; ContractWorkspace.tsx no longer calls the raw proxy path
