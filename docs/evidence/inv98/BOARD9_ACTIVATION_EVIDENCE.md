@@ -106,6 +106,8 @@ Production code flags at the time of this record.
   refuses every Production write with `PRODUCTION_WRITES_DISABLED` while these
   flags are off.
 
+**Open question for Spock — ANSWERED 2026-09-30 by §1e:** the line is withdrawn. It was an unverified restatement of an earlier instruction premise, and Spock did not observe IAOS flag state. The original question is kept below, unchanged.
+
 **Open question for Spock:** what did "Production flags remain OFF" refer to?
 If it meant these IAOS code flags, the statement is incorrect for this deploy.
 If it meant something else, name it: for example, a GHL-side setting, or the
@@ -124,6 +126,41 @@ They are recorded for Jess's confirmation, not as a substitute for it.
 - The contract authorization, note `V3thwK4bmDtpU2GiBBgy`, covers the
   generated PDF with SHA-256
   `d942a58051db268f88e1d6759048686672fba0236fc0793445cc9e38dda5f16c`.
+
+### 1e. Addendum — Spock's flags correction (2026-09-30)
+
+**Source:** Spock's addendum, relayed by Brad on 2026-09-30. It is reproduced below exactly as relayed, compared character by character against the relayed message. The §1b block is unchanged by it, as the addendum itself says.
+
+**Corrected scope of P1:**
+- **P1: PASS for the GHL workflow layer only.** That covers the `Seller - Under Contract Exit` configuration, the 38-workflow scan, and the finding that no other Published workflow fires on entry to Under Contract.
+- **IAOS flag state: not observed by Spock.** The IAOS Production flag state rests solely on §1c: deploy `6abd1e65`, `main@eab3133`, both flags ON.
+- **The same withdrawal applies to the identical closing line in Spock's Sep 29 reports:** the workflow preflight, D&C settings, S0 and the post-step-2 snapshot. Those reports are not reproduced in this file.
+
+```text
+ADDENDUM TO SEP 30 P1 RECONFIRMATION — CORRECTION (original block unchanged)
+
+The closing line "Production flags remain OFF" is WITHDRAWN.
+
+What it was: a restatement of a premise from earlier Board #9 instructions
+("enablement remains OFF" / "write flags remain OFF"), carried into the report without
+verification. The Sep 30 P1 instruction did not state flag status.
+
+What was actually observed: GHL workflow builder and workflow list only. No IAOS
+deploy, commit, environment variable, or feature-flag value was inspected on Sep 29
+or Sep 30. Spock has no observation of contractProductionEnabled or
+productionProofScope.enabled, or of the live deploy at main@eab3133.
+
+Effect on P1: none. The Seller - Under Contract Exit configuration, the
+38-workflow scan, and the "no other Published workflow fires on Under Contract entry"
+finding are GHL-UI observations and stand.
+
+Same correction applies to the identical closing lines in the Sep 29 reports (workflow
+preflight, D&C settings, S0, post-step-2 snapshot). Each echoed the instruction
+premise; none verified flag state.
+
+Corrected P1 ruling line: PASS (GHL workflow layer). IAOS flag state: not observed
+by Spock.
+```
 
 ---
 
