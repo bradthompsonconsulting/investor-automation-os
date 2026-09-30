@@ -40,8 +40,27 @@ export function stageTransitionMarkerKey(opportunityId: string, env = process.en
 }
 /** Thrown when another attempt already holds this opportunity's marker. */
 export class StageTransitionUnresolved extends WriteUncertain {}
+/**
+ * INV-98 Board #9 Production: this is an early refusal only. Lambda-
+ * compatibility functions (`connectLambda`) are never given an
+ * `uncachedEdgeURL`, so the SDK refuses a strong read with
+ * `BlobsConsistencyError` before any request -- the same limit
+ * ghl-executed-artifact-upload.ts already handles. That error alone falls
+ * back to a default-consistency read; any other error still throws. The
+ * authoritative guard is `claimStageTransition`'s atomic `onlyIfNew` write,
+ * which runs before the PUT and does not depend on read consistency.
+ */
 export async function stageTransitionUnresolved(opportunityId: string): Promise<boolean> {
-  return (await getStore("iaos-write-receipts").get(stageTransitionMarkerKey(opportunityId), { type: "json", consistency: "strong" })) !== null;
+  const store = getStore("iaos-write-receipts");
+  const key = stageTransitionMarkerKey(opportunityId);
+  let marker: unknown;
+  try {
+    marker = await store.get(key, { type: "json", consistency: "strong" });
+  } catch (e: any) {
+    if (e?.name !== "BlobsConsistencyError") throw e;
+    marker = await store.get(key, { type: "json" });
+  }
+  return marker !== null;
 }
 export async function claimStageTransition(opportunityId: string, requestId: string, operator: string): Promise<void> {
   const result = await getStore("iaos-write-receipts").setJSON(stageTransitionMarkerKey(opportunityId), {
