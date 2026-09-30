@@ -130,7 +130,15 @@ The transition permits no workflow enrollment other than the one named, reviewed
     1. **Deploy:** the live deploy ID, commit and lock match the approved build, and both IAOS Production flags are ON at that commit.
     2. **Fixture:** a fresh GHL GET shows the pinned opportunity as the contact's only opportunity, in Seller Leads Pipeline / New Lead - Seller / Open, with `lastStageChangeAt` unchanged and no tags on the contact. The note count and latest note match the last recorded readback.
     3. **Enrollments (Spock):** a pre-transition snapshot shows the pinned contact enrolled in none of the five P2 workflows and none of `Seller 6`, `Seller 7` or `Seller 8`. Any other active enrollment is recorded and stops this attempt. P2-X can't be used while it exists. Proceeding would need a separately reviewed amendment.
-    4. **IAOS:** Contract Workspace shows every contract check green, and the transition button enabled after a fresh reload.
+    4. **IAOS (clarified 2026-09-30):** after a fresh reload, Contract Workspace shows all of the following:
+       - the executed PDF verified against the expected hash and 13 pages;
+       - all six material terms MATCH;
+       - the executed-terms attestation current;
+       - the Under Contract record present;
+       - the executed artifact preserved;
+       - the transition button enabled.
+
+       The five-item Contract Ready checklist, and its "Not Contract Ready" banner, are **excluded from this one P2-X preflight** for two reasons. The Production proof scope refuses checklist notes, so the checklist can't be completed in Production. And the send, execution and transition paths don't depend on it. This exclusion changes no other preflight item, scope, stop condition or monitoring requirement.
   - **During the monitoring window,** from the click until the last post-transition snapshot below:
     - no action on the pinned contact or opportunity in GHL or IAOS: no disposition, routing, tag, note, call, message, form or manual stage change;
     - no reply from the fixture's seller mailbox;

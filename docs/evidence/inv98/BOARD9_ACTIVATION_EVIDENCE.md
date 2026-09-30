@@ -210,3 +210,63 @@ this commit. It is quoted as Markdown source.
 Production transition, and it is not a finding that the P2 guards exist.
 It satisfies only the P2-X acceptance precondition, and only once P2-X is
 approved and merged.
+
+---
+
+## 4. P2-X preflight item 4 — Contract Ready checklist exclusion (2026-09-30)
+
+### 4a. Observed (Jeff, read-only)
+
+- **When and how:** 2026-09-30T16:28:25Z, one GET of the pinned contact
+  `T3t5AZ3Z5lak0BmZawvP`'s notes.
+- **Result:** 27 notes. The app's own checklist parser at `main@1c3ff0b`
+  (`parseContractReadyChecklistNote`, `app/src/lib/seller-call-readiness-carriers.ts`)
+  matches **0** of them, and no note carries a "CONTRACT READY" header. No
+  Contract Ready checklist record exists for this agreement: accept outcome
+  2026-09-30T02:02:51.332Z at $250,000. The checklist is absent, not stale.
+- **Why it can't exist:** each checklist box writes a checklist note, and the
+  Production proof scope refuses that note type:
+  `{ parse: parseContractReadyChecklistNote, allow: null }`
+  (`app/netlify/functions/lib/production-write-scope.ts`).
+  Contract Ready is derived from those five confirmations
+  (`app/src/lib/board9-contract-model.ts`, `evaluateContractReady`), so
+  Contract Workspace can only show "Not Contract Ready — 5 items remaining"
+  in Production.
+- **No dependency:** none of these read Contract Ready:
+  - authorization and PDF generation;
+  - the manual send record;
+  - execution: signer mapping, executed-terms attestation, the Under
+    Contract record;
+  - the server's stage-transition verification.
+
+  Its only other consumer is the retired Contract Sent evaluation in
+  `ContractWorkspace.tsx`, whose result isn't displayed.
+- **Contract Workspace as Brad reported it (a fresh reload, before this
+  entry):**
+  - executed PDF verified (expected hash, 13 pages);
+  - six material terms MATCH;
+  - existing attestation current;
+  - Under Contract note recorded;
+  - preserved artifact present;
+  - transition button enabled;
+  - the "Not Contract Ready — 5 items remaining" banner, with all five boxes
+    unchecked.
+
+### 4b. Ruling (Jess, 2026-09-30, as relayed)
+
+- **Item 4's required checks:** preflight item 4 requires these Contract
+  Workspace checks after a fresh reload:
+  - executed PDF verified against the expected hash and 13 pages;
+  - all six material terms MATCH;
+  - attestation current;
+  - Under Contract record present;
+  - executed artifact preserved;
+  - transition button enabled.
+- **The exclusion:** the five-item Contract Ready checklist/banner is excluded
+  from this one P2-X preflight. The Production proof scope refuses checklist
+  notes, and the send, execution and transition paths don't depend on it.
+- **Nothing else changes:** no other preflight item, scope, stop rule or
+  monitoring requirement is weakened.
+
+Spec §4.1a P2-X item 4 is clarified to match. The exclusion takes effect
+only once that clarification is approved and merged.
