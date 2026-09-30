@@ -185,7 +185,7 @@ Brad.
 plain-language explanation of the one synthetic transition, and the detailed
 "Risk Brad accepts" text in PR #108.
 
-**Form of acceptance: by direct reference.** Brad wrote the five words above.
+**Form of acceptance: by direct reference.** Brad wrote the four words above.
 He did **not** type the risk statement below; it is the text his words refer
 to. Spec §4.1a P2-X allows this form of acceptance. The statement is
 reproduced below from `docs/CONTACTS_OPPORTUNITIES_SPEC.md` §4.1a P2-X,
