@@ -1,0 +1,134 @@
+# INV-98 Board #9 — Production activation evidence
+
+This file is the Board #9 activation evidence named in
+`docs/CONTACTS_OPPORTUNITIES_SPEC.md` §4.1a. Each entry reproduces its source
+verbatim, followed by any dated clarification. Clarifications never edit
+the source text.
+
+---
+
+## 1. P1 — Production entry reconfirmation (Spock, read-only)
+
+**Source:** Spock's report, relayed by Brad on 2026-09-30. Reproduced
+verbatim below, including its correction and limitations. Nothing has been
+added or inferred.
+
+```text
+Going straight to Seller - Under Contract Exit (e6a4de9d-34aa-4e6e-981a-094b91c156b1) to read its trigger and action. After that, the workflow list to confirm nothing has been added or changed since yesterday's 36-workflow inventory.
+
+Target workflow verified; the Saved button stays disabled, so no unsaved changes. Now the list, to check workflow count and any "Last updated" after yesterday's inventory.
+
+PASS. Seller - Under Contract Exit matches the reviewed configuration. No other Published workflow fires on entry to Under Contract.
+
+One correction to yesterday's report: the Production list has 38 Published workflows, not 36. I missed the last two rows, Sequence - Hot Tag Mail and Sequence - Low Tag Mail. I checked both today. They trigger on Contact Tag Added ("hot" / "low"), not on a stage change, so yesterday's conclusions hold. The count was still wrong, and that's on me.
+
+I can't write to the Board #9 activation evidence record from here. The block below is formatted to be pasted into it.
+
+This goes to Jess:
+
+BOARD #9 — PRODUCTION P1 RECONFIRMATION — READ-ONLY — PASS
+Location jmHG4B8RdzwpfqruNf68 · Observed Sep 30, 2026, from 9:56 AM CDT
+Method: GHL workflow builder UI. Panels opened and closed via Cancel. Nothing edited,
+saved, published, or triggered; the Saved button stayed disabled throughout.
+
+SELLER - UNDER CONTRACT EXIT
+Workflow ID: e6a4de9d-34aa-4e6e-981a-094b91c156b1 · Status: Published
+Last updated Sep 24, 2026, 6:34 PM · Total enrolled 1 · Active 0
+Trigger: Pipeline stage changed ("Pipeline Stage Changed")
+  - In pipeline: Seller Leads Pipeline
+  - Pipeline stage: Under Contract
+  - Status: Is Open
+Actions: exactly one, then END
+  - Remove from Workflow, "Another workflow": Seller 6 - Follow-Up Reminder,
+    Seller 7 - Offer Sent, Seller 8 - Long-Term Nurture
+  - Sends message: NO · Changes stage: NO · Enrolls contact: NO
+Matches the reviewed configuration.
+
+NO OTHER PUBLISHED WORKFLOW FIRES ON ENTRY TO UNDER CONTRACT
+- Full list rescanned today: 38 Published workflows. No Last-updated date after
+  Sep 24, 2026 on any row, so none has changed since the Sep 29 trigger inventory.
+- CORRECTION to the Sep 29 report: that report said 36. Two rows were missed:
+  - Sequence - Hot Tag Mail (d4218621-fbb0-4876-a968-c88317591b25)
+    Trigger: Contact tag, Tag added = "hot" · Active 5
+  - Sequence - Low Tag Mail (2b224bb3-b2cd-4b64-a42d-37d688a4d94b)
+    Trigger: Contact tag, Tag added = "low" · Active 23
+  Both are tag-triggered, not stage-triggered, so the Sep 29 conclusion stands.
+- Stage-triggered workflows other than UC Exit, all filtered to other stages or pipelines:
+  - Seller 6: Seller Follow-Up
+  - Seller 7: Seller Offer Sent
+  - Seller 8: Long-Term Nurture
+  - Seller 9: Closed / status Won
+  - Investor 2/7/8: Investor Leads Pipeline
+  - 7-Day Check-In and IAOS Account Activation: IAOS Client Pipeline
+  The other 36 trigger filters were read on Sep 29 and not re-opened today. Since
+  none was updated after Sep 24, the Sep 29 reads remain current.
+
+LIMITATIONS
+1. "No change since Sep 29" rests on the list's Last-updated column. That covers
+   builder saves; the UI gives no way to check it against a separate change history.
+2. External listeners (Make.com, Netlify, Marketplace apps) on stage-change events
+   are not visible in the workflow UI.
+3. Seller 8 is still configured for removal. It has 40 active enrollments, but the
+   pinned contact is in none of Seller 6, 7, or 8, so the removal is a no-op for it.
+
+OBSERVED, NOT INVESTIGATED
+- An existing Chrome tab shows a Production document preview,
+  6abc7a5d07906671ae20bc22. The Sep 29 Production D&C list had 0 documents, so this
+  was created after that check. I did not open it; flagging it for Jess to confirm
+  it is the authorized Board #9 document.
+
+RULING: PASS. Production flags remain OFF.
+```
+
+### 1a. Clarification — IAOS Production code flags (Jeff, 2026-09-30)
+
+The source's last line, "Production flags remain OFF", does not match the IAOS
+Production code flags at the time of this record.
+
+- **Live deploy:** `iaos-app` deploy `6abd1e656bc9fe0008243a42`, `main@eab3133`,
+  published 2026-09-30T14:43:06Z, auto publishing locked. Read back from the
+  Netlify API.
+- **In that commit's `app/shared/ghl-config.ts`:**
+  - `contractProductionEnabled: CONTRACT_PRODUCTION_ENABLED`
+  - `productionProofScope.enabled: PRODUCTION_PROOF_SCOPE_ENABLED`
+- **Both are ON, and have been since PR #104's enabled build.** The pinned
+  walkthrough writes of 2026-09-29/30 succeeded in Production. The proof scope
+  refuses every Production write with `PRODUCTION_WRITES_DISABLED` while these
+  flags are off.
+
+**Open question for Spock:** what did "Production flags remain OFF" refer to?
+If it meant these IAOS code flags, the statement is incorrect for this deploy.
+If it meant something else, name it: for example, a GHL-side setting, or the
+three P2 mover filters, which are absent in Production. This record will add
+his answer as a further dated clarification. It will not edit the source.
+
+### 1b. Clarification — the document Spock flagged (Jeff, 2026-09-30)
+
+These are IAOS ledger facts, read from the pinned contact's notes (GET only).
+They are recorded for Jess's confirmation, not as a substitute for it.
+
+- The accepted manual-send record, note `QM9yMi8yilDMea9lKWsu`, names
+  provider document `6abc7a5d07906671ae20bc22`. Its attemptId is
+  `2026-09-30T03:13:00.000Z`, `templateSource: manual_ghl_upload`, and it
+  records no document revision.
+- The contract authorization, note `V3thwK4bmDtpU2GiBBgy`, covers the
+  generated PDF with SHA-256
+  `d942a58051db268f88e1d6759048686672fba0236fc0793445cc9e38dda5f16c`.
+
+---
+
+## 2. P2 — status against `main` §4.1a (Jeff, 2026-09-30)
+
+None of the five P2 exit guards is built and proven in Production:
+`Seller - Follow Up`, `Seller - Not Interested`,
+`Seller - Route to Long-Term Nurture`, `Seller 6` and `Seller 7`.
+P1 passing does not satisfy P2. The proposed one-time exception for the
+pinned synthetic transition is in §4.1a, **P2-X**.
+
+---
+
+## 3. Written risk acceptance (Brad) — PENDING
+
+**Not yet given.** P2-X requires Brad's written acceptance of the exact risk
+statement in §4.1a P2-X, "Risk Brad accepts", recorded here verbatim with
+its date and time before the transition.
