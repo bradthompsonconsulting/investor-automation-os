@@ -3,7 +3,7 @@
 **INV-71 · B10-01.** "Lock Buyer Disposition V1 contract, state machine,
 qualification rules, and finish line."
 
-**Status: DRAFT, revision 2, after Jess's REQUEST CHANGES of 2026-09-30.**
+**Status: DRAFT, revision 3 (after Jess's review of revision 2, 2026-09-30).**
 It is a design contract only. It authorizes no code, no GHL write, no
 message send and no Production change. Every record kind and operation
 named here is a **proposal** until reviewed. Each needs its own named
@@ -36,7 +36,7 @@ Selected**, the V1 finish line.
   score, recommendation or "best buyer" signal, in any form.
 - **Outreach: Brad-authorized only; autonomous outreach is prohibited.**
   IAOS may send a message to a buyer only as an explicit Brad action
-  (T5). Brad picks that one buyer, that channel and that exact content,
+  (T5a–T5c, §5a). Brad picks that one buyer, that channel and that exact content,
   for that one send. Prohibited:
   - any send IAOS decides on its own;
   - bulk or list sends;
@@ -146,15 +146,53 @@ Every qualification-relevant fact carries exactly one **provenance**:
   available funds of at least the required funds for this deal.
 - `pof_rejected` (with reason) ends that document's use.
 
+**Buy-box evidence classes (INV-71 requires four; revision 3 adds the
+structure).**
+- Every `buyer-criteria-claim` (T3) carries exactly **one** of the four
+  buy-box evidence classes INV-71 defines. Match (T4) and gate G2 evaluate
+  criteria per class.
+- **PENDING: the four class names, and which of them may satisfy G2, come
+  from the INV-71 issue text.** Jeff couldn't read it (the Linear
+  connection needs re-authentication), so no class is named or ranked here.
+- **Placeholders:** until then the schema carries `evidenceClass` with four
+  placeholder values, `B1`–`B4`. G2 treats every criteria claim as
+  `buyer_claim` provenance: necessary, never sufficient.
+
+**Funds and POF freshness (PROPOSED concrete rules, for Brad's
+confirmation).**
+- **Required funds** for a buyer on a deal identity =
+  **that buyer's current offer price** (the latest un-superseded `buyer-offer`)
+  **+ the end-buyer closing-cost allowance**.
+- **The allowance** is the resolved underwriting input `closingCost`, which
+  is exactly "End-Buyer Purchase/Closing Costs" in the underwriting
+  computation (`app/src/lib/underwriting/compute.ts:216`, OBSERVED). Its
+  policy default is 2500, from the GHL custom value
+  `default_closing_cost_estimate`, and it can be overridden per deal
+  (`docs/UNDERWRITING_FIELD_REFERENCE.md`). It is read at check time for
+  this opportunity.
+- **No fallback.** If the buyer has no current offer, or the allowance is
+  unresolved, **G4 cannot pass**.
+- **Coverage is a read-time check, not a stored verdict.** G4 passes only
+  while an accepted POF's stated amount is at least the *current* required
+  funds. An upward offer revision re-tests it automatically. So in V1,
+  qualification requires a current offer.
+- **POF freshness window: 30 days.** A POF's document date must not be in
+  the future, and must be no more than 30 days before the time of the
+  check. It is checked at T8, at T11, at T17 and at every read, so a POF
+  that ages out lapses qualification (T12) without a write.
+- **Seller-price relationship: undecided.** These rules set no relationship
+  between an offer and the seller contract price. That offer-economics rule
+  remains open (§7).
+
 **Qualification gates (PROPOSED).** Each is checked on a fresh read, both
 when the qualification decision is recorded and again at every later read.
 
 | Gate | Requirement | Provenance that can satisfy it |
 |---|---|---|
 | **G1 Usable buyer contact** | The buyer's GHL contact has at least one contact method that isn't DND for its channel. Brad has recorded that the buyer was actually reached and responded on it (a T6 `responded` fact) | `brad_decision` on engagement facts |
-| **G2 Deal-criteria fit** | Match is `criteria_fit` against the **accepted** handoff snapshot for this deal identity | System derivation from the buyer's claim and deal facts. Fit is necessary, never sufficient |
+| **G2 Deal-criteria fit** | Match is `criteria_fit` against the **accepted** handoff snapshot for this deal identity, evaluated per buy-box evidence class (class rules PENDING, from INV-71) | System derivation. Fit is necessary, never sufficient |
 | **G3 Identity** | The legal buyer name or entity, and the signer's name and role, confirmed by Brad from named evidence | `brad_decision` |
-| **G4 Funds** | An accepted POF covers the required funds for this deal, and its document date is inside the freshness window | `brad_decision` on `evidence_received` |
+| **G4 Funds** | An accepted POF's stated amount is at least the current required funds (offer price + end-buyer closing-cost allowance), and its document date is inside the 30-day window | `brad_decision` on `evidence_received`, plus a read-time computation |
 | **G5 Ability to meet closing** | Brad has decided the buyer can close by the seller contract's closing date. The buyer's committed closing date is **on or before** the handoff's `closingDate`, and that date is not `unresolved` | `brad_decision`, based on the buyer's recorded commitment plus G4. A timeline claim alone never passes |
 | **G6 Acquisition path** | Cash purchase, consistent with Board #9's supported "Cash Acquisition / Assignment Exit" path. Financing-contingent intent fails in V1 | `brad_decision` on the buyer's recorded intent |
 | **G7 Nothing adverse** | No disqualification, and no outstanding revocation of any record G1–G6 relies on | System derivation |
@@ -197,14 +235,17 @@ when the qualification decision is recorded and again at every later read.
 | T2 | Deal `disposition_ready` | Brad adds a buyer candidate | Brad | The buyer is an existing GHL contact in this location, is not the seller contact, and is not already a candidate for this deal identity | Match `candidate`; Engagement `not_engaged`; Qualification `unqualified` | Refuses a duplicate, the seller as buyer, or a deal that isn't `disposition_ready` | `buyer-candidate-added` |
 | T3 | Match `candidate`, `criteria_*` | Brad records the buyer's stated buy-box criteria | Brad | The criteria verbatim (`buyer_claim`), with date and channel. A newer claim supersedes the older by reference | (input to T4) | Refuses an empty claim, or a missing date or channel | `buyer-criteria-claim` |
 | T4 | Match `candidate` or `criteria_*` | Criteria or deal facts are read | System | The latest un-superseded criteria claim compared with the accepted handoff snapshot | `criteria_fit` / `criteria_misfit` / `criteria_insufficient` | Missing data gives `criteria_insufficient`, never a guess | None. Derived |
-| T5 | Deal `disposition_ready`; Match not `candidate_removed` | **Brad-authorized outreach: one send** | **Brad only** | Brad selects this buyer, channel and exact content for this one send. The channel's contact method exists and isn't DND. The provider accepts the send, verified by fresh readback | Engagement `contacted` | Refuses any missing selection, DND, a removed candidate or a deal that isn't ready. Provider uncertainty is reported as uncertain, never auto-retried, never sent twice | `buyer-outreach` (buyer, channel, verbatim content, provider message ref, at, operator `brad`) |
+| T2b | Match not `candidate_removed` | Brad removes a buyer candidate | Brad | A reason | Match `candidate_removed` (terminal for this buyer × deal identity) | Refuses a missing reason | `buyer-candidate-removed` |
+| T5a | Deal `disposition_ready`; Match not `candidate_removed`; **no unresolved send for this buyer × deal (§5a)** | **Brad authorizes one outreach send: reserve** | **Brad only** | Brad selects this buyer, one channel and the exact content. The channel's contact method exists and isn't DND | Send `reserved` (nothing sent yet) | Refuses a missing selection, DND, a removed candidate, a deal that isn't ready, or an existing unresolved send. If the reservation isn't confirmed by readback, **nothing is sent** | `buyer-outreach-reservation` (sendId, buyer, channel, verbatim content hash and text, at, operator `brad`) |
+| T5b | Send `reserved` | Send, then provider readback | System, executing Brad's T5a authorization exactly once | The reservation read back. One provider send call for that sendId. A fresh provider readback of the message | `sent_confirmed` → Engagement `contacted`; or `refused` (definite pre-acceptance refusal); or `uncertain` | **Never retried.** A timeout, network error, ambiguous response or failed readback gives `uncertain`. Partial success is also treated as `uncertain`: the send may have happened, but the outcome record wasn't written or wasn't read back | `buyer-outreach-outcome` (sendId, outcome, provider message ref if any, at) |
+| T5c | Send `uncertain`, or a reservation with no outcome record | **Brad resolves the uncertain send** | Brad | Brad's check of the buyer's GHL conversation for that sendId's content, recorded as `confirmed_sent` (with the provider message ref) or `confirmed_not_sent` | `confirmed_sent` → Engagement `contacted`; `confirmed_not_sent` → no engagement change | Refuses a missing basis. A resend is **never** part of T5c: after `confirmed_not_sent` or `refused`, a new send is a new T5a with a new sendId and re-approved content | `buyer-outreach-resolution` (sendId, resolution, basis) |
 | T6 | Any engagement | Brad records an engagement fact | Brad | Brad attestation: date, channel, and outcome (`responded`, `interested`, `not_interested`, `unresponsive`) | Engagement per the outcome | Refuses a future date, or a missing channel or outcome | `buyer-engagement` |
 | T7 | Qualification not `disqualified` | Brad records a POF received | Brad | The reference (SHA-256 and file name), stated amount, issuer as shown, document date, received time | Qualification unchanged | Refuses a missing reference, amount or date | `pof-received` |
-| T8 | A `pof-received` record with no decision | Brad accepts or rejects that POF | Brad | Accept only if it covers the required funds, is inside the freshness window, and the name matches the buyer or entity; otherwise reject, with reason | That POF is `accepted` or `rejected` | Refuses an acceptance that fails any test, or a second decision on the same POF | `pof-decision` |
+| T8 | A `pof-received` record with no decision | Brad accepts or rejects that POF | Brad | Accept only if Brad judges it reliable, the name matches the buyer or entity, and its document date is within the 30-day window; otherwise reject, with reason. Coverage of required funds is **not** decided here: G4 tests it at read time against the current offer | That POF is `accepted` or `rejected` | Refuses an acceptance with a stale or future date or a name mismatch, or a second decision on the same POF | `pof-decision` |
 | T9 | Qualification not `disqualified` | Brad confirms identity and signer | Brad | The legal name or entity, and the signer's name and role, from named evidence | (gate G3) | Refuses a missing entity or signer | `buyer-identity-confirmed` |
 | T10 | Qualification not `disqualified` | Brad records ability to meet closing | Brad | The buyer's committed closing date (`buyer_claim`) plus Brad's decision and basis. Requires the date to be on or before the handoff `closingDate` | (gate G5) | Refuses if `closingDate` is `unresolved`, the committed date is later, or the basis is missing | `buyer-closing-capability` |
 | T11 | Qualification `unqualified` or `qualification_lapsed` | **Brad records the qualification decision** | Brad (system-gated) | G1–G7 all pass on a fresh read | Qualification `qualified` | Refuses, naming each failing gate. Never records on its own | `buyer-qualification-decision` (`qualified`, with references to every gate-satisfying record) |
-| T12 | Qualification `qualified` | A relied-on gate stops passing | System | Read-time re-check of G1–G7 | `qualification_lapsed` | None | None. Derived |
+| T12 | Qualification `qualified` | A relied-on gate stops passing (for example: POF older than 30 days, offer raised above POF coverage, contact now DND) | System | Read-time re-check of G1–G7 | `qualification_lapsed` | None | None. Derived |
 | T13 | Any qualification | Brad disqualifies the buyer | Brad | A reason | `disqualified` (terminal for this buyer × deal identity) | Refuses a missing reason | `buyer-qualification-decision` (`disqualified`) |
 | T14 | Any | **Brad revokes one of his own decisions** | Brad | The exact record being revoked (disposition acceptance, POF decision, identity, closing capability, qualification, or selection), and a reason | States re-derive without the revoked record. Revoking a selection returns the deal to `disposition_ready`, the selection to `no_selection`, and the offer to `offer_received`. Revoking the acceptance returns the deal to `handoff_unaccepted` | Refuses a missing reason or target, or an already-revoked target | `decision-revocation` (target ref, reason) |
 | T15 | Deal `disposition_ready`; Match not `candidate_removed` | Brad records a buyer offer | Brad | Price, terms, closing timing and earnest money as stated (`buyer_claim`), with date and channel | `offer_received`. A prior open offer from the same buyer becomes `offer_superseded` | Refuses a deal that isn't ready, or a missing field | `buyer-offer` (the superseded offer is referenced) |
@@ -220,6 +261,69 @@ when the qualification decision is recorded and again at every later read.
 T19 or T20 condition applies to it. Board #10 V1 ends there. Anything after
 it is Board #11. Board #11 must not proceed on a frozen, superseded, void or
 revoked selection.
+
+### 5a. Outreach sends — partial success and uncertainty (T5a–T5c)
+
+The pattern mirrors Board #9's reserve-then-execute send path
+(`ghl-contract-send-reserve.ts`, `ghl-contract-send-execute.ts`, OBSERVED
+to exist). The mechanism is still an open decision (§7).
+
+- **One authorization, one send.** A T5a reservation authorizes exactly one
+  provider send call for its `sendId`, once. Nothing re-sends it: not a
+  retry, a reload, a second click, another browser or another operator.
+- **Terminal outcomes:**
+  - `sent_confirmed`: fresh provider readback shows the message;
+  - `refused`: a definite refusal before the provider accepted anything;
+  - `confirmed_sent` / `confirmed_not_sent`: Brad's T5c resolution.
+- **Everything else is `uncertain`,** including:
+  - a timeout or network error after the call left;
+  - an ambiguous provider response;
+  - a failed or unavailable readback;
+  - a reservation with no outcome record, for example an interrupted
+    function or a failed outcome write. This is the partial-success case.
+- **An unresolved send blocks further outreach.** While any send for a
+  buyer × deal identity is `reserved` or `uncertain`, T5a refuses every new
+  send to that buyer, on **every** channel, until Brad resolves it (T5c). A
+  later read showing the message doesn't resolve it by itself; Brad's T5c
+  does.
+- **No blind retry, ever.** A new message after `refused` or
+  `confirmed_not_sent` is a new T5a, with a new `sendId` and content Brad
+  approves again.
+- **A reservation doesn't count as contact.** Only `sent_confirmed` and
+  `confirmed_sent` set Engagement `contacted`.
+
+### 5b. Factual, reason-coded comparison (System, read-only)
+
+- **What it is.** Board #10 may present candidate buyers and their offers
+  side by side, as **facts with reason codes**. It writes nothing, and it
+  never selects, pre-selects or recommends. **Selection stays T17, Brad
+  only.**
+- **Permitted content, per buyer or offer:**
+  - each gate G1–G7 as `PASS` or `FAIL:<code>`. For example:
+    - `G1_FAIL_NO_RESPONSE`, `G1_FAIL_DND`;
+    - `G2_FAIL_MISFIT`, `G2_FAIL_INSUFFICIENT`;
+    - `G4_FAIL_NO_OFFER`, `G4_FAIL_ALLOWANCE_UNRESOLVED`, `G4_FAIL_SHORT_BY:<amount>`,
+      `G4_FAIL_POF_STALE:<days>`;
+    - `G5_FAIL_AFTER_SELLER_CLOSING`, `G5_FAIL_CLOSING_UNRESOLVED`;
+  - offer facts as recorded:
+    - price;
+    - earnest money;
+    - committed closing date, with its relation to the seller closing
+      date (`CLOSES_ON_OR_BEFORE` / `CLOSES_AFTER`);
+    - POF days remaining;
+    - required funds and the POF stated amount;
+    - the plain signed difference *offer price − seller contract price*.
+      Shown as a number only, with no pass/fail, color or judgment,
+      because that economics rule is undecided (§7);
+  - `SELECTABLE`, or `NOT_SELECTABLE:<codes>`, stating exactly which T17
+    preconditions fail.
+- **Prohibited:**
+  - any score, weight, composite or index;
+  - ranking or ordering by desirability. The default order is the offer's
+    received time; Brad may sort by any **single** factual column;
+  - "best", "recommended", "top" or similar labels, or highlighting;
+  - any AI-generated assessment;
+  - any automatic action taken from the comparison.
 
 ## 6. Revocation, supersession, re-entry and Board #9 corrections
 
@@ -268,7 +372,7 @@ revoked selection.
 | **Correction, case 3:** metadata only | Outside Corrected; no new contract cycle | **None** |
 | **Correction, case 2:** wording fix, same `agreementAt`, new version | The prior executed version stays authoritative until the replacement reaches verified full execution, or Brad records a Rescission | While pending: **frozen** (T18). Selection and new offers are blocked, qualification work may continue, and an existing selection is `selection_frozen`. When the replacement is verified Under Contract: the prior identity is **superseded** (T19); re-entry is through the new version's handoff and acceptance (T21) |
 | **Correction, case 1:** a material term differs, so a new Agreement Reached with a new `agreementAt` | A different accepted deal; the prior version stays authoritative on the same terms as case 2 | The same as case 2: frozen, then superseded, then re-entry for the new identity. No qualification, offer or selection carries over, because price or terms changed |
-| **Rescission** of this agreement/version | Brad-only; this agreement is terminal | **Halted** (T20), terminal for the identity; any selection is `selection_void` in IAOS. Buyer communication about it is a separate Brad-authorized send (T5), never automatic |
+| **Rescission** of this agreement/version | Brad-only; this agreement is terminal | **Halted** (T20), terminal for the identity; any selection is `selection_void` in IAOS. Buyer communication about it is a separate Brad-authorized send (T5a–T5c), never automatic |
 | **Expired / Declined** | Pre-execution outcomes | **Not applicable.** They cannot follow a verified Under Contract for the same version (INFERRED from the state order; confirm with Jess) |
 
 **IAOS makes no legal determination.** As in Board #9, these states govern
@@ -277,20 +381,24 @@ legally void or superseded.
 
 ## 7. Open decisions (for Brad or Jess; not decided here)
 
-1. **Carriers and locations.** Which GHL record holds each proposed record,
-   and in what form. Each needs a named write operation and scope review.
+1. **Carriers and locations: confirm or amend the proposal in §8.** Each
+   record still needs a named write operation and scope review.
    `ghl.notes.create()` is the only sanctioned general write today.
-2. **The outreach send mechanism (T5).** Which GHL send path is used, and
+2. **The outreach send mechanism (T5a–T5c).** Which GHL send path is used, and
    its named operation, Production scope and proof. Is a send in Board #10
    V1, or only recorded?
 3. **Identifying a buyer contact,** given that IAOS may not write tags.
-4. **Required funds (G4).** The formula POF must cover. The seller contract
-   price is the floor.
-5. **The POF freshness window (G4).** The number of days.
+4. **Required funds (G4): confirm or amend the proposal in §4.** Offer
+   price + the end-buyer closing-cost allowance (underwriting `closingCost`),
+   with no fallback.
+5. **The POF freshness window (G4): confirm or amend the proposed 30 days**
+   (§4).
 6. **The closing margin (G5).** Whether a buffer before the seller closing
    date is required.
-7. **An offer below the seller contract price.** Refuse it at selection, or
-   allow it with Brad's recorded override.
+7. **Offer economics: undecided.** Whether any relationship between an
+   offer and the seller contract price constrains selection, and if so,
+   what. This contract asserts none. The comparison (§5b) shows only the
+   plain signed difference.
 8. **POF document preservation.** Preserved bytes, like Board #9's executed
    artifact, or a hash reference only.
 9. **Offer before qualification.** Revision 2 allows recording it, but not
@@ -302,3 +410,57 @@ legally void or superseded.
     UNKNOWN: Board #9 defines no such record today.
 12. **Recheck the full INV-71 issue and the Board #10 project** against this
     draft once Jeff's Linear connection returns.
+13. **The four buy-box evidence class names** and their G2 rules, from the
+    INV-71 issue text (§4). Currently placeholders `B1`–`B4`.
+
+## 8. Record scope and schema versions (PROPOSED)
+
+**Carrier.** Every Board #10 record is a GHL note, following the
+append-only `IAOS … — iaos-<kind>-vN` note pattern Board #9 uses (OBSERVED
+in the pinned fixture's ledger).
+
+**Location, one ledger per deal.** Records are written on the **seller
+contact** that already holds the deal's Board #9 ledger.
+- **No Board #10 record is written to a buyer contact.** The only thing
+  that reaches a buyer contact is a Brad-authorized message (T5b).
+- Buyers are identified inside each record by `buyerContactId`.
+- V1 has no cross-deal reuse. Re-entry reuse (§6) stays within the same
+  opportunity, and so the same seller contact.
+
+**Common scope keys, on every record:**
+- `recordId`: a UUID;
+- `opportunityId`, `agreementAt` and `versionSeq`: the deal identity;
+- `at`: an ISO instant;
+- `operator`: `brad`, for Brad records.
+
+Where applicable, records also carry `buyerContactId`, and `supersedes` or
+`revokes`, a `recordId` reference.
+
+| Record | Schema version | Written by | Extra scope keys | Required content |
+|---|---|---|---|---|
+| Disposition acceptance | `iaos-b10-disposition-acceptance-v1` | T1, T21 | `handoffNoteId`, `priorIdentity?` | the result of each re-verification check |
+| Buyer candidate added | `iaos-b10-buyer-candidate-v1` | T2 | `buyerContactId` | — |
+| Buyer candidate removed | `iaos-b10-buyer-candidate-removed-v1` | T2b | `buyerContactId` | reason |
+| Buyer criteria claim | `iaos-b10-buyer-criteria-claim-v1` | T3 | `buyerContactId`, `supersedes?` | criteria verbatim, `evidenceClass` (B1–B4, names PENDING), date, channel |
+| Outreach reservation | `iaos-b10-outreach-reservation-v1` | T5a | `buyerContactId`, `sendId` | channel, content text, content SHA-256 |
+| Outreach outcome | `iaos-b10-outreach-outcome-v1` | T5b | `buyerContactId`, `sendId` | `sent_confirmed` / `refused` / `uncertain`, provider message ref if any |
+| Outreach resolution | `iaos-b10-outreach-resolution-v1` | T5c | `buyerContactId`, `sendId` | `confirmed_sent` / `confirmed_not_sent`, basis, provider message ref if sent |
+| Engagement fact | `iaos-b10-buyer-engagement-v1` | T6 | `buyerContactId` | date, channel, outcome |
+| POF received | `iaos-b10-pof-received-v1` | T7 | `buyerContactId`, `pofId` | file SHA-256, file name, stated amount, issuer as shown, document date, received time |
+| POF decision | `iaos-b10-pof-decision-v1` | T8 | `buyerContactId`, `pofId` | `accepted` / `rejected`, reason |
+| Identity confirmed | `iaos-b10-buyer-identity-v1` | T9 | `buyerContactId`, `supersedes?` | legal name or entity, signer name and role, evidence named |
+| Closing capability | `iaos-b10-buyer-closing-capability-v1` | T10 | `buyerContactId`, `supersedes?` | committed closing date, basis |
+| Qualification decision | `iaos-b10-qualification-decision-v1` | T11, T13 | `buyerContactId` | `qualified` (with refs to the records satisfying G1–G7) / `disqualified` (reason) |
+| Decision revocation | `iaos-b10-decision-revocation-v1` | T14 | `revokes` | reason |
+| Buyer offer | `iaos-b10-buyer-offer-v1` | T15 | `buyerContactId`, `offerId`, `supersedes?` | price, terms, earnest money, committed closing date, date, channel |
+| Offer status | `iaos-b10-offer-status-v1` | T16 | `buyerContactId`, `offerId` | `withdrawn` / `declined`, reason |
+| Buyer selection | `iaos-b10-buyer-selection-v1` | T17 | `buyerContactId`, `offerId` | refs: qualification decision, acceptance |
+
+**Rules that apply to every record:**
+- **Unknown versions are refused.** A record whose version is unknown to
+  the reader is refused, and never guessed at.
+- **Schema changes create a new version.** A later schema is a new `-vN`.
+  Earlier versions stay readable, following Board #9's pattern.
+- **Writes still need approval.** None of these may be written until each
+  has a named write operation, a Production scope entry, and a guard in
+  the server's note validation.
