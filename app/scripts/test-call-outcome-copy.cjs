@@ -97,6 +97,19 @@ check('heading and subheading come from the copy module',
   /\{DIAL_RESULT_HEADING\}/.test(dispositionCode) && /\{DIAL_RESULT_SUBHEADING\} \{GHL_CALL_LOGGING_LINE\}/.test(dispositionCode), true);
 check('every outcome shows its consequence before any click',
   /data-testid="disposition-consequences"/.test(dispositionCode) && /TRANCHE_A_DISPOSITIONS\.map\(\(label\) => \(\s*<li[\s\S]*DIAL_RESULT_CONSEQUENCES\[label\]\.text/.test(dispositionCode), true);
+{
+  // The consequence-line test IDs must normalize spaces exactly like the
+  // existing disposition-option IDs (PR #113 review: a lost backslash made
+  // the pattern /s+/, which strips the letter "s" instead).
+  const m = dispositionCode.match(/data-testid=\{`disposition-consequence-\$\{label\.replace\((\/[^/]+\/g), "-"\)\.toLowerCase\(\)\}`\}/);
+  const optionPattern = (dispositionCode.match(/data-testid=\{`disposition-option-\$\{label\.replace\((\/[^/]+\/g), "-"\)\.toLowerCase\(\)\}`\}/) || [])[1];
+  check('consequence test IDs use the same space pattern as the option IDs', m ? m[1] : null, optionPattern ?? 'missing');
+  const re = m ? new RegExp(m[1].slice(1, -2), 'g') : null;
+  check('consequence test IDs resolve to the expected slugs',
+    re ? trancheLabels.map((l) => `disposition-consequence-${l.replace(re, '-').toLowerCase()}`) : [],
+    ['disposition-consequence-no-answer', 'disposition-consequence-voicemail', 'disposition-consequence-follow-up',
+      'disposition-consequence-requested-appointment', 'disposition-consequence-not-interested', 'disposition-consequence-incorrect-number']);
+}
 check('confirm-required outcomes open the confirm step instead of writing',
   /onClick=\{\(\) => \(DIAL_RESULT_CONSEQUENCES\[label\]\.confirm \? setConfirming\(label\) : void run\(label\)\)\}/.test(dispositionCode), true);
 check('confirm step shows the consequence and records only on the confirm button',

@@ -369,7 +369,7 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
       {/* B14-12 — what each outcome sets off, visible before any click. */}
       <ul data-testid="disposition-consequences" style={{ margin: "10px 0 0", paddingLeft: "16px", fontSize: "11px", color: "#64748B", lineHeight: 1.5 }}>
         {TRANCHE_A_DISPOSITIONS.map((label) => (
-          <li key={label} data-testid={`disposition-consequence-${label.replace(/s+/g, "-").toLowerCase()}`}>
+          <li key={label} data-testid={`disposition-consequence-${label.replace(/\s+/g, "-").toLowerCase()}`}>
             <span style={{ color: "#94A3B8" }}>{label}:</span> {DIAL_RESULT_CONSEQUENCES[label].text}
           </li>
         ))}
