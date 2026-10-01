@@ -66,11 +66,13 @@ export function SellerCallVoiceControls(props: { contactId: string; sellerName: 
           </button>
         </div>
         <div className="seller-call-mode__hint" aria-live="polite" data-testid="ghl-handoff-status">
-          {handoff === "blocked" ? (
-            <span role="alert" className="seller-call-mode__error">
-              Your browser blocked the new window.{" "}
+          {handoff === "blocked" || handoff === "isolation-failed" ? (
+            <span role="alert" className="seller-call-mode__error" data-testid={`ghl-handoff-${handoff}`}>
+              {handoff === "blocked"
+                ? "Your browser blocked the new window. "
+                : "IAOS could not open GHL safely in a new window, so it was closed. "}
               <a href={ghlUrl} target="_blank" rel="noopener noreferrer" data-testid="ghl-handoff-manual-link">Open the GHL record</a>{" "}
-              manually, or allow pop-ups for IAOS.
+              {handoff === "blocked" ? "manually, or allow pop-ups for IAOS." : "manually instead."}
             </span>
           ) : handoff === "opened" ? (
             "GHL opened in a new window. Confirm the contact name and number there before dialing. Opening GHL does not place or record a call."

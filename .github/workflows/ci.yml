@@ -219,7 +219,7 @@ jobs:
       - name: Voice foundation and recovery — 62 offline checks
         run: node app/scripts/test-voice-foundation.cjs
 
-      - name: Seller Call calling options — 36 offline checks
+      - name: Seller Call calling options — 43 offline checks
         run: node app/scripts/test-seller-call-voice-controls.cjs
 
       - name: Netlify observer — 86 offline checks

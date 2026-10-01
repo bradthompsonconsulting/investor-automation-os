@@ -11,23 +11,56 @@
  * operator confirms the GHL contact identity before dialing; the URL is the
  * page's own contact id, but that is not treated as proof of identity.
  *
- * Why not window.open(url, "_blank", "noopener"): with that feature the
- * browser always returns null, which would make a blocked popup
- * indistinguishable from a successful one. Opening without it and severing
- * `opener` afterwards keeps the same isolation and lets a blocked popup
- * report itself.
+ * ISOLATE BEFORE NAVIGATING. The window is opened blank (same-origin), its
+ * `opener` is cleared and then VERIFIED null, and only then is it sent to
+ * GHL. If isolation cannot be verified the blank window is closed and the
+ * handoff fails closed, so GHL never loads with a live reference back to
+ * IAOS. Passing "noopener" to window.open is not used because the browser
+ * then always returns null, which would hide a blocked popup.
  */
-export type GhlHandoffResult = "opened" | "blocked";
+export type GhlHandoffResult = "opened" | "blocked" | "isolation-failed";
 
-type WindowOpener = (url: string, target: string) => { opener: unknown } | null;
+export interface HandoffWindow {
+  opener: unknown;
+  location: { replace(url: string): void };
+  close(): void;
+}
+
+type WindowOpener = (url: string, target: string) => HandoffWindow | null;
+
+function closeQuietly(win: HandoffWindow): void {
+  try {
+    win.close();
+  } catch {
+    // Nothing further can be done; the caller still reports failure.
+  }
+}
 
 export function openGhlContactWindow(url: string, open: WindowOpener): GhlHandoffResult {
-  const opened = open(url, "_blank");
-  if (!opened) return "blocked";
+  const win = open("about:blank", "_blank");
+  if (!win) return "blocked";
+
   try {
-    opened.opener = null;
+    win.opener = null;
   } catch {
-    // Cross-origin assignment can throw in some browsers; the window is open either way.
+    // Verified below; an assignment that throws must not count as isolation.
+  }
+  let isolated = false;
+  try {
+    isolated = win.opener === null;
+  } catch {
+    isolated = false;
+  }
+  if (!isolated) {
+    closeQuietly(win);
+    return "isolation-failed";
+  }
+
+  try {
+    win.location.replace(url);
+  } catch {
+    closeQuietly(win);
+    return "isolation-failed";
   }
   return "opened";
 }

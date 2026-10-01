@@ -46,17 +46,66 @@ check('already-normalized US phone remains stable', contract.normalizeVoicePhone
 check('non-US or malformed phone fails closed', contract.normalizeVoicePhone('555'), null);
 check('missing phone fails closed', contract.normalizeVoicePhone(''), null);
 
-// GHL handoff helper: popup opened vs blocked.
+// GHL handoff helper: isolate a blank window BEFORE navigating it to GHL.
 const URL = 'https://app.gohighlevel.com/v2/location/loc/contacts/detail/contact-1';
-const opens = [];
-const fakeWindow = { opener: 'iaos' };
-check('handoff reports opened when the browser returns a window',
-  handoff.openGhlContactWindow(URL, (url, target) => { opens.push([url, target]); return fakeWindow; }), 'opened');
-check('handoff opens exactly the given GHL URL in a new browsing context', opens, [[URL, '_blank']]);
-check('handoff severs window.opener on the GHL window', fakeWindow.opener, null);
+function fakeWindow(overrides = {}) {
+  const log = [];
+  const win = {
+    _opener: 'iaos',
+    get opener() { log.push(['get-opener']); return this._opener; },
+    set opener(v) { log.push(['set-opener', v]); this._opener = v; },
+    location: { replace(url) { log.push(['navigate', url]); } },
+    close() { log.push(['close']); },
+    ...overrides,
+  };
+  return { win, log };
+}
+{
+  const opens = [];
+  const { win, log } = fakeWindow();
+  check('handoff reports opened when isolation is verified',
+    handoff.openGhlContactWindow(URL, (url, target) => { opens.push([url, target]); return win; }), 'opened');
+  check('handoff opens a blank window first, never GHL directly', opens, [['about:blank', '_blank']]);
+  check('handoff clears and verifies opener before navigating to the exact GHL URL',
+    log, [['set-opener', null], ['get-opener'], ['navigate', URL]]);
+}
 check('handoff reports blocked when the browser returns null', handoff.openGhlContactWindow(URL, () => null), 'blocked');
-const throwingWindow = { set opener(_) { throw new Error('cross-origin'); }, get opener() { return 'x'; } };
-check('handoff still reports opened when severing opener throws', handoff.openGhlContactWindow(URL, () => throwingWindow), 'opened');
+{
+  const log = [];
+  const win = {
+    get opener() { return 'iaos'; }, set opener(_) { throw new Error('cross-origin'); },
+    location: { replace(url) { log.push(['navigate', url]); } }, close() { log.push(['close']); },
+  };
+  check('handoff fails closed when clearing opener throws', handoff.openGhlContactWindow(URL, () => win), 'isolation-failed');
+  check('failed isolation closes the window and never navigates to GHL', log, [['close']]);
+}
+{
+  const log = [];
+  const win = {
+    get opener() { return 'iaos'; }, set opener(_) { /* silently ignored */ },
+    location: { replace(url) { log.push(['navigate', url]); } }, close() { log.push(['close']); },
+  };
+  check('handoff fails closed when opener silently stays attached', handoff.openGhlContactWindow(URL, () => win), 'isolation-failed');
+  check('silently attached opener closes the window and never navigates', log, [['close']]);
+}
+{
+  const log = [];
+  const win = {
+    get opener() { throw new Error('unreadable'); }, set opener(_) {},
+    location: { replace(url) { log.push(['navigate', url]); } }, close() { log.push(['close']); },
+  };
+  check('handoff fails closed when opener cannot be verified', handoff.openGhlContactWindow(URL, () => win), 'isolation-failed');
+  check('unverifiable opener closes the window and never navigates', log, [['close']]);
+}
+{
+  const log = [];
+  const win = { opener: 'iaos', location: { replace() { throw new Error('nav'); } }, close() { log.push(['close']); } };
+  check('handoff fails closed and closes when navigation throws', [handoff.openGhlContactWindow(URL, () => win), log], ['isolation-failed', [['close']]]);
+}
+{
+  const win = { get opener() { return 'iaos'; }, set opener(_) {}, location: { replace() {} }, close() { throw new Error('close'); } };
+  check('handoff still fails closed when close itself throws', handoff.openGhlContactWindow(URL, () => win), 'isolation-failed');
+}
 
 const component = fs.readFileSync(path.join(APP, 'src/components/SellerCallVoiceControls.tsx'), 'utf8');
 const componentCode = component.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -72,7 +121,7 @@ check('GHL handoff tells the operator to confirm the GHL contact before dialing'
 check('GHL handoff never claims a call was placed, connected, or completed', !/call (?:placed|started|connected|completed)|Calling seller|Connected/i.test(componentCode.replace(/does not place or record a call/g, '')), true);
 check('GHL handoff stays available without a valid seller number', /data-testid="open-ghl-contact"/.test(componentCode) && !/data-testid="open-ghl-contact"[^>]*disabled|disabled[^>]*data-testid="open-ghl-contact"/.test(componentCode), true);
 check('no-number state is explained on the GHL handoff', /data-testid="ghl-handoff-no-number"/.test(componentCode) && /IAOS has no valid number for this seller/.test(componentCode), true);
-check('popup-blocked state is announced with a manual isolated link', /handoff === "blocked"/.test(componentCode) && /role="alert"/.test(componentCode) &&
+check('popup-blocked and isolation-failed states are announced with a manual isolated link', /handoff === "blocked" || handoff === "isolation-failed"/.test(componentCode) && /role="alert"/.test(componentCode) && /could not open GHL safely/.test(componentCode) &&
   /href=\{ghlUrl\} target="_blank" rel="noopener noreferrer" data-testid="ghl-handoff-manual-link"/.test(componentCode), true);
 
 // Retired Twilio-era entrance stays out of the browser.
