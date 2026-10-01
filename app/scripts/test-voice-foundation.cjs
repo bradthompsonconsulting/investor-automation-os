@@ -14,6 +14,7 @@ const sources = [
   'netlify/functions/lib/voice-attempt-store.ts',
   'netlify/functions/lib/voice-provider.ts',
   'src/lib/voice/call-session.ts',
+  'netlify/functions/voice-session.ts',
 ].map((file) => path.join(APP, file));
 try {
   execFileSync(process.execPath, [
@@ -187,9 +188,47 @@ class MemoryStore {
   check('B14-11: fully configured Production voice stays disabled', provider.voiceCapability(fullVoiceEnv('production')).enabled, false);
   check('B14-11: empty environment stays disabled', provider.voiceCapability({}).enabled, false);
   const providerSource = fs.readFileSync(path.join(APP, 'netlify/functions/lib/voice-provider.ts'), 'utf8');
-  check('B14-11: capability return is the literal false, not derived from configuration', /return { enabled: false, reasons };/.test(providerSource) && !/enabled: reasons.length === 0/.test(providerSource), true);
-  for (const name of ['voice-authorize.ts', 'voice-session.ts', 'voice-twiml.ts', 'voice-status.ts']) {
-    check('B14-11: ' + name + ' is gated on voiceCapability', /voiceCapability()/.test(fs.readFileSync(path.join(APP, 'netlify/functions', name), 'utf8')), true);
+  check('B14-11: capability return is the literal false, not derived from configuration', /return \{ enabled: false, reasons \};/.test(providerSource) && !/enabled: reasons\.length === 0/.test(providerSource), true);
+  for (const name of ['voice-authorize.ts', 'voice-twiml.ts', 'voice-status.ts']) {
+    check('B14-11: ' + name + ' calls voiceCapability()', /voiceCapability\(\)/.test(fs.readFileSync(path.join(APP, 'netlify/functions', name), 'utf8')), true);
+  }
+
+  // B14-11 (Bones finding 2): voice-session POST is retired at the handler,
+  // not only in source text. Identity verification and session creation are
+  // spied so a valid mocked identity would succeed if the gate were absent.
+  {
+    const sessionHandler = require(path.join(TMP, 'netlify/functions/voice-session.js')).handler;
+    const savedEnv = { ...process.env };
+    const realVerify = auth.verifyGoogleIdentity;
+    const realIssue = auth.issueOperatorSession;
+    let verifyCalls = 0;
+    let issueCalls = 0;
+    auth.verifyGoogleIdentity = async () => { verifyCalls += 1; return { email: 'brad@example.com' }; };
+    auth.issueOperatorSession = () => { issueCalls += 1; return { token: 'issued-session', expiresAt: '2030-01-01T00:00:00.000Z' }; };
+    try {
+      for (const iaosEnv of ['test', 'production']) {
+        Object.assign(process.env, fullVoiceEnv(iaosEnv));
+        const post = await sessionHandler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ googleIdToken: 'valid-mock-token' }) });
+        check(`B14-11: ${iaosEnv} voice-session POST with valid mocked identity returns 503`, post.statusCode, 503);
+        check(`B14-11: ${iaosEnv} voice-session POST returns the disabled response`, JSON.parse(post.body), { error: 'IAOS voice is unavailable' });
+        check(`B14-11: ${iaosEnv} voice-session POST issues no session token`, /issued-session|"token"/.test(post.body), false);
+        const malformed = await sessionHandler({ httpMethod: 'POST', headers: {}, body: '{not json' });
+        check(`B14-11: ${iaosEnv} malformed voice-session POST is refused before parsing`, [malformed.statusCode, JSON.parse(malformed.body)], [503, { error: 'IAOS voice is unavailable' }]);
+        const get = await sessionHandler({ httpMethod: 'GET', headers: {} });
+        check(`B14-11: ${iaosEnv} voice-session GET reports disabled`, [get.statusCode, JSON.parse(get.body)], [200, { enabled: false, googleClientId: null }]);
+        const put = await sessionHandler({ httpMethod: 'PUT', headers: {} });
+        check(`B14-11: ${iaosEnv} voice-session other methods remain 405`, put.statusCode, 405);
+        const options = await sessionHandler({ httpMethod: 'OPTIONS', headers: {} });
+        check(`B14-11: ${iaosEnv} voice-session OPTIONS remains 204`, options.statusCode, 204);
+      }
+      check('B14-11: voice-session POST never invoked identity verification', verifyCalls, 0);
+      check('B14-11: voice-session POST never invoked session creation', issueCalls, 0);
+    } finally {
+      auth.verifyGoogleIdentity = realVerify;
+      auth.issueOperatorSession = realIssue;
+      for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
+      Object.assign(process.env, savedEnv);
+    }
   }
 
   const authEnv = { GOOGLE_OAUTH_CLIENT_ID: 'client-id', IAOS_VOICE_BRAD_EMAILS: 'brad@example.com', IAOS_VOICE_SESSION_SECRET: '0123456789abcdef0123456789abcdef' };

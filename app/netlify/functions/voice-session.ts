@@ -12,6 +12,9 @@ export const handler = async (event: any) => {
       : { enabled: false, googleClientId: null });
   }
   if (event.httpMethod !== "POST") return json(405, { error: "Method Not Allowed" });
+  // B14-11 / INV-93: the retired voice path issues no operator session. Gate
+  // before the body is parsed, identity is verified or a session is created.
+  if (!voiceCapability().enabled) return json(503, { error: "IAOS voice is unavailable" });
   try {
     const body = safeJsonBody(event);
     if (Object.keys(body).sort().join(",") !== "googleIdToken" || typeof body.googleIdToken !== "string") return json(400, { error: "Expected googleIdToken only" });
