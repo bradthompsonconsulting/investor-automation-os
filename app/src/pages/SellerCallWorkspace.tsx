@@ -37,6 +37,10 @@ import {
   type CallOutcomeKind, type OutcomeSnapshot,
 } from "../lib/seller-call-outcome";
 import {
+  CONVERSATION_OUTCOME_HEADING, CONVERSATION_OUTCOME_SUBHEADING, DIAL_RESULT_POINTER, GHL_CALL_LOGGING_LINE,
+  SELLER_CALL_FOLLOW_UP_CONSEQUENCE, SELLER_CALL_PASS_CONSEQUENCE,
+} from "../lib/call-outcome-copy";
+import {
   formatNegotiationOverrideNote, latestNegotiationOverrideNoteForOpportunity,
 } from "../lib/seller-call-negotiation-override-note";
 import { resolveResumeHydration, type DealHydrationRef } from "../lib/seller-call-resume";
@@ -2492,7 +2496,17 @@ export default function SellerCallWorkspace() {
             data-testid="call-outcome-panel"
             style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px", marginTop: "8px" }}
           >
-            <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Record Call Outcome</div>
+            <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "4px" }}>{CONVERSATION_OUTCOME_HEADING}</div>
+            {/* B14-12 — what this panel records, and where a dial result
+                (no conversation) goes instead. Copy: call-outcome-copy.ts. */}
+            <div data-testid="call-outcome-subheading" style={{ fontSize: "11px", color: "#64748B", marginBottom: "4px", lineHeight: 1.5 }}>
+              {CONVERSATION_OUTCOME_SUBHEADING} {GHL_CALL_LOGGING_LINE}
+            </div>
+            <div style={{ fontSize: "11px", marginBottom: "10px" }}>
+              <Link data-testid="call-outcome-dial-result-pointer" to={`/contacts/${contactId}`} style={{ color: "#1EC8FF" }}>
+                {DIAL_RESULT_POINTER}
+              </Link>
+            </div>
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               {!confirmAcceptOffered(latestOutcome?.kind) ? (
                 <span data-testid="call-outcome-accept-recorded" style={{ fontSize: "12px", color: "#22C55E", alignSelf: "center" }}>
@@ -2587,6 +2601,9 @@ export default function SellerCallWorkspace() {
                     style={{ display: "block", marginTop: "4px", background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px", padding: "8px 10px", color: "#E2E8F0", fontSize: "13px" }}
                   />
                 </label>
+                <div data-testid="call-outcome-follow-up-consequence" style={{ fontSize: "11px", color: "#94A3B8", lineHeight: 1.5 }}>
+                  {SELLER_CALL_FOLLOW_UP_CONSEQUENCE}
+                </div>
                 <button
                   data-testid="call-outcome-follow-up-confirm"
                   onClick={() => void handleRecordOutcome("follow_up")}
@@ -2611,6 +2628,9 @@ export default function SellerCallWorkspace() {
                   rows={2}
                   style={{ background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px", padding: "8px 10px", color: "#E2E8F0", fontSize: "12px", resize: "vertical" }}
                 />
+                <div data-testid="call-outcome-pass-consequence" style={{ fontSize: "11px", color: "#94A3B8", lineHeight: 1.5 }}>
+                  {SELLER_CALL_PASS_CONSEQUENCE}
+                </div>
                 <button
                   data-testid="call-outcome-pass-confirm"
                   onClick={() => void handleRecordOutcome("pass")}

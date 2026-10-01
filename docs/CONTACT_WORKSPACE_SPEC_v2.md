@@ -226,6 +226,15 @@ Callback scheduled for {Mon D, h:mm A}
 
 (The Path-B `Call — {duration}s, no disposition` copy is removed — Path B is rejected, §5.4.)
 
+**Amendment — B14-12 / INV-94 (Jess ruling, 2026-10-01): source labels.** The block above is the GHL call-event note written by `ghl-disposition.ts`, unchanged. Notes written by the IAOS contact-page dial-result control now name their source so they can never be read as GHL's own call event:
+
+```
+Call (reported by Brad in IAOS): {disposition}
+Call (reported by Brad in IAOS): Follow Up — callback scheduled for {Mon D, h:mm A}
+```
+
+Built by `operatorCallNote()` in `app/src/lib/call-outcome-copy.ts`. Nothing parses either `Call` form, and the label never begins `IAOS ` + a ledger word, which `write-note-guard.ts` refuses. A label for the GHL call-event note is held with the rest of the webhook behavior change.
+
 Internal notes, not seller-facing — the "no just checking in" copy rule doesn't apply here. Keep them parseable; they'll be grepped later.
 
 ---
