@@ -49,32 +49,13 @@
 }
 
 .seller-call-button--primary { background: #005ce6; border-color: #1d70f7; color: white; }
-.seller-call-button--danger { background: #3f1720; border-color: #7f1d2d; color: #fecdd3; }
 .seller-call-button:disabled { cursor: not-allowed; opacity: 0.48; }
 
-.seller-softphone {
-  grid-column: 1 / -1;
-  border: 1px solid #1e5f88;
-  border-radius: 10px;
-  background: #0c1727;
-  padding: 14px;
-}
-
-.seller-softphone__header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.seller-softphone__status { margin-top: 10px; color: #bae6fd; font-size: 13px; }
-.seller-softphone__error { margin-top: 8px; color: #fca5a5; font-size: 12px; }
-.seller-softphone__hint { margin-top: 8px; color: #94a3b8; font-size: 12px; }
-.seller-google-signin { min-height: 40px; margin-top: 10px; }
+.seller-call-mode__hint { margin-top: 8px; color: #94a3b8; font-size: 12px; }
+.seller-call-mode__error { color: #fca5a5; }
+.seller-call-mode__error a { color: #7dd3fc; }
 
 @media (max-width: 767px) {
   .seller-call-modes { grid-template-columns: 1fr; }
-  .seller-softphone { grid-column: 1; }
   .seller-call-button { width: 100%; }
-  .seller-softphone__header { flex-direction: column; }
 }
