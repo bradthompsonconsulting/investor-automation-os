@@ -91,7 +91,10 @@ read away from a violation that review cannot undo.
 **HARD NO** — `CONTACTS_OPPORTUNITIES_SPEC.md` §4.1. Tags, pipeline stage,
 `offer_` fields, workflow triggers. No write class relaxes this. IAOS
 writes reach GHL workflows only through reviewed, intentional inputs: Board
-#4's reviewed disposition and routing fields, the separately governed
+#4's three carrier fields `iaos_call_disposition`, `iaos_call_routing` and
+`iaos_disposition_at` (rule R3 — IAOS writes a field with its own business
+meaning and a GHL-owned workflow watches it; authorized by Brad, reviewed by
+Jess, 2026-08-27, `docs/JEFF_BRIEF_BOARD4_MEASUREMENT.md`), the separately governed
 scoring tags (hot/warm/low; `docs/INV95_WRITE_BOUNDARIES.md`), and the one
 guarded stage exception, whose only permitted entry workflow is the named,
 reviewed `Seller - Under Contract Exit`. **Exactly one guarded stage
@@ -105,7 +108,10 @@ It gates physical mail to real sellers.
 
 **No field is written before its own inert-proof.** Whether a field change
 fires a GHL workflow is not API-derivable, so no field is writable on
-assumption. `dataType` proves serialization; it does not prove safety.
+assumption. `dataType` proves serialization; it does not prove safety. The
+Board #4 R3 carriers above are the deliberate exception: they exist to be
+watched, so each is governed by its recorded workflow-effect ruling instead
+of an inert-proof, and a new workflow effect on one needs its own ruling.
 
 **Writes are limited to named, reviewed operations.** The original three
 sanctioned writes — `ghl.notes.create()`,
