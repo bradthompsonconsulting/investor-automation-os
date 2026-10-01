@@ -5,6 +5,10 @@ import {
   type StorageLike,
 } from "../lib/dispositionOverride";
 import { formatCallbackTime } from "../lib/callbackWrite";
+import {
+  operatorCallNote, DIAL_RESULT_CONSEQUENCES, DIAL_RESULT_HEADING, DIAL_RESULT_SUBHEADING,
+  GHL_CALL_LOGGING_LINE, MOVE_TO_LTN_CONSEQUENCE, type DialResult,
+} from "../lib/call-outcome-copy";
 import { ReadUnavailableError } from "../lib/read-session";
 
 /**
@@ -139,6 +143,10 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
   const [promptOpen, setPromptOpen] = useState(false);
   const [followUpAt, setFollowUpAt] = useState(defaultFollowUp);
   const [pending, setPending] = useState<string | null>(null);
+  /* B14-12 — the outcomes that can lead to seller messages take a second
+     click, after Brad has read what GHL will do (call-outcome-copy.ts). */
+  const [confirming, setConfirming] = useState<DialResult | null>(null);
+  const [confirmLtn, setConfirmLtn] = useState(false);
 
   /* A — THE SYNCHRONOUS GUARD.
      React state updates are asynchronous, so two dispatches inside one frame
@@ -167,6 +175,8 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
   async function run(label: string) {
     if (inFlight.current) return;          // A — synchronous, before any await
     inFlight.current = true;
+    setConfirming(null);
+    setConfirmLtn(false);
     setSubmit({ status: "in_flight", label });
     setRouting({ status: "idle" });
     setPromptOpen(false);
@@ -230,9 +240,9 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
       // carried here or the human record silently stops naming the callback
       // time. Reuses the exported formatter; no second note, no second attempt.
       let noteError: string | null = null;
-      const noteBody = callbackIso
-        ? `Call: ${label} — callback scheduled for ${formatCallbackTime(callbackIso)}`
-        : `Call: ${label}`;
+      // B14-12: the note names its source, so Brad's report can't be read as
+      // GHL's own call event (ghl-disposition writes "Call: X — Ns").
+      const noteBody = operatorCallNote(label as DialResult, callbackIso ? formatCallbackTime(callbackIso) : null);
       try { await ghl.notes.create(contactId, noteBody); }
       catch (e) { noteError = (e as Error).message; }
 
@@ -279,6 +289,7 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
   async function moveToLtn() {
     if (inFlight.current) return;          // A applies to Retry too
     inFlight.current = true;
+    setConfirmLtn(false);
     setRouting({ status: "in_flight" });
     try {
       await ghl.contacts.setCallRouting(contactId, ROUTING_LTN);
@@ -318,8 +329,11 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
       marginTop: "14px", padding: "16px 18px", background: "#0F172A",
       border: "1px solid #1E293B", borderRadius: "10px",
     }}>
-      <div style={{ fontSize: "13px", fontWeight: 600, color: "#E2E8F0", marginBottom: "10px" }}>
-        Record call outcome
+      <div style={{ fontSize: "13px", fontWeight: 600, color: "#E2E8F0", marginBottom: "4px" }}>
+        {DIAL_RESULT_HEADING}
+      </div>
+      <div data-testid="disposition-subheading" style={{ fontSize: "11px", color: "#64748B", marginBottom: "10px", lineHeight: 1.5 }}>
+        {DIAL_RESULT_SUBHEADING} {GHL_CALL_LOGGING_LINE}
       </div>
 
       {/* B — DISCLOSURE. Requested Appointment only: the single confirmed
@@ -343,7 +357,7 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
           <button
             key={label}
             data-testid={`disposition-option-${label.replace(/\s+/g, "-").toLowerCase()}`}
-            onClick={() => void run(label)}
+            onClick={() => (DIAL_RESULT_CONSEQUENCES[label].confirm ? setConfirming(label) : void run(label))}
             disabled={busy}
             style={btn("rgba(30,200,255,0.08)", "rgba(30,200,255,0.35)", "#1EC8FF")}
           >
@@ -352,6 +366,14 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
         ))}
       </div>
 
+      {/* B14-12 — what each outcome sets off, visible before any click. */}
+      <ul data-testid="disposition-consequences" style={{ margin: "10px 0 0", paddingLeft: "16px", fontSize: "11px", color: "#64748B", lineHeight: 1.5 }}>
+        {TRANCHE_A_DISPOSITIONS.map((label) => (
+          <li key={label} data-testid={`disposition-consequence-${label.replace(/\s+/g, "-").toLowerCase()}`}>
+            <span style={{ color: "#94A3B8" }}>{label}:</span> {DIAL_RESULT_CONSEQUENCES[label].text}
+          </li>
+        ))}
+      </ul>
       {/* Follow Up's callback. R6 — reuses setCallbackDatetime, no new carrier.
           Default +3 days; an explicit date/time is allowed, same-day included. */}
       <div style={{ marginTop: "10px", fontSize: "12px", color: "#64748B" }}>
@@ -366,6 +388,21 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
         />
       </div>
 
+      {confirming ? (
+        <div data-testid="disposition-confirm" style={{ marginTop: "10px", padding: "10px 12px", border: "1px solid rgba(251,191,36,0.40)", borderRadius: "8px", background: "rgba(251,191,36,0.06)", fontSize: "12px", color: "#E2E8F0", lineHeight: 1.5 }}>
+          <div data-testid="disposition-confirm-text">{DIAL_RESULT_CONSEQUENCES[confirming].text}</div>
+          <div style={{ marginTop: "8px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button data-testid="disposition-confirm-record" onClick={() => void run(confirming)} disabled={busy}
+              style={btn("rgba(251,191,36,0.10)", "rgba(251,191,36,0.40)", "#FBBF24")}>
+              Record {confirming}
+            </button>
+            <button data-testid="disposition-confirm-cancel" onClick={() => setConfirming(null)} disabled={busy}
+              style={btn("transparent", "#334155", "#94A3B8")}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
       <div style={{ marginTop: "10px", fontSize: "12px", minHeight: "18px" }}>
         {submit.status === "in_flight" ? <span style={{ color: "#94A3B8" }}>Recording {submit.label}…</span> : null}
         {submit.status === "done" ? (
@@ -389,12 +426,27 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
           </div>
           <button
             data-testid="routing-move-ltn"
-            onClick={() => void moveToLtn()}
+            onClick={() => setConfirmLtn(true)}
             disabled={busy}
             style={btn("rgba(251,191,36,0.10)", "rgba(251,191,36,0.40)", "#FBBF24")}
           >
             Move to Long-Term Nurture
           </button>
+          {confirmLtn ? (
+            <div data-testid="routing-ltn-confirm" style={{ marginTop: "8px", fontSize: "12px", color: "#E2E8F0", lineHeight: 1.5 }}>
+              <div data-testid="routing-ltn-confirm-text">{MOVE_TO_LTN_CONSEQUENCE}</div>
+              <div style={{ marginTop: "8px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <button data-testid="routing-move-ltn-confirm" onClick={() => void moveToLtn()} disabled={busy}
+                  style={btn("rgba(251,191,36,0.10)", "rgba(251,191,36,0.40)", "#FBBF24")}>
+                  Confirm move to Long-Term Nurture
+                </button>
+                <button data-testid="routing-move-ltn-cancel" onClick={() => setConfirmLtn(false)} disabled={busy}
+                  style={btn("transparent", "#334155", "#94A3B8")}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
