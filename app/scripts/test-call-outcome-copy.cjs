@@ -86,7 +86,12 @@ check('no copy claims a seller reply is required',
   [ra, fu, copy.MOVE_TO_LTN_CONSEQUENCE, ...Object.values(copy.DIAL_RESULT_CONSEQUENCES).map((v) => v.text)]
     .some((t) => /(reply|replies) (is |are )?(needed|required)|after the seller replies|once the seller replies/i.test(t)), false);
 check('outcomes with no observed seller messages say so',
-  ['No Answer', 'Voicemail', 'Not Interested', 'Incorrect Number'].every((k) => /No seller messages/.test(copy.DIAL_RESULT_CONSEQUENCES[k].text)), true);
+  ['No Answer', 'Voicemail', 'Incorrect Number'].every((k) => /No seller messages/.test(copy.DIAL_RESULT_CONSEQUENCES[k].text)), true);
+const ni = copy.DIAL_RESULT_CONSEQUENCES['Not Interested'].text;
+check('Not Interested: stops only the Seller 6 path; already-scheduled messages (e.g. Seller 2 booking text) may still send',
+  /Stops the Seller 6 follow-up path for this deal/.test(ni) && /already scheduled by another workflow/.test(ni)
+  && /Seller 2's booking-link text/.test(ni) && /may still send/.test(ni), true);
+check('Not Interested does not promise that no seller messages follow', /No seller messages/.test(ni), false);
 check('Seller Call Follow-Up is contrasted with the contact-page Follow Up',
   /No stage change and no seller messages/.test(copy.SELLER_CALL_FOLLOW_UP_CONSEQUENCE) && /contact page/.test(copy.SELLER_CALL_FOLLOW_UP_CONSEQUENCE), true);
 

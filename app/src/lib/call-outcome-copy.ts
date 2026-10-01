@@ -61,7 +61,7 @@ export const DIAL_RESULT_CONSEQUENCES: Readonly<Record<DialResult, { text: strin
     confirm: true,
   },
   "Not Interested": {
-    text: "Stops GHL follow-up for this deal. No seller messages.",
+    text: "Stops the Seller 6 follow-up path for this deal. Messages already scheduled by another workflow, such as Seller 2's booking-link text, may still send.",
     confirm: false,
   },
   "Incorrect Number": {
