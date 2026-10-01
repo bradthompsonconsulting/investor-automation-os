@@ -14,6 +14,7 @@ const sources = [
   'netlify/functions/lib/voice-attempt-store.ts',
   'netlify/functions/lib/voice-provider.ts',
   'src/lib/voice/call-session.ts',
+  'netlify/functions/voice-session.ts',
 ].map((file) => path.join(APP, file));
 try {
   execFileSync(process.execPath, [
@@ -174,6 +175,61 @@ class MemoryStore {
   check('missing contact rejects authorization', missingContactRejected, true);
   check('voice-disabled configuration fails closed', provider.voiceCapability({ IAOS_ENV: 'test' }).enabled, false);
   check('non-Test environment fails closed', provider.voiceCapability({ IAOS_ENV: 'production', IAOS_VOICE_ENABLED: 'true' }).reasons.includes('IAOS voice is restricted to TEST'), true);
+  // B14-11 / INV-93 containment: a fully configured environment stays disabled.
+  const fullVoiceEnv = (iaosEnv) => ({
+    IAOS_ENV: iaosEnv, IAOS_VOICE_ENABLED: 'true', GOOGLE_OAUTH_CLIENT_ID: 'client-id', IAOS_VOICE_BRAD_EMAILS: 'brad@example.com',
+    IAOS_VOICE_SESSION_SECRET: '0123456789abcdef0123456789abcdef', GHL_PRIVATE_API_KEY: 'fixture',
+    TWILIO_ACCOUNT_SID: 'AC' + '1'.repeat(32), TWILIO_API_KEY_SID: 'SK' + '2'.repeat(32), TWILIO_API_KEY_SECRET: 'fixture-secret',
+    TWILIO_AUTH_TOKEN: 'fixture', TWILIO_TWIML_APP_SID: 'AP' + '3'.repeat(32), TWILIO_OUTBOUND_CALLER_ID: '+12145550199',
+    IAOS_VOICE_PUBLIC_BASE_URL: 'https://example.test',
+  });
+  check('B14-11: fully configured Test voice stays disabled', provider.voiceCapability(fullVoiceEnv('test')).enabled, false);
+  check('B14-11: fully configured Test voice reports only the retirement reason', provider.voiceCapability(fullVoiceEnv('test')).reasons, [provider.VOICE_RETIRED_REASON]);
+  check('B14-11: fully configured Production voice stays disabled', provider.voiceCapability(fullVoiceEnv('production')).enabled, false);
+  check('B14-11: empty environment stays disabled', provider.voiceCapability({}).enabled, false);
+  const providerSource = fs.readFileSync(path.join(APP, 'netlify/functions/lib/voice-provider.ts'), 'utf8');
+  check('B14-11: capability return is the literal false, not derived from configuration', /return \{ enabled: false, reasons \};/.test(providerSource) && !/enabled: reasons\.length === 0/.test(providerSource), true);
+  for (const name of ['voice-authorize.ts', 'voice-twiml.ts', 'voice-status.ts']) {
+    check('B14-11: ' + name + ' calls voiceCapability()', /voiceCapability\(\)/.test(fs.readFileSync(path.join(APP, 'netlify/functions', name), 'utf8')), true);
+  }
+
+  // B14-11 (Bones finding 2): voice-session POST is retired at the handler,
+  // not only in source text. Identity verification and session creation are
+  // spied so a valid mocked identity would succeed if the gate were absent.
+  {
+    const sessionHandler = require(path.join(TMP, 'netlify/functions/voice-session.js')).handler;
+    const savedEnv = { ...process.env };
+    const realVerify = auth.verifyGoogleIdentity;
+    const realIssue = auth.issueOperatorSession;
+    let verifyCalls = 0;
+    let issueCalls = 0;
+    auth.verifyGoogleIdentity = async () => { verifyCalls += 1; return { email: 'brad@example.com' }; };
+    auth.issueOperatorSession = () => { issueCalls += 1; return { token: 'issued-session', expiresAt: '2030-01-01T00:00:00.000Z' }; };
+    try {
+      for (const iaosEnv of ['test', 'production']) {
+        Object.assign(process.env, fullVoiceEnv(iaosEnv));
+        const post = await sessionHandler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ googleIdToken: 'valid-mock-token' }) });
+        check(`B14-11: ${iaosEnv} voice-session POST with valid mocked identity returns 503`, post.statusCode, 503);
+        check(`B14-11: ${iaosEnv} voice-session POST returns the disabled response`, JSON.parse(post.body), { error: 'IAOS voice is unavailable' });
+        check(`B14-11: ${iaosEnv} voice-session POST issues no session token`, /issued-session|"token"/.test(post.body), false);
+        const malformed = await sessionHandler({ httpMethod: 'POST', headers: {}, body: '{not json' });
+        check(`B14-11: ${iaosEnv} malformed voice-session POST is refused before parsing`, [malformed.statusCode, JSON.parse(malformed.body)], [503, { error: 'IAOS voice is unavailable' }]);
+        const get = await sessionHandler({ httpMethod: 'GET', headers: {} });
+        check(`B14-11: ${iaosEnv} voice-session GET reports disabled`, [get.statusCode, JSON.parse(get.body)], [200, { enabled: false, googleClientId: null }]);
+        const put = await sessionHandler({ httpMethod: 'PUT', headers: {} });
+        check(`B14-11: ${iaosEnv} voice-session other methods remain 405`, put.statusCode, 405);
+        const options = await sessionHandler({ httpMethod: 'OPTIONS', headers: {} });
+        check(`B14-11: ${iaosEnv} voice-session OPTIONS remains 204`, options.statusCode, 204);
+      }
+      check('B14-11: voice-session POST never invoked identity verification', verifyCalls, 0);
+      check('B14-11: voice-session POST never invoked session creation', issueCalls, 0);
+    } finally {
+      auth.verifyGoogleIdentity = realVerify;
+      auth.issueOperatorSession = realIssue;
+      for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
+      Object.assign(process.env, savedEnv);
+    }
+  }
 
   const authEnv = { GOOGLE_OAUTH_CLIENT_ID: 'client-id', IAOS_VOICE_BRAD_EMAILS: 'brad@example.com', IAOS_VOICE_SESSION_SECRET: '0123456789abcdef0123456789abcdef' };
   const google = await auth.verifyGoogleIdentity('mock', async () => ({ ok: true, json: async () => ({ iss: 'https://accounts.google.com', aud: 'client-id', email: 'Brad@Example.com', email_verified: true, exp: 2_000_000_000 }) }), 1_800_000_000_000, authEnv);
