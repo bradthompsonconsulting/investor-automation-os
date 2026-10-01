@@ -63,13 +63,23 @@ export function verifyTwilioSignature(signature: string, url: string, params: Re
   return twilio.validateRequest(authToken, signature, url, params);
 }
 
+/**
+ * B14-11 / INV-93 containment. GHL Phone is the calling and call-record
+ * system of record; the Twilio-era IAOS voice path is retired. Capability is
+ * UNCONDITIONALLY disabled in every environment -- it does not depend on
+ * IAOS_ENV, IAOS_VOICE_ENABLED or any Twilio value being absent, so no
+ * Netlify configuration can turn it back on. The configuration checks below
+ * still run so the endpoints keep reporting what is missing.
+ */
+export const VOICE_RETIRED_REASON = "IAOS voice is retired: GHL Phone is the calling system of record (B14-11)";
+
 export function voiceCapability(env = process.env): { enabled: boolean; reasons: string[] } {
-  const reasons: string[] = [];
+  const reasons: string[] = [VOICE_RETIRED_REASON];
   if (env.IAOS_ENV !== "test") reasons.push("IAOS voice is restricted to TEST");
   if (env.IAOS_VOICE_ENABLED !== "true") reasons.push("IAOS_VOICE_ENABLED is not true");
   for (const key of ["GOOGLE_OAUTH_CLIENT_ID", "IAOS_VOICE_BRAD_EMAILS", "IAOS_VOICE_SESSION_SECRET", "GHL_PRIVATE_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET", "TWILIO_AUTH_TOKEN", "TWILIO_TWIML_APP_SID", "TWILIO_OUTBOUND_CALLER_ID", "IAOS_VOICE_PUBLIC_BASE_URL"]) {
     if (!env[key]?.trim()) reasons.push(`${key} is not configured`);
   }
   if (!normalizeUsPhone(env.TWILIO_OUTBOUND_CALLER_ID)) reasons.push("TWILIO_OUTBOUND_CALLER_ID is invalid");
-  return { enabled: reasons.length === 0, reasons };
+  return { enabled: false, reasons };
 }
