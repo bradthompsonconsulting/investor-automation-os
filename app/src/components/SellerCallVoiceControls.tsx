@@ -4,6 +4,7 @@ import { normalizeVoicePhone } from "../../shared/voice-call-contract";
 import { formatPhone } from "../lib/format";
 import { ghlContactDetailUrl } from "../lib/ghl";
 import { openGhlContactWindow, type GhlHandoffResult } from "../lib/ghl-call-handoff";
+import { GhlHandoffNotice } from "./GhlHandoffNotice";
 import "./SellerCallVoiceControls.css";
 
 /*
@@ -66,19 +67,7 @@ export function SellerCallVoiceControls(props: { contactId: string; sellerName: 
           </button>
         </div>
         <div className="seller-call-mode__hint" aria-live="polite" data-testid="ghl-handoff-status">
-          {handoff === "blocked" || handoff === "isolation-failed" ? (
-            <span role="alert" className="seller-call-mode__error" data-testid={`ghl-handoff-${handoff}`}>
-              {handoff === "blocked"
-                ? "Your browser blocked the new window. "
-                : "IAOS could not open GHL safely in a new window, so it was closed. "}
-              <a href={ghlUrl} target="_blank" rel="noopener noreferrer" data-testid="ghl-handoff-manual-link">Open the GHL record</a>{" "}
-              {handoff === "blocked" ? "manually, or allow pop-ups for IAOS." : "manually instead."}
-            </span>
-          ) : handoff === "opened" ? (
-            "GHL opened in a new window. Confirm the contact name and number there before dialing. Opening GHL does not place or record a call."
-          ) : (
-            "Opens this seller's GHL record in a new window. Confirm the contact, then dial from GHL's phone icon. Opening GHL does not place or record a call."
-          )}
+          <GhlHandoffNotice result={handoff} ghlUrl={ghlUrl} />
         </div>
         {!destination ? (
           <div className="seller-call-mode__hint" data-testid="ghl-handoff-no-number">

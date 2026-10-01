@@ -22,8 +22,9 @@ try {
     path.join(APP, 'node_modules', 'typescript', 'bin', 'tsc'),
     path.join(APP, 'shared/voice-call-contract.ts'),
     path.join(APP, 'src/lib/ghl-call-handoff.ts'),
+    path.join(APP, 'src/components/GhlHandoffNotice.tsx'),
     '--outDir', TMP, '--rootDir', APP, '--module', 'commonjs',
-    '--target', 'es2020', '--strict', '--skipLibCheck',
+    '--target', 'es2020', '--strict', '--skipLibCheck', '--jsx', 'react-jsx',
   ], { cwd: APP, stdio: 'inherit' });
 } catch (error) {
   fs.rmSync(TMP, { recursive: true, force: true });
@@ -32,6 +33,10 @@ try {
 
 const contract = require(path.join(TMP, 'shared/voice-call-contract.js'));
 const handoff = require(path.join(TMP, 'src/lib/ghl-call-handoff.js'));
+const { GhlHandoffNotice } = require(path.join(TMP, 'src/components/GhlHandoffNotice.js'));
+const React = require('react');
+const { renderToStaticMarkup } = require('react-dom/server');
+const renderNotice = (result) => renderToStaticMarkup(React.createElement(GhlHandoffNotice, { result, ghlUrl: 'https://app.gohighlevel.com/v2/location/loc/contacts/detail/contact-1' }));
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -116,13 +121,33 @@ const css = fs.readFileSync(path.join(APP, 'src/components/SellerCallVoiceContro
 check('GHL handoff uses the existing exact-contact URL builder with the page contact id', /ghlContactDetailUrl\(props\.contactId\)/.test(componentCode), true);
 check('GHL handoff opens through the blocked-aware helper in a new window', /openGhlContactWindow\(ghlUrl,/.test(componentCode) && /window\.open\(url, target\)/.test(componentCode), true);
 check('GHL handoff is labelled as GHL Phone, not IAOS calling', /Call with GHL Phone/.test(componentCode) && /Open seller in GHL/.test(componentCode), true);
-check('GHL handoff states that opening GHL does not place or record a call', (componentCode.match(/Opening GHL does not place or record a call/g) || []).length, 2);
-check('GHL handoff tells the operator to confirm the GHL contact before dialing', /Confirm the contact name and number there before dialing/.test(componentCode) && /Confirm the contact, then dial/.test(componentCode), true);
-check('GHL handoff never claims a call was placed, connected, or completed', !/call (?:placed|started|connected|completed)|Calling seller|Connected/i.test(componentCode.replace(/does not place or record a call/g, '')), true);
+const noticeSource = fs.readFileSync(path.join(APP, 'src/components/GhlHandoffNotice.tsx'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+const rendered = { idle: renderNotice(null), opened: renderNotice('opened'), blocked: renderNotice('blocked'), failed: renderNotice('isolation-failed') };
+check('GHL handoff renders its status through GhlHandoffNotice', /<GhlHandoffNotice result=\{handoff\} ghlUrl=\{ghlUrl\} \/>/.test(componentCode), true);
+check('rendered idle and opened notices deny that opening GHL places or records a call',
+  /Opening GHL does not place or record a call/.test(rendered.idle) && /Opening GHL does not place or record a call/.test(rendered.opened), true);
+check('rendered notices tell the operator to confirm the GHL contact before dialing',
+  /Confirm the contact, then dial/.test(rendered.idle) && /Confirm the contact name and number there before dialing/.test(rendered.opened), true);
+check('GHL handoff never claims a call was placed, connected, or completed',
+  !/call (?:placed|started|connected|completed)|Calling seller|Connected/i.test((componentCode + noticeSource + Object.values(rendered).join('')).replace(/does not place or record a call/g, '')), true);
 check('GHL handoff stays available without a valid seller number', /data-testid="open-ghl-contact"/.test(componentCode) && !/data-testid="open-ghl-contact"[^>]*disabled|disabled[^>]*data-testid="open-ghl-contact"/.test(componentCode), true);
 check('no-number state is explained on the GHL handoff', /data-testid="ghl-handoff-no-number"/.test(componentCode) && /IAOS has no valid number for this seller/.test(componentCode), true);
-check('popup-blocked and isolation-failed states are announced with a manual isolated link', /handoff === "blocked" || handoff === "isolation-failed"/.test(componentCode) && /role="alert"/.test(componentCode) && /could not open GHL safely/.test(componentCode) &&
-  /href=\{ghlUrl\} target="_blank" rel="noopener noreferrer" data-testid="ghl-handoff-manual-link"/.test(componentCode), true);
+const manualLink = '<a href="https://app.gohighlevel.com/v2/location/loc/contacts/detail/contact-1" target="_blank" rel="noopener noreferrer" data-testid="ghl-handoff-manual-link">Open the GHL record</a>';
+check('rendered popup-blocked notice is an alert with the isolated manual link',
+  /^<span role="alert"[^>]*data-testid="ghl-handoff-blocked"/.test(rendered.blocked) && rendered.blocked.includes(manualLink) && /blocked the new window/.test(rendered.blocked), true);
+{
+  // Bones finding 1: close() itself throws, so the blank window may remain open.
+  const closeThrows = { get opener() { return 'iaos'; }, set opener(_) {}, location: { replace() { throw new Error('must not navigate'); } }, close() { throw new Error('close failed'); } };
+  const result = handoff.openGhlContactWindow('https://app.gohighlevel.com/v2/location/loc/contacts/detail/contact-1', () => closeThrows);
+  const html = renderNotice(result);
+  check('close() throwing yields isolation-failed', result, 'isolation-failed');
+  check('rendered isolation-failed notice is an alert with the isolated manual link',
+    /^<span role="alert"[^>]*data-testid="ghl-handoff-isolation-failed"/.test(html) && html.includes(manualLink), true);
+  check('rendered isolation-failed notice gives the exact recovery instruction',
+    html.includes('IAOS could not safely open the GHL record. If a blank window remains open, close it and use the link below.'), true);
+  check('rendered isolation-failed notice never claims the window was closed', !/was closed|has been closed|window closed/i.test(html), true);
+  check('notice source carries no window-closed guarantee', !/was closed|has been closed/i.test(noticeSource + componentCode), true);
+}
 
 // Retired Twilio-era entrance stays out of the browser.
 check('component imports no Twilio SDK or IAOS voice session client', !/@twilio|twilio-browser-adapter|call-session|seller-call-voice-controls/.test(componentCode), true);
