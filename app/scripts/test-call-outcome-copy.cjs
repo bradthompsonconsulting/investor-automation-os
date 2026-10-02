@@ -48,6 +48,7 @@ const sellerCallCode = stripBlockComments(sellerCall);
 const noteGuard = read('netlify/functions/lib/write-note-guard.ts');
 const webhook = read('netlify/functions/ghl-disposition.ts');
 const writeContracts = read('netlify/functions/lib/write-contracts.ts');
+const contactPageCode = stripBlockComments(read('src/pages/ContactWorkspace.tsx'));
 
 // ── Operator note source label ───────────────────────────────────────────
 check('dial-result note names its source', copy.operatorCallNote('No Answer', null), 'Call (reported by Brad in IAOS): No Answer');
@@ -145,6 +146,44 @@ check('Seller Call Follow-Up and Pass show their consequence before the confirm 
 check('Seller Call never writes the Board #4 dial-result fields',
   /setCallDisposition|setCallRouting|setDispositionAt/.test(sellerCallCode), false);
 check('the old "Record Call Outcome" heading is gone', /Record Call Outcome/.test(sellerCallCode), false);
+
+// ── Seller Call Pass: an existing callback stays (Jess ruling 2026-10-02, option B) ──
+check('Pass with no callback: wording unchanged', copy.sellerCallPassConsequence(null), 'Records the pass. No seller messages.');
+check('Pass with a callback: names it, says Pass does not clear it, and where to clear it',
+  copy.sellerCallPassConsequence({ text: 'Oct 6, 10:00 AM' }),
+  "Records the pass. No seller messages. Your callback for Oct 6, 10:00 AM stays scheduled: Pass does not clear it. If you won't call back, clear it separately on the contact page.");
+check('Pass with an unreadable callback time: still warns',
+  copy.sellerCallPassConsequence({ text: null }),
+  "Records the pass. No seller messages. Your scheduled callback stays scheduled: Pass does not clear it. If you won't call back, clear it separately on the contact page.");
+{
+  const ids = { precise: 'P', date: 'D' };
+  check('callback: none present', copy.resolveScheduledCallback(null, [], ids), null);
+  check('callback: empty values are none', copy.resolveScheduledCallback(null, [{ id: 'P', value: '' }, { id: 'D', value: null }], ids), null);
+  check('callback: precise TEXT field read first', copy.resolveScheduledCallback(null,
+    [{ id: 'D', value: 1790000000000 }, { id: 'P', value: '2026-10-06T15:00:00.000Z' }], ids), { iso: '2026-10-06T15:00:00.000Z' });
+  check('callback: DATE field (unix ms) when no precise value', copy.resolveScheduledCallback(null, [{ id: 'D', value: 1791298800000 }], ids),
+    { iso: new Date(1791298800000).toISOString() });
+  check('callback: DATE field as a numeric string', copy.resolveScheduledCallback(null, [{ id: 'D', value: '1791298800000' }], ids),
+    { iso: new Date(1791298800000).toISOString() });
+  check('callback: present but unreadable is still a callback', copy.resolveScheduledCallback(null, [{ id: 'P', value: 'not a date' }], ids), { iso: null });
+  check('callback: one scheduled on this page wins over the loaded detail',
+    copy.resolveScheduledCallback('2026-10-09T15:00:00.000Z', [{ id: 'P', value: '2026-10-06T15:00:00.000Z' }], ids), { iso: '2026-10-09T15:00:00.000Z' });
+}
+check('Seller Call Pass consequence is built from the contact\'s callback (precise, then DATE)',
+  /data-testid="call-outcome-pass-consequence"[^>]*>\s*\{\(\(\) => \{\s*const cb = resolveScheduledCallback\(sessionCallbackIso, contact\?\.customFields \?\? \[\],\s*\{ precise: CONFIG\.fields\.callbackDatetimePrecise, date: CONFIG\.fields\.callbackDatetime \}\);\s*return sellerCallPassConsequence\(cb \? \{ text: cb\.iso \? formatCallbackTime\(cb\.iso\) : null \} : null\);/.test(sellerCallCode), true);
+check('a Follow-Up recorded on this page counts as the scheduled callback once saved',
+  /const cb = await scheduleCallbackGated\(ghl, contactId, followUpIso\);\s*if \(cb\.ok \|\| cb\.callbackPersisted\) setSessionCallbackIso\(followUpIso\);/.test(sellerCallCode), true);
+check('Pass writes stay note + attempt only: Seller Call never clears a callback',
+  /setCallbackDatetime/.test(sellerCallCode), false);
+
+// ── Contact page: a recorded dial result refreshes notes and the callback ──
+check('dial-result control reports a saved note to its page',
+  /try \{ await ghl\.notes\.create\(contactId, noteBody\); onNoteWritten\(\); \}/.test(dispositionCode), true);
+check('dial-result control reports a saved Follow Up callback to its page',
+  /await ghl\.contacts\.setCallbackDatetime\(contactId, callbackIso\);\s*onCallback\(callbackIso\);/.test(dispositionCode), true);
+check('onNoteWritten and onCallback fire once each', [(dispositionCode.match(/onNoteWritten\(\)/g) || []).length, (dispositionCode.match(/onCallback\(callbackIso\)/g) || []).length], [1, 1]);
+check('Contact page reloads its notes list and shows the callback',
+  /<DispositionControl[\s\S]*?onNoteWritten=\{loadNotes\}[\s\S]*?onCallback=\{\(iso\) => setCallbackOverride\(iso\)\}[\s\S]*?\/>/.test(contactPageCode), true);
 
 // ── Held changes stay untouched ──────────────────────────────────────────
 check('webhook note copy unchanged (held: webhook behavior)', /\? `Call: \$\{disposition\} — \$\{duration\}s`/.test(webhook) && /: `Call: \$\{disposition\}`;/.test(webhook), true);

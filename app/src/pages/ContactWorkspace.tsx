@@ -2244,6 +2244,8 @@ export default function ContactWorkspace() {
           contactId={id!}
           contact={detail}
           onAttempt={(iso) => setAttemptOverride(iso)}
+          onNoteWritten={loadNotes}
+          onCallback={(iso) => setCallbackOverride(iso)}
         />
       )}
 

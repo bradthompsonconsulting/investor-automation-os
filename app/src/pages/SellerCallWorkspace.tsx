@@ -38,7 +38,7 @@ import {
 } from "../lib/seller-call-outcome";
 import {
   CONVERSATION_OUTCOME_HEADING, CONVERSATION_OUTCOME_SUBHEADING, DIAL_RESULT_POINTER, GHL_CALL_LOGGING_LINE,
-  SELLER_CALL_FOLLOW_UP_CONSEQUENCE, SELLER_CALL_PASS_CONSEQUENCE,
+  SELLER_CALL_FOLLOW_UP_CONSEQUENCE, sellerCallPassConsequence, resolveScheduledCallback,
 } from "../lib/call-outcome-copy";
 import {
   formatNegotiationOverrideNote, latestNegotiationOverrideNoteForOpportunity,
@@ -56,7 +56,7 @@ import {
   formatContractReadyChecklistNote, currentContractReadyChecklistForOpportunity,
   CONTRACT_READY_ITEM_KEYS, type ContractReadyItemKey, type ContractReadyItems,
 } from "../lib/seller-call-readiness-carriers";
-import { scheduleCallbackGated } from "../lib/callbackWrite";
+import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 /* INV-70 / B9-07A Phase 2 — Family 5's approved ruling. The pure gate/
    freeze logic lives in its own module so "frozen after Agreement
    Reached" is provable without a network call, mirroring how
@@ -562,6 +562,9 @@ export default function SellerCallWorkspace() {
   const [timestampRecoveryBusy, setTimestampRecoveryBusy] = useState(false);
   const [followUpAtInput, setFollowUpAtInput] = useState("");
   const [passReasonInput, setPassReasonInput] = useState("");
+  /* B14-12: a callback this page scheduled (Follow-Up) after the contact
+     detail was loaded. The Pass warning must name it too. */
+  const [sessionCallbackIso, setSessionCallbackIso] = useState<string | null>(null);
 
   /* B8-13 / INV-68 -- the four Offer Readiness determination carriers'
      write-in-flight/error state, one pair per carrier, mirroring
@@ -1847,7 +1850,9 @@ export default function SellerCallWorkspace() {
       }
 
       if (kind === "follow_up") {
-        const cb = await scheduleCallbackGated(ghl, contactId, new Date(followUpAtInput).toISOString());
+        const followUpIso = new Date(followUpAtInput).toISOString();
+        const cb = await scheduleCallbackGated(ghl, contactId, followUpIso);
+        if (cb.ok || cb.callbackPersisted) setSessionCallbackIso(followUpIso);
         if (!cb.ok) {
           setOutcomeActionError(cb.error);
           return;
@@ -2629,7 +2634,11 @@ export default function SellerCallWorkspace() {
                   style={{ background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px", padding: "8px 10px", color: "#E2E8F0", fontSize: "12px", resize: "vertical" }}
                 />
                 <div data-testid="call-outcome-pass-consequence" style={{ fontSize: "11px", color: "#94A3B8", lineHeight: 1.5 }}>
-                  {SELLER_CALL_PASS_CONSEQUENCE}
+                  {(() => {
+                    const cb = resolveScheduledCallback(sessionCallbackIso, contact?.customFields ?? [],
+                      { precise: CONFIG.fields.callbackDatetimePrecise, date: CONFIG.fields.callbackDatetime });
+                    return sellerCallPassConsequence(cb ? { text: cb.iso ? formatCallbackTime(cb.iso) : null } : null);
+                  })()}
                 </div>
                 <button
                   data-testid="call-outcome-pass-confirm"

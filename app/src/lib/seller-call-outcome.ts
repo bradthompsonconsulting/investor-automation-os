@@ -79,7 +79,7 @@ export type ParsedOutcomeNote = {
   opportunityId: string;
   kind: CallOutcomeKind;
   at: string;
-  /** `null` when no authenticated operator identity is available -- never a fabricated name. Same convention as `seller-call-negotiation.ts`'s `NegotiationOverride`. */
+  /** `null` when the note names no operator -- never a fabricated name. Same convention as `seller-call-negotiation.ts`'s `NegotiationOverride`. */
   operator: string | null;
   snapshot: OutcomeSnapshot;
   /** Present only for `pass`. */
@@ -92,6 +92,18 @@ const LEDGER_VERSION = "iaos-seller-call-outcome-v1" as const;
 const EXPECTED_HEADER = `IAOS SELLER CALL OUTCOME LEDGER — ${LEDGER_VERSION}`;
 const OUTCOME_KINDS: ReadonlySet<string> = new Set(["accept", "follow_up", "pass"]);
 const READINESS_STATUSES: ReadonlySet<string> = new Set(["NOT_READY", "REVIEW_NEEDED", "OFFER_READY"]);
+
+/**
+ * B14-12 / INV-94 (Jess ruling, 2026-10-02): what the ledger says when it
+ * names no operator. The earlier `UNAVAILABLE` read as if identity had been
+ * looked for and was missing. Every note is saved through `ghl-write`, which
+ * requires an IAOS write sign-in, but the allowlist behind that sign-in is not
+ * proof of WHO signed in, so the ledger names nobody. Both values parse to
+ * `null`, so notes written before this change still read back the same and
+ * `write-note-guard.ts` (which accepts a null operator) is unchanged.
+ */
+export const OPERATOR_NOT_RECORDED = "Not recorded (saved through IAOS write sign-in)";
+const LEGACY_OPERATOR_UNAVAILABLE = "UNAVAILABLE";
 
 function ledgerValue(value: string | number | null | undefined): string {
   return value === null || value === undefined || value === "" ? "UNAVAILABLE" : String(value);
@@ -130,7 +142,7 @@ export function formatOutcomeNote(args: {
   return [
     EXPECTED_HEADER,
     `Outcome timestamp: ${args.at}`,
-    `Operator: ${ledgerValue(args.operator)}`,
+    `Operator: ${args.operator === null || args.operator === "" ? OPERATOR_NOT_RECORDED : args.operator}`,
     `Opportunity: ${args.opportunityId}`,
     `Outcome: ${args.kind}`,
     `Seller Position: ${ledgerValue(s.sellerPosition)}`,
@@ -186,7 +198,9 @@ export function parseOutcomeNote(body: string): ParsedOutcomeNote | null {
 
   const reason = reasonRaw === null || reasonRaw === "UNAVAILABLE" || reasonRaw === "" ? null : reasonRaw;
   const followUpAt = followUpAtRaw === null || followUpAtRaw === "UNAVAILABLE" || followUpAtRaw === "" ? null : followUpAtRaw;
-  const operator = operatorRaw === null || operatorRaw === "UNAVAILABLE" || operatorRaw === "" ? null : operatorRaw;
+  const operator = operatorRaw === null || operatorRaw === "" || operatorRaw === OPERATOR_NOT_RECORDED || operatorRaw === LEGACY_OPERATOR_UNAVAILABLE
+    ? null
+    : operatorRaw;
 
   return {
     opportunityId,

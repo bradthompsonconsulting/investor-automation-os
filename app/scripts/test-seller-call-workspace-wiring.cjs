@@ -196,7 +196,7 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   const foundForbidden = forbiddenAlways.filter((t) => sellerCallTsxNoComments.indexOf(t) !== -1);
   check('page never calls any writer outside the three sanctioned writes (no underwriting/repairs/ARV write, no Board 4 disposition field)', foundForbidden, []);
   check('page never calls ghl.contacts.setCallbackDatetime directly (only through the unmodified scheduleCallbackGated)', sellerCallTsxNoComments.indexOf('ghl.contacts.setCallbackDatetime') === -1, true);
-  check('page imports scheduleCallbackGated from callbackWrite.ts rather than reimplementing the gated callback sequence', /import \{ scheduleCallbackGated \} from "\.\.\/lib\/callbackWrite"/.test(sellerCallTsx), true);
+  check('page imports scheduleCallbackGated from callbackWrite.ts rather than reimplementing the gated callback sequence', /import \{ scheduleCallbackGated(, formatCallbackTime)? \} from "\.\.\/lib\/callbackWrite"/.test(sellerCallTsx), true);
   check('page reads getDetail, listPipeline, underwriting.policy, and notes.list (all pre-existing read calls)', {
     getDetail: sellerCallTsx.indexOf('ghl.contacts.getDetail') !== -1,
     listPipeline: sellerCallTsx.indexOf('ghl.opportunities.listPipeline') !== -1,
