@@ -563,8 +563,10 @@ export default function SellerCallWorkspace() {
   const [followUpAtInput, setFollowUpAtInput] = useState("");
   const [passReasonInput, setPassReasonInput] = useState("");
   /* B14-12: a callback this page scheduled (Follow-Up) after the contact
-     detail was loaded. The Pass warning must name it too. */
-  const [sessionCallbackIso, setSessionCallbackIso] = useState<string | null>(null);
+     detail was loaded. The Pass warning must name it too. Tagged with the
+     contact it was written for: this page survives A -> B navigation, and a
+     late save for A must never become B's callback. */
+  const [sessionCallback, setSessionCallback] = useState<{ contactId: string; iso: string } | null>(null);
 
   /* B8-13 / INV-68 -- the four Offer Readiness determination carriers'
      write-in-flight/error state, one pair per carrier, mirroring
@@ -1852,7 +1854,7 @@ export default function SellerCallWorkspace() {
       if (kind === "follow_up") {
         const followUpIso = new Date(followUpAtInput).toISOString();
         const cb = await scheduleCallbackGated(ghl, contactId, followUpIso);
-        if (cb.ok || cb.callbackPersisted) setSessionCallbackIso(followUpIso);
+        if (cb.ok || cb.callbackPersisted) setSessionCallback({ contactId, iso: followUpIso });
         if (!cb.ok) {
           setOutcomeActionError(cb.error);
           return;
@@ -2635,9 +2637,14 @@ export default function SellerCallWorkspace() {
                 />
                 <div data-testid="call-outcome-pass-consequence" style={{ fontSize: "11px", color: "#94A3B8", lineHeight: 1.5 }}>
                   {(() => {
-                    const cb = resolveScheduledCallback(sessionCallbackIso, contact?.customFields ?? [],
+                    /* Only THIS contact's data: `contact` is not cleared on
+                       navigation, so it can still hold the previous contact
+                       until this one loads. */
+                    const cb = resolveScheduledCallback(
+                      sessionCallback?.contactId === contactId ? sessionCallback.iso : null,
+                      contact?.id === contactId ? contact.customFields : null,
                       { precise: CONFIG.fields.callbackDatetimePrecise, date: CONFIG.fields.callbackDatetime });
-                    return sellerCallPassConsequence(cb ? { text: cb.iso ? formatCallbackTime(cb.iso) : null } : null);
+                    return sellerCallPassConsequence(cb === "unknown" ? "unknown" : cb ? { text: cb.iso ? formatCallbackTime(cb.iso) : null } : null);
                   })()}
                 </div>
                 <button

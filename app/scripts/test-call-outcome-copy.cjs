@@ -168,11 +168,18 @@ check('Pass with an unreadable callback time: still warns',
   check('callback: present but unreadable is still a callback', copy.resolveScheduledCallback(null, [{ id: 'P', value: 'not a date' }], ids), { iso: null });
   check('callback: one scheduled on this page wins over the loaded detail',
     copy.resolveScheduledCallback('2026-10-09T15:00:00.000Z', [{ id: 'P', value: '2026-10-06T15:00:00.000Z' }], ids), { iso: '2026-10-09T15:00:00.000Z' });
+  check('callback: this contact\'s record not loaded yet -> unknown, never another contact\'s answer',
+    copy.resolveScheduledCallback(null, null, ids), 'unknown');
+  check('callback: a callback saved on this page for this contact is known even before the record loads',
+    copy.resolveScheduledCallback('2026-10-09T15:00:00.000Z', null, ids), { iso: '2026-10-09T15:00:00.000Z' });
 }
-check('Seller Call Pass consequence is built from the contact\'s callback (precise, then DATE)',
-  /data-testid="call-outcome-pass-consequence"[^>]*>\s*\{\(\(\) => \{\s*const cb = resolveScheduledCallback\(sessionCallbackIso, contact\?\.customFields \?\? \[\],\s*\{ precise: CONFIG\.fields\.callbackDatetimePrecise, date: CONFIG\.fields\.callbackDatetime \}\);\s*return sellerCallPassConsequence\(cb \? \{ text: cb\.iso \? formatCallbackTime\(cb\.iso\) : null \} : null\);/.test(sellerCallCode), true);
-check('a Follow-Up recorded on this page counts as the scheduled callback once saved',
-  /const cb = await scheduleCallbackGated\(ghl, contactId, followUpIso\);\s*if \(cb\.ok \|\| cb\.callbackPersisted\) setSessionCallbackIso\(followUpIso\);/.test(sellerCallCode), true);
+check('Pass while this contact\'s record is loading: names no callback',
+  copy.sellerCallPassConsequence('unknown'), 'Records the pass. No seller messages. Checking this contact for a scheduled callback…');
+check('Seller Call Pass consequence uses only THIS contact\'s callback (session save and loaded record both contact-checked)',
+  /data-testid="call-outcome-pass-consequence"[^>]*>\s*\{\(\(\) => \{\s*const cb = resolveScheduledCallback\(\s*sessionCallback\?\.contactId === contactId \? sessionCallback\.iso : null,\s*contact\?\.id === contactId \? contact\.customFields : null,\s*\{ precise: CONFIG\.fields\.callbackDatetimePrecise, date: CONFIG\.fields\.callbackDatetime \}\);\s*return sellerCallPassConsequence\(cb === "unknown" \? "unknown" : cb \? \{ text: cb\.iso \? formatCallbackTime\(cb\.iso\) : null \} : null\);/.test(sellerCallCode), true);
+check('a Follow-Up saved on this page is recorded WITH the contact it was written for',
+  /const cb = await scheduleCallbackGated\(ghl, contactId, followUpIso\);\s*if \(cb\.ok \|\| cb\.callbackPersisted\) setSessionCallback\(\{ contactId, iso: followUpIso \}\);/.test(sellerCallCode), true);
+check('no unscoped session callback remains', /sessionCallbackIso/.test(sellerCallCode), false);
 check('Pass writes stay note + attempt only: Seller Call never clears a callback',
   /setCallbackDatetime/.test(sellerCallCode), false);
 
@@ -182,8 +189,18 @@ check('dial-result control reports a saved note to its page',
 check('dial-result control reports a saved Follow Up callback to its page',
   /await ghl\.contacts\.setCallbackDatetime\(contactId, callbackIso\);\s*onCallback\(callbackIso\);/.test(dispositionCode), true);
 check('onNoteWritten and onCallback fire once each', [(dispositionCode.match(/onNoteWritten\(\)/g) || []).length, (dispositionCode.match(/onCallback\(callbackIso\)/g) || []).length], [1, 1]);
-check('Contact page reloads its notes list and shows the callback',
-  /<DispositionControl[\s\S]*?onNoteWritten=\{loadNotes\}[\s\S]*?onCallback=\{\(iso\) => setCallbackOverride\(iso\)\}[\s\S]*?\/>/.test(contactPageCode), true);
+check('Contact page reloads its notes list and shows the callback, only for the contact still shown',
+  /<DispositionControl[\s\S]*?onNoteWritten=\{loadNotes\}[\s\S]*?onCallback=\{\(iso\) => \{ if \(currentIdRef\.current === id\) setCallbackOverride\(iso\); \}\}[\s\S]*?\/>/.test(contactPageCode), true);
+check('Contact page tracks the contact it currently shows',
+  /const currentIdRef = useRef\(id\);\s*currentIdRef\.current = id;/.test(contactPageCode), true);
+{
+  const loadNotesSrc = (contactPageCode.match(/function loadNotes\(\) \{[\s\S]*?\n  \}/) || [''])[0];
+  check('loadNotes: skips a refresh started for a contact no longer shown',
+    /const forId = id;\s*if \(currentIdRef\.current !== forId\) return;/.test(loadNotesSrc), true);
+  check('loadNotes: drops a late notes answer or error for a contact no longer shown',
+    /ghl\.notes\.list\(forId\)/.test(loadNotesSrc) && /\.then\(\(res\) => \{\s*if \(currentIdRef\.current !== forId\) return;/.test(loadNotesSrc)
+    && /\.catch\(\(e: Error\) => \{ if \(currentIdRef\.current === forId\) setNotesError\(e\.message\); \}\)/.test(loadNotesSrc), true);
+}
 
 // ── Held changes stay untouched ──────────────────────────────────────────
 check('webhook note copy unchanged (held: webhook behavior)', /\? `Call: \$\{disposition\} — \$\{duration\}s`/.test(webhook) && /: `Call: \$\{disposition\}`;/.test(webhook), true);
