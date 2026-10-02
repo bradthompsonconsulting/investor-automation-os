@@ -19,6 +19,10 @@
  *   warning; while B's record is loading the warning names no callback, and
  *   Confirm Pass sends no write (button or handler) until B's status is
  *   known, which a late read for A cannot supply.
+ *   Contact page Not Interested (B14-12 P7 ruling) — confirm before recording,
+ *   the confirm names a scheduled callback, Record is blocked (button and
+ *   handler) while this contact's callback status is unknown, write order is
+ *   unchanged; and the corrected Move-to-LTN confirm wording.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -417,6 +421,111 @@ async function main() {
     hB1.release(); hB2.release();
     await until(async () => (await passText()) === BASE, 'B status known after its read');
     check('B\'s own read resolved: Confirm Pass is enabled', !(await passConfirmDisabled()));
+
+    // ═══ Contact page: Not Interested confirm (B14-12 P7 ruling) ════════════
+    const NI = "Moves the deal to Lost / Not Interested and removes it from Seller 6 follow-up. It does not stop a Long-Term Nurture (Seller 8) sequence that is already running, or messages another workflow has already scheduled, such as Seller 2's booking-link text.";
+    const NI_CB = (when) => `${NI} Your callback for ${when} stays scheduled: Not Interested does not clear it. Clear it separately with the callback control on this page.`;
+    const NI_CHECKING = `${NI} Checking this contact for a scheduled callback…`;
+    const confirmText = async () => (await page.getByTestId('disposition-confirm-text').innerText()).trim();
+    const recordDisabled = () => page.getByTestId('disposition-confirm-record').isDisabled();
+    const attemptRecord = async () => {
+      const before = writes().length;
+      await page.getByTestId('disposition-confirm-record').click({ force: true }).catch(() => {});
+      await settle();
+      if (writes().length > before) return;
+      const invoked = await page.getByTestId('disposition-confirm-record').evaluate((el) => {
+        const key = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+        if (!key || typeof el[key].onClick !== 'function') return false;
+        el[key].onClick({}); return true;
+      });
+      if (!invoked) throw new Error('could not reach the Record onClick handler');
+      await settle();
+    };
+
+    // N1 — same contact, callback scheduled: the click opens a confirm, names the callback, writes nothing until Record.
+    await fresh({ aCallback: A_CALLBACK }, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await until(async () => (await text()).includes('Callback: Oct 6, 10:00 AM'), 'A callback display');
+    let w0 = writes().length;
+    await page.getByTestId('disposition-option-not-interested').click();
+    await settle();
+    check('Not Interested: the first click opens a confirm step and writes nothing', (await page.getByTestId('disposition-confirm').count()) === 1 && writes().length === w0, writes().slice(w0));
+    check('Not Interested confirm names the scheduled callback and says it stays', (await confirmText()) === NI_CB('Oct 6, 10:00 AM'), await confirmText());
+    await page.getByTestId('disposition-confirm-cancel').click();
+    await settle();
+    check('Not Interested: Cancel writes nothing', writes().length === w0, writes().slice(w0));
+    await page.getByTestId('disposition-option-not-interested').click();
+    await page.getByTestId('disposition-confirm-record').click();
+    await until(async () => writesFor(A, 'contact.dispositionAt') === 1, 'A Not Interested bell');
+    const niOps = writes().slice(w0).map((r) => [r.op, r.contact, r.op === 'contact.disposition' ? r.args.value : undefined]);
+    check('Not Interested: Record writes disposition, note, attempt, bell, in order, for A only (write order unchanged)',
+      JSON.stringify(niOps) === JSON.stringify([['contact.disposition', A, 'Not Interested'], ['note.create', A, undefined], ['contact.lastCallAttempt', A, undefined], ['contact.dispositionAt', A, undefined]]), niOps);
+    check('Not Interested: the callback is neither written nor cleared',
+      writesFor(A, 'contact.callback') === 0 && db[A].fields.get(F.callbackDatetimePrecise) === A_CALLBACK);
+
+    // N2 — no callback: the confirm carries the consequence alone.
+    await fresh({}, `/contacts/${B}`);
+    await contactLoaded('Bravo');
+    await page.getByTestId('disposition-option-not-interested').click();
+    check('Not Interested confirm with no callback: the consequence alone', (await confirmText()) === NI, await confirmText());
+    check('Not Interested confirm with no callback: Record is enabled', !(await recordDisabled()));
+
+    // N3 — the real page: A's late contact read lands while B is shown, so the loaded
+    // record is not B. B's callback status is unknown; Record must stay blocked.
+    await fresh({ aCallback: A_CALLBACK }, `/`);
+    h = hold((r) => r.kind === 'row' && r.contact === A);
+    await go(`/contacts/${A}`);
+    await h.hit;
+    await go(`/contacts/${B}`);
+    await contactLoaded('Bravo');
+    await until(async () => (await page.getByTestId('disposition-option-not-interested').count()) === 1, 'B control');
+    h.release();                                   // A's late row lands on B's page
+    await settle();
+    w0 = writes().length;
+    await page.getByTestId('disposition-option-not-interested').click();
+    await settle();
+    check('late A record on B\'s page: Not Interested confirm names no callback, says it is checking', (await confirmText()) === NI_CHECKING, await confirmText());
+    check('late A record on B\'s page: Record is disabled', await recordDisabled());
+    await attemptRecord();
+    check('late A record on B\'s page: attempting Record (button and handler) sends zero writes', writes().length === w0, writes().slice(w0));
+    check('late A record on B\'s page: the handler says nothing was recorded',
+      (await page.getByTestId('disposition-confirm-blocked').innerText().catch(() => '')) === 'Not recorded. Still checking this contact for a scheduled callback. Confirm once it has loaded.');
+    await go('/'); await settle();
+    await go(`/contacts/${B}`);
+    await contactLoaded('Bravo');
+    await page.getByTestId('disposition-option-not-interested').click();
+    check('B reloaded (its own record): confirm text is B\'s (no callback) and Record is enabled',
+      (await confirmText()) === NI && !(await recordDisabled()), await confirmText());
+    w0 = writes().length;
+    await page.getByTestId('disposition-confirm-record').click();
+    await until(async () => writesFor(B, 'contact.dispositionAt') === 1, 'B Not Interested bell');
+    check('B reloaded: Record writes for B only', writes().slice(w0).every((r) => r.contact === B) && writes().slice(w0).length === 4, writes().slice(w0).map((r) => [r.op, r.contact]));
+
+    // N4 — the real control with an explicit unknown status, then a known one.
+    await fresh({}, `/harness/disposition/${B}?callback=unknown`);
+    await until(async () => (await page.getByTestId('disposition-option-not-interested').count()) === 1, 'harness control');
+    w0 = writes().length;
+    await page.getByTestId('disposition-option-not-interested').click();
+    check('control, status unknown: Record is disabled', await recordDisabled());
+    await attemptRecord();
+    check('control, status unknown: attempting Record (button and handler) sends zero writes', writes().length === w0, writes().slice(w0));
+    check('control, status unknown: blocked message shown', (await page.getByTestId('disposition-confirm-blocked').count()) === 1);
+    await go(`/harness/disposition/${B}?callback=${encodeURIComponent(B_CALLBACK)}`);
+    await settle();
+    check('control, status resolves to a callback: the confirm names it and Record is enabled; no blocked message',
+      (await confirmText()) === NI_CB('Oct 9, 2:30 PM') && !(await recordDisabled()) && (await page.getByTestId('disposition-confirm-blocked').count()) === 0, await confirmText());
+    check('control: still zero writes before any confirmed Record', writes().length === w0, writes().slice(w0));
+
+    // N5 — Move to Long-Term Nurture confirm wording, live.
+    await fresh({}, `/contacts/${B}`);
+    await contactLoaded('Bravo');
+    await page.getByTestId('disposition-option-no-answer').click();
+    await until(async () => (await page.getByTestId('routing-move-ltn').count()) === 1, 'routing prompt');
+    await page.getByTestId('routing-move-ltn').click();
+    check('Move to Long-Term Nurture confirm: corrected wording',
+      (await page.getByTestId('routing-ltn-confirm-text').innerText()).trim() === "Moves the deal to Long-Term Nurture. If it isn't already there, GHL starts its Long-Term Nurture email and text messages to the seller.");
+    await page.getByTestId('routing-move-ltn-cancel').click();
+    check('Move to Long-Term Nurture: Cancel writes no routing change', writesFor(B, 'contact.routing') === 1, writesFor(B, 'contact.routing'));
 
     check('no request left the machine', foreign.length === 0, foreign);
     check('no uncaught page errors', pageErrors.length === 0, pageErrors);

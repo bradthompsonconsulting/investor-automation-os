@@ -2251,6 +2251,10 @@ export default function ContactWorkspace() {
         <DispositionControl
           contactId={id!}
           contact={detail}
+          /* B14-12: the same callback this page displays, but only once the
+             loaded record IS the contact on screen (a late read for another
+             contact can still land in `contact`); "unknown" until then. */
+          callbackStatus={contact.id === id ? (callback ? { iso: callback } : null) : "unknown"}
           onAttempt={(iso) => setAttemptOverride(iso)}
           onNoteWritten={loadNotes}
           onCallback={(iso) => { if (currentIdRef.current === id) setCallbackOverride(iso); }}

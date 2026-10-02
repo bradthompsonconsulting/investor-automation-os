@@ -73,25 +73,39 @@ const trancheLabels = [...tranche.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
 check('every Tranche A disposition has consequence copy, and nothing else does',
   Object.keys(copy.DIAL_RESULT_CONSEQUENCES).sort(), [...trancheLabels].sort());
 check('Do Not Call is not an IAOS outcome', Object.keys(copy.DIAL_RESULT_CONSEQUENCES).includes('Do Not Call'), false);
-check('second click required exactly for the outcomes that can lead to seller messages',
-  Object.entries(copy.DIAL_RESULT_CONSEQUENCES).filter(([, v]) => v.confirm).map(([k]) => k).sort(), ['Follow Up', 'Requested Appointment']);
+check('second click required exactly for the outcomes that can lead to seller messages, and for Not Interested (B14-12 P7 ruling)',
+  Object.entries(copy.DIAL_RESULT_CONSEQUENCES).filter(([, v]) => v.confirm).map(([k]) => k).sort(), ['Follow Up', 'Not Interested', 'Requested Appointment']);
 const ra = copy.DIAL_RESULT_CONSEQUENCES['Requested Appointment'].text;
 check('Requested Appointment: booking-link text about 15 minutes later, no reply needed, may repeat',
   /booking link/.test(ra) && /15 minutes/.test(ra) && /even without a reply/.test(ra) && /again may text/.test(ra), true);
 const fu = copy.DIAL_RESULT_CONSEQUENCES['Follow Up'].text;
 check('Follow Up: names Seller Follow-Up, the day-37 move and seller email/text',
   /Seller Follow-Up/.test(fu) && /day 37/.test(fu) && /Long-Term Nurture/.test(fu) && /email and text/.test(fu), true);
-check('Move to Long-Term Nurture: stated as possible and not yet verified',
-  /may start/.test(copy.MOVE_TO_LTN_CONSEQUENCE) && /not yet verified/.test(copy.MOVE_TO_LTN_CONSEQUENCE), true);
+check('Move to Long-Term Nurture: exact wording, effect conditional on an actual move into the stage',
+  copy.MOVE_TO_LTN_CONSEQUENCE, "Moves the deal to Long-Term Nurture. If it isn't already there, GHL starts its Long-Term Nurture email and text messages to the seller.");
+check('Move to Long-Term Nurture: the stale "not yet verified" hedge is gone', /not yet verified/.test(copy.MOVE_TO_LTN_CONSEQUENCE), false);
 check('no copy claims a seller reply is required',
   [ra, fu, copy.MOVE_TO_LTN_CONSEQUENCE, ...Object.values(copy.DIAL_RESULT_CONSEQUENCES).map((v) => v.text)]
     .some((t) => /(reply|replies) (is |are )?(needed|required)|after the seller replies|once the seller replies/i.test(t)), false);
 check('outcomes with no observed seller messages say so',
   ['No Answer', 'Voicemail', 'Incorrect Number'].every((k) => /No seller messages/.test(copy.DIAL_RESULT_CONSEQUENCES[k].text)), true);
 const ni = copy.DIAL_RESULT_CONSEQUENCES['Not Interested'].text;
-check('Not Interested: stops only the Seller 6 path; already-scheduled messages (e.g. Seller 2 booking text) may still send',
-  /Stops the Seller 6 follow-up path for this deal/.test(ni) && /already scheduled by another workflow/.test(ni)
-  && /Seller 2's booking-link text/.test(ni) && /may still send/.test(ni), true);
+check('Not Interested: exact wording (stage, Seller 6 removed, running Seller 8 and scheduled messages NOT stopped)', ni,
+  "Moves the deal to Lost / Not Interested and removes it from Seller 6 follow-up. It does not stop a Long-Term Nurture (Seller 8) sequence that is already running, or messages another workflow has already scheduled, such as Seller 2's booking-link text.");
+check('Not Interested confirm: no callback -> the consequence alone',
+  copy.dialResultConfirmText('Not Interested', null), ni);
+check('Not Interested confirm: names a scheduled callback and says Not Interested leaves it',
+  copy.dialResultConfirmText('Not Interested', { text: 'Oct 6, 10:00 AM' }),
+  ni + ' Your callback for Oct 6, 10:00 AM stays scheduled: Not Interested does not clear it. Clear it separately with the callback control on this page.');
+check('Not Interested confirm: an unreadable callback is still warned about',
+  copy.dialResultConfirmText('Not Interested', { text: null }),
+  ni + ' Your scheduled callback stays scheduled: Not Interested does not clear it. Clear it separately with the callback control on this page.');
+check('Not Interested confirm: callback status unknown -> names no callback, says it is checking',
+  copy.dialResultConfirmText('Not Interested', 'unknown'), ni + ' Checking this contact for a scheduled callback…');
+check('other confirm steps never carry the callback line',
+  ['Follow Up', 'Requested Appointment'].every((l) => copy.dialResultConfirmText(l, { text: 'Oct 6, 10:00 AM' }) === copy.DIAL_RESULT_CONSEQUENCES[l].text), true);
+check('blocked Not Interested message', copy.NOT_INTERESTED_BLOCKED,
+  'Not recorded. Still checking this contact for a scheduled callback. Confirm once it has loaded.');
 check('Not Interested does not promise that no seller messages follow', /No seller messages/.test(ni), false);
 check('Seller Call Follow-Up is contrasted with the contact-page Follow Up',
   /No stage change and no seller messages/.test(copy.SELLER_CALL_FOLLOW_UP_CONSEQUENCE) && /contact page/.test(copy.SELLER_CALL_FOLLOW_UP_CONSEQUENCE), true);
@@ -118,10 +132,20 @@ check('every outcome shows its consequence before any click',
 }
 check('confirm-required outcomes open the confirm step instead of writing',
   /onClick=\{\(\) => \(DIAL_RESULT_CONSEQUENCES\[label\]\.confirm \? setConfirming\(label\) : void run\(label\)\)\}/.test(dispositionCode), true);
-check('confirm step shows the consequence and records only on the confirm button',
-  /data-testid="disposition-confirm-text">\{DIAL_RESULT_CONSEQUENCES\[confirming\]\.text\}/.test(dispositionCode)
+check('confirm step shows the consequence (callback-aware for Not Interested) and records only on the confirm button',
+  /data-testid="disposition-confirm-text">\{dialResultConfirmText\(confirming, callbackText\)\}/.test(dispositionCode)
   && /data-testid="disposition-confirm-record" onClick=\{\(\) => void run\(confirming\)\}/.test(dispositionCode)
   && /data-testid="disposition-confirm-cancel" onClick=\{\(\) => setConfirming\(null\)\}/.test(dispositionCode), true);
+check('Not Interested confirm is disabled while this contact\'s callback status is unknown',
+  /data-testid="disposition-confirm-record" onClick=\{\(\) => void run\(confirming\)\}\s*disabled=\{busy \|\| \(confirming === "Not Interested" && callbackStatus === "unknown"\)\}/.test(dispositionCode), true);
+{
+  const runSrc = (dispositionCode.match(/async function run\(label: string\) \{[\s\S]*?\n  \}\n/) || [''])[0];
+  const gate = runSrc.indexOf('if (label === "Not Interested" && callbackStatus === "unknown") { setNotInterestedBlocked(true); return; }');
+  const firstEffect = Math.min(...['inFlight.current = true', 'ghl.', 'setSubmit('].map((s) => { const i = runSrc.indexOf(s); return i === -1 ? Infinity : i; }));
+  check('run() refuses Not Interested before any state change or write while the callback status is unknown', gate !== -1 && gate < firstEffect, true);
+}
+check('Contact page hands the control ITS OWN callback status ("unknown" unless the loaded record is the contact on screen)',
+  /<DispositionControl[\s\S]*?callbackStatus=\{contact\.id === id \? \(callback \? \{ iso: callback \} : null\) : "unknown"\}[\s\S]*?\/>/.test(contactPageCode), true);
 check('Move to Long-Term Nurture opens its confirm step; only the confirm button moves',
   /data-testid="routing-move-ltn"\s*onClick=\{\(\) => setConfirmLtn\(true\)\}/.test(dispositionCode)
   && /data-testid="routing-move-ltn-confirm" onClick=\{\(\) => void moveToLtn\(\)\}/.test(dispositionCode)

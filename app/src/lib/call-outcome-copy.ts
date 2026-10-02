@@ -60,9 +60,12 @@ export const DIAL_RESULT_CONSEQUENCES: Readonly<Record<DialResult, { text: strin
     text: "GHL texts the seller a booking link about 15 minutes later (within its sending hours), even without a reply. Recording it again may text the seller again.",
     confirm: true,
   },
+  /* B14-12 P7 (Test, 2026-10-02): Seller – Not Interested moved the deal to
+     Lost / Not Interested and removed Seller 6, but an already-running Seller 8
+     (Long-Term Nurture) kept going (G8). Said plainly, and confirmed first. */
   "Not Interested": {
-    text: "Stops the Seller 6 follow-up path for this deal. Messages already scheduled by another workflow, such as Seller 2's booking-link text, may still send.",
-    confirm: false,
+    text: "Moves the deal to Lost / Not Interested and removes it from Seller 6 follow-up. It does not stop a Long-Term Nurture (Seller 8) sequence that is already running, or messages another workflow has already scheduled, such as Seller 2's booking-link text.",
+    confirm: true,
   },
   "Incorrect Number": {
     text: "Takes the lead out of your call queue until its phone number changes. No seller messages.",
@@ -70,8 +73,10 @@ export const DIAL_RESULT_CONSEQUENCES: Readonly<Record<DialResult, { text: strin
   },
 };
 
+/* B14-12: a real move into Long-Term Nurture has been observed starting
+   Seller 8; P4 showed a deal ALREADY there gets no new Seller 8 entry. */
 export const MOVE_TO_LTN_CONSEQUENCE =
-  "Moves the deal to Long-Term Nurture. GHL may start email and text messages to the seller from there (not yet verified).";
+  "Moves the deal to Long-Term Nurture. If it isn't already there, GHL starts its Long-Term Nurture email and text messages to the seller.";
 
 export const CONVERSATION_OUTCOME_HEADING = "Record conversation outcome";
 export const CONVERSATION_OUTCOME_SUBHEADING = "These do not start cold-outreach workflows.";
@@ -97,6 +102,29 @@ export function sellerCallPassConsequence(callback: ScheduledCallback): string {
   const which = callback.text ? `Your callback for ${callback.text}` : "Your scheduled callback";
   return `${SELLER_CALL_PASS_CONSEQUENCE} ${which} stays scheduled: Pass does not clear it. If you won't call back, clear it separately on the contact page.`;
 }
+
+/**
+ * B14-12 (Jess ruling, 2026-10-02): Not Interested, like Pass, leaves a
+ * scheduled callback in place (PB-D54), and says so before Brad confirms.
+ */
+export function notInterestedCallbackLine(callback: ScheduledCallback): string {
+  if (callback === "unknown") return "Checking this contact for a scheduled callback…";
+  if (!callback) return "";
+  const which = callback.text ? `Your callback for ${callback.text}` : "Your scheduled callback";
+  return `${which} stays scheduled: Not Interested does not clear it. Clear it separately with the callback control on this page.`;
+}
+
+/** The confirm-step text for a dial result. Only Not Interested names the callback. */
+export function dialResultConfirmText(label: DialResult, callback: ScheduledCallback): string {
+  const base = DIAL_RESULT_CONSEQUENCES[label].text;
+  if (label !== "Not Interested") return base;
+  const line = notInterestedCallbackLine(callback);
+  return line ? `${base} ${line}` : base;
+}
+
+/** Shown when a Not Interested confirm is attempted before the callback status is known. Nothing is written. */
+export const NOT_INTERESTED_BLOCKED =
+  "Not recorded. Still checking this contact for a scheduled callback. Confirm once it has loaded.";
 
 /**
  * The callback a Pass would leave in place. A callback this page itself just

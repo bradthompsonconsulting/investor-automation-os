@@ -6,7 +6,7 @@ import {
 } from "../lib/dispositionOverride";
 import { formatCallbackTime } from "../lib/callbackWrite";
 import {
-  operatorCallNote, DIAL_RESULT_CONSEQUENCES, DIAL_RESULT_HEADING, DIAL_RESULT_SUBHEADING,
+  operatorCallNote, DIAL_RESULT_CONSEQUENCES, dialResultConfirmText, NOT_INTERESTED_BLOCKED, DIAL_RESULT_HEADING, DIAL_RESULT_SUBHEADING,
   GHL_CALL_LOGGING_LINE, MOVE_TO_LTN_CONSEQUENCE, type DialResult,
 } from "../lib/call-outcome-copy";
 import { ReadUnavailableError } from "../lib/read-session";
@@ -131,9 +131,13 @@ async function confirmCarriers(
   return { ok: missing.length === 0, missing };
 }
 
-export function DispositionControl({ contactId, contact, onAttempt, onNoteWritten, onCallback }: {
+export function DispositionControl({ contactId, contact, callbackStatus, onAttempt, onNoteWritten, onCallback }: {
   contactId: string;
   contact: ContactDetail | null;
+  /** B14-12: THIS contact's scheduled callback, or "unknown" while the page
+   *  has not loaded this contact's record. Not Interested names it, and cannot
+   *  be recorded while it is "unknown". */
+  callbackStatus: { iso: string } | null | "unknown";
   /** Fires only on a CONFIRMED attempt write, so the parent's in-session
    *  override never claims a write that did not land. */
   onAttempt: (iso: string) => void;
@@ -153,6 +157,11 @@ export function DispositionControl({ contactId, contact, onAttempt, onNoteWritte
      click, after Brad has read what GHL will do (call-outcome-copy.ts). */
   const [confirming, setConfirming] = useState<DialResult | null>(null);
   const [confirmLtn, setConfirmLtn] = useState(false);
+  /* B14-12: a Not Interested confirm attempted while the callback status is
+     unknown. Display only; nothing is written. */
+  const [notInterestedBlocked, setNotInterestedBlocked] = useState(false);
+  const callbackText = callbackStatus === "unknown" ? "unknown"
+    : callbackStatus ? { text: formatCallbackTime(callbackStatus.iso) } : null;
 
   /* A — THE SYNCHRONOUS GUARD.
      React state updates are asynchronous, so two dispatches inside one frame
@@ -179,6 +188,11 @@ export function DispositionControl({ contactId, contact, onAttempt, onNoteWritte
   );
 
   async function run(label: string) {
+    /* B14-12 — the backstop behind the disabled confirm button: no Not
+       Interested is recorded, and nothing is written, before this contact's
+       callback status is known. */
+    if (label === "Not Interested" && callbackStatus === "unknown") { setNotInterestedBlocked(true); return; }
+    setNotInterestedBlocked(false);
     if (inFlight.current) return;          // A — synchronous, before any await
     inFlight.current = true;
     setConfirming(null);
@@ -397,9 +411,13 @@ export function DispositionControl({ contactId, contact, onAttempt, onNoteWritte
 
       {confirming ? (
         <div data-testid="disposition-confirm" style={{ marginTop: "10px", padding: "10px 12px", border: "1px solid rgba(251,191,36,0.40)", borderRadius: "8px", background: "rgba(251,191,36,0.06)", fontSize: "12px", color: "#E2E8F0", lineHeight: 1.5 }}>
-          <div data-testid="disposition-confirm-text">{DIAL_RESULT_CONSEQUENCES[confirming].text}</div>
+          <div data-testid="disposition-confirm-text">{dialResultConfirmText(confirming, callbackText)}</div>
+          {confirming === "Not Interested" && notInterestedBlocked && callbackStatus === "unknown" ? (
+            <div data-testid="disposition-confirm-blocked" style={{ marginTop: "6px", color: "#F87171" }}>{NOT_INTERESTED_BLOCKED}</div>
+          ) : null}
           <div style={{ marginTop: "8px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            <button data-testid="disposition-confirm-record" onClick={() => void run(confirming)} disabled={busy}
+            <button data-testid="disposition-confirm-record" onClick={() => void run(confirming)}
+              disabled={busy || (confirming === "Not Interested" && callbackStatus === "unknown")}
               style={btn("rgba(251,191,36,0.10)", "rgba(251,191,36,0.40)", "#FBBF24")}>
               Record {confirming}
             </button>
