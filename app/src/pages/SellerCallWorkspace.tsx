@@ -38,7 +38,7 @@ import {
 } from "../lib/seller-call-outcome";
 import {
   CONVERSATION_OUTCOME_HEADING, CONVERSATION_OUTCOME_SUBHEADING, DIAL_RESULT_POINTER, GHL_CALL_LOGGING_LINE,
-  SELLER_CALL_FOLLOW_UP_CONSEQUENCE, SELLER_CALL_PASS_CONSEQUENCE,
+  SELLER_CALL_FOLLOW_UP_CONSEQUENCE, sellerCallPassConsequence, resolveScheduledCallback,
 } from "../lib/call-outcome-copy";
 import {
   formatNegotiationOverrideNote, latestNegotiationOverrideNoteForOpportunity,
@@ -56,7 +56,7 @@ import {
   formatContractReadyChecklistNote, currentContractReadyChecklistForOpportunity,
   CONTRACT_READY_ITEM_KEYS, type ContractReadyItemKey, type ContractReadyItems,
 } from "../lib/seller-call-readiness-carriers";
-import { scheduleCallbackGated } from "../lib/callbackWrite";
+import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 /* INV-70 / B9-07A Phase 2 — Family 5's approved ruling. The pure gate/
    freeze logic lives in its own module so "frozen after Agreement
    Reached" is provable without a network call, mirroring how
@@ -562,6 +562,11 @@ export default function SellerCallWorkspace() {
   const [timestampRecoveryBusy, setTimestampRecoveryBusy] = useState(false);
   const [followUpAtInput, setFollowUpAtInput] = useState("");
   const [passReasonInput, setPassReasonInput] = useState("");
+  /* B14-12: a callback this page scheduled (Follow-Up) after the contact
+     detail was loaded. The Pass warning must name it too. Tagged with the
+     contact it was written for: this page survives A -> B navigation, and a
+     late save for A must never become B's callback. */
+  const [sessionCallback, setSessionCallback] = useState<{ contactId: string; iso: string } | null>(null);
 
   /* B8-13 / INV-68 -- the four Offer Readiness determination carriers'
      write-in-flight/error state, one pair per carrier, mirroring
@@ -655,6 +660,19 @@ export default function SellerCallWorkspace() {
   }, [contactId]);
 
   const loading = fetchError === null && (contact === null || opps === null || policyValues === null || notes === null);
+
+  /* B14-12 (Bones, PR #115): THIS contact's callback status, the one value
+     the Pass warning, the Confirm Pass button and handleRecordOutcome all
+     read. `contact` is not cleared on navigation, so it can still hold the
+     previous contact: only a record whose id is the contact on screen counts,
+     and a Follow-Up saved here counts only for the contact it was written
+     for. Until then it is "unknown" and a Pass cannot be confirmed, so a late
+     read for another contact can never unlock this one. */
+  const passCallback = resolveScheduledCallback(
+    sessionCallback?.contactId === contactId ? sessionCallback.iso : null,
+    contact?.id === contactId ? contact.customFields : null,
+    { precise: CONFIG.fields.callbackDatetimePrecise, date: CONFIG.fields.callbackDatetime });
+  const passCallbackKnown = passCallback !== "unknown";
 
   const candidates: SelectedOpportunity[] = useMemo(() => opportunityCandidates(opps), [opps]);
   const selected: SelectedOpportunity | null = useMemo(
@@ -1780,6 +1798,13 @@ export default function SellerCallWorkspace() {
           not an action this function performs. */
   async function handleRecordOutcome(kind: CallOutcomeKind) {
     if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
+    /* B14-12 (Bones): the backstop behind the disabled button. No Pass is
+       recorded, and nothing is written, before this contact's callback
+       status is known. */
+    if (kind === "pass" && !passCallbackKnown) {
+      setOutcomeActionError("Still checking this contact for a scheduled callback. Confirm Pass once it has loaded.");
+      return;
+    }
     const nowIso = new Date().toISOString();
     const snapshot = buildOutcomeSnapshot();
     const attempt = attemptRecordOutcome({
@@ -1847,7 +1872,9 @@ export default function SellerCallWorkspace() {
       }
 
       if (kind === "follow_up") {
-        const cb = await scheduleCallbackGated(ghl, contactId, new Date(followUpAtInput).toISOString());
+        const followUpIso = new Date(followUpAtInput).toISOString();
+        const cb = await scheduleCallbackGated(ghl, contactId, followUpIso);
+        if (cb.ok || cb.callbackPersisted) setSessionCallback({ contactId, iso: followUpIso });
         if (!cb.ok) {
           setOutcomeActionError(cb.error);
           return;
@@ -2629,15 +2656,17 @@ export default function SellerCallWorkspace() {
                   style={{ background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px", padding: "8px 10px", color: "#E2E8F0", fontSize: "12px", resize: "vertical" }}
                 />
                 <div data-testid="call-outcome-pass-consequence" style={{ fontSize: "11px", color: "#94A3B8", lineHeight: 1.5 }}>
-                  {SELLER_CALL_PASS_CONSEQUENCE}
+                  {sellerCallPassConsequence(passCallback === "unknown" ? "unknown"
+                    : passCallback ? { text: passCallback.iso ? formatCallbackTime(passCallback.iso) : null } : null)}
                 </div>
                 <button
                   data-testid="call-outcome-pass-confirm"
                   onClick={() => void handleRecordOutcome("pass")}
-                  disabled={recordingOutcome !== null || passReasonInput.trim() === ""}
+                  disabled={recordingOutcome !== null || passReasonInput.trim() === "" || !passCallbackKnown}
                   style={{
                     ...COMPACT_BUTTON_STYLE, alignSelf: "flex-start", borderColor: "rgba(239,68,68,0.45)", color: "#EF4444", background: "rgba(239,68,68,0.1)",
-                    opacity: passReasonInput.trim() === "" ? 0.45 : 1, cursor: recordingOutcome !== null || passReasonInput.trim() === "" ? "not-allowed" : "pointer",
+                    opacity: passReasonInput.trim() === "" || !passCallbackKnown ? 0.45 : 1,
+                    cursor: recordingOutcome !== null || passReasonInput.trim() === "" || !passCallbackKnown ? "not-allowed" : "pointer",
                   }}
                 >
                   {recordingOutcome === "pass" ? <Loader2 size={12} className="animate-spin" /> : null} Confirm Pass

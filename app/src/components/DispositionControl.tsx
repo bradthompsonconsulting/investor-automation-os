@@ -131,12 +131,18 @@ async function confirmCarriers(
   return { ok: missing.length === 0, missing };
 }
 
-export function DispositionControl({ contactId, contact, onAttempt }: {
+export function DispositionControl({ contactId, contact, onAttempt, onNoteWritten, onCallback }: {
   contactId: string;
   contact: ContactDetail | null;
   /** Fires only on a CONFIRMED attempt write, so the parent's in-session
    *  override never claims a write that did not land. */
   onAttempt: (iso: string) => void;
+  /** B14-12: fires after the dial-result note is saved, so the page's notes
+   *  list shows it without a reload. */
+  onNoteWritten: () => void;
+  /** B14-12: fires after Follow Up's callback is saved, so the page's
+   *  callback display shows it without a reload. */
+  onCallback: (iso: string) => void;
 }) {
   const [submit, setSubmit] = useState<Submit>({ status: "idle" });
   const [routing, setRouting] = useState<Routing>({ status: "idle" });
@@ -221,6 +227,7 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
         callbackIso = new Date(followUpAt).toISOString();
         try {
           await ghl.contacts.setCallbackDatetime(contactId, callbackIso);
+          onCallback(callbackIso);
         } catch (e) {
           setSubmit({
             status: "partial", label,
@@ -243,7 +250,7 @@ export function DispositionControl({ contactId, contact, onAttempt }: {
       // B14-12: the note names its source, so Brad's report can't be read as
       // GHL's own call event (ghl-disposition writes "Call: X — Ns").
       const noteBody = operatorCallNote(label as DialResult, callbackIso ? formatCallbackTime(callbackIso) : null);
-      try { await ghl.notes.create(contactId, noteBody); }
+      try { await ghl.notes.create(contactId, noteBody); onNoteWritten(); }
       catch (e) { noteError = (e as Error).message; }
 
       let attemptError: string | null = null;

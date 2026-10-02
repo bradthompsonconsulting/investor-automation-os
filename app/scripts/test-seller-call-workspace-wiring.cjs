@@ -196,7 +196,7 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   const foundForbidden = forbiddenAlways.filter((t) => sellerCallTsxNoComments.indexOf(t) !== -1);
   check('page never calls any writer outside the three sanctioned writes (no underwriting/repairs/ARV write, no Board 4 disposition field)', foundForbidden, []);
   check('page never calls ghl.contacts.setCallbackDatetime directly (only through the unmodified scheduleCallbackGated)', sellerCallTsxNoComments.indexOf('ghl.contacts.setCallbackDatetime') === -1, true);
-  check('page imports scheduleCallbackGated from callbackWrite.ts rather than reimplementing the gated callback sequence', /import \{ scheduleCallbackGated \} from "\.\.\/lib\/callbackWrite"/.test(sellerCallTsx), true);
+  check('page imports scheduleCallbackGated from callbackWrite.ts rather than reimplementing the gated callback sequence', /import \{ scheduleCallbackGated(, formatCallbackTime)? \} from "\.\.\/lib\/callbackWrite"/.test(sellerCallTsx), true);
   check('page reads getDetail, listPipeline, underwriting.policy, and notes.list (all pre-existing read calls)', {
     getDetail: sellerCallTsx.indexOf('ghl.contacts.getDetail') !== -1,
     listPipeline: sellerCallTsx.indexOf('ghl.opportunities.listPipeline') !== -1,
@@ -741,7 +741,7 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('page renders a truthful not-yet-Offer-Ready explanation distinct from the missing-Current-Offer message', /data-testid="call-outcome-accept-not-ready"/.test(sellerCallTsx), true);
   check('the not-ready explanation only renders when a Current Offer IS present but readiness is not OFFER_READY (never masking the missing-offer message)', /currentOffer === null[\s\S]{0,400}readiness\?\.effectiveStatus !== "OFFER_READY"[\s\S]{0,120}data-testid="call-outcome-accept-not-ready"/.test(sellerCallTsxNoComments), true);
   check('Follow-Up confirm is disabled with no date/time typed', /disabled=\{recordingOutcome !== null \|\| followUpAtInput\.trim\(\) === ""\}/.test(sellerCallTsx), true);
-  check('Pass confirm is disabled with no reason typed', /disabled=\{recordingOutcome !== null \|\| passReasonInput\.trim\(\) === ""\}/.test(sellerCallTsx), true);
+  check('Pass confirm is disabled with no reason typed', /disabled=\{recordingOutcome !== null \|\| passReasonInput\.trim\(\) === ""( \|\| !passCallbackKnown)?\}/.test(sellerCallTsx), true);
   check('Follow-Up confirm never reads readiness -- it remains available regardless of Offer Readiness', !/disabled=\{recordingOutcome !== null \|\| followUpAtInput\.trim\(\) === ""[^}]*readiness/.test(sellerCallTsx), true);
   check('Pass confirm never reads readiness -- it remains available regardless of Offer Readiness', !/disabled=\{recordingOutcome !== null \|\| passReasonInput\.trim\(\) === ""[^}]*readiness/.test(sellerCallTsx), true);
   check('a successful outcome write is appended to local notes state immediately (no refetch required for resume to reflect it)', /setNotes\(\(prev\) => \[\.\.\.\(prev \?\? \[\]\), \{ id: `local-\$\{Date\.now\(\)\}`, body: attempt\.note, dateAdded: nowIso \}\]\)/.test(sellerCallTsx), true);

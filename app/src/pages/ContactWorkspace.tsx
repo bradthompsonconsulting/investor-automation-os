@@ -1148,6 +1148,11 @@ function ConversationBubble({ m }: { m: ConvMessageRow }) {
 
 export default function ContactWorkspace() {
   const { id = "" } = useParams();
+  /* B14-12 contact isolation (Bones, PR #115). This page survives A -> B
+     navigation, and a write or read started for A can finish after it. Every
+     late result checks this before touching the screen. */
+  const currentIdRef = useRef(id);
+  currentIdRef.current = id;
 
   const [contact, setContact]   = useState<ContactRow | null>(null);
   const [loading, setLoading]   = useState(true);
@@ -1246,15 +1251,18 @@ export default function ContactWorkspace() {
   }
 
   function loadNotes() {
+    const forId = id;
+    if (currentIdRef.current !== forId) return;   // started for a contact no longer shown
     setNotesError(null);
-    ghl.notes.list(id)
+    ghl.notes.list(forId)
       .then((res) => {
+        if (currentIdRef.current !== forId) return;
         const rows = (res.notes ?? []).slice().sort(
           (a, b) => new Date(b.dateAdded).getTime() - new Date(a.dateAdded).getTime(),
         );
         setNotes(rows);
       })
-      .catch((e: Error) => setNotesError(e.message));
+      .catch((e: Error) => { if (currentIdRef.current === forId) setNotesError(e.message); });
   }
 
   // Read-only, GET-only. Scoped by explicit contactId via the conversations API
@@ -2244,6 +2252,8 @@ export default function ContactWorkspace() {
           contactId={id!}
           contact={detail}
           onAttempt={(iso) => setAttemptOverride(iso)}
+          onNoteWritten={loadNotes}
+          onCallback={(iso) => { if (currentIdRef.current === id) setCallbackOverride(iso); }}
         />
       )}
 
