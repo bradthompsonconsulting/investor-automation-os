@@ -10,10 +10,12 @@
  * the local Vite server is aborted and counted.
  *
  * Proves, with the fix in place:
- *   Contact page — a recorded dial result refreshes the notes list and the
- *   Follow Up callback for the SAME contact (successful write), a failed note
- *   write still reports partial and does not refresh, and a late A write or
- *   a late A notes read never puts A's notes or callback on B.
+ *   Contact page — the recording-only call log (B14-12): choosing a result
+ *   writes nothing; Save writes the result, the note and the last touch only
+ *   (never routing, the trigger timestamp or a callback) for every result;
+ *   notes show as the last call; Follow Up never schedules a callback and Set
+ *   Callback is the explicit action; a failed note is partial with Retry; a
+ *   late A write or notes read never puts A's notes on B.
  *   Seller Call — Pass names a Follow-Up callback saved on this page for the
  *   SAME contact, and a late A save or a late A read never becomes B's Pass
  *   warning; while B's record is loading the warning names no callback, and
@@ -79,6 +81,7 @@ function applyWrite(op, target, args) {
   switch (op) {
     case 'note.create': c.notes.push({ id: `${target}-n${c.notes.length + 1}`, body: args.body, dateAdded: new Date().toISOString() }); return { status: 200, body: { note: { id: 'n' } } };
     case 'contact.disposition': set(F.callDisposition); break;
+    case 'contact.callLogResult': set(F.callDisposition); break;
     case 'contact.routing': set(F.callRouting); break;
     case 'contact.dispositionAt': set(F.dispositionAt); break;
     case 'contact.lastCallAttempt': set(F.lastCallAttempt, F.lastCallAttemptPrecise); break;
@@ -184,89 +187,129 @@ async function main() {
     const contactLoaded = (first) => until(async () => (await text()).includes(`Seed note for ${first}`), `${first} notes`);
     const A_NOTE = 'Call (reported by Brad in IAOS): No Answer';
 
-    // ═══ Contact page ═══════════════════════════════════════════════════════
-    // C1 — successful write, same contact: the note shows without a reload.
+    // ═══ Contact page: recording-only call log (B14-12, Jess 2026-10-02) ═══
+    const W = () => log.filter((r) => r.kind === 'write');
+    const opsFor = (contact, from = 0) => W().slice(from).filter((r) => r.contact === contact).map((r) => r.op);
+    const RETIRED = ['contact.routing', 'contact.dispositionAt', 'contact.disposition', 'contact.callback'];
+    const save = async (result, notes) => {
+      await page.getByTestId('call-log-result-' + result.replace(/\s+/g, '-').toLowerCase()).click();
+      if (notes !== undefined) await page.getByTestId('call-log-notes').fill(notes);
+      await page.getByTestId('call-log-save').click();
+    };
+
+    // C1 — choosing a result writes nothing; Save writes result, note, last touch, in order; the note shows without a reload.
     await fresh({}, `/contacts/${A}`);
     await contactLoaded('Alpha');
-    await page.getByTestId('disposition-option-no-answer').click();
-    await until(async () => writesFor(A, 'contact.dispositionAt') === 1, 'A bell');
-    await until(async () => (await text()).includes(A_NOTE), 'A dial-result note in the list');
-    check('contact page: a recorded dial result appears in the notes list without a reload', (await text()).includes(A_NOTE));
+    let w0 = W().length;
+    await page.getByTestId('call-log-result-no-answer').click();
+    await settle();
+    check('call log: choosing a result writes nothing', W().length === w0, W().slice(w0));
+    await page.getByTestId('call-log-save').click();
+    await until(async () => writesFor(A, 'contact.lastCallAttempt') === 1, 'A last touch');
+    check('call log: Save writes the result, the note, then the last touch — nothing else',
+      JSON.stringify(opsFor(A, w0)) === JSON.stringify(['contact.callLogResult', 'note.create', 'contact.lastCallAttempt']), opsFor(A, w0));
+    await until(async () => (await text()).includes(A_NOTE), 'A call-log note in the list');
+    check('contact page: a saved call appears in the notes list without a reload', (await text()).includes(A_NOTE));
 
-    // C2 — successful Follow Up, same contact: the callback shows without a reload.
+    // C2 — every result is recording-only: never routing, the bell, the old disposition op or a callback.
+    for (const result of ['No Answer', 'Voicemail', 'Spoke with Seller', 'Follow Up', 'Not Interested', 'Incorrect Number']) {
+      await fresh({}, `/contacts/${B}`);
+      await contactLoaded('Bravo');
+      w0 = W().length;
+      await save(result);
+      await until(async () => writesFor(B, 'contact.lastCallAttempt') === 1, result + ' last touch');
+      const ops = opsFor(B, w0);
+      check('call log ' + result + ': records only (result, note, last touch); no routing, bell or callback',
+        JSON.stringify(ops) === JSON.stringify(['contact.callLogResult', 'note.create', 'contact.lastCallAttempt']) && !ops.some((o) => RETIRED.includes(o)), ops);
+      check('call log ' + result + ': the result field holds ' + result, db[B].fields.get(F.callDisposition) === result, db[B].fields.get(F.callDisposition));
+    }
+
+    // C3 — notes are saved with the result and shown as the last call.
     await fresh({}, `/contacts/${A}`);
     await contactLoaded('Alpha');
-    await page.getByTestId('disposition-option-follow-up').click();
-    await page.getByTestId('disposition-confirm-record').click();
-    await until(async () => writesFor(A, 'contact.dispositionAt') === 1, 'A Follow Up bell');
-    const cbWritten = db[A].fields.get(F.callbackDatetimePrecise);
-    const cbText = new Date(cbWritten).toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-    await until(async () => (await text()).includes(`Callback: ${cbText}`), 'A callback display');
-    check('contact page: a Follow Up callback is displayed without a reload', (await text()).includes(`Callback: ${cbText}`), cbText);
+    await save('Spoke with Seller', 'Wants to close in 30 days.\nAsk about the roof next time.');
+    await until(async () => writesFor(A, 'contact.lastCallAttempt') === 1, 'A spoke');
+    const spokeNote = W().find((r) => r.contact === A && r.op === 'note.create');
+    check('call log: the note carries the result and Brad\'s notes',
+      spokeNote && spokeNote.args.body === 'Call (reported by Brad in IAOS): Spoke with Seller\nWants to close in 30 days.\nAsk about the roof next time.', spokeNote && spokeNote.args.body);
+    await until(async () => (await page.getByTestId('call-log-last').count()) === 1, 'last call summary');
+    const last = await page.getByTestId('call-log-last').innerText();
+    check('call log: the last call shows its result and notes for the next call', /Last call:\s*Spoke with Seller/.test(last) && last.includes('Ask about the roof next time.'), last);
 
-    // C3 — partial failure: a failed note write reports partial and does not refresh notes.
+    // C4 — Follow Up never schedules a callback; Set Callback is the explicit action.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await page.getByTestId('call-log-result-follow-up').click();
+    check('call log Follow Up: the hint points to Set Callback',
+      (await page.getByTestId('call-log-follow-up-hint').innerText()).includes("Follow Up doesn't set a callback. Use Set Callback to choose a date and time."));
+    w0 = W().length;
+    await page.getByTestId('call-log-save').click();
+    await until(async () => writesFor(A, 'contact.lastCallAttempt') === 1, 'A follow up');
+    check('call log Follow Up: no callback is written', writesFor(A, 'contact.callback') === 0 && !db[A].fields.has(F.callbackDatetimePrecise));
+    await page.getByTestId('call-log-result-follow-up').click();
+    w0 = W().length;
+    await page.getByTestId('call-log-set-callback').click();
+    await settle();
+    check('call log: Set Callback opens the callback control and writes nothing by itself',
+      (await page.locator('input[type="datetime-local"]').count()) === 1 && W().length === w0, W().slice(w0));
+    await page.locator('input[type="datetime-local"]').fill('2026-10-09T14:30');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await until(async () => writesFor(A, 'contact.callback') === 1, 'explicit callback');
+    await until(async () => (await text()).includes('Callback: Oct 9, 2:30 PM'), 'callback display').catch(() => {});
+    check('call log: a callback is set only by Brad\'s explicit date and time',
+      db[A].fields.get(F.callbackDatetimePrecise) === '2026-10-09T19:30:00.000Z' && (await text()).includes('Callback: Oct 9, 2:30 PM'),
+      { stored: db[A].fields.get(F.callbackDatetimePrecise), shown: (await text()).split('\n').filter((l) => l.includes('Callback:')) });
+
+    // C5 — partial failure: a failed note is reported, nothing claims success, Retry completes it.
     await fresh({}, `/contacts/${A}`);
     await contactLoaded('Alpha');
     failNext.push((r) => r.kind === 'write' && r.op === 'note.create' && r.contact === A);
     const readsBefore = notesReadsFor(A);
-    await page.getByTestId('disposition-option-no-answer').click();
-    await until(async () => writesFor(A, 'contact.dispositionAt') === 1, 'A bell after note failure');
-    await settle();
-    check('contact page: a failed note write is reported as partial', /note: /.test(await page.getByTestId('disposition-partial').innerText().catch(() => '')));
-    check('contact page: a failed note write does not refresh the notes list', notesReadsFor(A) === readsBefore, { before: readsBefore, after: notesReadsFor(A) });
+    await save('No Answer');
+    await until(async () => (await page.getByTestId('call-log-partial').count()) === 1, 'partial');
+    check('call log: a failed note is reported as partial (result saved, notes not saved)',
+      /Result saved; notes not saved/.test(await page.getByTestId('call-log-partial').innerText()) && (await page.getByTestId('call-log-done').count()) === 0);
+    check('call log: a failed note does not refresh the notes list or touch last call', notesReadsFor(A) === readsBefore && writesFor(A, 'contact.lastCallAttempt') === 0,
+      { readsBefore, readsAfter: notesReadsFor(A), touches: writesFor(A, 'contact.lastCallAttempt'), ops: opsFor(A) });
+    await page.getByTestId('call-log-retry-note').click();
+    await until(async () => writesFor(A, 'contact.lastCallAttempt') === 1, 'retry');
+    check('call log: Retry notes writes the note then the last touch, and reports saved',
+      writesFor(A, 'note.create') === 2 && (await page.getByTestId('call-log-done').count()) === 1,
+      { notes: writesFor(A, 'note.create'), ops: opsFor(A), done: await page.getByTestId('call-log-done').count() });
 
-    // C4 — A's note write still pending at A -> B: B shows only B's notes.
+    // C6 — A's note write still pending at A -> B: B shows only B's notes.
     await fresh({}, `/contacts/${A}`);
     await contactLoaded('Alpha');
     let h = hold((r) => r.kind === 'write' && r.op === 'note.create' && r.contact === A);
-    await page.getByTestId('disposition-option-no-answer').click();
+    await save('No Answer');
     await h.hit;
     await go(`/contacts/${B}`);
     await contactLoaded('Bravo');
     const aReadsAtNav = notesReadsFor(A);
     h.release();
-    await until(async () => writesFor(A, 'contact.dispositionAt') === 1, 'A run to finish after navigation');
+    await until(async () => writesFor(A, 'contact.lastCallAttempt') === 1, 'A run to finish after navigation');
     await settle();
     let t = await text();
     check('A->B with A\'s note write pending: B shows B\'s notes', t.includes('Seed note for Bravo'));
     check('A->B with A\'s note write pending: none of A\'s notes appear on B', !t.includes('Seed note for Alpha') && !t.includes(A_NOTE));
     check('A->B with A\'s note write pending: no notes read is started for A after navigation', notesReadsFor(A) === aReadsAtNav, { atNav: aReadsAtNav, after: notesReadsFor(A) });
 
-    // C5 — A's notes REFRESH READ still pending at A -> B: its late answer is dropped.
+    // C7 — A's notes REFRESH READ still pending at A -> B: its late answer is dropped.
     await fresh({}, `/contacts/${A}`);
     await contactLoaded('Alpha');
     const initialAReads = notesReadsFor(A);
     h = hold((r) => r.kind === 'notes' && r.contact === A && notesReadsFor(A) > initialAReads);
-    await page.getByTestId('disposition-option-no-answer').click();
+    await save('No Answer');
     await h.hit;
     await go(`/contacts/${B}`);
     await contactLoaded('Bravo');
     h.release();
-    await until(async () => writesFor(A, 'contact.dispositionAt') === 1, 'A run to finish');
+    await until(async () => writesFor(A, 'contact.lastCallAttempt') === 1, 'A run to finish');
     await settle();
     t = await text();
     check('A->B with A\'s notes read pending: B still shows B\'s notes after A\'s read returns', t.includes('Seed note for Bravo'));
     check('A->B with A\'s notes read pending: A\'s notes never replace B\'s', !t.includes('Seed note for Alpha') && !t.includes(A_NOTE));
 
-    // C6 — A's Follow Up callback write pending at A -> B: B shows B's callback only.
-    await fresh({ bCallback: B_CALLBACK }, `/contacts/${A}`);
-    await contactLoaded('Alpha');
-    h = hold((r) => r.kind === 'write' && r.op === 'contact.callback' && r.contact === A);
-    await page.getByTestId('disposition-option-follow-up').click();
-    await page.getByTestId('disposition-confirm-record').click();
-    const aCbReq = await h.hit;
-    await go(`/contacts/${B}`);
-    await contactLoaded('Bravo');
-    await until(async () => (await text()).includes('Callback: Oct 9, 2:30 PM'), 'B callback display');
-    h.release();
-    await until(async () => writesFor(A, 'contact.dispositionAt') === 1, 'A Follow Up run to finish');
-    await settle();
-    t = await text();
-    const aCbText = new Date(aCbReq.args.value).toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-    check('A->B with A\'s callback write pending: B shows B\'s callback', t.includes('Callback: Oct 9, 2:30 PM'));
-    check('A->B with A\'s callback write pending: A\'s callback never shows on B', !t.includes(`Callback: ${aCbText}`), aCbText);
-    check('A->B with A\'s callback write pending: A\'s write still landed on A only (write target unchanged)',
-      db[A].fields.get(F.callbackDatetimePrecise) === aCbReq.args.value && db[B].fields.get(F.callbackDatetimePrecise) === B_CALLBACK);
 
     // ═══ Seller Call ════════════════════════════════════════════════════════
     const passText = async () => {

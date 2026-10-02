@@ -12,6 +12,7 @@ import {
 import { getRuntimeConfig } from "../../shared/ghl-config";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { readOverrides, effectiveDisposition, type StorageLike } from "../lib/dispositionOverride";
+import { callLogPlacement, type CallLogPlacement } from "../lib/call-log-queue";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
 import { readCurrentOfferFromOpportunity } from "../lib/current-offer-carrier";
@@ -606,6 +607,36 @@ export default function Dashboard() {
     return readOverrides(sessionStore(), Date.now());
   }, [nowTick]);
 
+  /* B14-12 recording-only (Jess, 2026-10-02): where each contact's LATEST
+     call result places it (call-log-queue.ts). READ-ONLY. Results no longer
+     move stages or phone status, so the queue reads the result itself.
+     `void callbackOverride`: reached through effectiveCallback. */
+  const callLogPlacementById = useMemo(() => {
+    void nowTick;
+    void callbackOverride;
+    const out = new Map<string, CallLogPlacement>();
+    const now = Date.now();
+    for (const c of contacts ?? []) {
+      const result = effectiveDisposition(c.callDisposition, c.dispositionAt, dispositionOverrides[c.id], now);
+      out.set(c.id, callLogPlacement(result, !!effectiveCallback(c)));
+    }
+    return out;
+  }, [contacts, dispositionOverrides, callbackOverride, nowTick]);
+
+  /** Answered or Follow Up, no callback set: kept visible so the next step isn't lost. */
+  const needsNextStepRows = useMemo(() => {
+    void attemptOverride;               // reached through effectiveLastAttempt
+    const rows = (contacts ?? [])
+      .filter((c) => callLogPlacementById.get(c.id) === "needs_next_step"
+        && !terminalContactIds.has(c.id) && !followUpContactIds.has(c.id))
+      .map((c) => ({
+        contact: c,
+        result: effectiveDisposition(c.callDisposition, c.dispositionAt, dispositionOverrides[c.id], Date.now()) ?? "",
+        attempt: effectiveLastAttempt(c),
+      }));
+    return rows.sort((a, b) => (a.attempt ? new Date(a.attempt).getTime() : 0) - (b.attempt ? new Date(b.attempt).getTime() : 0));
+  }, [contacts, callLogPlacementById, terminalContactIds, followUpContactIds, dispositionOverrides, attemptOverride]);
+
   /** contactId -> the disposition label to name in the badge. */
   const partialWriteContactIds = useMemo(() => {
     void nowTick;                       // recency is clock-dependent
@@ -676,9 +707,11 @@ export default function Dashboard() {
     ]);
     for (const c of contacts ?? []) {
       if (c.phoneStatus === "Incorrect Number") out.add(c.id);
+      // 7. B14-12 call log — the latest result leaves the cold-call queue.
+      if (callLogPlacementById.get(c.id) && callLogPlacementById.get(c.id) !== "cold") out.add(c.id);
     }
     return out;
-  }, [contacts, escalatedContactIds, terminalContactIds, callbackScheduledContactIds, offersAwaitingContactIds, followUpContactIds]);
+  }, [contacts, escalatedContactIds, terminalContactIds, callbackScheduledContactIds, offersAwaitingContactIds, followUpContactIds, callLogPlacementById]);
 
   const leadQueue = useMemo<LeadRow[]>(() => {
     void nowTick; // re-derive bands as clock advances past RESURFACE_HOURS
@@ -1030,6 +1063,34 @@ export default function Dashboard() {
                     />
                   )}
                 </div>
+              </Card>
+            ))}
+          </div>
+        )}
+
+        {/* 3.2a Needs Next Step — B14-12 recording-only. The latest call result is
+            Spoke with Seller or Follow Up and no callback is set, so the contact
+            is out of the Lead Queue but not lost. READ-ONLY: no write path; the
+            next step (Set Callback or the next call) happens on the contact page.
+            Leaves this list once a callback exists or a newer result is logged. */}
+        <SectionHeading count={needsNextStepRows.length}>Needs Next Step</SectionHeading>
+        {needsNextStepRows.length === 0 ? (
+          <Card tone="muted" style={{ marginBottom: "10px", display: "flex", gap: "10px", alignItems: "flex-start" }}>
+            <PhoneCall size={16} style={{ color: "#475569", marginTop: "1px", flexShrink: 0 }} />
+            <p style={{ fontSize: "12px", color: "#64748B", margin: 0 }}>No answered calls waiting on a next step.</p>
+          </Card>
+        ) : (
+          <div data-testid="needs-next-step" style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
+            {needsNextStepRows.map(({ contact: c, result, attempt }) => (
+              <Card key={c.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
+                <PhoneCall size={15} style={{ color: "#FBBF24", flexShrink: 0 }} />
+                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>{contactName(c)}</span>
+                <span style={{ fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px", background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", color: "#FBBF24" }}>{result}</span>
+                <span style={{ fontSize: "12px", color: "#64748B" }}>{attempt ? `Last touch ${relativeTime(attempt)}` : "No touch recorded"}</span>
+                <Link to={`/contacts/${c.id}`} title="Set a callback or log the next call"
+                  style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600, padding: "5px 9px", borderRadius: "7px", border: "1px solid rgba(30,200,255,0.25)", background: "rgba(30,200,255,0.06)", color: "#1EC8FF", textDecoration: "none" }}>
+                  <ExternalLink size={12} /> Set next step
+                </Link>
               </Card>
             ))}
           </div>

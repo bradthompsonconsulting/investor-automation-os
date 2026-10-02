@@ -1,12 +1,13 @@
 /**
- * B14-12 / INV-94 — call-outcome wording, operator note source label, the
- * Seller Call pointer and the pre-commit consequence text.
+ * B14-12 / INV-94 — call-outcome copy and wiring: the recording-only
+ * contact-page call log (Brad's design, ruled by Jess 2026-10-02), its note
+ * format and queue placement, and Seller Call's conversation-outcome panel.
  *
- * Offline. Compiles the pure copy module and checks the two surfaces that use
- * it by source text, following this repository's existing convention for UI
- * wiring (see test-seller-call-workspace-wiring.cjs). Webhook behavior and the
- * Production write scope are deliberately untouched by this change and are
- * asserted unchanged here.
+ * Offline. Compiles the pure copy and queue modules and checks the surfaces
+ * that use them by source text, following this repository's existing
+ * convention for UI wiring (see test-seller-call-workspace-wiring.cjs).
+ * Webhook behavior and the Production write scope are deliberately untouched
+ * and are asserted unchanged here.
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -21,6 +22,7 @@ try {
   execFileSync(process.execPath, [
     path.join(APP, 'node_modules', 'typescript', 'bin', 'tsc'),
     path.join(APP, 'src/lib/call-outcome-copy.ts'),
+    path.join(APP, 'src/lib/call-log-queue.ts'),
     '--outDir', TMP, '--rootDir', APP, '--module', 'commonjs',
     '--target', 'es2020', '--strict', '--skipLibCheck',
   ], { cwd: APP, stdio: 'inherit' });
@@ -30,6 +32,7 @@ try {
 }
 
 const copy = require(path.join(TMP, 'src/lib/call-outcome-copy.js'));
+const queue = require(path.join(TMP, 'src/lib/call-log-queue.js'));
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -41,101 +44,104 @@ function check(name, actual, expected) {
 const read = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8').replace(/\r\n/g, '\n');
 const stripBlockComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '');
 
-const disposition = read('src/components/DispositionControl.tsx');
-const dispositionCode = stripBlockComments(disposition);
+
+const callLog = read('src/components/CallLogControl.tsx');
+const callLogCode = stripBlockComments(callLog);
 const sellerCall = read('src/pages/SellerCallWorkspace.tsx');
 const sellerCallCode = stripBlockComments(sellerCall);
 const noteGuard = read('netlify/functions/lib/write-note-guard.ts');
 const webhook = read('netlify/functions/ghl-disposition.ts');
 const writeContracts = read('netlify/functions/lib/write-contracts.ts');
 const contactPageCode = stripBlockComments(read('src/pages/ContactWorkspace.tsx'));
+const dashboardCode = stripBlockComments(read('src/pages/Dashboard.tsx'));
+const ghlClient = read('src/lib/ghl.ts');
+const listOf = (name) => [...((writeContracts.match(new RegExp('export const ' + name + ' = \\[([^\\]]*)\\]')) || [])[1] || '').matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+const RESULTS = ['No Answer', 'Voicemail', 'Spoke with Seller', 'Follow Up', 'Not Interested', 'Incorrect Number'];
 
-// ── Operator note source label ───────────────────────────────────────────
-check('dial-result note names its source', copy.operatorCallNote('No Answer', null), 'Call (reported by Brad in IAOS): No Answer');
-check('Follow Up note keeps the callback assertion', copy.operatorCallNote('Follow Up', 'Oct 4, 10:00 AM'),
-  'Call (reported by Brad in IAOS): Follow Up — callback scheduled for Oct 4, 10:00 AM');
+// ── Call log: results and the note ───────────────────────────────────────
+check('six results in display order: Spoke with Seller added; Requested Appointment and Do Not Call are not results', [...copy.CALL_LOG_RESULTS], RESULTS);
+check('server callLogResults matches the UI list exactly', listOf('callLogResults'), RESULTS);
+check('dialer webhook list unchanged: the original six, no Spoke with Seller', listOf('dispositions'),
+  ['No Answer', 'Voicemail', 'Follow Up', 'Requested Appointment', 'Not Interested', 'Incorrect Number']);
+check('note without notes', copy.callLogNote('No Answer', '   '), 'Call (reported by Brad in IAOS): No Answer');
+check('note with notes (trimmed, line breaks kept)', copy.callLogNote('Spoke with Seller', '  Wants 30 days.\nCall after 5.  '),
+  'Call (reported by Brad in IAOS): Spoke with Seller\nWants 30 days.\nCall after 5.');
 const guardPattern = (() => {
   const m = noteGuard.match(/if \((\/\^IAOS \(\?:[^/]+\/)\.test\(body\)\)/);
-  if (!m) return null;
-  return new RegExp(m[1].slice(1, -1));
+  return m ? new RegExp(m[1].slice(1, -1)) : null;
 })();
 check('note guard ledger-prefix pattern located in write-note-guard.ts', guardPattern instanceof RegExp, true);
-const sampleNotes = ['No Answer', 'Voicemail', 'Follow Up', 'Requested Appointment', 'Not Interested', 'Incorrect Number']
-  .map((label) => copy.operatorCallNote(label, label === 'Follow Up' ? 'Oct 4, 10:00 AM' : null));
-check('no operator note begins with IAOS + a ledger word (write-note-guard would refuse it)',
-  sampleNotes.filter((body) => guardPattern && guardPattern.test(body)), []);
-check('no operator note begins with "IAOS "', sampleNotes.filter((body) => body.startsWith('IAOS ')), []);
-check('operator label differs from the GHL call-event note form', sampleNotes.some((body) => /^Call: /.test(body)), false);
+const sampleNotes = RESULTS.map((r) => copy.callLogNote(r, 'IAOS ARV 250000 said the seller'));
+check('no call-log note begins with IAOS + a ledger word, even when the notes do', sampleNotes.filter((b) => guardPattern && guardPattern.test(b)), []);
+check('call-log notes differ from the GHL call-event form', sampleNotes.some((b) => /^Call: /.test(b)), false);
+check('parse round-trips result and notes', copy.parseCallLogNote(copy.callLogNote('Spoke with Seller', 'a\nb')), { result: 'Spoke with Seller', notes: 'a\nb' });
+check('parse reads an older dial-result note', copy.parseCallLogNote('Call (reported by Brad in IAOS): Follow Up — callback scheduled for Oct 6, 10:00 AM'), { result: 'Follow Up', notes: '' });
+check('parse ignores GHL call events and callback notes', [copy.parseCallLogNote('Call: No Answer — 10s'), copy.parseCallLogNote('Callback scheduled for Oct 6, 10:00 AM')], [null, null]);
+check('effect line, exact', copy.CALL_LOG_EFFECT, "Records this call: who, when, the result and your notes. It doesn't move the deal, start or stop workflows, or send messages.");
+check('Follow Up hint, exact', copy.FOLLOW_UP_CALLBACK_HINT, "Follow Up doesn't set a callback. Use Set Callback to choose a date and time.");
+check('notes limit', copy.CALL_NOTES_MAX, 4000);
 
-// ── Consequence copy ─────────────────────────────────────────────────────
-const tranche = (disposition.match(/export const TRANCHE_A_DISPOSITIONS = \[([\s\S]*?)\] as const;/) || [])[1] || '';
-const trancheLabels = [...tranche.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-check('every Tranche A disposition has consequence copy, and nothing else does',
-  Object.keys(copy.DIAL_RESULT_CONSEQUENCES).sort(), [...trancheLabels].sort());
-check('Do Not Call is not an IAOS outcome', Object.keys(copy.DIAL_RESULT_CONSEQUENCES).includes('Do Not Call'), false);
-check('second click required exactly for the outcomes that can lead to seller messages',
-  Object.entries(copy.DIAL_RESULT_CONSEQUENCES).filter(([, v]) => v.confirm).map(([k]) => k).sort(), ['Follow Up', 'Requested Appointment']);
-const ra = copy.DIAL_RESULT_CONSEQUENCES['Requested Appointment'].text;
-check('Requested Appointment: booking-link text about 15 minutes later, no reply needed, may repeat',
-  /booking link/.test(ra) && /15 minutes/.test(ra) && /even without a reply/.test(ra) && /again may text/.test(ra), true);
-const fu = copy.DIAL_RESULT_CONSEQUENCES['Follow Up'].text;
-check('Follow Up: names Seller Follow-Up, the day-37 move and seller email/text',
-  /Seller Follow-Up/.test(fu) && /day 37/.test(fu) && /Long-Term Nurture/.test(fu) && /email and text/.test(fu), true);
-check('Move to Long-Term Nurture: stated as possible and not yet verified',
-  /may start/.test(copy.MOVE_TO_LTN_CONSEQUENCE) && /not yet verified/.test(copy.MOVE_TO_LTN_CONSEQUENCE), true);
-check('no copy claims a seller reply is required',
-  [ra, fu, copy.MOVE_TO_LTN_CONSEQUENCE, ...Object.values(copy.DIAL_RESULT_CONSEQUENCES).map((v) => v.text)]
-    .some((t) => /(reply|replies) (is |are )?(needed|required)|after the seller replies|once the seller replies/i.test(t)), false);
-check('outcomes with no observed seller messages say so',
-  ['No Answer', 'Voicemail', 'Incorrect Number'].every((k) => /No seller messages/.test(copy.DIAL_RESULT_CONSEQUENCES[k].text)), true);
-const ni = copy.DIAL_RESULT_CONSEQUENCES['Not Interested'].text;
-check('Not Interested: stops only the Seller 6 path; already-scheduled messages (e.g. Seller 2 booking text) may still send',
-  /Stops the Seller 6 follow-up path for this deal/.test(ni) && /already scheduled by another workflow/.test(ni)
-  && /Seller 2's booking-link text/.test(ni) && /may still send/.test(ni), true);
-check('Not Interested does not promise that no seller messages follow', /No seller messages/.test(ni), false);
-check('Seller Call Follow-Up is contrasted with the contact-page Follow Up',
-  /No stage change and no seller messages/.test(copy.SELLER_CALL_FOLLOW_UP_CONSEQUENCE) && /contact page/.test(copy.SELLER_CALL_FOLLOW_UP_CONSEQUENCE), true);
-
-// ── Contact-page dial-result control wiring ──────────────────────────────
-check('dial-result note is built by operatorCallNote', /operatorCallNote\(label as DialResult, callbackIso \? formatCallbackTime\(callbackIso\) : null\)/.test(dispositionCode), true);
-check('the old unlabeled `Call: ${label}` note copy is gone', /`Call: \$\{label\}/.test(dispositionCode), false);
-check('heading and subheading come from the copy module',
-  /\{DIAL_RESULT_HEADING\}/.test(dispositionCode) && /\{DIAL_RESULT_SUBHEADING\} \{GHL_CALL_LOGGING_LINE\}/.test(dispositionCode), true);
-check('every outcome shows its consequence before any click',
-  /data-testid="disposition-consequences"/.test(dispositionCode) && /TRANCHE_A_DISPOSITIONS\.map\(\(label\) => \(\s*<li[\s\S]*DIAL_RESULT_CONSEQUENCES\[label\]\.text/.test(dispositionCode), true);
+// ── Call log control: what it may write ──────────────────────────────────
+check('the control calls only getDetail, setCallLogResult, notes.create and setLastCallAttempt',
+  [...new Set([...callLogCode.matchAll(/ghl\.(contacts|notes)\.(\w+)\(/g)].map((m) => m[1] + '.' + m[2]))].sort(),
+  ['contacts.getDetail', 'contacts.setCallLogResult', 'contacts.setLastCallAttempt', 'notes.create']);
+check('the control never names routing, the bell, the old disposition writer or a callback write',
+  /setCallRouting|setDispositionAt|setCallDisposition|setCallbackDatetime|scheduleCallbackGated|dispositionAt|callRouting/.test(callLogCode), false);
+check('choosing a result only sets state',
+  /onClick=\{\(\) => \{ setResult\(r\); if \(submit\.status !== "in_flight"\) setSubmit\(\{ status: "idle" \}\); \}\}/.test(callLogCode), true);
 {
-  // The consequence-line test IDs must normalize spaces exactly like the
-  // existing disposition-option IDs (PR #113 review: a lost backslash made
-  // the pattern /s+/, which strips the letter "s" instead).
-  const m = dispositionCode.match(/data-testid=\{`disposition-consequence-\$\{label\.replace\((\/[^/]+\/g), "-"\)\.toLowerCase\(\)\}`\}/);
-  const optionPattern = (dispositionCode.match(/data-testid=\{`disposition-option-\$\{label\.replace\((\/[^/]+\/g), "-"\)\.toLowerCase\(\)\}`\}/) || [])[1];
-  check('consequence test IDs use the same space pattern as the option IDs', m ? m[1] : null, optionPattern ?? 'missing');
-  const re = m ? new RegExp(m[1].slice(1, -2), 'g') : null;
-  check('consequence test IDs resolve to the expected slugs',
-    re ? trancheLabels.map((l) => `disposition-consequence-${l.replace(re, '-').toLowerCase()}`) : [],
-    ['disposition-consequence-no-answer', 'disposition-consequence-voicemail', 'disposition-consequence-follow-up',
-      'disposition-consequence-requested-appointment', 'disposition-consequence-not-interested', 'disposition-consequence-incorrect-number']);
+  const at = (s) => callLogCode.indexOf(s);
+  check('Save order: result -> readback -> note -> last touch',
+    at('await ghl.contacts.setCallLogResult(contactId, chosen)') !== -1
+    && at('await ghl.contacts.setCallLogResult(contactId, chosen)') < at('await ghl.contacts.getDetail(contactId)')
+    && at('await ghl.contacts.getDetail(contactId)') < at('await writeNoteAndTouch(chosen, body)')
+    && at('await ghl.notes.create(contactId, body)') < at('await ghl.contacts.setLastCallAttempt(contactId, at)'), true);
 }
-check('confirm-required outcomes open the confirm step instead of writing',
-  /onClick=\{\(\) => \(DIAL_RESULT_CONSEQUENCES\[label\]\.confirm \? setConfirming\(label\) : void run\(label\)\)\}/.test(dispositionCode), true);
-check('confirm step shows the consequence and records only on the confirm button',
-  /data-testid="disposition-confirm-text">\{DIAL_RESULT_CONSEQUENCES\[confirming\]\.text\}/.test(dispositionCode)
-  && /data-testid="disposition-confirm-record" onClick=\{\(\) => void run\(confirming\)\}/.test(dispositionCode)
-  && /data-testid="disposition-confirm-cancel" onClick=\{\(\) => setConfirming\(null\)\}/.test(dispositionCode), true);
-check('Move to Long-Term Nurture opens its confirm step; only the confirm button moves',
-  /data-testid="routing-move-ltn"\s*onClick=\{\(\) => setConfirmLtn\(true\)\}/.test(dispositionCode)
-  && /data-testid="routing-move-ltn-confirm" onClick=\{\(\) => void moveToLtn\(\)\}/.test(dispositionCode)
-  && /\{MOVE_TO_LTN_CONSEQUENCE\}/.test(dispositionCode), true);
-check('moveToLtn is called only by the confirm button and the failure Retry',
-  (dispositionCode.match(/void moveToLtn\(\)/g) || []).length, 2);
-check('write sequence unchanged: one bell, still last after note and attempt',
-  (dispositionCode.match(/setDispositionAt\(/g) || []).length === 1
-  && dispositionCode.indexOf('ghl.notes.create(contactId, noteBody)') < dispositionCode.indexOf('setLastCallAttempt(contactId, attemptIso)')
-  && dispositionCode.indexOf('setLastCallAttempt(contactId, attemptIso)') < dispositionCode.indexOf('setDispositionAt('), true);
+check('a refused readback stops before the note and last touch',
+  /if \(!\(e instanceof ReadUnavailableError\)\) throw e;\s*setSubmit\(\{ status: "saved_unverified", message: [^\n]*\n\s*return;/.test(callLogCode), true);
+check('a readback that does not match writes nothing further',
+  /if \(!landed\) \{\s*setSubmit\(\{ status: "not_saved", message: "GHL did not confirm the result\. Nothing else was written\." \}\);\s*return;\s*\}/.test(callLogCode), true);
+check('a failed note or last touch is reported as partial, never as saved',
+  /status: "partial", result: saved, message: `Result saved; notes not saved/.test(callLogCode) && /status: "partial", result: saved, message: `Saved; last-touch time not updated/.test(callLogCode), true);
+check('Follow Up shows the hint and a Set Callback that only opens the page control',
+  /\{result === "Follow Up" \? \(/.test(callLogCode) && /data-testid="call-log-set-callback" onClick=\{onOpenCallback\}/.test(callLogCode), true);
+check('ghl client: setCallLogResult uses the contact.callLogResult operation',
+  /setCallLogResult: \(contactId: string, value: string\) =>\s*confirmedCommand\("contact\.callLogResult", contactId, \{ value \}\)/.test(ghlClient), true);
+check('server: contact.callLogResult validates against callLogResults and plans the result field only',
+  /case "contact\.callLogResult": \{ const v = single\(\); if \(!callLogResults\.includes\(v\)\) throw new Error\("Invalid call result"\); add\(c\.callDisposition, v\); break; \}/.test(writeContracts), true);
+check('server: an operation-specific guard refuses any other field for the call log',
+  /if \(operation === "contact\.callLogResult" && \(fields\.length !== 1 \|\| fields\[0\]\.id !== c\.callDisposition \|\| fields\.some\(x => x\.id === c\.dispositionAt \|\| x\.id === c\.callRouting\)\)\) throw new Error\("Call log writes only the call result"\);/.test(writeContracts), true);
+check('Contact page renders the call log with its refresh and Set Callback wiring',
+  /<CallLogControl[\s\S]*?notes=\{notes\}[\s\S]*?onNoteWritten=\{loadNotes\}[\s\S]*?onOpenCallback=\{\(\) => \{ setCallbackOpen\(true\); setCallbackError\(null\); \}\}[\s\S]*?\/>/.test(contactPageCode), true);
+check('the old dial-result control is gone', fs.existsSync(path.join(APP, 'src/components/DispositionControl.tsx')) || /DispositionControl/.test(contactPageCode), false);
+check('Set Callback stays a separate, explicit page action', /\{callback \? "Change Callback" : "Set Callback"\}/.test(contactPageCode), true);
+
+// ── Queue placement (Jess ruling 2026-10-02) ─────────────────────────────
+check('No Answer / Voicemail stay in the cold-call queue', [queue.callLogPlacement('No Answer', false), queue.callLogPlacement('Voicemail', true)], ['cold', 'cold']);
+check('Not Interested / Incorrect Number leave it', [queue.callLogPlacement('Not Interested', false), queue.callLogPlacement('Incorrect Number', true)], ['out', 'out']);
+check('Spoke with Seller / Follow Up with no callback -> Needs Next Step', [queue.callLogPlacement('Spoke with Seller', false), queue.callLogPlacement('Follow Up', false)], ['needs_next_step', 'needs_next_step']);
+check('Spoke with Seller / Follow Up with a callback -> out (Callbacks shows them)', [queue.callLogPlacement('Spoke with Seller', true), queue.callLogPlacement('Follow Up', true)], ['out', 'out']);
+check('no result, an older result, or Do Not Call (its own PR) change nothing here',
+  [queue.callLogPlacement(null, false), queue.callLogPlacement('Requested Appointment', false), queue.callLogPlacement('Do Not Call', false)], ['cold', 'cold', 'cold']);
+check('Dashboard places each contact by its latest result and its callback',
+  /out\.set\(c\.id, callLogPlacement\(result, !!effectiveCallback\(c\)\)\);/.test(dashboardCode)
+  && /const result = effectiveDisposition\(c\.callDisposition, c\.dispositionAt, dispositionOverrides\[c\.id\], now\);/.test(dashboardCode), true);
+check('Lead Queue excludes every non-cold placement',
+  /if \(callLogPlacementById\.get\(c\.id\) && callLogPlacementById\.get\(c\.id\) !== "cold"\) out\.add\(c\.id\);/.test(dashboardCode), true);
+{
+  const start = dashboardCode.indexOf('<SectionHeading count={needsNextStepRows.length}>Needs Next Step</SectionHeading>');
+  const end = dashboardCode.indexOf('<SectionHeading count={followUpRows.length}>Follow Up</SectionHeading>');
+  const section = start !== -1 && end > start ? dashboardCode.slice(start, end) : '';
+  check('Needs Next Step section renders before the stage-based Follow Up section', section.length > 0, true);
+  check('Needs Next Step is read-only: no write, no onClick, just a link to the contact', /ghl\.|onClick=/.test(section) === false && /<Link to=\{`\/contacts\/\$\{c\.id\}`\}/.test(section), true);
+}
+check('Needs Next Step rows: needs_next_step, not terminal, not already in the stage Follow Up list',
+  /callLogPlacementById\.get\(c\.id\) === "needs_next_step"\s*&& !terminalContactIds\.has\(c\.id\) && !followUpContactIds\.has\(c\.id\)/.test(dashboardCode), true);
 
 // ── Seller Call conversation-outcome panel ───────────────────────────────
 check('Seller Call heading and subheading come from the copy module',
   /\{CONVERSATION_OUTCOME_HEADING\}/.test(sellerCallCode) && /\{CONVERSATION_OUTCOME_SUBHEADING\} \{GHL_CALL_LOGGING_LINE\}/.test(sellerCallCode), true);
+check('Seller Call points no-conversation calls to this contact\'s call log', copy.DIAL_RESULT_POINTER, 'No conversation? Log the call on the contact page.');
 check('Seller Call points no-conversation results to this contact\'s page',
   /<Link data-testid="call-outcome-dial-result-pointer" to=\{`\/contacts\/\$\{contactId\}`\}/.test(sellerCallCode) && /\{DIAL_RESULT_POINTER\}/.test(sellerCallCode), true);
 check('Seller Call Follow-Up and Pass show their consequence before the confirm button',
@@ -195,14 +201,7 @@ check('no unscoped session callback remains', /sessionCallbackIso/.test(sellerCa
 check('Pass writes stay note + attempt only: Seller Call never clears a callback',
   /setCallbackDatetime/.test(sellerCallCode), false);
 
-// ── Contact page: a recorded dial result refreshes notes and the callback ──
-check('dial-result control reports a saved note to its page',
-  /try \{ await ghl\.notes\.create\(contactId, noteBody\); onNoteWritten\(\); \}/.test(dispositionCode), true);
-check('dial-result control reports a saved Follow Up callback to its page',
-  /await ghl\.contacts\.setCallbackDatetime\(contactId, callbackIso\);\s*onCallback\(callbackIso\);/.test(dispositionCode), true);
-check('onNoteWritten and onCallback fire once each', [(dispositionCode.match(/onNoteWritten\(\)/g) || []).length, (dispositionCode.match(/onCallback\(callbackIso\)/g) || []).length], [1, 1]);
-check('Contact page reloads its notes list and shows the callback, only for the contact still shown',
-  /<DispositionControl[\s\S]*?onNoteWritten=\{loadNotes\}[\s\S]*?onCallback=\{\(iso\) => \{ if \(currentIdRef\.current === id\) setCallbackOverride\(iso\); \}\}[\s\S]*?\/>/.test(contactPageCode), true);
+// ── Contact page: late results stay with their contact ───────────────────
 check('Contact page tracks the contact it currently shows',
   /const currentIdRef = useRef\(id\);\s*currentIdRef\.current = id;/.test(contactPageCode), true);
 {

@@ -4,6 +4,8 @@ import { ASSIGNMENT_MODE_OPTIONS } from "../../../src/lib/underwriting/resolver-
 import { type ContractVersionIdentity } from "../../../src/lib/board9-contract-model";
 export const dispositions = ["No Answer", "Voicemail", "Follow Up", "Requested Appointment", "Not Interested", "Incorrect Number"];
 export const routings = ["Stay in Cold Outreach", "Long-Term Nurture"];
+/** B14-12 recording-only call log. Distinct from `dispositions`, which also gates the held dialer webhook and stays unchanged. */
+export const callLogResults = ["No Answer", "Voicemail", "Spoke with Seller", "Follow Up", "Not Interested", "Incorrect Number"];
 export function exact(value: any, keys: string[]) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== keys.length || keys.some(k => !Object.prototype.hasOwnProperty.call(value, k))) throw new Error("Undeclared or missing fields");
 }
@@ -35,6 +37,7 @@ export function planWrite(operation: string, args: any, config: ReturnType<typeo
     case "contact.disposition": { const v = single(); if (!dispositions.includes(v)) throw new Error("Invalid disposition"); add(c.callDisposition, v); break; }
     case "contact.routing": { const v = single(); if (!routings.includes(v)) throw new Error("Invalid routing"); add(c.callRouting, v); break; }
     case "contact.dispositionAt": { const v = single(); iso(v); add(c.dispositionAt, v); break; }
+    case "contact.callLogResult": { const v = single(); if (!callLogResults.includes(v)) throw new Error("Invalid call result"); add(c.callDisposition, v); break; }
     case "contact.occupancy": { const v = single(); if (!["", "Owner Occupied", "Tenant Occupied", "Vacant"].includes(v)) throw new Error("Invalid occupancy"); add(c.occupancyStatus, v === "" ? "" : [v]); break; }
     case "note.create": exact(args, ["body"]); text(args.body); if (!args.body.trim()) throw new Error("Empty note"); return { kind: "note", fields, body: args.body };
     case "task.complete": exact(args, ["taskId"]); identifier(args.taskId); return { kind: "task", fields, taskId: args.taskId };
@@ -58,6 +61,8 @@ export function planWrite(operation: string, args: any, config: ReturnType<typeo
     }
     default: throw new Error("Unknown write operation");
   }
+  // B14-12 operation-specific boundary: the call log records the result field only, never a field a GHL workflow watches.
+  if (operation === "contact.callLogResult" && (fields.length !== 1 || fields[0].id !== c.callDisposition || fields.some(x => x.id === c.dispositionAt || x.id === c.callRouting))) throw new Error("Call log writes only the call result");
   if (new Set(fields.map(f => f.id)).size !== fields.length) throw new Error("Duplicate configured fields");
   return { kind, fields };
 }

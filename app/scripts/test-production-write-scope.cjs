@@ -169,6 +169,7 @@ const VALID_ARGS = {
   'contact.disposition': { value: 'No Answer' },
   'contact.routing': { value: 'Stay in Cold Outreach' },
   'contact.dispositionAt': { value: '2026-09-24T12:00:00.000Z' },
+  'contact.callLogResult': { value: 'Spoke with Seller' },
   'contact.occupancy': { value: 'Vacant' },
   'note.create': { body: MINIMAL_NOTES[0].body },
   'task.complete': { taskId: 'offline-task' },

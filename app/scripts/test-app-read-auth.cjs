@@ -456,40 +456,34 @@ function assertNoCors(res) {
   });
 
   // ---- 7b. PR #93 review corrections: confirmed writes whose readback is refused --
-  // DispositionControl reads back through confirmCarriers -> ghl.contacts.getDetail,
-  // so the error TYPE it receives is what decides saved_unverified vs failure.
-  await check('getDetail (DispositionControl readback) throws ReadUnavailableError on a marked refusal', async () => {
+  // The call log (B14-12, replacing DispositionControl) reads back through
+  // ghl.contacts.getDetail, so the error TYPE it receives is what decides
+  // saved_unverified vs failure.
+  await check('getDetail (call-log readback) throws ReadUnavailableError on a marked refusal', async () => {
     route = () => ok(REFUSED_401, 401);
     await assert.rejects(() => ghl.contacts.getDetail('fixture-contact'), (e) => e instanceof readSession.ReadUnavailableError);
     route = () => ok({ message: 'Invalid JWT' }, 401);
     await assert.rejects(() => ghl.contacts.getDetail('fixture-contact'), (e) => !(e instanceof readSession.ReadUnavailableError));
     route = null;
   });
-  const disp = fs.readFileSync(path.join(APP, 'src', 'components', 'DispositionControl.tsx'), 'utf8').replace(/\r\n/g, '\n');
-  await check('DispositionControl imports ReadUnavailableError', () => assert.match(disp, /import \{ ReadUnavailableError \} from "\.\.\/lib\/read-session";/));
-  await check('DispositionControl record path: refused readback after confirmed writes -> saved_unverified, bell withheld', () => {
-    assert.match(disp, /await ghl\.contacts\.setCallDisposition\(contactId, label\);[\s\S]*?try \{ confirmed = await confirmCarriers\(contactId, required\); \}\s*catch \(e\) \{\s*if \(!\(e instanceof ReadUnavailableError\)\) throw e;\s*setSubmit\(\{\s*status: "saved_unverified", label,[\s\S]*?\}\);\s*return;[^\n]*\n\s*\}\s*if \(!confirmed\.ok\)/);
+  const callLog = fs.readFileSync(path.join(APP, 'src', 'components', 'CallLogControl.tsx'), 'utf8').replace(/\r\n/g, '\n');
+  await check('CallLogControl imports ReadUnavailableError', () => assert.match(callLog, /import \{ ReadUnavailableError \} from "\.\.\/lib\/read-session";/));
+  await check('CallLogControl: refused readback after a confirmed result write -> saved_unverified; no note, no last touch', () => {
+    assert.match(callLog, /await ghl\.contacts\.setCallLogResult\(contactId, chosen\);[\s\S]*?\} catch \(e\) \{\s*if \(!\(e instanceof ReadUnavailableError\)\) throw e;\s*setSubmit\(\{ status: "saved_unverified", message: [^\n]*\n\s*return;\s*\}/);
   });
-  await check('DispositionControl routing path: refused readback after confirmed write -> saved_unverified, prompt closed', () => {
-    assert.match(disp, /await ghl\.contacts\.setCallRouting\(contactId, ROUTING_LTN\);[\s\S]*?\} catch \(e\) \{\s*if \(!\(e instanceof ReadUnavailableError\)\) throw e;\s*setRouting\(\{ status: "saved_unverified", message: [^\n]*\n\s*setPromptOpen\(false\);\s*return;/);
-  });
-  await check('DispositionControl message: confirmed, not verifiable, sign in to reads and reload, do not retry', () => {
-    const m = disp.match(/const VERIFY_UNAVAILABLE = "([^"]*)";/);
+  await check('CallLogControl message: confirmed, not verifiable, sign in to reads and reload, do not retry', () => {
+    const m = callLog.match(/const VERIFY_UNAVAILABLE = "([^"]*)";/);
     assert.ok(m, 'VERIFY_UNAVAILABLE not found');
     assert.match(m[1], /can't be verified/); assert.match(m[1], /Sign in to reads and reload/); assert.match(m[1], /do not retry/);
-    assert.match(disp, /Saved -- IAOS confirmed the write, but it \$\{VERIFY_UNAVAILABLE\}/);
-    assert.match(disp, /Routing saved -- IAOS confirmed the move to Long-Term Nurture, but it \$\{VERIFY_UNAVAILABLE\}/);
+    assert.match(callLog, /Result saved -- IAOS confirmed the write, but it \$\{VERIFY_UNAVAILABLE\} Notes and last-touch time were not written\./);
   });
-  await check('DispositionControl keeps its existing uncertain/failed-write handling', () => {
-    assert.match(disp, /\} catch \(e\) \{\s*setSubmit\(\{ status: "partial", label, message: `\$\{\(e as Error\)\.message\}\. Nothing was signalled to GHL\.` \}\);/);
-    assert.match(disp, /setRouting\(\{ status: "failed", stage: "write", message: \(e as Error\)\.message \}\);/);
-    assert.match(disp, /setRouting\(\{ status: "failed", stage: "readback", message: "GHL did not confirm the new routing\." \}\);/);
+  await check('CallLogControl keeps uncertain/failed-write handling: a thrown write saves nothing further', () => {
+    assert.match(callLog, /\} catch \(e\) \{\s*setSubmit\(\{ status: "not_saved", message: \`\$\{\(e as Error\)\.message\}\. Nothing was written\.\` \}\);/);
   });
-  await check('DispositionControl renders saved_unverified in amber, with no Retry', () => {
-    assert.match(disp, /data-testid="disposition-saved-unverified" style=\{\{ color: "#F59E0B" \}\}/);
-    const block = disp.slice(disp.indexOf('routing.status === "saved_unverified" ?'), disp.indexOf('routing.status === "done" ?'));
-    assert.match(block, /data-testid="routing-saved-unverified"/);
-    assert.doesNotMatch(block, /routing-retry|moveToLtn/);
+  await check('CallLogControl renders saved_unverified in amber, with no Retry', () => {
+    assert.match(callLog, /data-testid="call-log-saved-unverified" style=\{\{ color: "#F59E0B" \}\}/);
+    const line = callLog.split('\n').find((l) => l.includes('data-testid="call-log-saved-unverified"')) || '';
+    assert.doesNotMatch(line, /retry/i);
   });
   const cw = fs.readFileSync(path.join(APP, 'src', 'pages', 'ContractWorkspace.tsx'), 'utf8').replace(/\r\n/g, '\n');
   await check('Create Under Contract stays disabled, and its handler refuses, in saved_unverified', () => {

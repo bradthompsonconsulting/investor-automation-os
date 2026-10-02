@@ -1,81 +1,62 @@
 /**
- * B14-12 / INV-94 — what each call-outcome control records, and what it sets
- * off, in the words Brad sees BEFORE he commits it.
+ * B14-12 / INV-94 — call-outcome copy. One home for the contact-page call log
+ * and Seller Call's conversation-outcome panel, so they can't drift and the
+ * offline suite can assert it directly.
  *
- * Pure: no I/O, no React, no GHL identifiers. One home for the copy so the
- * contact-page dial-result control and Seller Call's conversation-outcome
- * panel can't drift, and so the offline suite can assert it directly.
+ * Pure: no I/O, no React, no GHL identifiers.
  *
- * SOURCE OF THE CONSEQUENCES. Spock's read-only Production passes of
- * 2026-10-01 (recorded on Linear 14-12): the Board #4 cutover is live, the
- * seller workflows watch `iaos_disposition_at` / `iaos_call_routing`, and
- * nothing watches the callback, `last_call_attempt` or notes. An effect that
- * is observed is stated plainly; one that is not yet verified is stated as
- * "may", never as fact. Re-check this copy whenever that record changes.
+ * RECORDING-ONLY (Brad's design, ruled by Jess 2026-10-02). A call result is
+ * a record, not an automation command: it writes the result, a call-log note
+ * and the last-touch time, and nothing a GHL workflow watches
+ * (`iaos_disposition_at`, `iaos_call_routing`). Callbacks are a separate,
+ * explicit action. Do Not Call is a separate action (its own PR and gate).
  *
- * THE OPERATOR NOTE LABEL. IAOS-written dial-result notes say who reported
- * them, so they can't be mistaken for GHL's own call event. The label must
- * never begin `IAOS ` + a ledger word: `write-note-guard.ts` refuses an
- * unparseable note that does.
+ * THE NOTE LABEL. Call-log notes say who reported them, so they can't be
+ * mistaken for GHL's own call event (`ghl-disposition` writes "Call: X — Ns").
+ * The label must never begin `IAOS ` + a ledger word: `write-note-guard.ts`
+ * refuses an unparseable note that does.
  */
 
-export type DialResult =
-  | "No Answer"
-  | "Voicemail"
-  | "Follow Up"
-  | "Requested Appointment"
-  | "Not Interested"
-  | "Incorrect Number";
+/** The six results the contact-page call log records, in display order. */
+export const CALL_LOG_RESULTS = ["No Answer", "Voicemail", "Spoke with Seller", "Follow Up", "Not Interested", "Incorrect Number"] as const;
+export type CallLogResult = typeof CALL_LOG_RESULTS[number];
 
 export const OPERATOR_CALL_NOTE_PREFIX = "Call (reported by Brad in IAOS):";
+export const CALL_NOTES_MAX = 4000;
 
-/** The dial-result note body. `callbackText` is the already-formatted callback time, Follow Up only. */
-export function operatorCallNote(label: DialResult, callbackText: string | null): string {
-  return callbackText
-    ? `${OPERATOR_CALL_NOTE_PREFIX} ${label} — callback scheduled for ${callbackText}`
-    : `${OPERATOR_CALL_NOTE_PREFIX} ${label}`;
+/** The call-log note: the result on the first line, then Brad's notes, if any. */
+export function callLogNote(result: CallLogResult, notes: string): string {
+  const text = notes.trim();
+  return text ? `${OPERATOR_CALL_NOTE_PREFIX} ${result}\n${text}` : `${OPERATOR_CALL_NOTE_PREFIX} ${result}`;
+}
+
+/**
+ * Reads a call-log note back: the result label from the first line (anything
+ * after " — ", e.g. an older "— callback scheduled for …", is dropped) and the
+ * notes below it. Also reads notes written before the call log. `null` for any
+ * other note.
+ */
+export function parseCallLogNote(body: string): { result: string; notes: string } | null {
+  if (typeof body !== "string" || !body.startsWith(OPERATOR_CALL_NOTE_PREFIX + " ")) return null;
+  const nl = body.indexOf("\n");
+  const first = (nl === -1 ? body : body.slice(0, nl)).slice(OPERATOR_CALL_NOTE_PREFIX.length + 1).trim();
+  const result = first.split(" — ")[0].trim();
+  if (!result) return null;
+  return { result, notes: nl === -1 ? "" : body.slice(nl + 1).trim() };
 }
 
 export const GHL_CALL_LOGGING_LINE =
   "Calls placed with GHL Phone are logged by GHL. IAOS records only what you report here.";
 
-export const DIAL_RESULT_HEADING = "Record dial result (cold outreach)";
-export const DIAL_RESULT_SUBHEADING = "These can start or stop GHL seller workflows.";
-
-/** `confirm: true` outcomes can lead to messages to the seller, so they take a second click. */
-export const DIAL_RESULT_CONSEQUENCES: Readonly<Record<DialResult, { text: string; confirm: boolean }>> = {
-  "No Answer": {
-    text: "No seller messages. The lead returns to your call queue after 12 hours.",
-    confirm: false,
-  },
-  "Voicemail": {
-    text: "No seller messages. The lead returns to your call queue after 12 hours.",
-    confirm: false,
-  },
-  "Follow Up": {
-    text: "Sets your callback and moves the deal to Seller Follow-Up. If it is still there around day 37, GHL may move it to Long-Term Nurture, where the seller gets email and text messages.",
-    confirm: true,
-  },
-  "Requested Appointment": {
-    text: "GHL texts the seller a booking link about 15 minutes later (within its sending hours), even without a reply. Recording it again may text the seller again.",
-    confirm: true,
-  },
-  "Not Interested": {
-    text: "Stops the Seller 6 follow-up path for this deal. Messages already scheduled by another workflow, such as Seller 2's booking-link text, may still send.",
-    confirm: false,
-  },
-  "Incorrect Number": {
-    text: "Takes the lead out of your call queue until its phone number changes. No seller messages.",
-    confirm: false,
-  },
-};
-
-export const MOVE_TO_LTN_CONSEQUENCE =
-  "Moves the deal to Long-Term Nurture. GHL may start email and text messages to the seller from there (not yet verified).";
+export const CALL_LOG_HEADING = "Log this call";
+export const CALL_LOG_EFFECT =
+  "Records this call: who, when, the result and your notes. It doesn't move the deal, start or stop workflows, or send messages.";
+export const CALL_NOTES_PLACEHOLDER = "What did the seller say? What did you learn? What to cover next time?";
+export const FOLLOW_UP_CALLBACK_HINT = "Follow Up doesn't set a callback. Use Set Callback to choose a date and time.";
 
 export const CONVERSATION_OUTCOME_HEADING = "Record conversation outcome";
 export const CONVERSATION_OUTCOME_SUBHEADING = "These do not start cold-outreach workflows.";
-export const DIAL_RESULT_POINTER = "No conversation? Record the dial result on the contact page.";
+export const DIAL_RESULT_POINTER = "No conversation? Log the call on the contact page.";
 export const SELLER_CALL_FOLLOW_UP_CONSEQUENCE =
   "Schedules your callback only. No stage change and no seller messages, unlike Follow Up on the contact page.";
 export const SELLER_CALL_PASS_CONSEQUENCE = "Records the pass. No seller messages.";
