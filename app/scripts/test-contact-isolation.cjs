@@ -16,7 +16,9 @@
  *   a late A notes read never puts A's notes or callback on B.
  *   Seller Call — Pass names a Follow-Up callback saved on this page for the
  *   SAME contact, and a late A save or a late A read never becomes B's Pass
- *   warning; while B's record is loading the warning names no callback.
+ *   warning; while B's record is loading the warning names no callback, and
+ *   Confirm Pass sends no write (button or handler) until B's status is
+ *   known, which a late read for A cannot supply.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -345,6 +347,76 @@ async function main() {
     await settle();
     p = await passText();
     check('A->B with A\'s initial read pending: A\'s late record never becomes B\'s warning', p === BASE, p);
+
+    // S6 — Bones's repro at b2e27d8: B's read pending, reason entered, Confirm Pass attempted.
+    const writes = () => log.filter((r) => r.kind === 'write');
+    const attemptPass = async () => {
+      const before = log.filter((r) => r.kind === 'write').length;
+      // 1) the button as a person would click it (forced past the disabled state)
+      await page.getByTestId('call-outcome-pass-confirm').click({ force: true }).catch(() => {});
+      await settle();
+      if (log.filter((r) => r.kind === 'write').length > before) return;   // already wrote: the zero-writes check reports it
+      // 2) the handler itself. React drops clicks on a button whose `disabled`
+      //    PROP is set, so call the rendered onClick prop directly: only
+      //    handleRecordOutcome's own gate stands between this call and a write.
+      const invoked = await page.getByTestId('call-outcome-pass-confirm').evaluate((el) => {
+        const key = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+        if (!key || typeof el[key].onClick !== 'function') return false;
+        el[key].onClick({}); return true;
+      });
+      if (!invoked) throw new Error('could not reach the Confirm Pass onClick handler');
+      await settle();
+    };
+    const passConfirmDisabled = () => page.getByTestId('call-outcome-pass-confirm').isDisabled();
+    await fresh({ aCallback: A_CALLBACK }, `/contacts/${A}/seller-call`);
+    await scLoaded('Alpha');
+    h = hold((r) => r.kind === 'detail' && r.contact === B);
+    await go(`/contacts/${B}/seller-call`);
+    await h.hit;
+    let writesAtNav = writes().length;
+    await passText();
+    await page.getByTestId('call-outcome-pass-reason').fill('14-12 offline gate check');
+    check('B\'s read pending: the warning says it is still checking', (await passText()) === `${BASE} Checking this contact for a scheduled callback…`);
+    check('B\'s read pending: Confirm Pass stays disabled after a reason is entered', await passConfirmDisabled());
+    await attemptPass();
+    check('B\'s read pending: attempting confirmation (button and handler) sends zero write requests', writes().length === writesAtNav,
+      writes().slice(writesAtNav));
+    check('B\'s read pending: the handler explains why nothing was recorded',
+      (await page.getByTestId('call-outcome-error').innerText().catch(() => '')).includes('Still checking this contact for a scheduled callback'));
+    h.release();
+    await until(async () => (await passText()) === BASE, 'B status known');
+    check('B\'s read resolved: Confirm Pass is enabled', !(await passConfirmDisabled()));
+    check('B\'s read resolved: still zero writes before confirmation', writes().length === writesAtNav, writes().slice(writesAtNav));
+    await page.getByTestId('call-outcome-pass-confirm').click();
+    await until(async () => writesFor(B, 'contact.lastCallAttempt') === 1, 'B Pass writes');
+    const bPass = writes().slice(writesAtNav);
+    check('B\'s read resolved: confirmation records the Pass for B only (note, then attempt)',
+      JSON.stringify(bPass.map((r) => [r.op, r.contact])) === JSON.stringify([['note.create', B], ['contact.lastCallAttempt', B]]), bPass.map((r) => [r.op, r.contact]));
+    check('B\'s Pass note is B\'s opportunity, with the entered reason',
+      /\nOpportunity: fixtureContactB-opp\n/.test(bPass[0].args.body) && /\nOutcome: pass\n/.test(bPass[0].args.body) && /\nReason: 14-12 offline gate check\n/.test(bPass[0].args.body));
+    check('no write reached A during the B Pass', writes().every((r) => r.contact !== A));
+
+    // S7 — a late read for A cannot unlock B: A -> B -> A -> B with every detail read held.
+    await fresh({ aCallback: A_CALLBACK }, `/contacts/${A}/seller-call`);
+    await scLoaded('Alpha');
+    const hB1 = hold((r) => r.kind === 'detail' && r.contact === B);
+    const hA2 = hold((r) => r.kind === 'detail' && r.contact === A);
+    const hB2 = hold((r) => r.kind === 'detail' && r.contact === B);
+    await go(`/contacts/${B}/seller-call`); await hB1.hit;
+    await go(`/contacts/${A}/seller-call`); await hA2.hit;
+    await go(`/contacts/${B}/seller-call`); await hB2.hit;
+    writesAtNav = writes().length;
+    hA2.release();                                   // A's late read lands while B is on screen
+    await settle();
+    await passText();
+    await page.getByTestId('call-outcome-pass-reason').fill('late A read check');
+    check('late A read while B is shown: B stays gated (Confirm Pass disabled)', await passConfirmDisabled());
+    check('late A read while B is shown: B\'s warning never names A\'s callback', !(await passText()).includes('Oct 6'), await passText());
+    await attemptPass();
+    check('late A read while B is shown: attempting confirmation sends zero write requests', writes().length === writesAtNav, writes().slice(writesAtNav));
+    hB1.release(); hB2.release();
+    await until(async () => (await passText()) === BASE, 'B status known after its read');
+    check('B\'s own read resolved: Confirm Pass is enabled', !(await passConfirmDisabled()));
 
     check('no request left the machine', foreign.length === 0, foreign);
     check('no uncaught page errors', pageErrors.length === 0, pageErrors);

@@ -175,8 +175,20 @@ check('Pass with an unreadable callback time: still warns',
 }
 check('Pass while this contact\'s record is loading: names no callback',
   copy.sellerCallPassConsequence('unknown'), 'Records the pass. No seller messages. Checking this contact for a scheduled callback…');
-check('Seller Call Pass consequence uses only THIS contact\'s callback (session save and loaded record both contact-checked)',
-  /data-testid="call-outcome-pass-consequence"[^>]*>\s*\{\(\(\) => \{\s*const cb = resolveScheduledCallback\(\s*sessionCallback\?\.contactId === contactId \? sessionCallback\.iso : null,\s*contact\?\.id === contactId \? contact\.customFields : null,\s*\{ precise: CONFIG\.fields\.callbackDatetimePrecise, date: CONFIG\.fields\.callbackDatetime \}\);\s*return sellerCallPassConsequence\(cb === "unknown" \? "unknown" : cb \? \{ text: cb\.iso \? formatCallbackTime\(cb\.iso\) : null \} : null\);/.test(sellerCallCode), true);
+check('Seller Call resolves ONE callback status from only THIS contact\'s data (session save and loaded record both contact-checked)',
+  /const passCallback = resolveScheduledCallback\(\s*sessionCallback\?\.contactId === contactId \? sessionCallback\.iso : null,\s*contact\?\.id === contactId \? contact\.customFields : null,\s*\{ precise: CONFIG\.fields\.callbackDatetimePrecise, date: CONFIG\.fields\.callbackDatetime \}\);\s*const passCallbackKnown = passCallback !== "unknown";/.test(sellerCallCode)
+  && (sellerCallCode.match(/resolveScheduledCallback\(/g) || []).length === 1, true);
+check('Pass consequence text comes from that status',
+  /data-testid="call-outcome-pass-consequence"[^>]*>\s*\{sellerCallPassConsequence\(passCallback === "unknown" \? "unknown"\s*: passCallback \? \{ text: passCallback\.iso \? formatCallbackTime\(passCallback\.iso\) : null \} : null\)\}/.test(sellerCallCode), true);
+check('Confirm Pass is disabled until this contact\'s callback status is known',
+  /data-testid="call-outcome-pass-confirm"\s*onClick=\{\(\) => void handleRecordOutcome\("pass"\)\}\s*disabled=\{recordingOutcome !== null \|\| passReasonInput\.trim\(\) === "" \|\| !passCallbackKnown\}/.test(sellerCallCode), true);
+{
+  const handler = (sellerCallCode.match(/async function handleRecordOutcome\(kind: CallOutcomeKind\) \{[\s\S]*?\n  \}\n/) || [''])[0];
+  const gate = handler.indexOf('if (kind === "pass" && !passCallbackKnown) {');
+  const firstWrite = Math.min(...['ghl.', 'runConfirmAcceptWrites(', 'scheduleCallbackGated(', 'attemptRecordOutcome('].map((s) => { const i = handler.indexOf(s); return i === -1 ? Infinity : i; }));
+  check('handleRecordOutcome refuses a Pass before any validation or write while the status is unknown',
+    gate !== -1 && gate < firstWrite && /if \(kind === "pass" && !passCallbackKnown\) \{\s*setOutcomeActionError\([^)]*\);\s*return;\s*\}/.test(handler), true);
+}
 check('a Follow-Up saved on this page is recorded WITH the contact it was written for',
   /const cb = await scheduleCallbackGated\(ghl, contactId, followUpIso\);\s*if \(cb\.ok \|\| cb\.callbackPersisted\) setSessionCallback\(\{ contactId, iso: followUpIso \}\);/.test(sellerCallCode), true);
 check('no unscoped session callback remains', /sessionCallbackIso/.test(sellerCallCode), false);
