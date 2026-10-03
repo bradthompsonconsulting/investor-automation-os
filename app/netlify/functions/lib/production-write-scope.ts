@@ -50,6 +50,8 @@
  */
 import { getConfig, PRODUCTION_PROOF_SCOPE_ENABLED, PRODUCTION_PROOF_CONTACT_NOT_PINNED, PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED, PRODUCTION_CALL_LOG_ENABLED } from "../../../shared/ghl-config";
 import { callLogResults } from "./write-contracts";
+import { isDncNoteBody } from "../../../src/lib/dnc";
+import { PRODUCTION_DNC_ENABLED } from "../../../shared/ghl-config";
 import type { GhlConfig } from "../../../shared/ghl-config";
 import { evaluateContractEnvironment } from "./contract-production-readiness";
 import { parseArvApprovalNote } from "../../../src/lib/arv-approval-note";
@@ -269,8 +271,20 @@ function evaluateProductionCallLog(config: GhlConfig, request: { operation: stri
   }
 }
 
+/* B14-12 — Production Do Not Call class: its own flag, independent of the call-log class. */
+export function productionDncEnabled(config: GhlConfig): boolean {
+  return !isTestDeployment(config) && config.productionDnc === PRODUCTION_DNC_ENABLED;
+}
+function evaluateProductionDnc(config: GhlConfig, request: { operation: string; targetId: string; args: unknown }): ProductionWriteScopeResult | null {
+  if (!productionDncEnabled(config)) return null;
+  if (request.operation === "note.create" && isDncNoteBody((request.args as { body?: unknown } | null)?.body)) return { ok: true };
+  return null;
+}
+
 export function evaluateProductionGhlWriteScope(config: GhlConfig, request: { operation: string; targetId: string; args: unknown }): ProductionWriteScopeResult {
   if (isTestDeployment(config)) return { ok: true };
+  const dnc = evaluateProductionDnc(config, request);
+  if (dnc) return dnc;
   const callLog = evaluateProductionCallLog(config, request);
   if (callLog) return callLog;
   const pre = productionPreconditions(config);

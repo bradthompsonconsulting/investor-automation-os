@@ -16,6 +16,7 @@ import { deriveRailDeal, railCells, railAuthorityReconciled, contactAskAuthority
 import { opportunitiesForContact } from "../lib/underwriting/selectOpportunity";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { CallLogControl } from "../components/CallLogControl";
+import { DncControl } from "../components/DncControl";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
 /* B7-02 — the PropStream browser handoff lives in ../lib/propstream, which holds
@@ -2254,6 +2255,14 @@ export default function ContactWorkspace() {
           onAttempt={(iso) => setAttemptOverride(iso)}
           onNoteWritten={loadNotes}
           onOpenCallback={() => { setCallbackOpen(true); setCallbackError(null); }}
+        />
+      )}
+      {contact && (
+        <DncControl
+          contactId={id!}
+          /* Only this contact's detail: a late read for another contact never decides DNC here. */
+          detail={detail && detail.id === id ? detail : null}
+          onNoteWritten={loadNotes}
         />
       )}
 
