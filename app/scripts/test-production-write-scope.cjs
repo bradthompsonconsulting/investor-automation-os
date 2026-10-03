@@ -112,6 +112,9 @@ function variant(state) {
   if (o.productionProofScope) c.productionProofScope = o.productionProofScope;
   if (o.contractProductionEnabled) c.contractProductionEnabled = o.contractProductionEnabled;
   if (o.stages) Object.assign(c.stages, o.stages);
+  // B14-12: the Board #9 matrix tests Board #9 alone, so the call-log class is
+  // OFF in every variant unless a check switches it on itself.
+  if (state !== 'default') c.productionCallLog = G.PRODUCTION_CALL_LOG_DISABLED;   // 'default' = the committed config, unchanged
   return c;
 }
 function applyLive(state) {
@@ -119,6 +122,7 @@ function applyLive(state) {
   PRODUCTION.productionProofScope = c.productionProofScope;
   PRODUCTION.contractProductionEnabled = c.contractProductionEnabled;
   PRODUCTION.stages.underContract = c.stages.underContract;
+  PRODUCTION.productionCallLog = c.productionCallLog;
 }
 const EXPECTED_PRE = {
   disabled: 'PRODUCTION_WRITES_DISABLED',
@@ -1109,7 +1113,22 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   const committedArgs = (op) => (op === 'note.create' ? { body: fixtureNotes[0].body } : VALID_ARGS[op]);
   const committedTarget = (op) => (op.startsWith('opportunity.') ? COMMITTED_FIXTURE_OPP : COMMITTED_FIXTURE_CONTACT);
   const committedOther = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_CONTACT);
+  // B14-12: the committed config also ENABLES the call-log class, which opens exactly these three
+  // operations for ANY contact (call-log and callback NOTES are covered by the call-log section below).
+  const CALL_LOG_OPEN = ['contact.callLogResult', 'contact.lastCallAttempt', 'contact.explicitCallback'];
   for (const op of Object.keys(VALID_ARGS)) {
+    if (CALL_LOG_OPEN.includes(op)) {
+      await check(`committed config: ${op} is open to ANY contact through the B14-12 call-log class`, () => {
+        for (const target of [committedTarget(op), committedOther(op)]) assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(PRODUCTION, { operation: op, targetId: target, args: committedArgs(op) }), { ok: true }, target);
+      });
+      await check(`handler committed config: ghl-write ${op} on another contact passes the scope gate (call-log class)`, async () => {
+        const before = snapshot();
+        const res = await writeHandler(writeEvent(op, committedOther(op), committedArgs(op)));
+        assert.notEqual(JSON.parse(res.body).by, 'iaos-production-write-scope', res.body);
+        assert.ok(blob.connections > before.connections, 'connectLambda reached after the gate');
+      });
+      continue;
+    }
     const allowed = ALLOWED_OPERATIONS.includes(op);
     await check(`committed config: ${op} on the REAL pinned fixture -> ${allowed ? 'ok' : 'OPERATION_NOT_PERMITTED'}`, () => {
       assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(PRODUCTION, { operation: op, targetId: committedTarget(op), args: committedArgs(op) }), allowed ? { ok: true } : { ok: false, code: 'OPERATION_NOT_PERMITTED' });
@@ -1271,8 +1290,8 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     const NOTE = (r, notes) => 'Call (reported by Brad in IAOS): ' + r + (notes ? '\n' + notes : '');
     const RESULTS = ['No Answer', 'Voicemail', 'Spoke with Seller', 'Follow Up', 'Not Interested', 'Incorrect Number'];
 
-    await check('call log: committed config is DISABLED in both environments', () => {
-      assert.equal(PRODUCTION_ORIGINAL.productionCallLog, G.PRODUCTION_CALL_LOG_DISABLED);
+    await check('call log: committed config is ENABLED in Production and documentation-only DISABLED in Test', () => {
+      assert.equal(PRODUCTION_ORIGINAL.productionCallLog, G.PRODUCTION_CALL_LOG_ENABLED);
       assert.equal(TEST.productionCallLog, G.PRODUCTION_CALL_LOG_DISABLED);
       assert.notEqual(G.PRODUCTION_CALL_LOG_DISABLED, G.PRODUCTION_CALL_LOG_ENABLED);
     });
@@ -1362,7 +1381,25 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     } finally {
       PRODUCTION.productionCallLog = savedCallLog;
     }
-    await assertRefusedClean('handler ghl-write contact.callLogResult: call log DISABLED (committed) refused, zero Blob/GHL', () => writeHandler(writeEvent('contact.callLogResult', OTHER_CONTACT, { value: 'Spoke with Seller' })));
+    {
+      const saved = PRODUCTION.productionCallLog;
+      PRODUCTION.productionCallLog = G.PRODUCTION_CALL_LOG_DISABLED;
+      try {
+        await assertRefusedClean('handler ghl-write contact.callLogResult: call log DISABLED refused, zero Blob/GHL', () => writeHandler(writeEvent('contact.callLogResult', OTHER_CONTACT, { value: 'Spoke with Seller' })));
+      } finally { PRODUCTION.productionCallLog = saved; }
+    }
+    await check('handler ghl-write contact.callLogResult: the COMMITTED Production config (ENABLED) passes the scope gate for a real contact', async () => {
+      const saved = PRODUCTION.productionCallLog;
+      PRODUCTION.productionCallLog = PRODUCTION_ORIGINAL.productionCallLog;
+      try {
+        const before = snapshot();
+        const res = await writeHandler(writeEvent('contact.callLogResult', OTHER_CONTACT, { value: 'Spoke with Seller' }));
+        assert.notEqual(JSON.parse(res.body).by, 'iaos-production-write-scope', res.body);
+        assert.ok(blob.connections > before.connections, 'connectLambda reached after the gate');
+      } finally {
+        PRODUCTION.productionCallLog = saved;
+      }
+    });
   }
   console.log(`production-write-scope checks=${checks} failures=${failures}`);
   process.exitCode = failures ? 1 : 0;

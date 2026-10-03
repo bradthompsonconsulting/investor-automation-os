@@ -664,8 +664,8 @@ const PRODUCTION: GhlConfig = {
   // that assert the enabled state -- and redeploy. Reverting only this file
   // leaves the contract suites failing, and CI runs them (test-inv95.cjs).
   contractProductionEnabled: CONTRACT_PRODUCTION_ENABLED,
-  // B14-12: DISABLED until the reviewed enable commit (production-write-scope.ts).
-  productionCallLog: PRODUCTION_CALL_LOG_DISABLED,
+  // B14-12: ENABLED — Brad's direct Production rollout of the recording-only call log (Jess, 2026-10-03). Disable: publish the prior deploy (lock kept), then revert this commit.
+  productionCallLog: PRODUCTION_CALL_LOG_ENABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
