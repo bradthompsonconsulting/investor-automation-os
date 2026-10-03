@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ghl, ghlContactDetailUrl, type ContactDetail } from "../lib/ghl";
 import { openGhlContactWindow, type GhlHandoffResult } from "../lib/ghl-call-handoff";
 import {
@@ -22,9 +22,14 @@ import {
  *      under its lock and refuses the note unless all three are still
  *      suppressed (first save and every retry).
  *
- * If the note's outcome is uncertain, Retry LOOKS FOR THAT NOTE FIRST and
- * treats it as recorded if found; only then re-checks suppression and saves.
- * It never claims the note was unsaved and never blindly writes a second one.
+ * UNRESOLVED ATTEMPTS (Bones, #120 recovery fix). A save whose outcome is
+ * uncertain is remembered for THAT contact (sessionStorage, keyed by contact
+ * id) until it is resolved — through Cancel, reopening, remounts and reloads
+ * in this tab. EVERY note write, whichever button starts it, goes through
+ * commit(): it first looks for the unresolved note and, if found, records it
+ * as done with no second write; if the lookup fails it writes nothing; only
+ * when the note is confirmed absent does it re-check suppression and make one
+ * new attempt. It never claims a note was unsaved.
  */
 
 type State =
@@ -33,7 +38,7 @@ type State =
   | { kind: "not_suppressed"; message: string }
   | { kind: "read_failed"; message: string }
   | { kind: "refused"; message: string }
-  | { kind: "uncertain"; message: string; note: string }
+  | { kind: "uncertain"; message: string }
   | { kind: "done"; found: boolean };
 
 /** Refusals the write path reports before anything is saved. */
@@ -44,6 +49,29 @@ const HANDOFF_TEXT: Record<GhlHandoffResult, string> = {
   blocked: "Your browser blocked the new window. Open this contact in GHL yourself, or allow pop-ups for IAOS.",
   "isolation-failed": "IAOS couldn't open GHL safely. Open this contact in GHL yourself.",
 };
+
+const PENDING_PREFIX = "iaos.dnc.pending.";
+const PENDING_TEXT = "An earlier Do Not Call note for this contact may or may not have been saved. IAOS looks for it before saving anything again.";
+
+type PendingStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+function storage(): PendingStore | null {
+  try { return typeof sessionStorage === "undefined" ? null : sessionStorage; } catch { return null; }
+}
+/** Unresolved notes in memory too, so the rule holds even if sessionStorage is unavailable. */
+const pendingMemory = new Map<string, string>();
+
+/** The unresolved (uncertain) note for this contact, if any. Never another contact's. */
+function readPending(contactId: string): string | null {
+  try { const v = storage()?.getItem(PENDING_PREFIX + contactId); if (v) return v; } catch { /* memory below */ }
+  return pendingMemory.get(contactId) ?? null;
+}
+function writePending(contactId: string, note: string | null) {
+  if (note === null) pendingMemory.delete(contactId); else pendingMemory.set(contactId, note);
+  try {
+    const s = storage();
+    if (note === null) s?.removeItem(PENDING_PREFIX + contactId); else s?.setItem(PENDING_PREFIX + contactId, note);
+  } catch { /* memory holds it */ }
+}
 
 export function DncControl({ contactId, detail, onNoteWritten }: {
   contactId: string;
@@ -56,17 +84,26 @@ export function DncControl({ contactId, detail, onNoteWritten }: {
   const [reason, setReason] = useState("");
   const [handoff, setHandoff] = useState<GhlHandoffResult | null>(null);
   const [state, setState] = useState<State>({ kind: "idle" });
+  const [pending, setPending] = useState<string | null>(() => readPending(contactId));
   const inFlight = useRef(false);
+  const currentId = useRef(contactId);
   const busy = state.kind === "busy";
   const known = detail !== null;
   const ghlUrl = ghlContactDetailUrl(contactId);
 
-  /** Fresh read of THIS contact. null = suppression holds on calls, SMS and email. */
-  async function verify(retrying: boolean): Promise<State | null> {
+  // Another contact: nothing from the previous one carries over, except each contact's own record.
+  useEffect(() => {
+    currentId.current = contactId;
+    setOpen(false); setReason(""); setHandoff(null); setState({ kind: "idle" });
+    setPending(readPending(contactId));
+  }, [contactId]);
+
+  /** Fresh read of contact `cid`. null = suppression holds on calls, SMS and email. */
+  async function verify(cid: string, retrying: boolean): Promise<State | null> {
     let fresh: ContactDetail;
-    try { fresh = await ghl.contacts.getDetail(contactId); }
+    try { fresh = await ghl.contacts.getDetail(cid); }
     catch (e) { return { kind: "read_failed", message: `Couldn't read this contact from GHL (${(e as Error).message}). Not recorded.` }; }
-    if (fresh.id !== contactId) return { kind: "read_failed", message: "GHL returned a different contact. Not recorded." };
+    if (fresh.id !== cid) return { kind: "read_failed", message: "GHL returned a different contact. Not recorded." };
     const missing = unsuppressedChannels(fresh.dndSettings);
     if (missing.length === 0) return null;
     return { kind: "not_suppressed", message: retrying
@@ -74,63 +111,77 @@ export function DncControl({ contactId, detail, onNoteWritten }: {
       : `GHL doesn't show Do Not Disturb on: ${missing.join(", ")} yet. Nothing recorded. Set it in GHL, then check again.` };
   }
 
-  async function save(note: string) {
+  /**
+   * THE ONLY NOTE-WRITE PATH (check now and Retry both come here). `note` is the note
+   * to save if nothing is outstanding. Order: reconcile any unresolved attempt for
+   * this contact → verify suppression → one save.
+   */
+  async function commit(cid: string, note: string) {
+    const live = () => currentId.current === cid;
+    const finish = (found: boolean) => {
+      writePending(cid, null);
+      if (!live()) return;
+      onNoteWritten(); setPending(null);
+      setState({ kind: "done", found }); setOpen(false); setReason(""); setHandoff(null);
+    };
+    // 1. An earlier attempt for this contact may have saved. Look before writing anything.
+    const earlier = readPending(cid);
+    if (earlier !== null) {
+      let existing: { body: string }[];
+      try { existing = (await ghl.notes.list(cid)).notes ?? []; }
+      catch (e) {
+        if (live()) setState({ kind: "uncertain", message: `Couldn't check whether the earlier note was saved (${(e as Error).message}). Nothing saved again.` });
+        return;
+      }
+      if (existing.some((n) => n.body === earlier)) { finish(true); return; }
+      writePending(cid, null);   // confirmed absent: that attempt did not save
+      if (live()) setPending(null);
+    }
+    // 2. Suppression must hold right now (re-checked after any unresolved attempt).
+    const problem = await verify(cid, earlier !== null);
+    if (problem) { if (live()) setState(problem); return; }
+    // 3. One save; ghl-write re-checks suppression before accepting it.
     try {
-      await ghl.notes.create(contactId, note);
-      onNoteWritten();
-      setState({ kind: "done", found: false });
-      setOpen(false); setReason(""); setHandoff(null);
+      await ghl.notes.create(cid, note);
+      finish(false);
     } catch (e) {
       const message = (e as Error).message;
       // A definite refusal — ghl-write's own fresh DND check, the Production scope, or no
       // write sign-in — means the note was NOT saved. Anything else is uncertain.
-      if (/^Do Not Call is not held in GHL for:/.test(message)) { setState({ kind: "refused", message }); return; }
-      if (DEFINITE_REFUSAL.test(message)) { setState({ kind: "refused", message: `Not recorded: ${message}` }); return; }
-      setState({ kind: "uncertain", note, message: `The note may or may not have been saved (${message}). Retry looks for it before saving anything again.` });
+      const refused = /^Do Not Call is not held in GHL for:/.test(message) ? message
+        : DEFINITE_REFUSAL.test(message) ? `Not recorded: ${message}` : null;
+      if (refused !== null) { if (live()) setState({ kind: "refused", message: refused }); return; }
+      writePending(cid, note);   // remembered for THIS contact even if Brad has moved on
+      if (!live()) return;
+      setPending(note);
+      setState({ kind: "uncertain", message: `The note may or may not have been saved (${message}). Retry looks for it before saving anything again.` });
     }
   }
 
-  async function check() {
+  async function run(note: string) {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setState({ kind: "busy" });
+    try { await commit(contactId, note); }
+    finally { inFlight.current = false; }
+  }
+
+  function check() {
     const why = reason.trim();
     if (!known || !why || inFlight.current) return;
-    inFlight.current = true;
-    setState({ kind: "busy" });
-    try {
-      const problem = await verify(false);
-      if (problem) { setState(problem); return; }
-      await save(dncNote(why));
-    } finally {
-      inFlight.current = false;
-    }
+    void run(dncNote(why));
   }
 
-  async function retry() {
-    if (state.kind !== "uncertain" || inFlight.current) return;
-    inFlight.current = true;
-    const note = state.note;
-    setState({ kind: "busy" });
-    try {
-      // 1. Did the earlier save go through? Look before writing anything.
-      let existing: { body: string }[];
-      try { existing = (await ghl.notes.list(contactId)).notes ?? []; }
-      catch (e) {
-        setState({ kind: "uncertain", note, message: `Couldn't check whether the earlier note was saved (${(e as Error).message}). Nothing saved again.` });
-        return;
-      }
-      if (existing.some((n) => n.body === note)) { onNoteWritten(); setState({ kind: "done", found: true }); setOpen(false); setReason(""); setHandoff(null); return; }
-      // 2. Not there: suppression must still hold right now.
-      const problem = await verify(true);
-      if (problem) { setState(problem); return; }
-      // 3. Save (ghl-write re-checks suppression before accepting it).
-      await save(note);
-    } finally {
-      inFlight.current = false;
-    }
+  function retry() {
+    const earlier = readPending(contactId);
+    if (earlier === null || inFlight.current) return;
+    void run(earlier);
   }
 
   const red = { fontSize: "12px", fontWeight: 600, padding: "8px 14px", borderRadius: "8px", border: "1px solid rgba(239,68,68,0.45)", background: "rgba(239,68,68,0.10)", color: "#F87171" } as const;
   const plain = { fontSize: "12px", padding: "8px 14px", borderRadius: "8px", border: "1px solid #334155", background: "transparent", color: "#94A3B8" } as const;
   const message = "message" in state ? state.message : null;
+  const retryButton = <> <button data-testid="dnc-retry" onClick={retry} disabled={busy} style={{ ...red, padding: "4px 10px" }}>Retry</button></>;
 
   return (
     <div data-testid="dnc" style={{ marginTop: "12px", padding: "12px 16px", border: "1px solid rgba(239,68,68,0.25)", borderRadius: "10px", background: "#0D1B3E" }}>
@@ -160,10 +211,11 @@ export function DncControl({ contactId, detail, onNoteWritten }: {
             <button data-testid="dnc-open-ghl" onClick={() => setHandoff(openGhlContactWindow(ghlUrl, (url, target) => window.open(url, target)))} disabled={busy} style={plain}>
               Open this contact in GHL
             </button>
-            <button data-testid="dnc-check" onClick={() => void check()} disabled={busy || !known || reason.trim() === ""}
+            <button data-testid="dnc-check" onClick={check} disabled={busy || !known || reason.trim() === ""}
               style={{ ...red, opacity: reason.trim() === "" ? 0.45 : 1, cursor: busy || reason.trim() === "" ? "not-allowed" : "pointer" }}>
               {busy ? "Checking GHL…" : "I've set it — check now"}
             </button>
+            {/* Cancel closes the form only; an unresolved attempt for this contact is kept. */}
             <button data-testid="dnc-cancel" onClick={() => { setOpen(false); setReason(""); setHandoff(null); setState({ kind: "idle" }); }} disabled={busy} style={plain}>
               Cancel
             </button>
@@ -174,7 +226,12 @@ export function DncControl({ contactId, detail, onNoteWritten }: {
       {message ? (
         <div data-testid={`dnc-${state.kind.replace("_", "-")}`} style={{ marginTop: "8px", fontSize: "12px", color: state.kind === "uncertain" ? "#F59E0B" : "#F87171" }}>
           {message}
-          {state.kind === "uncertain" ? <> <button data-testid="dnc-retry" onClick={() => void retry()} style={{ ...red, padding: "4px 10px" }}>Retry</button></> : null}
+          {state.kind === "uncertain" && pending !== null ? retryButton : null}
+        </div>
+      ) : pending !== null && state.kind !== "done" && state.kind !== "busy" ? (
+        <div data-testid="dnc-pending" style={{ marginTop: "8px", fontSize: "12px", color: "#F59E0B" }}>
+          {PENDING_TEXT}
+          {retryButton}
         </div>
       ) : null}
     </div>

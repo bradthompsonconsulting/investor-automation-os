@@ -691,6 +691,135 @@ async function main() {
     check('DNC Retry: suppression no longer held -> stops, no second save',
       (await dncState('dnc-not-suppressed')) === 'GHL no longer shows Do Not Disturb on: SMS. Not recorded.' && dncNotes(A) === 0 && JSON.stringify(opsFor(A, d0)) === JSON.stringify(['note.create']), opsFor(A, d0));
 
+    // ═══ #120 recovery fix (Bones): EVERY note write reconciles an unresolved attempt first ═══
+    // seq: this contact's GHL traffic in order — 'notes' (lookup or list refresh), 'detail' (suppression read), write ops.
+    const seq = (id, from) => log.slice(from).filter((r) => r.contact === id && (r.kind === 'notes' || r.kind === 'detail' || r.kind === 'write')).map((r) => r.kind === 'write' ? r.op : r.kind);
+    const writesIn = (s) => s.filter((k) => k !== 'notes' && k !== 'detail');
+    const uncertainSave = async (id) => {
+      saveThenFail.push((r) => r.kind === 'write' && r.op === 'note.create' && r.contact === id);
+      await openDnc();
+      await page.getByTestId('dnc-reason').fill(REASON);
+      await page.getByTestId('dnc-check').click();
+      await until(async () => (await dncState('dnc-uncertain')) !== null, 'DNC uncertain (saved)');
+    };
+
+    // R1 — the note saved but the response failed; Brad clicks "I've set it — check now" again
+    // (not Retry). The shared path looks first, finds the note, and writes nothing more.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    db[A].dnd = { Call: ON, SMS: ON, Email: ON };
+    d0 = W().length;
+    await uncertainSave(A);
+    check('R1 precondition: the uncertain save DID land one note', dncNotes(A) === 1);
+    let l0 = log.length;
+    await page.getByTestId('dnc-check').click();
+    await until(async () => (await dncState('dnc-done')) !== null, 'R1 found');
+    check('R1: "check now" after an uncertain save looks for the note first and finds it — zero second writes',
+      /^Do Not Call recorded \(the earlier save had gone through\)\./.test(await dncState('dnc-done')) && dncNotes(A) === 1
+      && JSON.stringify(opsFor(A, d0)) === JSON.stringify(['note.create']) && seq(A, l0)[0] === 'notes' && writesIn(seq(A, l0)).length === 0, seq(A, l0));
+
+    // R2 — same, but Brad cancels the form and reopens it: the attempt is kept for THIS contact.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    db[A].dnd = { Call: ON, SMS: ON, Email: ON };
+    d0 = W().length;
+    await uncertainSave(A);
+    await page.getByTestId('dnc-cancel').click();
+    await settle();
+    check('R2: after Cancel the unresolved attempt is still shown, with Retry',
+      /may or may not have been saved/.test((await dncState('dnc-pending')) || '') && (await page.getByTestId('dnc-retry').count()) === 1);
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill('A different reason typed after reopening.');
+    l0 = log.length;
+    await page.getByTestId('dnc-check').click();
+    await until(async () => (await dncState('dnc-done')) !== null, 'R2 found');
+    check('R2: Cancel/reopen then "check now" finds the earlier note — zero second writes, one Do Not Call note',
+      /the earlier save had gone through/.test(await dncState('dnc-done')) && db[A].notes.filter((n) => /^Do Not Call/.test(n.body)).length === 1
+      && JSON.stringify(opsFor(A, d0)) === JSON.stringify(['note.create']) && seq(A, l0)[0] === 'notes' && writesIn(seq(A, l0)).length === 0, seq(A, l0));
+    check('R2: once found, the attempt is resolved (no pending notice)', (await page.getByTestId('dnc-pending').count()) === 0);
+
+    // R3 — the attempt is scoped to its contact: B is unaffected (no notice, no lookup, its own
+    // note saves normally) and A still holds its attempt — across navigation and a page reload.
+    await fresh({ bDnd: { Call: ON, SMS: ON, Email: ON } }, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    db[A].dnd = { Call: ON, SMS: ON, Email: ON };
+    await uncertainSave(A);
+    await go(`/contacts/${B}`);
+    await contactLoaded('Bravo');
+    await settle();
+    check('R3: another contact shows no unresolved attempt', (await page.getByTestId('dnc-pending').count()) === 0 && (await page.getByTestId('dnc-uncertain').count()) === 0);
+    l0 = log.length;
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill(REASON);
+    await page.getByTestId('dnc-check').click();
+    await until(async () => (await dncState('dnc-done')) !== null, 'R3 B done');
+    check('R3: B records its own note normally (verify → one save, no lookup first); nothing touches A',
+      JSON.stringify(seq(B, l0).slice(0, 2)) === JSON.stringify(['detail', 'note.create']) && writesIn(seq(B, l0)).length === 1 && dncNotes(B) === 1 && seq(A, l0).length === 0
+      && (await dncState('dnc-done')) === 'Do Not Call recorded. At verification GHL showed calls, SMS and email suppressed ✓ · Out of IAOS calling lists ✓', { a: seq(A, l0), b: seq(B, l0) });
+    await page.goto(`${base}/scripts/harness/contact-isolation/index.html`);   // a full page load: memory is gone, the tab's sessionStorage is not
+    await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
+    await go(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await until(async () => (await page.getByTestId('dnc-pending').count()) === 1, 'R3 A pending after reload');
+    l0 = log.length;
+    await page.getByTestId('dnc-retry').click();
+    await until(async () => (await dncState('dnc-done')) !== null, 'R3 A found');
+    check('R3: back on A after navigating away and a reload, the attempt is still held and resolves by lookup — still one note',
+      /the earlier save had gone through/.test(await dncState('dnc-done')) && dncNotes(A) === 1 && seq(A, l0)[0] === 'notes' && writesIn(seq(A, l0)).length === 0 && !seq(A, l0).includes('detail'), seq(A, l0));
+
+    // R4 — the note did NOT save: after Cancel/reopen, "check now" looks (absent), re-checks
+    // suppression, then makes exactly one new attempt — in that order.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    db[A].dnd = { Call: ON, SMS: ON, Email: ON };
+    failNext.push((r) => r.kind === 'write' && r.op === 'note.create' && r.contact === A);
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill(REASON);
+    await page.getByTestId('dnc-check').click();
+    await until(async () => (await dncState('dnc-uncertain')) !== null, 'R4 uncertain');
+    check('R4 precondition: the failed save landed nothing', dncNotes(A) === 0);
+    await page.getByTestId('dnc-cancel').click();
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill(REASON);
+    l0 = log.length;
+    await page.getByTestId('dnc-check').click();
+    await until(async () => (await dncState('dnc-done')) !== null, 'R4 saved');
+    check('R4: note absent -> lookup, then suppression re-checked, then exactly one new attempt',
+      JSON.stringify(seq(A, l0).slice(0, 3)) === JSON.stringify(['notes', 'detail', 'note.create']) && writesIn(seq(A, l0)).length === 1 && dncNotes(A) === 1, seq(A, l0));
+
+    // R5 — note absent and suppression lost: "check now" stops after the re-check; nothing written.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    db[A].dnd = { Call: ON, SMS: ON, Email: ON };
+    failNext.push((r) => r.kind === 'write' && r.op === 'note.create' && r.contact === A);
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill(REASON);
+    await page.getByTestId('dnc-check').click();
+    await until(async () => (await dncState('dnc-uncertain')) !== null, 'R5 uncertain');
+    db[A].dnd.Email = { status: 'inactive', message: '' };
+    l0 = log.length;
+    await page.getByTestId('dnc-check').click();
+    await until(async () => (await dncState('dnc-not-suppressed')) !== null, 'R5 stopped');
+    check('R5: note absent and Email no longer suppressed -> lookup, re-check, stop; no new attempt',
+      JSON.stringify(seq(A, l0)) === JSON.stringify(['notes', 'detail']) && dncNotes(A) === 0
+      && (await dncState('dnc-not-suppressed')) === 'GHL no longer shows Do Not Disturb on: Email. Not recorded.', seq(A, l0));
+
+    // R6 — the lookup itself fails: nothing is written; the attempt stays unresolved.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    db[A].dnd = { Call: ON, SMS: ON, Email: ON };
+    d0 = W().length;
+    await uncertainSave(A);
+    failNext.push((r) => r.kind === 'notes' && r.contact === A);
+    l0 = log.length;
+    await page.getByTestId('dnc-check').click();
+    await until(async () => /Couldn't check whether the earlier note was saved/.test((await dncState('dnc-uncertain')) || ''), 'R6 lookup failed');
+    check('R6: a failed lookup writes nothing and keeps the attempt (Retry still offered)',
+      JSON.stringify(seq(A, l0)) === JSON.stringify(['notes']) && dncNotes(A) === 1 && (await page.getByTestId('dnc-retry').count()) === 1, seq(A, l0));
+    await page.getByTestId('dnc-retry').click();
+    await until(async () => (await dncState('dnc-done')) !== null, 'R6 found');
+    check('R6: the next attempt finds the note — still exactly one', dncNotes(A) === 1 && JSON.stringify(opsFor(A, d0)) === JSON.stringify(['note.create']));
+
     // E9 — GHL already shows all three suppressed: shown as in effect.
     await fresh({ aDnd: { Call: ON, SMS: STOP, Email: ON } }, `/contacts/${A}`);
     await contactLoaded('Alpha');
