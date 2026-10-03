@@ -175,7 +175,6 @@ const VALID_ARGS = {
   'contact.dispositionAt': { value: '2026-09-24T12:00:00.000Z' },
   'contact.callLogResult': { value: 'Spoke with Seller' },
   'contact.explicitCallback': { value: '2026-10-09T19:30:00.000Z' },
-  'contact.dnc': { confirm: 'DO_NOT_CALL' },
   'contact.occupancy': { value: 'Vacant' },
   'note.create': { body: MINIMAL_NOTES[0].body },
   'task.complete': { taskId: 'offline-task' },
@@ -1402,42 +1401,39 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       }
     });
   }
-  // ===== B14-12 — Production Do Not Call class (its own flag; default DISABLED).
+  // ===== B14-12 — Production Do Not Call class (own flag; DISABLED). IAOS never writes DND:
+  // the class opens ONLY the exact Do Not Call note (which ghl-write further accepts only
+  // while the contact's GHL calls, SMS and email read back suppressed).
   {
     const decide = (cfg, operation, targetId, args) => scopeLib.evaluateProductionGhlWriteScope(cfg, { operation, targetId, args });
     const dncOn = (state) => ({ ...variant(state), productionDnc: G.PRODUCTION_DNC_ENABLED });
-    const NOTE = 'Do Not Call (recorded by Brad in IAOS): Seller asked us not to contact them again.\nSuppressed in GHL: calls, SMS and email.';
+    const NOTE = 'Do Not Call (recorded by Brad in IAOS): Seller asked us not to contact them again.\nAt verification, GHL showed calls, SMS and email suppressed.';
     await check('dnc: committed config is DISABLED in both environments', () => {
       assert.equal(PRODUCTION_ORIGINAL.productionDnc, G.PRODUCTION_DNC_DISABLED);
       assert.equal(TEST.productionDnc, G.PRODUCTION_DNC_DISABLED);
       assert.notEqual(G.PRODUCTION_DNC_DISABLED, G.PRODUCTION_DNC_ENABLED);
     });
-    await check('dnc: DISABLED -> contact.dnc and the DNC note are refused in every Board #9 state, for any contact', () => {
-      for (const state of [...Object.keys(EXPECTED_PRE), 'ready']) {
-        for (const target of [OTHER_CONTACT, PIN_CONTACT]) {
-          assert.equal(decide(variant(state), 'contact.dnc', target, { confirm: 'DO_NOT_CALL' }).ok, false, state);
-          assert.equal(decide(variant(state), 'note.create', target, { body: NOTE }).ok, false, state);
-        }
-      }
+    await check('dnc: there is no DND write operation to permit (contact.dnc is not a planWrite case)', () => {
+      assert.equal(Object.prototype.hasOwnProperty.call(scopeLib.PRODUCTION_OPERATION_SCOPE, 'contact.dnc'), false);
+    });
+    await check('dnc: DISABLED -> the Do Not Call note is refused for a non-pinned contact in every Board #9 state', () => {
+      for (const state of [...Object.keys(EXPECTED_PRE), 'ready']) assert.equal(decide(variant(state), 'note.create', OTHER_CONTACT, { body: NOTE }).ok, false, state);
     });
     for (const state of [...Object.keys(EXPECTED_PRE), 'ready']) {
-      await check('dnc ENABLED (' + state + '): contact.dnc and the exact DNC note allowed for ANY contact, independent of Board #9 and the call-log class', () => {
+      await check('dnc ENABLED (' + state + '): only the exact Do Not Call note is opened, for ANY contact, independent of Board #9 and the call-log class', () => {
         const on = dncOn(state);
-        for (const target of [OTHER_CONTACT, PIN_CONTACT]) {
-          assert.deepEqual(decide(on, 'contact.dnc', target, { confirm: 'DO_NOT_CALL' }), { ok: true });
-          assert.deepEqual(decide(on, 'note.create', target, { body: NOTE }), { ok: true });
-        }
+        for (const target of [OTHER_CONTACT, PIN_CONTACT]) assert.deepEqual(decide(on, 'note.create', target, { body: NOTE }), { ok: true });
         assert.equal(decide(on, 'contact.callLogResult', OTHER_CONTACT, { value: 'No Answer' }).ok, false, 'call-log op not opened by the DNC class');
       });
     }
-    await check('dnc ENABLED: near-miss notes and every other operation decide exactly as when disabled', () => {
+    await check('dnc ENABLED: near-miss notes and every operation decide exactly as when disabled', () => {
       for (const state of [...Object.keys(EXPECTED_PRE), 'ready']) {
         const off = variant(state), on = dncOn(state);
-        for (const op of Object.keys(VALID_ARGS)) {
-          if (op === 'contact.dnc') continue;
-          for (const target of [pinnedTarget(op), otherTarget(op)]) assert.deepEqual(decide(on, op, target, VALID_ARGS[op]), decide(off, op, target, VALID_ARGS[op]), op + ' ' + state);
+        for (const op of Object.keys(VALID_ARGS)) for (const target of [pinnedTarget(op), otherTarget(op)]) {
+          assert.deepEqual(decide(on, op, target, VALID_ARGS[op]), decide(off, op, target, VALID_ARGS[op]), op + ' ' + state);
         }
-        for (const body of ['plain note', NOTE.replace('Suppressed in GHL: calls, SMS and email.', 'Suppressed.'), NOTE + '\nextra', 'Do Not Call (recorded by Brad in IAOS): \nSuppressed in GHL: calls, SMS and email.']) {
+        for (const body of ['plain note', NOTE.replace('At verification, GHL showed calls, SMS and email suppressed.', 'Suppressed in GHL: calls, SMS and email.'), NOTE + '\nextra',
+          'Do Not Call (recorded by Brad in IAOS): \nAt verification, GHL showed calls, SMS and email suppressed.']) {
           assert.deepEqual(decide(on, 'note.create', OTHER_CONTACT, { body }), decide(off, 'note.create', OTHER_CONTACT, { body }), body);
         }
       }
@@ -1446,18 +1442,16 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     applyLive('disabled');
     PRODUCTION.productionDnc = G.PRODUCTION_DNC_ENABLED;
     try {
-      for (const [op, args] of [['contact.dnc', { confirm: 'DO_NOT_CALL' }], ['note.create', { body: NOTE }]]) {
-        await check('handler ghl-write ' + op + ': DNC ENABLED, non-pinned contact passes the scope gate (reaches Blob/GHL)', async () => {
-          const before = snapshot();
-          const res = await writeHandler(writeEvent(op, OTHER_CONTACT, args));
-          assert.notEqual(JSON.parse(res.body).by, 'iaos-production-write-scope', res.body);
-          assert.ok(blob.connections > before.connections, 'connectLambda reached after the gate');
-        });
-      }
+      await check('handler ghl-write note.create (Do Not Call note): DNC ENABLED, non-pinned contact passes the scope gate (reaches Blob/GHL)', async () => {
+        const before = snapshot();
+        const res = await writeHandler(writeEvent('note.create', OTHER_CONTACT, { body: NOTE }));
+        assert.notEqual(JSON.parse(res.body).by, 'iaos-production-write-scope', res.body);
+        assert.ok(blob.connections > before.connections, 'connectLambda reached after the gate');
+      });
     } finally {
       PRODUCTION.productionDnc = savedDnc;
     }
-    await assertRefusedClean('handler ghl-write contact.dnc: DNC DISABLED refused, zero Blob/GHL', () => writeHandler(writeEvent('contact.dnc', OTHER_CONTACT, { confirm: 'DO_NOT_CALL' })));
+    await assertRefusedClean('handler ghl-write note.create (Do Not Call note): DNC DISABLED refused, zero Blob/GHL', () => writeHandler(writeEvent('note.create', OTHER_CONTACT, { body: NOTE })));
     applyLive('default');
   }
   console.log(`production-write-scope checks=${checks} failures=${failures}`);

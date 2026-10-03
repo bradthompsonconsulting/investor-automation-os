@@ -92,7 +92,6 @@ export const PRODUCTION_OPERATION_SCOPE = {
   "contact.lastCallAttempt": "pinned_contact",
   "contact.callback": "refused",
   "contact.explicitCallback": "refused",
-  "contact.dnc": "refused",
   "contact.propertyNotes": "refused",
   "contact.arv": "refused",
   "contact.disposition": "refused",
@@ -278,7 +277,6 @@ export function productionDncEnabled(config: GhlConfig): boolean {
 }
 function evaluateProductionDnc(config: GhlConfig, request: { operation: string; targetId: string; args: unknown }): ProductionWriteScopeResult | null {
   if (!productionDncEnabled(config)) return null;
-  if (request.operation === "contact.dnc") return { ok: true };
   if (request.operation === "note.create" && isDncNoteBody((request.args as { body?: unknown } | null)?.body)) return { ok: true };
   return null;
 }

@@ -1,3 +1,4 @@
+import { isDncNoteBody, unsuppressedChannels } from "../../src/lib/dnc";
 import { connectLambda } from "@netlify/blobs";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { validateLedgerNote } from "./lib/write-note-guard";
@@ -123,6 +124,14 @@ export const handler = async (event: any) => {
       if (!dispositions.includes(d)) return json(409, { error: "A valid disposition must be confirmed first" });
       if (d === "Follow Up" && !fieldValue(target.customFields, config.fields.callbackDatetimePrecise, "contact").value) return json(409, { error: "Follow Up requires a confirmed callback" });
     }
+    // B14-12 Do Not Call (Jess ruling): IAOS never writes DND. The exact Do Not Call
+    // note is accepted only if THIS contact, read fresh under the lock just above,
+    // shows calls, SMS and email suppressed in GHL right now — on a first save and on
+    // every Retry. Otherwise nothing is written.
+    if (plan.kind === "note" && isDncNoteBody(plan.body)) {
+      const missing = unsuppressedChannels(target.dndSettings);
+      if (missing.length) return json(409, { error: `Do Not Call is not held in GHL for: ${missing.join(", ")}. Not recorded.`, by: "iaos-dnc-not-held", missing });
+    }
     if (plan.kind === "note") await validateLedgerNote(boundary, targetId, plan.body!, operator);
     await claimWrite(`${operator}:${operation}:${targetId}`, requestId, request);
     if (plan.kind === "note") return json(200, await boundary.note(targetId, plan.body!));
@@ -149,7 +158,6 @@ export const handler = async (event: any) => {
       });
       return json(200, { confirmed: true, alreadyInStage: result.alreadyInStage, readback: { id: result.readback.id, pipelineId: result.readback.pipelineId, pipelineStageId: result.readback.pipelineStageId } });
     }
-    if (plan.kind === "contact_dnd") return json(200, { confirmed: true, ...(await boundary.dnc(targetId, target)) });
     const result = await boundary.fields(plan.kind, targetId, plan.fields);
     // A deterministic partial readback is not a successful write. Existing clients
     // receive per-field evidence and retain their partial-recovery path.

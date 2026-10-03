@@ -93,7 +93,7 @@ global.fetch = async (url, init = {}) => {
   if (method === 'PUT') {
     writes++;
     const putBody = JSON.parse(init.body);
-    if (putBody.dndSettings) { object.dndSettings = structuredClone(putBody.dndSettings); return reply(object === contact ? { contact } : { opportunity }); }
+    if ('dndSettings' in putBody || 'dnd' in putBody) throw new Error('IAOS must never write DND (B14-12): ' + JSON.stringify(Object.keys(putBody)));
     if (!omitReadback) for (const field of putBody.customFields) {
       object.customFields = object.customFields.filter(f => f.id !== field.id);
       if (field.field_value !== '' && field.field_value !== null) object.customFields.push({ id: field.id, [object === contact ? 'value' : 'fieldValue']: field.field_value });
@@ -433,22 +433,56 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
     assert.throws(() => contracts.planWrite('contact.explicitCallback', { value: 'tomorrow' }, config));
     assert.throws(() => contracts.planWrite('contact.explicitCallback', { value: null, note: 'x' }, config));
   });
-  await check('Do Not Call handler: sets Call/SMS/Email, keeps an existing STOP exactly, confirms from the readback, touches no custom field', async () => {
-    const stop = { status: 'permanent', message: 'STOP_KEYWORD' };
-    contact.dndSettings = { SMS: stop, RCS: stop };
-    const fieldsBefore = JSON.stringify(contact.customFields);
-    const res = await handler(event('contact.dnc', contact.id, { confirm: 'DO_NOT_CALL' }));
+  // B14-12 Do Not Call (Jess ruling): IAOS never writes DND; ghl-write accepts the exact
+  // Do Not Call note only while THIS contact, read fresh under the lock, shows calls,
+  // SMS and email suppressed in GHL.
+  const DNC_NOTE = 'Do Not Call (recorded by Brad in IAOS): Seller asked us not to contact them again.\nAt verification, GHL showed calls, SMS and email suppressed.';
+  const STOP = { status: 'permanent', message: 'STOP_KEYWORD' };
+  const ON = { status: 'active', message: '' };
+  await check('Do Not Call note: accepted while GHL shows calls, SMS (here a seller STOP) and email suppressed; DND is only read', async () => {
+    contact.dndSettings = { Call: ON, SMS: STOP, RCS: STOP, Email: ON };
+    const before = JSON.stringify(contact.dndSettings);
+    const notesBefore = notes.length, callsBefore = calls.length;
+    const res = await handler(event('note.create', contact.id, { body: DNC_NOTE }));
     assert.equal(res.statusCode, 200, res.body);
-    const body = JSON.parse(res.body);
-    assert.equal(body.confirmed, true);
-    assert.deepEqual(body.changed, ['Call', 'Email']);
-    assert.deepEqual(contact.dndSettings, { SMS: stop, RCS: stop, Call: { status: 'active', message: 'IAOS Do Not Call' }, Email: { status: 'active', message: 'IAOS Do Not Call' } });
-    assert.equal(JSON.stringify(contact.customFields), fieldsBefore);
+    assert.equal(notes.length, notesBefore + 1);
+    assert.equal(JSON.stringify(contact.dndSettings), before, 'the STOP and every channel untouched');
+    assert.equal(calls.slice(callsBefore).filter((c) => c.method === 'PUT').length, 0, 'no PUT at all');
     delete contact.dndSettings;
   });
-  await check('Do Not Call handler: an unconfirmed request is refused before any GHL call', async () => {
+  await check('Do Not Call note: refused (409, by iaos-dnc-not-held, naming the channel) when GHL does not show email suppressed; nothing written', async () => {
+    contact.dndSettings = { Call: ON, SMS: STOP };
+    const writesBefore = writes, notesBefore = notes.length;
+    const res = await handler(event('note.create', contact.id, { body: DNC_NOTE.replace('them again.', 'them again!') }));
+    assert.equal(res.statusCode, 409, res.body);
+    const body = JSON.parse(res.body);
+    assert.equal(body.by, 'iaos-dnc-not-held');
+    assert.deepEqual(body.missing, ['Email']);
+    assert.equal(body.error, 'Do Not Call is not held in GHL for: Email. Not recorded.');
+    assert.equal(writes, writesBefore); assert.equal(notes.length, notesBefore);
+    delete contact.dndSettings;
+  });
+  await check('Do Not Call note: refused when GHL shows no DND at all; an ordinary note still needs no DND', async () => {
+    const res = await handler(event('note.create', contact.id, { body: DNC_NOTE.replace('them again.', 'them again?') }));
+    assert.equal(res.statusCode, 409, res.body);
+    assert.deepEqual(JSON.parse(res.body).missing, ['Call', 'SMS', 'Email']);
+    const ok = await handler(event('note.create', contact.id, { body: 'ordinary operator note, no DND involved' }));
+    assert.equal(ok.statusCode, 200, ok.body);
+  });
+  await check('Do Not Call note: the check runs on every save (a retry after suppression is lost is refused)', async () => {
+    contact.dndSettings = { Call: ON, SMS: ON, Email: ON };
+    const body = DNC_NOTE.replace('them again.', 'them again (retry).');
+    const first = await handler(event('note.create', contact.id, { body }));
+    assert.equal(first.statusCode, 200, first.body);
+    contact.dndSettings = { Call: ON, SMS: { status: 'inactive' }, Email: ON };
+    const again = await handler(event('note.create', contact.id, { body: body.replace('(retry)', '(retry 2)') }));
+    assert.equal(again.statusCode, 409, again.body);
+    assert.deepEqual(JSON.parse(again.body).missing, ['SMS']);
+    delete contact.dndSettings;
+  });
+  await check('contact.dnc no longer exists: refused as an unknown operation before any GHL call', async () => {
     const before = calls.length;
-    const res = await handler(event('contact.dnc', contact.id, { confirm: 'yes' }));
+    const res = await handler(event('contact.dnc', contact.id, { confirm: 'DO_NOT_CALL' }));
     assert.equal(res.statusCode, 400, res.body);
     assert.equal(calls.length, before);
   });

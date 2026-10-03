@@ -222,7 +222,7 @@ jobs:
       - name: Seller Call calling options — 49 offline checks
         run: node app/scripts/test-seller-call-voice-controls.cjs
 
-      - name: Call log, call-outcome wording, queue placement, contact isolation and Do Not Call wiring — 82 offline checks
+      - name: Call log, call-outcome wording, queue placement, contact isolation and Do Not Call wiring — 84 offline checks
         run: node app/scripts/test-call-outcome-copy.cjs
 
       - name: Netlify observer — 86 offline checks

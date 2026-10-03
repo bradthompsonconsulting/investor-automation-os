@@ -171,9 +171,11 @@ export interface GhlConfig {
   /**
    * B14-12 Do Not Call — its own Production permission class, independent of
    * the call-log class and of Board #9. SERVER-SIDE ONLY. Only
-   * `PRODUCTION_DNC_ENABLED` opens it; then, for ANY Production contact:
-   * contact.dnc, and note.create ONLY for an exact Do Not Call note. TEST
-   * carries a documentation-only value. Enabling is its own reviewed commit.
+   * `PRODUCTION_DNC_ENABLED` opens it; then, for ANY Production contact,
+   * note.create ONLY for an exact Do Not Call note — which ghl-write further
+   * accepts only while that contact's GHL calls, SMS and email read back
+   * suppressed. IAOS never writes DND. TEST carries a documentation-only
+   * value. Enabling is its own reviewed commit.
    */
   productionDnc: string;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */

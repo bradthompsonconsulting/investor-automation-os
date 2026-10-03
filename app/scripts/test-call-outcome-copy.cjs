@@ -241,16 +241,26 @@ check('webhook still accepts exactly the six dispositions (Do Not Call refused)'
 // ── Do Not Call wiring (B14-12) ──────────────────────────────────────────
 {
   const dncCode = stripBlockComments(read('src/components/DncControl.tsx'));
-  check('DNC control calls only setDnc, getDetail and notes.create',
-    [...new Set([...dncCode.matchAll(/ghl\.(contacts|notes)\.(\w+)\(/g)].map((m) => m[1] + '.' + m[2]))].sort(), ['contacts.getDetail', 'contacts.setDnc', 'notes.create']);
-  check('DNC order: suppression, then a fresh read, then the note',
-    dncCode.indexOf('await ghl.contacts.setDnc(contactId)') !== -1
-    && dncCode.indexOf('await ghl.contacts.setDnc(contactId)') < dncCode.indexOf('await ghl.contacts.getDetail(contactId)')
-    && dncCode.indexOf('await ghl.contacts.getDetail(contactId)') < dncCode.indexOf('await writeNote(dncNote(why))'), true);
+  check('DNC control only reads GHL and writes the note (getDetail, notes.list, notes.create) — never a contact write',
+    [...new Set([...dncCode.matchAll(/ghl\.(contacts|notes)\.(\w+)\(/g)].map((m) => m[1] + '.' + m[2]))].sort(), ['contacts.getDetail', 'notes.create', 'notes.list']);
+  check('DNC hands Brad to THIS contact in GHL through the isolated 14-11 handoff',
+    /const ghlUrl = ghlContactDetailUrl\(contactId\);/.test(dncCode) && /openGhlContactWindow\(ghlUrl, \(url, target\) => window\.open\(url, target\)\)/.test(dncCode), true);
+  check('DNC check: verify (fresh read of this contact) before saving the note',
+    dncCode.indexOf('const problem = await verify(false);') !== -1 && dncCode.indexOf('const problem = await verify(false);') < dncCode.indexOf('await save(dncNote(why));')
+    && /if \(fresh\.id !== contactId\)/.test(dncCode) && /const missing = unsuppressedChannels\(fresh\.dndSettings\);/.test(dncCode), true);
   check('DNC confirm needs this contact loaded and a reason', /disabled=\{busy \|\| !known \|\| reason\.trim\(\) === ""\}/.test(dncCode) && /if \(!known \|\| !why \|\| inFlight\.current\) return;/.test(dncCode), true);
-  check('DNC never claims success without the fresh read; never names a call result, routing or the trigger timestamp',
-    /verified = fresh\.id === contactId && isDncComplete\(fresh\.dndSettings\);/.test(dncCode) && !/setCallLogResult|setCallRouting|setDispositionAt|setCallDisposition/.test(dncCode), true);
-  check('ghl client: setDnc is the contact.dnc operation with a fixed confirm', /setDnc: \(contactId: string\) => confirmedCommand\("contact\.dnc", contactId, \{ confirm: "DO_NOT_CALL" \}\)/.test(ghlClient), true);
+  {
+    const retrySrc = (dncCode.match(/async function retry\(\) \{[\s\S]*?\n  \}\n/) || [''])[0];
+    const at = (s) => retrySrc.indexOf(s);
+    check('DNC Retry: look for the earlier note first, then re-verify suppression, then save — never a blind second note',
+      at('await ghl.notes.list(contactId)') !== -1 && at('existing.some((n) => n.body === note)') > at('await ghl.notes.list(contactId)')
+      && at('await verify(true)') > at('existing.some((n) => n.body === note)') && at('await save(note)') > at('await verify(true)'), true);
+  }
+  check('DNC: a server refusal is "not recorded"; any other note failure is "uncertain", never "unsaved"',
+    /if \(\/\^Do Not Call is not held in GHL for:\/\.test\(message\)\) \{ setState\(\{ kind: "refused", message \}\); return; \}/.test(dncCode)
+    && /if \(DEFINITE_REFUSAL\.test\(message\)\) \{ setState\(\{ kind: "refused", message: `Not recorded: \$\{message\}` \}\); return; \}/.test(dncCode)
+    && /The note may or may not have been saved/.test(dncCode) && !/(was not|wasn't) saved/.test(dncCode), true);
+  check('ghl client has no DND write method', /setDnc|contact\.dnc/.test(ghlClient), false);
   check("Contact page mounts the DNC control with only this contact's detail",
     /<DncControl[\s\S]*?detail=\{detail && detail\.id === id \? detail : null\}[\s\S]*?onNoteWritten=\{loadNotes\}/.test(contactPageCode), true);
   check('Dashboard keeps a Call-suppressed contact out of every calling list',
