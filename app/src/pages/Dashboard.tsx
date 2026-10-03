@@ -4,7 +4,7 @@ import {
   AlertCircle, Clock, FileCheck, Mail as MailIcon, Inbox, CalendarClock,
   ChevronDown, Flame, Sun, Snowflake, PhoneCall, StickyNote, ExternalLink, PartyPopper, Headphones,
 } from "lucide-react";
-import {
+import { explicitCallbackClient,
   ghl, getBucketTag, ghlContactDetailUrl,
   type ContactRow, type MailerDigest, type PipelineData, type BucketTag,
   type UnansweredInboundRow,
@@ -358,7 +358,7 @@ export default function Dashboard() {
     // Clearing is not a disposition — just clear the field, no note, no attempt.
     if (iso === null) {
       try {
-        await ghl.contacts.setCallbackDatetime(contactId, null);
+        await ghl.contacts.setExplicitCallback(contactId, null);
         setCallbackOverride((prev) => ({ ...prev, [contactId]: null }));
         setCallbackPopoverId(null);
       } catch (e) {
@@ -372,7 +372,7 @@ export default function Dashboard() {
     // Scheduling IS a disposition (§10): gated callback → note → attempt via the
     // shared helper, so the fresh last_call_attempt greys this row just like the
     // Workspace. Still exactly the three sanctioned writes.
-    const result = await scheduleCallbackGated(ghl, contactId, iso);
+    const result = await scheduleCallbackGated(explicitCallbackClient, contactId, iso);
     setCallbackSaving(false);
 
     if (result.ok) {

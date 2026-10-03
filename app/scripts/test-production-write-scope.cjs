@@ -170,6 +170,7 @@ const VALID_ARGS = {
   'contact.routing': { value: 'Stay in Cold Outreach' },
   'contact.dispositionAt': { value: '2026-09-24T12:00:00.000Z' },
   'contact.callLogResult': { value: 'Spoke with Seller' },
+  'contact.explicitCallback': { value: '2026-10-09T19:30:00.000Z' },
   'contact.occupancy': { value: 'Vacant' },
   'note.create': { body: MINIMAL_NOTES[0].body },
   'task.complete': { taskId: 'offline-task' },
@@ -1285,13 +1286,15 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       }
     });
     for (const state of [...Object.keys(EXPECTED_PRE), 'ready']) {
-      await check('call log ENABLED (' + state + '): result, last touch and callback allowed for ANY contact, independent of Board #9', () => {
+      await check('call log ENABLED (' + state + '): result, last touch and the EXPLICIT callback allowed for ANY contact, independent of Board #9; generic contact.callback still refused', () => {
         const on = callLogOn(state);
         for (const target of [OTHER_CONTACT, PIN_CONTACT]) {
           for (const r of RESULTS) assert.deepEqual(decide(on, 'contact.callLogResult', target, { value: r }), { ok: true }, r);
           assert.deepEqual(decide(on, 'contact.lastCallAttempt', target, { value: '2026-10-02T12:00:00.000Z' }), { ok: true });
-          assert.deepEqual(decide(on, 'contact.callback', target, { value: '2026-10-09T19:30:00.000Z' }), { ok: true });
-          assert.deepEqual(decide(on, 'contact.callback', target, { value: null }), { ok: true });
+          assert.deepEqual(decide(on, 'contact.explicitCallback', target, { value: '2026-10-09T19:30:00.000Z' }), { ok: true });
+          assert.deepEqual(decide(on, 'contact.explicitCallback', target, { value: null }), { ok: true });
+          assert.equal(decide(on, 'contact.callback', target, { value: '2026-10-09T19:30:00.000Z' }).ok, false, 'generic contact.callback');
+          assert.equal(decide(on, 'contact.callback', target, { value: null }).ok, false, 'generic contact.callback clear');
         }
       });
     }
@@ -1317,7 +1320,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       for (const state of [...Object.keys(EXPECTED_PRE), 'ready']) {
         const off = variant(state), on = callLogOn(state);
         for (const op of Object.keys(VALID_ARGS)) {
-          if (['contact.callLogResult', 'contact.lastCallAttempt', 'contact.callback'].includes(op)) continue;
+          if (['contact.callLogResult', 'contact.lastCallAttempt', 'contact.explicitCallback'].includes(op)) continue;
           for (const target of [pinnedTarget(op), otherTarget(op)]) {
             if (op === 'note.create') continue;      // notes: covered by the exact-pattern checks above
             assert.deepEqual(decide(on, op, target, VALID_ARGS[op]), decide(off, op, target, VALID_ARGS[op]), op + ' ' + state);
@@ -1344,7 +1347,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     try {
       for (const [op, args] of [
         ['contact.callLogResult', { value: 'Spoke with Seller' }], ['contact.lastCallAttempt', VALID_ARGS['contact.lastCallAttempt']],
-        ['contact.callback', { value: '2026-10-09T19:30:00.000Z' }], ['note.create', { body: NOTE('Spoke with Seller', 'Wants 30 days.') }],
+        ['contact.explicitCallback', { value: '2026-10-09T19:30:00.000Z' }], ['note.create', { body: NOTE('Spoke with Seller', 'Wants 30 days.') }],
       ]) {
         await check('handler ghl-write ' + op + ': call log ENABLED, non-pinned contact passes the scope gate (reaches Blob/GHL)', async () => {
           const before = snapshot();
@@ -1353,7 +1356,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
           assert.ok(blob.connections > before.connections, 'connectLambda reached after the gate');
         });
       }
-      for (const [op, args] of [['contact.routing', VALID_ARGS['contact.routing']], ['contact.dispositionAt', VALID_ARGS['contact.dispositionAt']], ['note.create', { body: 'plain note' }]]) {
+      for (const [op, args] of [['contact.routing', VALID_ARGS['contact.routing']], ['contact.dispositionAt', VALID_ARGS['contact.dispositionAt']], ['note.create', { body: 'plain note' }], ['contact.callback', { value: '2026-10-09T19:30:00.000Z' }], ['note.create', { body: PASS_OUTCOME_BODY }]]) {
         await assertRefusedClean('handler ghl-write ' + op + ': call log ENABLED still refuses it, zero Blob/GHL', () => writeHandler(writeEvent(op, OTHER_CONTACT, args)));
       }
     } finally {

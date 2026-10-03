@@ -160,7 +160,8 @@ export interface GhlConfig {
    * `PRODUCTION_CALL_LOG_ENABLED` opens it; anything else leaves every
    * Production write exactly as the Board #9 proof scope rules it. When open,
    * for ANY Production contact: contact.callLogResult, contact.lastCallAttempt,
-   * contact.callback, and note.create ONLY for an exact call-log note or an
+   * contact.explicitCallback (the deliberate Set/Clear Callback action — never
+   * the generic contact.callback), and note.create ONLY for an exact call-log note or an
    * exact "Callback scheduled for …" note. Nothing else — no Board #9
    * contract operation, no routing, no trigger timestamp, no other note.
    * TEST carries a fixed, documentation-only value no code path reads.

@@ -31,7 +31,19 @@ const APP = path.resolve(__dirname, '..');
 Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true },
 }).outputText, filename);
-const { getConfig } = require(path.join(APP, 'shared/ghl-config.ts'));
+Module._resolveFilename = ((original) => function (name, parent, ...rest) {
+  if (name.startsWith('.') && parent) {
+    const candidate = path.resolve(path.dirname(parent.filename), name + '.ts');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return original.call(this, name, parent, ...rest);
+})(Module._resolveFilename);
+const G = require(path.join(APP, 'shared/ghl-config.ts'));
+const { getConfig } = G;
+const scopeLib = require(path.join(APP, 'netlify/functions/lib/production-write-scope.ts'));
+// Production, as committed, with ONLY the B14-12 call-log class switched on.
+const PROD_CALL_LOG_ON = { ...JSON.parse(JSON.stringify(getConfig('production'))), productionCallLog: G.PRODUCTION_CALL_LOG_ENABLED };
+let prodScope = false;
 const CFG = getConfig('test');
 const F = CFG.fields;
 
@@ -85,7 +97,7 @@ function applyWrite(op, target, args) {
     case 'contact.routing': set(F.callRouting); break;
     case 'contact.dispositionAt': set(F.dispositionAt); break;
     case 'contact.lastCallAttempt': set(F.lastCallAttempt, F.lastCallAttemptPrecise); break;
-    case 'contact.callback': set(F.callbackDatetime, F.callbackDatetimePrecise); break;
+    case 'contact.callback': case 'contact.explicitCallback': set(F.callbackDatetime, F.callbackDatetimePrecise); break;
     default: return { status: 400, body: { error: `fixture does not model ${op}` } };
   }
   return { status: 200, body: { confirmed: true } };
@@ -162,6 +174,13 @@ async function main() {
       log.push(req);
       const h = holds.find((x) => !x.used && x.match(req));
       if (h) { h.used = true; h.onHit(req); await h.released; }
+      if (prodScope && req.kind === 'write') {
+        const decision = scopeLib.evaluateProductionGhlWriteScope(PROD_CALL_LOG_ON, { operation: req.op, targetId: req.contact, args: req.args });
+        if (!decision.ok) {
+          req.refused = decision.code;
+          return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Production write refused by the proof write scope', by: 'iaos-production-write-scope', code: decision.code }) });
+        }
+      }
       const fi = failNext.findIndex((p) => p(req));
       const res = fi >= 0 ? (failNext.splice(fi, 1), { status: 500, body: { error: 'fixture: injected failure' } }) : answer(req);
       return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
@@ -254,8 +273,9 @@ async function main() {
       (await page.locator('input[type="datetime-local"]').count()) === 1 && W().length === w0, W().slice(w0));
     await page.locator('input[type="datetime-local"]').fill('2026-10-09T14:30');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await until(async () => writesFor(A, 'contact.callback') === 1, 'explicit callback');
+    await until(async () => writesFor(A, 'contact.explicitCallback') === 1, 'explicit callback');
     await until(async () => (await text()).includes('Callback: Oct 9, 2:30 PM'), 'callback display').catch(() => {});
+    check('call log: Set Callback writes through the explicit-callback operation', writesFor(A, 'contact.explicitCallback') === 1 && writesFor(A, 'contact.callback') === 0);
     check('call log: a callback is set only by Brad\'s explicit date and time',
       db[A].fields.get(F.callbackDatetimePrecise) === '2026-10-09T19:30:00.000Z' && (await text()).includes('Callback: Oct 9, 2:30 PM'),
       { stored: db[A].fields.get(F.callbackDatetimePrecise), shown: (await text()).split('\n').filter((l) => l.includes('Callback:')) });
@@ -479,6 +499,71 @@ async function main() {
     hB1.release(); hB2.release();
     await until(async () => (await passText()) === BASE, 'B status known after its read');
     check('B\'s own read resolved: Confirm Pass is enabled', !(await passConfirmDisabled()));
+
+    // ═══ Production scope, call-log class ENABLED: the real callers (Bones, PR #118) ═══
+    // Every write the real pages send is decided by the REAL production-write-scope
+    // with a Production config whose call-log class is ENABLED (Board #9 flags as
+    // committed); a refusal is answered exactly as ghl-write answers it and
+    // nothing lands.
+    const prodWrites = () => log.filter((r) => r.kind === 'write');
+    prodScope = true;
+    try {
+      // PS1 — Contact page Save call: result, note and last touch all pass.
+      await fresh({}, `/contacts/${A}`);
+      await contactLoaded('Alpha');
+      let p0 = prodWrites().length;
+      await save('Spoke with Seller', 'Production scope check.');
+      await until(async () => (await page.getByTestId('call-log-done').count()) === 1, 'prod save done');
+      check('Production scope: Contact page Save call passes (result, note, last touch), nothing refused',
+        JSON.stringify(prodWrites().slice(p0).map((r) => [r.op, !!r.refused])) === JSON.stringify([['contact.callLogResult', false], ['note.create', false], ['contact.lastCallAttempt', false]]),
+        prodWrites().slice(p0).map((r) => [r.op, r.refused]));
+
+      // PS2 — Contact page Set Callback (explicit op) passes, with its note and touch.
+      p0 = prodWrites().length;
+      await page.getByRole('button', { name: 'Set Callback', exact: true }).first().click();
+      await page.locator('input[type="datetime-local"]').fill('2026-10-09T14:30');
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      await until(async () => (await text()).includes('Callback: Oct 9, 2:30 PM'), 'prod callback display');
+      check('Production scope: Contact page Set Callback uses contact.explicitCallback and passes with its note and touch',
+        JSON.stringify(prodWrites().slice(p0).map((r) => [r.op, !!r.refused])) === JSON.stringify([['contact.explicitCallback', false], ['note.create', false], ['contact.lastCallAttempt', false]])
+        && db[A].fields.get(F.callbackDatetimePrecise) === '2026-10-09T19:30:00.000Z', prodWrites().slice(p0).map((r) => [r.op, r.refused]));
+
+      // PS3 — Contact page Clear Callback (explicit op) passes; nothing else is written.
+      p0 = prodWrites().length;
+      await page.getByRole('button', { name: 'Change Callback', exact: true }).click();
+      await page.getByRole('button', { name: 'Clear', exact: true }).click();
+      await until(async () => !(await text()).includes('Callback: Oct 9'), 'prod callback cleared');
+      check('Production scope: Contact page Clear Callback is one explicit-callback write and passes',
+        JSON.stringify(prodWrites().slice(p0).map((r) => [r.op, !!r.refused, r.args && r.args.value])) === JSON.stringify([['contact.explicitCallback', false, null]])
+        && !db[A].fields.has(F.callbackDatetimePrecise), prodWrites().slice(p0).map((r) => [r.op, r.refused]));
+
+      // PS4 — Seller Call Follow-Up: refused at its FIRST write; nothing lands.
+      await fresh({}, `/contacts/${B}/seller-call`);
+      await scLoaded('Bravo');
+      const notesBefore = db[B].notes.length;
+      p0 = prodWrites().length;
+      await recordFollowUp('2026-10-06T10:00');
+      await until(async () => (await page.getByTestId('call-outcome-error').count()) === 1, 'follow-up refused');
+      await settle();
+      const fu = prodWrites().slice(p0);
+      check('Production scope: Seller Call Follow-Up is refused at its first write (generic contact.callback) and attempts nothing more',
+        JSON.stringify(fu.map((r) => [r.op, !!r.refused])) === JSON.stringify([['contact.callback', true]]), fu.map((r) => [r.op, r.refused]));
+      check('Production scope: Seller Call Follow-Up landed nothing (no callback, no note, no touch, no ledger)',
+        !db[B].fields.has(F.callbackDatetimePrecise) && db[B].notes.length === notesBefore && !db[B].fields.has(F.lastCallAttemptPrecise));
+
+      // PS5 — Seller Call Pass: its outcome ledger note is refused first; nothing lands.
+      p0 = prodWrites().length;
+      await passText();
+      await page.getByTestId('call-outcome-pass-reason').fill('production scope check');
+      await page.getByTestId('call-outcome-pass-confirm').click();
+      await settle(); await settle();
+      const ps = prodWrites().slice(p0);
+      check('Production scope: Seller Call Pass is refused at its ledger note and lands nothing',
+        JSON.stringify(ps.map((r) => [r.op, !!r.refused])) === JSON.stringify([['note.create', true]]) && db[B].notes.length === notesBefore && !db[B].fields.has(F.lastCallAttemptPrecise),
+        ps.map((r) => [r.op, r.refused]));
+    } finally {
+      prodScope = false;
+    }
 
     check('no request left the machine', foreign.length === 0, foreign);
     check('no uncaught page errors', pageErrors.length === 0, pageErrors);

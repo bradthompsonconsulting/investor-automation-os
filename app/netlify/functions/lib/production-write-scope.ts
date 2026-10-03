@@ -89,6 +89,7 @@ export type ProductionWriteScopeResult = { ok: true } | { ok: false; code: Produ
 export const PRODUCTION_OPERATION_SCOPE = {
   "contact.lastCallAttempt": "pinned_contact",
   "contact.callback": "refused",
+  "contact.explicitCallback": "refused",
   "contact.propertyNotes": "refused",
   "contact.arv": "refused",
   "contact.disposition": "refused",
@@ -254,7 +255,10 @@ function evaluateProductionCallLog(config: GhlConfig, request: { operation: stri
   switch (request.operation) {
     case "contact.callLogResult":
     case "contact.lastCallAttempt":
-    case "contact.callback":
+    // The explicit Set/Clear Callback action only. Generic contact.callback
+    // (Seller Call Follow-Up's first write) stays refused, so Follow-Up fails
+    // before it writes anything (Bones, PR #118).
+    case "contact.explicitCallback":
       return { ok: true };
     case "note.create": {
       const body = (request.args as { body?: unknown } | null)?.body;
