@@ -48,7 +48,8 @@
  * must still belong to the pinned contact and sit in Seller Leads.
  * The Contract Ready checklist stays refused: no walkthrough step gates on it.
  */
-import { getConfig, PRODUCTION_PROOF_SCOPE_ENABLED, PRODUCTION_PROOF_CONTACT_NOT_PINNED, PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED } from "../../../shared/ghl-config";
+import { getConfig, PRODUCTION_PROOF_SCOPE_ENABLED, PRODUCTION_PROOF_CONTACT_NOT_PINNED, PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED, PRODUCTION_CALL_LOG_ENABLED } from "../../../shared/ghl-config";
+import { callLogResults } from "./write-contracts";
 import type { GhlConfig } from "../../../shared/ghl-config";
 import { evaluateContractEnvironment } from "./contract-production-readiness";
 import { parseArvApprovalNote } from "../../../src/lib/arv-approval-note";
@@ -215,8 +216,59 @@ function classifyNote(body: string, pinnedOpportunityId: string, pinnedContactId
 }
 
 /** `ghl-write.ts` -- evaluated after `planWrite`, before `connectLambda`. */
+/* ------------------------------------------------------------------ */
+/* B14-12 — Production call-log permission class (Brad, 2026-10-02)     */
+/* ------------------------------------------------------------------ */
+
+const CALL_LOG_NOTE_PREFIX = "Call (reported by Brad in IAOS): ";
+const CALL_LOG_NOTES_MAX = 4000;
+/* `formatCallbackTime`'s exact shape ("Oct 9, 2:30 PM"); newer ICU puts a
+   narrow no-break space before AM/PM. */
+const CALLBACK_NOTE = /^Callback scheduled for [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}[ \u202f](AM|PM)$/;
+
+/** True only for an exact call-log note: one of the six results on the first line, then at most 4,000 characters of notes. */
+export function isCallLogNoteBody(body: string): boolean {
+  const nl = body.indexOf("\n");
+  const first = nl === -1 ? body : body.slice(0, nl);
+  const rest = nl === -1 ? "" : body.slice(nl + 1);
+  if (!first.startsWith(CALL_LOG_NOTE_PREFIX)) return false;
+  if (!callLogResults.includes(first.slice(CALL_LOG_NOTE_PREFIX.length))) return false;
+  return nl === -1 || (rest.trim().length > 0 && rest.length <= CALL_LOG_NOTES_MAX);
+}
+
+/** True only for the exact note `scheduleCallbackGated` writes. */
+export function isCallbackNoteBody(body: string): boolean {
+  return CALLBACK_NOTE.test(body);
+}
+
+export function productionCallLogEnabled(config: GhlConfig): boolean {
+  return !isTestDeployment(config) && config.productionCallLog === PRODUCTION_CALL_LOG_ENABLED;
+}
+
+/**
+ * The call-log class. `null` = not covered (the Board #9 rules below decide,
+ * exactly as before). Covered only while ENABLED, for any Production contact.
+ */
+function evaluateProductionCallLog(config: GhlConfig, request: { operation: string; targetId: string; args: unknown }): ProductionWriteScopeResult | null {
+  if (!productionCallLogEnabled(config)) return null;
+  switch (request.operation) {
+    case "contact.callLogResult":
+    case "contact.lastCallAttempt":
+    case "contact.callback":
+      return { ok: true };
+    case "note.create": {
+      const body = (request.args as { body?: unknown } | null)?.body;
+      return typeof body === "string" && (isCallLogNoteBody(body) || isCallbackNoteBody(body)) ? { ok: true } : null;
+    }
+    default:
+      return null;
+  }
+}
+
 export function evaluateProductionGhlWriteScope(config: GhlConfig, request: { operation: string; targetId: string; args: unknown }): ProductionWriteScopeResult {
   if (isTestDeployment(config)) return { ok: true };
+  const callLog = evaluateProductionCallLog(config, request);
+  if (callLog) return callLog;
   const pre = productionPreconditions(config);
   if (!pre.ok) return pre;
   const scope = (PRODUCTION_OPERATION_SCOPE as Record<string, string>)[request.operation];
@@ -241,8 +293,12 @@ export function evaluateProductionGhlWriteScope(config: GhlConfig, request: { op
 }
 
 /** True when `ghl-write.ts` must run `evaluateProductionPairedOwnership` for this operation (never in Test). */
-export function requiresProductionPairedOwnership(config: GhlConfig, operation: string): boolean {
-  return !isTestDeployment(config) && PRODUCTION_PAIRED_OPERATIONS.has(operation);
+export function requiresProductionPairedOwnership(config: GhlConfig, operation: string, targetId?: string): boolean {
+  if (isTestDeployment(config) || !PRODUCTION_PAIRED_OPERATIONS.has(operation)) return false;
+  // B14-12: a call-log last touch on any contact other than the pinned one is
+  // permitted by the call-log class, not by the Board #9 pairing.
+  if (operation === "contact.lastCallAttempt" && productionCallLogEnabled(config) && targetId !== undefined && targetId !== config.productionProofScope.contactId) return false;
+  return true;
 }
 
 /**

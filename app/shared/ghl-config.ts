@@ -153,6 +153,20 @@ export interface GhlConfig {
    * fixed, documentation-only value that no code path ever reads.
    */
   contractProductionEnabled: string;
+  /**
+   * B14-12 recording-only call log — Production permission class. SERVER-SIDE
+   * ONLY (read by production-write-scope.ts; never in RUNTIME_GROUPS) and
+   * INDEPENDENT of the Board #9 flags above. Only
+   * `PRODUCTION_CALL_LOG_ENABLED` opens it; anything else leaves every
+   * Production write exactly as the Board #9 proof scope rules it. When open,
+   * for ANY Production contact: contact.callLogResult, contact.lastCallAttempt,
+   * contact.callback, and note.create ONLY for an exact call-log note or an
+   * exact "Callback scheduled for …" note. Nothing else — no Board #9
+   * contract operation, no routing, no trigger timestamp, no other note.
+   * TEST carries a fixed, documentation-only value no code path reads.
+   * Enabling is its own reviewed config-only commit, never a runtime toggle.
+   */
+  productionCallLog: string;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -297,6 +311,11 @@ export const POPULATION_NOT_VERIFIED = "POPULATION_NOT_VERIFIED" as const;
  * exactly one place -- never toggled, always a reviewed commit.
  */
 export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVISIONED" as const;
+
+/** B14-12 — the ONE value that opens the Production call-log permission class. */
+export const PRODUCTION_CALL_LOG_ENABLED = "PRODUCTION_CALL_LOG_ENABLED" as const;
+/** B14-12 — the value PRODUCTION carries until the enable commit; TEST carries it as documentation only. */
+export const PRODUCTION_CALL_LOG_DISABLED = "PRODUCTION_CALL_LOG_DISABLED" as const;
 
 /**
  * INV-67 / B9-12 -- the literal placeholder value for a not-yet-provisioned
@@ -644,6 +663,8 @@ const PRODUCTION: GhlConfig = {
   // that assert the enabled state -- and redeploy. Reverting only this file
   // leaves the contract suites failing, and CI runs them (test-inv95.cjs).
   contractProductionEnabled: CONTRACT_PRODUCTION_ENABLED,
+  // B14-12: DISABLED until the reviewed enable commit (production-write-scope.ts).
+  productionCallLog: PRODUCTION_CALL_LOG_DISABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -1008,6 +1029,8 @@ const TEST: GhlConfig = {
   // flag for Test, which is governed unconditionally by its own approved-
   // contact pin below, exactly as before this phase.
   contractProductionEnabled: CONTRACT_TEST_ALWAYS_ENABLED,
+  // B14-12: documentation-only in TEST; Test writes are never scoped.
+  productionCallLog: PRODUCTION_CALL_LOG_DISABLED,
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },

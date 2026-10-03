@@ -99,7 +99,7 @@ export const handler = async (event: any) => {
     // the CONFIGURED pinned contact, never whichever owner the first,
     // unlocked read happened to report. The fresh ownership check below then
     // runs under that lock. Test and every other operation are unchanged.
-    const pairedProduction = requiresProductionPairedOwnership(config, operation);
+    const pairedProduction = requiresProductionPairedOwnership(config, operation, targetId);
     release = await lockContact(pairedProduction && isOpportunityTargeted ? config.productionProofScope.contactId : contactId);
     target = isOpportunityTargeted ? await boundary.opportunity(targetId) : await boundary.contact(targetId);
     // INV-98 walkthrough: under the contact lock, before the write claim or
