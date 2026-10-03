@@ -13,6 +13,7 @@ import { getRuntimeConfig } from "../../shared/ghl-config";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { readOverrides, effectiveDisposition, type StorageLike } from "../lib/dispositionOverride";
 import { callLogPlacement, type CallLogPlacement } from "../lib/call-log-queue";
+import { isCallSuppressed } from "../lib/dnc";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
 import { readCurrentOfferFromOpportunity } from "../lib/current-offer-carrier";
@@ -488,6 +489,15 @@ export default function Dashboard() {
         !!row.contact?.tags.includes("offer-made"));
   }, [pipeline, contacts, sellerOfferSentStageId]);
 
+  /* B14-12 Do Not Call (R8): a contact whose GHL Call channel is suppressed —
+     IAOS Do Not Call or any other Do Not Disturb on calls — is in NO IAOS
+     calling list: Lead Queue, Callbacks, Needs Next Step or Follow Up.
+     READ-ONLY; nothing here writes. */
+  const doNotCallIds = useMemo(
+    () => new Set((contacts ?? []).filter((c) => isCallSuppressed(c.dndSettings)).map((c) => c.id)),
+    [contacts],
+  );
+
   // Waiting-on-me 3.2 — callbacks. Overdue = scheduled before today's CT
   // calendar date; Today = scheduled on today's CT date. Future-dated
   // callbacks aren't due yet, so they're excluded from both lists. Scheduling
@@ -495,7 +505,7 @@ export default function Dashboard() {
   const callbacks = useMemo(() => {
     const withCb = (contacts ?? [])
       .map((c) => ({ contact: c, cb: effectiveCallback(c) }))
-      .filter((x): x is { contact: ContactRow; cb: string } => !!x.cb);
+      .filter((x): x is { contact: ContactRow; cb: string } => !!x.cb && !doNotCallIds.has(x.contact.id));
     const byTime = (a: typeof withCb[number], b: typeof withCb[number]) =>
       new Date(a.cb).getTime() - new Date(b.cb).getTime();
     const overdue = withCb.filter((x) => ctDateString(new Date(x.cb)) < today).sort(byTime);
@@ -555,7 +565,7 @@ export default function Dashboard() {
     const byId = new Map((contacts ?? []).map((c) => [c.id, c]));
     const rows = [...followUpContactIds]
       .map((id) => byId.get(id))
-      .filter((c): c is ContactRow => !!c)
+      .filter((c): c is ContactRow => !!c && !doNotCallIds.has(c.id))
       .map((c) => ({ contact: c, attempt: effectiveLastAttempt(c) }));
     // Oldest attempt first, never-attempted at the very top — the same
     // ordering principle the Lead Queue's BAND 1 uses.
@@ -628,14 +638,14 @@ export default function Dashboard() {
     void attemptOverride;               // reached through effectiveLastAttempt
     const rows = (contacts ?? [])
       .filter((c) => callLogPlacementById.get(c.id) === "needs_next_step"
-        && !terminalContactIds.has(c.id) && !followUpContactIds.has(c.id))
+        && !terminalContactIds.has(c.id) && !followUpContactIds.has(c.id) && !doNotCallIds.has(c.id))
       .map((c) => ({
         contact: c,
         result: effectiveDisposition(c.callDisposition, c.dispositionAt, dispositionOverrides[c.id], Date.now()) ?? "",
         attempt: effectiveLastAttempt(c),
       }));
     return rows.sort((a, b) => (a.attempt ? new Date(a.attempt).getTime() : 0) - (b.attempt ? new Date(b.attempt).getTime() : 0));
-  }, [contacts, callLogPlacementById, terminalContactIds, followUpContactIds, dispositionOverrides, attemptOverride]);
+  }, [contacts, callLogPlacementById, terminalContactIds, followUpContactIds, dispositionOverrides, attemptOverride, doNotCallIds]);
 
   /** contactId -> the disposition label to name in the badge. */
   const partialWriteContactIds = useMemo(() => {
@@ -709,9 +719,11 @@ export default function Dashboard() {
       if (c.phoneStatus === "Incorrect Number") out.add(c.id);
       // 7. B14-12 call log — the latest result leaves the cold-call queue.
       if (callLogPlacementById.get(c.id) && callLogPlacementById.get(c.id) !== "cold") out.add(c.id);
+      // 8. B14-12 Do Not Call — GHL Call channel suppressed.
+      if (doNotCallIds.has(c.id)) out.add(c.id);
     }
     return out;
-  }, [contacts, escalatedContactIds, terminalContactIds, callbackScheduledContactIds, offersAwaitingContactIds, followUpContactIds, callLogPlacementById]);
+  }, [contacts, escalatedContactIds, terminalContactIds, callbackScheduledContactIds, offersAwaitingContactIds, followUpContactIds, callLogPlacementById, doNotCallIds]);
 
   const leadQueue = useMemo<LeadRow[]>(() => {
     void nowTick; // re-derive bands as clock advances past RESURFACE_HOURS

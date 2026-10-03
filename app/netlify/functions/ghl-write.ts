@@ -149,6 +149,7 @@ export const handler = async (event: any) => {
       });
       return json(200, { confirmed: true, alreadyInStage: result.alreadyInStage, readback: { id: result.readback.id, pipelineId: result.readback.pipelineId, pipelineStageId: result.readback.pipelineStageId } });
     }
+    if (plan.kind === "contact_dnd") return json(200, { confirmed: true, ...(await boundary.dnc(targetId, target)) });
     const result = await boundary.fields(plan.kind, targetId, plan.fields);
     // A deterministic partial readback is not a successful write. Existing clients
     // receive per-field evidence and retain their partial-recovery path.

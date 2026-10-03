@@ -1,3 +1,4 @@
+import { planDnc, verifyDnc, DNC_CHANNELS } from "../../../src/lib/dnc";
 import { createHash } from "node:crypto";
 import { getConfig, UNDER_CONTRACT_STAGE_NOT_PROVISIONED } from "../../../shared/ghl-config";
 import type { FieldWrite } from "./write-contracts";
@@ -25,6 +26,26 @@ export class GhlBoundary {
     if (opportunity.id !== id || opportunity.locationId !== this.locationId || typeof opportunity.contactId !== "string" || !Array.isArray(opportunity.customFields)) throw new Error("Opportunity identity or field readback is ambiguous");
     await this.contact(opportunity.contactId);
     return opportunity;
+  }
+  /**
+   * B14-12 Do Not Call. `before` is the contact read fresh under the lock.
+   * Sends the WHOLE dndSettings object (planDnc keeps every existing entry and
+   * only turns unsuppressed Call/SMS/Email to active), then reads back and
+   * fails closed (WriteUncertain) unless verifyDnc confirms suppression and
+   * that nothing else changed. Never reads or writes the top-level `dnd`.
+   */
+  async dnc(id: string, before: any) {
+    const plan = planDnc(before?.dndSettings);
+    if (plan.changed.length) {
+      try { await this.call(`/contacts/${id}`, "PUT", { dndSettings: plan.next }); }
+      catch (error) { throw new WriteUncertain(`Do Not Disturb write was not accepted (${(error as Error).message})`); }
+    }
+    const after = await this.contact(id);
+    const check = verifyDnc(before?.dndSettings, plan.changed, after.dndSettings);
+    if (!check.ok) throw new WriteUncertain(`Do Not Disturb readback did not confirm suppression: ${check.problems.join("; ")}`);
+    const channels: Record<string, { status: unknown; message: unknown }> = {};
+    for (const ch of DNC_CHANNELS) channels[ch] = { status: after.dndSettings?.[ch]?.status, message: after.dndSettings?.[ch]?.message };
+    return { alreadySuppressed: plan.changed.length === 0, changed: plan.changed, readback: { channels } };
   }
   async notes(id: string) {
     const data = await this.call(`/contacts/${id}/notes`);

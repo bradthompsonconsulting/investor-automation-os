@@ -713,6 +713,9 @@ export const ghl = {
     // B14-12: the deliberate Set/Clear Callback action (Contact page, Dashboard
     // row). Same fields, distinct operation — see explicitCallbackClient below.
     setExplicitCallback: (contactId: string, iso: string | null) => confirmedCommand("contact.explicitCallback", contactId, { value: iso }),
+    // B14-12 Do Not Call: the server sets Call/SMS/Email DND (never weakening an
+    // existing entry) and reads it back; no caller-supplied channel or status.
+    setDnc: (contactId: string) => confirmedCommand("contact.dnc", contactId, { confirm: "DO_NOT_CALL" }),
 
     // Phase B PB-D1 — the first authorized Class 1 app write and the fourth
     // named GHL write. ONE field per PUT: this body carries exactly one

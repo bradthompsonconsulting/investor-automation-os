@@ -323,7 +323,7 @@ function enabledProductionConfig(overrides = {}) {
 
   const writeContractsSrc = fs.readFileSync(path.join(APP, 'netlify', 'functions', 'lib', 'write-contracts.ts'), 'utf8');
   const opCount = (writeContractsSrc.match(/case "[a-zA-Z_.]+":/g) || []).length;
-  check('write-contracts.ts\'s own operation-allowlist switch was not touched by this phase (exact same case count as origin/main before this phase; B14-12 later added exactly two, contact.callLogResult and contact.explicitCallback)', opCount, 19);
+  check('write-contracts.ts\'s own operation-allowlist switch was not touched by this phase (exact same case count as origin/main before this phase; B14-12 later added exactly three, contact.callLogResult, contact.explicitCallback and contact.dnc)', opCount, 20);
 }
 
 // ============================================================

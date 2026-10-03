@@ -43,7 +43,11 @@ const { getConfig } = G;
 const scopeLib = require(path.join(APP, 'netlify/functions/lib/production-write-scope.ts'));
 // Production, as committed, with ONLY the B14-12 call-log class switched on.
 const PROD_CALL_LOG_ON = { ...JSON.parse(JSON.stringify(getConfig('production'))), productionCallLog: G.PRODUCTION_CALL_LOG_ENABLED };
+const PROD_DNC_ON = { ...JSON.parse(JSON.stringify(getConfig('production'))), productionDnc: G.PRODUCTION_DNC_ENABLED };
+const dncLib = require(path.join(APP, 'src/lib/dnc.ts'));
 let prodScope = false;
+let prodScopeConfig = PROD_CALL_LOG_ON;
+let dncNoApply = false;
 const CFG = getConfig('test');
 const F = CFG.fields;
 
@@ -61,25 +65,25 @@ const B = 'fixtureContactB';
 const A_CALLBACK = '2026-10-06T15:00:00.000Z';   // Oct 6, 10:00 AM CT
 const B_CALLBACK = '2026-10-09T19:30:00.000Z';   // Oct 9, 2:30 PM CT
 let db;
-function resetDb({ aCallback = null, bCallback = null } = {}) {
-  const contact = (id, first, cb) => ({
+function resetDb({ aCallback = null, bCallback = null, aDnd = {}, bDnd = {} } = {}) {
+  const contact = (id, first, cb, dnd) => ({ dnd: JSON.parse(JSON.stringify(dnd)),
     id, first, fields: new Map(cb ? [[F.callbackDatetimePrecise, cb], [F.callbackDatetime, Date.parse(cb)]] : []),
     notes: [{ id: `${id}-n1`, body: `Seed note for ${first}`, dateAdded: '2026-09-30T12:00:00.000Z' }],
   });
-  db = { [A]: contact(A, 'Alpha', aCallback), [B]: contact(B, 'Bravo', bCallback) };
+  db = { [A]: contact(A, 'Alpha', aCallback, aDnd), [B]: contact(B, 'Bravo', bCallback, bDnd) };
 }
 const field = (c, id) => (c.fields.has(id) ? c.fields.get(id) : null);
 function contactRow(c) {
   return {
     id: c.id, firstName: c.first, lastName: 'Fixture', phone: '+15555550100', email: '', address1: '', city: '', state: '',
-    postalCode: '', dateAdded: '2026-09-01T00:00:00.000Z', tags: [], dndSettings: {}, motivationScore: null, dealScore: null,
+    postalCode: '', dateAdded: '2026-09-01T00:00:00.000Z', tags: [], dndSettings: c.dnd, motivationScore: null, dealScore: null,
     combinedScore: null, completenessScore: null,
     callbackDatetime: field(c, F.callbackDatetimePrecise), callbackDatetimePrecise: field(c, F.callbackDatetimePrecise),
     lastCallAttempt: field(c, F.lastCallAttemptPrecise), lastCallAttemptPrecise: field(c, F.lastCallAttemptPrecise),
     callDisposition: field(c, F.callDisposition), dispositionAt: field(c, F.dispositionAt),
   };
 }
-const detail = (c) => ({ contact: { id: c.id, firstName: c.first, lastName: 'Fixture', phone: '+15555550100',
+const detail = (c) => ({ contact: { id: c.id, firstName: c.first, lastName: 'Fixture', phone: '+15555550100', dndSettings: c.dnd,
   customFields: [...c.fields].map(([id, value]) => ({ id, value })) } });
 const pipeline = () => ({
   pipelineId: 'fixture-pipeline', stages: [],
@@ -91,6 +95,7 @@ function applyWrite(op, target, args) {
   if (!c) return { status: 404, body: { error: 'unknown target' } };
   const set = (...ids) => ids.forEach((id) => (args.value === null ? c.fields.delete(id) : c.fields.set(id, args.value)));
   switch (op) {
+    case 'contact.dnc': { if (!dncNoApply) c.dnd = dncLib.planDnc(c.dnd).next; return { status: 200, body: { confirmed: true } }; }
     case 'note.create': c.notes.push({ id: `${target}-n${c.notes.length + 1}`, body: args.body, dateAdded: new Date().toISOString() }); return { status: 200, body: { note: { id: 'n' } } };
     case 'contact.disposition': set(F.callDisposition); break;
     case 'contact.callLogResult': set(F.callDisposition); break;
@@ -175,7 +180,7 @@ async function main() {
       const h = holds.find((x) => !x.used && x.match(req));
       if (h) { h.used = true; h.onHit(req); await h.released; }
       if (prodScope && req.kind === 'write') {
-        const decision = scopeLib.evaluateProductionGhlWriteScope(PROD_CALL_LOG_ON, { operation: req.op, targetId: req.contact, args: req.args });
+        const decision = scopeLib.evaluateProductionGhlWriteScope(prodScopeConfig, { operation: req.op, targetId: req.contact, args: req.args });
         if (!decision.ok) {
           req.refused = decision.code;
           return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Production write refused by the proof write scope', by: 'iaos-production-write-scope', code: decision.code }) });
@@ -563,6 +568,115 @@ async function main() {
         ps.map((r) => [r.op, r.refused]));
     } finally {
       prodScope = false;
+    }
+
+    // ═══ Contact page: Do Not Call (B14-12) ═══════════════════════════════
+    const STOP = { status: 'permanent', message: 'STOP_KEYWORD' };
+    const IAOS_DNC = { status: 'active', message: 'IAOS Do Not Call' };
+    const DNC_NOTE = 'Do Not Call (recorded by Brad in IAOS): Seller asked us not to contact them again.\nSuppressed in GHL: calls, SMS and email.';
+    const openDnc = async () => { await until(async () => (await page.getByTestId('dnc-open').count()) === 1, 'DNC button'); await page.getByTestId('dnc-open').click(); };
+
+    // D1 — Cancel writes nothing; Confirm needs a reason.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    let d0 = W().length;
+    await openDnc();
+    check('DNC: the consequence is shown before confirming',
+      (await page.getByTestId('dnc-consequence').innerText()).includes('calls, text messages and email') && (await page.getByTestId('dnc-consequence').innerText()).includes('Existing opt-outs such as STOP stay in place'));
+    check('DNC: Confirm is disabled until a reason is entered', await page.getByTestId('dnc-confirm').isDisabled());
+    await page.getByTestId('dnc-cancel').click();
+    await settle();
+    check('DNC: opening and cancelling writes nothing', W().length === d0, W().slice(d0));
+
+    // D2 — success; an existing STOP survives; suppression, then the note.
+    await fresh({ aDnd: { SMS: STOP, RCS: STOP } }, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    d0 = W().length;
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill('Seller asked us not to contact them again.');
+    await page.getByTestId('dnc-confirm').click();
+    await until(async () => (await page.getByTestId('dnc-done').count()) === 1, 'DNC done');
+    check('DNC: writes suppression then the note — nothing else (no call result, routing or trigger field)',
+      JSON.stringify(opsFor(A, d0)) === JSON.stringify(['contact.dnc', 'note.create']), opsFor(A, d0));
+    check('DNC: Call, SMS and Email suppressed; the existing STOP entries kept exactly',
+      JSON.stringify(db[A].dnd) === JSON.stringify({ SMS: STOP, RCS: STOP, Call: IAOS_DNC, Email: IAOS_DNC }), db[A].dnd);
+    check('DNC: the note records who, why and the verified suppression', W().find((r) => r.contact === A && r.op === 'note.create').args.body === DNC_NOTE);
+    check('DNC: the screen states all three outcomes', (await page.getByTestId('dnc-done').innerText()).includes('Suppressed in GHL for calls, SMS and email ✓ · Out of IAOS calling lists ✓ · Recorded ✓'));
+    await until(async () => (await text()).includes('Do Not Call (recorded by Brad in IAOS)'), 'DNC note in list');
+
+    // D3 — the server refuses: nothing recorded, nothing claimed.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    d0 = W().length;
+    failNext.push((r) => r.kind === 'write' && r.op === 'contact.dnc' && r.contact === A);
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill('refusal check');
+    await page.getByTestId('dnc-confirm').click();
+    await until(async () => (await page.getByTestId('dnc-not-confirmed').count()) === 1, 'DNC not confirmed');
+    check('DNC refused: "not confirmed", nothing recorded, no note written',
+      /Do Not Call was not confirmed/.test(await page.getByTestId('dnc-not-confirmed').innerText()) && JSON.stringify(opsFor(A, d0)) === JSON.stringify(['contact.dnc']) && (await page.getByTestId('dnc-done').count()) === 0);
+
+    // D4 — GHL "accepts" but the fresh read is not suppressed: no note, no success.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    d0 = W().length;
+    dncNoApply = true;
+    try {
+      await openDnc();
+      await page.getByTestId('dnc-reason').fill('readback check');
+      await page.getByTestId('dnc-confirm').click();
+      await until(async () => (await page.getByTestId('dnc-unverified').count()) === 1, 'DNC unverified');
+    } finally { dncNoApply = false; }
+    check('DNC unverified: no note and no success claimed when the fresh read is not suppressed',
+      /couldn't confirm it on a fresh read/.test(await page.getByTestId('dnc-unverified').innerText()) && JSON.stringify(opsFor(A, d0)) === JSON.stringify(['contact.dnc']) && (await page.getByTestId('dnc-done').count()) === 0);
+
+    // D5 — suppression confirmed, note fails: partial, then Retry note.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    d0 = W().length;
+    failNext.push((r) => r.kind === 'write' && r.op === 'note.create' && r.contact === A);
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill('note failure check');
+    await page.getByTestId('dnc-confirm').click();
+    await until(async () => (await page.getByTestId('dnc-note-failed').count()) === 1, 'DNC note failed');
+    check('DNC note failure: suppression is reported done, the record is reported missing',
+      /Suppressed in GHL for calls, SMS and email ✓ · Out of IAOS calling lists ✓ — but the record note wasn't saved/.test(await page.getByTestId('dnc-note-failed').innerText()));
+    await page.getByTestId('dnc-retry-note').click();
+    await until(async () => (await page.getByTestId('dnc-done').count()) === 1, 'DNC done after retry');
+    check('DNC Retry note: one suppression write, the note retried, then done', JSON.stringify(opsFor(A, d0)) === JSON.stringify(['contact.dnc', 'note.create', 'note.create']), opsFor(A, d0));
+
+    // D6 — already complete: shown as in effect, nothing offered.
+    await fresh({ aDnd: { Call: IAOS_DNC, SMS: STOP, Email: IAOS_DNC } }, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await until(async () => (await page.getByTestId('dnc-in-effect').count()) === 1, 'DNC in effect');
+    check('DNC already complete: shown as in effect; no Do Not Call button', (await page.getByTestId('dnc-open').count()) === 0);
+
+    // D7 — real callers against the Production scope: DNC class ENABLED vs DISABLED.
+    prodScope = true;
+    try {
+      prodScopeConfig = PROD_DNC_ON;
+      await fresh({}, `/contacts/${B}`);
+      await contactLoaded('Bravo');
+      d0 = W().length;
+      await openDnc();
+      await page.getByTestId('dnc-reason').fill('Seller asked us not to contact them again.');
+      await page.getByTestId('dnc-confirm').click();
+      await until(async () => (await page.getByTestId('dnc-done').count()) === 1, 'prod DNC done');
+      check('Production scope, DNC ENABLED: suppression and the note pass for a real contact',
+        JSON.stringify(W().slice(d0).map((r) => [r.op, !!r.refused])) === JSON.stringify([['contact.dnc', false], ['note.create', false]]), W().slice(d0).map((r) => [r.op, r.refused]));
+      prodScopeConfig = PROD_CALL_LOG_ON;
+      await fresh({}, `/contacts/${B}`);
+      await contactLoaded('Bravo');
+      d0 = W().length;
+      await openDnc();
+      await page.getByTestId('dnc-reason').fill('disabled check');
+      await page.getByTestId('dnc-confirm').click();
+      await until(async () => (await page.getByTestId('dnc-not-confirmed').count()) === 1, 'prod DNC refused');
+      check('Production scope, DNC DISABLED (as committed): refused at the suppression write; nothing lands',
+        JSON.stringify(W().slice(d0).map((r) => [r.op, !!r.refused])) === JSON.stringify([['contact.dnc', true]]) && JSON.stringify(db[B].dnd) === '{}', W().slice(d0).map((r) => [r.op, r.refused]));
+    } finally {
+      prodScope = false;
+      prodScopeConfig = PROD_CALL_LOG_ON;
     }
 
     check('no request left the machine', foreign.length === 0, foreign);

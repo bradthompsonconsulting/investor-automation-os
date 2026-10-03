@@ -15,7 +15,7 @@ function number(value: unknown): asserts value is number { if (typeof value !== 
 function iso(value: unknown) { if (typeof value !== "string" || !/^\d{4}-\d\d-\d\dT/.test(value) || !Number.isFinite(Date.parse(value))) throw new Error("Expected ISO instant"); }
 export type FieldWrite = { id: string; field_value: string | number | string[] | null; date?: boolean };
 export type WritePlan = {
-  kind: "contact" | "opportunity" | "note" | "task" | "opportunity_stage";
+  kind: "contact" | "opportunity" | "note" | "task" | "opportunity_stage" | "contact_dnd";
   fields: FieldWrite[]; body?: string; taskId?: string;
   agreementAt?: string; version?: ContractVersionIdentity;
 };
@@ -41,6 +41,9 @@ export function planWrite(operation: string, args: any, config: ReturnType<typeo
     case "contact.dispositionAt": { const v = single(); iso(v); add(c.dispositionAt, v); break; }
     case "contact.callLogResult": { const v = single(); if (!callLogResults.includes(v)) throw new Error("Invalid call result"); add(c.callDisposition, v); break; }
     case "contact.occupancy": { const v = single(); if (!["", "Owner Occupied", "Tenant Occupied", "Vacant"].includes(v)) throw new Error("Invalid occupancy"); add(c.occupancyStatus, v === "" ? "" : [v]); break; }
+    // B14-12 Do Not Call: a fixed read-modify-write of dndSettings (Call/SMS/Email) done by
+    // GhlBoundary.dnc under the contact lock. No caller-supplied channel, status or message.
+    case "contact.dnc": exact(args, ["confirm"]); if (args.confirm !== "DO_NOT_CALL") throw new Error("Do Not Call must be confirmed"); return { kind: "contact_dnd", fields };
     case "note.create": exact(args, ["body"]); text(args.body); if (!args.body.trim()) throw new Error("Empty note"); return { kind: "note", fields, body: args.body };
     case "task.complete": exact(args, ["taskId"]); identifier(args.taskId); return { kind: "task", fields, taskId: args.taskId };
     case "opportunity.askingPrice": { kind = "opportunity"; const v = single(); if (v !== "") number(v); add(f.askingPrice, v); break; }

@@ -236,7 +236,28 @@ check('Contact page tracks the contact it currently shows',
 // ── Held changes stay untouched ──────────────────────────────────────────
 check('webhook note copy unchanged (held: webhook behavior)', /\? `Call: \$\{disposition\} — \$\{duration\}s`/.test(webhook) && /: `Call: \$\{disposition\}`;/.test(webhook), true);
 check('webhook still accepts exactly the six dispositions (Do Not Call refused)',
-  (writeContracts.match(/export const dispositions = \[([^\]]*)\]/) || [])[1].split(',').length === 6 && !/Do Not Call/.test(writeContracts), true);
+  listOf('dispositions').length === 6 && !listOf('dispositions').includes('Do Not Call'), true);
+
+// ── Do Not Call wiring (B14-12) ──────────────────────────────────────────
+{
+  const dncCode = stripBlockComments(read('src/components/DncControl.tsx'));
+  check('DNC control calls only setDnc, getDetail and notes.create',
+    [...new Set([...dncCode.matchAll(/ghl\.(contacts|notes)\.(\w+)\(/g)].map((m) => m[1] + '.' + m[2]))].sort(), ['contacts.getDetail', 'contacts.setDnc', 'notes.create']);
+  check('DNC order: suppression, then a fresh read, then the note',
+    dncCode.indexOf('await ghl.contacts.setDnc(contactId)') !== -1
+    && dncCode.indexOf('await ghl.contacts.setDnc(contactId)') < dncCode.indexOf('await ghl.contacts.getDetail(contactId)')
+    && dncCode.indexOf('await ghl.contacts.getDetail(contactId)') < dncCode.indexOf('await writeNote(dncNote(why))'), true);
+  check('DNC confirm needs this contact loaded and a reason', /disabled=\{busy \|\| !known \|\| reason\.trim\(\) === ""\}/.test(dncCode) && /if \(!known \|\| !why \|\| inFlight\.current\) return;/.test(dncCode), true);
+  check('DNC never claims success without the fresh read; never names a call result, routing or the trigger timestamp',
+    /verified = fresh\.id === contactId && isDncComplete\(fresh\.dndSettings\);/.test(dncCode) && !/setCallLogResult|setCallRouting|setDispositionAt|setCallDisposition/.test(dncCode), true);
+  check('ghl client: setDnc is the contact.dnc operation with a fixed confirm', /setDnc: \(contactId: string\) => confirmedCommand\("contact\.dnc", contactId, \{ confirm: "DO_NOT_CALL" \}\)/.test(ghlClient), true);
+  check("Contact page mounts the DNC control with only this contact's detail",
+    /<DncControl[\s\S]*?detail=\{detail && detail\.id === id \? detail : null\}[\s\S]*?onNoteWritten=\{loadNotes\}/.test(contactPageCode), true);
+  check('Dashboard keeps a Call-suppressed contact out of every calling list',
+    /const doNotCallIds = useMemo\(\s*\(\) => new Set\(\(contacts \?\? \[\]\)\.filter\(\(c\) => isCallSuppressed\(c\.dndSettings\)\)/.test(dashboardCode)
+    && /!!x\.cb && !doNotCallIds\.has\(x\.contact\.id\)/.test(dashboardCode) && /!!c && !doNotCallIds\.has\(c\.id\)/.test(dashboardCode)
+    && /!followUpContactIds\.has\(c\.id\) && !doNotCallIds\.has\(c\.id\)/.test(dashboardCode) && /if \(doNotCallIds\.has\(c\.id\)\) out\.add\(c\.id\);/.test(dashboardCode), true);
+}
 
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\nB14-12 call-outcome copy: ${checks - failures}/${checks} checks passed`);
