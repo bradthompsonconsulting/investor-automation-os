@@ -399,6 +399,7 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
     ['contact.lastCallAttempt', {value:'2026-09-18T01:00:00.000Z'}], ['contact.callback',{value:'2026-09-19T01:00:00.000Z'}],
     ['contact.propertyNotes',{value:'synthetic note'}], ['contact.arv',{value:250000}], ['contact.disposition',{value:'No Answer'}],
     ['contact.routing',{value:'Stay in Cold Outreach'}], ['contact.dispositionAt',{value:'2026-09-18T01:00:00.000Z'}], ['contact.occupancy',{value:'Vacant'}],
+    ['contact.callLogResult',{value:'Spoke with Seller'}],
     ['opportunity.askingPrice',{value:100000}], ['opportunity.arv',{value:250000}], ['opportunity.repairs',{value:25000}],
     ['opportunity.currentOffer',{value:110000}], ['opportunity.assignmentMode',{value:'Standard'}],
     ['opportunity.underwriting',{endBuyerMaxPrice:150000,sellerMAO:130000,assignmentMode:'Standard'}],
@@ -410,6 +411,33 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   cases.find(c=>c[0]==='opportunity.underwriting')[1].assignmentMode=mode;
   for(const [op,args] of cases) await check('retained '+op, async () => {
     const res=await handler(event(op, op.startsWith('opportunity.')||op.startsWith('contract.')?opportunity.id:contact.id,args)); assert.equal(res.statusCode,200,res.body); assert.notEqual(JSON.parse(res.body).confirmed,false);
+  });
+  // B14-12 recording-only call log: the operation-specific boundary.
+  await check('call log: contact.callLogResult plans iaos_call_disposition only, for every call-log result', () => {
+    assert.deepEqual(contracts.callLogResults, ['No Answer', 'Voicemail', 'Spoke with Seller', 'Follow Up', 'Not Interested', 'Incorrect Number']);
+    for (const v of contracts.callLogResults) assert.deepEqual(contracts.planWrite('contact.callLogResult', { value: v }, config).fields.map((f) => f.id), [config.fields.callDisposition], v);
+  });
+  await check('call log: values outside the call-log list are refused', () => {
+    for (const v of ['Requested Appointment', 'Do Not Call', '', 'spoke with seller', 'Long-Term Nurture']) assert.throws(() => contracts.planWrite('contact.callLogResult', { value: v }, config), undefined, JSON.stringify(v));
+  });
+  await check('call log: nothing can ride along (no routing, no timestamp, no extra key)', () => {
+    assert.throws(() => contracts.planWrite('contact.callLogResult', { value: 'No Answer', routing: 'Long-Term Nurture' }, config));
+    assert.throws(() => contracts.planWrite('contact.callLogResult', { value: 'No Answer', dispositionAt: '2026-10-02T00:00:00.000Z' }, config));
+  });
+  await check('call log: the webhook list is unchanged and does not gain Spoke with Seller', () => {
+    assert.deepEqual(contracts.dispositions, ['No Answer', 'Voicemail', 'Follow Up', 'Requested Appointment', 'Not Interested', 'Incorrect Number']);
+  });
+  await check('call log handler: the result lands; iaos_call_routing and iaos_disposition_at are not touched', async () => {
+    const val = (id) => contact.customFields.find((f) => f.id === id)?.value;
+    const before = { routing: val(config.fields.callRouting), at: val(config.fields.dispositionAt) };
+    const res = await handler(event('contact.callLogResult', contact.id, { value: 'Not Interested' }));
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(val(config.fields.callDisposition), 'Not Interested');
+    assert.deepEqual({ routing: val(config.fields.callRouting), at: val(config.fields.dispositionAt) }, before);
+  });
+  await check('existing named operations keep their own rules (contact.disposition still refuses Spoke with Seller)', () => {
+    assert.throws(() => contracts.planWrite('contact.disposition', { value: 'Spoke with Seller' }, config));
+    assert.deepEqual(contracts.planWrite('contact.dispositionAt', { value: '2026-10-02T00:00:00.000Z' }, config).fields.map((f) => f.id), [config.fields.dispositionAt]);
   });
   const arvNote=require('../src/lib/arv-persist.ts').formatArvApprovalNote({kind:'approved',amount:250000,recommendedArv:250000,revision:3},{approvedAt:'2026-09-04T20:00:00.000Z',operator:'Brad Thompson',opportunityId:opportunity.id,evidenceState:'HIGH',reconciliationOutcome:'RECOMMENDED',acceptedCompCount:4,searchLevel:'STANDARD',source:{kind:'PROPSTREAM_COMPARABLE_CSV',version:'propstream-comparable-csv-v1',fileName:'synthetic.csv',importedAt:'2026-09-04T19:00:00.000Z'}});
   await check('retained ARV approval with existing Brad display name',async()=>{const res=await handler(event('note.create',contact.id,{body:arvNote}));assert.equal(res.statusCode,200,res.body);});

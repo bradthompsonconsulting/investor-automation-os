@@ -15,7 +15,7 @@ import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTI
 import { deriveRailDeal, railCells, railAuthorityReconciled, contactAskAuthority, RAIL_MONEY, type ContactAskAuthority, type RailDeal, type RailIds } from "../lib/rail";
 import { opportunitiesForContact } from "../lib/underwriting/selectOpportunity";
 import { CallbackPopover } from "../components/CallbackPopover";
-import { DispositionControl } from "../components/DispositionControl";
+import { CallLogControl } from "../components/CallLogControl";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
 /* B7-02 — the PropStream browser handoff lives in ../lib/propstream, which holds
@@ -2140,7 +2140,7 @@ export default function ContactWorkspace() {
               color: "#1EC8FF", cursor: loading ? "not-allowed" : "pointer",
             }}
           >
-            <CalendarClock size={14} /> {callback ? "Reschedule Callback" : "Schedule Callback"}
+            <CalendarClock size={14} /> {callback ? "Change Callback" : "Set Callback"}
           </button>
           {callbackOpen && (
             <CallbackPopover
@@ -2248,12 +2248,12 @@ export default function ContactWorkspace() {
           attempt write, so the in-session override never claims a write that
           did not land — the same rule the note→attempt path at L738 follows. */}
       {contact && (
-        <DispositionControl
+        <CallLogControl
           contactId={id!}
-          contact={detail}
+          notes={notes}
           onAttempt={(iso) => setAttemptOverride(iso)}
           onNoteWritten={loadNotes}
-          onCallback={(iso) => { if (currentIdRef.current === id) setCallbackOverride(iso); }}
+          onOpenCallback={() => { setCallbackOpen(true); setCallbackError(null); }}
         />
       )}
 

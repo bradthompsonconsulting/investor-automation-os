@@ -761,6 +761,12 @@ export const ghl = {
     setDispositionAt: (contactId: string, iso: string) =>
       confirmedCommand("contact.dispositionAt", contactId, { value: iso }),
 
+    // B14-12 recording-only call log: the result field ONLY. The server's
+    // contact.callLogResult operation cannot write iaos_disposition_at or
+    // iaos_call_routing, so recording a result fires no GHL workflow.
+    setCallLogResult: (contactId: string, value: string) =>
+      confirmedCommand("contact.callLogResult", contactId, { value }),
+
     /* Board #5 S3 — PRIVATE options transport, the counterpart to
        _putMonetaryField and _putStringField and permitted by the same PB-D16
        §4.4 sentence: a private one-field PUT helper is allowed, a PUBLIC setter

@@ -93,6 +93,7 @@ export const PRODUCTION_OPERATION_SCOPE = {
   "contact.disposition": "refused",
   "contact.routing": "refused",
   "contact.dispositionAt": "refused",
+  "contact.callLogResult": "refused",
   "contact.occupancy": "refused",
   "note.create": "pinned_contact_note",
   "task.complete": "refused",

@@ -16,6 +16,7 @@ Sources: baseline app/src/lib/ghl.ts, app/src/pages/Pipeline.tsx, app/netlify/fu
 | contacts.setPropertyNotes | contact.propertyNotes | Only property notes TEXT |
 | contacts.setArv | contact.arv | Only existing legacy contact ARV MONETARY field; no repair field |
 | contacts.setCallDisposition | contact.disposition | Only existing six disposition choices |
+| contacts.setCallLogResult (B14-12 recording-only call log) | contact.callLogResult | Only iaos_call_disposition; only No Answer, Voicemail, Spoke with Seller, Follow Up, Not Interested, Incorrect Number; never iaos_disposition_at or iaos_call_routing (operation-specific guard in planWrite); Production refused |
 | contacts.setCallRouting | contact.routing | Only two routing choices; nurture requires No Answer/Voicemail |
 | contacts.setDispositionAt | contact.dispositionAt | Only timestamp; confirmed disposition and Follow Up callback prerequisite |
 | contacts.setOccupancyStatus | contact.occupancy | Existing three choices or clear; SINGLE_OPTIONS serialization |
