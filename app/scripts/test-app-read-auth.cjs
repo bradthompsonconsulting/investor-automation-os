@@ -469,16 +469,17 @@ function assertNoCors(res) {
   const callLog = fs.readFileSync(path.join(APP, 'src', 'components', 'CallLogControl.tsx'), 'utf8').replace(/\r\n/g, '\n');
   await check('CallLogControl imports ReadUnavailableError', () => assert.match(callLog, /import \{ ReadUnavailableError \} from "\.\.\/lib\/read-session";/));
   await check('CallLogControl: refused readback after a confirmed result write -> saved_unverified; no note, no last touch', () => {
-    assert.match(callLog, /await ghl\.contacts\.setCallLogResult\(contactId, chosen\);[\s\S]*?\} catch \(e\) \{\s*if \(!\(e instanceof ReadUnavailableError\)\) throw e;\s*setSubmit\(\{ status: "saved_unverified", message: [^\n]*\n\s*return;\s*\}/);
+    assert.match(callLog, /await ghl\.contacts\.setCallLogResult\(contactId, chosen\);[\s\S]*?\} catch \(e\) \{\s*setSubmit\(\{ status: "saved_unverified", message: e instanceof ReadUnavailableError[\s\S]*?\}\);\s*return;\s*\}/);
   });
   await check('CallLogControl message: confirmed, not verifiable, sign in to reads and reload, do not retry', () => {
     const m = callLog.match(/const VERIFY_UNAVAILABLE = "([^"]*)";/);
     assert.ok(m, 'VERIFY_UNAVAILABLE not found');
     assert.match(m[1], /can't be verified/); assert.match(m[1], /Sign in to reads and reload/); assert.match(m[1], /do not retry/);
-    assert.match(callLog, /Result saved -- IAOS confirmed the write, but it \$\{VERIFY_UNAVAILABLE\} Notes and last-touch time were not written\./);
+    assert.match(callLog, /Result saved -- IAOS confirmed the write, but it \$\{VERIFY_UNAVAILABLE\} Notes and last-touch time were not attempted\./);
   });
-  await check('CallLogControl keeps uncertain/failed-write handling: a thrown write saves nothing further', () => {
-    assert.match(callLog, /\} catch \(e\) \{\s*setSubmit\(\{ status: "not_saved", message: \`\$\{\(e as Error\)\.message\}\. Nothing was written\.\` \}\);/);
+  await check('CallLogControl keeps uncertain/failed-write handling: a thrown write attempts nothing further and never claims nothing was written', () => {
+    assert.ok(callLog.includes('status: "not_saved", message: `Result not confirmed (${(e as Error).message}). Notes and last-touch time were not attempted.'));
+    assert.doesNotMatch(callLog, /Nothing was written/);
   });
   await check('CallLogControl renders saved_unverified in amber, with no Retry', () => {
     assert.match(callLog, /data-testid="call-log-saved-unverified" style=\{\{ color: "#F59E0B" \}\}/);
