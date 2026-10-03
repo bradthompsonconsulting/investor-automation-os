@@ -253,23 +253,27 @@ check('webhook still accepts exactly the six dispositions (Do Not Call refused)'
       (dncCode.match(/ghl\.notes\.create\(/g) || []).length === 1 && at(commitSrc, 'await ghl.notes.create(cid, note)') !== -1
       && /void run\(dncNote\(why\)\)/.test(checkSrc) && /void run\(earlier\)/.test(retrySrc) && /await commit\(contactId, note\)/.test(runSrc)
       && !/ghl\./.test(checkSrc + retrySrc + runSrc), true);
-    check('DNC commit order: reconcile this contact\'s unresolved attempt (lookup; a failed lookup writes nothing) → re-verify suppression → one save',
-      at(commitSrc, 'const earlier = readPending(cid);') !== -1
-      && at(commitSrc, 'await ghl.notes.list(cid)') > at(commitSrc, 'const earlier = readPending(cid);')
+    check('DNC commit order: read the record (unreadable = stop) → reconcile (lookup; failed = no write) → re-verify → write-ahead record (not stored = stop) → one save',
+      at(commitSrc, 'const record = readPending(cid);') !== -1
+      && /if \(!record\.ok\) \{ if \(live\(\)\) setState\(\{ kind: "storage_blocked", message: STORAGE_BLOCKED \}\); return; \}/.test(commitSrc)
+      && at(commitSrc, 'await ghl.notes.list(cid)') > at(commitSrc, 'const record = readPending(cid);')
       && /Nothing saved again\.` \}\);\n\s+return;/.test(commitSrc)
       && at(commitSrc, 'existing.some((n) => n.body === earlier)') > at(commitSrc, 'await ghl.notes.list(cid)')
       && at(commitSrc, 'await verify(cid, earlier !== null)') > at(commitSrc, 'existing.some((n) => n.body === earlier)')
-      && at(commitSrc, 'await ghl.notes.create(cid, note)') > at(commitSrc, 'await verify(cid, earlier !== null)')
+      && at(commitSrc, 'if (!persistPending(cid, note)) { if (live()) setState({ kind: "storage_blocked", message: STORAGE_BLOCKED }); return; }') > at(commitSrc, 'await verify(cid, earlier !== null)')
+      && at(commitSrc, 'await ghl.notes.create(cid, note)') > at(commitSrc, 'if (!persistPending(cid, note))')
+      && /return sessionStorage\.getItem\(PENDING_PREFIX \+ contactId\) === note;/.test(dncCode) && !/pendingMemory|new Map/.test(dncCode)
       && /if \(fresh\.id !== cid\)/.test(dncCode) && /const missing = unsuppressedChannels\(fresh\.dndSettings\);/.test(dncCode), true);
   }
   check('DNC confirm needs this contact loaded and a reason; the unresolved attempt is keyed to the contact and Cancel keeps it',
     /disabled=\{busy \|\| !known \|\| reason\.trim\(\) === ""\}/.test(dncCode) && /if \(!known \|\| !why \|\| inFlight\.current\) return;/.test(dncCode)
-    && /getItem\(PENDING_PREFIX \+ contactId\)/.test(dncCode) && /setPending\(readPending\(contactId\)\);/.test(dncCode)
+    && /getItem\(PENDING_PREFIX \+ contactId\)/.test(dncCode) && /setPending\(pendingNote\(contactId\)\);/.test(dncCode)
     && /data-testid="dnc-cancel" onClick=\{\(\) => \{ setOpen\(false\); setReason\(""\); setHandoff\(null\); setState\(\{ kind: "idle" \}\); \}\}/.test(dncCode), true);
-  check('DNC: a server refusal is "not recorded"; any other note failure is "uncertain" and remembered, never "unsaved"',
+  check('DNC: a server refusal is "not recorded" and resolves the record; any other note failure is "uncertain" and keeps it, never "unsaved"',
     /const refused = \/\^Do Not Call is not held in GHL for:\/\.test\(message\) \? message\n\s+: DEFINITE_REFUSAL\.test\(message\) \? `Not recorded: \$\{message\}` : null;/.test(dncCode)
-    && /writePending\(cid, note\);/.test(dncCode)
+    && /if \(refused !== null\) \{ clearPending\(cid\);/.test(dncCode) && (commitSrcForRefusal(dncCode).match(/clearPending\(cid\)/g) || []).length === 2
     && /The note may or may not have been saved/.test(dncCode) && !/(was not|wasn't) saved/.test(dncCode), true);
+  function commitSrcForRefusal(code) { return (code.match(/async function commit\([^)]*\)[^{]*\{[\s\S]*?\n  \}\n/) || [''])[0]; }
   check('ghl client has no DND write method', /setDnc|contact\.dnc/.test(ghlClient), false);
   check("Contact page mounts the DNC control with only this contact's detail",
     /<DncControl[\s\S]*?detail=\{detail && detail\.id === id \? detail : null\}[\s\S]*?onNoteWritten=\{loadNotes\}/.test(contactPageCode), true);

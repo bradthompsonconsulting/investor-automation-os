@@ -22,12 +22,16 @@ import {
  *      under its lock and refuses the note unless all three are still
  *      suppressed (first save and every retry).
  *
- * UNRESOLVED ATTEMPTS (Bones, #120 recovery fix). A save whose outcome is
- * uncertain is remembered for THAT contact (sessionStorage, keyed by contact
- * id) until it is resolved — through Cancel, reopening, remounts and reloads
- * in this tab. EVERY note write, whichever button starts it, goes through
- * commit(): it first looks for the unresolved note and, if found, records it
- * as done with no second write; if the lookup fails it writes nothing; only
+ * UNRESOLVED ATTEMPTS (Bones, #120 recovery fixes). WRITE-AHEAD: before any
+ * note is sent, the attempt is stored for THAT contact in sessionStorage (keyed
+ * by contact id) and read back; if that fails, nothing is sent and Brad is told
+ * recording can't safely proceed in this browser session. There is no
+ * in-memory fallback — it would not survive a reload. The record is kept until
+ * the note is confirmed present (saved, or found by a lookup) or the write is
+ * definitely refused — through Cancel, reopening, navigation and reloads.
+ * EVERY note write, whichever button starts it, goes through commit(): if the
+ * record can't be read it writes nothing; if there is one it looks for that
+ * note first (found = done, no second write; lookup failed = no write); only
  * when the note is confirmed absent does it re-check suppression and make one
  * new attempt. It never claims a note was unsaved.
  */
@@ -37,6 +41,7 @@ type State =
   | { kind: "busy" }
   | { kind: "not_suppressed"; message: string }
   | { kind: "read_failed"; message: string }
+  | { kind: "storage_blocked"; message: string }
   | { kind: "refused"; message: string }
   | { kind: "uncertain"; message: string }
   | { kind: "done"; found: boolean };
@@ -53,25 +58,28 @@ const HANDOFF_TEXT: Record<GhlHandoffResult, string> = {
 const PENDING_PREFIX = "iaos.dnc.pending.";
 const PENDING_TEXT = "An earlier Do Not Call note for this contact may or may not have been saved. IAOS looks for it before saving anything again.";
 
-type PendingStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-function storage(): PendingStore | null {
-  try { return typeof sessionStorage === "undefined" ? null : sessionStorage; } catch { return null; }
-}
-/** Unresolved notes in memory too, so the rule holds even if sessionStorage is unavailable. */
-const pendingMemory = new Map<string, string>();
+const STORAGE_BLOCKED = "Do Not Call can't be recorded safely in this browser session: IAOS couldn't keep a recovery record of the save (browser storage unavailable or full). Nothing recorded. Use a normal browser window with site storage allowed, then check again.";
 
-/** The unresolved (uncertain) note for this contact, if any. Never another contact's. */
-function readPending(contactId: string): string | null {
-  try { const v = storage()?.getItem(PENDING_PREFIX + contactId); if (v) return v; } catch { /* memory below */ }
-  return pendingMemory.get(contactId) ?? null;
+/**
+ * This contact's unresolved note. ok:false = the record can't be read, so whether an
+ * earlier attempt is outstanding is unknown and nothing may be written.
+ */
+function readPending(contactId: string): { ok: true; note: string | null } | { ok: false } {
+  try { return { ok: true, note: sessionStorage.getItem(PENDING_PREFIX + contactId) }; }
+  catch { return { ok: false }; }
 }
-function writePending(contactId: string, note: string | null) {
-  if (note === null) pendingMemory.delete(contactId); else pendingMemory.set(contactId, note);
+/** Write-ahead record. true ONLY when it is stored and reads back exactly. */
+function persistPending(contactId: string, note: string): boolean {
   try {
-    const s = storage();
-    if (note === null) s?.removeItem(PENDING_PREFIX + contactId); else s?.setItem(PENDING_PREFIX + contactId, note);
-  } catch { /* memory holds it */ }
+    sessionStorage.setItem(PENDING_PREFIX + contactId, note);
+    return sessionStorage.getItem(PENDING_PREFIX + contactId) === note;
+  } catch { return false; }
 }
+/** Resolved (confirmed present or definitely refused). A record left behind only costs a lookup. */
+function clearPending(contactId: string) {
+  try { sessionStorage.removeItem(PENDING_PREFIX + contactId); } catch { /* the next save looks first */ }
+}
+const pendingNote = (contactId: string) => { const p = readPending(contactId); return p.ok ? p.note : null; };
 
 export function DncControl({ contactId, detail, onNoteWritten }: {
   contactId: string;
@@ -84,7 +92,7 @@ export function DncControl({ contactId, detail, onNoteWritten }: {
   const [reason, setReason] = useState("");
   const [handoff, setHandoff] = useState<GhlHandoffResult | null>(null);
   const [state, setState] = useState<State>({ kind: "idle" });
-  const [pending, setPending] = useState<string | null>(() => readPending(contactId));
+  const [pending, setPending] = useState<string | null>(() => pendingNote(contactId));
   const inFlight = useRef(false);
   const currentId = useRef(contactId);
   const busy = state.kind === "busy";
@@ -95,7 +103,7 @@ export function DncControl({ contactId, detail, onNoteWritten }: {
   useEffect(() => {
     currentId.current = contactId;
     setOpen(false); setReason(""); setHandoff(null); setState({ kind: "idle" });
-    setPending(readPending(contactId));
+    setPending(pendingNote(contactId));
   }, [contactId]);
 
   /** Fresh read of contact `cid`. null = suppression holds on calls, SMS and email. */
@@ -113,19 +121,22 @@ export function DncControl({ contactId, detail, onNoteWritten }: {
 
   /**
    * THE ONLY NOTE-WRITE PATH (check now and Retry both come here). `note` is the note
-   * to save if nothing is outstanding. Order: reconcile any unresolved attempt for
-   * this contact → verify suppression → one save.
+   * to save if nothing is outstanding. Order: read this contact's record (unreadable =
+   * stop) → reconcile any unresolved attempt → verify suppression → write-ahead record
+   * (not stored = stop) → one save.
    */
   async function commit(cid: string, note: string) {
     const live = () => currentId.current === cid;
     const finish = (found: boolean) => {
-      writePending(cid, null);
+      clearPending(cid);
       if (!live()) return;
       onNoteWritten(); setPending(null);
       setState({ kind: "done", found }); setOpen(false); setReason(""); setHandoff(null);
     };
     // 1. An earlier attempt for this contact may have saved. Look before writing anything.
-    const earlier = readPending(cid);
+    const record = readPending(cid);
+    if (!record.ok) { if (live()) setState({ kind: "storage_blocked", message: STORAGE_BLOCKED }); return; }
+    const earlier = record.note;
     if (earlier !== null) {
       let existing: { body: string }[];
       try { existing = (await ghl.notes.list(cid)).notes ?? []; }
@@ -134,13 +145,15 @@ export function DncControl({ contactId, detail, onNoteWritten }: {
         return;
       }
       if (existing.some((n) => n.body === earlier)) { finish(true); return; }
-      writePending(cid, null);   // confirmed absent: that attempt did not save
-      if (live()) setPending(null);
+      // Confirmed absent. The record stays until this attempt resolves; step 3 replaces it.
     }
     // 2. Suppression must hold right now (re-checked after any unresolved attempt).
     const problem = await verify(cid, earlier !== null);
     if (problem) { if (live()) setState(problem); return; }
-    // 3. One save; ghl-write re-checks suppression before accepting it.
+    // 3. Write-ahead: the attempt must be on record (surviving a reload) BEFORE it is sent.
+    if (!persistPending(cid, note)) { if (live()) setState({ kind: "storage_blocked", message: STORAGE_BLOCKED }); return; }
+    if (live()) setPending(note);
+    // 4. One save; ghl-write re-checks suppression before accepting it.
     try {
       await ghl.notes.create(cid, note);
       finish(false);
@@ -150,10 +163,9 @@ export function DncControl({ contactId, detail, onNoteWritten }: {
       // write sign-in — means the note was NOT saved. Anything else is uncertain.
       const refused = /^Do Not Call is not held in GHL for:/.test(message) ? message
         : DEFINITE_REFUSAL.test(message) ? `Not recorded: ${message}` : null;
-      if (refused !== null) { if (live()) setState({ kind: "refused", message: refused }); return; }
-      writePending(cid, note);   // remembered for THIS contact even if Brad has moved on
+      if (refused !== null) { clearPending(cid); if (live()) { setPending(null); setState({ kind: "refused", message: refused }); } return; }
+      // Uncertain: the write-ahead record stays, for THIS contact, even if Brad has moved on.
       if (!live()) return;
-      setPending(note);
       setState({ kind: "uncertain", message: `The note may or may not have been saved (${message}). Retry looks for it before saving anything again.` });
     }
   }
@@ -173,7 +185,7 @@ export function DncControl({ contactId, detail, onNoteWritten }: {
   }
 
   function retry() {
-    const earlier = readPending(contactId);
+    const earlier = pendingNote(contactId);
     if (earlier === null || inFlight.current) return;
     void run(earlier);
   }

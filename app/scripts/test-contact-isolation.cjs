@@ -820,6 +820,90 @@ async function main() {
     await until(async () => (await dncState('dnc-done')) !== null, 'R6 found');
     check('R6: the next attempt finds the note — still exactly one', dncNotes(A) === 1 && JSON.stringify(opsFor(A, d0)) === JSON.stringify(['note.create']));
 
+    // ═══ #120 storage recovery block (Bones): write-ahead record, verified, before ANY note is sent ═══
+    // Bones's repro: sessionStorage fails, the first save answers 500 (it saved), the page reloads.
+    const harnessLoad = async () => {   // a full page load: JS memory is gone, the tab's sessionStorage is not
+      await page.goto(`${base}/scripts/harness/contact-isolation/index.html`);
+      await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
+    };
+    const breakDncStorage = (which) => page.evaluate((w) => {
+      const orig = Storage.prototype[w];
+      Storage.prototype[w] = function (k, ...rest) {
+        if (String(k).startsWith('iaos.dnc.')) throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+        return orig.call(this, k, ...rest);
+      };
+    }, which);
+
+    // S1 — setItem throws QuotaExceededError before the first write: nothing is sent.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    db[A].dnd = { Call: ON, SMS: ON, Email: ON };
+    d0 = W().length;
+    saveThenFail.push((r) => r.kind === 'write' && r.op === 'note.create' && r.contact === A);   // would "save, then 500" if ever reached
+    await breakDncStorage('setItem');
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill(REASON);
+    l0 = log.length;
+    await page.getByTestId('dnc-check').click();
+    await until(async () => (await dncState('dnc-storage-blocked')) !== null, 'S1 storage blocked');
+    check('S1: storage full before the first write -> stops BEFORE the write: zero note writes, nothing in GHL',
+      writesIn(seq(A, l0)).length === 0 && opsFor(A, d0).length === 0 && dncNotes(A) === 0 && saveThenFail.length === 1, seq(A, l0));
+    check('S1: says recording can\'t safely proceed in this browser session; nothing recorded',
+      /can't be recorded safely in this browser session/.test(await dncState('dnc-storage-blocked')) && /Nothing recorded\./.test(await dncState('dnc-storage-blocked'))
+      && (await page.getByTestId('dnc-done').count()) === 0 && (await page.getByTestId('dnc-retry').count()) === 0);
+    await page.getByTestId('dnc-check').click();   // trying again in the same broken session
+    await until(async () => (await page.getByTestId('dnc-check').isEnabled()), 'S1 second click settled');
+    await settle();
+    check('S1: clicking again in the same session still writes nothing', opsFor(A, d0).length === 0 && dncNotes(A) === 0, opsFor(A, d0));
+
+    // S2 — after a reload (storage still failing): still zero note writes; nothing left pending.
+    await harnessLoad();
+    await breakDncStorage('setItem');
+    await go(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    check('S2: after the reload nothing is shown as pending (nothing was ever sent)', (await page.getByTestId('dnc-pending').count()) === 0);
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill(REASON);
+    await page.getByTestId('dnc-check').click();
+    await until(async () => (await dncState('dnc-storage-blocked')) !== null, 'S2 storage blocked');
+    check('S2: after the reload, with storage still failing -> zero note writes', opsFor(A, d0).length === 0 && dncNotes(A) === 0, opsFor(A, d0));
+
+    // S3 — the record can't even be READ (getItem throws): IAOS can't know whether an earlier
+    // attempt is outstanding, so it sends nothing at all — not even the suppression read.
+    await harnessLoad();
+    await breakDncStorage('getItem');
+    await go(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill(REASON);
+    l0 = log.length;
+    await page.getByTestId('dnc-check').click();
+    await until(async () => (await dncState('dnc-storage-blocked')) !== null, 'S3 storage blocked');
+    check('S3: unreadable record -> stops before any lookup, read or write', seq(A, l0).length === 0 && opsFor(A, d0).length === 0, seq(A, l0));
+
+    // S4 — storage works again: the same "saved, then 500" now leaves a record that survives
+    // the reload, and the next "check now" finds the note — exactly one, ever.
+    await harnessLoad();
+    await go(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill(REASON);
+    await page.getByTestId('dnc-check').click();
+    await until(async () => (await dncState('dnc-uncertain')) !== null, 'S4 uncertain');
+    check('S4 precondition: storage working, the save landed and answered 500', dncNotes(A) === 1 && saveThenFail.length === 0);
+    await harnessLoad();
+    await go(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await until(async () => (await page.getByTestId('dnc-pending').count()) === 1, 'S4 pending after reload');
+    await openDnc();
+    await page.getByTestId('dnc-reason').fill(REASON);
+    l0 = log.length;
+    await page.getByTestId('dnc-check').click();
+    await until(async () => (await dncState('dnc-done')) !== null, 'S4 found');
+    check('S4: after the reload "check now" looks first and finds it — one note, one write in total',
+      /the earlier save had gone through/.test(await dncState('dnc-done')) && dncNotes(A) === 1 && JSON.stringify(opsFor(A, d0)) === JSON.stringify(['note.create'])
+      && seq(A, l0)[0] === 'notes' && writesIn(seq(A, l0)).length === 0, seq(A, l0));
+
     // E9 — GHL already shows all three suppressed: shown as in effect.
     await fresh({ aDnd: { Call: ON, SMS: STOP, Email: ON } }, `/contacts/${A}`);
     await contactLoaded('Alpha');
