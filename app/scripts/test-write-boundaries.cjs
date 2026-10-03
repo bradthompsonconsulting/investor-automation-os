@@ -399,7 +399,7 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
     ['contact.lastCallAttempt', {value:'2026-09-18T01:00:00.000Z'}], ['contact.callback',{value:'2026-09-19T01:00:00.000Z'}],
     ['contact.propertyNotes',{value:'synthetic note'}], ['contact.arv',{value:250000}], ['contact.disposition',{value:'No Answer'}],
     ['contact.routing',{value:'Stay in Cold Outreach'}], ['contact.dispositionAt',{value:'2026-09-18T01:00:00.000Z'}], ['contact.occupancy',{value:'Vacant'}],
-    ['contact.callLogResult',{value:'Spoke with Seller'}],
+    ['contact.callLogResult',{value:'Spoke with Seller'}], ['contact.explicitCallback',{value:'2026-09-19T01:00:00.000Z'}],
     ['opportunity.askingPrice',{value:100000}], ['opportunity.arv',{value:250000}], ['opportunity.repairs',{value:25000}],
     ['opportunity.currentOffer',{value:110000}], ['opportunity.assignmentMode',{value:'Standard'}],
     ['opportunity.underwriting',{endBuyerMaxPrice:150000,sellerMAO:130000,assignmentMode:'Standard'}],
@@ -423,6 +423,13 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   await check('call log: nothing can ride along (no routing, no timestamp, no extra key)', () => {
     assert.throws(() => contracts.planWrite('contact.callLogResult', { value: 'No Answer', routing: 'Long-Term Nurture' }, config));
     assert.throws(() => contracts.planWrite('contact.callLogResult', { value: 'No Answer', dispositionAt: '2026-10-02T00:00:00.000Z' }, config));
+  });
+  await check('explicit callback: the same two callback fields as contact.callback, set or clear, nothing else', () => {
+    for (const value of ['2026-10-09T19:30:00.000Z', null]) {
+      assert.deepEqual(contracts.planWrite('contact.explicitCallback', { value }, config).fields.map((f) => f.id), contracts.planWrite('contact.callback', { value }, config).fields.map((f) => f.id));
+    }
+    assert.throws(() => contracts.planWrite('contact.explicitCallback', { value: 'tomorrow' }, config));
+    assert.throws(() => contracts.planWrite('contact.explicitCallback', { value: null, note: 'x' }, config));
   });
   await check('call log: the webhook list is unchanged and does not gain Spoke with Seller', () => {
     assert.deepEqual(contracts.dispositions, ['No Answer', 'Voicemail', 'Follow Up', 'Requested Appointment', 'Not Interested', 'Incorrect Number']);

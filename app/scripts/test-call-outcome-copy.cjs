@@ -123,6 +123,18 @@ check('Contact page renders the call log with its refresh and Set Callback wirin
   /<CallLogControl[\s\S]*?notes=\{notes\}[\s\S]*?onNoteWritten=\{loadNotes\}[\s\S]*?onOpenCallback=\{\(\) => \{ setCallbackOpen\(true\); setCallbackError\(null\); \}\}[\s\S]*?\/>/.test(contactPageCode), true);
 check('the old dial-result control is gone', fs.existsSync(path.join(APP, 'src/components/DispositionControl.tsx')) || /DispositionControl/.test(contactPageCode), false);
 check('Set Callback stays a separate, explicit page action', /\{callback \? "Change Callback" : "Set Callback"\}/.test(contactPageCode), true);
+{
+  const dashboardSrc = stripBlockComments(read('src/pages/Dashboard.tsx'));
+  check('explicit Set/Clear Callback (Contact page and Dashboard row) use the distinct explicit-callback operation',
+    /scheduleCallbackGated\(explicitCallbackClient, id, iso\)/.test(contactPageCode) && /await ghl\.contacts\.setExplicitCallback\(id, null\)/.test(contactPageCode)
+    && /scheduleCallbackGated\(explicitCallbackClient, contactId, iso\)/.test(dashboardSrc) && /await ghl\.contacts\.setExplicitCallback\(contactId, null\)/.test(dashboardSrc)
+    && !/setCallbackDatetime\(/.test(contactPageCode) && !/setCallbackDatetime\(/.test(dashboardSrc), true);
+  check('Seller Call Follow-Up keeps the generic callback operation (denied in Production) and never the explicit one',
+    /scheduleCallbackGated\(ghl, contactId, followUpIso\)/.test(sellerCallCode) && !/explicitCallback|setExplicitCallback/.test(sellerCallCode), true);
+  check('ghl client: explicit callback is its own operation; explicitCallbackClient routes only the callback write through it',
+    /setExplicitCallback: \(contactId: string, iso: string \| null\) => confirmedCommand\("contact\.explicitCallback", contactId, \{ value: iso \}\)/.test(ghlClient)
+    && /setCallbackDatetime: \(id: string, iso: string \| null\) => ghl\.contacts\.setExplicitCallback\(id, iso\)/.test(ghlClient), true);
+}
 
 // ── Queue placement (Jess ruling 2026-10-02) ─────────────────────────────
 check('No Answer / Voicemail stay in the cold-call queue', [queue.callLogPlacement('No Answer', false), queue.callLogPlacement('Voicemail', true)], ['cold', 'cold']);

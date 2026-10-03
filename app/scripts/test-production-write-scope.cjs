@@ -170,6 +170,7 @@ const VALID_ARGS = {
   'contact.routing': { value: 'Stay in Cold Outreach' },
   'contact.dispositionAt': { value: '2026-09-24T12:00:00.000Z' },
   'contact.callLogResult': { value: 'Spoke with Seller' },
+  'contact.explicitCallback': { value: '2026-10-09T19:30:00.000Z' },
   'contact.occupancy': { value: 'Vacant' },
   'note.create': { body: MINIMAL_NOTES[0].body },
   'task.complete': { taskId: 'offline-task' },
@@ -1263,6 +1264,106 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     assert.ok(/readbackLocationId: runtimeConfig\.locationId/.test(call));
   });
 
+  // ===== B14-12 — Production call-log permission class (default DISABLED).
+  {
+    const callLogOn = (state) => ({ ...variant(state), productionCallLog: G.PRODUCTION_CALL_LOG_ENABLED });
+    const decide = (cfg, operation, targetId, args) => scopeLib.evaluateProductionGhlWriteScope(cfg, { operation, targetId, args });
+    const NOTE = (r, notes) => 'Call (reported by Brad in IAOS): ' + r + (notes ? '\n' + notes : '');
+    const RESULTS = ['No Answer', 'Voicemail', 'Spoke with Seller', 'Follow Up', 'Not Interested', 'Incorrect Number'];
+
+    await check('call log: committed config is DISABLED in both environments', () => {
+      assert.equal(PRODUCTION_ORIGINAL.productionCallLog, G.PRODUCTION_CALL_LOG_DISABLED);
+      assert.equal(TEST.productionCallLog, G.PRODUCTION_CALL_LOG_DISABLED);
+      assert.notEqual(G.PRODUCTION_CALL_LOG_DISABLED, G.PRODUCTION_CALL_LOG_ENABLED);
+    });
+    await check('call log: DISABLED -> every operation decides exactly as before, in every Board #9 state', () => {
+      for (const state of [...Object.keys(EXPECTED_PRE), 'ready']) {
+        const off = variant(state);
+        for (const op of Object.keys(VALID_ARGS)) for (const target of [pinnedTarget(op), otherTarget(op)]) {
+          assert.deepEqual(decide(off, op, target, VALID_ARGS[op]), decide({ ...off, productionCallLog: 'anything-else' }, op, target, VALID_ARGS[op]), op + ' ' + state);
+        }
+        assert.equal(decide(off, 'contact.callLogResult', OTHER_CONTACT, { value: 'No Answer' }).ok, false, state);
+      }
+    });
+    for (const state of [...Object.keys(EXPECTED_PRE), 'ready']) {
+      await check('call log ENABLED (' + state + '): result, last touch and the EXPLICIT callback allowed for ANY contact, independent of Board #9; generic contact.callback still refused', () => {
+        const on = callLogOn(state);
+        for (const target of [OTHER_CONTACT, PIN_CONTACT]) {
+          for (const r of RESULTS) assert.deepEqual(decide(on, 'contact.callLogResult', target, { value: r }), { ok: true }, r);
+          assert.deepEqual(decide(on, 'contact.lastCallAttempt', target, { value: '2026-10-02T12:00:00.000Z' }), { ok: true });
+          assert.deepEqual(decide(on, 'contact.explicitCallback', target, { value: '2026-10-09T19:30:00.000Z' }), { ok: true });
+          assert.deepEqual(decide(on, 'contact.explicitCallback', target, { value: null }), { ok: true });
+          assert.equal(decide(on, 'contact.callback', target, { value: '2026-10-09T19:30:00.000Z' }).ok, false, 'generic contact.callback');
+          assert.equal(decide(on, 'contact.callback', target, { value: null }).ok, false, 'generic contact.callback clear');
+        }
+      });
+    }
+    await check('call log ENABLED: exact call-log notes and callback notes allowed for any contact', () => {
+      const on = callLogOn('disabled');
+      for (const r of RESULTS) {
+        assert.deepEqual(decide(on, 'note.create', OTHER_CONTACT, { body: NOTE(r) }), { ok: true }, r);
+        assert.deepEqual(decide(on, 'note.create', OTHER_CONTACT, { body: NOTE(r, 'Wants 30 days.\nAsk about roof.') }), { ok: true }, r);
+      }
+      assert.deepEqual(decide(on, 'note.create', OTHER_CONTACT, { body: NOTE('Spoke with Seller', 'x'.repeat(4000)) }), { ok: true });
+      for (const body of ['Callback scheduled for Oct 9, 2:30 PM', 'Callback scheduled for Oct 12, 10:00\u202fAM']) assert.deepEqual(decide(on, 'note.create', OTHER_CONTACT, { body }), { ok: true }, body);
+    });
+    await check('call log ENABLED: every other note is still refused for a non-pinned contact', () => {
+      const on = callLogOn('ready');
+      for (const body of [
+        'plain operator note', 'Call: No Answer — 10s', NOTE('Requested Appointment'), NOTE('Do Not Call'), NOTE('no answer'),
+        'Call (reported by Brad in IAOS):  No Answer', ' ' + NOTE('No Answer'), NOTE('No Answer') + ' — callback scheduled for Oct 6, 10:00 AM',
+        NOTE('No Answer', '   '), NOTE('Spoke with Seller', 'x'.repeat(4001)), 'Callback scheduled for tomorrow', 'Callback scheduled for Oct 9, 2:30 PM extra',
+        PASS_OUTCOME_BODY, MINIMAL_NOTES[0].body,
+      ]) assert.equal(decide(on, 'note.create', OTHER_CONTACT, { body }).ok, false, JSON.stringify(body).slice(0, 80));
+    });
+    await check('call log ENABLED: nothing else opens — routing, trigger timestamp, old disposition, Board #9 and other ops decide exactly as when disabled', () => {
+      for (const state of [...Object.keys(EXPECTED_PRE), 'ready']) {
+        const off = variant(state), on = callLogOn(state);
+        for (const op of Object.keys(VALID_ARGS)) {
+          if (['contact.callLogResult', 'contact.lastCallAttempt', 'contact.explicitCallback'].includes(op)) continue;
+          for (const target of [pinnedTarget(op), otherTarget(op)]) {
+            if (op === 'note.create') continue;      // notes: covered by the exact-pattern checks above
+            assert.deepEqual(decide(on, op, target, VALID_ARGS[op]), decide(off, op, target, VALID_ARGS[op]), op + ' ' + state);
+          }
+        }
+        for (const op of ['contact.routing', 'contact.dispositionAt', 'contact.disposition']) assert.equal(decide(on, op, OTHER_CONTACT, VALID_ARGS[op]).ok, false, op);
+        assert.deepEqual(decide(on, 'note.create', PIN_CONTACT, { body: PASS_OUTCOME_BODY }), decide(off, 'note.create', PIN_CONTACT, { body: PASS_OUTCOME_BODY }));
+      }
+    });
+    await check('call log: paired-ownership check skipped only for a call-log last touch on a non-pinned contact', () => {
+      const on = callLogOn('ready'), off = variant('ready');
+      assert.equal(scopeLib.requiresProductionPairedOwnership(on, 'contact.lastCallAttempt', OTHER_CONTACT), false);
+      assert.equal(scopeLib.requiresProductionPairedOwnership(on, 'contact.lastCallAttempt', PIN_CONTACT), true);
+      assert.equal(scopeLib.requiresProductionPairedOwnership(off, 'contact.lastCallAttempt', OTHER_CONTACT), true);
+      assert.equal(scopeLib.requiresProductionPairedOwnership(on, 'opportunity.arv', PIN_OPP), true);
+      assert.equal(scopeLib.requiresProductionPairedOwnership(on, 'contact.lastCallAttempt'), true);
+      assert.equal(scopeLib.requiresProductionPairedOwnership(TEST, 'contact.lastCallAttempt', OTHER_CONTACT), false);
+    });
+
+    // Handler: the live module config, call log ENABLED with Board #9 DISABLED.
+    const savedCallLog = PRODUCTION.productionCallLog;
+    applyLive('disabled');
+    PRODUCTION.productionCallLog = G.PRODUCTION_CALL_LOG_ENABLED;
+    try {
+      for (const [op, args] of [
+        ['contact.callLogResult', { value: 'Spoke with Seller' }], ['contact.lastCallAttempt', VALID_ARGS['contact.lastCallAttempt']],
+        ['contact.explicitCallback', { value: '2026-10-09T19:30:00.000Z' }], ['note.create', { body: NOTE('Spoke with Seller', 'Wants 30 days.') }],
+      ]) {
+        await check('handler ghl-write ' + op + ': call log ENABLED, non-pinned contact passes the scope gate (reaches Blob/GHL)', async () => {
+          const before = snapshot();
+          const res = await writeHandler(writeEvent(op, OTHER_CONTACT, args));
+          assert.notEqual(JSON.parse(res.body).by, 'iaos-production-write-scope', res.body);
+          assert.ok(blob.connections > before.connections, 'connectLambda reached after the gate');
+        });
+      }
+      for (const [op, args] of [['contact.routing', VALID_ARGS['contact.routing']], ['contact.dispositionAt', VALID_ARGS['contact.dispositionAt']], ['note.create', { body: 'plain note' }], ['contact.callback', { value: '2026-10-09T19:30:00.000Z' }], ['note.create', { body: PASS_OUTCOME_BODY }]]) {
+        await assertRefusedClean('handler ghl-write ' + op + ': call log ENABLED still refuses it, zero Blob/GHL', () => writeHandler(writeEvent(op, OTHER_CONTACT, args)));
+      }
+    } finally {
+      PRODUCTION.productionCallLog = savedCallLog;
+    }
+    await assertRefusedClean('handler ghl-write contact.callLogResult: call log DISABLED (committed) refused, zero Blob/GHL', () => writeHandler(writeEvent('contact.callLogResult', OTHER_CONTACT, { value: 'Spoke with Seller' })));
+  }
   console.log(`production-write-scope checks=${checks} failures=${failures}`);
   process.exitCode = failures ? 1 : 0;
 })();

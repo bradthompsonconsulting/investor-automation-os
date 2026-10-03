@@ -5,7 +5,7 @@ import {
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
   Calculator, Copy, ExternalLink, Headphones,
 } from "lucide-react";
-import { ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, CONTACT_ASKING_PRICE_ID, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow } from "../lib/ghl";
+import { explicitCallbackClient, ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, CONTACT_ASKING_PRICE_ID, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow } from "../lib/ghl";
 /* Board #5 S2d — the rail's logic lives in ../lib/rail, a module with no React
    and no module-scope config read, so it is loadable by a .cjs runner and the
    Ask precedence can be proven offline. This page supplies the ids and renders
@@ -1640,7 +1640,7 @@ export default function ContactWorkspace() {
   async function handleSaveCallback(iso: string) {
     setCallbackSaving(true);
     setCallbackError(null);
-    const result = await scheduleCallbackGated(ghl, id, iso);
+    const result = await scheduleCallbackGated(explicitCallbackClient, id, iso);
     setCallbackSaving(false);
 
     if (result.ok) {
@@ -1666,7 +1666,7 @@ export default function ContactWorkspace() {
     setCallbackSaving(true);
     setCallbackError(null);
     try {
-      await ghl.contacts.setCallbackDatetime(id, null);
+      await ghl.contacts.setExplicitCallback(id, null);
       setCallbackOverride(null);
       setCallbackOpen(false);
     } catch (e) {

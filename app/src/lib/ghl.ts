@@ -710,6 +710,9 @@ export const ghl = {
     // rides along in the same call as the exact value our own read path uses.
     // Pass null (not "") to clear both — GHL silently ignores an empty string.
     setCallbackDatetime: (contactId: string, iso: string | null) => confirmedCommand("contact.callback", contactId, { value: iso }),
+    // B14-12: the deliberate Set/Clear Callback action (Contact page, Dashboard
+    // row). Same fields, distinct operation — see explicitCallbackClient below.
+    setExplicitCallback: (contactId: string, iso: string | null) => confirmedCommand("contact.explicitCallback", contactId, { value: iso }),
 
     // Phase B PB-D1 — the first authorized Class 1 app write and the fourth
     // named GHL write. ONE field per PUT: this body carries exactly one
@@ -1480,5 +1483,20 @@ export const ghl = {
     },
 
   },
+};
+
+/**
+ * B14-12 (Bones, PR #118) — the explicit Set/Clear Callback action's client.
+ * The same gated sequence (scheduleCallbackGated) and the same two callback
+ * fields, but through the distinct `contact.explicitCallback` operation, so
+ * Production can permit Brad's deliberate callback action without permitting
+ * the generic `contact.callback` that Seller Call Follow-Up uses.
+ */
+export const explicitCallbackClient = {
+  contacts: {
+    setCallbackDatetime: (id: string, iso: string | null) => ghl.contacts.setExplicitCallback(id, iso),
+    setLastCallAttempt: (id: string, iso: string) => ghl.contacts.setLastCallAttempt(id, iso),
+  },
+  notes: { create: (id: string, body: string) => ghl.notes.create(id, body) },
 };
 

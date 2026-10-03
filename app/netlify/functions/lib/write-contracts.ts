@@ -32,6 +32,8 @@ export function planWrite(operation: string, args: any, config: ReturnType<typeo
   switch (operation) {
     case "contact.lastCallAttempt": { const v = single(); iso(v); add(c.lastCallAttempt, v, true); add(c.lastCallAttemptPrecise, v); break; }
     case "contact.callback": { const v = single(); if (v !== null) iso(v); add(c.callbackDatetime, v, true); add(c.callbackDatetimePrecise, v); break; }
+    // B14-12 (Bones, PR #118): Brad's deliberate Set/Clear Callback action only — the same two fields as contact.callback, a distinct operation so Production can scope it.
+    case "contact.explicitCallback": { const v = single(); if (v !== null) iso(v); add(c.callbackDatetime, v, true); add(c.callbackDatetimePrecise, v); break; }
     case "contact.propertyNotes": { const v = single(); text(v); add(c.propertyNotes, v); break; }
     case "contact.arv": { const v = single(); if (v !== "") number(v); add(c.arv, v); break; }
     case "contact.disposition": { const v = single(); if (!dispositions.includes(v)) throw new Error("Invalid disposition"); add(c.callDisposition, v); break; }
