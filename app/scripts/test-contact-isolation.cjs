@@ -277,6 +277,25 @@ async function main() {
       writesFor(A, 'note.create') === 2 && (await page.getByTestId('call-log-done').count()) === 1,
       { notes: writesFor(A, 'note.create'), ops: opsFor(A), done: await page.getByTestId('call-log-done').count() });
 
+    // C5b — Bones (PR #117): the result write lands in GHL, then its readback returns 500.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    w0 = W().length;
+    failNext.push((r) => r.kind === 'detail' && r.contact === A);
+    await save('Spoke with Seller', 'readback will fail');
+    await until(async () => (await page.getByTestId('call-log-saved-unverified').count()) + (await page.getByTestId('call-log-not-saved').count()) === 1, 'a settled save state');
+    await settle(); await settle();          // room for any (forbidden) retry or follow-on write
+    const unverified = (await page.getByTestId('call-log-saved-unverified').count())
+      ? await page.getByTestId('call-log-saved-unverified').innerText()
+      : 'NOT saved-unverified; showed: ' + await page.getByTestId('call-log-not-saved').innerText();
+    check('readback 500: the result stays saved in the GHL record', db[A].fields.get(F.callDisposition) === 'Spoke with Seller', db[A].fields.get(F.callDisposition));
+    check('readback 500: the UI says saved but unverified, and that notes and last touch were not attempted',
+      /^Result saved -- IAOS confirmed the write, but couldn't read it back to verify it/.test(unverified) && /Notes and last-touch time were not attempted\.$/.test(unverified.trim()), unverified);
+    check('readback 500: nothing on the page says "Nothing was written" or "Saved:"',
+      !/Nothing was written/.test(await text()) && (await page.getByTestId('call-log-done').count()) === 0 && (await page.getByTestId('call-log-not-saved').count()) === 0);
+    check('readback 500: exactly one write, the result — no note, no last touch, no automatic retry',
+      JSON.stringify(opsFor(A, w0)) === JSON.stringify(['contact.callLogResult']), opsFor(A, w0));
+
     // C6 — A's note write still pending at A -> B: B shows only B's notes.
     await fresh({}, `/contacts/${A}`);
     await contactLoaded('Alpha');

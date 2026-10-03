@@ -97,8 +97,16 @@ check('choosing a result only sets state',
     && at('await ghl.contacts.getDetail(contactId)') < at('await writeNoteAndTouch(chosen, body)')
     && at('await ghl.notes.create(contactId, body)') < at('await ghl.contacts.setLastCallAttempt(contactId, at)'), true);
 }
-check('a refused readback stops before the note and last touch',
-  /if \(!\(e instanceof ReadUnavailableError\)\) throw e;\s*setSubmit\(\{ status: "saved_unverified", message: [^\n]*\n\s*return;/.test(callLogCode), true);
+{
+  const readback = (callLogCode.match(/const detail = await ghl\.contacts\.getDetail\(contactId\);[\s\S]*?\n      \}\n/) || [''])[0];
+  check('ANY readback failure (sign-in, 500, network) is saved-but-unverified and stops before the note and last touch',
+    /\} catch \(e\) \{\s*setSubmit\(\{ status: "saved_unverified", message: e instanceof ReadUnavailableError/.test(readback)
+    && /Notes and last-touch time were not attempted\.` \}\);\s*return;\s*\}/.test(readback) && !/throw e/.test(readback), true);
+}
+check('no message ever claims "Nothing was written"', /Nothing was written/.test(callLogCode), false);
+check('a failed result write is "not confirmed", not "not saved", and attempts nothing further',
+  /status: "not_saved", message: `Result not confirmed \(\$\{\(e as Error\)\.message\}\)\. Notes and last-touch time were not attempted\./.test(callLogCode), true);
+check('the result write appears exactly once (never retried automatically)', (callLogCode.match(/ghl\.contacts\.setCallLogResult\(/g) || []).length, 1);
 check('a readback that does not match writes nothing further',
   /if \(!landed\) \{\s*setSubmit\(\{ status: "not_saved", message: "GHL did not confirm the result\. Nothing else was written\." \}\);\s*return;\s*\}/.test(callLogCode), true);
 check('a failed note or last touch is reported as partial, never as saved',

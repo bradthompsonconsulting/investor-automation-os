@@ -94,14 +94,20 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
     setSubmit({ status: "in_flight" });
     try {
       await ghl.contacts.setCallLogResult(contactId, chosen);
+      /* From here ghl-write has CONFIRMED the result write. A readback that
+         fails for ANY reason (read sign-in, a 500, a network error) is
+         "saved but unverified" — never "nothing was written" — and nothing
+         further is attempted: no note, no last touch, and no second result
+         write (Bones, PR #117). */
       let landed: boolean;
       try {
         const detail = await ghl.contacts.getDetail(contactId);
         const got = detail.customFields.find((f) => f.id === CALL_DISPOSITION_ID)?.value;
         landed = (got == null ? "" : String(got).trim()) === chosen;
       } catch (e) {
-        if (!(e instanceof ReadUnavailableError)) throw e;
-        setSubmit({ status: "saved_unverified", message: `Result saved -- IAOS confirmed the write, but it ${VERIFY_UNAVAILABLE} Notes and last-touch time were not written.` });
+        setSubmit({ status: "saved_unverified", message: e instanceof ReadUnavailableError
+          ? `Result saved -- IAOS confirmed the write, but it ${VERIFY_UNAVAILABLE} Notes and last-touch time were not attempted.`
+          : `Result saved -- IAOS confirmed the write, but couldn't read it back to verify it (${(e as Error).message}). Reload the contact to check it; do not save it again. Notes and last-touch time were not attempted.` });
         return;
       }
       if (!landed) {
@@ -112,7 +118,9 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
       recordOverride(storage(), contactId, chosen, new Date().toISOString(), Date.now());
       await writeNoteAndTouch(chosen, body);
     } catch (e) {
-      setSubmit({ status: "not_saved", message: `${(e as Error).message}. Nothing was written.` });
+      // The result write itself did not confirm. It may or may not have
+      // landed, so this never claims that nothing was written.
+      setSubmit({ status: "not_saved", message: `Result not confirmed (${(e as Error).message}). Notes and last-touch time were not attempted. Reload the contact to check it before saving again.` });
     } finally {
       inFlight.current = false;
     }
