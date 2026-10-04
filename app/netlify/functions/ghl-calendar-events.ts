@@ -32,6 +32,13 @@ function headers(token: string) {
 }
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** Response `code` when GHL refuses the calendar read (401/403). The page
+ *  (src/lib/ghl.ts calendars.events) matches this exact string. */
+export const CALENDAR_ACCESS_DENIED = "ghl_calendar_access_denied";
+function ghlReadError(message: string, ghlStatus: number): Error & { ghlStatus: number } {
+  return Object.assign(new Error(message), { ghlStatus });
+}
+
 export interface CalendarEventRow {
   id:             string;
   calendarId:     string;
@@ -71,7 +78,7 @@ export const handler = async (event: any) => {
     //    GHL has, don't hardcode ids that can change.
     const cRes  = await fetch(`${GHL_BASE}/calendars/?locationId=${LOCATION_ID}`, { headers: headers(token) });
     const cBody = await cRes.json();
-    if (!cRes.ok) throw new Error(`GET /calendars/ → ${cRes.status}: ${JSON.stringify(cBody)}`);
+    if (!cRes.ok) throw ghlReadError(`GET /calendars/ → ${cRes.status}: ${JSON.stringify(cBody)}`, cRes.status);
     const calendars: any[] = (cBody.calendars ?? []).filter((c: any) => c?.id && c.isActive !== false);
 
     // 2) Fan out over each calendarId (bounded — a handful of calendars), merge.
@@ -83,7 +90,7 @@ export const handler = async (event: any) => {
       });
       const eRes  = await fetch(`${GHL_BASE}/calendars/events?${params}`, { headers: headers(token) });
       const eBody = await eRes.json();
-      if (!eRes.ok) throw new Error(`GET /calendars/events?calendarId=${cal.id} → ${eRes.status}: ${JSON.stringify(eBody)}`);
+      if (!eRes.ok) throw ghlReadError(`GET /calendars/events?calendarId=${cal.id} → ${eRes.status}: ${JSON.stringify(eBody)}`, eRes.status);
       for (const e of (eBody.events ?? [])) {
         rows.push({
           id:             e.id ?? "",
@@ -112,6 +119,17 @@ export const handler = async (event: any) => {
     return { statusCode: 200, headers: { ...RESPONSE_HEADERS, "Content-Type": "application/json" }, body: JSON.stringify(result) };
   } catch (err: any) {
     console.error("[ghl-calendar-events]", err);
+    // B15-07 / Pass 1 F47: GHL refusing the calendar read (401/403, e.g. a
+    // token without calendar read scope) is a permission state, not a crash.
+    // Say so with a stable code the page can explain; keep GHL's text as
+    // detail. Every other failure is unchanged.
+    if (err?.ghlStatus === 401 || err?.ghlStatus === 403) {
+      return {
+        statusCode: 502,
+        headers: { ...RESPONSE_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ code: CALENDAR_ACCESS_DENIED, error: err.message }),
+      };
+    }
     return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: err.message ?? "Internal error" }) };
   }
 };

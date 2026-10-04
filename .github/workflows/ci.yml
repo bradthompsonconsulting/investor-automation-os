@@ -231,6 +231,9 @@ jobs:
       - name: Board 15 operator copy stays true (Pass 1 findings) — 10 offline checks
         run: node app/scripts/test-b15-operator-copy.cjs
 
+      - name: Calendars explains a GHL permission refusal instead of raw JSON — 13 offline checks
+        run: node app/scripts/test-calendar-unavailable.cjs
+
       - name: Netlify observer — 86 offline checks
         run: node scripts/netlify-status.test.cjs
 

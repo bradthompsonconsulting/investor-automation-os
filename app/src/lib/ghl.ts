@@ -1255,7 +1255,11 @@ export const ghl = {
       const res = await readFetch(url);
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(`ghl-calendar-events → ${res.status}: ${text}`);
+        // B15-07 / Pass 1 F47: carry the server's stable code so the page can
+        // explain a GHL permission refusal instead of printing raw JSON.
+        let code: string | null = null;
+        try { code = typeof JSON.parse(text)?.code === "string" ? JSON.parse(text).code : null; } catch { /* not JSON */ }
+        throw Object.assign(new Error(`ghl-calendar-events → ${res.status}: ${text}`), { code });
       }
       return res.json() as Promise<CalendarEventsResult>;
     },
