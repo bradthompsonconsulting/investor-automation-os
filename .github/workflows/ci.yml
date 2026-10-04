@@ -225,6 +225,9 @@ jobs:
       - name: Call log, call-outcome wording, queue placement, contact isolation and Do Not Call wiring — 83 offline checks
         run: node app/scripts/test-call-outcome-copy.cjs
 
+      - name: Board 15 navigation-only paths (Pass 1 F19, F24, F16, F54, F44, F12) — 17 offline checks
+        run: node app/scripts/test-b15-navigation.cjs
+
       - name: Netlify observer — 86 offline checks
         run: node scripts/netlify-status.test.cjs
 
