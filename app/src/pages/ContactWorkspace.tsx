@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
+import NoDealYet from "../components/NoDealYet";
 import {
   ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2, BellOff,
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
@@ -1784,6 +1785,14 @@ export default function ContactWorkspace() {
           </div>
         )}
       </div>
+
+      {/* Pass 1 F19 (INV-109): with no opportunity, Seller Ask and MAO cannot
+          fill. Say so once, with the way to fix it in GHL. Navigation only. */}
+      {railDeal.state === "no_opportunity" ? (
+        <div style={{ marginBottom: "16px" }}>
+          <NoDealYet contactId={id} reason="Seller Ask, MAO and underwriting attach to a deal, not to the contact." />
+        </div>
+      ) : null}
 
       {/* Board #5 — persistent call rail. Content comes from railCells() above.
 
