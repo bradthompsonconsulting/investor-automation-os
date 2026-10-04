@@ -83,6 +83,14 @@ policy authority:
 Plus the **untouched-estimator fallback, $20,000**, which is an approved table
 value and is reviewed on the same cycle as the rest.
 
+> **Amended 2026-10-04 (Brad; `ESTIMATED_REPAIRS_STANDARD.md`, Itemized
+> unanswered allowances amendment).** The $20,000 untouched fallback is
+> **retired** and removed from the data file. Each unanswered row now carries
+> its own approved severe-state value from the table above as a "condition not
+> confirmed" allowance. The table now holds the fourteen values only. Windows,
+> being per-window, carries no allowance while its count is unknown. The text
+> above is kept as history.
+
 Unit-based values stay unit-based. Windows is `$750 per window`; the review
 proposes a new per-window rate, not a lump sum.
 

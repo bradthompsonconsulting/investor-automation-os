@@ -604,3 +604,110 @@ hard-coded `$750` anywhere is a defect.
 The policy is approved. The implementation is B6-F1 / INV-43 and remains behind
 the Jess gate; this document records the approved policy and does not itself
 accept the implementation.
+
+---
+
+## Itemized unanswered allowances amendment — 2026-10-04
+
+Brad approved this amendment on 2026-10-04, relayed by Jess, in response to
+Operator Walkthrough Pass 1 findings F39 and F40 (Board 15; INV-100, INV-102).
+It is recorded on INV-100. Under the PB-D43 supersession convention it governs
+wherever it conflicts with the two 2026-09-04 amendments above. Their text is
+preserved, not rewritten.
+
+**What it supersedes, exactly:**
+
+- **The `Untouched-estimator fallback` section** of the operator-defaults
+  amendment. The blanket $20,000 fallback is **retired**.
+- **The `UNPRICED RISK` bullet** of the operator interaction contract, for the
+  unanswered case only. A row that is `Not asked` with a blank Known Amount is
+  no longer an unpriced risk excluded from the total; it carries an allowance
+  (rule 1).
+- **The `Not asked` bullet** of the Windows interaction contract, insofar as it
+  calls the row an unpriced risk. Its outcome is restated in rule 6.
+- **The `An intentional Windows interaction removes the $20,000 fallback`
+  bullet**, which no longer applies because no fallback exists.
+
+### The approved rules (Brad, 2026-10-04)
+
+1. **Each unanswered major system carries its existing approved replacement
+   allowance**, the row's severe-state amount (`severeDefault`: Replace / Major
+   / Material issue) from the approved table, shown separately as **"condition
+   not confirmed"**. No new amount is introduced.
+2. **The estimator displays three figures:** a **Known Repairs** subtotal, an
+   **Unanswered Allowances** subtotal, and a **Preliminary Total**.
+3. **Answering a row replaces only that row's allowance:** Good = $0; Repair =
+   the approved Repair amount; Replace / severe = the approved severe amount.
+   **Approved manual amount overrides are preserved:** the number in the field
+   is the number used, and a typed figure is `MANUAL` as before.
+4. **The blanket $20,000 untouched fallback is retired** with this
+   implementation. It is never added to row allowances; it no longer exists.
+5. **"Miscellaneous / Other repairs"** sits below all other rows. It has a
+   description plus a non-negative amount entered by Brad, and is blank by
+   default. An entered amount is included once in the total, as `MANUAL`.
+6. **New categories** (kitchen, bath, flooring, interior paint, water heater,
+   exterior and others) still need separately approved rates. No amount and no
+   quantity assumption is invented, and any unresolved unit basis is flagged.
+7. **Labelling:** these are **preliminary policy allowances**, not verified
+   market averages and not confirmed repair needs.
+
+**Preserved unchanged:**
+
+- human approval (the operator approves the total; nothing persists without
+  it);
+- the existing authorized persistence (the approved TOTAL only, to the
+  Opportunity Repairs carrier per INV-70; no itemization persisted, locked
+  principle 7);
+- underwriting economics, which consume the approved total exactly as before;
+- the `IAOS DFW POLICY` / `BOOK` / `MANUAL` provenance classes and the INV-30
+  BOOK-only FMTM rule (the FMTM allowance still computes to $0 on this
+  surface).
+
+**No new GHL write is authorized by this amendment.**
+
+### How the rules apply to edge cases (implementation record)
+
+Recorded so review can check them against the ruling. None of these invents a
+value.
+
+- **Classification.** An unanswered row's allowance is carried by the existing
+  calculation core as an `unknown_condition` reserve. The core already totals
+  reserves separately from indicated repairs, so **Unanswered Allowances** is
+  the core's `unknownRiskReserves`, **Known Repairs** is its indicated
+  subtotal, and the **Preliminary Total** is the resolved subtotal plus the
+  (still $0) FMTM allowance. The core is unchanged.
+- **Windows: unresolved unit basis (rule 6).** The approved Windows allowance
+  is a rate *per window*. An unanswered Windows row has no count, and pricing
+  it would require assuming one. It is therefore **not priced and not
+  included**. It is shown as unresolved, "window count needed", until a
+  condition (and count) or a known amount is entered.
+- **Windows: blank count on an answered condition.** The B6-F1 rule that a
+  blank count on Repair or Replace loads ONE window's amount is pre-existing
+  approved behaviour and is **unchanged** here. It is flagged for Brad, because
+  rule 6 forbids quantity assumptions for new categories and this is an
+  existing one.
+- **An answered row whose amount is cleared, or any entry that is not a dollar
+  figure**, has no usable amount. It stays visible as unresolved and is **not**
+  silently replaced by an allowance. This is unchanged from 2026-09-04.
+- **A typed amount on a `Not asked` row** is honoured as `MANUAL` and replaces
+  that row's allowance (rule 3: overrides preserved).
+- **Electrical: whole house and panel.** These are two separately approved
+  rows, so both unanswered allowances are applied ($12,500 + $3,000). Whether
+  the panel allowance overlaps a whole-house replacement is **flagged for Brad**
+  and not decided here.
+- **Arithmetic consequence of rules 1 and 4, recorded because nobody chose the
+  figure directly.** With nothing answered, the Preliminary Total is the sum of
+  the six lump-sum rows' approved severe amounts:
+  $15,000 + $8,000 + $12,500 + $3,000 + $12,500 + $15,000 = **$66,000**. Windows
+  is unresolved and excluded. The previous untouched figure was the $20,000
+  fallback.
+- **Miscellaneous.** A blank amount adds nothing and creates no unresolved
+  item. An invalid or negative entry is shown as unresolved and excluded. The
+  description is session state and is not persisted (principle 7).
+
+### Status
+
+The policy is approved and recorded here. The implementation is the Board 15
+repair-allowances change and remains behind Bones's review and Spock's Test
+verification; this document records the policy and does not itself accept the
+implementation. Rates for new categories (F40 / INV-102) remain open.
