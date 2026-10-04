@@ -228,6 +228,9 @@ jobs:
       - name: Pipeline stage display list covers every configured stage — 10 offline checks
         run: node app/scripts/test-pipeline-stage-display.cjs
 
+      - name: Board 15 operator copy stays true (Pass 1 findings) — 10 offline checks
+        run: node app/scripts/test-b15-operator-copy.cjs
+
       - name: Netlify observer — 86 offline checks
         run: node scripts/netlify-status.test.cjs
 
