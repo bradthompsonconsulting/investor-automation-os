@@ -2262,7 +2262,6 @@ export default function ContactWorkspace() {
           contactId={id!}
           /* Only this contact's detail: a late read for another contact never decides DNC here. */
           detail={detail && detail.id === id ? detail : null}
-          onNoteWritten={loadNotes}
         />
       )}
 

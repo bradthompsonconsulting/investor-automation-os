@@ -1,25 +1,28 @@
 /**
- * B14-12 / INV-94 — Do Not Call (Brad's requirement; Jess rulings 2026-10-03).
+ * B14-12 / INV-94 — Do Not Call (Brad's requirement; simplified 2026-10-04).
  *
- * Pure: no I/O, no React. Shared by ghl-write's note check, the Contact page
- * and the Dashboard, so the suppression rule, the note and the calling-list
- * predicate cannot drift apart.
+ * Pure: no I/O, no React. Shared by the Contact page and the Dashboard, so the
+ * suppression rule, the status wording and the calling-list predicate cannot
+ * drift apart.
  *
- * IAOS NEVER WRITES DND. HighLevel's Update Contact API documents dndSettings
- * only as "per-channel DND settings": no merge-vs-replace rule, no handling of
- * `permanent` entries, no conditional (If-Match/ETag) write. No IAOS
- * read-then-write could guarantee that a STOP or other opt-out GHL records at
- * the same moment survives, so Do Not Call is set by Brad in GHL's own contact
- * control. IAOS hands him to that contact, then verifies and records.
+ * IAOS NEVER WRITES DND AND WRITES NO DO NOT CALL RECORD. HighLevel's Update
+ * Contact API documents dndSettings only as "per-channel DND settings": no
+ * merge-vs-replace rule, no handling of `permanent` entries, no conditional
+ * (If-Match/ETag) write. No IAOS read-then-write could guarantee that a STOP
+ * or other opt-out GHL records at the same moment survives, so Brad sets Do
+ * Not Disturb in GHL's own contact control. IAOS opens that contact in GHL,
+ * then only READS and SHOWS what GHL holds. Brad asked for no reason and no
+ * note (2026-10-04); none is written.
  *
  * WHAT "SUPPRESSED" MEANS HERE. A channel entry whose status is `active` or
- * `permanent`, whatever its message (IAOS's, a seller's STOP_KEYWORD, an email
+ * `permanent`, whatever its message (a seller's STOP_KEYWORD, an email
  * unsubscribe). Recorded GHL facts (PB-D50, CONTACTS_DETAIL_SPEC): dndSettings
  * is keyed by channel; the top-level `dnd` boolean is unreliable and is never
  * read here.
  */
 
 export const DNC_CHANNELS = ["Call", "SMS", "Email"] as const;
+export type DncChannel = (typeof DNC_CHANNELS)[number];
 
 export type DndEntry = { status?: unknown; message?: unknown; [key: string]: unknown };
 export type DndSettings = Record<string, DndEntry>;
@@ -35,7 +38,7 @@ export function isSuppressing(entry: DndEntry | null | undefined): boolean {
 }
 
 /** Which of calls, SMS and email GHL does NOT currently show suppressed (in that order). */
-export function unsuppressedChannels(dndSettings: unknown): string[] {
+export function unsuppressedChannels(dndSettings: unknown): DncChannel[] {
   const d = asSettings(dndSettings);
   return DNC_CHANNELS.filter((ch) => !isSuppressing(d[ch]));
 }
@@ -50,29 +53,31 @@ export function isCallSuppressed(dndSettings: unknown): boolean {
   return isSuppressing(asSettings(dndSettings).Call);
 }
 
-/* ── The record note ─────────────────────────────────────────────────── */
+/* ── What IAOS shows (read-only) ─────────────────────────────────────── */
 
-export const DNC_NOTE_PREFIX = "Do Not Call (recorded by Brad in IAOS): ";
-/** What IAOS observed when it verified — not a guarantee that it stays so (Jess). */
-export const DNC_NOTE_OBSERVED_LINE = "At verification, GHL showed calls, SMS and email suppressed.";
-export const DNC_REASON_MAX = 500;
+const LABEL: Record<DncChannel, string> = { Call: "calls", SMS: "SMS", Email: "email" };
+const list = (chs: DncChannel[]) =>
+  chs.length <= 1 ? chs.map((c) => LABEL[c]).join("") : `${chs.slice(0, -1).map((c) => LABEL[c]).join(", ")} or ${LABEL[chs[chs.length - 1]]}`;
+const andList = (chs: DncChannel[]) =>
+  chs.length <= 1 ? chs.map((c) => LABEL[c]).join("") : `${chs.slice(0, -1).map((c) => LABEL[c]).join(", ")} and ${LABEL[chs[chs.length - 1]]}`;
 
-export function dncNote(reason: string): string {
-  return `${DNC_NOTE_PREFIX}${reason.trim()}\n${DNC_NOTE_OBSERVED_LINE}`;
-}
-
-/** Exact Do Not Call note: one reason line (1–500 characters, trimmed) then the fixed observation line. */
-export function isDncNoteBody(body: unknown): boolean {
-  if (typeof body !== "string") return false;
-  const lines = body.split("\n");
-  if (lines.length !== 2 || lines[1] !== DNC_NOTE_OBSERVED_LINE || !lines[0].startsWith(DNC_NOTE_PREFIX)) return false;
-  const reason = lines[0].slice(DNC_NOTE_PREFIX.length);
-  return reason.trim().length > 0 && reason === reason.trim() && reason.length <= DNC_REASON_MAX;
+/** One sentence describing what GHL holds for calls, SMS and email, and what that means for IAOS's calling lists. */
+export function dncStatusText(dndSettings: unknown): string {
+  const missing = unsuppressedChannels(dndSettings);
+  const on = DNC_CHANNELS.filter((c) => !missing.includes(c));
+  const lists = isCallSuppressed(dndSettings)
+    ? " This contact is out of IAOS calling lists."
+    : " It stays on IAOS calling lists while calls are not suppressed.";
+  if (missing.length === 0) return "GHL shows Do Not Disturb on calls, SMS and email." + lists;
+  if (on.length === 0) return "GHL doesn't show Do Not Disturb on calls, SMS or email." + lists;
+  return `GHL shows Do Not Disturb on ${andList(on)}, not on ${list(missing)}.` + lists;
 }
 
 /* ── Copy ────────────────────────────────────────────────────────────── */
 
-export const DNC_CONSEQUENCE =
-  "Do Not Call is set in GHL itself: turn on Do Not Disturb for Calls, SMS and Email on this contact. IAOS then checks GHL and records it, and the contact leaves IAOS calling lists. Existing opt-outs such as STOP stay in place. Removing Do Not Call later is also done in GHL.";
+/** The button: it opens GHL; it does not itself suppress anything. */
+export const DNC_BUTTON = "Do Not Call (opens GHL)";
+export const DNC_HANDOFF_OPENED =
+  "GHL opened this contact in a new window. Turn on Do Not Disturb there for Calls & Voicemails, Text Messages and Emails, then check here. IAOS doesn't change Do Not Disturb itself.";
+export const DNC_KEEPS_OPT_OUTS = "Existing opt-outs such as STOP stay in place. Turning Do Not Call off is also done in GHL.";
 export const DNC_DIALER_LINE = "Choosing Do Not Call in GHL's dialer doesn't suppress anything; use GHL's Do Not Disturb settings on the contact.";
-export const DNC_REASON_PLACEHOLDER = "Why? (required) e.g. Seller asked us not to contact them again.";

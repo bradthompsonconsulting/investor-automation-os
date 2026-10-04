@@ -1,15 +1,13 @@
 /**
- * B14-12 / INV-94 — Do Not Call (GHL-native handoff design, Jess 2026-10-03). Offline.
+ * B14-12 / INV-94 — Do Not Call, simplified (Brad 2026-10-04): a button that
+ * opens this contact in GHL, and a read-only check of what GHL holds. Offline.
  *
  * 1. The pure rules (src/lib/dnc.ts): which channels GHL shows suppressed,
- *    the calling-list predicate, and the exact note — worded as what GHL
- *    showed AT VERIFICATION, not a guarantee.
- * 2. IAOS NEVER WRITES DND: no named operation, client method or GHL call
- *    anywhere in the app sends dndSettings (or the top-level dnd). The former
- *    contact.dnc operation is gone and is refused as unknown.
- * The server's note check (re-read under the contact lock before accepting the
- * note) is exercised through the real ghl-write handler in
- * test-write-boundaries.cjs; the browser flow in test-contact-isolation.cjs.
+ *    the calling-list predicate, and the status sentence IAOS shows.
+ * 2. IAOS NEVER WRITES DND AND WRITES NO DO NOT CALL RECORD: no named
+ *    operation, client method or GHL call anywhere in the app sends
+ *    dndSettings (or the top-level dnd); the retired reason/note helpers are
+ *    gone. The browser flow is in test-contact-isolation.cjs.
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -66,25 +64,23 @@ const ON = { status: 'active', message: '' };
     assert.equal(dnc.isCallSuppressed({ SMS: STOP, RCS: STOP }), false);
     assert.equal(dnc.isCallSuppressed(undefined), false);
   });
-  await check('note: states what GHL showed at verification — not a guarantee', () => {
-    const n = dnc.dncNote('  Seller asked us not to contact them again.  ');
-    assert.equal(n, 'Do Not Call (recorded by Brad in IAOS): Seller asked us not to contact them again.\nAt verification, GHL showed calls, SMS and email suppressed.');
-    assert.equal(dnc.isDncNoteBody(n), true);
-    assert.equal(dnc.isDncNoteBody(dnc.dncNote('x'.repeat(500))), true);
-    assert.equal(/guarantee|permanently|will stay|remains/i.test(dnc.DNC_NOTE_OBSERVED_LINE), false);
+  await check('status: what GHL holds for calls, SMS and email, and what it means for calling lists', () => {
+    assert.equal(dnc.dncStatusText({ Call: ON, SMS: STOP, Email: UNSUB }), 'GHL shows Do Not Disturb on calls, SMS and email. This contact is out of IAOS calling lists.');
+    assert.equal(dnc.dncStatusText({}), "GHL doesn't show Do Not Disturb on calls, SMS or email. It stays on IAOS calling lists while calls are not suppressed.");
+    assert.equal(dnc.dncStatusText({ Call: ON }), 'GHL shows Do Not Disturb on calls, not on SMS or email. This contact is out of IAOS calling lists.');
+    assert.equal(dnc.dncStatusText({ SMS: STOP, RCS: STOP }), 'GHL shows Do Not Disturb on SMS, not on calls or email. It stays on IAOS calling lists while calls are not suppressed.');
+    assert.equal(dnc.dncStatusText({ Call: ON, Email: ON, SMS: { status: 'inactive' } }), 'GHL shows Do Not Disturb on calls and email, not on SMS. This contact is out of IAOS calling lists.');
+    assert.equal(dnc.dncStatusText(undefined), dnc.dncStatusText({}));
   });
-  await check('note: anything but the exact two lines is not a Do Not Call note', () => {
-    for (const bad of [dnc.dncNote('x'.repeat(501)), 'Do Not Call (recorded by Brad in IAOS): \nAt verification, GHL showed calls, SMS and email suppressed.',
-      'Do Not Call (recorded by Brad in IAOS):  padded\nAt verification, GHL showed calls, SMS and email suppressed.',
-      'Do Not Call (recorded by Brad in IAOS): a\nb\nAt verification, GHL showed calls, SMS and email suppressed.',
-      'Do Not Call (recorded by Brad in IAOS): a\nSuppressed in GHL: calls, SMS and email.',
-      'IAOS Do Not Call: a\nAt verification, GHL showed calls, SMS and email suppressed.', 'plain note', null]) {
-      assert.equal(dnc.isDncNoteBody(bad), false, JSON.stringify(bad));
-    }
-    assert.equal(dnc.dncNote('x').startsWith('IAOS '), false, 'the server note guard refuses undeclared IAOS-prefixed ledgers');
+  await check('copy: the button opens GHL; nothing claims IAOS set DND or recorded anything; no reason is asked for', () => {
+    assert.equal(dnc.DNC_BUTTON, 'Do Not Call (opens GHL)');
+    assert.ok(/Turn on Do Not Disturb there for Calls & Voicemails, Text Messages and Emails/.test(dnc.DNC_HANDOFF_OPENED) && /IAOS doesn't change Do Not Disturb itself/.test(dnc.DNC_HANDOFF_OPENED));
+    assert.ok(/Existing opt-outs such as STOP stay in place/.test(dnc.DNC_KEEPS_OPT_OUTS));
+    const all = Object.values(dnc).filter((v) => typeof v === 'string').join('\n');
+    assert.equal(/recorded|reason|IAOS (set|turned on|suppressed)/i.test(all), false, all);
   });
-  await check('copy: set in GHL itself; opt-outs kept; removal also in GHL', () => {
-    assert.ok(/Do Not Call is set in GHL itself/.test(dnc.DNC_CONSEQUENCE) && /Existing opt-outs such as STOP stay in place/.test(dnc.DNC_CONSEQUENCE) && /Removing Do Not Call later is also done in GHL/.test(dnc.DNC_CONSEQUENCE));
+  await check('the retired reason/note helpers are gone', () => {
+    for (const k of ['dncNote', 'isDncNoteBody', 'DNC_NOTE_PREFIX', 'DNC_NOTE_OBSERVED_LINE', 'DNC_REASON_MAX', 'DNC_REASON_PLACEHOLDER', 'DNC_CONSEQUENCE']) assert.equal(k in dnc, false, k);
   });
 
   // ── 2. IAOS never writes DND ────────────────────────────────────────────
@@ -96,8 +92,8 @@ const ON = { status: 'active', message: '' };
     const offenders = files.filter((f) => /dndSettings\s*:\s*(plan|next|\{|settings|d\b)|["']dnd["']\s*:|\bdnd\s*:\s*(true|false)/.test(srcOf(f)) && !/\/src\/lib\/dnc\.ts$/.test(f.replace(/\\/g, '/')));
     assert.deepEqual(offenders.map((f) => path.relative(APP, f)), []);
   });
-  await check('the former write path is gone everywhere (contact.dnc, setDnc, planDnc, GhlBoundary.dnc)', () => {
-    const offenders = files.filter((f) => /contact\.dnc|setDnc|planDnc|verifyDnc|boundary\.dnc|async dnc\(/.test(srcOf(f)));
+  await check('the former write paths are gone everywhere (contact.dnc, setDnc, planDnc, GhlBoundary.dnc, the DNC note and its Production class)', () => {
+    const offenders = files.filter((f) => /contact\.dnc|setDnc|planDnc|verifyDnc|boundary\.dnc|async dnc\(|isDncNoteBody|dncNote\(|productionDnc|PRODUCTION_DNC|iaos-dnc-not-held/.test(srcOf(f)));
     assert.deepEqual(offenders.map((f) => path.relative(APP, f)), []);
   });
   const contracts = require(path.join(APP, 'netlify/functions/lib/write-contracts.ts'));
