@@ -4,7 +4,7 @@ import NoDealYet from "../components/NoDealYet";
 import {
   ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2, BellOff,
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
-  Calculator, Copy, ExternalLink, Headphones,
+  Calculator, Copy, ExternalLink, Headphones, FileText,
 } from "lucide-react";
 import { explicitCallbackClient, ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, CONTACT_ASKING_PRICE_ID, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow } from "../lib/ghl";
 /* Board #5 S2d — the rail's logic lives in ../lib/rail, a module with no React
@@ -2079,6 +2079,21 @@ export default function ContactWorkspace() {
           }}
         >
           <Headphones size={14} /> Start / Resume Seller Call
+        </Link>
+        {/* Pass 1 F54 (INV-130) — the Contract workspace was reachable only from
+            Seller Call after Accept. Same pattern as the two links above: a
+            plain in-app <Link>, read-only, writes nothing. The page itself
+            explains when there is no accepted price yet. */}
+        <Link
+          to={`/contacts/${id}/contract`}
+          data-testid="contact-contract-link"
+          style={{
+            display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", fontWeight: 600,
+            padding: "8px 14px", borderRadius: "8px", border: "1px solid rgba(30,200,255,0.35)",
+            background: "rgba(30,200,255,0.08)", color: "#1EC8FF", textDecoration: "none",
+          }}
+        >
+          <FileText size={14} /> Contract
         </Link>
         {/* B8-09 / INV-52 — optional entry point into the standalone Deal
             Calculator, pre-linked to this contact via the `contactId` query
