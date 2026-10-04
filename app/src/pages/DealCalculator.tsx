@@ -456,9 +456,11 @@ export default function DealCalculator() {
                 );
               })}
               <div data-testid="deal-calc-repairs-detailed-total" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "4px" }}>
-                {detailedEstimate.mode === "fallback"
-                  ? `${money(detailedEstimate.total)} (${detailedEstimate.label})`
-                  : `${money(detailedEstimate.total)} total${detailedEstimate.estimate.isCompleteAllowance ? "" : " -- unpriced risks remain"}`}
+                {/* 2026-10-04 amendment: Known / Unanswered / Preliminary. Untouched,
+                    this scratchpad still uses no repairs figure at all (above). */}
+                {isUntouched(repairAnswers)
+                  ? "Not used yet -- answer a row to include itemized repairs"
+                  : `Known ${money(detailedEstimate.knownSubtotal)} + unanswered allowances ${money(detailedEstimate.unansweredSubtotal)} = ${money(detailedEstimate.total)} preliminary${detailedEstimate.estimate.isCompleteAllowance ? "" : ` (excludes ${detailedEstimate.estimate.unpricedRisks.length} unresolved)`}`}
               </div>
             </div>
           )}

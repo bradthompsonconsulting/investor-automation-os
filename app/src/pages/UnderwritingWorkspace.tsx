@@ -25,16 +25,18 @@ import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriti
    core is accepted and unchanged; this page asks the questions and renders
    what the core returns. It decides no pricing of its own. */
 import { computeRepairEstimate, RepairInputError } from "../lib/repair-estimation/compute";
-/* INV-14 — the approved question set, defaults, provenance names and
-   untouched fallback. The canonical reference table and the calculation core
-   are untouched; this surface no longer reads the table directly. */
+/* INV-14 — the approved question set, defaults and provenance names; since
+   2026-10-04 the itemized unanswered allowances and the Miscellaneous row
+   (the untouched fallback is retired). The canonical reference table and the
+   calculation core are untouched; this surface no longer reads the table
+   directly. */
 import {
-  applyAmount, applyCondition, applyQuantity, EMPTY_ANSWER, operatorEstimate,
-  OPERATOR_PROVENANCE_LABEL, OPERATOR_ROWS, parseKnownAmount, parseQuantity,
-  quantitySpecFor,
+  applyAmount, applyCondition, applyQuantity, EMPTY_ANSWER, EMPTY_MISC, MISC_ROW_LABEL,
+  operatorEstimate, OPERATOR_PROVENANCE_LABEL, OPERATOR_ROWS, parseKnownAmount, parseQuantity,
+  quantitySpecFor, UNANSWERED_ALLOWANCE_LABEL, unansweredAllowanceFor,
 } from "../lib/repair-estimation/operator-model";
 import type {
-  Answers, OperatorCondition, OperatorRow, RowAnswer,
+  Answers, MiscAnswer, OperatorCondition, OperatorRow, RowAnswer,
 } from "../lib/repair-estimation/operator-model";
 /* INV-13 — the persistence boundary. The gate and the write/readback live in
    their own module so "unapproved cannot write" is a property of a pure
@@ -457,6 +459,11 @@ const PROVENANCE_COLOR: Record<"BOOK" | "IAOS_POLICY" | "MANUAL", string> = {
  * is cleared and disabled rather than left to look as though it were doing
  * something. Known Amount itself is never disabled on any row.
  */
+/** 2026-10-04 amendment, rule 7 (Brad's wording). Lives on the page, not in
+ *  the operator model, whose source is guarded against geographic tokens. */
+const PRELIMINARY_ALLOWANCE_NOTICE =
+  "Preliminary policy allowances — not verified market averages and not confirmed repair needs.";
+
 function EstimatorRow({ row, answer, onCondition, onAmount, onQuantity }: {
   row: OperatorRow;
   answer: RowAnswer;
@@ -535,6 +542,15 @@ function EstimatorRow({ row, answer, onCondition, onAmount, onQuantity }: {
       {answer.dirty && parsed.kind === "value" ? (
         <span style={{ fontSize: "10px", color: PROVENANCE_COLOR.MANUAL }}>manual</span>
       ) : null}
+      {/* 2026-10-04 amendment, rule 1: an unanswered row shows the allowance
+          it carries, or why it carries none. */}
+      {answer.condition === "not_asked" && parsed.kind === "blank" ? (
+        <span data-testid={`repair-unanswered-${row.system}`} style={{ fontSize: "10px", color: "#F59E0B" }}>
+          {unansweredAllowanceFor(row) !== null
+            ? `${UNANSWERED_ALLOWANCE_LABEL} · allowance ${money(unansweredAllowanceFor(row)!)}`
+            : `${UNANSWERED_ALLOWANCE_LABEL} · ${quantity?.unit ?? "unit"} count needed — not in the total`}
+        </span>
+      ) : null}
       {row.note ? (
         <span style={{ fontSize: "10px", color: "#475569" }}>{row.note}</span>
       ) : null}
@@ -569,6 +585,9 @@ function RepairEstimator({ opportunityId, onPersisted }: {
   onPersisted: () => void;
 }) {
   const [answers, setAnswers] = useState<Answers>({});
+  /* 2026-10-04 amendment, rule 5: Miscellaneous / Other repairs. Session
+     state only, like every Known Amount (no persisted itemization). */
+  const [misc, setMisc] = useState<MiscAnswer>(EMPTY_MISC);
   /* The estimator's edit counter. Approval carries the revision it was given
      for, so a stale approval is detectable rather than merely unlikely. */
   const [revision, setRevision] = useState(0);
@@ -580,11 +599,18 @@ function RepairEstimator({ opportunityId, onPersisted }: {
   /* Any edit invalidates the approval and any prior save outcome. An approval
      that survives a changed answer is a claim about a number the operator
      never saw, and a stale "Saved" is worse than none. */
-  function commit(next: Answers) {
-    setAnswers(next);
+  function invalidate() {
     setRevision((r) => r + 1);
     setApproval({ kind: "none" });
     setPersistState({ status: "idle" });
+  }
+  function commit(next: Answers) {
+    setAnswers(next);
+    invalidate();
+  }
+  function commitMisc(next: MiscAnswer) {
+    setMisc(next);
+    invalidate();
   }
 
   function setCondition(row: OperatorRow, condition: OperatorCondition) {
@@ -627,12 +653,12 @@ function RepairEstimator({ opportunityId, onPersisted }: {
           /* Property context is offered, never required. Nothing on this
              surface prices from square footage. */
           lines, property: { squareFeet: null, bathroomCount: null },
-        })),
+        }), misc),
       };
     } catch (e) {
       return { ok: false as const, message: e instanceof RepairInputError ? e.message : String(e) };
     }
-  }, [answers]);
+  }, [answers, misc]);
 
   if (!computed.ok) {
     return (
@@ -656,9 +682,10 @@ function RepairEstimator({ opportunityId, onPersisted }: {
 
       <div style={{ padding: "18px 20px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
         <div style={{ fontSize: "11px", color: "#475569", marginBottom: "6px" }}>
-          Selecting a condition loads its approved amount. Where a row is counted, the count loads its
-          approved rate times that count. The number in the field is the number used — type over it
-          whenever you know better.
+          Every row starts unanswered and carries its approved replacement amount as a preliminary
+          allowance. Selecting a condition loads that condition's approved amount instead. Where a row is
+          counted, the count loads its approved rate times that count. The number in the field is the
+          number used — type over it whenever you know better.
         </div>
 
         {OPERATOR_ROWS.map((row) => (
@@ -672,86 +699,108 @@ function RepairEstimator({ opportunityId, onPersisted }: {
           />
         ))}
 
-        {result.mode === "fallback" ? (
-          <div style={{
-            marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #1E293B",
-            fontFamily: "Space Grotesk, monospace", fontSize: "13px",
-          }}>
-            <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#E2E8F0", fontWeight: 700 }}>
-              <span>{result.label}</span><span>{money(result.total)}</span>
-            </div>
-            <div style={{ fontSize: "11px", color: "#475569", marginTop: "6px", fontFamily: "Inter, sans-serif" }}>
-              Nothing has been answered yet, so the standing policy allowance applies. Answering any row —
-              or typing any amount — replaces it entirely with the row calculation. The two are never added.
-            </div>
+        {/* 2026-10-04 amendment, rule 5: below every table row. */}
+        <div data-testid="repair-misc-row" style={{
+          display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap",
+          padding: "8px 0", borderTop: "1px solid #16202F",
+        }}>
+          <div style={{ width: "180px", fontSize: "13px", color: "#94A3B8" }}>{MISC_ROW_LABEL}</div>
+          <input
+            data-testid="repair-misc-description"
+            value={misc.description}
+            onChange={(e) => commitMisc({ ...misc, description: e.target.value })}
+            placeholder="What it is"
+            style={{
+              flex: "1 1 200px", minWidth: "160px", padding: "5px 8px", fontSize: "12px", borderRadius: "6px",
+              background: "#0A0E1A", border: "1px solid #1E293B", color: "#E2E8F0",
+            }}
+          />
+          <input
+            data-testid="repair-misc-amount"
+            value={misc.amount}
+            onChange={(e) => commitMisc({ ...misc, amount: e.target.value })}
+            placeholder="Amount"
+            style={{
+              width: "130px", padding: "5px 8px", fontSize: "12px", borderRadius: "6px",
+              background: "#0A0E1A",
+              border: `1px solid ${parseKnownAmount(misc.amount).kind === "invalid" ? "rgba(239,68,68,0.5)" : "#1E293B"}`,
+              color: "#E2E8F0",
+            }}
+          />
+          <span style={{ fontSize: "10px", color: "#475569" }}>your figure · blank adds nothing</span>
+        </div>
+
+        {/* Rule 2: Known Repairs, Unanswered Allowances, Preliminary Total.
+            Indicated repairs and unconfirmed-condition allowances are
+            economically identical in the total and informationally different,
+            so they never collapse (Zone 4 discipline). */}
+        <div data-testid="repair-summary" style={{
+          marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #1E293B",
+          fontFamily: "Space Grotesk, monospace", fontSize: "13px",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#94A3B8" }}>
+            <span>Known repairs</span><span>{money(result.knownSubtotal)}</span>
           </div>
-        ) : (
-          <>
-            {/* Zone 4 discipline: indicated repairs and any unknown-condition
-                reserves are economically identical in the total and
-                informationally different, so they never collapse. */}
-            <div style={{
-              marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #1E293B",
-              fontFamily: "Space Grotesk, monospace", fontSize: "13px",
-            }}>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#94A3B8" }}>
+            <span>Unanswered allowances ({UNANSWERED_ALLOWANCE_LABEL})</span><span>{money(result.unansweredSubtotal)}</span>
+          </div>
+          {result.estimate.components.fmtmAllowance.outcome.amount > 0 ? (
+            <>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#94A3B8" }}>
-                <span>Known / indicated repairs</span><span>{money(result.estimate.indicatedSubtotal)}</span>
+                <span>{result.estimate.components.fmtmAllowance.label}</span>
+                <span>{money(result.estimate.components.fmtmAllowance.outcome.amount)}</span>
               </div>
-              {result.estimate.components.unknownRiskReserves > 0 ? (
-                <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#94A3B8" }}>
-                  <span>Unknown-condition reserves</span><span>{money(result.estimate.components.unknownRiskReserves)}</span>
-                </div>
-              ) : null}
-              {result.estimate.components.fmtmAllowance.outcome.amount > 0 ? (
-                <>
-                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#94A3B8" }}>
-                    <span>{result.estimate.components.fmtmAllowance.label}</span>
-                    <span>{money(result.estimate.components.fmtmAllowance.outcome.amount)}</span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", padding: "0 0 6px 18px", color: "#475569", fontSize: "11px" }}>
-                    <span>10% of {money(result.estimate.components.fmtmAllowance.outcome.basis)} in BOOK amounts</span><span />
-                  </div>
-                </>
-              ) : null}
-              <div style={{
-                display: "flex", justifyContent: "space-between", padding: "10px 0 0",
-                borderTop: "1px solid #1E293B", color: "#E2E8F0", fontWeight: 700,
-              }}>
-                <span>{result.estimate.isCompleteAllowance ? "Conservative allowance" : "Incomplete subtotal"}</span>
-                <span>{money(total)}</span>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "0 0 6px 18px", color: "#475569", fontSize: "11px" }}>
+                <span>10% of {money(result.estimate.components.fmtmAllowance.outcome.basis)} in BOOK amounts</span><span />
               </div>
-            </div>
+            </>
+          ) : null}
+          <div style={{
+            display: "flex", justifyContent: "space-between", padding: "10px 0 0",
+            borderTop: "1px solid #1E293B", color: "#E2E8F0", fontWeight: 700,
+          }}>
+            <span>
+              Preliminary total
+              {result.estimate.unpricedRisks.length > 0
+                ? ` (excludes ${result.estimate.unpricedRisks.length} unresolved)`
+                : ""}
+            </span>
+            <span>{money(total)}</span>
+          </div>
+          <div data-testid="repair-preliminary-notice" style={{ fontSize: "11px", color: "#475569", marginTop: "6px", fontFamily: "Inter, sans-serif" }}>
+            {PRELIMINARY_ALLOWANCE_NOTICE} An unanswered row carries its approved replacement amount until
+            you answer it; answering replaces only that row's allowance.
+          </div>
+        </div>
 
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 18px", marginTop: "12px", fontSize: "11px" }}>
-              {(["BOOK", "IAOS_POLICY", "MANUAL"] as const).map((p) => (
-                <span key={p} style={{ color: "#475569" }}>
-                  <span style={{ color: PROVENANCE_COLOR[p] }}>{OPERATOR_PROVENANCE_LABEL[p]}</span>{" "}
-                  {money(result.estimate.byProvenance[p])}
-                </span>
-              ))}
-            </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 18px", marginTop: "12px", fontSize: "11px" }}>
+          {(["BOOK", "IAOS_POLICY", "MANUAL"] as const).map((p) => (
+            <span key={p} style={{ color: "#475569" }}>
+              <span style={{ color: PROVENANCE_COLOR[p] }}>{OPERATOR_PROVENANCE_LABEL[p]}</span>{" "}
+              {money(result.estimate.byProvenance[p])}
+            </span>
+          ))}
+        </div>
 
-            {/* Visible, and informational. It does not gate approval. */}
-            {result.estimate.unpricedRisks.length > 0 ? (
-              <div style={{
-                marginTop: "14px", padding: "12px 14px", borderRadius: "8px",
-                background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.35)",
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#F59E0B", fontSize: "12px", fontWeight: 700 }}>
-                  <AlertCircle size={13} /> UNPRICED RISK · {result.estimate.unpricedRisks.length}
-                </div>
-                <div style={{ fontSize: "11px", color: "#94A3B8", marginTop: "4px" }}>
-                  Not priced and not counted. Enter a known amount for any of these if you have one.
-                </div>
-                {result.estimate.unpricedRisks.map((r) => (
-                  <div key={r.id} style={{ fontSize: "12px", color: "#94A3B8", marginTop: "6px" }}>
-                    <span style={{ color: "#E2E8F0" }}>{r.label}</span> — {r.reason}
-                  </div>
-                ))}
+        {/* Visible, and informational. It does not gate approval. */}
+        {result.estimate.unpricedRisks.length > 0 ? (
+          <div style={{
+            marginTop: "14px", padding: "12px 14px", borderRadius: "8px",
+            background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.35)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#F59E0B", fontSize: "12px", fontWeight: 700 }}>
+              <AlertCircle size={13} /> UNRESOLVED · NOT IN THE TOTAL · {result.estimate.unpricedRisks.length}
+            </div>
+            <div style={{ fontSize: "11px", color: "#94A3B8", marginTop: "4px" }}>
+              No approved amount applies to these yet. Answer the row or enter a known amount.
+            </div>
+            {result.estimate.unpricedRisks.map((r) => (
+              <div key={r.id} style={{ fontSize: "12px", color: "#94A3B8", marginTop: "6px" }}>
+                <span style={{ color: "#E2E8F0" }}>{r.label}</span> — {r.reason}
               </div>
-            ) : null}
-          </>
-        )}
+            ))}
+          </div>
+        ) : null}
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "14px", flexWrap: "wrap" }}>
           <button

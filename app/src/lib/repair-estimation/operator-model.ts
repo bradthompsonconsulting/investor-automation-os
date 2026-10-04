@@ -3,7 +3,8 @@
  *
  * Brad completed the V1 operator review and approved the defaults and
  * behaviour below on 2026-09-04. This module holds ONLY that: the approved
- * DFW policy defaults, the untouched-estimator fallback, and the pure rules
+ * DFW policy defaults, the unanswered-row allowance rule (2026-10-04; the
+ * untouched-estimator fallback it replaced is retired), and the pure rules
  * that turn an operator's answers into calculation-core input.
  *
  * ⚠ THIS IS NOT THE CANONICAL REFERENCE TABLE, AND IT DELIBERATELY DOES NOT
@@ -115,17 +116,44 @@ export function quantitySpecFor(row: OperatorRow): QuantitySpec | undefined {
 }
 
 /**
- * The untouched-estimator fallback.
+ * Itemized unanswered allowances — Brad, 2026-10-04
+ * (`docs/ESTIMATED_REPAIRS_STANDARD.md`, "Itemized unanswered allowances
+ * amendment"). It RETIRES the $20,000 untouched-estimator fallback that used to
+ * live here: there is no blanket figure any more, so nothing can be added on
+ * top of the rows.
  *
- * Applies ONLY when the operator has not interacted with the estimator at
- * all — no condition, no Known Amount, no quantity. The moment anything is
- * answered or typed it is removed completely: it
- * is never added to row amounts, because a fallback that survives alongside
- * real answers double-counts the same repairs.
+ * An unanswered row (`Not asked`, blank Known Amount) carries its OWN approved
+ * severe-state amount — `severeDefault` from the approved table, no new
+ * number — as a "condition not confirmed" allowance. It reaches the calculation
+ * core as an `unknown_condition` reserve, which the core already totals apart
+ * from indicated repairs: that is the Unanswered Allowances subtotal.
+ *
+ * A COUNTED row has no allowance while its count is unknown. Its approved
+ * amount is per unit, and pricing an unanswered count would mean assuming one
+ * (rule 6: no quantity assumptions; flag an unresolved unit basis). It stays
+ * visibly unresolved and out of the total.
  */
-export const UNTOUCHED_FALLBACK_AMOUNT: number = approvedTable.untouchedFallbackAmount;
-export const UNTOUCHED_FALLBACK_LABEL =
-  "IAOS DFW policy fallback — estimator not used";
+export const UNANSWERED_ALLOWANCE_LABEL = "condition not confirmed";
+
+/** The allowance an unanswered row carries, or null where its unit basis is unresolved. */
+export function unansweredAllowanceFor(row: OperatorRow): number | null {
+  return quantitySpecFor(row) === undefined ? row.severeDefault : null;
+}
+
+/**
+ * "Miscellaneous / Other repairs" (rule 5): a description and a non-negative
+ * amount Brad enters himself, blank by default, sitting below every table row.
+ * It holds no default and loads nothing. An entered amount is MANUAL and is
+ * counted once; a blank amount adds nothing.
+ */
+export const MISC_ROW_LABEL = "Miscellaneous / Other repairs";
+export const MISC_LINE_ID = "misc";
+export interface MiscAnswer {
+  description: string;
+  /** Raw field text. Blank adds nothing; it never becomes zero on its own. */
+  amount: string;
+}
+export const EMPTY_MISC: MiscAnswer = { description: "", amount: "" };
 
 /**
  * Operator-facing provenance names, per the 2026-09-04 amendment.
@@ -329,10 +357,17 @@ export function isUntouched(answers: Answers): boolean {
  *
  * The rule the review settled: THE DOLLAR AMOUNT IN THE FIELD IS THE AMOUNT
  * USED. A known amount is honoured whatever the condition says, including on
- * a row that was never asked. A row is an unpriced risk only when it has no
- * usable amount — nothing is ever invented to fill one in.
+ * a row that was never asked.
+ *
+ * 2026-10-04 amendment: a row that is `Not asked` with nothing entered carries
+ * its approved severe-state allowance as an `unknown_condition` reserve
+ * ("condition not confirmed"), except a counted row, whose unit basis is
+ * unresolved. A row is an unpriced risk only when it has no usable amount and
+ * no allowance applies — nothing is ever invented to fill one in.
+ *
+ * `misc` is the Miscellaneous / Other repairs row; omitted, it is blank.
  */
-export function buildLines(answers: Answers): RepairLineInput[] {
+export function buildLines(answers: Answers, misc: MiscAnswer = EMPTY_MISC): RepairLineInput[] {
   const lines: RepairLineInput[] = [];
   for (const row of OPERATOR_ROWS) {
     const a = answers[row.system] ?? EMPTY_ANSWER;
@@ -345,19 +380,33 @@ export function buildLines(answers: Answers): RepairLineInput[] {
     }
 
     if (parsed.kind === "blank") {
-      /* Not asked and nothing entered is the review's definition of an
-         unpriced risk. A condition that was answered and then had its amount
-         cleared is not a case the approved rules name; it is treated the same
-         way, because the alternative is inventing a number for it. */
-      lines.push({
-        ...base,
-        pricing: {
-          kind: "unpriced_risk",
-          reason: a.condition === "not_asked"
-            ? "not asked, and no known amount entered"
-            : "the known amount was cleared",
-        },
-      });
+      if (a.condition === "not_asked") {
+        const allowance = unansweredAllowanceFor(row);
+        if (allowance !== null) {
+          /* Rule 1: the row's own approved severe-state amount, held as a
+             reserve against a condition nobody has confirmed. Policy, never
+             cost book; answering the row replaces it (rule 3). */
+          lines.push({
+            ...base, origin: "unknown_condition",
+            pricing: { kind: "amount", amount: allowance, provenance: "IAOS_POLICY" },
+          });
+          continue;
+        }
+        const unit = quantitySpecFor(row)?.unit ?? "unit";
+        lines.push({
+          ...base,
+          pricing: {
+            kind: "unpriced_risk",
+            reason: `${UNANSWERED_ALLOWANCE_LABEL}; its allowance is per ${unit}, so it needs a ${unit} count — not included in the total`,
+          },
+        });
+        continue;
+      }
+      /* A condition that was answered and then had its amount cleared is not
+         a case the approved rules name. It stays unresolved rather than
+         quietly taking an allowance, because the alternative is inventing
+         which number the operator meant. */
+      lines.push({ ...base, pricing: { kind: "unpriced_risk", reason: "the known amount was cleared" } });
       continue;
     }
 
@@ -373,18 +422,44 @@ export function buildLines(answers: Answers): RepairLineInput[] {
     const provenance: Provenance = a.dirty ? "MANUAL" : "IAOS_POLICY";
     lines.push({ ...base, pricing: { kind: "amount", amount: parsed.value, provenance } });
   }
+
+  /* Rule 5: Miscellaneous / Other repairs, below every table row. Blank adds
+     nothing and is not a risk — it is the default. Entered, it is Brad's own
+     figure (MANUAL), counted once. */
+  const miscAmount = parseKnownAmount(misc.amount);
+  const description = misc.description.trim();
+  const miscBase = {
+    id: MISC_LINE_ID,
+    label: description ? `${MISC_ROW_LABEL} — ${description}` : MISC_ROW_LABEL,
+    component: "major_system" as const,
+  };
+  if (miscAmount.kind === "invalid") {
+    lines.push({ ...miscBase, pricing: { kind: "unpriced_risk", reason: "the amount entered is not a valid non-negative dollar figure" } });
+  } else if (miscAmount.kind === "value") {
+    lines.push(miscAmount.value === 0
+      ? { ...miscBase, pricing: { kind: "no_repair" } }
+      : { ...miscBase, pricing: { kind: "amount", amount: miscAmount.value, provenance: "MANUAL" } });
+  }
   return lines;
 }
 
 /**
- * What the operator surface should show.
+ * What the operator surface shows (2026-10-04 amendment, rule 2).
  *
- * `fallback` and `rows` are mutually exclusive by construction — there is no
- * expression anywhere in this module that adds the fallback to a row amount.
+ * There is no fallback mode any more: every estimate is the row calculation.
+ *   knownSubtotal       — Known Repairs: answered rows, manual figures, misc.
+ *   unansweredSubtotal  — Unanswered Allowances: "condition not confirmed".
+ *   total               — Preliminary Total: both, plus the (BOOK-only, so
+ *                         here $0) FMTM allowance. This is what approval
+ *                         carries and what persists.
  */
-export type OperatorEstimate =
-  | { mode: "fallback"; total: number; label: string; provenance: Provenance }
-  | { mode: "rows"; estimate: RepairEstimate; total: number };
+export interface OperatorEstimate {
+  mode: "rows";
+  estimate: RepairEstimate;
+  knownSubtotal: number;
+  unansweredSubtotal: number;
+  total: number;
+}
 
 /**
  * The conservative allowance for a row-mode estimate: the resolved
@@ -395,25 +470,23 @@ export function rowsTotal(estimate: RepairEstimate): number {
 }
 
 /**
- * Resolve the operator's answers, applying the untouched fallback only when
- * the estimator has not been used at all.
+ * Resolve the operator's answers into Known Repairs, Unanswered Allowances and
+ * the Preliminary Total. An untouched estimator is simply every row unanswered.
  *
- * `compute` is injected rather than imported so this stays a pure decision
- * about WHICH result applies, testable without the core, and so the core
- * keeps exactly one caller shape.
+ * `compute` is injected rather than imported so this stays testable without
+ * the core, and so the core keeps exactly one caller shape.
  */
 export function operatorEstimate(
   answers: Answers,
   compute: (lines: RepairLineInput[]) => RepairEstimate,
+  misc: MiscAnswer = EMPTY_MISC,
 ): OperatorEstimate {
-  if (isUntouched(answers)) {
-    return {
-      mode: "fallback",
-      total: UNTOUCHED_FALLBACK_AMOUNT,
-      label: UNTOUCHED_FALLBACK_LABEL,
-      provenance: "IAOS_POLICY",
-    };
-  }
-  const estimate = compute(buildLines(answers));
-  return { mode: "rows", estimate, total: rowsTotal(estimate) };
+  const estimate = compute(buildLines(answers, misc));
+  return {
+    mode: "rows",
+    estimate,
+    knownSubtotal: estimate.indicatedSubtotal,
+    unansweredSubtotal: estimate.components.unknownRiskReserves,
+    total: rowsTotal(estimate),
+  };
 }

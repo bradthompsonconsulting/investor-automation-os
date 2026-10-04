@@ -225,6 +225,9 @@ jobs:
       - name: Call log, call-outcome wording, queue placement, contact isolation and Do Not Call wiring — 83 offline checks
         run: node app/scripts/test-call-outcome-copy.cjs
 
+      - name: Repair estimator operator model, incl. 2026-10-04 itemized unanswered allowances — 276 offline checks
+        run: node app/scripts/test-repair-operator.cjs
+
       - name: Netlify observer — 86 offline checks
         run: node scripts/netlify-status.test.cjs
 
