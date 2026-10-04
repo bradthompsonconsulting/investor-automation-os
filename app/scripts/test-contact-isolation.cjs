@@ -653,7 +653,78 @@ async function main() {
     failNext.push((r) => r.kind === 'detail' && r.contact === A);
     await page.getByTestId('dnc-check').click();
     await until(async () => (await page.getByTestId('dnc-read-failed').count()) === 1, 'DNC read failed');
-    check('DNC: a failed GHL read says so and asks to check again', /^Couldn't read this contact from GHL \(.*\)\. Check again\.$/.test(await dncState('dnc-read-failed')));
+    check('DNC: a failed GHL read says so, calls the status unknown, and asks to check again', /^Couldn't read this contact from GHL \(.*\)\. Do Not Disturb status is unknown right now\. Check again\.$/.test(await dncState('dnc-read-failed')));
+
+    // D10 — Bones's repro (#122 at d06c28f): suppressed on load -> a successful read shows it
+    // cleared -> the next read FAILS. The failure is "unknown": the older suppressed reading must
+    // NOT come back, and nothing may say "out of IAOS calling lists".
+    await freshDnc({ aDnd: { Call: ON, SMS: ON, Email: ON } }, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await until(async () => (await page.getByTestId('dnc-status').count()) === 1, 'D10 suppressed on load');
+    check('D10: on load GHL shows all three suppressed', /^GHL shows Do Not Disturb on calls, SMS and email\./.test(await dncState('dnc-status')));
+    await openDnc();
+    db[A].dnd = {};                                   // cleared in GHL
+    await checkGhl();
+    check('D10: a successful read shows suppression cleared',
+      (await dncState('dnc-status')) === "GHL doesn't show Do Not Disturb on calls, SMS or email. It stays on IAOS calling lists while calls are not suppressed.");
+    h = hold((r) => r.kind === 'detail' && r.contact === A);
+    failNext.push((r) => r.kind === 'detail' && r.contact === A);
+    await page.getByTestId('dnc-check').click();
+    await h.hit;
+    const whileChecking = (await dncState('dnc')) || '';
+    check('D10: while a check is running, no suppression or calling-list claim is shown',
+      (await page.getByTestId('dnc-checking').count()) === 1 && (await page.getByTestId('dnc-status').count()) === 0 && !/shows Do Not Disturb on|out of IAOS calling lists/.test(whileChecking), whileChecking);
+    h.release();
+    await until(async () => (await page.getByTestId('dnc-read-failed').count()) === 1, 'D10 read failed');
+    const afterFail = (await dncState('dnc')) || '';
+    check('D10: the failed read is shown as UNKNOWN — the older "suppressed" reading is NOT brought back',
+      (await page.getByTestId('dnc-status').count()) === 0 && /Do Not Disturb status is unknown right now/.test(afterFail)
+      && !/shows Do Not Disturb on|out of IAOS calling lists/.test(afterFail), afterFail);
+    await page.getByTestId('dnc-close').click();
+    await settle();
+    const afterClose = (await dncState('dnc')) || '';
+    check('D10: after Close it is still unknown, never the older suppressed claim',
+      (await page.getByTestId('dnc-read-failed').count()) === 1 && (await page.getByTestId('dnc-status').count()) === 0 && !/out of IAOS calling lists/.test(afterClose), afterClose);
+
+    // D11 — a RETAINED DncControl (same instance, contactId A -> B; the harness route keeps it
+    // mounted — the Contact page itself unmounts it on navigation). A's read is pending when the
+    // control switches to B: neither A's late SUCCESS nor A's late FAILURE may reach B.
+    await freshDnc({ aDnd: { Call: ON, SMS: ON, Email: ON } }, `/dnc-retained/${A}`);
+    await until(async () => (await page.getByTestId('dnc-open').count()) === 1, 'retained DNC');
+    const mounts0 = await page.evaluate(() => window.__dncMounts);
+    const bClean = async () => (await page.getByTestId('dnc-status').count()) === 0 && (await page.getByTestId('dnc-read-failed').count()) === 0
+      && (await page.getByTestId('dnc-checking').count()) === 0 && (await page.getByTestId('dnc-panel').count()) === 0;
+    // (a) late success
+    await openDnc();
+    h = hold((r) => r.kind === 'detail' && r.contact === A);
+    await page.getByTestId('dnc-check').click();
+    await h.hit;
+    await go(`/dnc-retained/${B}`);
+    await settle();
+    h.release();
+    await settle(); await settle();
+    check("D11 (retained): A's late SUCCESS does not reach B — no status, no panel, nothing of A's",
+      (await page.evaluate(() => window.__dncMounts)) === mounts0 && await bClean(), { mounts0, now: await page.evaluate(() => window.__dncMounts), text: await dncState('dnc') });
+    // (b) late failure
+    await go(`/dnc-retained/${A}`);
+    await settle();
+    await openDnc();
+    h = hold((r) => r.kind === 'detail' && r.contact === A);
+    failNext.push((r) => r.kind === 'detail' && r.contact === A);
+    await page.getByTestId('dnc-check').click();
+    await h.hit;
+    await go(`/dnc-retained/${B}`);
+    await settle();
+    h.release();
+    await settle(); await settle();
+    check("D11 (retained): A's late FAILURE does not reach B — no error, no status, nothing of A's",
+      (await page.evaluate(() => window.__dncMounts)) === mounts0 && await bClean(), { text: await dncState('dnc') });
+    // B's own handoff and check, in the same retained instance.
+    await openDnc();
+    await until(async () => /\/contacts\/detail\/fixtureContactB$/.test(handoffs[handoffs.length - 1] || ''), 'retained B handoff');
+    await checkGhl();
+    check("D11 (retained): B's handoff and check are B's own, same instance",
+      (await page.evaluate(() => window.__dncMounts)) === mounts0 && (await dncState('dnc-status')) === "GHL doesn't show Do Not Disturb on calls, SMS or email. It stays on IAOS calling lists while calls are not suppressed.");
 
     // D9 — the whole Do Not Call section wrote nothing at all, in either contact.
     dncWrites += W().length;

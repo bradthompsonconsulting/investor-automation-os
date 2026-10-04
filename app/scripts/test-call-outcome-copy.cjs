@@ -250,6 +250,10 @@ check('webhook still accepts exactly the six dispositions (Do Not Call refused)'
     /textarea|reason|notes\.create|sessionStorage|PENDING_PREFIX|Retry|recorded/i.test(dncCode), false);
   check('DNC check reads THIS contact fresh and drops a late answer for another contact',
     /const fresh = await ghl\.contacts\.getDetail\(cid\);\n\s+if \(currentId\.current !== cid\) return;\n\s+if \(fresh\.id !== cid\)/.test(dncCode), true);
+  check('DNC: only a successful read is shown as GHL state — while checking or after a failure nothing older (suppressed / out of lists) is shown',
+    /const dnd = check\.kind === "read" \? check\.dnd : check\.kind === "none" \? detail\?\.dndSettings : undefined;/.test(dncCode)
+    && /const known = check\.kind === "read" \|\| \(check\.kind === "none" && detail !== null\);/.test(dncCode)
+    && /Do Not Disturb status is unknown right now/.test(dncCode), true);
   check('ghl client has no DND write method', /setDnc|contact\.dnc/.test(ghlClient), false);
   check("Contact page mounts the DNC control with only this contact's detail (and no note callback)",
     /<DncControl[\s\S]*?detail=\{detail && detail\.id === id \? detail : null\}\s*\/>/.test(contactPageCode), true);

@@ -17,6 +17,12 @@ import {
  *      calls, SMS and email GHL holds suppressed. It never claims IAOS set
  *      anything or recorded anything.
  *
+ * ONLY A SUCCESSFUL READ IS SHOWN AS GHL STATE (Bones, #122). Before any
+ * check, the page's own read of this contact; after a check, that check's
+ * result. While a check is running, or after one fails, the state is UNKNOWN:
+ * no suppression or calling-list claim is shown — an older read is never
+ * brought back as if it were current.
+ *
  * The Dashboard leaves any contact whose GHL Call channel is suppressed out of
  * its calling lists (isCallSuppressed), whoever set it.
  */
@@ -64,16 +70,17 @@ export function DncControl({ contactId, detail }: {
     try {
       const fresh = await ghl.contacts.getDetail(cid);
       if (currentId.current !== cid) return;
-      if (fresh.id !== cid) { setCheck({ kind: "failed", message: "GHL returned a different contact. Check again." }); return; }
+      if (fresh.id !== cid) { setCheck({ kind: "failed", message: "GHL returned a different contact. Do Not Disturb status is unknown right now. Check again." }); return; }
       setCheck({ kind: "read", dnd: fresh.dndSettings });
     } catch (e) {
-      if (currentId.current === cid) setCheck({ kind: "failed", message: `Couldn't read this contact from GHL (${(e as Error).message}). Check again.` });
+      if (currentId.current === cid) setCheck({ kind: "failed", message: `Couldn't read this contact from GHL (${(e as Error).message}). Do Not Disturb status is unknown right now. Check again.` });
     }
   }
 
-  // What to show: the fresh check if there is one, else the page's own read of this contact.
-  const dnd = check.kind === "read" ? check.dnd : detail?.dndSettings;
-  const known = check.kind === "read" || detail !== null;
+  // What to show — only a SUCCESSFUL read: this check's, or (before any check) the page's own.
+  // Checking or failed = unknown: nothing older is shown as current GHL state.
+  const dnd = check.kind === "read" ? check.dnd : check.kind === "none" ? detail?.dndSettings : undefined;
+  const known = check.kind === "read" || (check.kind === "none" && detail !== null);
   const anySuppressed = known && unsuppressedChannels(dnd).length < 3;
   const showStatus = check.kind === "read" || anySuppressed;
 
@@ -82,7 +89,11 @@ export function DncControl({ contactId, detail }: {
 
   return (
     <div data-testid="dnc" style={{ marginTop: "12px", padding: "12px 16px", border: "1px solid rgba(239,68,68,0.25)", borderRadius: "10px", background: "#0D1B3E" }}>
-      {showStatus ? (
+      {check.kind === "failed" ? (
+        <div data-testid="dnc-read-failed" style={{ fontSize: "12px", color: "#F59E0B", marginBottom: "8px" }}>{check.message}</div>
+      ) : check.kind === "busy" ? (
+        <div data-testid="dnc-checking" style={{ fontSize: "12px", color: "#94A3B8", marginBottom: "8px" }}>Checking GHL… Do Not Disturb status will show when GHL answers.</div>
+      ) : showStatus ? (
         <div data-testid="dnc-status" style={{ fontSize: "12px", color: isCallSuppressed(dnd) ? "#F87171" : "#94A3B8", marginBottom: "8px" }}>
           {dncStatusText(dnd)}
         </div>
@@ -100,7 +111,6 @@ export function DncControl({ contactId, detail }: {
             <button data-testid="dnc-open-ghl" onClick={openInGhl} disabled={busy} style={plain}>Open in GHL again</button>
             <button data-testid="dnc-close" onClick={() => { setOpen(false); setHandoff(null); }} disabled={busy} style={plain}>Close</button>
           </div>
-          {check.kind === "failed" ? <div data-testid="dnc-read-failed" style={{ fontSize: "12px", color: "#F87171" }}>{check.message}</div> : null}
         </div>
       )}
     </div>
