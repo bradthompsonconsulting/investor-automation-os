@@ -57,8 +57,10 @@ export const FOLLOW_UP_CALLBACK_HINT = "Follow Up doesn't set a callback. Use Se
 export const CONVERSATION_OUTCOME_HEADING = "Record conversation outcome";
 export const CONVERSATION_OUTCOME_SUBHEADING = "These do not start cold-outreach workflows.";
 export const DIAL_RESULT_POINTER = "No conversation? Log the call on the contact page.";
+// Pass 1 F30: the old trailing clause ("unlike Follow Up on the contact page")
+// went stale when PR #117 made the contact-page call log recording-only.
 export const SELLER_CALL_FOLLOW_UP_CONSEQUENCE =
-  "Schedules your callback only. No stage change and no seller messages, unlike Follow Up on the contact page.";
+  "Schedules your callback only. No stage change and no seller messages.";
 export const SELLER_CALL_PASS_CONSEQUENCE = "Records the pass. No seller messages.";
 
 /**
