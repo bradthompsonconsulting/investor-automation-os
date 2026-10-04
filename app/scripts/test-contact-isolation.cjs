@@ -41,8 +41,8 @@ Module._resolveFilename = ((original) => function (name, parent, ...rest) {
 const G = require(path.join(APP, 'shared/ghl-config.ts'));
 const { getConfig } = G;
 const scopeLib = require(path.join(APP, 'netlify/functions/lib/production-write-scope.ts'));
-// Production, as committed, with ONLY the B14-12 call-log class switched on.
-const PROD_CALL_LOG_ON = { ...JSON.parse(JSON.stringify(getConfig('production'))), productionCallLog: G.PRODUCTION_CALL_LOG_ENABLED };
+// Production as committed (call-log and Do Not Call classes ENABLED); PROD_CALL_LOG_ON switches the DNC class OFF.
+const PROD_CALL_LOG_ON = { ...JSON.parse(JSON.stringify(getConfig('production'))), productionCallLog: G.PRODUCTION_CALL_LOG_ENABLED, productionDnc: G.PRODUCTION_DNC_DISABLED };
 const PROD_DNC_ON = { ...JSON.parse(JSON.stringify(getConfig('production'))), productionDnc: G.PRODUCTION_DNC_ENABLED };
 const dncLib = require(path.join(APP, 'src/lib/dnc.ts'));
 let prodScope = false;
@@ -931,7 +931,7 @@ async function main() {
       await page.getByTestId('dnc-reason').fill(REASON);
       await page.getByTestId('dnc-check').click();
       await until(async () => (await dncState('dnc-refused')) !== null, 'prod DNC refused');
-      check('Production scope, DNC DISABLED (as committed): refused, and reported as definitely "Not recorded" (not "uncertain")',
+      check('Production scope, DNC DISABLED (the switched-off state): refused, and reported as definitely "Not recorded" (not "uncertain")',
         /^Not recorded: Production write refused/.test(await dncState('dnc-refused')) && dncNotes(B) === 0, await dncState('dnc-refused'));
     } finally {
       prodScope = false;

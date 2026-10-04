@@ -680,8 +680,8 @@ const PRODUCTION: GhlConfig = {
   contractProductionEnabled: CONTRACT_PRODUCTION_ENABLED,
   // B14-12: ENABLED — Brad's direct Production rollout of the recording-only call log (Jess, 2026-10-03). Disable: publish the prior deploy (lock kept), then revert this commit.
   productionCallLog: PRODUCTION_CALL_LOG_ENABLED,
-  // B14-12 Do Not Call: DISABLED until its own reviewed enable commit.
-  productionDnc: PRODUCTION_DNC_DISABLED,
+  // B14-12 Do Not Call: ENABLED after the passed Test proof (Jess, 2026-10-03). Opens only the exact DNC note; IAOS never writes DND. Disable: publish the prior deploy (lock kept), then revert this commit.
+  productionDnc: PRODUCTION_DNC_ENABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
