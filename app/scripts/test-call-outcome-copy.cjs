@@ -241,42 +241,22 @@ check('webhook still accepts exactly the six dispositions (Do Not Call refused)'
 // ── Do Not Call wiring (B14-12) ──────────────────────────────────────────
 {
   const dncCode = stripBlockComments(read('src/components/DncControl.tsx'));
-  check('DNC control only reads GHL and writes the note (getDetail, notes.list, notes.create) — never a contact write',
-    [...new Set([...dncCode.matchAll(/ghl\.(contacts|notes)\.(\w+)\(/g)].map((m) => m[1] + '.' + m[2]))].sort(), ['contacts.getDetail', 'notes.create', 'notes.list']);
-  check('DNC hands Brad to THIS contact in GHL through the isolated 14-11 handoff',
-    /const ghlUrl = ghlContactDetailUrl\(contactId\);/.test(dncCode) && /openGhlContactWindow\(ghlUrl, \(url, target\) => window\.open\(url, target\)\)/.test(dncCode), true);
-  {
-    const fn = (name) => (dncCode.match(new RegExp('(async )?function ' + name + String.raw`\([^)]*\)[^{]*\{[\s\S]*?\n  \}\n`)) || [''])[0];
-    const commitSrc = fn('commit'), runSrc = fn('run'), checkSrc = fn('check'), retrySrc = fn('retry');
-    const at = (src, s) => src.indexOf(s);
-    check('DNC: ONE note-write path — notes.create appears once, inside commit(); "check now" and Retry both go through it',
-      (dncCode.match(/ghl\.notes\.create\(/g) || []).length === 1 && at(commitSrc, 'await ghl.notes.create(cid, note)') !== -1
-      && /void run\(dncNote\(why\)\)/.test(checkSrc) && /void run\(earlier\)/.test(retrySrc) && /await commit\(contactId, note\)/.test(runSrc)
-      && !/ghl\./.test(checkSrc + retrySrc + runSrc), true);
-    check('DNC commit order: read the record (unreadable = stop) → reconcile (lookup; failed = no write) → re-verify → write-ahead record (not stored = stop) → one save',
-      at(commitSrc, 'const record = readPending(cid);') !== -1
-      && /if \(!record\.ok\) \{ if \(live\(\)\) setState\(\{ kind: "storage_blocked", message: STORAGE_BLOCKED \}\); return; \}/.test(commitSrc)
-      && at(commitSrc, 'await ghl.notes.list(cid)') > at(commitSrc, 'const record = readPending(cid);')
-      && /Nothing saved again\.` \}\);\n\s+return;/.test(commitSrc)
-      && at(commitSrc, 'existing.some((n) => n.body === earlier)') > at(commitSrc, 'await ghl.notes.list(cid)')
-      && at(commitSrc, 'await verify(cid, earlier !== null)') > at(commitSrc, 'existing.some((n) => n.body === earlier)')
-      && at(commitSrc, 'if (!persistPending(cid, note)) { if (live()) setState({ kind: "storage_blocked", message: STORAGE_BLOCKED }); return; }') > at(commitSrc, 'await verify(cid, earlier !== null)')
-      && at(commitSrc, 'await ghl.notes.create(cid, note)') > at(commitSrc, 'if (!persistPending(cid, note))')
-      && /return sessionStorage\.getItem\(PENDING_PREFIX \+ contactId\) === note;/.test(dncCode) && !/pendingMemory|new Map/.test(dncCode)
-      && /if \(fresh\.id !== cid\)/.test(dncCode) && /const missing = unsuppressedChannels\(fresh\.dndSettings\);/.test(dncCode), true);
-  }
-  check('DNC confirm needs this contact loaded and a reason; the unresolved attempt is keyed to the contact and Cancel keeps it',
-    /disabled=\{busy \|\| !known \|\| reason\.trim\(\) === ""\}/.test(dncCode) && /if \(!known \|\| !why \|\| inFlight\.current\) return;/.test(dncCode)
-    && /getItem\(PENDING_PREFIX \+ contactId\)/.test(dncCode) && /setPending\(pendingNote\(contactId\)\);/.test(dncCode)
-    && /data-testid="dnc-cancel" onClick=\{\(\) => \{ setOpen\(false\); setReason\(""\); setHandoff\(null\); setState\(\{ kind: "idle" \}\); \}\}/.test(dncCode), true);
-  check('DNC: a server refusal is "not recorded" and resolves the record; any other note failure is "uncertain" and keeps it, never "unsaved"',
-    /const refused = \/\^Do Not Call is not held in GHL for:\/\.test\(message\) \? message\n\s+: DEFINITE_REFUSAL\.test\(message\) \? `Not recorded: \$\{message\}` : null;/.test(dncCode)
-    && /if \(refused !== null\) \{ clearPending\(cid\);/.test(dncCode) && (commitSrcForRefusal(dncCode).match(/clearPending\(cid\)/g) || []).length === 2
-    && /The note may or may not have been saved/.test(dncCode) && !/(was not|wasn't) saved/.test(dncCode), true);
-  function commitSrcForRefusal(code) { return (code.match(/async function commit\([^)]*\)[^{]*\{[\s\S]*?\n  \}\n/) || [''])[0]; }
+  check('DNC control only READS GHL (contacts.getDetail) — no note, no contact write',
+    [...new Set([...dncCode.matchAll(/ghl\.(\w+)\.(\w+)\(/g)].map((m) => m[1] + '.' + m[2]))].sort(), ['contacts.getDetail']);
+  check('DNC hands Brad to THIS contact in GHL through the isolated 14-11 handoff, from the button itself',
+    /const ghlUrl = ghlContactDetailUrl\(contactId\);/.test(dncCode) && /openGhlContactWindow\(ghlUrl, \(url, target\) => window\.open\(url, target\)\)/.test(dncCode)
+    && /data-testid="dnc-open" onClick=\{openInGhl\}/.test(dncCode), true);
+  check('DNC (Brad 2026-10-04): no reason field, no note, no recovery record, no "recorded" claim',
+    /textarea|reason|notes\.create|sessionStorage|PENDING_PREFIX|Retry|recorded/i.test(dncCode), false);
+  check('DNC check reads THIS contact fresh and drops a late answer for another contact',
+    /const fresh = await ghl\.contacts\.getDetail\(cid\);\n\s+if \(currentId\.current !== cid\) return;\n\s+if \(fresh\.id !== cid\)/.test(dncCode), true);
+  check('DNC: only a successful read is shown as GHL state — while checking or after a failure nothing older (suppressed / out of lists) is shown',
+    /const dnd = check\.kind === "read" \? check\.dnd : check\.kind === "none" \? detail\?\.dndSettings : undefined;/.test(dncCode)
+    && /const known = check\.kind === "read" \|\| \(check\.kind === "none" && detail !== null\);/.test(dncCode)
+    && /Do Not Disturb status is unknown right now/.test(dncCode), true);
   check('ghl client has no DND write method', /setDnc|contact\.dnc/.test(ghlClient), false);
-  check("Contact page mounts the DNC control with only this contact's detail",
-    /<DncControl[\s\S]*?detail=\{detail && detail\.id === id \? detail : null\}[\s\S]*?onNoteWritten=\{loadNotes\}/.test(contactPageCode), true);
+  check("Contact page mounts the DNC control with only this contact's detail (and no note callback)",
+    /<DncControl[\s\S]*?detail=\{detail && detail\.id === id \? detail : null\}\s*\/>/.test(contactPageCode), true);
   check('Dashboard keeps a Call-suppressed contact out of every calling list',
     /const doNotCallIds = useMemo\(\s*\(\) => new Set\(\(contacts \?\? \[\]\)\.filter\(\(c\) => isCallSuppressed\(c\.dndSettings\)\)/.test(dashboardCode)
     && /!!x\.cb && !doNotCallIds\.has\(x\.contact\.id\)/.test(dashboardCode) && /!!c && !doNotCallIds\.has\(c\.id\)/.test(dashboardCode)

@@ -168,16 +168,6 @@ export interface GhlConfig {
    * Enabling is its own reviewed config-only commit, never a runtime toggle.
    */
   productionCallLog: string;
-  /**
-   * B14-12 Do Not Call — its own Production permission class, independent of
-   * the call-log class and of Board #9. SERVER-SIDE ONLY. Only
-   * `PRODUCTION_DNC_ENABLED` opens it; then, for ANY Production contact,
-   * note.create ONLY for an exact Do Not Call note — which ghl-write further
-   * accepts only while that contact's GHL calls, SMS and email read back
-   * suppressed. IAOS never writes DND. TEST carries a documentation-only
-   * value. Enabling is its own reviewed commit.
-   */
-  productionDnc: string;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -327,10 +317,6 @@ export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVIS
 export const PRODUCTION_CALL_LOG_ENABLED = "PRODUCTION_CALL_LOG_ENABLED" as const;
 /** B14-12 — the value PRODUCTION carries until the enable commit; TEST carries it as documentation only. */
 export const PRODUCTION_CALL_LOG_DISABLED = "PRODUCTION_CALL_LOG_DISABLED" as const;
-/** B14-12 — the ONE value that opens the Production Do Not Call class. */
-export const PRODUCTION_DNC_ENABLED = "PRODUCTION_DNC_ENABLED" as const;
-/** B14-12 — Production's value until the DNC enable commit; TEST's documentation-only value. */
-export const PRODUCTION_DNC_DISABLED = "PRODUCTION_DNC_DISABLED" as const;
 
 /**
  * INV-67 / B9-12 -- the literal placeholder value for a not-yet-provisioned
@@ -680,8 +666,6 @@ const PRODUCTION: GhlConfig = {
   contractProductionEnabled: CONTRACT_PRODUCTION_ENABLED,
   // B14-12: ENABLED — Brad's direct Production rollout of the recording-only call log (Jess, 2026-10-03). Disable: publish the prior deploy (lock kept), then revert this commit.
   productionCallLog: PRODUCTION_CALL_LOG_ENABLED,
-  // B14-12 Do Not Call: ENABLED after the passed Test proof (Jess, 2026-10-03). Opens only the exact DNC note; IAOS never writes DND. Disable: publish the prior deploy (lock kept), then revert this commit.
-  productionDnc: PRODUCTION_DNC_ENABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -1048,7 +1032,6 @@ const TEST: GhlConfig = {
   contractProductionEnabled: CONTRACT_TEST_ALWAYS_ENABLED,
   // B14-12: documentation-only in TEST; Test writes are never scoped.
   productionCallLog: PRODUCTION_CALL_LOG_DISABLED,
-  productionDnc: PRODUCTION_DNC_DISABLED,
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },
