@@ -865,6 +865,7 @@ export default function Dashboard() {
           display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center",
           background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "10px 14px",
         }}>
+          <span style={{ fontSize: "11px", color: "#64748B" }}>Contacts by temperature</span>
           {(Object.keys(bucketCounts) as BucketTag[]).map((tier) => (
             <span key={tier} style={{
               display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
@@ -1203,6 +1204,11 @@ export default function Dashboard() {
       <p style={{ fontSize: "12px", color: "#64748B", margin: "0 0 6px", maxWidth: CONTENT_MAX_WIDTH }}>
         Sellers to cold-call next, top of the list first. Save a note after each call to mark the attempt. Showing{" "}
         {Math.min(RESURFACE_VISIBLE_ROWS, leadQueue.length)} of {leadQueue.length} — scroll for the rest.
+      </p>
+      <p style={{ fontSize: "11px", color: "#475569", margin: "0 0 6px", maxWidth: CONTENT_MAX_WIDTH }}>
+        Not every contact is here. Contacts with an unanswered reply, a callback, an offer out or a Follow-Up stage
+        are in the lists above; a contact with a recent call result is placed by that result; contacts with no
+        phone, a wrong number, Do Not Call or a closed deal are left out.
       </p>
       <details style={{ fontSize: "11px", color: "#334155", margin: "0 0 12px", maxWidth: CONTENT_MAX_WIDTH }}>
         <summary style={{ cursor: "pointer", color: "#475569" }}>How this list is ordered</summary>
