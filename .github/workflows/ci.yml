@@ -213,6 +213,12 @@ jobs:
       - name: Resolver and view model — 169 checks
         run: node app/scripts/test-underwriting-resolver.cjs
 
+      - name: Repair estimator operator model, incl. 2026-10-04 itemized unanswered allowances — 276 offline checks
+        run: node app/scripts/test-repair-operator.cjs
+
+      - name: Repair estimate rendered (Underwriting and Deal Calculator share it; PR 124 review) — 23 offline checks
+        run: node app/scripts/test-repair-estimate-rendered.cjs
+
       - name: Rail — 94 offline checks
         run: node app/scripts/test-rail.cjs
 
@@ -224,12 +230,6 @@ jobs:
 
       - name: Call log, call-outcome wording, queue placement, contact isolation and Do Not Call wiring — 83 offline checks
         run: node app/scripts/test-call-outcome-copy.cjs
-
-      - name: Repair estimator operator model, incl. 2026-10-04 itemized unanswered allowances — 276 offline checks
-        run: node app/scripts/test-repair-operator.cjs
-
-      - name: Repair estimate rendered (Underwriting and Deal Calculator share it; PR 124 review) — 23 offline checks
-        run: node app/scripts/test-repair-estimate-rendered.cjs
 
       - name: Netlify observer — 86 offline checks
         run: node scripts/netlify-status.test.cjs
