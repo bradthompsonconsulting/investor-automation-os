@@ -531,6 +531,11 @@ export default function SellerCallWorkspace() {
     | { status: "saving" }
     | { status: "error"; message: string }
   >({ status: "idle" });
+  /* PR #126 re-review (Bones / Jess, 2026-10-05): the Current Offer amount
+     CONFIRMED in GHL -- restored from the Opportunity carrier, or a save GHL
+     read back. Only this amount may be labelled "Recorded in GHL". State,
+     not a ref: it drives the deal-bar label. */
+  const [confirmedCurrentOffer, setConfirmedCurrentOffer] = useState<number | null>(null);
 
   /* The one already-granted override, if any -- see seller-call-
      negotiation.ts's own header for why this is a DIFFERENT concept from
@@ -819,6 +824,9 @@ export default function SellerCallWorkspace() {
      must never silently carry forward onto a different one typed next. */
   function handleCurrentOfferChange(raw: string) {
     setCurrentOfferInput(raw);
+    /* An edit after a failed save is a new draft; the failure stays true of
+       the amount it was about, not of what is typed now. */
+    setCurrentOfferWriteState((s) => (s.status === "error" ? { status: "idle" } : s));
     setOverrideAcknowledged(false);
     setOverrideReasonDraft("");
     setOverrideActionError(null);
@@ -855,6 +863,7 @@ export default function SellerCallWorkspace() {
         return;
       }
       lastWrittenCurrentOfferRef.current = decision.value;
+      setConfirmedCurrentOffer(decision.value);
       setCurrentOfferWriteState({ status: "idle" });
     } catch (e: any) {
       setCurrentOfferWriteState({ status: "error", message: e?.message ?? "Couldn't save Current Offer." });
@@ -1548,10 +1557,17 @@ export default function SellerCallWorkspace() {
       repairs: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.repairs : null,
       sellerPosition,
       currentOffer,
+      /* PR #126 re-review: recorded only when the typed amount IS the
+         confirmed one and no save is pending or failed. */
+      currentOfferStatus:
+        currentOfferWriteState.status === "saving" ? "saving"
+          : currentOfferWriteState.status === "error" ? "failed"
+            : currentOffer !== null && currentOffer === confirmedCurrentOffer ? "recorded"
+              : "draft",
       board8,
       expectedSpread,
     }),
-    [screen, sellerPosition, currentOffer, board8, expectedSpread],
+    [screen, sellerPosition, currentOffer, currentOfferWriteState, confirmedCurrentOffer, board8, expectedSpread],
   );
 
   const hasKnownFacts = (screen.state === "resolved" || screen.state === "unresolved")
@@ -1732,6 +1748,7 @@ export default function SellerCallWorkspace() {
       /* INV-70 / B9-07A Phase 2 -- Deal A's last-written Current Offer
          value must never suppress Deal B's first commit. */
       lastWrittenCurrentOfferRef.current = null;
+      setConfirmedCurrentOffer(null);
       setCurrentOfferWriteState({ status: "idle" });
     }
     if (decision.restoreSellerPosition !== null) {
@@ -1745,6 +1762,7 @@ export default function SellerCallWorkspace() {
          as already-written means an operator who blurs without editing
          it issues no redundant PUT. */
       lastWrittenCurrentOfferRef.current = Number(decision.restoreCurrentOffer);
+      setConfirmedCurrentOffer(Number(decision.restoreCurrentOffer));
     }
     /* B8-11 / INV-54 -- restoring the durable override record. Whether it
        still APPLIES to the (also just-restored) Current Offer is

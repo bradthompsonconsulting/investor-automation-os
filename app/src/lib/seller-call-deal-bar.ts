@@ -77,11 +77,26 @@ const CURRENT_OFFER_WAITING = "None recorded";
  * be supported: the note says whether current underwriting supports a
  * figure at all (Max Supported Offer) and, when it does, states that Max
  * beside it so the operator can compare. Display only.
+ *
+ * PR #126 re-review (Bones / Jess, 2026-10-05): "Recorded in GHL" applies
+ * ONLY to the amount confirmed saved (restored from the GHL carrier, or a
+ * save GHL read back). A typed amount not yet saved is a draft; a save in
+ * flight says so; a refused or unconfirmed save says it was not saved.
  */
-export function currentOfferNote(board8: Board8Economics | null): string {
-  return board8 && board8.status === "calculated"
-    ? `Recorded in GHL · supported Max ${money(board8.maxSupportedOffer)}`
-    : "Recorded in GHL · not supported — ARV, repairs or deal economics not established";
+export type CurrentOfferStatus = "recorded" | "draft" | "saving" | "failed";
+
+export const CURRENT_OFFER_STATUS_TEXT: Record<CurrentOfferStatus, string> = {
+  recorded: "Recorded in GHL",
+  draft: "Draft — not saved yet (saves when you leave the field)",
+  saving: "Saving to GHL…",
+  failed: "Not saved — the save was refused or could not be confirmed",
+};
+
+export function currentOfferNote(board8: Board8Economics | null, status: CurrentOfferStatus): string {
+  const support = board8 && board8.status === "calculated"
+    ? `supported Max ${money(board8.maxSupportedOffer)}`
+    : "not supported — ARV, repairs or deal economics not established";
+  return `${CURRENT_OFFER_STATUS_TEXT[status]} · ${support}`;
 }
 
 function money(n: number): string {
@@ -109,6 +124,10 @@ export type DealBarInput = {
    *  recorded -- IAOS invents no opening offer. (Board 15: the old "never a GHL
    *  carrier" note predated the carrier.) */
   currentOffer: number | null;
+  /** PR #126 re-review: whether `currentOffer` is the amount confirmed saved
+   *  in GHL ("recorded"), an unsaved draft, a save in flight, or a failed
+   *  save. Required, so no caller can fall back to "Recorded in GHL". */
+  currentOfferStatus: CurrentOfferStatus;
   /** B8-03's own output. Null only before an opportunity is selected. */
   board8: Board8Economics | null;
   /** B8-03's own output, computed with referenceKind "current_offer". Null only before an opportunity is selected. */
@@ -156,7 +175,7 @@ export function buildDealBarCells(input: DealBarInput): DealBarCell[] {
     (() => {
       const cell = factCell("current_offer", "Current Offer", input.currentOffer, CURRENT_OFFER_WAITING);
       return cell.value.kind === "value"
-        ? { ...cell, value: { ...cell.value, note: currentOfferNote(input.board8) } }
+        ? { ...cell, value: { ...cell.value, note: currentOfferNote(input.board8, input.currentOfferStatus) } }
         : cell;
     })(),
     { key: "target", label: "Target", value: target },

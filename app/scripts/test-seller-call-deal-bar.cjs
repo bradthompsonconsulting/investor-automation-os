@@ -61,7 +61,7 @@ const { computeBoard8Economics, computeExpectedSpread } = require(board8Path);
 const { buildDealBarCells, DEAL_BAR_LABELS } = require(dealBarPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 37; // 34 + 3 (Board 15 / Pass 1 F31)
+const FLOOR = 40; // 34 + 3 (Board 15 / Pass 1 F31) + 3 (PR 126 re-review)
 let failures = 0;
 let checks = 0;
 
@@ -149,13 +149,18 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
 
   /* Board 15 / Pass 1 F31 (Jess 2026-10-04): a recorded Current Offer is shown and labelled -- never erased,
      never implied supported. 3 checks. */
-  const recordedUnsupported = buildDealBarCells({ arv: null, repairs: null, sellerPosition: null, currentOffer: 918273, board8: null, expectedSpread: null })
+  const recordedUnsupported = buildDealBarCells({ arv: null, repairs: null, sellerPosition: null, currentOffer: 918273, currentOfferStatus: 'recorded', board8: null, expectedSpread: null })
     .find((c) => c.key === 'current_offer');
   check('F31 a recorded offer is shown even with no economics', [recordedUnsupported.value.kind, recordedUnsupported.value.text], ['value', '$918,273']);
   check('F31 and says it is not supported', recordedUnsupported.value.note, 'Recorded in GHL · not supported — ARV, repairs or deal economics not established');
-  const recordedSupported = buildDealBarCells({ arv: 315000, repairs: 41000, sellerPosition: null, currentOffer: 150000, board8: GOLDEN_ECONOMICS, expectedSpread: null })
+  const recordedSupported = buildDealBarCells({ arv: 315000, repairs: 41000, sellerPosition: null, currentOffer: 150000, currentOfferStatus: 'recorded', board8: GOLDEN_ECONOMICS, expectedSpread: null })
     .find((c) => c.key === 'current_offer');
   check('F31 with economics, the note states the supported Max beside it', /^Recorded in GHL · supported Max \$[\d,]+$/.test(recordedSupported.value.note), true);
+  /* PR #126 re-review (Bones / Jess 2026-10-05): "Recorded in GHL" only for the confirmed amount. 3 checks. */
+  const noteFor = (status) => buildDealBarCells({ arv: null, repairs: null, sellerPosition: null, currentOffer: 250000, currentOfferStatus: status, board8: null, expectedSpread: null }).find((c) => c.key === 'current_offer').value.note;
+  check('PR126 a typed, unsaved amount is a draft, not recorded', noteFor('draft').indexOf('Draft — not saved yet') === 0 && !/Recorded in GHL/.test(noteFor('draft')), true);
+  check('PR126 a save in flight says so, not recorded', noteFor('saving').indexOf('Saving to GHL…') === 0, true);
+  check('PR126 a refused save says it was not saved', noteFor('failed').indexOf('Not saved — the save was refused or could not be confirmed') === 0, true);
 
   const entered = buildDealBarCells({
     arv: 315000, repairs: 41000, sellerPosition: 210000, currentOffer: 150000, board8: GOLDEN_ECONOMICS,
