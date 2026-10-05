@@ -4,6 +4,7 @@ import {
   MessageSquare, Mail, ArrowDownLeft, ArrowUpRight, Loader2, ExternalLink, FileText, Phone,
 } from "lucide-react";
 import { ghl, ghlContactDetailUrl, type ThreadRow, type ConvMessageRow } from "../lib/ghl";
+import { NO_MESSAGE_TEXT } from "../lib/operator-display";
 
 /**
  * Conversations — READ-ONLY inbox (Coverage Roadmap surface #3). Two-pane:
@@ -323,7 +324,7 @@ export default function Conversations() {
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "3px" }}>
                       {inbound ? <ArrowDownLeft size={11} style={{ color: "#64748B", flexShrink: 0 }} /> : <ArrowUpRight size={11} style={{ color: "#1EC8FF", flexShrink: 0 }} />}
-                      <span style={{ fontSize: "12px", color: "#64748B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.preview || "(no preview)"}</span>
+                      <span style={{ fontSize: "12px", color: "#64748B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.preview || NO_MESSAGE_TEXT}</span>
                       {t.unreadCount > 0 && (
                         <span style={{ flexShrink: 0, marginLeft: "auto", fontSize: "10px", fontWeight: 700, color: "#07142E", background: "#1EC8FF", borderRadius: "999px", padding: "1px 6px" }}>{t.unreadCount}</span>
                       )}

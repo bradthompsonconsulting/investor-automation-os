@@ -20,3 +20,12 @@ export function displayContactName(name: string | null | undefined): string {
   if (!trimmed || trimmed === "(no name)" || looksLikePhone(trimmed)) return UNNAMED_CONTACT;
   return trimmed;
 }
+
+// ── Empty conversation preview (Pass 1 F51) ─────────────────────────────────
+// The preview is GHL's lastMessageBody. A call log arrives with an empty body
+// (docs/CONVERSATIONS_SPEC.md §8.6, OBSERVED 2026-07-20); other empty-body
+// events are possible but unrecorded. The conversation search response's
+// message-type field is not
+// recorded anywhere in this repository, so no type is guessed: an empty
+// preview gets one neutral label instead of "(no preview)".
+export const NO_MESSAGE_TEXT = "No message text (call or activity)";

@@ -16,7 +16,7 @@ import { callLogPlacement, type CallLogPlacement } from "../lib/call-log-queue";
 import { isCallSuppressed } from "../lib/dnc";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
-import { displayContactName } from "../lib/operator-display";
+import { displayContactName, NO_MESSAGE_TEXT } from "../lib/operator-display";
 import { readCurrentOfferFromOpportunity } from "../lib/current-offer-carrier";
 
 /**
@@ -989,7 +989,7 @@ export default function Dashboard() {
                     {formatPhone(r.phone) || r.email || "—"}
                   </span>
                   <span style={{ fontSize: "12px", color: "#94A3B8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-                    {r.preview || <em style={{ color: "#334155" }}>(no preview)</em>}
+                    {r.preview || <em style={{ color: "#334155" }}>{NO_MESSAGE_TEXT}</em>}
                   </span>
                   <span style={{
                     marginLeft: "auto", fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
