@@ -622,7 +622,7 @@ async function main() {
 
     // 22 — storage failures block and send nothing.
     await fresh({}, A);
-    bf.failStorageOnce((op, key) => op === 'get' && key.startsWith('current-offer/barrier/'));
+    bf.failStorageOnce((op, key) => op === 'getWithMetadata' && key.startsWith('current-offer/head/'));
     await reloadOn(page, A);
     await until(async () => unresolvedShown(), 'status unreadable').catch(() => {});
     check('22 an unreadable status blocks: locked, "could not check", nothing sent', (await unresolvedShown()) && /could not check/.test(await bodyText()) && (await input().isEditable()) === false && writes().length === 0);

@@ -1,38 +1,42 @@
 /**
- * Board 15 / PR #126 stacked server PR (Jess architecture ruling, 2026-10-05)
- * -- the DURABLE Current Offer barrier.
+ * Board 15 / PR #126 stacked server PR -- the DURABLE Current Offer barrier.
  *
  * Why: the browser-side save coordinator (src/lib/current-offer-save-
  * coordinator.ts) blocks an unresolved deal only while one tab stays loaded.
  * A reload, another browser or another operator could submit again while an
  * earlier request may still land. This module keeps that state in durable
- * server records, scoped to environment + location + opportunity, and lets
- * every session see and respect it.
+ * server records, scoped to environment + location + opportunity, that every
+ * session sees and respects.
  *
- * Records (store "iaos-write-receipts", own prefix `current-offer/`, own
- * semantics -- shares nothing with the Under Contract stage marker beyond the
- * store, `digest` and the contact lock; digest-only apart from timestamps):
+ * Bones / Jess, 2026-10-05 (second review): storage reads in Lambda-
+ * compatibility functions may be STALE, and the Blobs API has no conditional
+ * delete. So nothing here is ever deleted, and the one mutable record changes
+ * only by compare-and-swap:
  *
- *   barrier/   ONE per opportunity, claimed atomically (onlyIfNew) by
- *              `begin` before the browser sends anything. Lists the request
- *              digests of the steps it owns: blur -> [offer]; Confirm Accept
- *              -> [offer, note, touch]. While it exists every other `begin`,
- *              from any browser, operator or reload, is refused.
- *   request/   one per request id: which opportunity, barrier and step it
- *              belongs to. Lets `ghl-write` recognise a barrier-owned request
- *              (the note and last-touch target the contact, not the deal).
- *   decision/  one per request: "send" or "withdrawn", claimed atomically
- *              (onlyIfNew) -- exactly one can ever exist. `ghl-write` claims
- *              "send" INSIDE the write boundary immediately before the GHL
- *              call (`claimDispatch`); `reconcile` claims "withdrawn". A
- *              request whose decision is "withdrawn" can never be sent: a late
- *              handler loses the claim and sends nothing.
- *   outcome/   one per request, written by the handler that owns "send":
- *              confirmed (GHL answered and the readback verified),
- *              not_dispatched (the owner never reached the GHL call), or
- *              uncertain. Absent if the function died.
+ *   head/      ONE per opportunity: { current: barrierId | null }. Changed
+ *              ONLY by a conditional write -- `onlyIfNew` when absent,
+ *              `onlyIfMatch: <etag>` otherwise. A decision based on a stale
+ *              read carries a stale etag, so its write fails and it re-reads:
+ *              stale evidence can never clear or replace a newer barrier.
+ *   barrier/   ONE per barrier id, write-once: purpose and the request digests
+ *              of the steps it owns (blur -> [offer]; Confirm Accept ->
+ *              [offer, note, touch]; the Accept timestamp recovery -> [touch]).
+ *   request/   ONE per request id, write-once: its opportunity, contact, step
+ *              and barrier.
+ *   decision/  ONE per request, write-once ("send" | "withdrawn", onlyIfNew).
+ *              `ghl-write` claims "send" INSIDE the write boundary immediately
+ *              before the GHL call; reconcile claims "withdrawn". A withdrawn
+ *              request can never be sent -- a late handler loses the claim.
+ *   outcome/   ONE per request, write-once: confirmed | not_dispatched |
+ *              uncertain, written only by the handler that owns "send".
  *
- * Clearing (`releaseIfSettled`, `reconcile`) needs EVIDENCE for every step:
+ * Every record is write-once except `head`, so a stale read of any of them can
+ * only be MISSING data (never wrong data): a missing decision makes the
+ * withdraw claim fail and re-read; a missing outcome reads as unresolved and
+ * keeps the barrier. "Clear" is reported only after a conditional write
+ * succeeded against the latest head -- never from a read alone.
+ *
+ * Clearing needs EVIDENCE for every step of the current barrier:
  *   withdrawn       never sent, and now never can be;
  *   confirmed       GHL answered and the server readback verified it;
  *   not_dispatched  the owning handler recorded that it never called GHL.
@@ -40,23 +44,22 @@
  * by GHL -- HighLevel documents no idempotency key, cancellation or request
  * status for these endpoints -- so it is NEVER cleared here: not by a fresh
  * read, not by elapsed time, not by an operator. Only the reviewed procedure
- * (docs/CURRENT_OFFER_RECOVERY_PROCEDURE.md) may resolve it, and it may
- * conclude that it cannot yet be cleared.
+ * (docs/CURRENT_OFFER_RECOVERY_PROCEDURE.md) may resolve it.
  *
- * Every mutation that can DELETE a barrier runs under the existing contact
- * lock (callers hold it), and `begin` takes the same lock, so a delete can
- * never remove a newer barrier. Storage failures throw; callers treat any
- * failure as "not cleared, nothing sent".
+ * The existing contact lock still serializes begin / reconcile / owned writes
+ * per contact, but safety does not depend on it: the conditional head write
+ * does. Storage failures throw; callers treat any failure as "not cleared,
+ * nothing sent".
  */
 import { digest } from "./ghl-write-boundary";
 
 export interface BarrierStore {
   get(key: string, options?: { type: "json"; consistency?: "strong" | "eventual" }): Promise<any>;
-  setJSON(key: string, value: unknown, options?: { onlyIfNew?: boolean }): Promise<{ modified: boolean }>;
-  delete(key: string): Promise<void>;
+  getWithMetadata(key: string, options?: { type: "json"; consistency?: "strong" | "eventual" }): Promise<{ data: any; etag?: string } | null>;
+  setJSON(key: string, value: unknown, options?: { onlyIfNew?: boolean; onlyIfMatch?: string }): Promise<{ modified: boolean; etag?: string }>;
 }
 
-export type BarrierPurpose = "blur" | "accept";
+export type BarrierPurpose = "blur" | "accept" | "touch";
 export type BarrierStep = "offer" | "note" | "touch";
 export const STEP_OPERATION: Record<BarrierStep, string> = {
   offer: "opportunity.currentOffer",
@@ -66,6 +69,8 @@ export const STEP_OPERATION: Record<BarrierStep, string> = {
 export const PURPOSE_STEPS: Record<BarrierPurpose, BarrierStep[]> = {
   blur: ["offer"],
   accept: ["offer", "note", "touch"],
+  /** Confirm Accept's "Check & retry call timestamp": a last-touch request only. */
+  touch: ["touch"],
 };
 export const STEP_LABEL: Record<BarrierStep, string> = {
   offer: "Current Offer save",
@@ -81,18 +86,26 @@ export type BarrierState =
 const PREFIX = "current-offer/";
 /** Scope = deployment environment + GHL location. Every key includes it. */
 export function barrierScope(env: string, locationId: string): string { return `${env}:${locationId}`; }
-const barrierKey = (scope: string, opp: string) => `${PREFIX}barrier/${digest(`${scope}:${opp}`)}`;
+const headKey = (scope: string, opp: string) => `${PREFIX}head/${digest(`${scope}:${opp}`)}`;
+const barrierKey = (scope: string, opp: string, barrierId: string) => `${PREFIX}barrier/${digest(`${scope}:${opp}:${barrierId}`)}`;
 const requestKey = (scope: string, requestId: string) => `${PREFIX}request/${digest(`${scope}:${requestId}`)}`;
 const decisionKey = (scope: string, opp: string, requestDigest: string) => `${PREFIX}decision/${digest(`${scope}:${opp}:${requestDigest}`)}`;
 const outcomeKey = (scope: string, opp: string, requestDigest: string) => `${PREFIX}outcome/${digest(`${scope}:${opp}:${requestDigest}`)}`;
 
-type BarrierRecord = { v: 1; oppDigest: string; contactDigest: string; purpose: BarrierPurpose; barrierId: string; steps: { step: BarrierStep; requestDigest: string }[]; createdAt: string };
-type RequestRecord = { v: 1; opp: string; contactId: string; step: BarrierStep; barrierId: string };
+type HeadRecord = { v: 2; current: string | null; at: string };
+type BarrierRecord = { v: 2; oppDigest: string; contactDigest: string; purpose: BarrierPurpose; barrierId: string; steps: { step: BarrierStep; requestDigest: string }[]; createdAt: string };
+type RequestRecord = { v: 2; opp: string; contactId: string; step: BarrierStep; barrierId: string };
 
 /** The owning handler never reached the GHL call (or lost the claim). Proof nothing was sent by this request. */
 export class NotSent extends Error { constructor(message: string, readonly refusal?: unknown) { super(message); } }
+/** The request id is not barrier-owned. */
+export class NotOwned extends Error {}
 /** `begin` refused: this deal already has a barrier. */
 export class BarrierHeld extends Error { constructor(readonly status: BarrierState) { super("This Current Offer has an unresolved save."); } }
+/** The latest head could not be confirmed after retries (persistently stale or contended). Nothing changed. */
+export class BarrierContended extends Error {}
+
+const CAS_ATTEMPTS = 4;
 
 async function readJson(store: BarrierStore, key: string): Promise<any> {
   try { return await store.get(key, { type: "json", consistency: "strong" }); }
@@ -102,9 +115,25 @@ async function readJson(store: BarrierStore, key: string): Promise<any> {
     return store.get(key, { type: "json" });
   }
 }
+async function readHead(store: BarrierStore, scope: string, opp: string): Promise<{ head: HeadRecord | null; etag: string | null }> {
+  let got: { data: any; etag?: string } | null;
+  try { got = await store.getWithMetadata(headKey(scope, opp), { type: "json", consistency: "strong" }); }
+  catch (e: any) {
+    if (e?.name !== "BlobsConsistencyError") throw e;
+    got = await store.getWithMetadata(headKey(scope, opp), { type: "json" });
+  }
+  if (!got) return { head: null, etag: null };
+  if (!got.etag) throw new Error("Head read without an etag; cannot change it safely");
+  return { head: got.data as HeadRecord, etag: got.etag };
+}
+/** The ONLY way the head changes: a conditional write against the etag that was read. */
+async function casHead(store: BarrierStore, scope: string, opp: string, etag: string | null, next: HeadRecord): Promise<boolean> {
+  const r = await store.setJSON(headKey(scope, opp), next, etag === null ? { onlyIfNew: true } : { onlyIfMatch: etag });
+  return r.modified;
+}
 
 export function validateSteps(purpose: unknown, steps: unknown): { purpose: BarrierPurpose; steps: { step: BarrierStep; requestId: string }[] } {
-  if (purpose !== "blur" && purpose !== "accept") throw new Error("Invalid purpose");
+  if (purpose !== "blur" && purpose !== "accept" && purpose !== "touch") throw new Error("Invalid purpose");
   const expected = PURPOSE_STEPS[purpose];
   if (!Array.isArray(steps) || steps.length !== expected.length) throw new Error("Invalid steps");
   const out = steps.map((s: any, i: number) => {
@@ -117,38 +146,12 @@ export function validateSteps(purpose: unknown, steps: unknown): { purpose: Barr
   return { purpose, steps: out };
 }
 
-/**
- * Claims the deal's barrier before anything is sent. Caller holds the contact
- * lock and has verified (by a fresh GHL read) that `contactId` owns `opp`.
- * Idempotent for the SAME first request id (a retried `begin` whose response
- * was lost). Refuses with BarrierHeld when another barrier exists.
- */
-export async function beginBarrier(store: BarrierStore, scope: string, input: { opp: string; contactId: string; purpose: BarrierPurpose; steps: { step: BarrierStep; requestId: string }[] }, now: string): Promise<void> {
-  const barrierId = digest(input.steps[0].requestId);
-  const record: BarrierRecord = {
-    v: 1, oppDigest: digest(input.opp), contactDigest: digest(input.contactId), purpose: input.purpose, barrierId,
-    steps: input.steps.map((s) => ({ step: s.step, requestDigest: digest(s.requestId) })), createdAt: now,
-  };
-  const claimed = await store.setJSON(barrierKey(scope, input.opp), record, { onlyIfNew: true });
-  if (!claimed.modified) {
-    const existing = await readJson(store, barrierKey(scope, input.opp)) as BarrierRecord | null;
-    if (!existing || existing.barrierId !== barrierId) throw new BarrierHeld(await statusOf(store, scope, input.opp));
-  }
-  for (const s of input.steps) {
-    const reg: RequestRecord = { v: 1, opp: input.opp, contactId: input.contactId, step: s.step, barrierId };
-    const r = await store.setJSON(requestKey(scope, s.requestId), reg, { onlyIfNew: true });
-    if (!r.modified) {
-      const existing = await readJson(store, requestKey(scope, s.requestId)) as RequestRecord | null;
-      if (!existing || existing.barrierId !== barrierId || existing.opp !== input.opp || existing.step !== s.step) throw new Error("Request id already used");
-    }
-  }
-}
-
 async function stepEvidence(store: BarrierStore, scope: string, opp: string, requestDigest: string, withdrawPending: boolean): Promise<StepEvidence> {
   let decision = await readJson(store, decisionKey(scope, opp, requestDigest)) as { d: "send" | "withdrawn" } | null;
   if (!decision && withdrawPending) {
     const w = await store.setJSON(decisionKey(scope, opp, requestDigest), { d: "withdrawn", at: new Date().toISOString() }, { onlyIfNew: true });
     decision = w.modified ? { d: "withdrawn" } : await readJson(store, decisionKey(scope, opp, requestDigest));
+    // A lost claim proves a decision exists; a read that cannot see it yet is stale.
     if (!decision) throw new Error("Decision unreadable after a lost claim");
   }
   if (!decision) return "pending";
@@ -161,46 +164,98 @@ async function stepEvidence(store: BarrierStore, scope: string, opp: string, req
 
 const SETTLED: StepEvidence[] = ["withdrawn", "confirmed", "not_dispatched"];
 
-async function evaluate(store: BarrierStore, scope: string, opp: string, withdrawPending: boolean): Promise<BarrierState> {
-  const barrier = await readJson(store, barrierKey(scope, opp)) as BarrierRecord | null;
-  if (!barrier) return { state: "clear" };
+async function evaluateBarrier(store: BarrierStore, scope: string, opp: string, barrierId: string, withdrawPending: boolean): Promise<BarrierState & { state: "blocked" }> {
+  const barrier = await readJson(store, barrierKey(scope, opp, barrierId)) as BarrierRecord | null;
+  // The head names it, and barrier records are written before the head: a
+  // missing record is a stale read. Fail closed.
+  if (!barrier) throw new Error("Barrier record unreadable");
   const steps: { step: BarrierStep; evidence: StepEvidence }[] = [];
   for (const s of barrier.steps) steps.push({ step: s.step, evidence: await stepEvidence(store, scope, opp, s.requestDigest, withdrawPending) });
   return { state: "blocked", purpose: barrier.purpose, createdAt: barrier.createdAt, steps };
 }
-
-/** Read-only status for any session (never claims, never clears). */
-export async function statusOf(store: BarrierStore, scope: string, opp: string): Promise<BarrierState> {
-  return evaluate(store, scope, opp, false);
-}
+const settled = (s: { steps: { evidence: StepEvidence }[] }) => s.steps.every((x) => SETTLED.includes(x.evidence));
 
 /**
- * Clears the barrier only when EVERY step has evidence (withdrawn, confirmed,
- * not_dispatched). Caller holds the contact lock. Never withdraws.
+ * Claims the deal before anything is sent. The caller has verified (by a fresh
+ * GHL read) that `contactId` owns `opp`. Idempotent for the SAME first request
+ * id (a retried `begin` whose response was lost). Refuses with BarrierHeld when
+ * another barrier is current.
  */
-export async function releaseIfSettled(store: BarrierStore, scope: string, opp: string): Promise<BarrierState> {
-  const s = await evaluate(store, scope, opp, false);
-  if (s.state === "blocked" && s.steps.every((x) => SETTLED.includes(x.evidence))) {
-    await store.delete(barrierKey(scope, opp));
-    return { state: "clear" };
+export async function beginBarrier(store: BarrierStore, scope: string, input: { opp: string; contactId: string; purpose: BarrierPurpose; steps: { step: BarrierStep; requestId: string }[] }, now: string): Promise<void> {
+  const barrierId = digest(input.steps[0].requestId);
+  const record: BarrierRecord = {
+    v: 2, oppDigest: digest(input.opp), contactDigest: digest(input.contactId), purpose: input.purpose, barrierId,
+    steps: input.steps.map((s) => ({ step: s.step, requestDigest: digest(s.requestId) })), createdAt: now,
+  };
+  // Write-once records first, so the head never names a missing barrier.
+  const b = await store.setJSON(barrierKey(scope, input.opp, barrierId), record, { onlyIfNew: true });
+  if (!b.modified) {
+    const existing = await readJson(store, barrierKey(scope, input.opp, barrierId)) as BarrierRecord | null;
+    if (existing && existing.barrierId !== barrierId) throw new Error("Barrier id collision");
   }
-  return s;
+  for (const s of input.steps) {
+    const reg: RequestRecord = { v: 2, opp: input.opp, contactId: input.contactId, step: s.step, barrierId };
+    const r = await store.setJSON(requestKey(scope, s.requestId), reg, { onlyIfNew: true });
+    if (!r.modified) {
+      const existing = await readJson(store, requestKey(scope, s.requestId)) as RequestRecord | null;
+      if (!existing || existing.barrierId !== barrierId || existing.opp !== input.opp || existing.step !== s.step) throw new Error("Request id already used");
+    }
+  }
+  for (let i = 0; i < CAS_ATTEMPTS; i++) {
+    const { head, etag } = await readHead(store, scope, input.opp);
+    if (head && head.current === barrierId) return;                       // a retried begin
+    if (head && head.current !== null) throw new BarrierHeld(await evaluateBarrier(store, scope, input.opp, head.current, false));
+    if (await casHead(store, scope, input.opp, etag, { v: 2, current: barrierId, at: now })) return;
+    // Lost the swap: the head changed (or our read was stale). Re-read.
+  }
+  throw new BarrierContended("The Current Offer reservation could not be confirmed");
+}
+
+/** Read-only status for any session (never claims, never clears). May lag; it only ever adds a block. */
+export async function statusOf(store: BarrierStore, scope: string, opp: string): Promise<BarrierState> {
+  const { head } = await readHead(store, scope, opp);
+  if (!head || head.current === null) return { state: "clear" };
+  return evaluateBarrier(store, scope, opp, head.current, false);
 }
 
 /**
- * Evidence-based recovery. Caller holds the contact lock. Withdraws every step
- * that has no decision yet (atomically -- such a request can then never be
- * sent), then clears only if every step is settled. A step that was sent and
- * is unresolved keeps the barrier; nothing here (no read of GHL, no elapsed
- * time, no operator) can clear it.
+ * Called by the handler that just settled a step of `barrierId`: releases the
+ * head only if it still names THAT barrier and every step has evidence -- by a
+ * conditional write, so a stale view can never release a newer barrier.
+ * Never withdraws.
+ */
+export async function releaseIfSettled(store: BarrierStore, scope: string, opp: string, barrierId: string): Promise<void> {
+  const { head, etag } = await readHead(store, scope, opp);
+  if (!head || head.current !== barrierId || etag === null) return;
+  const s = await evaluateBarrier(store, scope, opp, barrierId, false);
+  if (settled(s)) await casHead(store, scope, opp, etag, { v: 2, current: null, at: new Date().toISOString() });
+  // A lost swap means the head moved; nothing else is touched. Reconcile reads it again.
+}
+
+/**
+ * Evidence-based recovery ("Check again"). Withdraws every step of the CURRENT
+ * barrier that has no decision yet (atomically -- such a request can then never
+ * be sent), and releases the head only if every step is settled. "Clear" is
+ * returned only after a conditional write succeeded against the latest head:
+ * a stale read can never report clear, and can never release a newer barrier.
+ * A step that was sent and is unresolved keeps the barrier -- nothing here (no
+ * read of GHL, no elapsed time, no operator) can clear it.
  */
 export async function reconcileBarrier(store: BarrierStore, scope: string, opp: string): Promise<BarrierState> {
-  const s = await evaluate(store, scope, opp, true);
-  if (s.state === "blocked" && s.steps.every((x) => SETTLED.includes(x.evidence))) {
-    await store.delete(barrierKey(scope, opp));
-    return { state: "clear" };
+  for (let i = 0; i < CAS_ATTEMPTS; i++) {
+    const { head, etag } = await readHead(store, scope, opp);
+    const now = new Date().toISOString();
+    if (!head || head.current === null) {
+      // Confirm "no barrier" by writing the empty head against what we read.
+      if (await casHead(store, scope, opp, etag, { v: 2, current: null, at: now })) return { state: "clear" };
+      continue;
+    }
+    const s = await evaluateBarrier(store, scope, opp, head.current, true);
+    if (!settled(s)) return s;
+    if (await casHead(store, scope, opp, etag, { v: 2, current: null, at: now })) return { state: "clear" };
+    // The head moved since we read it (or the read was stale): evaluate again.
   }
-  return s;
+  throw new BarrierContended("The Current Offer barrier could not be confirmed");
 }
 
 /**
@@ -209,7 +264,7 @@ export async function reconcileBarrier(store: BarrierStore, scope: string, opp: 
  * `hooks.beforeDispatch()` immediately before the GHL call and set
  * `hooks.state.dispatched = true` right after it returns, BEFORE the GHL call.
  *
- * Returns `null` when `requestId` is not barrier-owned (the caller proceeds
+ * Throws NotOwned when `requestId` is not barrier-owned (the caller proceeds
  * exactly as before). Throws NotSent when this request provably sent nothing
  * (the caller answers `outcome: "not_sent"`); re-throws the body's error
  * after recording `uncertain` when the GHL call may have been made.
@@ -225,10 +280,9 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
   if (STEP_OPERATION[reg.step] !== request.operation) throw new NotSent("Request is reserved for a different step");
   const target = reg.step === "offer" ? reg.opp : reg.contactId;
   if (request.targetId !== target || request.contactId !== reg.contactId) throw new NotSent("Request is reserved for a different target");
-  const barrier = await readJson(store, barrierKey(scope, reg.opp)) as BarrierRecord | null;
-  if (!barrier || barrier.barrierId !== reg.barrierId || !barrier.steps.some((s) => s.requestDigest === requestDigest && s.step === reg.step)) {
-    throw new NotSent("The reservation for this save is no longer current");
-  }
+  // Advisory only (the read may lag): the atomic send claim below is the guard.
+  const { head } = await readHead(store, scope, reg.opp);
+  if (!head || head.current !== reg.barrierId) throw new NotSent("The reservation for this save is not current");
   const state = { dispatched: false, claimed: false };
   const hooks = {
     state,
@@ -249,7 +303,7 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
       try {
         if (state.claimed) await store.setJSON(outcomeKey(scope, reg.opp, requestDigest), { kind: "not_dispatched", at: new Date().toISOString() }, { onlyIfNew: true });
         else await store.setJSON(decisionKey(scope, reg.opp, requestDigest), { d: "withdrawn", at: new Date().toISOString() }, { onlyIfNew: true });
-        await releaseIfSettled(store, scope, reg.opp);
+        await releaseIfSettled(store, scope, reg.opp, reg.barrierId);
       } catch { /* the barrier stays; still nothing was sent */ }
       throw new NotSent(error instanceof Error ? error.message : "Not sent", error instanceof NotSent && error.refusal !== undefined ? error.refusal : error);
     }
@@ -258,12 +312,10 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
   }
   try {
     await store.setJSON(outcomeKey(scope, reg.opp, requestDigest), { kind: result.confirmed ? "confirmed" : "uncertain", at: new Date().toISOString() }, { onlyIfNew: true });
-    if (result.confirmed) await releaseIfSettled(store, scope, reg.opp);
+    if (result.confirmed) await releaseIfSettled(store, scope, reg.opp, reg.barrierId);
   } catch { /* the barrier stays: a later reconcile reads the evidence */ }
   return result;
 }
-/** The request id is not barrier-owned. */
-export class NotOwned extends Error {}
 
 /** Whether a request id is barrier-owned (no side effects). */
 export async function isBarrierOwned(store: BarrierStore, scope: string, requestId: string): Promise<boolean> {

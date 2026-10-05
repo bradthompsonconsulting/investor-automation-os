@@ -69,7 +69,8 @@ function client(behaviour = {}) {
     const c = client({ note: 'throw' });
     const r = await lib.runConfirmAcceptWrites(c, ARGS);
     assert.equal(r.stage, 'note_failed'); assert.equal(r.acceptanceRecorded, 'unknown');
-    assert.ok(/may or may not have been recorded/.test(r.message) && /Reload/.test(r.message));
+    // Brad / Bones 2026-10-05: never "reload and check"; the durable barrier decides.
+    assert.ok(/may or may not have been recorded/.test(r.message) && !/[Rr]eload/.test(r.message) && /until IAOS can prove what happened/.test(r.message));
     assert.deepEqual(c.calls.map((x) => x[0]), ['offer', 'note']);
   });
   await check('timestamp fails AFTER the note -> acceptance reported RECORDED, only the timestamp outstanding, never "record again"', async () => {

@@ -19,12 +19,20 @@ const lib = require(path.resolve(__dirname, '../../netlify/functions/lib/current
 
 function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-location' }) {
   const records = new Map();
+  const etags = new Map();
+  let etagSeq = 0;
   let failNext = [];
   const maybeFail = (op, key) => { const i = failNext.findIndex((f) => f(op, key)); if (i >= 0) { failNext.splice(i, 1); throw new Error('fixture: storage failure'); } };
   const store = {
     async get(key) { maybeFail('get', key); return records.has(key) ? structuredClone(records.get(key)) : null; },
-    async setJSON(key, value, options) { maybeFail('setJSON', key); if (options?.onlyIfNew && records.has(key)) return { modified: false }; records.set(key, structuredClone(value)); return { modified: true }; },
-    async delete(key) { maybeFail('delete', key); records.delete(key); },
+    async getWithMetadata(key) { maybeFail('getWithMetadata', key); return records.has(key) ? { data: structuredClone(records.get(key)), etag: etags.get(key) } : null; },
+    async setJSON(key, value, options) {
+      maybeFail('setJSON', key);
+      if (options?.onlyIfNew && records.has(key)) return { modified: false };
+      if (options?.onlyIfMatch !== undefined && etags.get(key) !== options.onlyIfMatch) return { modified: false };
+      records.set(key, structuredClone(value)); const etag = 'etag-' + (++etagSeq); etags.set(key, etag);
+      return { modified: true, etag };
+    },
   };
   const scope = lib.barrierScope(env, locationId);
   const locked = new Set();
@@ -63,9 +71,10 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
    *   apply()          performs the write in the fixture's GHL and returns { confirmed }.
    *   refuse           a pre-send refusal { status, error } (the server's gate).
    *   failAfterSend    the GHL call is made, then fails (the response is lost).
+ *   sentNotApplied   the GHL call leaves but is not applied yet (it may land later).
    * Returns { status, body } exactly as ghl-write would.
    */
-  async function write({ operation, targetId, requestId, contactId }, apply, { refuse = null, failAfterSend = false, beforeLockRelease = null } = {}) {
+  async function write({ operation, targetId, requestId, contactId }, apply, { refuse = null, failAfterSend = false, sentNotApplied = false, beforeLockRelease = null } = {}) {
     let owned;
     try { owned = await lib.isBarrierOwned(store, scope, requestId); }
     catch {
@@ -85,6 +94,8 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
         if (refuse) { const e = new Error(refuse.error); e.refusal = refuse; throw e; }
         await hooks.beforeDispatch();
         hooks.state.dispatched = true;
+        // The GHL call left but has not been applied yet (it may land later).
+        if (sentNotApplied) throw new Error('fixture: sent, response lost, not applied yet');
         const r = await apply();
         if (failAfterSend) throw new Error('fixture: response lost after the GHL call');
         return { confirmed: r.confirmed };
@@ -104,7 +115,7 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
     handle, write, store, records,
     status: (opp) => lib.statusOf(store, scope, opp),
     failStorageOnce: (pred) => failNext.push(pred),
-    reset() { records.clear(); locked.clear(); failNext = []; },
+    reset() { records.clear(); etags.clear(); locked.clear(); failNext = []; },
   };
 }
 

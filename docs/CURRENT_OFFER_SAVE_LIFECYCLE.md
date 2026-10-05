@@ -10,8 +10,8 @@ Board 15 / PR #126 plus its stacked durable-barrier PR, reviewed as **one** repa
 | Coordinator (browser, one per loaded app) | `app/src/lib/current-offer-save-coordinator.ts` | Serializes saves per deal: one write and its readback at a time, a queue, coalescing, de-dupe. Owns the deal state (confirmed, failure, unresolved, accepting) and the labels. |
 | Barrier client | `app/src/lib/current-offer-barrier-client.ts` | `beginReservation`, `readReservationStatus`, `reconcileReservation`. |
 | Write client | `app/src/lib/ghl.ts`, `write-command.ts` | `setCurrentOffer`, `notes.create` and `setLastCallAttempt` carry the reserved request id. |
-| Server records | `app/netlify/functions/lib/current-offer-barrier.ts` | Per deal: a barrier. Per request: a registration, a decision (`send` or `withdrawn`, atomic) and an outcome. |
-| Server endpoints | `current-offer-barrier.ts` (begin, reconcile, status); `ghl-write.ts` (owned writes) | Every mutation that can delete a barrier runs under the contact lock. |
+| Server records | `app/netlify/functions/lib/current-offer-barrier.ts` | Per deal: one **head** naming the current barrier, changed **only by compare-and-swap** on its etag. Write-once barrier records. Per request: a registration, a decision (`send` or `withdrawn`, atomic) and an outcome. **Nothing is ever deleted.** |
+| Server endpoints | `current-offer-barrier.ts` (begin, reconcile, status); `ghl-write.ts` (owned writes) | The contact lock still serializes these, but safety rests on the conditional head write, not on the lock. |
 | Write boundary | `lib/ghl-write-boundary.ts` | Claims `send` immediately before the GHL call. |
 
 ## States
@@ -25,6 +25,16 @@ Board 15 / PR #126 plus its stacked durable-barrier PR, reviewed as **one** repa
 | Unresolved: in progress or interrupted | a barrier with steps that have no decision | "…in progress or was interrupted… use Check again" | **read-only** |
 | Unresolved: may still reach GHL | a barrier with a sent step whose outcome is uncertain or missing | "Unresolved — the <step> may still reach GHL…" | **read-only** |
 | Agreement Reached | released after the touch step is confirmed | Agreement Reached | frozen by the existing gate, and refused by the server |
+
+## Storage consistency (Bones / Jess, second review)
+
+Lambda-compatibility functions can't make strong reads, so any read may be **stale**. The Blobs API has **no conditional delete**. Therefore:
+
+- **Nothing is deleted.** Barrier, request, decision and outcome records are write-once (`onlyIfNew`).
+- **Only the per-deal head changes, and only by compare-and-swap:** `onlyIfNew` when it is absent, `onlyIfMatch: <etag>` otherwise.
+- **Stale evidence can't do damage.** A decision made on a stale read carries a stale etag, so its write fails and the code re-reads. A settled first barrier, seen through a stale head, can never clear or replace a newer barrier.
+- **Stale reads of write-once records** can only be *missing* data. A missing decision makes the withdraw claim fail and re-read; a missing outcome reads as unresolved.
+- **"Clear" is reported only after a successful conditional write** against the latest head, never from a read alone. A persistently stale head gives up after four attempts with a 503, and nothing changes.
 
 ## Blur save, step by step
 
@@ -57,6 +67,14 @@ Board 15 / PR #126 plus its stacked durable-barrier PR, reviewed as **one** repa
    - Otherwise the deal stays unresolved, with the server naming the step.
    - The accept module's partial-failure messages are unchanged. Nothing is called atomic.
 
+## Accept timestamp recovery ("Check & retry call timestamp")
+
+1. **Reconcile first.** While the original last-touch request (or any step of the deal's barrier) is unresolved, nothing new is sent: no reservation and no timestamp write. The reason is shown, naming the step.
+2. **Only when the server proves every step**, reserve a last-touch-only request (purpose `touch`). The recovery's write carries that new id.
+3. **Reconcile again.** An unproven write keeps the deal blocked.
+
+The recovery's own read-first logic (`recoverLastCallAttempt`) is unchanged. Its messages no longer invite a blind retry or a reload. The page's other note writes (evidence notes, Follow-Up / Pass outcomes) aren't Accept steps.
+
 ## Failure cases (Jess's list) and their tests
 
 Abbreviations:
@@ -77,6 +95,8 @@ Abbreviations:
 | Duplicate request | A second send of the same id sends nothing. | S "duplicate" |
 | **Partial Accept failures** | Offer refused, lost before the server, or lost after the GHL call; note refused, or lost after the call; last-touch lost. Each is reported by the existing messages, and the uncertain step is tracked and named. | A A2, A3a, A3b, A4a, A4b, A6; S Accept cases |
 | Storage failures | Begin, claim, outcome, status and reservation-read failures never send and never clear. | S storage cases; O 22 |
+| **Stale storage** | A stale head naming the settled first barrier can't clear or release the newer unresolved barrier. A stale empty head can't let a second barrier in or report clear. A persistently stale head answers 503 and changes nothing. | S "STALE FIRST BARRIER / NEWER UNRESOLVED BARRIER" (reconcile and release), "stale empty head", "persistently stale", "nothing deleted" |
+| **Timestamp recovery** | While the original last-touch is unresolved (sent, not yet applied), recovery sends nothing. When it is proven unsent, recovery reserves first, then sends exactly one write with a new reserved id. | A A6 (recovery refused twice), A6b (reserved recovery) |
 | Lock contention | Reconcile while a write holds the lock answers `in_progress` and changes nothing. | S "held lock" |
 | Contact isolation (unchanged) | A's late results never reach B. | I (87/87) |
 

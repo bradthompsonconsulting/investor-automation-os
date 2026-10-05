@@ -31,6 +31,8 @@ Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
 // every Blob and GHL call in order.
 const blob = { connections: 0, stores: 0, reads: 0, writes: 0 };
 const blobData = new Map();
+const blobEtags = new Map();
+let blobEtagSeq = 0;
 const events = [];
 Module._load = function (name, ...rest) {
   if (name === '@netlify/blobs') return {
@@ -40,14 +42,15 @@ Module._load = function (name, ...rest) {
       const k = (key) => `${storeName}:${key}`;
       return {
         async get(key) { blob.reads++; const v = blobData.get(k(key)); return v === undefined ? null : v; },
-        async getWithMetadata() { blob.reads++; return null; },
+        async getWithMetadata(key, options) { blob.reads++; if (options && options.type === 'json' && blobData.has(k(key))) return { data: blobData.get(k(key)), etag: blobEtags.get(k(key)) }; return null; },
         async getMetadata() { blob.reads++; return null; },
         async list() { blob.reads++; return { blobs: [], directories: [] }; },
         async set(key, value) { blob.writes++; events.push({ kind: 'blob.set', key }); blobData.set(k(key), value); },
         async setJSON(key, value, opts) {
           blob.writes++;
           if (opts && opts.onlyIfNew && blobData.has(k(key))) { events.push({ kind: 'blob.setJSON.exists', key }); return { modified: false }; }
-          events.push({ kind: 'blob.setJSON', key }); blobData.set(k(key), value); return { modified: true };
+          if (opts && opts.onlyIfMatch !== undefined && blobEtags.get(k(key)) !== opts.onlyIfMatch) { events.push({ kind: 'blob.setJSON.stale', key }); return { modified: false }; }
+          events.push({ kind: 'blob.setJSON', key }); blobData.set(k(key), value); const etag = 'etag-' + (++blobEtagSeq); blobEtags.set(k(key), etag); return { modified: true, etag };
         },
         async delete(key) { blob.writes++; events.push({ kind: 'blob.delete', key }); blobData.delete(k(key)); },
       };

@@ -18,7 +18,7 @@ import { readFetch } from "./read-session";
 
 const ENDPOINT = "/.netlify/functions/current-offer-barrier";
 
-export type BarrierPurpose = "blur" | "accept";
+export type BarrierPurpose = "blur" | "accept" | "touch";
 export type BarrierStep = "offer" | "note" | "touch";
 export type BarrierView =
   | { state: "clear" }

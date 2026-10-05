@@ -114,7 +114,7 @@ async function main() {
         const serverWrite = (opts) => bf.write({ operation: req.op, targetId: req.target, requestId: req.requestId, contactId: fx.CONTACT },
           () => { fx.applyWrite(req); return { confirmed: true }; }, opts);
         if (h && h.lose === 'late') { h.lateWrite = () => serverWrite({ refuse: fx.precheckWrite(req) ? { status: 409, error: 'refused' } : null }); return route.abort('failed'); }
-        const res = await serverWrite({ refuse, failAfterSend: !!(h && h.failAfterSend) });
+        const res = await serverWrite({ refuse, failAfterSend: !!(h && h.failAfterSend), sentNotApplied: !!(h && h.sentNotApplied) });
         return fulfill(res);
       }
       return fulfill(fx.answer(req));
@@ -279,15 +279,46 @@ async function main() {
     await until(async () => (await recorded().count()) > 0, 'recorded after reload').catch(() => {});
     check('A5 after a reload: Agreement Reached at the accepted price', (await recorded().count()) > 0 && fx.state.currentOffer === 400000 && (await input().inputValue()) === '400000');
 
-    // A6 — last-touch lost after the acceptance is recorded.
+    // A6 — last-touch sent after the acceptance is recorded, response lost, not applied yet.
     await fresh({ currentOffer: 400000 });
     await openAcceptForm();
-    h = hold((r) => r.kind === 'write' && r.op === 'contact.lastCallAttempt'); h.failAfterSend = true; h.release();
+    // Sent, but not applied yet: GHL may still apply it later -- the case a blind retry would contradict.
+    h = hold((r) => r.kind === 'write' && r.op === 'contact.lastCallAttempt'); h.sentNotApplied = true; h.release();
     await confirm().click();
     await until(async () => (await recorded().count()) > 0, 'recorded').catch(() => {});
     await page.waitForTimeout(800);
     check('A6 Agreement Reached shows, with the timestamp-only recovery offered (existing handling)', (await recorded().count()) > 0 && (await page.getByTestId('call-timestamp-recover').count()) > 0, await outcomeError());
     check('A6 the uncertain last-touch step is tracked: Unresolved, naming it; the price holds', /last-touch time may still reach GHL/.test((await unresolvedText()) || '') && fx.state.currentOffer === 400000, await unresolvedText());
+    // A6 recovery (Bones / Jess 2026-10-05): "Check & retry call timestamp" obeys the barrier.
+    const touchesBefore6 = touchWrites().length;
+    const beginsBefore6 = log.filter((r) => r.kind === 'barrier' && r.action === 'begin').length;
+    await page.getByTestId('call-timestamp-recover').click();
+    await until(async () => /Call timestamp not retried/.test((await outcomeError()) || ''), 'recovery refused').catch(() => {});
+    await page.waitForTimeout(500);
+    check('A6 recovery while the ORIGINAL last-touch is unresolved sends NOTHING -- no new timestamp write, no reservation', touchWrites().length === touchesBefore6 && log.filter((r) => r.kind === 'barrier' && r.action === 'begin').length === beginsBefore6, { touches: touchWrites().length, before: touchesBefore6 });
+    check('A6 it says why, names the unresolved last-touch, and never says reload', /Call timestamp not retried/.test((await outcomeError()) || '') && /last-touch time may still reach GHL/.test((await outcomeError()) || '') && !/[Rr]eload/.test(await page.locator('body').innerText()), await outcomeError());
+    await page.getByTestId('call-timestamp-recover').click();
+    await page.waitForTimeout(800);
+    check('A6 retrying again still sends nothing', touchWrites().length === touchesBefore6);
+
+    // A6b — last-touch refused BEFORE sending: provably not sent, so recovery may proceed -- reserved.
+    await fresh({ currentOffer: 400000 });
+    await openAcceptForm();
+    h = hold((r) => r.kind === 'write' && r.op === 'contact.lastCallAttempt'); h.refuse = { status: 409, error: 'fixture: refused before sending' }; h.release();
+    await confirm().click();
+    await until(async () => (await page.getByTestId('call-timestamp-recover').count()) > 0, 'recovery offered').catch(() => {});
+    await page.waitForTimeout(600);
+    check('A6b Agreement Reached; the refused last-touch was never sent, so the deal clears (barrier released)', (await recorded().count()) > 0 && (await serverClear()) && (await unresolvedText()) === null);
+    const logAt6b = log.length;
+    await page.getByTestId('call-timestamp-recover').click();
+    await until(async () => (await page.getByTestId('call-timestamp-recover').count()) === 0, 'recovered').catch(() => {});
+    await page.waitForTimeout(600);
+    const after6b = log.slice(logAt6b);
+    const beginAt = after6b.findIndex((r) => r.kind === 'barrier' && r.action === 'begin');
+    const touchAt = after6b.findIndex((r) => r.kind === 'write' && r.op === 'contact.lastCallAttempt');
+    check('A6b recovery reserves FIRST (a last-touch-only reservation), then sends exactly one timestamp write', beginAt >= 0 && touchAt > beginAt && after6b.filter((r) => r.kind === 'write' && r.op === 'contact.lastCallAttempt').length === 1, after6b.map((r) => r.kind === 'write' ? r.op : `${r.kind}:${r.action || ''}`));
+    check('A6b the recovery write carries a new reserved request id (not the original)', touchAt >= 0 && after6b[touchAt].requestId !== touchWrites()[0].requestId);
+    check('A6b recovered: the warning is gone, the timestamp is saved, and the barrier is released', (await page.getByTestId('call-timestamp-recover').count()) === 0 && fx.state.contactFields.some((f) => f.value && String(f.value).includes('T')) && (await serverClear()));
 
     // A7 — a second browser during Accept.
     await fresh({ currentOffer: 400000 });

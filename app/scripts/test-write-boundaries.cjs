@@ -8,6 +8,8 @@ const APP = path.resolve(__dirname, '..');
 const originalResolve = Module._resolveFilename;
 const originalLoad = Module._load;
 const receipts = new Map();
+const receiptEtags = new Map();
+let receiptEtagSeq = 0;
 // Gate-review closure -- PR #85 live failure. A SEPARATE map for raw
 // artifact-upload bytes, additive only: ghl-write.ts's own receipt
 // usage (JSON via setJSON/get) is completely untouched below.
@@ -40,9 +42,14 @@ Module._load = function(name, ...rest) {
       },
       async set(key, value, options) { rawBlobs.set(key, Buffer.isBuffer(value) ? value : Buffer.from(value)); if (options?.metadata) rawBlobsMetadata.set(key, options.metadata); },
       async delete(key) { receipts.delete(key); rawBlobs.delete(key); rawBlobsMetadata.delete(key); },
-      async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; },
+      async setJSON(key, value, options) {
+        if (options?.onlyIfNew && receipts.has(key)) return { modified: false };
+        if (options?.onlyIfMatch !== undefined && receiptEtags.get(key) !== options.onlyIfMatch) return { modified: false };
+        receipts.set(key, value); const etag = 'etag-' + (++receiptEtagSeq); receiptEtags.set(key, etag); return { modified: true, etag };
+      },
       async getMetadata(key) { if (!rawBlobs.has(key)) return null; return { etag: 'fixture-etag', metadata: rawBlobsMetadata.get(key) ?? {} }; },
       async getWithMetadata(key, options) {
+        if (options?.type === 'json') return receipts.has(key) ? { data: receipts.get(key), etag: receiptEtags.get(key) } : null;
         if (!rawBlobs.has(key)) return null;
         const v = rawBlobs.get(key);
         const data = options?.type === 'arrayBuffer' ? v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) : v;

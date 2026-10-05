@@ -56,7 +56,7 @@ export async function runConfirmAcceptWrites(
   try {
     await client.createNote(args.contactId, args.note);
   } catch (e) {
-    return { stage: "note_failed", acceptanceRecorded: "unknown", message: `The acceptance may or may not have been recorded (${errorText(e)}). Reload this page to check before recording it again.` };
+    return { stage: "note_failed", acceptanceRecorded: "unknown", message: `The acceptance may or may not have been recorded (${errorText(e)}). Nothing more will be sent for this deal until IAOS can prove what happened.` };
   }
   try {
     await client.setLastCallAttempt(args.contactId, args.at);
@@ -168,7 +168,7 @@ export async function recoverLastCallAttempt(
     await client.setLastCallAttempt(args.contactId, args.now);
   } catch (e) {
     // The attempted timestamp becomes the pending one: it may have landed.
-    return { kind: "write_unconfirmed", pendingTimestamp: args.now, message: `The call timestamp could not be confirmed (${errorText(e)}). Use "Check & retry call timestamp" again; it reads first.` };
+    return { kind: "write_unconfirmed", pendingTimestamp: args.now, message: `The call timestamp could not be confirmed (${errorText(e)}). It stays unresolved: nothing more is sent for this deal until IAOS can prove what happened.` };
   }
   return { kind: "written", at: args.now };
 }

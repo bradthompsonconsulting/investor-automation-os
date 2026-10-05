@@ -2035,20 +2035,63 @@ export default function SellerCallWorkspace() {
      acceptance was recorded. Reads BOTH saved last-call fields first
      (lib/seller-call-accept-writes.ts decides); never touches the
      acceptance. */
+  /* PR #126 stacked server PR (Bones / Jess, 2026-10-05): the recovery is a
+     Confirm Accept step, so it obeys the same durable reservation rules.
+     1. The server reconciles first: while the ORIGINAL last-touch request (or
+        any step of the deal's barrier) is unresolved, nothing new is sent --
+        not even an unreserved timestamp write.
+     2. Only then a last-touch-only reservation; its write carries that id.
+     3. The server reconciles again; an unproven step leaves the deal blocked. */
   async function handleRecoverCallTimestamp() {
-    if (!timestampRecovery || timestampRecoveryBusy) return;
+    if (!timestampRecovery || timestampRecoveryBusy || !dealBarOppId) return;
+    const opp = dealBarOppId;
     setTimestampRecoveryBusy(true);
     try {
-      const recovered = await recoverLastCallAttempt(
-        {
-          readLastCallFields: async (id) => (await ghl.contacts.getDetail(id)).customFields,
-          setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso),
-        },
-        {
-          contactId, pendingTimestamp: timestampRecovery.pendingTimestamp, now: new Date().toISOString(),
-          fieldIds: { date: CONFIG.fields.lastCallAttempt, precise: CONFIG.fields.lastCallAttemptPrecise },
-        },
-      );
+      let first: Awaited<ReturnType<typeof reconcileReservation>>;
+      try { first = await reconcileReservation(opp); }
+      catch {
+        setOutcomeActionError("Call timestamp not retried -- the check could not be completed. Nothing was sent.");
+        return;
+      }
+      if (first.state !== "clear") {
+        offerSaves.markUnresolved(opp, first.message);
+        setOutcomeActionError(`Call timestamp not retried -- ${first.message}`);
+        return;
+      }
+      offerSaves.clearUnresolved(opp);
+      const touchIds = newRequestIds(["touch"] as const);
+      let reserved: Awaited<ReturnType<typeof beginReservation>>;
+      try { reserved = await beginReservation(opp, "touch", [{ step: "touch", requestId: touchIds.touch }]); }
+      catch (e) {
+        if (!(e instanceof AppWriteSignInRequired)) offerSaves.markUnresolved(opp, RESERVATION_FAILED_MESSAGE);
+        setOutcomeActionError(`Call timestamp not retried -- ${e instanceof AppWriteSignInRequired ? (e as Error).message : RESERVATION_FAILED_MESSAGE}`);
+        return;
+      }
+      if (reserved.state !== "reserved") {
+        offerSaves.markUnresolved(opp, reserved.message);
+        setOutcomeActionError(`Call timestamp not retried -- ${reserved.message}`);
+        return;
+      }
+      let recovered: Awaited<ReturnType<typeof recoverLastCallAttempt>>;
+      try {
+        recovered = await recoverLastCallAttempt(
+          {
+            readLastCallFields: async (id) => (await ghl.contacts.getDetail(id)).customFields,
+            setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso, { requestId: touchIds.touch }),
+          },
+          {
+            contactId, pendingTimestamp: timestampRecovery.pendingTimestamp, now: new Date().toISOString(),
+            fieldIds: { date: CONFIG.fields.lastCallAttempt, precise: CONFIG.fields.lastCallAttemptPrecise },
+          },
+        );
+      } finally {
+        // The server decides: a never-sent reservation is withdrawn; an
+        // unproven write keeps the deal blocked.
+        try {
+          const after = await reconcileReservation(opp);
+          if (after.state !== "clear") offerSaves.markUnresolved(opp, after.message);
+        } catch { offerSaves.markUnresolved(opp, "The check could not be completed; nothing more will be sent until it is checked — use Check again."); }
+      }
       if (recovered.kind === "confirmed" || recovered.kind === "written") {
         setTimestampRecovery(null);
         setOutcomeActionError(null);

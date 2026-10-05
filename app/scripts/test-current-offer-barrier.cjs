@@ -34,7 +34,13 @@ const Module = require('node:module');
 const ts = require('typescript');
 
 const receipts = new Map();
+const etags = new Map();
+let etagSeq = 0;
 let failNext = [];            // predicates over { op, key } -> throw once
+/* Stale-read injection: the next read of a matching key returns an OLD
+   snapshot (value + etag), as an eventually consistent read can. */
+let staleNext = [];           // { match(key), snapshot: { data, etag } }
+const snapshotOf = (key) => ({ data: receipts.has(key) ? structuredClone(receipts.get(key)) : null, etag: etags.get(key) ?? null });
 const realBlobs = require('@netlify/blobs');
 delete process.env.NETLIFY_BLOBS_CONTEXT;
 const lambdaHeaders = { 'x-nf-site-id': 'offline-site', 'x-nf-deploy-id': 'offline-deploy' };
@@ -57,13 +63,27 @@ Module._load = function (name, ...rest) {
   if (name === '@netlify/blobs') return {
     connectLambda: (event) => realBlobs.connectLambda(event),
     getStore: () => ({
-      async get(key) { maybeFail('get', key); return receipts.has(key) ? structuredClone(receipts.get(key)) : null; },
+      async get(key) {
+        maybeFail('get', key);
+        const i = staleNext.findIndex((x) => x.match(key));
+        if (i >= 0) { const [st] = staleNext.splice(i, 1); return st.snapshot.data === null ? null : structuredClone(st.snapshot.data); }
+        return receipts.has(key) ? structuredClone(receipts.get(key)) : null;
+      },
+      async getWithMetadata(key) {
+        maybeFail('getWithMetadata', key);
+        const i = staleNext.findIndex((x) => x.match(key));
+        if (i >= 0) { const [st] = staleNext.splice(i, 1); return st.snapshot.data === null ? null : { data: structuredClone(st.snapshot.data), etag: st.snapshot.etag }; }
+        return receipts.has(key) ? { data: structuredClone(receipts.get(key)), etag: etags.get(key) } : null;
+      },
       async setJSON(key, value, options) {
         maybeFail('setJSON', key);
         if (options?.onlyIfNew && receipts.has(key)) return { modified: false };
-        receipts.set(key, structuredClone(value)); return { modified: true };
+        if (options?.onlyIfMatch !== undefined && etags.get(key) !== options.onlyIfMatch) return { modified: false };
+        receipts.set(key, structuredClone(value));
+        const etag = 'etag-' + (++etagSeq); etags.set(key, etag);
+        return { modified: true, etag };
       },
-      async delete(key) { maybeFail('delete', key); receipts.delete(key); },
+      async delete(key) { maybeFail('delete', key); receipts.delete(key); etags.delete(key); },
     }),
   };
   return originalLoad.call(this, name, ...rest);
@@ -157,7 +177,7 @@ async function check(name, fn) {
   catch (e) { failures++; console.error('FAIL ' + name + '\n  ' + (e && e.stack ? e.stack.split('\n').slice(0, 3).join('\n  ') : e)); }
 }
 function fresh() {
-  receipts.clear(); failNext = []; holds = []; loseNext = []; ghlWrites = []; notes = [];
+  receipts.clear(); etags.clear(); failNext = []; staleNext = []; holds = []; loseNext = []; ghlWrites = []; notes = [];
   opportunity.customFields = []; contact.customFields = [];
 }
 
@@ -415,17 +435,27 @@ function fresh() {
     assert.equal(res.statusCode, 200);
     assert.equal(body(await reconcile()).state, 'blocked');
   });
-  await check('storage failure during begin: 503, nothing sent; any partial reservation is cleared only by reconcile', async () => {
+  await check('storage failure during begin: 503, nothing sent; the head is written last, so no partial reservation becomes current', async () => {
     fresh();
     failNext.push((op, key) => op === 'setJSON' && key.startsWith('current-offer/request/'));
-    const res = await beginBlur(rid('beginfail'));
+    const r = rid('beginfail');
+    const res = await beginBlur(r);
     assert.equal(res.statusCode, 503); assert.equal(ghlWrites.length, 0);
-    assert.equal((await status()).body.state, 'blocked');
-    assert.equal(body(await reconcile()).state, 'clear');
+    assert.equal((await status()).body.state, 'clear');
+    assert.equal(body(await offer(410000, r)).outcome, 'not_sent', 'a write naming the failed reservation is refused');
+    assert.equal(offerPuts().length, 0);
+  });
+  await check('storage failure writing the head during begin: 503, nothing sent, nothing current', async () => {
+    fresh();
+    failNext.push((op, key) => op === 'setJSON' && key.startsWith('current-offer/head/'));
+    const r = rid('headfail');
+    assert.equal((await beginBlur(r)).statusCode, 503);
+    assert.equal(body(await offer(410000, r)).outcome, 'not_sent');
+    assert.equal(offerPuts().length, 0);
   });
   await check('storage failure reading status: 503 (the browser treats it as blocked)', async () => {
     fresh();
-    failNext.push((op, key) => op === 'get' && key.startsWith('current-offer/barrier/'));
+    failNext.push((op, key) => op === 'getWithMetadata' && key.startsWith('current-offer/head/'));
     assert.equal((await status()).statusCode, 503);
   });
   await check('storage failure reading the reservation in ghl-write: not_sent, nothing sent', async () => {
@@ -434,6 +464,79 @@ function fresh() {
     await beginBlur(r);
     failNext.push((op, key) => op === 'get' && key.startsWith('current-offer/request/'));
     assert.equal(body(await offer(410000, r)).outcome, 'not_sent'); assert.equal(offerPuts().length, 0);
+  });
+
+  // ── Bones / Jess second review: stale evidence must never clear a newer barrier ──
+  const headKeys = () => [...receipts.keys()].filter((k) => k.startsWith('current-offer/head/'));
+  const headSnapshot = () => snapshotOf(headKeys()[0]);
+  const storeApi = require('@netlify/blobs').getStore();
+  const scopeT = barrierLib.barrierScope('test', config.locationId);
+  await check('STALE FIRST BARRIER / NEWER UNRESOLVED BARRIER (reconcile): a stale head naming the settled first barrier cannot clear the newer unresolved one', async () => {
+    fresh();
+    const r1 = rid('first'); const r2 = rid('second');
+    await beginBlur(r1);
+    const staleHead = headSnapshot();                       // head names barrier 1, with its etag
+    assert.equal((await offer(410000, r1)).statusCode, 200); // barrier 1 settles and releases
+    assert.equal((await beginBlur(r2)).statusCode, 200);     // barrier 2 becomes current
+    loseNext.push((req) => req.method === 'PUT');
+    assert.equal(body(await offer(420000, r2)).outcome, 'indeterminate');   // barrier 2: sent, unresolved
+    staleNext.push({ match: (k) => k.startsWith('current-offer/head/'), snapshot: staleHead });
+    const rec = body(await reconcile());
+    assert.equal(rec.state, 'blocked', 'the stale view of barrier 1 is settled, but its swap fails and the latest head is re-read');
+    assert.deepEqual(rec.steps.map((x) => x.evidence), ['unresolved']);
+    assert.equal((await status()).body.state, 'blocked');
+    assert.equal((await beginBlur(rid('third'))).statusCode, 409, 'a new begin is still refused');
+  });
+  await check('STALE FIRST BARRIER / NEWER UNRESOLVED BARRIER (release): a late release for the first barrier, reading a stale head, cannot release the second', async () => {
+    fresh();
+    const r1 = rid('first'); const r2 = rid('second');
+    await beginBlur(r1);
+    const staleHead = headSnapshot();
+    await offer(410000, r1);
+    await beginBlur(r2);
+    loseNext.push((req) => req.method === 'PUT');
+    await offer(420000, r2);
+    staleNext.push({ match: (k) => k.startsWith('current-offer/head/'), snapshot: staleHead });
+    const crypto = require('node:crypto');
+    const firstId = crypto.createHash('sha256').update(r1).digest('hex');
+    await barrierLib.releaseIfSettled(storeApi, scopeT, opportunity.id, firstId);
+    assert.equal((await status()).body.state, 'blocked', 'barrier 2 is still current');
+  });
+  await check('a stale head that reads as EMPTY cannot let a second barrier in, or report clear', async () => {
+    fresh();
+    const emptySnapshot = { data: null, etag: null };
+    loseNext.push((req) => req.method === 'PUT');
+    const r1 = rid('held');
+    await beginBlur(r1); await offer(410000, r1);           // unresolved
+    staleNext.push({ match: (k) => k.startsWith('current-offer/head/'), snapshot: emptySnapshot });
+    assert.equal((await beginBlur(rid('intruder'))).statusCode, 409, 'begin: the conditional create fails, the re-read finds the held barrier');
+    staleNext.push({ match: (k) => k.startsWith('current-offer/head/'), snapshot: emptySnapshot });
+    assert.equal(body(await reconcile()).state, 'blocked', 'reconcile: "clear" needs a successful conditional write; it fails and re-reads');
+  });
+  await check('a persistently stale head is never reported clear: reconcile gives up with 503 and nothing changes', async () => {
+    fresh();
+    const r1 = rid('first'); const r2 = rid('second');
+    await beginBlur(r1);
+    const staleHead = headSnapshot();
+    await offer(410000, r1);
+    await beginBlur(r2);
+    loseNext.push((req) => req.method === 'PUT');
+    await offer(420000, r2);
+    for (let i = 0; i < 8; i++) staleNext.push({ match: (k) => k.startsWith('current-offer/head/'), snapshot: staleHead });
+    const res = await reconcile();
+    assert.equal(res.statusCode, 503);
+    staleNext = [];
+    assert.equal((await status()).body.state, 'blocked');
+  });
+  await check('nothing in current-offer/ is ever deleted; only the head is rewritten, and only conditionally', async () => {
+    fresh();
+    const r1 = rid('nodelete');
+    await beginBlur(r1); await offer(410000, r1);
+    const src = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '../netlify/functions/lib/current-offer-barrier.ts'), 'utf8');
+    assert.ok(!/\.delete\(/.test(src), 'no delete call in the barrier module');
+    assert.equal((src.match(/headKey\(scope, opp\), next/g) || []).length, 1, 'one head writer');
+    assert.ok(/onlyIfMatch: etag/.test(src) && /onlyIfNew: true \} : \{ onlyIfMatch: etag \}/.test(src));
+    assert.equal([...receipts.keys()].filter((k) => k.startsWith('current-offer/barrier/')).length, 1, 'the settled barrier record is kept');
   });
 
   // ── scope, separation, auth, unchanged operations ──────────────────────────
