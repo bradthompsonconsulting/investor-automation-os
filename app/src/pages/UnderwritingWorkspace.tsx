@@ -1246,6 +1246,10 @@ export default function UnderwritingWorkspace() {
               </div>
             </div>
           </div>
+          <div data-testid="underwriting-figures-legend" style={{ fontSize: "11px", color: "#64748B", margin: "6px 0 0" }}>
+            These are the deal's figures. "Approve underwriting" saves the End-Buyer Maximum and Seller MAO to the
+            opportunity; the Deal Calculator is practice only and never changes them.
+          </div>
 
           {screen.warnings.map((w) => (
             <div key={w.code} style={{ marginTop: "14px" }}>
