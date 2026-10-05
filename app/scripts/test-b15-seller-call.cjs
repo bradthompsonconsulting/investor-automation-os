@@ -57,5 +57,32 @@ check('F31 the Seller Call deal bar renders the recorded-offer note',
 check('F36 no "negotiation carrier" jargon is rendered by the rail or the deal bar',
   /WAITING on negotiation/.test(rail.replace(/\/\*[\s\S]*?\*\//g, '')) || /WAITING on negotiation/.test(read('src/lib/seller-call-deal-bar.ts').replace(/\/\*[\s\S]*?\*\//g, '')), false);
 
-console.log(`\nBoard 15 B3 Seller Call:${checks - failures}/${checks} checks passed`);
+// ── F29 / F30 / F32 / F33 / F35 / F37 / F43 / F55 / F41 ──────────────────────
+const copy = read('src/lib/call-outcome-copy.ts');
+const callLog = read('src/components/CallLogControl.tsx');
+const uw = read('src/pages/UnderwritingWorkspace.tsx');
+check('F29 the contact page calls the GHL action by the Seller Call name',
+  /<PhoneCall size=\{14\} \/> Call with GHL Phone/.test(contactPage) && !/Open GHL to Call/.test(contactPage), true);
+check('F30 both outcome sets say what they are for and where the other lives',
+  /export const CALL_LOG_PURPOSE =/.test(copy) && /\{CALL_LOG_PURPOSE\}/.test(callLog)
+    && /export const CONVERSATION_OUTCOME_PURPOSE =/.test(copy) && /\{CONVERSATION_OUTCOME_PURPOSE\}/.test(page), true);
+check('F30 the two sets stay separate (Seller Call does not mount the call log)',
+  /<CallLogControl/.test(page), false);
+check('F32 the readiness badge collapses its reasons to a count',
+  /<details data-testid="readiness-reasons"/.test(page) && /open \{readiness\.reasons\.length === 1 \? "item" : "items"\}/.test(page), true);
+check('F33 the readiness decision panel is collapsed until opened (open once a decision exists)',
+  /<details\s+data-testid="readiness-human-action-panel"\s+open=\{readinessHumanActionRecord \? true : undefined\}/.test(page), true);
+check('F35 each transaction-assumption input has a visible label and "None known"',
+  ['How the deal is structured', 'Closing and move-out (possession) expectations', 'Known title problems'].every((l) => page.includes(l))
+    && (page.match(/\/> None known\r?\n/g) || []).length === 3, true);
+check('F37 the contact page renders Notes before the record folders',
+  contactPage.indexOf('>Notes</h2>') !== -1 && contactPage.indexOf('>Notes</h2>') < contactPage.indexOf('data-testid="record-section"'), true);
+check('F43 each assignment mode is explained',
+  /data-testid="assignment-mode-explanations"/.test(uw) && ['Standard Minimum</strong>', '25% of Buyer Profit</strong>', 'Manual</strong>'].every((t) => uw.includes(t)), true);
+check('F55 Seller Call renders no internal "Board #9" name',
+  /Board #9 completes/.test(page), false);
+check('F41 the Seller Call repairs link says where the estimate is made',
+  page.includes('"Estimate repairs in Underwriting"'), true);
+
+console.log(`\nBoard 15 B3 Seller Call: ${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);

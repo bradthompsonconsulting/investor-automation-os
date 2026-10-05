@@ -222,6 +222,15 @@ jobs:
       - name: Seller Call calling options — 49 offline checks
         run: node app/scripts/test-seller-call-voice-controls.cjs
 
+      - name: Board 15 B3 Seller Call content (Pass 1 F29-F37, F41, F43, F55) — 20 offline checks
+        run: node app/scripts/test-b15-seller-call.cjs
+
+      - name: Seller Call deal bar, incl. recorded Current Offer note (Pass 1 F31) — 37 offline checks
+        run: node app/scripts/test-seller-call-deal-bar.cjs
+
+      - name: Next best question, incl. operator checklist routing (Pass 1 F34) — 66 offline checks
+        run: node app/scripts/test-next-best-question.cjs
+
       - name: Call log, call-outcome wording, queue placement, contact isolation and Do Not Call wiring — 83 offline checks
         run: node app/scripts/test-call-outcome-copy.cjs
 
