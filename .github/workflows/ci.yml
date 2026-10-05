@@ -228,6 +228,9 @@ jobs:
       - name: Voice foundation and recovery — 77 offline checks
         run: node app/scripts/test-voice-foundation.cjs
 
+      - name: Board 15 B5 sign-in presentation and hidden empty pages — 28 offline checks
+        run: node app/scripts/test-b15-signin-pages.cjs
+
       - name: Seller Call calling options — 49 offline checks
         run: node app/scripts/test-seller-call-voice-controls.cjs
 
