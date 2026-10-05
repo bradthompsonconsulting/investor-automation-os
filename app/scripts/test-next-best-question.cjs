@@ -61,10 +61,18 @@ for (const p of [computePath, board8Path, readinessPath, nbqPath]) {
 const { computeUnderwriting } = require(computePath);
 const { computeBoard8Economics } = require(board8Path);
 const { computeOfferReadiness } = require(readinessPath);
-const { computeNextBestQuestion, CATEGORY_PRIORITY } = require(nbqPath);
+const { computeNextBestQuestion: computeSellerNext, computeOperatorChecklist, computeQuestionQueue, CATEGORY_PRIORITY } = require(nbqPath);
+/* Board 15 / Pass 1 F34: the engine still generates ARV / deal-economics items with the same wording,
+   but routes them to the operator checklist instead of the seller card. These phrasing and priority
+   checks read the first open item of either audience; section F34 below asserts the routing itself. */
+function computeNextBestQuestion(r, f, e) {
+  const n = computeSellerNext(r, f, e);
+  if (n.kind !== "operator_only") return n;
+  return computeOperatorChecklist(r, f, e)[0];
+}
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 54;
+const FLOOR = 66; // 54 + 12 (Board 15 / Pass 1 F34 section)
 let failures = 0;
 let checks = 0;
 
@@ -457,6 +465,52 @@ function readinessAndEconomics(over) {
   check('audited every emitted question string (case count)', cases.length, 26);
   check('every emitted question string ends in "?" (genuinely interrogative)', allInterrogative, true);
   check('no offending non-interrogative questions found', offenders, []);
+}
+
+// ============================================================
+// Board 15 / Pass 1 F34 (INV-103): ARV and deal-economics items are the
+// OPERATOR's underwriting work. They never become the Suggested Next
+// Question or an Other Useful Question; they are the operator checklist.
+// 12 checks.
+// ============================================================
+{
+  // (a) Only ARV open: nothing to ask the seller.
+  const { readiness: rA, dealEconomics: eA } = readinessAndEconomics({ arv: 'INSUFFICIENT' });
+  const sellerA = computeSellerNext(rA, NO_FACTS, eA);
+  check('F34 ARV-only: the seller card says no seller question remains', sellerA.kind, 'operator_only');
+  check('F34 ARV-only: the ARV item is on the operator checklist',
+    computeOperatorChecklist(rA, NO_FACTS, eA).map((q) => [q.audience, q.question]),
+    [['operator', 'Has a valuation (ARV) been run for this property yet?']]);
+  check('F34 ARV-only: Other Useful Questions carries no operator item', computeQuestionQueue(rA, NO_FACTS, eA), []);
+
+  // (b) Deal economics missing the assignment mode: the exact Pass 1 complaint.
+  const econMode = computeBoard8Economics(computeUnderwriting(underwritingInputs({ assignment: U() })));
+  const { readiness: rM, dealEconomics: eM } = readinessAndEconomics({ dealEconomics: econMode });
+  const listM = computeOperatorChecklist(rM, NO_FACTS, eM);
+  check('F34 assignment mode: deal economics is unresolved', rM.categories.deal_economics === 'UNKNOWN' || rM.categories.deal_economics === 'PRELIMINARY', true);
+  check('F34 assignment mode: the item is operator-audience', listM.map((q) => q.audience), ['operator']);
+  check('F34 assignment mode: it never reaches the seller card', computeSellerNext(rM, NO_FACTS, eM).kind, 'operator_only');
+
+  // (c) Mixed: a seller category AND ARV open. ARV ranks earlier in
+  // CATEGORY_PRIORITY, but the seller card skips it for the seller item.
+  const { readiness: rX, dealEconomics: eX } = readinessAndEconomics({ arv: 'INSUFFICIENT', transactionAssumptions: 'UNKNOWN' });
+  const sellerX = computeSellerNext(rX, NO_FACTS, eX);
+  check('F34 mixed: the seller card asks the seller item, not ARV',
+    [sellerX.kind, sellerX.source && sellerX.source.category, sellerX.audience], ['question', 'transaction_assumptions', 'seller']);
+  check('F34 mixed: ARV stays on the operator checklist',
+    computeOperatorChecklist(rX, NO_FACTS, eX).map((q) => q.source.category), ['arv']);
+  check('F34 mixed: every Other Useful Question is seller-audience',
+    computeQuestionQueue(rX, NO_FACTS, eX).every((q) => q.audience === 'seller'), true);
+
+  // (d) Seller categories are unchanged: repairs/condition still asks the seller.
+  const { readiness: rR, dealEconomics: eR } = readinessAndEconomics({ repairsCondition: 'UNKNOWN' });
+  check('F34 seller categories unchanged: repairs/condition is still the seller question',
+    [computeSellerNext(rR, NO_FACTS, eR).audience, computeOperatorChecklist(rR, NO_FACTS, eR).length], ['seller', 0]);
+
+  // (e) Offer Ready: no checklist either.
+  const { readiness: rOk, dealEconomics: eOk } = readinessAndEconomics();
+  check('F34 Offer Ready: no operator checklist', computeOperatorChecklist(rOk, NO_FACTS, eOk), []);
+  check('F34 Offer Ready: the seller card is still offer_ready', computeSellerNext(rOk, NO_FACTS, eOk).kind, 'offer_ready');
 }
 
 cleanup();

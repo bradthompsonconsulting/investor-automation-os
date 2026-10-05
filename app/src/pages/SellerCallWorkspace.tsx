@@ -19,10 +19,10 @@ import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-t
 import type { AssignmentResolution, UnderwritingResult, UnderwritingInputs } from "../lib/underwriting/types";
 import { computeBoard8Economics, computeExpectedSpread, type Board8Economics, type ExpectedSpread } from "../lib/underwriting/board8-economics";
 import { computeOfferReadiness, CATEGORY_LABEL, type ReadinessResult, type MaterialCategory, type HumanAction } from "../lib/underwriting/offer-readiness";
-import { computeNextBestQuestion, computeQuestionQueue, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
+import { computeNextBestQuestion, computeQuestionQueue, computeOperatorChecklist, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { FullScriptDrawer } from "../components/FullScriptDrawer";
 import { SellerCallVoiceControls } from "../components/SellerCallVoiceControls";
-import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
+import { buildDealBarCells, type CurrentOfferStatus, type DealBarCell } from "../lib/seller-call-deal-bar";
 import { buildOfferReadinessInputs } from "../lib/seller-call-readiness-inputs";
 import { latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
 import {
@@ -38,7 +38,7 @@ import {
   type CallOutcomeKind, type OutcomeSnapshot,
 } from "../lib/seller-call-outcome";
 import {
-  CONVERSATION_OUTCOME_HEADING, CONVERSATION_OUTCOME_SUBHEADING, DIAL_RESULT_POINTER, GHL_CALL_LOGGING_LINE,
+  CONVERSATION_OUTCOME_HEADING, CONVERSATION_OUTCOME_SUBHEADING, CONVERSATION_OUTCOME_PURPOSE, DIAL_RESULT_POINTER, GHL_CALL_LOGGING_LINE,
   SELLER_CALL_FOLLOW_UP_CONSEQUENCE, sellerCallPassConsequence, resolveScheduledCallback,
 } from "../lib/call-outcome-copy";
 import {
@@ -353,8 +353,16 @@ function DealBar({ cells }: { cells: DealBarCell[] }) {
             {cell.label}
           </span>
           {cell.value.kind === "value" ? (
-            <span style={{ fontSize: "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#E2E8F0" }}>
-              {cell.value.text}
+            <span style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+              <span style={{ fontSize: "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#E2E8F0" }}>
+                {cell.value.text}
+              </span>
+              {/* Board 15 / Pass 1 F31: a recorded Current Offer says whether it is supported. */}
+              {cell.value.note ? (
+                <span data-testid={`deal-bar-note-${cell.key}`} style={{ fontSize: "10px", color: "#F59E0B", maxWidth: "200px", lineHeight: 1.3 }}>
+                  {cell.value.note}
+                </span>
+              ) : null}
             </span>
           ) : (
             <span style={{ fontSize: "11px", color: "#F59E0B", fontWeight: 600, paddingTop: "4px", lineHeight: 1.4 }} title={cell.value.text}>
@@ -397,14 +405,22 @@ function ReadinessBadge({ readiness }: { readiness: ReadinessResult }) {
           </span>
         ) : null}
       </div>
+      {/* Pass 1 F32: the same open items were listed three times on this
+          screen. The badge now gives the count; the items themselves are one
+          click away here and listed in full under "What We Still Need". */}
       {readiness.reasons.length > 0 ? (
-        <ul style={{ margin: "10px 0 0", padding: 0, listStyle: "none" }}>
-          {readiness.reasons.map((r, i) => (
-            <li key={i} style={{ fontSize: "12px", color: "#94A3B8", padding: "3px 0" }}>
-              {r.message}
-            </li>
-          ))}
-        </ul>
+        <details data-testid="readiness-reasons" style={{ marginTop: "8px" }}>
+          <summary style={{ fontSize: "12px", color: "#94A3B8", cursor: "pointer" }}>
+            {readiness.reasons.length} open {readiness.reasons.length === 1 ? "item" : "items"} — details below under What We Still Need
+          </summary>
+          <ul style={{ margin: "6px 0 0", padding: 0, listStyle: "none" }}>
+            {readiness.reasons.map((r, i) => (
+              <li key={i} style={{ fontSize: "12px", color: "#94A3B8", padding: "3px 0" }}>
+                {r.message}
+              </li>
+            ))}
+          </ul>
+        </details>
       ) : null}
     </div>
   );
@@ -450,6 +466,31 @@ function OfferReadinessChecklist({ readiness }: { readiness: ReadinessResult }) 
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
+
+/**
+ * PR #126 second re-review (Bones / Jess, 2026-10-05). The Current Offer
+ * label for the amount on screen. Every input names its deal and amount, so
+ * a save, failure or confirmation for another deal -- or for an older amount
+ * of this deal -- never labels what is on screen now:
+ *   saving       a save of THIS deal's THIS amount is in flight;
+ *   failed       GHL refused a save of this deal's this amount;
+ *   unconfirmed  a save of this deal's this amount may have landed but could
+ *                not be read back;
+ *   recorded     this deal's confirmed amount equals what is on screen;
+ *   draft        anything else.
+ */
+export function currentOfferStatusFor(
+  ws: { status: "idle" } | { status: "saving" | "error"; oppId: string; amount: number; kind?: "refused" | "unconfirmed" },
+  confirmed: { oppId: string; amount: number } | null,
+  oppId: string | null,
+  amount: number | null,
+): CurrentOfferStatus {
+  const same = (m: { oppId: string; amount: number }) => oppId !== null && amount !== null && m.oppId === oppId && m.amount === amount;
+  if (ws.status === "saving" && same(ws)) return "saving";
+  if (ws.status === "error" && same(ws)) return ws.kind === "refused" ? "failed" : "unconfirmed";
+  if (confirmed && same(confirmed)) return "recorded";
+  return "draft";
+}
 
 export default function SellerCallWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -510,12 +551,25 @@ export default function SellerCallWorkspace() {
      mount/opportunity change so a genuinely new deal's first blur always
      writes once, never assumes a prior deal's last-written value still
      applies. */
-  const lastWrittenCurrentOfferRef = useRef<number | null>(null);
+  /* PR #126 second re-review (Bones / Jess, 2026-10-05): every piece of
+     Current Offer save bookkeeping names the DEAL and the AMOUNT it is
+     about, so a completion for deal A (or for an older amount) can never
+     confirm, suppress or label deal B's (or a newer) amount. */
+  type OfferMark = { oppId: string; amount: number };
+  const lastWrittenCurrentOfferRef = useRef<OfferMark | null>(null);
   const [currentOfferWriteState, setCurrentOfferWriteState] = useState<
     | { status: "idle" }
-    | { status: "saving" }
-    | { status: "error"; message: string }
+    | { status: "saving"; oppId: string; amount: number; attempt: number }
+    | { status: "error"; kind: "refused" | "unconfirmed"; oppId: string; amount: number; attempt: number; message: string }
   >({ status: "idle" });
+  /* The Current Offer CONFIRMED in GHL for a deal -- restored from the
+     Opportunity carrier, or a save GHL read back. Only this deal's confirmed
+     amount may be labelled "Recorded in GHL". */
+  const [confirmedCurrentOffer, setConfirmedCurrentOffer] = useState<OfferMark | null>(null);
+  /* Each save is numbered; only the latest attempt may settle the status. */
+  const offerAttemptRef = useRef(0);
+  /* The deal on screen right now, for completions that arrive later. */
+  const currentOppIdRef = useRef<string | null>(null);
 
   /* The one already-granted override, if any -- see seller-call-
      negotiation.ts's own header for why this is a DIFFERENT concept from
@@ -830,19 +884,43 @@ export default function SellerCallWorkspace() {
     const agreementAlreadyReached = latestOutcome?.kind === "accept";
     const decision = currentOfferWriteGate({ value: currentOffer, agreementAlreadyReached });
     if (decision.kind === "blocked") return;
-    if (lastWrittenCurrentOfferRef.current === decision.value) return;
+    const oppId = screen.opportunity.id;
+    const amount = decision.value;
+    /* De-dupe only against THIS deal's own last-written amount. */
+    const last = lastWrittenCurrentOfferRef.current;
+    if (last && last.oppId === oppId && last.amount === amount) return;
 
-    setCurrentOfferWriteState({ status: "saving" });
+    const attempt = ++offerAttemptRef.current;
+    setCurrentOfferWriteState({ status: "saving", oppId, amount, attempt });
+    /* Only the latest attempt may settle the status; a completion for an
+       earlier attempt (another deal or an older amount) changes nothing. */
+    const settle = (next: typeof currentOfferWriteState) =>
+      setCurrentOfferWriteState((s) => (s.status !== "idle" && s.attempt === attempt ? next : s));
     try {
-      const result = await ghl.opportunities.setCurrentOffer(screen.opportunity.id, decision.value);
+      const result = await ghl.opportunities.setCurrentOffer(oppId, amount);
       if (!result.ok) {
-        setCurrentOfferWriteState({ status: "error", message: "Current Offer was sent but could not be confirmed." });
+        /* The write was accepted but GHL did not read the amount back: it may
+           or may not have landed. Never "recorded", never "refused". */
+        settle({ status: "error", kind: "unconfirmed", oppId, amount, attempt, message: "Save could not be confirmed." });
         return;
       }
-      lastWrittenCurrentOfferRef.current = decision.value;
-      setCurrentOfferWriteState({ status: "idle" });
+      /* Confirmed. The bookkeeping is this deal's own; it is recorded only
+         while this deal is still the one on screen (a later visit restores
+         the confirmed amount from the GHL carrier anyway). */
+      if (currentOppIdRef.current === oppId) {
+        lastWrittenCurrentOfferRef.current = { oppId, amount };
+        setConfirmedCurrentOffer({ oppId, amount });
+      }
+      settle({ status: "idle" });
     } catch (e: any) {
-      setCurrentOfferWriteState({ status: "error", message: e?.message ?? "Couldn't save Current Offer." });
+      /* A definite refusal is an answered request that said no (4xx): nothing
+         was written. Anything else -- a 5xx, a network failure, or a readback
+         that could not be completed -- leaves the outcome unknown. */
+      const m = /setCurrentOffer PUT → (\d{3})/.exec(String(e?.message ?? ""));
+      const refused = m !== null && Number(m[1]) >= 400 && Number(m[1]) < 500;
+      settle(refused
+        ? { status: "error", kind: "refused", oppId, amount, attempt, message: `Not saved — GHL refused the save (${m![1]}).` }
+        : { status: "error", kind: "unconfirmed", oppId, amount, attempt, message: "Save could not be confirmed." });
     }
   }
 
@@ -1527,16 +1605,24 @@ export default function SellerCallWorkspace() {
     propertyIdentityConfirmation, transactionAssumptionsRecord, sellerPricePositionRecord, readinessHumanAction,
   ]);
 
+  /* PR #126 second re-review: the deal on screen, for the Current Offer label
+     and for save completions that arrive after the operator has moved on. */
+  const dealBarOppId = screen.state === "resolved" || screen.state === "unresolved" ? screen.opportunity.id : null;
+  currentOppIdRef.current = dealBarOppId;
+
   const dealBarCells = useMemo(
     () => buildDealBarCells({
       arv: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.arv : null,
       repairs: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.repairs : null,
       sellerPosition,
       currentOffer,
+      /* PR #126 re-review: recorded only when the typed amount IS the
+         confirmed one and no save is pending or failed. */
+      currentOfferStatus: currentOfferStatusFor(currentOfferWriteState, confirmedCurrentOffer, dealBarOppId, currentOffer),
       board8,
       expectedSpread,
     }),
-    [screen, sellerPosition, currentOffer, board8, expectedSpread],
+    [screen, sellerPosition, currentOffer, currentOfferWriteState, confirmedCurrentOffer, dealBarOppId, board8, expectedSpread],
   );
 
   const hasKnownFacts = (screen.state === "resolved" || screen.state === "unresolved")
@@ -1572,6 +1658,19 @@ export default function SellerCallWorkspace() {
       askingPrice: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.askingPrice : null,
     };
     return computeQuestionQueue(readiness, known, board8).slice(1);
+  }, [readiness, board8, screen]);
+
+  /* Board 15 / Pass 1 F34 (INV-103) — ARV and deal-economics items (incl.
+     assignment mode) are Brad's underwriting work, not questions for the
+     seller. Same engine, same inputs; shown apart from the seller card. */
+  const operatorChecklist = useMemo(() => {
+    if (!readiness || !board8) return [];
+    const known = {
+      arv: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.arv : null,
+      repairs: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.repairs : null,
+      askingPrice: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.askingPrice : null,
+    };
+    return computeOperatorChecklist(readiness, known, board8);
   }, [readiness, board8, screen]);
 
   const [fullScriptOpen, setFullScriptOpen] = useState(false);
@@ -1704,8 +1803,10 @@ export default function SellerCallWorkspace() {
       /* INV-70 / B9-07A Phase 2 -- Deal A's last-written Current Offer
          value must never suppress Deal B's first commit. */
       lastWrittenCurrentOfferRef.current = null;
+      setConfirmedCurrentOffer(null);
       setCurrentOfferWriteState({ status: "idle" });
     }
+    const restoreOppId = screen.state === "resolved" || screen.state === "unresolved" ? screen.opportunity.id : null;
     if (decision.restoreSellerPosition !== null) {
       setSellerPositionInput(decision.restoreSellerPosition);
     }
@@ -1716,7 +1817,10 @@ export default function SellerCallWorkspace() {
          resume.ts), so it is already correctly persisted. Recording it
          as already-written means an operator who blurs without editing
          it issues no redundant PUT. */
-      lastWrittenCurrentOfferRef.current = Number(decision.restoreCurrentOffer);
+      if (restoreOppId !== null) {
+        lastWrittenCurrentOfferRef.current = { oppId: restoreOppId, amount: Number(decision.restoreCurrentOffer) };
+        setConfirmedCurrentOffer({ oppId: restoreOppId, amount: Number(decision.restoreCurrentOffer) });
+      }
     }
     /* B8-11 / INV-54 -- restoring the durable override record. Whether it
        still APPLIES to the (also just-restored) Current Offer is
@@ -1853,8 +1957,11 @@ export default function SellerCallWorkspace() {
         }
         // The Current Offer is confirmed from here on. Recorded as
         // already-written so an untouched blur issues no redundant PUT.
-        lastWrittenCurrentOfferRef.current = freeze.value;
-        setCurrentOfferWriteState({ status: "idle" });
+        if (currentOppIdRef.current === screen.opportunity.id) {
+          lastWrittenCurrentOfferRef.current = { oppId: screen.opportunity.id, amount: freeze.value };
+          setConfirmedCurrentOffer({ oppId: screen.opportunity.id, amount: freeze.value });
+          setCurrentOfferWriteState({ status: "idle" });
+        }
         if (result.stage === "note_failed") {
           setOutcomeActionError(result.message);
           return;
@@ -2019,7 +2126,9 @@ export default function SellerCallWorkspace() {
                   ? "Underwriting must resolve before an objective can be set."
                   : nextBestQuestion.kind === "offer_ready"
                     ? "Offer Ready — move to presenting the offer."
-                    : nextBestQuestion.question}
+                    : nextBestQuestion.kind === "operator_only"
+                      ? "Finish your underwriting checklist below — nothing left to ask the seller."
+                      : nextBestQuestion.question}
         </div>
       ) : null}
 
@@ -2112,17 +2221,23 @@ export default function SellerCallWorkspace() {
               OVERRIDDEN requires a non-empty reason and may elevate a
               non-ready status (visible in ReadinessBadge above as "raw
               evidence: ... -- overridden"). */}
+          {/* Pass 1 F33: "Override anyway" sat open near the top, before any
+              question was asked. The decision panel is now collapsed until
+              opened (open by default only once a decision is on record), so
+              the call starts with the conversation. Same controls, same
+              gates; layout only. */}
           {readiness ? (
-            <div
+            <details
               data-testid="readiness-human-action-panel"
+              open={readinessHumanActionRecord ? true : undefined}
               style={{
                 marginBottom: "16px", padding: "14px 16px", borderRadius: "10px",
                 background: "#0F172A", border: "1px solid #1E293B",
               }}
             >
-              <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "8px" }}>
-                Offer Readiness decision
-              </div>
+              <summary style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "8px", cursor: "pointer" }}>
+                Offer Readiness decision — approve or override (optional)
+              </summary>
               {readinessHumanActionRecord ? (
                 <div data-testid="readiness-human-action-current" style={{ fontSize: "12px", color: "#94A3B8", marginBottom: "10px" }}>
                   Last recorded: <strong style={{ color: (readinessDecisionCurrency?.current === false || observedStaleThisSession) ? "#64748B" : readinessHumanActionRecord.kind === "overridden" ? "#F59E0B" : "#22C55E" }}>
@@ -2216,7 +2331,7 @@ export default function SellerCallWorkspace() {
               {readinessDecisionError ? (
                 <div data-testid="readiness-decision-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{readinessDecisionError}</div>
               ) : null}
-            </div>
+            </details>
           ) : null}
 
           {/* B8-10 / INV-53 — Agreement Reached + Contract Ready handoff.
@@ -2267,7 +2382,7 @@ export default function SellerCallWorkspace() {
               ) : null}
 
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "8px" }}>
-                Contract Ready checklist (Board #9 completes the transaction; this is a handoff, not contract software)
+                Contract Ready checklist (the Contract workspace completes the transaction; this is a handoff, not contract software)
               </div>
               <div style={{ fontSize: "12px", color: "#E2E8F0", lineHeight: 1.9 }} data-testid="contract-ready-checklist">
                 <div>✓ Agreed price: {moneyOrUnknown(latestOutcome.snapshot.currentOffer)} (from the Agreement Reached record)</div>
@@ -2290,7 +2405,7 @@ export default function SellerCallWorkspace() {
                 <div data-testid="contract-ready-checklist-error" style={{ fontSize: "11px", color: "#EF4444", marginTop: "8px" }}>{contractChecklistError}</div>
               ) : null}
               <div style={{ fontSize: "10px", color: "#475569", marginTop: "8px" }}>
-                Checklist progress is durable and scoped to this agreed price and property address — it does not carry over to a different agreement or property. Board #9 completes the actual transaction; this checklist is a handoff aid only.
+                Checklist progress is durable and scoped to this agreed price and property address — it does not carry over to a different agreement or property. The Contract workspace completes the actual transaction; this checklist is a handoff aid only.
               </div>
               {/* B9-04 / INV-59 -- ADDITIVE ONLY. A single link to the new,
                   dedicated Contract Workspace; nothing above this line in
@@ -2378,12 +2493,12 @@ export default function SellerCallWorkspace() {
                     existing philosophy that GHL is the sole system of
                     record and the screen states only what differs from
                     "working as expected." */}
-                {currentOfferWriteState.status === "saving" ? (
+                {currentOfferWriteState.status === "saving" && currentOfferWriteState.oppId === dealBarOppId && currentOfferWriteState.amount === currentOffer ? (
                   <span data-testid="current-offer-write-saving" style={{ color: "#64748B", fontSize: "10px" }}>
                     Saving Current Offer…
                   </span>
                 ) : null}
-                {currentOfferWriteState.status === "error" ? (
+                {currentOfferWriteState.status === "error" && currentOfferWriteState.oppId === dealBarOppId && currentOfferWriteState.amount === currentOffer ? (
                   <span data-testid="current-offer-write-error" style={{ color: "#EF4444", fontSize: "10px" }}>
                     {currentOfferWriteState.message}
                   </span>
@@ -2525,6 +2640,7 @@ export default function SellerCallWorkspace() {
             style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px", marginTop: "8px" }}
           >
             <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "4px" }}>{CONVERSATION_OUTCOME_HEADING}</div>
+            <div data-testid="conversation-outcome-purpose" style={{ fontSize: "11px", color: "#94A3B8", marginBottom: "4px" }}>{CONVERSATION_OUTCOME_PURPOSE}</div>
             {/* B14-12 — what this panel records, and where a dial result
                 (no conversation) goes instead. Copy: call-outcome-copy.ts. */}
             <div data-testid="call-outcome-subheading" style={{ fontSize: "11px", color: "#64748B", marginBottom: "4px", lineHeight: 1.5 }}>
@@ -2743,6 +2859,10 @@ export default function SellerCallWorkspace() {
               <div style={{ fontSize: "16px", color: "#22C55E", fontWeight: 700, lineHeight: 1.6 }}>
                 {nextBestQuestion.message}
               </div>
+            ) : nextBestQuestion.kind === "operator_only" ? (
+              <div data-testid="next-best-question-operator-only" style={{ fontSize: "15px", color: "#94A3B8", fontWeight: 600, lineHeight: 1.6 }}>
+                {nextBestQuestion.message}
+              </div>
             ) : (
               <div>
                 <div style={{ fontSize: "19px", color: "#F8FAFC", fontWeight: 700, lineHeight: 1.4 }}>
@@ -2780,6 +2900,30 @@ export default function SellerCallWorkspace() {
               </div>
             ) : null}
           </div>
+
+          {/* Board 15 / Pass 1 F34 (INV-103) — the operator's underwriting
+              checklist. Deliberately OUTSIDE the Suggested Next Question card
+              and styled as a to-do, not a question to read aloud. */}
+          {operatorChecklist.length > 0 ? (
+            <div data-testid="operator-underwriting-checklist" style={{
+              marginTop: "12px", padding: "14px 18px", borderRadius: "10px",
+              background: "#0F172A", border: "1px dashed #334155",
+            }}>
+              <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>
+                Your underwriting checklist — not for the seller
+              </div>
+              <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
+                {operatorChecklist.map((q, i) => (
+                  <li key={i} style={{ fontSize: "12px", color: "#94A3B8", lineHeight: 1.5, padding: "3px 0" }}>
+                    ☐ {q.question}
+                  </li>
+                ))}
+              </ul>
+              <div style={{ fontSize: "11px", color: "#475569", marginTop: "6px" }}>
+                Handle these in Underwriting (ARV, repairs, deal assumptions). Don't ask the seller.
+              </div>
+            </div>
+          ) : null}
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginTop: "16px" }}>
             <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
@@ -2870,6 +3014,8 @@ export default function SellerCallWorkspace() {
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {/* Pass 1 F35: a visible label, not only placeholder text. */}
+                  <div style={{ fontSize: "11px", color: "#94A3B8", marginBottom: "-4px" }}>How the deal is structured (e.g. standard assignment)</div>
                   <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                     <input
                       value={transactionStructureInput}
@@ -2879,9 +3025,11 @@ export default function SellerCallWorkspace() {
                       style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
                     />
                     <label style={{ fontSize: "11px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <input type="checkbox" checked={transactionStructureNone} onChange={(e) => setTransactionStructureNone(e.target.checked)} /> None
+                      <input type="checkbox" checked={transactionStructureNone} onChange={(e) => setTransactionStructureNone(e.target.checked)} /> None known
                     </label>
                   </div>
+                  {/* Pass 1 F35: a visible label, not only placeholder text. */}
+                  <div style={{ fontSize: "11px", color: "#94A3B8", marginBottom: "-4px" }}>Closing and move-out (possession) expectations</div>
                   <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                     <input
                       value={closingPossessionInput}
@@ -2891,9 +3039,11 @@ export default function SellerCallWorkspace() {
                       style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
                     />
                     <label style={{ fontSize: "11px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <input type="checkbox" checked={closingPossessionNone} onChange={(e) => setClosingPossessionNone(e.target.checked)} /> None
+                      <input type="checkbox" checked={closingPossessionNone} onChange={(e) => setClosingPossessionNone(e.target.checked)} /> None known
                     </label>
                   </div>
+                  {/* Pass 1 F35: a visible label, not only placeholder text. */}
+                  <div style={{ fontSize: "11px", color: "#94A3B8", marginBottom: "-4px" }}>Known title problems (liens, heirs, probate)</div>
                   <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                     <input
                       value={titleComplicationsInput}
@@ -2903,7 +3053,7 @@ export default function SellerCallWorkspace() {
                       style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
                     />
                     <label style={{ fontSize: "11px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <input type="checkbox" checked={titleComplicationsNone} onChange={(e) => setTitleComplicationsNone(e.target.checked)} /> None
+                      <input type="checkbox" checked={titleComplicationsNone} onChange={(e) => setTitleComplicationsNone(e.target.checked)} /> None known
                     </label>
                   </div>
                   <div style={{ display: "flex", gap: "8px" }}>
@@ -3025,7 +3175,7 @@ export default function SellerCallWorkspace() {
                 data-testid="seller-call-estimate-repairs-link"
                 style={COMPACT_LINK_STYLE}
               >
-                <Home size={12} /> {screen.known.repairs !== null ? "Re-estimate Repairs" : "Estimate Repairs"}
+                <Home size={12} /> {screen.known.repairs !== null ? "Re-estimate repairs in Underwriting" : "Estimate repairs in Underwriting"}
               </Link>
             </div>
 

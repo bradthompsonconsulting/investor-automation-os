@@ -103,7 +103,7 @@ for (const p of [readinessPath, nbqPath, scriptPath]) {
 }
 
 const { computeOfferReadiness, CATEGORY_LABEL } = require(readinessPath);
-const { computeNextBestQuestion, computeQuestionQueue, CATEGORY_PRIORITY } = require(nbqPath);
+const { computeNextBestQuestion, computeQuestionQueue, computeOperatorChecklist, OPERATOR_CATEGORIES, CATEGORY_PRIORITY } = require(nbqPath);
 const {
   APPROVED_SCRIPT_LINES, APPROVED_SCRIPT_FOR_COLD_CATEGORY,
   SCRIPT_STAGE_ORDER, scriptLinesByStage,
@@ -226,8 +226,12 @@ function readiness(overrides) {
   const nbq = computeNextBestQuestion(r1, NO_FACTS, econ1);
   const queue = computeQuestionQueue(r1, NO_FACTS, econ1);
   check('queue[0] is always identical to computeNextBestQuestion (same engine, never a second)', queue[0], nbq);
-  check('all six categories UNKNOWN -> queue has all six entries', queue.length, 6);
-  check('queue follows CATEGORY_PRIORITY order', queue.map((q) => q.source.category), CATEGORY_PRIORITY);
+  /* Board 15 / Pass 1 F34: ARV and deal economics are the operator checklist, not seller questions.
+     The seller queue keeps CATEGORY_PRIORITY order minus those two; together the two lists still
+     cover all six categories, in the same order. */
+  check('all six categories UNKNOWN -> seller queue has the four seller categories', queue.length, 4);
+  check('seller queue follows CATEGORY_PRIORITY order, minus the operator categories', queue.map((q) => q.source.category), CATEGORY_PRIORITY.filter((c) => !OPERATOR_CATEGORIES.includes(c)));
+  check('the operator checklist holds ARV and deal economics, in priority order', computeOperatorChecklist(r1, NO_FACTS, econ1).map((q) => q.source.category), ['arv', 'deal_economics']);
   check('every queue entry is labeled a "question" (never offer_ready mixed in)', queue.every((q) => q.kind === 'question'), true);
 }
 

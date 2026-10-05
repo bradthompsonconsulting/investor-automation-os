@@ -50,7 +50,9 @@
 import type { Board8Economics, ExpectedSpread } from "./underwriting/board8-economics";
 
 export type DealBarCellValue =
-  | { kind: "value"; text: string }
+  /** `note`: Board 15 / Pass 1 F31 — a short status line under a value (e.g.
+   *  that a recorded Current Offer is not a supported offer). */
+  | { kind: "value"; text: string; note?: string }
   | { kind: "waiting"; text: string };
 
 export type DealBarCell = {
@@ -64,8 +66,42 @@ export type DealBarCell = {
  * concepts. Still used, now conditionally: only when the caller has not
  * yet entered a value (see the module header's B8-08/INV-51 note).
  */
-const SELLER_POSITION_WAITING = "WAITING on negotiation carrier";
-const CURRENT_OFFER_WAITING = "WAITING on negotiation semantics / carrier contract";
+/* Board 15 / Pass 1 F36: operator wording, replacing "WAITING on negotiation
+   carrier" / "WAITING on negotiation semantics / carrier contract". */
+const SELLER_POSITION_WAITING = "Not entered yet";
+const CURRENT_OFFER_WAITING = "None recorded";
+
+/**
+ * Board 15 / Pass 1 F31 (Jess, 2026-10-04). A Current Offer on file is a
+ * RECORDED negotiation fact. It is shown, never erased, and never implied to
+ * be supported: the note says whether current underwriting supports a
+ * figure at all (Max Supported Offer) and, when it does, states that Max
+ * beside it so the operator can compare. Display only.
+ *
+ * PR #126 re-review (Bones / Jess, 2026-10-05): "Recorded in GHL" applies
+ * ONLY to the amount confirmed saved (restored from the GHL carrier, or a
+ * save GHL read back). A typed amount not yet saved is a draft; a save in
+ * flight says so; a refused or unconfirmed save says it was not saved.
+ */
+export type CurrentOfferStatus = "recorded" | "draft" | "saving" | "failed" | "unconfirmed";
+
+/* Second re-review (Bones / Jess, 2026-10-05): a definite refusal (GHL said
+   no; nothing was written) is told apart from an uncertain result (the save
+   may have landed but could not be read back). */
+export const CURRENT_OFFER_STATUS_TEXT: Record<CurrentOfferStatus, string> = {
+  recorded: "Recorded in GHL",
+  draft: "Draft — not saved yet (saves when you leave the field)",
+  saving: "Saving to GHL…",
+  failed: "Not saved — GHL refused the save",
+  unconfirmed: "Save could not be confirmed — check the deal in GHL",
+};
+
+export function currentOfferNote(board8: Board8Economics | null, status: CurrentOfferStatus): string {
+  const support = board8 && board8.status === "calculated"
+    ? `supported Max ${money(board8.maxSupportedOffer)}`
+    : "not supported — ARV, repairs or deal economics not established";
+  return `${CURRENT_OFFER_STATUS_TEXT[status]} · ${support}`;
+}
 
 function money(n: number): string {
   return n.toLocaleString("en-US", {
@@ -87,8 +123,15 @@ export type DealBarInput = {
   repairs: number | null;
   /** B8-08 / INV-51: operator-entered session state, never a GHL carrier. `null` until a human types a value -- IAOS invents neither. */
   sellerPosition: number | null;
-  /** B8-08 / INV-51: operator-entered session state, never a GHL carrier. `null` until a human types a value -- IAOS invents no opening offer. */
+  /** The opportunity's Current Offer: restored from its GHL carrier on resume
+   *  (current-offer-carrier.ts) or typed by the operator. `null` when none is
+   *  recorded -- IAOS invents no opening offer. (Board 15: the old "never a GHL
+   *  carrier" note predated the carrier.) */
   currentOffer: number | null;
+  /** PR #126 re-review: whether `currentOffer` is the amount confirmed saved
+   *  in GHL ("recorded"), an unsaved draft, a save in flight, or a failed
+   *  save. Required, so no caller can fall back to "Recorded in GHL". */
+  currentOfferStatus: CurrentOfferStatus;
   /** B8-03's own output. Null only before an opportunity is selected. */
   board8: Board8Economics | null;
   /** B8-03's own output, computed with referenceKind "current_offer". Null only before an opportunity is selected. */
@@ -133,7 +176,12 @@ export function buildDealBarCells(input: DealBarInput): DealBarCell[] {
     factCell("arv", "ARV", input.arv, "Not yet established"),
     factCell("repairs", "Repairs", input.repairs, "Not yet established"),
     factCell("seller_position", "Seller Position", input.sellerPosition, SELLER_POSITION_WAITING),
-    factCell("current_offer", "Current Offer", input.currentOffer, CURRENT_OFFER_WAITING),
+    (() => {
+      const cell = factCell("current_offer", "Current Offer", input.currentOffer, CURRENT_OFFER_WAITING);
+      return cell.value.kind === "value"
+        ? { ...cell, value: { ...cell.value, note: currentOfferNote(input.board8, input.currentOfferStatus) } }
+        : cell;
+    })(),
     { key: "target", label: "Target", value: target },
     { key: "max", label: "Max", value: max },
     { key: "spread", label: "Spread", value: spread },

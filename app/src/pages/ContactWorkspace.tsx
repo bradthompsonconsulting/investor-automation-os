@@ -89,6 +89,7 @@ const RAIL_IDS: RailIds = {
     askingPrice: RAIL_CONFIG.fields.askingPrice,
   },
   sellerMAO: RAIL_CONFIG.opportunityFields.sellerMAO,
+  currentOffer: RAIL_CONFIG.opportunityFacts.currentOffer,
 };
 
 // ── Presentational helpers (replicated from Dashboard; purely visual, no
@@ -2038,7 +2039,8 @@ export default function ContactWorkspace() {
             background: "rgba(30,200,255,0.08)", color: "#1EC8FF", cursor: loading ? "not-allowed" : "pointer",
           }}
         >
-          <PhoneCall size={14} /> Open GHL to Call
+          {/* Pass 1 F29: the same name the Seller Call uses for the same action. */}
+          <PhoneCall size={14} /> Call with GHL Phone
         </button>
         {/* Board item #2A — the only entry point to /contacts/:id/underwriting.
             The route has existed since the Underwriting Workspace shipped and was
@@ -2289,62 +2291,6 @@ export default function ContactWorkspace() {
         />
       )}
 
-      {/* Record section (§5.4) — all six folders, collapsible. Live field defs +
-          folder names from GHL; ORDER is an IAOS presentation decision (Offer
-          first, then remaining folders ascending by GHL folder position), NOT
-          GHL's own order (see the folder-names effect). Section-scoped states
-          (D3), precedence unchanged: defsError/detailError → error; defs or
-          folder-names loading → loading; else fields. Collapsed bodies stay
-          MOUNTED (display:none) — every field row is in the DOM regardless of
-          collapse state. Nothing else on the page depends on defs/detail. */}
-      <div style={{ marginBottom: "18px" }}>
-        {(defsError || detailError) ? (
-          <div style={{ background: "#0D1B3E", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "10px", padding: "14px 16px", color: "#F87171", fontSize: "13px" }}>
-            Couldn't load fields: {defsError || detailError}
-          </div>
-        ) : (defsLoading || folderNamesLoading) ? (
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#334155", fontSize: "12px" }}>
-            <Loader2 size={13} className="animate-spin" /> Loading fields…
-          </div>
-        ) : (recordModel && folderNames) && (
-          <div data-testid="record-section" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {[...folderNames].map(([parentId, folderName]) => {
-              const folder = recordModel.find((r) => r.parentId === parentId);
-              const open = expanded.has(parentId);
-              return (
-                <div key={parentId} style={{ background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", overflow: "hidden" }}>
-                  <button
-                    onClick={() => setExpanded((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(parentId)) next.delete(parentId); else next.add(parentId);
-                      return next;
-                    })}
-                    style={{ width: "100%", display: "flex", alignItems: "center", gap: "8px", padding: "10px 16px", background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
-                  >
-                    {open ? <ChevronDown size={14} style={{ color: "#64748B" }} /> : <ChevronRight size={14} style={{ color: "#64748B" }} />}
-                    <span style={{ fontSize: "14px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif" }}>{folderName}</span>
-                  </button>
-                  <div style={{ display: open ? "flex" : "none", flexDirection: "column", gap: "6px", padding: "0 16px 12px" }}>
-                    {parentId === ADDITIONAL_INFO_FOLDER_ID
-                      ? groupAdditionalInfo(folder?.fields ?? []).map(({ subgroup, fields }) => (
-                          <div key={subgroup} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                            <div style={{ fontSize: "11px", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", color: "#64748B", marginTop: "4px" }}>{subgroup}</div>
-                            {fields.map((f) => (
-                              <FieldRow key={f.id} f={f} contactId={id} askAuthority={askAuthority} />
-                            ))}
-                          </div>
-                        ))
-                      : (folder?.fields ?? []).map((f) => (
-                          <FieldRow key={f.id} f={f} contactId={id} askAuthority={askAuthority} />
-                        ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
       {/* Two-column: left = work, right = context */}
       <div style={{ display: "flex", gap: "18px", alignItems: "flex-start", flexWrap: "wrap" }}>
         {/* LEFT — notes / the work */}
@@ -2418,6 +2364,65 @@ export default function ContactWorkspace() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Pass 1 F37 (INV-105): moved BELOW Notes / Conversation. Spec §7 puts
+          the notes (the work) directly under the actions; the six collapsed
+          record folders were pushing them to the bottom of the page. */}
+      {/* Record section (§5.4) — all six folders, collapsible. Live field defs +
+          folder names from GHL; ORDER is an IAOS presentation decision (Offer
+          first, then remaining folders ascending by GHL folder position), NOT
+          GHL's own order (see the folder-names effect). Section-scoped states
+          (D3), precedence unchanged: defsError/detailError → error; defs or
+          folder-names loading → loading; else fields. Collapsed bodies stay
+          MOUNTED (display:none) — every field row is in the DOM regardless of
+          collapse state. Nothing else on the page depends on defs/detail. */}
+      <div style={{ marginTop: "18px" }}>
+        {(defsError || detailError) ? (
+          <div style={{ background: "#0D1B3E", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "10px", padding: "14px 16px", color: "#F87171", fontSize: "13px" }}>
+            Couldn't load fields: {defsError || detailError}
+          </div>
+        ) : (defsLoading || folderNamesLoading) ? (
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#334155", fontSize: "12px" }}>
+            <Loader2 size={13} className="animate-spin" /> Loading fields…
+          </div>
+        ) : (recordModel && folderNames) && (
+          <div data-testid="record-section" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            {[...folderNames].map(([parentId, folderName]) => {
+              const folder = recordModel.find((r) => r.parentId === parentId);
+              const open = expanded.has(parentId);
+              return (
+                <div key={parentId} style={{ background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", overflow: "hidden" }}>
+                  <button
+                    onClick={() => setExpanded((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(parentId)) next.delete(parentId); else next.add(parentId);
+                      return next;
+                    })}
+                    style={{ width: "100%", display: "flex", alignItems: "center", gap: "8px", padding: "10px 16px", background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
+                  >
+                    {open ? <ChevronDown size={14} style={{ color: "#64748B" }} /> : <ChevronRight size={14} style={{ color: "#64748B" }} />}
+                    <span style={{ fontSize: "14px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif" }}>{folderName}</span>
+                  </button>
+                  <div style={{ display: open ? "flex" : "none", flexDirection: "column", gap: "6px", padding: "0 16px 12px" }}>
+                    {parentId === ADDITIONAL_INFO_FOLDER_ID
+                      ? groupAdditionalInfo(folder?.fields ?? []).map(({ subgroup, fields }) => (
+                          <div key={subgroup} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                            <div style={{ fontSize: "11px", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", color: "#64748B", marginTop: "4px" }}>{subgroup}</div>
+                            {fields.map((f) => (
+                              <FieldRow key={f.id} f={f} contactId={id} askAuthority={askAuthority} />
+                            ))}
+                          </div>
+                        ))
+                      : (folder?.fields ?? []).map((f) => (
+                          <FieldRow key={f.id} f={f} contactId={id} askAuthority={askAuthority} />
+                        ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
     </EditorGateContext.Provider>

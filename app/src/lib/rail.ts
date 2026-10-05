@@ -68,6 +68,9 @@ import type {
   RawField,
 } from "./underwriting/resolver-types";
 import { parseContactSeeds, parseOpportunityValues } from "./underwriting/resolver";
+/* Board 15 / Pass 1 F31: the SAME reader Seller Call and the Dashboard use for
+   the opportunity's Current Offer carrier, so the two screens cannot disagree. */
+import { readCurrentOfferFromOpportunity } from "./current-offer-carrier";
 import {
   opportunityCandidates,
   readOpportunityNumber,
@@ -137,6 +140,10 @@ export type RailDeal =
       opportunityId: string;
       ask: { value: number; source: AskSource } | null;
       mao: number | null;
+      /** Board 15 / Pass 1 F31: the opportunity's recorded Current Offer, read
+       *  by the shared carrier reader. A recorded negotiation fact, never a
+       *  claim that underwriting supports it. */
+      currentOffer: number | null;
     };
 
 export type RailCellView = {
@@ -219,6 +226,8 @@ export type RailIds = {
   oppFacts: OpportunityFactIds;
   contactSeeds: ContactSeedIds;
   sellerMAO: string;
+  /** Board 15 / Pass 1 F31: the opportunity Current Offer carrier id. */
+  currentOffer: string;
 };
 
 /**
@@ -272,7 +281,10 @@ export function deriveRailDeal(input: {
   // MAO — Opportunity ONLY. No fallback exists and none may be added.
   const mao = readOpportunityNumber(opp.customFields, ids.sellerMAO);
 
-  return { state: "resolved", opportunityName: selected.name, opportunityId: selected.id, ask, mao };
+  // Current Offer — the opportunity carrier only, through the shared reader.
+  const currentOffer = readCurrentOfferFromOpportunity(opp.customFields, ids.currentOffer);
+
+  return { state: "resolved", opportunityName: selected.name, opportunityId: selected.id, ask, mao, currentOffer };
 }
 
 /**
@@ -340,6 +352,11 @@ export function contactAskAuthority(deal: RailDeal): ContactAskAuthority {
  * "pending a fetch"; they are pending a carrier decision, and collapsing those
  * two reasons into one is what S1's comment forbade.
  */
+/** Board 15 / Pass 1 F31 / F36 operator wording for the two negotiation cells. */
+export const RAIL_SELLER_POSITION_NOT_RECORDED = "not recorded — enter it on the Seller Call";
+export const RAIL_OFFER_NONE = "none recorded";
+export const RAIL_OFFER_PROVENANCE = "Recorded on the deal · not an approved or supported offer";
+
 export function railCells(deal: RailDeal): RailCellView[] {
   type CellBody = Pick<RailCellView, "primary" | "provenance" | "tone" | "route" | "editor" | "authorityNote">;
   const waiting = (primary: string): CellBody =>
@@ -356,6 +373,14 @@ export function railCells(deal: RailDeal): RailCellView[] {
 
   let ask: CellBody;
   let mao: CellBody;
+  /* Board 15 / Pass 1 F31 (Jess, 2026-10-04): show an existing Current Offer
+     as a RECORDED negotiation fact, never as a supported offer, and say so. */
+  const offer: CellBody =
+    deal.state !== "resolved"
+      ? waiting(RAIL_OFFER_NONE)
+      : deal.currentOffer === null
+        ? waiting(RAIL_OFFER_NONE)
+        : { primary: RAIL_MONEY(deal.currentOffer), provenance: RAIL_OFFER_PROVENANCE, tone: "value", route: null, editor: null, authorityNote: null };
 
   switch (deal.state) {
     case "loading":
@@ -426,7 +451,9 @@ export function railCells(deal: RailDeal): RailCellView[] {
   return [
     { key: "seller-ask", label: "Seller Ask", ...ask },
     { key: "seller-mao", label: "Seller MAO", ...mao },
-    { key: "seller-position", label: "Current Seller Position", ...waiting("WAITING on negotiation carrier") },
-    { key: "investor-offer", label: "Current Investor Offer", ...waiting("WAITING on negotiation semantics / carrier contract") },
+    /* Board 15 / Pass 1 F36: no "negotiation carrier" jargon. Seller Position
+       has no GHL carrier; it is entered on the Seller Call for that session. */
+    { key: "seller-position", label: "Current Seller Position", ...waiting(RAIL_SELLER_POSITION_NOT_RECORDED) },
+    { key: "investor-offer", label: "Current Investor Offer", ...offer },
   ];
 }
