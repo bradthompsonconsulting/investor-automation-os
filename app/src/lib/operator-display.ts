@@ -29,3 +29,17 @@ export function displayContactName(name: string | null | undefined): string {
 // recorded anywhere in this repository, so no type is guessed: an empty
 // preview gets one neutral label instead of "(no preview)".
 export const NO_MESSAGE_TEXT = "No message text (call or activity)";
+
+// ── Automated document emails (Pass 1 F52) ──────────────────────────────────
+// GHL's document notification emails ("DOCUMENT SIGNED SUCCESSFULLY ...")
+// bury the seller's real emails. Conservative match: the email body, with any
+// HTML tags removed and whitespace collapsed and trimmed, STARTS WITH one of these
+// exact phrases (case-insensitive). Nothing is hidden irretrievably: matching
+// emails are grouped behind a collapsed row the operator can open. The phrase
+// list is a Jess decision (Board 15 B4 report); widen it only by ruling.
+export const AUTOMATED_DOCUMENT_EMAIL_PHRASES = ["DOCUMENT SIGNED SUCCESSFULLY"];
+
+export function isAutomatedDocumentEmail(body: string | null | undefined): boolean {
+  const text = (body ?? "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().toUpperCase();
+  return AUTOMATED_DOCUMENT_EMAIL_PHRASES.some((phrase) => text.startsWith(phrase));
+}

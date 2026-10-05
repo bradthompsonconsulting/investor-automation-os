@@ -4,7 +4,7 @@ import {
   MessageSquare, Mail, ArrowDownLeft, ArrowUpRight, Loader2, ExternalLink, FileText, Phone,
 } from "lucide-react";
 import { ghl, ghlContactDetailUrl, type ThreadRow, type ConvMessageRow } from "../lib/ghl";
-import { NO_MESSAGE_TEXT } from "../lib/operator-display";
+import { NO_MESSAGE_TEXT, isAutomatedDocumentEmail } from "../lib/operator-display";
 
 /**
  * Conversations — READ-ONLY inbox (Coverage Roadmap surface #3). Two-pane:
@@ -119,6 +119,25 @@ function MessageBubble({ m }: { m: ConvMessageRow }) {
   );
 }
 
+// Pass 1 F52 — GHL's automated document emails, grouped behind one collapsed
+// row. The bubbles mount only once the row is opened, so each one measures its
+// own overflow while visible (MessageBubble's Expand control). Display only.
+function AutomatedEmailGroup({ emails }: { emails: ConvMessageRow[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)} style={{ fontSize: "12px", color: "#64748B" }}>
+      <summary style={{ cursor: "pointer", padding: "4px 0" }}>
+        {emails.length} automated document email{emails.length === 1 ? "" : "s"}
+      </summary>
+      {open && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "6px" }}>
+          {emails.map((m) => <MessageBubble key={m.id || `${m.conversationId}-${m.dateAdded}`} m={m} />)}
+        </div>
+      )}
+    </details>
+  );
+}
+
 // A note renders PLAIN (§8.3): no direction, no Sent/Received tag, no alignment —
 // just a timestamp and the body. Notes are Brad's own record, not a message to anyone.
 function NoteEntry({ n }: { n: NoteRow }) {
@@ -213,6 +232,11 @@ export default function Conversations() {
   // (already oldest→newest from the function).
   const texts  = useMemo(() => displayMessages.filter((m) => m.messageType === "TYPE_SMS"),   [displayMessages]);
   const emails = useMemo(() => displayMessages.filter((m) => m.messageType === "TYPE_EMAIL"), [displayMessages]);
+  // Pass 1 F52 — GHL's automated document emails are grouped behind one
+  // collapsed row so they do not bury real emails. Display only; every email
+  // stays one click away. Rule: isAutomatedDocumentEmail (lib/operator-display).
+  const realEmails      = useMemo(() => emails.filter((m) => !isAutomatedDocumentEmail(m.body)), [emails]);
+  const automatedEmails = useMemo(() => emails.filter((m) => isAutomatedDocumentEmail(m.body)),  [emails]);
   // Notes oldest→newest by dateAdded (§8.6) — same read order as the message sections.
   const sortedNotes = useMemo(
     () => [...(notes ?? [])].sort((a, b) => new Date(a.dateAdded).getTime() - new Date(b.dateAdded).getTime()),
@@ -382,7 +406,10 @@ export default function Conversations() {
                   emptyLabel="No emails."
                   style={{ flex: 1 }}
                 >
-                  {emails.map((m) => <MessageBubble key={m.id || `${m.conversationId}-${m.dateAdded}`} m={m} />)}
+                  {realEmails.map((m) => <MessageBubble key={m.id || `${m.conversationId}-${m.dateAdded}`} m={m} />)}
+                  {automatedEmails.length > 0 && (
+                    <AutomatedEmailGroup key={selected.conversationId} emails={automatedEmails} />
+                  )}
                 </ThreadSection>
               </div>
             </>
