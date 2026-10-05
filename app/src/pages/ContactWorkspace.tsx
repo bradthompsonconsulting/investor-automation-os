@@ -2030,7 +2030,8 @@ export default function ContactWorkspace() {
             background: "rgba(30,200,255,0.08)", color: "#1EC8FF", cursor: loading ? "not-allowed" : "pointer",
           }}
         >
-          <PhoneCall size={14} /> Open GHL to Call
+          {/* Pass 1 F29: the same name the Seller Call uses for the same action. */}
+          <PhoneCall size={14} /> Call with GHL Phone
         </button>
         {/* Board item #2A — the only entry point to /contacts/:id/underwriting.
             The route has existed since the Underwriting Workspace shipped and was
