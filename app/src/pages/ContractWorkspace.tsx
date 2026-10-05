@@ -474,6 +474,21 @@ const SELLER_CONTRACT_FACT_GROUPS: { key: keyof SellerContractFactsReport; label
 ];
 const GROUP_LABEL_BY_KEY: Record<string, string> = Object.fromEntries(SELLER_CONTRACT_FACT_GROUPS.map((g) => [String(g.key), g.label]));
 
+// Board 15 Pass 1 F45 -- operator labels for internal keys that were rendered
+// raw. Display only; an unknown key still renders as itself.
+const AUTHORITY_LABEL: Record<string, string> = {
+  board8_agreement_reached_outcome: "the seller's accepted agreement (Seller Call)",
+};
+const VERIFICATION_STAGE_LABEL: Record<string, string> = {
+  binding: "Contract binding",
+  required_signers: "Required signers",
+  signer_mapping: "Signer mapping",
+  buyer_signer_identity: "Buyer signer identity",
+  signers: "Signers",
+  provider_completion: "Signing-provider completion",
+  artifact: "Executed PDF",
+};
+
 const CONTRACT_CHECKLIST_ITEMS: { key: ContractReadyItemKey; label: string }[] = [
   { key: "legal_owners", label: "Correct legal owners confirmed" },
   { key: "closing_timeline", label: "Closing timeline set" },
@@ -2813,7 +2828,7 @@ export default function ContractWorkspace() {
               <div>Max Supported Offer at acceptance: {moneyOrUnknown(screen.economics.economics.maxSupportedOffer)}</div>
               <div>Expected Spread at acceptance: {moneyOrUnknown(screen.economics.economics.expectedSpread)}</div>
               <div style={{ color: "#64748B", marginTop: "6px" }}>
-                Provenance: {screen.economics.authority} -- captured verbatim at the moment of acceptance, never recomputed here.
+                Provenance: {AUTHORITY_LABEL[screen.economics.authority] ?? screen.economics.authority} -- captured verbatim at the moment of acceptance, never recomputed here.
               </div>
             </div>
           </div>
@@ -3531,7 +3546,7 @@ export default function ContractWorkspace() {
                   <ul data-testid="contract-authorization-diff-list" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#F59E0B", lineHeight: 1.8 }}>
                     {differencesFromLastAuthorized.map((d) => (
                       <li key={`${d.group}.${d.field}`}>
-                        {d.group}.{d.field}: {d.previous ? `"${d.previous.text ?? d.previous.status}"` : "(none)"} → {d.current ? `"${d.current.text ?? d.current.status}"` : "(removed)"}
+                        {GROUP_LABEL_BY_KEY[d.group] ?? d.group} — {FIELD_LABELS[`${d.group}.${d.field}`] ?? d.field}: {d.previous ? `"${d.previous.text ?? d.previous.status}"` : "(none)"} → {d.current ? `"${d.current.text ?? d.current.status}"` : "(removed)"}
                       </li>
                     ))}
                   </ul>
@@ -4123,7 +4138,7 @@ export default function ContractWorkspace() {
                     </div>
                   ) : (
                     <div data-testid="contract-execution-full-result" style={{ fontSize: "11px", color: "#94A3B8" }}>
-                      <div style={{ color: "#EF4444", fontWeight: 700, marginBottom: "6px" }}>BLOCKED -- stage: <span style={{ fontFamily: "monospace" }}>{fullVerificationResult.failure.stage}</span></div>
+                      <div style={{ color: "#EF4444", fontWeight: 700, marginBottom: "6px" }}>BLOCKED -- stage: <span>{VERIFICATION_STAGE_LABEL[fullVerificationResult.failure.stage] ?? fullVerificationResult.failure.stage}</span></div>
                       <ul style={{ margin: 0, padding: "0 0 0 18px", lineHeight: 1.8 }}>
                         {fullVerificationResult.failure.reasons.map((r) => <li key={r.code} data-testid={`contract-execution-full-reason-${r.code}`}>{r.message}</li>)}
                       </ul>

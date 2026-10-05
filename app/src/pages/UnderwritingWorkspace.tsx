@@ -209,6 +209,14 @@ function Rail({ ask, arv, repairs, mao, waiting }: {
  * The only condition that disables the button is a write already in
  * flight, which prevents a second PUT over an outstanding one.
  */
+// Board 15 Pass 1 F45 -- operator labels for the approval carrier keys shown
+// in a partial-save report. Display only; the keys themselves are unchanged.
+const CARRIER_LABEL: Record<string, string> = {
+  endBuyerMaxPrice: "End-Buyer Maximum Purchase Price",
+  sellerMAO:        "Seller MAO",
+  assignmentMode:   "Assignment mode",
+};
+
 function ApproveControl({ state, onApprove, warningCount }: {
   state: ApproveState;
   onApprove: () => void;
@@ -253,7 +261,7 @@ function ApproveControl({ state, onApprove, warningCount }: {
               <span style={{ color: c.landed ? "#22C55E" : "#EF4444", width: "62px" }}>
                 {c.landed ? "saved" : "not saved"}
               </span>
-              <span style={{ color: "#94A3B8" }}>{c.key}</span>
+              <span style={{ color: "#94A3B8" }}>{CARRIER_LABEL[c.key] ?? c.key}</span>
             </div>
           ))}
         </div>
