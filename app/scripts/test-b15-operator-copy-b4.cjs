@@ -136,7 +136,7 @@ check('F55 persisted disposition evidenceSummary deliberately unchanged',
 check('F45 Contract provenance uses a label', /Provenance: \{AUTHORITY_LABEL\[screen\.economics\.authority\] \?\? screen\.economics\.authority\}/.test(contract), true);
 check('F45 Contract authorization diff uses group/field labels', /\{GROUP_LABEL_BY_KEY\[d\.group\] \?\? d\.group\} — \{FIELD_LABELS\[`\$\{d\.group\}\.\$\{d\.field\}`\] \?\? d\.field\}/.test(contract), true);
 check('F45 Contract BLOCKED stage uses a label', /\{VERIFICATION_STAGE_LABEL\[fullVerificationResult\.failure\.stage\] \?\? fullVerificationResult\.failure\.stage\}/.test(contract), true);
-check('F45 Underwriting partial-save carriers use labels', /\{CARRIER_LABEL\[c\.key\] \?\? c\.key\}/.test(underwriting) && /sellerMAO:\s+"Seller MAO"/.test(underwriting), true);
+// F45 Underwriting partial-save carrier labels: owned by PR #123 (test-b15-operator-copy.cjs), not duplicated here.
 
 // ── F41 / F42 / F46 Deal Calculator ─────────────────────────────────────
 check('F41 Deal Calculator title area says nothing is saved', /Scratchpad -- nothing here is saved\./.test(calc), true);
