@@ -694,7 +694,15 @@ value.
 - **Electrical: whole house and panel.** These are two separately approved
   rows, so both unanswered allowances are applied ($12,500 + $3,000). Whether
   the panel allowance overlaps a whole-house replacement is **flagged for Brad**
-  and not decided here.
+  and not decided here. *Jess ruling on the PR #124 review, 2026-10-04:*
+  whenever both electrical rows carry an amount, the estimator shows a
+  possible-overlap note beside the Preliminary Total, worded as unconfirmed;
+  nothing is deducted and no overlap is asserted.
+- **Deal Calculator itemized mode** (Jess ruling on the PR #124 review,
+  2026-10-04) uses the same operator model and the same display: selecting it
+  shows Known $0 / Unanswered $66,000 / Preliminary $66,000 at once, with
+  Windows unresolved, and it has the same Miscellaneous row. Its quick-entry
+  mode stays the default and stays blank until typed.
 - **Arithmetic consequence of rules 1 and 4, recorded because nobody chose the
   figure directly.** With nothing answered, the Preliminary Total is the sum of
   the six lump-sum rows' approved severe amounts:

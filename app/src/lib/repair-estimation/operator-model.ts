@@ -470,6 +470,22 @@ export function rowsTotal(estimate: RepairEstimate): number {
 }
 
 /**
+ * Jess ruling on the PR #124 review, item 3 (2026-10-04). The whole-house
+ * electrical and electrical panel rows are separately approved, so both carry
+ * their amounts; whether they cover some of the same work is unconfirmed.
+ * True when BOTH currently contribute a positive amount (an answer, a manual
+ * figure or an unanswered allowance) -- the operator is then told the overlap
+ * is possible. It decides nothing and deducts nothing.
+ */
+export function electricalOverlapPossible(result: OperatorEstimate): boolean {
+  const amountOf = (id: string): number => {
+    const line = result.estimate.lines.find((l) => l.id === id);
+    return line && line.outcome.kind === "priced" ? line.outcome.amount : 0;
+  };
+  return amountOf("electrical_whole_house") > 0 && amountOf("electrical_panel") > 0;
+}
+
+/**
  * Resolve the operator's answers into Known Repairs, Unanswered Allowances and
  * the Preliminary Total. An untouched estimator is simply every row unanswered.
  *

@@ -748,16 +748,22 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   // 18g. The page shows the three figures, the labels and the misc row.
   {
     const pageCode = fs.readFileSync(PAGE, 'utf8');
+    /* PR #124 review: the summary and the Miscellaneous row moved into the
+       shared RepairEstimateSummary component (rendered by Underwriting and the
+       Deal Calculator alike; rendered checks in test-repair-estimate-rendered.cjs). */
+    const summaryCode = fs.readFileSync(path.join(APP, 'src', 'components', 'RepairEstimateSummary.tsx'), 'utf8');
     check('18g page: Known repairs / Unanswered allowances / Preliminary total',
-      /<span>Known repairs<\/span><span>\{money\(result\.knownSubtotal\)\}<\/span>/.test(pageCode)
-        && /<span>Unanswered allowances \(\{UNANSWERED_ALLOWANCE_LABEL\}\)<\/span><span>\{money\(result\.unansweredSubtotal\)\}<\/span>/.test(pageCode)
-        && /Preliminary total/.test(pageCode), true);
+      /<RepairEstimateSummary result=\{result\} \/>/.test(pageCode)
+        && /<span>Known repairs<\/span><span data-testid="repair-known-subtotal">\{money\(result\.knownSubtotal\)\}<\/span>/.test(summaryCode)
+        && /\{money\(result\.unansweredSubtotal\)\}/.test(summaryCode)
+        && /Preliminary total/.test(summaryCode), true);
     check('18g page: the preliminary-policy notice, in the ruling wording',
-      pageCode.indexOf('"Preliminary policy allowances — not verified market averages and not confirmed repair needs."') !== -1, true);
+      summaryCode.indexOf('"Preliminary policy allowances — not verified market averages and not confirmed repair needs."') !== -1, true);
     check('18g page: each unanswered row shows its allowance or why it has none',
       /data-testid=\{`repair-unanswered-\$\{row\.system\}`\}/.test(pageCode), true);
     check('18g page: the Miscellaneous row has a description and an amount',
-      /data-testid="repair-misc-description"/.test(pageCode) && /data-testid="repair-misc-amount"/.test(pageCode), true);
+      /<MiscRepairRow misc=\{misc\} onChange=\{commitMisc\} \/>/.test(pageCode)
+        && /data-testid=\{`\$\{testIdPrefix\}-description`\}/.test(summaryCode) && /data-testid=\{`\$\{testIdPrefix\}-amount`\}/.test(summaryCode), true);
     check('18g page: a misc edit invalidates approval like any other edit',
       /function commitMisc\(next: MiscAnswer\) \{\s*setMisc\(next\);\s*invalidate\(\);/.test(pageCode), true);
     check('18g page: no fallback branch survives', /mode === "fallback"/.test(pageCode), false);

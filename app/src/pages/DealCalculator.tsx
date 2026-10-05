@@ -20,9 +20,10 @@ import { buildDealCalculatorBarCells, type DealCalcBarCell } from "../lib/deal-c
 import { parseAcquisitionPriceInput } from "../lib/seller-call-negotiation";
 import {
   OPERATOR_ROWS, EMPTY_ANSWER, applyCondition, applyAmount, applyQuantity,
-  quantitySpecFor, operatorEstimate, isUntouched,
-  type Answers, type OperatorCondition,
+  quantitySpecFor, operatorEstimate, EMPTY_MISC,
+  type Answers, type MiscAnswer, type OperatorCondition,
 } from "../lib/repair-estimation/operator-model";
+import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstimateSummary";
 import { computeRepairEstimate } from "../lib/repair-estimation/compute";
 import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
 
@@ -201,17 +202,26 @@ export default function DealCalculator() {
      construction, exactly like Board 6's real UI. */
   const [repairsMode, setRepairsMode] = useState<"quick" | "detailed">("quick");
   const [repairAnswers, setRepairAnswers] = useState<Answers>({});
+  /* Board 15 / PR #124 review (Jess, 2026-10-04): Miscellaneous / Other
+     repairs, the same operator-model row Underwriting has, counted once. */
+  const [repairMisc, setRepairMisc] = useState<MiscAnswer>(EMPTY_MISC);
   const [repairRevision, setRepairRevision] = useState(0);
 
   const detailedEstimate = useMemo(
-    () => operatorEstimate(repairAnswers, (lines) => computeRepairEstimate({ lines, property: { squareFeet: null, bathroomCount: null } })),
-    [repairAnswers],
+    () => operatorEstimate(repairAnswers, (lines) => computeRepairEstimate({ lines, property: { squareFeet: null, bathroomCount: null } }), repairMisc),
+    [repairAnswers, repairMisc],
   );
 
+  /* Quick entry stays the default and stays blank until typed. Selecting the
+     itemized mode uses Brad's 2026-10-04 itemized allowances AT ONCE: with
+     nothing answered that is Known $0 + Unanswered $66,000 = Preliminary
+     $66,000, Windows unresolved -- the same figure Underwriting shows (PR
+     #124 review, Jess ruling item 1). The old "untouched itemizer = no
+     figure" scratchpad rule is retired with the $20,000 fallback. */
   const repairs =
     repairsMode === "quick"
       ? (repairsQuickParsed.kind === "value" ? repairsQuickParsed.value : null)
-      : (isUntouched(repairAnswers) ? null : detailedEstimate.total);
+      : detailedEstimate.total;
 
   function bumpRepairRevision() {
     setRepairRevision((r) => r + 1);
@@ -455,12 +465,15 @@ export default function DealCalculator() {
                   </div>
                 );
               })}
-              <div data-testid="deal-calc-repairs-detailed-total" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "4px" }}>
-                {/* 2026-10-04 amendment: Known / Unanswered / Preliminary. Untouched,
-                    this scratchpad still uses no repairs figure at all (above). */}
-                {isUntouched(repairAnswers)
-                  ? "Not used yet -- answer a row to include itemized repairs"
-                  : `Known ${money(detailedEstimate.knownSubtotal)} + unanswered allowances ${money(detailedEstimate.unansweredSubtotal)} = ${money(detailedEstimate.total)} preliminary${detailedEstimate.estimate.isCompleteAllowance ? "" : ` (excludes ${detailedEstimate.estimate.unpricedRisks.length} unresolved)`}`}
+              {/* PR #124 review: the same Miscellaneous row and the same
+                  Known / Unanswered / Preliminary summary Underwriting renders. */}
+              <MiscRepairRow
+                misc={repairMisc}
+                onChange={(next) => { setRepairMisc(next); bumpRepairRevision(); }}
+                testIdPrefix="deal-calc-repair-misc"
+              />
+              <div data-testid="deal-calc-repairs-detailed-total">
+                <RepairEstimateSummary result={detailedEstimate} />
               </div>
             </div>
           )}
