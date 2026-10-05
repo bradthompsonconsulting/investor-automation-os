@@ -73,6 +73,37 @@ check('the contract line is the pointer for every stage, including Under Contrac
     /\.then\(\(p\) => \{\s*if \(currentIdRef\.current !== forId\) return;[^\n]*\n\s*setPipelineStages\(p\.stages\);\s*setOpps\(opportunitiesForContact\(p\.opportunities, forId\)\);\s*\}\)/.test(page), true);
 }
 
+// ── PR #129 re-review: every contact-scoped read that sets state is guarded ──
+{
+  const page = fs.readFileSync(path.join(APP, 'src/pages/ContactWorkspace.tsx'), 'utf8');
+  const body = (startMarker, endMarker) => {
+    const i = page.indexOf(startMarker);
+    const j = page.indexOf(endMarker, i);
+    return i !== -1 && j > i ? page.slice(i, j) : '';
+  };
+  const refreshAll = body('const refreshAll = useCallback(async () => {', '}, [id]);');
+  check('refreshAll captures the contact it started for',
+    /const forId = id;/.test(refreshAll), true);
+  check('refreshAll drops a late SUCCESS for a contact no longer shown',
+    /await Promise\.all\(\[[\s\S]*?\]\);\s*if \(currentIdRef\.current !== forId\) return;/.test(refreshAll), true);
+  check('refreshAll drops a late ERROR for a contact no longer shown',
+    /catch \(e\) \{\s*if \(currentIdRef\.current !== forId\) return;\s*setRefreshError/.test(refreshAll), true);
+  const refreshOpps = body('const refreshOpportunities = useCallback(async () => {', '}, [id]);');
+  check('refreshOpportunities (after an Ask save) drops a late completion',
+    /const forId = id;\s*const pipeline = await ghl\.opportunities\.listPipeline\(\);\s*if \(currentIdRef\.current !== forId\) return;/.test(refreshOpps), true);
+  for (const [name, start, end] of [
+    ['loadContact', 'function loadContact() {', 'function loadNotes() {'],
+    ['loadConversations', 'function loadConversations() {', 'function loadDetail() {'],
+    ['loadDetail', 'function loadDetail() {', 'function loadOpportunities() {'],
+  ]) {
+    const b = body(start, end);
+    checks++;
+    const ok = /const forId = id;/.test(b) && /currentIdRef\.current [!=]== forId/.test(b);
+    if (!ok) failures++;
+    console.log(`${ok ? 'PASS' : 'FAIL'}  ${name} is guarded against contact changes`);
+  }
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\nF38 contact deal status: ${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);

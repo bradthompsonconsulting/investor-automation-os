@@ -1375,20 +1375,29 @@ export default function ContactWorkspace() {
      are newer-of by design and clearing them could revert a write GHL has
      not yet surfaced. */
   const refreshAll = useCallback(async () => {
+    /* PR #129 re-review (Bones / Jess, 2026-10-05): the tab-return refresh is
+       guarded like every initial read. The contact it started for is
+       captured; if the operator has moved on by the time it completes -- or
+       fails -- nothing it read (contact, detail, deals, stage names) and no
+       error is applied to the contact now shown. */
+    const forId = id;
     setRefreshError(null);
     try {
       const [c, d, pipeline] = await Promise.all([
-        ghl.contacts.getOne(id),
-        ghl.contacts.getDetail(id),
+        ghl.contacts.getOne(forId),
+        ghl.contacts.getDetail(forId),
         ghl.opportunities.listPipeline(),
       ]);
+      if (currentIdRef.current !== forId) return;   // started for a contact no longer shown
       setContact(c);
       setDetail(d);
-      setOpps(opportunitiesForContact(pipeline.opportunities, id));
+      setPipelineStages(pipeline.stages);
+      setOpps(opportunitiesForContact(pipeline.opportunities, forId));
       loadNotes();
       loadConversations();
       setRefreshCount((n) => n + 1);
     } catch (e) {
+      if (currentIdRef.current !== forId) return;
       setRefreshError((e as Error).message);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1537,8 +1546,15 @@ export default function ContactWorkspace() {
      editor says it could not refresh. */
   const [saveRefreshCount, setSaveRefreshCount] = useState(0);
   const refreshOpportunities = useCallback(async () => {
+    /* PR #129 re-review: the save-triggered deal re-read is guarded too, so a
+       late completion for the previous contact never replaces this one's
+       deals. A failure still propagates to the caller (the Ask editor), which
+       is itself scoped to the contact it was opened on. */
+    const forId = id;
     const pipeline = await ghl.opportunities.listPipeline();
-    setOpps(opportunitiesForContact(pipeline.opportunities, id));
+    if (currentIdRef.current !== forId) return;
+    setPipelineStages(pipeline.stages);
+    setOpps(opportunitiesForContact(pipeline.opportunities, forId));
     setSaveRefreshCount((n) => n + 1);
   }, [id]);
 

@@ -59,7 +59,8 @@ const detail = (id) => ({ contact: { id, firstName: CONTACTS[id].first, lastName
 
 let log = [];
 let holds = [];
-let currentNav = null;   // which contact the page was opened for when a request arrived
+let currentNav = null;
+let failNextPipeline = false;   // R2: the next released pipeline read answers 500   // which contact the page was opened for when a request arrived
 function hold(match) {
   let release; let onHit;
   const h = { match, released: new Promise((r) => { release = r; }), hit: new Promise((r) => { onHit = r; }) };
@@ -123,6 +124,10 @@ async function main() {
       log.push(req);
       const h = holds.find((x) => !x.used && x.match(req));
       if (h) { h.used = true; h.onHit(req); await h.released; }
+      if (failNextPipeline && req.kind === 'ghl-opportunities') {
+        failNextPipeline = false;
+        return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'fixture: injected refresh failure' }) });
+      }
       const res = answer(req);
       return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
     });
@@ -172,6 +177,63 @@ async function main() {
     check('B\'s Opportunity Ask stays B\'s ($222,222), never A\'s ($111,111)', t.includes('$222,222') && !t.includes('$111,111'));
     check('A\'s deal name never appears on B\'s page', !t.includes('Alpha deal'));
     check('B\'s name is still the one shown', t.includes('Bravo') && !t.includes('Alpha Fixture'));
+    // ── Re-review (Bones / Jess 2026-10-05): the TAB-RETURN refresh (refreshAll) ──
+    // A hidden -> visible transition triggers refreshAll for the contact shown.
+    const tabReturn = async () => {
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+        document.dispatchEvent(new Event('visibilitychange'));
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+    };
+    const openFresh = async (who, first) => {
+      currentNav = null; await go('/'); await page.waitForTimeout(300);
+      currentNav = who; await go(`/contacts/${who}`);
+      await until(async () => (await text()).includes(`Seed note for ${first}`), `${first} loaded`);
+      await until(async () => (await stage()) !== null, `${first} stage`);
+    };
+
+    // R1 — A's refresh held -> move to B -> release A: B keeps its own data.
+    await openFresh(A, 'Alpha');
+    check('R1 setup: A shows its own stage', (await stage()) === 'Seller Offer Sent', await stage());
+    log = []; holds = [];
+    let refreshing = true;
+    const rPipe = hold((r) => refreshing && r.kind === 'ghl-opportunities' && r.nav === A);
+    const rDetail = hold((r) => refreshing && r.kind === 'detail' && r.contact === A);
+    const rRow = hold((r) => refreshing && r.kind === 'row' && r.contact === A);
+    await tabReturn();
+    await Promise.all([rPipe.hit, rDetail.hit, rRow.hit]);
+    check('R1 the tab return started A\'s refresh (pipeline, detail and contact reads held)', true);
+    refreshing = false;
+    currentNav = B; await go(`/contacts/${B}`);
+    await until(async () => (await stage()) === 'New Lead - Seller', 'B stage during A refresh');
+    await until(async () => (await text()).includes('Seed note for Bravo'), 'B notes');
+    rPipe.release(); rDetail.release(); rRow.release();
+    await page.waitForTimeout(1500);
+    {
+      const t = await text();
+      check('R1 after A\'s late refresh, B keeps B\'s stage', (await stage()) === 'New Lead - Seller', await stage());
+      check('R1 B keeps B\'s Ask and never shows A\'s', t.includes('$222,222') && !t.includes('$111,111'));
+      check('R1 B keeps B\'s contact (no Alpha name, no A deal)', t.includes('Bravo') && !t.includes('Alpha Fixture') && !t.includes('Alpha deal'));
+    }
+
+    // R2 — A's refresh FAILS after the move: no refresh error on B.
+    await openFresh(A, 'Alpha');
+    log = []; holds = [];
+    refreshing = true;
+    const fPipe = hold((r) => refreshing && r.kind === 'ghl-opportunities' && r.nav === A);
+    await tabReturn();
+    await fPipe.hit;
+    refreshing = false;
+    currentNav = B; await go(`/contacts/${B}`);
+    await until(async () => (await stage()) === 'New Lead - Seller', 'B stage before A failure');
+    failNextPipeline = true;   // A's held pipeline read answers 500 when released
+    fPipe.release();
+    await page.waitForTimeout(1500);
+    check('R2 A\'s failed refresh puts no refresh error on B', (await page.getByTestId('refresh-error').count()) === 0);
+    check('R2 B still shows its own stage', (await stage()) === 'New Lead - Seller', await stage());
+
     check('no write was sent', !log.some((r) => r.kind === 'write'), log.filter((r) => r.kind === 'write'));
     check('no request left the machine', foreign.length === 0, foreign);
     check('no page errors', pageErrors.length === 0, pageErrors);
