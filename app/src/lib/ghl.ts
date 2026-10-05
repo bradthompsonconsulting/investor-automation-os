@@ -1085,7 +1085,16 @@ export const ghl = {
         throw new Error(`setCurrentOffer PUT → ${putStatus}: ${text}`);
       }
 
-      const opportunity = await readbackOpportunity("setCurrentOffer", opportunityId, putRes);
+      /* PR #126 fifth re-review: a readback failure carries the PUT's status, so
+         the caller can tell a finished write (200) from an indeterminate one
+         (202) whose request may still land. */
+      let opportunity: any;
+      try {
+        opportunity = await readbackOpportunity("setCurrentOffer", opportunityId, putRes);
+      } catch (e) {
+        if (e && typeof e === "object") (e as { putStatus?: number }).putStatus = putStatus;
+        throw e;
+      }
       const entry = (opportunity.customFields ?? [])
         .find((field: any) => field.id === fieldId) ?? null;
       const observed = entry === null ? null : readSingularFieldValue(entry);

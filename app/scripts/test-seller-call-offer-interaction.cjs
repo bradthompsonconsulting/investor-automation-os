@@ -147,6 +147,20 @@ async function main() {
         return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
       }
       if (h) { h.used = true; h.onHit(req); await h.released; }
+      /* An indeterminate submission: `lose` drops the response (the browser
+         sees a network failure) -- 'landed' applies the write first, 'late'
+         leaves it for the test to apply later (a request still on its way);
+         `reply` answers with a given status/body (e.g. 502, or the server's
+         409 indeterminate), applying the write when `applies` is set. */
+      if (req.kind === 'write' && h && h.lose) {
+        if (h.lose === 'landed') db[req.target] = req.args.value;
+        if (h.lose === 'late') h.lateWrite = () => { db[req.target] = req.args.value; };
+        return route.abort('failed');
+      }
+      if (req.kind === 'write' && h && h.reply) {
+        if (h.applies) db[req.target] = req.args.value;
+        return route.fulfill({ status: h.reply.status, contentType: 'application/json', body: JSON.stringify(h.reply.body) });
+      }
       if (req.kind === 'write' && (h ? h.refuse : refuseNext > 0)) {
         if (!h) refuseNext -= 1;
         return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'fixture: write refused' }) });
@@ -179,7 +193,15 @@ async function main() {
       await input().waitFor({ timeout: 30000 });
       await until(async () => (await page.locator('body').innerText()).includes(`${FIRST[c]} deal`) || (await input().isVisible()), `${c} loaded`);
     };
-    const fresh = async (opts, c) => { resetDb(opts); log = []; holds = []; refuseNext = 0; failReadbackNext = 0; await open(c); };
+    /* Each case starts from a full page load: the Current Offer save
+       coordinator is shared by the whole loaded app (an unresolved deal
+       stays blocked across in-app navigation), so only a reload resets it. */
+    const fresh = async (opts, c) => {
+      resetDb(opts); log = []; holds = []; refuseNext = 0; failReadbackNext = 0;
+      await page.goto(`${base}/scripts/harness/contact-isolation/index.html`);
+      await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
+      await open(c);
+    };
     const noteStarts = async (prefix) => ((await note()) || '').startsWith(prefix);
 
     // 1 — typing is a draft and sends nothing.
@@ -390,6 +412,75 @@ async function main() {
     await until(async () => (await input().inputValue()) === '410000', 'A restored').catch(() => {});
     await until(async () => noteStarts('Recorded in GHL'), 'A recorded').catch(() => {});
     check('14 back on A: its verified 410000 is restored and recorded', (await input().inputValue()) === '410000' && (await noteStarts('Recorded in GHL')) && (await truthful()), { v: await input().inputValue(), note: await note() });
+
+    const unresolvedShown = async () => (await page.getByTestId('current-offer-unresolved').count()) > 0;
+
+    // 15 — Bones's uncertain-submission reproduction: the $410k write's response is lost and
+    //      the request is still on its way; the operator then enters $420k.
+    await fresh({ aOffer: 300000 }, A);
+    await until(async () => noteStarts('Recorded in GHL'), 'restored 300000');
+    await input().fill('410000');
+    h = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 410000); h.lose = 'late';
+    h.release();                                   // the browser gets a network failure; GHL has not applied it yet
+    await input().press('Tab');
+    await until(async () => unresolvedShown(), 'unresolved shown').catch(() => {});
+    check('15 a lost response shows the deal as Unresolved, clearly', (await unresolvedShown()) && (await noteStarts('Unresolved')), await note());
+    check('15 the input is locked (read-only) for that deal', (await input().isEditable()) === false);
+    check('15 nothing is labelled "Recorded in GHL" -- not even the earlier verified 300000', !(await noteStarts('Recorded in GHL')));
+    await input().evaluate((el) => el.blur());
+    await page.waitForTimeout(500);
+    check('15 no further submission is sent for the deal (no retry)', writes(opp(A)).length === 1, writes(opp(A)).map((r) => r.args.value));
+    h.lateWrite();                                 // the earlier request lands now
+    check('15 setup: GHL now holds 410000 from the late request', db[opp(A)] === 410000);
+    await go('/'); await page.waitForTimeout(300);
+    await go(`/contacts/${A}/seller-call`);        // leave and come back: a fresh carrier snapshot is read
+    await until(async () => (await input().inputValue()) !== '', 'A back').catch(() => {});
+    await page.waitForTimeout(500);
+    check('15 a snapshot read after navigating back does not clear it: still Unresolved, still locked', (await noteStarts('Unresolved')) && (await input().isEditable()) === false, await note());
+    check('15 still exactly one write sent for the deal', writes(opp(A)).length === 1, writes(opp(A)).map((r) => r.args.value));
+    await go(`/contacts/${B}/seller-call`);
+    await until(async () => (await page.locator('body').innerText()).includes('Bravo'), 'B on screen').catch(() => {});
+    await input().fill('410000'); await input().press('Tab');
+    await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(B)] === 410000, 'B recorded').catch(() => {});
+    check('15 another deal is unaffected: B saves and records', (await noteStarts('Recorded in GHL')) && db[opp(B)] === 410000, { note: await note(), b: db[opp(B)] });
+
+    // 16 — a queued save behind an indeterminate one is dropped, never released.
+    await fresh({}, A);
+    await input().fill('410000');
+    h = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 410000); h.lose = 'landed';
+    await input().press('Tab');
+    await h.hit;
+    await input().fill('420000'); await input().press('Tab');   // queued behind 410000
+    check('16 setup: 420000 is queued, not sent', writesOf(420000) === 0 && (await noteStarts('Saving to GHL…')), await note());
+    h.release();                                   // 410000 landed; the response is lost
+    await until(async () => unresolvedShown(), 'unresolved').catch(() => {});
+    await page.waitForTimeout(800);
+    check('16 the queued 420000 is never sent', writesOf(420000) === 0, writes(opp(A)).map((r) => r.args.value));
+    check('16 the deal is Unresolved, not Recorded, though GHL happens to hold 410000', (await noteStarts('Unresolved')) && db[opp(A)] === 410000, await note());
+
+    // 17 — a 502 and the server's own "indeterminate" answer are also unresolved; a snapshot readback cannot clear the 202.
+    for (const [label, reply, applies] of [
+      ['502', { status: 502, body: { error: 'bad gateway' } }, false],
+      ['server indeterminate', { status: 409, body: { outcome: 'indeterminate', error: 'Another write is in progress or unresolved; inspect before retrying' } }, true],
+    ]) {
+      await fresh({}, A);
+      await input().fill('410000');
+      h = hold((r) => r.kind === 'write' && r.target === opp(A)); h.reply = reply; h.applies = applies; h.release();
+      await input().press('Tab');
+      await until(async () => unresolvedShown(), `${label} unresolved`).catch(() => {});
+      check(`17 ${label}: Unresolved and locked, never "Recorded"`, (await noteStarts('Unresolved')) && (await input().isEditable()) === false, { note: await note(), a: db[opp(A)] });
+    }
+
+    // 18 — determinate failures do NOT block: a refusal and a readback failure after a 200 leave the deal usable.
+    await fresh({}, A);
+    await input().fill('410000');
+    refuseNext = 1;
+    await input().press('Tab');
+    await until(async () => noteStarts('Not saved'), 'refused');
+    check('18 a refusal is "Not saved", not Unresolved, and the input stays editable', (await noteStarts('Not saved — GHL refused the save')) && !(await unresolvedShown()) && (await input().isEditable()), await note());
+    await input().fill('420000'); await input().press('Tab');
+    await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(A)] === 420000, 'recorded after refusal').catch(() => {});
+    check('18 the next save proceeds and records', (await noteStarts('Recorded in GHL')) && db[opp(A)] === 420000, { note: await note(), a: db[opp(A)] });
 
     check('no request left the machine', foreign.length === 0, foreign);
     check('no page errors', pageErrors.length === 0, pageErrors);

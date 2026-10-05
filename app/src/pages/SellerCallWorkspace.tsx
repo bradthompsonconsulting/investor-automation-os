@@ -467,6 +467,19 @@ function OfferReadinessChecklist({ readiness }: { readiness: ReadinessResult }) 
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
+/* PR #126 (Bones / Jess, 2026-10-05): ONE Current Offer save coordinator for
+   the whole loaded app -- not per page instance -- so an unresolved deal stays
+   blocked when the operator leaves Seller Call or switches deals, and a save
+   that completes after the page unmounts is still recorded against its deal.
+   See lib/current-offer-save-coordinator.ts. */
+let sharedOfferSaves: OfferSaveCoordinator | null = null;
+function offerSaveCoordinator(): OfferSaveCoordinator {
+  if (sharedOfferSaves === null) {
+    sharedOfferSaves = createOfferSaveCoordinator((oppId, amount) => ghl.opportunities.setCurrentOffer(oppId, amount));
+  }
+  return sharedOfferSaves;
+}
+
 export default function SellerCallWorkspace() {
   const { id } = useParams<{ id: string }>();
   const contactId = id ?? "";
@@ -531,15 +544,9 @@ export default function SellerCallWorkspace() {
      coordinator.ts). It owns the de-dupe, the in-flight/queued state, the
      verified amount and the failure for each deal; the page only asks it.
      `offerSaveVersion` re-renders the page when any of that changes. */
+  const offerSaves = offerSaveCoordinator();
   const [offerSaveVersion, setOfferSaveVersion] = useState(0);
-  const offerSavesRef = useRef<OfferSaveCoordinator | null>(null);
-  if (offerSavesRef.current === null) {
-    offerSavesRef.current = createOfferSaveCoordinator(
-      (oppId, amount) => ghl.opportunities.setCurrentOffer(oppId, amount),
-      () => setOfferSaveVersion((v) => v + 1),
-    );
-  }
-  const offerSaves = offerSavesRef.current;
+  useEffect(() => offerSaves.subscribe(() => setOfferSaveVersion((v) => v + 1)), [offerSaves]);
 
   /* The one already-granted override, if any -- see seller-call-
      negotiation.ts's own header for why this is a DIFFERENT concept from
@@ -1871,19 +1878,35 @@ export default function SellerCallWorkspace() {
            accept note, call timestamp, in that order -- and every failure
            message live in lib/seller-call-accept-writes.ts, where they are
            tested directly. */
-        /* The accept write goes through the same per-deal save coordinator
-           as the blur: it waits for any save of this deal in flight, and
-           only its own verified readback records the accepted amount. */
-        const result = await runConfirmAcceptWrites(
-          {
-            setCurrentOffer: (opportunityId, value) => offerSaves.saveForAccept(opportunityId, value),
-            createNote: (id, body) => ghl.notes.create(id, body),
-            setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso),
-          },
-          { contactId, opportunityId: screen.opportunity.id, offerValue: freeze.value, note: attempt.note, at: nowIso },
-        );
+        /* PR #126 (Jess, 2026-10-05): the frozen accepted price is protected
+           for the WHOLE sequence -- offer write + readback, acceptance note,
+           last-touch. beginAccept drops queued (never-sent) blur saves and
+           ignores new ones until endAccept; they are never replayed after.
+           The offer write goes through the same per-deal queue, behind any
+           save already in flight. An unknown acceptance outcome leaves the
+           deal unresolved. Not atomic: partial failures are reported by the
+           accept module exactly as before. */
+        const acceptOppId = screen.opportunity.id;
+        if (!offerSaves.beginAccept(acceptOppId)) {
+          setOutcomeActionError(offerSaves.unresolvedMessage(acceptOppId) ?? "Cannot record acceptance -- an acceptance for this deal is already in progress.");
+          return;
+        }
+        let result: Awaited<ReturnType<typeof runConfirmAcceptWrites>>;
+        try {
+          result = await runConfirmAcceptWrites(
+            {
+              setCurrentOffer: (opportunityId, value) => offerSaves.saveForAccept(opportunityId, value),
+              createNote: (id, body) => ghl.notes.create(id, body),
+              setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso),
+            },
+            { contactId, opportunityId: acceptOppId, offerValue: freeze.value, note: attempt.note, at: nowIso },
+          );
+        } finally {
+          offerSaves.endAccept(acceptOppId, false);
+        }
+        if (result.stage === "note_failed") offerSaves.endAccept(acceptOppId, true);
         if (result.stage === "offer_failed" || result.stage === "offer_unconfirmed") {
-          setOutcomeActionError(result.message);
+          setOutcomeActionError(offerSaves.unresolvedMessage(acceptOppId) ?? result.message);
           return;
         }
         if (result.stage === "note_failed") {
@@ -2399,6 +2422,7 @@ export default function SellerCallWorkspace() {
                   value={currentOfferInput}
                   onChange={(e) => handleCurrentOfferChange(e.target.value)}
                   onBlur={() => { void commitCurrentOffer(); }}
+                  readOnly={offerSaves.isLocked(dealBarOppId)}
                   placeholder="Not yet entered — IAOS never sets this"
                   style={{
                     background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px",
@@ -2420,6 +2444,11 @@ export default function SellerCallWorkspace() {
                 {offerSaves.statusFor(dealBarOppId, currentOffer) === "saving" ? (
                   <span data-testid="current-offer-write-saving" style={{ color: "#64748B", fontSize: "10px" }}>
                     Saving Current Offer…
+                  </span>
+                ) : null}
+                {offerSaves.unresolvedMessage(dealBarOppId) !== null ? (
+                  <span data-testid="current-offer-unresolved" style={{ color: "#F59E0B", fontSize: "10px", maxWidth: "220px" }}>
+                    {offerSaves.unresolvedMessage(dealBarOppId)}
                   </span>
                 ) : null}
                 {offerSaves.failureFor(dealBarOppId, currentOffer) !== null ? (
