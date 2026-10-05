@@ -22,7 +22,7 @@ import { computeOfferReadiness, CATEGORY_LABEL, type ReadinessResult, type Mater
 import { computeNextBestQuestion, computeQuestionQueue, computeOperatorChecklist, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { FullScriptDrawer } from "../components/FullScriptDrawer";
 import { SellerCallVoiceControls } from "../components/SellerCallVoiceControls";
-import { buildDealBarCells, type CurrentOfferStatus, type DealBarCell } from "../lib/seller-call-deal-bar";
+import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
 import { buildOfferReadinessInputs } from "../lib/seller-call-readiness-inputs";
 import { latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
 import {
@@ -64,6 +64,7 @@ import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite"
    `seller-call-negotiation.ts`'s pure functions already work. */
 import { currentOfferWriteGate, acceptedPriceFreezeValue, readCurrentOfferFromOpportunity, checkCurrentOfferIntegrity } from "../lib/current-offer-carrier";
 import { runConfirmAcceptWrites, confirmAcceptOffered, recoverLastCallAttempt } from "../lib/seller-call-accept-writes";
+import { createOfferSaveCoordinator, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
 
 /**
  * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49,
@@ -467,31 +468,6 @@ function OfferReadinessChecklist({ readiness }: { readiness: ReadinessResult }) 
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-/**
- * PR #126 second re-review (Bones / Jess, 2026-10-05). The Current Offer
- * label for the amount on screen. Every input names its deal and amount, so
- * a save, failure or confirmation for another deal -- or for an older amount
- * of this deal -- never labels what is on screen now:
- *   saving       a save of THIS deal's THIS amount is in flight;
- *   failed       GHL refused a save of this deal's this amount;
- *   unconfirmed  a save of this deal's this amount may have landed but could
- *                not be read back;
- *   recorded     this deal's confirmed amount equals what is on screen;
- *   draft        anything else.
- */
-export function currentOfferStatusFor(
-  ws: { status: "idle" } | { status: "saving" | "error"; oppId: string; amount: number; kind?: "refused" | "unconfirmed" },
-  confirmed: { oppId: string; amount: number } | null,
-  oppId: string | null,
-  amount: number | null,
-): CurrentOfferStatus {
-  const same = (m: { oppId: string; amount: number }) => oppId !== null && amount !== null && m.oppId === oppId && m.amount === amount;
-  if (ws.status === "saving" && same(ws)) return "saving";
-  if (ws.status === "error" && same(ws)) return ws.kind === "refused" ? "failed" : "unconfirmed";
-  if (confirmed && same(confirmed)) return "recorded";
-  return "draft";
-}
-
 export default function SellerCallWorkspace() {
   const { id } = useParams<{ id: string }>();
   const contactId = id ?? "";
@@ -545,31 +521,26 @@ export default function SellerCallWorkspace() {
      policy this document's ruling itself specified -- flagged here for
      Jess Gate review, same as any other engineering judgment call.
 
-     `lastWrittenCurrentOffer` (a ref, not state -- it never drives a
-     render) de-dupes: committing the SAME value twice (e.g. blur without
-     an intervening edit) never issues a second PUT. Reset to null on
-     mount/opportunity change so a genuinely new deal's first blur always
-     writes once, never assumes a prior deal's last-written value still
-     applies. */
-  /* PR #126 second re-review (Bones / Jess, 2026-10-05): every piece of
-     Current Offer save bookkeeping names the DEAL and the AMOUNT it is
-     about, so a completion for deal A (or for an older amount) can never
-     confirm, suppress or label deal B's (or a newer) amount. */
-  type OfferMark = { oppId: string; amount: number };
-  const lastWrittenCurrentOfferRef = useRef<OfferMark | null>(null);
-  const [currentOfferWriteState, setCurrentOfferWriteState] = useState<
-    | { status: "idle" }
-    | { status: "saving"; oppId: string; amount: number; attempt: number }
-    | { status: "error"; kind: "refused" | "unconfirmed"; oppId: string; amount: number; attempt: number; message: string }
-  >({ status: "idle" });
-  /* The Current Offer CONFIRMED in GHL for a deal -- restored from the
-     Opportunity carrier, or a save GHL read back. Only this deal's confirmed
-     amount may be labelled "Recorded in GHL". */
-  const [confirmedCurrentOffer, setConfirmedCurrentOffer] = useState<OfferMark | null>(null);
-  /* Each save is numbered; only the latest attempt may settle the status. */
-  const offerAttemptRef = useRef(0);
-  /* The deal on screen right now, for completions that arrive later. */
-  const currentOppIdRef = useRef<string | null>(null);
+     De-dupe: committing the SAME value twice (e.g. blur without an
+     intervening edit) never issues a second PUT -- the save coordinator
+     below skips an amount already verified, or already last in line, for
+     that deal. Each deal's state is its own, so a genuinely new deal's
+     first blur always writes once. */
+  /* PR #126 fourth re-review (Bones, 2026-10-05): every Current Offer save --
+     blur and Confirm Accept -- goes through ONE per-deal coordinator that
+     serializes each write with its readback (lib/current-offer-save-
+     coordinator.ts). It owns the de-dupe, the in-flight/queued state, the
+     verified amount and the failure for each deal; the page only asks it.
+     `offerSaveVersion` re-renders the page when any of that changes. */
+  const [offerSaveVersion, setOfferSaveVersion] = useState(0);
+  const offerSavesRef = useRef<OfferSaveCoordinator | null>(null);
+  if (offerSavesRef.current === null) {
+    offerSavesRef.current = createOfferSaveCoordinator(
+      (oppId, amount) => ghl.opportunities.setCurrentOffer(oppId, amount),
+      () => setOfferSaveVersion((v) => v + 1),
+    );
+  }
+  const offerSaves = offerSavesRef.current;
 
   /* The one already-granted override, if any -- see seller-call-
      negotiation.ts's own header for why this is a DIFFERENT concept from
@@ -867,7 +838,7 @@ export default function SellerCallWorkspace() {
   /* INV-70 / B9-07A Phase 2 -- Family 5's approved ruling. Commits the
      current, already-parsed `currentOffer` to the Opportunity-owned
      Current Offer carrier. Called on the input's `onBlur`, never on
-     every keystroke (see `lastWrittenCurrentOfferRef`'s own comment for
+     every keystroke (see the save coordinator's comment above for
      why). `currentOfferWriteGate` (pure, imported) is the ONLY place the
      freeze decision is made -- this function performs no freeze logic of
      its own, it only acts on what the gate already decided, exactly as
@@ -877,77 +848,16 @@ export default function SellerCallWorkspace() {
      A blocked gate is NOT surfaced as an error when the reason is simply
      "no Current Offer entered" or "already frozen" -- those are normal,
      expected states (nothing typed yet; negotiation already closed), not
-     failures. Only an actual write failure sets `currentOfferWriteState`
-     to `error`. */
+     failures. Only an actual write failure is reported, by the save
+     coordinator, for the amount it failed to save. */
   async function commitCurrentOffer() {
     if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
     const agreementAlreadyReached = latestOutcome?.kind === "accept";
     const decision = currentOfferWriteGate({ value: currentOffer, agreementAlreadyReached });
     if (decision.kind === "blocked") return;
-    const oppId = screen.opportunity.id;
-    const amount = decision.value;
-    /* De-dupe only against THIS deal's own last-written amount. */
-    const last = lastWrittenCurrentOfferRef.current;
-    if (last && last.oppId === oppId && last.amount === amount) return;
-    /* Nor re-send the amount this deal is already saving. */
-    if (currentOfferWriteState.status === "saving" && currentOfferWriteState.oppId === oppId && currentOfferWriteState.amount === amount) return;
-
-    const attempt = ++offerAttemptRef.current;
-    /* PR #126 third re-review (Bones, 2026-10-05): once a new amount is sent,
-       what GHL holds is unknown until THIS save settles -- the previously
-       confirmed amount may be overwritten. Drop it, so retyping it is a draft
-       and its blur issues its own save. */
-    lastWrittenCurrentOfferRef.current = null;
-    setConfirmedCurrentOffer(null);
-    setCurrentOfferWriteState({ status: "saving", oppId, amount, attempt });
-    /* Only the latest attempt may settle the status; a completion for an
-       earlier attempt (another deal or an older amount) changes nothing. */
-    const settle = (next: typeof currentOfferWriteState) =>
-      setCurrentOfferWriteState((s) => (s.status !== "idle" && s.attempt === attempt ? next : s));
-    /* An OLDER save of the deal on screen that may have written its amount
-       (confirmed or uncertain) after a newer save was sent: the order the
-       responses arrived in does not tell which write GHL applied last, so a
-       different amount recorded since is no longer known to be what GHL holds.
-       It becomes a draft again and its blur saves it afresh. A refusal wrote
-       nothing and changes nothing. */
-    const staleMayHaveWritten = () => {
-      if (offerAttemptRef.current === attempt || currentOppIdRef.current !== oppId) return;
-      const lw = lastWrittenCurrentOfferRef.current;
-      if (lw && lw.oppId === oppId && lw.amount !== amount) lastWrittenCurrentOfferRef.current = null;
-      setConfirmedCurrentOffer((c) => (c && c.oppId === oppId && c.amount !== amount ? null : c));
-    };
-    try {
-      const result = await ghl.opportunities.setCurrentOffer(oppId, amount);
-      if (!result.ok) {
-        /* The write was accepted but GHL did not read the amount back: it may
-           or may not have landed. Never "recorded", never "refused". */
-        staleMayHaveWritten();
-        settle({ status: "error", kind: "unconfirmed", oppId, amount, attempt, message: "Save could not be confirmed." });
-        return;
-      }
-      /* Confirmed. The bookkeeping is this deal's own; it is recorded only
-         while this deal is still the one on screen (a later visit restores
-         the confirmed amount from the GHL carrier anyway) AND only if this is
-         still the latest save -- an older save confirming late must not mark
-         its amount recorded (or de-dupe it) after a newer amount was sent. */
-      if (offerAttemptRef.current === attempt && currentOppIdRef.current === oppId) {
-        lastWrittenCurrentOfferRef.current = { oppId, amount };
-        setConfirmedCurrentOffer({ oppId, amount });
-      } else {
-        staleMayHaveWritten();
-      }
-      settle({ status: "idle" });
-    } catch (e: any) {
-      /* A definite refusal is an answered request that said no (4xx): nothing
-         was written. Anything else -- a 5xx, a network failure, or a readback
-         that could not be completed -- leaves the outcome unknown. */
-      const m = /setCurrentOffer PUT → (\d{3})/.exec(String(e?.message ?? ""));
-      const refused = m !== null && Number(m[1]) >= 400 && Number(m[1]) < 500;
-      if (!refused) staleMayHaveWritten();
-      settle(refused
-        ? { status: "error", kind: "refused", oppId, amount, attempt, message: `Not saved — GHL refused the save (${m![1]}).` }
-        : { status: "error", kind: "unconfirmed", oppId, amount, attempt, message: "Save could not be confirmed." });
-    }
+    /* Queued behind any save of this deal still in flight; the coordinator
+       de-dupes and decides what is recorded. */
+    offerSaves.requestSave(screen.opportunity.id, decision.value);
   }
 
   function handleKeepNegotiating() {
@@ -1631,10 +1541,8 @@ export default function SellerCallWorkspace() {
     propertyIdentityConfirmation, transactionAssumptionsRecord, sellerPricePositionRecord, readinessHumanAction,
   ]);
 
-  /* PR #126 second re-review: the deal on screen, for the Current Offer label
-     and for save completions that arrive after the operator has moved on. */
+  /* PR #126: the deal on screen, for the Current Offer label. */
   const dealBarOppId = screen.state === "resolved" || screen.state === "unresolved" ? screen.opportunity.id : null;
-  currentOppIdRef.current = dealBarOppId;
 
   const dealBarCells = useMemo(
     () => buildDealBarCells({
@@ -1643,12 +1551,12 @@ export default function SellerCallWorkspace() {
       sellerPosition,
       currentOffer,
       /* PR #126 re-review: recorded only when the typed amount IS the
-         confirmed one and no save is pending or failed. */
-      currentOfferStatus: currentOfferStatusFor(currentOfferWriteState, confirmedCurrentOffer, dealBarOppId, currentOffer),
+         verified one and nothing for this deal is pending or failed. */
+      currentOfferStatus: offerSaves.statusFor(dealBarOppId, currentOffer),
       board8,
       expectedSpread,
     }),
-    [screen, sellerPosition, currentOffer, currentOfferWriteState, confirmedCurrentOffer, dealBarOppId, board8, expectedSpread],
+    [screen, sellerPosition, currentOffer, offerSaves, offerSaveVersion, dealBarOppId, board8, expectedSpread],
   );
 
   const hasKnownFacts = (screen.state === "resolved" || screen.state === "unresolved")
@@ -1826,13 +1734,9 @@ export default function SellerCallWorkspace() {
       setOverrideAcknowledged(false);
       setOverrideActionError(null);
       setWarningDismissed(false);
-      /* INV-70 / B9-07A Phase 2 -- Deal A's last-written Current Offer
-         value must never suppress Deal B's first commit. */
-      lastWrittenCurrentOfferRef.current = null;
-      setConfirmedCurrentOffer(null);
-      setCurrentOfferWriteState({ status: "idle" });
-      /* Every save still in flight belongs to the previous deal: stale. */
-      offerAttemptRef.current += 1;
+      /* INV-70 / B9-07A Phase 2 -- Deal A's Current Offer saves never
+         touch Deal B: the save coordinator keeps each deal's state apart
+         (PR #126 fourth re-review), so there is nothing to reset here. */
     }
     const restoreOppId = screen.state === "resolved" || screen.state === "unresolved" ? screen.opportunity.id : null;
     if (decision.restoreSellerPosition !== null) {
@@ -1845,10 +1749,7 @@ export default function SellerCallWorkspace() {
          resume.ts), so it is already correctly persisted. Recording it
          as already-written means an operator who blurs without editing
          it issues no redundant PUT. */
-      if (restoreOppId !== null) {
-        lastWrittenCurrentOfferRef.current = { oppId: restoreOppId, amount: Number(decision.restoreCurrentOffer) };
-        setConfirmedCurrentOffer({ oppId: restoreOppId, amount: Number(decision.restoreCurrentOffer) });
-      }
+      if (restoreOppId !== null) offerSaves.seed(restoreOppId, Number(decision.restoreCurrentOffer));
     }
     /* B8-11 / INV-54 -- restoring the durable override record. Whether it
        still APPLIES to the (also just-restored) Current Offer is
@@ -1971,14 +1872,12 @@ export default function SellerCallWorkspace() {
            accept note, call timestamp, in that order -- and every failure
            message live in lib/seller-call-accept-writes.ts, where they are
            tested directly. */
-        /* The accept write is a Current Offer save too: it supersedes any blur
-           save still in flight, and only it may record what it confirms. */
-        const offerAttempt = ++offerAttemptRef.current;
-        lastWrittenCurrentOfferRef.current = null;
-        setConfirmedCurrentOffer(null);
+        /* The accept write goes through the same per-deal save coordinator
+           as the blur: it waits for any save of this deal in flight, and
+           only its own verified readback records the accepted amount. */
         const result = await runConfirmAcceptWrites(
           {
-            setCurrentOffer: (opportunityId, value) => ghl.opportunities.setCurrentOffer(opportunityId, value),
+            setCurrentOffer: (opportunityId, value) => offerSaves.saveForAccept(opportunityId, value),
             createNote: (id, body) => ghl.notes.create(id, body),
             setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso),
           },
@@ -1987,13 +1886,6 @@ export default function SellerCallWorkspace() {
         if (result.stage === "offer_failed" || result.stage === "offer_unconfirmed") {
           setOutcomeActionError(result.message);
           return;
-        }
-        // The Current Offer is confirmed from here on. Recorded as
-        // already-written so an untouched blur issues no redundant PUT.
-        if (offerAttemptRef.current === offerAttempt && currentOppIdRef.current === screen.opportunity.id) {
-          lastWrittenCurrentOfferRef.current = { oppId: screen.opportunity.id, amount: freeze.value };
-          setConfirmedCurrentOffer({ oppId: screen.opportunity.id, amount: freeze.value });
-          setCurrentOfferWriteState({ status: "idle" });
         }
         if (result.stage === "note_failed") {
           setOutcomeActionError(result.message);
@@ -2526,14 +2418,14 @@ export default function SellerCallWorkspace() {
                     existing philosophy that GHL is the sole system of
                     record and the screen states only what differs from
                     "working as expected." */}
-                {currentOfferWriteState.status === "saving" && currentOfferWriteState.oppId === dealBarOppId && currentOfferWriteState.amount === currentOffer ? (
+                {offerSaves.statusFor(dealBarOppId, currentOffer) === "saving" ? (
                   <span data-testid="current-offer-write-saving" style={{ color: "#64748B", fontSize: "10px" }}>
                     Saving Current Offer…
                   </span>
                 ) : null}
-                {currentOfferWriteState.status === "error" && currentOfferWriteState.oppId === dealBarOppId && currentOfferWriteState.amount === currentOffer ? (
+                {offerSaves.failureFor(dealBarOppId, currentOffer) !== null ? (
                   <span data-testid="current-offer-write-error" style={{ color: "#EF4444", fontSize: "10px" }}>
-                    {currentOfferWriteState.message}
+                    {offerSaves.failureFor(dealBarOppId, currentOffer)}
                   </span>
                 ) : null}
               </label>

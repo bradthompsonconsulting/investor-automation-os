@@ -22,16 +22,23 @@
  *   6. an older failure never labels a newer edited amount;
  *   7. a write that may have landed but cannot be read back says "Save could
  *      not be confirmed", never "Recorded" and never "Not saved";
- *   8. Bones's reproduction: $310,000's readback held, $320,000 saved and read
- *      back, the older response released, $310,000 typed again -> Draft, and
- *      its blur sends its own save;
- *   9. reversed completion order: the older save completes while the newer is
- *      still saving -- it records nothing, the newer then records alone;
- *  10. stale failures after a newer recorded save: an uncertain older result
- *      drops the recorded label (GHL may hold either amount); a refused older
- *      save changes nothing;
- *  11. a newer save in flight: retyping the previously recorded amount is a
- *      draft and its blur sends a save (not de-duped).
+ *   8. an older readback held: the newer amount waits (one save per deal at
+ *      a time), then saves and records; the older amount retyped is a
+ *      draft and saves;
+ *   9. Bones's exact case: older $410k write held -> newer $420k readback
+ *      captured and delayed -> older write released -> newer readback
+ *      delivered: never "Recorded" unless GHL holds the amount on screen;
+ *  10. edits made while saving are preserved; repeated blurs coalesce;
+ *  11. an older uncertain result, and 12. an older refusal, with a newer
+ *      amount waiting: the newer saves and records on its own;
+ *  13. the corrective save: retyping the recorded amount while a newer one
+ *      is in flight is a draft, and its blur is queued, not de-duped;
+ *  14. navigation: A's pending save never delays or labels B; back on A,
+ *      its own verified amount is restored.
+ *
+ * Confirm Accept uses the same save coordinator; its ordering is covered
+ * directly in test-current-offer-save-coordinator.cjs (the fixture here
+ * cannot reach Offer Ready).
  *
  * A hold either delays the REQUEST (the server has not applied it yet) or,
  * with `early`, delays only the RESPONSE (the server answered on arrival and
@@ -263,104 +270,126 @@ async function main() {
     check('7 an uncertain result is never "Recorded" and never "Not saved"', !/Recorded in GHL|Not saved/.test((await note()) || ''), await note());
     failReadbackNext = 0;
 
-    const writesOf = (v) => writes(opp(A)).filter((r) => r.args.value === v).length;
+    const writesOf = (v, target = opp(A)) => writes(target).filter((r) => r.args.value === v).length;
     const errCount = () => page.getByTestId('current-offer-write-error').count();
+    /* The invariant behind every case: "Recorded in GHL" is shown only when
+       GHL holds exactly the amount on screen. */
+    const truthful = async (target = opp(A)) => !(await noteStarts('Recorded in GHL')) || db[target] === Number(await input().inputValue());
 
-    // 8 — Bones's exact reproduction (a stale success after a newer recorded save).
+    // 8 — older readback held: the newer amount waits, then saves; the older amount retyped is a draft that saves.
     await fresh({}, A);
     await input().fill('310000');
     h = hold((r) => r.kind === 'opp-read' && r.target === opp(A)); h.early = true;   // 310000's readback answered, delivery held
     await input().press('Tab');
     await h.hit;
-    check('8 setup: 310000 was written and its readback is held', db[opp(A)] === 310000 && writesOf(310000) === 1, db[opp(A)]);
     await input().fill('320000');
     await input().press('Tab');
-    await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(A)] === 320000, '320000 recorded');
-    check('8 320000 saves and is recorded while 310000 is still pending', await noteStarts('Recorded in GHL'), await note());
-    h.release();                                   // the older 310000 response arrives now
-    await page.waitForTimeout(800);
-    check('8 the late 310000 confirmation shows no error', (await errCount()) === 0);
-    await input().fill('310000');                  // operator enters 310000 again
-    await until(async () => (await note()) !== null, 'note');
-    check('8 retyped 310000 is a Draft (not "Recorded in GHL")', await noteStarts('Draft — not saved yet'), await note());
-    await input().press('Tab');
-    await until(async () => writesOf(310000) === 2, '310000 re-sent', 8000).catch(() => {});
-    check('8 its blur sends its own save of 310000', writesOf(310000) === 2, writes(opp(A)).map((r) => r.args.value));
-    await until(async () => noteStarts('Recorded in GHL'), '310000 recorded').catch(() => {});
-    check('8 310000 is recorded only after its own confirmed save', (await noteStarts('Recorded in GHL')) && db[opp(A)] === 310000, { note: await note(), a: db[opp(A)] });
-
-    // 9 — reversed completion order: the older save completes while the newer one is still saving.
-    await fresh({}, A);
-    await input().fill('310000');
-    const h310 = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 310000);
-    await input().press('Tab');
-    await h310.hit;
-    await input().fill('320000');
-    const h320 = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 320000);
-    await input().press('Tab');
-    await h320.hit;
-    h310.release();                                // the older save completes first
-    await until(async () => db[opp(A)] === 310000, '310000 applied');
-    await page.waitForTimeout(800);
-    check('9 the older completion leaves the newer amount "Saving to GHL…"', await noteStarts('Saving to GHL…'), await note());
-    h320.release();
+    await page.waitForTimeout(600);
+    check('8 while 310000 is being saved, 320000 is NOT sent (one save per deal at a time)', writesOf(320000) === 0, writes(opp(A)).map((r) => r.args.value));
+    check('8 320000 shows "Saving to GHL…" (queued), never "Recorded"', await noteStarts('Saving to GHL…'), await note());
+    h.release();
     await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(A)] === 320000, '320000 recorded').catch(() => {});
-    check('9 the newer amount then records on its own', (await noteStarts('Recorded in GHL')) && db[opp(A)] === 320000, { note: await note(), a: db[opp(A)] });
+    check('8 after 310000 settles, 320000 is sent and recorded by its own readback', (await noteStarts('Recorded in GHL')) && db[opp(A)] === 320000 && writesOf(320000) === 1, { note: await note(), a: db[opp(A)] });
     await input().fill('310000');
-    check('9 retyped 310000 (completed out of turn) is a Draft', await noteStarts('Draft — not saved yet'), await note());
+    check('8 retyped 310000 is a Draft', await noteStarts('Draft — not saved yet'), await note());
     await input().press('Tab');
-    await until(async () => writesOf(310000) === 2, '310000 re-sent', 8000).catch(() => {});
-    check('9 and its blur sends its own save', writesOf(310000) === 2, writes(opp(A)).map((r) => r.args.value));
+    await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(A)] === 310000, '310000 recorded').catch(() => {});
+    check('8 its blur sends its own save, and it is recorded only once GHL holds it', writesOf(310000) === 2 && db[opp(A)] === 310000 && (await noteStarts('Recorded in GHL')), { w: writes(opp(A)).map((r) => r.args.value), a: db[opp(A)] });
 
-    // 10a — a stale UNCERTAIN failure after a newer recorded save.
+    // 9 — Bones's exact case: hold older $410k write -> capture/delay newer $420k readback -> release older write -> deliver newer readback.
     await fresh({}, A);
-    await input().fill('310000');
+    await input().fill('410000');
+    const h410 = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 410000);
+    await input().press('Tab');
+    await h410.hit;                                // older $410k write held (not yet applied)
+    const h420read = hold((r) => r.kind === 'opp-read' && r.target === opp(A) && db[opp(A)] === 420000); h420read.early = true;
+    await input().fill('420000');
+    await input().press('Tab');
+    await page.waitForTimeout(600);
+    check('9 while the $410k write is held, the $420k write is NOT sent', writesOf(420000) === 0, writes(opp(A)).map((r) => r.args.value));
+    check('9 $420k is not claimed recorded while GHL does not hold it', (await truthful()) && !(await noteStarts('Recorded in GHL')), { note: await note(), a: db[opp(A)] });
+    h410.release();                                // older write lands
+    await h420read.hit;                            // newer readback captured (answered on arrival), delivery held
+    check('9 the $420k write went out only after the $410k write settled', log.filter((r) => r.kind === 'write').map((r) => r.args.value).join() === '410000,420000', log.filter((r) => r.kind === 'write').map((r) => r.args.value));
+    check('9 while $420k\'s readback is held: not "Recorded", and the label is truthful', !(await noteStarts('Recorded in GHL')) && (await truthful()), { note: await note(), a: db[opp(A)] });
+    h420read.release();                            // newer readback delivered
+    await until(async () => noteStarts('Recorded in GHL'), '420000 recorded').catch(() => {});
+    check('9 $420k is recorded and GHL holds $420k', (await noteStarts('Recorded in GHL')) && db[opp(A)] === 420000, { note: await note(), a: db[opp(A)] });
+    await input().focus(); await input().press('Tab');
+    await page.waitForTimeout(500);
+    check('9 nothing further is needed: an untouched blur sends nothing', writesOf(420000) === 1);
+
+    // 10 — edits while saving are preserved; repeated blurs coalesce to the latest.
+    await fresh({}, A);
+    await input().fill('410000');
+    h = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 410000);
+    await input().press('Tab');
+    await h.hit;
+    await input().fill('420000'); await input().press('Tab');
+    await input().fill('430000'); await input().press('Tab');
+    check('10 the edit made while saving stays on screen', (await input().inputValue()) === '430000', await input().inputValue());
+    h.release();
+    await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(A)] === 430000, '430000 recorded').catch(() => {});
+    check('10 only 410000 and then 430000 were written (the replaced 420000 never)', writes(opp(A)).map((r) => r.args.value).join() === '410000,430000', writes(opp(A)).map((r) => r.args.value));
+    check('10 430000 is recorded and the input still shows it', (await noteStarts('Recorded in GHL')) && (await input().inputValue()) === '430000' && (await truthful()), await note());
+
+    // 11 — an older UNCERTAIN result with a newer amount waiting.
+    await fresh({}, A);
+    await input().fill('410000');
     h = hold((r) => r.kind === 'opp-read' && r.target === opp(A)); h.early = true; h.failRead = true;
     await input().press('Tab');
     await h.hit;
-    await input().fill('320000');
-    await input().press('Tab');
-    await until(async () => noteStarts('Recorded in GHL'), '320000 recorded');
-    h.release();                                   // the older readback fails late
-    await page.waitForTimeout(800);
-    check('10a an older uncertain result shows no error on the newer amount', (await errCount()) === 0 && !/Save could not be confirmed/.test((await note()) || ''), await note());
-    check('10a the newer amount is no longer claimed "Recorded" (GHL may hold either)', await noteStarts('Draft — not saved yet'), await note());
-    const n320 = writesOf(320000);
-    await input().focus();
-    await input().press('Tab');
-    await until(async () => writesOf(320000) === n320 + 1, '320000 re-sent', 8000).catch(() => {});
-    const rec10a = await until(async () => noteStarts('Recorded in GHL'), 'recorded again').then(() => true).catch(() => false);
-    check('10a its blur re-saves it, and it is recorded again', writesOf(320000) === n320 + 1 && rec10a, writes(opp(A)).map((r) => r.args.value));
+    await input().fill('420000'); await input().press('Tab');
+    h.release();                                   // the older readback fails
+    await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(A)] === 420000, '420000 recorded').catch(() => {});
+    check('11 the newer amount is then saved and recorded by its own readback, with no error', (await noteStarts('Recorded in GHL')) && (await errCount()) === 0 && db[opp(A)] === 420000, { note: await note(), a: db[opp(A)] });
 
-    // 10b — a stale REFUSAL after a newer recorded save: nothing was written, nothing changes.
+    // 12 — an older REFUSAL with a newer amount waiting.
     await fresh({}, A);
-    await input().fill('310000');
-    h = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 310000); h.refuse = true;
+    await input().fill('410000');
+    h = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 410000); h.refuse = true;
     await input().press('Tab');
     await h.hit;
-    await input().fill('320000');
-    await input().press('Tab');
-    await until(async () => noteStarts('Recorded in GHL'), '320000 recorded');
-    h.release();                                   // the older save is refused late
-    await page.waitForTimeout(800);
-    check('10b an older refusal leaves the newer amount "Recorded in GHL", with no error', (await noteStarts('Recorded in GHL')) && (await errCount()) === 0 && db[opp(A)] === 320000, { note: await note(), a: db[opp(A)] });
+    await input().fill('420000'); await input().press('Tab');
+    h.release();                                   // the older save is refused
+    await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(A)] === 420000, '420000 recorded').catch(() => {});
+    check('12 the newer amount is saved and recorded, with no error from the older refusal', (await noteStarts('Recorded in GHL')) && (await errCount()) === 0 && db[opp(A)] === 420000, { note: await note(), a: db[opp(A)] });
 
-    // 11 — a newer save in flight: the previously recorded amount is not de-duped.
+    // 13 — the corrective save: back to the recorded amount while a newer one is in flight.
     await fresh({}, A);
-    await input().fill('310000');
-    await input().press('Tab');
+    await input().fill('310000'); await input().press('Tab');
     await until(async () => noteStarts('Recorded in GHL'), '310000 recorded');
     await input().fill('320000');
     h = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 320000);
     await input().press('Tab');
     await h.hit;
     await input().fill('310000');
-    check('11 while 320000 is in flight, retyped 310000 is a Draft', await noteStarts('Draft — not saved yet'), await note());
+    check('13 while 320000 is in flight, retyped 310000 is a Draft (not "Recorded")', await noteStarts('Draft — not saved yet'), await note());
     await input().press('Tab');
-    await until(async () => writesOf(310000) === 2, '310000 re-sent', 8000).catch(() => {});
-    check('11 and its blur sends a save (not de-duped)', writesOf(310000) === 2, writes(opp(A)).map((r) => r.args.value));
+    check('13 its blur queues a save (shown "Saving to GHL…", not de-duped away)', await noteStarts('Saving to GHL…'), await note());
     h.release();
+    await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(A)] === 310000, '310000 recorded').catch(() => {});
+    check('13 the corrective 310000 is written after 320000 and recorded; GHL holds 310000', writes(opp(A)).map((r) => r.args.value).join() === '310000,320000,310000' && db[opp(A)] === 310000 && (await noteStarts('Recorded in GHL')), { w: writes(opp(A)).map((r) => r.args.value), a: db[opp(A)] });
+
+    // 14 — navigation: A's pending save never delays or labels B; returning to A shows A's own verified amount.
+    await fresh({}, A);
+    await input().fill('410000');
+    h = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 410000);
+    await input().press('Tab');
+    await h.hit;
+    await go(`/contacts/${B}/seller-call`);
+    await until(async () => (await input().inputValue()) === '' && (await page.locator('body').innerText()).includes('Bravo'), 'B on screen').catch(() => {});
+    await input().fill('410000'); await input().press('Tab');
+    await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(B)] === 410000, 'B recorded').catch(() => {});
+    check('14 B saves and records the same amount while A\'s save is still held', (await noteStarts('Recorded in GHL')) && db[opp(B)] === 410000 && db[opp(A)] === null, { note: await note(), a: db[opp(A)], b: db[opp(B)] });
+    h.release();
+    await until(async () => db[opp(A)] === 410000, 'A applied');
     await page.waitForTimeout(800);
+    check('14 A\'s completion leaves B recorded and truthful', (await noteStarts('Recorded in GHL')) && (await truthful(opp(B))), await note());
+    await go(`/contacts/${A}/seller-call`);
+    await until(async () => (await input().inputValue()) === '410000', 'A restored').catch(() => {});
+    await until(async () => noteStarts('Recorded in GHL'), 'A recorded').catch(() => {});
+    check('14 back on A: its verified 410000 is restored and recorded', (await input().inputValue()) === '410000' && (await noteStarts('Recorded in GHL')) && (await truthful()), { v: await input().inputValue(), note: await note() });
 
     check('no request left the machine', foreign.length === 0, foreign);
     check('no page errors', pageErrors.length === 0, pageErrors);
