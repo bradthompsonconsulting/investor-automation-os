@@ -852,9 +852,7 @@ export default function Dashboard() {
         )}
       </div>
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 18px" }}>
-        What needs your attention today. Only three writes happen anywhere on this page: saving a note, marking a
-        call attempt the instant a note saves, and scheduling/clearing a callback. Nothing here sends, enrolls,
-        re-tags, or moves a stage.
+        What needs your attention today.
       </p>
 
       {/* Pipeline Health strip — moved to the very top: glanceable status nobody would scroll for.
@@ -1202,15 +1200,21 @@ export default function Dashboard() {
 
       {/* 4. Lead Queue (renamed from Call Queue) — cold outreach, the long list at the bottom */}
       <SectionHeading count={leadQueue.length} href="/contacts">Lead Queue</SectionHeading>
-      <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 12px", maxWidth: CONTENT_MAX_WIDTH }}>
-        Attempted-but-no-response (oldest attempt first) → never-attempted (tier + score, mailer-overdue bubbles to
-        tier top) → freshly-attempted (greyed, bottom). A note is the only thing that marks an attempt — Call opens
-        GHL to dial and the callback icon schedules a follow-up, but neither one greys a row on its own. Contacts stay
-        here while cold outreach is still the right move — they drop out when another state takes over: an unanswered
-        inbound reply, a scheduled callback, an offer awaiting response, Seller Follow-Up, a terminal stage, or a phone
-        marked incorrect. Showing{" "}
+      <p style={{ fontSize: "12px", color: "#64748B", margin: "0 0 6px", maxWidth: CONTENT_MAX_WIDTH }}>
+        Sellers to cold-call next, top of the list first. Save a note after each call to mark the attempt. Showing{" "}
         {Math.min(RESURFACE_VISIBLE_ROWS, leadQueue.length)} of {leadQueue.length} — scroll for the rest.
       </p>
+      <details style={{ fontSize: "11px", color: "#334155", margin: "0 0 12px", maxWidth: CONTENT_MAX_WIDTH }}>
+        <summary style={{ cursor: "pointer", color: "#475569" }}>How this list is ordered</summary>
+        <p style={{ margin: "6px 0 0" }}>
+          Attempted-but-no-response (oldest attempt first) → never-attempted (tier + score, mailer-overdue bubbles to
+          tier top) → freshly-attempted (greyed, bottom). A note is the only thing that marks an attempt — Call opens
+          GHL to dial and the callback icon schedules a follow-up, but neither one greys a row on its own. Contacts stay
+          here while cold outreach is still the right move — they drop out when another state takes over: an unanswered
+          inbound reply, a scheduled callback, an offer awaiting response, Seller Follow-Up, a terminal stage, or a phone
+          marked incorrect.
+        </p>
+      </details>
       <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden", maxWidth: CONTENT_MAX_WIDTH }}>
         <div style={{ overflow: "auto", maxHeight: `${RESURFACE_VISIBLE_ROWS * 44}px` }}>
           <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
