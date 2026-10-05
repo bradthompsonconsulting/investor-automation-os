@@ -341,6 +341,9 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
 
   // ===== 5. Handlers fail closed BEFORE any Blob access or GHL call.
   const writeHandler = require('../netlify/functions/ghl-write.ts').handler;
+  // Board 15 / PR #126 stacked server PR: the page reserves a durable Current
+  // Offer barrier (current-offer-barrier.ts) before sending a Current Offer.
+  const barrierHandler = require('../netlify/functions/current-offer-barrier.ts').handler;
   const uploadHandler = require('../netlify/functions/ghl-executed-artifact-upload.ts').handler;
   let seq = 0;
   const writeEvent = (operation, targetId, args) => ({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ operation, targetId, args, requestId: `scope-${++seq}` }) });
@@ -833,7 +836,16 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     let n = 0;
     const call = async (op, target, args) => runWorld(world, fixedEvent(op, target, args, `${tag}-${++n}`));
     return {
-      setCurrentOffer: async (id, value) => { const r = await call('opportunity.currentOffer', id, { value }); if (r.res.statusCode !== 200) throw new Error(r.body.error || 'refused'); return { ok: r.body.confirmed === true }; },
+      setCurrentOffer: async (id, value) => {
+        const requestId = `${tag}-offer-${++n}`;
+        ghlRoute = world.route;
+        try {
+          const reserved = await barrierHandler({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ action: 'begin', opportunityId: id, purpose: 'blur', steps: [{ step: 'offer', requestId }] }) });
+          if (reserved.statusCode !== 200) throw new Error('reservation refused: ' + reserved.body);
+        } finally { ghlRoute = null; }
+        const r = await runWorld(world, fixedEvent('opportunity.currentOffer', id, { value }, requestId));
+        if (r.res.statusCode !== 200) throw new Error(r.body.error || 'refused'); return { ok: r.body.confirmed === true };
+      },
       createNote: async (id, body) => { const r = await call('note.create', id, { body }); if (r.res.statusCode !== 200) throw new Error(r.body.error || 'refused'); return r.body; },
       setLastCallAttempt: async (id, iso) => { const r = await call('contact.lastCallAttempt', id, { value: iso }); if (r.res.statusCode !== 200 || r.body.confirmed === false) throw new Error(r.body.error || 'Write was not confirmed'); return r.body; },
       readLastCallFields: async (id) => world.contacts[id].customFields.map((f) => ({ id: f.id, value: f.value })),

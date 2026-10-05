@@ -701,7 +701,7 @@ export const ghl = {
     // (TEXT) rides along in the same call as the exact value our own read path
     // uses. Called exactly once, right after a note saves — never on its own,
     // never from a Call click.
-    setLastCallAttempt: (contactId: string, iso: string) => confirmedCommand("contact.lastCallAttempt", contactId, { value: iso }),
+    setLastCallAttempt: (contactId: string, iso: string, opts?: { requestId?: string }) => confirmedCommand("contact.lastCallAttempt", contactId, { value: iso }, opts?.requestId),
 
     // Dashboard Phase 3 — the schedule-callback control. Still ONE write
     // action: a single PUT carrying exactly these two customFields entries,
@@ -807,8 +807,8 @@ export const ghl = {
   notes: {
     // Dashboard Phase 2 — the ONLY note-write path. Always a NEW note, never
     // an overwrite/edit of a prior one (GHL has no "edit" call site here).
-    create: (contactId: string, body: string) =>
-      confirmedCommand("note.create", contactId, { body }),
+    create: (contactId: string, body: string, opts?: { requestId?: string }) =>
+      confirmedCommand("note.create", contactId, { body }, opts?.requestId),
 
     // Contact Workspace §8 step 2 — READ-ONLY note history. GET only; not a
     // write, does not touch the three-write invariant. Returns GHL's
@@ -1063,6 +1063,7 @@ export const ghl = {
     setCurrentOffer: async (
       opportunityId: string,
       value: number,
+      opts?: { requestId?: string },
     ): Promise<{ ok: boolean; putStatus: number; sent: number; observed: number | string | null }> => {
       const fieldId = CONFIG.opportunityFacts.currentOffer;
       if (!fieldId) throw new Error("setCurrentOffer: no configured id for opportunityFacts.currentOffer");
@@ -1078,7 +1079,7 @@ export const ghl = {
 
       const sent = roundCurrency(value);
       const body = { customFields: [{ id: fieldId, field_value: sent }] };
-      const putRes = await writeCommand("opportunity.currentOffer", opportunityId, { value: sent });
+      const putRes = await writeCommand("opportunity.currentOffer", opportunityId, { value: sent }, opts?.requestId);
       const putStatus = putRes.status;
       if (!putRes.ok) {
         const text = await putRes.text();

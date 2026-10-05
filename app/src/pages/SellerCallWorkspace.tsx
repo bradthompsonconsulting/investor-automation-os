@@ -63,7 +63,9 @@ import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite"
    `seller-call-negotiation.ts`'s pure functions already work. */
 import { currentOfferWriteGate, acceptedPriceFreezeValue, readCurrentOfferFromOpportunity, checkCurrentOfferIntegrity } from "../lib/current-offer-carrier";
 import { runConfirmAcceptWrites, confirmAcceptOffered, recoverLastCallAttempt } from "../lib/seller-call-accept-writes";
-import { createOfferSaveCoordinator, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
+import { createOfferSaveCoordinator, OfferSaveBlocked, UNRESOLVED_ACCEPT_MESSAGE, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
+import { beginReservation, reconcileReservation, readReservationStatus, newRequestIds, RESERVATION_FAILED_MESSAGE } from "../lib/current-offer-barrier-client";
+import { AppWriteSignInRequired } from "../lib/app-write-session";
 
 /**
  * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49,
@@ -473,10 +475,25 @@ function OfferReadinessChecklist({ readiness }: { readiness: ReadinessResult }) 
    that completes after the page unmounts is still recorded against its deal.
    See lib/current-offer-save-coordinator.ts. */
 let sharedOfferSaves: OfferSaveCoordinator | null = null;
-function offerSaveCoordinator(): OfferSaveCoordinator {
-  if (sharedOfferSaves === null) {
-    sharedOfferSaves = createOfferSaveCoordinator((oppId, amount) => ghl.opportunities.setCurrentOffer(oppId, amount));
+/* PR #126 stacked server PR: every Current Offer save is reserved with the
+   durable server barrier first (lib/current-offer-barrier-client.ts), and the
+   write carries the reserved request id. Confirm Accept reserves its own three
+   steps and passes its offer request id. A refused or unknown reservation
+   sends nothing and blocks the deal. */
+async function saveCurrentOfferReserved(oppId: string, amount: number, requestId?: string) {
+  if (requestId) return ghl.opportunities.setCurrentOffer(oppId, amount, { requestId });
+  const ids = newRequestIds(["offer"] as const);
+  let reserved: Awaited<ReturnType<typeof beginReservation>>;
+  try { reserved = await beginReservation(oppId, "blur", [{ step: "offer", requestId: ids.offer }]); }
+  catch (e) {
+    if (e instanceof AppWriteSignInRequired) throw e;           // nothing reserved, nothing sent
+    throw new OfferSaveBlocked(RESERVATION_FAILED_MESSAGE);
   }
+  if (reserved.state !== "reserved") throw new OfferSaveBlocked(reserved.message);
+  return ghl.opportunities.setCurrentOffer(oppId, amount, { requestId: ids.offer });
+}
+function offerSaveCoordinator(): OfferSaveCoordinator {
+  if (sharedOfferSaves === null) sharedOfferSaves = createOfferSaveCoordinator(saveCurrentOfferReserved);
   return sharedOfferSaves;
 }
 
@@ -1550,6 +1567,30 @@ export default function SellerCallWorkspace() {
   /* PR #126: the deal on screen, for the Current Offer label. */
   const dealBarOppId = screen.state === "resolved" || screen.state === "unresolved" ? screen.opportunity.id : null;
 
+  /* PR #126 stacked server PR: on every load and deal change, ask the durable
+     barrier whether this deal is blocked for every session (another browser,
+     an earlier reload). A failed read blocks. Only "Check again" clears. */
+  useEffect(() => {
+    if (!dealBarOppId) return;
+    const opp = dealBarOppId;
+    void readReservationStatus(opp).then((v) => { if (v.state !== "clear") offerSaves.markUnresolved(opp, v.message); });
+  }, [dealBarOppId, offerSaves]);
+  const [checkingOffer, setCheckingOffer] = useState(false);
+  async function handleCheckOfferAgain() {
+    if (!dealBarOppId) return;
+    const opp = dealBarOppId;
+    setCheckingOffer(true);
+    try {
+      const v = await reconcileReservation(opp);
+      if (v.state === "clear") offerSaves.clearUnresolved(opp);
+      else offerSaves.markUnresolved(opp, v.message);
+    } catch (e) {
+      offerSaves.markUnresolved(opp, e instanceof AppWriteSignInRequired
+        ? "Sign in for application writes, then use Check again. Nothing will be sent until then."
+        : "The check could not be completed; nothing was changed. Nothing will be sent until it is checked — use Check again.");
+    } finally { setCheckingOffer(false); }
+  }
+
   const dealBarCells = useMemo(
     () => buildDealBarCells({
       arv: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.arv : null,
@@ -1883,7 +1924,7 @@ export default function SellerCallWorkspace() {
            last-touch. beginAccept drops queued (never-sent) blur saves and
            ignores new ones until endAccept; they are never replayed after.
            The offer write goes through the same per-deal queue, behind any
-           save already in flight. An unknown acceptance outcome leaves the
+           save already in flight. A step the server cannot prove leaves the
            deal unresolved. Not atomic: partial failures are reported by the
            accept module exactly as before. */
         const acceptOppId = screen.opportunity.id;
@@ -1891,20 +1932,60 @@ export default function SellerCallWorkspace() {
           setOutcomeActionError(offerSaves.unresolvedMessage(acceptOppId) ?? "Cannot record acceptance -- an acceptance for this deal is already in progress.");
           return;
         }
+        /* PR #126 stacked server PR: the durable barrier owns all three steps
+           (offer, acceptance note, last-touch) for every session. Each write
+           carries its reserved request id; when the sequence ends the server
+           reconciles and the deal is cleared only with evidence for every step. */
+        /* Wait for a blur save of this deal already in flight (beginAccept dropped
+           the queued ones): its own barrier must settle first. If it ended
+           unresolved, nothing is reserved or sent. */
+        await offerSaves.whenIdle(acceptOppId);
+        if (offerSaves.unresolvedMessage(acceptOppId) !== null) {
+          const message = offerSaves.unresolvedMessage(acceptOppId)!;
+          offerSaves.endAccept(acceptOppId, message);
+          setOutcomeActionError(`Cannot record acceptance -- ${message}`);
+          return;
+        }
+        const acceptIds = newRequestIds(["offer", "note", "touch"] as const);
+        let reserved: Awaited<ReturnType<typeof beginReservation>>;
+        try {
+          reserved = await beginReservation(acceptOppId, "accept", [
+            { step: "offer", requestId: acceptIds.offer },
+            { step: "note", requestId: acceptIds.note },
+            { step: "touch", requestId: acceptIds.touch },
+          ]);
+        } catch (e) {
+          const signIn = e instanceof AppWriteSignInRequired;
+          offerSaves.endAccept(acceptOppId, signIn ? null : RESERVATION_FAILED_MESSAGE);
+          setOutcomeActionError(signIn ? (e as Error).message : `Cannot record acceptance -- ${RESERVATION_FAILED_MESSAGE}`);
+          return;
+        }
+        if (reserved.state !== "reserved") {
+          offerSaves.endAccept(acceptOppId, reserved.message);
+          setOutcomeActionError(`Cannot record acceptance -- ${reserved.message}`);
+          return;
+        }
         let result: Awaited<ReturnType<typeof runConfirmAcceptWrites>>;
         try {
           result = await runConfirmAcceptWrites(
             {
-              setCurrentOffer: (opportunityId, value) => offerSaves.saveForAccept(opportunityId, value),
-              createNote: (id, body) => ghl.notes.create(id, body),
-              setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso),
+              setCurrentOffer: (opportunityId, value) => offerSaves.saveForAccept(opportunityId, value, acceptIds.offer),
+              createNote: (id, body) => ghl.notes.create(id, body, { requestId: acceptIds.note }),
+              setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso, { requestId: acceptIds.touch }),
             },
             { contactId, opportunityId: acceptOppId, offerValue: freeze.value, note: attempt.note, at: nowIso },
           );
         } finally {
-          offerSaves.endAccept(acceptOppId, false);
+          let unresolved: string | null = UNRESOLVED_ACCEPT_MESSAGE;
+          try {
+            const settled = await reconcileReservation(acceptOppId);
+            unresolved = settled.state === "clear" ? null : settled.message;
+          } catch { /* not proven: the deal stays unresolved */ }
+          offerSaves.endAccept(acceptOppId, unresolved);
+          // The server proved every step (sent and confirmed, or never sent):
+          // a block left by an uncertain step in this tab is lifted too.
+          if (unresolved === null) offerSaves.clearUnresolved(acceptOppId);
         }
-        if (result.stage === "note_failed") offerSaves.endAccept(acceptOppId, true);
         if (result.stage === "offer_failed" || result.stage === "offer_unconfirmed") {
           setOutcomeActionError(offerSaves.unresolvedMessage(acceptOppId) ?? result.message);
           return;
@@ -2448,7 +2529,16 @@ export default function SellerCallWorkspace() {
                 ) : null}
                 {offerSaves.unresolvedMessage(dealBarOppId) !== null ? (
                   <span data-testid="current-offer-unresolved" style={{ color: "#F59E0B", fontSize: "10px", maxWidth: "220px" }}>
-                    {offerSaves.unresolvedMessage(dealBarOppId)}
+                    {offerSaves.unresolvedMessage(dealBarOppId)}{" "}
+                    <button
+                      type="button"
+                      data-testid="current-offer-check-again"
+                      onClick={() => { void handleCheckOfferAgain(); }}
+                      disabled={checkingOffer}
+                      style={{ background: "none", border: "1px solid #F59E0B", borderRadius: "4px", color: "#F59E0B", fontSize: "10px", padding: "1px 6px", cursor: checkingOffer ? "wait" : "pointer" }}
+                    >
+                      {checkingOffer ? "Checking…" : "Check again"}
+                    </button>
                   </span>
                 ) : null}
                 {offerSaves.failureFor(dealBarOppId, currentOffer) !== null ? (

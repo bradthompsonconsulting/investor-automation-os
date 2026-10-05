@@ -245,10 +245,12 @@ function client(behaviour = {}) {
     // PR #126 fourth re-review: the accepted price is written through the page's
     // per-deal Current Offer save coordinator (serialized with any blur save),
     // whose own write is ghl.opportunities.setCurrentOffer.
-    assert.ok(/setCurrentOffer: \(opportunityId, value\) => offerSaves\.saveForAccept\(opportunityId, value\)/.test(PAGE_NC));
-    assert.ok(/createOfferSaveCoordinator\(\s*\(oppId, amount\) => ghl\.opportunities\.setCurrentOffer\(oppId, amount\)\s*\)/.test(PAGE_NC));
-    assert.ok(/createNote: \(id, body\) => ghl\.notes\.create\(id, body\)/.test(PAGE_NC));
-    assert.ok(/setLastCallAttempt: \(id, iso\) => ghl\.contacts\.setLastCallAttempt\(id, iso\)/.test(PAGE_NC));
+    // PR #126 stacked server PR: each write carries the request id reserved with the durable barrier.
+    assert.ok(/setCurrentOffer: \(opportunityId, value\) => offerSaves\.saveForAccept\(opportunityId, value, acceptIds\.offer\)/.test(PAGE_NC));
+    assert.ok(/createNote: \(id, body\) => ghl\.notes\.create\(id, body, \{ requestId: acceptIds\.note \}\)/.test(PAGE_NC));
+    assert.ok(/setLastCallAttempt: \(id, iso\) => ghl\.contacts\.setLastCallAttempt\(id, iso, \{ requestId: acceptIds\.touch \}\)/.test(PAGE_NC));
+    assert.ok(/createOfferSaveCoordinator\(saveCurrentOfferReserved\)/.test(PAGE_NC));
+
   });
   await check('page: a timestamp failure appends the saved accept note to local state (Agreement Reached shows at once) and arms timestamp-only recovery', () => {
     assert.ok(/setNotes\(\(prev\) => \[\.\.\.\(prev \?\? \[\]\), \{ id: `local-\$\{Date\.now\(\)\}`, body: result\.note, dateAdded: nowIso \}\]\);[\s\S]{0,120}if \(result\.stage === "timestamp_failed"\) \{\s*setTimestampRecovery\(\{ pendingTimestamp: result\.pendingTimestamp \}\);\s*setOutcomeActionError\(result\.message\);/.test(PAGE_NC));

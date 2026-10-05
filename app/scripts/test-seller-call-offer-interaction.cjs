@@ -36,6 +36,19 @@
  *  14. navigation: A's pending save never delays or labels B; back on A,
  *      its own verified amount is restored.
  *
+ *  19. Bones's reload reproduction (reconstructed): a save whose request is
+ *      still on its way leaves the deal Unresolved; a RELOAD keeps it
+ *      Unresolved and locked (the server's durable barrier); Check again
+ *      proves the request was never sent and withdraws it; the delayed
+ *      request then reaches the server and sends NOTHING;
+ *  20. a sent-and-unresolved save survives a reload, and Check again cannot
+ *      clear it (no reload or GHL look clears it);
+ *  21. two browsers: the second browser sees the first's unresolved save
+ *      and its save in progress, and sends nothing until the server proves
+ *      it;
+ *  22. storage failures: an unreadable status, and a reservation that
+ *      could not be stored, block and send nothing.
+ *
  * Confirm Accept uses the same save coordinator; its ordering is covered
  * directly in test-current-offer-save-coordinator.cjs (the fixture here
  * cannot reach Offer Ready).
@@ -82,10 +95,16 @@ function hold(match) {
   const h = { match, released: new Promise((r) => { release = r; }), hit: new Promise((r) => { onHit = r; }) };
   h.release = release; h.onHit = onHit; holds.push(h); return h;
 }
+/* PR #126 stacked server PR: the durable Current Offer barrier, run by the REAL
+   server module in Node (harness/current-offer-barrier-fixture.cjs). Its state
+   is shared by every browser context and survives page reloads. */
+const { createBarrierFixture } = require('./harness/current-offer-barrier-fixture.cjs');
+const bf = createBarrierFixture({ contactOf: (o) => (o === opp(A) ? A : o === opp(B) ? B : null) });
 function classify(url, method, post) {
   const u = new URL(url);
   const fn = u.pathname.replace('/.netlify/functions/', '');
-  if (fn === 'ghl-write' && method === 'POST') return { kind: 'write', op: post.operation, target: post.targetId, args: post.args };
+  if (fn === 'ghl-write' && method === 'POST') return { kind: 'write', op: post.operation, target: post.targetId, args: post.args, requestId: post.requestId };
+  if (fn === 'current-offer-barrier') return { kind: 'barrier', method, url, post, action: method === 'GET' ? 'status' : post && post.action };
   if (fn === 'ghl-proxy') {
     const p = u.searchParams.get('path') || '';
     let m;
@@ -132,7 +151,7 @@ async function main() {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, timezoneId: 'America/Chicago' });
     const pageErrors = [];
     page.on('pageerror', (e) => pageErrors.push(String(e)));
-    await page.route('**/*', async (route) => {
+    const routeHandler = async (route) => {
       const url = route.request().url();
       if (url.startsWith(base) && !url.includes('/.netlify/functions/')) return route.continue();
       if (!url.includes('/.netlify/functions/')) { foreign.push(url); return route.abort(); }
@@ -152,18 +171,29 @@ async function main() {
          leaves it for the test to apply later (a request still on its way);
          `reply` answers with a given status/body (e.g. 502, or the server's
          409 indeterminate), applying the write when `applies` is set. */
-      if (req.kind === 'write' && h && h.lose) {
-        if (h.lose === 'landed') db[req.target] = req.args.value;
-        if (h.lose === 'late') h.lateWrite = () => { db[req.target] = req.args.value; };
-        return route.abort('failed');
+      if (req.kind === 'barrier') {
+        const res = await bf.handle(req.method, req.url, req.post);
+        return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
       }
-      if (req.kind === 'write' && h && h.reply) {
-        if (h.applies) db[req.target] = req.args.value;
-        return route.fulfill({ status: h.reply.status, contentType: 'application/json', body: JSON.stringify(h.reply.body) });
-      }
-      if (req.kind === 'write' && (h ? h.refuse : refuseNext > 0)) {
-        if (!h) refuseNext -= 1;
-        return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'fixture: write refused' }) });
+      if (req.kind === 'write') {
+        /* The server side of a Current Offer write: the real barrier module claims
+           the send, applies the write to the fixture GHL, records the outcome.
+           `refuse` is a refusal decided BEFORE the GHL call (not_sent);
+           `lose: 'landed'` -- the server finished, the browser lost the answer;
+           `lose: 'late'` -- the request is still on its way: `lateWrite()`
+           delivers it to the server later (a delayed handler);
+           `reply` without `applies` -- a gateway answer, the server never ran;
+           `reply` with `applies` -- the GHL call was made, its answer lost. */
+        const contactId = req.target === opp(A) ? A : req.target === opp(B) ? B : req.target;
+        const serverWrite = (opts) => bf.write({ operation: req.op, targetId: req.target, requestId: req.requestId, contactId },
+          () => { db[req.target] = req.args.value; return { confirmed: true }; }, opts);
+        if (h && h.lose === 'late') { h.lateWrite = () => serverWrite({}); return route.abort('failed'); }
+        if (h && h.reply && !h.applies) return route.fulfill({ status: h.reply.status, contentType: 'application/json', body: JSON.stringify(h.reply.body) });
+        const refusing = h ? !!h.refuse : refuseNext > 0;
+        if (!h && refusing) refuseNext -= 1;
+        const res = await serverWrite({ refuse: refusing ? { status: 409, error: 'fixture: write refused' } : null, failAfterSend: !!(h && h.reply && h.applies) });
+        if (h && h.lose === 'landed') return route.abort('failed');
+        return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
       }
       if (req.kind === 'opp-read' && failReadbackNext > 0) {
         failReadbackNext -= 1;
@@ -171,7 +201,8 @@ async function main() {
       }
       const res = answer(req);
       return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
-    });
+    };
+    await page.route('**/*', routeHandler);
     await page.context().route(/gohighlevel\.com/, (route) => route.abort());
     await page.goto(`${base}/scripts/harness/contact-isolation/index.html`);
     await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
@@ -197,7 +228,7 @@ async function main() {
        coordinator is shared by the whole loaded app (an unresolved deal
        stays blocked across in-app navigation), so only a reload resets it. */
     const fresh = async (opts, c) => {
-      resetDb(opts); log = []; holds = []; refuseNext = 0; failReadbackNext = 0;
+      resetDb(opts); log = []; holds = []; refuseNext = 0; failReadbackNext = 0; bf.reset();
       await page.goto(`${base}/scripts/harness/contact-isolation/index.html`);
       await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
       await open(c);
@@ -229,7 +260,7 @@ async function main() {
     refuseNext = 1;
     await input().press('Tab');
     await until(async () => noteStarts('Not saved'), 'not saved');
-    check('3 a refused save says "Not saved — GHL refused the save"', await noteStarts('Not saved — GHL refused the save'), await note());
+    check('3 a save refused before reaching GHL says "Not saved — nothing was sent to GHL"', await noteStarts('Not saved — nothing was sent to GHL'), await note());
     check('3 the carrier keeps 250000', db[opp(A)] === 250000, db[opp(A)]);
 
     // 4 — restored carrier amount is recorded.
@@ -287,10 +318,12 @@ async function main() {
     await input().fill('280000');
     failReadbackNext = 99;                         // every readback attempt fails
     await input().press('Tab');
-    await until(async () => noteStarts('Save could not be confirmed'), 'unconfirmed').catch(() => {});
-    check('7 an uncertain result says "Save could not be confirmed"', await noteStarts('Save could not be confirmed'), await note());
-    check('7 an uncertain result is never "Recorded" and never "Not saved"', !/Recorded in GHL|Not saved/.test((await note()) || ''), await note());
+    await until(async () => noteStarts('Unresolved'), 'unresolved').catch(() => {});
+    check('7 a readback that fails is not proof either way: Unresolved and locked, never "Recorded" or "Not saved"', (await noteStarts('Unresolved')) && (await input().isEditable()) === false, await note());
     failReadbackNext = 0;
+    await page.getByTestId('current-offer-check-again').click();
+    await until(async () => (await input().isEditable()), 'cleared').catch(() => {});
+    check('7 Check again: the server has evidence (its own write was confirmed), so it clears -- as a draft, nothing assumed', (await input().isEditable()) && (await noteStarts('Draft — not saved yet')), await note());
 
     const writesOf = (v, target = opp(A)) => writes(target).filter((r) => r.args.value === v).length;
     const errCount = () => page.getByTestId('current-offer-write-error').count();
@@ -363,8 +396,14 @@ async function main() {
     await h.hit;
     await input().fill('420000'); await input().press('Tab');
     h.release();                                   // the older readback fails
+    await until(async () => noteStarts('Unresolved'), 'unresolved').catch(() => {});
+    await page.waitForTimeout(500);
+    check('11 an older failed readback blocks: Unresolved, and the waiting 420000 is never sent', (await noteStarts('Unresolved')) && writesOf(420000) === 0, { note: await note(), w: writes(opp(A)).map((x) => x.args.value) });
+    await page.getByTestId('current-offer-check-again').click();
+    await until(async () => (await input().isEditable()), 'cleared').catch(() => {});
+    await input().focus(); await input().press('Tab');
     await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(A)] === 420000, '420000 recorded').catch(() => {});
-    check('11 the newer amount is then saved and recorded by its own readback, with no error', (await noteStarts('Recorded in GHL')) && (await errCount()) === 0 && db[opp(A)] === 420000, { note: await note(), a: db[opp(A)] });
+    check('11 after Check again proves the older save, 420000 saves and records on its own', (await noteStarts('Recorded in GHL')) && db[opp(A)] === 420000 && writesOf(420000) === 1, { note: await note(), a: db[opp(A)] });
 
     // 12 — an older REFUSAL with a newer amount waiting.
     await fresh({}, A);
@@ -430,7 +469,7 @@ async function main() {
     await input().evaluate((el) => el.blur());
     await page.waitForTimeout(500);
     check('15 no further submission is sent for the deal (no retry)', writes(opp(A)).length === 1, writes(opp(A)).map((r) => r.args.value));
-    h.lateWrite();                                 // the earlier request lands now
+    await h.lateWrite();                           // the earlier request reaches the server and lands now
     check('15 setup: GHL now holds 410000 from the late request', db[opp(A)] === 410000);
     await go('/'); await page.waitForTimeout(300);
     await go(`/contacts/${A}/seller-call`);        // leave and come back: a fresh carrier snapshot is read
@@ -477,10 +516,126 @@ async function main() {
     refuseNext = 1;
     await input().press('Tab');
     await until(async () => noteStarts('Not saved'), 'refused');
-    check('18 a refusal is "Not saved", not Unresolved, and the input stays editable', (await noteStarts('Not saved — GHL refused the save')) && !(await unresolvedShown()) && (await input().isEditable()), await note());
+    check('18 a refusal before sending is "Not saved", not Unresolved, and the input stays editable', (await noteStarts('Not saved — nothing was sent to GHL')) && !(await unresolvedShown()) && (await input().isEditable()), await note());
     await input().fill('420000'); await input().press('Tab');
     await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(A)] === 420000, 'recorded after refusal').catch(() => {});
     check('18 the next save proceeds and records', (await noteStarts('Recorded in GHL')) && db[opp(A)] === 420000, { note: await note(), a: db[opp(A)] });
+
+    const harnessUrl = `${base}/scripts/harness/contact-isolation/index.html`;
+    const reloadOn = async (pg, c) => {
+      /* A full page load: a new JS context with no in-memory state -- exactly
+         what a browser reload gives the app. (The harness URL itself is loaded;
+         its in-app routes are not served by the offline dev server.) */
+      await pg.goto(harnessUrl);
+      await pg.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
+      await pg.evaluate((t) => window.__iaosNavigate(t), '/');
+      await pg.waitForTimeout(300);
+      await pg.evaluate((t) => window.__iaosNavigate(t), `/contacts/${c}/seller-call`);
+      await pg.getByTestId('negotiation-current-offer-input').waitFor({ timeout: 30000 });
+    };
+    const bodyText = async (pg = page) => pg.locator('body').innerText();
+    const noReloadWording = async (pg = page) => !/[Rr]eload/.test(await bodyText(pg));
+
+    // 19 — Bones's reload reproduction (reconstructed from the ruling): reload must preserve Unresolved.
+    await fresh({}, A);
+    await input().fill('410000');
+    h = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 410000); h.lose = 'late';
+    h.release();
+    await input().press('Tab');                     // the request leaves; the browser gets a network failure
+    await until(async () => unresolvedShown(), 'unresolved').catch(() => {});
+    check('19 setup: the request is still on its way -- the deal is Unresolved', (await noteStarts('Unresolved')) && db[opp(A)] === null, await note());
+    await reloadOn(page, A);
+    await until(async () => unresolvedShown(), 'unresolved after reload').catch(() => {});
+    check('19 after a RELOAD the deal is still Unresolved and locked (the durable barrier)', (await unresolvedShown()) && (await input().isEditable()) === false, await note());
+    check('19 nothing on the page tells the operator to reload; it offers Check again', (await noReloadWording()) && (await page.getByTestId('current-offer-check-again').count()) === 1);
+    const writesBefore19 = writes(opp(A)).length;
+    await input().evaluate((el) => el.blur());
+    await page.waitForTimeout(400);
+    check('19 after the reload nothing is sent for the deal', writes(opp(A)).length === writesBefore19);
+    await page.getByTestId('current-offer-check-again').click();
+    await until(async () => (await input().isEditable()), 'cleared').catch(() => {});
+    check('19 Check again proves the request was never sent (withdrawn) and clears the deal', (await input().isEditable()) && !(await unresolvedShown()), await note());
+    const late19 = await h.lateWrite();             // the delayed request finally reaches the server
+    check('19 the delayed handler sends NOTHING: refused as not_sent, GHL unchanged', late19.body.outcome === 'not_sent' && db[opp(A)] === null, late19);
+    await input().fill('420000'); await input().press('Tab');
+    await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(A)] === 420000, '420000 recorded').catch(() => {});
+    check('19 the next save is reserved, sent and recorded normally', (await noteStarts('Recorded in GHL')) && db[opp(A)] === 420000, { note: await note(), a: db[opp(A)] });
+
+    // 20 — a sent-and-unresolved save survives a reload; Check again cannot clear it.
+    await fresh({}, A);
+    await input().fill('410000');
+    h = hold((r) => r.kind === 'write' && r.target === opp(A)); h.reply = { status: 409, body: { outcome: 'indeterminate' } }; h.applies = true; h.release();
+    await input().press('Tab');
+    await until(async () => unresolvedShown(), 'unresolved').catch(() => {});
+    await reloadOn(page, A);
+    await until(async () => unresolvedShown(), 'unresolved after reload').catch(() => {});
+    check('20 the GHL call was made and its answer lost: after a reload, still Unresolved and locked', (await unresolvedShown()) && (await input().isEditable()) === false && db[opp(A)] === 410000, await note());
+    await page.getByTestId('current-offer-check-again').click();
+    await page.waitForTimeout(800);
+    check('20 Check again cannot clear it, even though GHL now shows 410000; it says the save may still reach GHL', (await unresolvedShown()) && /may still reach GHL/.test(await bodyText()) && (await input().isEditable()) === false);
+    check('20 no reload wording anywhere', await noReloadWording());
+
+    // 21 — two browsers.
+    await fresh({}, A);
+    const ctx2 = await browser.newContext({ viewport: { width: 1280, height: 900 }, timezoneId: 'America/Chicago' });
+    const page2 = await ctx2.newPage();
+    page2.on('pageerror', (e) => pageErrors.push('browser 2: ' + String(e)));
+    await page2.route('**/*', routeHandler);
+    await ctx2.route(/gohighlevel\.com/, (rt) => rt.abort());
+    const input2 = () => page2.getByTestId('negotiation-current-offer-input');
+    const open2 = async () => {
+      await page2.goto(harnessUrl);
+      await page2.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
+      await page2.evaluate((t) => window.__iaosNavigate(t), `/contacts/${A}/seller-call`);
+      await input2().waitFor({ timeout: 30000 });
+    };
+    // 21a: browser 1's save is in progress (reserved, request held) when browser 2 opens the deal.
+    await input().fill('410000');
+    h = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 410000);
+    await input().press('Tab');
+    await h.hit;
+    await open2();
+    await until(async () => (await page2.getByTestId('current-offer-unresolved').count()) > 0, 'browser 2 blocked').catch(() => {});
+    check('21 browser 2 sees browser 1\'s save in progress: blocked and locked', (await page2.getByTestId('current-offer-unresolved').count()) > 0 && (await input2().isEditable()) === false);
+    const w21 = log.filter((x) => x.kind === 'write').length;
+    const b21 = log.filter((x) => x.kind === 'barrier' && x.action === 'begin').length;
+    await input2().evaluate((el) => el.blur());
+    await page2.waitForTimeout(400);
+    check('21 browser 2 sends nothing -- not even a reservation', log.filter((x) => x.kind === 'write').length === w21 && log.filter((x) => x.kind === 'barrier' && x.action === 'begin').length === b21);
+    h.release();
+    await until(async () => (await noteStarts('Recorded in GHL')) && db[opp(A)] === 410000, 'browser 1 recorded').catch(() => {});
+    await page2.getByTestId('current-offer-check-again').click();
+    await until(async () => input2().isEditable(), 'browser 2 cleared').catch(() => {});
+    check('21 once browser 1\'s save is confirmed, Check again clears browser 2', await input2().isEditable());
+    // 21b: browser 1's save is sent and unresolved; browser 2 (and a reload of it) stays blocked.
+    await input().fill('420000');
+    h = hold((r) => r.kind === 'write' && r.target === opp(A) && r.args.value === 420000); h.reply = { status: 502, body: {} }; h.applies = true; h.release();
+    await input().press('Tab');
+    await until(async () => unresolvedShown(), 'browser 1 unresolved').catch(() => {});
+    await open2();
+    await until(async () => (await page2.getByTestId('current-offer-unresolved').count()) > 0, 'browser 2 blocked').catch(() => {});
+    check('21 browser 2 opening the deal later sees it Unresolved and locked', (await page2.getByTestId('current-offer-unresolved').count()) > 0 && (await input2().isEditable()) === false && /may still reach GHL/.test(await bodyText(page2)));
+    await page2.getByTestId('current-offer-check-again').click();
+    await page2.waitForTimeout(800);
+    check('21 Check again in browser 2 cannot clear a sent-and-unresolved save', (await input2().isEditable()) === false);
+    await ctx2.close();
+
+    // 22 — storage failures block and send nothing.
+    await fresh({}, A);
+    bf.failStorageOnce((op, key) => op === 'get' && key.startsWith('current-offer/barrier/'));
+    await reloadOn(page, A);
+    await until(async () => unresolvedShown(), 'status unreadable').catch(() => {});
+    check('22 an unreadable status blocks: locked, "could not check", nothing sent', (await unresolvedShown()) && /could not check/.test(await bodyText()) && (await input().isEditable()) === false && writes().length === 0);
+    await page.getByTestId('current-offer-check-again').click();
+    await until(async () => input().isEditable(), 'cleared').catch(() => {});
+    check('22 Check again (storage healthy, nothing reserved) clears it', await input().isEditable());
+    bf.failStorageOnce((op, key) => op === 'setJSON' && key.startsWith('current-offer/request/'));
+    await input().fill('430000'); await input().press('Tab');
+    await until(async () => unresolvedShown(), 'reservation failed').catch(() => {});
+    check('22 a reservation that could not be stored blocks and sends nothing', (await unresolvedShown()) && writes().length === 0 && /could not be reserved/.test(await bodyText()));
+    await page.getByTestId('current-offer-check-again').click();
+    await until(async () => input().isEditable(), 'cleared').catch(() => {});
+    check('22 Check again withdraws the partial reservation and clears', await input().isEditable());
 
     check('no request left the machine', foreign.length === 0, foreign);
     check('no page errors', pageErrors.length === 0, pageErrors);

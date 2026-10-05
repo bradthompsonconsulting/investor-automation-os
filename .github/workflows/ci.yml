@@ -225,8 +225,11 @@ jobs:
       - name: Board 15 B3 Seller Call content (Pass 1 F29-F37, F41, F43, F55) — 20 offline checks
         run: node app/scripts/test-b15-seller-call.cjs
 
-      - name: Current Offer save coordinator — serialized per deal, unresolved block, protected Accept (PR 126) — 89 offline checks
+      - name: Current Offer save coordinator — serialized per deal, unresolved block, protected Accept (PR 126) — 67 offline checks
         run: node app/scripts/test-current-offer-save-coordinator.cjs
+
+      - name: Durable Current Offer barrier — real ghl-write and barrier handlers, reloads, late handlers, storage failures (PR 126 stacked server PR) — 28 offline checks
+        run: node app/scripts/test-current-offer-barrier.cjs
 
       - name: Seller Call deal bar, incl. recorded Current Offer note (Pass 1 F31, PR 126 re-reviews) — 42 offline checks
         run: node app/scripts/test-seller-call-deal-bar.cjs
