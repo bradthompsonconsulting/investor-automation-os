@@ -16,6 +16,7 @@ import { callLogPlacement, type CallLogPlacement } from "../lib/call-log-queue";
 import { isCallSuppressed } from "../lib/dnc";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
+import { displayContactName, NO_MESSAGE_TEXT } from "../lib/operator-display";
 import { readCurrentOfferFromOpportunity } from "../lib/current-offer-carrier";
 
 /**
@@ -853,9 +854,7 @@ export default function Dashboard() {
         )}
       </div>
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 18px" }}>
-        What needs your attention today. Only three writes happen anywhere on this page: saving a note, marking a
-        call attempt the instant a note saves, and scheduling/clearing a callback. Nothing here sends, enrolls,
-        re-tags, or moves a stage.
+        What needs your attention today.
       </p>
 
       {/* Pipeline Health strip — moved to the very top: glanceable status nobody would scroll for.
@@ -868,6 +867,7 @@ export default function Dashboard() {
           display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center",
           background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "10px 14px",
         }}>
+          <span style={{ fontSize: "11px", color: "#64748B" }}>Contacts by temperature</span>
           {(Object.keys(bucketCounts) as BucketTag[]).map((tier) => (
             <span key={tier} style={{
               display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
@@ -984,13 +984,13 @@ export default function Dashboard() {
                 <Card key={r.conversationId} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
                   <Inbox size={15} style={{ color: "#F59E0B", flexShrink: 0 }} />
                   <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>
-                    {r.contactName}
+                    {displayContactName(r.contactName)}
                   </span>
                   <span style={{ fontSize: "12px", color: "#64748B", whiteSpace: "nowrap" }}>
                     {formatPhone(r.phone) || r.email || "—"}
                   </span>
                   <span style={{ fontSize: "12px", color: "#94A3B8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-                    {r.preview || <em style={{ color: "#334155" }}>(no preview)</em>}
+                    {r.preview || <em style={{ color: "#334155" }}>{NO_MESSAGE_TEXT}</em>}
                   </span>
                   <span style={{
                     marginLeft: "auto", fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
@@ -1203,15 +1203,26 @@ export default function Dashboard() {
 
       {/* 4. Lead Queue (renamed from Call Queue) — cold outreach, the long list at the bottom */}
       <SectionHeading count={leadQueue.length} href="/contacts">Lead Queue</SectionHeading>
-      <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 12px", maxWidth: CONTENT_MAX_WIDTH }}>
-        Attempted-but-no-response (oldest attempt first) → never-attempted (tier + score, mailer-overdue bubbles to
-        tier top) → freshly-attempted (greyed, bottom). A note is the only thing that marks an attempt — Call opens
-        GHL to dial and the callback icon schedules a follow-up, but neither one greys a row on its own. Contacts stay
-        here while cold outreach is still the right move — they drop out when another state takes over: an unanswered
-        inbound reply, a scheduled callback, an offer awaiting response, Seller Follow-Up, a terminal stage, or a phone
-        marked incorrect. Showing{" "}
+      <p style={{ fontSize: "12px", color: "#64748B", margin: "0 0 6px", maxWidth: CONTENT_MAX_WIDTH }}>
+        Sellers to cold-call next, top of the list first. Save a note after each call to mark the attempt. Showing{" "}
         {Math.min(RESURFACE_VISIBLE_ROWS, leadQueue.length)} of {leadQueue.length} — scroll for the rest.
       </p>
+      <p style={{ fontSize: "11px", color: "#475569", margin: "0 0 6px", maxWidth: CONTENT_MAX_WIDTH }}>
+        Not every contact is here. Contacts with an unanswered reply, a callback, an offer out or a Follow-Up stage
+        are in the lists above; a contact with a recent call result is placed by that result; contacts with no
+        phone, a wrong number, Do Not Call or a closed deal are left out.
+      </p>
+      <details style={{ fontSize: "11px", color: "#334155", margin: "0 0 12px", maxWidth: CONTENT_MAX_WIDTH }}>
+        <summary style={{ cursor: "pointer", color: "#475569" }}>How this list is ordered</summary>
+        <p style={{ margin: "6px 0 0" }}>
+          Attempted-but-no-response (oldest attempt first) → never-attempted (tier + score, mailer-overdue bubbles to
+          tier top) → freshly-attempted (greyed, bottom). A note is the only thing that marks an attempt — Call opens
+          GHL to dial and the callback icon schedules a follow-up, but neither one greys a row on its own. Contacts stay
+          here while cold outreach is still the right move — they drop out when another state takes over: an unanswered
+          inbound reply, a scheduled callback, an offer awaiting response, Seller Follow-Up, a terminal stage, or a phone
+          marked incorrect.
+        </p>
+      </details>
       <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden", maxWidth: CONTENT_MAX_WIDTH }}>
         <div style={{ overflow: "auto", maxHeight: `${RESURFACE_VISIBLE_ROWS * 44}px` }}>
           <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>

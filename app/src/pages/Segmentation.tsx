@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, Flame, Sun, Snowflake, Scroll } from "lucide-react";
 import { ghl, getBucketTag, isProbate, type ContactRow, type BucketTag } from "../lib/ghl";
+import { formatPhone } from "../lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -110,7 +111,7 @@ function ContactCard({ contact }: { contact: ContactRow }) {
       </div>
 
       <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {contact.phone || contact.email || "—"}
+        {formatPhone(contact.phone) || contact.email || "—"}
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
@@ -326,7 +327,7 @@ export default function Segmentation() {
       </div>
 
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 18px" }}>
-        Read-only view of GHL bucket tags. Tiers are assigned by the scoring function; this page never sends, enrolls, or re-tags.
+        Leads grouped by temperature (Hot / Warm / Low). Read-only.
       </p>
 
       {/* Three-tier board */}

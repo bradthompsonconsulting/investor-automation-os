@@ -48,7 +48,7 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
 function SkeletonRow() {
   return (
     <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-      {[160, 160, 120, 220].map((w, i) => (
+      {[160, 160, 120].map((w, i) => (
         <td key={i} style={{ padding: "12px 16px" }}>
           <div style={{
             height: "14px", width: `${w}px`, borderRadius: "4px",
@@ -144,7 +144,7 @@ export default function Pipeline() {
       </div>
 
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 18px" }}>
-        Seller Leads Pipeline — read-only. Stage changes are managed in GHL.
+        Read-only view of the Seller Leads Pipeline. Stage changes are made in GHL.
       </p>
 
       {/* Table card */}
@@ -186,13 +186,6 @@ export default function Pipeline() {
                     Stage <SortIcon active={sortKey === "stage"} dir={sortDir} />
                   </span>
                 </th>
-                <th style={{
-                  padding: "10px 16px", textAlign: "left", fontSize: "11px", fontWeight: 600,
-                  letterSpacing: "0.06em", textTransform: "uppercase", color: "#475569",
-                  whiteSpace: "nowrap", background: "#07142E",
-                }}>
-                  Access
-                </th>
               </tr>
             </thead>
             <tbody>
@@ -200,7 +193,7 @@ export default function Pipeline() {
                 Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)
               ) : sorted.length === 0 ? (
                 <tr>
-                  <td colSpan={4} style={{ padding: "60px 16px", textAlign: "center" }}>
+                  <td colSpan={3} style={{ padding: "60px 16px", textAlign: "center" }}>
                     <GitBranch size={32} style={{ color: "#334155", margin: "0 auto 12px" }} />
                     <p style={{ color: "#475569", margin: 0 }}>No opportunities found</p>
                   </td>
@@ -227,9 +220,6 @@ export default function Pipeline() {
                     </td>
                     <td style={{ padding: "11px 16px" }}>
                       <StageBadge name={stageName.get(o.stageId) ?? "Unknown"} />
-                    </td>
-                    <td style={{ padding: "11px 16px" }}>
-                      <span>Read-only</span>
                     </td>
                   </tr>
                 ))
