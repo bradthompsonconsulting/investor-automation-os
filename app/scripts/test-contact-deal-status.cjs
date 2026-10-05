@@ -69,7 +69,8 @@ check('the contract line is the pointer for every stage, including Under Contrac
   check('the contract line links to the Contract Workspace',
     /<Link data-testid="contact-contract-state" to=\{`\/contacts\/\$\{id\}\/contract`\}[^>]*>\{dealStatus\.contract\}<\/Link>/.test(page), true);
   check('stage names come from the same pipeline read as the opportunities',
-    /\.then\(\(p\) => \{ setPipelineStages\(p\.stages\); setOpps\(opportunitiesForContact\(p\.opportunities, id\)\); \}\)/.test(page), true);
+    /* PR #129 re-review: the same read, now guarded against contact changes. */
+    /\.then\(\(p\) => \{\s*if \(currentIdRef\.current !== forId\) return;[^\n]*\n\s*setPipelineStages\(p\.stages\);\s*setOpps\(opportunitiesForContact\(p\.opportunities, forId\)\);\s*\}\)/.test(page), true);
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });
