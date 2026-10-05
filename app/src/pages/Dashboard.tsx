@@ -16,6 +16,7 @@ import { callLogPlacement, type CallLogPlacement } from "../lib/call-log-queue";
 import { isCallSuppressed } from "../lib/dnc";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
+import { displayContactName } from "../lib/operator-display";
 import { readCurrentOfferFromOpportunity } from "../lib/current-offer-carrier";
 
 /**
@@ -982,7 +983,7 @@ export default function Dashboard() {
                 <Card key={r.conversationId} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
                   <Inbox size={15} style={{ color: "#F59E0B", flexShrink: 0 }} />
                   <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>
-                    {r.contactName}
+                    {displayContactName(r.contactName)}
                   </span>
                   <span style={{ fontSize: "12px", color: "#64748B", whiteSpace: "nowrap" }}>
                     {formatPhone(r.phone) || r.email || "—"}
