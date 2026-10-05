@@ -347,6 +347,10 @@ export default function DealCalculator() {
     setTestPriceInput("");
     setRepairsMode("quick");
     setRepairAnswers({});
+    /* PR #124 re-review (Bones / Jess): Clear must also reset Miscellaneous,
+       or its description and amount reappear when itemized mode is reopened
+       and silently add to the repairs figure. */
+    setRepairMisc(EMPTY_MISC);
     setRepairRevision(0);
     setAssignmentMode(DEFAULT_ASSIGNMENT_MODE);
     setManualAmountInput("");
