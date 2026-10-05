@@ -26,7 +26,7 @@ function fmtTime(iso: string): string {
 
 export default function Calendars() {
   const [data, setData]   = useState<CalendarEventsResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ detail: string; accessDenied: boolean } | null>(null);
 
   // Explicit window (client clock) so the read is deterministic: today → +30 days.
   useEffect(() => {
@@ -34,7 +34,8 @@ export default function Calendars() {
     const now = Date.now();
     ghl.calendars.events(now, now + WINDOW_DAYS * 86_400_000)
       .then(setData)
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error & { code?: string | null }) =>
+        setError({ detail: e.message, accessDenied: e.code === "ghl_calendar_access_denied" }));
   }, []);
 
   // Group by CT day, preserving the server's oldest→newest ordering.
@@ -57,7 +58,24 @@ export default function Calendars() {
       </div>
 
       {error ? (
-        <div style={{ fontSize: "13px", color: "#F87171" }}>Failed to load appointments: {error}</div>
+        // B15-07 / Pass 1 F47: an operator sentence first; GHL's raw text only
+        // as collapsed detail for whoever diagnoses it.
+        <div data-testid="calendar-unavailable" style={{ background: "#0D1B3E", border: "1px solid rgba(248,113,113,0.3)", borderRadius: "12px", padding: "16px 18px", maxWidth: "820px" }}>
+          <div style={{ fontSize: "13px", color: "#F87171", fontWeight: 600 }}>
+            {error.accessDenied
+              ? "Appointments can't be shown here: GHL refused IAOS access to calendars for this account."
+              : "Appointments couldn't be loaded from GHL right now."}
+          </div>
+          <div style={{ fontSize: "12px", color: "#94A3B8", marginTop: "6px", lineHeight: 1.5 }}>
+            {error.accessDenied
+              ? "Your appointments are still in GHL — open Calendars in GHL to see them. Nothing was changed."
+              : "Try again in a moment. Your appointments are still in GHL. Nothing was changed."}
+          </div>
+          <details style={{ marginTop: "8px" }}>
+            <summary style={{ fontSize: "11px", color: "#475569", cursor: "pointer" }}>Technical detail</summary>
+            <div style={{ fontSize: "11px", color: "#475569", marginTop: "4px", wordBreak: "break-word" }}>{error.detail}</div>
+          </details>
+        </div>
       ) : data === null ? (
         <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#334155", fontSize: "13px" }}>
           <Loader2 size={14} className="animate-spin" /> Loading appointments…

@@ -129,6 +129,7 @@ const STAGE_COLOR: Record<string, string> = {
   "Seller Call Completed": "#1EC8FF",
   "Seller Follow-Up":      "#1EC8FF",
   "Seller Offer Sent":     "#8B5CF6",
+  "Under Contract":        "#22C55E",
   "Seller Closed-Won":     "#22C55E",
   "Long-Term Nurture":     "#A78BFA",
   "Lost / Not Interested": "#EF4444",
