@@ -326,7 +326,7 @@ export default function Segmentation() {
       </div>
 
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 18px" }}>
-        Read-only view of GHL bucket tags. Tiers are assigned by the scoring function; this page never sends, enrolls, or re-tags.
+        Leads grouped by temperature (Hot / Warm / Low). Read-only.
       </p>
 
       {/* Three-tier board */}
