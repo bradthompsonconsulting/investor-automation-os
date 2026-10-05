@@ -250,26 +250,23 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('the resume ref is keyed by opportunity identity (dealId), not contactId', /const dealHydrationRef = useRef<DealHydrationRef>\(\{ dealId: null, hydrated: false \}\)/.test(sellerCallTsx), true);
   check('the resume effect passes the CURRENT live inputs and the CURRENT ref into resolveResumeHydration every render (the pure function, not the page, decides what changes)', /resolveResumeHydration\(\{[\s\S]{0,300}prevRef: dealHydrationRef\.current,[\s\S]{0,300}currentDealId,[\s\S]{0,300}loading,[\s\S]{0,300}sellerPositionInput,[\s\S]{0,300}currentOfferInput,/.test(sellerCallTsx), true);
   check('the page stores the decision\'s nextRef back onto the ref every render (so the NEXT render sees this render\'s outcome)', /dealHydrationRef\.current = decision\.nextRef/.test(sellerCallTsx), true);
-  // INV-70 / B9-07A Phase 2 extends the cleared set: the Opportunity-owned
-  // Current Offer carrier's own write bookkeeping (the last-written-value
-  // ref and its write-state) is exactly as deal-specific as Seller
-  // Position/Current Offer/override state, and must be reset on a genuine
-  // deal switch for the same reason -- Deal A's last-written value must
-  // never suppress or mis-report Deal B's first commit.
-  check('the page clears every deal-specific negotiation value (Seller Position, Current Offer, the above-Max override/draft/warning state, and the Current Offer write bookkeeping) when decision.clear is true, BEFORE either restore field is applied', /if \(decision\.clear\) \{\s*setSellerPositionInput\(""\);\s*setCurrentOfferInput\(""\);\s*setNegotiationOverride\(null\);\s*setOverrideReasonDraft\(""\);\s*setOverrideAcknowledged\(false\);\s*setOverrideActionError\(null\);\s*setWarningDismissed\(false\);\s*lastWrittenCurrentOfferRef\.current = null;\s*setConfirmedCurrentOffer\(null\);\s*setCurrentOfferWriteState\(\{ status: "idle" \}\);\s*offerAttemptRef\.current \+= 1;\s*\}/.test(sellerCallTsxNoComments), true);
-  // PR #126 third re-review (Bones, 2026-10-05): every piece of SUCCESS
-  // bookkeeping -- not only the write status -- is recorded only by the
-  // latest save, and starting a new save drops the previously confirmed mark.
-  check('a blur save records lastWritten/confirmed only if it is still the latest attempt for the deal on screen', /if \(offerAttemptRef\.current === attempt && currentOppIdRef\.current === oppId\) \{\s*lastWrittenCurrentOfferRef\.current = \{ oppId, amount \};\s*setConfirmedCurrentOffer\(\{ oppId, amount \}\);\s*\} else \{\s*staleMayHaveWritten\(\);\s*\}/.test(sellerCallTsxNoComments), true);
-  check('starting a save drops the previously confirmed/last-written mark', /const attempt = \+\+offerAttemptRef\.current;\s*lastWrittenCurrentOfferRef\.current = null;\s*setConfirmedCurrentOffer\(null\);/.test(sellerCallTsxNoComments), true);
-  check('a stale save that may have written (success or uncertain, never a refusal) un-records a different amount for its deal', /if \(!refused\) staleMayHaveWritten\(\);/.test(sellerCallTsxNoComments) && /staleMayHaveWritten\(\);\s*settle\(\{ status: "error", kind: "unconfirmed"/.test(sellerCallTsxNoComments), true);
-  check('the accept write is its own attempt and records only if still the latest', /const offerAttempt = \+\+offerAttemptRef\.current;/.test(sellerCallTsxNoComments) && /if \(offerAttemptRef\.current === offerAttempt && currentOppIdRef\.current === screen\.opportunity\.id\)/.test(sellerCallTsxNoComments), true);
+  // INV-70 / B9-07A Phase 2: a genuine deal switch clears every deal-specific
+  // negotiation value. PR #126 fourth re-review (Bones, 2026-10-05): Current
+  // Offer SAVE state is no longer page state to reset -- it lives per deal in
+  // the save coordinator, so Deal A's saves can never suppress, delay or
+  // label Deal B's.
+  check('the page clears every deal-specific negotiation value (Seller Position, Current Offer, the above-Max override/draft/warning state) when decision.clear is true, BEFORE either restore field is applied', /if \(decision\.clear\) \{\s*setSellerPositionInput\(""\);\s*setCurrentOfferInput\(""\);\s*setNegotiationOverride\(null\);\s*setOverrideReasonDraft\(""\);\s*setOverrideAcknowledged\(false\);\s*setOverrideActionError\(null\);\s*setWarningDismissed\(false\);\s*\}/.test(sellerCallTsxNoComments), true);
+  // PR #126 fourth re-review: ONE per-deal save coordinator serializes every
+  // Current Offer write with its readback, for the blur AND Confirm Accept.
+  check('the page creates one save coordinator, whose injected write is the ONLY setCurrentOffer call on the page', /createOfferSaveCoordinator\(\s*\(oppId, amount\) => ghl\.opportunities\.setCurrentOffer\(oppId, amount\),/.test(sellerCallTsxNoComments) && (sellerCallTsxNoComments.match(/ghl\.opportunities\.setCurrentOffer\(/g) || []).length === 1, true);
+  check('the blur save goes through the coordinator for the deal on screen', /offerSaves\.requestSave\(screen\.opportunity\.id, decision\.value\);/.test(sellerCallTsxNoComments), true);
+  check('Confirm Accept\'s Current Offer write goes through the same coordinator', /setCurrentOffer: \(opportunityId, value\) => offerSaves\.saveForAccept\(opportunityId, value\),/.test(sellerCallTsxNoComments), true);
+  check('the deal-bar label, the saving line and the error line all come from the coordinator for the deal and amount on screen', /currentOfferStatus: offerSaves\.statusFor\(dealBarOppId, currentOffer\)/.test(sellerCallTsxNoComments) && /offerSaves\.statusFor\(dealBarOppId, currentOffer\) === "saving"/.test(sellerCallTsxNoComments) && /offerSaves\.failureFor\(dealBarOppId, currentOffer\)/.test(sellerCallTsxNoComments), true);
   check('the page applies decision.restoreSellerPosition only when non-null, verbatim -- never re-deciding whether to restore', /if \(decision\.restoreSellerPosition !== null\) \{\s*setSellerPositionInput\(decision\.restoreSellerPosition\);\s*\}/.test(sellerCallTsxNoComments), true);
-  // INV-70 / B9-07A Phase 2 correction round 3 -- restoring Current Offer
-  // now ALSO records the value as already-written (lastWrittenCurrentOfferRef),
-  // since the restored value IS the Opportunity field's own live content
-  // -- an unchanged blur must not re-issue a redundant PUT.
-  check('the page applies decision.restoreCurrentOffer only when non-null, and records it as already-written to the Opportunity field', /if \(decision\.restoreCurrentOffer !== null\) \{\s*setCurrentOfferInput\(decision\.restoreCurrentOffer\);\s*if \(restoreOppId !== null\) \{\s*lastWrittenCurrentOfferRef\.current = \{ oppId: restoreOppId, amount: Number\(decision\.restoreCurrentOffer\) \};\s*setConfirmedCurrentOffer\(\{ oppId: restoreOppId, amount: Number\(decision\.restoreCurrentOffer\) \}\);\s*\}\s*\}/.test(sellerCallTsxNoComments), true);
+  // INV-70 / B9-07A Phase 2 correction round 3 -- the restored Current Offer
+  // IS the Opportunity field's own live content: it seeds the coordinator as
+  // that deal's verified amount, so an unchanged blur issues no redundant PUT.
+  check('the page applies decision.restoreCurrentOffer only when non-null, and seeds it into the save coordinator as the deal\'s verified amount', /if \(decision\.restoreCurrentOffer !== null\) \{\s*setCurrentOfferInput\(decision\.restoreCurrentOffer\);\s*if \(restoreOppId !== null\) offerSaves\.seed\(restoreOppId, Number\(decision\.restoreCurrentOffer\)\);\s*\}/.test(sellerCallTsxNoComments), true);
   check('the restore calls are positioned AFTER the clear block in source order (clear, then restore, never the reverse)', sellerCallTsxNoComments.indexOf('if (decision.clear)') !== -1 && sellerCallTsxNoComments.indexOf('if (decision.clear)') < sellerCallTsxNoComments.indexOf('if (decision.restoreSellerPosition'), true);
   check('page imports useRef from react (required for the per-deal hydration guard)', /import \{ useEffect, useMemo, useRef, useState \} from "react"/.test(sellerCallTsx), true);
   check('restored Current Offer needs no separate Expected Spread wiring -- it flows through the SAME computeExpectedSpread useMemo already keyed on currentOffer', /computeExpectedSpread\(\{ endBuyerMaxPrice: board8\.endBuyerMaxPrice, referenceKind: "current_offer", referencePrice: currentOffer \}\)/.test(sellerCallTsx), true);
