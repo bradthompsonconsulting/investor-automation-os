@@ -225,7 +225,7 @@ jobs:
       - name: Board 15 B3 Seller Call content (Pass 1 F29-F37, F41, F43, F55) — 20 offline checks
         run: node app/scripts/test-b15-seller-call.cjs
 
-      - name: Seller Call deal bar, incl. recorded Current Offer note (Pass 1 F31, PR 126 re-review) — 40 offline checks
+      - name: Seller Call deal bar, incl. recorded Current Offer note (Pass 1 F31, PR 126 re-reviews) — 41 offline checks
         run: node app/scripts/test-seller-call-deal-bar.cjs
 
       - name: Next best question, incl. operator checklist routing (Pass 1 F34) — 66 offline checks

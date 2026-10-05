@@ -21,7 +21,7 @@ import { computeOfferReadiness, CATEGORY_LABEL, type ReadinessResult, type Mater
 import { computeNextBestQuestion, computeQuestionQueue, computeOperatorChecklist, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { FullScriptDrawer } from "../components/FullScriptDrawer";
 import { SellerCallVoiceControls } from "../components/SellerCallVoiceControls";
-import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
+import { buildDealBarCells, type CurrentOfferStatus, type DealBarCell } from "../lib/seller-call-deal-bar";
 import { buildOfferReadinessInputs } from "../lib/seller-call-readiness-inputs";
 import { latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
 import {
@@ -466,6 +466,31 @@ function OfferReadinessChecklist({ readiness }: { readiness: ReadinessResult }) 
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
+/**
+ * PR #126 second re-review (Bones / Jess, 2026-10-05). The Current Offer
+ * label for the amount on screen. Every input names its deal and amount, so
+ * a save, failure or confirmation for another deal -- or for an older amount
+ * of this deal -- never labels what is on screen now:
+ *   saving       a save of THIS deal's THIS amount is in flight;
+ *   failed       GHL refused a save of this deal's this amount;
+ *   unconfirmed  a save of this deal's this amount may have landed but could
+ *                not be read back;
+ *   recorded     this deal's confirmed amount equals what is on screen;
+ *   draft        anything else.
+ */
+export function currentOfferStatusFor(
+  ws: { status: "idle" } | { status: "saving" | "error"; oppId: string; amount: number; kind?: "refused" | "unconfirmed" },
+  confirmed: { oppId: string; amount: number } | null,
+  oppId: string | null,
+  amount: number | null,
+): CurrentOfferStatus {
+  const same = (m: { oppId: string; amount: number }) => oppId !== null && amount !== null && m.oppId === oppId && m.amount === amount;
+  if (ws.status === "saving" && same(ws)) return "saving";
+  if (ws.status === "error" && same(ws)) return ws.kind === "refused" ? "failed" : "unconfirmed";
+  if (confirmed && same(confirmed)) return "recorded";
+  return "draft";
+}
+
 export default function SellerCallWorkspace() {
   const { id } = useParams<{ id: string }>();
   const contactId = id ?? "";
@@ -525,17 +550,25 @@ export default function SellerCallWorkspace() {
      mount/opportunity change so a genuinely new deal's first blur always
      writes once, never assumes a prior deal's last-written value still
      applies. */
-  const lastWrittenCurrentOfferRef = useRef<number | null>(null);
+  /* PR #126 second re-review (Bones / Jess, 2026-10-05): every piece of
+     Current Offer save bookkeeping names the DEAL and the AMOUNT it is
+     about, so a completion for deal A (or for an older amount) can never
+     confirm, suppress or label deal B's (or a newer) amount. */
+  type OfferMark = { oppId: string; amount: number };
+  const lastWrittenCurrentOfferRef = useRef<OfferMark | null>(null);
   const [currentOfferWriteState, setCurrentOfferWriteState] = useState<
     | { status: "idle" }
-    | { status: "saving" }
-    | { status: "error"; message: string }
+    | { status: "saving"; oppId: string; amount: number; attempt: number }
+    | { status: "error"; kind: "refused" | "unconfirmed"; oppId: string; amount: number; attempt: number; message: string }
   >({ status: "idle" });
-  /* PR #126 re-review (Bones / Jess, 2026-10-05): the Current Offer amount
-     CONFIRMED in GHL -- restored from the Opportunity carrier, or a save GHL
-     read back. Only this amount may be labelled "Recorded in GHL". State,
-     not a ref: it drives the deal-bar label. */
-  const [confirmedCurrentOffer, setConfirmedCurrentOffer] = useState<number | null>(null);
+  /* The Current Offer CONFIRMED in GHL for a deal -- restored from the
+     Opportunity carrier, or a save GHL read back. Only this deal's confirmed
+     amount may be labelled "Recorded in GHL". */
+  const [confirmedCurrentOffer, setConfirmedCurrentOffer] = useState<OfferMark | null>(null);
+  /* Each save is numbered; only the latest attempt may settle the status. */
+  const offerAttemptRef = useRef(0);
+  /* The deal on screen right now, for completions that arrive later. */
+  const currentOppIdRef = useRef<string | null>(null);
 
   /* The one already-granted override, if any -- see seller-call-
      negotiation.ts's own header for why this is a DIFFERENT concept from
@@ -824,9 +857,6 @@ export default function SellerCallWorkspace() {
      must never silently carry forward onto a different one typed next. */
   function handleCurrentOfferChange(raw: string) {
     setCurrentOfferInput(raw);
-    /* An edit after a failed save is a new draft; the failure stays true of
-       the amount it was about, not of what is typed now. */
-    setCurrentOfferWriteState((s) => (s.status === "error" ? { status: "idle" } : s));
     setOverrideAcknowledged(false);
     setOverrideReasonDraft("");
     setOverrideActionError(null);
@@ -853,20 +883,43 @@ export default function SellerCallWorkspace() {
     const agreementAlreadyReached = latestOutcome?.kind === "accept";
     const decision = currentOfferWriteGate({ value: currentOffer, agreementAlreadyReached });
     if (decision.kind === "blocked") return;
-    if (lastWrittenCurrentOfferRef.current === decision.value) return;
+    const oppId = screen.opportunity.id;
+    const amount = decision.value;
+    /* De-dupe only against THIS deal's own last-written amount. */
+    const last = lastWrittenCurrentOfferRef.current;
+    if (last && last.oppId === oppId && last.amount === amount) return;
 
-    setCurrentOfferWriteState({ status: "saving" });
+    const attempt = ++offerAttemptRef.current;
+    setCurrentOfferWriteState({ status: "saving", oppId, amount, attempt });
+    /* Only the latest attempt may settle the status; a completion for an
+       earlier attempt (another deal or an older amount) changes nothing. */
+    const settle = (next: typeof currentOfferWriteState) =>
+      setCurrentOfferWriteState((s) => (s.status !== "idle" && s.attempt === attempt ? next : s));
     try {
-      const result = await ghl.opportunities.setCurrentOffer(screen.opportunity.id, decision.value);
+      const result = await ghl.opportunities.setCurrentOffer(oppId, amount);
       if (!result.ok) {
-        setCurrentOfferWriteState({ status: "error", message: "Current Offer was sent but could not be confirmed." });
+        /* The write was accepted but GHL did not read the amount back: it may
+           or may not have landed. Never "recorded", never "refused". */
+        settle({ status: "error", kind: "unconfirmed", oppId, amount, attempt, message: "Save could not be confirmed." });
         return;
       }
-      lastWrittenCurrentOfferRef.current = decision.value;
-      setConfirmedCurrentOffer(decision.value);
-      setCurrentOfferWriteState({ status: "idle" });
+      /* Confirmed. The bookkeeping is this deal's own; it is recorded only
+         while this deal is still the one on screen (a later visit restores
+         the confirmed amount from the GHL carrier anyway). */
+      if (currentOppIdRef.current === oppId) {
+        lastWrittenCurrentOfferRef.current = { oppId, amount };
+        setConfirmedCurrentOffer({ oppId, amount });
+      }
+      settle({ status: "idle" });
     } catch (e: any) {
-      setCurrentOfferWriteState({ status: "error", message: e?.message ?? "Couldn't save Current Offer." });
+      /* A definite refusal is an answered request that said no (4xx): nothing
+         was written. Anything else -- a 5xx, a network failure, or a readback
+         that could not be completed -- leaves the outcome unknown. */
+      const m = /setCurrentOffer PUT → (\d{3})/.exec(String(e?.message ?? ""));
+      const refused = m !== null && Number(m[1]) >= 400 && Number(m[1]) < 500;
+      settle(refused
+        ? { status: "error", kind: "refused", oppId, amount, attempt, message: `Not saved — GHL refused the save (${m![1]}).` }
+        : { status: "error", kind: "unconfirmed", oppId, amount, attempt, message: "Save could not be confirmed." });
     }
   }
 
@@ -1551,6 +1604,11 @@ export default function SellerCallWorkspace() {
     propertyIdentityConfirmation, transactionAssumptionsRecord, sellerPricePositionRecord, readinessHumanAction,
   ]);
 
+  /* PR #126 second re-review: the deal on screen, for the Current Offer label
+     and for save completions that arrive after the operator has moved on. */
+  const dealBarOppId = screen.state === "resolved" || screen.state === "unresolved" ? screen.opportunity.id : null;
+  currentOppIdRef.current = dealBarOppId;
+
   const dealBarCells = useMemo(
     () => buildDealBarCells({
       arv: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.arv : null,
@@ -1559,15 +1617,11 @@ export default function SellerCallWorkspace() {
       currentOffer,
       /* PR #126 re-review: recorded only when the typed amount IS the
          confirmed one and no save is pending or failed. */
-      currentOfferStatus:
-        currentOfferWriteState.status === "saving" ? "saving"
-          : currentOfferWriteState.status === "error" ? "failed"
-            : currentOffer !== null && currentOffer === confirmedCurrentOffer ? "recorded"
-              : "draft",
+      currentOfferStatus: currentOfferStatusFor(currentOfferWriteState, confirmedCurrentOffer, dealBarOppId, currentOffer),
       board8,
       expectedSpread,
     }),
-    [screen, sellerPosition, currentOffer, currentOfferWriteState, confirmedCurrentOffer, board8, expectedSpread],
+    [screen, sellerPosition, currentOffer, currentOfferWriteState, confirmedCurrentOffer, dealBarOppId, board8, expectedSpread],
   );
 
   const hasKnownFacts = (screen.state === "resolved" || screen.state === "unresolved")
@@ -1751,6 +1805,7 @@ export default function SellerCallWorkspace() {
       setConfirmedCurrentOffer(null);
       setCurrentOfferWriteState({ status: "idle" });
     }
+    const restoreOppId = screen.state === "resolved" || screen.state === "unresolved" ? screen.opportunity.id : null;
     if (decision.restoreSellerPosition !== null) {
       setSellerPositionInput(decision.restoreSellerPosition);
     }
@@ -1761,8 +1816,10 @@ export default function SellerCallWorkspace() {
          resume.ts), so it is already correctly persisted. Recording it
          as already-written means an operator who blurs without editing
          it issues no redundant PUT. */
-      lastWrittenCurrentOfferRef.current = Number(decision.restoreCurrentOffer);
-      setConfirmedCurrentOffer(Number(decision.restoreCurrentOffer));
+      if (restoreOppId !== null) {
+        lastWrittenCurrentOfferRef.current = { oppId: restoreOppId, amount: Number(decision.restoreCurrentOffer) };
+        setConfirmedCurrentOffer({ oppId: restoreOppId, amount: Number(decision.restoreCurrentOffer) });
+      }
     }
     /* B8-11 / INV-54 -- restoring the durable override record. Whether it
        still APPLIES to the (also just-restored) Current Offer is
@@ -1899,8 +1956,11 @@ export default function SellerCallWorkspace() {
         }
         // The Current Offer is confirmed from here on. Recorded as
         // already-written so an untouched blur issues no redundant PUT.
-        lastWrittenCurrentOfferRef.current = freeze.value;
-        setCurrentOfferWriteState({ status: "idle" });
+        if (currentOppIdRef.current === screen.opportunity.id) {
+          lastWrittenCurrentOfferRef.current = { oppId: screen.opportunity.id, amount: freeze.value };
+          setConfirmedCurrentOffer({ oppId: screen.opportunity.id, amount: freeze.value });
+          setCurrentOfferWriteState({ status: "idle" });
+        }
         if (result.stage === "note_failed") {
           setOutcomeActionError(result.message);
           return;
@@ -2432,12 +2492,12 @@ export default function SellerCallWorkspace() {
                     existing philosophy that GHL is the sole system of
                     record and the screen states only what differs from
                     "working as expected." */}
-                {currentOfferWriteState.status === "saving" ? (
+                {currentOfferWriteState.status === "saving" && currentOfferWriteState.oppId === dealBarOppId && currentOfferWriteState.amount === currentOffer ? (
                   <span data-testid="current-offer-write-saving" style={{ color: "#64748B", fontSize: "10px" }}>
                     Saving Current Offer…
                   </span>
                 ) : null}
-                {currentOfferWriteState.status === "error" ? (
+                {currentOfferWriteState.status === "error" && currentOfferWriteState.oppId === dealBarOppId && currentOfferWriteState.amount === currentOffer ? (
                   <span data-testid="current-offer-write-error" style={{ color: "#EF4444", fontSize: "10px" }}>
                     {currentOfferWriteState.message}
                   </span>

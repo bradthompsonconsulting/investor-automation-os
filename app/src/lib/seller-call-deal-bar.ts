@@ -83,13 +83,17 @@ const CURRENT_OFFER_WAITING = "None recorded";
  * save GHL read back). A typed amount not yet saved is a draft; a save in
  * flight says so; a refused or unconfirmed save says it was not saved.
  */
-export type CurrentOfferStatus = "recorded" | "draft" | "saving" | "failed";
+export type CurrentOfferStatus = "recorded" | "draft" | "saving" | "failed" | "unconfirmed";
 
+/* Second re-review (Bones / Jess, 2026-10-05): a definite refusal (GHL said
+   no; nothing was written) is told apart from an uncertain result (the save
+   may have landed but could not be read back). */
 export const CURRENT_OFFER_STATUS_TEXT: Record<CurrentOfferStatus, string> = {
   recorded: "Recorded in GHL",
   draft: "Draft — not saved yet (saves when you leave the field)",
   saving: "Saving to GHL…",
-  failed: "Not saved — the save was refused or could not be confirmed",
+  failed: "Not saved — GHL refused the save",
+  unconfirmed: "Save could not be confirmed — check the deal in GHL",
 };
 
 export function currentOfferNote(board8: Board8Economics | null, status: CurrentOfferStatus): string {
