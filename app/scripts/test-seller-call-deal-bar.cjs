@@ -61,7 +61,7 @@ const { computeBoard8Economics, computeExpectedSpread } = require(board8Path);
 const { buildDealBarCells, DEAL_BAR_LABELS } = require(dealBarPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 41; // 34 + 3 (Board 15 / Pass 1 F31) + 4 (PR 126 re-reviews)
+const FLOOR = 42; // 34 + 3 (Board 15 / Pass 1 F31) + 5 (PR 126 re-reviews)
 let failures = 0;
 let checks = 0;
 
@@ -164,6 +164,8 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
   check('PR126 a refused save says it was not saved', noteFor('failed').indexOf('Not saved — GHL refused the save') === 0, true);
   check('PR126 an unconfirmed save says it could not be confirmed (not "not saved")',
     noteFor('unconfirmed').indexOf('Save could not be confirmed') === 0 && !/Not saved|Recorded in GHL/.test(noteFor('unconfirmed')), true);
+  check('PR126 an unresolved deal says so (an earlier save may still reach GHL), never "Recorded"',
+    noteFor('unresolved').indexOf('Unresolved') === 0 && /may still reach GHL/.test(noteFor('unresolved')) && !/Recorded in GHL/.test(noteFor('unresolved')), true);
 
   const entered = buildDealBarCells({
     arv: 315000, repairs: 41000, sellerPosition: 210000, currentOffer: 150000, board8: GOLDEN_ECONOMICS,

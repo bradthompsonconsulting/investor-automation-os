@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 235;
+const FLOOR = 238;
 let failures = 0;
 let checks = 0;
 
@@ -258,10 +258,15 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('the page clears every deal-specific negotiation value (Seller Position, Current Offer, the above-Max override/draft/warning state) when decision.clear is true, BEFORE either restore field is applied', /if \(decision\.clear\) \{\s*setSellerPositionInput\(""\);\s*setCurrentOfferInput\(""\);\s*setNegotiationOverride\(null\);\s*setOverrideReasonDraft\(""\);\s*setOverrideAcknowledged\(false\);\s*setOverrideActionError\(null\);\s*setWarningDismissed\(false\);\s*\}/.test(sellerCallTsxNoComments), true);
   // PR #126 fourth re-review: ONE per-deal save coordinator serializes every
   // Current Offer write with its readback, for the blur AND Confirm Accept.
-  check('the page creates one save coordinator, whose injected write is the ONLY setCurrentOffer call on the page', /createOfferSaveCoordinator\(\s*\(oppId, amount\) => ghl\.opportunities\.setCurrentOffer\(oppId, amount\),/.test(sellerCallTsxNoComments) && (sellerCallTsxNoComments.match(/ghl\.opportunities\.setCurrentOffer\(/g) || []).length === 1, true);
+  check('the page creates one save coordinator, whose injected write is the ONLY setCurrentOffer call on the page', /createOfferSaveCoordinator\(\s*\(oppId, amount\) => ghl\.opportunities\.setCurrentOffer\(oppId, amount\)\s*\)/.test(sellerCallTsxNoComments) && (sellerCallTsxNoComments.match(/ghl\.opportunities\.setCurrentOffer\(/g) || []).length === 1, true);
   check('the blur save goes through the coordinator for the deal on screen', /offerSaves\.requestSave\(screen\.opportunity\.id, decision\.value\);/.test(sellerCallTsxNoComments), true);
   check('Confirm Accept\'s Current Offer write goes through the same coordinator', /setCurrentOffer: \(opportunityId, value\) => offerSaves\.saveForAccept\(opportunityId, value\),/.test(sellerCallTsxNoComments), true);
   check('the deal-bar label, the saving line and the error line all come from the coordinator for the deal and amount on screen', /currentOfferStatus: offerSaves\.statusFor\(dealBarOppId, currentOffer\)/.test(sellerCallTsxNoComments) && /offerSaves\.statusFor\(dealBarOppId, currentOffer\) === "saving"/.test(sellerCallTsxNoComments) && /offerSaves\.failureFor\(dealBarOppId, currentOffer\)/.test(sellerCallTsxNoComments), true);
+  // PR #126 (Jess, 2026-10-05): ONE coordinator for the loaded app (an unresolved deal stays
+  // blocked across navigation); Accept's whole sequence is protected; a locked deal's input is read-only.
+  check('the save coordinator is shared by the loaded app (module scope), not created per page instance', /let sharedOfferSaves: OfferSaveCoordinator \| null = null;/.test(sellerCallTsxNoComments) && /const offerSaves = offerSaveCoordinator\(\);/.test(sellerCallTsxNoComments), true);
+  check('Confirm Accept runs its whole sequence between beginAccept and endAccept (endAccept in finally; an unknown note leaves the deal unresolved)', /if \(!offerSaves\.beginAccept\(acceptOppId\)\) \{/.test(sellerCallTsxNoComments) && /\} finally \{\s*offerSaves\.endAccept\(acceptOppId, false\);\s*\}\s*if \(result\.stage === "note_failed"\) offerSaves\.endAccept\(acceptOppId, true\);/.test(sellerCallTsxNoComments), true);
+  check('the Current Offer input is read-only while its deal is accepting or unresolved, and the unresolved message is shown', /readOnly=\{offerSaves\.isLocked\(dealBarOppId\)\}/.test(sellerCallTsxNoComments) && /data-testid="current-offer-unresolved"/.test(sellerCallTsxNoComments), true);
   check('the page applies decision.restoreSellerPosition only when non-null, verbatim -- never re-deciding whether to restore', /if \(decision\.restoreSellerPosition !== null\) \{\s*setSellerPositionInput\(decision\.restoreSellerPosition\);\s*\}/.test(sellerCallTsxNoComments), true);
   // INV-70 / B9-07A Phase 2 correction round 3 -- the restored Current Offer
   // IS the Opportunity field's own live content: it seeds the coordinator as
