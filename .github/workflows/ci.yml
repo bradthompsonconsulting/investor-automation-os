@@ -253,3 +253,6 @@ jobs:
 
       - name: INV-95 named write boundaries and affected regressions
         run: node app/scripts/test-inv95.cjs
+
+      - name: Contact deal stage + Contract Workspace pointer (Pass 1 F38) — 10 offline checks
+        run: node app/scripts/test-contact-deal-status.cjs

@@ -5,7 +5,9 @@ import {
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
   Calculator, Copy, ExternalLink, Headphones,
 } from "lucide-react";
-import { explicitCallbackClient, ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, CONTACT_ASKING_PRICE_ID, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow } from "../lib/ghl";
+import { explicitCallbackClient, ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, CONTACT_ASKING_PRICE_ID, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow, type PipelineStage } from "../lib/ghl";
+/* Board 15 / Pass 1 F38 — deal stage only; contract status lives in the Contract Workspace. */
+import { contactDealStatus } from "../lib/contact-deal-status";
 /* Board #5 S2d — the rail's logic lives in ../lib/rail, a module with no React
    and no module-scope config read, so it is loadable by a .cjs runner and the
    Ask precedence can be proven offline. This page supplies the ids and renders
@@ -1176,6 +1178,8 @@ export default function ContactWorkspace() {
      degrade the rail's two Opportunity cells and NOTHING else on this page. */
   const [opps, setOpps]           = useState<OpportunityRow[] | null>(null);
   const [oppsError, setOppsError] = useState<string | null>(null);
+  /* F38: the pipeline's own stage list (names), from the SAME read as opps. */
+  const [pipelineStages, setPipelineStages] = useState<PipelineStage[] | null>(null);
 
   /* ── Board #5 D1 — RETURN REVALIDATION ───────────────────────────────────
      The contact fetch is keyed on [id] and nothing revalidates, so a tab-hop
@@ -1294,7 +1298,7 @@ export default function ContactWorkspace() {
   function loadOpportunities() {
     setOppsError(null);
     ghl.opportunities.listPipeline()
-      .then((p) => setOpps(opportunitiesForContact(p.opportunities, id)))
+      .then((p) => { setPipelineStages(p.stages); setOpps(opportunitiesForContact(p.opportunities, id)); })
       .catch((e: Error) => setOppsError(e.message));
   }
 
@@ -1462,6 +1466,20 @@ export default function ContactWorkspace() {
      all, so there is nothing to guess with. */
   const railAskOpportunityId =
     railDeal.state === "resolved" ? railDeal.opportunityId : null;
+
+  /* Board 15 / Pass 1 F38 (INV-130; Jess 2026-10-04/05). The deal stage,
+     read independently from the opportunity and named from the pipeline's
+     own stage list. NO contract status is derived here: that is the Contract
+     Workspace's governing derivation (scope / version / correction /
+     rescission), which this page does not hold the inputs for, so the line
+     sends the operator there. Notes and emails are not inputs. Read-only;
+     resolved deals only (the rail already explains every other state). */
+  const dealStatus = useMemo(() => {
+    if (railDeal.state !== "resolved" || !opps) return null;
+    const opp = opps.find((o) => o.id === railDeal.opportunityId);
+    if (!opp) return null;
+    return contactDealStatus({ stageName: pipelineStages?.find((st) => st.id === opp.stageId)?.name ?? null });
+  }, [railDeal, opps, pipelineStages]);
 
   /* ⚠ §4C — THE ONLY NEW DATUM, AND ITS BOUNDARY IS THE WHOLE POINT.
      confirmedWrite is what the setter told us it wrote (its ROUNDED `sent`,
@@ -1784,6 +1802,19 @@ export default function ContactWorkspace() {
           </div>
         )}
       </div>
+
+      {/* Board 15 / Pass 1 F38 — read-only deal status (see dealStatus above). */}
+      {dealStatus ? (
+        <div data-testid="contact-deal-status" style={{
+          marginBottom: "12px", padding: "10px 14px", borderRadius: "10px",
+          background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", fontSize: "12px", color: "#94A3B8",
+        }}>
+          <div><span style={{ color: "#64748B" }}>Deal stage:</span>{" "}
+            <span data-testid="contact-deal-stage" style={{ color: "#E2E8F0" }}>{dealStatus.stage}</span></div>
+          <div style={{ marginTop: "3px" }}><span style={{ color: "#64748B" }}>Contract:</span>{" "}
+            <Link data-testid="contact-contract-state" to={`/contacts/${id}/contract`} style={{ color: "#1EC8FF", textDecoration: "none" }}>{dealStatus.contract}</Link></div>
+        </div>
+      ) : null}
 
       {/* Board #5 — persistent call rail. Content comes from railCells() above.
 
