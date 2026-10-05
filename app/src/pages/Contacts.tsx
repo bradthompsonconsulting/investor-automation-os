@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { AlertCircle, Users, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
 import { ghl, type ContactGridRow } from "../lib/ghl";
 import { formatPhone } from "../lib/format";
+import { phoneQueryDigits } from "../lib/operator-display";
 
 // ── Date formatting ────────────────────────────────────────────────────────────
 // Date Added column: gridRows() passes the ISO string (or null); render a short
@@ -163,11 +164,16 @@ export default function Contacts() {
   // Branch 2: any query containing a non-digit uses case-insensitive substring
   // matching across Name, Phone, Email. Property Address is excluded (mirrors
   // GHL's own query behavior). No fuzzy matching, no ranking.
+  // Board 15 Pass 1 F15 (Jess, 2026-10-04): a query typed in the displayed
+  // phone format ("757-5598", "(817) 757-5598", "817.757.5598") also takes
+  // Branch 1 -- see phoneQueryDigits (lib/operator-display) and
+  // CONTACTS_OPPORTUNITIES_SPEC.md §5.1.
   const filtered = useMemo(() => {
     const q = search.trim();
     if (!q) return ordered;
-    if (/^\d+$/.test(q)) {
-      return ordered.filter((r) => r.phone.replace(/\D/g, "").includes(q));
+    const phoneDigits = phoneQueryDigits(q);
+    if (phoneDigits !== null) {
+      return ordered.filter((r) => r.phone.replace(/\D/g, "").includes(phoneDigits));
     }
     const lc = q.toLowerCase();
     return ordered.filter(

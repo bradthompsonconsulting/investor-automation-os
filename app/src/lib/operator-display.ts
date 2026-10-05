@@ -43,3 +43,17 @@ export function isAutomatedDocumentEmail(body: string | null | undefined): boole
   const text = (body ?? "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().toUpperCase();
   return AUTOMATED_DOCUMENT_EMAIL_PHRASES.some((phrase) => text.startsWith(phrase));
 }
+
+// ── Phone-format search query (Pass 1 F15, Jess 2026-10-04) ─────────────────
+// Returns the digits to match against a phone (with non-digits removed) when
+// the query is a phone number, else null. A digits-only query is a phone query
+// at any length (unchanged V1 behaviour). A query typed in a displayed phone
+// format ("757-5598", "(817) 757-5598", "817.757.5598", "+1 817 757 5598") is a
+// phone query when, after removing spaces, hyphens, dots, parentheses and a
+// leading +, it is all digits and at least 3 of them.
+export function phoneQueryDigits(query: string): string | null {
+  const q = query.trim();
+  if (/^\d+$/.test(q)) return q;
+  const stripped = q.replace(/^\+/, "").replace(/[\s\-.()]/g, "");
+  return /^\d{3,}$/.test(stripped) ? stripped : null;
+}
