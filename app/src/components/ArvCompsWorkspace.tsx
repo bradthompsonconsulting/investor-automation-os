@@ -239,6 +239,14 @@ export default function ArvCompsWorkspace({ contact, opportunityId }: Props) {
         </div>
       ) : null}
 
+      {/* Pass 1 F44: Get Comps is disabled without an address; say why and
+          what to do, instead of leaving an unexplained grey button. */}
+      {!address ? (
+        <div data-testid="arv-needs-address" style={{ marginTop: "12px", padding: "10px 12px", borderRadius: "8px", background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)", color: "#F59E0B", fontSize: "12px" }}>
+          Add the property address (street, city and state) on this contact in GHL first — Get Comps needs it. The fields below can wait until then.
+        </div>
+      ) : null}
+
       <div data-testid="arv-persistence-boundary" style={{ marginTop: "12px", color: "#94A3B8", fontSize: "11px" }}>
         Approved ARV saves to the selected Opportunity. Each confirmed approval appends one valuation-history note; detailed comps remain session-only.
       </div>

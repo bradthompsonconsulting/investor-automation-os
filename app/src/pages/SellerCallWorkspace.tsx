@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home, AlertTriangle } from "lucide-react";
 import { ghl, type ContactDetail } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
@@ -2037,10 +2038,10 @@ export default function SellerCallWorkspace() {
       ) : null}
 
       {screen.state === "no_opportunity" ? (
-        <Notice
-          tone="info"
-          title="No opportunity on this contact"
-          body="A seller call needs a deal to attach to (PB-D55). Create an opportunity in GHL before starting this call."
+        /* Pass 1 F19: the same explanation, plus the way to act on it. */
+        <NoDealYet
+          contactId={id ?? ""}
+          reason="A seller call needs a deal to attach to (PB-D55)."
         />
       ) : null}
 
