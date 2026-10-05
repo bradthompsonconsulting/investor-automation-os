@@ -210,6 +210,9 @@ jobs:
       - name: Calculation core — 63 checks
         run: node app/scripts/test-underwriting-core.cjs
 
+      - name: Board 15 B4 operator copy and labels — 48 offline checks
+        run: node app/scripts/test-b15-operator-copy-b4.cjs
+
       - name: Resolver and view model — 169 checks
         run: node app/scripts/test-underwriting-resolver.cjs
 
