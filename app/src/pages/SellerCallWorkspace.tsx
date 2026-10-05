@@ -404,14 +404,22 @@ function ReadinessBadge({ readiness }: { readiness: ReadinessResult }) {
           </span>
         ) : null}
       </div>
+      {/* Pass 1 F32: the same open items were listed three times on this
+          screen. The badge now gives the count; the items themselves are one
+          click away here and listed in full under "What We Still Need". */}
       {readiness.reasons.length > 0 ? (
-        <ul style={{ margin: "10px 0 0", padding: 0, listStyle: "none" }}>
-          {readiness.reasons.map((r, i) => (
-            <li key={i} style={{ fontSize: "12px", color: "#94A3B8", padding: "3px 0" }}>
-              {r.message}
-            </li>
-          ))}
-        </ul>
+        <details data-testid="readiness-reasons" style={{ marginTop: "8px" }}>
+          <summary style={{ fontSize: "12px", color: "#94A3B8", cursor: "pointer" }}>
+            {readiness.reasons.length} open {readiness.reasons.length === 1 ? "item" : "items"} — details below under What We Still Need
+          </summary>
+          <ul style={{ margin: "6px 0 0", padding: 0, listStyle: "none" }}>
+            {readiness.reasons.map((r, i) => (
+              <li key={i} style={{ fontSize: "12px", color: "#94A3B8", padding: "3px 0" }}>
+                {r.message}
+              </li>
+            ))}
+          </ul>
+        </details>
       ) : null}
     </div>
   );
@@ -2134,17 +2142,23 @@ export default function SellerCallWorkspace() {
               OVERRIDDEN requires a non-empty reason and may elevate a
               non-ready status (visible in ReadinessBadge above as "raw
               evidence: ... -- overridden"). */}
+          {/* Pass 1 F33: "Override anyway" sat open near the top, before any
+              question was asked. The decision panel is now collapsed until
+              opened (open by default only once a decision is on record), so
+              the call starts with the conversation. Same controls, same
+              gates; layout only. */}
           {readiness ? (
-            <div
+            <details
               data-testid="readiness-human-action-panel"
+              open={readinessHumanActionRecord ? true : undefined}
               style={{
                 marginBottom: "16px", padding: "14px 16px", borderRadius: "10px",
                 background: "#0F172A", border: "1px solid #1E293B",
               }}
             >
-              <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "8px" }}>
-                Offer Readiness decision
-              </div>
+              <summary style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "8px", cursor: "pointer" }}>
+                Offer Readiness decision — approve or override (optional)
+              </summary>
               {readinessHumanActionRecord ? (
                 <div data-testid="readiness-human-action-current" style={{ fontSize: "12px", color: "#94A3B8", marginBottom: "10px" }}>
                   Last recorded: <strong style={{ color: (readinessDecisionCurrency?.current === false || observedStaleThisSession) ? "#64748B" : readinessHumanActionRecord.kind === "overridden" ? "#F59E0B" : "#22C55E" }}>
@@ -2238,7 +2252,7 @@ export default function SellerCallWorkspace() {
               {readinessDecisionError ? (
                 <div data-testid="readiness-decision-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{readinessDecisionError}</div>
               ) : null}
-            </div>
+            </details>
           ) : null}
 
           {/* B8-10 / INV-53 — Agreement Reached + Contract Ready handoff.
@@ -2289,7 +2303,7 @@ export default function SellerCallWorkspace() {
               ) : null}
 
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "8px" }}>
-                Contract Ready checklist (Board #9 completes the transaction; this is a handoff, not contract software)
+                Contract Ready checklist (the Contract workspace completes the transaction; this is a handoff, not contract software)
               </div>
               <div style={{ fontSize: "12px", color: "#E2E8F0", lineHeight: 1.9 }} data-testid="contract-ready-checklist">
                 <div>✓ Agreed price: {moneyOrUnknown(latestOutcome.snapshot.currentOffer)} (from the Agreement Reached record)</div>
@@ -2312,7 +2326,7 @@ export default function SellerCallWorkspace() {
                 <div data-testid="contract-ready-checklist-error" style={{ fontSize: "11px", color: "#EF4444", marginTop: "8px" }}>{contractChecklistError}</div>
               ) : null}
               <div style={{ fontSize: "10px", color: "#475569", marginTop: "8px" }}>
-                Checklist progress is durable and scoped to this agreed price and property address — it does not carry over to a different agreement or property. Board #9 completes the actual transaction; this checklist is a handoff aid only.
+                Checklist progress is durable and scoped to this agreed price and property address — it does not carry over to a different agreement or property. The Contract workspace completes the actual transaction; this checklist is a handoff aid only.
               </div>
               {/* B9-04 / INV-59 -- ADDITIVE ONLY. A single link to the new,
                   dedicated Contract Workspace; nothing above this line in
@@ -2921,6 +2935,8 @@ export default function SellerCallWorkspace() {
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {/* Pass 1 F35: a visible label, not only placeholder text. */}
+                  <div style={{ fontSize: "11px", color: "#94A3B8", marginBottom: "-4px" }}>How the deal is structured (e.g. standard assignment)</div>
                   <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                     <input
                       value={transactionStructureInput}
@@ -2930,9 +2946,11 @@ export default function SellerCallWorkspace() {
                       style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
                     />
                     <label style={{ fontSize: "11px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <input type="checkbox" checked={transactionStructureNone} onChange={(e) => setTransactionStructureNone(e.target.checked)} /> None
+                      <input type="checkbox" checked={transactionStructureNone} onChange={(e) => setTransactionStructureNone(e.target.checked)} /> None known
                     </label>
                   </div>
+                  {/* Pass 1 F35: a visible label, not only placeholder text. */}
+                  <div style={{ fontSize: "11px", color: "#94A3B8", marginBottom: "-4px" }}>Closing and move-out (possession) expectations</div>
                   <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                     <input
                       value={closingPossessionInput}
@@ -2942,9 +2960,11 @@ export default function SellerCallWorkspace() {
                       style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
                     />
                     <label style={{ fontSize: "11px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <input type="checkbox" checked={closingPossessionNone} onChange={(e) => setClosingPossessionNone(e.target.checked)} /> None
+                      <input type="checkbox" checked={closingPossessionNone} onChange={(e) => setClosingPossessionNone(e.target.checked)} /> None known
                     </label>
                   </div>
+                  {/* Pass 1 F35: a visible label, not only placeholder text. */}
+                  <div style={{ fontSize: "11px", color: "#94A3B8", marginBottom: "-4px" }}>Known title problems (liens, heirs, probate)</div>
                   <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                     <input
                       value={titleComplicationsInput}
@@ -2954,7 +2974,7 @@ export default function SellerCallWorkspace() {
                       style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
                     />
                     <label style={{ fontSize: "11px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <input type="checkbox" checked={titleComplicationsNone} onChange={(e) => setTitleComplicationsNone(e.target.checked)} /> None
+                      <input type="checkbox" checked={titleComplicationsNone} onChange={(e) => setTitleComplicationsNone(e.target.checked)} /> None known
                     </label>
                   </div>
                   <div style={{ display: "flex", gap: "8px" }}>
@@ -3076,7 +3096,7 @@ export default function SellerCallWorkspace() {
                 data-testid="seller-call-estimate-repairs-link"
                 style={COMPACT_LINK_STYLE}
               >
-                <Home size={12} /> {screen.known.repairs !== null ? "Re-estimate Repairs" : "Estimate Repairs"}
+                <Home size={12} /> {screen.known.repairs !== null ? "Re-estimate repairs in Underwriting" : "Estimate repairs in Underwriting"}
               </Link>
             </div>
 
