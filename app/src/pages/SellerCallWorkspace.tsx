@@ -889,27 +889,52 @@ export default function SellerCallWorkspace() {
     /* De-dupe only against THIS deal's own last-written amount. */
     const last = lastWrittenCurrentOfferRef.current;
     if (last && last.oppId === oppId && last.amount === amount) return;
+    /* Nor re-send the amount this deal is already saving. */
+    if (currentOfferWriteState.status === "saving" && currentOfferWriteState.oppId === oppId && currentOfferWriteState.amount === amount) return;
 
     const attempt = ++offerAttemptRef.current;
+    /* PR #126 third re-review (Bones, 2026-10-05): once a new amount is sent,
+       what GHL holds is unknown until THIS save settles -- the previously
+       confirmed amount may be overwritten. Drop it, so retyping it is a draft
+       and its blur issues its own save. */
+    lastWrittenCurrentOfferRef.current = null;
+    setConfirmedCurrentOffer(null);
     setCurrentOfferWriteState({ status: "saving", oppId, amount, attempt });
     /* Only the latest attempt may settle the status; a completion for an
        earlier attempt (another deal or an older amount) changes nothing. */
     const settle = (next: typeof currentOfferWriteState) =>
       setCurrentOfferWriteState((s) => (s.status !== "idle" && s.attempt === attempt ? next : s));
+    /* An OLDER save of the deal on screen that may have written its amount
+       (confirmed or uncertain) after a newer save was sent: the order the
+       responses arrived in does not tell which write GHL applied last, so a
+       different amount recorded since is no longer known to be what GHL holds.
+       It becomes a draft again and its blur saves it afresh. A refusal wrote
+       nothing and changes nothing. */
+    const staleMayHaveWritten = () => {
+      if (offerAttemptRef.current === attempt || currentOppIdRef.current !== oppId) return;
+      const lw = lastWrittenCurrentOfferRef.current;
+      if (lw && lw.oppId === oppId && lw.amount !== amount) lastWrittenCurrentOfferRef.current = null;
+      setConfirmedCurrentOffer((c) => (c && c.oppId === oppId && c.amount !== amount ? null : c));
+    };
     try {
       const result = await ghl.opportunities.setCurrentOffer(oppId, amount);
       if (!result.ok) {
         /* The write was accepted but GHL did not read the amount back: it may
            or may not have landed. Never "recorded", never "refused". */
+        staleMayHaveWritten();
         settle({ status: "error", kind: "unconfirmed", oppId, amount, attempt, message: "Save could not be confirmed." });
         return;
       }
       /* Confirmed. The bookkeeping is this deal's own; it is recorded only
          while this deal is still the one on screen (a later visit restores
-         the confirmed amount from the GHL carrier anyway). */
-      if (currentOppIdRef.current === oppId) {
+         the confirmed amount from the GHL carrier anyway) AND only if this is
+         still the latest save -- an older save confirming late must not mark
+         its amount recorded (or de-dupe it) after a newer amount was sent. */
+      if (offerAttemptRef.current === attempt && currentOppIdRef.current === oppId) {
         lastWrittenCurrentOfferRef.current = { oppId, amount };
         setConfirmedCurrentOffer({ oppId, amount });
+      } else {
+        staleMayHaveWritten();
       }
       settle({ status: "idle" });
     } catch (e: any) {
@@ -918,6 +943,7 @@ export default function SellerCallWorkspace() {
          that could not be completed -- leaves the outcome unknown. */
       const m = /setCurrentOffer PUT → (\d{3})/.exec(String(e?.message ?? ""));
       const refused = m !== null && Number(m[1]) >= 400 && Number(m[1]) < 500;
+      if (!refused) staleMayHaveWritten();
       settle(refused
         ? { status: "error", kind: "refused", oppId, amount, attempt, message: `Not saved — GHL refused the save (${m![1]}).` }
         : { status: "error", kind: "unconfirmed", oppId, amount, attempt, message: "Save could not be confirmed." });
@@ -1805,6 +1831,8 @@ export default function SellerCallWorkspace() {
       lastWrittenCurrentOfferRef.current = null;
       setConfirmedCurrentOffer(null);
       setCurrentOfferWriteState({ status: "idle" });
+      /* Every save still in flight belongs to the previous deal: stale. */
+      offerAttemptRef.current += 1;
     }
     const restoreOppId = screen.state === "resolved" || screen.state === "unresolved" ? screen.opportunity.id : null;
     if (decision.restoreSellerPosition !== null) {
@@ -1943,6 +1971,11 @@ export default function SellerCallWorkspace() {
            accept note, call timestamp, in that order -- and every failure
            message live in lib/seller-call-accept-writes.ts, where they are
            tested directly. */
+        /* The accept write is a Current Offer save too: it supersedes any blur
+           save still in flight, and only it may record what it confirms. */
+        const offerAttempt = ++offerAttemptRef.current;
+        lastWrittenCurrentOfferRef.current = null;
+        setConfirmedCurrentOffer(null);
         const result = await runConfirmAcceptWrites(
           {
             setCurrentOffer: (opportunityId, value) => ghl.opportunities.setCurrentOffer(opportunityId, value),
@@ -1957,7 +1990,7 @@ export default function SellerCallWorkspace() {
         }
         // The Current Offer is confirmed from here on. Recorded as
         // already-written so an untouched blur issues no redundant PUT.
-        if (currentOppIdRef.current === screen.opportunity.id) {
+        if (offerAttemptRef.current === offerAttempt && currentOppIdRef.current === screen.opportunity.id) {
           lastWrittenCurrentOfferRef.current = { oppId: screen.opportunity.id, amount: freeze.value };
           setConfirmedCurrentOffer({ oppId: screen.opportunity.id, amount: freeze.value });
           setCurrentOfferWriteState({ status: "idle" });

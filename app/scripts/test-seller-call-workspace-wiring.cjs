@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 231;
+const FLOOR = 235;
 let failures = 0;
 let checks = 0;
 
@@ -256,7 +256,14 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   // Position/Current Offer/override state, and must be reset on a genuine
   // deal switch for the same reason -- Deal A's last-written value must
   // never suppress or mis-report Deal B's first commit.
-  check('the page clears every deal-specific negotiation value (Seller Position, Current Offer, the above-Max override/draft/warning state, and the Current Offer write bookkeeping) when decision.clear is true, BEFORE either restore field is applied', /if \(decision\.clear\) \{\s*setSellerPositionInput\(""\);\s*setCurrentOfferInput\(""\);\s*setNegotiationOverride\(null\);\s*setOverrideReasonDraft\(""\);\s*setOverrideAcknowledged\(false\);\s*setOverrideActionError\(null\);\s*setWarningDismissed\(false\);\s*lastWrittenCurrentOfferRef\.current = null;\s*setConfirmedCurrentOffer\(null\);\s*setCurrentOfferWriteState\(\{ status: "idle" \}\);\s*\}/.test(sellerCallTsxNoComments), true);
+  check('the page clears every deal-specific negotiation value (Seller Position, Current Offer, the above-Max override/draft/warning state, and the Current Offer write bookkeeping) when decision.clear is true, BEFORE either restore field is applied', /if \(decision\.clear\) \{\s*setSellerPositionInput\(""\);\s*setCurrentOfferInput\(""\);\s*setNegotiationOverride\(null\);\s*setOverrideReasonDraft\(""\);\s*setOverrideAcknowledged\(false\);\s*setOverrideActionError\(null\);\s*setWarningDismissed\(false\);\s*lastWrittenCurrentOfferRef\.current = null;\s*setConfirmedCurrentOffer\(null\);\s*setCurrentOfferWriteState\(\{ status: "idle" \}\);\s*offerAttemptRef\.current \+= 1;\s*\}/.test(sellerCallTsxNoComments), true);
+  // PR #126 third re-review (Bones, 2026-10-05): every piece of SUCCESS
+  // bookkeeping -- not only the write status -- is recorded only by the
+  // latest save, and starting a new save drops the previously confirmed mark.
+  check('a blur save records lastWritten/confirmed only if it is still the latest attempt for the deal on screen', /if \(offerAttemptRef\.current === attempt && currentOppIdRef\.current === oppId\) \{\s*lastWrittenCurrentOfferRef\.current = \{ oppId, amount \};\s*setConfirmedCurrentOffer\(\{ oppId, amount \}\);\s*\} else \{\s*staleMayHaveWritten\(\);\s*\}/.test(sellerCallTsxNoComments), true);
+  check('starting a save drops the previously confirmed/last-written mark', /const attempt = \+\+offerAttemptRef\.current;\s*lastWrittenCurrentOfferRef\.current = null;\s*setConfirmedCurrentOffer\(null\);/.test(sellerCallTsxNoComments), true);
+  check('a stale save that may have written (success or uncertain, never a refusal) un-records a different amount for its deal', /if \(!refused\) staleMayHaveWritten\(\);/.test(sellerCallTsxNoComments) && /staleMayHaveWritten\(\);\s*settle\(\{ status: "error", kind: "unconfirmed"/.test(sellerCallTsxNoComments), true);
+  check('the accept write is its own attempt and records only if still the latest', /const offerAttempt = \+\+offerAttemptRef\.current;/.test(sellerCallTsxNoComments) && /if \(offerAttemptRef\.current === offerAttempt && currentOppIdRef\.current === screen\.opportunity\.id\)/.test(sellerCallTsxNoComments), true);
   check('the page applies decision.restoreSellerPosition only when non-null, verbatim -- never re-deciding whether to restore', /if \(decision\.restoreSellerPosition !== null\) \{\s*setSellerPositionInput\(decision\.restoreSellerPosition\);\s*\}/.test(sellerCallTsxNoComments), true);
   // INV-70 / B9-07A Phase 2 correction round 3 -- restoring Current Offer
   // now ALSO records the value as already-written (lastWrittenCurrentOfferRef),
