@@ -6,7 +6,9 @@ import {
   Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
   Calculator, Copy, ExternalLink, Headphones, FileText,
 } from "lucide-react";
-import { explicitCallbackClient, ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, CONTACT_ASKING_PRICE_ID, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow } from "../lib/ghl";
+import { explicitCallbackClient, ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, CONTACT_ASKING_PRICE_ID, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow, type PipelineStage } from "../lib/ghl";
+/* Board 15 / Pass 1 F38 — deal stage only; contract status lives in the Contract Workspace. */
+import { contactDealStatus } from "../lib/contact-deal-status";
 /* Board #5 S2d — the rail's logic lives in ../lib/rail, a module with no React
    and no module-scope config read, so it is loadable by a .cjs runner and the
    Ask precedence can be proven offline. This page supplies the ids and renders
@@ -1178,6 +1180,8 @@ export default function ContactWorkspace() {
      degrade the rail's two Opportunity cells and NOTHING else on this page. */
   const [opps, setOpps]           = useState<OpportunityRow[] | null>(null);
   const [oppsError, setOppsError] = useState<string | null>(null);
+  /* F38: the pipeline's own stage list (names), from the SAME read as opps. */
+  const [pipelineStages, setPipelineStages] = useState<PipelineStage[] | null>(null);
 
   /* ── Board #5 D1 — RETURN REVALIDATION ───────────────────────────────────
      The contact fetch is keyed on [id] and nothing revalidates, so a tab-hop
@@ -1244,13 +1248,16 @@ export default function ContactWorkspace() {
     setError(null);
     // Single-record read (immediate, no list-index lag — §11). A 404 means the
     // contact genuinely doesn't exist; any other failure is a real error.
-    ghl.contacts.getOne(id)
-      .then((c) => { setContact(c); setNotFound(false); })
+    // PR #129 re-review: a late response for a contact no longer shown is dropped.
+    const forId = id;
+    ghl.contacts.getOne(forId)
+      .then((c) => { if (currentIdRef.current !== forId) return; setContact(c); setNotFound(false); })
       .catch((e: Error) => {
+        if (currentIdRef.current !== forId) return;
         if (/→ 404/.test(e.message)) setNotFound(true);
         else setError(e.message);
       })
-      .finally(() => setLoading(false));
+      .finally(() => { if (currentIdRef.current === forId) setLoading(false); });
   }
 
   function loadNotes() {
@@ -1272,9 +1279,11 @@ export default function ContactWorkspace() {
   // (§8 step 5) — never listAll, so §11's list lag/drop does not apply here.
   function loadConversations() {
     setConversationsError(null);
-    ghl.conversations.forContact(id)
-      .then((res) => setConversations(res.messages))
-      .catch((e: Error) => setConversationsError(e.message));
+    // PR #129 re-review: a late response for a contact no longer shown is dropped.
+    const forId = id;
+    ghl.conversations.forContact(forId)
+      .then((res) => { if (currentIdRef.current === forId) setConversations(res.messages); })
+      .catch((e: Error) => { if (currentIdRef.current === forId) setConversationsError(e.message); });
   }
 
   // Detail record read (D3) — own loading/error, section-scoped. getOne stays the
@@ -1282,10 +1291,13 @@ export default function ContactWorkspace() {
   // A failure here sets detailError and touches nothing else.
   function loadDetail() {
     setDetailError(null);
-    ghl.contacts.getDetail(id)
-      .then((d) => setDetail(d))
-      .catch((e: Error) => setDetailError(e.message))
-      .finally(() => setDetailLoading(false));
+    // PR #129 re-review: a late response for a contact no longer shown is
+    // dropped -- the detail feeds the rail's Ask fallback (deal data).
+    const forId = id;
+    ghl.contacts.getDetail(forId)
+      .then((d) => { if (currentIdRef.current === forId) setDetail(d); })
+      .catch((e: Error) => { if (currentIdRef.current === forId) setDetailError(e.message); })
+      .finally(() => { if (currentIdRef.current === forId) setDetailLoading(false); });
   }
 
   /* Board #5 S2 — the rail's Opportunity read. READ ONLY.
@@ -1295,9 +1307,18 @@ export default function ContactWorkspace() {
      not a second one written here. */
   function loadOpportunities() {
     setOppsError(null);
+    /* PR #129 re-review (Bones / Jess, 2026-10-05): the same guard the notes
+       read uses. A response that arrives after the operator has moved to
+       another contact is dropped, so contact A's deals (and their stage,
+       Ask and MAO) can never populate contact B's page. */
+    const forId = id;
     ghl.opportunities.listPipeline()
-      .then((p) => setOpps(opportunitiesForContact(p.opportunities, id)))
-      .catch((e: Error) => setOppsError(e.message));
+      .then((p) => {
+        if (currentIdRef.current !== forId) return;   // started for a contact no longer shown
+        setPipelineStages(p.stages);
+        setOpps(opportunitiesForContact(p.opportunities, forId));
+      })
+      .catch((e: Error) => { if (currentIdRef.current === forId) setOppsError(e.message); });
   }
 
   // Render-config read (§5.4 / §6 failure contract) — own loading/error,
@@ -1356,20 +1377,29 @@ export default function ContactWorkspace() {
      are newer-of by design and clearing them could revert a write GHL has
      not yet surfaced. */
   const refreshAll = useCallback(async () => {
+    /* PR #129 re-review (Bones / Jess, 2026-10-05): the tab-return refresh is
+       guarded like every initial read. The contact it started for is
+       captured; if the operator has moved on by the time it completes -- or
+       fails -- nothing it read (contact, detail, deals, stage names) and no
+       error is applied to the contact now shown. */
+    const forId = id;
     setRefreshError(null);
     try {
       const [c, d, pipeline] = await Promise.all([
-        ghl.contacts.getOne(id),
-        ghl.contacts.getDetail(id),
+        ghl.contacts.getOne(forId),
+        ghl.contacts.getDetail(forId),
         ghl.opportunities.listPipeline(),
       ]);
+      if (currentIdRef.current !== forId) return;   // started for a contact no longer shown
       setContact(c);
       setDetail(d);
-      setOpps(opportunitiesForContact(pipeline.opportunities, id));
+      setPipelineStages(pipeline.stages);
+      setOpps(opportunitiesForContact(pipeline.opportunities, forId));
       loadNotes();
       loadConversations();
       setRefreshCount((n) => n + 1);
     } catch (e) {
+      if (currentIdRef.current !== forId) return;
       setRefreshError((e as Error).message);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1465,6 +1495,20 @@ export default function ContactWorkspace() {
   const railAskOpportunityId =
     railDeal.state === "resolved" ? railDeal.opportunityId : null;
 
+  /* Board 15 / Pass 1 F38 (INV-130; Jess 2026-10-04/05). The deal stage,
+     read independently from the opportunity and named from the pipeline's
+     own stage list. NO contract status is derived here: that is the Contract
+     Workspace's governing derivation (scope / version / correction /
+     rescission), which this page does not hold the inputs for, so the line
+     sends the operator there. Notes and emails are not inputs. Read-only;
+     resolved deals only (the rail already explains every other state). */
+  const dealStatus = useMemo(() => {
+    if (railDeal.state !== "resolved" || !opps) return null;
+    const opp = opps.find((o) => o.id === railDeal.opportunityId);
+    if (!opp) return null;
+    return contactDealStatus({ stageName: pipelineStages?.find((st) => st.id === opp.stageId)?.name ?? null });
+  }, [railDeal, opps, pipelineStages]);
+
   /* ⚠ §4C — THE ONLY NEW DATUM, AND ITS BOUNDARY IS THE WHOLE POINT.
      confirmedWrite is what the setter told us it wrote (its ROUNDED `sent`,
      never the raw draft -- roundCurrency runs before the PUT, so an unrounded
@@ -1504,8 +1548,15 @@ export default function ContactWorkspace() {
      editor says it could not refresh. */
   const [saveRefreshCount, setSaveRefreshCount] = useState(0);
   const refreshOpportunities = useCallback(async () => {
+    /* PR #129 re-review: the save-triggered deal re-read is guarded too, so a
+       late completion for the previous contact never replaces this one's
+       deals. A failure still propagates to the caller (the Ask editor), which
+       is itself scoped to the contact it was opened on. */
+    const forId = id;
     const pipeline = await ghl.opportunities.listPipeline();
-    setOpps(opportunitiesForContact(pipeline.opportunities, id));
+    if (currentIdRef.current !== forId) return;
+    setPipelineStages(pipeline.stages);
+    setOpps(opportunitiesForContact(pipeline.opportunities, forId));
     setSaveRefreshCount((n) => n + 1);
   }, [id]);
 
@@ -1792,6 +1843,19 @@ export default function ContactWorkspace() {
       {railDeal.state === "no_opportunity" ? (
         <div style={{ marginBottom: "16px" }}>
           <NoDealYet contactId={id} reason="Seller Ask, MAO and underwriting attach to a deal, not to the contact." />
+        </div>
+      ) : null}
+
+      {/* Board 15 / Pass 1 F38 — read-only deal status (see dealStatus above). */}
+      {dealStatus ? (
+        <div data-testid="contact-deal-status" style={{
+          marginBottom: "12px", padding: "10px 14px", borderRadius: "10px",
+          background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", fontSize: "12px", color: "#94A3B8",
+        }}>
+          <div><span style={{ color: "#64748B" }}>Deal stage:</span>{" "}
+            <span data-testid="contact-deal-stage" style={{ color: "#E2E8F0" }}>{dealStatus.stage}</span></div>
+          <div style={{ marginTop: "3px" }}><span style={{ color: "#64748B" }}>Contract:</span>{" "}
+            <Link data-testid="contact-contract-state" to={`/contacts/${id}/contract`} style={{ color: "#1EC8FF", textDecoration: "none" }}>{dealStatus.contract}</Link></div>
         </div>
       ) : null}
 
