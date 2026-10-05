@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, Flame, Sun, Snowflake, Scroll } from "lucide-react";
 import { ghl, getBucketTag, isProbate, type ContactRow, type BucketTag } from "../lib/ghl";
+import { formatPhone } from "../lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -110,7 +111,7 @@ function ContactCard({ contact }: { contact: ContactRow }) {
       </div>
 
       <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {contact.phone || contact.email || "—"}
+        {formatPhone(contact.phone) || contact.email || "—"}
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
