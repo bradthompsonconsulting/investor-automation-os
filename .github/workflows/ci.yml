@@ -277,3 +277,6 @@ jobs:
 
       - name: INV-95 named write boundaries and affected regressions
         run: node app/scripts/test-inv95.cjs
+
+      - name: Contact deal stage + Contract Workspace pointer, contact-change guards (Pass 1 F38, PR 129) — 17 offline checks
+        run: node app/scripts/test-contact-deal-status.cjs
