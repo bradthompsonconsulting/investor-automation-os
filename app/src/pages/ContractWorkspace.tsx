@@ -2768,7 +2768,7 @@ export default function ContractWorkspace() {
           testId="contract-no-agreement"
           tone="info"
           title="No agreement reached yet"
-          body="Board #9 begins once the seller has accepted a price in the Seller Call workspace. Nothing to show here until then."
+          body="The contract begins once the seller has accepted a price in the Seller Call workspace. Nothing to show here until then."
         />
       ) : null}
 
@@ -4095,7 +4095,7 @@ export default function ContractWorkspace() {
                   fullVerificationResult.ok ? (
                     <div>
                       <div data-testid="contract-execution-under-contract-eligible" style={{ fontSize: "12px", color: "#22C55E", fontWeight: 700, marginBottom: "10px" }}>
-                        Every INV-65 requirement passes for this exact evidence.
+                        Every contract-execution requirement passes for this exact evidence.
                       </div>
                       {!preservedArtifactRecord ? (
                         <div data-testid="contract-execution-under-contract-awaiting-preservation" style={{ fontSize: "12px", color: "#F59E0B", marginBottom: "10px" }}>
@@ -4218,10 +4218,10 @@ export default function ContractWorkspace() {
           {showStartDispositionControl(currentUnderContractRecord, preservedArtifactRecord, underContractStageConfirmed) ? (
             <div data-testid="disposition-handoff-section" style={{ marginTop: "24px" }}>
               <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
-                Start Disposition -- hand off to Board #10
+                Start Disposition -- hand off to buyer disposition
               </div>
               <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
-                Assembles the complete authoritative deal package Board #10 needs, from already-canonical Board #9 sources only -- nothing recalculated, nothing fabricated. Writes nothing until you explicitly click Start Disposition below.
+                Assembles the complete deal package buyer disposition needs, from the recorded contract only -- nothing recalculated, nothing fabricated. Writes nothing until you explicitly click Start Disposition below.
               </div>
 
               {/*
@@ -4253,7 +4253,7 @@ export default function ContractWorkspace() {
                 <div style={{ marginBottom: "12px" }}>
                   {dispositionWriteState.kind === "success" ? (
                     <div data-testid="disposition-handoff-write-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
-                      Recorded and verified by fresh readback -- the written note round-trips exactly. Board #10 may now consume handoff id <span style={{ fontFamily: "monospace" }}>{dispositionWriteState.record.handoffId}</span>.
+                      Recorded and verified by fresh readback -- the written note round-trips exactly. Buyer disposition can now use handoff id <span style={{ fontFamily: "monospace" }}>{dispositionWriteState.record.handoffId}</span>.
                     </div>
                   ) : (
                     <div data-testid="disposition-handoff-already-recorded" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "8px" }}>
