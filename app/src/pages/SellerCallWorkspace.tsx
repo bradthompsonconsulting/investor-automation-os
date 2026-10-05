@@ -37,7 +37,7 @@ import {
   type CallOutcomeKind, type OutcomeSnapshot,
 } from "../lib/seller-call-outcome";
 import {
-  CONVERSATION_OUTCOME_HEADING, CONVERSATION_OUTCOME_SUBHEADING, DIAL_RESULT_POINTER, GHL_CALL_LOGGING_LINE,
+  CONVERSATION_OUTCOME_HEADING, CONVERSATION_OUTCOME_SUBHEADING, CONVERSATION_OUTCOME_PURPOSE, DIAL_RESULT_POINTER, GHL_CALL_LOGGING_LINE,
   SELLER_CALL_FOLLOW_UP_CONSEQUENCE, sellerCallPassConsequence, resolveScheduledCallback,
 } from "../lib/call-outcome-copy";
 import {
@@ -2547,6 +2547,7 @@ export default function SellerCallWorkspace() {
             style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px", marginTop: "8px" }}
           >
             <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "4px" }}>{CONVERSATION_OUTCOME_HEADING}</div>
+            <div data-testid="conversation-outcome-purpose" style={{ fontSize: "11px", color: "#94A3B8", marginBottom: "4px" }}>{CONVERSATION_OUTCOME_PURPOSE}</div>
             {/* B14-12 — what this panel records, and where a dial result
                 (no conversation) goes instead. Copy: call-outcome-copy.ts. */}
             <div data-testid="call-outcome-subheading" style={{ fontSize: "11px", color: "#64748B", marginBottom: "4px", lineHeight: 1.5 }}>
