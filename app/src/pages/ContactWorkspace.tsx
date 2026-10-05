@@ -88,6 +88,7 @@ const RAIL_IDS: RailIds = {
     askingPrice: RAIL_CONFIG.fields.askingPrice,
   },
   sellerMAO: RAIL_CONFIG.opportunityFields.sellerMAO,
+  currentOffer: RAIL_CONFIG.opportunityFacts.currentOffer,
 };
 
 // ── Presentational helpers (replicated from Dashboard; purely visual, no

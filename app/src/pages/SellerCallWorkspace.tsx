@@ -352,8 +352,16 @@ function DealBar({ cells }: { cells: DealBarCell[] }) {
             {cell.label}
           </span>
           {cell.value.kind === "value" ? (
-            <span style={{ fontSize: "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#E2E8F0" }}>
-              {cell.value.text}
+            <span style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+              <span style={{ fontSize: "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#E2E8F0" }}>
+                {cell.value.text}
+              </span>
+              {/* Board 15 / Pass 1 F31: a recorded Current Offer says whether it is supported. */}
+              {cell.value.note ? (
+                <span data-testid={`deal-bar-note-${cell.key}`} style={{ fontSize: "10px", color: "#F59E0B", maxWidth: "200px", lineHeight: 1.3 }}>
+                  {cell.value.note}
+                </span>
+              ) : null}
             </span>
           ) : (
             <span style={{ fontSize: "11px", color: "#F59E0B", fontWeight: 600, paddingTop: "4px", lineHeight: 1.4 }} title={cell.value.text}>

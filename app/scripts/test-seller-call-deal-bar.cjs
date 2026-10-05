@@ -61,7 +61,7 @@ const { computeBoard8Economics, computeExpectedSpread } = require(board8Path);
 const { buildDealBarCells, DEAL_BAR_LABELS } = require(dealBarPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 34;
+const FLOOR = 37; // 34 + 3 (Board 15 / Pass 1 F31)
 let failures = 0;
 let checks = 0;
 
@@ -140,9 +140,22 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
   const waitingSellerPosition = waiting.find((c) => c.key === 'seller_position');
   const waitingCurrentOffer = waiting.find((c) => c.key === 'current_offer');
   check('Seller Position waits when the operator has not entered one, even with full economics available', waitingSellerPosition.value.kind, 'waiting');
-  check('Seller Position waiting text matches rail.ts verbatim', waitingSellerPosition.value.text, 'WAITING on negotiation carrier');
+  /* Board 15 / Pass 1 F36: the "negotiation carrier" jargon is gone from both screens. The rail (contact page)
+     says where to enter it; here, on the Seller Call itself, it simply has not been entered. */
+  check('Seller Position waiting text is operator wording, no carrier jargon', waitingSellerPosition.value.text, 'Not entered yet');
   check('Current Offer waits when the operator has not entered one, even with full economics available', waitingCurrentOffer.value.kind, 'waiting');
-  check('Current Offer waiting text matches rail.ts verbatim', waitingCurrentOffer.value.text, 'WAITING on negotiation semantics / carrier contract');
+  /* Same meaning as the rail RAIL_OFFER_NONE ("none recorded"); asserted case-insensitively. */
+  check('Current Offer waiting text matches the rail, ignoring case', waitingCurrentOffer.value.text.toLowerCase(), 'none recorded');
+
+  /* Board 15 / Pass 1 F31 (Jess 2026-10-04): a recorded Current Offer is shown and labelled -- never erased,
+     never implied supported. 3 checks. */
+  const recordedUnsupported = buildDealBarCells({ arv: null, repairs: null, sellerPosition: null, currentOffer: 918273, board8: null, expectedSpread: null })
+    .find((c) => c.key === 'current_offer');
+  check('F31 a recorded offer is shown even with no economics', [recordedUnsupported.value.kind, recordedUnsupported.value.text], ['value', '$918,273']);
+  check('F31 and says it is not supported', recordedUnsupported.value.note, 'Recorded in GHL · not supported — ARV, repairs or deal economics not established');
+  const recordedSupported = buildDealBarCells({ arv: 315000, repairs: 41000, sellerPosition: null, currentOffer: 150000, board8: GOLDEN_ECONOMICS, expectedSpread: null })
+    .find((c) => c.key === 'current_offer');
+  check('F31 with economics, the note states the supported Max beside it', /^Recorded in GHL · supported Max \$[\d,]+$/.test(recordedSupported.value.note), true);
 
   const entered = buildDealBarCells({
     arv: 315000, repairs: 41000, sellerPosition: 210000, currentOffer: 150000, board8: GOLDEN_ECONOMICS,

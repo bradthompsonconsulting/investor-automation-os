@@ -43,5 +43,19 @@ check('F34 the card handles "no seller question left"',
 check('F34 the Next objective line handles it too',
   /nextBestQuestion\.kind === "operator_only"\s*\? "Finish your underwriting checklist below — nothing left to ask the seller\."/.test(page), true);
 
-console.log(`\nBoard 15 B3 Seller Call: ${checks - failures}/${checks} checks passed`);
+// ── F31 / F36: recorded Current Offer, same carrier on both screens ──────────
+const rail = read('src/lib/rail.ts');
+const contactPage = read('src/pages/ContactWorkspace.tsx');
+check('F31 the rail reads Current Offer through the shared carrier reader',
+  /import \{ readCurrentOfferFromOpportunity \} from "\.\/current-offer-carrier";/.test(rail)
+    && /const currentOffer = readCurrentOfferFromOpportunity\(opp\.customFields, ids\.currentOffer\);/.test(rail), true);
+check('F31 the contact page binds the same carrier id Seller Call uses',
+  /currentOffer: RAIL_CONFIG\.opportunityFacts\.currentOffer,/.test(contactPage)
+    && /readCurrentOfferFromOpportunity\(opp\.customFields, CONFIG\.opportunityFacts\.currentOffer\)/.test(page), true);
+check('F31 the Seller Call deal bar renders the recorded-offer note',
+  /\{cell\.value\.note \? \(\s*<span data-testid=\{`deal-bar-note-\$\{cell\.key\}`\}/.test(page), true);
+check('F36 no "negotiation carrier" jargon is rendered by the rail or the deal bar',
+  /WAITING on negotiation/.test(rail.replace(/\/\*[\s\S]*?\*\//g, '')) || /WAITING on negotiation/.test(read('src/lib/seller-call-deal-bar.ts').replace(/\/\*[\s\S]*?\*\//g, '')), false);
+
+console.log(`\nBoard 15 B3 Seller Call:${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);
