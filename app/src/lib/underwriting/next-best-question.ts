@@ -103,14 +103,42 @@ export type KnownFactsSnapshot = {
 
 export type NextBestQuestion =
   | { kind: "offer_ready"; message: string }
+  /** Board 15 / Pass 1 F34: nothing left to ask the SELLER, but underwriting
+   *  items remain -- those are the operator's own checklist, not questions. */
+  | { kind: "operator_only"; message: string }
   | {
       kind: "question";
       source:
         | { kind: "category"; category: MaterialCategory; level: "UNKNOWN" | "PRELIMINARY" }
         | { kind: "material_unknown"; unknownCode: string };
+      /** Who the item is for. "seller": something to ask the seller on the
+       *  call. "operator": an underwriting task for Brad (ARV, deal economics,
+       *  assignment mode) that must never be read to the seller (F34). */
+      audience: QuestionAudience;
       question: string;
       whyItMatters: string;
     };
+
+export type QuestionAudience = "seller" | "operator";
+
+/**
+ * Board 15 / Pass 1 F34 (INV-103). Pass 1 found the call script asking the
+ * seller internal questions ("Has a valuation (ARV) been run?", "Underwriting
+ * is still missing ... the assignment mode -- is that information available?").
+ * ARV and deal economics are underwriting work Brad does himself; the seller
+ * cannot answer them. They stay visible -- as the operator's checklist --
+ * but never as a Suggested Next Question or an Other Useful Question.
+ *
+ * Every other category (property identity, repairs/condition, transaction
+ * assumptions, seller price position) is something the seller can speak to.
+ * Material unknowns are caller-supplied facts a human marked material for
+ * THIS deal; they keep their existing seller-facing treatment (unchanged).
+ */
+export const OPERATOR_CATEGORIES: readonly MaterialCategory[] = ["arv", "deal_economics"];
+
+function audienceFor(source: { kind: "category"; category: MaterialCategory } | { kind: "material_unknown" }): QuestionAudience {
+  return source.kind === "category" && OPERATOR_CATEGORIES.includes(source.category) ? "operator" : "seller";
+}
 
 /**
  * `DEAL_ECONOMICS_OFFER_READINESS_V1.md` lines 200-207's own listed
@@ -315,6 +343,7 @@ function enumerateQuestions(
     out.push({
       kind: "question",
       source: { kind: "material_unknown", unknownCode: r.unknownCode },
+      audience: audienceFor({ kind: "material_unknown" }),
       question: materialUnknownQuestionText(r),
       whyItMatters:
         "This is exactly the kind of fact the Offer Ready contract names as able to significantly change the supported offer — it comes before any other underwriting question.",
@@ -325,11 +354,12 @@ function enumerateQuestions(
   for (const category of CATEGORY_PRIORITY) {
     if (readiness.categories[category] !== "UNKNOWN") continue;
     if (category === "deal_economics") {
-      out.push({ kind: "question", source: { kind: "category", category, level: "UNKNOWN" }, ...dealEconomicsDiagnosis(dealEconomics) });
+      out.push({ kind: "question", source: { kind: "category", category, level: "UNKNOWN" }, audience: audienceFor({ kind: "category", category }), ...dealEconomicsDiagnosis(dealEconomics) });
     } else {
       out.push({
         kind: "question",
         source: { kind: "category", category, level: "UNKNOWN" },
+        audience: audienceFor({ kind: "category", category }),
         question: categoryQuestionText(category, "UNKNOWN", known),
         whyItMatters: WHY_IT_MATTERS[category],
       });
@@ -340,11 +370,12 @@ function enumerateQuestions(
   for (const category of CATEGORY_PRIORITY) {
     if (readiness.categories[category] !== "PRELIMINARY") continue;
     if (category === "deal_economics") {
-      out.push({ kind: "question", source: { kind: "category", category, level: "PRELIMINARY" }, ...dealEconomicsDiagnosis(dealEconomics) });
+      out.push({ kind: "question", source: { kind: "category", category, level: "PRELIMINARY" }, audience: audienceFor({ kind: "category", category }), ...dealEconomicsDiagnosis(dealEconomics) });
     } else {
       out.push({
         kind: "question",
         source: { kind: "category", category, level: "PRELIMINARY" },
+        audience: audienceFor({ kind: "category", category }),
         question: categoryQuestionText(category, "PRELIMINARY", known),
         whyItMatters: WHY_IT_MATTERS[category],
       });
@@ -357,6 +388,11 @@ function enumerateQuestions(
 const OFFER_READY: NextBestQuestion = {
   kind: "offer_ready",
   message: "Offer Ready — no further underwriting question. Move to presenting the offer.",
+};
+
+const OPERATOR_ONLY: NextBestQuestion = {
+  kind: "operator_only",
+  message: "No more questions for the seller right now. What's still open is underwriting work for you — see your checklist below.",
 };
 
 /**
@@ -373,13 +409,18 @@ export function computeNextBestQuestion(
   if (readiness.effectiveStatus === "OFFER_READY") return OFFER_READY;
 
   const queue = enumerateQuestions(readiness, known, dealEconomics);
+  // F34: the Suggested Next Question is the first SELLER item. When only
+  // operator items remain, say so rather than reading one to the seller.
+  const firstSeller = queue.find((q) => q.audience === "seller");
+  if (firstSeller) return firstSeller;
+  if (queue.length > 0) return OPERATOR_ONLY;
   // Structurally unreachable while effectiveStatus and status share
   // computeOfferReadiness's own aggregation rule: no material unknown, no
   // UNKNOWN category and no PRELIMINARY category means every category is
   // SUPPORTED, which is exactly OFFER_READY and already returned above.
   // Kept explicit rather than a non-null assertion, so a future change to
   // that aggregation rule fails loudly here instead of throwing.
-  return queue[0] ?? OFFER_READY;
+  return OFFER_READY;
 }
 
 /**
@@ -395,5 +436,20 @@ export function computeQuestionQueue(
   dealEconomics: Board8Economics,
 ): QuestionEntry[] {
   if (readiness.effectiveStatus === "OFFER_READY") return [];
-  return enumerateQuestions(readiness, known, dealEconomics);
+  // F34: seller items only; operator items are computeOperatorChecklist's.
+  return enumerateQuestions(readiness, known, dealEconomics).filter((q) => q.audience === "seller");
+}
+
+/**
+ * Board 15 / Pass 1 F34 -- the underwriting items that are Brad's own work
+ * (ARV, deal economics incl. assignment mode), in the same priority order.
+ * Shown as the operator's checklist, never as a question for the seller.
+ */
+export function computeOperatorChecklist(
+  readiness: ReadinessResult,
+  known: KnownFactsSnapshot,
+  dealEconomics: Board8Economics,
+): QuestionEntry[] {
+  if (readiness.effectiveStatus === "OFFER_READY") return [];
+  return enumerateQuestions(readiness, known, dealEconomics).filter((q) => q.audience === "operator");
 }

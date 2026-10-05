@@ -18,7 +18,7 @@ import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-t
 import type { AssignmentResolution, UnderwritingResult, UnderwritingInputs } from "../lib/underwriting/types";
 import { computeBoard8Economics, computeExpectedSpread, type Board8Economics, type ExpectedSpread } from "../lib/underwriting/board8-economics";
 import { computeOfferReadiness, CATEGORY_LABEL, type ReadinessResult, type MaterialCategory, type HumanAction } from "../lib/underwriting/offer-readiness";
-import { computeNextBestQuestion, computeQuestionQueue, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
+import { computeNextBestQuestion, computeQuestionQueue, computeOperatorChecklist, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { FullScriptDrawer } from "../components/FullScriptDrawer";
 import { SellerCallVoiceControls } from "../components/SellerCallVoiceControls";
 import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
@@ -1573,6 +1573,19 @@ export default function SellerCallWorkspace() {
     return computeQuestionQueue(readiness, known, board8).slice(1);
   }, [readiness, board8, screen]);
 
+  /* Board 15 / Pass 1 F34 (INV-103) — ARV and deal-economics items (incl.
+     assignment mode) are Brad's underwriting work, not questions for the
+     seller. Same engine, same inputs; shown apart from the seller card. */
+  const operatorChecklist = useMemo(() => {
+    if (!readiness || !board8) return [];
+    const known = {
+      arv: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.arv : null,
+      repairs: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.repairs : null,
+      askingPrice: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.askingPrice : null,
+    };
+    return computeOperatorChecklist(readiness, known, board8);
+  }, [readiness, board8, screen]);
+
   const [fullScriptOpen, setFullScriptOpen] = useState(false);
 
   /* B8-10 / INV-53 — the most recent bounded call outcome for THIS
@@ -2018,7 +2031,9 @@ export default function SellerCallWorkspace() {
                   ? "Underwriting must resolve before an objective can be set."
                   : nextBestQuestion.kind === "offer_ready"
                     ? "Offer Ready — move to presenting the offer."
-                    : nextBestQuestion.question}
+                    : nextBestQuestion.kind === "operator_only"
+                      ? "Finish your underwriting checklist below — nothing left to ask the seller."
+                      : nextBestQuestion.question}
         </div>
       ) : null}
 
@@ -2742,6 +2757,10 @@ export default function SellerCallWorkspace() {
               <div style={{ fontSize: "16px", color: "#22C55E", fontWeight: 700, lineHeight: 1.6 }}>
                 {nextBestQuestion.message}
               </div>
+            ) : nextBestQuestion.kind === "operator_only" ? (
+              <div data-testid="next-best-question-operator-only" style={{ fontSize: "15px", color: "#94A3B8", fontWeight: 600, lineHeight: 1.6 }}>
+                {nextBestQuestion.message}
+              </div>
             ) : (
               <div>
                 <div style={{ fontSize: "19px", color: "#F8FAFC", fontWeight: 700, lineHeight: 1.4 }}>
@@ -2779,6 +2798,30 @@ export default function SellerCallWorkspace() {
               </div>
             ) : null}
           </div>
+
+          {/* Board 15 / Pass 1 F34 (INV-103) — the operator's underwriting
+              checklist. Deliberately OUTSIDE the Suggested Next Question card
+              and styled as a to-do, not a question to read aloud. */}
+          {operatorChecklist.length > 0 ? (
+            <div data-testid="operator-underwriting-checklist" style={{
+              marginTop: "12px", padding: "14px 18px", borderRadius: "10px",
+              background: "#0F172A", border: "1px dashed #334155",
+            }}>
+              <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>
+                Your underwriting checklist — not for the seller
+              </div>
+              <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
+                {operatorChecklist.map((q, i) => (
+                  <li key={i} style={{ fontSize: "12px", color: "#94A3B8", lineHeight: 1.5, padding: "3px 0" }}>
+                    ☐ {q.question}
+                  </li>
+                ))}
+              </ul>
+              <div style={{ fontSize: "11px", color: "#475569", marginTop: "6px" }}>
+                Handle these in Underwriting (ARV, repairs, deal assumptions). Don't ask the seller.
+              </div>
+            </div>
+          ) : null}
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginTop: "16px" }}>
             <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
