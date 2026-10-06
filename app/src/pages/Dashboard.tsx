@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useReadRecovered } from "../components/access-status";
 import { Link } from "react-router-dom";
 import {
   AlertCircle, Clock, FileCheck, Mail as MailIcon, Inbox, CalendarClock,
@@ -410,7 +411,11 @@ export default function Dashboard() {
     if (openContactId) noteInputRefs.current[openContactId]?.focus();
   }, [openContactId]);
 
+  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
+  const readRecovered = useReadRecovered();
+  const visitRecorded = useRef(false);
   useEffect(() => {
+    setError(null);
     Promise.all([
       ghl.contacts.listAll(),
       ghl.mailers.list(),
@@ -423,12 +428,14 @@ export default function Dashboard() {
         setPipeline(p);
         setUnanswered(u);
 
+        if (visitRecorded.current) return;
+        visitRecorded.current = true;
         const prevVisit = localStorage.getItem(LAST_VISIT_KEY);
         setNewSince(prevVisit ? c.filter((row) => row.dateAdded && row.dateAdded > prevVisit).length : 0);
         localStorage.setItem(LAST_VISIT_KEY, new Date().toISOString());
       })
       .catch((e: Error) => setError(e.message));
-  }, []);
+  }, [readRecovered]);
 
   const loading = !contacts || !digest || !pipeline || !unanswered;
   const today = useMemo(() => todayCT(), []);

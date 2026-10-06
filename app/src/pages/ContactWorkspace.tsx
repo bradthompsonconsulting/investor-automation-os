@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link, useParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
@@ -1431,12 +1432,40 @@ export default function ContactWorkspace() {
     };
   }, [refreshAll]);
 
+  /* Board 15 cleanup (Bones, PR #131): read sign-in came back after a lapse.
+     The page is NOT remounted -- drafts, saves in flight and their warnings
+     stay -- so re-run the same per-contact loaders a navigation uses (each
+     clears only its own read error, and each drops a response for a contact
+     no longer shown), without the navigation reset. Field definitions are
+     re-read only if they never loaded. Like a tab return, it waits while an
+     editor is open. */
+  const readRecovered = useReadRecovered();
+  const seenRecovery = useRef(readRecovered);
+  const recoveryPending = useRef(false);
+  function recoverReads() {
+    loadContact();
+    loadDetail();
+    if (!defs) loadDefs();
+    loadNotes();
+    loadConversations();
+    loadOpportunities();
+  }
+  useEffect(() => {
+    if (readRecovered === seenRecovery.current) return;
+    seenRecovery.current = readRecovered;
+    if (anyEditorOpenRef.current) { recoveryPending.current = true; setRefreshDeferred(true); return; }
+    recoverReads();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readRecovered]);
+
   /* The deferred half: the editor closed, so take the reading now. Exactly
      one, because the flag is cleared before the fetch is issued. */
   useEffect(() => {
     if (!refreshDeferred || anyEditorOpen) return;
     setRefreshDeferred(false);
+    if (recoveryPending.current) { recoveryPending.current = false; recoverReads(); return; }
     void refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshDeferred, anyEditorOpen, refreshAll]);
 
   useEffect(() => {
@@ -1463,6 +1492,7 @@ export default function ContactWorkspace() {
     setOppsError(null);
     setOpenEditors(new Set());
     setRefreshDeferred(false);
+    recoveryPending.current = false;
     setRefreshError(null);
     setRefreshCount(0);
     loadContact();

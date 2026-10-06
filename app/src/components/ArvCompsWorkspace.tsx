@@ -67,7 +67,12 @@ export default function ArvCompsWorkspace({ contact, opportunityId }: Props) {
   const [handoff, setHandoff] = useState<HandoffResult | null>(null);
   const [handoffBusy, setHandoffBusy] = useState(false);
 
+  /* Board 15 cleanup: seeded once per contact. A re-read of the SAME contact
+     (sign-in recovery, a refresh) hands over a new object; re-seeding then
+     would overwrite the operator's subject edits. */
+  const seededFor = useRef<string | null>(null);
   useEffect(() => {
+    if (seededFor.current === contact.id) return;
     let cancelled = false;
     ghl.customFields.list()
       .then((body) => {
@@ -83,6 +88,7 @@ export default function ArvCompsWorkspace({ contact, opportunityId }: Props) {
           yearBuilt: seed.yearBuilt == null ? "" : String(seed.yearBuilt),
         });
         setSeedStatus("ready");
+        seededFor.current = contact.id;
       })
       .catch(() => { if (!cancelled) setSeedStatus("unavailable"); });
     return () => { cancelled = true; };

@@ -1,28 +1,59 @@
 /**
- * Board 15 cleanup (Brad's Test check, 2026-10-06) — an ended read session
- * shows a clear sign-in recovery screen, never "Failed to load dashboard"
- * with the raw 401 JSON.
+ * Board 15 cleanup (Brad's Test check, 2026-10-06; Bones's PR #131 blocker)
+ * -- an ended read session shows a clear sign-in recovery screen, and signing
+ * back in refreshes the page's READS without destroying anything on it.
  *
  * Offline. Vite serves scripts/harness/read-session-recovery (the REAL
- * Layout, ReadAccess and Dashboard with the real GHL client) in headless
- * Chromium. Every /.netlify/functions request, app-read-session included, is
- * answered here; the test decides when the session ends. The sign-in popup
- * is a stub page that posts the same message the real one does. Nothing
- * leaves the machine; no write is expected.
+ * Layout, ReadAccess, Dashboard, ContactWorkspace and SellerCallWorkspace with
+ * the real GHL client) in headless Chromium. Every /.netlify/functions
+ * request, app-read-session included, is answered here from an in-memory
+ * fixture; every write goes through the REAL durable Current Offer barrier
+ * module (harness/current-offer-barrier-fixture.cjs), which applies
+ * ghl-write's rules. The sign-in popup is a stub page that posts the same
+ * message the real one does. Nothing leaves the machine.
  *
- * Reproduces Brad's report: signed in, the Dashboard loads; the session ends
- * server-side while the page still believes it is signed in (e.g. the expiry
- * timer was delayed by sleep); opening the Dashboard reads 401 from the
- * read-auth boundary.
+ * While signed out, every GHL READ answers 401 with the read-auth marker,
+ * exactly as the read-auth boundary does; writes are unaffected (they carry
+ * the separate write session).
  *
- * Proves: the recovery screen appears with "Sign in again"; the Dashboard's
- * error and the raw refusal JSON are not shown; the nav locks; signing in
- * again removes the screen and the Dashboard reloads its data fresh.
- * Also: the expiry timer path shows the same screen.
+ * Proves:
+ *   D  Dashboard -- Brad's report (raw 401 JSON) is replaced by the recovery
+ *      screen; signing in re-reads the Dashboard; the expiry timer path; an
+ *      explicit Sign out still shows the plain landing.
+ *   R1 an unsaved call-log draft survives a lapse and recovery; the page is
+ *      not remounted (definitions are not re-read) but its reads are.
+ *   R2 "Result saved ... Notes and last-touch time were not attempted"
+ *      survives recovery, and nothing further is sent.
+ *   R3 the first call-log request is delayed BEFORE the server handles it;
+ *      the session lapses and recovers while it is pending: no competing save
+ *      can start, and on completion the page reports exactly what is stored,
+ *      with one note and one last touch.
+ *   R4 contact isolation: A's recovery re-reads and A's pending save, both
+ *      completing after the move to B, never reach B's page.
+ *   R5 Seller Call: an Unresolved Current Offer save (the durable barrier)
+ *      stays Unresolved and locked across a lapse and recovery; recovery
+ *      sends nothing.
  */
+const fs = require('node:fs');
 const path = require('node:path');
+const Module = require('node:module');
+const ts = require('typescript');
 
 const APP = path.resolve(__dirname, '..');
+Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true },
+}).outputText, filename);
+Module._resolveFilename = ((original) => function (name, parent, ...rest) {
+  if (name.startsWith('.') && parent) {
+    const candidate = path.resolve(path.dirname(parent.filename), name + '.ts');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return original.call(this, name, parent, ...rest);
+})(Module._resolveFilename);
+const { getConfig } = require(path.join(APP, 'shared/ghl-config.ts'));
+const CFG = getConfig('test');
+const F = CFG.fields;
+const OFFER_FIELD = CFG.opportunityFacts.currentOffer;
 const HARNESS = '/scripts/harness/read-session-recovery/index.html';
 
 let checks = 0;
@@ -33,30 +64,98 @@ function check(name, ok, detail) {
   console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail)}`}`);
 }
 
+// ── Read session ─────────────────────────────────────────────────────────────
 let signedIn = true;
-let expiresAt = () => new Date(Date.now() + 3600_000).toISOString();
-let log = [];
-const READS = new Set(['ghl-contacts', 'ghl-mailers', 'ghl-opportunities', 'ghl-conversations']);
+let sessionMs = 3600_000;
 const REFUSAL = { error: 'Read sign-in required.', by: 'iaos-app-read-auth' };
+
+// ── In-memory GHL: two contacts, one deal each ──────────────────────────────
+const A = 'fixtureContactA';
+const B = 'fixtureContactB';
+const FIRST = { [A]: 'Alpha', [B]: 'Bravo' };
+const opp = (c) => `${c}-opp`;
+let db;
+function resetDb() {
+  const contact = (id) => ({ id, first: FIRST[id], fields: new Map(),
+    notes: [{ id: `${id}-n1`, body: `Seed note for ${FIRST[id]}`, dateAdded: '2026-09-30T12:00:00.000Z' }] });
+  db = { contacts: { [A]: contact(A), [B]: contact(B) }, offers: { [opp(A)]: null, [opp(B)]: null } };
+}
+const field = (c, id) => (c.fields.has(id) ? c.fields.get(id) : null);
+const contactRow = (c) => ({
+  id: c.id, firstName: c.first, lastName: 'Fixture', phone: '+15555550100', email: '', address1: '', city: '', state: '', postalCode: '',
+  dateAdded: '2026-09-01T00:00:00.000Z', tags: [], dndSettings: {}, motivationScore: null, dealScore: null, combinedScore: null, completenessScore: null,
+  callbackDatetime: field(c, F.callbackDatetimePrecise), callbackDatetimePrecise: field(c, F.callbackDatetimePrecise),
+  lastCallAttempt: field(c, F.lastCallAttemptPrecise), lastCallAttemptPrecise: field(c, F.lastCallAttemptPrecise),
+  callDisposition: field(c, F.callDisposition), dispositionAt: null,
+});
+const detail = (c) => ({ contact: { id: c.id, firstName: c.first, lastName: 'Fixture', phone: '+15555550100', dndSettings: {},
+  customFields: [...c.fields].map(([id, value]) => ({ id, value })) } });
+const oppRow = (c) => ({ id: opp(c), contactId: c, contactName: FIRST[c], opportunityName: `${FIRST[c]} deal`, phone: '', email: '', stageId: 'fixture-stage',
+  customFields: db.offers[opp(c)] === null ? [] : [{ id: OFFER_FIELD, fieldValueNumber: db.offers[opp(c)] }] });
 const EMPTY_DIGEST = { weekStartCT: '2026-10-05', weekEndCT: '2026-10-11', thisWeekReady: [], thisWeekBusiness: [], overdue: [], noAddress: [],
   totals: { ready: 0, business: 0, overdue: 0, noAddress: 0, byMailerType: {} } };
-const CONTACT = { id: 'fixtureContact', firstName: 'Recovery', lastName: 'Fixture', phone: '+15555550100', email: '', address1: '', city: '', state: '', postalCode: '',
-  dateAdded: '2026-09-01T00:00:00.000Z', tags: [], dndSettings: {}, motivationScore: null, dealScore: null, combinedScore: null, completenessScore: null,
-  callbackDatetime: null, callbackDatetimePrecise: null, lastCallAttempt: null, lastCallAttemptPrecise: null, callDisposition: null, dispositionAt: null };
 
-function answer(fn, method) {
-  if (fn === 'app-read-session') {
-    if (method === 'DELETE') { signedIn = false; return { status: 200, body: { signedIn: false } }; }
-    return { status: 200, body: signedIn ? { signedIn: true, expiresAt: expiresAt() } : { signedIn: false } };
+function applyWrite(op, target, args) {
+  if (op === 'opportunity.currentOffer') { db.offers[target] = args.value; return true; }
+  const c = db.contacts[target];
+  if (!c) return false;
+  const set = (...ids) => ids.forEach((id) => (args.value === null ? c.fields.delete(id) : c.fields.set(id, args.value)));
+  switch (op) {
+    case 'note.create': c.notes.push({ id: `${target}-n${c.notes.length + 1}`, body: args.body, dateAdded: new Date().toISOString() }); return true;
+    case 'contact.callLogResult': set(F.callDisposition); return true;
+    case 'contact.lastCallAttempt': set(F.lastCallAttempt, F.lastCallAttemptPrecise); return true;
+    case 'contact.callback': case 'contact.explicitCallback': set(F.callbackDatetime, F.callbackDatetimePrecise); return true;
+    default: return false;
   }
-  if (!READS.has(fn)) return { status: 404, body: { error: `fixture does not model ${fn}` } };
-  if (!signedIn) return { status: 401, body: REFUSAL };
-  switch (fn) {
-    case 'ghl-contacts': return { status: 200, body: [CONTACT] };
+}
+
+const { createBarrierFixture } = require('./harness/current-offer-barrier-fixture.cjs');
+const { parseOutcomeNote } = require(path.join(APP, 'src/lib/seller-call-outcome.ts'));
+const bf = createBarrierFixture({ contactOf: (o) => (o === opp(A) ? A : o === opp(B) ? B : null) });
+
+function classify(url, method, post) {
+  const u = new URL(url);
+  const fn = u.pathname.replace('/.netlify/functions/', '');
+  if (fn === 'app-read-session') return { kind: 'session', method };
+  if (fn === 'ghl-write' && method === 'POST') return { kind: 'write', op: post.operation, target: post.targetId, args: post.args, requestId: post.requestId };
+  if (fn === 'current-offer-barrier') return { kind: 'barrier' };
+  if (fn === 'ghl-proxy') {
+    const p = u.searchParams.get('path') || '';
+    let m;
+    if ((m = p.match(/^\/contacts\/([^/?]+)\/notes$/))) return { kind: 'notes', contact: m[1], read: true };
+    if ((m = p.match(/^\/contacts\/([^/?]+)$/))) return { kind: 'detail', contact: m[1], read: true };
+    if ((m = p.match(/^\/opportunities\/([^/?]+)$/))) return { kind: 'opp-read', target: m[1], read: true };
+    if (/\/customFields\/[^/]+$/.test(p)) return { kind: 'folder', read: true };
+    if (/\/customFields$/.test(p)) return { kind: 'defs', read: true };
+    return { kind: 'proxy-other', path: p, read: true };
+  }
+  if (fn === 'ghl-contact') return { kind: 'row', contact: u.searchParams.get('id'), read: true };
+  return { kind: fn, read: true };
+}
+function answerRead(req) {
+  switch (req.kind) {
+    case 'notes': return { status: 200, body: { notes: db.contacts[req.contact].notes.slice() } };
+    case 'detail': return { status: 200, body: detail(db.contacts[req.contact]) };
+    case 'row': return { status: 200, body: contactRow(db.contacts[req.contact]) };
+    case 'opp-read': return { status: 200, body: { opportunity: { id: req.target, customFields: db.offers[req.target] === null ? [] : [{ id: OFFER_FIELD, fieldValue: db.offers[req.target] }] } } };
+    case 'defs': return { status: 200, body: { customFields: [] } };
+    case 'folder': return { status: 200, body: { customField: { id: 'folder', name: 'Folder', position: 0 } } };
+    case 'ghl-contacts': return { status: 200, body: Object.values(db.contacts).map(contactRow) };
+    case 'ghl-opportunities': return { status: 200, body: { pipelineId: 'fixture-pipeline', stages: [], opportunities: [oppRow(A), oppRow(B)] } };
     case 'ghl-mailers': return { status: 200, body: EMPTY_DIGEST };
-    case 'ghl-opportunities': return { status: 200, body: { pipelineId: 'fixture-pipeline', stages: [], opportunities: [] } };
-    default: return { status: 200, body: [] };
+    case 'ghl-conversations': return { status: 200, body: [] };
+    case 'ghl-underwriting-policy': return { status: 200, body: { values: [] } };
+    case 'ghl-contact-conversations': return { status: 200, body: { messages: [], conversations: [] } };
+    default: return { status: 404, body: { error: `fixture does not model ${req.kind}` } };
   }
+}
+
+let log = [];
+let holds = [];
+function hold(match, opts = {}) {
+  let release; let onHit;
+  const h = { match, ...opts, released: new Promise((r) => { release = r; }), hit: new Promise((r) => { onHit = r; }) };
+  h.release = release; h.onHit = onHit; holds.push(h); return h;
 }
 
 // The stub popup: the same message the real /app-read-login.html posts after a successful sign-in.
@@ -84,83 +183,254 @@ async function main() {
     const page = await context.newPage();
     const pageErrors = [];
     page.on('pageerror', (e) => pageErrors.push(String(e)));
+    await context.route(/gohighlevel\.com/, (route) => route.abort());
     await context.route('**/*', async (route) => {
       const url = route.request().url();
       if (url.startsWith(`${base}/app-read-login.html`)) {
-        signedIn = true; // the stub stands in for a successful sign-in, which sets the cookie
+        signedIn = true;   // the stub stands in for a successful sign-in, which sets the cookie
         return route.fulfill({ status: 200, contentType: 'text/html', body: POPUP });
       }
       if (url.startsWith(base) && !url.includes('/.netlify/functions/')) return route.continue();
       if (!url.includes('/.netlify/functions/')) { foreign.push(url); return route.abort(); }
-      const fn = new URL(url).pathname.replace('/.netlify/functions/', '');
+      let post = null;
+      try { post = route.request().postDataJSON(); } catch { post = null; }
       const method = route.request().method();
-      log.push({ fn, method, signedIn });
-      const res = answer(fn, method);
-      return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
+      const req = classify(url, method, post);
+      req.signedIn = signedIn;
+      log.push(req);
+      const reply = (res) => route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
+      if (req.kind === 'session') {
+        if (method === 'DELETE') { signedIn = false; return reply({ status: 200, body: { signedIn: false } }); }
+        return reply({ status: 200, body: signedIn ? { signedIn: true, expiresAt: new Date(Date.now() + sessionMs).toISOString() } : { signedIn: false } });
+      }
+      // A hold delays the request BEFORE the server handles it.
+      const h = holds.find((x) => !x.used && x.match(req));
+      if (h) { h.used = true; h.onHit(req); await h.released; }
+      if (req.kind === 'barrier') return reply(await bf.handle(method, url, post));
+      if (req.kind === 'write') {
+        const contactId = req.target === opp(A) ? A : req.target === opp(B) ? B : req.target;
+        const res = await bf.write({ operation: req.op, targetId: req.target, requestId: req.requestId, contactId },
+          () => ({ confirmed: applyWrite(req.op, req.target, req.args) }),
+          { outcome: req.op === 'note.create' ? parseOutcomeNote(req.args.body) : null });
+        if (h && h.loseAnswer) return route.abort('failed');   // the server finished; the browser lost the answer
+        return reply(res);
+      }
+      // While signed out, every read is refused by the read-auth boundary (it is checked when the request is handled).
+      if (!signedIn) return reply({ status: 401, body: REFUSAL });
+      return reply(answerRead(req));
     });
-    await page.goto(`${base}${HARNESS}`);
-    await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
+
     const go = (to) => page.evaluate((t) => window.__iaosNavigate(t), to);
-    const visible = (testId) => page.getByTestId(testId).isVisible().catch(() => false);
+    const freshApp = async (to) => {
+      resetDb(); log = []; holds = []; bf.reset(); signedIn = true; sessionMs = 3600_000;
+      await page.goto(`${base}${HARNESS}`);
+      await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
+      await go(to);
+    };
+    const visible = (testId) => page.getByTestId(testId).first().isVisible().catch(() => false);
     const visibleText = (s) => page.getByText(s, { exact: false }).first().isVisible().catch(() => false);
     const until = async (fn, label, ms = 30000) => {
       const t0 = Date.now();
-      while (Date.now() - t0 < ms) { if (await fn()) return true; await page.waitForTimeout(100); }
+      while (Date.now() - t0 < ms) { if (await fn()) return true; await page.waitForTimeout(50); }
       throw new Error(`timed out waiting for: ${label}`);
     };
-    const dashboardLoaded = async () => (await visibleText('Recovery Fixture')) || (await page.getByRole('heading', { name: 'Dashboard' }).isVisible().catch(() => false));
-    const readsSince = (i) => log.slice(i).filter((r) => READS.has(r.fn));
+    const settle = () => page.waitForTimeout(600);
+    const writes = (op, target) => log.filter((r) => r.kind === 'write' && (!op || r.op === op) && (!target || r.target === target));
+    const readsSince = (i, pred = () => true) => log.slice(i).filter((r) => r.read && pred(r));
+    const recovery = () => visible('read-access-recovery');
+    /* ONLY=R2,R3 runs just those sections (used for the negative controls). */
+    const want = (k) => !process.env.ONLY || process.env.ONLY.split(',').includes(k);
+    let mark; let h;
+    /** The read session ends server-side. `trigger` makes the page find out the way readFetch does on a refused read. */
+    const lapse = async (trigger = true) => {
+      signedIn = false;
+      if (trigger) await page.evaluate(() => window.dispatchEvent(new Event('iaos-read-session-lost')));
+      await until(recovery, 'recovery screen');
+    };
+    const signInAgain = async () => {
+      await page.getByRole('button', { name: 'Sign in again' }).click();
+      await until(async () => !(await recovery()), 'recovery screen gone after sign-in');
+    };
+    const contactLoaded = (first) => until(async () => visibleText(`Seed note for ${first}`), `${first} loaded`);
 
-    // 0 — signed in, the Dashboard loads.
+    // ═══ D — Dashboard (Brad's report) ═══════════════════════════════════════
+    if (want('D')) {
+    const dashboardLoaded = async () => (await visibleText('Alpha Fixture')) && !(await recovery());
+    await freshApp('/');
     await until(dashboardLoaded, 'Dashboard loaded while signed in');
-    check('signed in: the Dashboard loads and no recovery screen is shown', !(await visible('read-access-recovery')));
-
-    // 1 — Brad's report: the session ends server-side; the page still believes it is signed in.
-    signedIn = false;
-    await go(`${HARNESS}/elsewhere`);
+    check('D signed in: the Dashboard loads and no recovery screen is shown', !(await recovery()));
+    signedIn = false;                               // ends server-side; the page still believes it is signed in
+    await go('/elsewhere');
     await until(() => visible('elsewhere'), 'another page');
-    const beforeLapse = log.length;
-    await go(HARNESS);   // the Dashboard mounts and reads -> 401 from the read-auth boundary
-    await until(() => visible('read-access-recovery'), 'recovery screen after a refused read');
-    check('the Dashboard\'s reads were refused 401 (the reproduction happened)', readsSince(beforeLapse).length > 0 && readsSince(beforeLapse).every((r) => !r.signedIn), readsSince(beforeLapse));
-    check('the recovery screen says the sign-in has ended', await visibleText('Your sign-in has ended'));
-    check('the recovery screen offers "Sign in again"', await page.getByRole('button', { name: 'Sign in again' }).isVisible());
-    await page.waitForTimeout(500);
-    check('"Failed to load dashboard" is not shown', !(await visibleText('Failed to load dashboard')));
+    mark = log.length;
+    await go('/');                                  // the Dashboard mounts and reads -> 401 from the read-auth boundary
+    await until(recovery, 'recovery screen after a refused read');
+    check('D the Dashboard\'s reads were refused 401 (the reproduction happened)', readsSince(mark).length > 0 && readsSince(mark).every((r) => !r.signedIn), readsSince(mark).map((r) => r.kind));
+    check('D the recovery screen says the sign-in has ended and offers "Sign in again"',
+      (await visibleText('Your sign-in has ended')) && (await page.getByRole('button', { name: 'Sign in again' }).isVisible()));
+    await settle();
+    check('D "Failed to load dashboard" is not shown', !(await visibleText('Failed to load dashboard')));
     const shown = await page.locator('body').innerText();
-    check('no raw refusal JSON or status code is shown', !/iaos-app-read-auth|→ 401|\{"error"/.test(shown), shown.slice(0, 400));
-    check('the nav is locked while signed out', await visible('sidebar-locked'));
-    check('the signed-in status line is gone', !(await visible('read-access-signed-in')));
+    check('D no raw refusal JSON or status code is shown', !/iaos-app-read-auth|→ 401|\{"error"/.test(shown), shown.slice(0, 400));
+    check('D the nav is locked and the signed-in status line is gone', (await visible('sidebar-locked')) && !(await visible('read-access-signed-in')));
+    mark = log.length;
+    await signInAgain();
+    await until(dashboardLoaded, 'Dashboard re-read after sign-in');
+    const reread = readsSince(mark);
+    check('D signing in again re-reads the Dashboard with the new session',
+      ['ghl-contacts', 'ghl-mailers', 'ghl-opportunities', 'ghl-conversations'].every((k) => reread.some((r) => r.kind === k && r.signedIn)), reread.map((r) => r.kind));
+    check('D after sign-in the Dashboard shows data, not the earlier failure', !(await visibleText('Failed to load dashboard')));
+    check('D the signed-in status line and nav are back', (await visible('read-access-signed-in')) && !(await visible('sidebar-locked')));
 
-    // 2 — signing in again removes the screen and reloads the Dashboard.
-    const beforeSignIn = log.length;
-    await page.getByRole('button', { name: 'Sign in again' }).click();
-    await until(async () => !(await visible('read-access-recovery')), 'recovery screen gone after sign-in');
-    await until(dashboardLoaded, 'Dashboard reloaded after sign-in');
-    const reloaded = readsSince(beforeSignIn);
-    check('the Dashboard reloaded its data with the new session', ['ghl-contacts', 'ghl-mailers', 'ghl-opportunities', 'ghl-conversations'].every((fn) => reloaded.some((r) => r.fn === fn && r.signedIn)), reloaded);
-    check('after sign-in the Dashboard shows data, not the earlier failure', (await visibleText('Recovery Fixture')) && !(await visibleText('Failed to load dashboard')));
-    check('the signed-in status line and nav are back', (await visible('read-access-signed-in')) && !(await visible('sidebar-locked')));
-
-    // 3 — the expiry timer path shows the same screen.
-    expiresAt = () => new Date(Date.now() + 2500).toISOString();
-    await page.reload();
+    // D-timer — the expiry timer path shows the same screen.
+    await freshApp('/');
+    sessionMs = 2500;
+    await page.goto(`${base}${HARNESS}`);
+    await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
+    await go('/');
     await until(dashboardLoaded, 'Dashboard loaded with a short session');
     signedIn = false;
-    await until(() => visible('read-access-recovery'), 'recovery screen after the expiry timer', 15000);
-    check('expiry timer: the recovery screen appears with the expired message', await visibleText('Read session expired'));
-    check('expiry timer: the Dashboard is hidden behind it', !(await visibleText('Recovery Fixture')));
+    await until(recovery, 'recovery screen after the expiry timer', 15000);
+    check('D-timer the recovery screen appears with the expired message', await visibleText('Read session expired'));
+    check('D-timer the Dashboard is hidden behind it', !(await visibleText('Alpha Fixture')));
 
-    // 4 — an explicit sign-out still goes to the plain sign-in landing, not the recovery screen.
-    signedIn = true;
-    expiresAt = () => new Date(Date.now() + 3600_000).toISOString();
-    await page.reload();
+    // D-signout — an explicit sign-out still shows the plain landing.
+    await freshApp('/');
     await until(dashboardLoaded, 'Dashboard loaded before sign-out');
     await page.getByTestId('read-access-signed-in').getByRole('button', { name: 'Sign out' }).click();
     await until(() => visibleText('Sign in to IAOS'), 'sign-in landing after sign-out');
-    check('explicit sign-out shows the sign-in landing, not the recovery screen', !(await visible('read-access-recovery')));
+    check('D-signout explicit sign-out shows the sign-in landing, not the recovery screen', !(await recovery()));
+    }
 
-    check('no write was sent', !log.some((r) => r.fn === 'ghl-write' || r.fn.includes('write')), log.filter((r) => r.fn.includes('write')));
+    // ═══ R1 — an unsaved call-log draft survives ═══════════════════════════
+    if (want('R1')) {
+    const DRAFT = 'Seller wants 30 days. Draft that must survive the sign-in.';
+    await freshApp(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await page.getByTestId('call-log-result-spoke-with-seller').click();
+    await page.getByTestId('call-log-notes').fill(DRAFT);
+    const defsBefore = log.filter((r) => r.kind === 'defs').length;
+    await lapse();
+    check('R1 the recovery screen covers the page while signed out', await recovery());
+    mark = log.length;
+    await signInAgain();
+    await until(async () => readsSince(mark, (r) => r.signedIn && r.contact === A && r.kind === 'row').length > 0, 'A re-read');
+    await settle();
+    check('R1 the chosen result is still selected', (await page.getByTestId('call-log-result-spoke-with-seller').getAttribute('aria-pressed')) === 'true');
+    check('R1 the typed notes are still there', (await page.getByTestId('call-log-notes').inputValue()) === DRAFT, await page.getByTestId('call-log-notes').inputValue());
+    check('R1 recovery sent no write', writes().length === 0, writes());
+    const r1Reads = readsSince(mark, (r) => r.signedIn);
+    check('R1 the contact\'s reads were refreshed (contact, detail, notes, deals)',
+      ['row', 'detail', 'notes', 'ghl-opportunities'].every((k) => r1Reads.some((r) => r.kind === k && (r.contact === undefined || r.contact === A))), r1Reads.map((r) => r.kind));
+    check('R1 the page was not remounted (field definitions were not re-read)', log.filter((r) => r.kind === 'defs').length === defsBefore);
+    await page.getByTestId('call-log-save').click();
+    await until(async () => (await page.getByTestId('call-log-done').count()) === 1, 'R1 saved');
+    check('R1 the surviving draft then saves once: result, note, last touch',
+      JSON.stringify(writes().map((w) => w.op)) === JSON.stringify(['contact.callLogResult', 'note.create', 'contact.lastCallAttempt'])
+      && db.contacts[A].notes.some((n) => n.body.endsWith(DRAFT)), writes().map((w) => w.op));
+    }
+
+    // ═══ R2 — "saved but unverified" survives ════════════════════════════════
+    if (want('R2')) {
+    await freshApp(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await page.getByTestId('call-log-result-no-answer').click();
+    h = hold((r) => r.kind === 'write' && r.op === 'contact.callLogResult');
+    await page.getByTestId('call-log-save').click();
+    await h.hit;
+    signedIn = false;                               // the session ends while the result write is on its way
+    h.release();                                    // the write is confirmed; its readback is refused 401 -> a real refused read
+    await until(recovery, 'R2 recovery screen after the refused readback');
+    check('R2 the refused readback itself brought up the recovery screen', log.some((r) => r.kind === 'detail' && r.contact === A && !r.signedIn));
+    await signInAgain();
+    await settle();
+    const unverified = async () => (await page.getByTestId('call-log-saved-unverified').count()) ? page.getByTestId('call-log-saved-unverified').innerText() : '';
+    check('R2 "Result saved ... Notes and last-touch time were not attempted" survives recovery',
+      /^Result saved -- IAOS confirmed the write/.test(await unverified()) && /Notes and last-touch time were not attempted/.test(await unverified()), await unverified());
+    check('R2 nothing further was sent: one result write, no note, no last touch',
+      writes('contact.callLogResult').length === 1 && writes('note.create').length === 0 && writes('contact.lastCallAttempt').length === 0, writes().map((w) => w.op));
+    check('R2 the stored result is what was confirmed', db.contacts[A].fields.get(F.callDisposition) === 'No Answer');
+    }
+
+    // ═══ R3 — a delayed first request, lapse and recovery while it is pending ═
+    if (want('R3')) {
+    await freshApp(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await page.getByTestId('call-log-result-voicemail').click();
+    await page.getByTestId('call-log-notes').fill('Left a message.');
+    h = hold((r) => r.kind === 'write' && r.op === 'contact.callLogResult');   // delayed BEFORE the server handles it
+    await page.getByTestId('call-log-save').click();
+    await h.hit;
+    check('R3 setup: the result write has not reached the server', db.contacts[A].fields.get(F.callDisposition) === undefined);
+    await lapse();
+    await signInAgain();
+    await settle();
+    check('R3 after recovery the save is still in progress ("Saving…", disabled)',
+      (await page.getByTestId('call-log-save').innerText()) === 'Saving…' && (await page.getByTestId('call-log-save').isDisabled()));
+    check('R3 no competing save can start: every result button is disabled', await page.getByTestId('call-log-result-no-answer').isDisabled());
+    await page.getByTestId('call-log-save').click({ force: true }).catch(() => {});
+    await page.getByTestId('call-log-result-no-answer').click({ force: true }).catch(() => {});
+    await settle();
+    check('R3 forcing clicks sends nothing new (only the held result write exists)', writes().length === 1, writes().map((w) => w.op));
+    h.release();                                    // the server now handles the first and only request
+    await until(async () => (await page.getByTestId('call-log-done').count()) === 1, 'R3 completion');
+    check('R3 completion reports exactly the stored result', (await page.getByTestId('call-log-done').innerText()) === 'Saved: Voicemail.' && db.contacts[A].fields.get(F.callDisposition) === 'Voicemail',
+      { shown: await page.getByTestId('call-log-done').innerText(), stored: db.contacts[A].fields.get(F.callDisposition) });
+    check('R3 one result write, one note, one last touch -- no duplicate sequence',
+      JSON.stringify(writes().map((w) => w.op)) === JSON.stringify(['contact.callLogResult', 'note.create', 'contact.lastCallAttempt']), writes().map((w) => w.op));
+    check('R3 GHL holds exactly one call note for it', db.contacts[A].notes.filter((n) => n.body === 'Call (reported by Brad in IAOS): Voicemail\nLeft a message.').length === 1);
+    }
+
+    // ═══ R4 — contact isolation across recovery ══════════════════════════════
+    if (want('R4')) {
+    await freshApp(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await page.getByTestId('call-log-result-no-answer').click();
+    const hSave = hold((r) => r.kind === 'write' && r.op === 'contact.callLogResult' && r.target === A);
+    await page.getByTestId('call-log-save').click();
+    await hSave.hit;                                // A's save is pending
+    await lapse();
+    const hRow = hold((r) => r.kind === 'row' && r.contact === A && r.signedIn);
+    const hNotes = hold((r) => r.kind === 'notes' && r.contact === A && r.signedIn);
+    await signInAgain();
+    await hRow.hit; await hNotes.hit;               // A's recovery re-reads are pending
+    await go(`/contacts/${B}`);                     // same mounted page, now B
+    await contactLoaded('Bravo');
+    hRow.release(); hNotes.release(); hSave.release();
+    await until(async () => db.contacts[A].notes.length === 2, 'A\'s pending save completes for A');
+    await settle();
+    const bText = await page.locator('main').innerText();
+    check('R4 B shows B, never A\'s late recovery reads', bText.includes('Bravo') && !bText.includes('Seed note for Alpha') && !bText.includes('Alpha Fixture'), bText.slice(0, 300));
+    check('R4 A\'s late save completion puts nothing on B (no saved, partial or warning)',
+      (await page.getByTestId('call-log-done').count()) === 0 && (await page.getByTestId('call-log-partial').count()) === 0 && (await page.getByTestId('call-log-saved-unverified').count()) === 0);
+    check('R4 A\'s writes went to A only', writes().every((w) => w.target === A) && db.contacts[B].notes.length === 1, writes().map((w) => `${w.op}:${w.target}`));
+    }
+
+    // ═══ R5 — the durable Current Offer barrier survives recovery ════════════
+    if (want('R5')) {
+    await freshApp(`/contacts/${A}/seller-call`);
+    const input = () => page.getByTestId('negotiation-current-offer-input');
+    await input().waitFor({ timeout: 30000 });
+    await input().fill('410000');
+    h = hold((r) => r.kind === 'write' && r.op === 'opportunity.currentOffer', { loseAnswer: true });
+    await input().press('Tab');
+    await h.hit;
+    h.release();                                    // GHL took it; the browser lost the answer
+    const unresolvedShown = async () => (await page.getByTestId('current-offer-unresolved').count()) > 0;
+    await until(unresolvedShown, 'R5 Unresolved');
+    check('R5 setup: the save is Unresolved and locked; GHL holds 410000', (await input().isEditable()) === false && db.offers[opp(A)] === 410000);
+    const offerWrites = writes('opportunity.currentOffer').length;
+    await lapse();
+    mark = log.length;
+    await signInAgain();
+    await until(async () => readsSince(mark, (r) => r.signedIn && r.kind === 'ghl-opportunities').length > 0, 'R5 re-read');
+    await settle();
+    check('R5 after recovery the deal is still Unresolved and locked', (await unresolvedShown()) && (await input().isEditable()) === false);
+    check('R5 recovery sent no write', writes().length === offerWrites, writes().map((w) => w.op));
+    check('R5 the Seller Call reads were refreshed with the new session',
+      ['detail', 'ghl-opportunities', 'notes'].every((k) => readsSince(mark, (r) => r.signedIn).some((r) => r.kind === k)), readsSince(mark).map((r) => r.kind));
+    }
+
     check('no request left the machine', foreign.length === 0, foreign);
     check('no page errors', pageErrors.length === 0, pageErrors);
   } catch (e) {

@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link } from "react-router-dom";
 import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, GitBranch } from "lucide-react";
@@ -71,7 +72,10 @@ export default function Pipeline() {
   const [sortKey, setSortKey]           = useState<SortKey>("stage");
   const [sortDir, setSortDir]           = useState<SortDir>("asc");
 
+  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
+  const readRecovered = useReadRecovered();
   useEffect(() => {
+    setError(null);
     ghl.opportunities.listPipeline()
       .then((data) => {
         setStages(data.stages);
@@ -79,7 +83,7 @@ export default function Pipeline() {
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [readRecovered]);
 
   const stagePosition = useMemo(() => {
     const map = new Map<string, number>();

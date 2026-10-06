@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { formatPhone } from "../lib/format";
 import { Link, useParams } from "react-router-dom";
@@ -690,6 +691,7 @@ export default function SellerCallWorkspace() {
     { key: "delivery_signing", label: "Delivery and signing information collected" },
   ] as const;
 
+  const readRecovered = useReadRecovered();
   useEffect(() => {
     if (!contactId) return;
     let cancelled = false;
@@ -709,7 +711,8 @@ export default function SellerCallWorkspace() {
       })
       .catch((e: Error) => { if (!cancelled) setFetchError(e.message); });
     return () => { cancelled = true; };
-  }, [contactId]);
+    // Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse.
+  }, [contactId, readRecovered]);
 
   const loading = fetchError === null && (contact === null || opps === null || policyValues === null || notes === null);
 

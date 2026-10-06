@@ -10,8 +10,9 @@
  *   2. "Unnamed contact" wherever a contact's name is shown; the Seller Call
  *      header phone is formatted.
  *   3. An expired read session shows a sign-in recovery screen (never the
- *      page's raw failed reads); the page stays mounted behind it and reloads
- *      when sign-in returns.
+ *      page's raw failed reads); the page stays mounted behind it, is never
+ *      remounted (drafts and pending saves survive) and re-reads its data
+ *      when sign-in returns (Bones, PR #131).
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -74,8 +75,29 @@ check('Seller Call header formats the phone', /\{contact\?\.phone \? ` · \$\{fo
 // 3 -- expired session
 const ra = code('src/components/ReadAccess.tsx');
 check('a lapsed session shows the sign-in recovery screen with a Sign in again action', /data-testid="read-access-recovery"/.test(ra) && /Your sign-in has ended/.test(ra) && /Sign in again/.test(ra));
-check('the page stays mounted behind it (one keyed wrapper, hidden while signed out)', /const page = <div key=\{`page-\$\{epoch\}`\} hidden=\{status\.kind !== "signed_in"\}/.test(ra) && /return <>\{null\}\{page\}<\/>;/.test(ra) && /\{page\}\s*<\/>;/.test(ra));
-check('the page reloads (remounts) when sign-in returns after a lapse', /if \(lapsed\.current\) \{ lapsed\.current = false; setEpoch\(\(e\) => e \+ 1\); \}/.test(ra));
+check('the page stays mounted behind it (one wrapper with a FIXED key, hidden while signed out)', /const page = <div key="page" hidden=\{status\.kind !== "signed_in"\}/.test(ra) && /return <>\{null\}\{page\}<\/>;/.test(ra) && /\{page\}\s*<\/>;/.test(ra));
+check('Bones PR #131: the page is never remounted on recovery (no key derived from the recovery count)', !/key=\{[^}]*epoch/.test(ra));
+check('recovery is signalled to the page, not forced by a remount', /if \(lapsed\.current\) \{ lapsed\.current = false; setEpoch\(\(e\) => e \+ 1\); \}/.test(ra) && /<ReadRecovered\.Provider value=\{epoch\}>\{children\}<\/ReadRecovered\.Provider>/.test(ra));
+{
+  // Every page that reads re-runs its READS on recovery (and only its reads).
+  const pages = { Dashboard: /\}, \[readRecovered\]\);/, Calendars: /\}, \[readRecovered\]\);/, Contacts: /\}, \[readRecovered\]\);/, Conversations: /\}, \[selected, readRecovered\]\);/,
+    Pipeline: /\}, \[readRecovered\]\);/, Segmentation: /\}, \[readRecovered\]\);/, Mailers: /load\(!firstLoad\.current\); firstLoad\.current = false; \}, \[readRecovered\]\);/,
+    DealCalculator: /\}, \[readRecovered\]\);/, SellerCallWorkspace: /\}, \[contactId, readRecovered\]\);/, ContractWorkspace: /\}, \[contactId, readRecovered\]\);/,
+    UnderwritingWorkspace: /\}, \[contactId, reloadTick, readRecovered\]\);/, ContactWorkspace: /if \(readRecovered === seenRecovery\.current\) return;/ };
+  const missing = Object.entries(pages).filter(([f, re]) => { const c = code(`src/pages/${f}.tsx`); return !/const readRecovered = useReadRecovered\(\);/.test(c) || !re.test(c); }).map(([f]) => f);
+  check('every reading page re-reads on recovery', missing.length === 0, missing);
+}
+{
+  const cw = code('src/pages/ContactWorkspace.tsx');
+  check('Contact page recovery re-runs its guarded loaders (no navigation reset) and waits while an editor is open',
+    /function recoverReads\(\) \{\s*loadContact\(\);\s*loadDetail\(\);\s*if \(!defs\) loadDefs\(\);\s*loadNotes\(\);\s*loadConversations\(\);\s*loadOpportunities\(\);\s*\}/.test(cw)
+    && /if \(anyEditorOpenRef\.current\) \{ recoveryPending\.current = true; setRefreshDeferred\(true\); return; \}/.test(cw)
+    && /if \(recoveryPending\.current\) \{ recoveryPending\.current = false; recoverReads\(\); return; \}/.test(cw));
+  check('ARV comps: a re-read of the same contact never re-seeds (overwrites) the subject draft',
+    /if \(seededFor\.current === contact\.id\) return;/.test(code('src/components/ArvCompsWorkspace.tsx')));
+  check('Mailers: a recovery re-read keeps ticked tasks that still exist', /setChecked\(\(prev\) => new Set\(\[\.\.\.prev\]\.filter\(\(t\) => present\.has\(t\)\)\)\);/.test(code('src/pages/Mailers.tsx')));
+  check('Dashboard: "new since last visit" is recorded on the first load only', /if \(visitRecorded\.current\) return;\s*visitRecorded\.current = true;/.test(code('src/pages/Dashboard.tsx')));
+}
 check('before any sign-in, the single sign-in landing is unchanged (no page rendered)', /if \(!wasSignedIn\) \{[\s\S]{0,600}>Sign in to IAOS<\/h1>[\s\S]{0,400}<\/div>;\s*\}/.test(ra));
 
 console.log(`\nBoard 15 cleanup: ${checks - failures}/${checks} checks passed`);

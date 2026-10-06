@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { useReadRecovered } from "../components/access-status";
 import { Link } from "react-router-dom";
 import { AlertCircle, Users, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
 import { ghl, type ContactGridRow } from "../lib/ghl";
@@ -118,12 +119,15 @@ export default function Contacts() {
     dir: "desc",
   });
 
+  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
+  const readRecovered = useReadRecovered();
   useEffect(() => {
+    setError(null);
     ghl.contacts.gridRows()
       .then(setRows)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [readRecovered]);
 
   // §5.1 Sort: `ordered` is the sort-driven spine that `filtered` consumes below,
   // so search narrows without reordering. Name → localeCompare (accents fold to

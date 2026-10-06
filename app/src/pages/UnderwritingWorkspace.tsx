@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link, useParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
@@ -839,6 +840,7 @@ export default function UnderwritingWorkspace() {
   const [modeWrite, setModeWrite] = useState<ModeWriteState>({ status: "idle" });
   const [reloadTick, setReloadTick] = useState(0);
 
+  const readRecovered = useReadRecovered();
   useEffect(() => {
     if (!contactId) return;
     let cancelled = false;
@@ -856,7 +858,8 @@ export default function UnderwritingWorkspace() {
       })
       .catch((e: Error) => { if (!cancelled) setFetchError(e.message); });
     return () => { cancelled = true; };
-  }, [contactId, reloadTick]);
+    // Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse.
+  }, [contactId, reloadTick, readRecovered]);
 
   const loading = fetchError === null && (contact === null || opps === null || policyValues === null);
 

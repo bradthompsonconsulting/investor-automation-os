@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, Flame, Sun, Snowflake, Scroll } from "lucide-react";
 import { ghl, getBucketTag, isProbate, type ContactRow, type BucketTag } from "../lib/ghl";
@@ -208,12 +209,15 @@ export default function Segmentation() {
   const [sortDir,  setSortDir]  = useState<SortDir>("desc");
   const [probateOnly, setProbateOnly] = useState(false);
 
+  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
+  const readRecovered = useReadRecovered();
   useEffect(() => {
+    setError(null);
     ghl.contacts.listAll()
       .then(setContacts)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [readRecovered]);
 
   function handleSort(key: SortKey) {
     if (key === sortKey) {

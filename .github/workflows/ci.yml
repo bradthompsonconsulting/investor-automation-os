@@ -234,7 +234,7 @@ jobs:
       - name: Board 15 B5 sign-in presentation and hidden empty pages — 28 offline checks
         run: node app/scripts/test-b15-signin-pages.cjs
 
-      - name: Board 15 cleanup (internal references, Unnamed contact, expired-session recovery) — 21 offline checks
+      - name: Board 15 cleanup (internal references, Unnamed contact, expired-session recovery) — 27 offline checks
         run: node app/scripts/test-b15-cleanup.cjs
 
       - name: Seller Call calling options — 49 offline checks

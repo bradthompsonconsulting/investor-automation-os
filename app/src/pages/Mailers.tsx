@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { AlertCircle, Mail, CheckSquare, Square, MapPinOff, Loader2 } from "lucide-react";
 import { ghl, type MailerDigest, type MailerGroup, type MailerTaskRow } from "../lib/ghl";
@@ -160,16 +161,24 @@ export default function Mailers() {
   const [completeError, setCompleteError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
 
-  function load() {
+  function load(keepSelection = false) {
     setLoading(true);
     setError(null);
     ghl.mailers.list()
-      .then((d) => { setDigest(d); setChecked(new Set()); })
+      .then((d) => {
+        setDigest(d);
+        if (!keepSelection) { setChecked(new Set()); return; }
+        const present = new Set([...[...d.thisWeekReady, ...d.thisWeekBusiness, ...d.overdue].flatMap((g) => g.rows), ...d.noAddress].map((r) => r.taskId));
+        setChecked((prev) => new Set([...prev].filter((t) => present.has(t))));
+      })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
   }
 
-  useEffect(load, []);
+  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
+  const readRecovered = useReadRecovered();
+  const firstLoad = useRef(true);
+  useEffect(() => { load(!firstLoad.current); firstLoad.current = false; }, [readRecovered]);
 
   // Flat lookup of every actionable row (ready + business + overdue) by taskId,
   // so completing a checked task can find its contactId.

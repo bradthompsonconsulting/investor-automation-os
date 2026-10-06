@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useReadRecovered } from "../components/access-status";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   Calculator, ChevronDown, ChevronUp, ExternalLink, Link2, Unlink, Loader2, RotateCcw,
@@ -267,13 +268,15 @@ export default function DealCalculator() {
      network call. */
   const [policyValues, setPolicyValues] = useState<{ id: string; value: string }[] | null>(null);
   const [policyError, setPolicyError] = useState<string | null>(null);
+  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
+  const readRecovered = useReadRecovered();
   useEffect(() => {
     let cancelled = false;
     ghl.underwriting.policy()
-      .then((p) => { if (!cancelled) setPolicyValues(p.values); })
-      .catch((e: Error) => { if (!cancelled) { setPolicyValues([]); setPolicyError(e.message); } });
+      .then((p) => { if (!cancelled) { setPolicyValues(p.values); setPolicyError(null); } })
+      .catch((e: Error) => { if (!cancelled) { setPolicyValues((v) => v ?? []); setPolicyError(e.message); } });
     return () => { cancelled = true; };
-  }, []);
+  }, [readRecovered]);
 
   const underwritingResult = useMemo(
     () => computeUnderwriting(buildDealCalculatorInputs({

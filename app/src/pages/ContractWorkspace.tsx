@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from "react";
+import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT, contractTemplateDisplayName, AGREEMENT_REACHED_OPERATOR_MEANING } from "../lib/operator-display";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ArrowRight } from "lucide-react";
@@ -835,6 +836,7 @@ export default function ContractWorkspace() {
   }
 
   // READS ONLY. No write of any kind happens in this effect.
+  const readRecovered = useReadRecovered();
   useEffect(() => {
     if (!contactId) return;
     let cancelled = false;
@@ -852,7 +854,8 @@ export default function ContractWorkspace() {
       })
       .catch((e: Error) => { if (!cancelled) setFetchError(e.message); });
     return () => { cancelled = true; };
-  }, [contactId]);
+    // Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse.
+  }, [contactId, readRecovered]);
 
   const loading = fetchError === null && (contact === null || opps === null || notes === null);
   const candidates = useMemo(() => opportunityCandidates(opps), [opps]);
