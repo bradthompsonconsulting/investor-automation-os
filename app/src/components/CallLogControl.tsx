@@ -7,8 +7,8 @@ import {
 } from "../lib/call-outcome-copy";
 import { ReadUnavailableError } from "../lib/read-session";
 import {
-  beginCallLog, reconcileCallLog, readCallLogStatus, sendCallLogStep, newCallLogRequestIds,
-  RESERVATION_FAILED_MESSAGE, CHECK_FAILED_MESSAGE, type CallLogStep, type ReconcileView,
+  beginOperation, resumeOperation, retryAttempt, settleLegacy, readCallLogStatus, readOperation, sendCallLogStep, describe, requestIdFor,
+  RESERVATION_FAILED_MESSAGE, CHECK_FAILED_MESSAGE, type CallLogView,
 } from "../lib/call-log-barrier-client";
 
 /**
@@ -25,14 +25,14 @@ import {
  * GHL seller workflows watch — and the server's `contact.callLogResult`
  * operation cannot. No stage, tag, enrollment or message.
  *
- * Board 15 / PR #131 (Bones) — DURABLE OWNERSHIP. The sequence is owned by a
- * server reservation for this contact (call-log-barrier), taken BEFORE the
- * first write and visible to every session: a reload, a navigation or another
- * browser sees an unfinished save and cannot start another. Each step carries
- * its reserved request id, the server sends it only after the previous step
- * is confirmed and at most once, and an unfinished save is finished with the
- * SAME ids (Check again) — never re-sent under new ones. The full map is
- * docs/CALL_LOG_SAVE_LIFECYCLE.md.
+ * Board 15 / PR #131 — DURABLE OPERATIONS (Bones-approved lifecycle v3,
+ * docs/CALL_LOG_SAVE_LIFECYCLE.md). One Save is one server operation with a
+ * permanent id, discoverable by every session. Steps carry derived request
+ * ids; Check again (resume) and Retry notes / Retry last-touch time (retry)
+ * only ever continue THAT operation; a new call is a new operation. After any
+ * answer that is not a confirmation, the page reads the operation by its
+ * ORIGINAL id and shows what the server recorded — never an inference. Only a
+ * recorded, complete operation is shown as "Saved".
  *
  * Callbacks are a separate, explicit action: Follow Up only points to Set
  * Callback (`onOpenCallback`); it never schedules one.
@@ -44,7 +44,7 @@ type Submit =
   | { status: "idle" }
   | { status: "in_flight" }
   | { status: "done"; result: CallLogResult }
-  | { status: "partial"; result: CallLogResult; message: string; retryNote: string | null }
+  | { status: "partial"; result: CallLogResult; message: string; retry: { slot: "note" | "touch"; after: number } | null }
   | { status: "saved_unverified"; message: string }
   | { status: "not_saved"; message: string };
 
@@ -52,8 +52,8 @@ type Submit =
 type Owner =
   | { kind: "checking" }
   | { kind: "clear" }
-  | { kind: "busy" }                              // this page's own attempt is running
-  | { kind: "blocked"; message: string };
+  | { kind: "busy" }                              // this page's own action is running
+  | { kind: "held"; message: string; legacy: boolean };
 
 function storage(): StorageLike | null {
   try { return typeof sessionStorage === "undefined" ? null : sessionStorage; } catch { return null; }
@@ -78,16 +78,45 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
   const [owner, setOwner] = useState<Owner>({ kind: "checking" });
   const [checking, setChecking] = useState(false);
   /* The contacts with a save or check running in THIS page. Per contact: an
-     attempt for A keeps running to its end after the page moves to B, and
+     operation for A keeps running to its end after the page moves to B, and
      neither blocks the other. */
   const inFlight = useRef<Set<string>>(new Set());
-  /* An attempt always runs to its end for ITS contact; only the screen follows
-     the contact shown -- a late answer for A never reaches B's screen. */
+  /* The operation this page knows for each contact (its own Save, or the one
+     the server reported open). Delayed answers are read by this ORIGINAL id. */
+  const operations = useRef<Map<string, string>>(new Map());
+  /* An operation always runs to its end for ITS contact; only the screen
+     follows the contact shown -- a late answer for A never reaches B's screen. */
   const current = useRef(contactId);
   current.current = contactId;
   const forThis = (cid: string) => current.current === cid;
   const busy = submit.status === "in_flight";
   const locked = owner.kind !== "clear";
+
+  /** Shows what the server recorded for an operation (or the contact). Never sends anything. */
+  function apply(cid: string, view: CallLogView, keepMessage = false) {
+    if (!forThis(cid)) return;
+    if (view.state === "open") operations.current.set(cid, view.op);
+    const d = describe(view);
+    if (d.tone === "clear") { setOwner({ kind: "clear" }); return; }
+    if (d.tone === "done" && view.state === "finished") {
+      setSubmit({ status: "done", result: view.outcome.result as CallLogResult });
+      setResult(null); setText("");
+      setOwner({ kind: "clear" });
+      return;
+    }
+    if (d.tone === "not_saved") {
+      if (!keepMessage) setSubmit({ status: "not_saved", message: d.message });
+      setOwner({ kind: "clear" });
+      return;
+    }
+    if (d.tone === "partial" && view.state === "open") {
+      setSubmit({ status: "partial", result: view.result as CallLogResult, message: d.message, retry: d.retry ?? null });
+      setOwner({ kind: "held", message: "", legacy: false });
+      return;
+    }
+    if (!keepMessage) setSubmit((s: Submit) => (s.status === "in_flight" || s.status === "done" ? { status: "idle" } : s));
+    setOwner({ kind: "held", message: d.message, legacy: view.state === "legacy" });
+  }
 
   /* Load / contact change: does any session hold an unfinished call save here? */
   useEffect(() => {
@@ -96,15 +125,11 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
     setSubmit({ status: "idle" });
     void readCallLogStatus(cid).then((v) => {
       if (!forThis(cid)) return;
-      setOwner(v.state === "clear" ? { kind: "clear" } : { kind: "blocked", message: v.message });
+      if (v.state === "finished") { setOwner({ kind: "clear" }); return; }   // a just-finished operation: nothing open
+      apply(cid, v);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contactId]);
-
-  async function refreshOwner(cid: string) {
-    const v = await readCallLogStatus(cid);
-    if (!forThis(cid)) return;
-    setOwner(v.state === "clear" ? { kind: "clear" } : { kind: "blocked", message: v.message });
-  }
 
   const lastCall = (() => {
     const rows = (notes ?? [])
@@ -115,71 +140,34 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
   })();
 
   /**
-   * Sends the remaining reserved steps of THIS contact's attempt, in order,
-   * each with its reserved request id (note, then last touch). Shared by Save,
-   * by Check again (finishing an attempt with its original ids) and by Retry
-   * notes. Stops at the first step that is not confirmed.
+   * Continues ONE operation through the server's next actions: each "send" is
+   * an existing, published attempt (same request id), sent once; anything that
+   * is not a confirmation ends here and the operation is read by its original
+   * id. Shared by Save, Check again and the retries.
    */
-  async function finishSteps(cid: string, attempt: string, saved: CallLogResult, body: string, remaining: { step: CallLogStep; requestId: string }[]) {
-    for (const { step, requestId } of remaining) {
-      if (step === "result") continue;   // never re-sent here; Save sends it once
+  async function runOperation(cid: string, op: string, first: CallLogView | null) {
+    let view: CallLogView | null = first;
+    for (let i = 0; i < 8; i++) {
+      if (!view) {
+        try { view = await resumeOperation(cid, op); }
+        catch { view = await readOperation(cid, op); }
+      }
+      if (view.state !== "open" || view.next.action !== "send") { apply(cid, view); return; }
+      const { slot, requestId } = view.next;
+      if (slot === "result") { apply(cid, view); return; }   // a result is sent once, by Save; never re-sent here
       const at = new Date().toISOString();
-      const outcome = await sendCallLogStep(cid, step, requestId, step === "note" ? { body } : { value: at });
+      const outcome = await sendCallLogStep(cid, slot, requestId, slot === "note" ? { body: view.body ?? "" } : { value: at });
       if (outcome.kind === "confirmed") {
-        // The attempt runs to its end for ITS contact; only the screen follows the contact shown.
-        if (forThis(cid)) { if (step === "note") onNoteWritten(); else onAttempt(at); }
+        // The operation runs to its end for ITS contact; only the screen follows the contact shown.
+        if (forThis(cid)) { if (slot === "note") onNoteWritten(); else onAttempt(at); }
+        view = null;
         continue;
       }
-      if (outcome.kind === "uncertain") {
-        if (!forThis(cid)) return;
-        setSubmit({ status: "partial", result: saved, retryNote: null, message: step === "note"
-          ? `Result saved; the call note may or may not have reached GHL (${outcome.message}). Nothing more will be saved for this contact until it is resolved — use Check again.`
-          : `Saved; the last-touch time may or may not have been updated (${outcome.message}). Use Check again.` });
-        await refreshOwner(cid);
-        return;
-      }
-      // Provably not sent. Let the server settle it: a step that can never be
-      // sent ends the attempt; one that is merely not ready yet stays resumable.
-      await settleAfterRefusal(cid, attempt, saved, step, outcome.message);
+      // Not a confirmation: read THIS operation by its original id and show what was recorded.
+      apply(cid, await readOperation(cid, op));
       return;
     }
-    if (!forThis(cid)) return;
-    setSubmit({ status: "done", result: saved });
-    setResult(null);
-    setText("");
-    setOwner({ kind: "clear" });
-  }
-
-  async function settleAfterRefusal(cid: string, attempt: string, saved: CallLogResult, step: CallLogStep, why: string) {
-    let r: ReconcileView;
-    // Scoped to THIS attempt: if a newer one is current, nothing is changed.
-    try { r = await reconcileCallLog(cid, attempt); }
-    catch { if (forThis(cid)) { setSubmit({ status: "partial", result: saved, retryNote: null, message: `Not finished (${why}).` }); setOwner({ kind: "blocked", message: CHECK_FAILED_MESSAGE }); } return; }
-    if (!forThis(cid)) return;
-    const refused = step === "note" ? `Result saved; notes not saved (${why}).` : `Saved; last-touch time not updated (${why}).`;
-    // Not finished and not ended (e.g. the contact's write lock was busy): the step keeps its reserved id for Check again.
-    if (r.state !== "clear") setSubmit({ status: "partial", result: saved, retryNote: null, message: `${refused} Use Check again to finish it.` });
-    showReconciled(r, refused);
-  }
-
-  /** Applies what the server's reconcile found. Never sends anything by itself. */
-  function showReconciled(r: ReconcileView, refusedMessage?: string) {
-    if (r.state === "resumable") { setOwner({ kind: "blocked", message: r.message }); return; }
-    if (r.state === "blocked") { setOwner({ kind: "blocked", message: r.message }); return; }
-    setOwner({ kind: "clear" });
-    const sum = r.summary;
-    if (!sum) return;
-    const ev = Object.fromEntries(sum.steps.map((s) => [s.step, s.evidence])) as Partial<Record<CallLogStep, string>>;
-    const saved = sum.result as CallLogResult;
-    if (ev.result !== undefined && ev.result !== "confirmed") {
-      setSubmit({ status: "not_saved", message: `"${saved}" was not saved — nothing was sent to GHL.` });
-    } else if (ev.note !== "confirmed") {
-      setSubmit({ status: "partial", result: saved, retryNote: sum.body, message: refusedMessage ?? "Result saved; notes not saved." });
-    } else if (ev.touch !== "confirmed") {
-      setSubmit({ status: "partial", result: saved, retryNote: null, message: refusedMessage ?? "Saved; last-touch time not updated." });
-    } else {
-      setSubmit({ status: "done", result: saved });
-    }
+    apply(cid, await readOperation(cid, op));
   }
 
   async function save() {
@@ -189,43 +177,41 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
     inFlight.current.add(cid);
     const chosen = result;
     const body = callLogNote(chosen, text.slice(0, CALL_NOTES_MAX));
-    const ids = newCallLogRequestIds(["result", "note", "touch"] as const);
+    const op = crypto.randomUUID();
+    operations.current.set(cid, op);
     setSubmit({ status: "in_flight" });
     setOwner({ kind: "busy" });
     try {
-      // 0. Durable ownership first: nothing is sent unless this succeeds.
-      let reserved: Awaited<ReturnType<typeof beginCallLog>>;
-      try { reserved = await beginCallLog(cid, "call_log", chosen, body, [{ step: "result", requestId: ids.result }, { step: "note", requestId: ids.note }, { step: "touch", requestId: ids.touch }]); }
+      // 0. Durable ownership first: a NEW operation; nothing is sent unless this succeeds.
+      let reserved: Awaited<ReturnType<typeof beginOperation>>;
+      try { reserved = await beginOperation(cid, op, chosen, body); }
       catch {
         if (!forThis(cid)) return;
         setSubmit({ status: "not_saved", message: RESERVATION_FAILED_MESSAGE });
-        setOwner({ kind: "blocked", message: RESERVATION_FAILED_MESSAGE });
+        setOwner({ kind: "held", message: RESERVATION_FAILED_MESSAGE, legacy: false });
         return;
       }
-      if (reserved.state === "blocked") { if (forThis(cid)) { setSubmit({ status: "idle" }); setOwner({ kind: "blocked", message: reserved.message }); } return; }
+      if (reserved.state === "held") { operations.current.delete(cid); if (forThis(cid)) { setSubmit({ status: "idle" }); apply(cid, reserved.current); } return; }
+      if (reserved.state !== "reserved") { apply(cid, reserved); return; }
 
-      // 1. The result. From here the attempt runs to its end for ITS contact,
-      // even if the page has moved on; only the screen follows the contact shown.
-      const sent = await sendCallLogStep(cid, "result", ids.result, { value: chosen });
-      if (sent.kind === "not_sent") {
-        await settleAfterRefusal(cid, ids.result, chosen, "result", sent.message);
-        if (forThis(cid)) setSubmit({ status: "not_saved", message: `Result not saved — nothing was sent (${sent.message}).` });
-        return;
-      }
+      // 1. The result, sent ONCE with its derived id. From here the operation runs
+      // to its end for ITS contact, even if the page has moved on.
+      const sent = await sendCallLogStep(cid, "result", requestIdFor(op, "result", 1), { value: chosen });
+      if (sent.kind === "not_sent") { apply(cid, await readOperation(cid, op)); return; }
       if (sent.kind === "uncertain") {
         // The result write itself did not confirm. It may or may not have
         // landed, so this never claims that nothing was written.
         if (!forThis(cid)) return;
         setSubmit({ status: "not_saved", message: `Result not confirmed (${sent.message}). Notes and last-touch time were not attempted. It may still reach GHL — use Check again; do not save it again.` });
-        await refreshOwner(cid);
+        apply(cid, await readOperation(cid, op), true);
         return;
       }
       /* From here ghl-write has CONFIRMED the result write. A readback that
          fails for ANY reason (read sign-in, a 500, a network error) is
          "saved but unverified" — never "nothing was written" — and nothing
          further is attempted here: no note, no last touch, and no second result
-         write (Bones, PR #117). The reservation keeps the note and last touch
-         for Check again, which finishes them with their reserved ids. */
+         write (Bones, PR #117). The operation keeps the note and last touch for
+         Check again, which finishes them with their reserved ids. */
       let landed: boolean;
       try {
         const detail = await ghl.contacts.getDetail(cid);
@@ -236,62 +222,70 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
         setSubmit({ status: "saved_unverified", message: e instanceof ReadUnavailableError
           ? `Result saved -- IAOS confirmed the write, but it ${VERIFY_UNAVAILABLE} Notes and last-touch time were not attempted.`
           : `Result saved -- IAOS confirmed the write, but couldn't read it back to verify it (${(e as Error).message}). Use Check again to finish this call; do not save it again. Notes and last-touch time were not attempted.` });
-        await refreshOwner(cid);
+        apply(cid, await readOperation(cid, op), true);
         return;
       }
       if (!landed) {
         if (!forThis(cid)) return;
         setSubmit({ status: "not_saved", message: "GHL did not confirm the result on a fresh read. Notes and last-touch time were not attempted; use Check again." });
-        await refreshOwner(cid);
+        apply(cid, await readOperation(cid, op), true);
         return;
       }
       // Session override: the Dashboard's queue placement sees the result at once.
       recordOverride(storage(), cid, chosen, new Date().toISOString(), Date.now());
-      await finishSteps(cid, ids.result, chosen, body, [{ step: "note", requestId: ids.note }, { step: "touch", requestId: ids.touch }]);
+      await runOperation(cid, op, null);
     } finally {
       inFlight.current.delete(cid);
     }
   }
 
-  /* Check again: the server reconciles from its own evidence. A resumable save
-     is finished with its ORIGINAL request ids; nothing is ever re-sent under a
-     new id, and nothing here reads GHL to decide. */
+  /* Check again: the server settles THIS operation from its own records and
+     names the next step of the existing attempts. Nothing here reads GHL to
+     decide, and nothing is re-sent under a new id. */
   async function checkAgain() {
     const cid = contactId;
     if (inFlight.current.has(cid)) return;
     inFlight.current.add(cid);
     setChecking(true);
     try {
-      let r: ReconcileView;
-      try { r = await reconcileCallLog(cid); }
-      catch { if (forThis(cid)) setOwner({ kind: "blocked", message: CHECK_FAILED_MESSAGE }); return; }
-      if (r.state !== "resumable") { if (forThis(cid)) showReconciled(r); return; }
-      const saved = r.result as CallLogResult;
-      if (forThis(cid)) { setOwner({ kind: "busy" }); setSubmit({ status: "in_flight" }); }
-      recordOverride(storage(), cid, saved, new Date().toISOString(), Date.now());
-      await finishSteps(cid, r.attempt, saved, r.body, r.remaining);
+      if (owner.kind === "held" && owner.legacy) {
+        try { apply(cid, await settleLegacy(cid)); } catch { if (forThis(cid)) setOwner({ kind: "held", message: CHECK_FAILED_MESSAGE, legacy: true }); }
+        return;
+      }
+      let op = operations.current.get(cid);
+      if (!op) { const v = await readCallLogStatus(cid); if (v.state !== "open") { apply(cid, v); return; } op = v.op; }
+      const known = op;
+      let first: CallLogView;
+      try { first = await resumeOperation(cid, known); }
+      catch { if (forThis(cid)) setOwner({ kind: "held", message: CHECK_FAILED_MESSAGE, legacy: false }); return; }
+      if (first.state === "open" && first.next.action === "send") {
+        if (forThis(cid)) { setOwner({ kind: "busy" }); setSubmit({ status: "in_flight" }); }
+        recordOverride(storage(), cid, first.result as CallLogResult, new Date().toISOString(), Date.now());
+      }
+      await runOperation(cid, known, first);
     } finally {
       inFlight.current.delete(cid);
       setChecking(false);
     }
   }
 
-  /* Retry notes: only after the server PROVED the note was never sent (the
-     attempt ended); a new reservation owns the note and last touch. */
-  async function retryNote() {
+  /* Retry notes / Retry last-touch time: an explicit retry of the attempt the
+     server reported proved unsent. It names that attempt; the server publishes
+     the next attempt of the SAME operation, or -- for a stale click -- returns
+     the existing attempt or the recorded outcome and creates nothing. */
+  async function retry() {
     const cid = contactId;
-    if (submit.status !== "partial" || !submit.retryNote || inFlight.current.has(cid) || owner.kind !== "clear") return;
+    const op = operations.current.get(cid);
+    if (submit.status !== "partial" || !submit.retry || !op || inFlight.current.has(cid)) return;
     inFlight.current.add(cid);
-    const { result: saved, retryNote: body } = submit;
-    const ids = newCallLogRequestIds(["note", "touch"] as const);
+    const { slot, after } = submit.retry;
     setSubmit({ status: "in_flight" });
     setOwner({ kind: "busy" });
     try {
-      let reserved: Awaited<ReturnType<typeof beginCallLog>>;
-      try { reserved = await beginCallLog(cid, "call_log_note", saved, body, [{ step: "note", requestId: ids.note }, { step: "touch", requestId: ids.touch }]); }
-      catch { if (forThis(cid)) { setSubmit({ status: "partial", result: saved, retryNote: body, message: RESERVATION_FAILED_MESSAGE }); setOwner({ kind: "blocked", message: RESERVATION_FAILED_MESSAGE }); } return; }
-      if (reserved.state === "blocked") { if (forThis(cid)) { setSubmit({ status: "partial", result: saved, retryNote: body, message: "Notes not saved." }); setOwner({ kind: "blocked", message: reserved.message }); } return; }
-      await finishSteps(cid, ids.note, saved, body, [{ step: "note", requestId: ids.note }, { step: "touch", requestId: ids.touch }]);
+      let view: CallLogView;
+      try { view = await retryAttempt(cid, op, slot, after); }
+      catch { apply(cid, await readOperation(cid, op)); return; }
+      await runOperation(cid, op, view);
     } finally { inFlight.current.delete(cid); }
   }
 
@@ -317,7 +311,7 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
         </div>
       ) : null}
 
-      {owner.kind === "blocked" ? (
+      {owner.kind === "held" && owner.message ? (
         <div data-testid="call-log-blocked" role="status" style={{ fontSize: "12px", color: "#F59E0B", marginBottom: "10px", lineHeight: 1.5 }}>
           {owner.message}{" "}
           <button data-testid="call-log-check-again" onClick={() => void checkAgain()} disabled={checking || busy} style={btn(false)}>
@@ -332,8 +326,8 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
         {CALL_LOG_RESULTS.map((r) => (
           <button key={r} data-testid={`call-log-result-${slug(r)}`} aria-pressed={result === r}
-            onClick={() => { if (owner.kind === "blocked") return; setResult(r); if (submit.status !== "in_flight") setSubmit({ status: "idle" }); }}
-            disabled={busy || owner.kind === "blocked"} style={btn(result === r)}>
+            onClick={() => { if (owner.kind === "held") return; setResult(r); if (submit.status !== "in_flight") setSubmit({ status: "idle" }); }}
+            disabled={busy || owner.kind === "held"} style={btn(result === r)}>
             {r}
           </button>
         ))}
@@ -360,7 +354,8 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
           {submit.status === "partial" ? (
             <span data-testid="call-log-partial" style={{ color: "#F87171" }}>
               {submit.result}: {submit.message}{" "}
-              {submit.retryNote && owner.kind === "clear" ? <button data-testid="call-log-retry-note" onClick={() => void retryNote()} style={btn(false)}>Retry notes</button> : null}
+              {submit.retry?.slot === "note" ? <button data-testid="call-log-retry-note" onClick={() => void retry()} style={btn(false)}>Retry notes</button> : null}
+              {submit.retry?.slot === "touch" ? <button data-testid="call-log-retry-touch" onClick={() => void retry()} style={btn(false)}>Retry last-touch time</button> : null}
             </span>
           ) : null}
           {submit.status === "saved_unverified" ? <span data-testid="call-log-saved-unverified" style={{ color: "#F59E0B" }}>{submit.message}</span> : null}

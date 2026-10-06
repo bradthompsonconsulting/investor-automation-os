@@ -1,16 +1,18 @@
 /**
- * Board 15 / PR #131 -- the browser side of durable call-log ownership
- * (server: netlify/functions/call-log-barrier.ts; lifecycle:
- * docs/CALL_LOG_SAVE_LIFECYCLE.md).
+ * Board 15 / PR #131 -- the browser side of durable call-log OPERATIONS
+ * (approved lifecycle v3, #issuecomment-6023481488; server:
+ * netlify/functions/call-log-barrier.ts; map: docs/CALL_LOG_SAVE_LIFECYCLE.md).
  *
- *   begin      reserve the contact before the FIRST call-log write; the
- *              request ids sent with each step are the ones reserved here.
- *   status     read on load and contact change: is a call save for this
- *              contact unfinished, in any session? A failed read is blocked.
- *   reconcile  "Check again": the server evaluates its own records. A
- *              resumable attempt comes back with its ORIGINAL request ids.
- *   sendStep   one reserved write, classified as confirmed / not_sent /
- *              uncertain -- never retried here.
+ *   status        the contact's open operation (on load / contact change)
+ *   operation     ONE operation by its ORIGINAL id -- how a delayed response
+ *                 learns that operation's outcome (never contact-level guessing)
+ *   begin         a NEW call (new operation id)
+ *   resume        "Check again" for an existing operation (creates nothing)
+ *   retry         Retry notes / Retry last-touch time, naming the attempt retried
+ *   sendStep      one bound attempt: confirmed / not_sent / uncertain
+ *
+ * Nothing here retries, and nothing here infers: a refusal is reported with what
+ * the server says it proves; the page then reads the operation.
  */
 import { appWriteFetch, AppWriteSignInRequired } from "./app-write-session";
 import { readFetch } from "./read-session";
@@ -18,16 +20,24 @@ import { writeCommand } from "./write-command";
 
 const ENDPOINT = "/.netlify/functions/call-log-barrier";
 
-export type CallLogStep = "result" | "note" | "touch";
-export type CallLogPurpose = "call_log" | "call_log_note";
-export type StepEvidence = "withdrawn" | "confirmed" | "not_dispatched" | "unresolved" | "pending";
+export type Slot = "result" | "note" | "touch";
+export type Evidence = "pending" | "in_flight" | "confirmed" | "withdrawn" | "not_dispatched" | "uncertain";
+export type SlotView = { slot: Slot; attempt: number; requestId: string; evidence: Evidence };
+export type Outcome = { kind: "complete" | "not_saved"; result: string; slots: SlotView[] };
+export type Next =
+  | { action: "withdraw_result" }
+  | { action: "send"; slot: Slot; requestId: string }
+  | { action: "retry"; slot: Slot; after: number }
+  | { action: "blocked"; slot: Slot; reason: "in_flight" | "uncertain" }
+  | { action: "finishing" };
 export type CallLogView =
   | { state: "clear" }
-  | { state: "blocked"; kind: "uncertain" | "pending" | "resumable" | "in_progress" | "unreadable"; message: string };
-export type ReconcileView =
-  | { state: "clear"; summary: null | { purpose: CallLogPurpose; result: string; body: string; steps: { step: CallLogStep; evidence: StepEvidence }[] } }
-  | { state: "blocked"; kind: "uncertain" | "pending" | "in_progress"; message: string }
-  | { state: "resumable"; message: string; result: string; body: string; attempt: string; remaining: { step: CallLogStep; requestId: string }[] };
+  | { state: "legacy"; message: string }
+  | { state: "finished"; op: string; outcome: Outcome }
+  | { state: "not_current"; op: string }
+  | { state: "open"; op: string; result: string; slots: SlotView[]; next: Next; body?: string }
+  | { state: "in_progress"; message: string }
+  | { state: "unreadable"; message: string };
 
 export const STATUS_UNREADABLE_MESSAGE =
   "IAOS could not check whether an earlier call save for this contact is unfinished. Nothing will be saved until it is checked — use Check again.";
@@ -35,77 +45,101 @@ export const RESERVATION_FAILED_MESSAGE =
   "The call could not be reserved, so nothing was sent. The reservation may still be held — use Check again before saving.";
 export const CHECK_FAILED_MESSAGE = "The check could not be completed; nothing was changed. Use Check again.";
 
-const OPERATION: Record<CallLogStep, string> = { result: "contact.callLogResult", note: "note.create", touch: "contact.lastCallAttempt" };
+const OPERATION: Record<Slot, string> = { result: "contact.callLogResult", note: "note.create", touch: "contact.lastCallAttempt" };
+export const requestIdFor = (op: string, slot: Slot, n: number) => `${op}-${slot}-${n}`;
 
-export function newCallLogRequestIds<S extends CallLogStep>(steps: readonly S[]): Record<S, string> {
-  const out = {} as Record<S, string>;
-  for (const s of steps) out[s] = crypto.randomUUID();
-  return out;
-}
-
-/** Status for any session. A failed read is reported as blocked. */
-export async function readCallLogStatus(contactId: string): Promise<CallLogView> {
+async function readView(url: string): Promise<CallLogView> {
   try {
-    const res = await readFetch(`${ENDPOINT}?contactId=${encodeURIComponent(contactId)}`);
+    const res = await readFetch(url);
     const body = await res.json().catch(() => null);
-    if (res.status === 200 && body?.state === "clear") return { state: "clear" };
-    if (res.status === 200 && body?.state === "blocked") return { state: "blocked", kind: body.kind, message: String(body.message) };
+    if (res.status === 200 && body && typeof body.state === "string") return body as CallLogView;
   } catch { /* fall through */ }
-  return { state: "blocked", kind: "unreadable", message: STATUS_UNREADABLE_MESSAGE };
+  return { state: "unreadable", message: STATUS_UNREADABLE_MESSAGE };
 }
+/** The contact's open operation, for any session. A failed read is "unreadable" (blocked). */
+export const readCallLogStatus = (contactId: string) => readView(`${ENDPOINT}?contactId=${encodeURIComponent(contactId)}`);
+/** One operation by its ORIGINAL id. */
+export const readOperation = (contactId: string, op: string) => readView(`${ENDPOINT}?contactId=${encodeURIComponent(contactId)}&operationId=${encodeURIComponent(op)}`);
 
-/** Reserves the contact. Resolves "reserved" or a blocked view; throws when the outcome is unknown. */
-export async function beginCallLog(contactId: string, purpose: CallLogPurpose, result: string, body: string, steps: { step: CallLogStep; requestId: string }[]): Promise<{ state: "reserved" } | { state: "blocked"; message: string }> {
-  const res = await appWriteFetch(ENDPOINT, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "begin", contactId, purpose, result, body, steps }),
-  });
-  const out = await res.json().catch(() => null);
-  if (res.status === 200 && out?.state === "reserved") return { state: "reserved" };
-  if (res.status === 409 && (out?.state === "blocked" || out?.state === "in_progress")) return { state: "blocked", message: String(out.message ?? RESERVATION_FAILED_MESSAGE) };
-  throw new Error(RESERVATION_FAILED_MESSAGE);
-}
-
-/**
- * "Check again" (no `attempt`): evaluates whatever attempt is current. With
- * `attempt` (its first request id): settles only THAT attempt -- if it is no
- * longer current, nothing changes and its own evidence is reported. Throws when
- * the server could not evaluate (the contact stays blocked).
- */
-export async function reconcileCallLog(contactId: string, attempt?: string): Promise<ReconcileView> {
-  const res = await appWriteFetch(ENDPOINT, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(attempt === undefined ? { action: "reconcile", contactId } : { action: "reconcile", contactId, attempt }),
-  });
-  const out = await res.json().catch(() => null);
-  if (res.status === 200 && out?.state === "clear") return { state: "clear", summary: out.summary ?? null };
-  if (res.status === 200 && out?.state === "blocked" && out.kind === "resumable" && Array.isArray(out.remaining) && typeof out.body === "string") {
-    return { state: "resumable", message: String(out.message), result: String(out.result), body: out.body, attempt: String(out.attempt), remaining: out.remaining };
-  }
-  if (res.status === 200 && out?.state === "blocked") return { state: "blocked", kind: out.kind, message: String(out.message) };
-  if (res.status === 409 && out?.state === "in_progress") return { state: "blocked", kind: "in_progress", message: String(out.message) };
+async function postAction(payload: Record<string, unknown>): Promise<CallLogView> {
+  const res = await appWriteFetch(ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  const body = await res.json().catch(() => null);
+  if (res.status === 200 && body && typeof body.state === "string") return body as CallLogView;
+  if (res.status === 409 && body?.state === "in_progress") return { state: "in_progress", message: String(body.message) };
   throw new Error(CHECK_FAILED_MESSAGE);
 }
 
-export type StepOutcome = { kind: "confirmed" } | { kind: "not_sent"; message: string } | { kind: "uncertain"; message: string };
+/** A NEW call. "reserved", "held" (another operation is open: its view), or a finished view; throws when unknown. */
+export async function beginOperation(contactId: string, op: string, result: string, body: string): Promise<{ state: "reserved" } | { state: "held"; current: CallLogView } | CallLogView> {
+  const res = await appWriteFetch(ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "begin", contactId, operationId: op, result, body }) });
+  const out = await res.json().catch(() => null);
+  if (res.status === 200 && out?.state === "reserved") return { state: "reserved" };
+  if (res.status === 200 && out?.state === "finished") return out as CallLogView;
+  if (res.status === 409 && out?.state === "held") return { state: "held", current: out.current as CallLogView };
+  if (res.status === 409 && out?.state === "in_progress") return { state: "in_progress", message: String(out.message) };
+  throw new Error(RESERVATION_FAILED_MESSAGE);
+}
+/** "Check again" for THIS operation. Never creates an attempt. */
+export const resumeOperation = (contactId: string, op: string) => postAction({ action: "resume", contactId, operationId: op });
+/** Retry notes / Retry last-touch time: names the attempt it retries. */
+export const retryAttempt = (contactId: string, op: string, slot: "note" | "touch", after: number) => postAction({ action: "retry", contactId, operationId: op, slot, after });
+/** Check again for an unfinished save from a previous IAOS version. */
+export const settleLegacy = (contactId: string) => postAction({ action: "resume", contactId, legacy: true });
+
+export type StepOutcome =
+  | { kind: "confirmed" }
+  | { kind: "not_sent"; message: string; proves: "this_request" | "nothing" }
+  | { kind: "uncertain"; message: string };
 
 /**
- * Sends ONE reserved step with its reserved request id. "not_sent" only when
- * the server (or the missing write session) proves nothing was sent; anything
- * else that is not a confirmation -- a network failure, an indeterminate
- * answer, an unreadable response -- is uncertain.
+ * Sends ONE bound attempt with its derived request id. "not_sent" carries what
+ * the server says it proves; anything that is neither a confirmation nor a
+ * refusal before sending -- a network failure, an indeterminate answer, an
+ * unreadable response -- is uncertain.
  */
-export async function sendCallLogStep(contactId: string, step: CallLogStep, requestId: string, args: Record<string, unknown>): Promise<StepOutcome> {
+export async function sendCallLogStep(contactId: string, slot: Slot, requestId: string, args: Record<string, unknown>): Promise<StepOutcome> {
   let res: Response;
-  try { res = await writeCommand(OPERATION[step], contactId, args, requestId); }
+  try { res = await writeCommand(OPERATION[slot], contactId, args, requestId); }
   catch (e) {
-    if (e instanceof AppWriteSignInRequired) return { kind: "not_sent", message: e.message };
+    if (e instanceof AppWriteSignInRequired) return { kind: "not_sent", message: e.message, proves: "nothing" };
     return { kind: "uncertain", message: (e as Error)?.message ?? "No response" };
   }
   const out = await res.json().catch(() => null);
   if (res.status === 200 && out && out.confirmed !== false) return { kind: "confirmed" };
-  if (out?.outcome === "not_sent") return { kind: "not_sent", message: String(out.error ?? "Nothing was sent") };
+  if (out?.outcome === "not_sent") return { kind: "not_sent", message: String(out.error ?? "Nothing was sent"), proves: out.proves === "this_request" ? "this_request" : "nothing" };
   // ghl-write refuses these before any store, lock or GHL call: request shape, write sign-in, origin, Production scope.
-  if (res.status === 400 || res.status === 401 || res.status === 403) return { kind: "not_sent", message: String(out?.error ?? `HTTP ${res.status}`) };
+  if (res.status === 400 || res.status === 401 || res.status === 403) return { kind: "not_sent", message: String(out?.error ?? `HTTP ${res.status}`), proves: "nothing" };
   return { kind: "uncertain", message: String(out?.error ?? `HTTP ${res.status}`) };
+}
+
+const LABEL: Record<Slot, string> = { result: "call result", note: "call note", touch: "last-touch time" };
+/**
+ * What the page says about an operation. Only a recorded `complete` is "Saved";
+ * a refused or uncertain operation stays visibly incomplete. Never recommends a reload.
+ */
+export function describe(view: CallLogView): { tone: "done" | "not_saved" | "partial" | "blocked" | "clear"; message: string; retry?: { slot: "note" | "touch"; after: number } } {
+  switch (view.state) {
+    case "clear": return { tone: "clear", message: "" };
+    case "finished": return view.outcome.kind === "complete"
+      ? { tone: "done", message: `Saved: ${view.outcome.result}.` }
+      : { tone: "not_saved", message: `"${view.outcome.result}" was not saved — nothing was sent to GHL.` };
+    case "not_current": return { tone: "not_saved", message: "Not saved — nothing was sent to GHL." };
+    case "legacy": case "in_progress": case "unreadable": return { tone: "blocked", message: view.message };
+    case "open": {
+      const n = view.next;
+      const r = view.result;
+      switch (n.action) {
+        case "retry": return n.slot === "note"
+          ? { tone: "partial", message: "Result saved; notes not saved. No other call can be saved for this contact until they are.", retry: { slot: "note", after: n.after } }
+          : { tone: "partial", message: "Saved; last-touch time not updated. No other call can be saved for this contact until it is.", retry: { slot: "touch", after: n.after } };
+        case "send": return { tone: "blocked", message: `The call "${r}" is partly saved: its ${LABEL[n.slot]} has not been sent yet. Use Check again to finish it. No other call can be saved for this contact until then.` };
+        case "blocked": return n.reason === "uncertain"
+          ? { tone: "blocked", message: `Unresolved — the ${LABEL[n.slot]} for "${r}" was sent and may still reach GHL. Nothing more will be saved in this contact's call log until it is resolved. Use Check again; if it stays unresolved, it needs the call-log recovery procedure.` }
+          : { tone: "blocked", message: `The ${LABEL[n.slot]} for "${r}" was sent and is not confirmed yet — it may still reach GHL. Use Check again in a moment.` };
+        case "withdraw_result": return { tone: "blocked", message: `A call save ("${r}") for this contact was started and is not confirmed — it may still be on its way to GHL. Nothing more will be saved until it is checked. Use Check again.` };
+        case "finishing": return { tone: "blocked", message: `The call "${r}" reached GHL; IAOS is still recording that it finished. Use Check again.` };
+      }
+    }
+  }
+  return { tone: "blocked", message: STATUS_UNREADABLE_MESSAGE };
 }
