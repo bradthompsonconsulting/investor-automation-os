@@ -8,7 +8,7 @@ import { exact, identifier, planWrite, dispositions, routings } from "./lib/writ
 import { configuredBoundary, fieldValue, WriteUncertain, type DispatchHooks } from "./lib/ghl-write-boundary";
 import { barrierScope, isBarrierOwned, runOwnedWrite, checkNoteReservation, NotSent, NotOwned, STEP_OPERATION, RESERVED_OPERATIONS, type BarrierStore } from "./lib/current-offer-barrier";
 import { parseOutcomeNote } from "../../src/lib/seller-call-outcome";
-import { callLogScope, isCallLogOwned, isCallLogNoteText, runCallLogOwnedWrite, CALL_LOG_OPERATIONS, NotSent as CallLogNotSent, NotOwned as CallLogNotOwned } from "./lib/call-log-barrier";
+import { callLogScope, isCallLogBound, isCallLogNoteText, runCallLogOwnedWrite, CALL_LOG_OPERATIONS, NotSent as CallLogNotSent, NotOwned as CallLogNotOwned } from "./lib/call-log-barrier";
 import { claimWrite, lockContact, stageTransitionUnresolved, claimStageTransition, clearStageTransition } from "./lib/write-receipts";
 import { latestOutcomeNoteForOpportunity } from "../../src/lib/seller-call-outcome";
 import { currentOfferWriteGate } from "../../src/lib/current-offer-carrier";
@@ -98,12 +98,12 @@ export const handler = async (event: any) => {
   const barrierOperation = BARRIER_OPERATIONS.has(request.operation);
   const offerScope = barrierScope(String(process.env.IAOS_ENV), config.locationId);
   let owned = false;
-  /* Board 15 / PR #131 (Bones) -- durable call-log ownership
-     (lib/call-log-barrier.ts). A call result, and any note in the call-log
-     format, is only ever sent as a step of a contact's call-log reservation:
-     ordered (each step only after the previous one is confirmed), claimed at
-     the write boundary, its outcome recorded. Plain notes and last-touch
-     writes that are not reserved are unchanged. */
+  /* Board 15 / PR #131 -- durable call-log OPERATIONS (approved lifecycle v3,
+     lib/call-log-barrier.ts). A call result, and any note in the call-log
+     format, is only ever sent as a published, bound attempt of the contact's
+     current operation: ordered (each slot only after the previous one is
+     confirmed), claimed at the write boundary, its outcome recorded. Plain
+     notes and last-touch writes that are not bound are unchanged. */
   const callLogNeedsReservation = request.operation === "contact.callLogResult" || (request.operation === "note.create" && isCallLogNoteText(request.args?.body));
   let callLogOwned = false;
   try {
@@ -132,7 +132,7 @@ export const handler = async (event: any) => {
       }
     }
     if (!owned && CALL_LOG_OPERATIONS.has(request.operation)) {
-      try { callLogOwned = await isCallLogOwned(barrierStore(), callLogScope(String(process.env.IAOS_ENV), config.locationId), request.requestId); }
+      try { callLogOwned = await isCallLogBound(barrierStore(), callLogScope(String(process.env.IAOS_ENV), config.locationId), request.requestId); }
       catch (e) {
         if (callLogNeedsReservation) return json(409, { outcome: "not_sent", error: "The call-log reservation could not be read; nothing was sent" });
         throw e;
@@ -231,7 +231,11 @@ export const handler = async (event: any) => {
         logWriteFailure(request, error);
         if (error instanceof CallLogNotSent || error instanceof CallLogNotOwned) {
           const refusal = error instanceof CallLogNotSent && error.refusal instanceof RefusedBeforeSend ? error.refusal : null;
-          return json(refusal?.statusCode ?? 409, { ...(refusal?.body ?? {}), outcome: "not_sent", error: refusal ? String(refusal.body.error) : (error instanceof CallLogNotSent ? `${error.message}; nothing was sent` : "Nothing was sent") });
+          /* `proves`: whether this refusal establishes that THIS request id can never be sent (a losing
+             duplicate's refusal proves nothing about the winner). `code`/`recorded`: a stale request of a
+             finished or non-current operation gets that operation's recorded outcome, and writes nothing. */
+          const cl = error instanceof CallLogNotSent ? error : null;
+          return json(refusal?.statusCode ?? 409, { ...(refusal?.body ?? {}), outcome: "not_sent", proves: cl?.proves ?? "nothing", ...(cl?.code ? { code: cl.code } : {}), ...(cl?.outcome ? { recorded: cl.outcome } : {}), error: refusal ? String(refusal.body.error) : (cl ? `${cl.message}; nothing was sent` : "Nothing was sent") });
         }
         // The GHL call may have been made: recorded as uncertain by runCallLogOwnedWrite.
         return json(409, { outcome: "indeterminate", error: error instanceof WriteUncertain ? error.message : "The call save may have reached GHL; it is unresolved" });
@@ -248,7 +252,7 @@ export const handler = async (event: any) => {
     logWriteFailure(request, error);
     // A barrier-owned request only reaches here BEFORE runOwnedWrite (the lock
     // is held elsewhere, a fresh read failed, ...): provably nothing was sent.
-    if (owned || callLogOwned) return json(409, { outcome: "not_sent", error: "Nothing was sent; the save could not start" });
+    if (owned || callLogOwned) return json(409, { outcome: "not_sent", ...(callLogOwned ? { proves: "nothing" } : {}), error: "Nothing was sent; the save could not start" });
     if (error instanceof WriteUncertain) return json(409, { outcome: "indeterminate", error: error.message });
     return json(409, { error: "Write refused or unconfirmed; refresh and inspect before retrying" });
   } finally { if (release) await release(); }

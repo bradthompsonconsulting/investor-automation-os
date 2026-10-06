@@ -1,88 +1,102 @@
-# Call-log save lifecycle
+# Call-log save lifecycle (v3)
 
-Board 15 / PR #131, Bones's re-review of `808e105`. This document is the complete lifecycle of a contact-page **Save call**. It maps every failure and recovery case to the code that handles it and the test that proves it. The recovery procedure for a step that may still land is in `CALL_LOG_RECOVERY_PROCEDURE.md`.
+Board 15 / PR #131. This implements the **Bones-approved lifecycle v3** (PR #131 `#issuecomment-6023481488`). That comment is the contract. This document maps it to the code and the tests. The recovery procedure for a protected, uncertain step is in `CALL_LOG_RECOVERY_PROCEDURE.md`.
 
-## Why the browser alone cannot own it
+## The model
 
-A call save is three GHL writes, in order:
-
-1. the result (`contact.callLogResult`);
-2. the call note (`note.create`);
-3. the last touch (`contact.lastCallAttempt`).
-
-Through `808e105`, the only memory of an unfinished save lived in the page. A reload, a navigation or another browser forgot it, which allowed three failures:
-
-- a replacement result;
-- a competing save, followed by the older one completing;
-- a second copy of a note that had already landed.
-
-Ownership now lives in durable server records, scoped to environment, location and **contact**. It is separate from the deal-scoped Current Offer barrier.
+- **One operation per call.** One **Save call** is one **operation** with a permanent `operationId` (UUID).
+- **Three slots, in order:** result (`contact.callLogResult`), call note (`note.create`), last touch (`contact.lastCallAttempt`). Each slot is satisfied **at most once**.
+- **Attempts.** A slot has numbered attempts. Their request ids are **derived**: `<operationId>-<slot>-<n>`.
+- **When a new attempt may exist.** Attempt `n+1` exists only after attempt `n` is **durably proved unsent**.
+- **Recovery continues the same operation.** Check again, Retry notes and Retry last-touch time only ever continue that operation.
+- **A new call is a new operation.** It is allowed only when the contact has no open operation.
+- **Saved means complete.** Only a recorded, `complete` operation is shown as **Saved**. A refused or uncertain operation stays visibly incomplete.
 
 ## Components
 
 | Layer | File | Role |
 |---|---|---|
-| Control | `app/src/components/CallLogControl.tsx` | Reads ownership on load and on every contact change. Shows an unfinished save with **Check again**. Save is disabled unless the server reports the contact clear. Reserves before the first write, then sends each step with its reserved request id. |
-| Client | `app/src/lib/call-log-barrier-client.ts` | `readCallLogStatus`, `beginCallLog`, `reconcileCallLog` and `sendCallLogStep`. A step's outcome is `confirmed`, `not_sent` (proven) or `uncertain`. Nothing here retries. |
-| Server records | `app/netlify/functions/lib/call-log-barrier.ts` | Per contact, a **head** naming the current attempt, changed only by compare-and-swap. Write-once **barrier** (the result, the exact note body, each step's original request id), **request**, **decision** (`send` or `withdrawn`) and **outcome** records. Nothing is deleted. |
-| Endpoint | `app/netlify/functions/call-log-barrier.ts` | `GET` status (read session). `POST` begin and reconcile (write session and origin, with the same Production write scope a call-log write needs), under the contact's write lock. |
-| Write path | `app/netlify/functions/ghl-write.ts` | A call result, and any note in the call-log format, is refused (`not_sent`) without a reservation. A reserved step runs through `runCallLogOwnedWrite`. |
+| Control | `app/src/components/CallLogControl.tsx` | **On load and contact change:** reads the contact's open operation. **Save:** begins a new operation, sends the result once, reads it back, then continues through the server's next actions. **Check again** calls `resume`; **Retry notes** and **Retry last-touch time** call `retry` with `after`. **After any answer that is not a confirmation:** reads the operation by its **original id** and shows what was recorded. |
+| Client | `app/src/lib/call-log-barrier-client.ts` | `readCallLogStatus`, `readOperation` (by original id), `beginOperation`, `resumeOperation`, `retryAttempt`, `settleLegacy`, `sendCallLogStep`, and `describe` (the wording). |
+| Server records | `app/netlify/functions/lib/call-log-barrier.ts` | Operation, attempt, **dispatch binding**, decision, outcome and **final** records (write-once), plus the per-contact head (compare-and-swap). Nothing is deleted. |
+| Endpoint | `app/netlify/functions/call-log-barrier.ts` | **Read session:** `GET` status by contact, or by operation. **Write session and origin:** `begin`, `resume`, `retry`, legacy `resume`, under the contact's write lock. `begin` is subject to the Production write scope. |
+| Write path | `app/netlify/functions/ghl-write.ts` | **Refused when unbound:** a call result or call-log note that is not a bound attempt of the contact's current operation gets `not_sent`. **Bound attempts** run through `runCallLogOwnedWrite`. |
+| Legacy | `app/netlify/functions/lib/call-log-legacy.ts` | The frozen `558c666` module, used only to settle an existing `558c666`-format unfinished head. |
 
-## The rules
+## Records
 
-- **Ownership before the first write.** `begin` claims the contact before the result is sent. Any session's `begin` is refused while another attempt is current. The client sends nothing unless `begin` succeeds.
-- **Enforced server-side.** `ghl-write` sends a call result, or a call-log note, only as a reserved step. Each step must:
-  - carry its reserved request id;
-  - be for the reserved contact and operation;
-  - carry the reserved result value or the exact reserved note body;
-  - belong to the current attempt.
+```
+call-log/head/<contact>            {v:3, current: op | null}         CAS; released only FROM the operation it names
+call-log/v3/op/<op>                contact, result, exact note body  write-once
+call-log/v3/attempt/<op,slot,n>    request id                        write-once
+call-log/v3/binding/<request>      op, slot, n, contact, operation,  write-once DISPATCH BINDING
+                                   result value / body digest
+call-log/v3/decision/<request>     send | withdrawn                  write-once, atomic
+call-log/v3/outcome/<request>      confirmed | not_dispatched | uncertain
+call-log/v3/final/<op>             complete | not_saved              write-once, read back BEFORE release
+```
 
-  Otherwise it is refused before anything is sent.
-- **Order.** A step is sent only when the previous step's outcome is **confirmed**. The note can never be sent unless its result landed, and the last touch never unless the note landed.
-- **At most once.** Each request id can claim `send` once, atomically, inside the write boundary immediately before the GHL call. A duplicate is refused by that claim and by the write receipt.
-- **Original identities.** An unfinished attempt is finished with the same request ids and the same note body. Reconcile returns them from the barrier record. **A step is never re-sent under a fresh id.**
-- **Evidence only.** A step may still be applied by GHL when it was sent and its outcome is uncertain or missing. Nothing clears it:
-  - not a GHL read;
-  - not elapsed time;
-  - not a reload;
-  - not an operator.
-- **No reload advice.** No message recommends a reload to clear anything. A reload shows the same state, because it comes from the server.
+## Rules (v3 section, then code)
 
-## Attempt standing (server evaluation, step by step in order)
+- **Publishing an attempt (§3).** `publishAttempt` and `writeOnceVerified`:
+  1. Write the attempt record **and** its binding with `onlyIfNew`.
+  2. **Read both back and verify them.**
+  3. Only then grant send permission.
+  4. On a failed or ambiguous write acknowledgement, **reread the same identity**. Never allocate a fresh one.
+- **What `ghl-write` verifies before sending (§3.7).** `runCallLogOwnedWrite` checks:
+  - the binding and the attempt both exist;
+  - this is the slot's **current** attempt;
+  - the operation is open, unfinished and current;
+  - the request carries the bound contact, operation, value or body;
+  - the previous slot is confirmed.
 
-| Standing | Evidence | Status shown | **Check again** (reconcile) |
-|---|---|---|---|
-| complete | every step `confirmed` | the head is released by the last step's own handler | releases, if still held |
-| pending | first step has **no decision** (it may still be on its way) | "…was started and is not confirmed — it may still be on its way…" | **withdraws** it atomically, and the rest; releases. The page shows "not saved — nothing was sent". A delayed request that arrives later loses its send claim and sends nothing. |
-| resumable | a later step has no decision behind a confirmed step | "…is partly saved: its call note and last-touch time have not been sent yet…" | **changes nothing**. Returns the remaining steps' **original** request ids, the result and the note body. The page sends them, in order. |
-| stopped | a step was provably never sent (`withdrawn` or `not_dispatched`) | (as pending, until checked) | withdraws the undecided later steps; releases. The page shows what landed. If the note never landed: "Result saved; notes not saved" with **Retry notes**, a new reservation (`call_log_note`) for that note and last touch. |
-| uncertain | a step was sent and its outcome is uncertain or missing | "Unresolved — the … was sent and may still reach GHL…" | **changes nothing**. Only `CALL_LOG_RECOVERY_PROCEDURE.md` may resolve it. If the outcome was only missing because the handler was still running, it becomes `confirmed` when that handler finishes. Check again then finishes the attempt. |
+  Any failure there **writes no record**.
+- **Proof (§4).** The only proof that a request never went out is its durable `withdrawn` or `not_dispatched` record. A refusal reports `proves: "this_request" | "nothing"`. A losing duplicate's refusal proves nothing.
+- **Result (§5).** Exactly one attempt.
+  - **Undecided:** `resume` withdraws it atomically. Success means **Not saved**. If dispatch won the race, the operation stays blocked until that attempt's outcome is known.
+- **Note and touch (§6).**
+  - **Undecided:** reuse the same request id.
+  - **Proved unsent:** an explicit `retry {slot, after: n}` publishes attempt `n+1`. Only after the previous slot is confirmed.
+  - **Uncertain:** protected.
+  - **A persistent note refusal** stays a visible partial save. Ownership is retained, and Retry notes stays available.
+  - **There is no "Finish without note".**
+- **Finalization (§7).**
+  1. Write `final`, then read it back.
+  2. Release the head **only from that operation**.
+  - **Final write fails:** ownership is retained, shown as "finishing". The next status, resume or retry retries finalization only; it never resends a write.
+  - **Release fails:** a later reconciliation releases the head only if it still names that operation. A new `begin` first completes the release of a finished operation.
+- **Stale requests of Call A (§7).** These all return **A's recorded outcome** without changing B:
+  - a `begin` of a finished operation (which never reopens it);
+  - a `resume` or `retry` for A;
+  - a step request for A (`operation_not_current`, with no record written).
+- **Older clients (§10).** Pre-#131 clients are refused. `558c666`-shape requests get 400. A `558c666`-format head is blocked, and is released only when its evidence settles: all steps confirmed, or the first step proved unsent. It is never resumed or resent.
 
-**Scoped reconcile.** After a refusal, a page settles **its own** attempt (`attempt` = that attempt's first request id). If that attempt is no longer current, nothing changes and only its own evidence is reported. A page left behind by a reload or navigation can never withdraw a **newer** attempt's step.
+## Acceptance matrix: where each case is proven
 
-## Failure and recovery map
+Server means `app/scripts/test-call-log-barrier.cjs` (38 checks, in CI). Page means `app/scripts/test-call-log-ownership.cjs` (35 checks, local browser).
 
-| Case | What happens | Proof |
+| Case | Server | Page |
 |---|---|---|
-| Result write refused before sending (lock, GHL read failed, storage) | `not_sent`. The step is withdrawn, or left undecided; Check again settles it. The page shows "Result not saved — nothing was sent", and GHL agrees. | `test-call-log-barrier`: "a RESULT refused before sending". `test-call-log-ownership`: O6. |
-| Result write uncertain (sent; GHL's answer lost at the server) | `uncertain`. The page shows "Result not confirmed … may still reach GHL". Nothing after it is ever sent. Repeated Check again and reloads keep it blocked. | `test-call-log-barrier`: "uncertain RESULT". O5. |
-| Result confirmed, browser lost the answer | The page cannot claim it saved. The server shows it partly saved; Check again finishes it with the original ids. | O5 (lost answer). |
-| **Bones 1**: result confirmed, readback failed, then reload, then a replacement result | After the reload the page shows "partly saved". Save and the results are disabled. A replacement can neither be reserved nor sent: `begin` is refused, and an unreserved call result is refused. Check again finishes the original with its original ids; one note. | `test-call-log-barrier`: REPRO 1 (both). O1. `808e105` control: the replacement wrote a second result, note and touch. |
-| **Bones 2**: pending save, then away and back, then a competing save, then the older completion | Back on the contact, the pending save blocks. A competing save cannot start. (a) The older one completes on its own: one result, one note, one touch. (b) After a reload, it lands and Check again finishes it with its original ids. (c) Check again first withdraws it; the newer save goes through; the older request arrives later and sends nothing. | `test-call-log-barrier`: REPRO 2 (four checks). O2, O2r, O2b. `808e105` control: a competing save started. |
-| **Bones 3**: note landed, response pending, then reload, then a duplicate note | After the reload: "may still reach GHL"; Save disabled. Check again changes nothing. The same id is refused, a fresh id is not reserved, and a new attempt is refused. When the handler confirms, Check again sends **only** the last touch, with its original id. GHL holds one call note. | `test-call-log-barrier`: REPRO 3 (three checks). O3. `808e105` control: no unfinished state after the reload. |
-| Note sent, answer lost at the server | Uncertain forever: no second note, no last touch. | REPRO 3 (lost response). O5. |
-| Note refused before sending | The attempt stops: result saved, note withdrawn. **Retry notes** (a new reservation) writes it once. | "a NOTE refused before sending". O6. `test-contact-isolation`: C5c. |
-| Note answered by a gateway failure (never reached the server) | Uncertain on the page. Check again finishes it with the **same** id; one note. | `test-contact-isolation`: C5. |
-| Contact's write lock held by another write | The step is `not_sent` with no decision, so it stays resumable with its own id. | "another write holding the contact lock". |
-| Last touch uncertain | Blocked, naming the last-touch time; one touch request. | "uncertain LAST TOUCH". O5. |
-| Two sessions | The second sees the first's save and cannot start one. Both finishing the same attempt get the same ids; one note and one touch reach GHL. Repeated reconciliation is stable. | "two sessions finishing the SAME attempt", "a second session cannot begin". O4, O7. |
-| Navigation mid-save | The attempt runs to its end for **its** contact. Only the screen follows the contact shown, and each contact has its own in-flight guard. | `test-contact-isolation`: C6. O8. |
-| Contact isolation | An unfinished save on A never blocks B. A's ids cannot write to B. | "contact isolation". O8. `test-read-session-recovery`: R4. |
-| Storage failure (claim, outcome, begin, status, reservation read) | Nothing sent, never assumed finished. A failed status read counts as blocked. | `test-call-log-barrier` storage checks. |
-| Read sign-in ends mid-save | The page is not remounted. Ownership survives on the server anyway. | `test-read-session-recovery`: R1–R3, P1CL. |
+| D1 Bones's exact order | D1 | D1 (two contexts; B1's stale Retry creates nothing; "Saved") |
+| D2 Jeff's variant | D2 | D2 |
+| D3 losing duplicate proves nothing | D3 | — |
+| RA1 reuse a pending attempt | RA1 | — |
+| RA2 concurrent retries and Check again | RA2 | RA2 |
+| RA3 no retry of an unproven attempt | RA3 | — |
+| P-1 attempt and binding verified before permission | P-1 | — |
+| R-1 / R-2 / R-3 result slot | R-1, R-2, R-3 | R-1 (AB), R-3 |
+| F-1 to F-8 note and touch | F-1 to F-8 | F (uncertain result, note and touch), F-2, F-3, F-6, F-7 |
+| AB-1 to AB-4 Call A, then Call B | AB-1 to AB-4 | AB-3, AB-4 |
+| FN-1 / FN-2 finalization and release | FN-1, FN-2 | — |
+| ST-1 to ST-7 storage | ST-1 to ST-4, ST-7 (ST-5 = FN-1, ST-6 = FN-2) | ST-7 |
+| L-1 to L-3 older clients and legacy records | L-1, L-2, L-3 | — |
+| E-1 to E-3 earlier reproductions | E-1 to E-3 | E-1 |
+| K preservation | K (isolation, Current Offer independence, auth) | K-4; the other suites (below) |
 
-## Unchanged
-
-- A plain contact note, and a last touch with no call-log reservation (Dashboard notes, the Contact-page note, Seller Call outcomes), write exactly as before.
-- The deal's Current Offer barrier is independent of the contact's call log. A pending Current Offer save does not block a call save, and the reverse.
-- The `808e105` recovery and display fixes are kept.
+**Preservation, also proven by the existing suites:**
+- `test-read-session-recovery` (R1–R5, P1BLUR, P2UW, P1CL);
+- `test-contact-isolation` (C1–C6 call log, and Seller Call);
+- `test-current-offer-barrier` (45);
+- `test-seller-call-offer-interaction` and `test-seller-call-accept-protection`;
+- `test-write-boundaries` (call result is bound-only; plain notes and touch unchanged);
+- the source pins in `test-call-outcome-copy`, `test-app-read-auth` and `test-b15-cleanup`.
