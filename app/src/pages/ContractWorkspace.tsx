@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from "react";
+import RefreshReadError from "../components/RefreshReadError";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT, contractTemplateDisplayName, AGREEMENT_REACHED_OPERATOR_MEANING } from "../lib/operator-display";
 import { Link, useParams } from "react-router-dom";
@@ -836,11 +837,20 @@ export default function ContractWorkspace() {
   }
 
   // READS ONLY. No write of any kind happens in this effect.
+  /* Board 15 cleanup (Bones, PR #131 P2): once this contact's data has
+     loaded, a failed RE-read (the refresh after read sign-in returns, or a
+     reload after a write) never replaces the workspace -- that would unmount
+     its editors and destroy their drafts and pending writes. It is reported
+     on its own line (RefreshReadError); only a first load that fails shows
+     the full-page error. */
+  const loadedFor = useRef<string | null>(null);
+  const [refreshReadError, setRefreshReadError] = useState<string | null>(null);
   const readRecovered = useReadRecovered();
   useEffect(() => {
     if (!contactId) return;
     let cancelled = false;
     setFetchError(null);
+    if (loadedFor.current !== contactId) setRefreshReadError(null);
     Promise.all([
       ghl.contacts.getDetail(contactId),
       ghl.opportunities.listPipeline(),
@@ -851,8 +861,14 @@ export default function ContractWorkspace() {
         setContact(c);
         setOpps(opportunitiesForContact(pipeline.opportunities, contactId));
         setNotes(notesResult.notes ?? []);
+        loadedFor.current = contactId;
+        setRefreshReadError(null);
       })
-      .catch((e: Error) => { if (!cancelled) setFetchError(e.message); });
+      .catch((e: Error) => {
+        if (cancelled) return;
+        if (loadedFor.current === contactId) setRefreshReadError(e.message);
+        else setFetchError(e.message);
+      });
     return () => { cancelled = true; };
     // Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse.
   }, [contactId, readRecovered]);
@@ -2727,6 +2743,7 @@ export default function ContractWorkspace() {
 
   return (
     <Shell contactId={contactId}>
+      <RefreshReadError message={refreshReadError} />
       <div style={{ marginBottom: "18px" }}>
         <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>Contract Ready</h1>
         <div style={{ fontSize: "13px", color: "#64748B", marginTop: "4px" }}>

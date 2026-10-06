@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { isLifecycleBlur } from "../lib/lifecycle-blur";
 import { useReadRecovered } from "../components/access-status";
 import { Link } from "react-router-dom";
 import {
@@ -1375,7 +1376,7 @@ export default function Dashboard() {
                             disabled={savingIds.has(c.id)}
                             onChange={(e) => setDraftNotes((prev) => ({ ...prev, [c.id]: e.target.value }))}
                             onFocus={() => setOpenContactId(c.id)}
-                            onBlur={() => handleNoteBlur(c.id)}
+                            onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; void handleNoteBlur(c.id); }}
                             placeholder={savingIds.has(c.id) ? "Saving…" : "Note (any text = attempted)…"}
                             style={{
                               width: "100%", fontSize: "11px", padding: "5px 8px", borderRadius: "6px",

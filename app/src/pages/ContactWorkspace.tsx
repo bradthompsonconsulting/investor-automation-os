@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { isLifecycleBlur } from "../lib/lifecycle-blur";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link, useParams } from "react-router-dom";
@@ -442,7 +443,7 @@ function MonetaryRow({ f, contactId, save }: {
             value={draft}
             autoFocus
             onChange={(e) => { setDraft(e.target.value); setInvalid(false); }}
-            onBlur={handleBlur}
+            onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; handleBlur(); }}
             onKeyDown={handleKeyDown}
             style={{ width: "160px", background: "#0F172A", color: "#E2E8F0", border: `1px solid ${invalid ? "#F87171" : "#334155"}`, borderRadius: "4px", padding: "4px 6px", fontSize: "13px", fontFamily: "inherit" }}
           />
@@ -620,7 +621,7 @@ function RailAskEditor({ open, onOpen, onClose, opportunityId, seed, label, disp
         value={draft}
         autoFocus
         onChange={(e) => { setDraft(e.target.value); setInvalid(false); }}
-        onBlur={handleBlur}
+        onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; handleBlur(); }}
         onKeyDown={handleKeyDown}
         style={{ width: "130px", background: "#0F172A", color: "#F1F5F9", border: `1px solid ${invalid ? "#F87171" : "#334155"}`, borderRadius: "4px", padding: "2px 6px", fontSize: "15px", fontWeight: 600, fontFamily: "inherit" }}
       />
@@ -1443,12 +1444,17 @@ export default function ContactWorkspace() {
   const seenRecovery = useRef(readRecovered);
   const recoveryPending = useRef(false);
   function recoverReads() {
-    loadContact();
-    loadDetail();
     if (!defs) loadDefs();
+    /* Bones, PR #131 P2: once the contact has loaded, recover through the same
+       screen-keeping refresh a tab return uses -- a failure is reported as a
+       refresh error and never replaces the page (and its editors). Only the
+       parts that never loaded go through their first-load readers. */
+    if (contact && detail && opps) { void refreshAll(); return; }
+    if (!contact) loadContact();
+    if (!detail) loadDetail();
+    if (!opps) loadOpportunities();
     loadNotes();
     loadConversations();
-    loadOpportunities();
   }
   useEffect(() => {
     if (readRecovered === seenRecovery.current) return;
@@ -2404,7 +2410,7 @@ export default function ContactWorkspace() {
               value={draft}
               disabled={saving || loading}
               onChange={(e) => setDraft(e.target.value)}
-              onBlur={handleNoteBlur}
+              onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; void handleNoteBlur(); }}
               placeholder={saving ? "Saving…" : "New note (any text = attempted)…"}
               style={{
                 width: "100%", fontSize: "13px", padding: "8px 10px", borderRadius: "8px",

@@ -33,6 +33,14 @@
  *   R5 Seller Call: an Unresolved Current Offer save (the durable barrier)
  *      stays Unresolved and locked across a lapse and recovery; recovery
  *      sends nothing.
+ *   P1CL a confirmed call-log result whose readback failed owns the control
+ *      until Check again reconciles it: choosing another result and Save send
+ *      nothing; reconciliation completes or ends that attempt exactly once.
+ *   P1BLUR the blur from expiry never saves a focused Current Offer (or a
+ *      Contact note) draft; the draft survives; the operator's own blur saves.
+ *   P2UW a recovery read that answers 500 keeps the Underwriting workspace:
+ *      sqft, Miscellaneous description and amount survive it and a later
+ *      successful recovery.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -118,7 +126,7 @@ function classify(url, method, post) {
   const fn = u.pathname.replace('/.netlify/functions/', '');
   if (fn === 'app-read-session') return { kind: 'session', method };
   if (fn === 'ghl-write' && method === 'POST') return { kind: 'write', op: post.operation, target: post.targetId, args: post.args, requestId: post.requestId };
-  if (fn === 'current-offer-barrier') return { kind: 'barrier' };
+  if (fn === 'current-offer-barrier') return { kind: 'barrier', method, action: method === 'GET' ? 'status' : post && post.action };
   if (fn === 'ghl-proxy') {
     const p = u.searchParams.get('path') || '';
     let m;
@@ -152,16 +160,31 @@ function answerRead(req) {
 
 let log = [];
 let holds = [];
+let failReads = [];   // predicates: answer the next matching READ with 500 (a server failure, not sign-in)
 function hold(match, opts = {}) {
   let release; let onHit;
   const h = { match, ...opts, released: new Promise((r) => { release = r; }), hit: new Promise((r) => { onHit = r; }) };
   h.release = release; h.onHit = onHit; holds.push(h); return h;
 }
+/** A held request must ARRIVE within ms, or the case fails clearly (never hangs). */
+function hitWithin(h, label, ms = 30000) {
+  let timer;
+  return Promise.race([h.hit, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out waiting for the held request: ${label}`)), ms); })])
+    .finally(() => clearTimeout(timer));
+}
+/** Release every held request (so no route handler is left pending) -- used on failure. */
+const releaseAll = () => holds.forEach((h) => h.release());
 
 // The stub popup: the same message the real /app-read-login.html posts after a successful sign-in.
 const POPUP = `<!doctype html><title>stub read sign-in</title><script>
   window.opener.postMessage({ type: "iaos-app-read-signed-in" }, location.origin);
 </script>`;
+
+/* The whole suite is bounded: a stuck run fails (exit 1) instead of hanging CI or a local run. */
+const watchdog = setTimeout(() => {
+  console.error('FAIL  the recovery suite did not finish within 15 minutes -- stopped');
+  process.exit(1);
+}, 15 * 60_000);
 
 async function main() {
   const { createServer } = await import('vite');
@@ -217,12 +240,14 @@ async function main() {
       }
       // While signed out, every read is refused by the read-auth boundary (it is checked when the request is handled).
       if (!signedIn) return reply({ status: 401, body: REFUSAL });
+      const fr = failReads.findIndex((pred) => pred(req));
+      if (fr >= 0) { failReads.splice(fr, 1); req.failed = 500; return reply({ status: 500, body: { error: 'fixture: read failed' } }); }
       return reply(answerRead(req));
     });
 
     const go = (to) => page.evaluate((t) => window.__iaosNavigate(t), to);
     const freshApp = async (to) => {
-      resetDb(); log = []; holds = []; bf.reset(); signedIn = true; sessionMs = 3600_000;
+      resetDb(); log = []; holds = []; failReads = []; bf.reset(); signedIn = true;
       await page.goto(`${base}${HARNESS}`);
       await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
       await go(to);
@@ -256,6 +281,7 @@ async function main() {
     // ═══ D — Dashboard (Brad's report) ═══════════════════════════════════════
     if (want('D')) {
     const dashboardLoaded = async () => (await visibleText('Alpha Fixture')) && !(await recovery());
+    sessionMs = 3600_000;
     await freshApp('/');
     await until(dashboardLoaded, 'Dashboard loaded while signed in');
     check('D signed in: the Dashboard loads and no recovery screen is shown', !(await recovery()));
@@ -283,11 +309,8 @@ async function main() {
     check('D the signed-in status line and nav are back', (await visible('read-access-signed-in')) && !(await visible('sidebar-locked')));
 
     // D-timer — the expiry timer path shows the same screen.
-    await freshApp('/');
     sessionMs = 2500;
-    await page.goto(`${base}${HARNESS}`);
-    await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
-    await go('/');
+    await freshApp('/');
     await until(dashboardLoaded, 'Dashboard loaded with a short session');
     signedIn = false;
     await until(recovery, 'recovery screen after the expiry timer', 15000);
@@ -295,6 +318,7 @@ async function main() {
     check('D-timer the Dashboard is hidden behind it', !(await visibleText('Alpha Fixture')));
 
     // D-signout — an explicit sign-out still shows the plain landing.
+    sessionMs = 3600_000;
     await freshApp('/');
     await until(dashboardLoaded, 'Dashboard loaded before sign-out');
     await page.getByTestId('read-access-signed-in').getByRole('button', { name: 'Sign out' }).click();
@@ -305,6 +329,7 @@ async function main() {
     // ═══ R1 — an unsaved call-log draft survives ═══════════════════════════
     if (want('R1')) {
     const DRAFT = 'Seller wants 30 days. Draft that must survive the sign-in.';
+    sessionMs = 3600_000;
     await freshApp(`/contacts/${A}`);
     await contactLoaded('Alpha');
     await page.getByTestId('call-log-result-spoke-with-seller').click();
@@ -332,12 +357,13 @@ async function main() {
 
     // ═══ R2 — "saved but unverified" survives ════════════════════════════════
     if (want('R2')) {
+    sessionMs = 3600_000;
     await freshApp(`/contacts/${A}`);
     await contactLoaded('Alpha');
     await page.getByTestId('call-log-result-no-answer').click();
     h = hold((r) => r.kind === 'write' && r.op === 'contact.callLogResult');
     await page.getByTestId('call-log-save').click();
-    await h.hit;
+    await hitWithin(h, 'h');
     signedIn = false;                               // the session ends while the result write is on its way
     h.release();                                    // the write is confirmed; its readback is refused 401 -> a real refused read
     await until(recovery, 'R2 recovery screen after the refused readback');
@@ -354,13 +380,14 @@ async function main() {
 
     // ═══ R3 — a delayed first request, lapse and recovery while it is pending ═
     if (want('R3')) {
+    sessionMs = 3600_000;
     await freshApp(`/contacts/${A}`);
     await contactLoaded('Alpha');
     await page.getByTestId('call-log-result-voicemail').click();
     await page.getByTestId('call-log-notes').fill('Left a message.');
     h = hold((r) => r.kind === 'write' && r.op === 'contact.callLogResult');   // delayed BEFORE the server handles it
     await page.getByTestId('call-log-save').click();
-    await h.hit;
+    await hitWithin(h, 'h');
     check('R3 setup: the result write has not reached the server', db.contacts[A].fields.get(F.callDisposition) === undefined);
     await lapse();
     await signInAgain();
@@ -383,20 +410,25 @@ async function main() {
 
     // ═══ R4 — contact isolation across recovery ══════════════════════════════
     if (want('R4')) {
+    sessionMs = 3600_000;
     await freshApp(`/contacts/${A}`);
     await contactLoaded('Alpha');
     await page.getByTestId('call-log-result-no-answer').click();
     const hSave = hold((r) => r.kind === 'write' && r.op === 'contact.callLogResult' && r.target === A);
     await page.getByTestId('call-log-save').click();
-    await hSave.hit;                                // A's save is pending
+    await hitWithin(hSave, 'hSave');                                // A's save is pending
     await lapse();
+    /* A's recovery refresh reads contact + detail + deals together (the
+       screen-keeping refresh); hold A's contact and detail reads. */
     const hRow = hold((r) => r.kind === 'row' && r.contact === A && r.signedIn);
-    const hNotes = hold((r) => r.kind === 'notes' && r.contact === A && r.signedIn);
+    const hDetail = hold((r) => r.kind === 'detail' && r.contact === A && r.signedIn);
     await signInAgain();
-    await hRow.hit; await hNotes.hit;               // A's recovery re-reads are pending
+    await hitWithin(hRow, 'A recovery contact read'); await hitWithin(hDetail, 'A recovery detail read');   // A's recovery re-reads are pending
     await go(`/contacts/${B}`);                     // same mounted page, now B
     await contactLoaded('Bravo');
-    hRow.release(); hNotes.release(); hSave.release();
+    check('R4 setup: A\'s recovery reads and A\'s save are all still held while B is on screen',
+      hRow.used && hDetail.used && hSave.used && db.contacts[A].notes.length === 1 && (await page.locator('main').innerText()).includes('Bravo'));
+    hRow.release(); hDetail.release(); hSave.release();
     await until(async () => db.contacts[A].notes.length === 2, 'A\'s pending save completes for A');
     await settle();
     const bText = await page.locator('main').innerText();
@@ -408,13 +440,14 @@ async function main() {
 
     // ═══ R5 — the durable Current Offer barrier survives recovery ════════════
     if (want('R5')) {
+    sessionMs = 3600_000;
     await freshApp(`/contacts/${A}/seller-call`);
     const input = () => page.getByTestId('negotiation-current-offer-input');
     await input().waitFor({ timeout: 30000 });
     await input().fill('410000');
     h = hold((r) => r.kind === 'write' && r.op === 'opportunity.currentOffer', { loseAnswer: true });
     await input().press('Tab');
-    await h.hit;
+    await hitWithin(h, 'h');
     h.release();                                    // GHL took it; the browser lost the answer
     const unresolvedShown = async () => (await page.getByTestId('current-offer-unresolved').count()) > 0;
     await until(unresolvedShown, 'R5 Unresolved');
@@ -431,12 +464,134 @@ async function main() {
       ['detail', 'ghl-opportunities', 'notes'].every((k) => readsSince(mark, (r) => r.signedIn).some((r) => r.kind === k)), readsSince(mark).map((r) => r.kind));
     }
 
+    // ═══ P1-CL — an unresolved confirmed call-log attempt owns the control (Bones, PR #131) ═
+    if (want('P1CL')) {
+    await freshApp(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await page.getByTestId('call-log-result-spoke-with-seller').click();
+    failReads.push((r) => r.kind === 'detail' && r.contact === A);   // the readback after the confirmed write fails (500)
+    await page.getByTestId('call-log-save').click();
+    await until(async () => (await page.getByTestId('call-log-saved-unverified').count()) === 1, 'P1CL saved but unverified');
+    check('P1CL setup: Spoke with Seller confirmed, its readback failed -> saved but unverified',
+      writes('contact.callLogResult').length === 1 && db.contacts[A].fields.get(F.callDisposition) === 'Spoke with Seller' && log.some((r) => r.failed === 500));
+    await page.getByTestId('call-log-result-no-answer').click({ force: true }).catch(() => {});
+    await settle();
+    check('P1CL selecting No Answer does not take over: still Spoke with Seller, warning still shown',
+      (await page.getByTestId('call-log-result-spoke-with-seller').getAttribute('aria-pressed')) === 'true'
+      && (await page.getByTestId('call-log-result-no-answer').getAttribute('aria-pressed')) === 'false'
+      && (await page.getByTestId('call-log-saved-unverified').count()) === 1);
+    check('P1CL Save and every result are disabled while the attempt is unresolved',
+      (await page.getByTestId('call-log-save').isDisabled()) && (await page.getByTestId('call-log-result-no-answer').isDisabled()));
+    await page.getByTestId('call-log-save').click({ force: true }).catch(() => {});
+    await settle();
+    check('P1CL attempted save: zero second result write, zero note, zero last touch',
+      writes('contact.callLogResult').length === 1 && writes('note.create').length === 0 && writes('contact.lastCallAttempt').length === 0, writes().map((w) => w.op));
+    failReads.push((r) => r.kind === 'detail' && r.contact === A);
+    await page.getByTestId('call-log-check-again').click();
+    await until(async () => /^Still can't verify/.test(await page.getByTestId('call-log-saved-unverified').innerText().catch(() => '')), 'P1CL still unverified');
+    check('P1CL a Check again whose readback fails again stays unresolved and sends nothing',
+      (await page.getByTestId('call-log-save').isDisabled()) && writes().length === 1, writes().map((w) => w.op));
+    await page.getByTestId('call-log-check-again').click();
+    await until(async () => (await page.getByTestId('call-log-done').count()) === 1, 'P1CL reconciled');
+    check('P1CL reconciliation (readback answers, GHL holds the confirmed result) completes that attempt once: note, then last touch',
+      JSON.stringify(writes().map((w) => w.op)) === JSON.stringify(['contact.callLogResult', 'note.create', 'contact.lastCallAttempt'])
+      && (await page.getByTestId('call-log-done').innerText()) === 'Saved: Spoke with Seller.', writes().map((w) => w.op));
+    await page.getByTestId('call-log-result-no-answer').click();
+    await page.getByTestId('call-log-save').click();
+    await until(async () => writes('contact.callLogResult').length === 2, 'P1CL next attempt');
+    check('P1CL only after reconciliation does another attempt become possible', writes('contact.callLogResult')[1].args.value === 'No Answer');
+    // GHL holds a different result when checked: the attempt ends, nothing further is sent.
+    sessionMs = 3600_000;
+    await freshApp(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await page.getByTestId('call-log-result-spoke-with-seller').click();
+    failReads.push((r) => r.kind === 'detail' && r.contact === A);
+    await page.getByTestId('call-log-save').click();
+    await until(async () => (await page.getByTestId('call-log-saved-unverified').count()) === 1, 'P1CL-b unverified');
+    db.contacts[A].fields.set(F.callDisposition, 'Voicemail');   // changed in GHL meanwhile
+    await page.getByTestId('call-log-check-again').click();
+    await until(async () => (await page.getByTestId('call-log-not-saved').count()) === 1, 'P1CL-b reconciled to not saved');
+    check('P1CL if GHL no longer holds the confirmed result, the attempt ends with no note or last touch',
+      writes().length === 1 && /no longer shows "Spoke with Seller"/.test(await page.getByTestId('call-log-not-saved').innerText()), writes().map((w) => w.op));
+    }
+
+    // ═══ P1-BLUR — the blur from expiry/recovery never saves (Bones, PR #131) ═
+    if (want('P1BLUR')) {
+    sessionMs = 6000;                               // a session that expires by its own timer
+    await freshApp(`/contacts/${A}/seller-call`);
+    const offerInput = () => page.getByTestId('negotiation-current-offer-input');
+    await offerInput().waitFor({ timeout: 30000 });
+    await offerInput().fill('395000');
+    check('P1BLUR setup: a focused, unsaved Current Offer draft', (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'negotiation-current-offer-input');
+    sessionMs = 3600_000;                           // the next sign-in gets a long session
+    signedIn = false;
+    await until(recovery, 'P1BLUR expiry', 20000);
+    await settle();
+    check('P1BLUR expiry took focus away from the field (the blur happened)', (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) !== 'negotiation-current-offer-input');
+    check('P1BLUR zero Current Offer write and zero barrier reservation (only status reads) before or during recovery',
+      writes('opportunity.currentOffer').length === 0 && !log.some((r) => r.kind === 'barrier' && r.method !== 'GET'), log.filter((r) => r.kind === 'write' || r.kind === 'barrier').map((r) => `${r.kind}:${r.method || ''}:${r.action || ''}`));
+    await signInAgain();
+    await settle();
+    check('P1BLUR after recovery: still zero writes, and the draft survives in the field',
+      writes().length === 0 && (await offerInput().inputValue()) === '395000', { writes: writes().length, value: await offerInput().inputValue() });
+    await offerInput().focus();
+    await offerInput().press('Tab');                // the operator's own blur
+    await until(async () => db.offers[opp(A)] === 395000, 'P1BLUR operator save');
+    check('P1BLUR the operator\'s own blur afterwards saves it, once', writes('opportunity.currentOffer').length === 1 && db.offers[opp(A)] === 395000);
+    // The same rule on the Contact page's blur-to-save note.
+    sessionMs = 3600_000;
+    await freshApp(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    const noteInput = page.getByPlaceholder('New note (any text = attempted)…');
+    await noteInput.fill('Typed but not yet saved');
+    await lapse();
+    await settle();
+    check('P1BLUR the Contact page note draft is not saved by the expiry blur', writes().length === 0, writes().map((w) => w.op));
+    await signInAgain();
+    check('P1BLUR the Contact page note draft survives', (await noteInput.inputValue()) === 'Typed but not yet saved');
+    }
+
+    // ═══ P2-UW — a failed recovery read keeps the Underwriting editors (Bones, PR #131) ═
+    if (want('P2UW')) {
+    sessionMs = 3600_000;
+    await freshApp(`/contacts/${A}/underwriting`);
+    const sqft = () => page.getByTestId('arv-subject-squareFeet');
+    const miscDesc = () => page.getByTestId('repair-misc-description');
+    const miscAmt = () => page.getByTestId('repair-misc-amount');
+    await sqft().waitFor({ timeout: 30000 });
+    await miscDesc().waitFor({ timeout: 30000 });
+    await sqft().fill('1850');
+    await miscDesc().fill('Replace back fence');
+    await miscAmt().fill('2400');
+    const drafts = async () => [await sqft().inputValue(), await miscDesc().inputValue(), await miscAmt().inputValue()];
+    await lapse();
+    failReads.push((r) => r.kind === 'ghl-opportunities' && r.signedIn);   // the recovery re-read answers 500
+    await signInAgain();
+    await until(async () => log.some((r) => r.failed === 500), 'P2UW the recovery read failed');
+    await settle();
+    check('P2UW a recovery read that returns 500 is reported on its own line', (await visible('refresh-read-error')) && /Couldn't refresh this page's data/.test(await page.getByTestId('refresh-read-error').innerText()));
+    const draftsOrGone = async () => ((await sqft().count()) && (await miscDesc().count()) ? drafts() : ['editors unmounted']);
+    check('P2UW the workspace stays: sqft, Miscellaneous description and amount are kept',
+      JSON.stringify(await draftsOrGone()) === JSON.stringify(['1850', 'Replace back fence', '2400']), await draftsOrGone());
+    await lapse();
+    mark = log.length;
+    await signInAgain();
+    await until(async () => readsSince(mark, (r) => r.signedIn && r.kind === 'ghl-opportunities' && !r.failed).length > 0, 'P2UW successful recovery');
+    await until(async () => !(await visible('refresh-read-error')), 'P2UW error cleared').catch(() => {});
+    await settle();
+    check('P2UW a later successful recovery clears the error and still keeps all three drafts',
+      !(await visible('refresh-read-error')) && JSON.stringify(await draftsOrGone()) === JSON.stringify(['1850', 'Replace back fence', '2400']), await draftsOrGone());
+    check('P2UW nothing was written', writes().length === 0, writes().map((w) => w.op));
+    }
+
     check('no request left the machine', foreign.length === 0, foreign);
     check('no page errors', pageErrors.length === 0, pageErrors);
   } catch (e) {
     console.error(e);
     failures += 1;
+    releaseAll();                                   // no route handler left waiting on a hold
   }
+  clearTimeout(watchdog);
   console.log(`\nRead session recovery: ${checks - failures}/${checks} checks passed`);
   await exit(failures ? 1 : 0);
 }

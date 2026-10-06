@@ -56,7 +56,15 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
   const [text, setText] = useState("");
   const [submit, setSubmit] = useState<Submit>({ status: "idle" });
   const inFlight = useRef(false);
+  /* Board 15 cleanup (Bones, PR #131 P1): a result write GHL CONFIRMED whose
+     readback then failed is an UNRESOLVED attempt. It owns this control until
+     a readback reconciles it: no second save (handler and button), and
+     choosing another result does not clear it. Set the moment the result
+     write is confirmed; cleared only by a readback that answers. */
+  const unresolved = useRef<{ result: CallLogResult; body: string } | null>(null);
+  const [checking, setChecking] = useState(false);
   const busy = submit.status === "in_flight";
+  const owned = submit.status === "saved_unverified";
 
   const lastCall = (() => {
     const rows = (notes ?? [])
@@ -88,12 +96,14 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
 
   async function save() {
     if (!result || inFlight.current) return;   // synchronous double-submit guard
+    if (unresolved.current) return;            // an unresolved confirmed attempt owns the control
     inFlight.current = true;
     const chosen = result;
     const body = callLogNote(chosen, text.slice(0, CALL_NOTES_MAX));
     setSubmit({ status: "in_flight" });
     try {
       await ghl.contacts.setCallLogResult(contactId, chosen);
+      unresolved.current = { result: chosen, body };
       /* From here ghl-write has CONFIRMED the result write. A readback that
          fails for ANY reason (read sign-in, a 500, a network error) is
          "saved but unverified" — never "nothing was written" — and nothing
@@ -110,6 +120,7 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
           : `Result saved -- IAOS confirmed the write, but couldn't read it back to verify it (${(e as Error).message}). Reload the contact to check it; do not save it again. Notes and last-touch time were not attempted.` });
         return;
       }
+      unresolved.current = null;               // the readback answered: reconciled either way
       if (!landed) {
         setSubmit({ status: "not_saved", message: "GHL did not confirm the result. Nothing else was written." });
         return;
@@ -123,6 +134,40 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
       setSubmit({ status: "not_saved", message: `Result not confirmed (${(e as Error).message}). Notes and last-touch time were not attempted. Reload the contact to check it before saving again.` });
     } finally {
       inFlight.current = false;
+    }
+  }
+
+  /* Check again: the reconciliation an unresolved attempt waits for. Reads the
+     saved result back. If GHL holds the confirmed result, the attempt
+     finishes exactly as a verified save would have (note, then last touch,
+     once). If GHL holds something else, the attempt ends and nothing further
+     is sent. If the readback still fails, the attempt stays unresolved. */
+  async function checkAgain() {
+    const pending = unresolved.current;
+    if (!pending || inFlight.current) return;
+    inFlight.current = true;
+    setChecking(true);
+    try {
+      let landed: boolean;
+      try {
+        const detail = await ghl.contacts.getDetail(contactId);
+        const got = detail.customFields.find((f) => f.id === CALL_DISPOSITION_ID)?.value;
+        landed = (got == null ? "" : String(got).trim()) === pending.result;
+      } catch (e) {
+        setSubmit({ status: "saved_unverified", message: `Still can't verify the saved result (${(e as Error).message}). Notes and last-touch time were not attempted. Check again once reads work; do not save it again.` });
+        return;
+      }
+      unresolved.current = null;
+      if (!landed) {
+        setSubmit({ status: "not_saved", message: `GHL no longer shows "${pending.result}" as the saved result. Notes and last-touch time were not attempted. Reload the contact to check it before saving again.` });
+        return;
+      }
+      recordOverride(storage(), contactId, pending.result, new Date().toISOString(), Date.now());
+      setSubmit({ status: "in_flight" });
+      await writeNoteAndTouch(pending.result, pending.body);
+    } finally {
+      inFlight.current = false;
+      setChecking(false);
     }
   }
 
@@ -159,8 +204,8 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
         {CALL_LOG_RESULTS.map((r) => (
           <button key={r} data-testid={`call-log-result-${slug(r)}`} aria-pressed={result === r}
-            onClick={() => { setResult(r); if (submit.status !== "in_flight") setSubmit({ status: "idle" }); }}
-            disabled={busy} style={btn(result === r)}>
+            onClick={() => { if (unresolved.current) return; setResult(r); if (submit.status !== "in_flight") setSubmit({ status: "idle" }); }}
+            disabled={busy || owned} style={btn(result === r)}>
             {r}
           </button>
         ))}
@@ -174,12 +219,12 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
       ) : null}
 
       <textarea data-testid="call-log-notes" value={text} maxLength={CALL_NOTES_MAX}
-        onChange={(e) => setText(e.target.value)} placeholder={CALL_NOTES_PLACEHOLDER} rows={3} disabled={busy}
+        onChange={(e) => setText(e.target.value)} placeholder={CALL_NOTES_PLACEHOLDER} rows={3} disabled={busy || owned}
         style={{ marginTop: "10px", width: "100%", boxSizing: "border-box", background: "#0B1220", color: "#E2E8F0", border: "1px solid #334155", borderRadius: "6px", padding: "8px 10px", fontSize: "12px", fontFamily: "inherit", resize: "vertical" }} />
 
       <div style={{ marginTop: "8px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
-        <button data-testid="call-log-save" onClick={() => void save()} disabled={busy || !result}
-          style={{ ...btn(true), opacity: result ? 1 : 0.45, cursor: busy || !result ? "not-allowed" : "pointer" }}>
+        <button data-testid="call-log-save" onClick={() => void save()} disabled={busy || owned || !result}
+          style={{ ...btn(true), opacity: result && !owned ? 1 : 0.45, cursor: busy || owned || !result ? "not-allowed" : "pointer" }}>
           {busy ? "Saving…" : "Save call"}
         </button>
         <span style={{ fontSize: "12px", minHeight: "18px" }}>
@@ -191,6 +236,11 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
             </span>
           ) : null}
           {submit.status === "saved_unverified" ? <span data-testid="call-log-saved-unverified" style={{ color: "#F59E0B" }}>{submit.message}</span> : null}
+          {owned ? (
+            <button data-testid="call-log-check-again" onClick={() => void checkAgain()} disabled={checking} style={btn(false)}>
+              {checking ? "Checking…" : "Check again"}
+            </button>
+          ) : null}
           {submit.status === "not_saved" ? <span data-testid="call-log-not-saved" style={{ color: "#F87171" }}>{submit.message}</span> : null}
         </span>
       </div>

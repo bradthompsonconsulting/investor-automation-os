@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import RefreshReadError from "../components/RefreshReadError";
+import { isLifecycleBlur } from "../lib/lifecycle-blur";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { formatPhone } from "../lib/format";
@@ -691,11 +693,20 @@ export default function SellerCallWorkspace() {
     { key: "delivery_signing", label: "Delivery and signing information collected" },
   ] as const;
 
+  /* Board 15 cleanup (Bones, PR #131 P2): once this contact's data has
+     loaded, a failed RE-read (the refresh after read sign-in returns, or a
+     reload after a write) never replaces the workspace -- that would unmount
+     its editors and destroy their drafts and pending writes. It is reported
+     on its own line (RefreshReadError); only a first load that fails shows
+     the full-page error. */
+  const loadedFor = useRef<string | null>(null);
+  const [refreshReadError, setRefreshReadError] = useState<string | null>(null);
   const readRecovered = useReadRecovered();
   useEffect(() => {
     if (!contactId) return;
     let cancelled = false;
     setFetchError(null);
+    if (loadedFor.current !== contactId) setRefreshReadError(null);
     Promise.all([
       ghl.contacts.getDetail(contactId),
       ghl.opportunities.listPipeline(),
@@ -708,8 +719,14 @@ export default function SellerCallWorkspace() {
         setOpps(opportunitiesForContact(pipeline.opportunities, contactId));
         setPolicyValues(policy.values);
         setNotes(notesResult.notes ?? []);
+        loadedFor.current = contactId;
+        setRefreshReadError(null);
       })
-      .catch((e: Error) => { if (!cancelled) setFetchError(e.message); });
+      .catch((e: Error) => {
+        if (cancelled) return;
+        if (loadedFor.current === contactId) setRefreshReadError(e.message);
+        else setFetchError(e.message);
+      });
     return () => { cancelled = true; };
     // Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse.
   }, [contactId, readRecovered]);
@@ -2200,6 +2217,7 @@ export default function SellerCallWorkspace() {
 
   return (
     <Shell contactId={contactId}>
+      <RefreshReadError message={refreshReadError} />
       <div style={{ marginBottom: "6px" }}>
         <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>
           Seller Call
@@ -2608,7 +2626,7 @@ export default function SellerCallWorkspace() {
                   data-testid="negotiation-current-offer-input"
                   value={currentOfferInput}
                   onChange={(e) => handleCurrentOfferChange(e.target.value)}
-                  onBlur={() => { void commitCurrentOffer(); }}
+                  onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; void commitCurrentOffer(); }}
                   readOnly={offerSaves.isLocked(dealBarOppId)}
                   placeholder="Not yet entered — IAOS never sets this"
                   style={{

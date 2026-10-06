@@ -89,8 +89,8 @@ check('recovery is signalled to the page, not forced by a remount', /if \(lapsed
 }
 {
   const cw = code('src/pages/ContactWorkspace.tsx');
-  check('Contact page recovery re-runs its guarded loaders (no navigation reset) and waits while an editor is open',
-    /function recoverReads\(\) \{\s*loadContact\(\);\s*loadDetail\(\);\s*if \(!defs\) loadDefs\(\);\s*loadNotes\(\);\s*loadConversations\(\);\s*loadOpportunities\(\);\s*\}/.test(cw)
+  check('Contact page recovery: screen-keeping refresh once loaded, guarded first-load readers only for what never loaded (no navigation reset); waits while an editor is open',
+    /function recoverReads\(\) \{\s*if \(!defs\) loadDefs\(\);[\s\S]*?if \(contact && detail && opps\) \{ void refreshAll\(\); return; \}\s*if \(!contact\) loadContact\(\);\s*if \(!detail\) loadDetail\(\);\s*if \(!opps\) loadOpportunities\(\);\s*loadNotes\(\);\s*loadConversations\(\);\s*\}/.test(cw)
     && /if \(anyEditorOpenRef\.current\) \{ recoveryPending\.current = true; setRefreshDeferred\(true\); return; \}/.test(cw)
     && /if \(recoveryPending\.current\) \{ recoveryPending\.current = false; recoverReads\(\); return; \}/.test(cw));
   check('ARV comps: a re-read of the same contact never re-seeds (overwrites) the subject draft',
@@ -99,6 +99,38 @@ check('recovery is signalled to the page, not forced by a remount', /if \(lapsed
   check('Dashboard: "new since last visit" is recorded on the first load only', /if \(visitRecorded\.current\) return;\s*visitRecorded\.current = true;/.test(code('src/pages/Dashboard.tsx')));
 }
 check('before any sign-in, the single sign-in landing is unchanged (no page rendered)', /if \(!wasSignedIn\) \{[\s\S]{0,600}>Sign in to IAOS<\/h1>[\s\S]{0,400}<\/div>;\s*\}/.test(ra));
+
+// 4 -- Bones, PR #131 re-review at b34c6d5 (behaviour proven in test-read-session-recovery.cjs P1CL / P1BLUR / P2UW).
+{
+  const cl = code('src/components/CallLogControl.tsx');
+  check('P1 call log: ownership starts the moment the result write is confirmed',
+    /await ghl\.contacts\.setCallLogResult\(contactId, chosen\);\s*unresolved\.current = \{ result: chosen, body \};/.test(cl));
+  check('P1 call log: the save handler refuses while an unresolved attempt exists',
+    /if \(!result \|\| inFlight\.current\) return;[^\n]*\n\s*if \(unresolved\.current\) return;/.test(cl));
+  check('P1 call log: choosing a result refuses (and is disabled) while unresolved; Save is disabled',
+    /onClick=\{\(\) => \{ if \(unresolved\.current\) return; setResult\(r\);/.test(cl) && /disabled=\{busy \|\| owned\} style=\{btn\(result === r\)\}/.test(cl)
+    && /data-testid="call-log-save" onClick=\{\(\) => void save\(\)\} disabled=\{busy \|\| owned \|\| !result\}/.test(cl));
+  check('P1 call log: only a readback that answers releases it (verified save path or Check again)',
+    (cl.match(/unresolved\.current = null;/g) || []).length === 2 && /async function checkAgain\(\)/.test(cl) && /data-testid="call-log-check-again"/.test(cl));
+  check('P1 call log: Check again finishes a confirmed attempt through the same note-then-touch path, once', /await writeNoteAndTouch\(pending\.result, pending\.body\);/.test(cl));
+
+  const blurSites = { 'src/pages/SellerCallWorkspace.tsx': 1, 'src/pages/ContactWorkspace.tsx': 3, 'src/pages/Dashboard.tsx': 1 };
+  for (const [f, n] of Object.entries(blurSites)) {
+    const c = code(f);
+    check(`P1 lifecycle blur: ${path.basename(f)} -- every blur-to-save handler ignores the blur from hiding the page (${n})`,
+      (c.match(/onBlur=\{\(e\) => \{ if \(isLifecycleBlur\(e\.currentTarget\)\) return;/g) || []).length === n && (c.match(/onBlur=/g) || []).length === n);
+  }
+  check('P1 lifecycle blur: the rule is "inside the hidden page wrapper"', /target\.closest\("\[hidden\]"\) !== null/.test(code('src/lib/lifecycle-blur.ts')));
+
+  for (const f of ['UnderwritingWorkspace', 'SellerCallWorkspace', 'ContractWorkspace']) {
+    const c = code(`src/pages/${f}.tsx`);
+    check(`P2 ${f}: a failed RE-read is reported on its own line and never replaces the loaded workspace`,
+      /if \(loadedFor\.current === contactId\) setRefreshReadError\(e\.message\);\s*else setFetchError\(e\.message\);/.test(c)
+      && /loadedFor\.current = contactId;\s*setRefreshReadError\(null\);/.test(c) && /<RefreshReadError message=\{refreshReadError\} \/>/.test(c));
+  }
+  check('P2 Contact page: once loaded, recovery uses the screen-keeping refresh (failure = refresh error, never the full-page error)',
+    /if \(contact && detail && opps\) \{ void refreshAll\(\); return; \}/.test(code('src/pages/ContactWorkspace.tsx')));
+}
 
 console.log(`\nBoard 15 cleanup: ${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);

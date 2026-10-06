@@ -87,8 +87,17 @@ check('the control calls only getDetail, setCallLogResult, notes.create and setL
   ['contacts.getDetail', 'contacts.setCallLogResult', 'contacts.setLastCallAttempt', 'notes.create']);
 check('the control never names routing, the bell, the old disposition writer or a callback write',
   /setCallRouting|setDispositionAt|setCallDisposition|setCallbackDatetime|scheduleCallbackGated|dispositionAt|callRouting/.test(callLogCode), false);
-check('choosing a result only sets state',
-  /onClick=\{\(\) => \{ setResult\(r\); if \(submit\.status !== "in_flight"\) setSubmit\(\{ status: "idle" \}\); \}\}/.test(callLogCode), true);
+/* Board 15 cleanup (Bones, PR #131 P1): the handler now refuses first while an
+   unresolved confirmed attempt owns the control. Choosing a result still only
+   sets state (no request of any kind), and it can never reset that ownership. */
+{
+  const resultClick = (callLogCode.match(/data-testid=\{`call-log-result-\$\{slug\(r\)\}`\}[\s\S]*?onClick=\{\(\) => \{ (.*) \}\}\r?\n/) || [, ''])[1];
+  check('choosing a result only sets state',
+    resultClick.trim() === 'if (unresolved.current) return; setResult(r); if (submit.status !== "in_flight") setSubmit({ status: "idle" });', true);
+  check('choosing a result sends no request of any kind', resultClick.length > 0 && !/ghl\.|fetch\(|save\(|writeNoteAndTouch|recordOverride/.test(resultClick), true);
+  check('choosing a result cannot reset an unresolved attempt (it refuses before touching state, and never clears ownership)',
+    /^\s*if \(unresolved\.current\) return;/.test(resultClick) && !/unresolved\.current = /.test(resultClick), true);
+}
 {
   const at = (s) => callLogCode.indexOf(s);
   check('Save order: result -> readback -> note -> last touch',
