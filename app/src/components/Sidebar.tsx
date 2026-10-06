@@ -8,11 +8,11 @@ import {
   Mail,
   Filter,
   Calculator,
-  Map,
   Upload,
-  Settings,
 } from "lucide-react";
 
+// Map and Settings are hidden (Board 15 B5, F57/F58): both pages are empty.
+// Their routes stay in App.tsx.
 const NAV = [
   { label: "Dashboard",     to: "/dashboard",     icon: LayoutDashboard },
   { label: "Deal Calculator", to: "/deal-calculator", icon: Calculator  },
@@ -22,12 +22,11 @@ const NAV = [
   { label: "Pipeline",      to: "/pipeline",       icon: GitBranch       },
   { label: "Mailers",       to: "/mailers",        icon: Mail            },
   { label: "Segmentation",  to: "/segmentation",   icon: Filter          },
-  { label: "Map",           to: "/map",            icon: Map             },
   { label: "Import",        to: "/import",         icon: Upload          },
-  { label: "Settings",      to: "/settings",       icon: Settings        },
 ];
 
-export default function Sidebar() {
+/** navEnabled: false until a read session exists (Board 15 B5) -- no links are shown, since every page would be a sign-in box. */
+export default function Sidebar({ navEnabled }: { navEnabled: boolean }) {
   return (
     <div className="flex flex-col h-full" style={{ background: "#07142E" }}>
       {/* Logo */}
@@ -51,7 +50,8 @@ export default function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 py-3 overflow-y-auto">
+      {!navEnabled && <div data-testid="sidebar-locked" className="flex-1 px-5 py-4 text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>Sign in to open IAOS.</div>}
+      {navEnabled && <nav className="flex-1 py-3 overflow-y-auto">
         {NAV.map(({ label, to, icon: Icon }) => (
           <NavLink
             key={to}
@@ -72,7 +72,7 @@ export default function Sidebar() {
             <span>{label}</span>
           </NavLink>
         ))}
-      </nav>
+      </nav>}
 
       {/* Footer */}
       <div className="px-4 py-3 border-t" style={{ borderColor: "rgba(255,255,255,0.08)" }}>

@@ -1,15 +1,21 @@
+import { useState } from "react";
 import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
 import AppWriteAccess from "./AppWriteAccess";
 import ReadAccess from "./ReadAccess";
+import { ReadViewReport, type ReadView } from "./access-status";
 
 export default function Layout() {
+  // Mirrors what ReadAccess already knows (no request of its own).
+  const [read, setRead] = useState<ReadView>({ kind: "checking" });
+  const readSignedIn = read.kind === "signed_in";
   return (
+    <ReadViewReport.Provider value={setRead}>
     <div className="flex h-screen overflow-hidden" style={{ background: "#0A0E1A" }}>
       {/* Fixed-width sidebar */}
       <aside className="w-60 shrink-0 flex flex-col overflow-hidden">
-        <Sidebar />
+        <Sidebar navEnabled={readSignedIn} />
       </aside>
 
       {/* Right column: header + scrollable content */}
@@ -21,7 +27,11 @@ export default function Layout() {
           <Header />
         </header>
 
-        <AppWriteAccess />
+        {/* ONE status line: read status + saving (write) status. Hidden until a read session exists. */}
+        <AppWriteAccess readSignedIn={readSignedIn}>
+          {read.kind === "signed_in" && <span data-testid="read-access-signed-in">
+            Signed in until {new Date(read.expiresAt).toLocaleTimeString()} <button onClick={read.signOut}>Sign out</button> · </span>}
+        </AppWriteAccess>
         <main className="flex-1 overflow-auto p-6" style={{ background: "#0A0E1A" }}>
           <ReadAccess>
             <Outlet />
@@ -29,5 +39,6 @@ export default function Layout() {
         </main>
       </div>
     </div>
+    </ReadViewReport.Provider>
   );
 }
