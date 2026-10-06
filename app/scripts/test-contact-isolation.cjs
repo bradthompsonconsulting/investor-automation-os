@@ -300,6 +300,10 @@ async function main() {
       { readsBefore, readsAfter: notesReadsFor(A), touches: writesFor(A, 'contact.lastCallAttempt'), ops: opsFor(A) });
     await page.getByTestId('call-log-retry-note').click();
     await until(async () => writesFor(A, 'contact.lastCallAttempt') === 1, 'retry');
+    /* The write is logged when its REQUEST arrives; "saved" renders only after
+       its response. Wait for the outcome being asserted (PR 126: this check
+       raced under load, 1 in 3 runs). */
+    await until(async () => (await page.getByTestId('call-log-done').count()) === 1, 'retry saved').catch(() => {});
     check('call log: Retry notes writes the note then the last touch, and reports saved',
       writesFor(A, 'note.create') === 2 && (await page.getByTestId('call-log-done').count()) === 1,
       { notes: writesFor(A, 'note.create'), ops: opsFor(A), done: await page.getByTestId('call-log-done').count() });

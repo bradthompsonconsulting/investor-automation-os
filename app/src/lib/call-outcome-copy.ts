@@ -110,3 +110,12 @@ export function resolveScheduledCallback(
   }
   return null;
 }
+
+
+/* Board 15 / Pass 1 F30 (Jess, 2026-10-04: keep the two sets separate; they
+   record different things). One line each, telling the operator which set is
+   for what and where the other one lives. Copy only. */
+export const CALL_LOG_PURPOSE =
+  "How the call itself went. For the seller's answer to an offer you discussed, use Accept / Follow-Up / Pass on the Seller Call.";
+export const CONVERSATION_OUTCOME_PURPOSE =
+  "The seller's answer to the offer you discussed. To record how the call itself went (no answer, voicemail, wrong number), use Log this call on the contact page.";
