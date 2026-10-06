@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Check, Loader2 } from "lucide-react";
 import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
@@ -231,6 +232,12 @@ function ApproveControl({ state, onApprove, warningCount }: {
   }
 
   if (state.status === "partial") {
+    // Pass 1 F45: operator labels, not the carrier keys.
+    const CARRIER_LABEL: Record<string, string> = {
+      endBuyerMaxPrice: "End-Buyer Maximum Purchase Price",
+      sellerMAO:        "Seller MAO",
+      assignmentMode:   "Assignment Mode",
+    };
     return (
       <div style={{
         display: "flex", flexDirection: "column", gap: "10px", padding: "16px 18px",
@@ -253,7 +260,7 @@ function ApproveControl({ state, onApprove, warningCount }: {
               <span style={{ color: c.landed ? "#22C55E" : "#EF4444", width: "62px" }}>
                 {c.landed ? "saved" : "not saved"}
               </span>
-              <span style={{ color: "#94A3B8" }}>{c.key}</span>
+              <span style={{ color: "#94A3B8" }}>{CARRIER_LABEL[c.key] ?? c.key}</span>
             </div>
           ))}
         </div>
@@ -559,8 +566,9 @@ function EstimatorRow({ row, answer, onCondition, onAmount, onQuantity }: {
  * acknowledgement gate: unpriced risk stays visible, but it does not stand
  * between the operator and their own approval.
  *
- * Approval persists the TOTAL ONLY, through the existing `estimated_repairs`
- * carrier (INV-13). No itemization is persisted; the Known Amounts that
+ * Approval persists the TOTAL ONLY, to the Opportunity's Repairs carrier
+ * (`opportunityFacts.repairs`, via `persistApprovedRepairTotalToOpportunity`;
+ * the Contact-side `estimated_repairs` writer was removed by INV-70). No itemization is persisted; the Known Amounts that
  * produced the total live only in this session, because storing them would
  * need a carrier V1 does not have.
  *
@@ -784,7 +792,7 @@ function RepairEstimator({ opportunityId, onPersisted }: {
 
           {saving ? (
             <span style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748B" }}>
-              <Loader2 size={13} className="animate-spin" /> Writing to estimated_repairs, then reading GHL back…
+              <Loader2 size={13} className="animate-spin" /> Saving the repair total to this deal, then reading GHL back…
             </span>
           ) : null}
 
@@ -793,7 +801,7 @@ function RepairEstimator({ opportunityId, onPersisted }: {
           {persistState.status === "done" && persistState.result.ok
             && persistState.result.confidence === "saved" ? (
             <span style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#22C55E" }}>
-              <Check size={13} /> Saved to estimated_repairs · {money(persistState.result.value)}
+              <Check size={13} /> Repair total saved to this deal · {money(persistState.result.value)}
             </span>
           ) : null}
 
@@ -801,7 +809,7 @@ function RepairEstimator({ opportunityId, onPersisted }: {
             && persistState.result.confidence === "unconfirmed" ? (
             <span style={{ fontSize: "12px", color: "#F59E0B" }}>
               Sent {money(persistState.result.value)}, but GHL did not read back that value. Check the
-              contact before relying on it. The write was not repeated.
+              deal (opportunity) in GHL before relying on it. The write was not repeated.
             </span>
           ) : null}
 
@@ -830,9 +838,9 @@ function RepairEstimator({ opportunityId, onPersisted }: {
 
         <div style={{ marginTop: "12px", fontSize: "11px", color: "#475569", lineHeight: 1.5 }}>
           Actual condition and repair scope are subject to inspection. This is an underwriting estimate,
-          not a contractor bid or a guaranteed repair cost. Approving writes the TOTAL ONLY to the
-          existing <span style={{ color: "#64748B" }}>estimated_repairs</span> field on this contact — no
-          itemization is stored and no other field is touched. Nothing is written without approval, and
+          not a contractor bid or a guaranteed repair cost. Approving saves the TOTAL ONLY to this deal's
+          Repairs field in GHL (on the opportunity, not the contact) — no itemization is stored and no
+          other field is touched. Nothing is written without approval, and
           the underwriting figures above update from GHL on the next read, not from this session.
         </div>
       </div>
@@ -1119,10 +1127,10 @@ export default function UnderwritingWorkspace() {
       ) : null}
 
       {screen.state === "no_opportunity" ? (
-        <Notice
-          tone="info"
-          title="No opportunity on this contact"
-          body="Underwriting belongs to the deal, not the person (PB-D55). Nothing is written to the contact as a substitute. Create an opportunity in GHL to underwrite this property."
+        /* Pass 1 F19: the same explanation, plus the way to act on it. */
+        <NoDealYet
+          contactId={id ?? ""}
+          reason="Underwriting belongs to the deal, not the person (PB-D55). Nothing is written to the contact as a substitute."
         />
       ) : null}
 

@@ -21,6 +21,14 @@ const PIPELINE_ID = CONFIG.pipelines.sellerLeads;
 
 // Names and positions stay here deliberately — they are display metadata, not
 // environment-bound identifiers. ORDER IS AUTHORITATIVE.
+//
+// B15-09 / Pass 1 F23: Under Contract (Board #9, provisioned in both locations
+// as `stages.underContract`) was missing from this display list, so every
+// opportunity in it rendered as "Unknown" and dropped out of the Dashboard's
+// per-stage counts. Its position matches the live pipeline as recorded on
+// `stages.underContract` in shared/ghl-config.ts: after Seller Offer Sent and
+// before Seller Closed-Won, in both Test and Production. Display only —
+// nothing here writes a stage.
 const STAGES = [
   { id: CONFIG.stages.newLeadSeller,       name: "New Lead - Seller",     position: 0 },
   { id: CONFIG.stages.contactInitiated,    name: "Contact Initiated",     position: 1 },
@@ -29,9 +37,10 @@ const STAGES = [
   { id: CONFIG.stages.sellerCallCompleted, name: "Seller Call Completed", position: 4 },
   { id: CONFIG.stages.sellerFollowUp,      name: "Seller Follow-Up",      position: 5 },
   { id: CONFIG.stages.sellerOfferSent,     name: "Seller Offer Sent",     position: 6 },
-  { id: CONFIG.stages.sellerClosedWon,     name: "Seller Closed-Won",     position: 7 },
-  { id: CONFIG.stages.longTermNurture,     name: "Long-Term Nurture",     position: 8 },
-  { id: CONFIG.stages.lostNotInterested,   name: "Lost / Not Interested", position: 9 },
+  { id: CONFIG.stages.underContract,       name: "Under Contract",        position: 7 },
+  { id: CONFIG.stages.sellerClosedWon,     name: "Seller Closed-Won",     position: 8 },
+  { id: CONFIG.stages.longTermNurture,     name: "Long-Term Nurture",     position: 9 },
+  { id: CONFIG.stages.lostNotInterested,   name: "Lost / Not Interested", position: 10 },
 ];
 
 // Same-origin only: no CORS grant. Reads are authorized by the SameSite=Strict
