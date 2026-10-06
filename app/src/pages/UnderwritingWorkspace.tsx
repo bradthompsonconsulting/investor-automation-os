@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Check, Loader2 } from "lucide-react";
 import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
@@ -1116,10 +1117,10 @@ export default function UnderwritingWorkspace() {
       ) : null}
 
       {screen.state === "no_opportunity" ? (
-        <Notice
-          tone="info"
-          title="No opportunity on this contact"
-          body="Underwriting belongs to the deal, not the person (PB-D55). Nothing is written to the contact as a substitute. Create an opportunity in GHL to underwrite this property."
+        /* Pass 1 F19: the same explanation, plus the way to act on it. */
+        <NoDealYet
+          contactId={id ?? ""}
+          reason="Underwriting belongs to the deal, not the person (PB-D55). Nothing is written to the contact as a substitute."
         />
       ) : null}
 
