@@ -173,7 +173,7 @@ for (const [name, fn] of Object.entries({ deriveRailDeal, railCells, railAuthori
    resolved+Contact Ask check.
    ⚠ The seven state PRECONDITIONS in CASE 8 are HARD ABORTS, not check() sites
    -- harness preconditions, not mapping invariants. The floor stays 94. */
-const FLOOR = 94;
+const FLOOR = 98; // 94 + 4 (Board 15 / Pass 1 F31)
 let checks = 0;
 let failures = 0;
 
@@ -195,6 +195,7 @@ const IDS = {
   oppFacts:     { arv: 'o-arv', repairs: 'o-rep', askingPrice: 'o-ask', assignmentMode: 'o-mode' },
   contactSeeds: { arv: 'c-arv', repairs: 'c-rep', askingPrice: 'c-ask' },
   sellerMAO:    'o-mao',
+  currentOffer: 'o-off',
 };
 
 const CONTACT = 'contact-1';
@@ -463,8 +464,9 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
 
 /* ================= CASE 7 -- the two carrier-less cells ================= */
 {
-  const POSITION = 'WAITING on negotiation carrier';
-  const OFFER    = 'WAITING on negotiation semantics / carrier contract';
+  /* Board 15 / Pass 1 F36: operator wording replaced the "negotiation carrier" jargon. */
+  const POSITION = 'not recorded — enter it on the Seller Call';
+  const OFFER    = 'none recorded';
   const states = {
     loading:            deriveRailDeal({ opps: null, oppsError: null, detail: null, detailLoading: true, ids: IDS }),
     error:              deriveRailDeal({ opps: null, oppsError: 'boom', detail: null, detailLoading: false, ids: IDS }),
@@ -489,6 +491,14 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
   check('case7 position is always waiting tone', cellOf(states.resolved, 'seller-position').tone, 'waiting');
   check('case7 offer is always waiting tone', cellOf(states.resolved, 'investor-offer').tone, 'waiting');
   check('case7 position never discloses a provenance', cellOf(states.resolved, 'seller-position').provenance, null);
+
+  /* Board 15 / Pass 1 F31 (Jess 2026-10-04): a recorded Current Offer is SHOWN, read through the shared
+     carrier reader, and labelled as recorded -- never as approved or supported. 4 checks. */
+  const withOffer = derive({ 'o-ask': 210000, 'o-mao': 165000, 'o-off': 918273 }, {});
+  check('F31 resolved deal carries the recorded Current Offer', withOffer.currentOffer, 918273);
+  check('F31 the offer cell shows it', [cellOf(withOffer, 'investor-offer').primary, cellOf(withOffer, 'investor-offer').tone], ['$918,273', 'value']);
+  check('F31 the offer cell says recorded, not supported', cellOf(withOffer, 'investor-offer').provenance, 'Recorded on the deal · not an approved or supported offer');
+  check('F31 the offer cell offers no edit and no route', [cellOf(withOffer, 'investor-offer').editor, cellOf(withOffer, 'investor-offer').route], [null, null]);
 
   // The rail states, in passing -- these are what the Ask/MAO cells say when
   // there is nothing to resolve yet.

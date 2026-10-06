@@ -283,7 +283,7 @@ const FIELD_ID = 'opp-field-under-test';
     true);
   check('a THROWN error from the Current Offer write returns before the Note is ever attempted',
     /catch \(e\) \{\s*return \{ stage: "offer_failed", acceptanceRecorded: false, message: `Cannot record acceptance -- the accepted price could not be saved/.test(acceptSrc)
-      && /if \(result\.stage === "offer_failed" \|\| result\.stage === "offer_unconfirmed"\) \{\s*setOutcomeActionError\(result\.message\);\s*return;\s*\}/.test(pageSrc),
+      && /if \(result\.stage === "offer_failed" \|\| result\.stage === "offer_unconfirmed"\) \{\s*setOutcomeActionError\(offerSaves\.unresolvedMessage\(acceptOppId\) \?\? result\.message\);\s*return;\s*\}/.test(pageSrc),
     true);
   check('a result.ok === false from the Current Offer write ALSO returns before the Note is ever attempted (checked identically to a thrown error)',
     /if \(!offer\.ok\) \{\s*return \{ stage: "offer_unconfirmed", acceptanceRecorded: false, message: "Cannot record acceptance -- the accepted price was sent but could not be confirmed/.test(acceptSrc),

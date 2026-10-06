@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { ghl, CALL_DISPOSITION_ID } from "../lib/ghl";
 import { recordOverride, type StorageLike } from "../lib/dispositionOverride";
 import {
-  CALL_LOG_RESULTS, CALL_LOG_HEADING, CALL_LOG_EFFECT, CALL_NOTES_MAX, CALL_NOTES_PLACEHOLDER,
+  CALL_LOG_RESULTS, CALL_LOG_HEADING, CALL_LOG_EFFECT, CALL_LOG_PURPOSE, CALL_NOTES_MAX, CALL_NOTES_PLACEHOLDER,
   FOLLOW_UP_CALLBACK_HINT, GHL_CALL_LOGGING_LINE, callLogNote, parseCallLogNote, type CallLogResult,
 } from "../lib/call-outcome-copy";
 import { ReadUnavailableError } from "../lib/read-session";
@@ -144,6 +144,7 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
   return (
     <div data-testid="call-log" style={{ marginTop: "14px", padding: "14px 16px", border: "1px solid #1E293B", borderRadius: "10px", background: "#0D1B3E" }}>
       <div style={{ fontSize: "13px", fontWeight: 700, color: "#F1F5F9", marginBottom: "4px" }}>{CALL_LOG_HEADING}</div>
+      <div data-testid="call-log-purpose" style={{ fontSize: "11px", color: "#94A3B8", marginBottom: "6px" }}>{CALL_LOG_PURPOSE}</div>
       <div data-testid="call-log-effect" style={{ fontSize: "11px", color: "#64748B", marginBottom: "10px", lineHeight: 1.5 }}>
         {CALL_LOG_EFFECT} {GHL_CALL_LOGGING_LINE}
       </div>

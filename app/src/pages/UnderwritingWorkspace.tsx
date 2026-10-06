@@ -406,6 +406,16 @@ function AssignmentModeSelector({ currentLabel, absentReason, state, onSelect }:
         })}
       </div>
 
+      {/* Pass 1 F43 (INV-105): one line per mode, taken from what
+          underwriting/compute.ts actually computes for it. No amounts are
+          stated here; the standard minimum and buyer-profit percentages are
+          the underwriting assumptions shown elsewhere on this page. */}
+      <ul data-testid="assignment-mode-explanations" style={{ margin: "10px 0 0", padding: 0, listStyle: "none", fontSize: "11px", color: "#94A3B8", lineHeight: 1.6 }}>
+        <li><strong style={{ color: "#CBD5E1" }}>Standard Minimum</strong> — your assignment spread is the standard minimum spread.</li>
+        <li><strong style={{ color: "#CBD5E1" }}>25% of Buyer Profit</strong> — your spread is a share (25% by default) of the end buyer's required profit, but never less than the standard minimum.</li>
+        <li><strong style={{ color: "#CBD5E1" }}>Manual</strong> — you set the spread yourself. GHL can't store that amount yet, so underwriting won't calculate under Manual.</li>
+      </ul>
+
       {/* The Manual carrier gap, stated wherever Manual is the mode in play --
           whether it is already set, or was just chosen. */}
       {manualIsCurrent ? (
