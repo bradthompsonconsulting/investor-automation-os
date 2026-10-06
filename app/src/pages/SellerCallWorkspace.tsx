@@ -64,7 +64,9 @@ import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite"
    `seller-call-negotiation.ts`'s pure functions already work. */
 import { currentOfferWriteGate, acceptedPriceFreezeValue, readCurrentOfferFromOpportunity, checkCurrentOfferIntegrity } from "../lib/current-offer-carrier";
 import { runConfirmAcceptWrites, confirmAcceptOffered, recoverLastCallAttempt } from "../lib/seller-call-accept-writes";
-import { createOfferSaveCoordinator, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
+import { createOfferSaveCoordinator, OfferSaveBlocked, UNRESOLVED_ACCEPT_MESSAGE, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
+import { beginReservation, reconcileReservation, readReservationStatus, newRequestIds, RESERVATION_FAILED_MESSAGE } from "../lib/current-offer-barrier-client";
+import { AppWriteSignInRequired } from "../lib/app-write-session";
 
 /**
  * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49,
@@ -474,10 +476,25 @@ function OfferReadinessChecklist({ readiness }: { readiness: ReadinessResult }) 
    that completes after the page unmounts is still recorded against its deal.
    See lib/current-offer-save-coordinator.ts. */
 let sharedOfferSaves: OfferSaveCoordinator | null = null;
-function offerSaveCoordinator(): OfferSaveCoordinator {
-  if (sharedOfferSaves === null) {
-    sharedOfferSaves = createOfferSaveCoordinator((oppId, amount) => ghl.opportunities.setCurrentOffer(oppId, amount));
+/* PR #126 stacked server PR: every Current Offer save is reserved with the
+   durable server barrier first (lib/current-offer-barrier-client.ts), and the
+   write carries the reserved request id. Confirm Accept reserves its own three
+   steps and passes its offer request id. A refused or unknown reservation
+   sends nothing and blocks the deal. */
+async function saveCurrentOfferReserved(oppId: string, amount: number, requestId?: string) {
+  if (requestId) return ghl.opportunities.setCurrentOffer(oppId, amount, { requestId });
+  const ids = newRequestIds(["offer"] as const);
+  let reserved: Awaited<ReturnType<typeof beginReservation>>;
+  try { reserved = await beginReservation(oppId, "blur", [{ step: "offer", requestId: ids.offer }]); }
+  catch (e) {
+    if (e instanceof AppWriteSignInRequired) throw e;           // nothing reserved, nothing sent
+    throw new OfferSaveBlocked(RESERVATION_FAILED_MESSAGE);
   }
+  if (reserved.state !== "reserved") throw new OfferSaveBlocked(reserved.message);
+  return ghl.opportunities.setCurrentOffer(oppId, amount, { requestId: ids.offer });
+}
+function offerSaveCoordinator(): OfferSaveCoordinator {
+  if (sharedOfferSaves === null) sharedOfferSaves = createOfferSaveCoordinator(saveCurrentOfferReserved);
   return sharedOfferSaves;
 }
 
@@ -1551,6 +1568,30 @@ export default function SellerCallWorkspace() {
   /* PR #126: the deal on screen, for the Current Offer label. */
   const dealBarOppId = screen.state === "resolved" || screen.state === "unresolved" ? screen.opportunity.id : null;
 
+  /* PR #126 stacked server PR: on every load and deal change, ask the durable
+     barrier whether this deal is blocked for every session (another browser,
+     an earlier reload). A failed read blocks. Only "Check again" clears. */
+  useEffect(() => {
+    if (!dealBarOppId) return;
+    const opp = dealBarOppId;
+    void readReservationStatus(opp).then((v) => { if (v.state !== "clear") offerSaves.markUnresolved(opp, v.message); });
+  }, [dealBarOppId, offerSaves]);
+  const [checkingOffer, setCheckingOffer] = useState(false);
+  async function handleCheckOfferAgain() {
+    if (!dealBarOppId) return;
+    const opp = dealBarOppId;
+    setCheckingOffer(true);
+    try {
+      const v = await reconcileReservation(opp);
+      if (v.state === "clear") offerSaves.clearUnresolved(opp);
+      else offerSaves.markUnresolved(opp, v.message);
+    } catch (e) {
+      offerSaves.markUnresolved(opp, e instanceof AppWriteSignInRequired
+        ? "Sign in for application writes, then use Check again. Nothing will be sent until then."
+        : "The check could not be completed; nothing was changed. Nothing will be sent until it is checked — use Check again.");
+    } finally { setCheckingOffer(false); }
+  }
+
   const dealBarCells = useMemo(
     () => buildDealBarCells({
       arv: screen.state === "resolved" || screen.state === "unresolved" ? screen.known.arv : null,
@@ -1884,7 +1925,7 @@ export default function SellerCallWorkspace() {
            last-touch. beginAccept drops queued (never-sent) blur saves and
            ignores new ones until endAccept; they are never replayed after.
            The offer write goes through the same per-deal queue, behind any
-           save already in flight. An unknown acceptance outcome leaves the
+           save already in flight. A step the server cannot prove leaves the
            deal unresolved. Not atomic: partial failures are reported by the
            accept module exactly as before. */
         const acceptOppId = screen.opportunity.id;
@@ -1892,20 +1933,60 @@ export default function SellerCallWorkspace() {
           setOutcomeActionError(offerSaves.unresolvedMessage(acceptOppId) ?? "Cannot record acceptance -- an acceptance for this deal is already in progress.");
           return;
         }
+        /* PR #126 stacked server PR: the durable barrier owns all three steps
+           (offer, acceptance note, last-touch) for every session. Each write
+           carries its reserved request id; when the sequence ends the server
+           reconciles and the deal is cleared only with evidence for every step. */
+        /* Wait for a blur save of this deal already in flight (beginAccept dropped
+           the queued ones): its own barrier must settle first. If it ended
+           unresolved, nothing is reserved or sent. */
+        await offerSaves.whenIdle(acceptOppId);
+        if (offerSaves.unresolvedMessage(acceptOppId) !== null) {
+          const message = offerSaves.unresolvedMessage(acceptOppId)!;
+          offerSaves.endAccept(acceptOppId, message);
+          setOutcomeActionError(`Cannot record acceptance -- ${message}`);
+          return;
+        }
+        const acceptIds = newRequestIds(["offer", "note", "touch"] as const);
+        let reserved: Awaited<ReturnType<typeof beginReservation>>;
+        try {
+          reserved = await beginReservation(acceptOppId, "accept", [
+            { step: "offer", requestId: acceptIds.offer },
+            { step: "note", requestId: acceptIds.note },
+            { step: "touch", requestId: acceptIds.touch },
+          ]);
+        } catch (e) {
+          const signIn = e instanceof AppWriteSignInRequired;
+          offerSaves.endAccept(acceptOppId, signIn ? null : RESERVATION_FAILED_MESSAGE);
+          setOutcomeActionError(signIn ? (e as Error).message : `Cannot record acceptance -- ${RESERVATION_FAILED_MESSAGE}`);
+          return;
+        }
+        if (reserved.state !== "reserved") {
+          offerSaves.endAccept(acceptOppId, reserved.message);
+          setOutcomeActionError(`Cannot record acceptance -- ${reserved.message}`);
+          return;
+        }
         let result: Awaited<ReturnType<typeof runConfirmAcceptWrites>>;
         try {
           result = await runConfirmAcceptWrites(
             {
-              setCurrentOffer: (opportunityId, value) => offerSaves.saveForAccept(opportunityId, value),
-              createNote: (id, body) => ghl.notes.create(id, body),
-              setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso),
+              setCurrentOffer: (opportunityId, value) => offerSaves.saveForAccept(opportunityId, value, acceptIds.offer),
+              createNote: (id, body) => ghl.notes.create(id, body, { requestId: acceptIds.note }),
+              setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso, { requestId: acceptIds.touch }),
             },
             { contactId, opportunityId: acceptOppId, offerValue: freeze.value, note: attempt.note, at: nowIso },
           );
         } finally {
-          offerSaves.endAccept(acceptOppId, false);
+          let unresolved: string | null = UNRESOLVED_ACCEPT_MESSAGE;
+          try {
+            const settled = await reconcileReservation(acceptOppId);
+            unresolved = settled.state === "clear" ? null : settled.message;
+          } catch { /* not proven: the deal stays unresolved */ }
+          offerSaves.endAccept(acceptOppId, unresolved);
+          // The server proved every step (sent and confirmed, or never sent):
+          // a block left by an uncertain step in this tab is lifted too.
+          if (unresolved === null) offerSaves.clearUnresolved(acceptOppId);
         }
-        if (result.stage === "note_failed") offerSaves.endAccept(acceptOppId, true);
         if (result.stage === "offer_failed" || result.stage === "offer_unconfirmed") {
           setOutcomeActionError(offerSaves.unresolvedMessage(acceptOppId) ?? result.message);
           return;
@@ -1927,18 +2008,75 @@ export default function SellerCallWorkspace() {
         return;
       }
 
-      if (kind === "follow_up") {
-        const followUpIso = new Date(followUpAtInput).toISOString();
-        const cb = await scheduleCallbackGated(ghl, contactId, followUpIso);
-        if (cb.ok || cb.callbackPersisted) setSessionCallback({ contactId, iso: followUpIso });
-        if (!cb.ok) {
-          setOutcomeActionError(cb.error);
-          return;
+      /* PR #126 stacked server PR (Bones, 2026-10-05): Follow-Up and Pass are
+         negotiation outcomes too. They take the deal's ONE durable reservation,
+         so neither can be submitted while an Accept is pending or unresolved
+         -- in this tab, another browser or after a reload -- and an Accept
+         cannot start while one of them is. Every write carries its reserved
+         id (the server refuses an outcome note or a Follow-Up callback
+         without one); the server's reconcile decides the end state. */
+      const outcomeOppId = screen.opportunity.id;
+      const outcomeLabel = kind === "pass" ? "Pass" : "Follow-Up";
+      if (!offerSaves.beginAccept(outcomeOppId)) {
+        setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${offerSaves.unresolvedMessage(outcomeOppId) ?? "another outcome for this deal is in progress."}`);
+        return;
+      }
+      await offerSaves.whenIdle(outcomeOppId);
+      const blockedBefore = offerSaves.unresolvedMessage(outcomeOppId);
+      if (blockedBefore !== null) {
+        offerSaves.endAccept(outcomeOppId, blockedBefore);
+        setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${blockedBefore}`);
+        return;
+      }
+      const passIds = newRequestIds(["note", "touch"] as const);
+      const followIds = newRequestIds(["callback", "callback_note", "touch", "note"] as const);
+      let outcomeReserved: Awaited<ReturnType<typeof beginReservation>>;
+      try {
+        outcomeReserved = kind === "pass"
+          ? await beginReservation(outcomeOppId, "pass", [{ step: "note", requestId: passIds.note }, { step: "touch", requestId: passIds.touch }])
+          : await beginReservation(outcomeOppId, "follow_up", [
+              { step: "callback", requestId: followIds.callback }, { step: "callback_note", requestId: followIds.callback_note },
+              { step: "touch", requestId: followIds.touch }, { step: "note", requestId: followIds.note },
+            ]);
+      } catch (e) {
+        const signIn = e instanceof AppWriteSignInRequired;
+        offerSaves.endAccept(outcomeOppId, signIn ? null : RESERVATION_FAILED_MESSAGE);
+        setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${signIn ? (e as Error).message : RESERVATION_FAILED_MESSAGE}`);
+        return;
+      }
+      if (outcomeReserved.state !== "reserved") {
+        offerSaves.endAccept(outcomeOppId, outcomeReserved.message);
+        setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${outcomeReserved.message}`);
+        return;
+      }
+      try {
+        if (kind === "follow_up") {
+          const followUpIso = new Date(followUpAtInput).toISOString();
+          const cb = await scheduleCallbackGated({
+            contacts: {
+              setCallbackDatetime: (id: string, iso: string | null) => ghl.contacts.setCallbackDatetime(id, iso, { requestId: followIds.callback }),
+              setLastCallAttempt: (id: string, iso: string) => ghl.contacts.setLastCallAttempt(id, iso, { requestId: followIds.touch }),
+            },
+            notes: { create: (id: string, body: string) => ghl.notes.create(id, body, { requestId: followIds.callback_note }) },
+          }, contactId, followUpIso);
+          if (cb.ok || cb.callbackPersisted) setSessionCallback({ contactId, iso: followUpIso });
+          if (!cb.ok) {
+            setOutcomeActionError(cb.error);
+            return;
+          }
+          await ghl.notes.create(contactId, attempt.note, { requestId: followIds.note });
+        } else {
+          await ghl.notes.create(contactId, attempt.note, { requestId: passIds.note });
+          await ghl.contacts.setLastCallAttempt(contactId, nowIso, { requestId: passIds.touch });
         }
-        await ghl.notes.create(contactId, attempt.note);
-      } else {
-        await ghl.notes.create(contactId, attempt.note);
-        await ghl.contacts.setLastCallAttempt(contactId, nowIso);
+      } finally {
+        let outcomeUnresolved: string | null = UNRESOLVED_ACCEPT_MESSAGE;
+        try {
+          const settledOutcome = await reconcileReservation(outcomeOppId);
+          outcomeUnresolved = settledOutcome.state === "clear" ? null : settledOutcome.message;
+        } catch { /* not proven: the deal stays unresolved */ }
+        offerSaves.endAccept(outcomeOppId, outcomeUnresolved);
+        if (outcomeUnresolved === null) offerSaves.clearUnresolved(outcomeOppId);
       }
       setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attempt.note, dateAdded: nowIso }]);
       setShowOutcomeForm(null);
@@ -1955,20 +2093,63 @@ export default function SellerCallWorkspace() {
      acceptance was recorded. Reads BOTH saved last-call fields first
      (lib/seller-call-accept-writes.ts decides); never touches the
      acceptance. */
+  /* PR #126 stacked server PR (Bones / Jess, 2026-10-05): the recovery is a
+     Confirm Accept step, so it obeys the same durable reservation rules.
+     1. The server reconciles first: while the ORIGINAL last-touch request (or
+        any step of the deal's barrier) is unresolved, nothing new is sent --
+        not even an unreserved timestamp write.
+     2. Only then a last-touch-only reservation; its write carries that id.
+     3. The server reconciles again; an unproven step leaves the deal blocked. */
   async function handleRecoverCallTimestamp() {
-    if (!timestampRecovery || timestampRecoveryBusy) return;
+    if (!timestampRecovery || timestampRecoveryBusy || !dealBarOppId) return;
+    const opp = dealBarOppId;
     setTimestampRecoveryBusy(true);
     try {
-      const recovered = await recoverLastCallAttempt(
-        {
-          readLastCallFields: async (id) => (await ghl.contacts.getDetail(id)).customFields,
-          setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso),
-        },
-        {
-          contactId, pendingTimestamp: timestampRecovery.pendingTimestamp, now: new Date().toISOString(),
-          fieldIds: { date: CONFIG.fields.lastCallAttempt, precise: CONFIG.fields.lastCallAttemptPrecise },
-        },
-      );
+      let first: Awaited<ReturnType<typeof reconcileReservation>>;
+      try { first = await reconcileReservation(opp); }
+      catch {
+        setOutcomeActionError("Call timestamp not retried -- the check could not be completed. Nothing was sent.");
+        return;
+      }
+      if (first.state !== "clear") {
+        offerSaves.markUnresolved(opp, first.message);
+        setOutcomeActionError(`Call timestamp not retried -- ${first.message}`);
+        return;
+      }
+      offerSaves.clearUnresolved(opp);
+      const touchIds = newRequestIds(["touch"] as const);
+      let reserved: Awaited<ReturnType<typeof beginReservation>>;
+      try { reserved = await beginReservation(opp, "touch", [{ step: "touch", requestId: touchIds.touch }]); }
+      catch (e) {
+        if (!(e instanceof AppWriteSignInRequired)) offerSaves.markUnresolved(opp, RESERVATION_FAILED_MESSAGE);
+        setOutcomeActionError(`Call timestamp not retried -- ${e instanceof AppWriteSignInRequired ? (e as Error).message : RESERVATION_FAILED_MESSAGE}`);
+        return;
+      }
+      if (reserved.state !== "reserved") {
+        offerSaves.markUnresolved(opp, reserved.message);
+        setOutcomeActionError(`Call timestamp not retried -- ${reserved.message}`);
+        return;
+      }
+      let recovered: Awaited<ReturnType<typeof recoverLastCallAttempt>>;
+      try {
+        recovered = await recoverLastCallAttempt(
+          {
+            readLastCallFields: async (id) => (await ghl.contacts.getDetail(id)).customFields,
+            setLastCallAttempt: (id, iso) => ghl.contacts.setLastCallAttempt(id, iso, { requestId: touchIds.touch }),
+          },
+          {
+            contactId, pendingTimestamp: timestampRecovery.pendingTimestamp, now: new Date().toISOString(),
+            fieldIds: { date: CONFIG.fields.lastCallAttempt, precise: CONFIG.fields.lastCallAttemptPrecise },
+          },
+        );
+      } finally {
+        // The server decides: a never-sent reservation is withdrawn; an
+        // unproven write keeps the deal blocked.
+        try {
+          const after = await reconcileReservation(opp);
+          if (after.state !== "clear") offerSaves.markUnresolved(opp, after.message);
+        } catch { offerSaves.markUnresolved(opp, "The check could not be completed; nothing more will be sent until it is checked — use Check again."); }
+      }
       if (recovered.kind === "confirmed" || recovered.kind === "written") {
         setTimestampRecovery(null);
         setOutcomeActionError(null);
@@ -2449,7 +2630,16 @@ export default function SellerCallWorkspace() {
                 ) : null}
                 {offerSaves.unresolvedMessage(dealBarOppId) !== null ? (
                   <span data-testid="current-offer-unresolved" style={{ color: "#F59E0B", fontSize: "10px", maxWidth: "220px" }}>
-                    {offerSaves.unresolvedMessage(dealBarOppId)}
+                    {offerSaves.unresolvedMessage(dealBarOppId)}{" "}
+                    <button
+                      type="button"
+                      data-testid="current-offer-check-again"
+                      onClick={() => { void handleCheckOfferAgain(); }}
+                      disabled={checkingOffer}
+                      style={{ background: "none", border: "1px solid #F59E0B", borderRadius: "4px", color: "#F59E0B", fontSize: "10px", padding: "1px 6px", cursor: checkingOffer ? "wait" : "pointer" }}
+                    >
+                      {checkingOffer ? "Checking…" : "Check again"}
+                    </button>
                   </span>
                 ) : null}
                 {offerSaves.failureFor(dealBarOppId, currentOffer) !== null ? (
@@ -2605,6 +2795,14 @@ export default function SellerCallWorkspace() {
                 {DIAL_RESULT_POINTER}
               </Link>
             </div>
+            {/* PR #126 stacked server PR: while this deal's offer or outcome is
+                pending or unresolved, say why here -- the server refuses any
+                conflicting outcome regardless of these buttons. */}
+            {offerSaves.unresolvedMessage(dealBarOppId) !== null ? (
+              <div data-testid="outcome-blocked-reason" style={{ fontSize: "11px", color: "#F59E0B", marginBottom: "8px" }}>
+                No outcome can be recorded for this deal right now: {offerSaves.unresolvedMessage(dealBarOppId)}
+              </div>
+            ) : null}
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               {!confirmAcceptOffered(latestOutcome?.kind) ? (
                 <span data-testid="call-outcome-accept-recorded" style={{ fontSize: "12px", color: "#22C55E", alignSelf: "center" }}>

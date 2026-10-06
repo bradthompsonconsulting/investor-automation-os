@@ -8,6 +8,8 @@ const APP = path.resolve(__dirname, '..');
 const originalResolve = Module._resolveFilename;
 const originalLoad = Module._load;
 const receipts = new Map();
+const receiptEtags = new Map();
+let receiptEtagSeq = 0;
 // Gate-review closure -- PR #85 live failure. A SEPARATE map for raw
 // artifact-upload bytes, additive only: ghl-write.ts's own receipt
 // usage (JSON via setJSON/get) is completely untouched below.
@@ -40,9 +42,14 @@ Module._load = function(name, ...rest) {
       },
       async set(key, value, options) { rawBlobs.set(key, Buffer.isBuffer(value) ? value : Buffer.from(value)); if (options?.metadata) rawBlobsMetadata.set(key, options.metadata); },
       async delete(key) { receipts.delete(key); rawBlobs.delete(key); rawBlobsMetadata.delete(key); },
-      async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; },
+      async setJSON(key, value, options) {
+        if (options?.onlyIfNew && receipts.has(key)) return { modified: false };
+        if (options?.onlyIfMatch !== undefined && receiptEtags.get(key) !== options.onlyIfMatch) return { modified: false };
+        receipts.set(key, value); const etag = 'etag-' + (++receiptEtagSeq); receiptEtags.set(key, etag); return { modified: true, etag };
+      },
       async getMetadata(key) { if (!rawBlobs.has(key)) return null; return { etag: 'fixture-etag', metadata: rawBlobsMetadata.get(key) ?? {} }; },
       async getWithMetadata(key, options) {
+        if (options?.type === 'json') return receipts.has(key) ? { data: receipts.get(key), etag: receiptEtags.get(key) } : null;
         if (!rawBlobs.has(key)) return null;
         const v = rawBlobs.get(key);
         const data = options?.type === 'arrayBuffer' ? v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) : v;
@@ -103,6 +110,20 @@ global.fetch = async (url, init = {}) => {
 };
 const handler = require('../netlify/functions/ghl-write.ts').handler;
 const uploadHandler = require('../netlify/functions/ghl-executed-artifact-upload.ts').handler;
+// Board 15 / PR #126 stacked server PR: a Current Offer write needs a durable
+// reservation (current-offer-barrier.ts) before it can be sent.
+const barrierHandler = require('../netlify/functions/current-offer-barrier.ts').handler;
+async function reserveFollowUpCallback(requestId) {
+  const steps = [{ step: 'callback', requestId }, { step: 'callback_note', requestId: requestId + '-cbn' }, { step: 'touch', requestId: requestId + '-tch' }, { step: 'note', requestId: requestId + '-out' }];
+  const res = await barrierHandler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ action: 'begin', opportunityId: opportunity.id, purpose: 'follow_up', steps }) });
+  assert.equal(res.statusCode, 200, res.body);
+}
+async function reserveOffer(requestId) {
+  // A previous case may have left a reservation with never-sent steps: reconcile withdraws them.
+  await barrierHandler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ action: 'reconcile', opportunityId: opportunity.id }) });
+  const res = await barrierHandler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ action: 'begin', opportunityId: opportunity.id, purpose: 'blur', steps: [{ step: 'offer', requestId }] }) });
+  assert.equal(res.statusCode, 200, res.body);
+}
 let count = 0;
 function check(name, fn) { return Promise.resolve().then(fn).then(() => { count++; console.log('PASS ' + name); }); }
 let sequence = 0;
@@ -411,8 +432,17 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   const mode = require('../src/lib/underwriting/resolver-types.ts').ASSIGNMENT_MODE_OPTIONS[0][0];
   cases.find(c=>c[0]==='opportunity.assignmentMode')[1].value=mode;
   cases.find(c=>c[0]==='opportunity.underwriting')[1].assignmentMode=mode;
+  await check('an unreserved Current Offer write is refused before sending (outcome not_sent, nothing written)', async () => {
+    const before = writes;
+    const res = await handler(event('opportunity.currentOffer', opportunity.id, {value:110000}));
+    assert.equal(res.statusCode, 409); assert.equal(JSON.parse(res.body).outcome, 'not_sent'); assert.equal(writes, before);
+  });
   for(const [op,args] of cases) await check('retained '+op, async () => {
-    const res=await handler(event(op, op.startsWith('opportunity.')||op.startsWith('contract.')?opportunity.id:contact.id,args)); assert.equal(res.statusCode,200,res.body); assert.notEqual(JSON.parse(res.body).confirmed,false);
+    const requestId = `request-${++sequence}`;
+    if (op === 'opportunity.currentOffer') await reserveOffer(requestId);
+    // PR #126 stacked server PR: the Seller Call Follow-Up callback is reserved-only.
+    if (op === 'contact.callback') await reserveFollowUpCallback(requestId);
+    const res=await handler(event(op, op.startsWith('opportunity.')||op.startsWith('contract.')?opportunity.id:contact.id,args,requestId)); assert.equal(res.statusCode,200,res.body); assert.notEqual(JSON.parse(res.body).confirmed,false);
   });
   // B14-12 recording-only call log: the operation-specific boundary.
   await check('call log: contact.callLogResult plans iaos_call_disposition only, for every call-log result', () => {
@@ -503,7 +533,24 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   Object.assign(contact,{firstName:'Jane',lastName:'Seller',email:'seller@example.com',address1:'123 Main St',city:'Austin',state:'TX',postalCode:'78701'});
   opportunity.customFields=opportunity.customFields.filter(f=>f.id!==config.opportunityFacts.currentOffer);
   opportunity.customFields.push({id:config.opportunityFacts.currentOffer,fieldValue:190000});
-  for(const note of fixture.notes) await check('retained ledger '+note.body.split(' — ')[0],async()=>{const res=await handler(event('note.create',contact.id,{body:note.body}));assert.equal(res.statusCode,200,res.body);});
+  // PR #126 stacked server PR: a negotiation-outcome note is sent only under a
+  // reservation of its own kind (as the Seller Call page does), then reconciled.
+  const parseOutcome = require('../src/lib/seller-call-outcome.ts').parseOutcomeNote;
+  const barrierPost = (payload) => barrierHandler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify(payload) });
+  for(const note of fixture.notes) await check('retained ledger '+note.body.split(' — ')[0],async()=>{
+    const outcome = parseOutcome(note.body);
+    let requestId;
+    if (outcome) {
+      await barrierPost({ action: 'reconcile', opportunityId: opportunity.id });
+      const base = `outcome-${++sequence}`;
+      const steps = { accept: ['offer', 'note', 'touch'], pass: ['note', 'touch'], follow_up: ['callback', 'callback_note', 'touch', 'note'] }[outcome.kind].map((step) => ({ step, requestId: `${base}-${step}` }));
+      const reserved = await barrierPost({ action: 'begin', opportunityId: opportunity.id, purpose: outcome.kind, steps });
+      assert.equal(reserved.statusCode, 200, reserved.body);
+      requestId = `${base}-note`;
+    }
+    const res=await handler(event('note.create',contact.id,{body:note.body},requestId));assert.equal(res.statusCode,200,res.body);
+    if (outcome) assert.equal(JSON.parse((await barrierPost({ action: 'reconcile', opportunityId: opportunity.id })).body).state, 'clear');
+  });
   const context = await require('../netlify/functions/lib/write-contract-context.ts').currentContractContext(boundaryLib.configuredBoundary(),opportunity.id);
 
 
@@ -538,7 +585,7 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   const authorization=require('../src/lib/contract-authorization-carriers.ts').formatBradContractAuthorizationNote(realAuthorization.value);
   await check('retained canonical Brad authorization',async()=>{const res=await handler(event('note.create',contact.id,{body:authorization}));assert.equal(res.statusCode,200,res.body);});
   await check('reject stale authorization content',async()=>{const before=writes;const res=await handler(event('note.create',contact.id,{body:authorization.replace('Jane Seller','Other Seller')}));assert.equal(res.statusCode,409);assert.equal(writes,before);});
-  await check('freeze Current Offer after agreement',async()=>{const before=writes;assert.equal((await handler(event('opportunity.currentOffer',opportunity.id,{value:195000}))).statusCode,409);assert.equal(writes,before);});
+  await check('freeze Current Offer after agreement',async()=>{const before=writes;const requestId=`request-${++sequence}`;await reserveOffer(requestId);const res=await handler(event('opportunity.currentOffer',opportunity.id,{value:195000},requestId));assert.equal(res.statusCode,409);assert.equal(JSON.parse(res.body).error,'Current Offer is frozen or invalid');assert.equal(JSON.parse(res.body).outcome,'not_sent');assert.equal(writes,before);});
   const sync={opportunityId:opportunity.id,at:'2026-09-18T01:00:00.000Z',attemptId:'2026-09-18T01:00:00.000Z',operator:'brad',status:'in_progress',version:fixture.version,entriesAttempted:context.projection.entries.length,entriesLanded:context.projection.entries.length,failedKeys:[],currentOfferCrossCheckOk:true,observedStateBeforeWrite:'Idle',intendedToState:'Requested',sentValue:null,observedValue:null,providerStatus:null,failureReason:null,sellerSigningEvidence:{sellerCountDiscriminator:'one_seller',seller1Ok:true,seller1ContactId:contact.id,seller1Capacity:'individual_own_capacity',seller2LegalName:null,seller2NormalizedEmail:null,seller2Capacity:null,printedPartyConsistencyOk:true,expectedSellerCountTransportValue:'One Seller',canonicalReady:true,sellerCountFieldProvisioned:true,sellerCountWriteReadbackOk:true,effectiveDateStatus:'pending_final_acceptance',recipientAssignmentStatus:'pending_manual_review',blockingReasons:[],sendOccurred:false}};
   const syncBody=require('../src/lib/contract-projection-sync-carriers.ts').formatContractProjectionSyncNote(sync);
   await check('retained projection reservation note',async()=>{const res=await handler(event('note.create',contact.id,{body:syncBody}));assert.equal(res.statusCode,200,res.body);});

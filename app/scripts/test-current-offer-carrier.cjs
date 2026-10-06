@@ -330,7 +330,7 @@ const FIELD_ID = 'opp-field-under-test';
 {
   const ghlSrc = fs.readFileSync(GHL, 'utf8');
   check('setCurrentOffer resolves opportunityFacts.currentOffer, not any offer_ field id',
-    /setCurrentOffer[\s\S]{0,200}CONFIG\.opportunityFacts\.currentOffer/.test(ghlSrc), true);
+    /setCurrentOffer[\s\S]{0,260}CONFIG\.opportunityFacts\.currentOffer/.test(ghlSrc), true);
   check('setCurrentOffer refuses before any network call when unprovisioned',
     /if \(fieldId === CURRENT_OFFER_NOT_PROVISIONED\)/.test(ghlSrc), true);
 }

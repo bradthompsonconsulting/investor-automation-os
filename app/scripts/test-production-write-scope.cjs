@@ -31,6 +31,8 @@ Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
 // every Blob and GHL call in order.
 const blob = { connections: 0, stores: 0, reads: 0, writes: 0 };
 const blobData = new Map();
+const blobEtags = new Map();
+let blobEtagSeq = 0;
 const events = [];
 Module._load = function (name, ...rest) {
   if (name === '@netlify/blobs') return {
@@ -40,14 +42,15 @@ Module._load = function (name, ...rest) {
       const k = (key) => `${storeName}:${key}`;
       return {
         async get(key) { blob.reads++; const v = blobData.get(k(key)); return v === undefined ? null : v; },
-        async getWithMetadata() { blob.reads++; return null; },
+        async getWithMetadata(key, options) { blob.reads++; if (options && options.type === 'json' && blobData.has(k(key))) return { data: blobData.get(k(key)), etag: blobEtags.get(k(key)) }; return null; },
         async getMetadata() { blob.reads++; return null; },
         async list() { blob.reads++; return { blobs: [], directories: [] }; },
         async set(key, value) { blob.writes++; events.push({ kind: 'blob.set', key }); blobData.set(k(key), value); },
         async setJSON(key, value, opts) {
           blob.writes++;
           if (opts && opts.onlyIfNew && blobData.has(k(key))) { events.push({ kind: 'blob.setJSON.exists', key }); return { modified: false }; }
-          events.push({ kind: 'blob.setJSON', key }); blobData.set(k(key), value); return { modified: true };
+          if (opts && opts.onlyIfMatch !== undefined && blobEtags.get(k(key)) !== opts.onlyIfMatch) { events.push({ kind: 'blob.setJSON.stale', key }); return { modified: false }; }
+          events.push({ kind: 'blob.setJSON', key }); blobData.set(k(key), value); const etag = 'etag-' + (++blobEtagSeq); blobEtags.set(k(key), etag); return { modified: true, etag };
         },
         async delete(key) { blob.writes++; events.push({ kind: 'blob.delete', key }); blobData.delete(k(key)); },
       };
@@ -341,6 +344,30 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
 
   // ===== 5. Handlers fail closed BEFORE any Blob access or GHL call.
   const writeHandler = require('../netlify/functions/ghl-write.ts').handler;
+  // Board 15 / PR #126 stacked server PR: the page reserves a durable Current
+  // Offer barrier (current-offer-barrier.ts) before sending a Current Offer.
+  const barrierHandler = require('../netlify/functions/current-offer-barrier.ts').handler;
+  /* PR #126 stacked server PR: a negotiation-outcome note is sent only under a
+     reservation of its own kind -- as the Seller Call page does: reconcile,
+     reserve, send the note with its reserved id, reconcile (withdrawing the
+     steps this harness does not send). */
+  let pageNoteSeq = 0;
+  const barrierCall = async (world, payload) => {
+    ghlRoute = world.route;
+    try { return await barrierHandler({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify(payload) }); }
+    finally { ghlRoute = null; }
+  };
+  const sendOutcomeNote = async (world, body, tag) => {
+    const kind = require('../src/lib/seller-call-outcome.ts').parseOutcomeNote(body).kind;
+    const opportunityId = require('../src/lib/seller-call-outcome.ts').parseOutcomeNote(body).opportunityId;
+    await barrierCall(world, { action: 'reconcile', opportunityId });
+    const steps = { accept: ['offer', 'note', 'touch'], pass: ['note', 'touch'], follow_up: ['callback', 'callback_note', 'touch', 'note'] }[kind].map((step) => ({ step, requestId: `${tag}-${step}` }));
+    const reserved = await barrierCall(world, { action: 'begin', opportunityId, purpose: kind, steps });
+    if (reserved.statusCode !== 200) throw new Error('outcome reservation refused: ' + reserved.body);
+    const r = await runWorld(world, fixedEvent('note.create', PIN_CONTACT, { body }, `${tag}-note`));
+    await barrierCall(world, { action: 'reconcile', opportunityId });
+    return r;
+  };
   const uploadHandler = require('../netlify/functions/ghl-executed-artifact-upload.ts').handler;
   let seq = 0;
   const writeEvent = (operation, targetId, args) => ({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ operation, targetId, args, requestId: `scope-${++seq}` }) });
@@ -781,7 +808,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     const acceptBody = outcome.formatOutcomeNote({ opportunityId: PIN_OPP, at: acceptAt, operator: 'brad', kind: 'accept', reason: null, followUpAt: null, snapshot: SNAPSHOT });
 
     // 1. The accept note is saved (Confirm Accept's second write).
-    const saved = await runWorld(world, fixedEvent('note.create', PIN_CONTACT, { body: acceptBody }, 'recovery-accept'));
+    const saved = await sendOutcomeNote(world, acceptBody, 'recovery-accept');
     assert.equal(saved.res.statusCode, 200, saved.res.body);
     assert.equal(world.notes.length, 1);
 
@@ -830,10 +857,27 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   // calls) driven against the real ghl-write handler, enabled + pinned.
   const acceptWrites = load('seller-call-accept-writes');
   const pageClient = (world, tag) => {
+    const base = pageClientBase(world, tag);
+    return { ...base, createNote: async (id, body) => {
+      const outcomeKind = (outcome.parseOutcomeNote(body) || {}).kind;
+      const r = outcomeKind ? await sendOutcomeNote(world, body, `${tag}-n${++pageNoteSeq}`) : await runWorld(world, fixedEvent('note.create', id, { body }, `${tag}-plain-${++pageNoteSeq}`));
+      if (r.res.statusCode !== 200) throw new Error(r.body.error || 'refused'); return r.body;
+    } };
+  };
+  const pageClientBase = (world, tag) => {
     let n = 0;
     const call = async (op, target, args) => runWorld(world, fixedEvent(op, target, args, `${tag}-${++n}`));
     return {
-      setCurrentOffer: async (id, value) => { const r = await call('opportunity.currentOffer', id, { value }); if (r.res.statusCode !== 200) throw new Error(r.body.error || 'refused'); return { ok: r.body.confirmed === true }; },
+      setCurrentOffer: async (id, value) => {
+        const requestId = `${tag}-offer-${++n}`;
+        ghlRoute = world.route;
+        try {
+          const reserved = await barrierHandler({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ action: 'begin', opportunityId: id, purpose: 'blur', steps: [{ step: 'offer', requestId }] }) });
+          if (reserved.statusCode !== 200) throw new Error('reservation refused: ' + reserved.body);
+        } finally { ghlRoute = null; }
+        const r = await runWorld(world, fixedEvent('opportunity.currentOffer', id, { value }, requestId));
+        if (r.res.statusCode !== 200) throw new Error(r.body.error || 'refused'); return { ok: r.body.confirmed === true };
+      },
       createNote: async (id, body) => { const r = await call('note.create', id, { body }); if (r.res.statusCode !== 200) throw new Error(r.body.error || 'refused'); return r.body; },
       setLastCallAttempt: async (id, iso) => { const r = await call('contact.lastCallAttempt', id, { value: iso }); if (r.res.statusCode !== 200 || r.body.confirmed === false) throw new Error(r.body.error || 'Write was not confirmed'); return r.body; },
       readLastCallFields: async (id) => world.contacts[id].customFields.map((f) => ({ id: f.id, value: f.value })),

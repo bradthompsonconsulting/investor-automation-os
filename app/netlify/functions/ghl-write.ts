@@ -1,15 +1,20 @@
-import { connectLambda } from "@netlify/blobs";
+import { connectLambda, getStore } from "@netlify/blobs";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { validateLedgerNote } from "./lib/write-note-guard";
 import { verifyUnderContractStageTransitionReady } from "./lib/write-derived-note";
 import { getConfig } from "../../shared/ghl-config";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { exact, identifier, planWrite, dispositions, routings } from "./lib/write-contracts";
-import { configuredBoundary, fieldValue, WriteUncertain } from "./lib/ghl-write-boundary";
+import { configuredBoundary, fieldValue, WriteUncertain, type DispatchHooks } from "./lib/ghl-write-boundary";
+import { barrierScope, isBarrierOwned, runOwnedWrite, checkNoteReservation, NotSent, NotOwned, STEP_OPERATION, RESERVED_OPERATIONS, type BarrierStore } from "./lib/current-offer-barrier";
+import { parseOutcomeNote } from "../../src/lib/seller-call-outcome";
 import { claimWrite, lockContact, stageTransitionUnresolved, claimStageTransition, clearStageTransition } from "./lib/write-receipts";
 import { latestOutcomeNoteForOpportunity } from "../../src/lib/seller-call-outcome";
 import { currentOfferWriteGate } from "../../src/lib/current-offer-carrier";
 import { evaluateProductionGhlWriteScope, evaluateProductionPairedOwnership, requiresProductionPairedOwnership, PRODUCTION_WRITE_SCOPE_REFUSAL } from "./lib/production-write-scope";
+/** Board 15 / PR #126 stacked server PR: the operations a Current Offer barrier can own. */
+const BARRIER_OPERATIONS = new Set(Object.values(STEP_OPERATION));
+const barrierStore = () => getStore("iaos-write-receipts") as unknown as BarrierStore;
 const json = (statusCode: number, data: unknown) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(data) });
 
 /**
@@ -83,8 +88,40 @@ export const handler = async (event: any) => {
   const scope = evaluateProductionGhlWriteScope(config, { operation: request.operation, targetId: request.targetId, args: request.args });
   if (!scope.ok) return json(403, { error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: scope.code });
   let release: (() => Promise<void>) | undefined;
+  /* Board 15 / PR #126 stacked server PR -- the durable Current Offer barrier
+     (lib/current-offer-barrier.ts). A request id registered by `begin` is
+     barrier-owned: its send is claimed atomically at the write boundary, its
+     outcome is recorded, and any refusal before sending answers
+     `outcome: "not_sent"`. A Current Offer write that is not barrier-owned is
+     refused before anything is sent. Every other request is unchanged. */
+  const barrierOperation = BARRIER_OPERATIONS.has(request.operation);
+  const offerScope = barrierScope(String(process.env.IAOS_ENV), config.locationId);
+  let owned = false;
   try {
     connectLambda(event);
+    if (barrierOperation) {
+      try { owned = await isBarrierOwned(barrierStore(), offerScope, request.requestId); }
+      catch (e) {
+        // Ownership unknown: never proceed. A reserved-only operation answers
+        // not_sent; any other operation fails exactly as before (generic
+        // refusal, nothing sent).
+        if (RESERVED_OPERATIONS.has(request.operation)) return json(409, { outcome: "not_sent", error: "The reservation could not be read; nothing was sent" });
+        throw e;
+      }
+      if (RESERVED_OPERATIONS.has(request.operation) && !owned) {
+        return json(409, { outcome: "not_sent", error: request.operation === "opportunity.currentOffer" ? "No Current Offer reservation for this save; nothing was sent" : "No reservation for this Follow-Up callback; nothing was sent" });
+      }
+      /* PR #126 stacked server PR (Bones, 2026-10-05): a negotiation outcome
+         (Accept, Pass, Follow-Up) is only sent under a reservation of the same
+         kind for the same deal -- so no outcome can be submitted while another
+         is pending or unresolved, from any session. Plain notes are unchanged. */
+      if (request.operation === "note.create") {
+        let refusal: string | null;
+        try { refusal = await checkNoteReservation(barrierStore(), offerScope, request.requestId, parseOutcomeNote(String(request.args?.body ?? ""))); }
+        catch { refusal = "The reservation could not be read; nothing was sent"; }
+        if (refusal) return json(409, { outcome: "not_sent", error: refusal });
+      }
+    }
     // INV-98: an unresolved earlier Under Contract attempt blocks every later
     // one -- any browser, operator or requestId -- before any GHL call.
     if (plan.kind === "opportunity_stage" && await stageTransitionUnresolved(request.targetId)) {
@@ -102,60 +139,91 @@ export const handler = async (event: any) => {
     const pairedProduction = requiresProductionPairedOwnership(config, operation, targetId);
     release = await lockContact(pairedProduction && isOpportunityTargeted ? config.productionProofScope.contactId : contactId);
     target = isOpportunityTargeted ? await boundary.opportunity(targetId) : await boundary.contact(targetId);
-    // INV-98 walkthrough: under the contact lock, before the write claim or
-    // any PUT, the pinned opportunity (read fresh) must still belong to the
-    // pinned contact in Seller Leads. Production only; Test is unaffected.
-    if (pairedProduction) {
-      const pinnedOpportunity = isOpportunityTargeted ? target : await boundary.opportunity(config.productionProofScope.opportunityId);
-      const ownership = evaluateProductionPairedOwnership(config, pinnedOpportunity);
-      if (!ownership.ok) return json(403, { error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: ownership.code });
+    const perform = async (hooks?: DispatchHooks): Promise<{ confirmed: boolean; statusCode: number; body: unknown }> => {
+      // INV-98 walkthrough: under the contact lock, before the write claim or
+      // any PUT, the pinned opportunity (read fresh) must still belong to the
+      // pinned contact in Seller Leads. Production only; Test is unaffected.
+      if (pairedProduction) {
+        const pinnedOpportunity = isOpportunityTargeted ? target : await boundary.opportunity(config.productionProofScope.opportunityId);
+        const ownership = evaluateProductionPairedOwnership(config, pinnedOpportunity);
+        if (!ownership.ok) throw new RefusedBeforeSend(403, { error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: ownership.code });
+      }
+      if (operation === "opportunity.currentOffer") {
+        const outcome = latestOutcomeNoteForOpportunity(await boundary.notes(contactId), targetId);
+        if (currentOfferWriteGate({ value: args.value, agreementAlreadyReached: outcome?.kind === "accept" }).kind !== "allowed") throw new RefusedBeforeSend(409, { error: "Current Offer is frozen or invalid" });
+      }
+      if (operation === "contact.routing" && args.value === routings[1]) {
+        const d = fieldValue(target.customFields, config.fields.callDisposition, "contact").value;
+        if (d !== "No Answer" && d !== "Voicemail") throw new RefusedBeforeSend(409, { error: "Routing transition is not permitted" });
+      }
+      if (operation === "contact.dispositionAt") {
+        const d = fieldValue(target.customFields, config.fields.callDisposition, "contact").value;
+        if (!dispositions.includes(d)) throw new RefusedBeforeSend(409, { error: "A valid disposition must be confirmed first" });
+        if (d === "Follow Up" && !fieldValue(target.customFields, config.fields.callbackDatetimePrecise, "contact").value) throw new RefusedBeforeSend(409, { error: "Follow Up requires a confirmed callback" });
+      }
+      if (plan.kind === "note") await validateLedgerNote(boundary, targetId, plan.body!, operator);
+      await claimWrite(`${operator}:${operation}:${targetId}`, requestId, request);
+      if (plan.kind === "note") return { confirmed: true, statusCode: 200, body: await boundary.note(targetId, plan.body!, hooks) };
+      if (plan.kind === "task") {
+        const path = `/contacts/${targetId}/tasks/${plan.taskId}`;
+        const before = await boundary.call(path); const task = before.task ?? before;
+        if (task.id !== plan.taskId || (task.contactId && task.contactId !== targetId) || typeof task.completed !== "boolean") throw new Error("Task identity is ambiguous");
+        if (!task.completed) await boundary.call(`${path}/completed`, "PUT", { completed: true });
+        const after = await boundary.call(path); const readback = after.task ?? after;
+        if (readback.id !== plan.taskId || readback.completed !== true) throw new WriteUncertain("Task completion readback is ambiguous");
+        return { confirmed: true, statusCode: 200, body: { confirmed: true } };
+      }
+      if (plan.kind === "opportunity_stage") {
+        // Board #9 Phase B (B9-13). Independent re-verification (both the
+        // Under Contract execution AND the preserved executed artifact)
+        // happens INSIDE this call -- never trusted from the caller's claim
+        // that either was already confirmed elsewhere.
+        await verifyUnderContractStageTransitionReady(boundary, targetId, plan.agreementAt!, plan.version!, operator);
+        const targetStageId = config.stages.underContract;
+        const forbiddenStageIds = [config.stages.sellerClosedWon];
+        const result = await boundary.transitionOpportunityStage(targetId, config.pipelines.sellerLeads, targetStageId, forbiddenStageIds, {
+          beforePut: () => claimStageTransition(targetId, requestId, operator),
+          afterConfirmed: () => clearStageTransition(targetId),
+        });
+        return { confirmed: true, statusCode: 200, body: { confirmed: true, alreadyInStage: result.alreadyInStage, readback: { id: result.readback.id, pipelineId: result.readback.pipelineId, pipelineStageId: result.readback.pipelineStageId } } };
+      }
+      const result = await boundary.fields(plan.kind, targetId, plan.fields, hooks);
+      // A deterministic partial readback is not a successful write. Existing clients
+      // receive per-field evidence and retain their partial-recovery path.
+      return { confirmed: result.confirmed, statusCode: 200, body: { ...result.response, confirmed: result.confirmed, readback: result.readback, results: result.results } };
+    };
+    if (owned) {
+      try {
+        const done = await runOwnedWrite(barrierStore(), offerScope, { operation, targetId, requestId, contactId }, perform);
+        return json(done.statusCode, done.body);
+      } catch (error) {
+        logWriteFailure(request, error);
+        if (error instanceof NotSent || error instanceof NotOwned) {
+          const refusal = error instanceof NotSent && error.refusal instanceof RefusedBeforeSend ? error.refusal : null;
+          return json(refusal?.statusCode ?? 409, { ...(refusal?.body ?? {}), outcome: "not_sent", error: refusal ? String(refusal.body.error) : "Nothing was sent; the save was refused before reaching GHL" });
+        }
+        // The GHL call may have been made: recorded as uncertain by runOwnedWrite.
+        return json(409, { outcome: "indeterminate", error: error instanceof WriteUncertain ? error.message : "The save may have reached GHL; it is unresolved" });
+      }
     }
-    if (operation === "opportunity.currentOffer") {
-      const outcome = latestOutcomeNoteForOpportunity(await boundary.notes(contactId), targetId);
-      if (currentOfferWriteGate({ value: args.value, agreementAlreadyReached: outcome?.kind === "accept" }).kind !== "allowed") return json(409, { error: "Current Offer is frozen or invalid" });
+    try {
+      const done = await perform();
+      return json(done.statusCode, done.body);
+    } catch (error) {
+      if (error instanceof RefusedBeforeSend) return json(error.statusCode, error.body);
+      throw error;
     }
-    if (operation === "contact.routing" && args.value === routings[1]) {
-      const d = fieldValue(target.customFields, config.fields.callDisposition, "contact").value;
-      if (d !== "No Answer" && d !== "Voicemail") return json(409, { error: "Routing transition is not permitted" });
-    }
-    if (operation === "contact.dispositionAt") {
-      const d = fieldValue(target.customFields, config.fields.callDisposition, "contact").value;
-      if (!dispositions.includes(d)) return json(409, { error: "A valid disposition must be confirmed first" });
-      if (d === "Follow Up" && !fieldValue(target.customFields, config.fields.callbackDatetimePrecise, "contact").value) return json(409, { error: "Follow Up requires a confirmed callback" });
-    }
-    if (plan.kind === "note") await validateLedgerNote(boundary, targetId, plan.body!, operator);
-    await claimWrite(`${operator}:${operation}:${targetId}`, requestId, request);
-    if (plan.kind === "note") return json(200, await boundary.note(targetId, plan.body!));
-    if (plan.kind === "task") {
-      const path = `/contacts/${targetId}/tasks/${plan.taskId}`;
-      const before = await boundary.call(path); const task = before.task ?? before;
-      if (task.id !== plan.taskId || (task.contactId && task.contactId !== targetId) || typeof task.completed !== "boolean") throw new Error("Task identity is ambiguous");
-      if (!task.completed) await boundary.call(`${path}/completed`, "PUT", { completed: true });
-      const after = await boundary.call(path); const readback = after.task ?? after;
-      if (readback.id !== plan.taskId || readback.completed !== true) throw new WriteUncertain("Task completion readback is ambiguous");
-      return json(200, { confirmed: true });
-    }
-    if (plan.kind === "opportunity_stage") {
-      // Board #9 Phase B (B9-13). Independent re-verification (both the
-      // Under Contract execution AND the preserved executed artifact)
-      // happens INSIDE this call -- never trusted from the caller's claim
-      // that either was already confirmed elsewhere.
-      await verifyUnderContractStageTransitionReady(boundary, targetId, plan.agreementAt!, plan.version!, operator);
-      const targetStageId = config.stages.underContract;
-      const forbiddenStageIds = [config.stages.sellerClosedWon];
-      const result = await boundary.transitionOpportunityStage(targetId, config.pipelines.sellerLeads, targetStageId, forbiddenStageIds, {
-        beforePut: () => claimStageTransition(targetId, requestId, operator),
-        afterConfirmed: () => clearStageTransition(targetId),
-      });
-      return json(200, { confirmed: true, alreadyInStage: result.alreadyInStage, readback: { id: result.readback.id, pipelineId: result.readback.pipelineId, pipelineStageId: result.readback.pipelineStageId } });
-    }
-    const result = await boundary.fields(plan.kind, targetId, plan.fields);
-    // A deterministic partial readback is not a successful write. Existing clients
-    // receive per-field evidence and retain their partial-recovery path.
-    return json(200, { ...result.response, confirmed: result.confirmed, readback: result.readback, results: result.results });
   } catch (error) {
     logWriteFailure(request, error);
+    // A barrier-owned request only reaches here BEFORE runOwnedWrite (the lock
+    // is held elsewhere, a fresh read failed, ...): provably nothing was sent.
+    if (owned) return json(409, { outcome: "not_sent", error: "Nothing was sent; the save could not start" });
     if (error instanceof WriteUncertain) return json(409, { outcome: "indeterminate", error: error.message });
     return json(409, { error: "Write refused or unconfirmed; refresh and inspect before retrying" });
   } finally { if (release) await release(); }
 };
+
+/** A refusal decided before any GHL write; keeps its original status and body. */
+class RefusedBeforeSend extends Error {
+  constructor(readonly statusCode: number, readonly body: Record<string, unknown>) { super(String(body.error ?? "Refused")); }
+}

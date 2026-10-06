@@ -92,7 +92,7 @@ export const CURRENT_OFFER_STATUS_TEXT: Record<CurrentOfferStatus, string> = {
   recorded: "Recorded in GHL",
   draft: "Draft — not saved yet (saves when you leave the field)",
   saving: "Saving to GHL…",
-  failed: "Not saved — GHL refused the save",
+  failed: "Not saved — nothing was sent to GHL",
   unconfirmed: "Save could not be confirmed — check the deal in GHL",
   /* Fifth re-review (Jess, 2026-10-05): an indeterminate submission -- the
      request may still land -- blocks the deal; nothing more is sent. */

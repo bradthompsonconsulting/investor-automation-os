@@ -3,6 +3,20 @@ import { getConfig, UNDER_CONTRACT_STAGE_NOT_PROVISIONED } from "../../../shared
 import type { FieldWrite } from "./write-contracts";
 export function digest(value: string) { return createHash("sha256").update(value).digest("hex"); }
 export class WriteUncertain extends Error {}
+/**
+ * Board 15 / PR #126 stacked server PR: the dispatch hook for a barrier-owned
+ * Current Offer request (lib/current-offer-barrier.ts). `beforeDispatch` claims
+ * ownership of the send atomically and runs immediately before the GHL call;
+ * `state.dispatched` is set right after it returns and BEFORE the call, so a
+ * call that throws part-way is always treated as possibly sent. Callers that
+ * pass no hooks behave exactly as before.
+ */
+export type DispatchHooks = { beforeDispatch: () => Promise<void>; state: { dispatched: boolean } };
+async function dispatching(hooks?: DispatchHooks) {
+  if (!hooks) return;
+  await hooks.beforeDispatch();
+  hooks.state.dispatched = true;
+}
 export class GhlBoundary {
   constructor(readonly token: string, readonly locationId: string, readonly fetcher: typeof fetch = fetch) { if (!token) throw new Error("GHL authentication not configured"); }
   async call(path: string, method = "GET", body?: unknown) {
@@ -31,8 +45,9 @@ export class GhlBoundary {
     if (!Array.isArray(data.notes) || data.notes.some((n: any) => typeof n.body !== "string")) throw new Error("Notes readback is ambiguous");
     return data.notes as { id: string; body: string; dateAdded?: string }[];
   }
-  async fields(kind: "contact" | "opportunity", id: string, fields: FieldWrite[]) {
+  async fields(kind: "contact" | "opportunity", id: string, fields: FieldWrite[], hooks?: DispatchHooks) {
     await (kind === "contact" ? this.contact(id) : this.opportunity(id));
+    await dispatching(hooks);
     let response: any;
     try { response = await this.call(`/${kind === "contact" ? "contacts" : "opportunities"}/${id}`, "PUT", { customFields: fields.map(({ id, field_value }) => ({ id, field_value })) }); }
     catch { throw new WriteUncertain("Write was not confirmed; independently read back before retrying"); }
@@ -86,8 +101,9 @@ export class GhlBoundary {
     await hooks.afterConfirmed?.();
     return { response, readback, alreadyInStage: false as const };
   }
-  async note(id: string, body: string) {
+  async note(id: string, body: string, hooks?: DispatchHooks) {
     await this.contact(id);
+    await dispatching(hooks);
     let response: any;
     try { response = await this.call(`/contacts/${id}/notes`, "POST", { body }); }
     catch { throw new WriteUncertain("Note outcome unknown; read back before retrying"); }

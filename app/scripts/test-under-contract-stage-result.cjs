@@ -238,7 +238,10 @@ async function transitionWith(writeResponse, version = nextVersion()) {
     assert.match(wc, /if \(!response\.ok \|\| result\.confirmed === false\) throw new Error/);
     assert.doesNotMatch(wc, /releasePendingWrite/);
     // writeCommand still keeps an indeterminate write's requestId (main's own rule).
-    assert.match(wc, /if \(outcome\?\.outcome !== "indeterminate"\) pending\.delete\(key\);/);
+    // PR #126 stacked server PR: an explicit (barrier-reserved) request id never
+    // enters the pending map, so the rule is unchanged for every pending id.
+    assert.match(wc, /if \(!explicitRequestId && outcome\?\.outcome !== "indeterminate"\) pending\.delete\(key\);/);
+    assert.match(wc, /if \(!explicitRequestId\) pending\.set\(key,requestId\);/);
     for (const rel of ['src/lib/ghl.ts', 'src/pages/ContractWorkspace.tsx']) {
       assert.doesNotMatch(fs.readFileSync(path.join(APP, rel), 'utf8'), /releasePendingWrite|pending\.delete/, rel);
     }
