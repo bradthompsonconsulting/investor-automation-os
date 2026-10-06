@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { Link } from "react-router-dom";
 import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, GitBranch } from "lucide-react";
 import { ghl, type OpportunityRow, type PipelineStage } from "../lib/ghl";
 
@@ -16,6 +17,7 @@ const STAGE_COLOR: Record<string, string> = {
   "Seller Call Completed": "#1EC8FF",
   "Seller Follow-Up":      "#1EC8FF",
   "Seller Offer Sent":     "#8B5CF6",
+  "Under Contract":        "#22C55E",
   "Seller Closed-Won":     "#22C55E",
   "Long-Term Nurture":     "#A78BFA",
   "Lost / Not Interested": "#EF4444",
@@ -207,7 +209,18 @@ export default function Pipeline() {
                 sorted.map((o) => (
                   <tr key={o.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
                     <td style={{ padding: "11px 16px", fontWeight: 500, color: "#F1F5F9" }}>
-                      {o.contactName || <em style={{ color: "#475569" }}>Unknown</em>}
+                      {/* Pass 1 F24: the row opens its contact. Navigation only. */}
+                      {o.contactId ? (
+                        <Link
+                          data-testid={`pipeline-row-contact-${o.id}`}
+                          to={`/contacts/${o.contactId}`}
+                          style={{ color: "#1EC8FF", textDecoration: "none" }}
+                        >
+                          {o.contactName || "Unnamed contact"}
+                        </Link>
+                      ) : (
+                        o.contactName || <em style={{ color: "#475569" }}>Unknown</em>
+                      )}
                     </td>
                     <td style={{ padding: "11px 16px", color: "#94A3B8", fontSize: "13px" }}>
                       {o.opportunityName || <span style={{ color: "#334155" }}>—</span>}

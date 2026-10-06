@@ -162,6 +162,10 @@ check('Needs Next Step rows: needs_next_step, not terminal, not already in the s
 check('Seller Call heading and subheading come from the copy module',
   /\{CONVERSATION_OUTCOME_HEADING\}/.test(sellerCallCode) && /\{CONVERSATION_OUTCOME_SUBHEADING\} \{GHL_CALL_LOGGING_LINE\}/.test(sellerCallCode), true);
 check('Seller Call points no-conversation calls to this contact\'s call log', copy.DIAL_RESULT_POINTER, 'No conversation? Log the call on the contact page.');
+// Pass 1 F30: since PR #117 the contact-page Follow Up is recording-only too,
+// so the Seller Call copy must not contrast itself with it.
+check('Seller Call Follow-Up consequence makes no stale claim about the contact-page Follow Up',
+  copy.SELLER_CALL_FOLLOW_UP_CONSEQUENCE, 'Schedules your callback only. No stage change and no seller messages.');
 check('Seller Call points no-conversation results to this contact\'s page',
   /<Link data-testid="call-outcome-dial-result-pointer" to=\{`\/contacts\/\$\{contactId\}`\}/.test(sellerCallCode) && /\{DIAL_RESULT_POINTER\}/.test(sellerCallCode), true);
 check('Seller Call Follow-Up and Pass show their consequence before the confirm button',

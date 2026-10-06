@@ -40,7 +40,9 @@ const COLUMNS: ColumnDef[] = [
         onMouseEnter={(e) => (e.currentTarget.style.color = "#1EC8FF")}
         onMouseLeave={(e) => (e.currentTarget.style.color = "#F1F5F9")}
       >
-        {r.name || <em style={{ color: "#475569" }}>Unknown</em>}
+        {/* Pass 1 F16: a nameless contact is still a working link, so it must
+            not look disabled (the old dim italic "Unknown" did). */}
+        {r.name || <span data-testid={`contacts-unnamed-${r.id}`} style={{ fontStyle: "italic", textDecoration: "underline dotted" }}>Unnamed contact</span>}
       </Link>
     ),
   },

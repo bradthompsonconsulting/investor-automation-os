@@ -216,14 +216,26 @@ jobs:
       - name: Rail — 94 offline checks
         run: node app/scripts/test-rail.cjs
 
+      - name: Board 15 navigation-only paths (Pass 1 F19, F24, F16, F54, F44, F12) — 17 offline checks
+        run: node app/scripts/test-b15-navigation.cjs
+
       - name: Voice foundation and recovery — 77 offline checks
         run: node app/scripts/test-voice-foundation.cjs
 
       - name: Seller Call calling options — 49 offline checks
         run: node app/scripts/test-seller-call-voice-controls.cjs
 
-      - name: Call log, call-outcome wording, queue placement, contact isolation and Do Not Call wiring — 83 offline checks
+      - name: Call log, call-outcome wording, queue placement, contact isolation and Do Not Call wiring — 84 offline checks
         run: node app/scripts/test-call-outcome-copy.cjs
+
+      - name: Pipeline stage display list covers every configured stage — 10 offline checks
+        run: node app/scripts/test-pipeline-stage-display.cjs
+
+      - name: Board 15 operator copy stays true (Pass 1 findings) — 10 offline checks
+        run: node app/scripts/test-b15-operator-copy.cjs
+
+      - name: Calendars explains a GHL permission refusal instead of raw JSON — 13 offline checks
+        run: node app/scripts/test-calendar-unavailable.cjs
 
       - name: Netlify observer — 86 offline checks
         run: node scripts/netlify-status.test.cjs
