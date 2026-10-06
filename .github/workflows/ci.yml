@@ -213,6 +213,12 @@ jobs:
       - name: Resolver and view model — 169 checks
         run: node app/scripts/test-underwriting-resolver.cjs
 
+      - name: Repair estimator operator model, incl. 2026-10-04 itemized unanswered allowances — 276 offline checks
+        run: node app/scripts/test-repair-operator.cjs
+
+      - name: Repair estimate rendered (Underwriting and Deal Calculator share it; PR 124 review) — 23 offline checks
+        run: node app/scripts/test-repair-estimate-rendered.cjs
+
       - name: Rail — 94 offline checks
         run: node app/scripts/test-rail.cjs
 

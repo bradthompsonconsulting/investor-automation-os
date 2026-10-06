@@ -1,13 +1,13 @@
 {
   "_meta": {
     "name": "IAOS approved repair table",
-    "authority": "docs/ESTIMATED_REPAIRS_STANDARD.md — Governing operator-defaults amendment, 2026-09-04",
+    "authority": "docs/ESTIMATED_REPAIRS_STANDARD.md — Governing operator-defaults amendment, 2026-09-04, as amended by the Itemized unanswered allowances amendment, 2026-10-04",
     "process": "docs/REPAIR_TABLE_MAINTENANCE_V1.md",
     "provenance": "IAOS DFW POLICY. Brad-approved underwriting policy amounts, not cost-book values. Applied unconditionally; no location is read to select them.",
     "note": "THIS FILE IS THE SOURCE OF TRUTH FOR THE REPAIR CALCULATOR'S DEFAULTS. Changing a value here changes what the estimator loads. Every change is a Brad decision, recorded as a dated amendment to the authority above. Nothing edits this file automatically.",
-    "lastApproved": "2026-09-04"
+    "lastApproved": "2026-10-04",
+    "retired": "untouchedFallbackAmount ($20,000) retired 2026-10-04 (Brad): each unanswered row now carries its own approved severe-state allowance instead."
   },
-  "untouchedFallbackAmount": 20000,
   "rows": [
     {
       "system": "roof",
