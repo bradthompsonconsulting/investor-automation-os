@@ -16,7 +16,7 @@ import { callLogPlacement, type CallLogPlacement } from "../lib/call-log-queue";
 import { isCallSuppressed } from "../lib/dnc";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
-import { displayContactName, NO_MESSAGE_TEXT } from "../lib/operator-display";
+import { displayContactName, NO_MESSAGE_TEXT, UNNAMED_CONTACT } from "../lib/operator-display";
 import { readCurrentOfferFromOpportunity } from "../lib/current-offer-carrier";
 
 /**
@@ -137,7 +137,7 @@ const STAGE_COLOR: Record<string, string> = {
 };
 
 function contactName(c: ContactRow): string {
-  return [c.firstName, c.lastName].filter(Boolean).join(" ") || "Unknown";
+  return [c.firstName, c.lastName].filter(Boolean).join(" ") || UNNAMED_CONTACT;
 }
 
 function formatAddress(c: ContactRow): string {
@@ -931,7 +931,7 @@ export default function Dashboard() {
             <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
               {tasksDueToday.map((r) => (
                 <div key={r.taskId} style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "12px" }}>
-                  <span style={{ color: "#F1F5F9", fontWeight: 500, minWidth: "140px" }}>{r.contactName || "Unknown"}</span>
+                  <span style={{ color: "#F1F5F9", fontWeight: 500, minWidth: "140px" }}>{r.contactName || UNNAMED_CONTACT}</span>
                   <span style={{ color: "#64748B" }}>{r.address || "—"}</span>
                   <span style={{ marginLeft: "auto", color: "#475569" }}>{r.tier[0].toUpperCase()}{r.tier.slice(1)} · {r.mailerType} · Touch {r.touchNumber}</span>
                 </div>

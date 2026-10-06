@@ -1,0 +1,82 @@
+/**
+ * Board 15 cleanup (Brad's Test checks, 2026-10-06) -- offline checks, in CI.
+ *
+ *   1. No internal Board / issue / commit / repository / PB-D references in
+ *      operator-visible text: the Contract Workspace (template name, the
+ *      Agreement Reached meaning, the send-evidence message), the no-deal
+ *      reasons (PB-D55) and the Seller Call question text (PB-D56). Stored
+ *      values (the template source in authorization records, the disposition
+ *      evidence summary) are unchanged -- only their display.
+ *   2. "Unnamed contact" wherever a contact's name is shown; the Seller Call
+ *      header phone is formatted.
+ *   3. An expired read session shows a sign-in recovery screen (never the
+ *      page's raw failed reads); the page stays mounted behind it and reloads
+ *      when sign-in returns.
+ */
+const fs = require('node:fs');
+const path = require('node:path');
+const Module = require('node:module');
+const ts = require('typescript');
+
+const APP = path.resolve(__dirname, '..');
+Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true },
+}).outputText, filename);
+
+let checks = 0;
+let failures = 0;
+function check(name, ok, detail) {
+  checks += 1;
+  if (!ok) failures += 1;
+  console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail)}`}`);
+}
+const read = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
+/** Source with comments removed, so only code and rendered strings remain. */
+const code = (rel) => read(rel).replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:"'`])\/\/.*$/gm, '$1');
+const INTERNAL = /\bBoard ?#?\d|\bINV-\d|\bPB-D\d|\bcommitted\b|\brepositor|\bgithub\b|docs\//;
+
+const display = require(path.join(APP, 'src/lib/operator-display.ts'));
+const docModel = require(path.join(APP, 'src/lib/contract-document-model.ts'));
+
+// 1 -- internal references
+check('the contract template is displayed by its document name only', display.contractTemplateDisplayName(docModel.CONTRACT_DOCUMENT_TEMPLATE_SOURCE) === 'TREC Resale Home Contract', display.contractTemplateDisplayName(docModel.CONTRACT_DOCUMENT_TEMPLATE_SOURCE));
+check('the stored template source is unchanged (it is part of persisted authorization records)', /committed d7a2b18/.test(docModel.CONTRACT_DOCUMENT_TEMPLATE_SOURCE));
+const contract = code('src/pages/ContractWorkspace.tsx');
+check('Contract Workspace renders the template through contractTemplateDisplayName', /\{contractTemplateDisplayName\(contractDocumentPreview\.templateSource\)\}/.test(contract) && !/\{contractDocumentPreview\.templateSource\}/.test(contract));
+check('Contract Workspace renders the operator Agreement Reached meaning (no board name)', /\{AGREEMENT_REACHED_OPERATOR_MEANING\}/.test(contract) && !INTERNAL.test(display.AGREEMENT_REACHED_OPERATOR_MEANING));
+check('the contract send-evidence message names no issue key', !/INV-\d/.test(code('src/lib/contract-lifecycle-model.ts').match(/message: "The supplied send evidence[^"]*"/)?.[0] ?? 'missing'));
+check('no-deal reasons on Seller Call and Underwriting carry no PB-D55', !/reason="[^"]*PB-D55/.test(code('src/pages/SellerCallWorkspace.tsx')) && !/reason="[^"]*PB-D55/.test(code('src/pages/UnderwritingWorkspace.tsx')));
+check('the Seller Call question text carries no PB-D56', !/"PB-D56/.test(code('src/lib/underwriting/next-best-question.ts')));
+{
+  // Every rendered string literal in the operator pages and the components they use.
+  const files = ['src/pages/ContractWorkspace.tsx', 'src/pages/SellerCallWorkspace.tsx', 'src/pages/UnderwritingWorkspace.tsx', 'src/pages/ContactWorkspace.tsx', 'src/pages/Dashboard.tsx', 'src/components/NoDealYet.tsx', 'src/lib/board9-contract-model.ts', 'src/lib/contract-lifecycle-model.ts', 'src/lib/underwriting/next-best-question.ts'];
+  const offenders = [];
+  for (const f of files) {
+    const lines = code(f).split('\n');
+    lines.forEach((l, i) => {
+      for (const m of l.matchAll(/"[^"\n]{3,}"|`[^`\n]{3,}`/g)) {
+        const s = m[0];
+        if (INTERNAL.test(s) && !/^["`](\.\/|\.\.\/)/.test(s) && !/evidenceSummary/.test(l) && !/CONTRACT_STATE_MEANING|agreement_reached:/.test(l) && !/CONTRACT_DOCUMENT_TEMPLATE_SOURCE/.test(l)) offenders.push(`${f}:${i + 1} ${s.slice(0, 80)}`);
+      }
+    });
+  }
+  // board9-contract-model's CONTRACT_STATE_MEANING restates the governing doc verbatim; it is displayed through the operator wording above.
+  check('no other internal references in rendered strings of these screens', offenders.filter((o) => !/board9-contract-model/.test(o)).length === 0, offenders);
+}
+
+// 2 -- "Unnamed contact"
+for (const f of ['src/pages/ContactWorkspace.tsx', 'src/pages/ContractWorkspace.tsx', 'src/pages/Dashboard.tsx', 'src/pages/SellerCallWorkspace.tsx', 'src/pages/UnderwritingWorkspace.tsx', 'src/pages/Segmentation.tsx', 'src/pages/Mailers.tsx', 'src/pages/Pipeline.tsx']) {
+  const c = code(f);
+  check(`${path.basename(f)}: a nameless contact is "Unnamed contact", never "Unknown"`, !/\|\|\s*"Unknown"|>Unknown</.test(c.replace(/stageName\.get\([^)]*\) \?\? "Unknown"/g, '')) && /UNNAMED_CONTACT/.test(c));
+}
+check('Seller Call header formats the phone', /\{contact\?\.phone \? ` · \$\{formatPhone\(contact\.phone\)\}` : ""\}/.test(code('src/pages/SellerCallWorkspace.tsx')));
+
+// 3 -- expired session
+const ra = code('src/components/ReadAccess.tsx');
+check('a lapsed session shows the sign-in recovery screen with a Sign in again action', /data-testid="read-access-recovery"/.test(ra) && /Your sign-in has ended/.test(ra) && /Sign in again/.test(ra));
+check('the page stays mounted behind it (one keyed wrapper, hidden while signed out)', /const page = <div key=\{`page-\$\{epoch\}`\} hidden=\{status\.kind !== "signed_in"\}/.test(ra) && /return <>\{null\}\{page\}<\/>;/.test(ra) && /\{page\}\s*<\/>;/.test(ra));
+check('the page reloads (remounts) when sign-in returns after a lapse', /if \(lapsed\.current\) \{ lapsed\.current = false; setEpoch\(\(e\) => e \+ 1\); \}/.test(ra));
+check('before any sign-in, the single sign-in landing is unchanged (no page rendered)', /if \(!wasSignedIn\) \{[\s\S]{0,600}>Sign in to IAOS<\/h1>[\s\S]{0,400}<\/div>;\s*\}/.test(ra));
+
+console.log(`\nBoard 15 cleanup: ${checks - failures}/${checks} checks passed`);
+process.exit(failures ? 1 : 0);

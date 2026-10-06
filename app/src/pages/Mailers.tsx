@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { AlertCircle, Mail, CheckSquare, Square, MapPinOff, Loader2 } from "lucide-react";
 import { ghl, type MailerDigest, type MailerGroup, type MailerTaskRow } from "../lib/ghl";
 
@@ -89,7 +90,7 @@ function GroupTable({
                   </button>
                 </td>
                 <td style={{ padding: "9px 16px", fontWeight: 500, color: "#F1F5F9", whiteSpace: "nowrap" }}>
-                  {r.contactName || <em style={{ color: "#475569" }}>Unknown</em>}
+                  {r.contactName || <em style={{ color: "#475569" }}>{UNNAMED_CONTACT}</em>}
                 </td>
                 <td style={{ padding: "9px 16px", color: "#94A3B8", fontSize: "13px" }}>
                   {r.address}

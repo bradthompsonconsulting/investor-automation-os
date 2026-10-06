@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { UNNAMED_CONTACT } from "../lib/operator-display";
+import { formatPhone } from "../lib/format";
 import { Link, useParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home, AlertTriangle } from "lucide-react";
@@ -248,7 +250,7 @@ const COMPACT_BUTTON_STYLE: React.CSSProperties = { ...COMPACT_LINK_STYLE };
 /** Page-local, one consumer -- same convention Dashboard.tsx and UnderwritingWorkspace.tsx each already follow for their own copies. */
 function contactName(c: ContactDetail | null): string {
   if (!c) return "—";
-  return [c.firstName, c.lastName].filter(Boolean).join(" ") || "Unknown";
+  return [c.firstName, c.lastName].filter(Boolean).join(" ") || UNNAMED_CONTACT;
 }
 
 function formatAddress(c: ContactDetail | null): string {
@@ -2206,7 +2208,7 @@ export default function SellerCallWorkspace() {
             : null}
         </div>
         <div style={{ fontSize: "12px", color: "#475569", marginTop: "2px" }}>
-          {formatAddress(contact)}{contact?.phone ? ` · ${contact.phone}` : ""}
+          {formatAddress(contact)}{contact?.phone ? ` · ${formatPhone(contact.phone)}` : ""}
         </div>
       </div>
 
@@ -2279,7 +2281,7 @@ export default function SellerCallWorkspace() {
         /* Pass 1 F19: the same explanation, plus the way to act on it. */
         <NoDealYet
           contactId={id ?? ""}
-          reason="A seller call needs a deal to attach to (PB-D55)."
+          reason="A seller call needs a deal to attach to."
         />
       ) : null}
 

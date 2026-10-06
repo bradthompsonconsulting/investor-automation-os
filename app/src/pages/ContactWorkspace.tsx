@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link, useParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
 import {
@@ -127,7 +128,7 @@ function useEditorGate(key: string, editing: boolean) {
 
 
 function contactName(c: ContactRow): string {
-  return [c.firstName, c.lastName].filter(Boolean).join(" ") || "Unknown";
+  return [c.firstName, c.lastName].filter(Boolean).join(" ") || UNNAMED_CONTACT;
 }
 
 function formatAddress(c: ContactRow): string {

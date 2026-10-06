@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link } from "react-router-dom";
 import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, GitBranch } from "lucide-react";
 import { ghl, type OpportunityRow, type PipelineStage } from "../lib/ghl";
@@ -212,7 +213,7 @@ export default function Pipeline() {
                           {o.contactName || "Unnamed contact"}
                         </Link>
                       ) : (
-                        o.contactName || <em style={{ color: "#475569" }}>Unknown</em>
+                        o.contactName || <em style={{ color: "#475569" }}>{UNNAMED_CONTACT}</em>
                       )}
                     </td>
                     <td style={{ padding: "11px 16px", color: "#94A3B8", fontSize: "13px" }}>

@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from "react";
+import { UNNAMED_CONTACT, contractTemplateDisplayName, AGREEMENT_REACHED_OPERATOR_MEANING } from "../lib/operator-display";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ArrowRight } from "lucide-react";
 import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
@@ -254,7 +255,7 @@ function daysOrNoneToFact(v: DONDraft): DaysOrNone | null {
 
 function contactName(c: ContactDetail | null): string {
   if (!c) return "—";
-  return [c.firstName, c.lastName].filter(Boolean).join(" ") || "Unknown";
+  return [c.firstName, c.lastName].filter(Boolean).join(" ") || UNNAMED_CONTACT;
 }
 
 function formatAddress(c: ContactDetail | null): string {
@@ -2820,7 +2821,7 @@ export default function ContractWorkspace() {
                 {money(screen.agreedPrice)}, agreed {new Date(screen.economics.agreementAt).toLocaleString()}
               </span>
             </div>
-            <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "8px" }}>{CONTRACT_STATE_MEANING.agreement_reached}</div>
+            <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "8px" }}>{AGREEMENT_REACHED_OPERATOR_MEANING}</div>
             <div style={{ fontSize: "12px", color: "#E2E8F0", lineHeight: 1.8 }}>
               <div>Property address: {screen.propertyAddress}</div>
               <div>ARV at acceptance: {moneyOrUnknown(screen.economics.economics.arv)}</div>
@@ -3440,7 +3441,7 @@ export default function ContractWorkspace() {
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Template &amp; document revision identity</div>
                 <div style={{ fontSize: "12px", color: "#E2E8F0", lineHeight: 1.8 }}>
                   <div data-testid="contract-authorization-template-name">Template: {contractDocumentPreview.templateName}</div>
-                  <div data-testid="contract-authorization-template-source" style={{ color: "#64748B" }}>{contractDocumentPreview.templateSource}</div>
+                  <div data-testid="contract-authorization-template-source" style={{ color: "#64748B" }}>{contractTemplateDisplayName(contractDocumentPreview.templateSource)}</div>
                   <div data-testid="contract-authorization-revision">
                     Revision: agreement {new Date(contractDocumentPreview.version.agreementAt).toLocaleString()}, version {contractDocumentPreview.version.versionSeq}
                     {contractDocumentPreview.version.supersedesVersionSeq !== null ? ` (supersedes version ${contractDocumentPreview.version.supersedesVersionSeq})` : ""}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link, useParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Check, Loader2 } from "lucide-react";
@@ -101,7 +102,7 @@ function money(n: number | null): string {
 
 function contactName(c: ContactDetail | null): string {
   if (!c) return "—";
-  return [c.firstName, c.lastName].filter(Boolean).join(" ") || "Unknown";
+  return [c.firstName, c.lastName].filter(Boolean).join(" ") || UNNAMED_CONTACT;
 }
 
 const LEVEL_LABEL: Record<string, string> = {
@@ -1089,7 +1090,7 @@ export default function UnderwritingWorkspace() {
         /* Pass 1 F19: the same explanation, plus the way to act on it. */
         <NoDealYet
           contactId={id ?? ""}
-          reason="Underwriting belongs to the deal, not the person (PB-D55). Nothing is written to the contact as a substitute."
+          reason="Underwriting belongs to the deal, not the person. Nothing is written to the contact as a substitute."
         />
       ) : null}
 

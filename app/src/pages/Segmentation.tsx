@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, Flame, Sun, Snowflake, Scroll } from "lucide-react";
 import { ghl, getBucketTag, isProbate, type ContactRow, type BucketTag } from "../lib/ghl";
 import { formatPhone } from "../lib/format";
@@ -82,7 +83,7 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
 
 function ContactCard({ contact }: { contact: ContactRow }) {
   const probate = isProbate(contact);
-  const name = [contact.firstName, contact.lastName].filter(Boolean).join(" ") || "Unknown";
+  const name = [contact.firstName, contact.lastName].filter(Boolean).join(" ") || UNNAMED_CONTACT;
 
   return (
     <div

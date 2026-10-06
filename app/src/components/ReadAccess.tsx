@@ -27,6 +27,13 @@ export default function ReadAccess({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>({ kind: "checking" });
   const [wasSignedIn, setWasSignedIn] = useState(false);
   useEffect(() => { if (status.kind === "signed_in") setWasSignedIn(true); }, [status.kind]);
+  /* Bumped when sign-in returns after a lapse: the page remounts and reloads. */
+  const [epoch, setEpoch] = useState(0);
+  const lapsed = useRef(false);
+  useEffect(() => {
+    if (status.kind === "signed_in") { if (lapsed.current) { lapsed.current = false; setEpoch((e) => e + 1); } }
+    else if (wasSignedIn && status.kind !== "checking") lapsed.current = true;
+  }, [status.kind, wasSignedIn]);
   const report = useContext(ReadViewReport);
   const signOutRef = useRef(signOut);
   signOutRef.current = signOut;
@@ -83,9 +90,13 @@ export default function ReadAccess({ children }: { children: ReactNode }) {
     await check("Signed out of reads.");
   }
 
-  const bar = { padding: "8px 16px", color: "#fff", background: "#14213d" } as const;
-  // Signed in: the status line (with Sign out) is rendered by Layout.
-  if (status.kind === "signed_in") return <>{children}</>;
+  // Signed in: the status line (with Sign out) is rendered by Layout. The page
+  // lives in ONE keyed wrapper in every state, so hiding it behind the
+  // recovery screen keeps it mounted; the key changes only when sign-in comes
+  // back after a lapse, so every page then reloads its data fresh.
+  const page = <div key={`page-${epoch}`} hidden={status.kind !== "signed_in"} aria-hidden={status.kind !== "signed_in"}>{children}</div>;
+  // Same shape in every state (fragment: [recovery card or nothing, page]) so React never remounts the page on a lapse.
+  if (status.kind === "signed_in") return <>{null}{page}</>;
   const text = status.kind === "checking" ? "Checking sign-in…" :
     status.kind === "unconfigured" ? "Read sign-in is not configured for this site. No IAOS data can be shown." :
     status.message;
@@ -97,9 +108,18 @@ export default function ReadAccess({ children }: { children: ReactNode }) {
       {status.kind === "signed_out" && <button onClick={signIn} className="px-4 py-2 rounded font-semibold" style={{ background: "#1EC8FF", color: "#07142E" }}>Sign in</button>}
     </div>;
   }
-  // The session ended on this page: keep the page (and any write outcome) visible.
-  const prompt = <div role="status" data-testid={`read-access-${status.kind}`} style={bar}>
-    {text} {status.kind === "signed_out" && <button onClick={signIn}>Sign in to read</button>}
-  </div>;
-  return <>{prompt}{children}</>;
+  // Board 15 cleanup (Brad's Test check, 2026-10-06): the session ended on a
+  // page. Show a clear sign-in recovery screen instead of the page's own
+  // failed reads (which surfaced as raw 401 JSON). The page stays mounted but
+  // hidden -- work in progress and anything saved are kept -- and reloads with
+  // current data once sign-in returns.
+  return <>
+    <div key="recovery" role="status" data-testid="read-access-recovery" className="max-w-md mx-auto mt-16 p-6 rounded-lg text-white" style={{ background: "#14213d" }}>
+      <h1 className="text-xl font-semibold mb-2">Your sign-in has ended</h1>
+      <p className="text-sm mb-2" style={{ color: "rgba(255,255,255,0.7)" }} data-testid={`read-access-${status.kind}`}>{text}</p>
+      <p className="text-sm mb-4" style={{ color: "rgba(255,255,255,0.7)" }}>Nothing you saved is lost. Sign in again to continue — this page reloads with current data.</p>
+      {status.kind === "signed_out" && <button onClick={signIn} className="px-4 py-2 rounded font-semibold" style={{ background: "#1EC8FF", color: "#07142E" }}>Sign in again</button>}
+    </div>
+    {page}
+  </>;
 }

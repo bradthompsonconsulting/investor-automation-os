@@ -288,7 +288,7 @@ function dealEconomicsDiagnosis(dealEconomics: Board8Economics): { question: str
             : hasArv
               ? "Has a current ARV been established for this property yet?"
               : "Has a repair estimate been established for this property yet?",
-        whyItMatters: "PB-D56 Gate 1: without ARV and repairs on file, no economics exist yet to negotiate from at all.",
+        whyItMatters: "Without ARV and repairs on file, no economics exist yet to negotiate from at all.",
       };
     }
 
