@@ -363,6 +363,8 @@ function fresh() {
   });
 
   // ── 5. Confirm Accept owns the barrier through offer, note and last-touch ──
+  /* A real acceptance note (the app's own format) at the accepted price. */
+  const acceptNote = (price = 400000) => require('../src/lib/seller-call-outcome.ts').formatOutcomeNote({ opportunityId: opportunity.id, kind: 'accept', at: '2026-10-05T12:00:00.000Z', operator: null, reason: null, followUpAt: null, snapshot: { sellerPosition: null, currentOffer: price, targetAcquisitionPrice: null, maxSupportedOffer: null, expectedSpread: null, arv: null, repairs: null, readinessStatus: 'OFFER_READY' } });
   const acceptSteps = () => { const ids = { offer: rid('acc-offer'), note: rid('acc-note'), touch: rid('acc-touch') }; return { ids, steps: [{ step: 'offer', requestId: ids.offer }, { step: 'note', requestId: ids.note }, { step: 'touch', requestId: ids.touch }] }; };
   await check('Accept: the barrier holds after the offer and the note, and clears only after last-touch is confirmed', async () => {
     fresh();
@@ -371,7 +373,7 @@ function fresh() {
     assert.equal((await offer(400000, ids.offer)).statusCode, 200);
     assert.equal((await status()).body.state, 'blocked');
     assert.equal((await beginBlur(rid('blur-during-accept'))).statusCode, 409, 'no blur save during Accept, from any session');
-    assert.equal((await write('note.create', contact.id, { body: 'Seller accepted (fixture note)' }, ids.note)).statusCode, 200);
+    assert.equal((await write('note.create', contact.id, { body: acceptNote() }, ids.note)).statusCode, 200);
     assert.equal((await status()).body.state, 'blocked');
     assert.equal((await write('contact.lastCallAttempt', contact.id, { value: '2026-10-05T12:00:00.000Z' }, ids.touch)).statusCode, 200);
     assert.equal((await status()).body.state, 'clear');
@@ -382,7 +384,7 @@ function fresh() {
     await begin('accept', steps);
     await offer(400000, ids.offer);
     loseNext.push((req) => req.method === 'POST' && req.pathname.endsWith('/notes'));
-    const n = await write('note.create', contact.id, { body: 'Seller accepted (fixture note)' }, ids.note);
+    const n = await write('note.create', contact.id, { body: acceptNote() }, ids.note);
     assert.equal(body(n).outcome, 'indeterminate');
     const rec = body(await reconcile());
     assert.equal(rec.state, 'blocked');
@@ -406,11 +408,82 @@ function fresh() {
     const { ids, steps } = acceptSteps();
     await begin('accept', steps);
     await offer(400000, ids.offer);
-    await write('note.create', contact.id, { body: 'Seller accepted (fixture note)' }, ids.note);
+    await write('note.create', contact.id, { body: acceptNote() }, ids.note);
     loseNext.push((req) => req.method === 'PUT' && req.pathname === `/contacts/${contact.id}`);
     assert.equal(body(await write('contact.lastCallAttempt', contact.id, { value: '2026-10-05T12:00:00.000Z' }, ids.touch)).outcome, 'indeterminate');
     const rec = body(await reconcile());
     assert.equal(rec.state, 'blocked'); assert.match(rec.message, /last-touch time/);
+  });
+
+  // ── Negotiation outcomes (Bones / Jess third review): no conflicting outcome while Accept is pending ──
+  const outcomeNote = (kind, extra = {}) => require('../src/lib/seller-call-outcome.ts').formatOutcomeNote({ opportunityId: opportunity.id, kind, at: '2026-10-05T12:30:00.000Z', operator: null, reason: kind === 'pass' ? 'not selling' : null, followUpAt: kind === 'follow_up' ? '2026-10-09T15:00:00.000Z' : null, snapshot: { sellerPosition: null, currentOffer: 400000, targetAcquisitionPrice: null, maxSupportedOffer: null, expectedSpread: null, arv: null, repairs: null, readinessStatus: 'OFFER_READY' }, ...extra });
+  const noteCount = () => notes.length;
+  await check('an UNRESERVED Pass / Follow-Up / Accept note is refused before sending (not_sent); nothing reaches GHL', async () => {
+    fresh();
+    for (const kind of ['pass', 'follow_up', 'accept']) {
+      const res = await write('note.create', contact.id, { body: outcomeNote(kind) }, rid('rogue-' + kind));
+      assert.equal(res.statusCode, 409, kind); assert.equal(body(res).outcome, 'not_sent', kind);
+    }
+    assert.equal(noteCount(), 0);
+  });
+  await check('while an Accept is pending: a Pass cannot be reserved and an unreserved Pass note is refused; nothing of the Pass reaches GHL', async () => {
+    fresh();
+    const { ids, steps } = acceptSteps();
+    await begin('accept', steps);
+    await offer(400000, ids.offer);                     // Accept in progress: offer written, note pending
+    const passIds = { note: rid('pass-note'), touch: rid('pass-touch') };
+    const pb = await begin('pass', [{ step: 'note', requestId: passIds.note }, { step: 'touch', requestId: passIds.touch }]);
+    assert.equal(pb.statusCode, 409); assert.match(body(pb).message, /An Accept for this deal is in progress/);
+    assert.equal(body(await write('note.create', contact.id, { body: outcomeNote('pass') }, passIds.note)).outcome, 'not_sent');
+    assert.equal(noteCount(), 0, 'no Pass note reached GHL');
+    await write('note.create', contact.id, { body: acceptNote() }, ids.note);
+    await write('contact.lastCallAttempt', contact.id, { value: '2026-10-05T12:00:00.000Z' }, ids.touch);
+    assert.equal((await status()).body.state, 'clear');
+    assert.equal(notes.filter((n) => /Outcome: accept/.test(n.body)).length, 1);
+    assert.equal(notes.filter((n) => /Outcome: pass/.test(n.body)).length, 0);
+  });
+  await check('and the other way: an Accept cannot be reserved while a Pass is pending', async () => {
+    fresh();
+    const passIds = { note: rid('pass-note'), touch: rid('pass-touch') };
+    await begin('pass', [{ step: 'note', requestId: passIds.note }, { step: 'touch', requestId: passIds.touch }]);
+    const { steps } = acceptSteps();
+    assert.equal((await begin('accept', steps)).statusCode, 409);
+  });
+  await check('a reserved Pass writes its note and last-touch, and releases the barrier', async () => {
+    fresh();
+    const passIds = { note: rid('pass-note'), touch: rid('pass-touch') };
+    assert.equal((await begin('pass', [{ step: 'note', requestId: passIds.note }, { step: 'touch', requestId: passIds.touch }])).statusCode, 200);
+    assert.equal((await write('note.create', contact.id, { body: outcomeNote('pass') }, passIds.note)).statusCode, 200);
+    assert.equal((await write('contact.lastCallAttempt', contact.id, { value: '2026-10-05T12:31:00.000Z' }, passIds.touch)).statusCode, 200);
+    assert.equal((await status()).body.state, 'clear');
+  });
+  await check('a note must match its reservation: an Accept note under a Pass reservation is refused', async () => {
+    fresh();
+    const passIds = { note: rid('pass-note'), touch: rid('pass-touch') };
+    await begin('pass', [{ step: 'note', requestId: passIds.note }, { step: 'touch', requestId: passIds.touch }]);
+    assert.equal(body(await write('note.create', contact.id, { body: acceptNote() }, passIds.note)).outcome, 'not_sent');
+    assert.equal(noteCount(), 0);
+  });
+  await check('Follow-Up: the callback is reserved-only; a reserved Follow-Up writes callback, callback note, last-touch and its outcome note', async () => {
+    fresh();
+    assert.equal(body(await write('contact.callback', contact.id, { value: '2026-10-09T15:00:00.000Z' }, rid('rogue-callback'))).outcome, 'not_sent');
+    const f = { callback: rid('fu-cb'), callback_note: rid('fu-cbnote'), touch: rid('fu-touch'), note: rid('fu-note') };
+    assert.equal((await begin('follow_up', [{ step: 'callback', requestId: f.callback }, { step: 'callback_note', requestId: f.callback_note }, { step: 'touch', requestId: f.touch }, { step: 'note', requestId: f.note }])).statusCode, 200);
+    assert.equal(body(await write('note.create', contact.id, { body: outcomeNote('follow_up') }, f.callback_note)).outcome, 'not_sent', 'an outcome note in the callback-note slot is refused');
+    assert.equal((await write('contact.callback', contact.id, { value: '2026-10-09T15:00:00.000Z' }, f.callback)).statusCode, 200);
+    assert.equal((await write('note.create', contact.id, { body: 'Callback scheduled for Oct 9, 10:00 AM' }, f.callback_note)).statusCode, 200);
+    assert.equal((await write('contact.lastCallAttempt', contact.id, { value: '2026-10-05T12:31:00.000Z' }, f.touch)).statusCode, 200);
+    assert.equal((await write('note.create', contact.id, { body: outcomeNote('follow_up') }, f.note)).statusCode, 200);
+    assert.equal((await status()).body.state, 'clear');
+  });
+  await check('unrelated writes are NOT blocked: a plain contact note, the call log\'s last-touch and the Contact-page callback still write while an Accept is pending', async () => {
+    fresh();
+    const { ids, steps } = acceptSteps();
+    await begin('accept', steps);
+    await offer(400000, ids.offer);
+    assert.equal((await write('note.create', contact.id, { body: 'Plain operator note' }, rid('plain-note'))).statusCode, 200);
+    assert.equal((await write('contact.lastCallAttempt', contact.id, { value: '2026-10-05T12:32:00.000Z' }, rid('calllog-touch'))).statusCode, 200);
+    assert.equal((await write('contact.explicitCallback', contact.id, { value: '2026-10-10T15:00:00.000Z' }, rid('explicit-cb'))).statusCode, 200);
   });
 
   // ── 6. storage failures never send and never clear ─────────────────────────

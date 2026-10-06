@@ -75,6 +75,38 @@ Lambda-compatibility functions can't make strong reads, so any read may be **sta
 
 The recovery's own read-first logic (`recoverLastCallAttempt`) is unchanged. Its messages no longer invite a blind retry or a reload. The page's other note writes (evidence notes, Follow-Up / Pass outcomes) aren't Accept steps.
 
+## Negotiation outcomes: Accept, Follow-Up, Pass (Bones / Jess, third review)
+
+All three outcomes take the deal's **one** durable reservation:
+
+| Outcome | Reserved steps |
+|---|---|
+| Accept | offer, note, touch |
+| Pass | note, touch |
+| Follow-Up | callback, callback note, touch, note |
+
+With one head per deal, no outcome can be reserved while another is pending or unresolved. That holds in this tab, in another browser and after a reload.
+
+**Server enforcement (`ghl-write`). Disabling a button is not the guard:**
+- A negotiation-outcome note is refused (`not_sent`) unless it is the `note` step of a reservation of the **same kind** for the **same deal**. A Follow-Up's callback note can never be an outcome note.
+- `contact.callback` (used only by the Seller Call Follow-Up) is reserved-only, like `opportunity.currentOffer`.
+- The outcome's associated last-touch is the reserved `touch` step. It can't be reserved while an Accept is pending or unresolved.
+
+**Deliberately not blocked** (audit): these are separate operations and are unchanged:
+- plain contact notes;
+- the recording-only call log's last-touch;
+- the Contact page and Dashboard callbacks (`contact.explicitCallback`).
+
+**The page:**
+- Pass and Follow-Up wait for any save in flight, reserve, write with the reserved ids, and let the server's reconcile decide the end state.
+- When the deal is blocked, the outcome area shows why (`outcome-blocked-reason`).
+
+**Retries:**
+- Confirm Accept again: needs a new reservation.
+- The timestamp recovery: reconcile first, then a `touch` reservation.
+- Recording an outcome again: needs a new reservation.
+- No path sends an unreserved outcome note, Follow-Up callback, or outcome last-touch.
+
 ## Failure cases (Jess's list) and their tests
 
 Abbreviations:
@@ -96,6 +128,7 @@ Abbreviations:
 | **Partial Accept failures** | Offer refused, lost before the server, or lost after the GHL call; note refused, or lost after the call; last-touch lost. Each is reported by the existing messages, and the uncertain step is tracked and named. | A A2, A3a, A3b, A4a, A4b, A6; S Accept cases |
 | Storage failures | Begin, claim, outcome, status and reservation-read failures never send and never clear. | S storage cases; O 22 |
 | **Stale storage** | A stale head naming the settled first barrier can't clear or release the newer unresolved barrier. A stale empty head can't let a second barrier in or report clear. A persistently stale head answers 503 and changes nothing. | S "STALE FIRST BARRIER / NEWER UNRESOLVED BARRIER" (reconcile and release), "stale empty head", "persistently stale", "nothing deleted" |
+| **Conflicting outcome during Accept** | With the submitted Accept note held, a Pass from the page, from another session, or sent unreserved straight to the server sends nothing (no Pass note, no last-touch). The Accept then completes alone. A pending Pass blocks Accept the same way. | A A8 (Bones's regression), A9, A10; S outcome cases |
 | **Timestamp recovery** | While the original last-touch is unresolved (sent, not yet applied), recovery sends nothing. When it is proven unsent, recovery reserves first, then sends exactly one write with a new reserved id. | A A6 (recovery refused twice), A6b (reserved recovery) |
 | Lock contention | Reconcile while a write holds the lock answers `in_progress` and changes nothing. | S "held lock" |
 | Contact isolation (unchanged) | A's late results never reach B. | I (87/87) |

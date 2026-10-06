@@ -2007,18 +2007,75 @@ export default function SellerCallWorkspace() {
         return;
       }
 
-      if (kind === "follow_up") {
-        const followUpIso = new Date(followUpAtInput).toISOString();
-        const cb = await scheduleCallbackGated(ghl, contactId, followUpIso);
-        if (cb.ok || cb.callbackPersisted) setSessionCallback({ contactId, iso: followUpIso });
-        if (!cb.ok) {
-          setOutcomeActionError(cb.error);
-          return;
+      /* PR #126 stacked server PR (Bones, 2026-10-05): Follow-Up and Pass are
+         negotiation outcomes too. They take the deal's ONE durable reservation,
+         so neither can be submitted while an Accept is pending or unresolved
+         -- in this tab, another browser or after a reload -- and an Accept
+         cannot start while one of them is. Every write carries its reserved
+         id (the server refuses an outcome note or a Follow-Up callback
+         without one); the server's reconcile decides the end state. */
+      const outcomeOppId = screen.opportunity.id;
+      const outcomeLabel = kind === "pass" ? "Pass" : "Follow-Up";
+      if (!offerSaves.beginAccept(outcomeOppId)) {
+        setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${offerSaves.unresolvedMessage(outcomeOppId) ?? "another outcome for this deal is in progress."}`);
+        return;
+      }
+      await offerSaves.whenIdle(outcomeOppId);
+      const blockedBefore = offerSaves.unresolvedMessage(outcomeOppId);
+      if (blockedBefore !== null) {
+        offerSaves.endAccept(outcomeOppId, blockedBefore);
+        setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${blockedBefore}`);
+        return;
+      }
+      const passIds = newRequestIds(["note", "touch"] as const);
+      const followIds = newRequestIds(["callback", "callback_note", "touch", "note"] as const);
+      let outcomeReserved: Awaited<ReturnType<typeof beginReservation>>;
+      try {
+        outcomeReserved = kind === "pass"
+          ? await beginReservation(outcomeOppId, "pass", [{ step: "note", requestId: passIds.note }, { step: "touch", requestId: passIds.touch }])
+          : await beginReservation(outcomeOppId, "follow_up", [
+              { step: "callback", requestId: followIds.callback }, { step: "callback_note", requestId: followIds.callback_note },
+              { step: "touch", requestId: followIds.touch }, { step: "note", requestId: followIds.note },
+            ]);
+      } catch (e) {
+        const signIn = e instanceof AppWriteSignInRequired;
+        offerSaves.endAccept(outcomeOppId, signIn ? null : RESERVATION_FAILED_MESSAGE);
+        setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${signIn ? (e as Error).message : RESERVATION_FAILED_MESSAGE}`);
+        return;
+      }
+      if (outcomeReserved.state !== "reserved") {
+        offerSaves.endAccept(outcomeOppId, outcomeReserved.message);
+        setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${outcomeReserved.message}`);
+        return;
+      }
+      try {
+        if (kind === "follow_up") {
+          const followUpIso = new Date(followUpAtInput).toISOString();
+          const cb = await scheduleCallbackGated({
+            contacts: {
+              setCallbackDatetime: (id: string, iso: string | null) => ghl.contacts.setCallbackDatetime(id, iso, { requestId: followIds.callback }),
+              setLastCallAttempt: (id: string, iso: string) => ghl.contacts.setLastCallAttempt(id, iso, { requestId: followIds.touch }),
+            },
+            notes: { create: (id: string, body: string) => ghl.notes.create(id, body, { requestId: followIds.callback_note }) },
+          }, contactId, followUpIso);
+          if (cb.ok || cb.callbackPersisted) setSessionCallback({ contactId, iso: followUpIso });
+          if (!cb.ok) {
+            setOutcomeActionError(cb.error);
+            return;
+          }
+          await ghl.notes.create(contactId, attempt.note, { requestId: followIds.note });
+        } else {
+          await ghl.notes.create(contactId, attempt.note, { requestId: passIds.note });
+          await ghl.contacts.setLastCallAttempt(contactId, nowIso, { requestId: passIds.touch });
         }
-        await ghl.notes.create(contactId, attempt.note);
-      } else {
-        await ghl.notes.create(contactId, attempt.note);
-        await ghl.contacts.setLastCallAttempt(contactId, nowIso);
+      } finally {
+        let outcomeUnresolved: string | null = UNRESOLVED_ACCEPT_MESSAGE;
+        try {
+          const settledOutcome = await reconcileReservation(outcomeOppId);
+          outcomeUnresolved = settledOutcome.state === "clear" ? null : settledOutcome.message;
+        } catch { /* not proven: the deal stays unresolved */ }
+        offerSaves.endAccept(outcomeOppId, outcomeUnresolved);
+        if (outcomeUnresolved === null) offerSaves.clearUnresolved(outcomeOppId);
       }
       setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attempt.note, dateAdded: nowIso }]);
       setShowOutcomeForm(null);
@@ -2737,6 +2794,14 @@ export default function SellerCallWorkspace() {
                 {DIAL_RESULT_POINTER}
               </Link>
             </div>
+            {/* PR #126 stacked server PR: while this deal's offer or outcome is
+                pending or unresolved, say why here -- the server refuses any
+                conflicting outcome regardless of these buttons. */}
+            {offerSaves.unresolvedMessage(dealBarOppId) !== null ? (
+              <div data-testid="outcome-blocked-reason" style={{ fontSize: "11px", color: "#F59E0B", marginBottom: "8px" }}>
+                No outcome can be recorded for this deal right now: {offerSaves.unresolvedMessage(dealBarOppId)}
+              </div>
+            ) : null}
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               {!confirmAcceptOffered(latestOutcome?.kind) ? (
                 <span data-testid="call-outcome-accept-recorded" style={{ fontSize: "12px", color: "#22C55E", alignSelf: "center" }}>

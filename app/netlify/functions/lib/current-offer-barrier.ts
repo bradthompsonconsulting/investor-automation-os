@@ -20,7 +20,11 @@
  *              stale evidence can never clear or replace a newer barrier.
  *   barrier/   ONE per barrier id, write-once: purpose and the request digests
  *              of the steps it owns (blur -> [offer]; Confirm Accept ->
- *              [offer, note, touch]; the Accept timestamp recovery -> [touch]).
+ *              [offer, note, touch]; the Accept timestamp recovery -> [touch];
+ *              Pass -> [note, touch]; Follow-Up -> [callback, callback_note,
+ *              touch, note]). One head per deal means a negotiation outcome
+ *              (Accept, Pass, Follow-Up) can never be reserved while another is
+ *              pending or unresolved -- in any session, across reloads.
  *   request/   ONE per request id, write-once: its opportunity, contact, step
  *              and barrier.
  *   decision/  ONE per request, write-once ("send" | "withdrawn", onlyIfNew).
@@ -59,24 +63,34 @@ export interface BarrierStore {
   setJSON(key: string, value: unknown, options?: { onlyIfNew?: boolean; onlyIfMatch?: string }): Promise<{ modified: boolean; etag?: string }>;
 }
 
-export type BarrierPurpose = "blur" | "accept" | "touch";
-export type BarrierStep = "offer" | "note" | "touch";
+export type BarrierPurpose = "blur" | "accept" | "touch" | "pass" | "follow_up";
+export type BarrierStep = "offer" | "note" | "touch" | "callback" | "callback_note";
 export const STEP_OPERATION: Record<BarrierStep, string> = {
   offer: "opportunity.currentOffer",
   note: "note.create",
   touch: "contact.lastCallAttempt",
+  callback: "contact.callback",
+  callback_note: "note.create",
 };
 export const PURPOSE_STEPS: Record<BarrierPurpose, BarrierStep[]> = {
   blur: ["offer"],
   accept: ["offer", "note", "touch"],
   /** Confirm Accept's "Check & retry call timestamp": a last-touch request only. */
   touch: ["touch"],
+  /** Seller Call Pass: the outcome note, then its last-touch. */
+  pass: ["note", "touch"],
+  /** Seller Call Follow-Up: the callback, its note and last-touch, then the outcome note. */
+  follow_up: ["callback", "callback_note", "touch", "note"],
 };
-export const STEP_LABEL: Record<BarrierStep, string> = {
-  offer: "Current Offer save",
-  note: "acceptance note",
-  touch: "last-touch time",
+/** Operations that are ONLY ever sent under a reservation (refused without one). */
+export const RESERVED_OPERATIONS = new Set(["opportunity.currentOffer", "contact.callback"]);
+const NOTE_LABEL: Record<BarrierPurpose, string> = {
+  blur: "note", accept: "acceptance note", touch: "note", pass: "Pass note", follow_up: "Follow-Up note",
 };
+export function stepLabel(purpose: BarrierPurpose, step: BarrierStep): string {
+  if (step === "note") return NOTE_LABEL[purpose];
+  return { offer: "Current Offer save", touch: "last-touch time", callback: "Follow-Up callback", callback_note: "callback note" }[step];
+}
 
 export type StepEvidence = "withdrawn" | "confirmed" | "not_dispatched" | "unresolved" | "pending";
 export type BarrierState =
@@ -133,8 +147,8 @@ async function casHead(store: BarrierStore, scope: string, opp: string, etag: st
 }
 
 export function validateSteps(purpose: unknown, steps: unknown): { purpose: BarrierPurpose; steps: { step: BarrierStep; requestId: string }[] } {
-  if (purpose !== "blur" && purpose !== "accept" && purpose !== "touch") throw new Error("Invalid purpose");
-  const expected = PURPOSE_STEPS[purpose];
+  if (!Object.prototype.hasOwnProperty.call(PURPOSE_STEPS, purpose as string)) throw new Error("Invalid purpose");
+  const expected = PURPOSE_STEPS[purpose as BarrierPurpose];
   if (!Array.isArray(steps) || steps.length !== expected.length) throw new Error("Invalid steps");
   const out = steps.map((s: any, i: number) => {
     if (!s || typeof s !== "object" || Object.keys(s).sort().join() !== "requestId,step") throw new Error("Invalid step");
@@ -143,7 +157,7 @@ export function validateSteps(purpose: unknown, steps: unknown): { purpose: Barr
     return { step: s.step as BarrierStep, requestId: s.requestId as string };
   });
   if (new Set(out.map((s) => s.requestId)).size !== out.length) throw new Error("Duplicate request id");
-  return { purpose, steps: out };
+  return { purpose: purpose as BarrierPurpose, steps: out };
 }
 
 async function stepEvidence(store: BarrierStore, scope: string, opp: string, requestDigest: string, withdrawPending: boolean): Promise<StepEvidence> {
@@ -317,6 +331,28 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
   return result;
 }
 
+/**
+ * A negotiation-outcome note (Accept, Pass, Follow-Up) is only ever sent as
+ * the "note" step of a reservation of the SAME kind for the SAME deal; a
+ * Follow-Up's callback note is never an outcome note. Returns the refusal, or
+ * null. Plain notes with no reservation (contact notes, the call log) pass.
+ */
+export async function checkNoteReservation(
+  store: BarrierStore, scope: string, requestId: string,
+  outcome: { kind: string; opportunityId: string } | null,
+): Promise<string | null> {
+  const reg = await readJson(store, requestKey(scope, requestId)) as RequestRecord | null;
+  if (!reg) return outcome ? "A negotiation outcome needs a reservation; nothing was sent" : null;
+  const barrier = await readJson(store, barrierKey(scope, reg.opp, reg.barrierId)) as BarrierRecord | null;
+  if (!barrier) return "The reservation for this note is unreadable; nothing was sent";
+  if (reg.step === "note") {
+    if (!outcome || outcome.kind !== barrier.purpose || outcome.opportunityId !== reg.opp) return "This note does not match its reservation; nothing was sent";
+    return null;
+  }
+  if (reg.step === "callback_note") return outcome ? "This note does not match its reservation; nothing was sent" : null;
+  return null;
+}
+
 /** Whether a request id is barrier-owned (no side effects). */
 export async function isBarrierOwned(store: BarrierStore, scope: string, requestId: string): Promise<boolean> {
   return (await readJson(store, requestKey(scope, requestId))) !== null;
@@ -326,9 +362,10 @@ export async function isBarrierOwned(store: BarrierStore, scope: string, request
 export function describeBlocked(s: BarrierState): string {
   if (s.state === "clear") return "";
   const open = s.steps.filter((x) => !SETTLED.includes(x.evidence));
-  const sent = open.filter((x) => x.evidence === "unresolved").map((x) => STEP_LABEL[x.step]);
+  const sent = open.filter((x) => x.evidence === "unresolved").map((x) => stepLabel(s.purpose, x.step));
   if (sent.length) {
-    return `Unresolved — the ${sent.join(" and ")} may still reach GHL. Nothing more will be sent for this Current Offer. It stays blocked until the recovery procedure establishes what happened.`;
+    return `Unresolved — the ${sent.join(" and ")} may still reach GHL. Nothing more will be sent for this deal's offer or outcome. It stays blocked until the recovery procedure establishes what happened.`;
   }
-  return "A Current Offer save for this deal is in progress or was interrupted. Nothing more will be sent until it is resolved — use Check again.";
+  const what = s.purpose === "accept" ? "An Accept" : s.purpose === "pass" ? "A Pass" : s.purpose === "follow_up" ? "A Follow-Up" : s.purpose === "touch" ? "A call-timestamp retry" : "A Current Offer save";
+  return `${what} for this deal is in progress or was interrupted. Nothing more will be sent until it is resolved — use Check again.`;
 }

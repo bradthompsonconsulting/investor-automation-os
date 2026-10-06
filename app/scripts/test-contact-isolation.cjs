@@ -107,6 +107,15 @@ function applyWrite(op, target, args) {
   return { status: 200, body: { confirmed: true } };
 }
 
+/* PR #126 stacked server PR: Seller Call outcomes (Follow-Up, Pass) and the
+   Follow-Up callback now take the deal's durable reservation. The REAL barrier
+   module answers /current-offer-barrier and applies ghl-write's rules to every
+   write (reserved-only operations, outcome notes, owned requests); every other
+   write is applied exactly as before. */
+const { createBarrierFixture } = require('./harness/current-offer-barrier-fixture.cjs');
+const { parseOutcomeNote } = require(path.join(APP, 'src/lib/seller-call-outcome.ts'));
+const bf = createBarrierFixture({ contactOf: (o) => (o === `${A}-opp` ? A : o === `${B}-opp` ? B : null) });
+
 // ── Request log, holds and injected failures ────────────────────────────────
 let log = [];        // { kind, contact, op? } in arrival order
 let holds = [];      // { match, hit, release, released }
@@ -121,7 +130,7 @@ function hold(match) {
 function classify(url, method, post) {
   const u = new URL(url);
   const fn = u.pathname.replace('/.netlify/functions/', '');
-  if (fn === 'ghl-write' && method === 'POST') return { kind: 'write', op: post.operation, contact: post.targetId, args: post.args };
+  if (fn === 'ghl-write' && method === 'POST') return { kind: 'write', op: post.operation, contact: post.targetId, args: post.args, requestId: post.requestId };
   if (fn === 'ghl-proxy') {
     const p = u.searchParams.get('path') || '';
     let m;
@@ -185,10 +194,17 @@ async function main() {
           return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Production write refused by the proof write scope', by: 'iaos-production-write-scope', code: decision.code }) });
         }
       }
+      if (req.kind === 'current-offer-barrier') {
+        const res = await bf.handle(route.request().method(), url, post);
+        return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
+      }
+      const serverWrite = () => bf.write({ operation: req.op, targetId: req.contact, requestId: req.requestId, contactId: req.contact },
+        () => { const a = applyWrite(req.op, req.contact, req.args); return { confirmed: a.status === 200 }; },
+        { outcome: req.op === 'note.create' ? parseOutcomeNote(req.args.body) : null });
       const sf = saveThenFail.findIndex((p) => p(req));
-      if (sf >= 0) { saveThenFail.splice(sf, 1); answer(req); return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'fixture: saved, then the response failed' }) }); }
+      if (sf >= 0) { saveThenFail.splice(sf, 1); if (req.kind === 'write') await serverWrite(); else answer(req); return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'fixture: saved, then the response failed' }) }); }
       const fi = failNext.findIndex((p) => p(req));
-      const res = fi >= 0 ? (failNext.splice(fi, 1), { status: 500, body: { error: 'fixture: injected failure' } }) : answer(req);
+      const res = fi >= 0 ? (failNext.splice(fi, 1), { status: 500, body: { error: 'fixture: injected failure' } }) : req.kind === 'write' ? await serverWrite() : answer(req);
       return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
     });
 

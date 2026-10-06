@@ -273,9 +273,14 @@ function client(behaviour = {}) {
   await check('page: the warning clears ONLY on confirmed/written; otherwise the module\'s pendingTimestamp is kept', () => {
     assert.ok(/if \(recovered\.kind === "confirmed" \|\| recovered\.kind === "written"\) \{\s*setTimestampRecovery\(null\);\s*setOutcomeActionError\(null\);\s*\} else \{(?:\s*\/\/[^\n]*)*\s*setTimestampRecovery\(\{ pendingTimestamp: recovered\.pendingTimestamp \}\);\s*setOutcomeActionError\(recovered\.message\);\s*\}/.test(PAGE_NC));
   });
-  await check('page: the only direct setLastCallAttempt calls are the two adapters handed to the module (outcome writes + recovery) and the non-accept outcomes', () => {
+  await check('page: the only direct setLastCallAttempt calls are the reserved adapters -- Accept, the timestamp recovery, the Follow-Up callback sequence and Pass -- each carrying its reserved request id', () => {
     const direct = (PAGE_NC.match(/ghl\.contacts\.setLastCallAttempt\(/g) || []).length;
-    assert.equal(direct, 3, 'accept adapter, recovery adapter, and the unchanged Pass path');
+    assert.equal(direct, 4, 'accept adapter, recovery adapter, Follow-Up adapter, Pass');
+    assert.ok(/setLastCallAttempt\(id, iso, \{ requestId: acceptIds\.touch \}\)/.test(PAGE_NC), 'accept');
+    assert.ok(/setLastCallAttempt\(id, iso, \{ requestId: touchIds\.touch \}\)/.test(PAGE_NC), 'recovery');
+    assert.ok(/setLastCallAttempt\(id, iso, \{ requestId: followIds\.touch \}\)/.test(PAGE_NC), 'follow-up');
+    assert.ok(/setLastCallAttempt\(contactId, nowIso, \{ requestId: passIds\.touch \}\)/.test(PAGE_NC), 'pass');
+    assert.ok(/ghl\.notes\.create\(contactId, attempt\.note, \{ requestId: passIds\.note \}\)/.test(PAGE_NC) && /ghl\.notes\.create\(contactId, attempt\.note, \{ requestId: followIds\.note \}\)/.test(PAGE_NC), 'outcome notes carry reserved ids');
   });
 
   console.log(`\nseller-call-accept-writes checks=${checks} failures=${failures}`);

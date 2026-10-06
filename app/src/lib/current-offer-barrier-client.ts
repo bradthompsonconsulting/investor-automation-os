@@ -18,8 +18,8 @@ import { readFetch } from "./read-session";
 
 const ENDPOINT = "/.netlify/functions/current-offer-barrier";
 
-export type BarrierPurpose = "blur" | "accept" | "touch";
-export type BarrierStep = "offer" | "note" | "touch";
+export type BarrierPurpose = "blur" | "accept" | "touch" | "pass" | "follow_up";
+export type BarrierStep = "offer" | "note" | "touch" | "callback" | "callback_note";
 export type BarrierView =
   | { state: "clear" }
   | { state: "blocked"; message: string }

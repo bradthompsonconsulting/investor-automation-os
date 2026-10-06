@@ -40,6 +40,13 @@
  *       last-touch step is tracked -- Unresolved, naming it.
  *   A7. A second browser during Accept: blocked, sends nothing; clear once
  *       the server has evidence for every step.
+ *   A8. Bones's regression: with the submitted Accept note held, Pass is
+ *       attempted on the page, from another session, and as an unreserved
+ *       request straight to the server -- no Pass note and no extra last-touch
+ *       reach GHL; then the Accept completes.
+ *   A9. A normal Pass reserves first, then writes; the barrier is released.
+ *   A10. A Pass with an unresolved last-touch blocks a later Accept, and the
+ *       outcome area says why.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -112,7 +119,8 @@ async function main() {
         const pre = fx.precheckWrite(req);
         const refuse = h && h.refuse ? h.refuse : pre ? { status: pre.status, error: pre.body.error } : null;
         const serverWrite = (opts) => bf.write({ operation: req.op, targetId: req.target, requestId: req.requestId, contactId: fx.CONTACT },
-          () => { fx.applyWrite(req); return { confirmed: true }; }, opts);
+          () => { fx.applyWrite(req); return { confirmed: true }; },
+          { ...opts, outcome: req.op === 'note.create' ? parseOutcomeNote(req.args.body) : null });
         if (h && h.lose === 'late') { h.lateWrite = () => serverWrite({ refuse: fx.precheckWrite(req) ? { status: 409, error: 'refused' } : null }); return route.abort('failed'); }
         const res = await serverWrite({ refuse, failAfterSend: !!(h && h.failAfterSend), sentNotApplied: !!(h && h.sentNotApplied) });
         return fulfill(res);
@@ -349,6 +357,78 @@ async function main() {
     await page2.waitForTimeout(800);
     check('A7 once the server has evidence for every step, Check again clears browser 2 (Agreement now freezes the offer)', (await page2.getByTestId('current-offer-unresolved').count()) === 0 && (await serverClear()));
     await ctx2.close();
+
+    // A8 — Bones's exact regression: hold the submitted Accept note -> attempt Pass from the
+    //      page and from another session -> nothing conflicting reaches GHL -> release Accept.
+    const passToggle = (pg) => pg.getByTestId('call-outcome-pass-toggle');
+    const passReason = (pg) => pg.getByTestId('call-outcome-pass-reason');
+    const passConfirm = (pg) => pg.getByTestId('call-outcome-pass-confirm');
+    const outcomeNotesOf = (kind) => fx.state.notes.filter((n) => (parseOutcomeNote(n.body) || {}).kind === kind);
+    const passNoteWrites = () => log.filter((r) => r.kind === 'write' && r.op === 'note.create' && (parseOutcomeNote(r.args.body) || {}).kind === 'pass');
+    const tryPass = async (pg, reason) => {
+      await passToggle(pg).click({ timeout: 2000 }).catch(() => {});
+      await passReason(pg).fill(reason, { timeout: 2000 }).catch(() => {});
+      await passConfirm(pg).click({ timeout: 2000 }).catch(() => {});
+      await pg.waitForTimeout(800);
+    };
+    await fresh({ currentOffer: 400000 });
+    await openAcceptForm();
+    const hA8 = hold((r) => r.kind === 'write' && r.op === 'note.create' && (parseOutcomeNote(r.args.body) || {}).kind === 'accept');
+    await confirm().click();
+    await hA8.hit;                                       // the Accept note is submitted and held
+    const touches8 = touchWrites().length;
+    await tryPass(page, 'Seller changed their mind (page)');
+    check('A8 Pass attempted on the same page during Accept: no Pass note and no extra last-touch reach GHL', passNoteWrites().length === 0 && touchWrites().length === touches8 && outcomeNotesOf('pass').length === 0);
+    const ctx8 = await browser.newContext({ viewport: { width: 1280, height: 900 }, timezoneId: 'America/Chicago' });
+    const page8 = await ctx8.newPage();
+    page8.on('pageerror', (e) => pageErrors.push('browser 2: ' + String(e)));
+    await page8.route('**/*', routeHandler);
+    await ctx8.route(/gohighlevel\.com/, (rt) => rt.abort());
+    await page8.goto(harnessUrl);
+    await page8.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
+    await page8.evaluate((t) => window.__iaosNavigate(t), `/contacts/${fx.CONTACT}/seller-call`);
+    await page8.getByTestId('negotiation-current-offer-input').waitFor({ timeout: 30000 });
+    await page8.waitForTimeout(800);
+    check('A8 the other session shows WHY no outcome can be recorded (the Accept in progress)', (await page8.getByTestId('outcome-blocked-reason').count()) > 0 && /An Accept for this deal is in progress/.test(await page8.getByTestId('outcome-blocked-reason').innerText()));
+    await tryPass(page8, 'Seller changed their mind (other session)');
+    const err8 = await page8.getByTestId('call-outcome-error').count() ? await page8.getByTestId('call-outcome-error').innerText() : '';
+    check('A8 Pass attempted from another session is refused before anything is sent, with the reason', /Cannot record Pass/.test(err8) && passNoteWrites().length === 0 && touchWrites().length === touches8, err8);
+    const { formatOutcomeNote } = require(path.join(APP, 'src/lib/seller-call-outcome.ts'));
+    const rogue = formatOutcomeNote({ opportunityId: fx.OPP, kind: 'pass', at: '2026-10-05T23:00:00.000Z', operator: null, reason: 'unreserved bypass', followUpAt: null,
+      snapshot: { sellerPosition: null, currentOffer: 400000, targetAcquisitionPrice: null, maxSupportedOffer: null, expectedSpread: null, arv: null, repairs: null, readinessStatus: 'OFFER_READY' } });
+    const bypass = await page8.evaluate(async (body) => {
+      const r = await fetch('/.netlify/functions/ghl-write', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation: 'note.create', targetId: body.contact, requestId: 'rogue-pass-0001', args: { body: body.note } }) });
+      return { status: r.status, body: await r.json() };
+    }, { contact: fx.CONTACT, note: rogue });
+    check('A8 an UNRESERVED Pass note sent directly to the server is refused (not_sent); nothing reaches GHL', bypass.body.outcome === 'not_sent' && outcomeNotesOf('pass').length === 0, bypass);
+    hA8.release();                                       // release the Accept
+    await until(async () => (await recorded().count()) > 0 && touchWrites().length === touches8 + 1, 'accept finished').catch(() => {});
+    await page.waitForTimeout(600);
+    check('A8 Accept completes: exactly one outcome note (the acceptance), no Pass note, one last-touch (Accept\'s own)', outcomeNotesOf('accept').length === 1 && outcomeNotesOf('pass').length === 0 && touchWrites().length === touches8 + 1 && (await serverClear()));
+    await ctx8.close();
+
+    // A9 — a normal Pass is reserved and completes; the barrier is released.
+    await fresh({ currentOffer: 400000 });
+    const logAt9 = log.length;
+    await tryPass(page, 'Not selling this year');
+    await until(async () => outcomeNotesOf('pass').length === 1 && touchWrites().length === 1, 'pass done').catch(() => {});
+    const after9 = log.slice(logAt9);
+    const begin9 = after9.findIndex((r) => r.kind === 'barrier' && r.action === 'begin');
+    const note9 = after9.findIndex((r) => r.kind === 'write' && r.op === 'note.create');
+    check('A9 Pass reserves first, then sends its note and last-touch; the barrier is released', begin9 >= 0 && note9 > begin9 && outcomeNotesOf('pass').length === 1 && touchWrites().length === 1 && (await serverClear()), after9.map((r) => r.kind === 'write' ? r.op : `${r.kind}:${r.action || ''}`));
+
+    // A10 — a Pass whose last-touch is unresolved blocks a later Accept, with the reason shown.
+    await fresh({ currentOffer: 400000 });
+    h = hold((r) => r.kind === 'write' && r.op === 'contact.lastCallAttempt'); h.sentNotApplied = true; h.release();
+    await tryPass(page, 'Not selling this year');
+    await until(async () => (await page.getByTestId('outcome-blocked-reason').count()) > 0, 'blocked reason').catch(() => {});
+    check('A10 the Pass\'s last-touch is unresolved: the outcome area says so, naming it', /Pass/.test((await page.getByTestId('outcome-blocked-reason').innerText().catch(() => '')) || '') || /last-touch time may still reach GHL/.test((await page.getByTestId('outcome-blocked-reason').innerText().catch(() => '')) || ''));
+    const offers10 = offerWrites().length;
+    const notes10 = log.filter((r) => r.kind === 'write' && r.op === 'note.create').length;
+    if (await confirm().count() === 0) await toggle().click().catch(() => {});
+    await confirm().click({ timeout: 2000 }).catch(() => {});
+    await page.waitForTimeout(800);
+    check('A10 an Accept attempted now sends nothing (no offer write, no note)', offerWrites().length === offers10 && log.filter((r) => r.kind === 'write' && r.op === 'note.create').length === notes10 && outcomeNotesOf('accept').length === 0);
 
     check('no request left the machine', foreign.length === 0, foreign);
     check('no page errors', pageErrors.length === 0, pageErrors);

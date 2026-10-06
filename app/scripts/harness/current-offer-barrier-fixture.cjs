@@ -74,14 +74,20 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
  *   sentNotApplied   the GHL call leaves but is not applied yet (it may land later).
    * Returns { status, body } exactly as ghl-write would.
    */
-  async function write({ operation, targetId, requestId, contactId }, apply, { refuse = null, failAfterSend = false, sentNotApplied = false, beforeLockRelease = null } = {}) {
+  async function write({ operation, targetId, requestId, contactId }, apply, { refuse = null, failAfterSend = false, sentNotApplied = false, beforeLockRelease = null, outcome = null } = {}) {
     let owned;
     try { owned = await lib.isBarrierOwned(store, scope, requestId); }
     catch {
       if (operation === 'opportunity.currentOffer') return { status: 409, body: { outcome: 'not_sent', error: 'The Current Offer reservation could not be read; nothing was sent' } };
       return { status: 409, body: { error: 'Write refused or unconfirmed; refresh and inspect before retrying' } };
     }
-    if (operation === 'opportunity.currentOffer' && !owned) return { status: 409, body: { outcome: 'not_sent', error: 'No Current Offer reservation for this save; nothing was sent' } };
+    if (lib.RESERVED_OPERATIONS.has(operation) && !owned) return { status: 409, body: { outcome: 'not_sent', error: 'No reservation for this write; nothing was sent' } };
+    // ghl-write's rule: a negotiation-outcome note only under a reservation of the same kind.
+    if (operation === 'note.create') {
+      let refusal;
+      try { refusal = await lib.checkNoteReservation(store, scope, requestId, outcome); } catch { refusal = 'The reservation could not be read; nothing was sent'; }
+      if (refusal) return { status: 409, body: { outcome: 'not_sent', error: refusal } };
+    }
     if (!owned) {
       if (refuse) return { status: refuse.status, body: { error: refuse.error } };
       const r = await apply();

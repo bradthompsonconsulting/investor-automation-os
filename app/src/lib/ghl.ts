@@ -709,7 +709,7 @@ export const ghl = {
     // in GHL and truncates time-of-day, so callback_datetime_precise (TEXT)
     // rides along in the same call as the exact value our own read path uses.
     // Pass null (not "") to clear both — GHL silently ignores an empty string.
-    setCallbackDatetime: (contactId: string, iso: string | null) => confirmedCommand("contact.callback", contactId, { value: iso }),
+    setCallbackDatetime: (contactId: string, iso: string | null, opts?: { requestId?: string }) => confirmedCommand("contact.callback", contactId, { value: iso }, opts?.requestId),
     // B14-12: the deliberate Set/Clear Callback action (Contact page, Dashboard
     // row). Same fields, distinct operation — see explicitCallbackClient below.
     setExplicitCallback: (contactId: string, iso: string | null) => confirmedCommand("contact.explicitCallback", contactId, { value: iso }),

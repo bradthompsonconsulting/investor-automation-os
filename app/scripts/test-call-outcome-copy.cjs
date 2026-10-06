@@ -130,7 +130,8 @@ check('Set Callback stays a separate, explicit page action', /\{callback \? "Cha
     && /scheduleCallbackGated\(explicitCallbackClient, contactId, iso\)/.test(dashboardSrc) && /await ghl\.contacts\.setExplicitCallback\(contactId, null\)/.test(dashboardSrc)
     && !/setCallbackDatetime\(/.test(contactPageCode) && !/setCallbackDatetime\(/.test(dashboardSrc), true);
   check('Seller Call Follow-Up keeps the generic callback operation (denied in Production) and never the explicit one',
-    /scheduleCallbackGated\(ghl, contactId, followUpIso\)/.test(sellerCallCode) && !/explicitCallback|setExplicitCallback/.test(sellerCallCode), true);
+    // PR #126 stacked server PR: the same generic operation, now carrying its reserved request id.
+    /scheduleCallbackGated\(\{[\s\S]{0,600}ghl\.contacts\.setCallbackDatetime\(id, iso, \{ requestId: followIds\.callback \}\)[\s\S]{0,600}\}, contactId, followUpIso\)/.test(sellerCallCode) && !/explicitCallback|setExplicitCallback/.test(sellerCallCode), true);
   check('ghl client: explicit callback is its own operation; explicitCallbackClient routes only the callback write through it',
     /setExplicitCallback: \(contactId: string, iso: string \| null\) => confirmedCommand\("contact\.explicitCallback", contactId, \{ value: iso \}\)/.test(ghlClient)
     && /setCallbackDatetime: \(id: string, iso: string \| null\) => ghl\.contacts\.setExplicitCallback\(id, iso\)/.test(ghlClient), true);
@@ -216,10 +217,13 @@ check('Confirm Pass is disabled until this contact\'s callback status is known',
     gate !== -1 && gate < firstWrite && /if \(kind === "pass" && !passCallbackKnown\) \{\s*setOutcomeActionError\([^)]*\);\s*return;\s*\}/.test(handler), true);
 }
 check('a Follow-Up saved on this page is recorded WITH the contact it was written for',
-  /const cb = await scheduleCallbackGated\(ghl, contactId, followUpIso\);\s*if \(cb\.ok \|\| cb\.callbackPersisted\) setSessionCallback\(\{ contactId, iso: followUpIso \}\);/.test(sellerCallCode), true);
+  /const cb = await scheduleCallbackGated\([\s\S]{0,1200}?\}, contactId, followUpIso\);\s*if \(cb\.ok \|\| cb\.callbackPersisted\) setSessionCallback\(\{ contactId, iso: followUpIso \}\);/.test(sellerCallCode), true);
 check('no unscoped session callback remains', /sessionCallbackIso/.test(sellerCallCode), false);
+// PR #126 stacked server PR: the page's only setCallbackDatetime is the reserved Follow-Up adapter;
+// Pass still writes its note and last-touch only (now with reserved ids) and never touches a callback.
 check('Pass writes stay note + attempt only: Seller Call never clears a callback',
-  /setCallbackDatetime/.test(sellerCallCode), false);
+  (sellerCallCode.match(/setCallbackDatetime\(/g) || []).length === 1
+    && /\} else \{\s*await ghl\.notes\.create\(contactId, attempt\.note, \{ requestId: passIds\.note \}\);\s*await ghl\.contacts\.setLastCallAttempt\(contactId, nowIso, \{ requestId: passIds\.touch \}\);\s*\}/.test(sellerCallCode), true);
 
 // ── Contact page: late results stay with their contact ───────────────────
 check('Contact page tracks the contact it currently shows',

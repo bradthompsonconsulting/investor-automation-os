@@ -113,7 +113,14 @@ const uploadHandler = require('../netlify/functions/ghl-executed-artifact-upload
 // Board 15 / PR #126 stacked server PR: a Current Offer write needs a durable
 // reservation (current-offer-barrier.ts) before it can be sent.
 const barrierHandler = require('../netlify/functions/current-offer-barrier.ts').handler;
+async function reserveFollowUpCallback(requestId) {
+  const steps = [{ step: 'callback', requestId }, { step: 'callback_note', requestId: requestId + '-cbn' }, { step: 'touch', requestId: requestId + '-tch' }, { step: 'note', requestId: requestId + '-out' }];
+  const res = await barrierHandler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ action: 'begin', opportunityId: opportunity.id, purpose: 'follow_up', steps }) });
+  assert.equal(res.statusCode, 200, res.body);
+}
 async function reserveOffer(requestId) {
+  // A previous case may have left a reservation with never-sent steps: reconcile withdraws them.
+  await barrierHandler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ action: 'reconcile', opportunityId: opportunity.id }) });
   const res = await barrierHandler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ action: 'begin', opportunityId: opportunity.id, purpose: 'blur', steps: [{ step: 'offer', requestId }] }) });
   assert.equal(res.statusCode, 200, res.body);
 }
@@ -433,6 +440,8 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   for(const [op,args] of cases) await check('retained '+op, async () => {
     const requestId = `request-${++sequence}`;
     if (op === 'opportunity.currentOffer') await reserveOffer(requestId);
+    // PR #126 stacked server PR: the Seller Call Follow-Up callback is reserved-only.
+    if (op === 'contact.callback') await reserveFollowUpCallback(requestId);
     const res=await handler(event(op, op.startsWith('opportunity.')||op.startsWith('contract.')?opportunity.id:contact.id,args,requestId)); assert.equal(res.statusCode,200,res.body); assert.notEqual(JSON.parse(res.body).confirmed,false);
   });
   // B14-12 recording-only call log: the operation-specific boundary.
@@ -524,7 +533,24 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   Object.assign(contact,{firstName:'Jane',lastName:'Seller',email:'seller@example.com',address1:'123 Main St',city:'Austin',state:'TX',postalCode:'78701'});
   opportunity.customFields=opportunity.customFields.filter(f=>f.id!==config.opportunityFacts.currentOffer);
   opportunity.customFields.push({id:config.opportunityFacts.currentOffer,fieldValue:190000});
-  for(const note of fixture.notes) await check('retained ledger '+note.body.split(' — ')[0],async()=>{const res=await handler(event('note.create',contact.id,{body:note.body}));assert.equal(res.statusCode,200,res.body);});
+  // PR #126 stacked server PR: a negotiation-outcome note is sent only under a
+  // reservation of its own kind (as the Seller Call page does), then reconciled.
+  const parseOutcome = require('../src/lib/seller-call-outcome.ts').parseOutcomeNote;
+  const barrierPost = (payload) => barrierHandler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify(payload) });
+  for(const note of fixture.notes) await check('retained ledger '+note.body.split(' — ')[0],async()=>{
+    const outcome = parseOutcome(note.body);
+    let requestId;
+    if (outcome) {
+      await barrierPost({ action: 'reconcile', opportunityId: opportunity.id });
+      const base = `outcome-${++sequence}`;
+      const steps = { accept: ['offer', 'note', 'touch'], pass: ['note', 'touch'], follow_up: ['callback', 'callback_note', 'touch', 'note'] }[outcome.kind].map((step) => ({ step, requestId: `${base}-${step}` }));
+      const reserved = await barrierPost({ action: 'begin', opportunityId: opportunity.id, purpose: outcome.kind, steps });
+      assert.equal(reserved.statusCode, 200, reserved.body);
+      requestId = `${base}-note`;
+    }
+    const res=await handler(event('note.create',contact.id,{body:note.body},requestId));assert.equal(res.statusCode,200,res.body);
+    if (outcome) assert.equal(JSON.parse((await barrierPost({ action: 'reconcile', opportunityId: opportunity.id })).body).state, 'clear');
+  });
   const context = await require('../netlify/functions/lib/write-contract-context.ts').currentContractContext(boundaryLib.configuredBoundary(),opportunity.id);
 
 

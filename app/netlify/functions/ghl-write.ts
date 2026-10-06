@@ -6,7 +6,8 @@ import { getConfig } from "../../shared/ghl-config";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { exact, identifier, planWrite, dispositions, routings } from "./lib/write-contracts";
 import { configuredBoundary, fieldValue, WriteUncertain, type DispatchHooks } from "./lib/ghl-write-boundary";
-import { barrierScope, isBarrierOwned, runOwnedWrite, NotSent, NotOwned, STEP_OPERATION, type BarrierStore } from "./lib/current-offer-barrier";
+import { barrierScope, isBarrierOwned, runOwnedWrite, checkNoteReservation, NotSent, NotOwned, STEP_OPERATION, RESERVED_OPERATIONS, type BarrierStore } from "./lib/current-offer-barrier";
+import { parseOutcomeNote } from "../../src/lib/seller-call-outcome";
 import { claimWrite, lockContact, stageTransitionUnresolved, claimStageTransition, clearStageTransition } from "./lib/write-receipts";
 import { latestOutcomeNoteForOpportunity } from "../../src/lib/seller-call-outcome";
 import { currentOfferWriteGate } from "../../src/lib/current-offer-carrier";
@@ -101,13 +102,24 @@ export const handler = async (event: any) => {
     if (barrierOperation) {
       try { owned = await isBarrierOwned(barrierStore(), offerScope, request.requestId); }
       catch (e) {
-        // Ownership unknown: never proceed. A Current Offer write answers not_sent;
-        // any other operation fails exactly as before (generic refusal, nothing sent).
-        if (request.operation === "opportunity.currentOffer") return json(409, { outcome: "not_sent", error: "The Current Offer reservation could not be read; nothing was sent" });
+        // Ownership unknown: never proceed. A reserved-only operation answers
+        // not_sent; any other operation fails exactly as before (generic
+        // refusal, nothing sent).
+        if (RESERVED_OPERATIONS.has(request.operation)) return json(409, { outcome: "not_sent", error: "The reservation could not be read; nothing was sent" });
         throw e;
       }
-      if (request.operation === "opportunity.currentOffer" && !owned) {
-        return json(409, { outcome: "not_sent", error: "No Current Offer reservation for this save; nothing was sent" });
+      if (RESERVED_OPERATIONS.has(request.operation) && !owned) {
+        return json(409, { outcome: "not_sent", error: request.operation === "opportunity.currentOffer" ? "No Current Offer reservation for this save; nothing was sent" : "No reservation for this Follow-Up callback; nothing was sent" });
+      }
+      /* PR #126 stacked server PR (Bones, 2026-10-05): a negotiation outcome
+         (Accept, Pass, Follow-Up) is only sent under a reservation of the same
+         kind for the same deal -- so no outcome can be submitted while another
+         is pending or unresolved, from any session. Plain notes are unchanged. */
+      if (request.operation === "note.create") {
+        let refusal: string | null;
+        try { refusal = await checkNoteReservation(barrierStore(), offerScope, request.requestId, parseOutcomeNote(String(request.args?.body ?? ""))); }
+        catch { refusal = "The reservation could not be read; nothing was sent"; }
+        if (refusal) return json(409, { outcome: "not_sent", error: refusal });
       }
     }
     // INV-98: an unresolved earlier Under Contract attempt blocks every later

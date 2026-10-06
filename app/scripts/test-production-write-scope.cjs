@@ -347,6 +347,27 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   // Board 15 / PR #126 stacked server PR: the page reserves a durable Current
   // Offer barrier (current-offer-barrier.ts) before sending a Current Offer.
   const barrierHandler = require('../netlify/functions/current-offer-barrier.ts').handler;
+  /* PR #126 stacked server PR: a negotiation-outcome note is sent only under a
+     reservation of its own kind -- as the Seller Call page does: reconcile,
+     reserve, send the note with its reserved id, reconcile (withdrawing the
+     steps this harness does not send). */
+  let pageNoteSeq = 0;
+  const barrierCall = async (world, payload) => {
+    ghlRoute = world.route;
+    try { return await barrierHandler({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify(payload) }); }
+    finally { ghlRoute = null; }
+  };
+  const sendOutcomeNote = async (world, body, tag) => {
+    const kind = require('../src/lib/seller-call-outcome.ts').parseOutcomeNote(body).kind;
+    const opportunityId = require('../src/lib/seller-call-outcome.ts').parseOutcomeNote(body).opportunityId;
+    await barrierCall(world, { action: 'reconcile', opportunityId });
+    const steps = { accept: ['offer', 'note', 'touch'], pass: ['note', 'touch'], follow_up: ['callback', 'callback_note', 'touch', 'note'] }[kind].map((step) => ({ step, requestId: `${tag}-${step}` }));
+    const reserved = await barrierCall(world, { action: 'begin', opportunityId, purpose: kind, steps });
+    if (reserved.statusCode !== 200) throw new Error('outcome reservation refused: ' + reserved.body);
+    const r = await runWorld(world, fixedEvent('note.create', PIN_CONTACT, { body }, `${tag}-note`));
+    await barrierCall(world, { action: 'reconcile', opportunityId });
+    return r;
+  };
   const uploadHandler = require('../netlify/functions/ghl-executed-artifact-upload.ts').handler;
   let seq = 0;
   const writeEvent = (operation, targetId, args) => ({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ operation, targetId, args, requestId: `scope-${++seq}` }) });
@@ -787,7 +808,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     const acceptBody = outcome.formatOutcomeNote({ opportunityId: PIN_OPP, at: acceptAt, operator: 'brad', kind: 'accept', reason: null, followUpAt: null, snapshot: SNAPSHOT });
 
     // 1. The accept note is saved (Confirm Accept's second write).
-    const saved = await runWorld(world, fixedEvent('note.create', PIN_CONTACT, { body: acceptBody }, 'recovery-accept'));
+    const saved = await sendOutcomeNote(world, acceptBody, 'recovery-accept');
     assert.equal(saved.res.statusCode, 200, saved.res.body);
     assert.equal(world.notes.length, 1);
 
@@ -836,6 +857,14 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   // calls) driven against the real ghl-write handler, enabled + pinned.
   const acceptWrites = load('seller-call-accept-writes');
   const pageClient = (world, tag) => {
+    const base = pageClientBase(world, tag);
+    return { ...base, createNote: async (id, body) => {
+      const outcomeKind = (outcome.parseOutcomeNote(body) || {}).kind;
+      const r = outcomeKind ? await sendOutcomeNote(world, body, `${tag}-n${++pageNoteSeq}`) : await runWorld(world, fixedEvent('note.create', id, { body }, `${tag}-plain-${++pageNoteSeq}`));
+      if (r.res.statusCode !== 200) throw new Error(r.body.error || 'refused'); return r.body;
+    } };
+  };
+  const pageClientBase = (world, tag) => {
     let n = 0;
     const call = async (op, target, args) => runWorld(world, fixedEvent(op, target, args, `${tag}-${++n}`));
     return {

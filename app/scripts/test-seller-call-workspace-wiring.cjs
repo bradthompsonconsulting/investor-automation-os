@@ -195,7 +195,10 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   ];
   const foundForbidden = forbiddenAlways.filter((t) => sellerCallTsxNoComments.indexOf(t) !== -1);
   check('page never calls any writer outside the three sanctioned writes (no underwriting/repairs/ARV write, no Board 4 disposition field)', foundForbidden, []);
-  check('page never calls ghl.contacts.setCallbackDatetime directly (only through the unmodified scheduleCallbackGated)', sellerCallTsxNoComments.indexOf('ghl.contacts.setCallbackDatetime') === -1, true);
+  // PR #126 stacked server PR: the Follow-Up callback is reserved-only, so the page hands
+  // scheduleCallbackGated (still unmodified) an adapter carrying the reserved ids -- the one
+  // setCallbackDatetime call on the page is that adapter.
+  check('page calls ghl.contacts.setCallbackDatetime only inside the reserved Follow-Up adapter passed to the unmodified scheduleCallbackGated', (sellerCallTsxNoComments.match(/ghl\.contacts\.setCallbackDatetime\(/g) || []).length === 1 && /setCallbackDatetime: \(id: string, iso: string \| null\) => ghl\.contacts\.setCallbackDatetime\(id, iso, \{ requestId: followIds\.callback \}\)/.test(sellerCallTsxNoComments), true);
   check('page imports scheduleCallbackGated from callbackWrite.ts rather than reimplementing the gated callback sequence', /import \{ scheduleCallbackGated(, formatCallbackTime)? \} from "\.\.\/lib\/callbackWrite"/.test(sellerCallTsx), true);
   check('page reads getDetail, listPipeline, underwriting.policy, and notes.list (all pre-existing read calls)', {
     getDetail: sellerCallTsx.indexOf('ghl.contacts.getDetail') !== -1,
@@ -462,8 +465,8 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
     // is a real, deliberate addition, still exactly ghl.notes.create.
     // INV-98 (Bones REVISE item 2): an eleventh -- the Confirm Accept adapter
     // handed to lib/seller-call-accept-writes.ts, still exactly ghl.notes.create.
-    'ghl.notes.create now has exactly eleven call sites in the actual code, never a twelfth',
-    (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 11,
+    'ghl.notes.create now has exactly twelve call sites in the actual code (PR #126 stacked server PR added the reserved Follow-Up callback-note adapter), never a thirteenth',
+    (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 12,
   );
   const forbiddenAlwaysForOverride = [
     'setApprovedArv', 'setEstimatedRepairs', 'saveUnderwritingFields', 'setAskingPrice',
