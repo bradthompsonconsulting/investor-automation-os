@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useReadRecovered } from "../components/access-status";
 import { Link } from "react-router-dom";
 import {
   MessageSquare, Mail, ArrowDownLeft, ArrowUpRight, Loader2, ExternalLink, FileText, Phone,
@@ -196,12 +197,14 @@ export default function Conversations() {
   const [notes, setNotes]               = useState<NoteRow[] | null>(null);
   const [notesError, setNotesError]     = useState<string | null>(null);
 
+  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
+  const readRecovered = useReadRecovered();
   useEffect(() => {
     setThreadsError(null);
     ghl.conversations.threads()
       .then(setThreads)
       .catch((e: Error) => setThreadsError(e.message));
-  }, []);
+  }, [readRecovered]);
 
   // Load the selected thread's messages (scoped by explicit contactId; never
   // listAll, so §11 lag/drop doesn't apply). Read-only GET.
@@ -219,7 +222,7 @@ export default function Conversations() {
     ghl.notes.list(selected.contactId)
       .then((res) => setNotes(res.notes ?? []))
       .catch((e: Error) => setNotesError(e.message));
-  }, [selected]);
+  }, [selected, readRecovered]);
 
   // Displayable messages: the endpoint returns the complete transcript incl.
   // activity/call noise — allowlist to real conversation channels. Already

@@ -1,4 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { isLifecycleBlur } from "../lib/lifecycle-blur";
+import { useReadRecovered } from "../components/access-status";
+import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link, useParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
 import {
@@ -127,7 +130,7 @@ function useEditorGate(key: string, editing: boolean) {
 
 
 function contactName(c: ContactRow): string {
-  return [c.firstName, c.lastName].filter(Boolean).join(" ") || "Unknown";
+  return [c.firstName, c.lastName].filter(Boolean).join(" ") || UNNAMED_CONTACT;
 }
 
 function formatAddress(c: ContactRow): string {
@@ -440,7 +443,7 @@ function MonetaryRow({ f, contactId, save }: {
             value={draft}
             autoFocus
             onChange={(e) => { setDraft(e.target.value); setInvalid(false); }}
-            onBlur={handleBlur}
+            onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; handleBlur(); }}
             onKeyDown={handleKeyDown}
             style={{ width: "160px", background: "#0F172A", color: "#E2E8F0", border: `1px solid ${invalid ? "#F87171" : "#334155"}`, borderRadius: "4px", padding: "4px 6px", fontSize: "13px", fontFamily: "inherit" }}
           />
@@ -618,7 +621,7 @@ function RailAskEditor({ open, onOpen, onClose, opportunityId, seed, label, disp
         value={draft}
         autoFocus
         onChange={(e) => { setDraft(e.target.value); setInvalid(false); }}
-        onBlur={handleBlur}
+        onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; handleBlur(); }}
         onKeyDown={handleKeyDown}
         style={{ width: "130px", background: "#0F172A", color: "#F1F5F9", border: `1px solid ${invalid ? "#F87171" : "#334155"}`, borderRadius: "4px", padding: "2px 6px", fontSize: "15px", fontWeight: 600, fontFamily: "inherit" }}
       />
@@ -1430,12 +1433,45 @@ export default function ContactWorkspace() {
     };
   }, [refreshAll]);
 
+  /* Board 15 cleanup (Bones, PR #131): read sign-in came back after a lapse.
+     The page is NOT remounted -- drafts, saves in flight and their warnings
+     stay -- so re-run the same per-contact loaders a navigation uses (each
+     clears only its own read error, and each drops a response for a contact
+     no longer shown), without the navigation reset. Field definitions are
+     re-read only if they never loaded. Like a tab return, it waits while an
+     editor is open. */
+  const readRecovered = useReadRecovered();
+  const seenRecovery = useRef(readRecovered);
+  const recoveryPending = useRef(false);
+  function recoverReads() {
+    if (!defs) loadDefs();
+    /* Bones, PR #131 P2: once the contact has loaded, recover through the same
+       screen-keeping refresh a tab return uses -- a failure is reported as a
+       refresh error and never replaces the page (and its editors). Only the
+       parts that never loaded go through their first-load readers. */
+    if (contact && detail && opps) { void refreshAll(); return; }
+    if (!contact) loadContact();
+    if (!detail) loadDetail();
+    if (!opps) loadOpportunities();
+    loadNotes();
+    loadConversations();
+  }
+  useEffect(() => {
+    if (readRecovered === seenRecovery.current) return;
+    seenRecovery.current = readRecovered;
+    if (anyEditorOpenRef.current) { recoveryPending.current = true; setRefreshDeferred(true); return; }
+    recoverReads();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readRecovered]);
+
   /* The deferred half: the editor closed, so take the reading now. Exactly
      one, because the flag is cleared before the fetch is issued. */
   useEffect(() => {
     if (!refreshDeferred || anyEditorOpen) return;
     setRefreshDeferred(false);
+    if (recoveryPending.current) { recoveryPending.current = false; recoverReads(); return; }
     void refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshDeferred, anyEditorOpen, refreshAll]);
 
   useEffect(() => {
@@ -1462,6 +1498,7 @@ export default function ContactWorkspace() {
     setOppsError(null);
     setOpenEditors(new Set());
     setRefreshDeferred(false);
+    recoveryPending.current = false;
     setRefreshError(null);
     setRefreshCount(0);
     loadContact();
@@ -2373,7 +2410,7 @@ export default function ContactWorkspace() {
               value={draft}
               disabled={saving || loading}
               onChange={(e) => setDraft(e.target.value)}
-              onBlur={handleNoteBlur}
+              onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; void handleNoteBlur(); }}
               placeholder={saving ? "Saving…" : "New note (any text = attempted)…"}
               style={{
                 width: "100%", fontSize: "13px", padding: "8px 10px", borderRadius: "8px",

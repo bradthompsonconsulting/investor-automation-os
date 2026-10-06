@@ -1,4 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import RefreshReadError from "../components/RefreshReadError";
+import { isLifecycleBlur } from "../lib/lifecycle-blur";
+import { useReadRecovered } from "../components/access-status";
+import { UNNAMED_CONTACT } from "../lib/operator-display";
+import { formatPhone } from "../lib/format";
 import { Link, useParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home, AlertTriangle } from "lucide-react";
@@ -248,7 +253,7 @@ const COMPACT_BUTTON_STYLE: React.CSSProperties = { ...COMPACT_LINK_STYLE };
 /** Page-local, one consumer -- same convention Dashboard.tsx and UnderwritingWorkspace.tsx each already follow for their own copies. */
 function contactName(c: ContactDetail | null): string {
   if (!c) return "—";
-  return [c.firstName, c.lastName].filter(Boolean).join(" ") || "Unknown";
+  return [c.firstName, c.lastName].filter(Boolean).join(" ") || UNNAMED_CONTACT;
 }
 
 function formatAddress(c: ContactDetail | null): string {
@@ -688,10 +693,20 @@ export default function SellerCallWorkspace() {
     { key: "delivery_signing", label: "Delivery and signing information collected" },
   ] as const;
 
+  /* Board 15 cleanup (Bones, PR #131 P2): once this contact's data has
+     loaded, a failed RE-read (the refresh after read sign-in returns, or a
+     reload after a write) never replaces the workspace -- that would unmount
+     its editors and destroy their drafts and pending writes. It is reported
+     on its own line (RefreshReadError); only a first load that fails shows
+     the full-page error. */
+  const loadedFor = useRef<string | null>(null);
+  const [refreshReadError, setRefreshReadError] = useState<string | null>(null);
+  const readRecovered = useReadRecovered();
   useEffect(() => {
     if (!contactId) return;
     let cancelled = false;
     setFetchError(null);
+    if (loadedFor.current !== contactId) setRefreshReadError(null);
     Promise.all([
       ghl.contacts.getDetail(contactId),
       ghl.opportunities.listPipeline(),
@@ -704,10 +719,17 @@ export default function SellerCallWorkspace() {
         setOpps(opportunitiesForContact(pipeline.opportunities, contactId));
         setPolicyValues(policy.values);
         setNotes(notesResult.notes ?? []);
+        loadedFor.current = contactId;
+        setRefreshReadError(null);
       })
-      .catch((e: Error) => { if (!cancelled) setFetchError(e.message); });
+      .catch((e: Error) => {
+        if (cancelled) return;
+        if (loadedFor.current === contactId) setRefreshReadError(e.message);
+        else setFetchError(e.message);
+      });
     return () => { cancelled = true; };
-  }, [contactId]);
+    // Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse.
+  }, [contactId, readRecovered]);
 
   const loading = fetchError === null && (contact === null || opps === null || policyValues === null || notes === null);
 
@@ -2195,6 +2217,7 @@ export default function SellerCallWorkspace() {
 
   return (
     <Shell contactId={contactId}>
+      <RefreshReadError message={refreshReadError} />
       <div style={{ marginBottom: "6px" }}>
         <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>
           Seller Call
@@ -2206,7 +2229,7 @@ export default function SellerCallWorkspace() {
             : null}
         </div>
         <div style={{ fontSize: "12px", color: "#475569", marginTop: "2px" }}>
-          {formatAddress(contact)}{contact?.phone ? ` · ${contact.phone}` : ""}
+          {formatAddress(contact)}{contact?.phone ? ` · ${formatPhone(contact.phone)}` : ""}
         </div>
       </div>
 
@@ -2279,7 +2302,7 @@ export default function SellerCallWorkspace() {
         /* Pass 1 F19: the same explanation, plus the way to act on it. */
         <NoDealYet
           contactId={id ?? ""}
-          reason="A seller call needs a deal to attach to (PB-D55)."
+          reason="A seller call needs a deal to attach to."
         />
       ) : null}
 
@@ -2603,7 +2626,7 @@ export default function SellerCallWorkspace() {
                   data-testid="negotiation-current-offer-input"
                   value={currentOfferInput}
                   onChange={(e) => handleCurrentOfferChange(e.target.value)}
-                  onBlur={() => { void commitCurrentOffer(); }}
+                  onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; void commitCurrentOffer(); }}
                   readOnly={offerSaves.isLocked(dealBarOppId)}
                   placeholder="Not yet entered — IAOS never sets this"
                   style={{

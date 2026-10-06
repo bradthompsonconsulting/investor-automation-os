@@ -81,7 +81,8 @@ check('no read session: sidebar shows no nav links',
 check('exactly one status line element across Layout and AppWriteAccess',
   count(layout, /role="status"/g) + count(writeAccess, /role="status"/g), 1);
 check('ReadAccess no longer renders its own signed-in bar (it returns only the page)',
-  /if \(status\.kind === "signed_in"\) return <>\{children\}<\/>;/.test(readAccess) && !/Reading as Brad/.test(readAccess), true);
+  // Board 15 cleanup: the page is one fixed-key wrapper (kept mounted behind the recovery screen on a lapse, never remounted).
+  /if \(status\.kind === "signed_in"\) return <>\{null\}\{page\}<\/>;/.test(readAccess) && /const page = <div key="page"[^>]*>\s*<ReadRecovered\.Provider value=\{epoch\}>\{children\}<\/ReadRecovered\.Provider>\s*<\/div>;/.test(readAccess) && !/Reading as Brad/.test(readAccess), true);
 check('status line: read part shows "Signed in until <time>" with Sign out of reads',
   /\{read\.kind === "signed_in" && <span data-testid="read-access-signed-in">\s*Signed in until \{new Date\(read\.expiresAt\)\.toLocaleTimeString\(\)\} <button onClick=\{read\.signOut\}>Sign out<\/button>/.test(layout), true);
 check('status line: view only offers "Enable saving" (existing write popup)',

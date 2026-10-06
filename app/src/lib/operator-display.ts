@@ -8,6 +8,21 @@
 // placeholder. Display only: the value read from GHL is never changed.
 export const UNNAMED_CONTACT = "Unnamed contact";
 
+/* Board 15 cleanup (Brad's Test check, 2026-10-06): the contract template is
+   shown by its document name only -- never the repository path, commit or
+   issue keys its stored source string carries. The stored value is unchanged
+   (it is part of persisted authorization records). */
+export function contractTemplateDisplayName(source: string): string {
+  const file = source.replace(/\s*\(.*\)\s*$/, "").split("/").pop() ?? source;
+  return file.replace(/\.pdf$/i, "").trim() || "Contract template";
+}
+
+/* The Agreement Reached meaning in operator words. The model's own constant
+   restates the governing state-machine document verbatim (and is tested
+   against it); only the on-screen wording drops the internal board name. */
+export const AGREEMENT_REACHED_OPERATOR_MEANING =
+  "The seller has accepted the negotiated price and terms. Negotiation is complete for this specific agreement.";
+
 // True when the text is only a phone number: digits once spaces, hyphens,
 // dots, parentheses and a leading + are removed, and at least 7 of them.
 export function looksLikePhone(text: string): boolean {

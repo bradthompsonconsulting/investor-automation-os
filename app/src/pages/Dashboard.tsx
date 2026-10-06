@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { isLifecycleBlur } from "../lib/lifecycle-blur";
+import { useReadRecovered } from "../components/access-status";
 import { Link } from "react-router-dom";
 import {
   AlertCircle, Clock, FileCheck, Mail as MailIcon, Inbox, CalendarClock,
@@ -16,7 +18,7 @@ import { callLogPlacement, type CallLogPlacement } from "../lib/call-log-queue";
 import { isCallSuppressed } from "../lib/dnc";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
-import { displayContactName, NO_MESSAGE_TEXT } from "../lib/operator-display";
+import { displayContactName, NO_MESSAGE_TEXT, UNNAMED_CONTACT } from "../lib/operator-display";
 import { readCurrentOfferFromOpportunity } from "../lib/current-offer-carrier";
 
 /**
@@ -137,7 +139,7 @@ const STAGE_COLOR: Record<string, string> = {
 };
 
 function contactName(c: ContactRow): string {
-  return [c.firstName, c.lastName].filter(Boolean).join(" ") || "Unknown";
+  return [c.firstName, c.lastName].filter(Boolean).join(" ") || UNNAMED_CONTACT;
 }
 
 function formatAddress(c: ContactRow): string {
@@ -410,7 +412,11 @@ export default function Dashboard() {
     if (openContactId) noteInputRefs.current[openContactId]?.focus();
   }, [openContactId]);
 
+  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
+  const readRecovered = useReadRecovered();
+  const visitRecorded = useRef(false);
   useEffect(() => {
+    setError(null);
     Promise.all([
       ghl.contacts.listAll(),
       ghl.mailers.list(),
@@ -423,12 +429,14 @@ export default function Dashboard() {
         setPipeline(p);
         setUnanswered(u);
 
+        if (visitRecorded.current) return;
+        visitRecorded.current = true;
         const prevVisit = localStorage.getItem(LAST_VISIT_KEY);
         setNewSince(prevVisit ? c.filter((row) => row.dateAdded && row.dateAdded > prevVisit).length : 0);
         localStorage.setItem(LAST_VISIT_KEY, new Date().toISOString());
       })
       .catch((e: Error) => setError(e.message));
-  }, []);
+  }, [readRecovered]);
 
   const loading = !contacts || !digest || !pipeline || !unanswered;
   const today = useMemo(() => todayCT(), []);
@@ -931,7 +939,7 @@ export default function Dashboard() {
             <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
               {tasksDueToday.map((r) => (
                 <div key={r.taskId} style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "12px" }}>
-                  <span style={{ color: "#F1F5F9", fontWeight: 500, minWidth: "140px" }}>{r.contactName || "Unknown"}</span>
+                  <span style={{ color: "#F1F5F9", fontWeight: 500, minWidth: "140px" }}>{r.contactName || UNNAMED_CONTACT}</span>
                   <span style={{ color: "#64748B" }}>{r.address || "—"}</span>
                   <span style={{ marginLeft: "auto", color: "#475569" }}>{r.tier[0].toUpperCase()}{r.tier.slice(1)} · {r.mailerType} · Touch {r.touchNumber}</span>
                 </div>
@@ -1368,7 +1376,7 @@ export default function Dashboard() {
                             disabled={savingIds.has(c.id)}
                             onChange={(e) => setDraftNotes((prev) => ({ ...prev, [c.id]: e.target.value }))}
                             onFocus={() => setOpenContactId(c.id)}
-                            onBlur={() => handleNoteBlur(c.id)}
+                            onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; void handleNoteBlur(c.id); }}
                             placeholder={savingIds.has(c.id) ? "Saving…" : "Note (any text = attempted)…"}
                             style={{
                               width: "100%", fontSize: "11px", padding: "5px 8px", borderRadius: "6px",

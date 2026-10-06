@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useReadRecovered } from "../components/access-status";
 import { Link } from "react-router-dom";
 import { CalendarDays, Loader2, ExternalLink, Clock } from "lucide-react";
 import { ghl, type CalendarEventRow, type CalendarEventsResult } from "../lib/ghl";
@@ -29,6 +30,8 @@ export default function Calendars() {
   const [error, setError] = useState<{ detail: string; accessDenied: boolean } | null>(null);
 
   // Explicit window (client clock) so the read is deterministic: today → +30 days.
+  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
+  const readRecovered = useReadRecovered();
   useEffect(() => {
     setError(null);
     const now = Date.now();
@@ -36,7 +39,7 @@ export default function Calendars() {
       .then(setData)
       .catch((e: Error & { code?: string | null }) =>
         setError({ detail: e.message, accessDenied: e.code === "ghl_calendar_access_denied" }));
-  }, []);
+  }, [readRecovered]);
 
   // Group by CT day, preserving the server's oldest→newest ordering.
   const days = useMemo(() => {

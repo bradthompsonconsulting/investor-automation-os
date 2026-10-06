@@ -130,7 +130,8 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
 // the one write function exists and is wired only to a checkbox onChange.
 // ============================================================
 {
-  const effectMatch = contractTsxNoComments.match(/useEffect\(\(\) => \{[\s\S]*?\n {2}\}, \[contactId\]\);/);
+  // Board 15 cleanup: the same effect also re-runs when read sign-in returns after a lapse (readRecovered).
+  const effectMatch = contractTsxNoComments.match(/useEffect\(\(\) => \{[\s\S]*?\n {2}\}, \[contactId(?:, readRecovered)?\]\);/);
   const effectBody = effectMatch ? effectMatch[0] : '';
   check('the data-fetching useEffect body was actually located (guards the next two checks against a false pass)', effectBody.length > 0, true);
   check('the data-fetching useEffect contains no ghl.notes.create call', /ghl\.notes\.create/.test(effectBody), false);

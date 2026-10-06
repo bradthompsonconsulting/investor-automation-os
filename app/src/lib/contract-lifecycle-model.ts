@@ -535,7 +535,7 @@ export function verifyAcceptedSendBinding(args: {
   if (!hasRealDocumentId) {
     reasons.push({
       code: "PROVIDER_SEND_EVIDENCE_NOT_ACCEPTED",
-      message: "The supplied send evidence is not an accepted INV-63 send with a confirmed provider document identifier -- provider evidence cannot be bound to a contract version without it.",
+      message: "The supplied send evidence is not an accepted contract send with a confirmed provider document identifier -- provider evidence cannot be bound to a contract version without it.",
     });
   }
   if (acceptedSend.opportunityId !== args.opportunityId) {

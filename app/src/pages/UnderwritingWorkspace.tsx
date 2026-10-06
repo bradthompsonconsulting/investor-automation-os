@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import RefreshReadError from "../components/RefreshReadError";
+import { useReadRecovered } from "../components/access-status";
+import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link, useParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Check, Loader2 } from "lucide-react";
@@ -101,7 +104,7 @@ function money(n: number | null): string {
 
 function contactName(c: ContactDetail | null): string {
   if (!c) return "—";
-  return [c.firstName, c.lastName].filter(Boolean).join(" ") || "Unknown";
+  return [c.firstName, c.lastName].filter(Boolean).join(" ") || UNNAMED_CONTACT;
 }
 
 const LEVEL_LABEL: Record<string, string> = {
@@ -838,10 +841,20 @@ export default function UnderwritingWorkspace() {
   const [modeWrite, setModeWrite] = useState<ModeWriteState>({ status: "idle" });
   const [reloadTick, setReloadTick] = useState(0);
 
+  /* Board 15 cleanup (Bones, PR #131 P2): once this contact's data has
+     loaded, a failed RE-read (the refresh after read sign-in returns, or a
+     reload after a write) never replaces the workspace -- that would unmount
+     its editors and destroy their drafts and pending writes. It is reported
+     on its own line (RefreshReadError); only a first load that fails shows
+     the full-page error. */
+  const loadedFor = useRef<string | null>(null);
+  const [refreshReadError, setRefreshReadError] = useState<string | null>(null);
+  const readRecovered = useReadRecovered();
   useEffect(() => {
     if (!contactId) return;
     let cancelled = false;
     setFetchError(null);
+    if (loadedFor.current !== contactId) setRefreshReadError(null);
     Promise.all([
       ghl.contacts.getDetail(contactId),
       ghl.opportunities.listPipeline(),
@@ -852,10 +865,17 @@ export default function UnderwritingWorkspace() {
         setContact(c);
         setOpps(opportunitiesForContact(pipeline.opportunities, contactId));
         setPolicyValues(policy.values);
+        loadedFor.current = contactId;
+        setRefreshReadError(null);
       })
-      .catch((e: Error) => { if (!cancelled) setFetchError(e.message); });
+      .catch((e: Error) => {
+        if (cancelled) return;
+        if (loadedFor.current === contactId) setRefreshReadError(e.message);
+        else setFetchError(e.message);
+      });
     return () => { cancelled = true; };
-  }, [contactId, reloadTick]);
+    // Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse.
+  }, [contactId, reloadTick, readRecovered]);
 
   const loading = fetchError === null && (contact === null || opps === null || policyValues === null);
 
@@ -1048,6 +1068,7 @@ export default function UnderwritingWorkspace() {
 
   return (
     <Shell contactId={contactId}>
+      <RefreshReadError message={refreshReadError} />
       <div style={{ marginBottom: "18px" }}>
         <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>
           Underwriting
@@ -1089,7 +1110,7 @@ export default function UnderwritingWorkspace() {
         /* Pass 1 F19: the same explanation, plus the way to act on it. */
         <NoDealYet
           contactId={id ?? ""}
-          reason="Underwriting belongs to the deal, not the person (PB-D55). Nothing is written to the contact as a substitute."
+          reason="Underwriting belongs to the deal, not the person. Nothing is written to the contact as a substitute."
         />
       ) : null}
 

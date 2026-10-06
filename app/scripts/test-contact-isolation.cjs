@@ -46,6 +46,7 @@ const PROD_CALL_LOG_ON = { ...JSON.parse(JSON.stringify(getConfig('production'))
 let prodScope = false;
 let prodScopeConfig = PROD_CALL_LOG_ON;
 let saveThenFail = [];   // predicates: apply the write, then answer 500 (an uncertain save)
+let refuseWrite = [];    // predicates: the SERVER refuses the write before sending (outcome not_sent)
 const handoffs = [];
 const CFG = getConfig('test');
 const F = CFG.fields;
@@ -194,13 +195,18 @@ async function main() {
           return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Production write refused by the proof write scope', by: 'iaos-production-write-scope', code: decision.code }) });
         }
       }
+      if (req.kind === 'call-log-barrier') {
+        const res = await bf.handleCallLog(route.request().method(), url, post);
+        return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
+      }
       if (req.kind === 'current-offer-barrier') {
         const res = await bf.handle(route.request().method(), url, post);
         return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
       }
-      const serverWrite = () => bf.write({ operation: req.op, targetId: req.contact, requestId: req.requestId, contactId: req.contact },
+      const serverWrite = () => bf.write({ operation: req.op, targetId: req.contact, requestId: req.requestId, contactId: req.contact, args: req.args },
         () => { const a = applyWrite(req.op, req.contact, req.args); return { confirmed: a.status === 200 }; },
-        { outcome: req.op === 'note.create' ? parseOutcomeNote(req.args.body) : null });
+        { outcome: req.op === 'note.create' ? parseOutcomeNote(req.args.body) : null,
+          refuse: (() => { const i = refuseWrite.findIndex((p) => p(req)); if (i < 0) return null; refuseWrite.splice(i, 1); return { status: 409, error: 'fixture: refused before sending' }; })() });
       const sf = saveThenFail.findIndex((p) => p(req));
       if (sf >= 0) { saveThenFail.splice(sf, 1); if (req.kind === 'write') await serverWrite(); else answer(req); return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'fixture: saved, then the response failed' }) }); }
       const fi = failNext.findIndex((p) => p(req));
@@ -222,7 +228,7 @@ async function main() {
     const writesFor = (contact, op) => log.filter((r) => r.kind === 'write' && r.contact === contact && (!op || r.op === op)).length;
     const notesReadsFor = (contact) => log.filter((r) => r.kind === 'notes' && r.contact === contact).length;
     const fresh = async (opts, to) => {
-      resetDb(opts); log = []; holds = []; failNext = []; saveThenFail = [];
+      resetDb(opts); log = []; holds = []; failNext = []; saveThenFail = []; refuseWrite = []; bf.reset();
       await go('/'); await settle();
       await go(to);
     };
@@ -303,25 +309,48 @@ async function main() {
       db[A].fields.get(F.callbackDatetimePrecise) === '2026-10-09T19:30:00.000Z' && (await text()).includes('Callback: Oct 9, 2:30 PM'),
       { stored: db[A].fields.get(F.callbackDatetimePrecise), shown: (await text()).split('\n').filter((l) => l.includes('Callback:')) });
 
-    // C5 — partial failure: a failed note is reported, nothing claims success, Retry completes it.
+    /* C5 — Board 15 / PR #131 (durable call-log operations, lifecycle v3). A note
+       request answered by a gateway 500 never reached the server: its attempt
+       is UNDECIDED, so the page reads the operation and shows it partly saved --
+       never "saved", never "not saved". Check again finishes it with the SAME
+       request id (reuse, not retry); GHL ends with exactly one call note. */
     await fresh({}, `/contacts/${A}`);
     await contactLoaded('Alpha');
     failNext.push((r) => r.kind === 'write' && r.op === 'note.create' && r.contact === A);
     const readsBefore = notesReadsFor(A);
     await save('No Answer');
-    await until(async () => (await page.getByTestId('call-log-partial').count()) === 1, 'partial');
-    check('call log: a failed note is reported as partial (result saved, notes not saved)',
-      /Result saved; notes not saved/.test(await page.getByTestId('call-log-partial').innerText()) && (await page.getByTestId('call-log-done').count()) === 0);
-    check('call log: a failed note does not refresh the notes list or touch last call', notesReadsFor(A) === readsBefore && writesFor(A, 'contact.lastCallAttempt') === 0,
+    await until(async () => (await page.getByTestId('call-log-blocked').count()) === 1, 'partly saved');
+    check('call log: a note answered by a gateway failure shows the call partly saved (its note not sent yet), never "saved"',
+      /partly saved: its call note has not been sent yet/.test(await page.getByTestId('call-log-blocked').innerText()) && (await page.getByTestId('call-log-done').count()) === 0);
+    check('call log: an uncertain note does not refresh the notes list or touch last call', notesReadsFor(A) === readsBefore && writesFor(A, 'contact.lastCallAttempt') === 0,
       { readsBefore, readsAfter: notesReadsFor(A), touches: writesFor(A, 'contact.lastCallAttempt'), ops: opsFor(A) });
+    await until(async () => (await page.getByTestId('call-log-check-again').count()) === 1, 'check again offered');
+    check('call log: Save is disabled while the save is unfinished', await page.getByTestId('call-log-save').isDisabled());
+    await page.getByTestId('call-log-check-again').click();
+    await until(async () => writesFor(A, 'contact.lastCallAttempt') === 1, 'finished');
+    await until(async () => (await page.getByTestId('call-log-done').count()) === 1, 'finished saved').catch(() => {});
+    const noteIds = W().filter((w) => w.contact === A && w.op === 'note.create').map((w) => w.requestId);
+    check('call log: Check again finishes the note with its ORIGINAL request id, then the last touch; one call note in GHL',
+      noteIds.length === 2 && noteIds[0] === noteIds[1] && db[A].notes.filter((n) => n.body === A_NOTE).length === 1 && (await page.getByTestId('call-log-done').count()) === 1,
+      { noteIds, notesInGhl: db[A].notes.map((n) => n.body), done: await page.getByTestId('call-log-done').count() });
+
+    // C5c — a note the SERVER refused before sending: provably not saved; Retry notes (a new reservation) writes it once.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    refuseWrite.push((r) => r.kind === 'write' && r.op === 'note.create' && r.contact === A);
+    await save('No Answer');
+    await until(async () => (await page.getByTestId('call-log-partial').count()) === 1, 'refused partial');
+    check('call log: a note refused before sending is reported as partial (result saved, notes not saved)',
+      /Result saved; notes not saved/.test(await page.getByTestId('call-log-partial').innerText()) && (await page.getByTestId('call-log-done').count()) === 0);
+    await until(async () => (await page.getByTestId('call-log-retry-note').count()) === 1, 'retry offered');
     await page.getByTestId('call-log-retry-note').click();
     await until(async () => writesFor(A, 'contact.lastCallAttempt') === 1, 'retry');
     /* The write is logged when its REQUEST arrives; "saved" renders only after
        its response. Wait for the outcome being asserted (PR 126: this check
        raced under load, 1 in 3 runs). */
     await until(async () => (await page.getByTestId('call-log-done').count()) === 1, 'retry saved').catch(() => {});
-    check('call log: Retry notes writes the note then the last touch, and reports saved',
-      writesFor(A, 'note.create') === 2 && (await page.getByTestId('call-log-done').count()) === 1,
+    check('call log: Retry notes writes the note then the last touch, and reports saved; one call note in GHL',
+      writesFor(A, 'note.create') === 2 && (await page.getByTestId('call-log-done').count()) === 1 && db[A].notes.filter((n) => n.body === A_NOTE).length === 1,
       { notes: writesFor(A, 'note.create'), ops: opsFor(A), done: await page.getByTestId('call-log-done').count() });
 
     // C5b — Bones (PR #117): the result write lands in GHL, then its readback returns 500.
