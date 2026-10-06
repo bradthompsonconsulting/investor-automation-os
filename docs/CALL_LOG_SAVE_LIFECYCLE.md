@@ -73,7 +73,7 @@ call-log/v3/final/<op>             complete | not_saved              write-once,
 
 ## Acceptance matrix: where each case is proven
 
-Server means `app/scripts/test-call-log-barrier.cjs` (38 checks, in CI). Page means `app/scripts/test-call-log-ownership.cjs` (35 checks, local browser).
+Server means `app/scripts/test-call-log-barrier.cjs` (47 checks, in CI). Page means `app/scripts/test-call-log-ownership.cjs` (43 checks, local browser).
 
 | Case | Server | Page |
 |---|---|---|
@@ -91,6 +91,9 @@ Server means `app/scripts/test-call-log-barrier.cjs` (38 checks, in CI). Page me
 | ST-1 to ST-7 storage | ST-1 to ST-4, ST-7 (ST-5 = FN-1, ST-6 = FN-2) | ST-7 |
 | L-1 to L-3 older clients and legacy records | L-1, L-2, L-3 | — |
 | E-1 to E-3 earlier reproductions | E-1 to E-3 | E-1 |
+| B1 ownership changes during a status read (finding, 14eb2d0): the ORIGINAL operation's final is rechecked; a non-current operation without a final is `unrecorded`, never "nothing was sent"; contact status follows the head | B1a, B1b, B1c, B1d | B1 (stale final read after A finished and B began: page 1 shows A "Saved") |
+| B2 partial publication (finding): the SAME attempt's missing binding is repaired and verified; shown as unpublished (nothing sent); a request id shaped like an attempt is never sent without its binding | B2 note, B2 touch, B2 via Check again | B2 note, B2 touch |
+| B3 pending finalization keeps its kind (finding): `finishing not_saved` is never shown as reaching GHL or Saved | B3 (not_saved), B3 (complete) | B3 |
 | K preservation | K (isolation, Current Offer independence, auth) | K-4; the other suites (below) |
 
 **Preservation, also proven by the existing suites:**

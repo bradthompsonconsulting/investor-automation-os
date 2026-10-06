@@ -25,6 +25,7 @@ let etagSeq = 0;
 let failNext = [];       // (op, key) -> throw once, nothing written
 let applyThenThrow = []; // (op, key) -> write applies, then the call throws (ambiguous acknowledgement)
 let staleNext = [];      // (key) -> the next read of it returns null once
+let beforeRead = [];     // { pred(key), fn } -> run fn ONCE just before that key is read (another session acting mid-read)
 const realBlobs = require('@netlify/blobs');
 delete process.env.NETLIFY_BLOBS_CONTEXT;
 const lambdaHeaders = { 'x-nf-site-id': 'offline-site', 'x-nf-deploy-id': 'offline-deploy' };
@@ -40,9 +41,15 @@ Module._resolveFilename = function (name, parent, ...rest) {
   return originalResolve.call(this, name, parent, ...rest);
 };
 Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
+async function runBeforeRead(key) {
+  const i = beforeRead.findIndex((h) => h.pred(key));
+  if (i < 0) return;
+  const [h] = beforeRead.splice(i, 1);
+  await h.fn();
+}
 const memStore = {
-  async get(key) { if (take(failNext, 'get', key)) throw new Error('fixture: blob get failed'); if (take(staleNext, key)) return null; return receipts.has(key) ? structuredClone(receipts.get(key)) : null; },
-  async getWithMetadata(key) { if (take(failNext, 'getWithMetadata', key)) throw new Error('fixture: blob read failed'); return receipts.has(key) ? { data: structuredClone(receipts.get(key)), etag: etags.get(key) } : null; },
+  async get(key) { await runBeforeRead(key); if (take(failNext, 'get', key)) throw new Error('fixture: blob get failed'); if (take(staleNext, key)) return null; return receipts.has(key) ? structuredClone(receipts.get(key)) : null; },
+  async getWithMetadata(key) { await runBeforeRead(key); if (take(failNext, 'getWithMetadata', key)) throw new Error('fixture: blob read failed'); return receipts.has(key) ? { data: structuredClone(receipts.get(key)), etag: etags.get(key) } : null; },
   async setJSON(key, value, options) {
     if (take(failNext, 'setJSON', key)) throw new Error('fixture: blob setJSON failed');
     if (options?.onlyIfNew && receipts.has(key)) return { modified: false };
@@ -184,7 +191,7 @@ async function check(name, fn) {
   catch (e) { failures++; console.error('FAIL ' + name + '\n  ' + (e && e.stack ? e.stack.split('\n').slice(0, 4).join('\n  ') : e)); }
 }
 function fresh() {
-  receipts.clear(); etags.clear(); failNext = []; applyThenThrow = []; staleNext = []; holds = []; loseNext = []; ghlWrites = [];
+  receipts.clear(); etags.clear(); failNext = []; applyThenThrow = []; staleNext = []; beforeRead = []; holds = []; loseNext = []; ghlWrites = [];
   ghl = { [A]: { id: A, customFields: [], notes: [] }, [B]: { id: B, customFields: [], notes: [] } };
 }
 
@@ -509,9 +516,11 @@ function fresh() {
     assert.ok(!receipts.has(keyOf.final(t.op))); assert.equal(receipts.get(keyOf.head(A)).current, t.op);
     const c0 = counts(A);
     failNext.push((op, key) => op === 'setJSON' && key.startsWith('call-log/v3/final/'));
-    assert.equal((await contactStatus()).body.next.action, 'finishing', 'still recording: never shown as finished early');
-    assert.equal((await contactStatus()).body.state, 'finished');
-    assert.ok(receipts.has(keyOf.final(t.op))); assert.equal((await contactStatus()).body.state, 'clear');
+    assert.deepEqual((await contactStatus()).body.next, { action: 'finishing', kind: 'complete' }, 'still recording: never shown as finished early');
+    // The status finalizes A (final first, then the release); the contact's state is then the head's: clear.
+    assert.equal((await contactStatus()).body.state, 'clear');
+    assert.ok(receipts.has(keyOf.final(t.op))); assert.equal(receipts.get(keyOf.head(A)).current, null);
+    assert.equal((await t.status()).body.outcome.kind, 'complete');
     assert.deepEqual(counts(A), c0);
   });
   await check('FN-2 / ST-6 the head release fails after final: a later reconciliation releases it only while it still names this operation; a head naming another is untouched', async () => {
@@ -581,6 +590,125 @@ function fresh() {
     fresh();
     failNext.push((op, key) => key.startsWith('call-log/head/'));
     assert.equal((await contactStatus()).statusCode, 503);
+  });
+
+  // ── Bones's code-review findings at 14eb2d0 (exact reproductions) ──────────
+  /* Finding 1 -- ownership changes during a status read. */
+  await check('B1a by-operation status: A finishes and Call B begins WHILE A\'s status is being read -> A\'s recorded outcome (complete), never "nothing was sent"; B untouched', async () => {
+    fresh();
+    const a = call(A, 'Spoke with Seller');
+    await a.begin(); await a.result(); await a.note();
+    failNext.push((op, key) => op === 'setJSON' && key === keyOf.final(a.op));
+    await a.touch();                                     // every write landed; final write failed: A still owns the head
+    const b = call(A, 'No Answer', 'B');
+    // After A's status read saw "no final", another session finalizes A (status) and begins B before A's head read.
+    beforeRead.push({ pred: (key) => key === keyOf.head(A), fn: async () => { await contactStatus(); await b.begin(); } });
+    const v = (await a.status()).body;
+    assert.equal(v.state, 'finished', JSON.stringify(v)); assert.equal(v.outcome.kind, 'complete');
+    assert.equal(receipts.get(keyOf.head(A)).current, b.op, 'B still owns the contact');
+    assert.ok(oneEach(A) || counts(A).results === 1);
+  });
+  await check('B1b a STALE final read while Call B owns the contact: status, Check again and Retry for A recheck A\'s own final -> complete; nothing written for B', async () => {
+    fresh();
+    const a = call(A, 'Voicemail');
+    await a.begin(); await a.result(); await a.note(); await a.touch();
+    const b = call(A, 'No Answer', 'B');
+    await b.begin();
+    const before = keysNow();
+    for (const act of [() => a.status(), () => a.resume(), () => a.retry('note', 1)]) {
+      staleNext.push((key) => key === keyOf.final(a.op));   // the first final read is stale (eventual consistency)
+      const v = (await act()).body;
+      assert.equal(v.state, 'finished', JSON.stringify(v)); assert.equal(v.outcome.kind, 'complete');
+    }
+    assert.deepEqual([...keysNow()].filter((k) => !before.has(k)), [], 'no record written; B unaffected');
+    assert.equal(receipts.get(keyOf.head(A)).current, b.op);
+  });
+  await check('B1c an operation that is not current and has NO final record is reported "unrecorded" with its evidence -- never as not saved; nothing written', async () => {
+    fresh();
+    const a = call(A, 'Voicemail');
+    await a.begin(); await a.result();
+    // Simulate a head that does not name A (a stale or foreign head) while A has no final record.
+    const realHead = receipts.get(keyOf.head(A));
+    receipts.set(keyOf.head(A), { v: 3, current: null, at: 'now' });
+    const before = keysNow();
+    const v = (await a.status()).body;
+    assert.equal(v.state, 'unrecorded'); assert.equal(v.slots[0].evidence, 'confirmed');
+    assert.equal((await a.resume()).body.state, 'unrecorded');
+    assert.deepEqual([...keysNow()].filter((k) => !before.has(k)), []);
+    receipts.set(keyOf.head(A), realHead);
+  });
+  await check('B1d contact status while ownership moves on: it never reports the finished A as the contact\'s state while B is open', async () => {
+    fresh();
+    const a = call(A, 'Spoke with Seller');
+    await a.begin(); await a.result(); await a.note();
+    failNext.push((op, key) => op === 'setJSON' && key === keyOf.final(a.op));
+    await a.touch();
+    const b = call(A, 'No Answer', 'B');
+    // While contact status settles A, another session finalizes A and begins B.
+    beforeRead.push({ pred: (key) => key === `call-log/v3/op/${dg(`${SCOPE}:${a.op}`)}`, fn: async () => { await a.resume(); await b.begin(); } });
+    const v = (await contactStatus()).body;
+    assert.equal(v.state, 'open', JSON.stringify(v)); assert.equal(v.op, b.op);
+  });
+
+  /* Finding 2 -- partial recovery publication (attempt written, binding not). */
+  for (const slot of ['note', 'touch']) {
+    await check(`B2 ${slot}: retry wrote attempt 2 but its binding failed -> shown UNPUBLISHED (nothing sent), never as dispatched; Check again / Retry repair the SAME attempt; never attempt 3; one ${slot}`, async () => {
+      fresh();
+      const t = call(A, 'No Answer');
+      await t.begin(); await t.result();
+      if (slot === 'touch') await t.note();
+      failNext.push((op, key) => op === 'setJSON' && /^[0-9a-f]{64}$/.test(key));   // refuse (proved) attempt 1
+      assert.equal(body(slot === 'note' ? await t.note() : await t.touch()).proves, 'this_request');
+      failNext.push((op, key) => op === 'setJSON' && key === keyOf.binding(rid(t.op, slot, 2)));
+      assert.equal((await t.retry(slot, 1)).statusCode, 503);
+      assert.ok(receipts.has(keyOf.attempt(t.op, slot, 2)) && !receipts.has(keyOf.binding(rid(t.op, slot, 2))), 'the partial publication');
+      const s1 = (await contactStatus()).body;
+      assert.deepEqual(s1.next, { action: 'unpublished', slot, attempt: 2 }, 'unpublished, not "in flight"');
+      const early = body(slot === 'note' ? await t.note(2) : await t.touch(2));   // sending the UNPUBLISHED attempt is refused; nothing reaches GHL
+      assert.equal(early.outcome, 'not_sent'); assert.equal(early.proves, 'nothing');
+      assert.equal(slot === 'note' ? callNotes(A).length : touchPuts(A).length, 0);
+      const again = (await t.retry(slot, 1)).body;      // a retry naming the old attempt repairs the SAME attempt 2
+      assert.deepEqual(again.next, { action: 'send', slot, requestId: rid(t.op, slot, 2) });
+      assert.ok(receipts.has(keyOf.binding(rid(t.op, slot, 2))) && !receipts.has(keyOf.attempt(t.op, slot, 3)));
+      assert.equal((slot === 'note' ? await t.note(2) : await t.touch(2)).statusCode, 200);
+      await finish(t);
+      assert.ok(oneEach(A), JSON.stringify(counts(A)));
+    });
+  }
+  await check('B2 via Check again: an unpublished attempt is repaired by resume (same attempt), then sent once', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result();
+    refuseNextNote(); await t.note();
+    failNext.push((op, key) => op === 'setJSON' && key === keyOf.binding(rid(t.op, 'note', 2)));
+    await t.retry('note', 1);
+    assert.deepEqual((await t.resume()).body.next, { action: 'send', slot: 'note', requestId: rid(t.op, 'note', 2) });
+    await t.note(2); await finish(t);
+    assert.ok(oneEach(A)); assert.ok(!receipts.has(keyOf.attempt(t.op, 'note', 3)));
+  });
+
+  /* Finding 3 -- pending finalization keeps its intended outcome. */
+  await check('B3 pending finalization keeps its kind: a not_saved operation whose final write failed is "finishing not_saved" (never complete/Saved); then recorded not_saved', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
+    await t.begin();
+    failNext.push((op, key) => op === 'setJSON' && key === keyOf.final(t.op));
+    const v = (await t.resume()).body;                   // the result is withdrawn: intended outcome not_saved, final write failed
+    assert.equal(v.state, 'open'); assert.deepEqual(v.next, { action: 'finishing', kind: 'not_saved' });
+    assert.equal(receipts.get(keyOf.head(A)).current, t.op, 'ownership retained');
+    const w = (await t.resume()).body;
+    assert.equal(w.state, 'finished'); assert.equal(w.outcome.kind, 'not_saved');
+    assert.equal(resultPuts(A).length, 0);
+  });
+  await check('B3 and a complete operation whose final write failed is "finishing complete"', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result(); await t.note();
+    failNext.push((op, key) => op === 'setJSON' && key === keyOf.final(t.op));
+    await t.touch();
+    failNext.push((op, key) => op === 'setJSON' && key === keyOf.final(t.op));
+    assert.deepEqual((await t.resume()).body.next, { action: 'finishing', kind: 'complete' });
+    assert.equal((await t.resume()).body.outcome.kind, 'complete');
   });
 
   // ── Older clients and legacy records ────────────────────────────────────────

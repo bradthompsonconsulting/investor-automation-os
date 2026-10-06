@@ -410,6 +410,66 @@ async function main() {
       check('ST-7 an unreadable status is treated as blocked (Save disabled, Check again offered)', /could not check/.test(await textOf(page, 'call-log-blocked')) && (await tid(page, 'call-log-save').isDisabled()));
     }
 
+    // ═══ Bones's code-review findings at 14eb2d0 (exact reproductions, real page) ══
+    if (want('B1')) {
+      // Finding 1: page 1's delayed answer for Call A arrives after A finished (another session) and Call B began;
+      // A's final record reads stale once. Page 1 must show A's RECORDED outcome -- never "not saved".
+      await fresh();
+      h = hold((r) => r.kind === 'write' && r.op === 'note.create' && r.contact === A, { afterServer: true });
+      await saveCall(page, 'Spoke with Seller', 'A');
+      await hitWithin(h, 'B1 A note');
+      const opA = opOf(A);
+      await open(page2, A);
+      await tid(page2, 'call-log-check-again').click();       // session 2 finishes A (the last touch)
+      await until(() => has(page2, 'call-log-done'), 'B1 A finished by session 2');
+      await saveCall(page2, 'No Answer', 'B');                // and saves Call B
+      await until(async () => (await textOf(page2, 'call-log-done')) === 'Saved: No Answer.', 'B1 Call B saved');
+      bf.staleReadOnce((key) => key === bf.callLogKey('final', opA));
+      h.release();                                            // page 1's held answer for A arrives now
+      await until(async () => (await has(page, 'call-log-done')) || (await has(page, 'call-log-not-saved')) || (await has(page, 'call-log-blocked')), 'B1 page 1 settled');
+      await settle();
+      check('B1 page 1 shows Call A\'s recorded outcome "Saved: Spoke with Seller." -- never "not saved" -- despite the ownership change and a stale read',
+        (await textOf(page, 'call-log-done')) === 'Saved: Spoke with Seller.' && !(await has(page, 'call-log-not-saved')), { done: await textOf(page, 'call-log-done'), notSaved: await textOf(page, 'call-log-not-saved'), blocked: await textOf(page, 'call-log-blocked') });
+      check('B1 Call B is unaffected: GHL holds B as the latest call; two complete calls, one note each', stored(A) === 'No Answer' && callNotes(A).length === 2 && applied('contact.callLogResult', A).length === 2 && applied('contact.lastCallAttempt', A).length === 2);
+    }
+
+    if (want('B2')) {
+      // Finding 2: a retry wrote attempt 2 but its binding write failed. The page must say nothing was sent,
+      // and Check again must complete the SAME attempt -- for the note and for the last touch.
+      for (const slot of ['note', 'touch']) {
+        await fresh();
+        const op = slot === 'note' ? 'note.create' : 'contact.lastCallAttempt';
+        hold((r) => r.kind === 'write' && r.op === op, { refuse: true });
+        await saveCall(page, 'No Answer');
+        const retryId = slot === 'note' ? 'call-log-retry-note' : 'call-log-retry-touch';
+        await until(() => has(page, retryId), `B2 ${slot} retry offered`);
+        bf.failStorageOnce((kind, key) => kind === 'setJSON' && key === bf.callLogKey('binding', `${opOf(A)}-${slot}-2`));
+        await tid(page, retryId).click();
+        await until(async () => /not ready to send yet — nothing has been sent/.test(await textOf(page, 'call-log-blocked')), `B2 ${slot} unpublished shown`);
+        check(`B2 ${slot}: a partially published retry is shown as NOT sent ("not ready to send yet — nothing has been sent"), never as dispatched; nothing reached GHL`,
+          !/may still reach GHL|was sent/.test(await textOf(page, 'call-log-blocked')) && writes(op).filter((w) => w.requestId.endsWith(`-${slot}-2`)).length === 0);
+        await tid(page, 'call-log-check-again').click();
+        await until(() => has(page, 'call-log-done'), `B2 ${slot} completed`);
+        check(`B2 ${slot}: Check again repairs and sends the SAME attempt 2 (never attempt 3); one result, one note, one touch`,
+          oneEach(A) && writes(op).map((w) => w.requestId.split('-').pop()).join() === '1,2' && attemptKeys() === 4);
+      }
+    }
+
+    if (want('B3')) {
+      // Finding 3: a call whose result was refused (proved unsent) is not_saved; its final write fails once.
+      // The page must say it was NOT saved and is still being recorded -- never "reached GHL", never "Saved".
+      await fresh();
+      hold((r) => r.kind === 'write' && r.op === 'contact.callLogResult', { refuse: true });
+      bf.failStorageOnce((kind, key) => kind === 'setJSON' && key.startsWith('call-log/v3/final/'));
+      await saveCall(page, 'No Answer');
+      await until(async () => /IAOS is still recording that/.test(await textOf(page, 'call-log-blocked')), 'B3 finishing shown');
+      check('B3 pending finalization of a not-saved call: "was not saved — nothing was sent … still recording"; never "reached GHL", never "Saved"; Save disabled',
+        /"No Answer" was not saved — nothing was sent to GHL/.test(await textOf(page, 'call-log-blocked')) && !/reached GHL/.test(await textOf(page, 'call-log-blocked')) && !(await has(page, 'call-log-done')) && (await tid(page, 'call-log-save').isDisabled()));
+      await tid(page, 'call-log-check-again').click();
+      await until(() => has(page, 'call-log-not-saved'), 'B3 recorded');
+      check('B3 Check again records it: "was not saved — nothing was sent"; Save is free; nothing reached GHL', /was not saved — nothing was sent/.test(await textOf(page, 'call-log-not-saved')) && !(await has(page, 'call-log-blocked')) && stored(A) === null);
+    }
+
     check('no request left the machine', foreign.length === 0, foreign);
     check('no page errors', pageErrors.length === 0, pageErrors);
   } catch (e) {

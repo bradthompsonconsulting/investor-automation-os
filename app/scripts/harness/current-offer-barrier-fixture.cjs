@@ -30,9 +30,11 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
   const etags = new Map();
   let etagSeq = 0;
   let failNext = [];
+  let staleNext = [];   // (key) -> the next get of it reads as missing once (an eventually consistent read)
   const maybeFail = (op, key) => { const i = failNext.findIndex((f) => f(op, key)); if (i >= 0) { failNext.splice(i, 1); throw new Error('fixture: storage failure'); } };
+  const stale = (key) => { const i = staleNext.findIndex((f) => f(key)); if (i < 0) return false; staleNext.splice(i, 1); return true; };
   const store = {
-    async get(key) { maybeFail('get', key); return records.has(key) ? structuredClone(records.get(key)) : null; },
+    async get(key) { maybeFail('get', key); if (stale(key)) return null; return records.has(key) ? structuredClone(records.get(key)) : null; },
     async getWithMetadata(key) { maybeFail('getWithMetadata', key); return records.has(key) ? { data: structuredClone(records.get(key)), etag: etags.get(key) } : null; },
     async setJSON(key, value, options) {
       maybeFail('setJSON', key);
@@ -126,12 +128,13 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
    */
   async function write({ operation, targetId, requestId, contactId, args }, apply, { refuse = null, failAfterSend = false, sentNotApplied = false, beforeLockRelease = null, outcome = null } = {}) {
     // ghl-write's call-log rule (lib/call-log-barrier.ts), checked before the Current Offer rules apply.
-    const needsCallLog = operation === 'contact.callLogResult' || (operation === 'note.create' && callLog.isCallLogNoteText(args && args.body));
+    const needsCallLog = operation === 'contact.callLogResult' || (operation === 'note.create' && callLog.isCallLogNoteText(args && args.body))
+      || (callLog.CALL_LOG_OPERATIONS.has(operation) && typeof callLog.isOperationRequestId === 'function' && callLog.isOperationRequestId(requestId));
     if (callLogRules && callLog.CALL_LOG_OPERATIONS.has(operation)) {
       let clOwned;
       try { clOwned = await callLog.isCallLogBound(store, callLogScope, requestId); }
       catch { if (needsCallLog) return { status: 409, body: { outcome: 'not_sent', error: 'The call-log reservation could not be read; nothing was sent' } }; clOwned = false; }
-      if (needsCallLog && !clOwned) return { status: 409, body: { outcome: 'not_sent', error: 'No call-log reservation for this write; nothing was sent' } };
+      if (needsCallLog && !clOwned) return { status: 409, body: { outcome: 'not_sent', proves: 'nothing', error: 'No call-log reservation for this write; nothing was sent' } };
       if (clOwned) {
         if (locked.has(targetId)) return { status: 409, body: { outcome: 'not_sent', proves: 'nothing', error: 'Nothing was sent; the save could not start' } };
         locked.add(targetId);
@@ -204,7 +207,13 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
     callLogOperation: (contactId, op) => callLog.statusByOperation(store, callLogScope, contactId, op),
     status: (opp) => lib.statusOf(store, scope, opp),
     failStorageOnce: (pred) => failNext.push(pred),
-    reset() { records.clear(); etags.clear(); locked.clear(); failNext = []; },
+    staleReadOnce: (pred) => staleNext.push(pred),
+    /** The key of a call-log v3 record, as the module computes it (for targeted storage faults in tests). */
+    callLogKey: (kind, ...parts) => {
+      const { digest } = require(path.resolve(__dirname, '../../netlify/functions/lib/ghl-write-boundary.ts'));
+      return `call-log/v3/${kind}/${digest([callLogScope, ...parts].join(':'))}`;
+    },
+    reset() { records.clear(); etags.clear(); locked.clear(); failNext = []; staleNext = []; },
   };
 }
 
