@@ -474,6 +474,21 @@ const SELLER_CONTRACT_FACT_GROUPS: { key: keyof SellerContractFactsReport; label
 ];
 const GROUP_LABEL_BY_KEY: Record<string, string> = Object.fromEntries(SELLER_CONTRACT_FACT_GROUPS.map((g) => [String(g.key), g.label]));
 
+// Board 15 Pass 1 F45 -- operator labels for internal keys that were rendered
+// raw. Display only; an unknown key still renders as itself.
+const AUTHORITY_LABEL: Record<string, string> = {
+  board8_agreement_reached_outcome: "the seller's accepted agreement (Seller Call)",
+};
+const VERIFICATION_STAGE_LABEL: Record<string, string> = {
+  binding: "Contract binding",
+  required_signers: "Required signers",
+  signer_mapping: "Signer mapping",
+  buyer_signer_identity: "Buyer signer identity",
+  signers: "Signers",
+  provider_completion: "Signing-provider completion",
+  artifact: "Executed PDF",
+};
+
 const CONTRACT_CHECKLIST_ITEMS: { key: ContractReadyItemKey; label: string }[] = [
   { key: "legal_owners", label: "Correct legal owners confirmed" },
   { key: "closing_timeline", label: "Closing timeline set" },
@@ -2768,7 +2783,7 @@ export default function ContractWorkspace() {
           testId="contract-no-agreement"
           tone="info"
           title="No agreement reached yet"
-          body="Board #9 begins once the seller has accepted a price in the Seller Call workspace. Nothing to show here until then."
+          body="The contract begins once the seller has accepted a price in the Seller Call workspace. Nothing to show here until then."
         />
       ) : null}
 
@@ -2813,7 +2828,7 @@ export default function ContractWorkspace() {
               <div>Max Supported Offer at acceptance: {moneyOrUnknown(screen.economics.economics.maxSupportedOffer)}</div>
               <div>Expected Spread at acceptance: {moneyOrUnknown(screen.economics.economics.expectedSpread)}</div>
               <div style={{ color: "#64748B", marginTop: "6px" }}>
-                Provenance: {screen.economics.authority} -- captured verbatim at the moment of acceptance, never recomputed here.
+                Provenance: {AUTHORITY_LABEL[screen.economics.authority] ?? screen.economics.authority} -- captured verbatim at the moment of acceptance, never recomputed here.
               </div>
             </div>
           </div>
@@ -3531,7 +3546,7 @@ export default function ContractWorkspace() {
                   <ul data-testid="contract-authorization-diff-list" style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#F59E0B", lineHeight: 1.8 }}>
                     {differencesFromLastAuthorized.map((d) => (
                       <li key={`${d.group}.${d.field}`}>
-                        {d.group}.{d.field}: {d.previous ? `"${d.previous.text ?? d.previous.status}"` : "(none)"} → {d.current ? `"${d.current.text ?? d.current.status}"` : "(removed)"}
+                        {GROUP_LABEL_BY_KEY[d.group] ?? d.group} — {FIELD_LABELS[`${d.group}.${d.field}`] ?? d.field}: {d.previous ? `"${d.previous.text ?? d.previous.status}"` : "(none)"} → {d.current ? `"${d.current.text ?? d.current.status}"` : "(removed)"}
                       </li>
                     ))}
                   </ul>
@@ -4095,7 +4110,7 @@ export default function ContractWorkspace() {
                   fullVerificationResult.ok ? (
                     <div>
                       <div data-testid="contract-execution-under-contract-eligible" style={{ fontSize: "12px", color: "#22C55E", fontWeight: 700, marginBottom: "10px" }}>
-                        Every INV-65 requirement passes for this exact evidence.
+                        Every contract-execution requirement passes for this exact evidence.
                       </div>
                       {!preservedArtifactRecord ? (
                         <div data-testid="contract-execution-under-contract-awaiting-preservation" style={{ fontSize: "12px", color: "#F59E0B", marginBottom: "10px" }}>
@@ -4123,7 +4138,7 @@ export default function ContractWorkspace() {
                     </div>
                   ) : (
                     <div data-testid="contract-execution-full-result" style={{ fontSize: "11px", color: "#94A3B8" }}>
-                      <div style={{ color: "#EF4444", fontWeight: 700, marginBottom: "6px" }}>BLOCKED -- stage: <span style={{ fontFamily: "monospace" }}>{fullVerificationResult.failure.stage}</span></div>
+                      <div style={{ color: "#EF4444", fontWeight: 700, marginBottom: "6px" }}>BLOCKED -- stage: <span>{VERIFICATION_STAGE_LABEL[fullVerificationResult.failure.stage] ?? fullVerificationResult.failure.stage}</span></div>
                       <ul style={{ margin: 0, padding: "0 0 0 18px", lineHeight: 1.8 }}>
                         {fullVerificationResult.failure.reasons.map((r) => <li key={r.code} data-testid={`contract-execution-full-reason-${r.code}`}>{r.message}</li>)}
                       </ul>
@@ -4218,10 +4233,10 @@ export default function ContractWorkspace() {
           {showStartDispositionControl(currentUnderContractRecord, preservedArtifactRecord, underContractStageConfirmed) ? (
             <div data-testid="disposition-handoff-section" style={{ marginTop: "24px" }}>
               <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
-                Start Disposition -- hand off to Board #10
+                Start Disposition -- hand off to buyer disposition
               </div>
               <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
-                Assembles the complete authoritative deal package Board #10 needs, from already-canonical Board #9 sources only -- nothing recalculated, nothing fabricated. Writes nothing until you explicitly click Start Disposition below.
+                Assembles the complete deal package buyer disposition needs, from the recorded contract only -- nothing recalculated, nothing fabricated. Writes nothing until you explicitly click Start Disposition below.
               </div>
 
               {/*
@@ -4253,7 +4268,7 @@ export default function ContractWorkspace() {
                 <div style={{ marginBottom: "12px" }}>
                   {dispositionWriteState.kind === "success" ? (
                     <div data-testid="disposition-handoff-write-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
-                      Recorded and verified by fresh readback -- the written note round-trips exactly. Board #10 may now consume handoff id <span style={{ fontFamily: "monospace" }}>{dispositionWriteState.record.handoffId}</span>.
+                      Recorded and verified by fresh readback -- the written note round-trips exactly. Buyer disposition can now use handoff id <span style={{ fontFamily: "monospace" }}>{dispositionWriteState.record.handoffId}</span>.
                     </div>
                   ) : (
                     <div data-testid="disposition-handoff-already-recorded" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "8px" }}>
