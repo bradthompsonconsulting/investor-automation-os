@@ -106,19 +106,25 @@ check('before any sign-in, the single sign-in landing is unchanged (no page rend
   /* Board 15 / PR #131 (Bones, re-review of 808e105): ownership is DURABLE and
      server-side (call-log-barrier); behaviour in test-call-log-barrier.cjs and
      test-call-log-ownership.cjs. */
-  check('call log: durable ownership is taken (begin) before the first write; nothing is sent unless it succeeds',
-    /try \{ reserved = await beginCallLog\(cid, "call_log",[^\n]*\}\s*catch \{\s*if \(!forThis\(cid\)\) return;\s*setSubmit\(\{ status: "not_saved", message: RESERVATION_FAILED_MESSAGE \}\);[\s\S]{0,120}return;\s*\}/.test(cl)
-    && cl.indexOf('await beginCallLog(cid, "call_log"') < cl.indexOf('await sendCallLogStep(cid, "result"'));
+  check('call log: a NEW operation (new id) is begun before the first write; nothing is sent unless it succeeds',
+    /const op = crypto\.randomUUID\(\);/.test(cl)
+    && /try \{ reserved = await beginOperation\(cid, op, chosen, body\); \}\s*catch \{\s*if \(!forThis\(cid\)\) return;\s*setSubmit\(\{ status: "not_saved", message: RESERVATION_FAILED_MESSAGE \}\);[\s\S]{0,140}return;\s*\}/.test(cl)
+    && cl.indexOf('await beginOperation(cid, op, chosen, body)') < cl.indexOf('await sendCallLogStep(cid, "result"'));
   check('call log: Save refuses unless the server reports the contact clear (any session\'s unfinished save blocks it)',
     /if \(!result \|\| inFlight\.current\.has\(cid\)\) return;[^\n]*\n\s*if \(owner\.kind !== "clear"\) return;/.test(cl)
     && /data-testid="call-log-save" onClick=\{\(\) => void save\(\)\} disabled=\{busy \|\| locked \|\| !result\}/.test(cl) && /const locked = owner\.kind !== "clear";/.test(cl));
   check('call log: ownership is read from the server on load and on every contact change (reload, navigation, another session)',
     /useEffect\(\(\) => \{\s*const cid = contactId;\s*setOwner\(\{ kind: "checking" \}\);[\s\S]*?readCallLogStatus\(cid\)[\s\S]*?\}, \[contactId\]\);/.test(cl));
-  check('call log: Check again reconciles on the server and finishes a resumable save with its ORIGINAL request ids only',
-    /async function checkAgain\(\)[\s\S]*?r = await reconcileCallLog\(cid\)[\s\S]*?await finishSteps\(cid, r\.attempt, saved, r\.body, r\.remaining\);/.test(cl) && /data-testid="call-log-check-again"/.test(cl));
+  check('call log: Check again resumes THIS operation (never creates an attempt) and continues only through the server-given existing attempts',
+    /async function checkAgain\(\)[\s\S]*?first = await resumeOperation\(cid, known\);[\s\S]*?await runOperation\(cid, known, first\);/.test(cl) && /data-testid="call-log-check-again"/.test(cl)
+    && /if \(view\.state !== "open" \|\| view\.next\.action !== "send"\) \{ apply\(cid, view\); return; \}/.test(cl));
+  check('call log: Retry notes / Retry last-touch time name the attempt they retry (after) and continue the SAME operation',
+    /view = await retryAttempt\(cid, op, slot, after\);/.test(cl) && /data-testid="call-log-retry-note"/.test(cl) && /data-testid="call-log-retry-touch"/.test(cl));
+  check('call log: after any answer that is not a confirmation, the operation is read by its ORIGINAL id (never contact-level guessing)',
+    (cl.match(/await readOperation\(cid, op\)/g) || []).length >= 5);
   check('call log: an attempt runs to its end for ITS contact; only the screen follows the contact shown (no screen update for another contact)',
     /const forThis = \(cid: string\) => current\.current === cid;/.test(cl) && (cl.match(/forThis\(cid\)/g) || []).length >= 10
-    && /if \(outcome\.kind === "confirmed"\) \{\s*if \(forThis\(cid\)\) \{ if \(step === "note"\) onNoteWritten\(\); else onAttempt\(at\); \}\s*continue;\s*\}/.test(cl));
+    && /if \(outcome\.kind === "confirmed"\) \{\s*\/\/[^\n]*\n\s*if \(forThis\(cid\)\) \{ if \(slot === "note"\) onNoteWritten\(\); else onAttempt\(at\); \}/.test(read('src/components/CallLogControl.tsx').replace(/\r\n/g, '\n')));
 
   const blurSites = { 'src/pages/SellerCallWorkspace.tsx': 1, 'src/pages/ContactWorkspace.tsx': 3, 'src/pages/Dashboard.tsx': 1 };
   for (const [f, n] of Object.entries(blurSites)) {

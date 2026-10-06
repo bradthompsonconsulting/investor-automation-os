@@ -82,49 +82,51 @@ check('Follow Up hint, exact', copy.FOLLOW_UP_CALLBACK_HINT, "Follow Up doesn't 
 check('notes limit', copy.CALL_NOTES_MAX, 4000);
 
 // ── Call log control: what it may write ──────────────────────────────────
-/* Board 15 / PR #131 (Bones): durable call-log ownership. The control now
-   writes ONLY through reserved steps (call-log-barrier-client.sendCallLogStep),
-   each carrying its reserved request id; its one direct GHL call is the
-   readback. The order, the stop on any readback failure and the copy rules are
-   the same as before. */
+/* Board 15 / PR #131: durable call-log OPERATIONS (approved lifecycle v3). The
+   control writes ONLY through bound attempts (call-log-barrier-client.sendCallLogStep)
+   whose request ids are derived from the operation; its one direct GHL call is
+   the readback. The order, the stop on any readback failure and the copy rules
+   are the same as before. */
 const barrierClient = read('src/lib/call-log-barrier-client.ts');
-check('the control calls GHL directly only to read the result back (getDetail); every write is a reserved step',
+check('the control calls GHL directly only to read the result back (getDetail); every write is a bound step',
   [...new Set([...callLogCode.matchAll(/ghl\.(contacts|notes)\.(\w+)\(/g)].map((m) => m[1] + '.' + m[2]))].sort(), ['contacts.getDetail']);
-check('a reserved step maps to exactly the three call-log operations (result, note, last touch)',
-  /const OPERATION: Record<CallLogStep, string> = \{ result: "contact\.callLogResult", note: "note\.create", touch: "contact\.lastCallAttempt" \};/.test(barrierClient), true);
+check('a step maps to exactly the three call-log operations (result, note, last touch)',
+  /const OPERATION: Record<Slot, string> = \{ result: "contact\.callLogResult", note: "note\.create", touch: "contact\.lastCallAttempt" \};/.test(barrierClient), true);
 check('the control never names routing, the bell, the old disposition writer or a callback write',
   /setCallRouting|setDispositionAt|setCallDisposition|setCallbackDatetime|scheduleCallbackGated|dispositionAt|callRouting/.test(callLogCode), false);
 {
   const resultClick = (callLogCode.match(/data-testid=\{`call-log-result-\$\{slug\(r\)\}`\}[\s\S]*?onClick=\{\(\) => \{ (.*) \}\}\r?\n/) || [, ''])[1];
   check('choosing a result only sets state',
-    resultClick.trim() === 'if (owner.kind === "blocked") return; setResult(r); if (submit.status !== "in_flight") setSubmit({ status: "idle" });', true);
-  check('choosing a result sends no request of any kind', resultClick.length > 0 && !/ghl\.|fetch\(|save\(|send|begin|reconcile|recordOverride/.test(resultClick), true);
-  check('choosing a result cannot take over an unfinished save (it refuses while blocked, and never changes ownership)',
-    /^\s*if \(owner\.kind === "blocked"\) return;/.test(resultClick) && !/setOwner/.test(resultClick), true);
+    resultClick.trim() === 'if (owner.kind === "held") return; setResult(r); if (submit.status !== "in_flight") setSubmit({ status: "idle" });', true);
+  check('choosing a result sends no request of any kind', resultClick.length > 0 && !/ghl\.|fetch\(|save\(|send|begin|resume|retry|recordOverride/.test(resultClick), true);
+  check('choosing a result cannot take over an unfinished save (it refuses while held, and never changes ownership)',
+    /^\s*if \(owner\.kind === "held"\) return;/.test(resultClick) && !/setOwner/.test(resultClick), true);
 }
 {
   const at = (x) => callLogCode.indexOf(x);
-  check('Save order: reserve -> result -> readback -> note -> last touch',
-    at('await beginCallLog(cid, "call_log", chosen, body,') !== -1
-    && at('await beginCallLog(cid, "call_log", chosen, body,') < at('await sendCallLogStep(cid, "result", ids.result, { value: chosen })')
-    && at('await sendCallLogStep(cid, "result", ids.result, { value: chosen })') < at('await ghl.contacts.getDetail(cid)')
-    && at('await ghl.contacts.getDetail(cid)') < at('await finishSteps(cid, ids.result, chosen, body, [{ step: "note", requestId: ids.note }, { step: "touch", requestId: ids.touch }])'), true);
+  check('Save order: new operation -> result -> readback -> note -> last touch',
+    at('reserved = await beginOperation(cid, op, chosen, body)') !== -1
+    && at('reserved = await beginOperation(cid, op, chosen, body)') < at('await sendCallLogStep(cid, "result", requestIdFor(op, "result", 1), { value: chosen })')
+    && at('await sendCallLogStep(cid, "result", requestIdFor(op, "result", 1), { value: chosen })') < at('await ghl.contacts.getDetail(cid)')
+    && at('await ghl.contacts.getDetail(cid)') < at('await runOperation(cid, op, null)'), true);
 }
 {
   const readback = (callLogCode.match(/const detail = await ghl\.contacts\.getDetail\(cid\);[\s\S]*?\n      \}\n/) || [''])[0];
   check('ANY readback failure (sign-in, 500, network) is saved-but-unverified and stops before the note and last touch',
     /\} catch \(e\) \{\s*if \(!forThis\(cid\)\) return;\s*setSubmit\(\{ status: "saved_unverified", message: e instanceof ReadUnavailableError/.test(readback)
-    && /Notes and last-touch time were not attempted\.` \}\);\s*await refreshOwner\(cid\);\s*return;\s*\}/.test(readback) && !/throw e/.test(readback) && !/finishSteps/.test(readback), true);
+    && /Notes and last-touch time were not attempted\.` \}\);\s*apply\(cid, await readOperation\(cid, op\), true\);\s*return;\s*\}/.test(readback) && !/throw e/.test(readback) && !/runOperation/.test(readback), true);
 }
 check('no message ever claims "Nothing was written"', /Nothing was written/.test(callLogCode), false);
 check('an unconfirmed result write is "not confirmed", not "not saved", and attempts nothing further',
   /status: "not_saved", message: `Result not confirmed \(\$\{sent\.message\}\)\. Notes and last-touch time were not attempted\./.test(callLogCode), true);
-check('the result write appears exactly once (never retried automatically, never re-sent when finishing a save)',
-  (callLogCode.match(/sendCallLogStep\(cid, "result"/g) || []).length === 1 && /if \(step === "result"\) continue;/.test(callLogCode), true);
+check('the result write appears exactly once (never retried automatically, never re-sent when continuing an operation)',
+  (callLogCode.match(/sendCallLogStep\(cid, "result"/g) || []).length === 1 && /if \(slot === "result"\) \{ apply\(cid, view\); return; \}/.test(callLogCode), true);
 check('a readback that does not match writes nothing further',
-  /if \(!landed\) \{\s*if \(!forThis\(cid\)\) return;\s*setSubmit\(\{ status: "not_saved", message: "GHL did not confirm the result on a fresh read\. Notes and last-touch time were not attempted; use Check again\." \}\);\s*await refreshOwner\(cid\);\s*return;\s*\}/.test(callLogCode), true);
-check('a failed note or last touch is reported as partial, never as saved',
-  /Result saved; notes not saved/.test(callLogCode) && /Saved; last-touch time not updated/.test(callLogCode) && /Result saved; the call note may or may not have reached GHL/.test(callLogCode), true);
+  /if \(!landed\) \{\s*if \(!forThis\(cid\)\) return;\s*setSubmit\(\{ status: "not_saved", message: "GHL did not confirm the result on a fresh read\. Notes and last-touch time were not attempted; use Check again\." \}\);\s*apply\(cid, await readOperation\(cid, op\), true\);\s*return;\s*\}/.test(callLogCode), true);
+check('a refused note or last touch is reported as a partial save (never as saved), from the recorded operation',
+  /Result saved; notes not saved\./.test(barrierClient) && /Saved; last-touch time not updated\./.test(barrierClient) && /status: "partial"/.test(callLogCode), true);
+check('only a recorded, complete operation is shown as "Saved"',
+  /if \(d\.tone === "done" && view\.state === "finished"\)/.test(callLogCode) && /view\.outcome\.kind === "complete"\s*\? \{ tone: "done"/.test(barrierClient), true);
 check('Follow Up shows the hint and a Set Callback that only opens the page control',
   /\{result === "Follow Up" \? \(/.test(callLogCode) && /data-testid="call-log-set-callback" onClick=\{onOpenCallback\}/.test(callLogCode), true);
 check('ghl client: setCallLogResult uses the contact.callLogResult operation',

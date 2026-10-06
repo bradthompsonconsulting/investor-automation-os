@@ -309,18 +309,19 @@ async function main() {
       db[A].fields.get(F.callbackDatetimePrecise) === '2026-10-09T19:30:00.000Z' && (await text()).includes('Callback: Oct 9, 2:30 PM'),
       { stored: db[A].fields.get(F.callbackDatetimePrecise), shown: (await text()).split('\n').filter((l) => l.includes('Callback:')) });
 
-    /* C5 — Board 15 / PR #131 (durable call-log ownership). A note request
-       answered by a gateway 500 never reached the server: from the browser it
-       is UNCERTAIN, never "not saved". Check again finishes it with the SAME
-       request id; GHL ends with exactly one call note. */
+    /* C5 — Board 15 / PR #131 (durable call-log operations, lifecycle v3). A note
+       request answered by a gateway 500 never reached the server: its attempt
+       is UNDECIDED, so the page reads the operation and shows it partly saved --
+       never "saved", never "not saved". Check again finishes it with the SAME
+       request id (reuse, not retry); GHL ends with exactly one call note. */
     await fresh({}, `/contacts/${A}`);
     await contactLoaded('Alpha');
     failNext.push((r) => r.kind === 'write' && r.op === 'note.create' && r.contact === A);
     const readsBefore = notesReadsFor(A);
     await save('No Answer');
-    await until(async () => (await page.getByTestId('call-log-partial').count()) === 1, 'partial');
-    check('call log: a note answered by a gateway failure is uncertain (may or may not have reached GHL), never "saved"',
-      /Result saved; the call note may or may not have reached GHL/.test(await page.getByTestId('call-log-partial').innerText()) && (await page.getByTestId('call-log-done').count()) === 0);
+    await until(async () => (await page.getByTestId('call-log-blocked').count()) === 1, 'partly saved');
+    check('call log: a note answered by a gateway failure shows the call partly saved (its note not sent yet), never "saved"',
+      /partly saved: its call note has not been sent yet/.test(await page.getByTestId('call-log-blocked').innerText()) && (await page.getByTestId('call-log-done').count()) === 0);
     check('call log: an uncertain note does not refresh the notes list or touch last call', notesReadsFor(A) === readsBefore && writesFor(A, 'contact.lastCallAttempt') === 0,
       { readsBefore, readsAfter: notesReadsFor(A), touches: writesFor(A, 'contact.lastCallAttempt'), ops: opsFor(A) });
     await until(async () => (await page.getByTestId('call-log-check-again').count()) === 1, 'check again offered');

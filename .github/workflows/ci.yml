@@ -234,7 +234,7 @@ jobs:
       - name: Board 15 B5 sign-in presentation and hidden empty pages — 28 offline checks
         run: node app/scripts/test-b15-signin-pages.cjs
 
-      - name: Board 15 cleanup (internal references, Unnamed contact, expired-session recovery) — 40 offline checks
+      - name: Board 15 cleanup (internal references, Unnamed contact, expired-session recovery) — 42 offline checks
         run: node app/scripts/test-b15-cleanup.cjs
 
       - name: Seller Call calling options — 49 offline checks
@@ -249,7 +249,7 @@ jobs:
       - name: Durable Current Offer barrier — real ghl-write and barrier handlers, reloads, late handlers, storage failures (PR 126 stacked server PR) — 45 offline checks
         run: node app/scripts/test-current-offer-barrier.cjs
 
-      - name: Durable call-log ownership — real ghl-write and call-log handlers, Bones's three reproductions, two sessions, uncertainty at every step (PR 131) — 31 offline checks
+      - name: Durable call-log operations (lifecycle v3) — real ghl-write and call-log handlers, D1/D2 two-browser orderings, stale calls, storage failures, legacy records (PR 131) — 38 offline checks
         run: node app/scripts/test-call-log-barrier.cjs
 
       - name: Seller Call deal bar, incl. recorded Current Offer note (Pass 1 F31, PR 126 re-reviews) — 42 offline checks

@@ -127,7 +127,7 @@ function classify(url, method, post) {
   if (fn === 'app-read-session') return { kind: 'session', method };
   if (fn === 'ghl-write' && method === 'POST') return { kind: 'write', op: post.operation, target: post.targetId, args: post.args, requestId: post.requestId };
   // The call-log status GET is a read (read-auth); begin / reconcile are writes.
-  if (fn === 'call-log-barrier') return { kind: 'call-log', method, action: method === 'GET' ? 'status' : post && post.action, steps: post && post.steps, read: method === 'GET' };
+  if (fn === 'call-log-barrier') return { kind: 'call-log', method, action: method === 'GET' ? 'status' : post && post.action, op: post && post.operationId, read: method === 'GET' };
   if (fn === 'current-offer-barrier') return { kind: 'barrier', method, action: method === 'GET' ? 'status' : post && post.action };
   if (fn === 'ghl-proxy') {
     const p = u.searchParams.get('path') || '';
@@ -497,12 +497,14 @@ async function main() {
     /* Board 15 / PR #131 (durable call-log ownership): Check again is decided by
        the SERVER's own records, never a GHL read. A check the server cannot
        complete changes nothing and sends nothing. */
-    failCallLog.push((r) => r.action === 'reconcile');
+    failCallLog.push((r) => r.action === 'resume');
     await page.getByTestId('call-log-check-again').click();
     await settle();
     check('P1CL a Check again the server cannot complete stays blocked and sends nothing',
       (await page.getByTestId('call-log-save').isDisabled()) && writes().length === 1 && (await page.getByTestId('call-log-check-again').count()) === 1, writes().map((w) => w.op));
-    const reserved = log.find((r) => r.kind === 'call-log' && r.action === 'begin').steps;
+    // v3: the operation's request ids are DERIVED from its operation id.
+    const opId = log.find((r) => r.kind === 'call-log' && r.action === 'begin').op;
+    const reserved = ['result', 'note', 'touch'].map((slot) => ({ requestId: `${opId}-${slot}-1` }));
     await page.getByTestId('call-log-check-again').click();
     await until(async () => (await page.getByTestId('call-log-done').count()) === 1, 'P1CL reconciled');
     const sentIds = Object.fromEntries(writes().map((w) => [w.op, w.requestId]));

@@ -45,38 +45,47 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
   const scope = lib.barrierScope(env, locationId);
   const callLogScope = callLog.callLogScope(env, locationId);
   const locked = new Set();
-  const withCallLogMessage = (v) => (v.state === 'clear' ? v : { ...v, message: callLog.describeCallLog(v) });
-
-  /** Answers one /.netlify/functions/call-log-barrier request (status / begin / reconcile). */
+  /** Answers one /.netlify/functions/call-log-barrier request (approved lifecycle v3), as the real endpoint does. */
   async function handleCallLog(method, url, post) {
     try {
       if (method === 'GET') {
-        const contactId = new URL(url).searchParams.get('contactId');
-        return { status: 200, body: withCallLogMessage(await callLog.callLogStatus(store, callLogScope, contactId)) };
+        const q = new URL(url).searchParams;
+        const contactId = q.get('contactId');
+        const op = q.get('operationId');
+        if (op === null) return { status: 200, body: await callLog.statusByContact(store, callLogScope, contactId) };
+        const v = await callLog.statusByOperation(store, callLogScope, contactId, op);
+        return v ? { status: 200, body: v } : { status: 404, body: { state: 'unknown' } };
       }
       const contactId = post.contactId;
       if (locked.has(contactId)) return { status: 409, body: { state: 'in_progress', message: 'Another write for this contact is in progress. Nothing was changed; use Check again in a moment.' } };
+      const now = new Date().toISOString();
       if (post.action === 'begin') {
+        if (Object.keys(post).sort().join() !== 'action,body,contactId,operationId,result') return { status: 400, body: { error: 'Invalid call-log request' } };
         let v;
-        try { v = callLog.validateBegin(post.purpose, post.result, post.body, post.steps); } catch { return { status: 400, body: { error: 'Invalid call-log request' } }; }
-        try {
-          await callLog.beginCallLog(store, callLogScope, { contactId, purpose: v.purpose, result: v.result, body: v.body, steps: v.steps }, new Date().toISOString());
-          return { status: 200, body: { state: 'reserved' } };
-        } catch (e) {
-          if (e instanceof callLog.CallLogHeld) return { status: 409, body: withCallLogMessage(e.status) };
+        try { v = callLog.validateBegin(post.operationId, post.result, post.body); } catch { return { status: 400, body: { error: 'Invalid call-log request' } }; }
+        try { return { status: 200, body: await callLog.beginOperation(store, callLogScope, { contactId, op: v.op, result: v.result, body: v.body }, now) }; }
+        catch (e) {
+          if (e instanceof callLog.CallLogHeld) return { status: 409, body: { state: 'held', current: e.status } };
           if (e instanceof callLog.ReservationMismatch) return { status: 409, body: { state: 'rejected', code: 'reservation_mismatch', message: e.message } };
           throw e;
         }
       }
-      if (post.action === 'reconcile') {
-        const out = await callLog.reconcileCallLog(store, callLogScope, contactId, post.attempt);
-        return { status: 200, body: out.state === 'clear' ? out : withCallLogMessage(out) };
+      if (post.action === 'resume' && post.legacy === true) return { status: 200, body: await callLog.settleLegacy(store, callLogScope, contactId) };
+      if (post.action === 'resume' || post.action === 'retry') {
+        let v;
+        try {
+          v = post.action === 'resume'
+            ? await callLog.resumeOperation(store, callLogScope, contactId, post.operationId)
+            : await callLog.retryAttempt(store, callLogScope, contactId, post.operationId, post.slot, post.after);
+        } catch (e) { if (e instanceof callLog.InvalidRequest) return { status: 400, body: { error: e.message } }; throw e; }
+        return v ? { status: 200, body: v } : { status: 404, body: { state: 'unknown' } };
       }
-      return { status: 400, body: { error: 'Invalid' } };
+      return { status: 400, body: { error: 'Invalid call-log request' } };
     } catch {
       return { status: 503, body: { error: 'The call-log request could not be completed; nothing was sent to GHL' } };
     }
   }
+
   const withMessage = (s) => (s.state === 'clear' ? s : { ...s, message: lib.describeBlocked(s) });
 
   /** Answers one /.netlify/functions/current-offer-barrier request. */
@@ -120,11 +129,11 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
     const needsCallLog = operation === 'contact.callLogResult' || (operation === 'note.create' && callLog.isCallLogNoteText(args && args.body));
     if (callLogRules && callLog.CALL_LOG_OPERATIONS.has(operation)) {
       let clOwned;
-      try { clOwned = await callLog.isCallLogOwned(store, callLogScope, requestId); }
+      try { clOwned = await callLog.isCallLogBound(store, callLogScope, requestId); }
       catch { if (needsCallLog) return { status: 409, body: { outcome: 'not_sent', error: 'The call-log reservation could not be read; nothing was sent' } }; clOwned = false; }
       if (needsCallLog && !clOwned) return { status: 409, body: { outcome: 'not_sent', error: 'No call-log reservation for this write; nothing was sent' } };
       if (clOwned) {
-        if (locked.has(targetId)) return { status: 409, body: { outcome: 'not_sent', error: 'Nothing was sent; the save could not start' } };
+        if (locked.has(targetId)) return { status: 409, body: { outcome: 'not_sent', proves: 'nothing', error: 'Nothing was sent; the save could not start' } };
         locked.add(targetId);
         try {
           const done = await callLog.runCallLogOwnedWrite(store, callLogScope, { operation, targetId, requestId, args }, async (hooks) => {
@@ -139,7 +148,10 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
           if (beforeLockRelease) await beforeLockRelease();
           return { status: 200, body: { confirmed: done.confirmed } };
         } catch (e) {
-          if (e instanceof callLog.NotSent || e instanceof callLog.NotOwned) return { status: 409, body: { outcome: 'not_sent', error: `${e.message}; nothing was sent` } };
+          if (e instanceof callLog.NotSent || e instanceof callLog.NotOwned) {
+            const cl = e instanceof callLog.NotSent ? e : null;
+            return { status: 409, body: { outcome: 'not_sent', proves: cl ? cl.proves : 'nothing', ...(cl && cl.code ? { code: cl.code } : {}), ...(cl && cl.outcome ? { recorded: cl.outcome } : {}), error: `${e.message}; nothing was sent` } };
+          }
           return { status: 409, body: { outcome: 'indeterminate', error: 'The call save may have reached GHL; it is unresolved' } };
         } finally { locked.delete(targetId); }
       }
@@ -188,7 +200,8 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
 
   return {
     handle, handleCallLog, write, store, records,
-    callLogStatus: (contactId) => callLog.callLogStatus(store, callLogScope, contactId),
+    callLogStatus: (contactId) => callLog.statusByContact(store, callLogScope, contactId),
+    callLogOperation: (contactId, op) => callLog.statusByOperation(store, callLogScope, contactId, op),
     status: (opp) => lib.statusOf(store, scope, opp),
     failStorageOnce: (pred) => failNext.push(pred),
     reset() { records.clear(); etags.clear(); locked.clear(); failNext = []; },

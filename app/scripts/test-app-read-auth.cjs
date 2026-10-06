@@ -470,7 +470,7 @@ function assertNoCors(res) {
   await check('CallLogControl imports ReadUnavailableError', () => assert.match(callLog, /import \{ ReadUnavailableError \} from "\.\.\/lib\/read-session";/));
   await check('CallLogControl: refused readback after a confirmed result write -> saved_unverified; no note, no last touch', () => {
     // Board 15 / PR #131: the result is a reserved step (sendCallLogStep); a refused readback still stops before the note and last touch.
-    assert.match(callLog, /await sendCallLogStep\(cid, "result", ids\.result, \{ value: chosen \}\);[\s\S]*?\} catch \(e\) \{\s*if \(!forThis\(cid\)\) return;\s*setSubmit\(\{ status: "saved_unverified", message: e instanceof ReadUnavailableError[\s\S]*?\}\);\s*await refreshOwner\(cid\);\s*return;\s*\}/);
+    assert.match(callLog, /await sendCallLogStep\(cid, "result", requestIdFor\(op, "result", 1\), \{ value: chosen \}\);[\s\S]*?\} catch \(e\) \{\s*if \(!forThis\(cid\)\) return;\s*setSubmit\(\{ status: "saved_unverified", message: e instanceof ReadUnavailableError[\s\S]*?\}\);\s*apply\(cid, await readOperation\(cid, op\), true\);\s*return;\s*\}/);
   });
   await check('CallLogControl message: confirmed, not verifiable, sign in to reads, finish with Check again, do not save it again (never "reload")', () => {
     const m = callLog.match(/const VERIFY_UNAVAILABLE = "([^"]*)";/);

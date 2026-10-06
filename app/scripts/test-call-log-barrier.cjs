@@ -1,39 +1,35 @@
 /**
- * Board 15 / PR #131 (Bones, re-review of 808e105) -- durable call-log
- * ownership, driven through the REAL handlers: netlify/functions/ghl-write.ts
- * and netlify/functions/call-log-barrier.ts. Lifecycle:
- * docs/CALL_LOG_SAVE_LIFECYCLE.md.
+ * Board 15 / PR #131 -- durable call-log OPERATIONS (Bones-approved lifecycle
+ * v3, #issuecomment-6023481488), driven through the REAL handlers:
+ * netlify/functions/ghl-write.ts and netlify/functions/call-log-barrier.ts.
  *
- * Offline. @netlify/blobs is replaced by an in-memory store with the SDK's
- * onlyIfNew / onlyIfMatch semantics and injectable failures; every GHL call
- * goes to a fake (two contacts) that can be held, fail before sending, or
- * apply a write and then lose the response. Every check verifies GHL's own
- * state (result field, notes, last touch) and the count of GHL writes.
+ * Offline. @netlify/blobs is an in-memory store with the SDK's onlyIfNew /
+ * onlyIfMatch semantics and injectable failures: a write that throws, a write
+ * that APPLIES and then throws (an ambiguous acknowledgement), and a stale read.
+ * Every GHL call goes to a fake (two contacts) that can be held, fail before
+ * sending, or apply a write and lose the response. Each case checks GHL's own
+ * state (result field, call notes, last touch) and the GHL write counts.
  *
- * Covered: ownership before the first write and enforced server-side; the
- * ORDER rule; original request identities on resume; Bones's three
- * reproductions; two sessions; uncertainty at every step; definite refusals;
- * repeated reconciliation; contact isolation; storage failures; auth; the
- * Current Offer barrier and unrelated writes unchanged.
+ * Case ids are the approved acceptance matrix (section 12).
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const Module = require('node:module');
 const ts = require('typescript');
+const crypto = require('node:crypto');
 
 const receipts = new Map();
 const etags = new Map();
 let etagSeq = 0;
-let failNext = [];
+let failNext = [];       // (op, key) -> throw once, nothing written
+let applyThenThrow = []; // (op, key) -> write applies, then the call throws (ambiguous acknowledgement)
+let staleNext = [];      // (key) -> the next read of it returns null once
 const realBlobs = require('@netlify/blobs');
 delete process.env.NETLIFY_BLOBS_CONTEXT;
 const lambdaHeaders = { 'x-nf-site-id': 'offline-site', 'x-nf-deploy-id': 'offline-deploy' };
 const lambdaBlobs = Buffer.from(JSON.stringify({ url: 'https://blobs.example.invalid', token: 'offline-blob-fixture' })).toString('base64');
-const maybeFail = (op, key) => {
-  const i = failNext.findIndex((f) => f(op, key));
-  if (i >= 0) { failNext.splice(i, 1); throw new Error(`fixture: blob ${op} failed`); }
-};
+const take = (list, ...args) => { const i = list.findIndex((f) => f(...args)); if (i < 0) return false; list.splice(i, 1); return true; };
 const originalResolve = Module._resolveFilename;
 const originalLoad = Module._load;
 Module._resolveFilename = function (name, parent, ...rest) {
@@ -44,23 +40,22 @@ Module._resolveFilename = function (name, parent, ...rest) {
   return originalResolve.call(this, name, parent, ...rest);
 };
 Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
+const memStore = {
+  async get(key) { if (take(failNext, 'get', key)) throw new Error('fixture: blob get failed'); if (take(staleNext, key)) return null; return receipts.has(key) ? structuredClone(receipts.get(key)) : null; },
+  async getWithMetadata(key) { if (take(failNext, 'getWithMetadata', key)) throw new Error('fixture: blob read failed'); return receipts.has(key) ? { data: structuredClone(receipts.get(key)), etag: etags.get(key) } : null; },
+  async setJSON(key, value, options) {
+    if (take(failNext, 'setJSON', key)) throw new Error('fixture: blob setJSON failed');
+    if (options?.onlyIfNew && receipts.has(key)) return { modified: false };
+    if (options?.onlyIfMatch !== undefined && etags.get(key) !== options.onlyIfMatch) return { modified: false };
+    receipts.set(key, structuredClone(value));
+    const etag = 'etag-' + (++etagSeq); etags.set(key, etag);
+    if (take(applyThenThrow, 'setJSON', key)) throw new Error('fixture: write applied, acknowledgement lost');
+    return { modified: true, etag };
+  },
+  async delete(key) { receipts.delete(key); etags.delete(key); },
+};
 Module._load = function (name, ...rest) {
-  if (name === '@netlify/blobs') return {
-    connectLambda: (event) => realBlobs.connectLambda(event),
-    getStore: () => ({
-      async get(key) { maybeFail('get', key); return receipts.has(key) ? structuredClone(receipts.get(key)) : null; },
-      async getWithMetadata(key) { maybeFail('getWithMetadata', key); return receipts.has(key) ? { data: structuredClone(receipts.get(key)), etag: etags.get(key) } : null; },
-      async setJSON(key, value, options) {
-        maybeFail('setJSON', key);
-        if (options?.onlyIfNew && receipts.has(key)) return { modified: false };
-        if (options?.onlyIfMatch !== undefined && etags.get(key) !== options.onlyIfMatch) return { modified: false };
-        receipts.set(key, structuredClone(value));
-        const etag = 'etag-' + (++etagSeq); etags.set(key, etag);
-        return { modified: true, etag };
-      },
-      async delete(key) { maybeFail('delete', key); receipts.delete(key); etags.delete(key); },
-    }),
-  };
+  if (name === '@netlify/blobs') return { connectLambda: (event) => realBlobs.connectLambda(event), getStore: () => memStore };
   return originalLoad.call(this, name, ...rest);
 };
 process.env.IAOS_ENV = 'test';
@@ -79,16 +74,20 @@ const auth = require('../netlify/functions/lib/app-write-auth.ts');
 const readAuth = require('../netlify/functions/lib/app-read-auth.ts');
 const { getConfig } = require('../shared/ghl-config.ts');
 const { callLogNote } = require('../src/lib/call-outcome-copy.ts');
+const lib = require('../netlify/functions/lib/call-log-barrier.ts');
+const legacy = require('../netlify/functions/lib/call-log-legacy.ts');
 const config = getConfig('test');
 const F = config.fields;
+const SCOPE = lib.callLogScope('test', config.locationId);
+const dg = (s) => crypto.createHash('sha256').update(s).digest('hex');
+const keyOf = { attempt: (op, slot, n) => `call-log/v3/attempt/${dg(`${SCOPE}:${op}:${slot}:${n}`)}`, binding: (rid) => `call-log/v3/binding/${dg(`${SCOPE}:${rid}`)}`,
+  decision: (rid) => `call-log/v3/decision/${dg(`${SCOPE}:${rid}`)}`, outcome: (rid) => `call-log/v3/outcome/${dg(`${SCOPE}:${rid}`)}`, final: (op) => `call-log/v3/final/${dg(`${SCOPE}:${op}`)}`,
+  head: (c) => `call-log/head/${dg(`${SCOPE}:${c}`)}` };
 
 // ── Fake GHL: two contacts ───────────────────────────────────────────────────
 const A = 'fixture-contact-a';
 const B = 'fixture-contact-b';
-let ghl;
-let ghlWrites = [];
-let holds = [];
-let loseNext = [];
+let ghl; let ghlWrites = []; let holds = []; let loseNext = [];
 const reply = (data) => ({ ok: true, status: 200, json: async () => structuredClone(data), text: async () => JSON.stringify(data) });
 function hold(match, opts = {}) {
   let release; let hit;
@@ -102,10 +101,10 @@ global.fetch = async (url, init = {}) => {
   const h = holds.find((x) => !x.used && x.match(req));
   if (h) { h.used = true; h.hit(req); await h.released; }
   if (h && h.failBefore) throw new Error('fixture: GHL unreachable');
-  const lose = loseNext.findIndex((f) => f(req));
   const m = pathname.match(/^\/contacts\/([^/]+)(\/notes)?$/);
   if (!m || !ghl[m[1]]) throw new Error('Unexpected mocked request: ' + method + ' ' + pathname);
   const c = ghl[m[1]];
+  const lose = loseNext.findIndex((f) => f(req));
   if (m[2]) {
     if (method === 'POST') {
       ghlWrites.push({ ...req, contact: c.id, kind: 'note' });
@@ -128,39 +127,56 @@ global.fetch = async (url, init = {}) => {
 
 const ghlWrite = require('../netlify/functions/ghl-write.ts').handler;
 const callLogFn = require('../netlify/functions/call-log-barrier.ts').handler;
-const offerBarrierFn = require('../netlify/functions/current-offer-barrier.ts').handler;
 const writeHeaders = () => ({ ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` });
-let seq = 0;
-const rid = (label) => `${label}-${String(++seq).padStart(4, '0')}-fixture`;
 const write = (operation, targetId, args, requestId) => ghlWrite({ blobs: lambdaBlobs, httpMethod: 'POST', headers: writeHeaders(), body: JSON.stringify({ operation, targetId, requestId, args }) });
-const post = (b, headers = writeHeaders()) => callLogFn({ blobs: lambdaBlobs, httpMethod: 'POST', headers, body: JSON.stringify(b) });
+const post = async (b, headers = writeHeaders()) => { const r = await callLogFn({ blobs: lambdaBlobs, httpMethod: 'POST', headers, body: JSON.stringify(b) }); return { statusCode: r.statusCode, body: JSON.parse(r.body) }; };
 const readCookie = () => `${readAuth.READ_COOKIE}=${readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig()).token}`;
-const status = async (contactId = A, signedIn = true) => {
-  const res = await callLogFn({ blobs: lambdaBlobs, httpMethod: 'GET', headers: { ...lambdaHeaders, ...(signedIn ? { cookie: readCookie() } : {}) }, queryStringParameters: { contactId } });
-  return { statusCode: res.statusCode, body: JSON.parse(res.body) };
-};
+const get = async (q, signedIn = true) => { const r = await callLogFn({ blobs: lambdaBlobs, httpMethod: 'GET', headers: { ...lambdaHeaders, ...(signedIn ? { cookie: readCookie() } : {}) }, queryStringParameters: q }); return { statusCode: r.statusCode, body: JSON.parse(r.body) }; };
 const body = (res) => JSON.parse(res.body);
+const rid = (op, slot, n) => `${op}-${slot}-${n}`;
+const newOp = () => crypto.randomUUID();
 
-/** One Save call attempt: its ids, result and exact note body. */
-function attempt(contactId, result, notes = '') {
-  const ids = { result: rid('result'), note: rid('note'), touch: rid('touch') };
+/** One call: its operation id, result and exact note body, and every way to act on it. */
+function call(contactId, result, notes = '') {
+  const op = newOp();
   const noteBody = callLogNote(result, notes);
   return {
-    contactId, result, noteBody, ids,
-    begin: (overrides = {}) => post({ action: 'begin', contactId, purpose: 'call_log', result, body: noteBody, steps: [{ step: 'result', requestId: ids.result }, { step: 'note', requestId: ids.note }, { step: 'touch', requestId: ids.touch }], ...overrides }),
-    sendResult: () => write('contact.callLogResult', contactId, { value: result }, ids.result),
-    sendNote: (id = ids.note, b = noteBody) => write('note.create', contactId, { body: b }, id),
-    sendTouch: (id = ids.touch, at = '2026-10-06T15:00:00.000Z') => write('contact.lastCallAttempt', contactId, { value: at }, id),
+    op, contactId, result, noteBody,
+    begin: (extra = {}) => post({ action: 'begin', contactId, operationId: op, result, body: noteBody, ...extra }),
+    resume: () => post({ action: 'resume', contactId, operationId: op }),
+    retry: (slot, after) => post({ action: 'retry', contactId, operationId: op, slot, after }),
+    status: () => get({ contactId, operationId: op }),
+    result: (n = 1) => write('contact.callLogResult', contactId, { value: result }, rid(op, 'result', n)),
+    note: (n = 1, b = noteBody) => write('note.create', contactId, { body: b }, rid(op, 'note', n)),
+    touch: (n = 1, at = '2026-10-06T15:00:00.000Z') => write('contact.lastCallAttempt', contactId, { value: at }, rid(op, 'touch', n)),
   };
 }
-const reconcile = (contactId = A) => post({ action: 'reconcile', contactId });
+const contactStatus = (c = A) => get({ contactId: c });
 const stored = (c) => (ghl[c].customFields.find((f) => f.id === F.callDisposition) || {}).value ?? null;
 const touchOf = (c) => (ghl[c].customFields.find((f) => f.id === F.lastCallAttemptPrecise) || {}).value ?? null;
 const callNotes = (c) => ghl[c].notes.filter((n) => n.body.startsWith('Call (reported by Brad in IAOS):'));
-const writesOf = (c, kind) => ghlWrites.filter((w) => w.contact === c && (!kind || w.kind === kind));
 const resultPuts = (c) => ghlWrites.filter((w) => w.contact === c && w.kind === 'fields' && w.body.customFields.some((f) => f.id === F.callDisposition));
 const touchPuts = (c) => ghlWrites.filter((w) => w.contact === c && w.kind === 'fields' && w.body.customFields.some((f) => f.id === F.lastCallAttemptPrecise));
+const counts = (c) => ({ results: resultPuts(c).length, notes: callNotes(c).length, touches: touchPuts(c).length });
+const oneEach = (c) => JSON.stringify(counts(c)) === JSON.stringify({ results: 1, notes: 1, touches: 1 });
+const keysNow = () => new Set(receipts.keys());
+/** The note refused BEFORE sending, durably proved unsent: the write receipt claim fails inside the owned write. */
+const refuseNextNote = () => failNext.push((op, key) => op === 'setJSON' && /^[0-9a-f]{64}$/.test(key));
+/** Complete an open operation through its server-given next actions (as the page's Check again does). */
+async function finish(t) {
+  for (let i = 0; i < 6; i++) {
+    const v = (await t.resume()).body;
+    if (v.state !== 'open' || v.next.action !== 'send') return v;
+    const n = Number(v.next.requestId.split('-').pop());
+    const res = v.next.slot === 'note' ? await t.note(n, v.body) : await t.touch(n);
+    assert.equal(res.statusCode, 200, res.body);
+  }
+  throw new Error('did not finish');
+}
 
+/* A wait that never resolves empties the event loop and Node exits 0 mid-suite: that must FAIL, never pass. */
+let finished = false;
+process.on('exit', (code) => { if (!finished && code === 0) { console.error('FAIL the suite ended before it finished (a wait never resolved)'); process.exitCode = 1; } });
 let count = 0;
 let failures = 0;
 async function check(name, fn) {
@@ -168,378 +184,478 @@ async function check(name, fn) {
   catch (e) { failures++; console.error('FAIL ' + name + '\n  ' + (e && e.stack ? e.stack.split('\n').slice(0, 4).join('\n  ') : e)); }
 }
 function fresh() {
-  receipts.clear(); etags.clear(); failNext = []; holds = []; loseNext = []; ghlWrites = [];
+  receipts.clear(); etags.clear(); failNext = []; applyThenThrow = []; staleNext = []; holds = []; loseNext = []; ghlWrites = [];
   ghl = { [A]: { id: A, customFields: [], notes: [] }, [B]: { id: B, customFields: [], notes: [] } };
 }
 
 (async () => {
-  // ── Ownership before the first write, enforced server-side ─────────────────
-  await check('a call result with no reservation is refused before sending (not_sent; zero GHL writes)', async () => {
+  // ── Basics ──────────────────────────────────────────────────────────────────
+  await check('L-1 / basics: an unbound call result or call-log note is refused before sending; a plain note and an unbound last touch are unchanged', async () => {
     fresh();
-    const res = await write('contact.callLogResult', A, { value: 'No Answer' }, rid('unreserved'));
-    assert.equal(res.statusCode, 409); assert.equal(body(res).outcome, 'not_sent'); assert.equal(ghlWrites.length, 0); assert.equal(stored(A), null);
-  });
-  await check('a note in the call-log format with no reservation is refused before sending; a plain note and an unreserved last touch are unchanged', async () => {
-    fresh();
-    const res = await write('note.create', A, { body: callLogNote('Voicemail', 'left a message') }, rid('unreserved-note'));
-    assert.equal(res.statusCode, 409); assert.equal(body(res).outcome, 'not_sent'); assert.equal(writesOf(A).length, 0);
-    assert.equal((await write('note.create', A, { body: 'Plain operator note' }, rid('plain'))).statusCode, 200);
-    assert.equal((await write('contact.lastCallAttempt', A, { value: '2026-10-06T14:00:00.000Z' }, rid('plain-touch'))).statusCode, 200);
-    assert.equal(writesOf(A).length, 2);
-  });
-  await check('Save call: begin -> result -> note -> touch, each confirmed; the reservation releases itself after the last step', async () => {
-    fresh();
-    const t = attempt(A, 'Spoke with Seller', 'Wants 30 days.');
-    assert.equal((await t.begin()).statusCode, 200);
-    assert.equal((await status()).body.state, 'blocked');
-    assert.equal((await t.sendResult()).statusCode, 200);
-    assert.equal((await status()).body.kind, 'resumable', 'between steps: not finished');
-    assert.equal((await t.sendNote()).statusCode, 200);
-    assert.equal((await t.sendTouch()).statusCode, 200);
-    assert.equal((await status()).body.state, 'clear');
-    assert.equal(stored(A), 'Spoke with Seller'); assert.equal(callNotes(A).length, 1); assert.equal(callNotes(A)[0].body, t.noteBody); assert.equal(touchOf(A), '2026-10-06T15:00:00.000Z');
-  });
-
-  // ── ORDER and identity rules ───────────────────────────────────────────────
-  await check('ORDER: the note is refused while its result is not confirmed (not_sent, no GHL write) and stays resumable with its own id', async () => {
-    fresh();
-    const t = attempt(A, 'Voicemail');
-    await t.begin();
-    const early = await t.sendNote();
-    assert.equal(body(early).outcome, 'not_sent'); assert.equal(writesOf(A).length, 0);
-    const early2 = await t.sendTouch();
-    assert.equal(body(early2).outcome, 'not_sent'); assert.equal(writesOf(A).length, 0);
-    await t.sendResult();
-    assert.equal((await t.sendNote()).statusCode, 200, 'the same note request id still works in order');
-    assert.equal(callNotes(A).length, 1);
-  });
-  await check('a step must carry exactly what was reserved: another result value or another note body is refused (not_sent)', async () => {
-    fresh();
-    const t = attempt(A, 'No Answer');
-    await t.begin();
-    assert.equal(body(await write('contact.callLogResult', A, { value: 'Voicemail' }, t.ids.result)).outcome, 'not_sent');
-    await t.sendResult();
-    assert.equal(body(await t.sendNote(t.ids.note, callLogNote('No Answer', 'something else'))).outcome, 'not_sent');
-    assert.equal(stored(A), 'No Answer'); assert.equal(callNotes(A).length, 0);
-  });
-  await check('a reserved request id cannot be used on another contact or for another step', async () => {
-    fresh();
-    const t = attempt(A, 'No Answer');
-    await t.begin();
-    assert.equal(body(await write('contact.callLogResult', B, { value: 'No Answer' }, t.ids.result)).outcome, 'not_sent');
-    assert.equal(body(await write('contact.lastCallAttempt', A, { value: '2026-10-06T15:00:00.000Z' }, t.ids.result)).outcome, 'not_sent');
+    assert.equal(body(await write('contact.callLogResult', A, { value: 'No Answer' }, 'unbound-result-0001')).outcome, 'not_sent');
+    assert.equal(body(await write('note.create', A, { body: callLogNote('Voicemail', 'x') }, 'unbound-note-0001')).outcome, 'not_sent');
     assert.equal(ghlWrites.length, 0);
+    assert.equal((await write('note.create', A, { body: 'Plain operator note' }, 'plain-note-0001')).statusCode, 200);
+    assert.equal((await write('contact.lastCallAttempt', A, { value: '2026-10-06T14:00:00.000Z' }, 'plain-touch-0001')).statusCode, 200);
   });
-
-  // ── Bones reproduction 1: saved-but-unverified -> reload -> replacement result ─
-  await check('REPRO 1: result confirmed, then the page is reloaded: every session sees it unfinished; a replacement result cannot be reserved or sent', async () => {
+  await check('happy path: begin publishes attempt 1 of each slot (attempt + binding); result -> note -> touch; final complete BEFORE the head is released; status clear', async () => {
     fresh();
-    const t = attempt(A, 'Spoke with Seller');
-    await t.begin(); await t.sendResult();          // confirmed; the browser's readback then failed -- nothing else sent
-    const s = await status();
-    assert.equal(s.body.state, 'blocked'); assert.equal(s.body.kind, 'resumable'); assert.match(s.body.message, /partly saved/);
-    assert.doesNotMatch(s.body.message, /reload/i, 'never recommends a reload');
-    const replacement = attempt(A, 'No Answer');
-    const b = await replacement.begin();
-    assert.equal(b.statusCode, 409); assert.equal(body(b).state, 'blocked');
-    assert.equal(body(await replacement.sendResult()).outcome, 'not_sent');
-    assert.equal(stored(A), 'Spoke with Seller'); assert.equal(resultPuts(A).length, 1);
+    const t = call(A, 'Spoke with Seller', 'Wants 30 days.');
+    assert.deepEqual((await t.begin()).body, { state: 'reserved', op: t.op });
+    for (const slot of ['result', 'note', 'touch']) { assert.ok(receipts.has(keyOf.attempt(t.op, slot, 1))); assert.ok(receipts.has(keyOf.binding(rid(t.op, slot, 1)))); }
+    assert.equal((await t.result()).statusCode, 200);
+    assert.equal((await t.note()).statusCode, 200);
+    assert.equal((await t.touch()).statusCode, 200);
+    assert.ok(receipts.has(keyOf.final(t.op)));
+    assert.equal((await contactStatus()).body.state, 'clear');
+    const s = (await t.status()).body;
+    assert.equal(s.state, 'finished'); assert.equal(s.outcome.kind, 'complete');
+    assert.ok(oneEach(A)); assert.equal(stored(A), 'Spoke with Seller'); assert.equal(callNotes(A)[0].body, t.noteBody);
   });
-  await check('REPRO 1 (resolution): reconcile returns the ORIGINAL note and touch ids; finishing with them writes exactly one note; then a new call can be saved', async () => {
+  await check('ORDER and bindings: note or touch before its previous slot is confirmed sends nothing and writes no record; a mismatched value, body, contact or step is refused', async () => {
     fresh();
-    const t = attempt(A, 'Spoke with Seller', 'Roof is new.');
-    await t.begin(); await t.sendResult();
-    const r = body(await reconcile());
-    assert.equal(r.kind, 'resumable');
-    assert.deepEqual(r.remaining, [{ step: 'note', requestId: t.ids.note }, { step: 'touch', requestId: t.ids.touch }]);
-    assert.equal(r.body, t.noteBody);
-    assert.equal((await t.sendNote(r.remaining[0].requestId, r.body)).statusCode, 200);
-    assert.equal((await t.sendTouch(r.remaining[1].requestId)).statusCode, 200);
-    assert.equal((await status()).body.state, 'clear');
-    assert.equal(callNotes(A).length, 1);
-    const next = attempt(A, 'No Answer');
-    assert.equal((await next.begin()).statusCode, 200);
-  });
-
-  // ── Bones reproduction 2: pending -> away/back -> competing save -> older completion ─
-  await check('REPRO 2: a result request still on its way: a competing save is refused while it is pending', async () => {
-    fresh();
-    const older = attempt(A, 'Spoke with Seller');
-    await older.begin();                             // the result request has not reached the server
-    assert.equal((await status()).body.kind, 'pending');
-    const competing = attempt(A, 'Not Interested');
-    assert.equal((await competing.begin()).statusCode, 409);
-    assert.equal(body(await competing.sendResult()).outcome, 'not_sent');
+    const t = call(A, 'Voicemail');
+    await t.begin();
+    const before = keysNow();
+    const early = body(await t.note());
+    assert.equal(early.outcome, 'not_sent'); assert.equal(early.proves, 'nothing');
+    assert.equal(body(await t.touch()).outcome, 'not_sent');
+    assert.deepEqual([...keysNow()].filter((k) => !before.has(k) && !/^[0-9a-f]{64}$/.test(k)), [], 'no call-log record written');
+    assert.equal(body(await write('contact.callLogResult', A, { value: 'No Answer' }, rid(t.op, 'result', 1))).outcome, 'not_sent');
+    assert.equal(body(await write('contact.callLogResult', B, { value: 'Voicemail' }, rid(t.op, 'result', 1))).outcome, 'not_sent');
+    assert.equal(body(await write('contact.lastCallAttempt', A, { value: '2026-10-06T15:00:00.000Z' }, rid(t.op, 'result', 1))).outcome, 'not_sent');
     assert.equal(ghlWrites.length, 0);
-  });
-  await check('REPRO 2: Check again withdraws the undelivered older request; the older request arriving LATER sends nothing; the newer save is the only result in GHL', async () => {
-    fresh();
-    const older = attempt(A, 'Spoke with Seller');
-    await older.begin();
-    const rec = body(await reconcile());
-    assert.equal(rec.state, 'clear'); assert.equal(rec.summary.steps[0].evidence, 'withdrawn');
-    const newer = attempt(A, 'Not Interested');
-    await newer.begin(); await newer.sendResult(); await newer.sendNote(); await newer.sendTouch();
-    const late = await older.sendResult();           // the delayed handler finally runs
-    assert.equal(late.statusCode, 409); assert.equal(body(late).outcome, 'not_sent');
-    assert.equal(body(await older.sendNote()).outcome, 'not_sent');
-    assert.equal(stored(A), 'Not Interested'); assert.equal(resultPuts(A).length, 1); assert.equal(callNotes(A).length, 1);
-  });
-  await check('REPRO 2: if nobody withdrew it, the older request completes normally when it arrives (it still owns the contact)', async () => {
-    fresh();
-    const older = attempt(A, 'Spoke with Seller');
-    await older.begin();
-    assert.equal((await attempt(A, 'Not Interested').begin()).statusCode, 409);
-    assert.equal((await older.sendResult()).statusCode, 200);
-    assert.equal(stored(A), 'Spoke with Seller'); assert.equal(resultPuts(A).length, 1);
-  });
-  await check('REPRO 2: an older request held INSIDE the server (lock held) cannot be withdrawn out from under it: reconcile answers in_progress', async () => {
-    fresh();
-    const older = attempt(A, 'Spoke with Seller');
-    await older.begin();
-    const h = hold((req) => req.method === 'PUT');
-    const pending = older.sendResult();
-    await h.hitP;
-    const rec = await reconcile();
-    assert.equal(rec.statusCode, 409); assert.equal(body(rec).state, 'in_progress');
-    h.release();
-    assert.equal((await pending).statusCode, 200);
-    assert.equal(stored(A), 'Spoke with Seller');
+    await t.result();
+    assert.equal(body(await t.note(1, callLogNote('Voicemail', 'other'))).outcome, 'not_sent');
+    assert.equal((await t.note()).statusCode, 200, 'the same reserved note id still works in order');
   });
 
-  // ── Bones reproduction 3: note landed, response pending -> reload -> duplicate note ─
-  await check('REPRO 3: the note has landed and its response is still pending: after a reload the note is NEVER re-sent (same id refused; a new id is not reserved)', async () => {
+  // ── D1 / D2: Bones's exact order and Jeff's variant ────────────────────────
+  for (const ordering of ['D1', 'D2']) {
+    await check(`${ordering} ${ordering === 'D1' ? "Bones's exact order: both browsers see Retry notes; B2 retries and completes; B1's stale Retry creates nothing" : "Jeff's variant: B2's retry completes BEFORE B1's held refusal is seen; B1 sees the recorded outcome"} -- 1/1/1`, async () => {
+      fresh();
+      const t = call(A, 'Spoke with Seller', 'Roof is new.');
+      await t.begin(); await t.result();
+      refuseNextNote();
+      const b1Refusal = body(await t.note());          // B1's note: refused before sending; its RESPONSE is held (not shown yet)
+      assert.equal(b1Refusal.outcome, 'not_sent'); assert.equal(b1Refusal.proves, 'this_request');
+      const b2Check = (await t.resume()).body;          // B2: Check again
+      assert.deepEqual(b2Check.next, { action: 'retry', slot: 'note', after: 1 });
+      if (ordering === 'D1') {
+        const b1Sees = (await t.status()).body;         // B1's held response released: B1 reads ITS operation
+        assert.deepEqual(b1Sees.next, { action: 'retry', slot: 'note', after: 1 }, 'both browsers show Retry notes');
+      }
+      const b2Retry = (await t.retry('note', 1)).body;  // B2: Retry notes
+      assert.deepEqual(b2Retry.next, { action: 'send', slot: 'note', requestId: rid(t.op, 'note', 2) });
+      assert.equal((await t.note(2, b2Retry.body)).statusCode, 200);
+      const done = await finish(t);
+      assert.equal(done.state, 'finished'); assert.equal(done.outcome.kind, 'complete');
+      if (ordering === 'D2') {
+        const b1Sees = (await t.status()).body;         // B1's held response seen only now
+        assert.equal(b1Sees.state, 'finished'); assert.equal(b1Sees.outcome.kind, 'complete');
+      }
+      const before = keysNow();
+      const stale = (await t.retry('note', 1)).body;    // B1: its stale Retry notes
+      assert.equal(stale.state, 'finished'); assert.equal(stale.outcome.kind, 'complete');
+      assert.deepEqual([...keysNow()].filter((k) => !before.has(k)), [], 'the stale retry created nothing');
+      assert.ok(!receipts.has(keyOf.attempt(t.op, 'note', 3)));
+      assert.ok(oneEach(A), JSON.stringify(counts(A)));
+    });
+  }
+  await check('D3 a losing duplicate sender\'s not_sent proves nothing about the winner; no attempt is created from it; 1 note', async () => {
     fresh();
-    const t = attempt(A, 'Voicemail', 'Left a message.');
-    await t.begin(); await t.sendResult();
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result();
     const h = hold((req) => req.method === 'POST' && req.pathname === `/contacts/${A}/notes`);
-    const pending = t.sendNote();                     // GHL receives the note; the answer is held
+    const winner = t.note();
     await h.hitP;
-    const s = await status();
-    assert.equal(s.body.kind, 'uncertain'); assert.match(s.body.message, /may still reach GHL/);
-    assert.equal(body(await t.sendNote()).outcome, 'not_sent', 'the same id: refused while the first is in flight');
-    assert.equal(body(await write('note.create', A, { body: t.noteBody }, rid('fresh-note'))).outcome, 'not_sent', 'a fresh id: not reserved');
-    assert.equal((await attempt(A, 'Voicemail', 'Left a message.').begin()).statusCode, 409, 'a new attempt: refused');
-    h.release();
-    assert.equal((await pending).statusCode, 200);
-    assert.equal(callNotes(A).length, 1);
+    const loser = body(await t.note());                 // the same id, while the winner holds the lock
+    assert.equal(loser.outcome, 'not_sent'); assert.equal(loser.proves, 'nothing');
+    h.release(); assert.equal((await winner).statusCode, 200);
+    const loser2 = body(await t.note());                // the same id after the winner confirmed
+    assert.equal(loser2.proves, 'nothing');
+    assert.equal((await t.retry('note', 1)).body.next.action, 'send', 'no retry was enabled by the losers; the touch is next');
+    assert.ok(!receipts.has(keyOf.attempt(t.op, 'note', 2)));
+    await finish(t); assert.ok(oneEach(A));
   });
-  await check('REPRO 3 (resolution): once the held note confirms, Check again resumes ONLY the last touch with its original id; one note in GHL', async () => {
+
+  // ── Reuse, publication, permission ─────────────────────────────────────────
+  await check('RA1 a pending attempt n+1 is REUSED: a retry naming after=n returns the same attempt; n+2 is never created', async () => {
     fresh();
-    const t = attempt(A, 'Voicemail', 'Left a message.');
-    await t.begin(); await t.sendResult(); await t.sendNote();
-    const r = body(await reconcile());
-    assert.equal(r.kind, 'resumable'); assert.deepEqual(r.remaining, [{ step: 'touch', requestId: t.ids.touch }]);
-    assert.equal(body(await t.sendNote()).outcome, 'not_sent', 'a duplicate of the confirmed note sends nothing');
-    assert.equal((await t.sendTouch(r.remaining[0].requestId)).statusCode, 200);
-    assert.equal((await status()).body.state, 'clear'); assert.equal(callNotes(A).length, 1); assert.equal(touchPuts(A).length, 1);
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result(); refuseNextNote(); await t.note();
+    const first = (await t.retry('note', 1)).body;
+    const again = (await t.retry('note', 1)).body;
+    assert.deepEqual(again.next, first.next); assert.equal(again.next.requestId, rid(t.op, 'note', 2));
+    assert.ok(!receipts.has(keyOf.attempt(t.op, 'note', 3)));
   });
-  await check('REPRO 3 (lost response): the note reached GHL and its response was lost: uncertain forever -- repeated reconcile, a new begin and the note visible in GHL do not clear it; no second note', async () => {
+  await check('RA2 concurrent retries and concurrent sends: one published attempt, one id, one claim -- 1 note, 1 touch', async () => {
     fresh();
-    const t = attempt(A, 'Voicemail');
-    await t.begin(); await t.sendResult();
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result(); refuseNextNote(); await t.note();
+    const [r1, r2] = await Promise.all([t.retry('note', 1), t.retry('note', 1)]);
+    const ok = [r1, r2].filter((r) => r.statusCode === 200).map((r) => r.body.next.requestId);
+    assert.ok(ok.every((x) => x === rid(t.op, 'note', 2)) && ok.length >= 1, JSON.stringify([r1, r2]));
+    const [n1, n2] = await Promise.all([t.note(2), t.note(2)]);
+    assert.deepEqual([n1.statusCode, n2.statusCode].sort(), [200, 409]);
+    await finish(t);
+    assert.ok(oneEach(A)); assert.ok(!receipts.has(keyOf.attempt(t.op, 'note', 3)));
+  });
+  await check('RA3 a retry of an attempt that is NOT proved unsent (undecided) creates nothing; Check again offers the same id', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result();
+    const v = (await t.retry('note', 1)).body;
+    assert.deepEqual(v.next, { action: 'send', slot: 'note', requestId: rid(t.op, 'note', 1) });
+    assert.ok(!receipts.has(keyOf.attempt(t.op, 'note', 2)));
+    assert.equal((await t.retry('note', 3)).statusCode, 400, 'a retry naming an attempt that does not exist is invalid');
+  });
+  await check('P-1 send permission needs BOTH the attempt record and the dispatch binding, verified', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result();
+    const saved = receipts.get(keyOf.attempt(t.op, 'note', 1));
+    receipts.delete(keyOf.attempt(t.op, 'note', 1));
+    assert.equal(body(await t.note()).outcome, 'not_sent', 'attempt record missing');
+    receipts.set(keyOf.attempt(t.op, 'note', 1), saved);
+    const b = receipts.get(keyOf.binding(rid(t.op, 'note', 1)));
+    receipts.delete(keyOf.binding(rid(t.op, 'note', 1)));
+    assert.equal(body(await t.note()).outcome, 'not_sent', 'binding missing: an unbound call-log note');
+    receipts.set(keyOf.binding(rid(t.op, 'note', 1)), { ...b, bodyDigest: 'tampered' });
+    assert.equal(body(await t.note()).outcome, 'not_sent', 'binding mismatched');
+    assert.equal(callNotes(A).length, 0);
+  });
+
+  // ── Result slot ─────────────────────────────────────────────────────────────
+  await check('R-1 an undelivered result is withdrawn by Check again: final not_saved, released, NO result attempt 2; the late original sends nothing and gets the recorded outcome', async () => {
+    fresh();
+    const t = call(A, 'Spoke with Seller');
+    await t.begin();
+    const v = (await t.resume()).body;
+    assert.equal(v.state, 'finished'); assert.equal(v.outcome.kind, 'not_saved');
+    assert.ok(!receipts.has(keyOf.attempt(t.op, 'result', 2)));
+    assert.equal((await contactStatus()).body.state, 'clear');
+    const late = body(await t.result());
+    assert.equal(late.outcome, 'not_sent'); assert.equal(late.code, 'operation_not_current'); assert.equal(late.recorded.kind, 'not_saved');
+    assert.equal(resultPuts(A).length, 0);
+  });
+  await check('R-2 dispatch wins the race against the withdrawal: blocked until that attempt\'s outcome is known, then the call continues', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
+    await t.begin();
+    memStore.setJSON(keyOf.decision(rid(t.op, 'result', 1)), { d: 'send', at: 'now' }, { onlyIfNew: true });   // the dispatch claimed first
+    const v = (await t.resume()).body;
+    assert.equal(v.state, 'open'); assert.deepEqual(v.next, { action: 'blocked', slot: 'result', reason: 'in_flight' });
+    memStore.setJSON(keyOf.outcome(rid(t.op, 'result', 1)), { kind: 'confirmed', at: 'now' }, { onlyIfNew: true });
+    assert.equal((await t.resume()).body.next.slot, 'note');
+  });
+  await check('R-3 a result refused before sending (proved): Not saved; a NEW call (new operation id) may then begin', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
+    await t.begin();
+    failNext.push((op, key) => op === 'setJSON' && /^[0-9a-f]{64}$/.test(key));   // receipt claim fails inside the owned write
+    const r = body(await t.result());
+    assert.equal(r.proves, 'this_request');
+    assert.equal((await t.resume()).body.outcome.kind, 'not_saved');
+    assert.equal((await call(A, 'Voicemail').begin()).body.state, 'reserved');
+  });
+
+  // ── Note and touch slots ────────────────────────────────────────────────────
+  await check('F-1 result uncertain (GHL\'s answer lost at the server): protected -- nothing further; repeated Check again blocked; a new begin refused', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
+    await t.begin();
+    loseNext.push((req) => req.method === 'PUT');
+    assert.equal(body(await t.result()).outcome, 'indeterminate');
+    for (let i = 0; i < 3; i++) assert.deepEqual((await t.resume()).body.next, { action: 'blocked', slot: 'result', reason: 'uncertain' });
+    assert.equal(body(await t.note()).outcome, 'not_sent');
+    assert.equal((await call(A, 'Voicemail').begin()).statusCode, 409);
+    assert.equal(callNotes(A).length, 0);
+  });
+  await check('F-2 note refused (proved): visible retry; Retry notes publishes attempt 2 of the SAME operation; 1 note', async () => {
+    fresh();
+    const t = call(A, 'Spoke with Seller');
+    await t.begin(); await t.result(); refuseNextNote(); await t.note();
+    assert.deepEqual((await contactStatus()).body.next, { action: 'retry', slot: 'note', after: 1 });
+    const r = (await t.retry('note', 1)).body;
+    await t.note(2, r.body); await finish(t);
+    assert.ok(oneEach(A));
+  });
+  await check('F-3 persistent note refusal: stays a visible partial save, ownership held, Retry available, no new call; never a duplicate; a later retry still completes once', async () => {
+    fresh();
+    const t = call(A, 'Spoke with Seller');
+    await t.begin(); await t.result();
+    for (let n = 1; n <= 3; n++) {
+      if (n > 1) assert.equal((await t.retry('note', n - 1)).body.next.requestId, rid(t.op, 'note', n));
+      refuseNextNote(); await t.note(n);
+      const s = (await contactStatus()).body;
+      assert.equal(s.state, 'open'); assert.deepEqual(s.next, { action: 'retry', slot: 'note', after: n });
+      assert.equal((await call(A, 'Voicemail').begin()).statusCode, 409, 'no new call while it is open');
+    }
+    assert.equal(callNotes(A).length, 0);
+    await t.retry('note', 3); await t.note(4); await finish(t);
+    assert.ok(oneEach(A));
+  });
+  await check('F-4 note uncertain (sent, answer lost): protected -- no attempt 2 (a retry creates nothing); the touch is never sent', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result();
     loseNext.push((req) => req.method === 'POST');
-    const res = await t.sendNote();
-    assert.equal(body(res).outcome, 'indeterminate');
-    assert.equal(callNotes(A).length, 1, 'GHL has the note');
-    for (let i = 0; i < 3; i++) { const r = body(await reconcile()); assert.equal(r.state, 'blocked'); assert.equal(r.kind, 'uncertain'); assert.equal(r.remaining, undefined); }
-    assert.equal((await attempt(A, 'Voicemail').begin()).statusCode, 409);
-    assert.equal(body(await t.sendNote()).outcome, 'not_sent');
-    assert.equal(body(await t.sendTouch()).outcome, 'not_sent', 'the touch waits for a confirmed note');
+    assert.equal(body(await t.note()).outcome, 'indeterminate');
+    assert.deepEqual((await t.retry('note', 1)).body.next, { action: 'blocked', slot: 'note', reason: 'uncertain' });
+    assert.ok(!receipts.has(keyOf.attempt(t.op, 'note', 2)));
+    assert.equal(body(await t.touch()).outcome, 'not_sent');
     assert.equal(callNotes(A).length, 1); assert.equal(touchPuts(A).length, 0);
   });
-
-  // ── Uncertainty at every step ──────────────────────────────────────────────
-  await check('uncertain RESULT (lost response): blocked as uncertain; nothing after it can be sent; reconcile never clears it', async () => {
+  await check('F-5 note undecided (the request never arrived): Check again reuses the SAME id; 1 note', async () => {
     fresh();
-    const t = attempt(A, 'No Answer');
-    await t.begin();
-    loseNext.push((req) => req.method === 'PUT');
-    assert.equal(body(await t.sendResult()).outcome, 'indeterminate');
-    for (let i = 0; i < 3; i++) assert.equal(body(await reconcile()).kind, 'uncertain');
-    assert.equal(body(await t.sendNote()).outcome, 'not_sent');
-    assert.equal(callNotes(A).length, 0); assert.equal(resultPuts(A).length, 1);
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result();
+    assert.deepEqual((await t.resume()).body.next, { action: 'send', slot: 'note', requestId: rid(t.op, 'note', 1) });
+    await finish(t); assert.ok(oneEach(A));
   });
-  await check('uncertain LAST TOUCH (lost response): blocked as uncertain naming the last-touch time; one touch PUT', async () => {
+  await check('F-6 note landed in GHL, its handler still running (no outcome yet): blocked in flight; the same id is refused; then only the touch, with its original id', async () => {
     fresh();
-    const t = attempt(A, 'No Answer');
-    await t.begin(); await t.sendResult(); await t.sendNote();
-    loseNext.push((req) => req.method === 'PUT');
-    assert.equal(body(await t.sendTouch()).outcome, 'indeterminate');
-    const r = body(await reconcile());
-    assert.equal(r.kind, 'uncertain'); assert.match(r.message, /last-touch time/);
-    assert.equal(body(await t.sendTouch()).outcome, 'not_sent'); assert.equal(touchPuts(A).length, 1);
-  });
-
-  // ── Definite refusals ──────────────────────────────────────────────────────
-  await check('a RESULT refused before sending (GHL unreachable before the call): not_sent; Check again proves nothing was saved and releases', async () => {
-    fresh();
-    const t = attempt(A, 'No Answer');
-    await t.begin();
-    const h = hold((req) => req.method === 'GET' && req.pathname === `/contacts/${A}`, { failBefore: true }); h.release();
-    assert.equal(body(await t.sendResult()).outcome, 'not_sent');
-    const r = body(await reconcile());
-    assert.equal(r.state, 'clear'); assert.notEqual(r.summary.steps[0].evidence, 'confirmed');
-    assert.equal(stored(A), null); assert.equal(writesOf(A).length, 0);
-  });
-  await check('a NOTE refused before sending: the attempt ends (result saved, note withdrawn); a Retry-notes reservation writes exactly one note', async () => {
-    fresh();
-    const t = attempt(A, 'Spoke with Seller', 'Call back Friday.');
-    await t.begin(); await t.sendResult();
-    // The write-receipt claim fails inside the owned write, before the send is claimed: provably nothing sent.
-    failNext.push((op, key) => op === 'setJSON' && /^[0-9a-f]{64}$/.test(key));
-    assert.equal(body(await t.sendNote()).outcome, 'not_sent');
-    assert.equal(writesOf(A, 'note').length, 0);
-    const r = body(await reconcile());
-    assert.equal(r.state, 'clear');
-    assert.deepEqual(r.summary.steps.map((s) => s.evidence), ['confirmed', 'withdrawn', 'withdrawn']);
-    assert.equal(r.summary.body, t.noteBody);
-    assert.equal(body(await t.sendNote()).outcome, 'not_sent', 'the withdrawn id can never be sent');
-    const ids = { note: rid('retry-note'), touch: rid('retry-touch') };
-    assert.equal((await post({ action: 'begin', contactId: A, purpose: 'call_log_note', result: t.result, body: t.noteBody, steps: [{ step: 'note', requestId: ids.note }, { step: 'touch', requestId: ids.touch }] })).statusCode, 200);
-    assert.equal((await t.sendNote(ids.note)).statusCode, 200);
-    assert.equal((await t.sendTouch(ids.touch)).statusCode, 200);
-    assert.equal(callNotes(A).length, 1); assert.equal((await status()).body.state, 'clear');
-  });
-  await check('another write holding the contact lock: the step is not_sent with NO decision, so it stays resumable with its own id', async () => {
-    fresh();
-    const t = attempt(A, 'No Answer');
-    await t.begin(); await t.sendResult();
-    const h = hold((req) => req.method === 'POST' && req.pathname === `/contacts/${A}/notes`);
-    const plain = write('note.create', A, { body: 'Plain operator note' }, rid('plain'));
+    const t = call(A, 'Voicemail', 'Left a message.');
+    await t.begin(); await t.result();
+    let reads = 0;
+    const h = hold((req) => req.method === 'GET' && req.pathname === `/contacts/${A}/notes` && ++reads === 1);   // the note's readback, after the POST
+    const pending = t.note();
     await h.hitP;
-    assert.equal(body(await t.sendNote()).outcome, 'not_sent');
-    h.release(); await plain;
-    assert.equal(body(await reconcile()).kind, 'resumable');
-    assert.equal((await t.sendNote()).statusCode, 200);
-    assert.equal(callNotes(A).length, 1);
+    assert.equal(callNotes(A).length, 1, 'GHL has the note');
+    assert.deepEqual((await t.status()).body.next, { action: 'blocked', slot: 'note', reason: 'in_flight' });
+    assert.equal(body(await t.note()).outcome, 'not_sent');
+    h.release(); assert.equal((await pending).statusCode, 200);
+    assert.deepEqual((await t.resume()).body.next, { action: 'send', slot: 'touch', requestId: rid(t.op, 'touch', 1) });
+    await finish(t); assert.ok(oneEach(A));
+  });
+  await check('F-7 Retry last-touch time: only after the note is confirmed and only on a proved-unsent touch attempt; 1 touch', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result();
+    assert.equal(body(await t.touch()).proves, 'nothing', 'a touch before the note is refused and proves nothing');
+    assert.notEqual((await t.retry('touch', 1)).body.next.slot, 'touch', 'no touch retry while the note is not confirmed');
+    assert.ok(!receipts.has(keyOf.attempt(t.op, 'touch', 2)));
+    await t.note();
+    assert.deepEqual((await t.retry('touch', 1)).body.next, { action: 'send', slot: 'touch', requestId: rid(t.op, 'touch', 1) }, 'an undecided touch is reused, not retried');
+    failNext.push((op, key) => op === 'setJSON' && /^[0-9a-f]{64}$/.test(key));
+    assert.equal(body(await t.touch()).proves, 'this_request');
+    assert.deepEqual((await t.resume()).body.next, { action: 'retry', slot: 'touch', after: 1 });
+    assert.equal((await t.retry('touch', 1)).body.next.requestId, rid(t.op, 'touch', 2));
+    await t.touch(2); await finish(t);
+    assert.ok(oneEach(A));
+  });
+  await check('F-8 touch uncertain: protected; blocked naming the touch; one touch PUT', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result(); await t.note();
+    loseNext.push((req) => req.method === 'PUT');
+    assert.equal(body(await t.touch()).outcome, 'indeterminate');
+    assert.deepEqual((await t.resume()).body.next, { action: 'blocked', slot: 'touch', reason: 'uncertain' });
+    assert.equal(touchPuts(A).length, 1);
   });
 
-  // ── Scoped reconcile (a page settling ITS OWN attempt) ─────────────────────
-  await check('a stale page settling its OLD attempt can never withdraw a NEWER attempt\'s undelivered step: nothing changes, the old attempt\'s own evidence is reported', async () => {
+  // ── Call A, then Call B ─────────────────────────────────────────────────────
+  async function aThenB() {
+    const a = call(A, 'Spoke with Seller');
+    await a.begin(); await a.result(); await a.note(); await a.touch();
+    const b = call(A, 'No Answer', 'B');
+    assert.equal((await b.begin()).body.state, 'reserved');
+    return { a, b };
+  }
+  await check('AB-1 stale BEGIN for finished A while B is open: A\'s recorded outcome; A is not reopened; B unchanged', async () => {
     fresh();
-    const older = attempt(A, 'Spoke with Seller');
-    await older.begin(); await older.sendResult(); await older.sendNote(); await older.sendTouch();   // finished and released
-    const newer = attempt(A, 'No Answer');
-    await newer.begin();                              // its result request is still on its way
-    const scoped = body(await post({ action: 'reconcile', contactId: A, attempt: older.ids.result }));
-    assert.equal(scoped.state, 'clear'); assert.deepEqual(scoped.summary.steps.map((s) => s.evidence), ['confirmed', 'confirmed', 'confirmed']);
-    assert.equal((await status()).body.kind, 'pending', 'the newer attempt is untouched');
-    assert.equal((await newer.sendResult()).statusCode, 200, 'and its delayed result still sends');
-    assert.equal(stored(A), 'No Answer');
+    const { a, b } = await aThenB();
+    const r = (await a.begin()).body;
+    assert.equal(r.state, 'finished'); assert.equal(r.op, a.op); assert.equal(r.outcome.kind, 'complete');
+    assert.equal(receipts.get(keyOf.head(A)).current, b.op);
   });
-  await check('a scoped reconcile of the CURRENT attempt behaves exactly like Check again; an invalid attempt id is refused (400)', async () => {
+  await check('AB-2 stale RESUME and RETRY for A while B is open: A\'s recorded outcome; B unchanged', async () => {
     fresh();
-    const t = attempt(A, 'No Answer');
-    await t.begin(); await t.sendResult();
-    const scoped = body(await post({ action: 'reconcile', contactId: A, attempt: t.ids.result }));
-    assert.equal(scoped.kind, 'resumable'); assert.equal(scoped.attempt, t.ids.result);
-    assert.equal((await post({ action: 'reconcile', contactId: A, attempt: 'bad id!' })).statusCode, 400);
+    const { a, b } = await aThenB();
+    const before = keysNow();
+    assert.equal((await a.resume()).body.outcome.kind, 'complete');
+    assert.equal((await a.retry('note', 1)).body.outcome.kind, 'complete');
+    assert.deepEqual([...keysNow()].filter((k) => !before.has(k)), []);
+    assert.equal(receipts.get(keyOf.head(A)).current, b.op);
   });
-
-  // ── Two sessions and repeated reconciliation ───────────────────────────────
-  await check('two sessions finishing the SAME attempt: both get the same original ids; one note and one touch reach GHL', async () => {
+  await check('AB-3 stale STEP requests of A while B is open: operation_not_current with A\'s recorded outcome; NO record written; B completes 1/1/1 for itself', async () => {
     fresh();
-    const t = attempt(A, 'Spoke with Seller');
-    await t.begin(); await t.sendResult();
-    const s1 = body(await reconcile()); const s2 = body(await reconcile());
-    assert.deepEqual(s1.remaining, s2.remaining, 'repeated reconciliation is stable');
-    const [n1, n2] = await Promise.all([t.sendNote(s1.remaining[0].requestId, s1.body), t.sendNote(s2.remaining[0].requestId, s2.body)]);
-    assert.deepEqual([n1.statusCode, n2.statusCode].sort(), [200, 409]);
-    const [t1, t2] = await Promise.all([t.sendTouch(s1.remaining[1].requestId), t.sendTouch(s2.remaining[1].requestId)]);
-    assert.deepEqual([t1.statusCode, t2.statusCode].sort(), [200, 409]);
-    assert.equal(callNotes(A).length, 1); assert.equal(touchPuts(A).length, 1);
-    assert.equal(body(await reconcile()).state, 'clear'); assert.equal(body(await reconcile()).state, 'clear');
+    const { a, b } = await aThenB();
+    const before = keysNow();
+    for (const res of [await a.result(), await a.note(), await a.touch()]) {
+      const x = body(res); assert.equal(x.outcome, 'not_sent'); assert.equal(x.code, 'operation_not_current'); assert.equal(x.recorded.kind, 'complete');
+    }
+    assert.deepEqual([...keysNow()].filter((k) => !before.has(k) && !/^[0-9a-f]{64}$/.test(k)), [], 'no call-log record written');
+    assert.equal(receipts.get(keyOf.head(A)).current, b.op);
+    await b.result(); await b.note(); await b.touch();
+    assert.equal(stored(A), 'No Answer'); assert.equal(callNotes(A).length, 2); assert.equal(resultPuts(A).length, 2);
   });
-  await check('a second session cannot begin while the first holds the contact; a retried begin of the exact original is idempotent; an altered repeat is rejected', async () => {
+  await check('AB-4 a finished not_saved operation reports not_saved to its stale readers', async () => {
     fresh();
-    const t = attempt(A, 'No Answer');
-    assert.equal((await t.begin()).statusCode, 200);
-    assert.equal((await t.begin()).statusCode, 200);
-    const altered = await t.begin({ body: callLogNote('No Answer', 'changed') });
-    assert.equal(altered.statusCode, 409); assert.equal(body(altered).code, 'reservation_mismatch');
-    assert.equal((await attempt(A, 'Voicemail').begin()).statusCode, 409);
+    const a = call(A, 'Spoke with Seller');
+    await a.begin(); await a.resume();
+    await call(A, 'No Answer').begin();
+    assert.equal((await a.status()).body.outcome.kind, 'not_saved');
   });
 
-  // ── Contact isolation ──────────────────────────────────────────────────────
-  await check('contact isolation: an unfinished save on A never blocks B; each contact\'s records and GHL writes stay its own', async () => {
+  // ── Finalization and release ────────────────────────────────────────────────
+  await check('FN-1 / ST-5 the final write fails after every write landed: ownership retained; the next status writes final ONLY; GHL counts unchanged', async () => {
     fresh();
-    const a = attempt(A, 'Spoke with Seller');
-    await a.begin(); await a.sendResult();
-    const b = attempt(B, 'No Answer');
-    assert.equal((await b.begin()).statusCode, 200);
-    await b.sendResult(); await b.sendNote(); await b.sendTouch();
-    assert.equal((await status(B)).body.state, 'clear'); assert.equal((await status(A)).body.kind, 'resumable');
-    assert.equal(stored(A), 'Spoke with Seller'); assert.equal(stored(B), 'No Answer');
-    assert.equal(callNotes(A).length, 0); assert.equal(callNotes(B).length, 1);
-    assert.equal(body(await write('note.create', B, { body: a.noteBody }, a.ids.note)).outcome, 'not_sent', "A's id cannot write to B");
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result(); await t.note();
+    failNext.push((op, key) => op === 'setJSON' && key.startsWith('call-log/v3/final/'));
+    assert.equal((await t.touch()).statusCode, 200);
+    assert.ok(!receipts.has(keyOf.final(t.op))); assert.equal(receipts.get(keyOf.head(A)).current, t.op);
+    const c0 = counts(A);
+    failNext.push((op, key) => op === 'setJSON' && key.startsWith('call-log/v3/final/'));
+    assert.equal((await contactStatus()).body.next.action, 'finishing', 'still recording: never shown as finished early');
+    assert.equal((await contactStatus()).body.state, 'finished');
+    assert.ok(receipts.has(keyOf.final(t.op))); assert.equal((await contactStatus()).body.state, 'clear');
+    assert.deepEqual(counts(A), c0);
+  });
+  await check('FN-2 / ST-6 the head release fails after final: a later reconciliation releases it only while it still names this operation; a head naming another is untouched', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result(); await t.note();
+    failNext.push((op, key) => op === 'setJSON' && key === keyOf.head(A));
+    await t.touch();
+    assert.ok(receipts.has(keyOf.final(t.op))); assert.equal(receipts.get(keyOf.head(A)).current, t.op);
+    assert.equal((await call(A, 'Voicemail').begin()).body.state, 'reserved', 'a new call first completes the finished release, then begins');
+    const other = receipts.get(keyOf.head(A)).current;
+    assert.notEqual(other, t.op);
+    assert.equal((await t.resume()).body.state, 'finished');
+    assert.equal(receipts.get(keyOf.head(A)).current, other, 'the stale reconciliation did not touch the newer head');
   });
 
-  // ── Storage failures, auth, scope, unchanged writes ────────────────────────
-  await check('storage failure while claiming the send: nothing is sent; the attempt stays held', async () => {
+  // ── Storage failures ────────────────────────────────────────────────────────
+  await check('ST-1 storage fails before dispatch: during begin (nothing reserved, head unset; the same begin then succeeds), and on the send claim (nothing sent)', async () => {
     fresh();
-    const t = attempt(A, 'No Answer');
-    await t.begin();
-    failNext.push((op, key) => op === 'setJSON' && key.startsWith('call-log/decision/'));
-    assert.equal(body(await t.sendResult()).outcome, 'not_sent'); assert.equal(writesOf(A).length, 0);
-    assert.equal((await status()).body.state, 'blocked');
-  });
-  await check('storage failure recording the confirmed outcome: the attempt is never assumed finished (uncertain, blocked)', async () => {
-    fresh();
-    const t = attempt(A, 'No Answer');
-    await t.begin();
-    failNext.push((op, key) => op === 'setJSON' && key.startsWith('call-log/outcome/'));
-    assert.equal((await t.sendResult()).statusCode, 200);
-    assert.equal((await status()).body.kind, 'uncertain');
-    assert.equal(body(await t.sendNote()).outcome, 'not_sent');
-  });
-  await check('storage failure during begin or reading status: 503, nothing reserved; ghl-write refuses a call result whose reservation cannot be read', async () => {
-    fresh();
-    const t = attempt(A, 'No Answer');
-    failNext.push((op, key) => op === 'setJSON' && key.startsWith('call-log/head/'));
+    const t = call(A, 'No Answer');
+    failNext.push((op, key) => op === 'setJSON' && key.startsWith('call-log/v3/binding/'));
     assert.equal((await t.begin()).statusCode, 503);
-    assert.equal((await status()).body.state, 'clear');
-    failNext.push((op, key) => key.startsWith('call-log/head/'));
-    assert.equal((await status()).statusCode, 503);
+    assert.equal((await contactStatus()).body.state, 'clear');
+    assert.equal((await t.begin()).body.state, 'reserved', 'the same operation id: idempotent');
+    failNext.push((op, key) => op === 'setJSON' && key.startsWith('call-log/v3/decision/'));
+    assert.equal(body(await t.result()).outcome, 'not_sent'); assert.equal(resultPuts(A).length, 0);
+    failNext.push((op, key) => op === 'get' && key.startsWith('call-log/v3/binding/'));
+    assert.equal(body(await t.result()).outcome, 'not_sent'); assert.equal(resultPuts(A).length, 0);
+  });
+  await check('ST-2 storage fails AFTER GHL success, before the outcome is persisted: protected (in flight), never assumed confirmed, never resent', async () => {
+    fresh();
+    const t = call(A, 'No Answer');
     await t.begin();
-    failNext.push((op, key) => op === 'get' && key.startsWith('call-log/request/'));
-    assert.equal(body(await t.sendResult()).outcome, 'not_sent'); assert.equal(writesOf(A).length, 0);
+    failNext.push((op, key) => op === 'setJSON' && key.startsWith('call-log/v3/outcome/'));
+    assert.equal((await t.result()).statusCode, 200);
+    assert.deepEqual((await t.resume()).body.next, { action: 'blocked', slot: 'result', reason: 'in_flight' });
+    assert.equal(body(await t.result()).outcome, 'not_sent'); assert.equal(body(await t.note()).outcome, 'not_sent');
+    assert.equal(resultPuts(A).length, 1);
   });
-  await check('status needs a read session; begin and reconcile need the write session and origin; a begin must carry an exact call-log note for its result', async () => {
+  await check('ST-3 publication ambiguous: the write APPLIED but its acknowledgement failed -> the same identity is read back and used; a write that did NOT apply -> 503, and a repeat publishes the SAME attempt (never n+2)', async () => {
     fresh();
-    assert.equal((await status(A, false)).statusCode, 401);
-    const t = attempt(A, 'No Answer');
-    assert.equal((await t.begin()).statusCode, 200);
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result(); refuseNextNote(); await t.note();
+    applyThenThrow.push((op, key) => key === keyOf.attempt(t.op, 'note', 2));
+    assert.equal((await t.retry('note', 1)).body.next.requestId, rid(t.op, 'note', 2));
     fresh();
-    assert.equal((await post({ action: 'reconcile', contactId: A }, { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN })).statusCode, 401);
-    assert.equal((await post({ action: 'reconcile', contactId: A }, { ...writeHeaders(), origin: 'https://evil.example.invalid' })).statusCode, 403);
-    assert.equal((await t.begin({ body: 'Call (reported by Brad in IAOS): Voicemail' })).statusCode, 400, 'note names another result');
-    assert.equal((await t.begin({ body: 'Plain note' })).statusCode, 400);
+    const u = call(A, 'No Answer');
+    await u.begin(); await u.result(); refuseNextNote(); await u.note();
+    failNext.push((op, key) => op === 'setJSON' && key === keyOf.attempt(u.op, 'note', 2));
+    assert.equal((await u.retry('note', 1)).statusCode, 503);
+    assert.equal((await u.retry('note', 1)).body.next.requestId, rid(u.op, 'note', 2));
+    assert.ok(!receipts.has(keyOf.attempt(u.op, 'note', 3)));
+    await u.note(2); await finish(u); assert.ok(oneEach(A));
   });
-  await check('records live under call-log/ only (never current-offer/ or the stage marker); nothing is deleted; the head changes only conditionally', async () => {
+  await check('ST-4 a stale read right after publication: no send permission until verified; the next call returns the same identity', async () => {
     fresh();
-    const t = attempt(A, 'No Answer');
-    await t.begin(); await t.sendResult(); await t.sendNote(); await t.sendTouch();
-    const keys = [...receipts.keys()];
-    assert.ok(keys.some((k) => k.startsWith('call-log/head/')));
-    assert.ok(!keys.some((k) => k.startsWith('current-offer/')));
-    assert.ok(!keys.some((k) => k.startsWith('stage-unresolved/')));
-    for (const prefix of ['barrier/', 'request/', 'decision/', 'outcome/']) assert.ok(keys.some((k) => k.startsWith('call-log/' + prefix)), prefix);
+    const t = call(A, 'No Answer');
+    await t.begin(); await t.result(); refuseNextNote(); await t.note();
+    staleNext.push((key) => key === keyOf.binding(rid(t.op, 'note', 2)));
+    const first = await t.retry('note', 1);
+    assert.equal(first.statusCode, 503, 'the published binding did not read back yet: no permission');
+    const again = (await t.retry('note', 1)).body;
+    assert.equal(again.next.requestId, rid(t.op, 'note', 2));
+    assert.ok(!receipts.has(keyOf.attempt(t.op, 'note', 3)));
   });
-  await check('the deal\'s Current Offer barrier and the contact\'s call log are independent: a pending Current Offer save does not block a call save', async () => {
+  await check('ST-7 storage fails reading status: 503 (the page treats it as blocked)', async () => {
     fresh();
-    // A Current Offer reservation for an opportunity of A (the opportunity read is not needed for begin in this fake: use the module directly).
-    const offerLib = require('../netlify/functions/lib/current-offer-barrier.ts');
-    const store = { get: async (k) => receipts.get(k) ?? null, getWithMetadata: async (k) => (receipts.has(k) ? { data: receipts.get(k), etag: etags.get(k) } : null),
-      setJSON: async (k, v, o) => { if (o?.onlyIfNew && receipts.has(k)) return { modified: false }; if (o?.onlyIfMatch !== undefined && etags.get(k) !== o.onlyIfMatch) return { modified: false }; receipts.set(k, v); const e = 'etag-' + (++etagSeq); etags.set(k, e); return { modified: true, etag: e }; } };
-    await offerLib.beginBarrier(store, offerLib.barrierScope('test', config.locationId), { opp: 'fixture-opp-a', contactId: A, purpose: 'blur', steps: [{ step: 'offer', requestId: rid('offer') }] }, new Date().toISOString());
-    const t = attempt(A, 'No Answer');
-    assert.equal((await t.begin()).statusCode, 200);
-    assert.equal((await t.sendResult()).statusCode, 200); assert.equal((await t.sendNote()).statusCode, 200); assert.equal((await t.sendTouch()).statusCode, 200);
-    assert.equal(callNotes(A).length, 1);
-    void offerBarrierFn;
+    failNext.push((op, key) => key.startsWith('call-log/head/'));
+    assert.equal((await contactStatus()).statusCode, 503);
   });
 
-  console.log(`\nCall-log durable ownership: ${count}/${count + failures} checks passed`);
+  // ── Older clients and legacy records ────────────────────────────────────────
+  await check('L-2 a 558c666 client: begin with purpose/steps and the old reconcile action are refused (400); nothing sent', async () => {
+    fresh();
+    assert.equal((await post({ action: 'begin', contactId: A, purpose: 'call_log', result: 'No Answer', body: callLogNote('No Answer', ''), steps: [{ step: 'result', requestId: 'old-result-00001' }, { step: 'note', requestId: 'old-note-000001' }, { step: 'touch', requestId: 'old-touch-00001' }] })).statusCode, 400);
+    assert.equal((await post({ action: 'reconcile', contactId: A })).statusCode, 400);
+    assert.equal(body(await write('contact.callLogResult', A, { value: 'No Answer' }, 'old-result-00001')).outcome, 'not_sent');
+    assert.equal(ghlWrites.length, 0);
+  });
+  await check('L-3 an existing 558c666-format unfinished head: blocked (legacy), begin refused, never resumed or resent; released only when its evidence settles', async () => {
+    fresh();
+    const lscope = legacy.callLogScope('test', config.locationId);
+    const steps = [{ step: 'result', requestId: 'legacy-result-0001' }, { step: 'note', requestId: 'legacy-note-00001' }, { step: 'touch', requestId: 'legacy-touch-0001' }];
+    await legacy.beginCallLog(memStore, lscope, { contactId: A, purpose: 'call_log', result: 'No Answer', body: callLogNote('No Answer', ''), steps }, 'now');
+    // (a) its result landed, the note did not: legacy partial -- stays blocked; Check again does not release or resend.
+    await legacy.runCallLogOwnedWrite(memStore, lscope, { operation: 'contact.callLogResult', targetId: A, requestId: 'legacy-result-0001', args: { value: 'No Answer' } }, async (hooks) => { await hooks.beforeDispatch(); hooks.state.dispatched = true; return { confirmed: true }; });
+    assert.equal((await contactStatus()).body.state, 'legacy');
+    assert.equal((await call(A, 'Voicemail').begin()).statusCode, 409);
+    assert.equal((await post({ action: 'resume', contactId: A, legacy: true })).body.state, 'legacy');
+    assert.equal(ghlWrites.length, 0);
+    // (b) a legacy head whose first step never went out: Check again withdraws and releases; then a new call begins.
+    fresh();
+    await legacy.beginCallLog(memStore, lscope, { contactId: A, purpose: 'call_log', result: 'No Answer', body: callLogNote('No Answer', ''), steps }, 'now');
+    assert.equal((await post({ action: 'resume', contactId: A, legacy: true })).body.state, 'clear');
+    assert.equal((await call(A, 'Voicemail').begin()).body.state, 'reserved');
+  });
+
+  // ── Earlier reproductions (808e105 review) and preservation ─────────────────
+  await check('E-1 saved but unverified -> reload -> replacement: the open operation is found; a replacement call is refused; finishing gives 1/1/1', async () => {
+    fresh();
+    const t = call(A, 'Spoke with Seller');
+    await t.begin(); await t.result();
+    const s = (await contactStatus()).body;
+    assert.equal(s.op, t.op); assert.equal(s.next.slot, 'note');
+    assert.equal((await call(A, 'No Answer').begin()).statusCode, 409);
+    await finish(t); assert.ok(oneEach(A));
+  });
+  await check('E-2 pending -> away/back -> competing save -> older completion: competing begin refused; the older completes alone', async () => {
+    fresh();
+    const t = call(A, 'Spoke with Seller');
+    await t.begin();
+    assert.equal((await call(A, 'Not Interested').begin()).statusCode, 409);
+    await t.result(); await finish(t);
+    assert.ok(oneEach(A)); assert.equal(stored(A), 'Spoke with Seller');
+  });
+  await check('E-3 note landed, response lost -> reload: protected; no duplicate note is possible', async () => {
+    fresh();
+    const t = call(A, 'Voicemail');
+    await t.begin(); await t.result();
+    loseNext.push((req) => req.method === 'POST');
+    await t.note();
+    assert.equal(body(await t.note()).outcome, 'not_sent');
+    assert.equal(body(await write('note.create', A, { body: t.noteBody }, 'fresh-note-0001')).outcome, 'not_sent');
+    assert.equal(callNotes(A).length, 1);
+  });
+  await check('K contact isolation; the Current Offer barrier and plain writes are independent; auth: status needs a read session, actions need the write session and origin', async () => {
+    fresh();
+    const a = call(A, 'Spoke with Seller');
+    await a.begin(); await a.result();
+    const b = call(B, 'No Answer');
+    assert.equal((await b.begin()).body.state, 'reserved');
+    await b.result(); await b.note(); await b.touch();
+    assert.equal((await contactStatus(B)).body.state, 'clear'); assert.equal((await contactStatus(A)).body.state, 'open');
+    assert.equal(body(await write('note.create', B, { body: a.noteBody }, rid(a.op, 'note', 1))).outcome, 'not_sent');
+    const offerLib = require('../netlify/functions/lib/current-offer-barrier.ts');
+    await offerLib.beginBarrier(memStore, offerLib.barrierScope('test', config.locationId), { opp: 'fixture-opp-a', contactId: A, purpose: 'blur', steps: [{ step: 'offer', requestId: 'offer-request-0001' }] }, 'now');
+    await finish(a); assert.ok(oneEach(A));
+    assert.equal((await get({ contactId: A }, false)).statusCode, 401);
+    assert.equal((await post({ action: 'resume', contactId: A, operationId: a.op }, { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN })).statusCode, 401);
+    assert.equal((await post({ action: 'resume', contactId: A, operationId: a.op }, { ...writeHeaders(), origin: 'https://evil.example.invalid' })).statusCode, 403);
+    assert.equal((await post({ action: 'retry', contactId: A, operationId: a.op, slot: 'result', after: 1 })).statusCode, 400, 'a result is never retried');
+  });
+
+  finished = true;
+  console.log(`\nCall-log durable operations: ${count}/${count + failures} checks passed`);
   process.exit(failures ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
