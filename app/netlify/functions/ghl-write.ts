@@ -8,7 +8,7 @@ import { exact, identifier, planWrite, dispositions, routings } from "./lib/writ
 import { configuredBoundary, fieldValue, WriteUncertain, type DispatchHooks } from "./lib/ghl-write-boundary";
 import { barrierScope, isBarrierOwned, runOwnedWrite, checkNoteReservation, NotSent, NotOwned, STEP_OPERATION, RESERVED_OPERATIONS, type BarrierStore } from "./lib/current-offer-barrier";
 import { parseOutcomeNote } from "../../src/lib/seller-call-outcome";
-import { callLogScope, isCallLogBound, isCallLogNoteText, runCallLogOwnedWrite, CALL_LOG_OPERATIONS, NotSent as CallLogNotSent, NotOwned as CallLogNotOwned } from "./lib/call-log-barrier";
+import { callLogScope, isCallLogBound, isCallLogNoteText, isOperationRequestId, runCallLogOwnedWrite, CALL_LOG_OPERATIONS, NotSent as CallLogNotSent, NotOwned as CallLogNotOwned } from "./lib/call-log-barrier";
 import { claimWrite, lockContact, stageTransitionUnresolved, claimStageTransition, clearStageTransition } from "./lib/write-receipts";
 import { latestOutcomeNoteForOpportunity } from "../../src/lib/seller-call-outcome";
 import { currentOfferWriteGate } from "../../src/lib/current-offer-carrier";
@@ -104,7 +104,8 @@ export const handler = async (event: any) => {
      current operation: ordered (each slot only after the previous one is
      confirmed), claimed at the write boundary, its outcome recorded. Plain
      notes and last-touch writes that are not bound are unchanged. */
-  const callLogNeedsReservation = request.operation === "contact.callLogResult" || (request.operation === "note.create" && isCallLogNoteText(request.args?.body));
+  const callLogNeedsReservation = request.operation === "contact.callLogResult" || (request.operation === "note.create" && isCallLogNoteText(request.args?.body))
+    || (CALL_LOG_OPERATIONS.has(request.operation) && isOperationRequestId(request.requestId));
   let callLogOwned = false;
   try {
     connectLambda(event);
@@ -138,7 +139,7 @@ export const handler = async (event: any) => {
         throw e;
       }
     }
-    if (callLogNeedsReservation && !callLogOwned) return json(409, { outcome: "not_sent", error: "No call-log reservation for this write; nothing was sent" });
+    if (callLogNeedsReservation && !callLogOwned) return json(409, { outcome: "not_sent", proves: "nothing", error: "No call-log reservation for this write; nothing was sent" });
     // INV-98: an unresolved earlier Under Contract attempt blocks every later
     // one -- any browser, operator or requestId -- before any GHL call.
     if (plan.kind === "opportunity_stage" && await stageTransitionUnresolved(request.targetId)) {

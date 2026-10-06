@@ -59,6 +59,13 @@ export function isCallLogNoteText(body: unknown): boolean {
   return typeof body === "string" && body.startsWith(CALL_LOG_NOTE_MARK);
 }
 export const requestIdFor = (op: string, slot: Slot, n: number) => `${op}-${slot}-${n}`;
+/**
+ * A request id shaped like an operation attempt (`<op>-<slot>-<n>`). Such a
+ * request is only ever sent as a published, bound attempt: without its binding
+ * it is refused (never treated as a plain, unowned write) -- an unpublished
+ * attempt can never be dispatched.
+ */
+export const isOperationRequestId = (id: unknown) => typeof id === "string" && /^[A-Za-z0-9_-]{8,40}-(result|note|touch)-[1-9][0-9]{0,5}$/.test(id);
 const OPERATION_ID = /^[A-Za-z0-9_-]{8,40}$/;
 
 export function callLogScope(env: string, locationId: string): string { return `${env}:${locationId}`; }
@@ -85,12 +92,15 @@ export type Next =
   | { action: "send"; slot: Slot; requestId: string }          // an undecided note/touch attempt: same id
   | { action: "retry"; slot: Slot; after: number }             // proved unsent: an explicit retry may publish n+1
   | { action: "blocked"; slot: Slot; reason: "in_flight" | "uncertain" }
-  | { action: "finishing" };                                   // every slot settled; final not yet recorded
+  | { action: "unpublished"; slot: Slot; attempt: number }     // the attempt exists but its binding is not (yet) published: NOTHING was sent
+  | { action: "finishing"; kind: FinalKind };                  // every slot settled; final (of this kind) not yet recorded
 export type CallLogView =
   | { state: "clear" }
   | { state: "legacy"; message: string }
   | { state: "finished"; op: string; outcome: Outcome }
-  | { state: "not_current"; op: string }                       // begun but never current: nothing of it was sent
+  /* Not the contact's current operation and no final record readable: its outcome is NOT recorded.
+     Absence from the head never proves nothing was sent; the evidence is reported as is. */
+  | { state: "unrecorded"; op: string; result: string; slots: SlotView[] }
   | { state: "open"; op: string; result: string; slots: SlotView[]; next: Next; body?: string };
 
 export const proved = (e: Evidence) => e === "withdrawn" || e === "not_dispatched";
@@ -286,25 +296,61 @@ async function settleView(store: BarrierStore, scope: string, o: OpRecord, withB
   const next = nextOf(slots);
   if (next.action === "complete" || next.action === "not_saved") {
     try { return { state: "finished", op: o.op, outcome: outcomeOf(await finalize(store, scope, o, next.action, slots)) }; }
-    catch { return openView(o, slots, { action: "finishing" }, withBody); }
+    catch { return openView(o, slots, { action: "finishing", kind: next.action }, withBody); }
   }
-  if (next.action === "send" && !(await attemptPublished(store, scope, o, next.slot, slots[SLOTS.indexOf(next.slot)].attempt))) {
-    // Not yet verifiably published: no send permission (a retried call reads the same identity).
-    return openView(o, slots, { action: "blocked", slot: next.slot, reason: "in_flight" }, withBody);
+  if (next.action === "send") {
+    const n = slots[SLOTS.indexOf(next.slot)].attempt;
+    // Not verifiably published: no send permission, and NOTHING was sent -- never shown as dispatched.
+    if (!(await attemptPublished(store, scope, o, next.slot, n))) return openView(o, slots, { action: "unpublished", slot: next.slot, attempt: n }, withBody);
   }
   return openView(o, slots, next, withBody);
+}
+
+/**
+ * The head does not name this operation (ownership changed, or the read was
+ * stale). Re-read THIS operation's durable final record: it may have finished
+ * and been released while we were reading. Without it, the outcome is
+ * UNRECORDED -- its evidence is reported, nothing is concluded, and nothing is
+ * written (a subsequent call is never affected).
+ */
+async function notCurrentView(store: BarrierStore, scope: string, contact: string, o: OpRecord): Promise<CallLogView> {
+  const f = await readFinal(store, scope, o.op);
+  if (f) return { state: "finished", op: o.op, outcome: outcomeOf(f) };
+  return { state: "unrecorded", op: o.op, result: o.result, slots: await evaluate(store, scope, o) };
+}
+
+/**
+ * Repairs the CURRENT attempt of the next unconfirmed slot when its
+ * publication is incomplete (e.g. the attempt record was written but its
+ * binding write failed): the SAME attempt's attempt record and binding are
+ * written once and verified. Never allocates another attempt to get around it.
+ */
+async function repairCurrent(store: BarrierStore, scope: string, o: OpRecord): Promise<void> {
+  const slots = await evaluate(store, scope, o);
+  const next = nextOf(slots);
+  if (next.action !== "send") return;
+  const n = slots[SLOTS.indexOf(next.slot)].attempt;
+  if (!(await attemptPublished(store, scope, o, next.slot, n))) await publishAttempt(store, scope, o, next.slot, n);
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
 
 /** Contact status, for any session (read session). */
 export async function statusByContact(store: BarrierStore, scope: string, contact: string): Promise<CallLogView> {
-  const { head } = await readHead(store, scope, contact);
-  if (!head || head.current === null) return { state: "clear" };
-  if (isLegacyHead(head)) return { state: "legacy", message: LEGACY_MESSAGE };
-  const o = await readOp(store, scope, head.current);
-  if (!o) throw new StorageUnsettled("The open operation is not readable yet");
-  return settleView(store, scope, o, false);
+  for (let i = 0; i < CAS_ATTEMPTS; i++) {
+    const { head } = await readHead(store, scope, contact);
+    if (!head || head.current === null) return { state: "clear" };
+    if (isLegacyHead(head)) return { state: "legacy", message: LEGACY_MESSAGE };
+    const o = await readOp(store, scope, head.current);
+    if (!o) throw new StorageUnsettled("The open operation is not readable yet");
+    const v = await settleView(store, scope, o, false);
+    if (v.state !== "finished") return v;
+    // That operation has finished: the contact's state is whatever the head names NOW.
+    const again = await readHead(store, scope, contact);
+    if (!again.head || again.head.current === null) return { state: "clear" };
+    if (again.head.current === o.op) return v;      // release still pending; reconciled on the next call
+  }
+  throw new StorageUnsettled("The contact's call-log state kept changing");
 }
 
 /** An operation's own state, by its ORIGINAL id -- for a delayed response, a stale page or a stale tab. */
@@ -314,7 +360,7 @@ export async function statusByOperation(store: BarrierStore, scope: string, cont
   const f = await readFinal(store, scope, op);
   if (f) return finishedView(store, scope, contact, f);
   const { head } = await readHead(store, scope, contact);
-  if (!head || head.current !== op) return { state: "not_current", op };
+  if (!head || head.current !== op) return notCurrentView(store, scope, contact, o);
   return settleView(store, scope, o, false);
 }
 
@@ -376,7 +422,7 @@ export async function resumeOperation(store: BarrierStore, scope: string, contac
     const f = await readFinal(store, scope, op);
     if (f) return finishedView(store, scope, contact, f);
     const { head } = await readHead(store, scope, contact);
-    if (!head || head.current !== op) return { state: "not_current", op };
+    if (!head || head.current !== op) return notCurrentView(store, scope, contact, o);
     const slots = await evaluate(store, scope, o);
     const next = nextOf(slots);
     if (next.action === "withdraw_result") {
@@ -384,6 +430,7 @@ export async function resumeOperation(store: BarrierStore, scope: string, contac
       if (!w.modified && !(await readJson(store, decisionKey(scope, slots[0].requestId)))) throw new StorageUnsettled("Decision unreadable after a lost claim");
       continue;   // evaluate again: withdrawn -> not_saved; dispatch won -> blocked until its outcome
     }
+    await repairCurrent(store, scope, o);   // an incompletely published current attempt: the SAME attempt is completed
     return settleView(store, scope, o, true);
   }
   throw new StorageUnsettled("The call-log state could not be confirmed");
@@ -403,7 +450,8 @@ export async function retryAttempt(store: BarrierStore, scope: string, contact: 
   const f = await readFinal(store, scope, op);
   if (f) return finishedView(store, scope, contact, f);
   const { head } = await readHead(store, scope, contact);
-  if (!head || head.current !== op) return { state: "not_current", op };
+  if (!head || head.current !== op) return notCurrentView(store, scope, contact, o);
+  await repairCurrent(store, scope, o);     // repair the SAME current attempt first; never allocate past it
   const slots = await evaluate(store, scope, o);
   const index = SLOTS.indexOf(slot);
   const cur = slots[index];

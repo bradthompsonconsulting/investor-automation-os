@@ -29,12 +29,13 @@ export type Next =
   | { action: "send"; slot: Slot; requestId: string }
   | { action: "retry"; slot: Slot; after: number }
   | { action: "blocked"; slot: Slot; reason: "in_flight" | "uncertain" }
-  | { action: "finishing" };
+  | { action: "unpublished"; slot: Slot; attempt: number }
+  | { action: "finishing"; kind: "complete" | "not_saved" };
 export type CallLogView =
   | { state: "clear" }
   | { state: "legacy"; message: string }
   | { state: "finished"; op: string; outcome: Outcome }
-  | { state: "not_current"; op: string }
+  | { state: "unrecorded"; op: string; result: string; slots: SlotView[] }
   | { state: "open"; op: string; result: string; slots: SlotView[]; next: Next; body?: string }
   | { state: "in_progress"; message: string }
   | { state: "unreadable"; message: string };
@@ -123,7 +124,8 @@ export function describe(view: CallLogView): { tone: "done" | "not_saved" | "par
     case "finished": return view.outcome.kind === "complete"
       ? { tone: "done", message: `Saved: ${view.outcome.result}.` }
       : { tone: "not_saved", message: `"${view.outcome.result}" was not saved — nothing was sent to GHL.` };
-    case "not_current": return { tone: "not_saved", message: "Not saved — nothing was sent to GHL." };
+    // Not the current operation and no final record: its outcome is NOT recorded -- never claimed either way.
+    case "unrecorded": return { tone: "blocked", message: `The outcome of the call "${view.result}" is not recorded yet; IAOS will not guess it. Nothing more will be sent for it. Use Check again.` };
     case "legacy": case "in_progress": case "unreadable": return { tone: "blocked", message: view.message };
     case "open": {
       const n = view.next;
@@ -137,7 +139,12 @@ export function describe(view: CallLogView): { tone: "done" | "not_saved" | "par
           ? { tone: "blocked", message: `Unresolved — the ${LABEL[n.slot]} for "${r}" was sent and may still reach GHL. Nothing more will be saved in this contact's call log until it is resolved. Use Check again; if it stays unresolved, it needs the call-log recovery procedure.` }
           : { tone: "blocked", message: `The ${LABEL[n.slot]} for "${r}" was sent and is not confirmed yet — it may still reach GHL. Use Check again in a moment.` };
         case "withdraw_result": return { tone: "blocked", message: `A call save ("${r}") for this contact was started and is not confirmed — it may still be on its way to GHL. Nothing more will be saved until it is checked. Use Check again.` };
-        case "finishing": return { tone: "blocked", message: `The call "${r}" reached GHL; IAOS is still recording that it finished. Use Check again.` };
+        // Prepared but not published: NOTHING was sent -- never shown as dispatched.
+        case "unpublished": return { tone: "blocked", message: `The ${LABEL[n.slot]} for "${r}" is not ready to send yet — nothing has been sent. Use Check again to finish preparing it.` };
+        // The intended outcome is kept: a pending not_saved is never worded as reaching GHL, and neither is shown as Saved.
+        case "finishing": return n.kind === "complete"
+          ? { tone: "blocked", message: `The call "${r}" reached GHL; IAOS is still recording that it finished. Use Check again.` }
+          : { tone: "blocked", message: `"${r}" was not saved — nothing was sent to GHL. IAOS is still recording that. Use Check again.` };
       }
     }
   }
