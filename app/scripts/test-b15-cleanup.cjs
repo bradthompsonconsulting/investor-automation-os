@@ -103,16 +103,22 @@ check('before any sign-in, the single sign-in landing is unchanged (no page rend
 // 4 -- Bones, PR #131 re-review at b34c6d5 (behaviour proven in test-read-session-recovery.cjs P1CL / P1BLUR / P2UW).
 {
   const cl = code('src/components/CallLogControl.tsx');
-  check('P1 call log: ownership starts the moment the result write is confirmed',
-    /await ghl\.contacts\.setCallLogResult\(contactId, chosen\);\s*unresolved\.current = \{ result: chosen, body \};/.test(cl));
-  check('P1 call log: the save handler refuses while an unresolved attempt exists',
-    /if \(!result \|\| inFlight\.current\) return;[^\n]*\n\s*if \(unresolved\.current\) return;/.test(cl));
-  check('P1 call log: choosing a result refuses (and is disabled) while unresolved; Save is disabled',
-    /onClick=\{\(\) => \{ if \(unresolved\.current\) return; setResult\(r\);/.test(cl) && /disabled=\{busy \|\| owned\} style=\{btn\(result === r\)\}/.test(cl)
-    && /data-testid="call-log-save" onClick=\{\(\) => void save\(\)\} disabled=\{busy \|\| owned \|\| !result\}/.test(cl));
-  check('P1 call log: only a readback that answers releases it (verified save path or Check again)',
-    (cl.match(/unresolved\.current = null;/g) || []).length === 2 && /async function checkAgain\(\)/.test(cl) && /data-testid="call-log-check-again"/.test(cl));
-  check('P1 call log: Check again finishes a confirmed attempt through the same note-then-touch path, once', /await writeNoteAndTouch\(pending\.result, pending\.body\);/.test(cl));
+  /* Board 15 / PR #131 (Bones, re-review of 808e105): ownership is DURABLE and
+     server-side (call-log-barrier); behaviour in test-call-log-barrier.cjs and
+     test-call-log-ownership.cjs. */
+  check('call log: durable ownership is taken (begin) before the first write; nothing is sent unless it succeeds',
+    /try \{ reserved = await beginCallLog\(cid, "call_log",[^\n]*\}\s*catch \{\s*if \(!forThis\(cid\)\) return;\s*setSubmit\(\{ status: "not_saved", message: RESERVATION_FAILED_MESSAGE \}\);[\s\S]{0,120}return;\s*\}/.test(cl)
+    && cl.indexOf('await beginCallLog(cid, "call_log"') < cl.indexOf('await sendCallLogStep(cid, "result"'));
+  check('call log: Save refuses unless the server reports the contact clear (any session\'s unfinished save blocks it)',
+    /if \(!result \|\| inFlight\.current\.has\(cid\)\) return;[^\n]*\n\s*if \(owner\.kind !== "clear"\) return;/.test(cl)
+    && /data-testid="call-log-save" onClick=\{\(\) => void save\(\)\} disabled=\{busy \|\| locked \|\| !result\}/.test(cl) && /const locked = owner\.kind !== "clear";/.test(cl));
+  check('call log: ownership is read from the server on load and on every contact change (reload, navigation, another session)',
+    /useEffect\(\(\) => \{\s*const cid = contactId;\s*setOwner\(\{ kind: "checking" \}\);[\s\S]*?readCallLogStatus\(cid\)[\s\S]*?\}, \[contactId\]\);/.test(cl));
+  check('call log: Check again reconciles on the server and finishes a resumable save with its ORIGINAL request ids only',
+    /async function checkAgain\(\)[\s\S]*?r = await reconcileCallLog\(cid\)[\s\S]*?await finishSteps\(cid, r\.attempt, saved, r\.body, r\.remaining\);/.test(cl) && /data-testid="call-log-check-again"/.test(cl));
+  check('call log: an attempt runs to its end for ITS contact; only the screen follows the contact shown (no screen update for another contact)',
+    /const forThis = \(cid: string\) => current\.current === cid;/.test(cl) && (cl.match(/forThis\(cid\)/g) || []).length >= 10
+    && /if \(outcome\.kind === "confirmed"\) \{\s*if \(forThis\(cid\)\) \{ if \(step === "note"\) onNoteWritten\(\); else onAttempt\(at\); \}\s*continue;\s*\}/.test(cl));
 
   const blurSites = { 'src/pages/SellerCallWorkspace.tsx': 1, 'src/pages/ContactWorkspace.tsx': 3, 'src/pages/Dashboard.tsx': 1 };
   for (const [f, n] of Object.entries(blurSites)) {

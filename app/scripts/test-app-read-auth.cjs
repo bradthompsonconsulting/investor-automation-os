@@ -469,16 +469,18 @@ function assertNoCors(res) {
   const callLog = fs.readFileSync(path.join(APP, 'src', 'components', 'CallLogControl.tsx'), 'utf8').replace(/\r\n/g, '\n');
   await check('CallLogControl imports ReadUnavailableError', () => assert.match(callLog, /import \{ ReadUnavailableError \} from "\.\.\/lib\/read-session";/));
   await check('CallLogControl: refused readback after a confirmed result write -> saved_unverified; no note, no last touch', () => {
-    assert.match(callLog, /await ghl\.contacts\.setCallLogResult\(contactId, chosen\);[\s\S]*?\} catch \(e\) \{\s*setSubmit\(\{ status: "saved_unverified", message: e instanceof ReadUnavailableError[\s\S]*?\}\);\s*return;\s*\}/);
+    // Board 15 / PR #131: the result is a reserved step (sendCallLogStep); a refused readback still stops before the note and last touch.
+    assert.match(callLog, /await sendCallLogStep\(cid, "result", ids\.result, \{ value: chosen \}\);[\s\S]*?\} catch \(e\) \{\s*if \(!forThis\(cid\)\) return;\s*setSubmit\(\{ status: "saved_unverified", message: e instanceof ReadUnavailableError[\s\S]*?\}\);\s*await refreshOwner\(cid\);\s*return;\s*\}/);
   });
-  await check('CallLogControl message: confirmed, not verifiable, sign in to reads and reload, do not retry', () => {
+  await check('CallLogControl message: confirmed, not verifiable, sign in to reads, finish with Check again, do not save it again (never "reload")', () => {
     const m = callLog.match(/const VERIFY_UNAVAILABLE = "([^"]*)";/);
     assert.ok(m, 'VERIFY_UNAVAILABLE not found');
-    assert.match(m[1], /can't be verified/); assert.match(m[1], /Sign in to reads and reload/); assert.match(m[1], /do not retry/);
+    assert.match(m[1], /can't be verified/); assert.match(m[1], /Sign in to reads/); assert.match(m[1], /Check again/); assert.match(m[1], /do not save it again/);
+    assert.doesNotMatch(m[1], /reload/i);
     assert.match(callLog, /Result saved -- IAOS confirmed the write, but it \$\{VERIFY_UNAVAILABLE\} Notes and last-touch time were not attempted\./);
   });
-  await check('CallLogControl keeps uncertain/failed-write handling: a thrown write attempts nothing further and never claims nothing was written', () => {
-    assert.ok(callLog.includes('status: "not_saved", message: `Result not confirmed (${(e as Error).message}). Notes and last-touch time were not attempted.'));
+  await check('CallLogControl keeps uncertain/failed-write handling: an unconfirmed write attempts nothing further and never claims nothing was written', () => {
+    assert.ok(callLog.includes('status: "not_saved", message: `Result not confirmed (${sent.message}). Notes and last-touch time were not attempted.'));
     assert.doesNotMatch(callLog, /Nothing was written/);
   });
   await check('CallLogControl renders saved_unverified in amber, with no Retry', () => {

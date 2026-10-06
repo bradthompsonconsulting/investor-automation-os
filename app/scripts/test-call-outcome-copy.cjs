@@ -82,44 +82,49 @@ check('Follow Up hint, exact', copy.FOLLOW_UP_CALLBACK_HINT, "Follow Up doesn't 
 check('notes limit', copy.CALL_NOTES_MAX, 4000);
 
 // ── Call log control: what it may write ──────────────────────────────────
-check('the control calls only getDetail, setCallLogResult, notes.create and setLastCallAttempt',
-  [...new Set([...callLogCode.matchAll(/ghl\.(contacts|notes)\.(\w+)\(/g)].map((m) => m[1] + '.' + m[2]))].sort(),
-  ['contacts.getDetail', 'contacts.setCallLogResult', 'contacts.setLastCallAttempt', 'notes.create']);
+/* Board 15 / PR #131 (Bones): durable call-log ownership. The control now
+   writes ONLY through reserved steps (call-log-barrier-client.sendCallLogStep),
+   each carrying its reserved request id; its one direct GHL call is the
+   readback. The order, the stop on any readback failure and the copy rules are
+   the same as before. */
+const barrierClient = read('src/lib/call-log-barrier-client.ts');
+check('the control calls GHL directly only to read the result back (getDetail); every write is a reserved step',
+  [...new Set([...callLogCode.matchAll(/ghl\.(contacts|notes)\.(\w+)\(/g)].map((m) => m[1] + '.' + m[2]))].sort(), ['contacts.getDetail']);
+check('a reserved step maps to exactly the three call-log operations (result, note, last touch)',
+  /const OPERATION: Record<CallLogStep, string> = \{ result: "contact\.callLogResult", note: "note\.create", touch: "contact\.lastCallAttempt" \};/.test(barrierClient), true);
 check('the control never names routing, the bell, the old disposition writer or a callback write',
   /setCallRouting|setDispositionAt|setCallDisposition|setCallbackDatetime|scheduleCallbackGated|dispositionAt|callRouting/.test(callLogCode), false);
-/* Board 15 cleanup (Bones, PR #131 P1): the handler now refuses first while an
-   unresolved confirmed attempt owns the control. Choosing a result still only
-   sets state (no request of any kind), and it can never reset that ownership. */
 {
   const resultClick = (callLogCode.match(/data-testid=\{`call-log-result-\$\{slug\(r\)\}`\}[\s\S]*?onClick=\{\(\) => \{ (.*) \}\}\r?\n/) || [, ''])[1];
   check('choosing a result only sets state',
-    resultClick.trim() === 'if (unresolved.current) return; setResult(r); if (submit.status !== "in_flight") setSubmit({ status: "idle" });', true);
-  check('choosing a result sends no request of any kind', resultClick.length > 0 && !/ghl\.|fetch\(|save\(|writeNoteAndTouch|recordOverride/.test(resultClick), true);
-  check('choosing a result cannot reset an unresolved attempt (it refuses before touching state, and never clears ownership)',
-    /^\s*if \(unresolved\.current\) return;/.test(resultClick) && !/unresolved\.current = /.test(resultClick), true);
+    resultClick.trim() === 'if (owner.kind === "blocked") return; setResult(r); if (submit.status !== "in_flight") setSubmit({ status: "idle" });', true);
+  check('choosing a result sends no request of any kind', resultClick.length > 0 && !/ghl\.|fetch\(|save\(|send|begin|reconcile|recordOverride/.test(resultClick), true);
+  check('choosing a result cannot take over an unfinished save (it refuses while blocked, and never changes ownership)',
+    /^\s*if \(owner\.kind === "blocked"\) return;/.test(resultClick) && !/setOwner/.test(resultClick), true);
 }
 {
-  const at = (s) => callLogCode.indexOf(s);
-  check('Save order: result -> readback -> note -> last touch',
-    at('await ghl.contacts.setCallLogResult(contactId, chosen)') !== -1
-    && at('await ghl.contacts.setCallLogResult(contactId, chosen)') < at('await ghl.contacts.getDetail(contactId)')
-    && at('await ghl.contacts.getDetail(contactId)') < at('await writeNoteAndTouch(chosen, body)')
-    && at('await ghl.notes.create(contactId, body)') < at('await ghl.contacts.setLastCallAttempt(contactId, at)'), true);
+  const at = (x) => callLogCode.indexOf(x);
+  check('Save order: reserve -> result -> readback -> note -> last touch',
+    at('await beginCallLog(cid, "call_log", chosen, body,') !== -1
+    && at('await beginCallLog(cid, "call_log", chosen, body,') < at('await sendCallLogStep(cid, "result", ids.result, { value: chosen })')
+    && at('await sendCallLogStep(cid, "result", ids.result, { value: chosen })') < at('await ghl.contacts.getDetail(cid)')
+    && at('await ghl.contacts.getDetail(cid)') < at('await finishSteps(cid, ids.result, chosen, body, [{ step: "note", requestId: ids.note }, { step: "touch", requestId: ids.touch }])'), true);
 }
 {
-  const readback = (callLogCode.match(/const detail = await ghl\.contacts\.getDetail\(contactId\);[\s\S]*?\n      \}\n/) || [''])[0];
+  const readback = (callLogCode.match(/const detail = await ghl\.contacts\.getDetail\(cid\);[\s\S]*?\n      \}\n/) || [''])[0];
   check('ANY readback failure (sign-in, 500, network) is saved-but-unverified and stops before the note and last touch',
-    /\} catch \(e\) \{\s*setSubmit\(\{ status: "saved_unverified", message: e instanceof ReadUnavailableError/.test(readback)
-    && /Notes and last-touch time were not attempted\.` \}\);\s*return;\s*\}/.test(readback) && !/throw e/.test(readback), true);
+    /\} catch \(e\) \{\s*if \(!forThis\(cid\)\) return;\s*setSubmit\(\{ status: "saved_unverified", message: e instanceof ReadUnavailableError/.test(readback)
+    && /Notes and last-touch time were not attempted\.` \}\);\s*await refreshOwner\(cid\);\s*return;\s*\}/.test(readback) && !/throw e/.test(readback) && !/finishSteps/.test(readback), true);
 }
 check('no message ever claims "Nothing was written"', /Nothing was written/.test(callLogCode), false);
-check('a failed result write is "not confirmed", not "not saved", and attempts nothing further',
-  /status: "not_saved", message: `Result not confirmed \(\$\{\(e as Error\)\.message\}\)\. Notes and last-touch time were not attempted\./.test(callLogCode), true);
-check('the result write appears exactly once (never retried automatically)', (callLogCode.match(/ghl\.contacts\.setCallLogResult\(/g) || []).length, 1);
+check('an unconfirmed result write is "not confirmed", not "not saved", and attempts nothing further',
+  /status: "not_saved", message: `Result not confirmed \(\$\{sent\.message\}\)\. Notes and last-touch time were not attempted\./.test(callLogCode), true);
+check('the result write appears exactly once (never retried automatically, never re-sent when finishing a save)',
+  (callLogCode.match(/sendCallLogStep\(cid, "result"/g) || []).length === 1 && /if \(step === "result"\) continue;/.test(callLogCode), true);
 check('a readback that does not match writes nothing further',
-  /if \(!landed\) \{\s*setSubmit\(\{ status: "not_saved", message: "GHL did not confirm the result\. Nothing else was written\." \}\);\s*return;\s*\}/.test(callLogCode), true);
+  /if \(!landed\) \{\s*if \(!forThis\(cid\)\) return;\s*setSubmit\(\{ status: "not_saved", message: "GHL did not confirm the result on a fresh read\. Notes and last-touch time were not attempted; use Check again\." \}\);\s*await refreshOwner\(cid\);\s*return;\s*\}/.test(callLogCode), true);
 check('a failed note or last touch is reported as partial, never as saved',
-  /status: "partial", result: saved, message: `Result saved; notes not saved/.test(callLogCode) && /status: "partial", result: saved, message: `Saved; last-touch time not updated/.test(callLogCode), true);
+  /Result saved; notes not saved/.test(callLogCode) && /Saved; last-touch time not updated/.test(callLogCode) && /Result saved; the call note may or may not have reached GHL/.test(callLogCode), true);
 check('Follow Up shows the hint and a Set Callback that only opens the page control',
   /\{result === "Follow Up" \? \(/.test(callLogCode) && /data-testid="call-log-set-callback" onClick=\{onOpenCallback\}/.test(callLogCode), true);
 check('ghl client: setCallLogResult uses the contact.callLogResult operation',

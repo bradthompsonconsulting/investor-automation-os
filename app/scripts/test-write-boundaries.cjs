@@ -113,6 +113,25 @@ const uploadHandler = require('../netlify/functions/ghl-executed-artifact-upload
 // Board 15 / PR #126 stacked server PR: a Current Offer write needs a durable
 // reservation (current-offer-barrier.ts) before it can be sent.
 const barrierHandler = require('../netlify/functions/current-offer-barrier.ts').handler;
+/* Board 15 / PR #131: a call result is sent only as a reserved call-log step
+   (lib/call-log-barrier.ts). A previous case may have left an attempt current:
+   Check again first (it withdraws never-sent steps and releases). */
+const callLogHandler = require('../netlify/functions/call-log-barrier.ts').handler;
+async function reserveCallLog(requestId, result) {
+  const headers = { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` };
+  const prior = JSON.parse((await callLogHandler({ blobs: lambdaBlobs, httpMethod: 'POST', headers, body: JSON.stringify({ action: 'reconcile', contactId: contact.id }) })).body);
+  // A partly saved earlier attempt is finished first, with its ORIGINAL ids (as the page's Check again does).
+  if (prior.kind === 'resumable') {
+    for (const s of prior.remaining) {
+      const args = s.step === 'note' ? { body: prior.body } : { value: '2026-10-06T12:00:00.000Z' };
+      const done = await handler(event(s.step === 'note' ? 'note.create' : 'contact.lastCallAttempt', contact.id, args, s.requestId));
+      assert.equal(done.statusCode, 200, done.body);
+    }
+  }
+  const steps = [{ step: 'result', requestId }, { step: 'note', requestId: requestId + '-note' }, { step: 'touch', requestId: requestId + '-touch' }];
+  const res = await callLogHandler({ blobs: lambdaBlobs, httpMethod: 'POST', headers, body: JSON.stringify({ action: 'begin', contactId: contact.id, purpose: 'call_log', result, body: `Call (reported by Brad in IAOS): ${result}`, steps }) });
+  assert.equal(res.statusCode, 200, res.body);
+}
 async function reserveFollowUpCallback(requestId) {
   const steps = [{ step: 'callback', requestId }, { step: 'callback_note', requestId: requestId + '-cbn' }, { step: 'touch', requestId: requestId + '-tch' }, { step: 'note', requestId: requestId + '-out' }];
   const res = await barrierHandler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ action: 'begin', opportunityId: opportunity.id, purpose: 'follow_up', steps }) });
@@ -442,6 +461,8 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
     if (op === 'opportunity.currentOffer') await reserveOffer(requestId);
     // PR #126 stacked server PR: the Seller Call Follow-Up callback is reserved-only.
     if (op === 'contact.callback') await reserveFollowUpCallback(requestId);
+    // PR #131: the call result is reserved-only (durable call-log ownership).
+    if (op === 'contact.callLogResult') await reserveCallLog(requestId, args.value);
     const res=await handler(event(op, op.startsWith('opportunity.')||op.startsWith('contract.')?opportunity.id:contact.id,args,requestId)); assert.equal(res.statusCode,200,res.body); assert.notEqual(JSON.parse(res.body).confirmed,false);
   });
   // B14-12 recording-only call log: the operation-specific boundary.
@@ -483,10 +504,17 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   await check('call log: the webhook list is unchanged and does not gain Spoke with Seller', () => {
     assert.deepEqual(contracts.dispositions, ['No Answer', 'Voicemail', 'Follow Up', 'Requested Appointment', 'Not Interested', 'Incorrect Number']);
   });
+  await check('call log handler: an unreserved call result is refused before sending (not_sent, nothing written)', async () => {
+    const before = writes;
+    const res = await handler(event('contact.callLogResult', contact.id, { value: 'Not Interested' }));
+    assert.equal(res.statusCode, 409); assert.equal(JSON.parse(res.body).outcome, 'not_sent'); assert.equal(writes, before);
+  });
   await check('call log handler: the result lands; iaos_call_routing and iaos_disposition_at are not touched', async () => {
     const val = (id) => contact.customFields.find((f) => f.id === id)?.value;
     const before = { routing: val(config.fields.callRouting), at: val(config.fields.dispositionAt) };
-    const res = await handler(event('contact.callLogResult', contact.id, { value: 'Not Interested' }));
+    const requestId = `request-${++sequence}`;
+    await reserveCallLog(requestId, 'Not Interested');
+    const res = await handler(event('contact.callLogResult', contact.id, { value: 'Not Interested' }, requestId));
     assert.equal(res.statusCode, 200, res.body);
     assert.equal(val(config.fields.callDisposition), 'Not Interested');
     assert.deepEqual({ routing: val(config.fields.callRouting), at: val(config.fields.dispositionAt) }, before);

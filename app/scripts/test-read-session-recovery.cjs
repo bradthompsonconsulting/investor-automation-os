@@ -126,6 +126,8 @@ function classify(url, method, post) {
   const fn = u.pathname.replace('/.netlify/functions/', '');
   if (fn === 'app-read-session') return { kind: 'session', method };
   if (fn === 'ghl-write' && method === 'POST') return { kind: 'write', op: post.operation, target: post.targetId, args: post.args, requestId: post.requestId };
+  // The call-log status GET is a read (read-auth); begin / reconcile are writes.
+  if (fn === 'call-log-barrier') return { kind: 'call-log', method, action: method === 'GET' ? 'status' : post && post.action, steps: post && post.steps, read: method === 'GET' };
   if (fn === 'current-offer-barrier') return { kind: 'barrier', method, action: method === 'GET' ? 'status' : post && post.action };
   if (fn === 'ghl-proxy') {
     const p = u.searchParams.get('path') || '';
@@ -160,6 +162,7 @@ function answerRead(req) {
 
 let log = [];
 let holds = [];
+let failCallLog = [];  // predicates: answer the next matching call-log request with 503 (the server could not complete it)
 let failReads = [];   // predicates: answer the next matching READ with 500 (a server failure, not sign-in)
 function hold(match, opts = {}) {
   let release; let onHit;
@@ -230,9 +233,14 @@ async function main() {
       const h = holds.find((x) => !x.used && x.match(req));
       if (h) { h.used = true; h.onHit(req); await h.released; }
       if (req.kind === 'barrier') return reply(await bf.handle(method, url, post));
+      if (req.kind === 'call-log' && !(req.read && !signedIn)) {
+        const fc = failCallLog.findIndex((pred) => pred(req));
+        if (fc >= 0) { failCallLog.splice(fc, 1); return reply({ status: 503, body: { error: 'fixture: the call-log request could not be completed' } }); }
+        return reply(await bf.handleCallLog(method, url, post));
+      }
       if (req.kind === 'write') {
         const contactId = req.target === opp(A) ? A : req.target === opp(B) ? B : req.target;
-        const res = await bf.write({ operation: req.op, targetId: req.target, requestId: req.requestId, contactId },
+        const res = await bf.write({ operation: req.op, targetId: req.target, requestId: req.requestId, contactId, args: req.args },
           () => ({ confirmed: applyWrite(req.op, req.target, req.args) }),
           { outcome: req.op === 'note.create' ? parseOutcomeNote(req.args.body) : null });
         if (h && h.loseAnswer) return route.abort('failed');   // the server finished; the browser lost the answer
@@ -247,7 +255,7 @@ async function main() {
 
     const go = (to) => page.evaluate((t) => window.__iaosNavigate(t), to);
     const freshApp = async (to) => {
-      resetDb(); log = []; holds = []; failReads = []; bf.reset(); signedIn = true;
+      resetDb(); log = []; holds = []; failReads = []; failCallLog = []; bf.reset(); signedIn = true;
       await page.goto(`${base}${HARNESS}`);
       await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
       await go(to);
@@ -486,21 +494,28 @@ async function main() {
     await settle();
     check('P1CL attempted save: zero second result write, zero note, zero last touch',
       writes('contact.callLogResult').length === 1 && writes('note.create').length === 0 && writes('contact.lastCallAttempt').length === 0, writes().map((w) => w.op));
-    failReads.push((r) => r.kind === 'detail' && r.contact === A);
+    /* Board 15 / PR #131 (durable call-log ownership): Check again is decided by
+       the SERVER's own records, never a GHL read. A check the server cannot
+       complete changes nothing and sends nothing. */
+    failCallLog.push((r) => r.action === 'reconcile');
     await page.getByTestId('call-log-check-again').click();
-    await until(async () => /^Still can't verify/.test(await page.getByTestId('call-log-saved-unverified').innerText().catch(() => '')), 'P1CL still unverified');
-    check('P1CL a Check again whose readback fails again stays unresolved and sends nothing',
-      (await page.getByTestId('call-log-save').isDisabled()) && writes().length === 1, writes().map((w) => w.op));
+    await settle();
+    check('P1CL a Check again the server cannot complete stays blocked and sends nothing',
+      (await page.getByTestId('call-log-save').isDisabled()) && writes().length === 1 && (await page.getByTestId('call-log-check-again').count()) === 1, writes().map((w) => w.op));
+    const reserved = log.find((r) => r.kind === 'call-log' && r.action === 'begin').steps;
     await page.getByTestId('call-log-check-again').click();
     await until(async () => (await page.getByTestId('call-log-done').count()) === 1, 'P1CL reconciled');
-    check('P1CL reconciliation (readback answers, GHL holds the confirmed result) completes that attempt once: note, then last touch',
+    const sentIds = Object.fromEntries(writes().map((w) => [w.op, w.requestId]));
+    check('P1CL reconciliation finishes that attempt once -- note, then last touch -- with its ORIGINAL reserved request ids',
       JSON.stringify(writes().map((w) => w.op)) === JSON.stringify(['contact.callLogResult', 'note.create', 'contact.lastCallAttempt'])
-      && (await page.getByTestId('call-log-done').innerText()) === 'Saved: Spoke with Seller.', writes().map((w) => w.op));
+      && sentIds['contact.callLogResult'] === reserved[0].requestId && sentIds['note.create'] === reserved[1].requestId && sentIds['contact.lastCallAttempt'] === reserved[2].requestId
+      && (await page.getByTestId('call-log-done').innerText()) === 'Saved: Spoke with Seller.', { ops: writes().map((w) => w.op), sentIds, reserved });
+    check('P1CL GHL holds exactly one call note for it', db.contacts[A].notes.filter((n) => n.body === 'Call (reported by Brad in IAOS): Spoke with Seller').length === 1);
     await page.getByTestId('call-log-result-no-answer').click();
     await page.getByTestId('call-log-save').click();
     await until(async () => writes('contact.callLogResult').length === 2, 'P1CL next attempt');
     check('P1CL only after reconciliation does another attempt become possible', writes('contact.callLogResult')[1].args.value === 'No Answer');
-    // GHL holds a different result when checked: the attempt ends, nothing further is sent.
+    // GHL's result changed meanwhile: the server's record of the confirmed write decides; the result is never re-sent.
     sessionMs = 3600_000;
     await freshApp(`/contacts/${A}`);
     await contactLoaded('Alpha');
@@ -510,9 +525,10 @@ async function main() {
     await until(async () => (await page.getByTestId('call-log-saved-unverified').count()) === 1, 'P1CL-b unverified');
     db.contacts[A].fields.set(F.callDisposition, 'Voicemail');   // changed in GHL meanwhile
     await page.getByTestId('call-log-check-again').click();
-    await until(async () => (await page.getByTestId('call-log-not-saved').count()) === 1, 'P1CL-b reconciled to not saved');
-    check('P1CL if GHL no longer holds the confirmed result, the attempt ends with no note or last touch',
-      writes().length === 1 && /no longer shows "Spoke with Seller"/.test(await page.getByTestId('call-log-not-saved').innerText()), writes().map((w) => w.op));
+    await until(async () => (await page.getByTestId('call-log-done').count()) === 1, 'P1CL-b finished');
+    check('P1CL a later change in GHL does not re-send the result: Check again finishes only this call\'s note and last touch',
+      JSON.stringify(writes().map((w) => w.op)) === JSON.stringify(['contact.callLogResult', 'note.create', 'contact.lastCallAttempt'])
+      && db.contacts[A].fields.get(F.callDisposition) === 'Voicemail', writes().map((w) => w.op));
     }
 
     // ═══ P1-BLUR — the blur from expiry/recovery never saves (Bones, PR #131) ═

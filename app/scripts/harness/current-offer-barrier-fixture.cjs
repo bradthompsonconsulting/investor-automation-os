@@ -12,12 +12,20 @@
  * State lives in Node, so a second browser context and a page reload see the
  * same records -- the point of the durable barrier.
  *
+ * Board 15 / PR #131: the same fixture also runs the REAL durable call-log
+ * module (netlify/functions/lib/call-log-barrier.ts) against the same store,
+ * mirroring ghl-write and /.netlify/functions/call-log-barrier: a call result
+ * or a call-log-format note is refused (not_sent) without a reservation, and a
+ * reserved step is checked, ordered, claimed and recorded exactly as on the
+ * server. Callers pass the write's `args`.
+ *
  * The caller must install the `.ts` transpile hook before requiring this file.
  */
 const path = require('node:path');
 const lib = require(path.resolve(__dirname, '../../netlify/functions/lib/current-offer-barrier.ts'));
+const callLog = require(path.resolve(__dirname, '../../netlify/functions/lib/call-log-barrier.ts'));
 
-function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-location' }) {
+function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-location', callLogRules = true }) {
   const records = new Map();
   const etags = new Map();
   let etagSeq = 0;
@@ -35,7 +43,40 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
     },
   };
   const scope = lib.barrierScope(env, locationId);
+  const callLogScope = callLog.callLogScope(env, locationId);
   const locked = new Set();
+  const withCallLogMessage = (v) => (v.state === 'clear' ? v : { ...v, message: callLog.describeCallLog(v) });
+
+  /** Answers one /.netlify/functions/call-log-barrier request (status / begin / reconcile). */
+  async function handleCallLog(method, url, post) {
+    try {
+      if (method === 'GET') {
+        const contactId = new URL(url).searchParams.get('contactId');
+        return { status: 200, body: withCallLogMessage(await callLog.callLogStatus(store, callLogScope, contactId)) };
+      }
+      const contactId = post.contactId;
+      if (locked.has(contactId)) return { status: 409, body: { state: 'in_progress', message: 'Another write for this contact is in progress. Nothing was changed; use Check again in a moment.' } };
+      if (post.action === 'begin') {
+        let v;
+        try { v = callLog.validateBegin(post.purpose, post.result, post.body, post.steps); } catch { return { status: 400, body: { error: 'Invalid call-log request' } }; }
+        try {
+          await callLog.beginCallLog(store, callLogScope, { contactId, purpose: v.purpose, result: v.result, body: v.body, steps: v.steps }, new Date().toISOString());
+          return { status: 200, body: { state: 'reserved' } };
+        } catch (e) {
+          if (e instanceof callLog.CallLogHeld) return { status: 409, body: withCallLogMessage(e.status) };
+          if (e instanceof callLog.ReservationMismatch) return { status: 409, body: { state: 'rejected', code: 'reservation_mismatch', message: e.message } };
+          throw e;
+        }
+      }
+      if (post.action === 'reconcile') {
+        const out = await callLog.reconcileCallLog(store, callLogScope, contactId, post.attempt);
+        return { status: 200, body: out.state === 'clear' ? out : withCallLogMessage(out) };
+      }
+      return { status: 400, body: { error: 'Invalid' } };
+    } catch {
+      return { status: 503, body: { error: 'The call-log request could not be completed; nothing was sent to GHL' } };
+    }
+  }
   const withMessage = (s) => (s.state === 'clear' ? s : { ...s, message: lib.describeBlocked(s) });
 
   /** Answers one /.netlify/functions/current-offer-barrier request. */
@@ -74,7 +115,35 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
  *   sentNotApplied   the GHL call leaves but is not applied yet (it may land later).
    * Returns { status, body } exactly as ghl-write would.
    */
-  async function write({ operation, targetId, requestId, contactId }, apply, { refuse = null, failAfterSend = false, sentNotApplied = false, beforeLockRelease = null, outcome = null } = {}) {
+  async function write({ operation, targetId, requestId, contactId, args }, apply, { refuse = null, failAfterSend = false, sentNotApplied = false, beforeLockRelease = null, outcome = null } = {}) {
+    // ghl-write's call-log rule (lib/call-log-barrier.ts), checked before the Current Offer rules apply.
+    const needsCallLog = operation === 'contact.callLogResult' || (operation === 'note.create' && callLog.isCallLogNoteText(args && args.body));
+    if (callLogRules && callLog.CALL_LOG_OPERATIONS.has(operation)) {
+      let clOwned;
+      try { clOwned = await callLog.isCallLogOwned(store, callLogScope, requestId); }
+      catch { if (needsCallLog) return { status: 409, body: { outcome: 'not_sent', error: 'The call-log reservation could not be read; nothing was sent' } }; clOwned = false; }
+      if (needsCallLog && !clOwned) return { status: 409, body: { outcome: 'not_sent', error: 'No call-log reservation for this write; nothing was sent' } };
+      if (clOwned) {
+        if (locked.has(targetId)) return { status: 409, body: { outcome: 'not_sent', error: 'Nothing was sent; the save could not start' } };
+        locked.add(targetId);
+        try {
+          const done = await callLog.runCallLogOwnedWrite(store, callLogScope, { operation, targetId, requestId, args }, async (hooks) => {
+            if (refuse) { const e = new Error(refuse.error); e.refusal = refuse; throw e; }
+            await hooks.beforeDispatch();
+            hooks.state.dispatched = true;
+            if (sentNotApplied) throw new Error('fixture: sent, response lost, not applied yet');
+            const r = await apply();
+            if (failAfterSend) throw new Error('fixture: response lost after the GHL call');
+            return { confirmed: r.confirmed };
+          });
+          if (beforeLockRelease) await beforeLockRelease();
+          return { status: 200, body: { confirmed: done.confirmed } };
+        } catch (e) {
+          if (e instanceof callLog.NotSent || e instanceof callLog.NotOwned) return { status: 409, body: { outcome: 'not_sent', error: `${e.message}; nothing was sent` } };
+          return { status: 409, body: { outcome: 'indeterminate', error: 'The call save may have reached GHL; it is unresolved' } };
+        } finally { locked.delete(targetId); }
+      }
+    }
     let owned;
     try { owned = await lib.isBarrierOwned(store, scope, requestId); }
     catch {
@@ -118,7 +187,8 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
   }
 
   return {
-    handle, write, store, records,
+    handle, handleCallLog, write, store, records,
+    callLogStatus: (contactId) => callLog.callLogStatus(store, callLogScope, contactId),
     status: (opp) => lib.statusOf(store, scope, opp),
     failStorageOnce: (pred) => failNext.push(pred),
     reset() { records.clear(); etags.clear(); locked.clear(); failNext = []; },
