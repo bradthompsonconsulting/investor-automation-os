@@ -367,7 +367,8 @@ export default function DealCalculator() {
             <Calculator size={20} style={{ color: "#1EC8FF" }} /> Deal Calculator
           </h1>
           <div style={{ fontSize: "12px", color: "#64748B", marginTop: "4px" }}>
-            A scratchpad. No contact or opportunity required -- type what you know.
+            <span data-testid="deal-calc-scratchpad-notice" style={{ color: "#F59E0B", fontWeight: 600 }}>Scratchpad -- nothing here is saved.</span>{" "}
+            No contact or opportunity required -- type what you know.
           </div>
         </div>
         <button data-testid="deal-calc-clear" onClick={handleClear} style={{ ...COMPACT_BUTTON_STYLE }}>
@@ -385,6 +386,10 @@ export default function DealCalculator() {
         }}
       >
         {barCells.map((cell) => <BarCellView key={cell.key} cell={cell} />)}
+      </div>
+      <div data-testid="deal-calc-practice-figures-note" style={{ fontSize: "11px", color: "#64748B", margin: "-6px 0 14px" }}>
+        Practice figures: the repairs, offer and spread here do not change the deal. The deal's repair total and
+        Seller MAO are approved on the contact's Underwriting page.
       </div>
 
       {/* What-If editing. */}
