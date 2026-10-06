@@ -216,6 +216,9 @@ jobs:
       - name: Rail — 94 offline checks
         run: node app/scripts/test-rail.cjs
 
+      - name: Board 15 navigation-only paths (Pass 1 F19, F24, F16, F54, F44, F12) — 17 offline checks
+        run: node app/scripts/test-b15-navigation.cjs
+
       - name: Voice foundation and recovery — 77 offline checks
         run: node app/scripts/test-voice-foundation.cjs
 
