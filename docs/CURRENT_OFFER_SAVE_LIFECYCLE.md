@@ -36,6 +36,13 @@ Lambda-compatibility functions can't make strong reads, so any read may be **sta
 - **Stale reads of write-once records** can only be *missing* data. A missing decision makes the withdraw claim fail and re-read; a missing outcome reads as unresolved.
 - **"Clear" is reported only after a successful conditional write** against the latest head, never from a read alone. A persistently stale head gives up after four attempts with a 503, and nothing changes.
 
+## Reservation integrity (Bones / Jess, fourth review)
+
+- **A repeated `begin` is accepted only as the complete immutable original:** same scope (part of every key), deal, contact, purpose, and every step and request id, in order.
+- **An altered reservation is rejected before anything is registered.** That covers a changed purpose, a changed, added or dropped step, or a request id already reserved elsewhere. No request record is ever written for a step the barrier doesn't list.
+- **The exact repeat stays idempotent.** It covers a lost response to `begin`.
+- **Dispatch verifies ownership independently.** The request's digest must appear, with the same step, in the original step list of the barrier it names, and that barrier must belong to the same deal and contact. An auxiliary request record alone is never enough. The outcome-note check uses the same verification.
+
 ## Blur save, step by step
 
 1. **Blur:** `requestSave(deal, amount)`.
@@ -128,6 +135,7 @@ Abbreviations:
 | **Partial Accept failures** | Offer refused, lost before the server, or lost after the GHL call; note refused, or lost after the call; last-touch lost. Each is reported by the existing messages, and the uncertain step is tracked and named. | A A2, A3a, A3b, A4a, A4b, A6; S Accept cases |
 | Storage failures | Begin, claim, outcome, status and reservation-read failures never send and never clear. | S storage cases; O 22 |
 | **Stale storage** | A stale head naming the settled first barrier can't clear or release the newer unresolved barrier. A stale empty head can't let a second barrier in or report clear. A persistently stale head answers 503 and changes nothing. | S "STALE FIRST BARRIER / NEWER UNRESOLVED BARRIER" (reconcile and release), "stale empty head", "persistently stale", "nothing deleted" |
+| **Altered reservation** | A repeated begin that keeps the first request id but changes the purpose or steps is rejected. Nothing is registered, an untracked step can't dispatch, and the original unresolved barrier stays blocked. Every purpose is covered; the exact repeat is idempotent. A stray request record naming the barrier is refused at dispatch. | S "ALTERED-RESERVATION REPRODUCTION", "every purpose", "another deal's request id", "DISPATCH verifies the original step list" |
 | **Conflicting outcome during Accept** | With the submitted Accept note held, a Pass from the page, from another session, or sent unreserved straight to the server sends nothing (no Pass note, no last-touch). The Accept then completes alone. A pending Pass blocks Accept the same way. | A A8 (Bones's regression), A9, A10; S outcome cases |
 | **Timestamp recovery** | While the original last-touch is unresolved (sent, not yet applied), recovery sends nothing. When it is proven unsent, recovery reserves first, then sends exactly one write with a new reserved id. | A A6 (recovery refused twice), A6b (reserved recovery) |
 | Lock contention | Reconcile while a write holds the lock answers `in_progress` and changes nothing. | S "held lock" |

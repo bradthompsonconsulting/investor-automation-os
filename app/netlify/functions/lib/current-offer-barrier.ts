@@ -118,6 +118,36 @@ export class NotOwned extends Error {}
 export class BarrierHeld extends Error { constructor(readonly status: BarrierState) { super("This Current Offer has an unresolved save."); } }
 /** The latest head could not be confirmed after retries (persistently stale or contended). Nothing changed. */
 export class BarrierContended extends Error {}
+/** A begin that is not the exact original reservation, or that reuses another reservation's request id. */
+export class ReservationMismatch extends Error {}
+
+/** The complete immutable reservation: deal, contact, purpose, and every step and request digest, in order. */
+function sameReservation(a: BarrierRecord, b: BarrierRecord): boolean {
+  return a.barrierId === b.barrierId && a.oppDigest === b.oppDigest && a.contactDigest === b.contactDigest && a.purpose === b.purpose
+    && a.steps.length === b.steps.length && a.steps.every((s, i) => s.step === b.steps[i].step && s.requestDigest === b.steps[i].requestDigest);
+}
+function sameRegistration(a: RequestRecord, b: { opp: string; contactId: string; step: BarrierStep; barrierId: string }): boolean {
+  return a.barrierId === b.barrierId && a.opp === b.opp && a.contactId === b.contactId && a.step === b.step;
+}
+
+/**
+ * Dispatch-time ownership, verified INDEPENDENTLY of the auxiliary request
+ * record: the request's digest must appear, with the same step, in the
+ * original step list of the barrier it names, and that barrier must belong to
+ * the same deal and contact. Returns the verified records, or null.
+ */
+async function verifiedOwnership(store: BarrierStore, scope: string, requestId: string): Promise<{ reg: RequestRecord; barrier: BarrierRecord } | null> {
+  const reg = await readJson(store, requestKey(scope, requestId)) as RequestRecord | null;
+  if (!reg) return null;
+  const barrier = await readJson(store, barrierKey(scope, reg.opp, reg.barrierId)) as BarrierRecord | null;
+  if (!barrier) throw new NotSent("The reservation for this request is unreadable");
+  const requestDigest = digest(requestId);
+  const listed = barrier.steps.some((s) => s.requestDigest === requestDigest && s.step === reg.step);
+  if (!listed || barrier.barrierId !== reg.barrierId || barrier.oppDigest !== digest(reg.opp) || barrier.contactDigest !== digest(reg.contactId)) {
+    throw new NotSent("This request is not part of its reservation's original steps");
+  }
+  return { reg, barrier };
+}
 
 const CAS_ATTEMPTS = 4;
 
@@ -201,18 +231,29 @@ export async function beginBarrier(store: BarrierStore, scope: string, input: { 
     v: 2, oppDigest: digest(input.opp), contactDigest: digest(input.contactId), purpose: input.purpose, barrierId,
     steps: input.steps.map((s) => ({ step: s.step, requestDigest: digest(s.requestId) })), createdAt: now,
   };
-  // Write-once records first, so the head never names a missing barrier.
+  /* Bones / Jess, fourth review: a repeated begin is accepted ONLY when it is
+     the complete immutable original -- same scope (in every key), deal,
+     contact, purpose and every step and request id, in order. Anything else
+     is an altered reservation and is rejected BEFORE anything is registered:
+     no request record is ever written for a step the barrier does not list. */
+  const existing = await readJson(store, barrierKey(scope, input.opp, barrierId)) as BarrierRecord | null;
+  if (existing && !sameReservation(existing, record)) throw new ReservationMismatch("This reservation does not match the original one; nothing was registered");
+  for (const s of input.steps) {
+    const reg = await readJson(store, requestKey(scope, s.requestId)) as RequestRecord | null;
+    if (reg && !sameRegistration(reg, { opp: input.opp, contactId: input.contactId, step: s.step, barrierId })) throw new ReservationMismatch("A request id is already reserved elsewhere; nothing was registered");
+  }
+  // Write-once records next (the head is set last, so it never names a missing barrier).
   const b = await store.setJSON(barrierKey(scope, input.opp, barrierId), record, { onlyIfNew: true });
   if (!b.modified) {
-    const existing = await readJson(store, barrierKey(scope, input.opp, barrierId)) as BarrierRecord | null;
-    if (existing && existing.barrierId !== barrierId) throw new Error("Barrier id collision");
+    const now2 = await readJson(store, barrierKey(scope, input.opp, barrierId)) as BarrierRecord | null;
+    if (!now2 || !sameReservation(now2, record)) throw new ReservationMismatch("This reservation does not match the original one; nothing was registered");
   }
   for (const s of input.steps) {
     const reg: RequestRecord = { v: 2, opp: input.opp, contactId: input.contactId, step: s.step, barrierId };
-    const r = await store.setJSON(requestKey(scope, s.requestId), reg, { onlyIfNew: true });
-    if (!r.modified) {
-      const existing = await readJson(store, requestKey(scope, s.requestId)) as RequestRecord | null;
-      if (!existing || existing.barrierId !== barrierId || existing.opp !== input.opp || existing.step !== s.step) throw new Error("Request id already used");
+    const w = await store.setJSON(requestKey(scope, s.requestId), reg, { onlyIfNew: true });
+    if (!w.modified) {
+      const prior = await readJson(store, requestKey(scope, s.requestId)) as RequestRecord | null;
+      if (!prior || !sameRegistration(prior, reg)) throw new ReservationMismatch("A request id is already reserved elsewhere");
     }
   }
   for (let i = 0; i < CAS_ATTEMPTS; i++) {
@@ -288,8 +329,9 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
   request: { operation: string; targetId: string; requestId: string; contactId: string },
   body: (hooks: { beforeDispatch: () => Promise<void>; state: { dispatched: boolean } }) => Promise<T>,
 ): Promise<T> {
-  const reg = await readJson(store, requestKey(scope, request.requestId)) as RequestRecord | null;
-  if (!reg) throw new NotOwned();
+  const owned = await verifiedOwnership(store, scope, request.requestId);
+  if (!owned) throw new NotOwned();
+  const { reg } = owned;
   const requestDigest = digest(request.requestId);
   if (STEP_OPERATION[reg.step] !== request.operation) throw new NotSent("Request is reserved for a different step");
   const target = reg.step === "offer" ? reg.opp : reg.contactId;
@@ -341,10 +383,11 @@ export async function checkNoteReservation(
   store: BarrierStore, scope: string, requestId: string,
   outcome: { kind: string; opportunityId: string } | null,
 ): Promise<string | null> {
-  const reg = await readJson(store, requestKey(scope, requestId)) as RequestRecord | null;
-  if (!reg) return outcome ? "A negotiation outcome needs a reservation; nothing was sent" : null;
-  const barrier = await readJson(store, barrierKey(scope, reg.opp, reg.barrierId)) as BarrierRecord | null;
-  if (!barrier) return "The reservation for this note is unreadable; nothing was sent";
+  let owned: { reg: RequestRecord; barrier: BarrierRecord } | null;
+  try { owned = await verifiedOwnership(store, scope, requestId); }
+  catch (e) { return e instanceof NotSent ? `${e.message}; nothing was sent` : "The reservation for this note is unreadable; nothing was sent"; }
+  if (!owned) return outcome ? "A negotiation outcome needs a reservation; nothing was sent" : null;
+  const { reg, barrier } = owned;
   if (reg.step === "note") {
     if (!outcome || outcome.kind !== barrier.purpose || outcome.opportunityId !== reg.opp) return "This note does not match its reservation; nothing was sent";
     return null;

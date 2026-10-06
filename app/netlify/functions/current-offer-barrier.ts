@@ -31,7 +31,7 @@ import { configuredBoundary, WriteUncertain } from "./lib/ghl-write-boundary";
 import { exact, identifier } from "./lib/write-contracts";
 import { lockContact } from "./lib/write-receipts";
 import {
-  barrierScope, beginBarrier, reconcileBarrier, statusOf, validateSteps, describeBlocked, BarrierHeld,
+  barrierScope, beginBarrier, reconcileBarrier, statusOf, validateSteps, describeBlocked, BarrierHeld, ReservationMismatch,
   type BarrierState, type BarrierStore,
 } from "./lib/current-offer-barrier";
 
@@ -91,6 +91,8 @@ export const handler = async (event: any) => {
         return json(200, { state: "reserved" });
       } catch (e) {
         if (e instanceof BarrierHeld) return json(409, withMessage(e.status));
+        // An altered repeat of a reservation, or a request id reserved elsewhere: nothing was registered.
+        if (e instanceof ReservationMismatch) return json(409, { state: "rejected", code: "reservation_mismatch", message: e.message });
         throw e;
       }
     }

@@ -612,6 +612,79 @@ function fresh() {
     assert.equal([...receipts.keys()].filter((k) => k.startsWith('current-offer/barrier/')).length, 1, 'the settled barrier record is kept');
   });
 
+  // ── Reservation integrity (Bones / Jess, fourth review) ──────────────────────
+  const requestKeys = () => [...receipts.keys()].filter((k) => k.startsWith('current-offer/request/')).sort();
+  await check('ALTERED-RESERVATION REPRODUCTION: a repeat begin that keeps the first request id but adds steps is rejected; nothing registered, nothing dispatched, the unresolved barrier cannot be cleared', async () => {
+    fresh();
+    const r1 = rid('orig');
+    assert.equal((await beginBlur(r1)).statusCode, 200);
+    loseNext.push((req) => req.method === 'PUT');
+    assert.equal(body(await offer(410000, r1)).outcome, 'indeterminate');            // the original barrier is now unresolved
+    const before = requestKeys();
+    const rx = rid('smuggled-note'); const ry = rid('smuggled-touch');
+    const altered = await begin('accept', [{ step: 'offer', requestId: r1 }, { step: 'note', requestId: rx }, { step: 'touch', requestId: ry }]);
+    assert.equal(altered.statusCode, 409); assert.equal(body(altered).code, 'reservation_mismatch');
+    assert.deepEqual(requestKeys(), before, 'no request record was registered for the altered steps');
+    const notesBefore = notes.length;
+    assert.equal(body(await write('note.create', contact.id, { body: acceptNote(410000) }, rx)).outcome, 'not_sent');
+    assert.equal((await write('contact.lastCallAttempt', contact.id, { value: '2026-10-05T13:00:00.000Z' }, ry)).statusCode, 200, 'the unregistered id is only an unrelated last-touch (allowed, like the call log) -- it is not a barrier step and settles nothing');
+    assert.equal(notes.length, notesBefore, 'no outcome note reached GHL');
+    assert.equal(ghlWrites.filter((w) => w.method === 'POST').length, 0);
+    const rec = body(await reconcile());
+    assert.equal(rec.state, 'blocked'); assert.deepEqual(rec.steps.map((x) => `${x.step}:${x.evidence}`), ['offer:unresolved'], 'the barrier still lists only its original step, still unresolved');
+    assert.equal((await status()).body.state, 'blocked');
+  });
+  await check('an altered repeat is rejected for EVERY purpose (changed purpose, a changed later request id, a dropped or added step); the exact repeat stays idempotent', async () => {
+    const purposes = {
+      blur: ['offer'], accept: ['offer', 'note', 'touch'], touch: ['touch'], pass: ['note', 'touch'], follow_up: ['callback', 'callback_note', 'touch', 'note'],
+    };
+    for (const [purpose, stepNames] of Object.entries(purposes)) {
+      fresh();
+      const ids = stepNames.map((s) => rid(`${purpose}-${s}`));
+      const steps = stepNames.map((s, i) => ({ step: s, requestId: ids[i] }));
+      assert.equal((await begin(purpose, steps)).statusCode, 200, purpose);
+      const keys = requestKeys();
+      assert.equal((await begin(purpose, steps)).statusCode, 200, `${purpose}: the exact repeat is idempotent`);
+      assert.deepEqual(requestKeys(), keys, `${purpose}: an exact repeat registers nothing new`);
+      const variants = [];
+      if (steps.length > 1) variants.push(['a changed later request id', steps.map((s, i) => (i === steps.length - 1 ? { ...s, requestId: rid('changed') } : s))]);
+      if (steps.length > 1) variants.push(['a dropped step', steps.slice(0, -1)]);
+      for (const [other, otherSteps] of Object.entries(purposes)) {
+        if (other !== purpose && otherSteps[0] === stepNames[0]) variants.push([`purpose changed to ${other}`, otherSteps.map((s, i) => ({ step: s, requestId: i === 0 ? ids[0] : rid(`x-${s}`) })), other]);
+      }
+      for (const [label, alteredSteps, alteredPurpose] of variants) {
+        const res = await begin(alteredPurpose || purpose, alteredSteps);
+        assert.equal(res.statusCode === 409 || res.statusCode === 400, true, `${purpose}: ${label} must be rejected (${res.statusCode})`);
+        assert.deepEqual(requestKeys(), keys, `${purpose}: ${label} registered nothing`);
+      }
+    }
+  });
+  await check('a request id already reserved for ANOTHER deal\'s reservation cannot be reused (rejected, nothing registered)', async () => {
+    fresh();
+    const r1 = rid('shared');
+    await beginBlur(r1);
+    const keys = requestKeys();
+    const second = await begin('pass', [{ step: 'note', requestId: rid('p-note') }, { step: 'touch', requestId: r1 }]);
+    assert.equal(second.statusCode, 409);
+    assert.deepEqual(requestKeys(), keys);
+  });
+  await check('DISPATCH verifies the barrier\'s original step list: a stray request record naming the current barrier is NOT enough -- not_sent, no GHL write', async () => {
+    fresh();
+    const r1 = rid('real');
+    await beginBlur(r1);
+    // Plant an auxiliary request record that names the current barrier but is not in its step list.
+    const crypto = require('node:crypto');
+    const dg = (x) => crypto.createHash('sha256').update(x).digest('hex');
+    const stray = rid('stray');
+    receipts.set('current-offer/request/' + dg(`${scopeT}:${stray}`), { v: 2, opp: opportunity.id, contactId: contact.id, step: 'offer', barrierId: dg(r1) });
+    const res = await offer(430000, stray);
+    assert.equal(body(res).outcome, 'not_sent'); assert.equal(offerPuts().length, 0);
+    const noteRes = await write('note.create', contact.id, { body: acceptNote(430000) }, stray);
+    assert.equal(body(noteRes).outcome, 'not_sent');
+    assert.equal(notes.length, 0);
+    assert.equal((await offer(430000, r1)).statusCode, 200, 'the genuine step still works');
+  });
+
   // ── scope, separation, auth, unchanged operations ──────────────────────────
   await check('records are scoped to environment + location + opportunity, under their own prefix (never the Under Contract marker)', async () => {
     fresh();
