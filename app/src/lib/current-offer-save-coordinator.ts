@@ -13,28 +13,28 @@
  *      - Nothing for a deal is "recorded" while anything for it is in flight
  *        or queued.
  *
- * 2. Every result is classified by what is known about the REQUEST:
- *      confirmed      GHL answered 200 and the readback shows the amount.
- *      refused        nothing was sent, or the server refused before any
- *                     write (400/401/403, the pre-write "frozen" 409, sign-in
- *                     required, a local validation error). The previously
- *                     verified amount stands.
- *      unverified     GHL answered 200 -- the request finished -- but the
- *                     readback failed or disagreed. Nothing is confirmed;
- *                     later saves may proceed (each verifies itself).
- *      indeterminate  no response, a 5xx, the server's generic 409, or its
- *                     "indeterminate" 202: the request may still land.
+ * 2. Every result is classified by what is PROVEN about the request (Jess,
+ *    2026-10-05: an HTTP error alone is not proof that nothing was written):
+ *      confirmed      the write was verified by its readback.
+ *      refused        provably nothing was sent: the server answered
+ *                     outcome "not_sent" (it refused before the GHL call),
+ *                     sign-in was required before sending, or a local
+ *                     validation error. The previously verified amount
+ *                     stands.
+ *      indeterminate  anything else -- no response, any other HTTP error,
+ *                     "indeterminate", or a readback that failed or did not
+ *                     verify. The server keeps its durable barrier for it.
  *
- * 3. An INDETERMINATE result makes the deal UNRESOLVED for as long as this
- *    app stays loaded (the coordinator is shared, so leaving the page or
- *    switching deals does not clear it):
+ * 3. An INDETERMINATE result makes the deal UNRESOLVED (the coordinator is
+ *    shared, so leaving the page or switching deals does not clear it, and
+ *    the server's durable barrier -- lib/current-offer-barrier-client.ts --
+ *    blocks reloads and other browsers):
  *      - no further submission for that deal is sent -- blur or Accept;
  *      - queued saves are dropped, never released or retried;
  *      - nothing for that deal is labelled "Recorded in GHL";
- *      - a carrier read (snapshot) never clears it.
- *    A full page reload starts a new coordinator. Making the block durable
- *    across reloads, browsers and operators, and resolving it safely, needs a
- *    server-side marker -- proposed separately on PR 126, not built here.
+ *      - a carrier read (snapshot) never clears it;
+ *      - only the server's evidence-based "Check again" clears it
+ *        (`clearUnresolved`), never a reload or a look at GHL.
  *
  * 4. Confirm Accept protects the frozen accepted price for the WHOLE existing
  *    sequence (offer write + readback, acceptance note, last-touch):
@@ -50,18 +50,20 @@
 import type { CurrentOfferStatus } from "./seller-call-deal-bar";
 import { AppWriteSignInRequired } from "./app-write-session";
 
-export type OfferWrite = (oppId: string, amount: number) => Promise<{ ok: boolean; putStatus?: number }>;
-export type OfferOutcomeKind = "confirmed" | "refused" | "unverified" | "indeterminate";
-export type OfferFailure = { amount: number; kind: "refused" | "unverified"; message: string };
+export type OfferWrite = (oppId: string, amount: number, requestId?: string) => Promise<{ ok: boolean; putStatus?: number }>;
+export type OfferOutcomeKind = "confirmed" | "refused" | "indeterminate";
+export type OfferFailure = { amount: number; kind: "refused"; message: string };
+/** Thrown by a write when the durable barrier is held: blocks with the server's own message. */
+export class OfferSaveBlocked extends Error {}
 
 export const UNRESOLVED_SAVE_MESSAGE =
-  "Unresolved — an earlier save of this Current Offer may still reach GHL. Nothing more will be sent for this deal. Check the deal in GHL before changing it.";
+  "Unresolved — an earlier save of this Current Offer may still reach GHL. Nothing more will be sent for this deal until IAOS can prove what happened — use Check again.";
 export const UNRESOLVED_ACCEPT_MESSAGE =
-  "Unresolved — the acceptance may or may not have been recorded. Nothing more will be sent for this deal. Reload and check the deal in GHL before changing the Current Offer.";
+  "Unresolved — part of the acceptance may still reach GHL. Nothing more will be sent for this deal until IAOS can prove what happened — use Check again.";
 
 type Entry =
   | { kind: "blur"; amount: number }
-  | { kind: "accept"; amount: number; resolve: (r: { ok: boolean }) => void; reject: (e: unknown) => void };
+  | { kind: "accept"; amount: number; requestId: string; resolve: (r: { ok: boolean }) => void; reject: (e: unknown) => void };
 
 type DealState = {
   confirmed: number | null;
@@ -74,34 +76,34 @@ type DealState = {
 
 /** What a write's result says about the REQUEST (see header, point 2). */
 export function classifyOfferWriteResult(r: { ok: boolean; putStatus?: number }): OfferOutcomeKind {
-  if (r.putStatus === 202) return "indeterminate";
-  return r.ok ? "confirmed" : "unverified";
+  return r.ok && r.putStatus !== 202 ? "confirmed" : "indeterminate";
 }
 export function classifyOfferWriteError(e: unknown): OfferOutcomeKind {
   const message = String((e as Error)?.message ?? "");
   if (e instanceof AppWriteSignInRequired) return "refused";            // thrown before any request is sent
   if (/^Sign in for application writes/.test(message)) return "refused";  // same, across module copies
   if (/^setCurrentOffer: /.test(message)) return "refused";          // local validation; nothing sent
-  const put = /setCurrentOffer PUT → (\d{3}):?\s*([\s\S]*)$/.exec(message);
-  if (put) {
-    const status = Number(put[1]);
-    if (status === 400 || status === 401 || status === 403) return "refused";
-    if (status === 409 && /Current Offer is frozen or invalid/.test(put[2])) return "refused";
-    return "indeterminate";
-  }
-  const putStatus = (e as { putStatus?: number })?.putStatus;
-  if (putStatus === 200) return "unverified";                         // the write finished; only the readback failed
-  return "indeterminate";                                             // network failure, 202 + failed readback, anything unknown
+  if (/setCurrentOffer PUT → \d{3}:[\s\S]*"outcome":"not_sent"/.test(message)) return "refused"; // the server refused before the GHL call
+  return "indeterminate";
 }
 const REFUSED_MESSAGE = (e: unknown) => {
-  const m = /PUT → (\d{3})/.exec(String((e as Error)?.message ?? ""));
-  return m ? `Not saved — GHL refused the save (${m[1]}).` : "Not saved — the save was not sent.";
+  const text = String((e as Error)?.message ?? "");
+  const server = /"error":"([^"]*)"/.exec(text);
+  if (server && /PUT → \d{3}/.test(text)) return `Not saved — ${server[1]}`;
+  return "Not saved — the save was not sent.";
 };
 
 export function createOfferSaveCoordinator(write: OfferWrite) {
   const deals = new Map<string, DealState>();
   const listeners = new Set<() => void>();
-  const changed = () => { for (const l of listeners) l(); };
+  const idleWaiters = new Map<string, (() => void)[]>();
+  const settleIdle = (oppId: string) => {
+    const d = deals.get(oppId);
+    if (d && (d.inFlight || d.queue.length) && !d.unresolved) return;
+    for (const w of idleWaiters.get(oppId) ?? []) w();
+    idleWaiters.delete(oppId);
+  };
+  const changed = () => { for (const l of listeners) l(); for (const opp of [...idleWaiters.keys()]) settleIdle(opp); };
   const deal = (oppId: string): DealState => {
     let d = deals.get(oppId);
     if (!d) { d = { confirmed: null, inFlight: null, queue: [], failure: null, unresolved: null, accepting: false }; deals.set(oppId, d); }
@@ -111,6 +113,7 @@ export function createOfferSaveCoordinator(write: OfferWrite) {
   const unresolvedError = (d: DealState) => new Error(d.unresolved!.message);
 
   function makeUnresolved(d: DealState, message: string) {
+    if (d.unresolved) { d.unresolved = { message }; return; }
     d.unresolved = { message };
     d.confirmed = null;
     d.failure = null;
@@ -131,22 +134,21 @@ export function createOfferSaveCoordinator(write: OfferWrite) {
     let kind: OfferOutcomeKind;
     let refusal: unknown = null;
     try {
-      const r = await write(oppId, next.amount);
+      const r = await write(oppId, next.amount, next.kind === "accept" ? next.requestId : undefined);
       kind = classifyOfferWriteResult(r);
       if (next.kind === "accept") {
         if (kind === "indeterminate") next.reject(new Error(UNRESOLVED_SAVE_MESSAGE));
         else next.resolve(r);
       }
     } catch (e) {
-      kind = classifyOfferWriteError(e);
+      kind = e instanceof OfferSaveBlocked ? "indeterminate" : classifyOfferWriteError(e);
       refusal = e;
-      if (next.kind === "accept") next.reject(kind === "indeterminate" ? new Error(UNRESOLVED_SAVE_MESSAGE) : e);
+      if (next.kind === "accept") next.reject(kind === "indeterminate" ? new Error(e instanceof OfferSaveBlocked ? e.message : UNRESOLVED_SAVE_MESSAGE) : e);
     }
     d.inFlight = null;
     if (kind === "confirmed") { d.confirmed = next.amount; }
     else if (kind === "refused") { d.confirmed = before; d.failure = { amount: next.amount, kind: "refused", message: REFUSED_MESSAGE(refusal) }; }
-    else if (kind === "unverified") { d.confirmed = null; d.failure = { amount: next.amount, kind: "unverified", message: "Save could not be confirmed." }; }
-    else makeUnresolved(d, UNRESOLVED_SAVE_MESSAGE);
+    else makeUnresolved(d, refusal instanceof OfferSaveBlocked ? refusal.message : UNRESOLVED_SAVE_MESSAGE);
     return pump(oppId);
   }
 
@@ -157,7 +159,7 @@ export function createOfferSaveCoordinator(write: OfferWrite) {
     if (amount === null || !d) return "draft";
     const last = lastPending(d);
     if (last) return last.amount === amount ? "saving" : "draft";
-    if (d.failure && d.failure.amount === amount) return d.failure.kind === "refused" ? "failed" : "unconfirmed";
+    if (d.failure && d.failure.amount === amount) return "failed";
     if (d.confirmed === amount) return "recorded";
     return "draft";
   }
@@ -194,21 +196,53 @@ export function createOfferSaveCoordinator(write: OfferWrite) {
       changed();
       return true;
     },
+    /** Resolves once nothing for this deal is in flight or queued (or it became
+        unresolved). Confirm Accept waits on it before reserving on the server,
+        so it never races a blur save that already holds the deal's barrier. */
+    whenIdle(oppId: string): Promise<void> {
+      return new Promise((resolve) => {
+        const list = idleWaiters.get(oppId) ?? [];
+        list.push(resolve);
+        idleWaiters.set(oppId, list);
+        settleIdle(oppId);
+      });
+    },
     /** Confirm Accept's Current Offer write, through the same per-deal queue. */
-    saveForAccept(oppId: string, amount: number): Promise<{ ok: boolean }> {
+    saveForAccept(oppId: string, amount: number, requestId: string): Promise<{ ok: boolean }> {
       const d = deal(oppId);
       if (d.unresolved) return Promise.reject(unresolvedError(d));
       return new Promise((resolve, reject) => {
-        d.queue.push({ kind: "accept", amount, resolve, reject });
+        d.queue.push({ kind: "accept", amount, requestId, resolve, reject });
         void pump(oppId);
       });
     },
-    /** Ends the protected sequence. `acceptanceUnknown` (the note's outcome is
-        unknown) leaves the deal unresolved. */
-    endAccept(oppId: string, acceptanceUnknown: boolean): void {
+    /** Ends the protected sequence. A non-null `unresolvedMessage` (the
+        server's reconcile could not prove every step) leaves the deal
+        unresolved with that message. */
+    endAccept(oppId: string, unresolvedMessage: string | null): void {
       const d = deal(oppId);
       d.accepting = false;
-      if (acceptanceUnknown && !d.unresolved) makeUnresolved(d, UNRESOLVED_ACCEPT_MESSAGE);
+      if (unresolvedMessage !== null) makeUnresolved(d, unresolvedMessage);
+      changed();
+    },
+    /** The server's durable barrier blocks this deal (status read, or a
+        refused reservation). Ignored while this tab's own save or Accept for
+        the deal is running -- that barrier is its own. */
+    markUnresolved(oppId: string, message: string): void {
+      const d = deal(oppId);
+      if (d.inFlight || d.accepting) return;
+      makeUnresolved(d, message);
+      changed();
+    },
+    /** Only after the server's evidence-based "Check again" answered clear.
+        Nothing is assumed recorded afterwards: the amount on screen is a
+        draft until its own save is verified. */
+    clearUnresolved(oppId: string): void {
+      const d = deal(oppId);
+      if (d.inFlight || d.queue.length || d.accepting) return;
+      d.unresolved = null;
+      d.confirmed = null;
+      d.failure = null;
       changed();
     },
     /** The carrier's own content, read on (re)load. Ignored while this deal has
@@ -230,10 +264,9 @@ export function createOfferSaveCoordinator(write: OfferWrite) {
     unresolvedMessage(oppId: string | null): string | null {
       return (oppId === null ? undefined : deals.get(oppId))?.unresolved?.message ?? null;
     },
-    /** The failure message for the amount on screen, when its status is failed/unconfirmed. */
+    /** The failure message for the amount on screen, when its save was refused. */
     failureFor(oppId: string | null, amount: number | null): string | null {
-      const st = statusFor(oppId, amount);
-      return st === "failed" || st === "unconfirmed" ? deals.get(oppId as string)!.failure!.message : null;
+      return statusFor(oppId, amount) === "failed" ? deals.get(oppId as string)!.failure!.message : null;
     },
   };
 }

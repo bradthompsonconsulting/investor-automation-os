@@ -69,7 +69,8 @@ function client(behaviour = {}) {
     const c = client({ note: 'throw' });
     const r = await lib.runConfirmAcceptWrites(c, ARGS);
     assert.equal(r.stage, 'note_failed'); assert.equal(r.acceptanceRecorded, 'unknown');
-    assert.ok(/may or may not have been recorded/.test(r.message) && /Reload/.test(r.message));
+    // Brad / Bones 2026-10-05: never "reload and check"; the durable barrier decides.
+    assert.ok(/may or may not have been recorded/.test(r.message) && !/[Rr]eload/.test(r.message) && /until IAOS can prove what happened/.test(r.message));
     assert.deepEqual(c.calls.map((x) => x[0]), ['offer', 'note']);
   });
   await check('timestamp fails AFTER the note -> acceptance reported RECORDED, only the timestamp outstanding, never "record again"', async () => {
@@ -245,10 +246,12 @@ function client(behaviour = {}) {
     // PR #126 fourth re-review: the accepted price is written through the page's
     // per-deal Current Offer save coordinator (serialized with any blur save),
     // whose own write is ghl.opportunities.setCurrentOffer.
-    assert.ok(/setCurrentOffer: \(opportunityId, value\) => offerSaves\.saveForAccept\(opportunityId, value\)/.test(PAGE_NC));
-    assert.ok(/createOfferSaveCoordinator\(\s*\(oppId, amount\) => ghl\.opportunities\.setCurrentOffer\(oppId, amount\)\s*\)/.test(PAGE_NC));
-    assert.ok(/createNote: \(id, body\) => ghl\.notes\.create\(id, body\)/.test(PAGE_NC));
-    assert.ok(/setLastCallAttempt: \(id, iso\) => ghl\.contacts\.setLastCallAttempt\(id, iso\)/.test(PAGE_NC));
+    // PR #126 stacked server PR: each write carries the request id reserved with the durable barrier.
+    assert.ok(/setCurrentOffer: \(opportunityId, value\) => offerSaves\.saveForAccept\(opportunityId, value, acceptIds\.offer\)/.test(PAGE_NC));
+    assert.ok(/createNote: \(id, body\) => ghl\.notes\.create\(id, body, \{ requestId: acceptIds\.note \}\)/.test(PAGE_NC));
+    assert.ok(/setLastCallAttempt: \(id, iso\) => ghl\.contacts\.setLastCallAttempt\(id, iso, \{ requestId: acceptIds\.touch \}\)/.test(PAGE_NC));
+    assert.ok(/createOfferSaveCoordinator\(saveCurrentOfferReserved\)/.test(PAGE_NC));
+
   });
   await check('page: a timestamp failure appends the saved accept note to local state (Agreement Reached shows at once) and arms timestamp-only recovery', () => {
     assert.ok(/setNotes\(\(prev\) => \[\.\.\.\(prev \?\? \[\]\), \{ id: `local-\$\{Date\.now\(\)\}`, body: result\.note, dateAdded: nowIso \}\]\);[\s\S]{0,120}if \(result\.stage === "timestamp_failed"\) \{\s*setTimestampRecovery\(\{ pendingTimestamp: result\.pendingTimestamp \}\);\s*setOutcomeActionError\(result\.message\);/.test(PAGE_NC));
@@ -270,9 +273,14 @@ function client(behaviour = {}) {
   await check('page: the warning clears ONLY on confirmed/written; otherwise the module\'s pendingTimestamp is kept', () => {
     assert.ok(/if \(recovered\.kind === "confirmed" \|\| recovered\.kind === "written"\) \{\s*setTimestampRecovery\(null\);\s*setOutcomeActionError\(null\);\s*\} else \{(?:\s*\/\/[^\n]*)*\s*setTimestampRecovery\(\{ pendingTimestamp: recovered\.pendingTimestamp \}\);\s*setOutcomeActionError\(recovered\.message\);\s*\}/.test(PAGE_NC));
   });
-  await check('page: the only direct setLastCallAttempt calls are the two adapters handed to the module (outcome writes + recovery) and the non-accept outcomes', () => {
+  await check('page: the only direct setLastCallAttempt calls are the reserved adapters -- Accept, the timestamp recovery, the Follow-Up callback sequence and Pass -- each carrying its reserved request id', () => {
     const direct = (PAGE_NC.match(/ghl\.contacts\.setLastCallAttempt\(/g) || []).length;
-    assert.equal(direct, 3, 'accept adapter, recovery adapter, and the unchanged Pass path');
+    assert.equal(direct, 4, 'accept adapter, recovery adapter, Follow-Up adapter, Pass');
+    assert.ok(/setLastCallAttempt\(id, iso, \{ requestId: acceptIds\.touch \}\)/.test(PAGE_NC), 'accept');
+    assert.ok(/setLastCallAttempt\(id, iso, \{ requestId: touchIds\.touch \}\)/.test(PAGE_NC), 'recovery');
+    assert.ok(/setLastCallAttempt\(id, iso, \{ requestId: followIds\.touch \}\)/.test(PAGE_NC), 'follow-up');
+    assert.ok(/setLastCallAttempt\(contactId, nowIso, \{ requestId: passIds\.touch \}\)/.test(PAGE_NC), 'pass');
+    assert.ok(/ghl\.notes\.create\(contactId, attempt\.note, \{ requestId: passIds\.note \}\)/.test(PAGE_NC) && /ghl\.notes\.create\(contactId, attempt\.note, \{ requestId: followIds\.note \}\)/.test(PAGE_NC), 'outcome notes carry reserved ids');
   });
 
   console.log(`\nseller-call-accept-writes checks=${checks} failures=${failures}`);

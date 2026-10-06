@@ -157,7 +157,11 @@ function classify(url, method, post) {
 
 const refuse = (status, error) => ({ status, body: { error } });
 
-function answerWrite(req) {
+/* PR #126 stacked server PR: the server decides every refusal BEFORE the GHL
+   call (and before the durable barrier's send claim), so the fixture does too:
+   precheckWrite() is side-effect free; applyWrite() mutates only after it
+   passed. answerWrite() keeps its exact previous behaviour. */
+function precheckWrite(req) {
   const args = req.args || {};
   if (req.op === 'opportunity.currentOffer') {
     if (req.target !== OPP) return refuse(400, `fixture: unknown opportunity ${req.target}`);
@@ -165,8 +169,7 @@ function answerWrite(req) {
     if (currentOfferWriteGate({ value: args.value, agreementAlreadyReached: outcome && outcome.kind === 'accept' }).kind !== 'allowed') {
       return refuse(409, 'Current Offer is frozen or invalid');
     }
-    state.currentOffer = args.value;
-    return { status: 200, body: { confirmed: true } };
+    return null;
   }
   if (req.op === 'note.create') {
     if (req.target !== CONTACT) return refuse(400, `fixture: unknown contact ${req.target}`);
@@ -179,18 +182,32 @@ function answerWrite(req) {
         return refuse(409, 'Write refused or unconfirmed; refresh and inspect before retrying'); // server: "Accepted price must match confirmed Current Offer"
       }
     }
+    return null;
+  }
+  if (req.op === 'contact.lastCallAttempt') {
+    if (req.target !== CONTACT || typeof args.value !== 'string') return refuse(400, 'fixture: bad lastCallAttempt');
+    return null;
+  }
+  return refuse(400, `fixture does not model ${req.op}`);
+}
+function applyWrite(req) {
+  const args = req.args || {};
+  if (req.op === 'opportunity.currentOffer') {
+    state.currentOffer = args.value;
+    return { status: 200, body: { confirmed: true } };
+  }
+  if (req.op === 'note.create') {
     state.createdNotes += 1;
     const note = { id: `ready-created-${state.createdNotes}`, body: args.body, dateAdded: '2026-10-01T15:00:00.000Z' };
     state.notes.push(note);
     return { status: 200, body: { confirmed: true, note: { id: note.id } } };
   }
-  if (req.op === 'contact.lastCallAttempt') {
-    if (req.target !== CONTACT || typeof args.value !== 'string') return refuse(400, 'fixture: bad lastCallAttempt');
-    state.contactFields = state.contactFields.filter((f) => f.id !== IDS.lastCallAttempt && f.id !== IDS.lastCallAttemptPrecise);
-    state.contactFields.push({ id: IDS.lastCallAttempt, value: args.value.slice(0, 10) }, { id: IDS.lastCallAttemptPrecise, value: args.value });
-    return { status: 200, body: { confirmed: true } };
-  }
-  return refuse(400, `fixture does not model ${req.op}`);
+  state.contactFields = state.contactFields.filter((f) => f.id !== IDS.lastCallAttempt && f.id !== IDS.lastCallAttemptPrecise);
+  state.contactFields.push({ id: IDS.lastCallAttempt, value: args.value.slice(0, 10) }, { id: IDS.lastCallAttemptPrecise, value: args.value });
+  return { status: 200, body: { confirmed: true } };
+}
+function answerWrite(req) {
+  return precheckWrite(req) ?? applyWrite(req);
 }
 
 function answer(req) {
@@ -213,6 +230,6 @@ function answer(req) {
 
 module.exports = {
   CONTACT, OPP, FIRST, ARV, REPAIRS, SELLER_PRICE, DISPLAY_ADDRESS, IDS, POLICY_VALUES,
-  reset, classify, answer,
+  reset, classify, answer, precheckWrite, applyWrite,
   get state() { return state; },
 };

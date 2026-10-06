@@ -161,7 +161,7 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
   check('PR126 a typed, unsaved amount is a draft, not recorded', noteFor('draft').indexOf('Draft — not saved yet') === 0 && !/Recorded in GHL/.test(noteFor('draft')), true);
   check('PR126 a save in flight says so, not recorded', noteFor('saving').indexOf('Saving to GHL…') === 0, true);
   /* Second re-review: definite refusal vs uncertain result are told apart. */
-  check('PR126 a refused save says it was not saved', noteFor('failed').indexOf('Not saved — GHL refused the save') === 0, true);
+  check('PR126 a refused save says it was not saved', noteFor('failed').indexOf('Not saved — nothing was sent to GHL') === 0, true);
   check('PR126 an unconfirmed save says it could not be confirmed (not "not saved")',
     noteFor('unconfirmed').indexOf('Save could not be confirmed') === 0 && !/Not saved|Recorded in GHL/.test(noteFor('unconfirmed')), true);
   check('PR126 an unresolved deal says so (an earlier save may still reach GHL), never "Recorded"',
