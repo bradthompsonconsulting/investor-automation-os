@@ -140,7 +140,7 @@ async function handle(event: LegacyEvent, inv: Invocation, setStorageHeader: (h:
   let result: LambdaResult;
   try {
     // The write gate (plan v6 §8.1 M4): deploy, captured activation (echoed), kill switch, G5 and legacy block.
-    await inv.gate.enter(echoedActivation(event));
+    await inv.gate.enter(echoedActivation(event), [`contact:${request.contactId}`]);
     await inv.gate.checkSubject(`contact:${request.contactId}`, callLogEffects(inv));
     await readBoundaryFor(inv).contact(request.contactId);
     const key = lockKey(inv.env, inv.config.locationId, request.contactId);

@@ -221,9 +221,19 @@ function fresh() { wire.clear(); }
     await assert.rejects(s.createOnce('k', {}));
     assert.equal(wire.log.length, 0);
   });
-  await check('AD-18 a static check: the ownership adapter source contains no delete call', async () => {
+  await check('AD-18 no ownership record is ever deleted: the ONE delete is discardPendingChunk, refused for the ownership store and for any key that is not a pending upload chunk', async () => {
     const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../netlify/functions/lib/verified-store.ts'), 'utf8');
-    assert.ok(!/\.delete\s*\(/.test(src));
+    assert.equal((src.match(/\.delete\s*\(/g) || []).length, 1);
+    assert.ok(/async discardPendingChunk[\s\S]*?this\.name !== UPLOADS_STORE[\s\S]*?s\.delete\(key\)/.test(src));
+    fresh();
+    wire.seed(S, 'sessions/o/v/u/chunk-0', { x: 1 });
+    assert.equal(await store().discardPendingChunk('sessions/o/v/u/chunk-0'), false, 'ownership store: refused');
+    const up = new vs.VerifiedStore(scope(), vs.UPLOADS_STORE);
+    wire.seed(vs.UPLOADS_STORE, 'authz/admission', { x: 1 });
+    assert.equal(await up.discardPendingChunk('authz/admission'), false, 'not a pending chunk key: refused');
+    wire.seed(vs.UPLOADS_STORE, 'sessions/o/v/u/chunk-0', { x: 1 });
+    assert.equal(await up.discardPendingChunk('sessions/o/v/u/chunk-0'), true);
+    assert.equal(wire.count((e) => e.method === 'DELETE' && e.store === 'site:' + S), 0);
   });
   done('storage adapter');
 })();

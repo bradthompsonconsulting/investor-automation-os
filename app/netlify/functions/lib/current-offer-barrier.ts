@@ -138,17 +138,21 @@ function sameRegistration(a: RequestRecord, b: { opp: string; contactId: string;
  * original step list of the barrier it names, and that barrier must belong to
  * the same deal and contact. Returns the verified records, or null.
  */
-async function verifiedOwnership(store: BarrierStore, scope: string, requestId: string): Promise<{ reg: RequestRecord; barrier: BarrierRecord } | null> {
+async function verifiedOwnership(store: BarrierStore, scope: string, requestId: string, alsoHead = false): Promise<{ reg: RequestRecord; barrier: BarrierRecord; head?: { head: HeadRecord | null; etag: string | null } } | null> {
   const reg = await readJson(store, requestKey(scope, requestId)) as RequestRecord | null;
   if (!reg) return null;
-  const barrier = await readJson(store, barrierKey(scope, reg.opp, reg.barrierId)) as BarrierRecord | null;
+  // The barrier record and (when asked) the deal's head are independent reads: one round trip.
+  const [barrier, head] = await Promise.all([
+    readJson(store, barrierKey(scope, reg.opp, reg.barrierId)) as Promise<BarrierRecord | null>,
+    alsoHead ? readHead(store, scope, reg.opp) : Promise.resolve(undefined),
+  ]);
   if (!barrier) throw new NotSent("The reservation for this request is unreadable");
   const requestDigest = digest(requestId);
   const listed = barrier.steps.some((s) => s.requestDigest === requestDigest && s.step === reg.step);
   if (!listed || barrier.barrierId !== reg.barrierId || barrier.oppDigest !== digest(reg.opp) || barrier.contactDigest !== digest(reg.contactId)) {
     throw new NotSent("This request is not part of its reservation's original steps");
   }
-  return { reg, barrier };
+  return { reg, barrier, ...(head ? { head } : {}) };
 }
 
 const CAS_ATTEMPTS = 4;
@@ -323,15 +327,15 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
   request: { operation: string; targetId: string; requestId: string; contactId: string },
   body: (hooks: { beforeDispatch: () => Promise<OwnedSend | null>; state: { dispatched: boolean; owned?: OwnedSend | null } }, identity: { requestId: string; opId: string; attemptId: string }) => Promise<T>,
 ): Promise<T> {
-  const owned = await verifiedOwnership(store, scope, request.requestId);
+  const owned = await verifiedOwnership(store, scope, request.requestId, true);
   if (!owned) throw new NotOwned();
   const { reg } = owned;
   const requestDigest = digest(request.requestId);
   if (STEP_OPERATION[reg.step] !== request.operation) throw new NotSent("Request is reserved for a different step");
   const target = reg.step === "offer" ? reg.opp : reg.contactId;
   if (request.targetId !== target || request.contactId !== reg.contactId) throw new NotSent("Request is reserved for a different target");
-  // Advisory only (the read may lag): the atomic send claim below is the guard.
-  const { head } = await readHead(store, scope, reg.opp);
+  // Advisory only: the atomic send claim below is the guard (read with the barrier, strongly).
+  const { head } = owned.head!;
   if (!head || head.current !== reg.barrierId) throw new NotSent("The reservation for this save is not current");
   /* Storage correction (plan v6 §3): the send claim mints an OwnedSend only on a
      validated create, or an exact strong read of OUR claim after an ambiguous

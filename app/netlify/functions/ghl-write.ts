@@ -13,8 +13,8 @@ import { currentOfferWriteGate } from "../../src/lib/current-offer-carrier";
 import { evaluateProductionGhlWriteScope, evaluateProductionPairedOwnership, requiresProductionPairedOwnership, PRODUCTION_WRITE_SCOPE_REFUSAL } from "./lib/production-write-scope";
 import { legacyEventFrom, toResponse, json, echoedActivation, type LambdaResult, type LegacyEvent } from "./lib/modern-runtime";
 import { invocation, boundaryFor, refusalResult, sessionCapabilityBranch, withLockWarning, LOCK_MESSAGES, type Invocation } from "./lib/endpoint-kit";
-import { WriteRefused } from "./lib/write-gate";
-import { acquireLock, lockKey, LockHeld, LockUnknown, type ContactLock } from "./lib/contact-lock-v2";
+import { WriteRefused, requireWritableDeployment, requireNotKilled } from "./lib/write-gate";
+import { acquireLock, lockKey, LockHeld, LockUnknown, type ContactLock, type LockRecord } from "./lib/contact-lock-v2";
 import { claimStageMarker, stageMarkerKey, stageMarkerUnresolved, type StageMarkerClaim } from "./lib/stage-marker-v2";
 import { isV2Id } from "./lib/cutover";
 /** Board 15 / PR #126 stacked server PR: the operations a Current Offer barrier can own. */
@@ -119,10 +119,23 @@ async function handle(event: LegacyEvent, inv: Invocation, setStorageHeader: (h:
   // unaffected (always ok).
   const scope = evaluateProductionGhlWriteScope(config, { operation: request.operation, targetId: request.targetId, args: request.args });
   if (!scope.ok) return json(403, { error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: scope.code });
-  // The write gate, before any ownership read (plan v6 §8.1 M4).
-  try { await inv.gate.enter(echoedActivation(event)); }
+  /* The write gate (plan v6 §8.1 M4). In the SAME round trip, the write-once
+     ownership records this request needs (its call-log binding and Current
+     Offer registration) and, for a contact target, the contact's lock record
+     are read; nothing is decided from them until the gate has passed. */
+  try { requireWritableDeployment(inv.deploy); requireNotKilled(); }
   catch (e) { if (e instanceof WriteRefused) return refusalResult(e); throw e; }
   const store = inv.store;
+  const callLogScopeKey = callLogScope(inv.env, config.locationId);
+  const contactTarget = plan.kind !== "opportunity" && plan.kind !== "opportunity_stage";
+  const early = {
+    callLogBound: CALL_LOG_OPERATIONS.has(request.operation) ? isCallLogBound(store, callLogScopeKey, request.requestId).then((v) => ({ v }), (e) => ({ e })) : Promise.resolve({ v: false }),
+    barrierOwned: BARRIER_OPERATIONS.has(request.operation) ? isBarrierOwned(store, barrierScope(inv.env, config.locationId), request.requestId).then((v) => ({ v }), (e) => ({ e })) : Promise.resolve({ v: false }),
+    noteReservation: request.operation === "note.create" ? checkNoteReservation(store, barrierScope(inv.env, config.locationId), request.requestId, parseOutcomeNote(String(request.args?.body ?? ""))).then((v) => ({ v }), (e) => ({ e })) : Promise.resolve({ v: null }),
+    lock: contactTarget ? store.read<LockRecord>(lockKey(inv.env, config.locationId, request.targetId), "lock_acquire").then((v) => ({ v }), () => ({ v: undefined })) : Promise.resolve({ v: undefined }),
+  };
+  try { await inv.gate.enter(echoedActivation(event), [`${contactTarget ? "contact" : "opportunity"}:${request.targetId}`]); }
+  catch (e) { if (e instanceof WriteRefused) { await Promise.allSettled(Object.values(early)); return refusalResult(e); } throw e; }
   let lock: ContactLock | null = null;
   /* Board 15 / PR #126 stacked server PR -- the durable Current Offer barrier
      (lib/current-offer-barrier.ts). A request id registered by `begin` is
@@ -145,7 +158,7 @@ async function handle(event: LegacyEvent, inv: Invocation, setStorageHeader: (h:
   let result: LambdaResult;
   try {
     if (barrierOperation) {
-      try { owned = await isBarrierOwned(store, offerScope, request.requestId); }
+      try { const r: any = await early.barrierOwned; if ("e" in r) throw r.e; owned = r.v; }
       catch (e) {
         // Ownership unknown: never proceed. A reserved-only operation answers
         // not_sent; any other operation fails exactly as before (generic
@@ -162,13 +175,13 @@ async function handle(event: LegacyEvent, inv: Invocation, setStorageHeader: (h:
          is pending or unresolved, from any session. Plain notes are unchanged. */
       if (request.operation === "note.create") {
         let refusal: string | null;
-        try { refusal = await checkNoteReservation(store, offerScope, request.requestId, parseOutcomeNote(String(request.args?.body ?? ""))); }
+        try { const r: any = await early.noteReservation; if ("e" in r) throw r.e; refusal = r.v; }
         catch { refusal = "The reservation could not be read; nothing was sent"; }
         if (refusal) return json(409, { outcome: "not_sent", error: refusal });
       }
     }
     if (!owned && CALL_LOG_OPERATIONS.has(request.operation)) {
-      try { callLogOwned = await isCallLogBound(store, callLogScope(inv.env, config.locationId), request.requestId); }
+      try { const r: any = await early.callLogBound; if ("e" in r) throw r.e; callLogOwned = r.v; }
       catch (e) {
         if (callLogNeedsReservation) return json(409, { outcome: "not_sent", error: "The call-log reservation could not be read; nothing was sent" });
         throw e;
@@ -194,7 +207,8 @@ async function handle(event: LegacyEvent, inv: Invocation, setStorageHeader: (h:
     const pairedProduction = requiresProductionPairedOwnership(config, operation, targetId);
     const lockContactId = pairedProduction && isOpportunityTargeted ? config.productionProofScope.contactId : contactId;
     const opId = isOperationRequestId(requestId) ? String(requestId).replace(/-(result|note|touch)-[1-9][0-9]*$/, "") : null;
-    try { lock = await acquireLock(store, inv.scope, lockKey(inv.env, config.locationId, lockContactId), { opId, deployId: inv.deploy.id! }); }
+    const lockHint = lockContactId === request.targetId ? (await early.lock).v : undefined;
+    try { lock = await acquireLock(store, inv.scope, lockKey(inv.env, config.locationId, lockContactId), { opId, deployId: inv.deploy.id! }, lockHint); }
     catch (e) {
       if (e instanceof LockHeld) throw new WriteUncertain(LOCK_MESSAGES[e.status] || LOCK_MESSAGES.held_in_progress);
       if (e instanceof LockUnknown) throw new WriteUncertain(LOCK_MESSAGES.unknown);

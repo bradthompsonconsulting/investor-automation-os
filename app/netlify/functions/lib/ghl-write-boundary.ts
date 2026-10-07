@@ -37,6 +37,16 @@ const READ_TIMEOUT_MS = 10_000;
 export class GhlBoundary {
   /** Per-read timeout (inside the invocation's work cutoff). ghl-disposition's contact check uses 5 s. */
   readTimeoutMs = READ_TIMEOUT_MS;
+  /**
+   * When set, a mutation's post-readback settle (ticket outcome + removal, or
+   * uncertain) is queued and run by `flush()` -- used where one invocation sends
+   * two NON-overlapping mutations (ghl-disposition), so the second dispatch is
+   * not delayed by the first one's bookkeeping. The ticket meanwhile stays
+   * `dispatching`, which blocks just the same. The caller always flushes.
+   */
+  deferSettles = false;
+  private queued: (() => Promise<void>)[] = [];
+  async flush(): Promise<void> { const q = this.queued; this.queued = []; for (const f of q) await f(); }
   constructor(readonly token: string, readonly locationId: string, readonly fetcher: typeof fetch = fetch, readonly gate: MutationGate | null = null, readonly scope: InvocationScope | null = null, readonly semantic: { lastTouch: string[]; callResult: string[]; offerValue: string[] } = { lastTouch: [], callResult: [], offerValue: [] }) { if (!token) throw new Error("GHL authentication not configured"); }
   private readSignal(): AbortSignal | undefined {
     if (!this.scope) return undefined;
@@ -77,7 +87,12 @@ export class GhlBoundary {
     }
     return { permit, response };
   }
-  private async settle(p: Permit, outcome: "confirmed" | "uncertain") { if (this.gate) await this.gate.settle(p, outcome).catch(() => {}); }
+  private async settle(p: Permit, outcome: "confirmed" | "uncertain") {
+    if (!this.gate) return;
+    const gate = this.gate;
+    const run = () => gate.settle(p, outcome).catch(() => {});
+    if (this.deferSettles) this.queued.push(run); else await run();
+  }
 
   async contact(id: string) {
     const data = await this.call(`/contacts/${id}`); const contact = data.contact;

@@ -119,7 +119,7 @@ async function handle(event: LegacyEvent, inv: Invocation, setStorageHeader: (h:
   let lock: ContactLock | null = null;
   let result: LambdaResult;
   try {
-    await inv.gate.enter(echoedActivation(event));
+    await inv.gate.enter(echoedActivation(event), [`opportunity:${request.opportunityId}`]);
     const opportunity = await readBoundaryFor(inv).opportunity(request.opportunityId);
     const purpose: BarrierPurpose = begin ? begin.purpose : "accept";
     for (const s of reservationSubjects(inv, purpose, request.opportunityId, opportunity.contactId)) await inv.gate.checkSubject(s.subject, s.effects);

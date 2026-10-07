@@ -225,12 +225,15 @@ async function handle(event: LegacyEvent, inv: Invocation, setStorageHeader: (h:
   let lock: ContactLock | null = null;
   try {
     // The write gate (no page to echo an activation id: server-to-server).
-    await inv.gate.enter(null);
+    await inv.gate.enter(null, [`contact:${contactId}`]);
     const s = semanticFields(inv.config);
     await inv.gate.checkSubject(`contact:${contactId}`, [...new Set(["note", ...fieldEffects([LAST_CALL_ATTEMPT_ID, LAST_CALL_ATTEMPT_PRECISE_ID], s)])].sort());
     lock = await acquireLock(inv.store, inv.scope, lockKey(inv.env, inv.config.locationId, contactId), { opId: null, deployId: inv.deploy.id! });
     const requestBase = `v2-disp-${digest(`${contactId}:${noteBody}:${inv.scope.startedAt}`).slice(0, 32)}`;
-    result = await writeDisposition(token, boundaryFor(inv), inv, contactId, noteBody, requestBase);
+    const boundary = boundaryFor(inv);
+    boundary.deferSettles = true;   // note and last touch do not overlap; both settle after the second dispatch
+    try { result = await writeDisposition(token, boundary, inv, contactId, noteBody, requestBase); }
+    finally { await boundary.flush(); }
   } catch (e) {
     if (lock) await lock.release();
     if (e instanceof WriteRefused) return json(e.refusal.status, e.refusal.body);

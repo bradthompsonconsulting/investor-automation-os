@@ -112,8 +112,9 @@ export async function readAdmission(store: VerifiedStore): Promise<ReadResult<Ad
  * ownership I/O. Refuses unless admission is open for THIS deployment. An
  * invocation never adopts a newer activation afterwards.
  */
-export async function captureActivation(store: VerifiedStore, deployId: string, clientActivationId: string | null | undefined): Promise<Captured> {
+export async function captureActivation(store: VerifiedStore, deployId: string, clientActivationId: string | null | undefined, cache?: AdmissionCache): Promise<Captured> {
   const r = await readAdmission(store);
+  if (cache) cache.last = r;
   if (!r) throw new AdmissionClosed("activation_missing");
   const a = r.data;
   if (a.state !== "open" || !a.activationId || a.deployId !== deployId) {
@@ -134,37 +135,49 @@ export function subjectsOverlap(a: string, b: string): boolean { return a === "l
 const blocks = (t: Ticket, now: number) => t.state !== "admitted" || now <= Date.parse(t.deadline);
 
 // ── Generic single-key transition ───────────────────────────────────────────
+/**
+ * This invocation's last KNOWN admission record and etag (its own last read or
+ * write). A transition may try its compare-and-swap from it instead of reading
+ * first: an etag identifies exact content, so a stale entry can only conflict
+ * (then a fresh read decides), and a refusal decided on cached data is always
+ * re-confirmed by a fresh read. It saves round trips; it never authorizes.
+ */
+export type AdmissionCache = { last: ReadResult<Admission> | null };
 type Decision<T> = { write: Admission; result: T } | { refuse: Error } | { done: T };
 /**
  * Runs one transition: strong read -> decide -> ONE conditional write. A conflict
  * re-reads and re-decides. An ambiguous write is resolved ONLY by `applied(read)`
  * (the transition's exact mark); otherwise TransitionUnresolved (not done).
  */
-async function transition<T>(store: VerifiedStore, name: string, decide: (cur: Admission | null) => Decision<T>, applied: (cur: Admission | null) => T | null): Promise<T> {
+async function transition<T>(store: VerifiedStore, name: string, decide: (cur: Admission | null) => Decision<T>, applied: (cur: Admission | null) => T | null, cache?: AdmissionCache): Promise<T> {
   for (let i = 0; i < CAS_ATTEMPTS; i++) {
-    const r = await readAdmission(store);
+    const cached = i === 0 && cache?.last ? cache.last : null;
+    const r = cached ?? await readAdmission(store);
+    if (cache && !cached) cache.last = r;
     const d = decide(r ? r.data : null);
-    if ("refuse" in d) throw d.refuse;
-    if ("done" in d) return d.done;
+    if ("refuse" in d) { if (cached) { cache!.last = null; i--; continue; } throw d.refuse; }
+    if ("done" in d) { if (cached) { cache!.last = null; i--; continue; } return d.done; }
     let w;
     try { w = await store.cas(ADMISSION_KEY, d.write, r ? r.etag : null, "admission"); }
     catch (e) {
       if (!(e instanceof StorageUncertain)) throw e;
       let again: ReadResult<Admission>;
       try { again = await readAdmission(store); } catch { throw new TransitionUnresolved(name); }
+      if (cache) cache.last = again;
       const ok = applied(again ? again.data : null);
       if (ok !== null) return ok;
       diag({ fn: store.scope.fn, action: "admission", phase: "admission", class: "ack_ambiguous" });
       throw new TransitionUnresolved(name);
     }
-    if (w.result === "written") return d.result;
+    if (w.result === "written") { if (cache) cache.last = { data: d.write, etag: w.etag }; return d.result; }
+    if (cache) cache.last = null;
   }
   throw new TransitionUnresolved(name);
 }
 
 // ── Sender tickets ──────────────────────────────────────────────────────────
 export type TicketSpec = { opId: string; attemptId: string; requestId: string; subject: string; effects: string[] };
-export type HeldTicket = { ticket: Ticket; scope: InvocationScope; captured: Captured; pendingDispatch?: Ticket };
+export type HeldTicket = { ticket: Ticket; scope: InvocationScope; captured: Captured; pendingDispatch?: Ticket; cache?: AdmissionCache };
 
 const ticketMatches = (got: Ticket | undefined, want: Ticket, state: TicketState, markField?: "dispatchMark" | "uncertainMark") =>
   !!got && got.ticketId === want.ticketId && got.state === state && got.epoch === want.epoch && got.activationId === want.activationId &&
@@ -172,7 +185,7 @@ const ticketMatches = (got: Ticket | undefined, want: Ticket, state: TicketState
   got.ownerHash === want.ownerHash && got.admitMark === want.admitMark && (!markField || got[markField] === want[markField]);
 
 /** Admit (one CAS). Requires the captured activation, an open record and no overlapping live ticket of any epoch. */
-export async function admit(store: VerifiedStore, scope: InvocationScope, captured: Captured, spec: TicketSpec): Promise<HeldTicket> {
+export async function admit(store: VerifiedStore, scope: InvocationScope, captured: Captured, spec: TicketSpec, cache?: AdmissionCache): Promise<HeldTicket> {
   const ownerHash = scope.claimantHash;
   const ticketId = digest(scope.mark("ticket", spec.requestId)).slice(0, 32);
   const base: Ticket = {
@@ -194,8 +207,8 @@ export async function admit(store: VerifiedStore, scope: InvocationScope, captur
     }
     tickets[base.ticketId] = base;
     return { write: { ...cur, tickets }, result: base };
-  }, (cur) => (cur && ticketMatches(cur.tickets[base.ticketId], base, "admitted") ? base : null));
-  return { ticket, scope, captured };
+  }, (cur) => (cur && ticketMatches(cur.tickets[base.ticketId], base, "admitted") ? base : null), cache);
+  return { ticket, scope, captured, cache };
 }
 
 /**
@@ -214,7 +227,7 @@ export async function markDispatching(store: VerifiedStore, held: HeldTicket): P
     if (!ticketMatches(got, t, "admitted")) return { refuse: new AdmissionClosed("admission_closed") };   // revoked by Close
     if (cur.state !== "open" || cur.epoch !== held.captured.epoch || cur.activationId !== held.captured.activationId) return { refuse: new ActivationChanged() };
     return { write: { ...cur, tickets: { ...cur.tickets, [t.ticketId]: next } }, result: true };
-  }, (cur) => (cur && ticketMatches(cur.tickets[t.ticketId], next, "dispatching", "dispatchMark") ? true : null));
+  }, (cur) => (cur && ticketMatches(cur.tickets[t.ticketId], next, "dispatching", "dispatchMark") ? true : null), held.cache);
   held.ticket = next;
 }
 
@@ -229,7 +242,7 @@ export async function markUncertain(store: VerifiedStore, held: HeldTicket): Pro
       if (got && got.state === "uncertain" && got.uncertainMark === next.uncertainMark) return { done: true };
       if (!cur || !ticketMatches(got, t, "dispatching", "dispatchMark")) return { refuse: new TransitionUnresolved("uncertain") };
       return { write: { ...cur, tickets: { ...cur.tickets, [t.ticketId]: next } }, result: true };
-    }, (cur) => (cur?.tickets[t.ticketId]?.uncertainMark === next.uncertainMark ? true : null));
+    }, (cur) => (cur?.tickets[t.ticketId]?.uncertainMark === next.uncertainMark ? true : null), held.cache);
     held.ticket = next;
   } catch { /* still `dispatching`: it blocks just the same */ }
 }
@@ -261,7 +274,7 @@ export async function removeWithOutcome(store: VerifiedStore, held: HeldTicket, 
       if (kind === "not_dispatched" && got.state === "uncertain") return { refuse: new TransitionUnresolved("remove") };
       const tickets = { ...cur.tickets }; delete tickets[t.ticketId];
       return { write: { ...cur, tickets }, result: true };
-    }, (cur) => (cur && !cur.tickets[t.ticketId] ? true : null));
+    }, (cur) => (cur && !cur.tickets[t.ticketId] ? true : null), held.cache);
     return true;
   } catch { return false; }
 }

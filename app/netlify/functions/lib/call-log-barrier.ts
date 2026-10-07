@@ -189,10 +189,13 @@ async function attemptPublished(store: BarrierStore, scope: string, o: OpRecord,
 }
 
 async function evidenceOf(store: BarrierStore, scope: string, requestId: string): Promise<Evidence> {
-  const d = await readJson(store, decisionKey(scope, requestId)) as { d: "send" | "withdrawn" } | null;
+  // Both write-once records are read together (one round trip); the decision still governs.
+  const [d, out] = await Promise.all([
+    readJson(store, decisionKey(scope, requestId)) as Promise<{ d: "send" | "withdrawn" } | null>,
+    readJson(store, outcomeKey(scope, requestId)) as Promise<{ kind: string } | null>,
+  ]);
   if (!d) return "pending";
   if (d.d === "withdrawn") return "withdrawn";
-  const out = await readJson(store, outcomeKey(scope, requestId)) as { kind: string } | null;
   if (!out) return "in_flight";
   if (out.kind === "confirmed") return "confirmed";
   if (out.kind === "not_dispatched") return "not_dispatched";
@@ -200,10 +203,17 @@ async function evidenceOf(store: BarrierStore, scope: string, requestId: string)
 }
 /** The slot's CURRENT attempt: the highest-numbered attempt that exists. */
 async function currentAttempt(store: BarrierStore, scope: string, op: string, slot: Slot): Promise<number> {
-  if (!(await readJson(store, attemptKey(scope, op, slot, 1)))) throw new StorageUnsettled("An operation's first attempt is not readable yet");
-  let n = 1;
-  while (await readJson(store, attemptKey(scope, op, slot, n + 1))) n++;
-  return n;
+  // Attempts n+1 and n+2 are read together: the common case (one attempt) is one round trip.
+  const [first, second] = await Promise.all([readJson(store, attemptKey(scope, op, slot, 1)), readJson(store, attemptKey(scope, op, slot, 2))]);
+  if (!first) throw new StorageUnsettled("An operation's first attempt is not readable yet");
+  if (!second) return 1;
+  let n = 2;
+  for (;;) {
+    const [a, b] = await Promise.all([readJson(store, attemptKey(scope, op, slot, n + 1)), readJson(store, attemptKey(scope, op, slot, n + 2))]);
+    if (!a) return n;
+    if (!b) return n + 1;
+    n += 2;
+  }
 }
 async function evaluate(store: BarrierStore, scope: string, o: OpRecord): Promise<SlotView[]> {
   const out: SlotView[] = [];
@@ -525,19 +535,31 @@ export async function runCallLogOwnedWrite<T extends { confirmed: boolean }>(
   if (b.contactId !== request.targetId) throw new NotSent("Request is bound to a different contact");
   if (b.slot === "result" && request.args?.value !== b.value) throw new NotSent("This is not the reserved result");
   if (b.slot === "note" && (typeof request.args?.body !== "string" || digest(request.args.body) !== b.bodyDigest)) throw new NotSent("This is not the reserved call note");
-  const o = await readOp(store, scope, b.op);
-  if (!o || o.contactId !== b.contactId) throw new NotSent("The operation for this request is unreadable");
-  if (!(await attemptPublished(store, scope, o, b.slot, b.n))) throw new NotSent("This attempt is not verifiably published");
-  if (await readJson(store, attemptKey(scope, o.op, b.slot, b.n + 1))) throw new NotSent("This attempt has been superseded", "nothing", "attempt_superseded");
-  const f = await readFinal(store, scope, o.op);
-  if (f) throw new NotSent("This call save has already finished", "nothing", "operation_not_current", outcomeOf(f));
-  const { head } = await readHead(store, scope, o.contactId);
-  if (!head || head.current !== o.op) throw new NotSent("This call save is not the contact's current one", "nothing", "operation_not_current", null);
+  /* Every check below reads write-once records (and the head) that are
+     independent of one another, so they are read TOGETHER (plan v6 §7: round
+     trips before dispatch). Each check is unchanged; only the order of the
+     reads is. */
   const index = SLOTS.indexOf(b.slot);
-  if (index > 0) {
-    const prevN = await currentAttempt(store, scope, o.op, SLOTS[index - 1]);
-    if ((await evidenceOf(store, scope, requestIdFor(o.op, SLOTS[index - 1], prevN))) !== "confirmed") throw new NotSent("The previous step of this call save is not confirmed");
-  }
+  const prevConfirmed = async () => {
+    if (index === 0) return true;
+    const prevN = await currentAttempt(store, scope, b.op, SLOTS[index - 1]);
+    return (await evidenceOf(store, scope, requestIdFor(b.op, SLOTS[index - 1], prevN))) === "confirmed";
+  };
+  const [o, aRec, superseding, f, headRead, prevOk] = await Promise.all([
+    readOp(store, scope, b.op),
+    readJson(store, attemptKey(scope, b.op, b.slot, b.n)) as Promise<AttemptRecord | null>,
+    readJson(store, attemptKey(scope, b.op, b.slot, b.n + 1)),
+    readFinal(store, scope, b.op),
+    readHead(store, scope, b.contactId),
+    prevConfirmed(),
+  ]);
+  if (!o || o.contactId !== b.contactId) throw new NotSent("The operation for this request is unreadable");
+  if (!aRec || !sameAttempt(aRec, attemptRecord(o.op, b.slot, b.n)) || !sameBinding(b, bindingFor(o, b.slot, b.n))) throw new NotSent("This attempt is not verifiably published");
+  if (superseding) throw new NotSent("This attempt has been superseded", "nothing", "attempt_superseded");
+  if (f) throw new NotSent("This call save has already finished", "nothing", "operation_not_current", outcomeOf(f));
+  const head = headRead.head;
+  if (!head || head.current !== o.op) throw new NotSent("This call save is not the contact's current one", "nothing", "operation_not_current", null);
+  if (!prevOk) throw new NotSent("The previous step of this call save is not confirmed");
   /* Storage correction (plan v6 §3): the send claim mints an unforgeable
      OwnedSend only on a validated create, or an exact strong read of OUR claim
      after an ambiguous write. A lost or unclear claim gives no ownership and

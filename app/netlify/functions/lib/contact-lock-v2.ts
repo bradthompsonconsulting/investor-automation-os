@@ -71,7 +71,12 @@ export class ContactLock {
  * Acquires the contact's lock. Throws LockHeld (409) when another holder has it,
  * LockUnknown (503) when the state cannot be established.
  */
-export async function acquireLock(store: VerifiedStore, scope: InvocationScope, key: string, info: { opId: string | null; deployId: string }): Promise<ContactLock> {
+/**
+ * `hint`: a strong read of this key made earlier in the SAME invocation. The
+ * first compare-and-swap may use its etag (a stale etag only conflicts, and the
+ * loop then reads afresh); it never grants entry by itself.
+ */
+export async function acquireLock(store: VerifiedStore, scope: InvocationScope, key: string, info: { opId: string | null; deployId: string }, hint?: { data: LockRecord; etag: string } | null): Promise<ContactLock> {
   const holderHash = scope.mark("lock", key);
   const held = (prev: string | null): HeldLock => ({
     v: 2, state: "held", holderHash, fn: scope.fn, opId: info.opId, acquiredAt: new Date().toISOString(),
@@ -79,7 +84,8 @@ export async function acquireLock(store: VerifiedStore, scope: InvocationScope, 
   });
   for (let i = 0; i < 3; i++) {
     let cur: { data: LockRecord; etag: string } | null;
-    try { cur = await store.read<LockRecord>(key, "lock_acquire"); } catch { throw new LockUnknown(); }
+    if (i === 0 && hint !== undefined) cur = hint;
+    else { try { cur = await store.read<LockRecord>(key, "lock_acquire"); } catch { throw new LockUnknown(); } }
     if (cur && cur.data.state === "held") {
       if (cur.data.holderHash === holderHash) return new ContactLock(store, scope, key, holderHash, info.opId, cur.etag);
       throw new LockHeld(statusOfRecord(cur.data));
