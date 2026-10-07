@@ -64,3 +64,34 @@ explaining why.
   - the publisher identity's permissions;
   - every C0–C8 step, separately authorized;
   - the G5 audit's deploy inventory (a gated read).
+
+## Re-review: Bones's findings on `e982ed0` (`#issuecomment-6046546656`)
+
+Each fix is a separate commit with adversarial regressions. "Pre-fix" means the regression was run
+against the unfixed code and failed there.
+
+| # | Finding | Fix commit | Regression evidence |
+|---|---|---|---|
+| 1 | G5 widening raced an entered invocation | `23fe554` | **The design:** the effective G5 table now lives in `authz/admission`. Admit and Dispatching check it inside their own compare-and-swap. `g5_widen` applies the block in one compare-and-swap that also revokes admitted overlapping tickets. A narrowing is staged and only a fresh activation copies it in. **The tests:** `test-storage-endpoints` W-1/W-2/W-3 drive the real `g5_widen` handler at three points of a real `ghl-write` note: after entry, after Admit, after Dispatching. W-1 fails pre-fix |
+| 2 | Preview control endpoints mutated shared records | `8856ec6` | Every POST action on `iaos-activation` and `iaos-cutover` requires a published production deploy. `test-iaos-cutover` CT-9 covers all 18 mutating actions under deploy-preview, unpublished production, branch-deploy and missing contexts: 403, zero storage writes, records unchanged |
+| 3 | The publisher lost its identity across commands | `652dc3d` | **The tool:** one-process `cycle` (Close to Activate) and `resume` (handover, reclassify the stored response, activate). **The protocol:** T7 may take over a `responded` attempt. **The tests:** `test-iaos-publish` runs every command as a separate child process: RESPONDED, process exit, later semantics, `resume`; activation finished by a new process; a kill mid-dispatch stays blocked; exactly one restore request ever |
+| 4 | Import let a later success cover an earlier unsafe attempt | `c2b4bf5` | Every attempt needs exact terminal evidence. `test-storage-g5-import` I5b reproduces the review case and two variants (fails pre-fix: `class=resolved`) |
+| 5 | Import could not resume after owner completion | `0b21b27` | Idempotent same-owner resume; `T_r` frozen into the owner record. I8b reproduces the review case (fails pre-fix: "already complete"); I8c covers ack-lost; I8d refuses a changed `T_r`, token or capture |
+| 6 | Marketing webhook made a partial, ungated tag write | `c518628` | Tags now go through gated boundary methods. Both webhooks are **uniformly held**: 503 before any provider or GHL call, with no exception introduced. `test-write-webhooks` exercises each real handler independently. **This is still a held loss of functionality pending Jess decision A** |
+| 7 | A stale page adopted a later activation | `c50a3b9`, `8662a12` | The page binds once at first read sign-in, before any save, and never re-reads. `test-page-activation-binding` runs the real module: the review case (first save echoes A1, not A2) and a failed initial bind followed by reactivation |
+
+**Proposal documents amended (still proposals, not implemented):**
+- `STORAGE_V2_UNCERTAIN_WRITE_RECOVERY.md` (item B): recovery is not restored. P-A and P-B now require
+  request-specific evidence plus supported terminal semantics; an approval is not clearance.
+- `STORAGE_V2_MARKETING_WEBHOOKS.md` (item A): the exception is NOT cleared; the evidence required before
+  one can be considered is listed.
+
+**Full offline run after the fixes:** 122 of 123 suites pass.
+- **The one failure:** `test-deal-calculator-wiring`, the unchanged baseline failure. It fails
+  identically on main `3de480e`.
+- **During the run:** two new regressions caused by finding 7 (`test-app-read-auth`,
+  `test-under-contract-stage-result`) were found and fixed in fixtures in `8662a12`; no assertion
+  changed. `test-inv95` now passes 40/40.
+- **Typecheck and build:** `tsc -b`, the root-functions `tsc` and `vite build` all pass.
+- **Unverified here:** four PDF suites need `pdftotext`. They passed on Jeff's machine, but Bones's
+  environment lacks the tool, so they remain unverified there.
