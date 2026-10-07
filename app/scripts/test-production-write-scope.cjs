@@ -11,65 +11,50 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const Module = require('node:module');
-const ts = require('typescript');
 const APP = path.resolve(__dirname, '..');
-const originalResolve = Module._resolveFilename;
-const originalLoad = Module._load;
-Module._resolveFilename = function (name, parent, ...rest) {
-  if (name.startsWith('.') && parent) {
-    const candidate = path.resolve(path.dirname(parent.filename), name + '.ts');
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return originalResolve.call(this, name, parent, ...rest);
-};
-Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
 
-// ---- Blob interception: every connectLambda / getStore / store call counted.
-// The store is an in-memory map honouring `onlyIfNew`, so the contact lock and
-// the write claim behave as they do in Netlify Blobs. `events` interleaves
-// every Blob and GHL call in order.
-const blob = { connections: 0, stores: 0, reads: 0, writes: 0 };
-const blobData = new Map();
-const blobEtags = new Map();
-let blobEtagSeq = 0;
+/* Storage correction (PR #131): the five write endpoints are modern-runtime
+   functions over the REAL verified adapter and the REAL @netlify/blobs client,
+   talking to the wire harness (store `iaos-ownership-v2`) through
+   harness/v2-lambda-compat.cjs, on a published production deploy with an open
+   activation (fixture records). `@netlify/blobs` can no longer be mocked with an
+   in-memory object, so the old connectLambda/getStore/read/write counters are
+   replaced by the wire's own request log (`compat.wire.log`): "zero Blob access"
+   now means zero wire requests of any kind. `events` still interleaves every
+   Blob request and every GHL call in order. */
+process.env.IAOS_ENV = 'production';   // set BEFORE createCompat (setupV2Env only defaults it when unset)
+require('./harness/ts-loader.cjs');
+const { createCompat } = require('./harness/v2-lambda-compat.cjs');
+const compat = createCompat();
+const wire = compat.wire;
+const S = compat.S;
 const events = [];
-Module._load = function (name, ...rest) {
-  if (name === '@netlify/blobs') return {
-    connectLambda: () => { blob.connections++; },
-    getStore: (storeName) => {
-      blob.stores++;
-      const k = (key) => `${storeName}:${key}`;
-      return {
-        async get(key) { blob.reads++; const v = blobData.get(k(key)); return v === undefined ? null : v; },
-        async getWithMetadata(key, options) { blob.reads++; if (options && options.type === 'json' && blobData.has(k(key))) return { data: blobData.get(k(key)), etag: blobEtags.get(k(key)) }; return null; },
-        async getMetadata() { blob.reads++; return null; },
-        async list() { blob.reads++; return { blobs: [], directories: [] }; },
-        async set(key, value) { blob.writes++; events.push({ kind: 'blob.set', key }); blobData.set(k(key), value); },
-        async setJSON(key, value, opts) {
-          blob.writes++;
-          if (opts && opts.onlyIfNew && blobData.has(k(key))) { events.push({ kind: 'blob.setJSON.exists', key }); return { modified: false }; }
-          if (opts && opts.onlyIfMatch !== undefined && blobEtags.get(k(key)) !== opts.onlyIfMatch) { events.push({ kind: 'blob.setJSON.stale', key }); return { modified: false }; }
-          events.push({ kind: 'blob.setJSON', key }); blobData.set(k(key), value); const etag = 'etag-' + (++blobEtagSeq); blobEtags.set(k(key), etag); return { modified: true, etag };
-        },
-        async delete(key) { blob.writes++; events.push({ kind: 'blob.delete', key }); blobData.delete(k(key)); },
-      };
-    },
-  };
-  return originalLoad.call(this, name, ...rest);
+const vs = require('../netlify/functions/lib/verified-store.ts');
+const innerWireFetch = wire.fetch;
+const recordedWireFetch = async (url, init = {}) => {
+  const u = new URL(String(url));
+  if (u.origin !== wire.EDGE && u.origin !== wire.UNCACHED) return innerWireFetch(url, init);
+  const parts = u.pathname.split('/').filter(Boolean);
+  const e = { kind: 'blob', method: String(init.method || 'GET').toUpperCase(), store: decodeURIComponent(parts[1] || ''), key: parts.length > 2 ? parts.slice(2).map(decodeURIComponent).join('/') : null, status: null, body: null };
+  if (e.method === 'PUT' && typeof init.body === 'string') { try { e.body = JSON.parse(init.body); } catch { e.body = null; } }
+  events.push(e);
+  try { const r = await innerWireFetch(url, init); e.status = r.status; return r; } catch (err) { e.status = 'threw'; throw err; }
 };
+wire.fetch = recordedWireFetch;          // the compat global.fetch path (raw getStore reads, e.g. preserved-artifact bytes)
+vs.transport.fetch = recordedWireFetch;  // the verified adapter's transport
 
 // ---- GHL interception: every outbound request counted; the default refuses.
 let ghlCalls = [];
 let ghlRoute = null;
-global.fetch = async (url, init = {}) => {
+compat.hooks.ghlFetch = async (url, init = {}) => {
   ghlCalls.push({ url: String(url), method: init.method || 'GET' });
   events.push({ kind: 'ghl', method: init.method || 'GET', path: new URL(String(url)).pathname, body: init.body });
   if (ghlRoute) return ghlRoute(String(url), init);
   throw new Error('offline: network disabled');
 };
+/** Request ids must be v2 (`^v2-[A-Za-z0-9_-]{5,61}$`); labels are sanitized, never widened. */
+const rid = (label) => (/^v2-/.test(label) ? label : 'v2-' + String(label).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 61));
 
-process.env.IAOS_ENV = 'production';
 process.env.IAOS_APP_WRITE_GOOGLE_CLIENT_ID = 'offline-client';
 process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN = 'https://proof.example.invalid';
 process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid';
@@ -254,6 +239,20 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   await check('unknown operation name is refused in Production', () => {
     assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(variant('ready'), { operation: 'contact.do_not_mail', targetId: PIN_CONTACT, args: { value: true } }), { ok: false, code: 'OPERATION_NOT_PERMITTED' });
   });
+  /* Storage correction (Jess's ruling; plan v6 §6): the ONE new read-only Production allowance is the exact
+     `storage_capability` shape. It must not loosen anything else. */
+  await check('capability allowance: only the exact storage_capability shape is allowed; nothing else is loosened', () => {
+    assert.deepEqual(scopeLib.evaluateProductionCapabilityAllowance({ action: 'storage_capability' }), { ok: true });
+    assert.deepEqual(scopeLib.evaluateProductionCapabilityAllowance({ action: 'storage_capability', nonce: 'n-1' }), { ok: true });
+    for (const body of [null, undefined, [], 'storage_capability', {}, { action: 'storage_capability', nonce: 'bad nonce!' }, { action: 'storage_capability', nonce: 1 },
+      { action: 'storage_capability', operation: 'note.create' }, { action: 'storage_capability', targetId: PIN_CONTACT }, { action: 'begin' },
+      { operation: 'note.create', targetId: PIN_CONTACT, args: { body: 'x' }, requestId: 'v2-capability-1' }]) {
+      assert.deepEqual(scopeLib.evaluateProductionCapabilityAllowance(body), { ok: false, code: 'OPERATION_NOT_PERMITTED' }, JSON.stringify(body));
+    }
+    for (const state of [...Object.keys(EXPECTED_PRE), 'ready']) {
+      assert.equal(scopeLib.evaluateProductionGhlWriteScope(variant(state), { operation: 'storage_capability', targetId: PIN_CONTACT, args: {} }).ok, false, state);
+    }
+  });
   await check('pin placeholders and malformed pins are refused', () => {
     for (const [contactId, opportunityId] of [[G.PRODUCTION_PROOF_CONTACT_NOT_PINNED, PIN_OPP], [PIN_CONTACT, G.PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED], ['', PIN_OPP], [PIN_CONTACT, 'has/slash'], [PIN_CONTACT, 'x'.repeat(65)]]) {
       const c = variant('ready'); c.productionProofScope = { enabled: G.PRODUCTION_PROOF_SCOPE_ENABLED, contactId, opportunityId };
@@ -343,10 +342,13 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   });
 
   // ===== 5. Handlers fail closed BEFORE any Blob access or GHL call.
-  const writeHandler = require('../netlify/functions/ghl-write.ts').handler;
+  /* Storage correction (PR #131): modern-runtime default exports, invoked through the compat
+     harness (Lambda-style event in, {statusCode, headers, body} out; the page's activation echo is
+     added to authenticated requests). */
+  const writeHandler = compat.handlerOf(require('../netlify/functions/ghl-write.ts'), 'ghl-write');
   // Board 15 / PR #126 stacked server PR: the page reserves a durable Current
   // Offer barrier (current-offer-barrier.ts) before sending a Current Offer.
-  const barrierHandler = require('../netlify/functions/current-offer-barrier.ts').handler;
+  const barrierHandler = compat.handlerOf(require('../netlify/functions/current-offer-barrier.ts'), 'current-offer-barrier');
   /* PR #126 stacked server PR: a negotiation-outcome note is sent only under a
      reservation of its own kind -- as the Seller Call page does: reconcile,
      reserve, send the note with its reserved id, reconcile (withdrawing the
@@ -361,18 +363,20 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     const kind = require('../src/lib/seller-call-outcome.ts').parseOutcomeNote(body).kind;
     const opportunityId = require('../src/lib/seller-call-outcome.ts').parseOutcomeNote(body).opportunityId;
     await barrierCall(world, { action: 'reconcile', opportunityId });
-    const steps = { accept: ['offer', 'note', 'touch'], pass: ['note', 'touch'], follow_up: ['callback', 'callback_note', 'touch', 'note'] }[kind].map((step) => ({ step, requestId: `${tag}-${step}` }));
+    const steps = { accept: ['offer', 'note', 'touch'], pass: ['note', 'touch'], follow_up: ['callback', 'callback_note', 'touch', 'note'] }[kind].map((step) => ({ step, requestId: rid(`${tag}-${step}`) }));
     const reserved = await barrierCall(world, { action: 'begin', opportunityId, purpose: kind, steps });
     if (reserved.statusCode !== 200) throw new Error('outcome reservation refused: ' + reserved.body);
     const r = await runWorld(world, fixedEvent('note.create', PIN_CONTACT, { body }, `${tag}-note`));
     await barrierCall(world, { action: 'reconcile', opportunityId });
     return r;
   };
-  const uploadHandler = require('../netlify/functions/ghl-executed-artifact-upload.ts').handler;
+  const uploadHandler = compat.handlerOf(require('../netlify/functions/ghl-executed-artifact-upload.ts'), 'ghl-executed-artifact-upload');
   let seq = 0;
-  const writeEvent = (operation, targetId, args) => ({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ operation, targetId, args, requestId: `scope-${++seq}` }) });
+  const writeEvent = (operation, targetId, args) => ({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ operation, targetId, args, requestId: rid(`scope-${++seq}`) }) });
   const uploadEvent = (phase, opportunityId) => ({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ phase, opportunityId, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'u1', chunkIndex: 0, chunkCount: 1, totalByteCount: 4, originalFileName: 'x.pdf', expectedFullSha256: 'a'.repeat(64), chunkBase64: 'AAAA' }) });
-  const snapshot = () => ({ ...blob, ghl: ghlCalls.length });
+  /* Storage correction: "no Blob access" = zero wire requests (compat.wire.log), replacing the
+     connectLambda/getStore/read/write counters of the in-memory mock. */
+  const snapshot = () => ({ blob: wire.log.length, ghl: ghlCalls.length });
   async function assertRefusedClean(label, run, code) {
     await check(label, async () => {
       const before = snapshot();
@@ -409,10 +413,22 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       const res = await writeHandler(writeEvent(op, pinnedTarget(op), args));
       const body = JSON.parse(res.body);
       assert.notEqual(body.by, 'iaos-production-write-scope');
-      assert.ok(blob.connections > before.connections, 'connectLambda reached after the gate');
+      assert.ok(wire.log.length > before.blob, 'storage reached after the scope gate'); /* Storage correction: the wire log replaces connectLambda */
     });
   }
   // The boundary's own read-only identity reads: GET opportunity, then GET its contact.
+  /* Storage correction: the upload endpoint now passes the write gate (read-only checks of the
+     activation, cutover, G5 and legacy-block records) BEFORE its GHL identity read, so a refusal at the
+     contact-scope check can follow those gate reads. Restated intent: no upload/artifact storage access
+     at all, and no storage WRITE of any kind -- only GETs of `authz/` gate records. */
+  const assertOnlyGateReads = (fromIndex) => {
+    const made = wire.log.slice(fromIndex);
+    for (const r of made) {
+      assert.equal(r.method, 'GET', 'no storage write: ' + JSON.stringify(r));
+      assert.equal(r.store, 'site:' + S, 'no upload/artifact store access: ' + JSON.stringify(r));
+      assert.ok(typeof r.key === 'string' && r.key.startsWith('authz/'), 'only write-gate records read: ' + JSON.stringify(r));
+    }
+  };
   const ownedBy = (contactId) => (url) => {
     const p = new URL(url).pathname;
     if (p === `/opportunities/${PIN_OPP}`) return new Response(JSON.stringify({ opportunity: { id: PIN_OPP, contactId, locationId: PRODUCTION.locationId, customFields: [] } }), { status: 200 });
@@ -426,7 +442,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       const res = await uploadHandler(uploadEvent('chunk', PIN_OPP));
       assert.equal(res.statusCode, 403, res.body);
       assert.equal(JSON.parse(res.body).code, 'TARGET_NOT_PINNED');
-      assert.equal(blob.reads, before.reads); assert.equal(blob.writes, before.writes);
+      assertOnlyGateReads(before.blob);
       const made = ghlCalls.slice(before.ghl);
       assert.equal(made.length, 2, 'only the two read-only identity GETs');
       assert.ok(made.every((c) => c.method === 'GET'));
@@ -512,7 +528,18 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
 
   // Paired ownership and the full write path, through the ghl-write handler.
   const F = { arv: PRODUCTION.opportunityFacts.arv, repairs: PRODUCTION.opportunityFacts.repairs, lca: PRODUCTION.fields.lastCallAttempt, lcaPrecise: PRODUCTION.fields.lastCallAttemptPrecise };
+  /* Storage correction (admission tickets): in v2 a dispatch whose outcome is not confirmed leaves a durable
+     `uncertain` ticket on its exact (subject, effects) in `authz/admission`, which blocks every later
+     overlapping send. The old in-memory store had no such barrier, so independent cases sharing the pinned
+     ids never interfered. Each independent world therefore starts with no live tickets (fixture isolation
+     only; within a case, tickets persist and are asserted on). */
+  const freshTickets = () => {
+    const a = wire.json(S, 'authz/admission');
+    if (a && a.tickets && Object.keys(a.tickets).length) wire.seed(S, 'authz/admission', { ...a, tickets: {} });
+  };
+  const liveTickets = () => Object.values((wire.json(S, 'authz/admission') || {}).tickets || {});
   function makeGhlWorld(opts = {}) {
+    freshTickets();
     const world = {
       opportunity: { id: PIN_OPP, locationId: PRODUCTION.locationId, contactId: opts.owner || PIN_CONTACT, pipelineId: opts.pipelineId || SELLER_LEADS, pipelineStageId: opts.stageId, customFields: (opts.oppFields || []).slice() },
       contacts: {
@@ -573,7 +600,8 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     return world;
   }
   // requestId must satisfy ghl-write's identifier() rule; labels are sanitized, never widened.
-  const fixedEvent = (operation, targetId, args, requestId) => ({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ operation, targetId, args, requestId: requestId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) }) });
+  /* Storage correction: and be a v2 id (`rid`) -- a non-v2 id is refused 400 legacy_id_refused before the scope. */
+  const fixedEvent = (operation, targetId, args, requestId) => ({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ operation, targetId, args, requestId: rid(requestId) }) });
   /** Runs one handler call against a mocked world and returns the response plus the ordered events it produced. */
   async function runWorld(world, event) {
     const start = events.length;
@@ -583,11 +611,19 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       return { res, body: JSON.parse(res.body), ev: events.slice(start) };
     } finally { ghlRoute = null; }
   }
-  const isLockKey = (e) => typeof e.key === 'string' && e.key.startsWith('lock/');
-  const claims = (ev) => ev.filter((e) => e.kind === 'blob.setJSON' && !isLockKey(e));
+  /* Storage correction (lock v2): the contact lock is `lock2/<sha256(env:locationId:contactId)>`, acquired
+     by a conditional PUT of a `state: "held"` record and released by a conditional PUT of a `state: "free"`
+     record -- never deleted. The write claim is the receipt `authz/receipt/<sha256(env:scope:requestId)>`. */
+  const { lockKey: lockKeyV2 } = require('../netlify/functions/lib/contact-lock-v2.ts');
+  const isLockKey = (e) => typeof e.key === 'string' && e.key.startsWith('lock2/');
+  const okPut = (e) => e.kind === 'blob' && e.method === 'PUT' && e.status >= 200 && e.status < 300;
+  const lockAcquire = (e) => okPut(e) && isLockKey(e) && e.body && e.body.state === 'held';
+  const lockRelease = (e) => okPut(e) && isLockKey(e) && e.body && e.body.state === 'free';
+  const isClaim = (e) => okPut(e) && typeof e.key === 'string' && e.key.startsWith('authz/receipt/');
+  const claims = (ev) => ev.filter(isClaim);
   const puts = (ev) => ev.filter((e) => e.kind === 'ghl' && (e.method === 'PUT' || e.method === 'POST'));
-  const lockReleased = (ev) => ev.some((e) => e.kind === 'blob.setJSON' && isLockKey(e)) && ev.some((e) => e.kind === 'blob.delete' && isLockKey(e));
-  const noLockHeld = () => ![...blobData.keys()].some((k) => k.includes(':lock/'));
+  const lockReleased = (ev) => { const a = ev.findIndex(lockAcquire); return a >= 0 && ev.slice(a + 1).some(lockRelease) && !ev.some((e) => e.kind === 'blob' && e.method === 'DELETE' && isLockKey(e)); };
+  const noLockHeld = () => !wire.keys(S).some((k) => k.startsWith('lock2/') && (wire.json(S, k) || {}).state === 'held');
 
   const FIELD_CASES = [
     ['opportunity.arv', PIN_OPP, 485000, `/opportunities/${PIN_OPP}`, [{ id: F.arv, field_value: 485000 }]],
@@ -603,8 +639,8 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       const p = puts(ev);
       assert.equal(p.length, 1); assert.equal(p[0].path, putPath);
       assert.deepEqual(JSON.parse(p[0].body).customFields.map(({ id, field_value }) => ({ id, field_value })), expectedFields);
-      const lockAt = ev.findIndex((e) => e.kind === 'blob.setJSON' && isLockKey(e));
-      const claimAt = ev.findIndex((e) => e.kind === 'blob.setJSON' && !isLockKey(e));
+      const lockAt = ev.findIndex(lockAcquire);
+      const claimAt = ev.findIndex(isClaim);
       const oppReadsUnderLock = ev.map((e, i) => ({ e, i })).filter(({ e, i }) => i > lockAt && i < claimAt && e.kind === 'ghl' && e.method === 'GET' && e.path === `/opportunities/${PIN_OPP}`);
       assert.ok(lockAt >= 0 && claimAt > lockAt, 'lock precedes claim');
       assert.ok(oppReadsUnderLock.length >= 1, 'the pinned opportunity is read under the lock before the claim');
@@ -662,10 +698,9 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   // Bones REVISE item 1: the lock is always the CONFIGURED pinned contact's,
   // whatever owner the first (unlocked) read reports; ownership is then
   // re-proven under that lock before any claim or PUT.
-  const { digest: boundaryDigest } = require('../netlify/functions/lib/ghl-write-boundary.ts');
-  const PINNED_LOCK_KEY = 'lock/' + boundaryDigest(PRODUCTION.locationId + PIN_CONTACT);
-  const OTHER_LOCK_KEY = 'lock/' + boundaryDigest(PRODUCTION.locationId + OTHER_CONTACT);
-  const lockKeysTaken = (ev) => ev.filter((e) => e.kind === 'blob.setJSON' && isLockKey(e)).map((e) => e.key);
+  const PINNED_LOCK_KEY = lockKeyV2('production', PRODUCTION.locationId, PIN_CONTACT);
+  const OTHER_LOCK_KEY = lockKeyV2('production', PRODUCTION.locationId, OTHER_CONTACT);
+  const lockKeysTaken = (ev) => ev.filter(lockAcquire).map((e) => e.key);
   for (const [op, value] of [['opportunity.arv', 485000], ['opportunity.repairs', 52000]]) {
     await check(`${op}: first read says ANOTHER owner, locked re-read says the pinned contact -> the PINNED contact's lock is taken, ownership passes, one PUT`, async () => {
       const world = makeGhlWorld({ ownerSequence: [OTHER_CONTACT, PIN_CONTACT] });
@@ -693,7 +728,9 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   await check('lock target in Test is unchanged: the paired-lock rule never applies outside Production', () => {
     for (const op of ['opportunity.arv', 'opportunity.repairs', 'opportunity.currentOffer']) assert.equal(scopeLib.requiresProductionPairedOwnership(TEST, op), false, op);
     const src = fs.readFileSync(path.join(APP, 'netlify/functions/ghl-write.ts'), 'utf8');
-    assert.ok(/lockContact\(pairedProduction && isOpportunityTargeted \? config\.productionProofScope\.contactId : contactId\)/.test(src), 'every other case still locks the target-derived contact');
+    /* Storage correction (lock v2 rename): the same rule is now `lockContactId`, passed to acquireLock. */
+    assert.ok(/const lockContactId = pairedProduction && isOpportunityTargeted \? config\.productionProofScope\.contactId : contactId;/.test(src), 'every other case still locks the target-derived contact');
+    assert.ok(/acquireLock\(store, inv\.scope, lockKey\(inv\.env, config\.locationId, lockContactId\)/.test(src), 'the lock taken is lockContactId');
   });
 
   await check('handler contact.lastCallAttempt: the pinned opportunity cannot be read -> 409, no claim, no PUT, lock released', async () => {
@@ -716,7 +753,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       const { res, ev } = await runWorld(world, fixedEvent('opportunity.arv', PIN_OPP, { value }, `bad-arv-${label}`));
       assert.equal(res.statusCode, status, res.body);
       if (status === 403) assert.equal(JSON.parse(res.body).code, 'OPERATION_NOT_PERMITTED');
-      assert.equal(ev.length, 0, 'no Blob or GHL event'); assert.equal(blob.connections, before.connections);
+      assert.equal(ev.length, 0, 'no Blob or GHL event'); assert.equal(wire.log.length, before.blob, 'no storage request (Storage correction: wire log replaces connectLambda)');
     });
   }
   await check('handler opportunity.repairs 52000.5: refused OPERATION_NOT_PERMITTED, no Blob/GHL', async () => {
@@ -758,15 +795,17 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   });
   await check('recovery: a held contact lock refuses the write before any claim or PUT', async () => {
     const world = makeGhlWorld();
-    const { digest } = require('../netlify/functions/lib/ghl-write-boundary.ts');
-    const lockKey = 'iaos-write-receipts:lock/' + digest(PRODUCTION.locationId + PIN_CONTACT);
-    blobData.set(lockKey, { claimedAt: 'held' });
+    /* Storage correction (lock v2): the held lock is a v2 `state: "held"` record within its holder deadline. */
+    const lockKey = lockKeyV2('production', PRODUCTION.locationId, PIN_CONTACT);
+    const prior = wire.json(S, lockKey);
+    const heldRecord = { v: 2, state: 'held', holderHash: 'other-holder', fn: 'ghl-write', opId: null, acquiredAt: new Date().toISOString(), holderDeadline: new Date(Date.now() + 10 * 60 * 1000).toISOString(), prevReleasedByHash: null, deployId: compat.DEPLOY_ID };
+    wire.seed(S, lockKey, heldRecord);
     try {
       const { res, body, ev } = await runWorld(world, fixedEvent('contact.lastCallAttempt', PIN_CONTACT, { value: '2026-09-29T12:00:00.000Z' }, 'held-lock'));
       assert.equal(res.statusCode, 409); assert.equal(body.outcome, 'indeterminate');
       assert.equal(claims(ev).length, 0); assert.equal(puts(ev).length, 0);
-      assert.ok(blobData.has(lockKey), 'a lock held by another write is never removed');
-    } finally { blobData.delete(lockKey); }
+      assert.deepEqual(wire.json(S, lockKey), heldRecord, 'a lock held by another write is never removed or changed');
+    } finally { if (prior) wire.seed(S, lockKey, prior); else wire.remove(S, lockKey); }
   });
   // The two walkthrough notes through the handler (real bodies, real ledger guard).
   await check('handler note.create: OVERRIDDEN readiness note on the pinned pair -> 200, created and read back', async () => {
@@ -846,10 +885,17 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     assert.equal(world.notes.length, 1, 'still exactly one accept note');
     assert.ok(noLockHeld());
 
-    // 5. The recovery step itself -- retrying only lastCallAttempt -- succeeds.
+    // 5. The recovery step itself -- retrying only lastCallAttempt.
+    /* Storage correction (admission tickets, plan v6 / admission.ts): the step-2 PUT left with no response, so its
+       dispatch is UNRESOLVED and its ticket stays `uncertain` on contact:<pinned> -- a durable barrier whose only
+       removal path is verified same-operation recovery. A fresh retry is therefore refused 409 `in_progress`
+       before anything is sent (it used to succeed). Restated: refused, no PUT, the barrier is still in place. */
     const lcaRetry = await runWorld(world, fixedEvent('contact.lastCallAttempt', PIN_CONTACT, { value: acceptAt }, 'recovery-lca-retry'));
-    assert.equal(lcaRetry.res.statusCode, 200, lcaRetry.res.body);
-    assert.equal(lcaRetry.body.confirmed, true);
+    assert.equal(lcaRetry.res.statusCode, 409, lcaRetry.res.body);
+    assert.equal(lcaRetry.body.code, 'in_progress', lcaRetry.res.body);
+    assert.equal(puts(lcaRetry.ev).length, 0, 'nothing sent');
+    assert.ok(liveTickets().some((t) => t.state === 'uncertain' && t.subject === `contact:${PIN_CONTACT}`), 'the uncertain ticket still blocks');
+    assert.ok(noLockHeld());
   });
 
   // Bones REVISE item 2, end to end: Seller Call's OWN write sequence and
@@ -872,7 +918,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
         const requestId = `${tag}-offer-${++n}`;
         ghlRoute = world.route;
         try {
-          const reserved = await barrierHandler({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ action: 'begin', opportunityId: id, purpose: 'blur', steps: [{ step: 'offer', requestId }] }) });
+          const reserved = await barrierHandler({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ action: 'begin', opportunityId: id, purpose: 'blur', steps: [{ step: 'offer', requestId: rid(requestId) }] }) });
           if (reserved.statusCode !== 200) throw new Error('reservation refused: ' + reserved.body);
         } finally { ghlRoute = null; }
         const r = await runWorld(world, fixedEvent('opportunity.currentOffer', id, { value }, requestId));
@@ -919,12 +965,21 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     assert.equal(again.stage, 'offer_failed', JSON.stringify(again));
     assert.equal(again.acceptanceRecorded, false);
     assert.equal(world.notes.length, notesBefore, 'still exactly one accept note');
-    // Recovery: read first -- nothing landed -- then one fresh write, which now succeeds.
+    // Recovery: read first -- nothing landed -- then one fresh write.
+    /* Storage correction (admission tickets, plan v6 / admission.ts): the failed timestamp PUT had no response, so
+       its ticket is `uncertain` and blocks every later last-touch send for this contact until verified recovery.
+       The fresh write is refused before sending (it used to land): the page reports write_unconfirmed and keeps
+       the new timestamp pending; nothing reaches GHL. */
     opts.contactPutFails = false;
     const now = '2026-09-29T14:05:00.000Z';
+    const recStart = events.length;
     const rec = await pageRecover(world, 'page-recover', result.pendingTimestamp, now);
-    assert.deepEqual(rec, { kind: 'written', at: now });
-    assert.equal(world.contacts[PIN_CONTACT].customFields.find((f) => f.id === F.lcaPrecise).value, now);
+    assert.equal(rec.kind, 'write_unconfirmed', JSON.stringify(rec));
+    assert.equal(rec.pendingTimestamp, now);
+    assert.ok(/in progress or unresolved\. Nothing was sent/.test(rec.message), rec.message);
+    assert.equal(puts(events.slice(recStart)).length, 0, 'nothing sent to GHL');
+    assert.equal((world.contacts[PIN_CONTACT].customFields.find((f) => f.id === F.lcaPrecise) || {}).value, undefined, 'nothing landed');
+    assert.ok(liveTickets().some((t) => t.state === 'uncertain' && t.subject === `contact:${PIN_CONTACT}`));
     assert.ok(noLockHeld());
   });
   await check('Seller Call path (real handler): the timestamp write LANDED but its response was lost -> recovery reads it back and writes NOTHING', async () => {
@@ -943,15 +998,21 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     const opts = {};
     const world = makeGhlWorld(opts);
     const origRoute = world.route;
+    /* Storage correction (admission tickets): T0 used to fail as a PUT with no response. In v2 that leaves an
+       `uncertain` ticket that blocks T1 from being sent at all (covered by the case above), so this case's
+       intent -- a T1 that LANDS but loses its response, then a zero-request readback -- is kept by making T0 fail
+       BEFORE dispatch instead: the pinned opportunity's ownership re-read (under the lock, before the claim)
+       fails, so nothing is sent and no ticket is left. */
     world.route = async (url, init) => {
-      if ((init.method || 'GET') === 'PUT' && new URL(url).pathname === `/contacts/${PIN_CONTACT}` && opts.contactPutFails) throw new Error('socket hang up');
+      if ((init.method || 'GET') === 'GET' && new URL(url).pathname === `/opportunities/${PIN_OPP}` && opts.oppGetFailsAfterNote && world.notes.length >= 1) return new Response(JSON.stringify({ message: 'unavailable' }), { status: 500 });
       return origRoute(url, init);
     };
-    opts.contactPutFails = true;
+    opts.oppGetFailsAfterNote = true;
     const T0 = '2026-09-29T16:00:00.000Z', T1 = '2026-09-29T16:05:00.000Z', T2 = '2026-09-29T16:10:00.000Z';
     const accept = await pageAccept(world, 'page-t0', T0);
     assert.equal(accept.stage, 'timestamp_failed'); assert.equal(accept.pendingTimestamp, T0);
-    opts.contactPutFails = false; opts.contactPutAppliedThenThrow = true;
+    assert.ok(!liveTickets().some((t) => t.subject === `contact:${PIN_CONTACT}` && t.state !== 'admitted'), 'T0 was never dispatched');
+    opts.oppGetFailsAfterNote = false; opts.contactPutAppliedThenThrow = true;
     const first = await pageRecover(world, 'page-t1', accept.pendingTimestamp, T1);
     assert.equal(first.kind, 'write_unconfirmed', JSON.stringify(first));
     assert.equal(first.pendingTimestamp, T1, 'the attempted T1 is kept as pending');
@@ -1014,9 +1075,11 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   const HANDOFF_BODY = handoffCarriers.formatDispositionHandoffNote(hBuilt.value);
   const hWorld = (over = {}) => makeGhlWorld(Object.assign({ stageId: PRODUCTION.stages.underContract, contactExtra: H_CONTACT_EXTRA, notes: hChainNotes }, over));
   const withArtifactBytes = async (bytes, fn) => {
-    const key = 'iaos-executed-artifacts:' + H_BLOB_KEY;
-    if (bytes === null) blobData.delete(key); else blobData.set(key, bytes);
-    try { return await fn(); } finally { blobData.delete(key); }
+    /* Storage correction: the preserved bytes live in the wire's `iaos-executed-artifacts` store. */
+    if (!wire.stores.has('site:iaos-executed-artifacts')) wire.stores.set('site:iaos-executed-artifacts', new Map());
+    const st = wire.stores.get('site:iaos-executed-artifacts');
+    if (bytes === null) st.delete(H_BLOB_KEY); else st.set(H_BLOB_KEY, { body: Buffer.from(bytes), etag: '"artifact-fixture"', meta: null, contentType: 'application/octet-stream' });
+    try { return await fn(); } finally { st.delete(H_BLOB_KEY); }
   };
   const notePosts = (ev) => ev.filter((e) => e.kind === 'ghl' && e.method === 'POST');
   const handoffRefused = async (label, world, body, bytes = H_BYTES) => {
@@ -1114,27 +1177,27 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   };
   for (const [label, op, target, args] of ALLOWANCE_REQUESTS) {
     await check(`sign-in/origin control: ${label} with a valid session and approved origin passes both gates`, async () => {
-      const before = blob.connections;
+      const before = wire.log.length;
       const res = await writeHandler(fixedEvent(op, target, args, 'auth-control-' + label));
       assert.notEqual(res.statusCode, 401, res.body);
       assert.ok(!/sign-in required|origin refused/i.test(res.body), res.body);
-      assert.ok(blob.connections > before, 'past both gates: connectLambda reached');
+      assert.ok(wire.log.length > before, 'past both gates: storage reached (Storage correction: wire log replaces connectLambda)');
     });
     for (const [caseLabel, mutate] of AUTH_CASES) {
       await check(`sign-in refused: ${label} -- ${caseLabel} -> 401, zero Lambda/Blob/GHL`, async () => {
-        const before = { conn: blob.connections, stores: blob.stores, reads: blob.reads, writes: blob.writes, ghl: ghlCalls.length, ev: events.length };
+        const before = { blob: wire.log.length, ghl: ghlCalls.length, ev: events.length };
         const res = await writeHandler(refusalEvent(op, target, args, mutate));
         assert.equal(res.statusCode, 401, res.body);
-        assert.deepEqual({ conn: blob.connections, stores: blob.stores, reads: blob.reads, writes: blob.writes, ghl: ghlCalls.length, ev: events.length }, before);
+        assert.deepEqual({ blob: wire.log.length, ghl: ghlCalls.length, ev: events.length }, before);
       });
     }
     for (const [caseLabel, origin] of ORIGIN_CASES) {
       await check(`origin refused: ${label} -- ${caseLabel} -> 403, zero Lambda/Blob/GHL`, async () => {
-        const before = { conn: blob.connections, stores: blob.stores, reads: blob.reads, writes: blob.writes, ghl: ghlCalls.length, ev: events.length };
+        const before = { blob: wire.log.length, ghl: ghlCalls.length, ev: events.length };
         const res = await writeHandler(refusalEvent(op, target, args, (h) => { if (origin === undefined) delete h.origin; else h.origin = origin; }));
         assert.equal(res.statusCode, 403, res.body);
         assert.equal(JSON.parse(res.body).error, 'Application write origin refused');
-        assert.deepEqual({ conn: blob.connections, stores: blob.stores, reads: blob.reads, writes: blob.writes, ghl: ghlCalls.length, ev: events.length }, before);
+        assert.deepEqual({ blob: wire.log.length, ghl: ghlCalls.length, ev: events.length }, before);
       });
     }
   }
@@ -1169,7 +1232,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
         const before = snapshot();
         const res = await writeHandler(writeEvent(op, committedOther(op), committedArgs(op)));
         assert.notEqual(JSON.parse(res.body).by, 'iaos-production-write-scope', res.body);
-        assert.ok(blob.connections > before.connections, 'connectLambda reached after the gate');
+        assert.ok(wire.log.length > before.blob, 'storage reached after the scope gate'); /* Storage correction: the wire log replaces connectLambda */
       });
       continue;
     }
@@ -1203,7 +1266,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       const before = snapshot();
       const res = await writeHandler(writeEvent(op, committedTarget(op), committedArgs(op)));
       assert.notEqual(JSON.parse(res.body).by, 'iaos-production-write-scope');
-      assert.ok(blob.connections > before.connections, 'connectLambda reached after the gate');
+      assert.ok(wire.log.length > before.blob, 'storage reached after the scope gate'); /* Storage correction: the wire log replaces connectLambda */
     });
   }
   const committedOwnedBy = (contactId) => (url) => {
@@ -1218,7 +1281,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       const before = snapshot();
       const res = await uploadHandler(uploadEvent('chunk', COMMITTED_FIXTURE_OPP));
       assert.equal(res.statusCode, 403, res.body); assert.equal(JSON.parse(res.body).code, 'TARGET_NOT_PINNED');
-      assert.equal(blob.reads, before.reads); assert.equal(blob.writes, before.writes);
+      assertOnlyGateReads(before.blob);
       assert.ok(ghlCalls.slice(before.ghl).every((c) => c.method === 'GET'), 'only read-only identity GETs');
     } finally { ghlRoute = null; }
   });
@@ -1416,7 +1479,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
           const before = snapshot();
           const res = await writeHandler(writeEvent(op, OTHER_CONTACT, args));
           assert.notEqual(JSON.parse(res.body).by, 'iaos-production-write-scope', res.body);
-          assert.ok(blob.connections > before.connections, 'connectLambda reached after the gate');
+          assert.ok(wire.log.length > before.blob, 'storage reached after the scope gate'); /* Storage correction: the wire log replaces connectLambda */
         });
       }
       for (const [op, args] of [['contact.routing', VALID_ARGS['contact.routing']], ['contact.dispositionAt', VALID_ARGS['contact.dispositionAt']], ['note.create', { body: 'plain note' }], ['contact.callback', { value: '2026-10-09T19:30:00.000Z' }], ['note.create', { body: PASS_OUTCOME_BODY }]]) {
@@ -1439,12 +1502,14 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
         const before = snapshot();
         const res = await writeHandler(writeEvent('contact.callLogResult', OTHER_CONTACT, { value: 'Spoke with Seller' }));
         assert.notEqual(JSON.parse(res.body).by, 'iaos-production-write-scope', res.body);
-        assert.ok(blob.connections > before.connections, 'connectLambda reached after the gate');
+        assert.ok(wire.log.length > before.blob, 'storage reached after the scope gate'); /* Storage correction: the wire log replaces connectLambda */
       } finally {
         PRODUCTION.productionCallLog = saved;
       }
     });
   }
+  /* Storage correction: v2 ownership reads are strong only; the wire records any that reached the cached origin. */
+  await check('storage: no ownership read reached the cached (eventual) origin', () => assert.deepEqual(wire.violations, []));
   console.log(`production-write-scope checks=${checks} failures=${failures}`);
   process.exitCode = failures ? 1 : 0;
 })();
