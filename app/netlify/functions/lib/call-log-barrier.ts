@@ -39,7 +39,10 @@
  * nothing here clears it -- not a GHL read, not time, not an operator
  * (docs/CALL_LOG_RECOVERY_PROCEDURE.md).
  */
-import { digest } from "./ghl-write-boundary";
+import { digest } from "./hash";
+import { claimSend, publishNotDispatched, withdraw } from "./owned-send";
+import type { VerifiedStore } from "./verified-store";
+import type { OwnedSend } from "./owned-send";
 import { isCallLogNoteBody } from "./production-write-scope";
 import { callLogResults } from "./write-contracts";
 import type { BarrierStore } from "./current-offer-barrier";
@@ -117,20 +120,14 @@ export class StorageUnsettled extends Error {}
 export class InvalidRequest extends Error {}
 
 const CAS_ATTEMPTS = 4;
+/* Storage correction (plan v6 §2): every ownership read is STRONG through the
+   verified adapter. The silent eventual-read fallback is removed: an
+   unavailable strong read fails closed. */
 async function readJson(store: BarrierStore, key: string): Promise<any> {
-  try { return await store.get(key, { type: "json", consistency: "strong" }); }
-  catch (e: any) {
-    if (e?.name !== "BlobsConsistencyError") throw e;
-    return store.get(key, { type: "json" });
-  }
+  return store.get(key, { type: "json", consistency: "strong" });
 }
 async function readHead(store: BarrierStore, scope: string, contact: string): Promise<{ head: HeadRecord | null; etag: string | null }> {
-  let got: { data: any; etag?: string } | null;
-  try { got = await store.getWithMetadata(headKey(scope, contact), { type: "json", consistency: "strong" }); }
-  catch (e: any) {
-    if (e?.name !== "BlobsConsistencyError") throw e;
-    got = await store.getWithMetadata(headKey(scope, contact), { type: "json" });
-  }
+  const got: { data: any; etag?: string } | null = await store.getWithMetadata(headKey(scope, contact), { type: "json", consistency: "strong" });
   if (!got) return { head: null, etag: null };
   if (!got.etag) throw new Error("Head read without an etag; cannot change it safely");
   return { head: got.data as HeadRecord, etag: got.etag };
@@ -426,8 +423,9 @@ export async function resumeOperation(store: BarrierStore, scope: string, contac
     const slots = await evaluate(store, scope, o);
     const next = nextOf(slots);
     if (next.action === "withdraw_result") {
-      const w = await store.setJSON(decisionKey(scope, slots[0].requestId), { d: "withdrawn", at: new Date().toISOString() }, { onlyIfNew: true });
-      if (!w.modified && !(await readJson(store, decisionKey(scope, slots[0].requestId)))) throw new StorageUnsettled("Decision unreadable after a lost claim");
+      // Atomic withdrawal. A failed or uncertain withdrawal proves nothing; the evidence is re-read.
+      await withdraw(store as VerifiedStore, decisionKey(scope, slots[0].requestId));
+      if (!(await readJson(store, decisionKey(scope, slots[0].requestId)))) throw new StorageUnsettled("Decision unreadable after a withdrawal attempt");
       continue;   // evaluate again: withdrawn -> not_saved; dispatch won -> blocked until its outcome
     }
     await repairCurrent(store, scope, o);   // an incompletely published current attempt: the SAME attempt is completed
@@ -478,6 +476,30 @@ export async function settleLegacy(store: BarrierStore, scope: string, contact: 
 }
 export const LEGACY_MESSAGE = "An earlier call save for this contact (from a previous version of IAOS) is unfinished. Nothing more will be saved in this contact's call log until it is resolved. Use Check again; if it stays, it needs the call-log recovery procedure.";
 
+/**
+ * Same-operation ticket recovery (amendments r1/r2): the digests of THIS
+ * operation's attempts whose persisted outcome is CONFIRMED. Only these can
+ * remove a dispatching or uncertain admission ticket.
+ */
+export async function confirmedRequestDigests(store: BarrierStore, scope: string, op: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  const o = await readOp(store, scope, op);
+  if (!o) return out;
+  for (const slot of SLOTS) {
+    for (let n = 1; ; n++) {
+      if (!(await readJson(store, attemptKey(scope, op, slot, n)))) break;
+      const rid = requestIdFor(op, slot, n);
+      const out1 = await readJson(store, outcomeKey(scope, rid)) as { kind: string } | null;
+      if (out1?.kind === "confirmed") out.add(digest(rid));
+    }
+  }
+  return out;
+}
+/** Whether this operation has a verified final record (same-operation lock recovery). */
+export async function hasFinal(store: BarrierStore, scope: string, op: string): Promise<boolean> {
+  return (await readFinal(store, scope, op)) !== null;
+}
+
 export async function isCallLogBound(store: BarrierStore, scope: string, requestId: string): Promise<boolean> {
   return (await readJson(store, bindingKey(scope, requestId))) !== null;
 }
@@ -493,9 +515,9 @@ export async function isCallLogBound(store: BarrierStore, scope: string, request
  * a confirmed last slot, finalization (final, then the conditional release).
  */
 export async function runCallLogOwnedWrite<T extends { confirmed: boolean }>(
-  store: BarrierStore, scope: string,
+  store: VerifiedStore, scope: string,
   request: { operation: string; targetId: string; requestId: string; args: any },
-  body: (hooks: { beforeDispatch: () => Promise<void>; state: { dispatched: boolean } }) => Promise<T>,
+  body: (hooks: { beforeDispatch: () => Promise<OwnedSend | null>; state: { dispatched: boolean; owned?: OwnedSend | null } }, identity: { requestId: string; opId: string; attemptId: string }) => Promise<T>,
 ): Promise<T> {
   const b = await readJson(store, bindingKey(scope, request.requestId)) as Binding | null;
   if (!b) throw new NotOwned();
@@ -516,30 +538,32 @@ export async function runCallLogOwnedWrite<T extends { confirmed: boolean }>(
     const prevN = await currentAttempt(store, scope, o.op, SLOTS[index - 1]);
     if ((await evidenceOf(store, scope, requestIdFor(o.op, SLOTS[index - 1], prevN))) !== "confirmed") throw new NotSent("The previous step of this call save is not confirmed");
   }
-  const state = { dispatched: false, claimed: false };
+  /* Storage correction (plan v6 §3): the send claim mints an unforgeable
+     OwnedSend only on a validated create, or an exact strong read of OUR claim
+     after an ambiguous write. A lost or unclear claim gives no ownership and
+     proves nothing. */
+  const state: { dispatched: boolean; owned?: OwnedSend | null; claimTried: boolean } = { dispatched: false, owned: null, claimTried: false };
   const hooks = {
     state,
     beforeDispatch: async () => {
-      const claim = await store.setJSON(decisionKey(scope, request.requestId), { d: "send", at: new Date().toISOString() }, { onlyIfNew: true });
-      if (!claim.modified) throw new NotSent("This step was withdrawn or already sent");
-      state.claimed = true;
+      state.claimTried = true;
+      const c = await claimSend(store, store.scope, { decision: decisionKey(scope, request.requestId), outcome: outcomeKey(scope, request.requestId) },
+        { scopeKey: scope, opId: o.op, attemptId: `${b.slot}:${b.n}`, requestDigest: digest(request.requestId) });
+      if (!c.owned) throw new NotSent("This step was withdrawn or already sent");
+      state.owned = c.owned;
+      return c.owned;
     },
   };
   let result: T;
   try {
-    result = await body(hooks);
+    result = await body(hooks, { requestId: request.requestId, opId: o.op, attemptId: `${b.slot}:${b.n}` });
   } catch (error) {
     if (!state.dispatched) {
       let proves: "this_request" | "nothing" = "nothing";
       try {
-        if (state.claimed) {
-          const w = await store.setJSON(outcomeKey(scope, request.requestId), { kind: "not_dispatched", at: new Date().toISOString() }, { onlyIfNew: true });
-          if (w.modified) proves = "this_request";
-        } else {
-          // Atomic: fails if another sender already claimed "send" -- then this refusal proves nothing.
-          const w = await store.setJSON(decisionKey(scope, request.requestId), { d: "withdrawn", at: new Date().toISOString() }, { onlyIfNew: true });
-          if (w.modified) proves = "this_request";
-        }
+        // The owner surrenders FIRST, then records not_dispatched; a non-owner only tries the atomic withdrawal.
+        if (state.owned) proves = await publishNotDispatched(store, state.owned);
+        else proves = await withdraw(store, decisionKey(scope, request.requestId));
       } catch { /* proves nothing */ }
       throw new NotSent(error instanceof Error ? error.message : "Not sent", proves, undefined, null, error instanceof NotSent && error.refusal !== undefined ? error.refusal : error);
     }

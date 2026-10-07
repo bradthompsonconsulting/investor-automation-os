@@ -48,6 +48,7 @@
  * must still belong to the pinned contact and sit in Seller Leads.
  * The Contract Ready checklist stays refused: no walkthrough step gates on it.
  */
+import { isCapabilityRequest } from "./capability-shape";
 import { getConfig, PRODUCTION_PROOF_SCOPE_ENABLED, PRODUCTION_PROOF_CONTACT_NOT_PINNED, PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED, PRODUCTION_CALL_LOG_ENABLED } from "../../../shared/ghl-config";
 import { callLogResults } from "./write-contracts";
 import type { GhlConfig } from "../../../shared/ghl-config";
@@ -339,4 +340,14 @@ export function evaluateProductionArtifactContactScope(config: GhlConfig, contac
   const pre = productionPreconditions(config);
   if (!pre.ok) return pre;
   return contactId === pre.contactId ? { ok: true } : { ok: false, code: "TARGET_NOT_PINNED" };
+}
+/**
+ * Storage correction (Jess's ruling; plan v6 §6) -- the ONE read-only
+ * Production allowance: the exact `storage_capability` shape. The caller has
+ * already required Brad's read and write sessions and the exact Production
+ * origin. It permits no GHL client creation and no storage write (enforced by
+ * test C8); every other Production refusal is unchanged.
+ */
+export function evaluateProductionCapabilityAllowance(body: unknown): ProductionWriteScopeResult {
+  return isCapabilityRequest(body) ? { ok: true } : { ok: false, code: "OPERATION_NOT_PERMITTED" };
 }

@@ -51,7 +51,7 @@
  * not an operator. Only the reviewed procedure may
  * (docs/CALL_LOG_RECOVERY_PROCEDURE.md).
  */
-import { digest } from "./ghl-write-boundary";
+import { digest } from "./hash";
 import { isCallLogNoteBody } from "./production-write-scope";
 import { callLogResults } from "./write-contracts";
 import type { BarrierStore } from "./current-offer-barrier";
@@ -108,20 +108,12 @@ export class CallLogContended extends Error {}
 export class ReservationMismatch extends Error {}
 
 const CAS_ATTEMPTS = 4;
+/* Storage correction (plan v6 §2): strong reads only; the eventual fallback is removed. */
 async function readJson(store: BarrierStore, key: string): Promise<any> {
-  try { return await store.get(key, { type: "json", consistency: "strong" }); }
-  catch (e: any) {
-    if (e?.name !== "BlobsConsistencyError") throw e;
-    return store.get(key, { type: "json" });
-  }
+  return store.get(key, { type: "json", consistency: "strong" });
 }
 async function readHead(store: BarrierStore, scope: string, contact: string): Promise<{ head: HeadRecord | null; etag: string | null }> {
-  let got: { data: any; etag?: string } | null;
-  try { got = await store.getWithMetadata(headKey(scope, contact), { type: "json", consistency: "strong" }); }
-  catch (e: any) {
-    if (e?.name !== "BlobsConsistencyError") throw e;
-    got = await store.getWithMetadata(headKey(scope, contact), { type: "json" });
-  }
+  const got: { data: any; etag?: string } | null = await store.getWithMetadata(headKey(scope, contact), { type: "json", consistency: "strong" });
   if (!got) return { head: null, etag: null };
   if (!got.etag) throw new Error("Head read without an etag; cannot change it safely");
   return { head: got.data as HeadRecord, etag: got.etag };

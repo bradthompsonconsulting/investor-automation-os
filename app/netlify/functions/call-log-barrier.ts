@@ -16,57 +16,79 @@
  *   POST {action:"resume", contactId, operationId}
  *                                     "Check again": never creates an attempt.
  *   POST {action:"resume", contactId, legacy:true}
- *                                     settles a 558c666-format unfinished head
- *                                     only when its evidence settles.
+ *                                     reports a legacy (pre-v2) block; never clears it.
  *   POST {action:"retry", contactId, operationId, slot, after}
  *                                     Retry notes / Retry last-touch time.
+ *   POST {action:"storage_capability"[, nonce]}
+ *                                     read-only storage diagnostic (plan v6 §6).
  *
- * The 558c666 request shapes (begin with purpose/steps; reconcile) are refused
- * (400): an older client stays blocked and sends nothing. Writes need Brad's
- * application write session and origin, and begin needs the Production write
- * scope a call-log write needs. The contact is read fresh from GHL (identity and
- * location checked) and every POST runs under that contact's write lock.
- * Nothing here writes to GHL.
+ * Storage correction (plan v6 §5): modern runtime; every POST passes the write
+ * gate (published production deploy, captured activation echoed by the page,
+ * kill switch, G5, legacy block); the contact lock is lock v2 with a visible,
+ * durable `release_unverified`; ids are `v2-` only. Status reads carry the
+ * activation id the page echoes and the durable lock state. Nothing here writes
+ * to GHL.
  */
-import { connectLambda, getStore } from "@netlify/blobs";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { readAuthRefusal } from "./lib/app-read-auth";
-import { getConfig } from "../../shared/ghl-config";
-import { configuredBoundary, WriteUncertain } from "./lib/ghl-write-boundary";
 import { exact, identifier } from "./lib/write-contracts";
-import { lockContact } from "./lib/write-receipts";
 import { evaluateProductionGhlWriteScope, PRODUCTION_WRITE_SCOPE_REFUSAL } from "./lib/production-write-scope";
-import type { BarrierStore } from "./lib/current-offer-barrier";
 import {
-  callLogScope, beginOperation, resumeOperation, retryAttempt, settleLegacy, statusByContact, statusByOperation,
+  callLogScope, beginOperation, resumeOperation, retryAttempt, statusByContact, statusByOperation, confirmedRequestDigests, hasFinal,
   validateBegin, validateOperationId, CallLogHeld, ReservationMismatch, InvalidRequest, type Slot,
 } from "./lib/call-log-barrier";
+import { legacyEventFrom, toResponse, json, echoedActivation, type LambdaResult, type LegacyEvent } from "./lib/modern-runtime";
+import { invocation, readBoundaryFor, refusalResult, sessionCapabilityBranch, lockRefusal, withLockWarning, legacyBlocked, logCatchAll, LOCK_MESSAGES, type Invocation } from "./lib/endpoint-kit";
+import { WriteRefused, currentActivationId, MESSAGES } from "./lib/write-gate";
+import { acquireLock, lockKey, readLockStatus, recoverLockForOperation, LockHeld, type ContactLock } from "./lib/contact-lock-v2";
+import { recoverTickets } from "./lib/admission";
+import { fieldEffects } from "./lib/g5-gate";
+import { semanticFields } from "./lib/ghl-write-boundary";
+import { isV2Id } from "./lib/cutover";
 
-const json = (statusCode: number, data: unknown) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(data) });
-const store = () => getStore("iaos-write-receipts") as unknown as BarrierStore;
 const UNKNOWN = { state: "unknown", error: "No such call save for this contact" };
 
-export const handler = async (event: any) => {
-  const config = getConfig(process.env.IAOS_ENV);
-  const scope = callLogScope(String(process.env.IAOS_ENV), config.locationId);
+/** The effect classes of a call-log operation on its contact (G5 overlap). */
+function callLogEffects(inv: Invocation): string[] {
+  const s = semanticFields(inv.config);
+  return [...new Set(["note", ...fieldEffects([...s.callResult, ...s.lastTouch], s)])].sort();
+}
+
+export default async (req: Request, context: any): Promise<Response> => {
+  const event = await legacyEventFrom(req, { requireJson: true });
+  const inv = invocation("call-log-barrier", context);
+  let header: Record<string, string> | undefined;
+  try {
+    const r = await handle(event, inv, (h) => { header = { "X-IAOS-Storage": h }; });
+    return toResponse(r, header);
+  } finally { inv.scope.close(); }
+};
+
+async function handle(event: LegacyEvent, inv: Invocation, setStorageHeader: (h: string) => void): Promise<LambdaResult> {
+  const scope = callLogScope(inv.env, inv.config.locationId);
 
   if (event.httpMethod === "GET") {
     const refused = readAuthRefusal(event);
-    if (refused) return refused;
+    if (refused) return refused as LambdaResult;
     const params = event.queryStringParameters ?? {};
     try {
+      if (event.isBase64Encoded) throw new Error("Unexpected query");
       const keys = Object.keys(params).sort().join();
       if (keys !== "contactId" && keys !== "contactId,operationId") throw new Error("Unexpected query");
       identifier(params.contactId);
       if (params.operationId !== undefined) validateOperationId(params.operationId);
     } catch { return json(400, { error: "Invalid status request" }); }
     try {
-      connectLambda(event);
-      if (params.operationId === undefined) return json(200, await statusByContact(store(), scope, params.contactId));
-      const v = await statusByOperation(store(), scope, params.contactId, params.operationId);
-      return v ? json(200, v) : json(404, UNKNOWN);
+      const subject = `contact:${params.contactId}`;
+      const [activationId, blocked] = await Promise.all([currentActivationId(inv.store, inv.deploy.id), legacyBlocked(inv, subject)]);
+      const lock = await readLockStatus(inv.store, lockKey(inv.env, inv.config.locationId, params.contactId), blocked);
+      const extra = { activationId, lock: lock.status, ...(lock.status !== "free" ? { lockMessage: LOCK_MESSAGES[lock.status] } : {}), ...(blocked ? { legacyBlocked: true, legacyMessage: MESSAGES.legacy_blocked } : {}) };
+      if (params.operationId === undefined) return json(200, { ...(await statusByContact(inv.store, scope, params.contactId)), ...extra });
+      const v = await statusByOperation(inv.store, scope, params.contactId, params.operationId);
+      return v ? json(200, { ...v, ...extra }) : json(404, UNKNOWN);
     } catch {
+      logCatchAll(inv, "status");
       // Callers treat an unreadable status as blocked.
       return json(503, { error: "The call-log status could not be read" });
     }
@@ -75,6 +97,9 @@ export const handler = async (event: any) => {
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
   try { requireAppWriter(event); } catch { return json(401, { error: "Application write sign-in required" }); }
   try { requireAppWriteOrigin(event); } catch { return json(403, { error: "Application write origin refused" }); }
+
+  const cap = await sessionCapabilityBranch(event, inv);
+  if (cap) { if (cap.header) setStorageHeader(cap.header); return cap.result; }
 
   let request: any;
   let begin: ReturnType<typeof validateBegin> | null = null;
@@ -92,6 +117,8 @@ export const handler = async (event: any) => {
     } else throw new Error("Unknown action");
     identifier(request.contactId);
   } catch { return json(400, { error: "Invalid call-log request" }); }
+  // Legacy (non-v2) operation ids are refused permanently, before any I/O (plan v6 §9.3).
+  if (request.operationId !== undefined && !isV2Id(request.operationId)) return json(400, { error: "Invalid call-log request", code: "legacy_id_refused" });
 
   // A reservation is only taken where the call-log writes themselves would be allowed.
   if (begin) {
@@ -99,42 +126,72 @@ export const handler = async (event: any) => {
       { operation: "contact.callLogResult", targetId: request.contactId, args: { value: begin.result } },
       { operation: "note.create", targetId: request.contactId, args: { body: begin.body } },
     ]) {
-      const scoped = evaluateProductionGhlWriteScope(config, probe);
+      const scoped = evaluateProductionGhlWriteScope(inv.config, probe);
       if (!scoped.ok) return json(403, { error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: scoped.code });
     }
   }
+  // A legacy block is reported, never cleared (plan v6 §4.3, §9).
+  if (request.action === "resume" && request.legacy === true) {
+    try { return json(200, (await legacyBlocked(inv, `contact:${request.contactId}`)) ? { state: "legacy", message: MESSAGES.legacy_blocked } : { state: "clear" }); }
+    catch { return json(503, { error: "The call-log request could not be completed; nothing was sent to GHL" }); }
+  }
 
-  let release: (() => Promise<void>) | undefined;
+  let lock: ContactLock | null = null;
+  let result: LambdaResult;
   try {
-    connectLambda(event);
-    await configuredBoundary().contact(request.contactId);
-    try { release = await lockContact(request.contactId); }
+    // The write gate (plan v6 §8.1 M4): deploy, captured activation (echoed), kill switch, G5 and legacy block.
+    await inv.gate.enter(echoedActivation(event));
+    await inv.gate.checkSubject(`contact:${request.contactId}`, callLogEffects(inv));
+    await readBoundaryFor(inv).contact(request.contactId);
+    const key = lockKey(inv.env, inv.config.locationId, request.contactId);
+    const take = () => acquireLock(inv.store, inv.scope, key, { opId: request.operationId ?? null, deployId: inv.deploy.id! });
+    try { lock = await take(); }
     catch (e) {
-      if (e instanceof WriteUncertain) return json(409, { state: "in_progress", message: "Another write for this contact is in progress. Nothing was changed; use Check again in a moment." });
-      throw e;
+      // Same-operation recovery ONLY: a lock left by THIS operation, whose final record is verified.
+      if (e instanceof LockHeld && e.status === "held_release_unverified" && request.action === "resume" && typeof request.operationId === "string"
+          && (await recoverCallLogLock(inv, request.contactId, request.operationId)) === "released") {
+        try { lock = await take(); } catch (e2) { const r = lockRefusal(e2); if (r) return r; throw e2; }
+      } else { const r = lockRefusal(e); if (r) return r; throw e; }
     }
     const now = new Date().toISOString();
     if (begin) {
-      try { return json(200, await beginOperation(store(), scope, { contactId: request.contactId, op: begin.op, result: begin.result, body: begin.body }, now)); }
+      try { result = json(200, await beginOperation(inv.store, scope, { contactId: request.contactId, op: begin.op, result: begin.result, body: begin.body }, now)); }
       catch (e) {
-        if (e instanceof CallLogHeld) return json(409, { state: "held", current: e.status });
-        if (e instanceof ReservationMismatch) return json(409, { state: "rejected", code: "reservation_mismatch", message: e.message });
-        throw e;
+        if (e instanceof CallLogHeld) result = json(409, { state: "held", current: e.status });
+        else if (e instanceof ReservationMismatch) result = json(409, { state: "rejected", code: "reservation_mismatch", message: e.message });
+        else throw e;
+      }
+    } else {
+      let v;
+      try {
+        v = request.action === "resume"
+          ? await resumeOperation(inv.store, scope, request.contactId, request.operationId)
+          : await retryAttempt(inv.store, scope, request.contactId, request.operationId, request.slot as Slot, request.after);
+      } catch (e) {
+        if (e instanceof InvalidRequest) { result = json(400, { error: e.message }); v = undefined; }
+        else throw e;
+      }
+      if (v !== undefined) result = v ? json(200, v) : json(404, UNKNOWN);
+      // Same-operation recovery: tickets of THIS operation's CONFIRMED attempts only.
+      if (request.action === "resume") {
+        const confirmed = await confirmedRequestDigests(inv.store, scope, request.operationId).catch(() => new Set<string>());
+        if (confirmed.size) await recoverTickets(inv.store, (t) => t.opId === request.operationId, async (t) => confirmed.has(t.requestDigest)).catch(() => 0);
       }
     }
-    if (request.action === "resume" && request.legacy === true) return json(200, await settleLegacy(store(), scope, request.contactId));
-    let v;
-    try {
-      v = request.action === "resume"
-        ? await resumeOperation(store(), scope, request.contactId, request.operationId)
-        : await retryAttempt(store(), scope, request.contactId, request.operationId, request.slot as Slot, request.after);
-    } catch (e) {
-      if (e instanceof InvalidRequest) return json(400, { error: e.message });
-      throw e;
-    }
-    return v ? json(200, v) : json(404, UNKNOWN);
-  } catch {
+  } catch (e) {
+    if (e instanceof WriteRefused) return refusalResult(e);
+    logCatchAll(inv, request.action);
     // Nothing is released and nothing is created on a failure; callers stay blocked and may repeat the same request.
-    return json(503, { error: "The call-log request could not be completed; nothing was sent to GHL" });
-  } finally { if (release) await release(); }
-};
+    result = json(503, { error: "The call-log request could not be completed; nothing was sent to GHL" });
+  }
+  let released: "released" | "release_unverified" | null = null;
+  if (lock) released = await lock.release();
+  return withLockWarning(result!, released);
+}
+
+/** Same-operation lock recovery for a FINISHED operation: needs its verified final record. */
+async function recoverCallLogLock(inv: Invocation, contactId: string, op: string) {
+  const scope = callLogScope(inv.env, inv.config.locationId);
+  const finalVerified = await hasFinal(inv.store, scope, op).catch(() => false);
+  return recoverLockForOperation(inv.store, inv.scope, lockKey(inv.env, inv.config.locationId, contactId), op, finalVerified);
+}

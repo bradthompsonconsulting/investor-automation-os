@@ -1,4 +1,5 @@
 import { requireSendOutcome } from "./write-receipts";
+import type { VerifiedStore } from "./verified-store";
 import { validateDerivedNote } from "./write-derived-note";
 /** INV-95: validate existing ledger schemas before they can acquire business authority. */
 import { parseArvApprovalNote } from "../../../src/lib/arv-approval-note";
@@ -21,7 +22,8 @@ import { fieldValue, type GhlBoundary } from "./ghl-write-boundary";
 import { getConfig } from "../../../shared/ghl-config";
 import { latestOutcomeNoteForOpportunity } from "../../../src/lib/seller-call-outcome";
 const parsers: ((body: string) => any)[] = [parseArvApprovalNote, parseOutcomeNote, parsePropertyIdentityConfirmationNote, parseTransactionAssumptionsNote, parseSellerPricePositionNote, parseReadinessHumanActionNote, parseReadinessDecisionInvalidationNote, parseContractReadyChecklistNote, parseNegotiationOverrideNote, parseBuyerEntityOverrideNote, parsePartySignerFactsNote, parsePropertyLegalDescriptionFactsNote, parseLeaseDisclosureFactsNote, parseEarnestMoneyOptionFactsNote, parseTitleSurveyFactsNote, parsePropertyConditionFactsNote, parseClosingPossessionFactsNote, parseSettlementExpenseFactsNote, parseRepresentationFactsNote, parseAddendaApplicabilityFactsNote, parseSellerEquitableInterestDisclosureNote, parseAttorneyManualFieldDispositionNote, parseSellerNoticeConfirmationFactsNote, parseBuyerBusinessConfigFactsNote, parseSellerSigningModelNote, parseBradContractAuthorizationNote, parseDispositionHandoffNote, parseExecutedTermsAttestationNote, parseContractLifecycleNote, parseUnderContractNote, parseContractProjectionSyncNote, parseContractSendNote, parseSignerMappingAttestationNote];
-export async function validateLedgerNote(boundary: GhlBoundary, contactId: string, body: string, operatorEmail: string) {
+/** `receipts`: the v2 ownership store, needed only for a send-receipt check (absent -> that check fails closed). */
+export async function validateLedgerNote(boundary: GhlBoundary, contactId: string, body: string, operatorEmail: string, receipts?: VerifiedStore) {
   const record = parsers.map(parse => parse(body)).find(Boolean);
   if (!record) {
     if (/^IAOS (?:ARV|OFFER|CONTRACT|BRAD|SELLER|PROPERTY|TRANSACTION|READINESS|UNDER|DISPOSITION|EXECUTED|SIGNER|NEGOTIATION|BUYER|PARTY|LEASE|EARNEST|TITLE|CLOSING|SETTLEMENT|REPRESENTATION|ADDENDA|ATTORNEY)/.test(body)) throw new Error("Malformed or undeclared ledger note");
@@ -60,7 +62,8 @@ export async function validateLedgerNote(boundary: GhlBoundary, contactId: strin
       // concurrent AUTOMATED attempt) applies to it.
       if (send.status !== "accepted") throw new Error("The manual GHL send bridge records only a completed (accepted) send");
     } else {
-      await requireSendOutcome(send.attemptId,send.status,send.providerResponse?.documentId??null);
+      if (!receipts) throw new Error("The send receipt store is unavailable");
+      await requireSendOutcome(receipts,send.attemptId,send.status,send.providerResponse?.documentId??null);
     }
     const existing = notes.map(n => parseContractSendNote(n.body)).filter(Boolean);
     if (existing.some(n=>n!.attemptId===send.attemptId && n!.status==="accepted")) throw new Error("Accepted send cannot be overwritten or duplicated");
