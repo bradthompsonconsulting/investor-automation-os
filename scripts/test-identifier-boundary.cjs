@@ -125,14 +125,22 @@ const IDENTIFIER_PATTERN =
  * app/src/lib/contract-authorization-carriers.ts. Each is verified NOT to be
  * a GHL identifier, a GHL config key, or environment-bound in any way, and
  * coincidentally 20 alphanumeric characters. This is enumeration, not a
- * pattern: a fifth literal requires a fifth named entry here, visible in a
- * diff, never a broadened shape.
+ * pattern: a further literal requires a further named entry here, visible in
+ * a diff, never a broadened shape.
+ *
+ * The fifth, TransitionUnresolved (storage v2, Bones re-review of 20d7a62,
+ * item 3), is the `name` of an Error class in
+ * app/netlify/functions/lib/admission.ts: a transition whose outcome could not
+ * be confirmed. It is not a GHL identifier, config key or environment-bound
+ * value, and coincidentally 20 alphanumeric characters. No directory or file
+ * is exempted: the rest of admission.ts and all storage source stay scanned.
  */
 const EXEMPT_LITERALS = new Set([
   "addendaApplicability",
   "attorneyManualFields",
   "signingAuthorityNote",
   "supersedesVersionSeq",
+  "TransitionUnresolved",
 ]);
 
 /** @param {string} source @returns {string[]} every identifier literal found */
@@ -253,6 +261,8 @@ const MUST_MATCH = [
   ['"attorneyManualFieldz"', "unknown 20-char camelCase token, not in EXEMPT_LITERALS"],
   // Same proof for the INV-62 exemption specifically (trailing "q" -> "z").
   ['"supersedesVersionSez"', "unknown 20-char camelCase token, not in EXEMPT_LITERALS"],
+  // Same proof for the storage-v2 error-class name (trailing "d" -> "z").
+  ['"TransitionUnresolvez"', "unknown 20-char PascalCase token, not in EXEMPT_LITERALS"],
 ];
 const MUST_REJECT = [
   ['"jmHG4B8RdzwpfqruNf6"', "19 chars"],
@@ -266,6 +276,7 @@ const MUST_REJECT = [
   ['"attorneyManualFields"', "INV-60 domain key, exact-literal exemption"],
   ['"signingAuthorityNote"', "INV-60 domain key, exact-literal exemption"],
   ['"supersedesVersionSeq"', "INV-62 domain key, exact-literal exemption"],
+  ['"TransitionUnresolved"', "storage-v2 error-class name, exact-literal exemption"],
 ];
 
 const missed = MUST_MATCH.filter(([s]) => findIdentifiers(s).length === 0);
@@ -283,7 +294,7 @@ check(
 // it — proven within ONE source text, not just in isolated fixtures. Check 9
 // shows each fixture matches or rejects on its own; this shows the exemption
 // keeps its precision when a real id, unknown near-lookalike tokens, and all
-// four exempted literals appear together, which is the shape an actual
+// five exempted literals appear together, which is the shape an actual
 // violation would take. The real-id fixture is the production locationId
 // already committed in ghl-config.ts and already reused as a Check 9
 // fixture — no new value is introduced.
@@ -294,11 +305,13 @@ const MIXED_FIXTURE =
   'const other = "attorneyManualFields";\n' +
   'const note = "signingAuthorityNote";\n' +
   'const version = "supersedesVersionSeq";\n' +
+  'this.name = "TransitionUnresolved";\n' +
   'const unknown = "attorneyManualFieldz";\n' +
   'const unknown2 = "supersedesVersionSez";\n' +
+  'const unknown3 = "TransitionUnresolvez";\n' +
   'const leaked = "jmHG4B8RdzwpfqruNf68";\n';
 const mixedFound = findIdentifiers(MIXED_FIXTURE);
-const mixedWant = ['"attorneyManualFieldz"', '"supersedesVersionSez"', '"jmHG4B8RdzwpfqruNf68"'];
+const mixedWant = ['"attorneyManualFieldz"', '"supersedesVersionSez"', '"TransitionUnresolvez"', '"jmHG4B8RdzwpfqruNf68"'];
 check(
   "exempt-literals-precise-real-id-and-unknown-token-still-caught",
   mixedFound.length === mixedWant.length &&
