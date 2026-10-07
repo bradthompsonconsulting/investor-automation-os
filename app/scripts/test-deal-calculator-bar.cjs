@@ -61,7 +61,7 @@ const { computeBoard8Economics, computeExpectedSpread } = require(board8Path);
 const { buildDealCalculatorBarCells, buildSpreadStatus, DEAL_CALC_BAR_LABELS } = require(barPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 46;
+const FLOOR = 57;
 let failures = 0;
 let checks = 0;
 
@@ -190,20 +190,20 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
 
   const below = status(178000);
   check('nonnegative spread under the minimum -> below_minimum status', below.kind, 'below_minimum');
-  check('below_minimum carries the exact shortfall', below.shortfall, 1637);
+  check('below_minimum carries the exact, unrounded shortfall', Math.abs(below.shortfall - (5000 - (GOLDEN_ECONOMICS.endBuyerMaxPrice - 178000))) < 1e-9 && below.shortfall !== 1637, true);
   check('below_minimum text states the exact shortfall and the minimum', below.text, 'Below minimum: $1,637 short of the $5,000 minimum spread.');
 
   const zero = status(GOLDEN_ECONOMICS.endBuyerMaxPrice);
   check('zero spread is below the minimum, not negative', zero.kind, 'below_minimum');
   check('zero spread is short by the whole minimum', zero.shortfall, 5000);
 
-  const atMax = status(Math.round(GOLDEN_ECONOMICS.maxSupportedOffer));
-  check('Test Price at the displayed Max meets the minimum (whole-dollar comparison)', atMax.kind, 'meets_minimum');
-  check('meeting the minimum exactly says so', atMax.text, 'Meets the $5,000 minimum spread.');
+  const atMax = status(GOLDEN_ECONOMICS.maxSupportedOffer);
+  check('Test Price exactly at Max meets the minimum', atMax.kind, 'meets_minimum');
+  check('meeting the minimum exactly says so, and says green is the minimum only', atMax.text, 'Meets the $5,000 minimum spread. This checks the minimum spread only, not your assignment target or net profit.');
 
   const above = status(150000);
   check('spread over the minimum -> meets_minimum status', above.kind, 'meets_minimum');
-  check('meets_minimum text states the margin over the minimum', above.text, 'Meets minimum: $26,363 above the $5,000 minimum spread.');
+  check('meets_minimum text states the margin over the minimum, and that green is the minimum only', above.text, 'Meets minimum: $26,363 above the $5,000 minimum spread. This checks the minimum spread only, not your assignment target or net profit.');
 
   const noTestPrice = status(null);
   check('no Test Price -> neutral, no implied success', noTestPrice.kind, 'neutral');
@@ -219,6 +219,26 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
     computeExpectedSpread({ endBuyerMaxPrice: wt2.endBuyerMaxPrice, referenceKind: 'test_price', referencePrice: testPrice }));
   check('Walkthrough 2 at 430,000 is below minimum', wt2Status(430000).kind, 'below_minimum');
   check('Walkthrough 2 at 440,000 is negative', wt2Status(440000).kind, 'negative');
+
+  // Fractional boundary. The comparison uses the exact figures; only the
+  // displayed amounts are rounded. Synthetic B8-03-shaped objects pin the
+  // exact spread so each sub-dollar edge is tested directly.
+  const exact = (spread, minimum) => buildSpreadStatus(
+    { status: 'calculated', endBuyerMaxPrice: 0, requiredBuyerProfit: 0, maxSupportedOffer: 0, standardMinimumAssignmentSpread: minimum, standardMinimumLevel: 'iaos_starter', target: { status: 'unavailable', reason: 'n/a' } },
+    { status: 'calculated', referenceKind: 'test_price', referencePrice: 0, endBuyerMaxPrice: 0, expectedSpread: spread },
+  );
+  check('$4,999.60 (rounds to $5,000) is still below the $5,000 minimum -- never green', exact(4999.6, 5000).kind, 'below_minimum');
+  check('a sub-dollar shortfall reads "Less than $1 below minimum", never "$0"', exact(4999.6, 5000).text, 'Less than $1 below minimum. The minimum spread is $5,000.');
+  check('a one-cent shortfall is still amber', exact(4999.99, 5000).kind, 'below_minimum');
+  check('the shortfall carried is the exact, unrounded difference', Math.abs(exact(4999.6, 5000).shortfall - 0.4) < 1e-9, true);
+  check('$4,999.00 shortfall of exactly $1 shows the dollar amount', exact(4999, 5000).text, 'Below minimum: $1 short of the $5,000 minimum spread.');
+  check('$4,998.40 shortfall shows the rounded amount', exact(4998.4, 5000).text, 'Below minimum: $2 short of the $5,000 minimum spread.');
+  check('exactly the minimum is green', exact(5000, 5000).kind, 'meets_minimum');
+  check('a sub-dollar margin over the minimum reads as meeting it, not "$0 above"', exact(5000.4, 5000).text, 'Meets the $5,000 minimum spread. This checks the minimum spread only, not your assignment target or net profit.');
+  check('a fractional minimum is compared exactly too', exact(5000.25, 5000.5).kind, 'below_minimum');
+  check('a sub-dollar negative spread is negative and reads "less than $1"', exact(-0.3, 5000).text,
+    "Negative spread: this Test Price is less than $1 above the end buyer's maximum price, so there is no assignment spread. The minimum spread is $5,000.");
+  check('zero exactly is below minimum, not negative', exact(0, 5000).kind, 'below_minimum');
 }
 
 // ============================================================

@@ -121,9 +121,17 @@ export function buildDealCalculatorBarCells(input: DealCalcBarInput): DealCalcBa
  * (Walkthrough 2: a below-minimum and a negative spread both rendered as
  * plain white numbers).
  *
+ * The comparison uses the exact, unrounded figures; only the amounts shown
+ * are rounded to whole dollars. A spread even a cent under the minimum is
+ * amber, and a sub-dollar gap reads "Less than $1", never "$0".
+ *
+ * Green means the minimum spread is met and nothing more: it does not mean
+ * the selected assignment mode's own target spread, or any net-profit
+ * requirement, is satisfied, and its text says so.
+ *
  *   negative       spread < 0                  red, explanatory text
  *   below_minimum  0 <= spread < minimum       amber, exact shortfall
- *   meets_minimum  spread >= minimum           positive, margin over it
+ *   meets_minimum  spread >= minimum           green, minimum only
  *   neutral        either input not calculated no implied success
  */
 export type SpreadStatus =
@@ -131,6 +139,15 @@ export type SpreadStatus =
   | { kind: "negative"; text: string }
   | { kind: "below_minimum"; text: string; shortfall: number }
   | { kind: "meets_minimum"; text: string };
+
+/** What a green status does not claim -- stated on every green status. */
+export const MEETS_MINIMUM_SCOPE_NOTE =
+  "This checks the minimum spread only, not your assignment target or net profit.";
+
+/** A displayed difference: whole dollars, or "less than $1" when it would round to $0. */
+function amountOrUnderOne(n: number): string {
+  return n < 1 ? "less than $1" : money(n);
+}
 
 export function buildSpreadStatus(
   board8: Board8Economics | null,
@@ -142,15 +159,12 @@ export function buildSpreadStatus(
   if (!expectedSpread || expectedSpread.status !== "calculated") {
     return { kind: "neutral", text: "No spread check yet: enter a Test Price." };
   }
-  // Compared in whole dollars, the precision every figure on this bar is
-  // shown at: typing the displayed Max must read as meeting the minimum,
-  // never as "$0 short" from a sub-dollar remainder the operator cannot see.
-  const spread = Math.round(expectedSpread.expectedSpread);
-  const minimum = Math.round(board8.standardMinimumAssignmentSpread);
+  const spread = expectedSpread.expectedSpread;
+  const minimum = board8.standardMinimumAssignmentSpread;
   if (spread < 0) {
     return {
       kind: "negative",
-      text: `Negative spread: this Test Price is ${money(-spread)} above the end buyer's maximum price, `
+      text: `Negative spread: this Test Price is ${amountOrUnderOne(-spread)} above the end buyer's maximum price, `
         + `so there is no assignment spread. The minimum spread is ${money(minimum)}.`,
     };
   }
@@ -159,13 +173,17 @@ export function buildSpreadStatus(
     return {
       kind: "below_minimum",
       shortfall,
-      text: `Below minimum: ${money(shortfall)} short of the ${money(minimum)} minimum spread.`,
+      text: shortfall < 1
+        ? `Less than $1 below minimum. The minimum spread is ${money(minimum)}.`
+        : `Below minimum: ${money(shortfall)} short of the ${money(minimum)} minimum spread.`,
     };
   }
+  const margin = spread - minimum;
   return {
     kind: "meets_minimum",
-    text: spread === minimum
+    text: (margin < 1
       ? `Meets the ${money(minimum)} minimum spread.`
-      : `Meets minimum: ${money(spread - minimum)} above the ${money(minimum)} minimum spread.`,
+      : `Meets minimum: ${money(margin)} above the ${money(minimum)} minimum spread.`)
+      + ` ${MEETS_MINIMUM_SCOPE_NOTE}`,
   };
 }
