@@ -16,7 +16,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 66;
+const FLOOR = 71;
 let failures = 0;
 let checks = 0;
 
@@ -219,6 +219,19 @@ const barTs = readSrc('src/lib/deal-calculator-bar.ts');
   const policyBlock = calcTsx.slice(policyBlockStart, policyBlockEnd);
   check('the extracted Investor Policy block actually renders policy values (non-trivial slice, not a vacuous match)', /parsedPolicy\./.test(policyBlock) && (policyBlock.match(/policyRow\(/g) || []).length, 10);
   check('the Investor Policy display block contains NO editable form control at all (<input>, <select>, or <textarea>)', /<input\b|<select\b|<textarea\b/.test(policyBlock), false);
+}
+
+// ============================================================
+// B15-26 (INV-134) -- spread status is rendered as text, from the pure
+// module, beside the bar; the spread cell is colored only when a status
+// exists, and the status line always shows its text.
+// ============================================================
+{
+  check('page imports buildSpreadStatus from deal-calculator-bar', /buildSpreadStatus[\s\S]*?from "\.\.\/lib\/deal-calculator-bar"/.test(calcTsx), true);
+  check('page computes the status from the same board8 + expectedSpread the bar uses', /buildSpreadStatus\(board8, expectedSpread\)/.test(calcTsxNoComments), true);
+  check('page renders the spread status line with its kind exposed', /data-testid="deal-calc-spread-status"\s+data-spread-status=\{spreadStatus\.kind\}/.test(calcTsx), true);
+  check('the spread status line renders the status text (color is never the only signal)', /data-testid="deal-calc-spread-status"[\s\S]{0,400}\{spreadStatus\.text\}/.test(calcTsx), true);
+  check('the spread cell is tinted only for a non-neutral status', /cell\.key === "spread" && spreadStatus\.kind !== "neutral"/.test(calcTsxNoComments), true);
 }
 
 // ============================================================

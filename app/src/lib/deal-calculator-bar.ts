@@ -108,3 +108,64 @@ export function buildDealCalculatorBarCells(input: DealCalcBarInput): DealCalcBa
     { key: "spread", label: "Spread", value: spread },
   ];
 }
+
+/**
+ * Spread status -- B15-26 (INV-134), warnings only.
+ *
+ * Compares the already-computed Expected Spread @ Test Price against the
+ * Standard Minimum Assignment Spread B8-03 already resolved (the same
+ * minimum Max Supported Offer is built from). It computes no spread,
+ * minimum or offer of its own; its only arithmetic is the difference it
+ * shows the operator (the shortfall, or the margin over the minimum).
+ * Every status carries text, so the warning never relies on color alone
+ * (Walkthrough 2: a below-minimum and a negative spread both rendered as
+ * plain white numbers).
+ *
+ *   negative       spread < 0                  red, explanatory text
+ *   below_minimum  0 <= spread < minimum       amber, exact shortfall
+ *   meets_minimum  spread >= minimum           positive, margin over it
+ *   neutral        either input not calculated no implied success
+ */
+export type SpreadStatus =
+  | { kind: "neutral"; text: string }
+  | { kind: "negative"; text: string }
+  | { kind: "below_minimum"; text: string; shortfall: number }
+  | { kind: "meets_minimum"; text: string };
+
+export function buildSpreadStatus(
+  board8: Board8Economics | null,
+  expectedSpread: ExpectedSpread | null,
+): SpreadStatus {
+  if (!board8 || board8.status !== "calculated") {
+    return { kind: "neutral", text: "No spread check yet: enter ARV and Repairs to calculate Max." };
+  }
+  if (!expectedSpread || expectedSpread.status !== "calculated") {
+    return { kind: "neutral", text: "No spread check yet: enter a Test Price." };
+  }
+  // Compared in whole dollars, the precision every figure on this bar is
+  // shown at: typing the displayed Max must read as meeting the minimum,
+  // never as "$0 short" from a sub-dollar remainder the operator cannot see.
+  const spread = Math.round(expectedSpread.expectedSpread);
+  const minimum = Math.round(board8.standardMinimumAssignmentSpread);
+  if (spread < 0) {
+    return {
+      kind: "negative",
+      text: `Negative spread: this Test Price is ${money(-spread)} above the end buyer's maximum price, `
+        + `so there is no assignment spread. The minimum spread is ${money(minimum)}.`,
+    };
+  }
+  if (spread < minimum) {
+    const shortfall = minimum - spread;
+    return {
+      kind: "below_minimum",
+      shortfall,
+      text: `Below minimum: ${money(shortfall)} short of the ${money(minimum)} minimum spread.`,
+    };
+  }
+  return {
+    kind: "meets_minimum",
+    text: spread === minimum
+      ? `Meets the ${money(minimum)} minimum spread.`
+      : `Meets minimum: ${money(spread - minimum)} above the ${money(minimum)} minimum spread.`,
+  };
+}

@@ -58,10 +58,10 @@ for (const p of [computePath, board8Path, barPath]) {
 
 const { computeUnderwriting } = require(computePath);
 const { computeBoard8Economics, computeExpectedSpread } = require(board8Path);
-const { buildDealCalculatorBarCells, DEAL_CALC_BAR_LABELS } = require(barPath);
+const { buildDealCalculatorBarCells, buildSpreadStatus, DEAL_CALC_BAR_LABELS } = require(barPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 29;
+const FLOOR = 46;
 let failures = 0;
 let checks = 0;
 
@@ -170,6 +170,55 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
 
   const noSpreadComputedYet = buildDealCalculatorBarCells({ arv: 315000, repairs: 41000, testPrice: null, board8: GOLDEN_ECONOMICS, expectedSpread: null });
   check('Spread waits before any ExpectedSpread has been computed at all', noSpreadComputedYet.find((c) => c.key === 'spread').value.kind, 'waiting');
+}
+
+// ============================================================
+// B15-26 (INV-134) -- spread status, warnings only. Golden economics:
+// endBuyerMaxPrice ~181363, Standard Minimum $5,000, so Max ~176363.
+// Every status carries text; color is never the only signal.
+// ============================================================
+{
+  const status = (testPrice) => buildSpreadStatus(
+    GOLDEN_ECONOMICS,
+    computeExpectedSpread({ endBuyerMaxPrice: GOLDEN_ECONOMICS.endBuyerMaxPrice, referenceKind: 'test_price', referencePrice: testPrice }),
+  );
+
+  const negative = status(190000);
+  check('negative spread -> negative status', negative.kind, 'negative');
+  check('negative status explains the amount above the end buyer max, in text', negative.text,
+    "Negative spread: this Test Price is $8,637 above the end buyer's maximum price, so there is no assignment spread. The minimum spread is $5,000.");
+
+  const below = status(178000);
+  check('nonnegative spread under the minimum -> below_minimum status', below.kind, 'below_minimum');
+  check('below_minimum carries the exact shortfall', below.shortfall, 1637);
+  check('below_minimum text states the exact shortfall and the minimum', below.text, 'Below minimum: $1,637 short of the $5,000 minimum spread.');
+
+  const zero = status(GOLDEN_ECONOMICS.endBuyerMaxPrice);
+  check('zero spread is below the minimum, not negative', zero.kind, 'below_minimum');
+  check('zero spread is short by the whole minimum', zero.shortfall, 5000);
+
+  const atMax = status(Math.round(GOLDEN_ECONOMICS.maxSupportedOffer));
+  check('Test Price at the displayed Max meets the minimum (whole-dollar comparison)', atMax.kind, 'meets_minimum');
+  check('meeting the minimum exactly says so', atMax.text, 'Meets the $5,000 minimum spread.');
+
+  const above = status(150000);
+  check('spread over the minimum -> meets_minimum status', above.kind, 'meets_minimum');
+  check('meets_minimum text states the margin over the minimum', above.text, 'Meets minimum: $26,363 above the $5,000 minimum spread.');
+
+  const noTestPrice = status(null);
+  check('no Test Price -> neutral, no implied success', noTestPrice.kind, 'neutral');
+  check('neutral (no Test Price) names the missing input', noTestPrice.text, 'No spread check yet: enter a Test Price.');
+  check('no economics -> neutral', buildSpreadStatus(UNAVAILABLE_ECONOMICS, null).kind, 'neutral');
+  check('nothing computed yet -> neutral', buildSpreadStatus(null, null).kind, 'neutral');
+
+  // Walkthrough 2 figures, reproduced through the shared engine: ARV
+  // 639,863, repairs 20,000; Test Price 430,000 gave 3,648 and 440,000
+  // gave -6,352, and both rendered white.
+  const wt2 = computeBoard8Economics(computeUnderwriting(underwritingInputs({ arv: D(639863), repairs: D(20000) })));
+  const wt2Status = (testPrice) => buildSpreadStatus(wt2,
+    computeExpectedSpread({ endBuyerMaxPrice: wt2.endBuyerMaxPrice, referenceKind: 'test_price', referencePrice: testPrice }));
+  check('Walkthrough 2 at 430,000 is below minimum', wt2Status(430000).kind, 'below_minimum');
+  check('Walkthrough 2 at 440,000 is negative', wt2Status(440000).kind, 'negative');
 }
 
 // ============================================================
