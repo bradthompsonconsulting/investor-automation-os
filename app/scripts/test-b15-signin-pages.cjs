@@ -99,7 +99,7 @@ check('old stacked banners are gone', /Read access\. Sign in to save changes\.|S
 // -- F57/F58: Map and Settings hidden, routes kept --------------------------
 const navLabels = [...sidebar.matchAll(/\{ label: "([^"]+)"/g)].map((m) => m[1]);
 check('sidebar nav list (Map and Settings removed, nothing else)', navLabels,
-  ['Dashboard', 'Deal Calculator', 'Contacts', 'Conversations', 'Calendars', 'Pipeline', 'Mailers', 'Segmentation', 'Import']);
+  ['Dashboard', 'Deal Calculator', 'Contacts', 'Conversations', 'Calendars', 'Pipeline', 'Mailers', 'Segmentation', 'Add Leads']);
 check('sidebar has no /map or /settings link', /to: "\/(map|settings)"/.test(sidebar), false);
 check('/map and /settings routes still exist',
   /<Route path="map"\s+element=\{<MapPage \/>\} \/>/.test(app) && /<Route path="settings"\s+element=\{<Settings \/>\} \/>/.test(app), true);

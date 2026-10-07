@@ -84,5 +84,22 @@ check('F12 Import page says leads are added in GHL', /Leads are added in GHL, no
 check('F12 Import page links nowhere and writes nothing',
   /href=|window\.open|<Link/.test(code(importPage)) || WRITES.test(code(importPage)), false);
 
+// -- INV-125 Walkthrough 2: "Add Leads" -- guidance only, route unchanged --
+const sidebarSrc = read('src/components/Sidebar.tsx');
+const headerSrc = read('src/components/Header.tsx');
+check('INV-125 nav item reads "Add Leads" and still opens /import',
+  /\{ label: "Add Leads",\s+to: "\/import",/.test(sidebarSrc) && !/label: "Import"/.test(sidebarSrc), true);
+check('INV-125 header title for /import is "Add Leads"', /"\/import":\s+"Add Leads",/.test(headerSrc), true);
+check('INV-125 page heading is "Add Leads"', />Add Leads<\/h1>/.test(importPage) && !/>Import<\/h1>/.test(importPage), true);
+check('INV-125 the /import route is unchanged', /<Route path="import"\s+element=\{<Import \/>\} \/>/.test(read('src/App.tsx')), true);
+check('INV-125 says IAOS does not import or create leads', /IAOS doesn't import or create leads\./.test(importPage), true);
+{
+  const steps = (importPage.replace(/\r\n/g, '\n').match(/<ol data-testid="add-leads-steps"[\s\S]*?<\/ol>/) || [''])[0];
+  const items = [...steps.matchAll(/<li>([^<]+)<\/li>/g)].map((m) => m[1]);
+  check('INV-125 two numbered GHL steps: contact with property address, then its opportunity', items,
+    ["Add the seller as a contact, with the property's full address (street, city and state).",
+     'Create an opportunity (deal) for that contact in the Seller Leads Pipeline.']);
+}
+
 console.log(`\nBoard 15 B2 navigation: ${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);
