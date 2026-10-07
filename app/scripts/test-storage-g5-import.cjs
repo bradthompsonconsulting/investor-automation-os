@@ -146,10 +146,20 @@ const tableAfterAudit = () => g5.applyNarrowing(g5.DEFAULT_TABLE(), AUDIT([
   const op = (o, c) => ({ v: 3, op: o, contactId: c, result: 'No Answer', body: 'b', bodyDigest: 'x', createdAt: 't' });
   const v3 = (kind, id) => `call-log/v3/${kind}/${digest(`${SCOPE}:${id}`)}`;
   const attK = (o, slot, n) => `call-log/v3/attempt/${digest(`${SCOPE}:${o}:${slot}:${n}`)}`;
+  const SLOT_OP = { result: 'contact.callLogResult', note: 'note.create', touch: 'contact.lastCallAttempt' };
+  // One published attempt as the v3 barrier writes it: the attempt record, its exact dispatch binding,
+  // then (when given) its decision and outcome.
+  const attempt = (w, o, c, slot, n, d = { d: 'send' }, out = { kind: 'confirmed' }) => {
+    all3(w, attK(o, slot, n), { v: 3, op: o, slot, n, requestId: `${o}-${slot}-${n}` });
+    all3(w, v3('binding', `${o}-${slot}-${n}`), { v: 3, op: o, slot, n, contactId: c, operation: SLOT_OP[slot], value: slot === 'result' ? 'No Answer' : null, bodyDigest: slot === 'note' ? 'x' : null });
+    if (d) all3(w, v3('decision', `${o}-${slot}-${n}`), d);
+    if (out) all3(w, v3('outcome', `${o}-${slot}-${n}`), out);
+  };
+  const completeFinal = (w, o) => all3(w, v3('final', o), { v: 3, op: o, kind: 'complete', result: 'No Answer', slots: [], at: 't' });
   const completeOp = (w, o, c) => {
     all3(w, v3('op', o), op(o, c));
-    for (const slot of ['result', 'note', 'touch']) { all3(w, attK(o, slot, 1), { v: 3, op: o, slot, n: 1, requestId: `${o}-${slot}-1` }); all3(w, v3('outcome', `${o}-${slot}-1`), { kind: 'confirmed' }); all3(w, v3('decision', `${o}-${slot}-1`), { d: 'send' }); }
-    all3(w, v3('final', o), { v: 3, op: o, kind: 'complete', result: 'No Answer', slots: [], at: 't' });
+    for (const slot of ['result', 'note', 'touch']) attempt(w, o, c, slot, 1);
+    completeFinal(w, o);
   };
   await check('I1 differing versions are all retained and the most conservative wins (a write-once record that changed is quarantined)', async () => {
     const w = W(); completeOp(w, 'op1', 'C1');
@@ -191,19 +201,58 @@ const tableAfterAudit = () => g5.applyNarrowing(g5.DEFAULT_TABLE(), AUDIT([
     for (const [label, d1, o1] of [['not_dispatched', { d: 'send' }, { kind: 'not_dispatched' }], ['withdrawn', { d: 'withdrawn' }, null], ['uncertain', { d: 'send' }, { kind: 'uncertain' }]]) {
       const w = W(); const o = 'op5b'; const c = 'C5b';
       all3(w, v3('op', o), op(o, c));
-      for (const slot of ['result', 'touch']) { all3(w, attK(o, slot, 1), { v: 3, op: o, slot, n: 1, requestId: `${o}-${slot}-1` }); all3(w, v3('decision', `${o}-${slot}-1`), { d: 'send' }); all3(w, v3('outcome', `${o}-${slot}-1`), { kind: 'confirmed' }); }
-      all3(w, attK(o, 'note', 1), { v: 3, op: o, slot: 'note', n: 1, requestId: `${o}-note-1` });
-      all3(w, v3('decision', `${o}-note-1`), d1);
-      if (o1) all3(w, v3('outcome', `${o}-note-1`), o1);
-      all3(w, attK(o, 'note', 2), { v: 3, op: o, slot: 'note', n: 2, requestId: `${o}-note-2` });
-      all3(w, v3('decision', `${o}-note-2`), { d: 'send' }); all3(w, v3('outcome', `${o}-note-2`), { kind: 'confirmed' });
-      all3(w, v3('final', o), { v: 3, op: o, kind: 'complete', result: 'No Answer', slots: [], at: 't' });
+      for (const slot of ['result', 'touch']) attempt(w, o, c, slot, 1);
+      attempt(w, o, c, 'note', 1, d1, o1);
+      attempt(w, o, c, 'note', 2);
+      completeFinal(w, o);
       const cls = li.classifyWorld(w, input()).subjects.get(`contact:${c}`).class;
       assert.equal(cls, 'blocked_unknown', `${label}: was ${cls}`);
     }
     // the positive control still resolves: every attempt with its own send + confirmed evidence
     const w2 = W(); completeOp(w2, 'op5c', 'C5c');
     assert.equal(li.classifyWorld(w2, input()).subjects.get('contact:C5c').class, 'resolved');
+  });
+  await check('I5c (Bones re-review of 20d7a62, item 1) SPARSE evidence: confirmed result/note/touch attempt 1, NO note attempt 2, note attempt 3 sent with an UNCERTAIN outcome, a complete final: the subject stays blocked (the gap never hides attempt 3)', async () => {
+    const sparse = (o, c, n3out) => {
+      const w = W(); all3(w, v3('op', o), op(o, c));
+      for (const slot of ['result', 'note', 'touch']) attempt(w, o, c, slot, 1);
+      attempt(w, o, c, 'note', 3, { d: 'send' }, n3out);
+      completeFinal(w, o); return w;
+    };
+    // the exact review case
+    const c1 = li.classifyWorld(sparse('op5d', 'C5d', { kind: 'uncertain' }), input()).subjects.get('contact:C5d');
+    assert.equal(c1.class, 'blocked_unknown', `review case: was ${c1.class}`);
+    assert.ok(c1.reasons.has('uncertain_outcome'), 'the uncertain outcome of attempt 3 is attributed to the contact');
+    // a gap blocks even when the later attempt is confirmed: inconsistent evidence, never proof
+    assert.equal(li.classifyWorld(sparse('op5e', 'C5e', { kind: 'confirmed' }), input()).subjects.get('contact:C5e').class, 'blocked_unknown', 'gap with a confirmed later attempt');
+    // a gap at attempt 1 (only attempt 2 observed) blocks
+    { const w = W(); all3(w, v3('op', 'op5f'), op('op5f', 'C5f'));
+      attempt(w, 'op5f', 'C5f', 'result', 2); attempt(w, 'op5f', 'C5f', 'note', 1); attempt(w, 'op5f', 'C5f', 'touch', 1); completeFinal(w, 'op5f');
+      assert.equal(li.classifyWorld(w, input()).subjects.get('contact:C5f').class, 'blocked_unknown', 'missing attempt 1'); }
+  });
+  await check('I5d (Bones re-review of 20d7a62, item 1) inconsistent attempt records fail closed: a wrong request id, a record under another attempt key, a mismatched or missing dispatch binding, a version that changed slot', async () => {
+    const del3 = (w, k) => { for (const s of ['S1', 'S2', 'S3']) w[s].delete(k); };
+    const variants = {
+      wrong_request_id: (w, o) => all3(w, attK(o, 'note', 2), { v: 3, op: o, slot: 'note', n: 2, requestId: `${o}-note-9` }),
+      wrong_key: (w, o) => all3(w, attK(o, 'note', 7), { v: 3, op: o, slot: 'note', n: 2, requestId: `${o}-note-2` }),
+      binding_other_contact: (w, o) => all3(w, v3('binding', `${o}-touch-1`), { v: 3, op: o, slot: 'touch', n: 1, contactId: 'OTHER', operation: SLOT_OP.touch, value: null, bodyDigest: null }),
+      binding_other_ordinal: (w, o, c) => all3(w, v3('binding', `${o}-touch-1`), { v: 3, op: o, slot: 'touch', n: 2, contactId: c, operation: SLOT_OP.touch, value: null, bodyDigest: null }),
+      binding_missing: (w, o) => del3(w, v3('binding', `${o}-result-1`)),
+      binding_one_version_differs: (w, o, c) => put(w, 'S2', v3('binding', `${o}-note-1`), { v: 3, op: o, slot: 'note', n: 1, contactId: c, operation: SLOT_OP.result, value: null, bodyDigest: 'x' }),
+      attempt_slot_changed: (w, o) => put(w, 'S3', attK(o, 'touch', 1), { v: 3, op: o, slot: 'note', n: 1, requestId: `${o}-touch-1` }),
+    };
+    let i = 0;
+    for (const [label, mutate] of Object.entries(variants)) {
+      const w = W(); const o = `op5g${i}`; const c = `C5g${i++}`;
+      completeOp(w, o, c); mutate(w, o, c);
+      const r = li.classifyWorld(w, input()).subjects.get(`contact:${c}`);
+      assert.ok(r && r.class !== 'resolved', `${label}: was ${r && r.class}`);
+    }
+    // an orphan decision/outcome for an attempt that has NO attempt record (note attempt 2) cannot be
+    // attributed: the run halts (unattributed); it is never resolved past
+    const w = W(); completeOp(w, 'op5h', 'C5h');
+    all3(w, v3('decision', 'op5h-note-2'), { d: 'send' }); all3(w, v3('outcome', 'op5h-note-2'), { kind: 'uncertain' });
+    assert.equal(li.classifyWorld(w, input()).unattributed.length, 2, 'orphan evidence halts the run');
   });
   await check('I7 an unattributable subject-bearing record HALTS: no completion, no cutover record', async () => {
     const w = W(); all3(w, `lock/${digest('unknown-contact')}`, { claimedAt: 't' });

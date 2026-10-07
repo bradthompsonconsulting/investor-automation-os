@@ -27,6 +27,7 @@ import { InvocationScope } from "./invocation-scope";
 import { LEGACY_STORE, RecordMismatch, StorageUncertain, VerifiedStore } from "./verified-store";
 import { CUTOVER_KEY, IMPORT_OWNER_KEY, LEGACY_BLOCK_PREFIX, legacyBlockKey, type CutoverRecord, type ImportOwner, type LegacyBlock } from "./cutover";
 import { SEND_RECEIPT_PREFIX } from "./write-receipts";
+import { SLOTS, SLOT_OPERATION, requestIdFor } from "./call-log-barrier";
 
 /** Every prefix of the legacy store (F3). Bare-digest receipts are listed with the empty prefix filter below. */
 export const LEGACY_PREFIXES = [
@@ -153,19 +154,40 @@ export function classifyWorld(world: World, input: ImportInput): Classified {
        "never sent" proof (withdrawn / not_dispatched) or an uncertain/missing outcome on ANY attempt
        keeps the operation unresolved, and its subject blocked. */
     const allVersions = (k: string) => present(k).map((o) => o.value);
+    /* Bones re-review of 20d7a62, item 1: the attempts are the UNION of every observed attempt record
+       naming this operation, never a walk from 1 that stops at the first missing ordinal (a gap would
+       hide every later attempt, uncertain ones included). Every version of every such record must be
+       exactly bound: slot, ordinal >= 1, request id `<op>-<slot>-<n>`, and the key it is stored under.
+       Each slot's ordinals must be exactly 1..max: a gap is inconsistent evidence, never proof that
+       later attempts do not exist. Each attempt needs its exact dispatch binding and its own terminal
+       evidence. Anything else leaves the operation unresolved: a complete final never covers it. */
+    const opRec = latest(v3key("op", op));
+    const ordinals = new Map<string, Set<number>>(SLOTS.map((s) => [s, new Set<number>()]));
+    for (const k of keys) {
+      if (!k.startsWith("call-log/v3/attempt/")) continue;
+      const vs = allVersions(k);
+      if (!vs.some((a) => a?.op === op)) continue;
+      for (const a of vs) {
+        const exact = !!a && a.v === 3 && a.op === op && (SLOTS as string[]).includes(a.slot) && Number.isInteger(a.n) && a.n >= 1
+          && a.requestId === requestIdFor(op, a.slot, a.n) && k === v3attemptKey(op, a.slot, a.n);
+        if (!exact) { ok = false; continue; }
+        ordinals.get(a.slot)!.add(a.n);
+      }
+    }
     if (ok) {
-      for (const slot of ["result", "note", "touch"]) {
-        let n = 1; let any = false;
-        while (latest(v3attemptKey(op, slot, n))) {
-          any = true;
-          const rid = `${op}-${slot}-${n}`;
+      for (const slot of SLOTS) {
+        const ns = [...ordinals.get(slot)!].sort((a, b) => a - b);
+        if (!ns.length || ns.some((n, i) => n !== i + 1)) { ok = false; continue; }   // none, or a gap
+        for (const n of ns) {
+          const rid = requestIdFor(op, slot, n);
+          const bindings = allVersions(v3key("binding", rid));
           const decisions = allVersions(v3key("decision", rid));
           const outcomes = allVersions(v3key("outcome", rid));
+          const boundExactly = bindings.length > 0 && bindings.every((b) => b?.v === 3 && b.op === op && b.slot === slot && b.n === n
+            && b.contactId === opRec?.contactId && b.operation === SLOT_OPERATION[slot]);
           const exactTerminal = decisions.length > 0 && decisions.every((d) => d?.d === "send") && outcomes.length > 0 && outcomes.every((o) => o?.kind === "confirmed");
-          if (!exactTerminal) ok = false;
-          n++;
+          if (!boundExactly || !exactTerminal) ok = false;
         }
-        if (!any) ok = false;
       }
     }
     opResolved.set(op, ok);   // R1
