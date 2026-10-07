@@ -14,7 +14,7 @@
  * static `import App` that used to live here is gone on purpose; restoring it
  * would silently defeat this.
  *
- * Deploy Previews receive neither IAOS_ENV nor GHL_PRIVATE_API_KEY (both are
+ * Deploy Previews receive neither IAOS_ENV nor IAOS_GHL_TOKEN_V2 (both are
  * Production-context only), so a preview lands here by configuration rather
  * than by accident. Before this commit a preview threw during module evaluation
  * with no error boundary and showed a white screen; now it shows something a

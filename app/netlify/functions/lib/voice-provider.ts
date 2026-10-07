@@ -1,6 +1,7 @@
 import twilio from "twilio";
 import { getConfig } from "../../../shared/ghl-config";
 import { normalizeVoicePhone } from "../../../shared/voice-call-contract";
+import { ghlToken } from "./ghl-token";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 
@@ -35,8 +36,8 @@ export function evaluateVoiceEligibility(raw: any, expectedContactId: string, en
 }
 
 export async function readEligibleGhlContact(contactId: string, fetcher: typeof fetch = fetch, env = process.env): Promise<VoiceEligibility> {
-  const token = env.GHL_PRIVATE_API_KEY?.trim();
-  if (!token) throw new Error("GHL_PRIVATE_API_KEY is not configured");
+  const token = ghlToken(env);
+  if (!token) throw new Error("The GHL token is not configured");
   const response = await fetcher(`${GHL_BASE}/contacts/${encodeURIComponent(contactId)}`, {
     headers: { Authorization: `Bearer ${token}`, Version: "2021-07-28" },
   });
@@ -77,7 +78,7 @@ export function voiceCapability(env = process.env): { enabled: boolean; reasons:
   const reasons: string[] = [VOICE_RETIRED_REASON];
   if (env.IAOS_ENV !== "test") reasons.push("IAOS voice is restricted to TEST");
   if (env.IAOS_VOICE_ENABLED !== "true") reasons.push("IAOS_VOICE_ENABLED is not true");
-  for (const key of ["GOOGLE_OAUTH_CLIENT_ID", "IAOS_VOICE_BRAD_EMAILS", "IAOS_VOICE_SESSION_SECRET", "GHL_PRIVATE_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET", "TWILIO_AUTH_TOKEN", "TWILIO_TWIML_APP_SID", "TWILIO_OUTBOUND_CALLER_ID", "IAOS_VOICE_PUBLIC_BASE_URL"]) {
+  for (const key of ["GOOGLE_OAUTH_CLIENT_ID", "IAOS_VOICE_BRAD_EMAILS", "IAOS_VOICE_SESSION_SECRET", "IAOS_GHL_TOKEN_V2", "TWILIO_ACCOUNT_SID", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET", "TWILIO_AUTH_TOKEN", "TWILIO_TWIML_APP_SID", "TWILIO_OUTBOUND_CALLER_ID", "IAOS_VOICE_PUBLIC_BASE_URL"]) {
     if (!env[key]?.trim()) reasons.push(`${key} is not configured`);
   }
   if (!normalizeUsPhone(env.TWILIO_OUTBOUND_CALLER_ID)) reasons.push("TWILIO_OUTBOUND_CALLER_ID is invalid");

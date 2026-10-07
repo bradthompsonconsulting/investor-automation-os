@@ -1,5 +1,5 @@
 /**
- * GHL Conversations — server-side function. Holds GHL_PRIVATE_API_KEY.
+ * GHL Conversations — server-side function. Holds IAOS_GHL_TOKEN_V2.
  *
  * GET /.netlify/functions/ghl-conversations
  * Returns every conversation whose LAST message is inbound with no outbound
@@ -12,6 +12,7 @@
 
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlToken } from "./lib/ghl-token";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
@@ -88,9 +89,9 @@ export const handler = async (event: any) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: RESPONSE_HEADERS, body: "" };
   if (event.httpMethod !== "GET") return { statusCode: 405, headers: RESPONSE_HEADERS, body: "Method Not Allowed" };
 
-  const token = process.env.GHL_PRIVATE_API_KEY;
+  const token = ghlToken();
   if (!token) {
-    return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
+    return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL token not configured" }) };
   }
 
   try {

@@ -1,7 +1,8 @@
 /** INV-95 read-only GHL proxy. All writes require authenticated named operations.
- * Documents reads remain Test-only. IAOS_ENV and GHL_PRIVATE_API_KEY are required. */
+ * Documents reads remain Test-only. IAOS_ENV and IAOS_GHL_TOKEN_V2 are required. */
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlToken } from "./lib/ghl-token";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
@@ -123,7 +124,7 @@ export const handler = async (event: any) => {
     };
   }
 
-  const token = process.env.GHL_PRIVATE_API_KEY;
+  const token = ghlToken();
   if (!token) {
     // REQUIRED, no fallback. Before this guard existed the missing-credential
     // path built `Bearer undefined` and sent it upstream, so the failure
@@ -132,7 +133,7 @@ export const handler = async (event: any) => {
     return {
       statusCode: 500,
       headers: RESPONSE_HEADERS,
-      body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }),
+      body: JSON.stringify({ error: "GHL token not configured" }),
     };
   }
 

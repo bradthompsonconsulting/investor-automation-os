@@ -1,6 +1,6 @@
 /**
  * GHL per-contact conversation history — server-side function. Holds
- * GHL_PRIVATE_API_KEY (the ghl-proxy pit- token lacks the Conversations scope).
+ * IAOS_GHL_TOKEN_V2 (the ghl-proxy pit- token lacks the Conversations scope).
  *
  * GET /.netlify/functions/ghl-contact-conversations?id={contactId}
  * Returns ONE contact's messages (SMS/email/call log), oldest→newest, read-only.
@@ -23,6 +23,7 @@
 
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlToken } from "./lib/ghl-token";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
@@ -95,8 +96,8 @@ export const handler = async (event: any) => {
   const id = event.queryStringParameters?.id;
   if (!id) return { statusCode: 400, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "missing ?id" }) };
 
-  const token = process.env.GHL_PRIVATE_API_KEY;
-  if (!token) return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
+  const token = ghlToken();
+  if (!token) return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL token not configured" }) };
 
   try {
     // 1) Conversation(s) for THIS contact — scoped by explicit contactId.

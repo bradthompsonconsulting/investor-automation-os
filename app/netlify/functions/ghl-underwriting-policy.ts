@@ -1,5 +1,5 @@
 /**
- * Underwriting policy — server-side function. Requires GHL_PRIVATE_API_KEY; no fallback.
+ * Underwriting policy — server-side function. Requires IAOS_GHL_TOKEN_V2; no fallback.
  *
  * GET /.netlify/functions/ghl-underwriting-policy
  * Returns ONLY the eleven investor-policy Custom Values named in shared
@@ -29,6 +29,7 @@
 
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlToken } from "./lib/ghl-token";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 // PB-D51 — resolved once at module scope from the shared config.
@@ -59,9 +60,9 @@ export const handler = async (event: any) => {
   // GET only. This endpoint has no write path and must never acquire one.
   if (event.httpMethod !== "GET") return { statusCode: 405, headers: RESPONSE_HEADERS, body: "Method Not Allowed" };
 
-  const token = process.env.GHL_PRIVATE_API_KEY;
+  const token = ghlToken();
   if (!token) {
-    return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
+    return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL token not configured" }) };
   }
 
   try {

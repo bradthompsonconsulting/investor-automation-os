@@ -18,11 +18,12 @@
  *
  * FAILS CLOSED. An absent or unknown `IAOS_ENV` throws at load (getConfig
  * at module scope, like every function here); a missing
- * `GHL_PRIVATE_API_KEY` answers 500 before any outbound request; a network
+ * `IAOS_GHL_TOKEN_V2` answers 500 before any outbound request; a network
  * failure answers 502 with no detail.
  */
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlToken } from "./lib/ghl-token";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 const CONFIG = getConfig(process.env.IAOS_ENV);
@@ -33,8 +34,8 @@ export const handler = async (event: any) => {
   if (refused) return refused;
   if (event.httpMethod !== "GET") return { statusCode: 405, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "Method not allowed" }) };
 
-  const token = process.env.GHL_PRIVATE_API_KEY;
-  if (!token) return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
+  const token = ghlToken();
+  if (!token) return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL token not configured" }) };
 
   let httpStatus: number;
   let documentsArrayPresent = false;

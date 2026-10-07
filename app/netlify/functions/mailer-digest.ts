@@ -10,6 +10,7 @@
 
 import { buildMailerDigest, type MailerDigest, type MailerGroup } from "./lib/mailer-shared";
 import { getConfig } from "../../shared/ghl-config";
+import { ghlToken } from "./lib/ghl-token";
 
 // PB-D51 — location id and custom-value pointers resolve once at module scope
 // from the shared config.
@@ -97,10 +98,10 @@ function renderEmailHtml(digest: MailerDigest): string {
 }
 
 export const handler = async () => {
-  const token = process.env.GHL_PRIVATE_API_KEY;
+  const token = ghlToken();
   const resendKey = process.env.RESEND_API_KEY;
 
-  if (!token) return { statusCode: 500, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
+  if (!token) return { statusCode: 500, body: JSON.stringify({ error: "GHL token not configured" }) };
   if (!resendKey) return { statusCode: 500, body: JSON.stringify({ error: "RESEND_API_KEY not configured" }) };
 
   try {

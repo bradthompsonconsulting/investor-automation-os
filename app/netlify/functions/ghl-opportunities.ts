@@ -1,5 +1,5 @@
 /**
- * GHL Opportunities — server-side function. Requires GHL_PRIVATE_API_KEY; no fallback.
+ * GHL Opportunities — server-side function. Requires IAOS_GHL_TOKEN_V2; no fallback.
  *
  * GET /.netlify/functions/ghl-opportunities
  * Returns every opportunity in the Seller Leads Pipeline, paged server-side,
@@ -8,6 +8,7 @@
 
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlToken } from "./lib/ghl-token";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 // PB-D51 — location, pipeline and stage ids all resolve once at module scope
@@ -90,9 +91,9 @@ export const handler = async (event: any) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: RESPONSE_HEADERS, body: "" };
   if (event.httpMethod !== "GET") return { statusCode: 405, headers: RESPONSE_HEADERS, body: "Method Not Allowed" };
 
-  const token = process.env.GHL_PRIVATE_API_KEY;
+  const token = ghlToken();
   if (!token) {
-    return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
+    return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL token not configured" }) };
   }
 
   try {

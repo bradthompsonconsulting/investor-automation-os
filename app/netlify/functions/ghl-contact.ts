@@ -11,6 +11,7 @@
 
 import { parseContact } from "./lib/contact-parse";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlToken } from "./lib/ghl-token";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 
@@ -36,9 +37,9 @@ export const handler = async (event: any) => {
     return { statusCode: 400, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "Missing id param" }) };
   }
 
-  const token = process.env.GHL_PRIVATE_API_KEY;
+  const token = ghlToken();
   if (!token) {
-    return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
+    return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL token not configured" }) };
   }
 
   try {
