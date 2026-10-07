@@ -35,11 +35,13 @@ const GHL_BASE = "https://services.leadconnectorhq.com";
 const READ_TIMEOUT_MS = 10_000;
 
 export class GhlBoundary {
+  /** Per-read timeout (inside the invocation's work cutoff). ghl-disposition's contact check uses 5 s. */
+  readTimeoutMs = READ_TIMEOUT_MS;
   constructor(readonly token: string, readonly locationId: string, readonly fetcher: typeof fetch = fetch, readonly gate: MutationGate | null = null, readonly scope: InvocationScope | null = null, readonly semantic: { lastTouch: string[]; callResult: string[]; offerValue: string[] } = { lastTouch: [], callResult: [], offerValue: [] }) { if (!token) throw new Error("GHL authentication not configured"); }
   private readSignal(): AbortSignal | undefined {
     if (!this.scope) return undefined;
     this.scope.assertMayStart();
-    return AbortSignal.any([this.scope.signal, AbortSignal.timeout(Math.max(1, Math.min(READ_TIMEOUT_MS, this.scope.remaining())))]);
+    return AbortSignal.any([this.scope.signal, AbortSignal.timeout(Math.max(1, Math.min(this.readTimeoutMs, this.scope.remaining())))]);
   }
   private async request(path: string, method: string, body: unknown, signal?: AbortSignal) {
     const response = await this.fetcher(`${GHL_BASE}${path}`, { method, headers: { Authorization: `Bearer ${this.token}`, Version: "2021-07-28", "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), ...(signal ? { signal } : {}) });

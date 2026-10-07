@@ -22,7 +22,10 @@
  * 150 / 400 ms, only when they fit before the phase cutoff, only for reads,
  * conditional writes (same condition) and identical-content overwrites.
  *
- * There is NO delete anywhere in this module.
+ * There is NO delete of any ownership record. The one delete in this module,
+ * `discardPendingChunk`, is refused unless the store is the executed-artifact
+ * UPLOAD store and the key is a pending upload session chunk (housekeeping of
+ * bytes that never authorize anything).
  */
 import { getStore } from "@netlify/blobs";
 import { clock, InvocationScope, ScopeClosed, STORAGE_REQUEST_TIMEOUT_MS, STORAGE_RETRY_DELAYS_MS } from "./invocation-scope";
@@ -32,6 +35,9 @@ import { diag, type DiagClass, type DiagPhase } from "./diagnostics";
 export const OWNERSHIP_STORE = "iaos-ownership-v2";
 /** The pre-v2 store, read ONLY by the legacy import (never written by v2). */
 export const LEGACY_STORE = "iaos-write-receipts";
+/** The executed-artifact stores (bytes only; never authorization). */
+export const UPLOADS_STORE = "iaos-executed-artifact-uploads";
+export const ARTIFACTS_STORE = "iaos-executed-artifacts";
 
 /** The outcome of a storage step is not known: callers fail closed. */
 export class StorageUncertain extends Error {
@@ -256,12 +262,33 @@ export class VerifiedStore {
       this.fail(phase, o);
     }
   }
+  /** Strong metadata read (HEAD) on the uncached origin. */
+  async readMeta(key: string, phase: DiagPhase = "storage_read"): Promise<{ etag: string; metadata: Record<string, unknown> } | null> {
+    for (let i = 0; ; i++) {
+      const a = await this.attempt((s) => s.getMetadata(key, { consistency: "strong" } as any) as Promise<any>);
+      const o = a.log[a.log.length - 1];
+      if (a.log.length === 0) throw new StrongReadUnavailable(phase);
+      if (a.log.length === 1 && o.origin === "uncached" && o.status === 404 && !a.threw) return null;
+      if (a.log.length === 1 && o.origin === "uncached" && o.status === 200 && !a.threw && o.etag && a.value) return { etag: o.etag, metadata: ((a.value as any).metadata ?? {}) as Record<string, unknown> };
+      if (a.log.length === 1 && o.origin !== "uncached" && !o.failure) throw new StrongReadUnavailable(phase);
+      if (a.log.length === 1 && retryable(o) && (await this.mayRetry(i))) continue;
+      this.fail(phase, o);
+    }
+  }
+  /** Housekeeping ONLY: discards a pending upload chunk. Refused for any other store or key. Never throws. */
+  async discardPendingChunk(key: string): Promise<boolean> {
+    if (this.readOnly || this.name !== UPLOADS_STORE || !/^sessions\/[^/]+\/[^/]+\/[^/]+\/chunk-\d+$/.test(key)) return false;
+    const a = await this.attempt((s) => s.delete(key));
+    const o = a.log[a.log.length - 1];
+    return a.log.length === 1 && !a.threw && !!o && (o.status === 200 || o.status === 204 || o.status === 404);
+  }
   /** Lists keys under a prefix. Every page must be a real 200 on the edge or uncached origin. */
   async list(prefix: string, phase: DiagPhase = "storage_read"): Promise<string[]> {
     for (let i = 0; ; i++) {
       const a = await this.attempt((s) => s.list({ prefix }) as Promise<any>);
-      const bad = a.log.find((o) => o.failure || o.status !== 200 || o.origin === "other");
+      const bad = a.log.find((o) => o.failure || (o.status !== 200 && o.status !== 404) || o.origin === "other");
       if (!a.threw && a.log.length >= 1 && !bad) return ((a.value as any).blobs as { key: string }[]).map((b) => b.key).sort();
+      if (a.log.length >= 1 && a.log.every((o) => o.status === 404 && !o.failure && o.origin !== "other")) return [];
       if (bad && retryable(bad) && (await this.mayRetry(i))) continue;
       this.fail(phase, bad ?? a.log[a.log.length - 1]);
     }

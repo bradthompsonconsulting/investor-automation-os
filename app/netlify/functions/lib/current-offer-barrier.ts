@@ -396,6 +396,24 @@ export async function checkNoteReservation(
   return null;
 }
 
+/**
+ * Same-operation ticket recovery (amendments r1/r2): for the deal's CURRENT
+ * barrier, its id and the request digests of steps whose persisted outcome is
+ * CONFIRMED. Only these can remove a dispatching or uncertain admission ticket.
+ */
+export async function confirmedStepDigests(store: BarrierStore, scope: string, opp: string): Promise<{ barrierId: string | null; digests: Set<string> }> {
+  const out = new Set<string>();
+  const { head } = await readHead(store, scope, opp);
+  if (!head || !head.current) return { barrierId: null, digests: out };
+  const barrier = await readJson(store, barrierKey(scope, opp, head.current)) as BarrierRecord | null;
+  if (!barrier) return { barrierId: head.current, digests: out };
+  for (const s of barrier.steps) {
+    const outcome = await readJson(store, outcomeKey(scope, opp, s.requestDigest)) as { kind: string } | null;
+    if (outcome?.kind === "confirmed") out.add(s.requestDigest);
+  }
+  return { barrierId: head.current, digests: out };
+}
+
 /** Whether a request id is barrier-owned (no side effects). */
 export async function isBarrierOwned(store: BarrierStore, scope: string, requestId: string): Promise<boolean> {
   return (await readJson(store, requestKey(scope, requestId))) !== null;

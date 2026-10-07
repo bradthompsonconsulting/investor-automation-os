@@ -41,12 +41,15 @@
  * input, per the Product Owner's explicit ruling.
  */
 
-import { connectLambda, getStore } from "@netlify/blobs";
 import { createHash } from "node:crypto";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
-import { configuredBoundary } from "./lib/ghl-write-boundary";
-import { lockContact } from "./lib/write-receipts";
+import { digest } from "./lib/ghl-write-boundary";
+import { VerifiedStore, UPLOADS_STORE, ARTIFACTS_STORE } from "./lib/verified-store";
+import { legacyEventFrom, toResponse, echoedActivation, type LambdaResult, type LegacyEvent } from "./lib/modern-runtime";
+import { invocation, boundaryFor, refusalResult, sessionCapabilityBranch, withLockWarning, type Invocation } from "./lib/endpoint-kit";
+import { WriteRefused } from "./lib/write-gate";
+import { acquireLock, lockKey, LockHeld, LockUnknown } from "./lib/contact-lock-v2";
 import { getConfig } from "../../shared/ghl-config";
 import { evaluateProductionArtifactUploadScope, evaluateProductionArtifactContactScope, PRODUCTION_WRITE_SCOPE_REFUSAL } from "./lib/production-write-scope";
 import { isSameContractVersion, type ContractVersionIdentity } from "../../src/lib/board9-contract-model";
@@ -59,7 +62,7 @@ import {
   formatPreservedExecutedArtifactNote, latestPreservedExecutedArtifactForVersion,
 } from "../../src/lib/contract-executed-artifact-carriers";
 
-const json = (statusCode: number, data: unknown) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(data) });
+const json = (statusCode: number, data: unknown): LambdaResult => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(data) });
 
 /**
  * Gate-review closure -- PR #85 live failure (Blobs initialization).
@@ -111,18 +114,11 @@ function artifactKey(opportunityId: string, version: ContractVersionIdentity) {
 
 /**
  * Gate-review closure -- PR #85 chunk-ingestion redesign, requirements
- * 3-7. `consistency: "strong"` is requested on every read below --
- * genuinely supported by the installed SDK (`GetOptions.consistency`),
- * but it requires an `uncachedEdgeURL` in the environment context that
- * `connectLambda(event)` does not supply (confirmed by reading the SDK's
- * own source: connectLambda sets only `{deployID, edgeURL, siteID,
- * token}`). Requesting it costs nothing when unsupported -- the SDK's
- * own `BlobsConsistencyError` is caught and the read retried at the
- * default consistency, never a new crash in place of the old race. A
- * short, bounded retry additionally covers a chunk finalize genuinely
- * expects to already be visible but is not yet -- "bounded visibility
- * handling", never an in-process lock, never a dependency on ANY other
- * chunk's write being immediately observable at request time.
+ * 3-7, as corrected by the storage correction (plan v6 §2): every chunk and
+ * artifact read is STRONG through the verified adapter (the silent
+ * eventual-read fallback is removed; an unavailable strong read fails
+ * closed). The short, bounded finalize retry is kept for a chunk finalize
+ * genuinely expects to already be visible.
  */
 const CHUNK_READ_RETRY_DELAYS_MS = [50, 150, 300];
 
@@ -132,21 +128,14 @@ function delay(ms: number): Promise<void> {
 
 type ChunkRead = { data: ArrayBuffer; metadata: ChunkRecordMetadata };
 
-async function getChunkOnce(uploads: ReturnType<typeof getStore>, key: string): Promise<ChunkRead | null> {
-  const attempt = async (consistency: "strong" | undefined) => (uploads as any).getWithMetadata(key, consistency ? { type: "arrayBuffer", consistency } : { type: "arrayBuffer" });
-  let result: any;
-  try {
-    result = await attempt("strong");
-  } catch (e: any) {
-    if (e?.name !== "BlobsConsistencyError") throw e;
-    result = await attempt(undefined);
-  }
+async function getChunkOnce(uploads: VerifiedStore, key: string): Promise<ChunkRead | null> {
+  const result = await uploads.readBinary(key);
   if (!result) return null;
-  return { data: result.data, metadata: result.metadata as ChunkRecordMetadata };
+  return { data: result.data, metadata: result.metadata as unknown as ChunkRecordMetadata };
 }
 
 /** Bounded retry -- only used at finalize, which genuinely expects every chunk to already exist. A chunk request evaluating its OWN key never needs this: a chunk index being written for the first time correctly finds nothing. */
-async function getChunkWithRetry(uploads: ReturnType<typeof getStore>, key: string): Promise<ChunkRead | null> {
+async function getChunkWithRetry(uploads: VerifiedStore, key: string): Promise<ChunkRead | null> {
   let result = await getChunkOnce(uploads, key);
   if (result !== null) return result;
   for (const waitMs of CHUNK_READ_RETRY_DELAYS_MS) {
@@ -157,16 +146,9 @@ async function getChunkWithRetry(uploads: ReturnType<typeof getStore>, key: stri
   return result;
 }
 
-async function getMetadataOnly(uploads: ReturnType<typeof getStore>, key: string): Promise<ChunkRecordMetadata | null> {
-  const attempt = async (consistency: "strong" | undefined) => uploads.getMetadata(key, consistency ? ({ consistency } as any) : undefined);
-  let result: any;
-  try {
-    result = await attempt("strong");
-  } catch (e: any) {
-    if (e?.name !== "BlobsConsistencyError") throw e;
-    result = await attempt(undefined);
-  }
-  return result ? (result.metadata as ChunkRecordMetadata) : null;
+async function getMetadataOnly(uploads: VerifiedStore, key: string): Promise<ChunkRecordMetadata | null> {
+  const result = await uploads.readMeta(key);
+  return result ? (result.metadata as unknown as ChunkRecordMetadata) : null;
 }
 
 /**
@@ -178,12 +160,11 @@ async function getMetadataOnly(uploads: ReturnType<typeof getStore>, key: string
  * never thrown, never blocks a genuine finalize/abort outcome the caller
  * already reached some other way.
  */
-async function listSessionChunkKeys(uploads: ReturnType<typeof getStore>, opportunityId: string, version: ContractVersionIdentity, uploadId: string): Promise<string[]> {
+async function listSessionChunkKeys(uploads: VerifiedStore, opportunityId: string, version: ContractVersionIdentity, uploadId: string): Promise<string[]> {
   try {
-    const result = await uploads.list({ prefix: `${sessionScope(opportunityId, version, uploadId)}/chunk-` });
-    return result.blobs.map((b) => b.key);
+    return await uploads.list(`${sessionScope(opportunityId, version, uploadId)}/chunk-`);
   } catch (e) {
-    console.error("[ghl-executed-artifact-upload] session chunk listing failed (non-fatal)", e);
+    console.error("[ghl-executed-artifact-upload] session chunk listing failed (non-fatal)");
     return [];
   }
 }
@@ -191,14 +172,14 @@ async function listSessionChunkKeys(uploads: ReturnType<typeof getStore>, opport
 /**
  * Gate-review closure, requirement 4 (prior repair) -- housekeeping
  * cleanup NEVER masks a result the caller already determined (a genuine
- * success or a genuine conflict refusal). A transient failure deleting a
+ * success or a genuine conflict refusal). A transient failure discarding a
  * pending chunk after that determination is logged and swallowed, never
  * allowed to turn an already-correct response into a false failure.
  */
-async function cleanupSessionChunks(uploads: ReturnType<typeof getStore>, opportunityId: string, version: ContractVersionIdentity, uploadId: string): Promise<void> {
+async function cleanupSessionChunks(uploads: VerifiedStore, opportunityId: string, version: ContractVersionIdentity, uploadId: string): Promise<void> {
   const keys = await listSessionChunkKeys(uploads, opportunityId, version, uploadId);
   for (const key of keys) {
-    try { await uploads.delete(key); } catch (e) { console.error("[ghl-executed-artifact-upload] chunk cleanup failed (non-fatal)", key, e); }
+    if (!(await uploads.discardPendingChunk(key))) console.error("[ghl-executed-artifact-upload] chunk cleanup failed (non-fatal)");
   }
 }
 
@@ -207,30 +188,46 @@ async function cleanupSessionChunks(uploads: ReturnType<typeof getStore>, opport
  * but stored bytes are missing or corrupted" must never be treated as a
  * verified preserved artifact by ANY code path that reads the artifact
  * back, not only the stage-transition gate. Re-reads the stored bytes
- * and independently recomputes SHA-256/byte-count against the durable
- * metadata's own claim -- never trusts that a successful `.set()`
- * sometime in the past still holds.
+ * (strongly) and independently recomputes SHA-256/byte-count against the
+ * durable metadata's own claim.
  */
-async function reverifyStoredArtifactBytes(artifacts: ReturnType<typeof getStore>, blobKey: string, expectedSha256: string, expectedByteCount: number): Promise<Buffer> {
-  let raw: ArrayBuffer | null;
-  try {
-    raw = await artifacts.get(blobKey, { type: "arrayBuffer", consistency: "strong" } as any);
-  } catch (e: any) {
-    if (e?.name !== "BlobsConsistencyError") throw e;
-    raw = await artifacts.get(blobKey, { type: "arrayBuffer" } as any);
-  }
+async function reverifyStoredArtifactBytes(artifacts: VerifiedStore, blobKey: string, expectedSha256: string, expectedByteCount: number): Promise<Buffer> {
+  const raw = await artifacts.readBinary(blobKey);
   if (!raw) throw new Error("Preserved artifact metadata exists but its stored bytes could not be read");
-  const buffer = Buffer.from(raw);
+  const buffer = Buffer.from(raw.data);
   if (buffer.byteLength !== expectedByteCount) throw new Error("Stored artifact byte count no longer matches its durable metadata -- refusing to treat it as verified");
   if (createHash("sha256").update(buffer).digest("hex") !== expectedSha256) throw new Error("Stored artifact hash no longer matches its durable metadata -- refusing to treat it as verified");
   return buffer;
 }
 
-export const handler = async (event: any) => {
+/**
+ * Storage correction (plan v6 §5, §7): modern runtime. Every phase that
+ * writes passes the write gate (published production deploy, captured and
+ * echoed activation, kill switch); finalize additionally passes G5 and the
+ * legacy block for its GHL note and runs under its own budget row (T_dispatch
+ * 8 s, GHL timeout 12 s). Chunk and artifact bytes are written by conditional
+ * create and read back strongly.
+ */
+export default async (req: Request, context: any): Promise<Response> => {
+  const event = await legacyEventFrom(req, { requireJson: true });
+  // Finalize has its own budget row; the phase is known only after parsing, so peek.
+  let finalize = false;
+  try { finalize = !event.isBase64Encoded && JSON.parse(event.body ?? "null")?.phase === "finalize"; } catch { finalize = false; }
+  const inv = invocation(finalize ? "ghl-executed-artifact-upload:finalize" : "ghl-executed-artifact-upload", context);
+  let header: Record<string, string> | undefined;
+  try {
+    const r = await handle(event, inv, (h) => { header = { "X-IAOS-Storage": h }; });
+    return toResponse(r, header);
+  } finally { inv.scope.close(); }
+};
+
+async function handle(event: LegacyEvent, inv: Invocation, setStorageHeader: (h: string) => void): Promise<LambdaResult> {
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
   let operator: string;
   try { operator = requireAppWriter(event); } catch { return json(401, { error: "Application write sign-in required" }); }
   try { requireAppWriteOrigin(event); } catch { return json(403, { error: "Application write origin refused" }); }
+  const cap = await sessionCapabilityBranch(event, inv);
+  if (cap) { if (cap.header) setStorageHeader(cap.header); return cap.result; }
 
   let request: any;
   try {
@@ -244,22 +241,18 @@ export const handler = async (event: any) => {
     return json(400, { error: "Missing or invalid opportunityId/agreementAt/version" });
   }
 
-  // INV-98 Board #9 Production proof write scope -- before connectLambda,
-  // any Blob store, or any GHL call. Test deployments are unaffected.
-  const config = getConfig(process.env.IAOS_ENV);
+  // INV-98 Board #9 Production proof write scope -- before any Blob store,
+  // or any GHL call. Test deployments are unaffected.
+  const config = inv.config;
   const scope = evaluateProductionArtifactUploadScope(config, opportunityId);
   if (!scope.ok) return json(403, { error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: scope.code });
 
   try {
-    // Gate-review closure -- PR #85 live failure. This Lambda-style
-    // handler must call connectLambda(event) BEFORE any getStore() call,
-    // exactly like ghl-write.ts's own established pattern -- the SDK has
-    // no other supported way to discover the Blobs context in Netlify's
-    // real runtime.
-    connectLambda(event);
-    const uploads = getStore("iaos-executed-artifact-uploads");
-    const artifacts = getStore("iaos-executed-artifacts");
-    const boundary = configuredBoundary();
+    // Every phase that stores or sends passes the write gate first (download-chunk only reads).
+    if (phase !== "download-chunk") await inv.gate.enter(echoedActivation(event));
+    const uploads = new VerifiedStore(inv.scope, UPLOADS_STORE);
+    const artifacts = new VerifiedStore(inv.scope, ARTIFACTS_STORE);
+    const boundary = boundaryFor(inv);
     const opportunity = await boundary.opportunity(opportunityId);
     const contactId = opportunity.contactId;
     // Defense in depth, still before any Blob read or write: the pinned
@@ -305,7 +298,13 @@ export const handler = async (event: any) => {
       }
 
       const metadata: ChunkRecordMetadata = { opportunityId, agreementAt, version, uploadId, chunkCount, totalByteCount, originalFileName, expectedFullSha256, chunkSha256 };
-      await uploads.set(cKey, chunkBytes, { metadata: metadata as any });
+      const stored = await uploads.createBinaryOnce(cKey, chunkBytes, metadata as any);
+      if (stored.result === "conflict") {
+        // Another request stored this chunk index first: identical metadata is a duplicate, anything else a refusal.
+        const now = await getMetadataOnly(uploads, cKey);
+        if (now && JSON.stringify(now) === JSON.stringify(metadata)) return json(200, { accepted: true, duplicate: true });
+        return json(409, { error: "Chunk refused", reasons: [{ code: "CHUNK_CONFLICT" }] });
+      }
       return json(200, { accepted: true, duplicate: false });
     }
 
@@ -331,8 +330,15 @@ export const handler = async (event: any) => {
       ) {
         return json(400, { error: "Missing uploadId/providerDocumentId/chunkCount/totalByteCount/originalFileName/expectedFullSha256" });
       }
-      const release = await lockContact(contactId);
-      try {
+      await inv.gate.checkSubject(`contact:${contactId}`, ["executed_artifact", "note"]);
+      let lock;
+      try { lock = await acquireLock(inv.store, inv.scope, lockKey(inv.env, config.locationId, contactId), { opId: null, deployId: inv.deploy.id! }); }
+      catch (e) {
+        if (e instanceof LockHeld || e instanceof LockUnknown) return json(409, { error: "Write refused or unconfirmed; refresh and inspect before retrying" });
+        throw e;
+      }
+      let finalized: LambdaResult;
+      try { finalized = await (async (): Promise<LambdaResult> => {
         const reads: (ChunkRead | null)[] = [];
         for (let i = 0; i < chunkCount; i++) {
           reads.push(await getChunkWithRetry(uploads, chunkKey(opportunityId, version, uploadId, i)));
@@ -390,17 +396,12 @@ export const handler = async (event: any) => {
         }
 
         const aKey = artifactKey(opportunityId, version);
-        await artifacts.set(aKey, reconstructed);
-        // Re-read independently -- never trust the write call's own success alone.
-        let readBack: ArrayBuffer | null;
-        try {
-          readBack = await artifacts.get(aKey, { type: "arrayBuffer", consistency: "strong" } as any);
-        } catch (e: any) {
-          if (e?.name !== "BlobsConsistencyError") throw e;
-          readBack = await artifacts.get(aKey, { type: "arrayBuffer" } as any);
-        }
-        if (!readBack) throw new Error("Artifact write was not confirmed by readback");
-        const readBackBuffer = Buffer.from(readBack);
+        // Conditional create: a retry finds the same bytes already stored (verified below); different bytes are refused.
+        try { await artifacts.createBinaryOnce(aKey, reconstructed, {}); } catch { /* verified by the strong readback below */ }
+        // Re-read independently (strong) -- never trust the write call's own success alone.
+        const readBackRec = await artifacts.readBinary(aKey);
+        if (!readBackRec) throw new Error("Artifact write was not confirmed by readback");
+        const readBackBuffer = Buffer.from(readBackRec.data);
         if (readBackBuffer.byteLength !== reconstructed.byteLength) throw new Error("Readback byte count differs from what was written");
         const readBackSha256 = createHash("sha256").update(readBackBuffer).digest("hex");
         if (readBackSha256 !== sha256) throw new Error("Readback SHA-256 differs from what was written");
@@ -422,7 +423,7 @@ export const handler = async (event: any) => {
         // call succeeds. A subsequent retry safely reconciles:
         // `artifacts.set` on the same deterministic key is idempotent,
         // and a fresh note write is attempted again.
-        await boundary.note(contactId, formatPreservedExecutedArtifactNote(record));
+        await boundary.note(contactId, formatPreservedExecutedArtifactNote(record), undefined, { requestId: `v2-art-${digest(`${opportunityId}:${uploadId}:${readBackSha256}`).slice(0, 40)}`, opId: "-", attemptId: "-" }, ["executed_artifact"]);
 
         // Cleanup happens AFTER the artifact is genuinely verified and
         // durably recorded -- its own failure must never mask that
@@ -430,7 +431,9 @@ export const handler = async (event: any) => {
         await cleanupSessionChunks(uploads, opportunityId, version, uploadId);
 
         return json(200, { preserved: true, alreadyPreserved: false, sha256: readBackSha256, byteCount: readBackBuffer.byteLength, pageCount, artifact: record });
-      } finally { await release(); }
+      })(); }
+      catch (e) { await lock.release(); throw e; }
+      return withLockWarning(finalized, await lock.release());
     }
 
     if (phase === "download-chunk") {
@@ -460,7 +463,8 @@ export const handler = async (event: any) => {
 
     return json(400, { error: "Unknown phase" });
   } catch (error) {
+    if (error instanceof WriteRefused) return refusalResult(error);
     logUploadFailure(phase, request?.uploadId, error);
     return json(409, { error: "Write refused or unconfirmed; refresh and inspect before retrying" });
   }
-};
+}
