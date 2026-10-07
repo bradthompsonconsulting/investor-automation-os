@@ -74,7 +74,7 @@ process.env.IAOS_APP_WRITE_GOOGLE_CLIENT_ID = 'offline-client';
 process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN = 'https://proof.example.invalid';
 process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid';
 process.env.IAOS_APP_WRITE_SESSION_SECRET = 'offline-fixture-only-not-a-real-secret';
-process.env.GHL_PRIVATE_API_KEY = 'offline-fixture';
+process.env.IAOS_GHL_TOKEN_V2 = 'offline-fixture';
 
 const G = require('../shared/ghl-config.ts');
 const scopeLib = require('../netlify/functions/lib/production-write-scope.ts');

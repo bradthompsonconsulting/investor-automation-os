@@ -68,7 +68,7 @@ process.env.IAOS_APP_WRITE_GOOGLE_CLIENT_ID = 'offline-client';
 process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN = 'https://proof.example.invalid';
 process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid';
 process.env.IAOS_APP_WRITE_SESSION_SECRET = 'offline-fixture-only-not-a-real-secret';
-process.env.GHL_PRIVATE_API_KEY = 'offline-fixture';
+process.env.IAOS_GHL_TOKEN_V2 = 'offline-fixture';
 process.env.GHL_API_TOKEN = 'offline-fixture';
 // Read authority (lib/app-read-auth.ts): its own settings, never the write ones.
 process.env.IAOS_APP_READ_GOOGLE_CLIENT_ID = 'offline-read-client';

@@ -171,14 +171,14 @@ class MemoryStore {
   check('wrong contact identity fails closed', provider.evaluateVoiceEligibility({ ...baseContact, id: 'contact-other' }, 'contact-1', env).code, 'contact-mismatch');
   check('wrong GHL location fails closed', provider.evaluateVoiceEligibility({ ...baseContact, locationId: 'wrong' }, 'contact-1', env).code, 'contact-mismatch');
   let missingContactRejected = false;
-  try { await provider.readEligibleGhlContact('contact-1', async () => ({ ok: false, status: 404 }), { ...env, GHL_PRIVATE_API_KEY: 'fixture' }); } catch { missingContactRejected = true; }
+  try { await provider.readEligibleGhlContact('contact-1', async () => ({ ok: false, status: 404 }), { ...env, IAOS_GHL_TOKEN_V2: 'fixture' }); } catch { missingContactRejected = true; }
   check('missing contact rejects authorization', missingContactRejected, true);
   check('voice-disabled configuration fails closed', provider.voiceCapability({ IAOS_ENV: 'test' }).enabled, false);
   check('non-Test environment fails closed', provider.voiceCapability({ IAOS_ENV: 'production', IAOS_VOICE_ENABLED: 'true' }).reasons.includes('IAOS voice is restricted to TEST'), true);
   // B14-11 / INV-93 containment: a fully configured environment stays disabled.
   const fullVoiceEnv = (iaosEnv) => ({
     IAOS_ENV: iaosEnv, IAOS_VOICE_ENABLED: 'true', GOOGLE_OAUTH_CLIENT_ID: 'client-id', IAOS_VOICE_BRAD_EMAILS: 'brad@example.com',
-    IAOS_VOICE_SESSION_SECRET: '0123456789abcdef0123456789abcdef', GHL_PRIVATE_API_KEY: 'fixture',
+    IAOS_VOICE_SESSION_SECRET: '0123456789abcdef0123456789abcdef', IAOS_GHL_TOKEN_V2: 'fixture',
     TWILIO_ACCOUNT_SID: 'AC' + '1'.repeat(32), TWILIO_API_KEY_SID: 'SK' + '2'.repeat(32), TWILIO_API_KEY_SECRET: 'fixture-secret',
     TWILIO_AUTH_TOKEN: 'fixture', TWILIO_TWIML_APP_SID: 'AP' + '3'.repeat(32), TWILIO_OUTBOUND_CALLER_ID: '+12145550199',
     IAOS_VOICE_PUBLIC_BASE_URL: 'https://example.test',

@@ -44,7 +44,7 @@ function check(label, actual, expected) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${ok ? '' : `\n      expected ${JSON.stringify(expected)}\n      actual   ${JSON.stringify(actual)}`}`);
 }
 
-process.env.GHL_PRIVATE_API_KEY = 'dummy-offline-token';
+process.env.IAOS_GHL_TOKEN_V2 = 'dummy-offline-token';
 process.env.IAOS_ENV = 'test';
 const mod = require(path.join(TMP, 'netlify/functions/ghl-calendar-events.js'));
 

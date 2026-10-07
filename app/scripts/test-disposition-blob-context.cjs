@@ -27,7 +27,7 @@ Module._extensions['.ts'] = (mod, filename) => {
 };
 process.env.IAOS_ENV = 'test';
 process.env.IAOS_WEBHOOK_SECRET = 'offline-disposition-secret';
-process.env.GHL_PRIVATE_API_KEY = 'offline-ghl-token';
+process.env.IAOS_GHL_TOKEN_V2 = 'offline-ghl-token';
 delete process.env.NETLIFY_BLOBS_CONTEXT;
 delete globalThis.netlifyBlobsContext;
 const { getConfig } = require('../shared/ghl-config.ts');

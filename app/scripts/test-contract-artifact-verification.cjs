@@ -31,7 +31,7 @@ Module._extensions['.ts'] = (module, filename) =>
   );
 
 process.env.IAOS_ENV = 'test';
-process.env.GHL_PRIVATE_API_KEY = 'offline-fixture';
+process.env.IAOS_GHL_TOKEN_V2 = 'offline-fixture';
 process.env.GHL_API_TOKEN = 'offline-fixture';
 
 const load = (name) => require('../src/lib/' + name + '.ts');

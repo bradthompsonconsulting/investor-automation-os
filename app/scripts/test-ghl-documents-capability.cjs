@@ -32,7 +32,7 @@ const READ_ENV = {
 const FIXTURE_TOKEN = 'offline-fixture-ghl-key-DO-NOT-ECHO';
 function setEnv(deployment, overrides = {}) {
   for (const k of Object.keys(process.env)) if (k.startsWith('IAOS_APP_') || k === 'IAOS_VOICE_SESSION_SECRET') delete process.env[k];
-  Object.assign(process.env, READ_ENV, { IAOS_ENV: deployment, GHL_PRIVATE_API_KEY: FIXTURE_TOKEN }, overrides);
+  Object.assign(process.env, READ_ENV, { IAOS_ENV: deployment, IAOS_GHL_TOKEN_V2: FIXTURE_TOKEN }, overrides);
   for (const [k, v] of Object.entries(overrides)) if (v === undefined) delete process.env[k];
 }
 
@@ -92,8 +92,8 @@ async function check(name, fn) {
         assert.equal(outbound.length, 0);
       });
     }
-    await check(`${deployment}: missing GHL_PRIVATE_API_KEY answers 500 with no outbound request`, async () => {
-      setEnv(deployment, { GHL_PRIVATE_API_KEY: undefined });
+    await check(`${deployment}: missing IAOS_GHL_TOKEN_V2 answers 500 with no outbound request`, async () => {
+      setEnv(deployment, { IAOS_GHL_TOKEN_V2: undefined });
       const handler = loadHandler();
       const res = await handler(sessionEvent());
       assert.equal(res.statusCode, 500);

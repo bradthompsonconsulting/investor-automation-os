@@ -34,7 +34,7 @@ const WRITE_ENV = {
 };
 function setEnv(deployment, overrides = {}) {
   for (const k of [...Object.keys(READ_ENV), ...Object.keys(WRITE_ENV), 'IAOS_VOICE_SESSION_SECRET']) delete process.env[k];
-  Object.assign(process.env, READ_ENV, WRITE_ENV, { IAOS_ENV: deployment, GHL_PRIVATE_API_KEY: 'offline-fixture' }, overrides);
+  Object.assign(process.env, READ_ENV, WRITE_ENV, { IAOS_ENV: deployment, IAOS_GHL_TOKEN_V2: 'offline-fixture' }, overrides);
   for (const [k, v] of Object.entries(overrides)) if (v === undefined) delete process.env[k];
 }
 setEnv('test');
@@ -539,7 +539,7 @@ function assertNoCors(res) {
     // reviewed in test-ghl-documents-capability.cjs.
     const reviewed = ['ghl-contract-send-readback', 'ghl-disposition', 'ghl-documents-capability', 'mailer-digest'];
     const holders = fs.readdirSync(FUNCTIONS).filter(f => f.endsWith('.ts'))
-      .filter(f => /leadconnectorhq|GHL_PRIVATE_API_KEY/.test(fs.readFileSync(path.join(FUNCTIONS, f), 'utf8')))
+      .filter(f => /leadconnectorhq|IAOS_GHL_TOKEN_V2/.test(fs.readFileSync(path.join(FUNCTIONS, f), 'utf8')))
       .map(f => f.slice(0, -3)).filter(n => !NINE.includes(n)).sort();
     assert.deepEqual(holders, reviewed);
   });
