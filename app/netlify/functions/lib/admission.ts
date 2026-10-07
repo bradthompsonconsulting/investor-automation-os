@@ -597,10 +597,16 @@ export async function handoverPublisher(store: VerifiedStore, newP: string): Pro
     if (!cur || !pub || cur.state !== "closed") return { refuse: new PublicationRefused("no_publication") };
     if (pub.publisherHash === newHash) return { done: true };
     const o = pub.outstanding;
-    if (o && o.state !== "claimed") return { refuse: new PublicationRefused("attempt_outstanding", "A dispatched publication attempt is not terminal; handover cannot clear it") };
+    /* Bones review finding 3: a new process may take over a cycle whose attempt is `claimed` (abandoned
+       in this same write: provably never sent) or `responded` (its response is ALREADY persisted; it can
+       never be dispatched again, because T3 requires `claimed`). The responded attempt is kept exactly
+       as it is, so the new publisher can reclassify that stored evidence (T8) once approved semantics
+       exist. `dispatching` and `unresolved` stay non-transferable: the sender may still be live, or the
+       outcome is unknown. */
+    if (o && o.state !== "claimed" && !(o.state === "responded" && o.evidence)) return { refuse: new PublicationRefused("attempt_outstanding", "A dispatched publication attempt with no recorded response is not terminal; handover cannot take it over") };
     const handoverMark = publisherMark(newP, "T7", o?.attemptId ?? "-", pub.pubId, pub.targetDeployId);
     let next: Publication = { ...pub, publisherHash: newHash, handoverMarks: [...pub.handoverMarks, handoverMark] };
-    if (o) next = settleTerminal(next, terminalEntry(newP, next, o, "ABANDONED", null));
+    if (o && o.state === "claimed") next = settleTerminal(next, terminalEntry(newP, next, o, "ABANDONED", null));
     return { write: { ...cur, publication: withDigest(next) }, result: true };
   }, (cur) => (cur?.publication?.publisherHash === newHash ? true : null));
 }

@@ -87,25 +87,31 @@ Each step is separately authorized.
 ## 4. Controlled publication with `iaos-publish`
 
 Environment (operator side only): `IAOS_SITE_URL`, `IAOS_WRITE_SESSION`, `IAOS_WRITE_ORIGIN`,
-`IAOS_READ_COOKIE`, and for `publish`: `NETLIFY_SITE_ID`, `NETLIFY_PUBLISHER_TOKEN` (the dedicated
+`IAOS_READ_COOKIE`, and for `cycle`: `NETLIFY_SITE_ID`, `NETLIFY_PUBLISHER_TOKEN` (the dedicated
 publisher identity — **never** placed in Netlify env or any function).
 
 1. `iaos-publish init` — only if `authz/admission` does not exist yet (T0; creates it **closed**).
-2. `iaos-publish publish --pub <pubId> --target <deployId>`:
+2. `iaos-publish cycle --pub <pubId> --target <deployId> --activation <id> --approval <ref> --revocation <ref> --g5-digest <approved digest>`
+   is **one process** holding its private publisher token in memory from start to finish:
    T1 Close (admitted tickets revoked; dispatching/uncertain kept) → T2 Claim → T3 Dispatching →
-   **exactly one** restore request, never retried (120 s timeout) → T4 Record response or T5 Mark unresolved.
-3. `iaos-publish activate --activation <id> --approval <ref> --revocation <ref> --g5-digest <approved digest>`:
-   collects the five `storage_capability` attestations from the **target** (nonce = `pubId:attemptSetDigest`),
-   then T9 on the target.
+   **exactly one** restore request, never retried (120 s timeout) → T4 Record response or T5 Mark unresolved →
+   if APPLIED, the five `storage_capability` attestations from the **target** (nonce = `pubId:attemptSetDigest`)
+   and T9 on the target. Exit 0 activated; 2 stopped safely (run `resume`); 3 blocked (unknown result).
+3. `iaos-publish resume --activation <id> --approval <ref> --revocation <ref> --g5-digest <approved digest>`
+   is how a NEW process recovers after the cycle's process is gone. It hands the cycle over to itself (T7): a
+   never-sent `claimed` attempt is abandoned, and a `responded` attempt is kept with its stored response.
+   It then reclassifies that stored response (T8, only under an approved semantics record) and activates (T9).
+   It **never dispatches**; a `dispatching` or `unresolved` attempt stays blocking (exit 3). The private token is
+   never written anywhere, so no command depends on an earlier process's token.
 
 ### 4.4 When the result is not APPLIED
 
 | State | Meaning | What is possible |
 |---|---|---|
-| `claimed` (process died before dispatching) | provably never sent | a new process runs `handover`, which abandons it (T7) |
+| `claimed` (process died before dispatching) | provably never sent | `resume` hands over and abandons it (T7); then a new `cycle` |
 | `dispatching` with no living sender | may have been sent | **nothing**: admission stays closed |
 | `unresolved` (timeout, transport, abort, 5xx, 429, malformed, other deploy) | unknown | **nothing**: never terminal |
-| `responded` (any 2xx/4xx without approved semantics) | evidence persisted, unclassified | `reclassify` (T8) once an approved semantics record classifies exactly that evidence |
+| `responded` (any 2xx/4xx without approved semantics) | evidence persisted, unclassified | `resume` once an approved semantics record classifies exactly that evidence (T7 keeps it, T8 classifies it) |
 | `REJECTED` (approved semantics) | not applied, cannot apply later | a new attempt (new attemptId) |
 
 **Fail-closed limitation (stated, not hidden):** one network failure during a controlled publication can

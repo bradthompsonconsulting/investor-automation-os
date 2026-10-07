@@ -7,34 +7,45 @@
  *
  * RELEASE-GATED: running any command is a separately authorized release step.
  *
- * It holds a fresh private publisher token p for THIS process only (never
- * written to disk, never logged). A restarted process has a new token and must
- * `handover` (which can abandon only a never-dispatched `claimed` attempt).
+ * Bones review finding 3: a cycle must not depend on a private token surviving
+ * across separate commands. Each command below is ONE process that holds a fresh
+ * private publisher token p in memory for its whole run (never written to disk,
+ * never logged) and carries the lifecycle as far as it safely can:
  *
  *   status
- *   init
- *   publish  --pub <pubId> --target <deployId>      T1 Close -> T2 Claim -> T3 Dispatching -> ONE restore -> T4/T5
- *   reclassify --attempt <attemptId>                 T8 (needs an approved provider-semantics record)
- *   abandon --attempt <attemptId>                    T6 (claimed only)
- *   handover                                         T7
- *   activate --activation <id> --approval <ref> --revocation <ref> --g5-digest <digest>
- *                                                    attestations from all five endpoints, then T9 on the target
+ *   init                                   T0 (record absent -> closed)
+ *   cycle  --pub <pubId> --target <deployId> --activation <id> --approval <ref>
+ *          --revocation <ref> --g5-digest <approved digest>
+ *          T1 Close -> T2 Claim -> T3 Dispatching -> ONE restore -> T4/T5, and if
+ *          APPLIED, the five attestations and T9 Activate -- all in this process.
+ *   resume --activation <id> --approval <ref> --revocation <ref> --g5-digest <digest>
+ *          after process loss: T7 Handover to THIS process (abandons a never-sent
+ *          `claimed` attempt; keeps a `responded` one), then T8 Reclassify of the
+ *          STORED response (needs approved semantics), then T9 Activate.
+ *          It never dispatches: an attempt that is `dispatching` or `unresolved`
+ *          stays blocking, and resume exits non-zero.
  *
  * The single Netlify request is never retried, automatically or otherwise; no
  * response, a timeout (120 s) or an abort is recorded UNRESOLVED and blocks
  * every later cycle and activation (the stated fail-closed limitation).
  *
- * Environment: IAOS_SITE_URL (https origin of the site), IAOS_WRITE_SESSION
- * (Brad's app write session bearer), IAOS_WRITE_ORIGIN (the configured write
- * origin), IAOS_READ_COOKIE (read session cookie, for attestations), and for
- * `publish` only: NETLIFY_SITE_ID and NETLIFY_PUBLISHER_TOKEN (the dedicated
+ * Environment: IAOS_SITE_URL (origin of the site), IAOS_WRITE_SESSION (Brad's app
+ * write session bearer), IAOS_WRITE_ORIGIN (the configured write origin),
+ * IAOS_READ_COOKIE (read session cookie, for status and attestations), and for
+ * `cycle` only: NETLIFY_SITE_ID and NETLIFY_PUBLISHER_TOKEN (the dedicated
  * publisher identity -- never placed in Netlify env or any function).
+ * IAOS_NETLIFY_API_BASE overrides https://api.netlify.com for offline tests only
+ * (an http origin is accepted only on 127.0.0.1).
+ *
+ * Exit codes: 0 activated (or status/init ok); 2 stopped safely, needs a later
+ * step (e.g. RESPONDED awaiting approved semantics; run `resume`); 3 blocked
+ * (an unresolved or still-dispatching attempt); 1 refused or error.
  *
  * Accepted exception (Brad, #issuecomment-6042966089): a Netlify Owner can
  * publish outside this tool; after an out-of-tool A -> B -> A, A may resume
  * writes under its earlier activation. Any such out-of-tool publication is an
  * exceptional event: record it, assume saving may have resumed, and run this
- * tool's close -> publish -> activate cycle (docs/STORAGE_V2_CUTOVER_RUNBOOK.md).
+ * tool's cycle (docs/STORAGE_V2_CUTOVER_RUNBOOK.md).
  */
 'use strict';
 const crypto = require('node:crypto');
@@ -42,13 +53,21 @@ const crypto = require('node:crypto');
 const RESTORE_TIMEOUT_MS = 120_000;
 const FUNCTIONS = ['call-log-barrier', 'current-offer-barrier', 'ghl-write', 'ghl-disposition', 'ghl-executed-artifact-upload'];
 
-function createPublisher({ env = process.env, fetchImpl = globalThis.fetch, log = console.log } = {}) {
-  const p = crypto.randomBytes(32).toString('hex');   // this process only
+function apiBase(env) {
+  const b = (env.IAOS_NETLIFY_API_BASE || 'https://api.netlify.com').replace(/\/$/, '');
+  const u = new URL(b);
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && u.hostname === '127.0.0.1')) throw new Error('IAOS_NETLIFY_API_BASE must be https (or http on 127.0.0.1 for tests)');
+  return b;
+}
+
+/** One publisher process. `p` exists only in this object, for this process's lifetime. */
+function createPublisher({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
+  const p = crypto.randomBytes(32).toString('hex');
   const site = (env.IAOS_SITE_URL || '').replace(/\/$/, '');
   const fn = (name) => `${site}/.netlify/functions/${name}`;
   const writeHeaders = () => ({ 'content-type': 'application/json', authorization: `Bearer ${env.IAOS_WRITE_SESSION}`, origin: env.IAOS_WRITE_ORIGIN });
-  async function call(action, extra = {}, token = p) {
-    const res = await fetchImpl(fn('iaos-activation'), { method: 'POST', headers: writeHeaders(), body: JSON.stringify({ action, publisherToken: token, ...extra }) });
+  async function call(action, extra = {}) {
+    const res = await fetchImpl(fn('iaos-activation'), { method: 'POST', headers: writeHeaders(), body: JSON.stringify({ action, publisherToken: p, ...extra }) });
     const body = await res.json().catch(() => ({}));
     return { status: res.status, body };
   }
@@ -61,7 +80,7 @@ function createPublisher({ env = process.env, fetchImpl = globalThis.fetch, log 
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), RESTORE_TIMEOUT_MS);
     try {
-      const res = await fetchImpl(`https://api.netlify.com${path}`, { method: 'POST', headers: { authorization: `Bearer ${env.NETLIFY_PUBLISHER_TOKEN}` }, signal: ac.signal });
+      const res = await fetchImpl(`${apiBase(env)}${path}`, { method: 'POST', headers: { authorization: `Bearer ${env.NETLIFY_PUBLISHER_TOKEN}` }, signal: ac.signal });
       const body = await res.text();
       return { kind: 'response', response: { status: res.status, contentType: res.headers.get('content-type'), body } };
     } catch (e) {
@@ -107,13 +126,36 @@ function createPublisher({ env = process.env, fetchImpl = globalThis.fetch, log 
     const r = await call('activate', { activationId, attemptSetDigest: pub.attemptSetDigest, attestations: atts.map((a) => ({ attestation: a.attestation })), approvalRef, revocationRef, g5Digest });
     return { ok: r.status === 200, status: r.status, body: r.body };
   }
+  /** cycle: one process from Close to Activate. */
+  async function cycle(args) {
+    const pub = await publish({ pubId: args.pubId, target: args.target });
+    if (!pub.ok) return { code: 1, publish: pub };
+    if (pub.classification === 'UNRESOLVED') return { code: 3, publish: pub, next: 'blocked: the publication result is unknown (fail-closed limitation)' };
+    if (pub.classification !== 'APPLIED') return { code: 2, publish: pub, next: 'run `resume` once an approved provider-semantics record classifies the stored response' };
+    const act = await activateTarget(args);
+    return { code: act.ok ? 0 : 2, publish: pub, activate: act, ...(act.ok ? {} : { next: 'run `resume` to retry activation' }) };
+  }
+  /** resume: a NEW process takes over safely and finishes what the stored records allow. Never dispatches. */
+  async function resume(args) {
+    const st = (await status()).body;
+    const pub = st && st.publication;
+    if (!pub) return { code: 1, stop: 'no_publication', status: st };
+    const o = pub.outstanding;
+    if (o && (o.state === 'dispatching' || o.state === 'unresolved')) return { code: 3, stop: 'blocked', outstanding: o, next: 'an attempt may have been sent and has no recorded response; nothing can take it over' };
+    const h = await call('handover');
+    if (h.status !== 200) return { code: 1, stop: 'handover', body: h.body };
+    if (o && o.state === 'responded') {
+      const r = await call('reclassify', { attemptId: o.attemptId });
+      if (r.status !== 200) return { code: 2, stop: 'reclassify', body: r.body, next: 'the stored response is not classified by any approved semantics record' };
+      if (r.body.classification !== 'APPLIED') return { code: 2, stop: 'rejected', classification: r.body.classification, next: 'the attempt was REJECTED; run `cycle` with a new publication' };
+    }
+    if (o && o.state === 'claimed') return { code: 2, stop: 'abandoned', next: 'the never-sent attempt was abandoned; run `cycle` again' };
+    const act = await activateTarget(args);
+    return { code: act.ok ? 0 : 2, activate: act };
+  }
   return {
     publisherHashForTests: () => crypto.createHash('sha256').update(Buffer.from(p, 'hex')).digest('hex'),
-    status, publish, activate: activateTarget,
-    init: () => call('init'),
-    reclassify: (attemptId) => call('reclassify', { attemptId }),
-    abandon: (attemptId) => call('abandon', { attemptId }),
-    handover: () => call('handover'),
+    status, cycle, resume, init: () => call('init'),
   };
 }
 
@@ -121,16 +163,15 @@ function arg(name) { const i = process.argv.indexOf(`--${name}`); return i > 0 ?
 async function main() {
   const cmd = process.argv[2];
   const pub = createPublisher();
-  let out;
-  if (cmd === 'status') out = await pub.status();
-  else if (cmd === 'init') out = await pub.init();
-  else if (cmd === 'publish') out = await pub.publish({ pubId: arg('pub'), target: arg('target') });
-  else if (cmd === 'reclassify') out = await pub.reclassify(arg('attempt'));
-  else if (cmd === 'abandon') out = await pub.abandon(arg('attempt'));
-  else if (cmd === 'handover') out = await pub.handover();
-  else if (cmd === 'activate') out = await pub.activate({ activationId: arg('activation'), approvalRef: arg('approval'), revocationRef: arg('revocation'), g5Digest: arg('g5-digest') });
-  else { console.error('usage: iaos-publish status|init|publish|reclassify|abandon|handover|activate'); process.exit(2); }
+  const common = { activationId: arg('activation'), approvalRef: arg('approval'), revocationRef: arg('revocation'), g5Digest: arg('g5-digest') };
+  let out; let code = 0;
+  if (cmd === 'status') { out = await pub.status(); code = out.status === 200 ? 0 : 1; }
+  else if (cmd === 'init') { out = await pub.init(); code = out.status === 200 ? 0 : 1; }
+  else if (cmd === 'cycle') { out = await pub.cycle({ pubId: arg('pub'), target: arg('target'), ...common }); code = out.code; }
+  else if (cmd === 'resume') { out = await pub.resume(common); code = out.code; }
+  else { console.error('usage: iaos-publish status|init|cycle|resume'); process.exit(1); }
   console.log(JSON.stringify(out, null, 2));
+  process.exitCode = code;
 }
 if (require.main === module) main().catch((e) => { console.error('iaos-publish failed:', e && e.message); process.exit(1); });
 module.exports = { createPublisher, RESTORE_TIMEOUT_MS };
