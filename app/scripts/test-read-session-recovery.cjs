@@ -517,6 +517,10 @@ async function main() {
     await page.getByTestId('call-log-save').click();
     await until(async () => writes('contact.callLogResult').length === 2, 'P1CL next attempt');
     check('P1CL only after reconciliation does another attempt become possible', writes('contact.callLogResult')[1].args.value === 'No Answer');
+    /* Storage correction: the v2 save path makes more (real, strong) storage round trips, so this
+       save's note and last touch can still be in flight here. Let it finish before the reload below
+       resets the request log -- otherwise its late note is logged as part of the next case. */
+    await until(async () => writes('contact.lastCallAttempt').length === 2, 'P1CL next attempt finished');
     // GHL's result changed meanwhile: the server's record of the confirmed write decides; the result is never re-sent.
     sessionMs = 3600_000;
     await freshApp(`/contacts/${A}`);

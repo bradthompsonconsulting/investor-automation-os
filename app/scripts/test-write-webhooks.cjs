@@ -5,21 +5,11 @@ const path = require('node:path');
 const Module = require('node:module');
 const ts = require('typescript');
 const APP = path.resolve(__dirname, '..');
-const originalResolve = Module._resolveFilename;
-const originalLoad = Module._load;
-const receipts = new Map();
-Module._resolveFilename = function(name, parent, ...rest) {
-  if (name.startsWith('.') && parent) {
-    const candidate = path.resolve(path.dirname(parent.filename), name + '.ts');
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return originalResolve.call(this, name, parent, ...rest);
-};
-Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
-Module._load = function(name, ...rest) {
-  if (name === '@netlify/blobs') return { connectLambda: () => {}, getStore: () => ({ async get(key) { return receipts.get(key) ?? null; }, async delete(key) { receipts.delete(key); }, async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; } }) };
-  return originalLoad.call(this, name, ...rest);
-};
+/* Storage correction (PR #131): ghl-disposition is a modern-runtime function whose ownership storage
+   (lock v2, admission tickets) runs on the REAL @netlify/blobs client over the wire harness. The two
+   repo-root webhooks below are unchanged Lambda handlers that use no Blob store. */
+const { setupV2Env } = require('./harness/v2-env.cjs');
+const v2env = setupV2Env();
 process.env.IAOS_ENV = 'test';
 process.env.IAOS_APP_WRITE_GOOGLE_CLIENT_ID = 'offline-client';
 process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid';
@@ -30,14 +20,14 @@ process.env.GHL_API_TOKEN = 'offline-fixture';
 const {getConfig}=require('../shared/ghl-config.ts');const config=getConfig('test');
 const phone=require('../../netlify/functions/phone-lookup.ts').handler;
 const motivation=require('../../netlify/functions/motivation-score.ts').handler;
-const disposition=require('../netlify/functions/ghl-disposition.ts').handler;
+const dispositionMod=require('../netlify/functions/ghl-disposition.ts');const disposition=(e)=>v2env.invoke(dispositionMod,{fn:'ghl-disposition',...e});
 const secret='offline-synthetic-webhook-secret-only';
 process.env.IAOS_PHONE_LOOKUP_WEBHOOK_SECRET=secret;process.env.IAOS_MOTIVATION_WEBHOOK_SECRET=secret;process.env.IAOS_WEBHOOK_SECRET=secret;
 process.env.TWILIO_ACCOUNT_SID='offline-fixture';process.env.TWILIO_AUTH_TOKEN='offline-fixture';
 const contact={id:'fixture-contact',locationId:config.locationId,phone:'+15555550101',customFields:[],tags:['unrelated']};
 let fields=[{id:'phone-type-field',fieldKey:'contact.phone_type'},{id:'motivation-field',fieldKey:'contact.motivation_score'}];
 let calls=[],writes=[],notes=[],omit=false;const response=data=>({ok:true,status:200,json:async()=>structuredClone(data),text:async()=>JSON.stringify(data)});
-global.fetch=async(url,init={})=>{const u=new URL(url);const method=init.method||'GET';calls.push({origin:u.origin,path:u.pathname,method});
+v2env.hooks.ghlFetch=async(url,init={})=>{const u=new URL(url);const method=init.method||'GET';calls.push({origin:u.origin,path:u.pathname,method});
 if(u.origin==='https://lookups.twilio.com'){assert.equal(method,'GET');return response({line_type_intelligence:{type:'mobile'}});}
 assert.equal(u.origin,'https://services.leadconnectorhq.com');
 if(method!=='GET')writes.push({path:u.pathname,method,body:JSON.parse(init.body)});
@@ -46,6 +36,7 @@ if(u.pathname==='/contacts/'+contact.id+'/tags'){const tags=JSON.parse(init.body
 if(u.pathname==='/contacts/'+contact.id+'/notes'){if(method==='POST'){const note={id:'note-'+notes.length,body:JSON.parse(init.body).body,dateAdded:new Date().toISOString()};notes.push(note);return response({note});}return response({notes});}
 if(u.pathname==='/contacts/'+contact.id){if(method==='PUT'&&!omit)for(const f of JSON.parse(init.body).customFields){contact.customFields=contact.customFields.filter(c=>c.id!==f.id);contact.customFields.push({id:f.id,value:f.field_value});}return response({contact});}
 throw new Error('Unexpected offline request '+u.pathname);};
+const ghlAndTwilio=v2env.hooks.ghlFetch;global.fetch=(url,init)=>ghlAndTwilio(url,init);
 const event=body=>({httpMethod:'POST',headers:{'x-iaos-secret':secret},body:JSON.stringify(body)});let count=0;
 async function check(name,fn){await fn();console.log('PASS '+name);count++;}
 (async()=>{

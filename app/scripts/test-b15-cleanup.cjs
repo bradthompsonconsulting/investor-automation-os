@@ -107,7 +107,7 @@ check('before any sign-in, the single sign-in landing is unchanged (no page rend
      server-side (call-log-barrier); behaviour in test-call-log-barrier.cjs and
      test-call-log-ownership.cjs. */
   check('call log: a NEW operation (new id) is begun before the first write; nothing is sent unless it succeeds',
-    /const op = crypto\.randomUUID\(\);/.test(cl)
+    /const op = newV2Id\(\);/.test(cl)   // storage correction: v2 clients mint only v2- ids
     && /try \{ reserved = await beginOperation\(cid, op, chosen, body\); \}\s*catch \{\s*if \(!forThis\(cid\)\) return;\s*setSubmit\(\{ status: "not_saved", message: RESERVATION_FAILED_MESSAGE \}\);[\s\S]{0,140}return;\s*\}/.test(cl)
     && cl.indexOf('await beginOperation(cid, op, chosen, body)') < cl.indexOf('await sendCallLogStep(cid, "result"'));
   check('call log: Save refuses unless the server reports the contact clear (any session\'s unfinished save blocks it)',

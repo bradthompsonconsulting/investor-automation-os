@@ -128,13 +128,14 @@ export class VerifiedStore {
       if (res.status === 429 || res.status >= 500) { try { await res.body?.cancel(); } catch { /* ignore */ } return synthetic(); }
       return res;
     };
-    return getStore({ name: this.name, consistency: "strong", fetch: wrapped as any, siteID: ctx.siteID ?? "unconfigured", token: ctx.token ?? "unconfigured", edgeURL: ctx.edgeURL, uncachedEdgeURL: ctx.uncachedEdgeURL } as any);
+    return getStore({ name: this.name, consistency: "strong", fetch: wrapped as any, siteID: ctx.siteID, token: ctx.token, edgeURL: ctx.edgeURL, uncachedEdgeURL: ctx.uncachedEdgeURL } as any);
   }
 
   private async attempt<T>(call: (store: ReturnType<typeof getStore>) => Promise<T>): Promise<{ log: Observation[]; value?: T; threw: boolean }> {
     const log: Observation[] = [];
     try {
-      if (!this.ctx) return { log, threw: true };
+      // An incomplete context (no https edge/uncached URL, site id or token) never reaches the network.
+      if (!this.ctx || !this.configured) return { log, threw: true };
       const value = await call(this.sdk(log));
       return { log, value, threw: false };
     } catch { return { log, threw: true }; }

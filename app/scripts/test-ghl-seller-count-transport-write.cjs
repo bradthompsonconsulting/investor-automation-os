@@ -33,7 +33,8 @@ check('canonical projection computation unchanged from authorized PR head',
   '8fb14afa3092e739d4e0aad826e4bc18aba3643ea872e7b8408d273eb8951a68');
 check('generic request receipts and contact locks remain',
   /export async function claimWrite/.test(read('netlify/functions/lib/write-receipts.ts')) &&
-  /export async function lockContact/.test(read('netlify/functions/lib/write-receipts.ts')));
+  // Storage correction: the contact lock is lock v2 (never deleted), in its own module.
+  /export async function acquireLock/.test(read('netlify/functions/lib/contact-lock-v2.ts')));
 // Scan executable string/template literals, ignoring historical comments.
 const ts = require('typescript');
 const sendLiterals = [];
