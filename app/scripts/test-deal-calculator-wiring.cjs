@@ -189,7 +189,21 @@ const barTs = readSrc('src/lib/deal-calculator-bar.ts');
 {
   check('page renders a Clear action', /data-testid="deal-calc-clear"/.test(calcTsx), true);
   check('Clear resets ARV/Repairs/Test Price/assignment state', /function handleClear\(\) \{[\s\S]{0,400}setArvInput\(""\)[\s\S]{0,400}setTestPriceInput\(""\)/.test(calcTsx), true);
-  check('Clear does not sever an existing link (Clear and Unlink are two distinct bounded actions)', /function handleClear\(\) \{[\s\S]{0,600}\n  \}/.test(calcTsx) && !/function handleClear\(\)[\s\S]{0,600}setLinkedContactId\(null\)/.test(calcTsx), true);
+  // handleClear's whole body, by brace matching from its opening brace --
+  // no fixed character window, so a longer comment cannot hide or break it.
+  const clearBody = (() => {
+    const open = calcTsx.indexOf('function handleClear() {');
+    if (open === -1) return null;
+    const from = calcTsx.indexOf('{', open);
+    let depth = 0;
+    for (let i = from; i < calcTsx.length; i++) {
+      if (calcTsx[i] === '{') depth++;
+      else if (calcTsx[i] === '}' && --depth === 0) return calcTsx.slice(from + 1, i);
+    }
+    return null;
+  })();
+  check('Clear does not sever an existing link (Clear and Unlink are two distinct bounded actions)',
+    clearBody !== null && /setArvInput\(""\)/.test(clearBody) && /setTestPriceInput\(""\)/.test(clearBody) && !/setLinkedContactId\(/.test(clearBody), true);
 }
 
 // ============================================================
