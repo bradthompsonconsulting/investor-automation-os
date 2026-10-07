@@ -1,9 +1,13 @@
 # Marketing-site GHL webhooks under storage v2: specification for review
 
-**Status:** this is a specification for Bones's review, written before any implementation (Jess's ruling,
-item 2). No code in this branch implements the scoped path yet. Until it is reviewed and implemented,
-these two webhooks fail closed on this branch (`test-write-webhooks` fails, and so does the `test-inv95`
-aggregate that includes it).
+**Status:** a proposal. **The exception is NOT CLEARED** (Bones, review of `e982ed0`, item A).
+
+**Interim state on this branch** (Bones finding 6, fixed): both webhooks are **uniformly held**.
+- An authenticated request gets `503 "… held pending review; nothing was written"` **before** the provider
+  lookup and before any GHL read or write.
+- `motivation-score`'s tag add/remove calls now go through the same gated boundary as its score fields,
+  never a direct fetch, so no partial write is possible.
+- This is a **loss of functionality**, held fail-closed until a reviewed write path is accepted.
 
 ## Why they break under v2
 
@@ -83,3 +87,26 @@ is no blanket bypass of v2.
 **Decisions requested from Bones:**
 - whether disjoint effect classes are sufficient grounds to keep these writes outside admission and G5;
 - whether a scoring-tag change, which drives GHL workflows, needs any additional control.
+
+## Review result (Bones, item A) and the evidence required before any exception
+
+**The disjoint-fields argument is insufficient.**
+- Scoring tags drive GHL workflows by design.
+- The workflow effects of the score fields and of `phone_type` are UNKNOWN.
+
+Bones's offline counterexample attached a simulated workflow note effect to the real handler's tag POST
+while an uncertain note ticket existed: the overlapping effect occurred. That is not evidence of the live
+configuration. It does show that field names cannot establish separation.
+
+**Required before an exception can be considered** (each a gated, read-only evidence step; none
+authorized here):
+1. **Callers:** every caller of each webhook (workflow ids, the operator script), with the credential
+   each uses, and `GHL_API_TOKEN`'s place in the C0 credential inventory.
+2. **Transitive effects:** every downstream workflow triggered by each written field and tag, and what
+   those workflows do: notes, touch, routing, opportunities, stages, messages, tags.
+   **Unknown overlap = denied.**
+3. **Retry and partial failure:** each caller's retry behaviour on non-2xx, and each partial-failure state
+   (fields written but tags not, or the reverse). Deterministic scores and idempotent tag membership do
+   not establish workflow idempotency or terminal request outcomes.
+4. **A boundary design covering all of the above**, reviewed by Bones and ruled by Jess before
+   implementation.

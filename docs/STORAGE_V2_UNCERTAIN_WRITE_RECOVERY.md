@@ -32,46 +32,61 @@ R1–R4 used to recover by **retrying**. Retrying blind after an uncertain send 
 to prevent: GHL documents no idempotency key, cancellation or request status. Retries are therefore
 refused by design, but the alternative is that the subject stays blocked until a recovery path exists.
 
-## Proposed recovery: tied to the exact attempt and its evidence
+## Review status
 
-Each proposal below needs review. None is implemented.
+Bones (review of `e982ed0`, `#issuecomment-6046546656`, item B) reproduced R1–R5 and confirmed they are
+covered by the rerun handlers. **Recovery is NOT restored.**
 
-**P-A: response received, readback failed** (R4, part of R2).
-- **What is recorded:** when the ticket became uncertain *after* GHL answered 2xx, the sender persists,
-  in the same write that marks the ticket uncertain, the exact evidence:
-  - the GHL status;
-  - the GHL-returned record id (the note id from the POST response);
-  - a digest of the request body;
-  - the ticket and attempt ids.
-- **Later recovery:** a strong GHL read that finds **that record id** with **that exact body** proves
-  the attempt applied. Recovery then compare-and-swaps the ticket to removed, matched on that exact
-  evidence. A field write returns no record id, so it does not qualify.
-- **Correlation:** this is correlation by an identifier the attempt itself produced, the N4 standard. A
-  matching value alone never clears anything.
+The restated assertions in those suites document a stricter held state. Their green counts are not
+evidence of preserved recovery behaviour. R4's later success uses a fixture that removes the ticket to
+simulate resolution, and that is not production recovery evidence. The accepted Owner-bypass exception
+changes none of this.
+
+## Proposed recovery (amended per review; for Jess and Bones; NOT implemented)
+
+Every proposal below is bound to **one exact ticket**: its ticket id, request digest, op and attempt ids,
+and the subject and effects it holds. Each must satisfy the same fail-closed contract as the publication
+classifier (amendment r4 §C).
+
+Removal requires BOTH:
+- (i) request-specific evidence bound to that exact attempt; and
+- (ii) supported provider semantics that make that request **terminal**: either applied and unable to
+  apply again, or not applied and unable to apply later.
+
+Missing or ambiguous evidence, an absent semantics record, an elapsed time, a later value read, or an
+approval alone leaves the ticket blocking.
+
+**P-A: GHL answered 2xx, readback failed** (R4, part of R2).
+- **What is persisted:** in the same compare-and-swap that marks the ticket uncertain, the attempt's exact
+  evidence: GHL status, returned record id, request-body digest, and ticket and attempt ids. The
+  evidence digest is bound to the ticket.
+- **What it can establish:** a later strong GHL read finding that record id with that exact body is
+  *correlation* (the attempt did apply). It does **not** by itself establish that the request cannot
+  apply again later.
+- **Removal also requires** an approved GHL provider-semantics record whose predicates classify exactly
+  that persisted evidence as terminal-applied, with the provider citation.
+- **Until then the ticket stays.** No such GHL semantics are known today.
 
 **P-B: no response** (R1, R3, part of R2).
-- **What it needs:** request-specific evidence. GHL offers none known for these endpoints, so no
-  automatic recovery is proposed.
-- **What it gets instead:** a **reviewed resolution record**, `authz/ticket-resolution/<ticketId>`. It is
-  immutable and created only by a separately authorized tool, with Bones's and Jess's approval references.
-  It holds:
-  - the exact ticket, attempt and request digest;
-  - the evidence relied on (for example a GHL audit-log entry identifying that request, if one exists);
-  - a statement of what was observed.
-- **What the gate requires:** the record and its approvals, the same model as `register_semantics`.
-- **What it rules out:** elapsed time, a later readback of the value, operator say-so without a record.
+- **What it needs:** request-specific evidence plus supported semantics for terminal-applied or
+  terminal-not-applied. GHL offers no known request-status, idempotency or audit API for these endpoints,
+  so **no removal route is proposed**.
+- **Approvals are not facts:** a resolution record carrying approval references is a policy act, not a
+  fact about an outstanding request. It cannot remove a ticket.
+- **If evidence ever becomes available** (for example a provider audit entry naming that request), its
+  classifier must be fail-closed and bound to that exact evidence, exactly like T4/T8. Until then R1, R3
+  and part of R2 stay held.
 
-**P-C: narrower blocking scope for no-identifier field writes** (R1–R3; an option, not a recommendation).
-- **The change:** for field writes, the ticket's blocking set could be its exact `custom_field:<id>`
-  classes plus the semantic class (`last_touch`), rather than every write in that class.
-- **The trade:** it reduces collateral blocking (R5-like effects across fields) but does not unblock
-  R1–R3, because those retry the same field.
+**P-C: blocking scope** (an option, not a recommendation). A narrower block is acceptable only if it is
+derived from **actual semantic and workflow overlap**, mapped from evidence. Field-name separation is not
+sufficient: a field write can trigger workflows that write notes, touches or stages. Without that
+mapping, the current effect-class block stands.
 
-**P-D: client/product change** (R1/R2). The pages could surface the blocked state, "Saving the call time
-is held: an earlier attempt's result is unknown", instead of offering a retry that will be refused.
-This is copy and flow only; the product decision is Brad's.
+**P-D: what the page says** (a product decision for Brad). The page should explain the held or partial
+state plainly. It should **not** offer a retry that suggests an unresolved request is safe to resend.
 
 **Not proposed:**
-- classifying GHL 4xx (or any status) as definitely refused;
+- classifying GHL 4xx (or any status) as refused;
 - time-based expiry;
-- a GHL value read as clearance.
+- a GHL value read as clearance;
+- an approval record as clearance.
