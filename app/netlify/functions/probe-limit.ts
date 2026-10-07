@@ -38,9 +38,9 @@ async function handle(event: LegacyEvent, context: any, scope: InvocationScope):
   let beats = 0;
   const started = scope.startedAt;
   while (scope.isOpen && clock.now() - started < 55_000) {
-    const w = await store.cas(key, { elapsedMs: clock.now() - started, beats, deployId: deployContextOf(context).id, sdk: SDK_VERSION, node: process.version }, etag, "storage_write").catch(() => null);
+    const w: { result: string; etag?: string } | null = await store.cas(key, { elapsedMs: clock.now() - started, beats, deployId: deployContextOf(context).id, sdk: SDK_VERSION, node: process.version }, etag, "storage_write").catch(() => null);
     if (!w || w.result !== "written") break;
-    etag = w.etag; beats++;
+    etag = w.etag ?? null; beats++;
     await new Promise((r) => setTimeout(r, 500));
   }
   return json(200, { beats, ranAtLeastMs: clock.now() - started });
