@@ -156,7 +156,7 @@ async function activateHere(inv: Invocation, b: any): Promise<LambdaResult> {
   if (!g5) return json(409, { refused: "g5_table_missing" });
   const g5Digest = tableDigest(g5.table);
   if (b.g5Digest !== g5Digest) return json(409, { refused: "g5_digest_not_approved", g5Digest });
-  const next = await activate(inv.store, inv.scope, { p: b.publisherToken, runtimeDeployId: inv.deploy.id!, attemptSetDigest: b.attemptSetDigest, g5Digest, activationId: b.activationId });
+  const next = await activate(inv.store, inv.scope, { p: b.publisherToken, runtimeDeployId: inv.deploy.id!, attemptSetDigest: b.attemptSetDigest, g5Table: g5.table, activationId: b.activationId });
   // I4: the activation record is an archive written AFTER the authoritative write.
   await archive(inv.store, `${ACTIVATION_ARCHIVE_PREFIX}${inv.deploy.id}/${next.activationId}`, { deployId: inv.deploy.id, activationId: next.activationId, epoch: next.epoch, pubId: pub.pubId, attemptSetDigest: pub.attemptSetDigest, history: pub.history, g5Digest, cutoverManifest: cutover.manifestDigest, ownerRunId: cutover.ownerRunId, approvalRef: b.approvalRef, revocationRef: b.revocationRef, attestations: atts.map((x) => x.attestation), at: new Date().toISOString() });
   return json(200, { activated: true, activationId: next.activationId, epoch: next.epoch, deployId: next.deployId });

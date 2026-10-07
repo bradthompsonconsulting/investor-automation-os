@@ -184,6 +184,47 @@ const storageIo = () => env.wire.log.length;
     assert.equal(ghl.writes.length, 0);
   });
 
+  // ── Bones finding 1: a G5 widening races an in-flight write ────────────────
+  const cutoverMod = require('../netlify/functions/iaos-cutover.ts');
+  const REVIEW = 'reviewContact';
+  const widenNow = async () => {
+    const r = await env.invoke(cutoverMod, { fn: 'iaos-cutover', httpMethod: 'POST', headers: env.writeHeaders(), body: JSON.stringify({ action: 'g5_widen', entry: { pathId: 'review-new-block', scope: `contact:${REVIEW}`, effects: ['note'] } }) });
+    assert.equal(r.statusCode, 200, r.body);
+    return JSON.parse(r.body);
+  };
+  const isAdmissionPut = (req) => req.method === 'PUT' && req.key === 'authz/admission';
+  const reviewNote = () => post('ghl-write', { operation: 'note.create', targetId: REVIEW, requestId: v2(), args: { body: 'review note' } });
+  await check('W-1 (Bones finding 1) a widening AFTER the gate entry read and BEFORE the Admit write: refused g5_blocked, ZERO GHL writes', async () => {
+    fresh(); ghl.addContact(REVIEW);
+    let widened = null;
+    env.wire.on(isAdmissionPut, env.wire.before(async () => { widened = await widenNow(); }), 1);
+    const r = await reviewNote();
+    assert.ok(widened && widened.effective === true, 'the widening took effect in the authoritative record');
+    assert.equal(r.statusCode, 503, r.body); assert.equal(parse(r).code, 'g5_blocked');
+    assert.equal(ghl.writes.length, 0);
+    assert.equal(env.g5.allows(env.admission().g5, `contact:${REVIEW}`, ['note']).ok, false);
+  });
+  await check('W-2 a widening AFTER Admit and BEFORE the Dispatching write: the admitted ticket is revoked in the same write; nothing is sent', async () => {
+    fresh(); ghl.addContact(REVIEW);
+    let n = 0; let widened = null;
+    env.wire.on(isAdmissionPut, env.wire.before(async () => { if (++n === 2) widened = await widenNow(); }), 2);
+    const r = await reviewNote();
+    assert.ok(widened && widened.revokedAdmitted === 1, JSON.stringify(widened));
+    assert.notEqual(r.statusCode, 200);
+    assert.equal(ghl.writes.length, 0, 'nothing dispatched');
+    assert.deepEqual(Object.keys(env.admission().tickets), [], 'no ticket left behind');
+  });
+  await check('W-3 a widening AFTER the Dispatching write (the agreed admission point): the send proceeds once; later overlapping writes are refused', async () => {
+    fresh(); ghl.addContact(REVIEW);
+    ghl.on((req) => req.method === 'POST', async () => { await widenNow(); });
+    const r = await reviewNote();
+    assert.equal(r.statusCode, 200, r.body);
+    assert.equal(ghl.writes.length, 1);
+    const later = await reviewNote();
+    assert.equal(later.statusCode, 503); assert.equal(parse(later).code, 'g5_blocked');
+    assert.equal(ghl.writes.length, 1);
+  });
+
   // ── Credentials (K1–K3) ───────────────────────────────────────────────────
   await check('K1 static: zero references to GHL_PRIVATE_API_KEY in the app source (functions, src, shared)', async () => {
     const hits = [];

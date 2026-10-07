@@ -46,6 +46,7 @@ import { canonical, digest } from "./hash";
 import { clock, InvocationScope } from "./invocation-scope";
 import { StorageUncertain, VerifiedStore, type ReadResult } from "./verified-store";
 import { diag } from "./diagnostics";
+import { allows, tableDigest, validTable, widen as widenTable, type G5Table } from "./g5-gate";
 
 export const ADMISSION_KEY = "authz/admission";
 export const TICKET_OUTCOME_PREFIX = "authz/ticket-outcome/";
@@ -83,6 +84,13 @@ export type Publication = {
 export type Admission = {
   v: 3; epoch: number; activationId: string | null; deployId: string | null; state: "open" | "closed";
   g5Digest: string | null; activatedAt: string | null; activationMark: string | null; initMark?: string;
+  /**
+   * Bones review finding 1: the EFFECTIVE G5 table lives in this same record, so policy and admission
+   * share one compare-and-swap. Admit and Dispatching check it inside their own write; a widening is a
+   * write to this record that also revokes already-admitted overlapping tickets. Narrowing is staged in
+   * `authz/g5/table` and becomes effective only through a fresh activation (T9 copies the approved table).
+   */
+  g5: G5Table | null;
   tickets: Record<string, Ticket>; publication: Publication | null;
 };
 
@@ -93,6 +101,8 @@ export type Captured = { epoch: number; activationId: string; deployId: string; 
 export class AdmissionClosed extends Error { constructor(readonly code: "activation_missing" | "admission_closed" | "publication_unresolved") { super("Saving is paused: writes are not admitted on this deployment"); this.name = "AdmissionClosed"; } }
 /** The invocation's captured activation no longer matches (409 activation_changed). */
 export class ActivationChanged extends Error { constructor() { super("This page is out of date — reload"); this.name = "ActivationChanged"; } }
+/** The effective G5 table (in this record) blocks the subject/effects: nothing may be admitted or dispatched. */
+export class G5Blocked extends Error { constructor() { super("Saving is held while earlier save records are reviewed"); this.name = "G5Blocked"; } }
 /** An overlapping live ticket exists (409). */
 export class TicketOverlap extends Error { constructor(readonly state: TicketState) { super("Another save for this record is in progress or unresolved"); this.name = "TicketOverlap"; } }
 /** The transition's outcome could not be established: it is treated as NOT done. */
@@ -198,6 +208,7 @@ export async function admit(store: VerifiedStore, scope: InvocationScope, captur
     if (!cur) return { refuse: new AdmissionClosed("activation_missing") };
     if (cur.state !== "open") return { refuse: new AdmissionClosed(cur.publication?.outstanding ? "publication_unresolved" : "admission_closed") };
     if (cur.epoch !== captured.epoch || cur.activationId !== captured.activationId || cur.deployId !== captured.deployId) return { refuse: new ActivationChanged() };
+    if (!allows(cur.g5, base.subject, base.effects).ok) { diag({ fn: scope.fn, action: "admit", phase: "g5_gate", class: "g5_blocked" }); return { refuse: new G5Blocked() }; }
     const now = clock.now();
     const tickets = { ...cur.tickets };
     for (const t of Object.values(cur.tickets)) {
@@ -226,6 +237,8 @@ export async function markDispatching(store: VerifiedStore, held: HeldTicket): P
     if (ticketMatches(got, next, "dispatching", "dispatchMark")) return { done: true };
     if (!ticketMatches(got, t, "admitted")) return { refuse: new AdmissionClosed("admission_closed") };   // revoked by Close
     if (cur.state !== "open" || cur.epoch !== held.captured.epoch || cur.activationId !== held.captured.activationId) return { refuse: new ActivationChanged() };
+    // The admission point re-checks the effective table in the SAME write.
+    if (!allows(cur.g5, t.subject, t.effects).ok) return { refuse: new G5Blocked() };
     return { write: { ...cur, tickets: { ...cur.tickets, [t.ticketId]: next } }, result: true };
   }, (cur) => (cur && ticketMatches(cur.tickets[t.ticketId], next, "dispatching", "dispatchMark") ? true : null), held.cache);
   held.ticket = next;
@@ -352,7 +365,7 @@ export async function initAdmission(store: VerifiedStore, p: string): Promise<"c
   const initMark = publisherMark(p, "T0", "-", "-", "-");
   return transition<"created" | "exists">(store, "T0", (cur) => {
     if (cur) return { done: "exists" };
-    const rec: Admission = { v: 3, epoch: 0, activationId: null, deployId: null, state: "closed", g5Digest: null, activatedAt: null, activationMark: null, initMark, tickets: {}, publication: null };
+    const rec: Admission = { v: 3, epoch: 0, activationId: null, deployId: null, state: "closed", g5Digest: null, g5: null, activatedAt: null, activationMark: null, initMark, tickets: {}, publication: null };
     return { write: rec, result: "created" };
   }, (cur) => (cur && cur.initMark === initMark ? "created" : null));
 }
@@ -617,9 +630,9 @@ export async function reclassifyAttempt(store: VerifiedStore, p: string, attempt
  * caller's verified prerequisites (attestations, import, G5, revocation). Opens a
  * new epoch with a new activationId. Tickets carry over untouched.
  */
-export async function activate(store: VerifiedStore, scope: InvocationScope, input: { p: string; runtimeDeployId: string; attemptSetDigest: string; g5Digest: string; activationId: string }): Promise<Admission> {
+export async function activate(store: VerifiedStore, scope: InvocationScope, input: { p: string; runtimeDeployId: string; attemptSetDigest: string; g5Table: G5Table; activationId: string }): Promise<Admission> {
   const { p, runtimeDeployId } = input;
-  if (!validToken(p) || !validId(input.activationId)) throw new PublicationRefused("invalid_request");
+  if (!validToken(p) || !validId(input.activationId) || !validTable(input.g5Table)) throw new PublicationRefused("invalid_request");
   const activationMark = publisherMark(p, "T9", input.activationId, "-", runtimeDeployId);
   return transition<Admission>(store, "T9", (cur) => {
     if (cur && cur.state === "open" && cur.activationId === input.activationId && cur.activationMark === activationMark) return { done: cur };
@@ -630,9 +643,39 @@ export async function activate(store: VerifiedStore, scope: InvocationScope, inp
     const lastApplied = [...pub.history].reverse().find((h) => h.terminal === "APPLIED");
     if (!lastApplied || pub.targetDeployId !== runtimeDeployId) return { refuse: new PublicationRefused("wrong_deploy", "This deployment is not the publication's target") };
     if (pub.attemptSetDigest !== input.attemptSetDigest || attemptSetDigestOf(pub) !== pub.attemptSetDigest) return { refuse: new PublicationRefused("attempt_set_changed") };
-    const next: Admission = { ...cur!, state: "open", epoch: cur!.epoch + 1, activationId: input.activationId, deployId: runtimeDeployId, g5Digest: input.g5Digest, activatedAt: new Date().toISOString(), activationMark, publication: null };
+    /* Widenings applied to the effective table while this cycle was closed are carried forward: the new
+       effective table is the approved staged table PLUS every widened entry already in force. */
+    const carried = (cur!.g5?.entries ?? []).filter((e) => e.basis === "widened" && !input.g5Table.entries.some((x) => x.pathId === e.pathId && x.scope === e.scope && JSON.stringify(x.effects) === JSON.stringify(e.effects)));
+    const g5: G5Table = carried.length ? { ...input.g5Table, entries: [...input.g5Table.entries, ...carried] } : input.g5Table;
+    const next: Admission = { ...cur!, state: "open", epoch: cur!.epoch + 1, activationId: input.activationId, deployId: runtimeDeployId, g5Digest: tableDigest(g5), g5, activatedAt: new Date().toISOString(), activationMark, publication: null };
     return { write: next, result: next };
   }, (cur) => (cur && cur.state === "open" && cur.activationId === input.activationId && cur.activationMark === activationMark ? cur : null));
+}
+
+/**
+ * Widening the EFFECTIVE G5 table (Bones review finding 1): ONE compare-and-swap on this record adds the
+ * block and REVOKES every `admitted` ticket it now covers (as Close does: those senders' Dispatching
+ * write then fails, so they provably never send). A `dispatching` or `uncertain` ticket already passed
+ * the admission point: it is kept, and it keeps blocking overlapping work. Idempotent for an identical
+ * entry. No admission record yet: nothing is in force to widen (the staged table carries it into the
+ * first activation).
+ */
+export async function widenEffectiveG5(store: VerifiedStore, entry: { pathId: string; scope: string; effects: string[]; ref?: string }): Promise<{ widened: boolean; revoked: number }> {
+  const same = (e: { pathId: string; scope: string; effects: string[] }) => e.pathId === entry.pathId && e.scope === entry.scope && JSON.stringify([...e.effects].sort()) === JSON.stringify([...entry.effects].sort());
+  let revoked = 0;
+  return transition<{ widened: boolean; revoked: number }>(store, "G5W", (cur) => {
+    if (!cur) return { done: { widened: false, revoked: 0 } };
+    const base = cur.g5 ?? { v: 1 as const, entries: [], narrowings: [], updatedAt: new Date().toISOString() };
+    if (base.entries.some(same)) return { done: { widened: true, revoked: 0 } };
+    const g5 = widenTable(base, entry);
+    const tickets: Record<string, Ticket> = {};
+    revoked = 0;
+    for (const t of Object.values(cur.tickets)) {
+      if (t.state === "admitted" && !allows({ ...g5, entries: [g5.entries[g5.entries.length - 1]] }, t.subject, t.effects).ok) { revoked++; continue; }
+      tickets[t.ticketId] = t;
+    }
+    return { write: { ...cur, g5, tickets }, result: { widened: true, revoked } };
+  }, (cur) => (cur?.g5?.entries.some(same) ? { widened: true, revoked } : null));
 }
 
 /** I4: archives are written AFTER the authoritative write and never read for authorization. Failure is harmless. */

@@ -19,10 +19,10 @@ import { clock, InvocationScope } from "./invocation-scope";
 import { VerifiedStore } from "./verified-store";
 import { diag } from "./diagnostics";
 import {
-  admit, captureActivation, type AdmissionCache, markDispatching, markUncertain, removeWithOutcome, withdrawAdmitted, readAdmission,
+  admit, captureActivation, G5Blocked, type AdmissionCache, markDispatching, markUncertain, removeWithOutcome, withdrawAdmitted, readAdmission,
   AdmissionClosed, ActivationChanged, TicketOverlap, TransitionUnresolved, type Captured, type HeldTicket,
 } from "./admission";
-import { allows, readG5Table, tableDigest } from "./g5-gate";
+import { allows } from "./g5-gate";
 import { cutoverValid, legacyBlockKey, type LegacyBlock } from "./cutover";
 import { consumeForDispatch, type OwnedSend } from "./owned-send";
 
@@ -76,8 +76,6 @@ export class WriteGate {
   captured: Captured | null = null;
   /** This invocation's last known admission record (saves round trips; never authorizes). */
   readonly cache: AdmissionCache = { last: null };
-  /** The G5 table read at entry, in the same round trip as the activation (re-checked against the activation's digest). */
-  private table: Awaited<ReturnType<typeof readG5Table>> | undefined = undefined;
   private blocks = new Map<string, LegacyBlock | null>();
   constructor(readonly scope: InvocationScope, readonly store: VerifiedStore, readonly deploy: DeployContext, readonly env: string, readonly locationId: string) {}
 
@@ -91,12 +89,11 @@ export class WriteGate {
     requireNotKilled();
     let captured: Captured; let cutover;
     try {
-      let table; let blocks: (LegacyBlock | null)[];
-      [captured, cutover, table, blocks] = await Promise.all([
-        captureActivation(this.store, this.deploy.id!, undefined, this.cache), cutoverValid(this.store), readG5Table(this.store),
+      let blocks: (LegacyBlock | null)[];
+      [captured, cutover, blocks] = await Promise.all([
+        captureActivation(this.store, this.deploy.id!, undefined, this.cache), cutoverValid(this.store),
         Promise.all(prefetchSubjects.map((s) => this.store.readData<LegacyBlock>(legacyBlockKey(this.env, this.locationId, s), "g5_gate"))),
       ]);
-      this.table = table;
       prefetchSubjects.forEach((s, i) => this.blocks.set(s, blocks[i]));
     } catch (e) {
       if (e instanceof ActivationChanged) { diag({ fn: this.scope.fn, action: "enter", phase: "activation", class: "activation_changed" }); throw new WriteRefused(ACTIVATION_CHANGED, "activation_changed"); }
@@ -113,16 +110,16 @@ export class WriteGate {
   /** (iv)–(v) for one subject and its effect classes. */
   async checkSubject(subject: string, effects: string[]): Promise<void> {
     if (!this.captured) throw new WriteRefused(paused("activation_missing", MESSAGES.activation_missing), "activation_missing");
-    let table, block: LegacyBlock | null;
+    let block: LegacyBlock | null;
     try {
-      [table, block] = await Promise.all([
-        this.table !== undefined ? this.table : readG5Table(this.store),
-        this.blocks.has(subject) ? this.blocks.get(subject)! : this.store.readData<LegacyBlock>(legacyBlockKey(this.env, this.locationId, subject), "g5_gate"),
-      ]);
-      this.table = table; this.blocks.set(subject, block);
+      block = this.blocks.has(subject) ? this.blocks.get(subject)! : await this.store.readData<LegacyBlock>(legacyBlockKey(this.env, this.locationId, subject), "g5_gate");
+      this.blocks.set(subject, block);
     }
     catch { throw new WriteRefused(paused("storage", MESSAGES.storage), "unexpected"); }
-    if (!table || this.captured.g5Digest === null || tableDigest(table.table) !== this.captured.g5Digest || !allows(table.table, subject, effects).ok) {
+    /* An EARLY refusal from this invocation's last-known admission record. It never authorizes: the
+       authoritative G5 check is inside the Admit and Dispatching compare-and-swaps (Bones finding 1). */
+    const effective = this.cache.last?.data.g5 ?? null;
+    if (!allows(effective, subject, effects).ok) {
       diag({ fn: this.scope.fn, action: "check", phase: "g5_gate", class: "g5_blocked" });
       throw new WriteRefused(paused("g5_blocked", MESSAGES.g5_blocked), "g5_blocked");
     }
@@ -139,6 +136,7 @@ export class WriteGate {
       if (e instanceof ActivationChanged) throw new WriteRefused(ACTIVATION_CHANGED, "activation_changed");
       if (e instanceof AdmissionClosed) throw new WriteRefused(paused(e.code, MESSAGES[e.code]), e.code);
       if (e instanceof TicketOverlap) throw new WriteRefused({ status: 409, body: { code: "in_progress", error: "Another save for this record is in progress or unresolved. Nothing was sent." } }, "ticket_overlap");
+      if (e instanceof G5Blocked) throw new WriteRefused(paused("g5_blocked", MESSAGES.g5_blocked), "g5_blocked");
       throw new WriteRefused(paused("storage", MESSAGES.storage), "unexpected");
     }
   }
@@ -147,6 +145,7 @@ export class WriteGate {
     catch (e) {
       if (e instanceof ActivationChanged) throw new WriteRefused(ACTIVATION_CHANGED, "activation_changed");
       if (e instanceof AdmissionClosed) throw new WriteRefused(paused("admission_closed", MESSAGES.admission_closed), "admission_closed");
+      if (e instanceof G5Blocked) throw new WriteRefused(paused("g5_blocked", MESSAGES.g5_blocked), "g5_blocked");
       throw new WriteRefused(paused("storage", MESSAGES.storage), e instanceof TransitionUnresolved ? "ack_ambiguous" : "unexpected");
     }
   }

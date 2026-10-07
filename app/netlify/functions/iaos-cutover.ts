@@ -26,7 +26,7 @@ import { acquireLock, LockHeld, LockUnknown } from "./lib/contact-lock-v2";
 import { CUTOVER_KEY, IMPORT_LOCK_KEY, IMPORT_OWNER_KEY } from "./lib/cutover";
 import { captureBatch, claimImportOwner, completeImport, dryRunReport, ImportHalted, loadWorld, requireOwner, SNAPSHOTS, type Snapshot } from "./lib/legacy-import";
 import { DEFAULT_TABLE, G5_NARROW_PREFIX, G5_TABLE_KEY, applyNarrowing, readG5Table, tableDigest, validTable, widen, NarrowingRefused, type NarrowingRecord } from "./lib/g5-gate";
-import { registerSemantics, PublicationRefused } from "./lib/admission";
+import { registerSemantics, widenEffectiveG5, PublicationRefused } from "./lib/admission";
 import { canonical } from "./lib/hash";
 
 export const DRAIN_MINUTES = 30;
@@ -112,7 +112,11 @@ async function handle(event: LegacyEvent, inv: Invocation): Promise<LambdaResult
         if (!validTable(next)) return json(400, { error: "Invalid entry" });
         const w = await s.cas(G5_TABLE_KEY, next, cur ? cur.etag : null, "g5_gate");
         if (w.result !== "written") return json(409, { refused: "table_changed" });
-        return json(200, { widened: true, digest: tableDigest(next) });
+        /* Bones finding 1: the widening takes effect in the authoritative admission record in ONE
+           compare-and-swap that also revokes admitted overlapping tickets. The staged table above
+           carries it into every later activation. A failure here is retried safely (idempotent). */
+        const eff = await widenEffectiveG5(s, b.entry);
+        return json(200, { widened: true, digest: tableDigest(next), effective: eff.widened, revokedAdmitted: eff.revoked });
       }
       case "register_semantics": { await registerSemantics(s, b.n, b.record); return json(200, { registered: true }); }
       default: return json(400, { error: "Unknown action" });

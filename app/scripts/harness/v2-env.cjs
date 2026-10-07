@@ -55,7 +55,7 @@ function setupV2Env(options = {}) {
     const t = over.table || table;
     wire.seed(S, 'authz/g5/table', t);
     wire.seed(S, 'authz/admission', {
-      v: 3, epoch: 1, activationId: ACTIVATION_ID, deployId: DEPLOY_ID, state: 'open', g5Digest: g5.tableDigest(t),
+      v: 3, epoch: 1, activationId: ACTIVATION_ID, deployId: DEPLOY_ID, state: 'open', g5Digest: g5.tableDigest(t), g5: t,
       activatedAt: '2026-10-07T01:00:00.000Z', activationMark: 'fixture', tickets: {}, publication: null, ...(over.admission || {}),
     });
   }

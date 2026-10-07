@@ -40,10 +40,12 @@ const SEMANTICS = {
     { id: 'rejected-404', classifies: 'REJECTED', status: 404, body: [{ field: 'code', op: 'equals', value: '404' }], citation: 'fixture citation only' },
   ],
 };
+/** A fixture-only effective G5 table that blocks nothing (the real one starts {location: ALL}). */
+const OPEN_TABLE = { v: 1, entries: [], narrowings: ['fixture-n2'], updatedAt: 'x' };
 const R201 = (target) => ({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: target, site_id: SITE, published_at: '2026-10-07T02:00:00Z', state: 'ready' }) });
 
 function seedOpen(deployId = A, activationId = 'v2-act-0001', epoch = 1) {
-  wire.seed(S, KEY, { v: 3, epoch, activationId, deployId, state: 'open', g5Digest: 'g'.repeat(64), activatedAt: 'x', activationMark: 'fixture', tickets: {}, publication: null });
+  wire.seed(S, KEY, { v: 3, epoch, activationId, deployId, state: 'open', g5Digest: 'g'.repeat(64), g5: OPEN_TABLE, activatedAt: 'x', activationMark: 'fixture', tickets: {}, publication: null });
 }
 async function fullCycle(p, target, { semantics = true } = {}) {
   const s = store();
@@ -56,7 +58,7 @@ async function fullCycle(p, target, { semantics = true } = {}) {
   const c = await ad.recordResponse(s, p, att, R201(target));
   const r = rec();
   const act = 'v2-act-' + crypto.randomBytes(4).toString('hex');
-  const next = await ad.activate(s, scope('iaos-activation'), { p, runtimeDeployId: target, attemptSetDigest: r.publication.attemptSetDigest, g5Digest: 'g'.repeat(64), activationId: act });
+  const next = await ad.activate(s, scope('iaos-activation'), { p, runtimeDeployId: target, attemptSetDigest: r.publication.attemptSetDigest, g5Table: OPEN_TABLE, activationId: act });
   return { pubId, att, c, activationId: next.activationId };
 }
 const spec = (subject = 'contact:x', effects = ['note'], rid = 'v2-req-' + crypto.randomBytes(4).toString('hex')) => ({ opId: 'v2-op', attemptId: 'note:1', requestId: rid, subject, effects });
@@ -207,7 +209,7 @@ const fresh = () => wire.clear();
           run = () => ad.reclassifyAttempt(store(), p, 'att-st020002');
         } else {
           await prep('T4'); await steps.T4();
-          run = () => ad.activate(store(), scope('iaos-activation'), { p, runtimeDeployId: B, attemptSetDigest: rec().publication.attemptSetDigest, g5Digest: 'g'.repeat(64), activationId: 'v2-act-st02' });
+          run = () => ad.activate(store(), scope('iaos-activation'), { p, runtimeDeployId: B, attemptSetDigest: rec().publication.attemptSetDigest, g5Table: OPEN_TABLE, activationId: 'v2-act-st02' });
         }
         const before = JSON.stringify(rec());
         if (mode === 'ackLost') { wire.on(isPut, wire.ackLost()); await run(); assert.notEqual(JSON.stringify(rec()), before, `${t} applied`); }
@@ -233,7 +235,7 @@ const fresh = () => wire.clear();
     fresh(); seedOpen(A);
     const p = tok(); await ad.registerSemantics(store(), 1, SEMANTICS);
     await ad.closeAdmission(store(), p, 'pub-0000st04', B); await ad.claimAttempt(store(), p, 'att-st040001');
-    await assert.rejects(ad.activate(store(), scope('iaos-activation'), { p, runtimeDeployId: B, attemptSetDigest: rec().publication.attemptSetDigest, g5Digest: 'g', activationId: 'v2-act-st04' }), (e) => e.code === 'attempt_outstanding');
+    await assert.rejects(ad.activate(store(), scope('iaos-activation'), { p, runtimeDeployId: B, attemptSetDigest: rec().publication.attemptSetDigest, g5Table: OPEN_TABLE, activationId: 'v2-act-st04' }), (e) => e.code === 'attempt_outstanding');
     await ad.markAttemptDispatching(store(), p, 'att-st040001', SITE); await ad.recordResponse(store(), p, 'att-st040001', R201(B));
     await assert.rejects(ad.claimAttempt(store(), p, 'att-st040002'), (e) => e.code === 'already_applied');
   });
@@ -244,7 +246,7 @@ const fresh = () => wire.clear();
     await ad.markAttemptDispatching(store(), p, 'att-st050001', SITE); await ad.recordResponse(store(), p, 'att-st050001', R201(B));
     wire.seed(S, 'evidence/publication/pub-0000st05/corrupt', { garbage: true });
     for (const k of wire.keys(S).filter((k) => k.startsWith('evidence/'))) wire.remove(S, k);
-    const next = await ad.activate(store(), scope('iaos-activation'), { p, runtimeDeployId: B, attemptSetDigest: rec().publication.attemptSetDigest, g5Digest: 'g', activationId: 'v2-act-st05' });
+    const next = await ad.activate(store(), scope('iaos-activation'), { p, runtimeDeployId: B, attemptSetDigest: rec().publication.attemptSetDigest, g5Table: OPEN_TABLE, activationId: 'v2-act-st05' });
     assert.equal(next.state, 'open');
     const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../netlify/functions/lib/admission.ts'), 'utf8');
     assert.ok(!/read[A-Za-z]*\([^)]*PUBLICATION_ARCHIVE_PREFIX|read[A-Za-z]*\([^)]*ACTIVATION_ARCHIVE_PREFIX|readData\([^)]*evidence\//.test(src), 'archives are never read');
@@ -264,7 +266,7 @@ const fresh = () => wire.clear();
     fresh(); seedOpen(A);
     const p = tok(); await ad.closeAdmission(store(), p, 'pub-0000pa01', B); await ad.claimAttempt(store(), p, 'att-pa010001'); await ad.markAttemptDispatching(store(), p, 'att-pa010001', SITE);
     await ad.markAttemptUnresolved(store(), p, 'att-pa010001', 'timeout');
-    await assert.rejects(ad.activate(store(), scope('iaos-activation'), { p, runtimeDeployId: B, attemptSetDigest: rec().publication.attemptSetDigest, g5Digest: 'g', activationId: 'v2-act-pa01' }));
+    await assert.rejects(ad.activate(store(), scope('iaos-activation'), { p, runtimeDeployId: B, attemptSetDigest: rec().publication.attemptSetDigest, g5Table: OPEN_TABLE, activationId: 'v2-act-pa01' }));
     await assert.rejects(ad.claimAttempt(store(), p, 'att-pa010002'), (e) => e.code === 'attempt_outstanding');
     await assert.rejects(ad.closeAdmission(store(), tok(), 'pub-0000pa02', A), (e) => e.code === 'publication_in_progress');
     assert.equal(rec().state, 'closed');
@@ -325,7 +327,7 @@ const fresh = () => wire.clear();
     fresh(); seedOpen(A);
     const p = tok(); await ad.closeAdmission(store(), p, 'pub-0000cl01', B); await ad.claimAttempt(store(), p, 'att-cl010001'); await ad.markAttemptDispatching(store(), p, 'att-cl010001', SITE);
     assert.equal((await ad.recordResponse(store(), p, 'att-cl010001', R201(B))).cls, 'RESPONDED');
-    await assert.rejects(ad.activate(store(), scope('iaos-activation'), { p, runtimeDeployId: B, attemptSetDigest: rec().publication.attemptSetDigest, g5Digest: 'g', activationId: 'v2-act-cl01' }));
+    await assert.rejects(ad.activate(store(), scope('iaos-activation'), { p, runtimeDeployId: B, attemptSetDigest: rec().publication.attemptSetDigest, g5Table: OPEN_TABLE, activationId: 'v2-act-cl01' }));
     await assert.rejects(ad.claimAttempt(store(), p, 'att-cl010002'));
   });
   await check('CL-2 every 4xx (404, 422, 401, 403, 409) without semantics: RESPONDED; there is no bare "definitive 4xx" rule', async () => {

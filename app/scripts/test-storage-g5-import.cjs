@@ -49,6 +49,7 @@ const tableAfterAudit = () => g5.applyNarrowing(g5.DEFAULT_TABLE(), AUDIT([
     const sc = new InvocationScope('ghl-write');
     const gate = new WriteGate(sc, store(sc), { id: 'd', context: 'production', published: true }, ENV, LOC);
     gate.captured = { epoch: 1, activationId: 'a', deployId: 'd', g5Digest: 'x' };
+    gate.cache.last = null;   // no admission record known: no effective table -> refused
     await assert.rejects(gate.checkSubject('contact:x', ['note']), (e) => e instanceof WriteRefused && e.refusal.body.code === 'g5_blocked');
     wire.on(wire.get(S, 'authz/g5/table'), wire.status(500), 9);
     await assert.rejects(gate.checkSubject('contact:x', ['note']), (e) => e instanceof WriteRefused);
@@ -115,11 +116,14 @@ const tableAfterAudit = () => g5.applyNarrowing(g5.DEFAULT_TABLE(), AUDIT([
     assert.throws(() => g5.applyNarrowing(t2, n), g5.NarrowingRefused, 'never applied twice');
     assert.throws(() => g5.applyNarrowing(t0, narrowing('N1', 'disposition-note', [{ scope: 'contact:X', effects: ['task'] }], { codePathCitations: ['a'], tests: ['b'], durableBeforeDispatchOnEveryBranch: true, readbackBeforeDispatch: true, trustsSdkModified: false, failsClosedOnStorageError: true, importClassified: true })), g5.NarrowingRefused, 'a narrowing can only reduce');
     fresh();
+    /* Bones finding 1: a narrowing is STAGED (authz/g5/table); the EFFECTIVE table in authz/admission is
+       unchanged until a fresh activation copies the approved table in. */
     wire.seed(S, 'authz/g5/table', t2);
     const sc = new InvocationScope('ghl-write');
     const gate = new WriteGate(sc, store(sc), { id: 'd', context: 'production', published: true }, ENV, LOC);
     gate.captured = { epoch: 1, activationId: 'a', deployId: 'd', g5Digest: g5.tableDigest(t0) };
-    await assert.rejects(gate.checkSubject('contact:Y', ['call_result']), (e) => e.refusal.body.code === 'g5_blocked', 'digest changed: refused until re-activation');
+    gate.cache.last = { data: { v: 3, g5: t0, tickets: {} }, etag: 'e' };
+    await assert.rejects(gate.checkSubject('contact:Y', ['note']), (e) => e.refusal.body.code === 'g5_blocked', 'staged narrowing is not in force before activation');
   });
   await check('G5-8 the sandbox contact q2ygQtBXQSBezlU4WjNH stays blocked by its legacy block even under a permissive table', async () => {
     fresh();
@@ -129,6 +133,7 @@ const tableAfterAudit = () => g5.applyNarrowing(g5.DEFAULT_TABLE(), AUDIT([
     const sc = new InvocationScope('ghl-write');
     const gate = new WriteGate(sc, store(sc), { id: 'd', context: 'production', published: true }, ENV, LOC);
     gate.captured = { epoch: 1, activationId: 'a', deployId: 'd', g5Digest: g5.tableDigest(t) };
+    gate.cache.last = { data: { v: 3, g5: t, tickets: {} }, etag: 'e' };   // the EFFECTIVE (permissive) table in authz/admission
     await assert.rejects(gate.checkSubject('contact:q2ygQtBXQSBezlU4WjNH', ['note']), (e) => e.refusal.body.code === 'legacy_blocked');
     await gate.checkSubject('contact:other-synthetic', ['note']);
   });
@@ -336,6 +341,7 @@ const tableAfterAudit = () => g5.applyNarrowing(g5.DEFAULT_TABLE(), AUDIT([
     const sc = new InvocationScope('ghl-write');
     const gate = new WriteGate(sc, store(sc), { id: 'd', context: 'production', published: true }, ENV, LOC);
     gate.captured = { epoch: 1, activationId: 'a', deployId: 'd', g5Digest: g5.tableDigest(t) };
+    gate.cache.last = { data: { v: 3, g5: t, tickets: {} }, etag: 'e' };   // the default table IS the effective one
     await assert.rejects(gate.checkSubject('contact:clean', ['note']), (e) => e.refusal.body.code === 'g5_blocked');
   });
   done('storage G5 and import');
