@@ -70,6 +70,11 @@ async function handle(event: LegacyEvent, inv: Invocation): Promise<LambdaResult
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
   try { requireAppWriter(event); } catch { return json(401, { error: "Application write sign-in required" }); }
   try { requireAppWriteOrigin(event); } catch { return json(403, { error: "Application write origin refused" }); }
+  /* Bones review finding 2: every control mutation requires a PUBLISHED PRODUCTION deploy context,
+     checked before any storage access. Deploy previews, unpublished permalinks and branch deploys
+     are refused whatever their credentials. Authenticated GET status reads stay available. */
+  try { requireWritableDeployment(inv.deploy); }
+  catch (e) { if (e instanceof WriteRefused) return json(e.refusal.status, e.refusal.body); throw e; }
   let b: any;
   try {
     if (event.isBase64Encoded || Object.keys(event.queryStringParameters ?? {}).length) throw new Error("encoding");
