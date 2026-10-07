@@ -95,3 +95,17 @@ against the unfixed code and failed there.
 - **Typecheck and build:** `tsc -b`, the root-functions `tsc` and `vite build` all pass.
 - **Unverified here:** four PDF suites need `pdftotext`. They passed on Jeff's machine, but Bones's
   environment lacks the tool, so they remain unverified there.
+
+## Re-review: Bones's findings on `20d7a62` (`#issuecomment-6048531462`)
+
+| # | Finding | Fix commit | Regression evidence |
+|---|---|---|---|
+| 1 | Import missed an uncertain attempt after a missing ordinal | `bbed3eb` | The importer takes the union of every observed attempt record for the operation. Every version must be exactly bound (slot, ordinal, request id, key); each slot's ordinals must be exactly 1..max; each attempt needs its exact dispatch binding plus a send decision and confirmed outcome. `test-storage-g5-import` I5c (the review case, a gap with a confirmed later attempt, a missing attempt 1) and I5d (seven inconsistent-record variants, and orphan evidence halting as unattributed). Both fail pre-fix (review case: `class=resolved`) |
+| 2 | The publisher's continuation after an abandoned attempt could not run | `25a26cd` | New `iaos-publish next-attempt`: the same publication, after ABANDONED or REJECTED with nothing outstanding; handover then one new attempt, history retained, then activation. T7 handover is bound to the named publication inside its compare-and-swap. `test-iaos-publish` PC-9 (the review case through to activation, one restore), PC-10 (REJECTED via `cycle` and via `resume`), PC-11 (refusals: dispatching and unresolved exit 3, other publication or target exit 1, after APPLIED exit 2, an unbound or mismatched handover refused). All three fail pre-fix |
+| 3 | Exact-head CI red on the identifier-boundary scanner | `4d41548` | `TransitionUnresolved` (an Error-class name) added as an exact-value exemption, following the INV-60/INV-62 precedent; no file or directory exempted, floor unchanged at 10. New near-miss control `TransitionUnresolvez`; a real id added to `admission.ts` still fails the scan |
+
+**Full offline run after the fixes:** 122 of 123 `app/scripts/test-*.cjs` pass. The one failure is the unchanged baseline `test-deal-calculator-wiring` (fails identically on main `3de480e`). No new regression. Root checks: identifier boundary 10/10, exit contract static and runtime, Netlify observer, root-functions `tsc`, and `pnpm --dir app build` (guard, `tsc -b`, `vite build`) all pass.
+
+**Unchanged holds:** marketing webhooks (decision A) and R1–R5 recovery (decision B) remain held; nothing here restores either.
+
+**Scotty Batch 1** (code-review approved at `8136fd893257f07cda962085a6d2cef554cf4fbe`, head of `b15-scotty`) is not part of this branch. It is kept for later integration; its four focused suites go into CI when the batch is integrated.
