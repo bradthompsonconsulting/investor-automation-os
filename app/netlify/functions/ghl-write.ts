@@ -256,7 +256,8 @@ async function handle(event: LegacyEvent, inv: Invocation, setStorageHeader: (h:
         let marker: StageMarkerClaim | null = null;
         const r = await boundary.transitionOpportunityStage(targetId, config.pipelines.sellerLeads, targetStageId, forbiddenStageIds, {
           beforePut: async () => { marker = await claimStageMarker(store, inv.scope, markerKey, requestId); },
-          afterConfirmed: async () => { if (marker) await marker.resolve(); },
+          // An unverified resolution is never reported as a clean success: the marker stays unresolved (later transitions refuse).
+          afterConfirmed: async () => { if (marker && !(await marker.resolve())) throw new WriteUncertain("The stage transition was confirmed, but its unresolved marker could not be cleared; later transitions stay refused until it is inspected"); },
         }, identity);
         return { confirmed: true, statusCode: 200, body: { confirmed: true, alreadyInStage: r.alreadyInStage, readback: { id: r.readback.id, pipelineId: r.readback.pipelineId, pipelineStageId: r.readback.pipelineStageId } } };
       }

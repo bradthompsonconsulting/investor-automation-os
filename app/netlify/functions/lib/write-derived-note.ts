@@ -21,7 +21,8 @@ import { latestContractSendForOpportunity, parseContractSendNote } from "../../.
 import { classifyDocumentReadback, classifyManualSendReadback } from "../../../src/lib/contract-send-model";
 import { MANUAL_SEND_TEMPLATE_SOURCE } from "../../../src/lib/contract-manual-send-model";
 import { latestPreservedExecutedArtifactForVersion, type PreservedExecutedArtifact } from "../../../src/lib/contract-executed-artifact-carriers";
-import { getStore } from "@netlify/blobs";
+import { VerifiedStore, ARTIFACTS_STORE } from "./verified-store";
+import { InvocationScope } from "./invocation-scope";
 import { createHash } from "node:crypto";
 
 /**
@@ -35,6 +36,7 @@ import { createHash } from "node:crypto";
  * throw -- never treated as a verified preserved artifact.
  */
 async function reverifyPreservedArtifact(
+  boundary: GhlBoundary,
   notes: { body: string }[],
   opportunityId: string,
   agreementAt: string,
@@ -42,9 +44,10 @@ async function reverifyPreservedArtifact(
 ): Promise<PreservedExecutedArtifact> {
   const preserved = latestPreservedExecutedArtifactForVersion(notes, opportunityId, agreementAt, version);
   if (!preserved) throw new Error("No independently re-verifiable preserved executed-artifact record exists for this exact opportunity/version");
-  const artifactBytes = await getStore("iaos-executed-artifacts").get(preserved.blobKey, { type: "arrayBuffer" });
-  if (!artifactBytes) throw new Error("Preserved artifact bytes could not be read back for re-verification");
-  const artifactBuffer = Buffer.from(artifactBytes);
+  // Storage correction (plan v6 §2): a STRONG read through the verified adapter, inside this invocation's deadlines.
+  const read = await new VerifiedStore(boundary.scope ?? new InvocationScope("ghl-write"), ARTIFACTS_STORE, undefined, true).readBinary(preserved.blobKey);
+  if (!read) throw new Error("Preserved artifact bytes could not be read back for re-verification");
+  const artifactBuffer = Buffer.from(read.data);
   if (artifactBuffer.byteLength !== preserved.byteCount) throw new Error("Preserved artifact byte count no longer matches its durable record");
   if (createHash("sha256").update(artifactBuffer).digest("hex") !== preserved.sha256) throw new Error("Preserved artifact hash no longer matches its durable record");
   return preserved;
@@ -90,7 +93,7 @@ export async function validateDerivedNote(boundary: GhlBoundary, body: string, o
     // resubmitted after a rescission or a since-corrupted artifact must
     // never be allowed to write a disposition handoff.
     const config = getConfig(process.env.IAOS_ENV);
-    await reverifyPreservedArtifact(context.notes, record.opportunityId, context.agreement.at, context.version);
+    await reverifyPreservedArtifact(boundary, context.notes, record.opportunityId, context.agreement.at, context.version);
     await requireUnderContractStageConfirmed(boundary, record.opportunityId, config);
     const required = buildRequiredSignerSet(context.report);
     if (!required.ok) throw new Error("Required signers unavailable");
@@ -268,7 +271,7 @@ export async function verifyUnderContractStageTransitionReady(
 
   // Board #9 Phase B, requirement 15 -- the transition also requires the
   // preserved executed-artifact to independently re-verify.
-  await reverifyPreservedArtifact(context.notes, opportunityId, agreementAt, version);
+  await reverifyPreservedArtifact(boundary, context.notes, opportunityId, agreementAt, version);
 
   return existing;
 }

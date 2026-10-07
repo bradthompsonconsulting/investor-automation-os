@@ -308,7 +308,7 @@ function enabledProductionConfig(overrides = {}) {
 {
   const ghlWriteSrc = fs.readFileSync(path.join(APP, 'netlify', 'functions', 'ghl-write.ts'), 'utf8');
   check('the opportunity_stage dispatch still names config.stages.sellerClosedWon as a forbidden target, unconditionally', /forbiddenStageIds = \[config\.stages\.sellerClosedWon\]/.test(ghlWriteSrc), true);
-  check('the forbidden-stage list is passed to transitionOpportunityStage on every call (storage v2: the stage marker is marker v2; the forbidden list is unchanged)', /boundary\.transitionOpportunityStage\(targetId, config\.pipelines\.sellerLeads, targetStageId, forbiddenStageIds, \{\s*beforePut: async \(\) => \{ marker = await claimStageMarker\(store, inv\.scope, markerKey, requestId\); \},\s*afterConfirmed: async \(\) => \{ if \(marker\) await marker\.resolve\(\); \},\s*\}, identity\)/.test(ghlWriteSrc), true);
+  check('the forbidden-stage list is passed to transitionOpportunityStage on every call (storage v2: the stage marker is marker v2; the forbidden list is unchanged)', /boundary\.transitionOpportunityStage\(targetId, config\.pipelines\.sellerLeads, targetStageId, forbiddenStageIds, \{\s*beforePut: async \(\) => \{ marker = await claimStageMarker\(store, inv\.scope, markerKey, requestId\); \},\s*[\s\S]{0,200}afterConfirmed: async \(\) => \{ if \(marker && !\(await marker\.resolve\(\)\)\) throw new WriteUncertain\([\s\S]*?\); \},\s*\}, identity\)/.test(ghlWriteSrc), true);
 }
 
 // ============================================================

@@ -2,95 +2,51 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const Module = require('node:module');
-const ts = require('typescript');
 const APP = path.resolve(__dirname, '..');
-const originalResolve = Module._resolveFilename;
-const originalLoad = Module._load;
-const receipts = new Map();
-// B9-13 Phase B -- a SEPARATE map for real binary/JSON Blobs data (upload
-// chunks, the permanent executed-artifact bytes), keyed independently of
-// `receipts` (which only ever held small write-receipt JSON before this).
-const blobsData = new Map();
-// Gate-review closure -- PR #85 chunk-ingestion redesign. Each chunk's
-// own self-describing metadata, attached via the SDK's own `.set(key,
-// data, {metadata})` -- keyed the SAME as blobsData, populated only when
-// `.set()` is called with a `metadata` option (an artifact `.set()` call
-// carries none).
-const blobsMetadata = new Map();
-// Gate-review closure -- failure-injection toggles, all default to "no
-// injected failure" and are reset by each test that uses them.
-let failNextBlobDelete = false;
-// Gate-review closure -- PR #85 chunk-ingestion redesign. Simulates a
-// SPECIFIC key not yet being visible to a read for a bounded number of
-// attempts (a genuine eventual-consistency delay) -- keyed per blob key,
-// never dependent on which OTHER key was written when. Counts down to 0
-// and self-resets; never affects any other key or test.
-const staleReadKeysRemaining = new Map();
-Module._resolveFilename = function(name, parent, ...rest) {
-  if (name.startsWith('.') && parent) {
-    const candidate = path.resolve(path.dirname(parent.filename), name + '.ts');
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return originalResolve.call(this, name, parent, ...rest);
-};
-Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
-Module._load = function(name, ...rest) {
-  if (name === '@netlify/blobs') return {
-    connectLambda: event => originalLoad.call(this, name, ...rest).connectLambda(event),
-    getStore: () => ({
-      async get(key, options) {
-        if (options?.type === 'arrayBuffer') {
-          if ((staleReadKeysRemaining.get(key) ?? 0) > 0) { staleReadKeysRemaining.set(key, staleReadKeysRemaining.get(key) - 1); return null; }
-          const v = blobsData.get(key);
-          if (!v) return null;
-          return v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength);
-        }
-        return receipts.get(key) ?? null;
-      },
-      async getMetadata(key) {
-        if (!blobsData.has(key)) return null;
-        return { etag: 'fixture-etag', metadata: blobsMetadata.get(key) ?? {} };
-      },
-      async getWithMetadata(key, options) {
-        if ((staleReadKeysRemaining.get(key) ?? 0) > 0) { staleReadKeysRemaining.set(key, staleReadKeysRemaining.get(key) - 1); return null; }
-        const v = blobsData.get(key);
-        if (!v) return null;
-        const data = options?.type === 'arrayBuffer' ? v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) : v;
-        return { data, etag: 'fixture-etag', metadata: blobsMetadata.get(key) ?? {} };
-      },
-      async set(key, value, options) {
-        blobsData.set(key, Buffer.isBuffer(value) ? value : Buffer.from(value));
-        if (options?.metadata) blobsMetadata.set(key, options.metadata);
-      },
-      async delete(key) {
-        if (failNextBlobDelete) { failNextBlobDelete = false; throw new Error('simulated transient delete failure'); }
-        receipts.delete(key); blobsData.delete(key); blobsMetadata.delete(key);
-      },
-      async setJSON(key, value, options) { if (options?.onlyIfNew && receipts.has(key)) return { modified: false }; receipts.set(key, value); return { modified: true }; },
-      async list(options) {
-        const prefix = options?.prefix ?? '';
-        const keys = [...blobsData.keys()].filter((k) => k.startsWith(prefix));
-        return { blobs: keys.map((key) => ({ key, etag: 'fixture-etag' })), directories: [] };
-      },
-    }),
-  };
-  return originalLoad.call(this, name, ...rest);
-};
+/* Storage correction (PR #131): the ownership store is the REAL verified adapter over the REAL
+   @netlify/blobs client and the wire harness (harness/v2-lambda-compat.cjs); the executed-artifact
+   bytes live in their own real stores on the same wire. Handlers are modern-runtime functions on a
+   published production deploy with an open activation (fixture records). `receipts` is the
+   compat Map-like view of `iaos-ownership-v2`; `blobsData` below is a small view over the two
+   executed-artifact stores so the existing byte-tampering cases keep their meaning. */
 process.env.IAOS_ENV = 'test';
+require('./harness/ts-loader.cjs');
+const { createCompat, v2Id } = require('./harness/v2-lambda-compat.cjs');
+const compat = createCompat();
+const { receipts, wire } = compat;
+const UPLOADS = 'iaos-executed-artifact-uploads';
+const ARTIFACTS = 'iaos-executed-artifacts';
+const rawStore = (name) => { if (!wire.stores.has('site:' + name)) wire.stores.set('site:' + name, new Map()); return wire.stores.get('site:' + name); };
+let tamperSeq = 0;
+const blobsData = {
+  has: (k) => rawStore(ARTIFACTS).has(k) || rawStore(UPLOADS).has(k),
+  /** The whole stored record (bytes, etag, metadata) -- restored as-is by set(). */
+  get: (k) => { const r = rawStore(ARTIFACTS).get(k) || rawStore(UPLOADS).get(k); return r ? { ...r } : undefined; },
+  /** A record from get() restores it; a Buffer replaces only the bytes (metadata kept, new etag). */
+  set: (k, v) => {
+    const name = rawStore(UPLOADS).has(k) ? UPLOADS : ARTIFACTS;
+    const cur = rawStore(name).get(k) || { meta: null, contentType: null };
+    if (Buffer.isBuffer(v)) rawStore(name).set(k, { ...cur, body: v, etag: `"w-tamper-${++tamperSeq}"` });
+    else if (v) rawStore(name).set(k, { ...v });
+  },
+  delete: (k) => { rawStore(ARTIFACTS).delete(k); rawStore(UPLOADS).delete(k); },
+};
 process.env.IAOS_APP_WRITE_GOOGLE_CLIENT_ID = 'offline-client';
 process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN = 'https://proof.example.invalid';
 process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid';
 process.env.IAOS_APP_WRITE_SESSION_SECRET = 'offline-fixture-only-not-a-real-secret';
-process.env.IAOS_GHL_TOKEN_V2 = 'offline-fixture';
-process.env.GHL_API_TOKEN = 'offline-fixture';
 
 const load=name=>require('../src/lib/'+name+'.ts');
 const config=require('../shared/ghl-config.ts').getConfig('test');
 const { UNDER_CONTRACT_STAGE_NOT_PROVISIONED } = require('../shared/ghl-config.ts');
 const auth=require('../netlify/functions/lib/app-write-auth.ts');
-const handler=require('../netlify/functions/ghl-write.ts').handler;
-const uploadHandler=require('../netlify/functions/ghl-executed-artifact-upload.ts').handler;
+const handler=compat.handlerOf(require('../netlify/functions/ghl-write.ts'),'ghl-write');
+const uploadHandler=compat.handlerOf(require('../netlify/functions/ghl-executed-artifact-upload.ts'),'ghl-executed-artifact-upload');
+/* Storage correction: a test-only pass-through MutationGate for the direct GhlBoundary mechanism
+   checks below (a gateless boundary refuses every mutation in v2). It admits, dispatches exactly
+   one request and settles -- no storage, no G5. */
+const passGate={admit:async()=>({held:null,sent:false,settled:false}),dispatching:async()=>{},send:async(p,owned,onDispatch,request)=>{p.sent=true;onDispatch();return request(undefined);},settle:async(p)=>{p.settled=true;}};
+const gatedBoundary=()=>require('../netlify/functions/lib/ghl-write-boundary.ts').configuredBoundary(undefined,passGate);
 const contact={id:config.documentsContracts.approvedTestContactId,locationId:config.locationId,customFields:[],firstName:'Jane',lastName:'Seller',email:'seller@example.com',address1:'123 Main St',city:'Austin',state:'TX',postalCode:'78701'};
 const opportunity={id:'fixture-opportunity',contactId:contact.id,locationId:config.locationId,customFields:[],pipelineId:config.pipelines.sellerLeads,pipelineStageId:config.stages.newLeadSeller};
 // Gate-review closure -- a SECOND fixture opportunity (same contact, its
@@ -127,7 +83,9 @@ let failNextNotePost=false;
 // toggle) or with currentContractContext's own read succeeding normally.
 let opportunityGetCallCount=0;
 let failOpportunityGetCallNumber=0;
-global.fetch=async(url,init={})=>{const u=new URL(url);assert.equal(u.origin,'https://services.leadconnectorhq.com');if(u.pathname==='/proposals/document')return reply({documents});if(u.pathname==='/opportunities/'+opportunity.id){
+/* Storage correction: blob traffic that does not go through the verified adapter (the raw SDK read of the
+   preserved artifact in write-derived-note.ts) reaches global fetch; it is routed to the same wire. */
+global.fetch=async(url,init={})=>{const u=new URL(url);if(u.origin===wire.EDGE||u.origin===wire.UNCACHED)return wire.fetch(url,init);assert.equal(u.origin,'https://services.leadconnectorhq.com');if(u.pathname==='/proposals/document')return reply({documents});if(u.pathname==='/opportunities/'+opportunity.id){
   if(init.method!=='PUT'){opportunityGetCallCount++;if(opportunityGetCallCount===failOpportunityGetCallNumber)return failResponse(503,{error:'simulated transient GHL outage'});}
   if(init.method==='PUT'){
     putIssuedThisAttempt=true;
@@ -156,11 +114,15 @@ const execution=load('contract-execution-model').buildVerifiedUnderContractRecor
 let n=0,count=0;
 async function invoke(body){return handler({blobs:Buffer.from(JSON.stringify({url:'https://blobs.example.invalid',
  token:'offline-blob-fixture'})).toString('base64'),httpMethod:'POST',
- headers:{'x-nf-site-id':'offline-site','x-nf-deploy-id':'offline-deploy',origin:process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN,authorization:'Bearer '+auth.issueAppSession('brad@example.invalid').token},body:JSON.stringify({operation:'note.create',targetId:contact.id,args:{body},requestId:'ledger-'+(++n)})});}
+ headers:{'x-nf-site-id':'offline-site','x-nf-deploy-id':'offline-deploy',origin:process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN,authorization:'Bearer '+auth.issueAppSession('brad@example.invalid').token},body:JSON.stringify({operation:'note.create',targetId:contact.id,args:{body},requestId:(++n,v2Id())})});}
 async function check(name,fn){await fn();console.log('PASS '+name);count++;}
+// A case left failing as a SUSPECTED PRODUCTION BUG (reported, not adjusted): it is recorded and the run
+// continues so the remaining cases still execute; the suite then exits non-zero.
+const suspected=[];
+async function checkSuspectedBug(name,fn){try{await fn();console.log('PASS '+name);count++;}catch(e){suspected.push(name);console.log('FAIL (suspected production bug) '+name+'\n  '+String(e&&e.message||e).split('\n').join('\n  '));process.exitCode=1;}}
 async function invokeOp(operation,targetId,args){return handler({blobs:Buffer.from(JSON.stringify({url:'https://blobs.example.invalid',
  token:'offline-blob-fixture'})).toString('base64'),httpMethod:'POST',
- headers:{'x-nf-site-id':'offline-site','x-nf-deploy-id':'offline-deploy',origin:process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN,authorization:'Bearer '+auth.issueAppSession('brad@example.invalid').token},body:JSON.stringify({operation,targetId,args,requestId:'ledger-'+(++n)})});}
+ headers:{'x-nf-site-id':'offline-site','x-nf-deploy-id':'offline-deploy',origin:process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN,authorization:'Bearer '+auth.issueAppSession('brad@example.invalid').token},body:JSON.stringify({operation,targetId,args,requestId:(++n,v2Id())})});}
 async function invokeUpload(body){return uploadHandler({blobs:Buffer.from(JSON.stringify({url:'https://blobs.example.invalid',
  token:'offline-blob-fixture'})).toString('base64'),httpMethod:'POST',
  headers:{'x-nf-site-id':'offline-site','x-nf-deploy-id':'offline-deploy',origin:process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN,authorization:'Bearer '+auth.issueAppSession('brad@example.invalid').token},body:JSON.stringify(body)});}
@@ -542,12 +504,14 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     // own read for its first two attempts -- a genuine eventual-consistency
     // delay, never dependent on any OTHER chunk or a shared manifest.
     const lastChunkKey = `sessions/${opportunity.id}/${load('contract-executed-artifact-storage-model').contractVersionStorageKey(fixture.version)}/${uploadId}/chunk-${chunks.length - 1}`;
-    staleReadKeysRemaining.set(lastChunkKey, 2);
+    /* Storage correction: chunk reads are strong in v2 (no eventual fallback); the delayed visibility
+       is now a real 404 on the strong (uncached) origin for the key's first two reads, on the wire. */
+    const delayed = wire.on(wire.get(UPLOADS, lastChunkKey), wire.status(404), 2);
     try {
       const res = await invokeUpload(finalizeArgs(uploadId, pdfBytes, 'executed.pdf', fixture.version, docId));
       assert.equal(res.statusCode, 200, res.body);
     } finally {
-      assert.equal(staleReadKeysRemaining.get(lastChunkKey), 0, 'the injected delayed visibility was genuinely exercised by the bounded retry, never skipped');
+      assert.equal(delayed.used, 2, 'the injected delayed visibility was genuinely exercised by the bounded retry, never skipped');
     }
   });
 
@@ -756,6 +720,23 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     const afterFailure = load('contract-executed-artifact-carriers').latestPreservedExecutedArtifactForVersion(notes, opportunity.id, fixture.version.agreementAt, freshVersion);
     assert.equal(afterFailure, null, 'no preserved-artifact record may exist for the new version after the note-write failure');
 
+    /* Storage correction: a GHL 500 on the note POST is an AMBIGUOUS send (it may have applied), so the
+       v2 write gate leaves that note's admission ticket `uncertain` -- a durable barrier on the contact.
+       A retry is refused, before anything is sent, until the uncertain write is resolved. Restated: the
+       retry is first proven refused with nothing written; then the fixture models the operator's
+       resolution (the uncertain ticket removed from the admission record) and the retry self-heals. */
+    const blockedUploadId = 'upload-note-write-retry-while-uncertain';
+    await uploadChunks(blockedUploadId, pdfBytes, 'executed.pdf', freshVersion);
+    const blocked = await invokeUpload(finalizeArgs(blockedUploadId, pdfBytes, 'executed.pdf', freshVersion, docId));
+    assert.equal(blocked.statusCode, 409, blocked.body);
+    assert.equal(JSON.parse(blocked.body).code, 'in_progress');
+    assert.equal(writes, before);
+    const admission = wire.json(compat.S, 'authz/admission');
+    const uncertain = Object.keys(admission.tickets).filter((id) => admission.tickets[id].state === 'uncertain');
+    assert.equal(uncertain.length, 1, 'exactly the one ambiguous note write is held uncertain');
+    for (const id of uncertain) delete admission.tickets[id];
+    wire.seed(compat.S, 'authz/admission', admission);
+
     // A fresh retry (new session, same file, same version) self-heals:
     // the deterministic blob key is safely overwritten with the same
     // bytes, and the note write is attempted again.
@@ -830,13 +811,15 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     const freshVersion2 = B9b.nextVersionIdentity(step3, { kind: 'same_agreement_reentry' }, null).value;
     const uploadId = 'upload-cleanup-partial-failure';
     await uploadChunks(uploadId, pdfBytes, 'executed.pdf', freshVersion2);
-    failNextBlobDelete = true; // fires on the FIRST cleanup delete call, which happens strictly after the note write above has already succeeded
+    // fires on the FIRST cleanup delete call, which happens strictly after the note write above has already succeeded
+    /* Storage correction: the injected delete failure is a real wire fault on the upload store (a 503 on the first chunk DELETE). */
+    const cleanupFault = wire.on((req) => req.method === 'DELETE' && req.store === 'site:' + UPLOADS, wire.status(503), 1);
     const res = await invokeUpload(finalizeArgs(uploadId, pdfBytes, 'executed.pdf', freshVersion2, docId));
     assert.equal(res.statusCode, 200, res.body);
     assert.equal(JSON.parse(res.body).preserved, true);
     const recorded = load('contract-executed-artifact-carriers').latestPreservedExecutedArtifactForVersion(notes, opportunity.id, fixture.version.agreementAt, freshVersion2);
     assert.equal(recorded !== null, true, 'the artifact for the new version must be genuinely durably recorded despite the cleanup hiccup');
-    failNextBlobDelete = false; // in case the injected failure was never consumed
+    assert.equal(cleanupFault.used, 1, 'the injected cleanup failure was genuinely exercised');
   });
 }
 
@@ -983,12 +966,25 @@ await check('manual send: readback failure -- live provider fetch itself errors,
 // ============================================================
 {
   const { configuredBoundary } = require('../netlify/functions/lib/ghl-write-boundary.ts');
+  /* Storage correction: a boundary built without a write gate is read-only in v2 -- it refuses every
+     mutation before any I/O. These direct calls isolate the write+readback MECHANISM, so they use a
+     test-only pass-through gate (admits, sends exactly once, records nothing); the real gate is
+     exercised end-to-end through ghl-write elsewhere in this file. */
+  await check('stage transition: a boundary WITHOUT a write gate refuses the PUT before any GHL call (v2 read-only default)', async () => {
+    const saved = opportunity.pipelineStageId;
+    opportunity.pipelineStageId = config.stages.sellerOfferSent; putIssuedThisAttempt = false;
+    try {
+      await assert.rejects(configuredBoundary().transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon]), /no write gate/);
+      assert.equal(putIssuedThisAttempt, false);
+      assert.equal(opportunity.pipelineStageId, config.stages.sellerOfferSent);
+    } finally { opportunity.pipelineStageId = saved; }
+  });
 
   await check('stage transition failure: the GHL PUT itself fails -- fails closed, opportunity stage left unchanged', async () => {
     const saved = opportunity.pipelineStageId;
     opportunity.pipelineStageId = config.stages.sellerOfferSent; // not yet in target, so a real PUT is attempted
     stagePutMode = 'reject'; putIssuedThisAttempt = false;
-    const boundary = configuredBoundary();
+    const boundary = gatedBoundary();
     await assert.rejects(boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon]));
     assert.equal(opportunity.pipelineStageId, config.stages.sellerOfferSent, 'a rejected PUT must never be treated as having changed the stage');
     stagePutMode = 'apply'; opportunity.pipelineStageId = saved;
@@ -998,7 +994,7 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     const saved = opportunity.pipelineStageId;
     opportunity.pipelineStageId = config.stages.sellerOfferSent;
     stagePutMode = 'ignore'; putIssuedThisAttempt = false;
-    const boundary = configuredBoundary();
+    const boundary = gatedBoundary();
     await assert.rejects(
       boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon]),
       /readback/i,
@@ -1010,7 +1006,7 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     const saved = opportunity.pipelineStageId;
     opportunity.pipelineStageId = config.stages.sellerOfferSent;
     stagePutMode = 'wrong-pipeline'; putIssuedThisAttempt = false;
-    const boundary = configuredBoundary();
+    const boundary = gatedBoundary();
     await assert.rejects(
       boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon]),
       /readback/i,
@@ -1022,7 +1018,7 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     const saved = opportunity.pipelineStageId;
     opportunity.pipelineStageId = config.stages.sellerOfferSent;
     stagePutMode = 'wrong-stage'; putIssuedThisAttempt = false;
-    const boundary = configuredBoundary();
+    const boundary = gatedBoundary();
     await assert.rejects(
       boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon]),
       /readback/i,
@@ -1238,35 +1234,55 @@ await check('manual send: readback failure -- live provider fetch itself errors,
 // ============================================================
 // INV-98 -- durable "Under Contract stage transition unresolved" marker.
 // ============================================================
+/* Storage correction: the marker is stage marker v2 (lib/stage-marker-v2.ts) in iaos-ownership-v2:
+   `stage-unresolved/<sha256(env:locationId:opportunityId)>` holding {v:2,state,...}. It is NEVER
+   deleted: confirmation moves it to `state: "resolved"` (compare-and-swap), and a claim succeeds only
+   when it is absent or resolved. "Has the marker" below therefore means "holds an UNRESOLVED marker".
+   `receipts.delete(markerKey)` remains only as a FIXTURE reset between cases (direct wire edit, never
+   the code under test). Direct claims go through claimStageMarker on a real verified store. */
 {
-  const receiptsLib = require('../netlify/functions/lib/write-receipts.ts');
-  const { configuredBoundary } = require('../netlify/functions/lib/ghl-write-boundary.ts');
-  const markerKey = receiptsLib.stageTransitionMarkerKey(opportunity.id);
+  const markerLib = require('../netlify/functions/lib/stage-marker-v2.ts');
+  const markerKey = markerLib.stageMarkerKey('test', config.locationId, opportunity.id);
+  const markerUnresolved = () => { const r = receipts.get(markerKey); return !!r && r.state !== 'resolved'; };
+  const claimDirect = (rid) => { const st = compat.store(); return markerLib.claimStageMarker(st, st.scope, markerKey, rid); };
+  /* Storage correction: an uncertain stage PUT also leaves the v2 write gate's admission ticket
+     `uncertain` on `opportunity:<id>` -- a second, independent barrier. Between cases (and before the
+     cases that isolate the MARKER as the barrier under test) the fixture models that ticket's
+     resolution by removing it from the admission record. */
+  const clearUncertainTickets = () => {
+    const admission = wire.json(compat.S, 'authz/admission');
+    let changed = false;
+    for (const id of Object.keys(admission.tickets || {})) if (admission.tickets[id].state !== 'admitted') { delete admission.tickets[id]; changed = true; }
+    if (changed) wire.seed(compat.S, 'authz/admission', admission);
+  };
   const stageArgs = () => ({ agreementAt: fixture.version.agreementAt, version: fixture.version });
-  const resetStage = (stage) => { opportunity.pipelineStageId = stage; stagePutMode = 'apply'; putIssuedThisAttempt = false; receipts.delete(markerKey); };
+  const resetStage = (stage) => { opportunity.pipelineStageId = stage; stagePutMode = 'apply'; putIssuedThisAttempt = false; receipts.delete(markerKey); clearUncertainTickets(); };
   async function invokeOpAs(email, operation, targetId, args) {
     return handler({blobs:Buffer.from(JSON.stringify({url:'https://blobs.example.invalid',token:'offline-blob-fixture'})).toString('base64'),httpMethod:'POST',
       headers:{'x-nf-site-id':'offline-site','x-nf-deploy-id':'offline-deploy',origin:process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN,authorization:'Bearer '+auth.issueAppSession(email).token},
-      body:JSON.stringify({operation,targetId,args,requestId:'marker-'+(++n)})});
+      body:JSON.stringify({operation,targetId,args,requestId:(++n,v2Id())})});
   }
-  // Counts every outbound GHL request made while fn runs.
+  // Counts every outbound GHL request made while fn runs (blob-wire traffic is storage, not GHL).
   async function countingGhl(fn) {
     const inner = global.fetch; let ghlCalls = 0;
-    global.fetch = async (url, init) => { ghlCalls++; return inner(url, init); };
+    global.fetch = async (url, init) => { if (new URL(url).origin === 'https://services.leadconnectorhq.com') ghlCalls++; return inner(url, init); };
     try { return { result: await fn(), ghlCalls: () => ghlCalls }; } finally { global.fetch = inner; }
   }
 
   await check('marker key: one per opportunity in this env+location; independent of operator, session and requestId; carries no raw id', async () => {
-    assert.equal(receiptsLib.stageTransitionMarkerKey(opportunity.id), markerKey);
-    assert.ok(markerKey.startsWith(receiptsLib.STAGE_UNRESOLVED_PREFIX));
+    assert.equal(markerLib.stageMarkerKey('test', config.locationId, opportunity.id), markerKey);
+    assert.ok(markerKey.startsWith(markerLib.STAGE_MARKER_PREFIX));
     assert.ok(!markerKey.includes(opportunity.id));
-    assert.notEqual(receiptsLib.stageTransitionMarkerKey(opportunity2.id), markerKey);
-    assert.notEqual(receiptsLib.stageTransitionMarkerKey(opportunity.id, { ...process.env, IAOS_ENV: 'production' }), markerKey);
-    assert.equal(receiptsLib.claimStageTransition.length, 3, 'operator and requestId are recorded as digests, never part of the key');
+    assert.notEqual(markerLib.stageMarkerKey('test', config.locationId, opportunity2.id), markerKey);
+    assert.notEqual(markerLib.stageMarkerKey('production', config.locationId, opportunity.id), markerKey);
+    /* Storage correction: the old claim took (opportunityId, requestId, operator) and stored their digests;
+       v2's key takes ONLY (env, locationId, opportunityId), and the request id enters the record solely as
+       an opaque attempt hash (operator is not recorded at all). */
+    assert.equal(markerLib.stageMarkerKey.length, 3, 'operator and requestId are never part of the key');
   });
 
   await check('claim point: never claimed on a pre-write refusal or when already in the stage', async () => {
-    const boundary = configuredBoundary();
+    const boundary = gatedBoundary();
     let claims = 0; const hooks = { beforePut: async () => { claims++; } };
     resetStage(config.stages.sellerOfferSent);
     await assert.rejects(boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.sellerClosedWon, [config.stages.sellerClosedWon], hooks));
@@ -1279,7 +1295,7 @@ await check('manual send: readback failure -- live provider fetch itself errors,
   });
 
   await check('claim point: claimed immediately BEFORE the PUT, confirmed hook only AFTER the exact readback', async () => {
-    const boundary = configuredBoundary(); const order = [];
+    const boundary = gatedBoundary(); const order = [];
     resetStage(config.stages.sellerOfferSent);
     await boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon], {
       beforePut: async () => { order.push('claim:putIssued=' + putIssuedThisAttempt); },
@@ -1292,17 +1308,21 @@ await check('manual send: readback failure -- live provider fetch itself errors,
   await check('an interrupted function leaves the marker: claimed, PUT never returns, nothing clears it', async () => {
     resetStage(config.stages.sellerOfferSent);
     const inner = global.fetch;
-    global.fetch = async (url, init) => (init?.method === 'PUT' ? new Promise(() => {}) : inner(url, init));
-    const boundary = configuredBoundary();
+    global.fetch = async (url, init) => (init?.method === 'PUT' && new URL(url).origin === 'https://services.leadconnectorhq.com' ? new Promise(() => {}) : inner(url, init));
+    const boundary = gatedBoundary();
+    let claimed = null;
     const pending = boundary.transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon], {
-      beforePut: () => receiptsLib.claimStageTransition(opportunity.id, 'interrupted-request', 'brad@example.invalid'),
-      afterConfirmed: () => receiptsLib.clearStageTransition(opportunity.id),
+      beforePut: async () => { claimed = await claimDirect('v2-interrupted-request'); },
+      afterConfirmed: async () => { await claimed.resolve(); },
     });
-    for (let i = 0; i < 20 && !receipts.has(markerKey); i++) await new Promise((r) => setImmediate(r));
+    for (let i = 0; i < 200 && !(markerUnresolved() && putIssuedThisAttempt); i++) await new Promise((r) => setTimeout(r, 5));
     global.fetch = inner;
-    assert.equal(receipts.has(markerKey), true, 'the marker must already be durable while the PUT is still outstanding');
+    assert.equal(markerUnresolved(), true, 'the marker must already be durable while the PUT is still outstanding');
     const stored = receipts.get(markerKey);
-    assert.deepEqual(Object.keys(stored).sort(), ['claimedAt', 'kind', 'operatorDigest', 'requestIdDigest']);
+    /* Storage correction: v2 record shape {v:2,state:"unresolved",attemptHash,claimedAt} (was
+       {claimedAt,kind,operatorDigest,requestIdDigest}); still no raw operator or request id. */
+    assert.deepEqual(Object.keys(stored).sort(), ['attemptHash', 'claimedAt', 'state', 'v']);
+    assert.equal(stored.v, 2); assert.equal(stored.state, 'unresolved');
     assert.ok(!JSON.stringify(stored).includes('brad@example.invalid') && !JSON.stringify(stored).includes('interrupted-request'));
     void pending; // deliberately never settles: models the platform killing the function
     resetStage(config.stages.underContract);
@@ -1314,7 +1334,9 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     assert.equal(res.statusCode, 200, res.body);
     assert.equal(JSON.parse(res.body).confirmed, true);
     assert.equal(opportunity.pipelineStageId, config.stages.underContract);
-    assert.equal(receipts.has(markerKey), false);
+    /* Storage correction: "cleared" is now state "resolved" (markers are never deleted). */
+    assert.equal(markerUnresolved(), false);
+    assert.equal(receipts.get(markerKey).state, 'resolved');
   });
 
   for (const [mode, label] of [['reject', 'the GHL PUT fails'], ['ignore', 'readback still shows the prior stage'], ['wrong-stage', 'readback shows Seller Closed-Won'], ['wrong-pipeline', 'readback shows another pipeline']]) {
@@ -1323,26 +1345,32 @@ await check('manual send: readback failure -- live provider fetch itself errors,
       const res = await invokeOp('opportunity.underContractStage', opportunity.id, stageArgs());
       assert.equal(res.statusCode, 409, res.body);
       assert.equal(JSON.parse(res.body).outcome, 'indeterminate');
-      assert.equal(receipts.has(markerKey), true);
+      assert.equal(markerUnresolved(), true);
       resetStage(config.stages.underContract);
     });
   }
 
-  await check('an exception after the claim (confirm hook itself fails) leaves the marker and is never success', async () => {
+  await checkSuspectedBug('an exception after the claim (confirm hook itself fails) leaves the marker and is never success', async () => {
     resetStage(config.stages.sellerOfferSent);
-    failNextBlobDelete = true;
-    const res = await invokeOp('opportunity.underContractStage', opportunity.id, stageArgs());
-    failNextBlobDelete = false;
+    /* Storage correction: the confirm hook is now the marker's compare-and-swap to `resolved` (there is
+       no delete to fail); the injected failure is a 503 on every write of the marker key after the claim. */
+    let claimSeen = false;
+    const fault = wire.on((req) => { if (req.method !== 'PUT' || req.store !== 'site:' + compat.S || req.key !== markerKey) return false; if (!claimSeen) { claimSeen = true; return false; } return true; }, wire.status(503), 1000);
+    let res;
+    try { res = await invokeOp('opportunity.underContractStage', opportunity.id, stageArgs()); }
+    finally { fault.times = 0; }
+    assert.ok(fault.used >= 1, 'the injected confirm-hook failure was genuinely exercised');
+    assert.equal(markerUnresolved(), true);
     assert.equal(res.statusCode, 409, res.body);
     assert.equal(JSON.parse(res.body).confirmed, undefined);
-    assert.equal(receipts.has(markerKey), true);
     resetStage(config.stages.underContract);
   });
 
   await check('while unresolved: a later request with a NEW requestId is refused before ANY GHL call', async () => {
     resetStage(config.stages.sellerOfferSent); stagePutMode = 'reject';
     await invokeOp('opportunity.underContractStage', opportunity.id, stageArgs());
-    assert.equal(receipts.has(markerKey), true);
+    assert.equal(markerUnresolved(), true);
+    clearUncertainTickets(); // isolate the MARKER as the barrier under test (see clearUncertainTickets)
     stagePutMode = 'apply';
     const { result: res, ghlCalls } = await countingGhl(() => invokeOp('opportunity.underContractStage', opportunity.id, stageArgs()));
     assert.equal(res.statusCode, 409, res.body);
@@ -1369,44 +1397,44 @@ await check('manual send: readback failure -- live provider fetch itself errors,
     assert.equal(res.statusCode, 409, res.body);
     assert.equal(JSON.parse(res.body).by, 'iaos-stage-transition-unresolved');
     assert.equal(ghlCalls(), 0);
-    assert.equal(receipts.has(markerKey), true);
+    assert.equal(markerUnresolved(), true);
   });
 
   await check('the marker blocks ONLY this opportunity\'s stage transition: other writes and other opportunities are unaffected', async () => {
-    assert.equal(receipts.has(markerKey), true);
-    assert.equal(await receiptsLib.stageTransitionUnresolved(opportunity2.id), false);
+    assert.equal(markerUnresolved(), true);
+    assert.equal(await markerLib.stageMarkerUnresolved(compat.store(), markerLib.stageMarkerKey('test', config.locationId, opportunity2.id)), false);
     resetStage(config.stages.underContract);
   });
 
   await check('concurrent claims: exactly one wins, the other is StageTransitionUnresolved', async () => {
     receipts.delete(markerKey);
-    const results = await Promise.allSettled([
-      receiptsLib.claimStageTransition(opportunity.id, 'request-a', 'brad@example.invalid'),
-      receiptsLib.claimStageTransition(opportunity.id, 'request-b', 'second-operator@example.invalid'),
-    ]);
+    const results = await Promise.allSettled([claimDirect('v2-request-a'), claimDirect('v2-request-b')]);
     assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
     const lost = results.find((r) => r.status === 'rejected');
-    assert.ok(lost.reason instanceof receiptsLib.StageTransitionUnresolved);
+    /* Storage correction: the losing claim's error class is StageMarkerHeld (was StageTransitionUnresolved). */
+    assert.ok(lost.reason instanceof markerLib.StageMarkerHeld);
     receipts.delete(markerKey);
   });
 
   await check('concurrent attempts at the boundary: exactly ONE PUT is issued', async () => {
     resetStage(config.stages.sellerOfferSent);
     const inner = global.fetch; let puts = 0;
-    global.fetch = async (url, init) => { if (init?.method === 'PUT') puts++; return inner(url, init); };
+    global.fetch = async (url, init) => { if (init?.method === 'PUT' && new URL(url).origin === 'https://services.leadconnectorhq.com') puts++; return inner(url, init); };
     try {
-      const attempt = (rid) => configuredBoundary().transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon], {
-        beforePut: () => receiptsLib.claimStageTransition(opportunity.id, rid, 'brad@example.invalid'),
-        afterConfirmed: () => receiptsLib.clearStageTransition(opportunity.id),
-      });
-      const results = await Promise.allSettled([attempt('concurrent-a'), attempt('concurrent-b')]);
+      const attempt = (rid) => { let claimed = null; return gatedBoundary().transitionOpportunityStage(opportunity.id, config.pipelines.sellerLeads, config.stages.underContract, [config.stages.sellerClosedWon], {
+        beforePut: async () => { claimed = await claimDirect(rid); },
+        afterConfirmed: async () => { await claimed.resolve(); },
+      }); };
+      const results = await Promise.allSettled([attempt('v2-concurrent-a'), attempt('v2-concurrent-b')]);
       assert.equal(puts, 1);
       assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
-      assert.ok(results.find((r) => r.status === 'rejected').reason instanceof receiptsLib.StageTransitionUnresolved);
+      assert.ok(results.find((r) => r.status === 'rejected').reason instanceof markerLib.StageMarkerHeld);
     } finally { global.fetch = inner; }
     resetStage(config.stages.underContract);
   });
 }
 
-console.log(count+' offline contract ledger checks passed');
+/* Storage correction: no ownership read ever reached the cached (eventual) origin. */
+assert.deepEqual(wire.violations,[],'ownership reads must be strong');
+console.log(count+' offline contract ledger checks passed'+(suspected.length?'; '+suspected.length+' FAILED (suspected production bug): '+suspected.join(' | '):''));
 })().catch(e=>{console.error(e);process.exitCode=1;});
