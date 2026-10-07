@@ -368,6 +368,7 @@ function assertNoCors(res) {
   setRuntimeConfig(projectRuntimeConfig(getConfig('test')));
   const readSession = require('../src/lib/read-session.ts');
   require('../src/lib/app-write-session.ts').setAppWriteSession({ token: 'write-fixture', expiresAt: new Date(Date.now() + 600000).toISOString() });
+  await require('../src/lib/app-write-session.ts').bindPageActivation(async () => new Response(JSON.stringify({ state: 'open', activationId: 'v2-act-fixture', deployId: 'd', runtimeDeployId: 'd' }), { status: 200 }));   // storage v2 (Bones finding 7): a signed-in page is bound to its activation before any save
   const { ghl } = require('../src/lib/ghl.ts');
   const REFUSED_401 = { error: 'Sign in to read IAOS data', by: 'iaos-app-read-auth' };
   const UNCONFIGURED_503 = { error: 'x', by: 'iaos-app-read-unconfigured' };

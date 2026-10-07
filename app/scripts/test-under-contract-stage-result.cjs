@@ -64,6 +64,7 @@ async function transitionWith(writeResponse, version = nextVersion()) {
 }
 
 (async () => {
+  await require('../src/lib/app-write-session.ts').bindPageActivation(async () => new Response(JSON.stringify({ state: 'open', activationId: 'v2-act-fixture', deployId: 'd', runtimeDeployId: 'd' }), { status: 200 }));   // storage v2 (Bones finding 7): a signed-in page is bound to its activation before any save
   // ---- 1. the classifier, directly ------------------------------------------------
   const expected = { opportunityId: OPP, expectedPipelineId: PIPE, targetStageId: STAGE };
   await check('model: 200 + confirmed + exact readback is the ONLY confirmed shape', () => {
