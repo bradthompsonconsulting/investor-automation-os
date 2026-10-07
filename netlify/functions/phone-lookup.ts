@@ -67,6 +67,12 @@ export const handler = async (event: any) => {
   if (!contactId || !phone) {
     return { statusCode: 400, body: "Missing contactId or phone" };
   }
+  // Storage correction (Bones review finding 6): held -- no reviewed write path exists for this webhook
+  // under storage v2. Refused BEFORE the provider lookup and any GHL read or write.
+  if (!configuredBoundary(process.env.GHL_API_TOKEN || "held").canMutate) {
+    console.error("[phone-lookup] held: GHL writes from this webhook await a reviewed write path (storage v2)");
+    return { statusCode: 503, body: "Phone type writes are held pending review; nothing was written" };
+  }
 
   try {
     exact(data, ["contactId", "phone"]); identifier(contactId);

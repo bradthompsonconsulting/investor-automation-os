@@ -87,6 +87,22 @@ export class GhlBoundary {
     }
     return { permit, response };
   }
+  /** Whether this boundary can perform ANY mutation (it has a write gate). Callers that must not write partially check this first. */
+  get canMutate(): boolean { return this.gate !== null; }
+  /**
+   * Contact tag membership (Bones review finding 6): a GATED mutation like every other -- refused before
+   * any I/O without a write gate. Effect class `tag` on the contact. The caller reads back membership.
+   */
+  async addTags(contactId: string, tags: string[], identity?: WriteIdentity) {
+    await this.contact(contactId);
+    const { permit } = await this.mutate(`/contacts/${contactId}/tags`, "POST", { tags }, { subject: `contact:${contactId}`, effects: ["tag"] }, identity);
+    await this.settle(permit, "uncertain");   // membership is confirmed only by the caller's later read
+  }
+  async removeTags(contactId: string, tags: string[], identity?: WriteIdentity) {
+    await this.contact(contactId);
+    const { permit } = await this.mutate(`/contacts/${contactId}/tags`, "DELETE", { tags }, { subject: `contact:${contactId}`, effects: ["tag"] }, identity);
+    await this.settle(permit, "uncertain");
+  }
   private async settle(p: Permit, outcome: "confirmed" | "uncertain") {
     if (!this.gate) return;
     const gate = this.gate;

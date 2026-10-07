@@ -90,24 +90,18 @@ async function writeScores(
   if (!result.confirmed) throw new Error("Score readback mismatch");
 }
 
+/* Storage correction (Bones review finding 6): tag membership changes go through the SAME gated boundary
+   as the score fields -- never a direct fetch -- so the operation is either fully permitted or refused
+   before any GHL mutation. Until a reviewed write path exists for this webhook (Jess decision A), it is
+   uniformly held. */
 async function addContactTag(contactId: string, tag: string): Promise<void> {
   if (!BUCKET_TAGS.includes(tag as BucketTag)) throw new Error("Tag refused");
-  const res = await fetch(`${GHL_BASE}/contacts/${contactId}/tags`, {
-    method: "POST",
-    headers: ghlHeaders(),
-    body: JSON.stringify({ tags: [tag] }),
-  });
-  if (!res.ok) throw new Error(`POST /contacts/${contactId}/tags → ${res.status}: ${await res.text()}`);
+  await configuredBoundary(process.env.GHL_API_TOKEN).addTags(contactId, [tag]);
 }
 
 async function removeContactTags(contactId: string, tags: string[]): Promise<void> {
   if (!tags.length || tags.some(t => !BUCKET_TAGS.includes(t as BucketTag)) || new Set(tags).size !== tags.length) throw new Error("Tags refused");
-  const res = await fetch(`${GHL_BASE}/contacts/${contactId}/tags`, {
-    method: "DELETE",
-    headers: ghlHeaders(),
-    body: JSON.stringify({ tags }),
-  });
-  if (!res.ok) throw new Error(`DELETE /contacts/${contactId}/tags → ${res.status}: ${await res.text()}`);
+  await configuredBoundary(process.env.GHL_API_TOKEN).removeTags(contactId, tags);
 }
 
 async function writeBucketTag(contactId: string, tag: BucketTag): Promise<void> {
@@ -350,6 +344,11 @@ export const handler = async (event: any) => {
 
   if (!contactId) return { statusCode: 400, body: "Missing contactId" };
 
+  // Held: no reviewed write path exists for this webhook under storage v2. Refused BEFORE any GHL read or write.
+  if (!configuredBoundary(process.env.GHL_API_TOKEN || "held").canMutate) {
+    console.error("[motivation-score] held: GHL writes from this webhook await a reviewed write path (storage v2)");
+    return { statusCode: 503, body: "Scoring writes are held pending review; nothing was written" };
+  }
   try {
     exact(data, ["contactId"]); identifier(contactId);
     await configuredBoundary(process.env.GHL_API_TOKEN).contact(contactId);
