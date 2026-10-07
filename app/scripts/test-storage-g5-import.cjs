@@ -182,6 +182,24 @@ const tableAfterAudit = () => g5.applyNarrowing(g5.DEFAULT_TABLE(), AUDIT([
     const w2 = W(); all3(w2, `current-offer/request/${digest(`${SCOPE}:rq`)}`, { v: 2, opp: 'O8', contactId: 'C8', step: 'offer', barrierId: 'b' });
     assert.equal(li.classifyWorld(w2, input()).subjects.get('opportunity:O8').class, 'blocked_unknown', 'Current Offer prefix: no R2');
   });
+  await check('I5b (Bones finding 4) an earlier never-sent / withdrawn / uncertain attempt is NOT covered by a later confirmed attempt and a complete final: the subject stays blocked', async () => {
+    for (const [label, d1, o1] of [['not_dispatched', { d: 'send' }, { kind: 'not_dispatched' }], ['withdrawn', { d: 'withdrawn' }, null], ['uncertain', { d: 'send' }, { kind: 'uncertain' }]]) {
+      const w = W(); const o = 'op5b'; const c = 'C5b';
+      all3(w, v3('op', o), op(o, c));
+      for (const slot of ['result', 'touch']) { all3(w, attK(o, slot, 1), { v: 3, op: o, slot, n: 1, requestId: `${o}-${slot}-1` }); all3(w, v3('decision', `${o}-${slot}-1`), { d: 'send' }); all3(w, v3('outcome', `${o}-${slot}-1`), { kind: 'confirmed' }); }
+      all3(w, attK(o, 'note', 1), { v: 3, op: o, slot: 'note', n: 1, requestId: `${o}-note-1` });
+      all3(w, v3('decision', `${o}-note-1`), d1);
+      if (o1) all3(w, v3('outcome', `${o}-note-1`), o1);
+      all3(w, attK(o, 'note', 2), { v: 3, op: o, slot: 'note', n: 2, requestId: `${o}-note-2` });
+      all3(w, v3('decision', `${o}-note-2`), { d: 'send' }); all3(w, v3('outcome', `${o}-note-2`), { kind: 'confirmed' });
+      all3(w, v3('final', o), { v: 3, op: o, kind: 'complete', result: 'No Answer', slots: [], at: 't' });
+      const cls = li.classifyWorld(w, input()).subjects.get(`contact:${c}`).class;
+      assert.equal(cls, 'blocked_unknown', `${label}: was ${cls}`);
+    }
+    // the positive control still resolves: every attempt with its own send + confirmed evidence
+    const w2 = W(); completeOp(w2, 'op5c', 'C5c');
+    assert.equal(li.classifyWorld(w2, input()).subjects.get('contact:C5c').class, 'resolved');
+  });
   await check('I7 an unattributable subject-bearing record HALTS: no completion, no cutover record', async () => {
     const w = W(); all3(w, `lock/${digest('unknown-contact')}`, { claimedAt: 't' });
     const c = li.classifyWorld(w, input());

@@ -147,11 +147,25 @@ export function classifyWorld(world: World, input: ImportInput): Classified {
     const anyAttempt = [...keys].some((k) => k.startsWith("call-log/v3/attempt/") && latest(k)?.op === op);
     if (!anyAttempt) { opResolved.set(op, true); continue; }   // R2
     let ok = !!fin && fin.kind === "complete" && fin.op === op && Array.isArray(fin.slots);
+    /* Bones review finding 4: EVERY attempt of every slot -- superseded ones included -- must carry its
+       own terminal evidence (a "send" decision and a persisted CONFIRMED outcome, in every observed
+       version). A later success or a complete final never covers an earlier attempt: a legacy
+       "never sent" proof (withdrawn / not_dispatched) or an uncertain/missing outcome on ANY attempt
+       keeps the operation unresolved, and its subject blocked. */
+    const allVersions = (k: string) => present(k).map((o) => o.value);
     if (ok) {
       for (const slot of ["result", "note", "touch"]) {
-        let n = 1; let lastConfirmed = false;
-        while (latest(v3attemptKey(op, slot, n))) { const rid = `${op}-${slot}-${n}`; lastConfirmed = latest(v3key("outcome", rid))?.kind === "confirmed"; n++; }
-        if (!lastConfirmed) ok = false;
+        let n = 1; let any = false;
+        while (latest(v3attemptKey(op, slot, n))) {
+          any = true;
+          const rid = `${op}-${slot}-${n}`;
+          const decisions = allVersions(v3key("decision", rid));
+          const outcomes = allVersions(v3key("outcome", rid));
+          const exactTerminal = decisions.length > 0 && decisions.every((d) => d?.d === "send") && outcomes.length > 0 && outcomes.every((o) => o?.kind === "confirmed");
+          if (!exactTerminal) ok = false;
+          n++;
+        }
+        if (!any) ok = false;
       }
     }
     opResolved.set(op, ok);   // R1
