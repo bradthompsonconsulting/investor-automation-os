@@ -342,8 +342,12 @@ export async function loadWorld(store: VerifiedStore, runId: string): Promise<Wo
  * any unattributed record.
  */
 export async function completeImport(store: VerifiedStore, input: ImportInput & { runId: string; runToken: string; T_r: string; drainMinutes: number }, world: World): Promise<{ manifest: Manifest; digest: string }> {
+  /* Bones review finding 5: completion is an idempotent RESUME for the same owner. An owner already
+     marked complete is never reset and never re-opened: the manifest is recomputed from the FROZEN
+     captures and must equal the owner's recorded digest, every output is re-verified, and only then is a
+     missing, matching cutover record created. There is no other route. */
   const { etag: ownerEtag, owner } = await requireOwner(store, input.runId, input.runToken);
-  if (owner.state === "complete") throw new ImportHalted("The import is already complete");
+  if (owner.state === "complete" && (!owner.manifestDigest || owner.T_r !== input.T_r)) throw new ImportHalted("The completed import's frozen T_r or manifest does not match this resume");
   if (!world.S1.size && !world.S2.size && !world.S3.size) throw new ImportHalted("No captures");
   if (!Number.isFinite(Date.parse(input.T_r))) throw new ImportHalted("T_r is required");
   // Every snapshot fully captured; S2 started at least `drainMinutes` after T_r (a precaution, never proof).
@@ -374,12 +378,24 @@ export async function completeImport(store: VerifiedStore, input: ImportInput & 
   if (blockKeys.length !== expected.size || blockKeys.some((k) => !expected.has(k))) throw new ImportHalted("Legacy-block outputs do not match the manifest");
   const sendKeys = await store.list(SEND_RECEIPT_PREFIX, "import_output");
   if (sendKeys.length !== c.sendReceipts.size) throw new ImportHalted("Send receipt outputs do not match the manifest");
-  // Owner completion, THEN the cutover record.
-  const done: ImportOwner = { ...owner, state: "complete", manifestDigest: mDigest };
-  const w = await store.cas(IMPORT_OWNER_KEY, done, ownerEtag, "import_owner");
-  if (w.result !== "written") throw new ImportHalted("Owner completion conflicted");
+  // Owner completion (unless this is a resume of a completed owner), THEN the cutover record.
+  if (owner.state === "complete") {
+    if (owner.manifestDigest !== mDigest) throw new ImportHalted("The frozen captures no longer reproduce the completed manifest");
+  } else {
+    const done: ImportOwner = { ...owner, state: "complete", manifestDigest: mDigest, T_r: input.T_r };
+    let applied = false;
+    try { applied = (await store.cas(IMPORT_OWNER_KEY, done, ownerEtag, "import_owner")).result === "written"; }
+    catch (e) { if (!(e instanceof StorageUncertain)) throw e; }
+    if (!applied) {
+      // A conflict or an ambiguous acknowledgement: only an exact strong read of OUR completion proves it.
+      const again = await store.readData<ImportOwner>(IMPORT_OWNER_KEY, "import_owner");
+      if (!again || again.runId !== owner.runId || again.ownerHash !== owner.ownerHash || again.state !== "complete" || again.manifestDigest !== mDigest || again.T_r !== input.T_r) {
+        throw new ImportHalted("Owner completion could not be confirmed; resume with the same run and token");
+      }
+    }
+  }
   const cut: CutoverRecord = { v: 1, importComplete: true, ownerRunId: input.runId, manifestDigest: mDigest, T_r: input.T_r, drainUntil: new Date(Date.parse(input.T_r) + input.drainMinutes * 60_000).toISOString(), createdAt: new Date().toISOString() };
-  await store.writeOnceVerified(CUTOVER_KEY, cut, (g: CutoverRecord) => g.ownerRunId === cut.ownerRunId && g.manifestDigest === mDigest, "import_output");
+  await store.writeOnceVerified(CUTOVER_KEY, cut, (g: CutoverRecord) => g.ownerRunId === cut.ownerRunId && g.manifestDigest === mDigest && g.T_r === cut.T_r, "import_output");
   return { manifest, digest: mDigest };
 }
 

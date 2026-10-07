@@ -20,7 +20,7 @@ export const IMPORT_LOCK_KEY = "authz/import/lock";
 export const LEGACY_BLOCK_PREFIX = "authz/legacy-block/";
 export const legacyBlockKey = (env: string, locationId: string, subject: string) => LEGACY_BLOCK_PREFIX + digest(`${env}:${locationId}:${subject}`);
 
-export type ImportOwner = { v: 1; runId: string; ownerHash: string; startedAt: string; state: "running" | "complete"; manifestDigest?: string };
+export type ImportOwner = { v: 1; runId: string; ownerHash: string; startedAt: string; state: "running" | "complete"; manifestDigest?: string; /** frozen at completion; a resume must match it */ T_r?: string };
 export type CutoverRecord = { v: 1; importComplete: true; ownerRunId: string; manifestDigest: string; T_r: string; drainUntil: string; createdAt: string };
 export type LegacyBlock = { v: 1; subject: string; class: "blocked_unknown" | "quarantined"; reasons: string[]; evidenceDigest: string };
 

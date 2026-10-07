@@ -257,6 +257,46 @@ const tableAfterAudit = () => g5.applyNarrowing(g5.DEFAULT_TABLE(), AUDIT([
     const p = wire.json(S, li.evidenceProgressKey(run, 'S1')); wire.remove(S, li.evidenceProgressKey(run, 'S1')); wire.seed(S, li.evidenceProgressKey(run, 'S1'), { ...p, done: false, next: 0 });
     await assert.rejects(li.captureBatch(store(), legacyStore(), scope(), { runId: run, snapshot: 'S1', env: ENV, locationId: LOC }), li.ImportHalted);
   });
+  const completeArgs = (run, t, T_r) => ({ env: ENV, locationId: LOC, runId: run, runToken: t, knownSubjects: [], unstablePrefixes: [], T_r, drainMinutes: 30 });
+  await check('I8b (Bones finding 5) the cutover write fails AFTER owner completion: the same owner resumes and publishes the matching cutover record (no reset route)', async () => {
+    fresh(); seedLegacy();
+    const t = runToken(); const run = 'run-imp0008b'; const T_r = new Date(Date.now() - 3_600_000).toISOString();
+    await li.claimImportOwner(store(), run, t);
+    await captureAll(store(), run, t);
+    wire.on(wire.put(S, cut.CUTOVER_KEY), wire.status(503), 3);
+    await assert.rejects(li.completeImport(store(), completeArgs(run, t, T_r), await li.loadWorld(store(), run)), (e) => e instanceof vs.StorageUncertain);
+    assert.equal(wire.json(S, cut.IMPORT_OWNER_KEY).state, 'complete');
+    assert.equal(await cut.cutoverValid(store()), null, 'no cutover yet: writes stay refused');
+    const r = await li.completeImport(store(), completeArgs(run, t, T_r), await li.loadWorld(store(), run));
+    const c = await cut.cutoverValid(store());
+    assert.ok(c); assert.equal(c.manifestDigest, r.digest); assert.equal(c.ownerRunId, run); assert.equal(c.T_r, T_r);
+    // a second resume is a no-op confirmation
+    assert.equal((await li.completeImport(store(), completeArgs(run, t, T_r), await li.loadWorld(store(), run))).digest, r.digest);
+  });
+  await check('I8c an ambiguous owner-completion acknowledgement (applied, ack lost) is confirmed by an exact read-back and the cutover follows', async () => {
+    fresh(); seedLegacy();
+    const t = runToken(); const run = 'run-imp0008c'; const T_r = new Date(Date.now() - 3_600_000).toISOString();
+    await li.claimImportOwner(store(), run, t);
+    await captureAll(store(), run, t);
+    wire.on(wire.put(S, cut.IMPORT_OWNER_KEY), wire.ackLost());
+    await li.completeImport(store(), completeArgs(run, t, T_r), await li.loadWorld(store(), run));
+    assert.ok(await cut.cutoverValid(store()));
+  });
+  await check('I8d a resume of a completed owner with a different T_r, a different token, or changed frozen captures is refused; no owner reset exists', async () => {
+    fresh(); seedLegacy();
+    const t = runToken(); const run = 'run-imp0008d'; const T_r = new Date(Date.now() - 3_600_000).toISOString();
+    await li.claimImportOwner(store(), run, t);
+    await captureAll(store(), run, t);
+    wire.on(wire.put(S, cut.CUTOVER_KEY), wire.status(503), 3);
+    await li.completeImport(store(), completeArgs(run, t, T_r), await li.loadWorld(store(), run)).catch(() => null);
+    await assert.rejects(li.completeImport(store(), completeArgs(run, t, new Date(Date.now() - 7_200_000).toISOString()), await li.loadWorld(store(), run)), li.ImportHalted);
+    await assert.rejects(li.completeImport(store(), completeArgs(run, runToken(), T_r), await li.loadWorld(store(), run)), li.ImportHalted);
+    const world = await li.loadWorld(store(), run);
+    const k = [...world.S3.keys()][0]; world.S3.set(k, { ...world.S3.get(k), valueDigest: 'changed' });
+    await assert.rejects(li.completeImport(store(), completeArgs(run, t, T_r), world), li.ImportHalted);
+    assert.equal(await cut.cutoverValid(store()), null);
+    assert.ok(!Object.keys(li).some((n) => /reset|clear|takeover/i.test(n)), 'no reset/clear/takeover export');
+  });
   await check('I10 the dry run writes nothing', async () => {
     fresh(); seedLegacy();
     const before = wire.keys(S).length;
