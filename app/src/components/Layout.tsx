@@ -1,15 +1,20 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
 import AppWriteAccess from "./AppWriteAccess";
 import ReadAccess from "./ReadAccess";
 import { ReadViewReport, type ReadView } from "./access-status";
+import { bindPageActivation } from "../lib/app-write-session";
 
 export default function Layout() {
   // Mirrors what ReadAccess already knows (no request of its own).
   const [read, setRead] = useState<ReadView>({ kind: "checking" });
   const readSignedIn = read.kind === "signed_in";
+  /* Storage correction (Bones finding 7): bind this page load to the deployment's activation the FIRST
+     time read sign-in succeeds -- before any edit or save is possible. Idempotent: later sign-ins
+     (session recovery) never rebind. */
+  useEffect(() => { if (readSignedIn) void bindPageActivation(); }, [readSignedIn]);
   return (
     <ReadViewReport.Provider value={setRead}>
     <div className="flex h-screen overflow-hidden" style={{ background: "#0A0E1A" }}>

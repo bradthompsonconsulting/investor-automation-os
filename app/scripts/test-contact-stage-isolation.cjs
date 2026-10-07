@@ -116,6 +116,7 @@ async function main() {
     const pageErrors = [];
     page.on('pageerror', (e) => pageErrors.push(String(e)));
     await page.route('**/*', async (route) => {
+      if (route.request().url().includes('/.netlify/functions/iaos-activation')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'open', activationId: 'v2-act-page-fixture', deployId: 'page-deploy', runtimeDeployId: 'page-deploy' }) }); // storage v2 (Bones finding 7): the page binds its activation at read sign-in
       const url = route.request().url();
       if (url.startsWith(base) && !url.includes('/.netlify/functions/')) return route.continue();
       if (!url.includes('/.netlify/functions/')) { foreign.push(url); return route.abort(); }

@@ -9,11 +9,13 @@
  */
 import { createRoot } from "react-dom/client";
 import { getConfig, projectRuntimeConfig, setRuntimeConfig } from "../../../shared/ghl-config";
-import { setAppWriteSession } from "../../../src/lib/app-write-session";
+import { setAppWriteSession, bindPageActivation } from "../../../src/lib/app-write-session";
 
 setRuntimeConfig(projectRuntimeConfig(getConfig("test")));
 // A placeholder bearer token: the test answers ghl-write itself.
 setAppWriteSession({ token: "offline-harness", expiresAt: "2099-01-01T00:00:00.000Z" });
+// Storage correction (Bones finding 7): as the signed-in shell (Layout) does, bind this page load to its activation before any save.
+void bindPageActivation();
 
 const [{ BrowserRouter, Routes, Route, useNavigate, useParams }, { default: ContactWorkspace }, { default: SellerCallWorkspace }, { DncControl }, { useEffect }] =
   await Promise.all([

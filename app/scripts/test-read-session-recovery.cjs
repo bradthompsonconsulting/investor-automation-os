@@ -211,6 +211,7 @@ async function main() {
     page.on('pageerror', (e) => pageErrors.push(String(e)));
     await context.route(/gohighlevel\.com/, (route) => route.abort());
     await context.route('**/*', async (route) => {
+      if (route.request().url().includes('/.netlify/functions/iaos-activation')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'open', activationId: 'v2-act-page-fixture', deployId: 'page-deploy', runtimeDeployId: 'page-deploy' }) }); // storage v2 (Bones finding 7): the page binds its activation at read sign-in
       const url = route.request().url();
       if (url.startsWith(`${base}/app-read-login.html`)) {
         signedIn = true;   // the stub stands in for a successful sign-in, which sets the cookie
