@@ -4,6 +4,7 @@ import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link } from "react-router-dom";
 import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, GitBranch } from "lucide-react";
 import { ghl, type OpportunityRow, type PipelineStage } from "../lib/ghl";
+import { indexPropertyAddresses, pipelinePropertyCell, type PropertyAddressSource } from "../lib/pipeline-property";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -83,6 +84,17 @@ export default function Pipeline() {
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
+  }, [readRecovered]);
+
+  /* B15-09: each row's property address is its contact's property_address,
+     from the existing contacts read (the one the Dashboard joins to the
+     pipeline). Read separately so a failure here never hides the pipeline. */
+  const [addressSource, setAddressSource] = useState<PropertyAddressSource>({ kind: "loading" });
+  useEffect(() => {
+    setAddressSource({ kind: "loading" });
+    ghl.contacts.listAll()
+      .then((contacts) => setAddressSource({ kind: "loaded", byContactId: indexPropertyAddresses(contacts) }))
+      .catch((e: Error) => setAddressSource({ kind: "failed", detail: e.message }));
   }, [readRecovered]);
 
   const stagePosition = useMemo(() => {
@@ -221,7 +233,22 @@ export default function Pipeline() {
                       )}
                     </td>
                     <td style={{ padding: "11px 16px", color: "#94A3B8", fontSize: "13px" }}>
-                      {o.opportunityName || <span style={{ color: "#334155" }}>—</span>}
+                      {(() => {
+                        const property = pipelinePropertyCell(o.contactId, addressSource);
+                        return (
+                          <div
+                            data-testid={`pipeline-row-property-${o.id}`}
+                            data-property-state={property.kind}
+                            title={addressSource.kind === "failed" && property.kind === "unavailable" ? addressSource.detail : undefined}
+                            style={property.kind === "address" ? { color: "#E2E8F0" } : { color: "#64748B", fontStyle: "italic" }}
+                          >
+                            {property.text}
+                          </div>
+                        );
+                      })()}
+                      {o.opportunityName && (
+                        <div style={{ fontSize: "12px", color: "#64748B", marginTop: "2px" }}>{o.opportunityName}</div>
+                      )}
                     </td>
                     <td style={{ padding: "11px 16px" }}>
                       <StageBadge name={stageName.get(o.stageId) ?? "Unknown"} />

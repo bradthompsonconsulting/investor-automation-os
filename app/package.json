@@ -29,6 +29,7 @@
     "test:deal-calculator-wiring": "node scripts/test-deal-calculator-wiring.cjs",
     "test:message-links": "node scripts/test-message-links.cjs",
     "test:b15-conversations-ghl-buttons": "node scripts/test-b15-conversations-ghl-buttons.cjs",
+    "test:pipeline-property": "node scripts/test-pipeline-property.cjs",
     "test:seller-call-outcome": "node scripts/test-seller-call-outcome.cjs",
     "test:contact-isolation": "node scripts/test-contact-isolation.cjs",
     "test:seller-call-resume": "node scripts/test-seller-call-resume.cjs",
