@@ -102,17 +102,26 @@ publisher identity — **never** placed in Netlify env or any function).
    never-sent `claimed` attempt is abandoned, and a `responded` attempt is kept with its stored response.
    It then reclassifies that stored response (T8, only under an approved semantics record) and activates (T9).
    It **never dispatches**; a `dispatching` or `unresolved` attempt stays blocking (exit 3). The private token is
-   never written anywhere, so no command depends on an earlier process's token.
+   never written anywhere, so no command depends on an earlier process's token. The handover names the
+   publication it read (`pubId`, target); the server refuses it inside the same compare-and-swap if another
+   publication is in progress.
+4. `iaos-publish next-attempt --pub <pubId> --target <deployId> --activation <id> --approval <ref> --revocation <ref> --g5-digest <approved digest>`
+   continues the **same** publication after its last attempt ended **ABANDONED** (provably never sent) or
+   **REJECTED** (approved semantics), with nothing outstanding. One process: T7 Handover bound to that
+   publication, then **one** new attempt (new attemptId, T2 Claim → T3 → one restore → T4/T5), the history
+   retained, and T9 if APPLIED. It refuses for any other publication or target (exit 1), while any attempt is
+   outstanding (a `dispatching` or `unresolved` attempt: exit 3; never reset or resent), and after APPLIED
+   (exit 2: run `resume`). A `cycle` with a new `pubId` stays refused while this publication holds admission.
 
 ### 4.4 When the result is not APPLIED
 
 | State | Meaning | What is possible |
 |---|---|---|
-| `claimed` (process died before dispatching) | provably never sent | `resume` hands over and abandons it (T7); then a new `cycle` |
+| `claimed` (process died before dispatching) | provably never sent | `resume` hands over and abandons it (T7); then `next-attempt` in the same publication |
 | `dispatching` with no living sender | may have been sent | **nothing**: admission stays closed |
 | `unresolved` (timeout, transport, abort, 5xx, 429, malformed, other deploy) | unknown | **nothing**: never terminal |
 | `responded` (any 2xx/4xx without approved semantics) | evidence persisted, unclassified | `resume` once an approved semantics record classifies exactly that evidence (T7 keeps it, T8 classifies it) |
-| `REJECTED` (approved semantics) | not applied, cannot apply later | a new attempt (new attemptId) |
+| `REJECTED` (approved semantics) | not applied, cannot apply later | `next-attempt`: a new attempt (new attemptId) in the same publication |
 
 **Fail-closed limitation (stated, not hidden):** one network failure during a controlled publication can
 disable writes indefinitely. Recovery needs request-specific provider evidence, a supported provider

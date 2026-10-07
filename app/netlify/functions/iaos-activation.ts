@@ -103,7 +103,7 @@ async function handle(event: LegacyEvent, inv: Invocation): Promise<LambdaResult
       }
       case "mark_unresolved": await markAttemptUnresolved(s, p, b.attemptId, b.reason); await archiveCycle(inv); return json(200, { unresolved: true });
       case "abandon": await abandonAttempt(s, p, b.attemptId); await archiveCycle(inv); return json(200, { abandoned: true });
-      case "handover": await handoverPublisher(s, p); return json(200, { handover: true });
+      case "handover": await handoverPublisher(s, p, { pubId: b.pubId, targetDeployId: b.targetDeployId }); return json(200, { handover: true });
       case "reclassify": { const c = await reclassifyAttempt(s, p, b.attemptId); await archiveCycle(inv); return json(200, { classification: c.cls }); }
       case "activate": return await activateHere(inv, b);
       default: return json(400, { error: "Unknown action" });

@@ -589,12 +589,16 @@ export async function abandonAttempt(store: VerifiedStore, p: string, attemptId:
 }
 
 /** T7 Handover (publisher restart): closed; outstanding null or `claimed` (abandoned in the same write). A dispatching attempt blocks handover. */
-export async function handoverPublisher(store: VerifiedStore, newP: string): Promise<void> {
-  if (!validToken(newP)) throw new PublicationRefused("invalid_request");
+export async function handoverPublisher(store: VerifiedStore, newP: string, expect?: { pubId: string; targetDeployId: string }): Promise<void> {
+  if (!validToken(newP) || (expect && (!validId(expect.pubId) || !validDeployId(expect.targetDeployId)))) throw new PublicationRefused("invalid_request");
   const newHash = publisherHashOf(newP);
   await transition<true>(store, "T7", (cur) => {
     const pub = cur?.publication;
     if (!cur || !pub || cur.state !== "closed") return { refuse: new PublicationRefused("no_publication") };
+    /* Bones re-review of 20d7a62, item 2: a handover names the publication it takes over (the operator's
+       status read). Checked inside this compare-and-swap, so a different cycle that appeared since that
+       read is never taken over. */
+    if (expect && (pub.pubId !== expect.pubId || pub.targetDeployId !== expect.targetDeployId)) return { refuse: new PublicationRefused("publication_mismatch", "The publication in progress is not the one named") };
     if (pub.publisherHash === newHash) return { done: true };
     const o = pub.outstanding;
     /* Bones review finding 3: a new process may take over a cycle whose attempt is `claimed` (abandoned
@@ -638,7 +642,7 @@ export async function reclassifyAttempt(store: VerifiedStore, p: string, attempt
  */
 export async function activate(store: VerifiedStore, scope: InvocationScope, input: { p: string; runtimeDeployId: string; attemptSetDigest: string; g5Table: G5Table; activationId: string }): Promise<Admission> {
   const { p, runtimeDeployId } = input;
-  if (!validToken(p) || !validId(input.activationId) || !validTable(input.g5Table)) throw new PublicationRefused("invalid_request");
+  if (!validToken(p) || !validId(input.activationId) || !validTable(input.g5Table)) throw new PublicationRefused("invalid_request");
   const activationMark = publisherMark(p, "T9", input.activationId, "-", runtimeDeployId);
   return transition<Admission>(store, "T9", (cur) => {
     if (cur && cur.state === "open" && cur.activationId === input.activationId && cur.activationMark === activationMark) return { done: cur };
@@ -653,7 +657,7 @@ export async function activate(store: VerifiedStore, scope: InvocationScope, inp
        effective table is the approved staged table PLUS every widened entry already in force. */
     const carried = (cur!.g5?.entries ?? []).filter((e) => e.basis === "widened" && !input.g5Table.entries.some((x) => x.pathId === e.pathId && x.scope === e.scope && JSON.stringify(x.effects) === JSON.stringify(e.effects)));
     const g5: G5Table = carried.length ? { ...input.g5Table, entries: [...input.g5Table.entries, ...carried] } : input.g5Table;
-    const next: Admission = { ...cur!, state: "open", epoch: cur!.epoch + 1, activationId: input.activationId, deployId: runtimeDeployId, g5Digest: tableDigest(g5), g5, activatedAt: new Date().toISOString(), activationMark, publication: null };
+    const next: Admission = { ...cur!, state: "open", epoch: cur!.epoch + 1, activationId: input.activationId, deployId: runtimeDeployId, g5Digest: tableDigest(g5), g5, activatedAt: new Date().toISOString(), activationMark, publication: null };
     return { write: next, result: next };
   }, (cur) => (cur && cur.state === "open" && cur.activationId === input.activationId && cur.activationMark === activationMark ? cur : null));
 }

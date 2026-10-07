@@ -24,6 +24,11 @@
  *          STORED response (needs approved semantics), then T9 Activate.
  *          It never dispatches: an attempt that is `dispatching` or `unresolved`
  *          stays blocking, and resume exits non-zero.
+ *   next-attempt --pub <pubId> --target <deployId> --activation <id> --approval <ref>
+ *          --revocation <ref> --g5-digest <digest>
+ *          after the SAME publication's last attempt ended ABANDONED or REJECTED (nothing
+ *          outstanding): T7 Handover bound to that publication, then ONE new attempt
+ *          (T2 Claim ... T4/T5) with history retained, then T9 Activate if APPLIED.
  *
  * The single Netlify request is never retried, automatically or otherwise; no
  * response, a timeout (120 s) or an abort is recorded UNRESOLVED and blocks
@@ -92,6 +97,10 @@ function createPublisher({ env = process.env, fetchImpl = globalThis.fetch } = {
     const close = await call('close', { pubId, targetDeployId: target });
     steps.push(['close', close.status]);
     if (close.status !== 200) return { ok: false, steps, stop: 'close', body: close.body };
+    return attemptOnce(steps);
+  }
+  /** ONE new attempt in the publication this process holds: T2 Claim -> T3 Dispatching -> ONE restore -> T4/T5. */
+  async function attemptOnce(steps) {
     const attemptId = `att-${crypto.randomBytes(8).toString('hex')}`;
     const claim = await call('claim', { attemptId });
     steps.push(['claim', claim.status]);
@@ -126,14 +135,42 @@ function createPublisher({ env = process.env, fetchImpl = globalThis.fetch } = {
     const r = await call('activate', { activationId, attemptSetDigest: pub.attemptSetDigest, attestations: atts.map((a) => ({ attestation: a.attestation })), approvalRef, revocationRef, g5Digest });
     return { ok: r.status === 200, status: r.status, body: r.body };
   }
-  /** cycle: one process from Close to Activate. */
-  async function cycle(args) {
-    const pub = await publish({ pubId: args.pubId, target: args.target });
+  /** After an attempt: activate if APPLIED; otherwise say exactly what may happen next. */
+  async function finish(args, pub) {
     if (!pub.ok) return { code: 1, publish: pub };
     if (pub.classification === 'UNRESOLVED') return { code: 3, publish: pub, next: 'blocked: the publication result is unknown (fail-closed limitation)' };
+    if (pub.classification === 'REJECTED') return { code: 2, publish: pub, next: `the attempt was REJECTED; run \`next-attempt --pub ${args.pubId} --target ${args.target}\` for a new attempt in this publication` };
     if (pub.classification !== 'APPLIED') return { code: 2, publish: pub, next: 'run `resume` once an approved provider-semantics record classifies the stored response' };
     const act = await activateTarget(args);
     return { code: act.ok ? 0 : 2, publish: pub, activate: act, ...(act.ok ? {} : { next: 'run `resume` to retry activation' }) };
+  }
+  /** cycle: one process from Close to Activate. */
+  async function cycle(args) {
+    return finish(args, await publish({ pubId: args.pubId, target: args.target }));
+  }
+  /**
+   * next-attempt (Bones re-review of 20d7a62, item 2): continues the SAME publication after its last
+   * attempt ended terminally unsent (ABANDONED) or REJECTED. This process takes the named publication
+   * over (T7, bound to that pubId and target inside the compare-and-swap) and claims ONE new attempt
+   * (T2), with the publication's history retained; then exactly as `cycle`. It refuses while any attempt
+   * is outstanding (a dispatching, unresolved or responded attempt is never reset or resent), after an
+   * APPLIED attempt (run `resume`), and for any other publication.
+   */
+  async function nextAttempt(args) {
+    const st = (await status()).body;
+    const pub = st && st.publication;
+    if (!pub) return { code: 1, stop: 'no_publication', status: st };
+    if (pub.pubId !== args.pubId || pub.targetDeployId !== args.target) return { code: 1, stop: 'publication_mismatch', publication: { pubId: pub.pubId, targetDeployId: pub.targetDeployId } };
+    const o = pub.outstanding;
+    if (o) return { code: o.state === 'dispatching' || o.state === 'unresolved' ? 3 : 2, stop: 'attempt_outstanding', outstanding: o, next: 'an attempt is not terminal; run `resume`' };
+    if (pub.phase !== 'closed') return { code: 2, stop: 'already_applied', next: 'run `resume` to activate' };
+    const last = pub.history[pub.history.length - 1];
+    if (!last || (last.terminal !== 'ABANDONED' && last.terminal !== 'REJECTED')) return { code: 1, stop: 'not_continuable', history: pub.history };
+    const steps = [];
+    const h = await call('handover', { pubId: args.pubId, targetDeployId: args.target });
+    steps.push(['handover', h.status]);
+    if (h.status !== 200) return { code: 1, stop: 'handover', steps, body: h.body };
+    return finish(args, await attemptOnce(steps));
   }
   /** resume: a NEW process takes over safely and finishes what the stored records allow. Never dispatches. */
   async function resume(args) {
@@ -142,20 +179,22 @@ function createPublisher({ env = process.env, fetchImpl = globalThis.fetch } = {
     if (!pub) return { code: 1, stop: 'no_publication', status: st };
     const o = pub.outstanding;
     if (o && (o.state === 'dispatching' || o.state === 'unresolved')) return { code: 3, stop: 'blocked', outstanding: o, next: 'an attempt may have been sent and has no recorded response; nothing can take it over' };
-    const h = await call('handover');
+    const h = await call('handover', { pubId: pub.pubId, targetDeployId: pub.targetDeployId });
     if (h.status !== 200) return { code: 1, stop: 'handover', body: h.body };
+    const cont = `run \`next-attempt --pub ${pub.pubId} --target ${pub.targetDeployId}\` for a new attempt in this publication`;
     if (o && o.state === 'responded') {
       const r = await call('reclassify', { attemptId: o.attemptId });
       if (r.status !== 200) return { code: 2, stop: 'reclassify', body: r.body, next: 'the stored response is not classified by any approved semantics record' };
-      if (r.body.classification !== 'APPLIED') return { code: 2, stop: 'rejected', classification: r.body.classification, next: 'the attempt was REJECTED; run `cycle` with a new publication' };
+      if (r.body.classification !== 'APPLIED') return { code: 2, stop: 'rejected', classification: r.body.classification, next: `the attempt was REJECTED; ${cont}` };
     }
-    if (o && o.state === 'claimed') return { code: 2, stop: 'abandoned', next: 'the never-sent attempt was abandoned; run `cycle` again' };
+    if (o && o.state === 'claimed') return { code: 2, stop: 'abandoned', next: `the never-sent attempt was abandoned; ${cont}` };
+    if (!o && pub.phase !== 'applied') return { code: 2, stop: 'no_applied_attempt', next: cont };
     const act = await activateTarget(args);
     return { code: act.ok ? 0 : 2, activate: act };
   }
   return {
     publisherHashForTests: () => crypto.createHash('sha256').update(Buffer.from(p, 'hex')).digest('hex'),
-    status, cycle, resume, init: () => call('init'),
+    status, cycle, resume, nextAttempt, init: () => call('init'),
   };
 }
 
@@ -169,7 +208,8 @@ async function main() {
   else if (cmd === 'init') { out = await pub.init(); code = out.status === 200 ? 0 : 1; }
   else if (cmd === 'cycle') { out = await pub.cycle({ pubId: arg('pub'), target: arg('target'), ...common }); code = out.code; }
   else if (cmd === 'resume') { out = await pub.resume(common); code = out.code; }
-  else { console.error('usage: iaos-publish status|init|cycle|resume'); process.exit(1); }
+  else if (cmd === 'next-attempt') { out = await pub.nextAttempt({ pubId: arg('pub'), target: arg('target'), ...common }); code = out.code; }
+  else { console.error('usage: iaos-publish status|init|cycle|resume|next-attempt'); process.exit(1); }
   console.log(JSON.stringify(out, null, 2));
   process.exitCode = code;
 }
