@@ -15,6 +15,7 @@
  */
 import { appWriteFetch } from "./app-write-session";
 import { readFetch } from "./read-session";
+import { newV2Id, pausedMessage } from "./v2-ids";
 
 const ENDPOINT = "/.netlify/functions/current-offer-barrier";
 
@@ -33,7 +34,7 @@ export const RESERVATION_FAILED_MESSAGE =
 /** The request ids for one reservation. */
 export function newRequestIds<S extends BarrierStep>(steps: readonly S[]): Record<S, string> {
   const out = {} as Record<S, string>;
-  for (const s of steps) out[s] = crypto.randomUUID();
+  for (const s of steps) out[s] = newV2Id();
   return out;
 }
 
@@ -46,6 +47,8 @@ export async function beginReservation(opportunityId: string, purpose: BarrierPu
   const body = await res.json().catch(() => null);
   if (res.status === 200 && body?.state === "reserved") return { state: "reserved" };
   if (res.status === 409 && (body?.state === "blocked" || body?.state === "in_progress")) return { state: body.state, message: String(body.message ?? RESERVATION_FAILED_MESSAGE) };
+  const paused = pausedMessage(body);
+  if (paused) return { state: "blocked", message: paused };
   throw new Error(RESERVATION_FAILED_MESSAGE);
 }
 

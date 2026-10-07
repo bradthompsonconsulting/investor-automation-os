@@ -17,6 +17,7 @@
 import { appWriteFetch, AppWriteSignInRequired } from "./app-write-session";
 import { readFetch } from "./read-session";
 import { writeCommand } from "./write-command";
+import { pausedMessage } from "./v2-ids";
 
 const ENDPOINT = "/.netlify/functions/call-log-barrier";
 
@@ -38,7 +39,10 @@ export type CallLogView =
   | { state: "unrecorded"; op: string; result: string; slots: SlotView[] }
   | { state: "open"; op: string; result: string; slots: SlotView[]; next: Next; body?: string }
   | { state: "in_progress"; message: string }
+  | { state: "paused"; message: string }
   | { state: "unreadable"; message: string };
+/** Storage correction: status reads carry the durable lock state (plan v6 §4.3). */
+export type LockState = { lock?: "free" | "held_in_progress" | "held_release_unverified" | "held_legacy" | "unknown"; lockMessage?: string };
 
 export const STATUS_UNREADABLE_MESSAGE =
   "IAOS could not check whether an earlier call save for this contact is unfinished. Nothing will be saved until it is checked — use Check again.";
@@ -67,6 +71,8 @@ async function postAction(payload: Record<string, unknown>): Promise<CallLogView
   const body = await res.json().catch(() => null);
   if (res.status === 200 && body && typeof body.state === "string") return body as CallLogView;
   if (res.status === 409 && body?.state === "in_progress") return { state: "in_progress", message: String(body.message) };
+  const paused = pausedMessage(body);
+  if (paused) return { state: "paused", message: paused };
   throw new Error(CHECK_FAILED_MESSAGE);
 }
 
@@ -78,6 +84,8 @@ export async function beginOperation(contactId: string, op: string, result: stri
   if (res.status === 200 && out?.state === "finished") return out as CallLogView;
   if (res.status === 409 && out?.state === "held") return { state: "held", current: out.current as CallLogView };
   if (res.status === 409 && out?.state === "in_progress") return { state: "in_progress", message: String(out.message) };
+  const paused = pausedMessage(out);
+  if (paused) return { state: "paused", message: paused };
   throw new Error(RESERVATION_FAILED_MESSAGE);
 }
 /** "Check again" for THIS operation. Never creates an attempt. */
@@ -108,6 +116,9 @@ export async function sendCallLogStep(contactId: string, slot: Slot, requestId: 
   const out = await res.json().catch(() => null);
   if (res.status === 200 && out && out.confirmed !== false) return { kind: "confirmed" };
   if (out?.outcome === "not_sent") return { kind: "not_sent", message: String(out.error ?? "Nothing was sent"), proves: out.proves === "this_request" ? "this_request" : "nothing" };
+  // Saving paused or held by the write gate: refused before any GHL call.
+  const paused = pausedMessage(out);
+  if (paused) return { kind: "not_sent", message: paused, proves: "nothing" };
   // ghl-write refuses these before any store, lock or GHL call: request shape, write sign-in, origin, Production scope.
   if (res.status === 400 || res.status === 401 || res.status === 403) return { kind: "not_sent", message: String(out?.error ?? `HTTP ${res.status}`), proves: "nothing" };
   return { kind: "uncertain", message: String(out?.error ?? `HTTP ${res.status}`) };
@@ -118,15 +129,17 @@ const LABEL: Record<Slot, string> = { result: "call result", note: "call note", 
  * What the page says about an operation. Only a recorded `complete` is "Saved";
  * a refused or uncertain operation stays visibly incomplete. Never recommends a reload.
  */
-export function describe(view: CallLogView): { tone: "done" | "not_saved" | "partial" | "blocked" | "clear"; message: string; retry?: { slot: "note" | "touch"; after: number } } {
+export function describe(view: CallLogView & LockState): { tone: "done" | "not_saved" | "partial" | "blocked" | "clear"; message: string; retry?: { slot: "note" | "touch"; after: number } } {
+  // A lock that could not be confirmed released is shown, durably, from the server's status (never from memory).
+  const lockNote = view.lock && view.lock !== "free" ? (view.lockMessage ?? null) : null;
   switch (view.state) {
-    case "clear": return { tone: "clear", message: "" };
+    case "clear": return lockNote ? { tone: "blocked", message: lockNote } : { tone: "clear", message: "" };
     case "finished": return view.outcome.kind === "complete"
-      ? { tone: "done", message: `Saved: ${view.outcome.result}.` }
+      ? { tone: "done", message: `Saved: ${view.outcome.result}.${lockNote ? " " + lockNote : ""}` }
       : { tone: "not_saved", message: `"${view.outcome.result}" was not saved — nothing was sent to GHL.` };
     // Not the current operation and no final record: its outcome is NOT recorded -- never claimed either way.
     case "unrecorded": return { tone: "blocked", message: `The outcome of the call "${view.result}" is not recorded yet; IAOS will not guess it. Nothing more will be sent for it. Use Check again.` };
-    case "legacy": case "in_progress": case "unreadable": return { tone: "blocked", message: view.message };
+    case "legacy": case "in_progress": case "paused": case "unreadable": return { tone: "blocked", message: view.message };
     case "open": {
       const n = view.next;
       const r = view.result;

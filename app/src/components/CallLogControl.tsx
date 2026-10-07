@@ -1,3 +1,4 @@
+import { newV2Id } from "../lib/v2-ids";
 import { useEffect, useRef, useState } from "react";
 import { ghl, CALL_DISPOSITION_ID } from "../lib/ghl";
 import { recordOverride, type StorageLike } from "../lib/dispositionOverride";
@@ -177,7 +178,7 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
     inFlight.current.add(cid);
     const chosen = result;
     const body = callLogNote(chosen, text.slice(0, CALL_NOTES_MAX));
-    const op = crypto.randomUUID();
+    const op = newV2Id();
     operations.current.set(cid, op);
     setSubmit({ status: "in_flight" });
     setOwner({ kind: "busy" });

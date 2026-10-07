@@ -84,17 +84,17 @@ export class WriteGate {
   async enter(echo: { activationId: string | null } | null): Promise<Captured> {
     requireWritableDeployment(this.deploy);
     requireNotKilled();
-    if (echo && !echo.activationId) throw new WriteRefused(ACTIVATION_CHANGED, "activation_changed");
-    const clientActivationId = echo ? echo.activationId! : undefined;
     let captured: Captured; let cutover;
     try {
-      [captured, cutover] = await Promise.all([captureActivation(this.store, this.deploy.id!, clientActivationId), cutoverValid(this.store)]);
+      [captured, cutover] = await Promise.all([captureActivation(this.store, this.deploy.id!, undefined), cutoverValid(this.store)]);
     } catch (e) {
       if (e instanceof ActivationChanged) { diag({ fn: this.scope.fn, action: "enter", phase: "activation", class: "activation_changed" }); throw new WriteRefused(ACTIVATION_CHANGED, "activation_changed"); }
       if (e instanceof AdmissionClosed) { diag({ fn: this.scope.fn, action: "enter", phase: "activation", class: e.code === "activation_missing" ? "activation_missing" : e.code === "publication_unresolved" ? "publication_unresolved" : "admission_closed" }); throw new WriteRefused(paused(e.code, MESSAGES[e.code]), e.code); }
       throw new WriteRefused(paused("storage", MESSAGES.storage), "unexpected");
     }
     if (!cutover) { diag({ fn: this.scope.fn, action: "enter", phase: "cutover_gate", class: "cutover_pending" }); throw new WriteRefused(paused("cutover_pending", MESSAGES.cutover_pending), "cutover_pending"); }
+    // The page's echoed activation must be EXACTLY the captured one (checked after admission is known open).
+    if (echo && echo.activationId !== captured.activationId) { diag({ fn: this.scope.fn, action: "enter", phase: "activation", class: "activation_changed" }); throw new WriteRefused(ACTIVATION_CHANGED, "activation_changed"); }
     this.captured = captured;
     return captured;
   }
