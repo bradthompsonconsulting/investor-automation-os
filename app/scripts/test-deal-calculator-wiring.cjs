@@ -16,7 +16,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 71;
+const FLOOR = 72;
 let failures = 0;
 let checks = 0;
 
@@ -242,7 +242,8 @@ const barTs = readSrc('src/lib/deal-calculator-bar.ts');
 // ============================================================
 {
   check('page imports buildSpreadStatus from deal-calculator-bar', /buildSpreadStatus[\s\S]*?from "\.\.\/lib\/deal-calculator-bar"/.test(calcTsx), true);
-  check('page computes the status from the same board8 + expectedSpread the bar uses', /buildSpreadStatus\(board8, expectedSpread\)/.test(calcTsxNoComments), true);
+  check('page computes the status from the same board8 + expectedSpread the bar uses', /buildSpreadStatus\(\s*board8,\s*expectedSpread,/.test(calcTsxNoComments), true);
+  check('page passes the active mode and the engine-resolved figures.assignmentSpread (never recomputed)', /\{ mode: assignmentMode, requiredSpread: underwritingResult\.figures\.assignmentSpread \}/.test(calcTsxNoComments), true);
   check('page renders the spread status line with its kind exposed', /data-testid="deal-calc-spread-status"\s+data-spread-status=\{spreadStatus\.kind\}/.test(calcTsx), true);
   check('the spread status line renders the status text (color is never the only signal)', /data-testid="deal-calc-spread-status"[\s\S]{0,400}\{spreadStatus\.text\}/.test(calcTsx), true);
   check('the spread cell is tinted only for a non-neutral status', /cell\.key === "spread" && spreadStatus\.kind !== "neutral"/.test(calcTsxNoComments), true);

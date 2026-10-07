@@ -157,8 +157,8 @@ function policyRow(
 /* B15-26: one color per spread status, always paired with the status text. */
 const SPREAD_STATUS_COLOR: Record<SpreadStatus["kind"], string> = {
   negative: "#EF4444",
-  below_minimum: "#F59E0B",
-  meets_minimum: "#22C55E",
+  short: "#F59E0B",
+  meets: "#22C55E",
   neutral: "#64748B",
 };
 
@@ -310,7 +310,18 @@ export default function DealCalculator() {
     () => buildDealCalculatorBarCells({ arv, repairs, testPrice, board8, expectedSpread }),
     [arv, repairs, testPrice, board8, expectedSpread],
   );
-  const spreadStatus = useMemo(() => buildSpreadStatus(board8, expectedSpread), [board8, expectedSpread]);
+  /* B15-26: the active mode's required spread is the engine's own resolved
+     figures.assignmentSpread -- read, never recomputed. */
+  const spreadStatus = useMemo(
+    () => buildSpreadStatus(
+      board8,
+      expectedSpread,
+      underwritingResult.status === "resolved"
+        ? { mode: assignmentMode, requiredSpread: underwritingResult.figures.assignmentSpread }
+        : null,
+    ),
+    [board8, expectedSpread, underwritingResult, assignmentMode],
+  );
 
   /* Optional linking. Contact-level only -- see module header for why no
      Opportunity resolution happens here at all. */
