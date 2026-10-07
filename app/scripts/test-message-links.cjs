@@ -31,11 +31,11 @@ try {
   process.exit(10);
 }
 
-const { splitMessageLinks, safeHttpHref, linkLabel } = require(path.join(TMP, 'src/lib/message-links.js'));
+const { splitMessageLinks, safeHttpHref, linkLabel, labeledLinkText } = require(path.join(TMP, 'src/lib/message-links.js'));
 fs.rmSync(TMP, { recursive: true, force: true });
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 31;
+const FLOOR = 49;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -58,7 +58,7 @@ const links = (segs) => segs.filter((s) => s.kind === 'link').map((s) => ({ href
   check('bracketed URL: body reproduces exactly', rejoin(segs), bracketed);
 
   const md = 'Please [Review and sign](https://docs.example.com/s/123) today.';
-  check('markdown link keeps its own label', links(splitMessageLinks(md)), [{ href: 'https://docs.example.com/s/123', label: 'Review and sign' }]);
+  check('markdown link keeps its own label, always followed by the real host', links(splitMessageLinks(md)), [{ href: 'https://docs.example.com/s/123', label: 'Review and sign (docs.example.com)' }]);
   check('markdown link: body reproduces exactly', rejoin(splitMessageLinks(md)), md);
 
   const angle = 'Copy: <https://www.example.com/a/b>';
@@ -102,6 +102,43 @@ const links = (segs) => segs.filter((s) => s.kind === 'link').map((s) => ({ href
   check('a body with no URL is one unchanged text segment', splitMessageLinks('Call me back tomorrow [after 5]'), [{ kind: 'text', text: 'Call me back tomorrow [after 5]' }]);
   check('an empty body yields no segments', splitMessageLinks(''), []);
   check('linkLabel names the host', linkLabel('https://sub.example.org/x'), 'Open link (sub.example.org)');
+}
+
+// ============================================================
+// Spoofing: a sender-controlled label can never hide the destination
+// (Spock review blocker 1). The real host is always visible.
+// ============================================================
+{
+  check('a plain label shows the real host after it', links(splitMessageLinks('[Your Chase account](https://evil.example/login)')),
+    [{ href: 'https://evil.example/login', label: 'Your Chase account (evil.example)' }]);
+  check('a URL-looking label naming another site is replaced by the real host', links(splitMessageLinks('[https://chase.com](https://evil.example/x)')),
+    [{ href: 'https://evil.example/x', label: 'Open link (evil.example)' }]);
+  check('a bare-domain label is replaced too', labeledLinkText('chase.com', 'https://evil.example/x'), 'Open link (evil.example)');
+  check('a domain-with-path label is replaced too', labeledLinkText('chase.com/login', 'https://evil.example/x'), 'Open link (evil.example)');
+  check('a www. label is replaced too', labeledLinkText('www.chase.com', 'https://evil.example/x'), 'Open link (evil.example)');
+  check('userinfo cannot fake the host: the label names the real host', links(splitMessageLinks('<https://bank.com@evil.example/>')).map((l) => l.label), ['Open link (evil.example)']);
+  check('an ordinary sentence label with a period is kept', labeledLinkText('Sign here. Thanks', 'https://docs.example.com/x'), 'Sign here. Thanks (docs.example.com)');
+  check('a whitespace-only label falls back to Open link (host)', labeledLinkText('   ', 'https://docs.example.com/x'), 'Open link (docs.example.com)');
+  check('spoof probe body reproduces exactly', rejoin(splitMessageLinks('Hi [https://chase.com](https://evil.example/x) bye')), 'Hi [https://chase.com](https://evil.example/x) bye');
+}
+
+// ============================================================
+// Parentheses inside URLs (Spock review item 2), every supported shape.
+// ============================================================
+{
+  const md = '[doc](https://a.com/b_(c))';
+  const mdSegs = splitMessageLinks(md);
+  check('labeled URL with balanced parentheses is one link', links(mdSegs), [{ href: 'https://a.com/b_(c)', label: 'doc (a.com)' }]);
+  check('labeled URL with parentheses leaves no stray text', mdSegs.filter((x) => x.kind === 'text').length, 0);
+  check('labeled URL with parentheses reproduces exactly', rejoin(mdSegs), md);
+  check('bracketed URL with parentheses', links(splitMessageLinks('[https://a.com/b_(c)]')).map((l) => l.href), ['https://a.com/b_(c)']);
+  check('angle URL with parentheses', links(splitMessageLinks('<https://a.com/b_(c)>')).map((l) => l.href), ['https://a.com/b_(c)']);
+  check('bare URL keeps balanced parentheses', links(splitMessageLinks('see https://a.com/b_(c) now')).map((l) => l.href), ['https://a.com/b_(c)']);
+  const wrapped = '(see https://a.com/b_(c)).';
+  const wrappedSegs = splitMessageLinks(wrapped);
+  check('a parenthesised bare URL with inner parentheses drops only the outer ")" and period', links(wrappedSegs).map((l) => l.href), ['https://a.com/b_(c)']);
+  check('the outer ")" and period stay as text', wrappedSegs[wrappedSegs.length - 1], { kind: 'text', text: ').' });
+  check('parenthesised body reproduces exactly', rejoin(wrappedSegs), wrapped);
 }
 
 // ============================================================
