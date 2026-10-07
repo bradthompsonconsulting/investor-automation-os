@@ -103,3 +103,7 @@ Server means `app/scripts/test-call-log-barrier.cjs` (47 checks, in CI). Page me
 - `test-seller-call-offer-interaction` and `test-seller-call-accept-protection`;
 - `test-write-boundaries` (call result is bound-only; plain notes and touch unchanged);
 - the source pins in `test-call-outcome-copy`, `test-app-read-auth` and `test-b15-cleanup`.
+
+## Storage v2 (storage correction, PR #131)
+
+From the storage cutover on, these records live in `iaos-ownership-v2` and are read and written only through the verified storage adapter (strong reads; conditional writes classified from the real wire outcome; no deletes). Every GHL mutation is admitted through `authz/admission`; an uncertain send keeps its admission ticket, which blocks overlapping saves until a CONFIRMED outcome of that exact attempt is recorded. Records from before the cutover are never resumed: the conservative import turns them into `authz/legacy-block/<subject>` records, which nothing clears. There is still **no clearing authority**. Design: [`STORAGE_V2_LIFECYCLE.md`](STORAGE_V2_LIFECYCLE.md); release procedure and stuck-lock steps: [`STORAGE_V2_CUTOVER_RUNBOOK.md`](STORAGE_V2_CUTOVER_RUNBOOK.md).
