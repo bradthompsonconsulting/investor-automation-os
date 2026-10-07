@@ -33,67 +33,22 @@ const path = require('node:path');
 const Module = require('node:module');
 const ts = require('typescript');
 
-const receipts = new Map();
-const etags = new Map();
-let etagSeq = 0;
-let failNext = [];            // predicates over { op, key } -> throw once
-/* Stale-read injection: the next read of a matching key returns an OLD
-   snapshot (value + etag), as an eventually consistent read can. */
-let staleNext = [];           // { match(key), snapshot: { data, etag } }
-const snapshotOf = (key) => ({ data: receipts.has(key) ? structuredClone(receipts.get(key)) : null, etag: etags.get(key) ?? null });
-const realBlobs = require('@netlify/blobs');
-delete process.env.NETLIFY_BLOBS_CONTEXT;
-const lambdaHeaders = { 'x-nf-site-id': 'offline-site', 'x-nf-deploy-id': 'offline-deploy' };
-const lambdaBlobs = Buffer.from(JSON.stringify({ url: 'https://blobs.example.invalid', token: 'offline-blob-fixture' })).toString('base64');
-const maybeFail = (op, key) => {
-  const i = failNext.findIndex((f) => f(op, key));
-  if (i >= 0) { failNext.splice(i, 1); throw new Error(`fixture: blob ${op} failed`); }
-};
-const originalResolve = Module._resolveFilename;
-const originalLoad = Module._load;
-Module._resolveFilename = function (name, parent, ...rest) {
-  if (name.startsWith('.') && parent) {
-    const candidate = path.resolve(path.dirname(parent.filename), name + '.ts');
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return originalResolve.call(this, name, parent, ...rest);
-};
-Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
-Module._load = function (name, ...rest) {
-  if (name === '@netlify/blobs') return {
-    connectLambda: (event) => realBlobs.connectLambda(event),
-    getStore: () => ({
-      async get(key) {
-        maybeFail('get', key);
-        const i = staleNext.findIndex((x) => x.match(key));
-        if (i >= 0) { const [st] = staleNext.splice(i, 1); return st.snapshot.data === null ? null : structuredClone(st.snapshot.data); }
-        return receipts.has(key) ? structuredClone(receipts.get(key)) : null;
-      },
-      async getWithMetadata(key) {
-        maybeFail('getWithMetadata', key);
-        const i = staleNext.findIndex((x) => x.match(key));
-        if (i >= 0) { const [st] = staleNext.splice(i, 1); return st.snapshot.data === null ? null : { data: structuredClone(st.snapshot.data), etag: st.snapshot.etag }; }
-        return receipts.has(key) ? { data: structuredClone(receipts.get(key)), etag: etags.get(key) } : null;
-      },
-      async setJSON(key, value, options) {
-        maybeFail('setJSON', key);
-        if (options?.onlyIfNew && receipts.has(key)) return { modified: false };
-        if (options?.onlyIfMatch !== undefined && etags.get(key) !== options.onlyIfMatch) return { modified: false };
-        receipts.set(key, structuredClone(value));
-        const etag = 'etag-' + (++etagSeq); etags.set(key, etag);
-        return { modified: true, etag };
-      },
-      async delete(key) { maybeFail('delete', key); receipts.delete(key); etags.delete(key); },
-    }),
-  };
-  return originalLoad.call(this, name, ...rest);
-};
+/* Storage correction (PR #131): the REAL verified adapter over the REAL @netlify/blobs client and the
+   wire harness (harness/v2-lambda-compat.cjs). failNext keeps its meaning; a stale-read injection now
+   serves the OLD snapshot (value + old etag) on the STRONG read path -- a strong read that lies -- and
+   compare-and-swap must still refuse the stale view. */
+require('./harness/ts-loader.cjs');
+const { createCompat, v2Id } = require('./harness/v2-lambda-compat.cjs');
+const compat = createCompat();
+const { receipts } = compat;
+const failNext = compat.arrays.failNext;            // predicates over { op, key } -> that request fails (uncertain)
+const staleNext = compat.arrays.staleNext;          // { match(key), snapshot: { data, etag } }
+const snapshotOf = (key) => compat.snapshotOf(key);
 process.env.IAOS_ENV = 'test';
 process.env.IAOS_APP_WRITE_GOOGLE_CLIENT_ID = 'offline-client';
 process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN = 'https://proof.example.invalid';
 process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid';
 process.env.IAOS_APP_WRITE_SESSION_SECRET = 'offline-fixture-only-not-a-real-secret';
-process.env.GHL_PRIVATE_API_KEY = 'offline-fixture';
 process.env.GHL_API_TOKEN = 'offline-fixture';
 process.env.IAOS_APP_READ_GOOGLE_CLIENT_ID = 'offline-read-client';
 process.env.IAOS_APP_READ_SESSION_SECRET = 'offline-read-fixture-only-not-a-real-secret';
@@ -150,20 +105,20 @@ global.fetch = async (url, init = {}) => {
   return reply(object === contact ? { contact } : { opportunity });
 };
 
-const ghlWrite = require('../netlify/functions/ghl-write.ts').handler;
-const barrierFn = require('../netlify/functions/current-offer-barrier.ts').handler;
-const writeHeaders = () => ({ ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` });
+const ghlWrite = compat.handlerOf(require('../netlify/functions/ghl-write.ts'), 'ghl-write');
+const barrierFn = compat.handlerOf(require('../netlify/functions/current-offer-barrier.ts'), 'current-offer-barrier');
+const writeHeaders = () => ({ origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` });
 let seq = 0;
-const rid = (label) => `${label}-${String(++seq).padStart(4, '0')}-fixture`;
-const write = (operation, targetId, args, requestId) => ghlWrite({ blobs: lambdaBlobs, httpMethod: 'POST', headers: writeHeaders(), body: JSON.stringify({ operation, targetId, requestId, args }) });
+const rid = (label) => `v2-${label}-${String(++seq).padStart(4, '0')}-fixture`;
+const write = (operation, targetId, args, requestId) => ghlWrite({ httpMethod: 'POST', headers: writeHeaders(), body: JSON.stringify({ operation, targetId, requestId, args }) });
 const offer = (value, requestId) => write('opportunity.currentOffer', opportunity.id, { value }, requestId);
-const barrier = (body) => barrierFn({ blobs: lambdaBlobs, httpMethod: 'POST', headers: writeHeaders(), body: JSON.stringify(body) });
+const barrier = (body) => barrierFn({ httpMethod: 'POST', headers: writeHeaders(), body: JSON.stringify(body) });
 const begin = (purpose, steps) => barrier({ action: 'begin', opportunityId: opportunity.id, purpose, steps });
 const beginBlur = (r) => begin('blur', [{ step: 'offer', requestId: r }]);
 const reconcile = () => barrier({ action: 'reconcile', opportunityId: opportunity.id });
 const readCookie = () => `${readAuth.READ_COOKIE}=${readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig()).token}`;
 const status = async (signedIn = true) => {
-  const res = await barrierFn({ blobs: lambdaBlobs, httpMethod: 'GET', headers: { ...lambdaHeaders, ...(signedIn ? { cookie: readCookie() } : {}) }, queryStringParameters: { opportunityId: opportunity.id } });
+  const res = await barrierFn({ httpMethod: 'GET', headers: { ...(signedIn ? { cookie: readCookie() } : {}) }, queryStringParameters: { opportunityId: opportunity.id } });
   return { statusCode: res.statusCode, body: JSON.parse(res.body) };
 };
 const body = (res) => JSON.parse(res.body);
@@ -177,7 +132,7 @@ async function check(name, fn) {
   catch (e) { failures++; console.error('FAIL ' + name + '\n  ' + (e && e.stack ? e.stack.split('\n').slice(0, 3).join('\n  ') : e)); }
 }
 function fresh() {
-  receipts.clear(); etags.clear(); failNext = []; staleNext = []; holds = []; loseNext = []; ghlWrites = []; notes = [];
+  compat.reset(); holds = []; loseNext = []; ghlWrites = []; notes = [];
   opportunity.customFields = []; contact.customFields = [];
 }
 
@@ -542,7 +497,7 @@ function fresh() {
   // ── Bones / Jess second review: stale evidence must never clear a newer barrier ──
   const headKeys = () => [...receipts.keys()].filter((k) => k.startsWith('current-offer/head/'));
   const headSnapshot = () => snapshotOf(headKeys()[0]);
-  const storeApi = require('@netlify/blobs').getStore();
+  const storeApi = compat.store();
   const scopeT = barrierLib.barrierScope('test', config.locationId);
   await check('STALE FIRST BARRIER / NEWER UNRESOLVED BARRIER (reconcile): a stale head naming the settled first barrier cannot clear the newer unresolved one', async () => {
     fresh();
@@ -598,7 +553,7 @@ function fresh() {
     for (let i = 0; i < 8; i++) staleNext.push({ match: (k) => k.startsWith('current-offer/head/'), snapshot: staleHead });
     const res = await reconcile();
     assert.equal(res.statusCode, 503);
-    staleNext = [];
+    staleNext.length = 0;
     assert.equal((await status()).body.state, 'blocked');
   });
   await check('nothing in current-offer/ is ever deleted; only the head is rewritten, and only conditionally', async () => {
@@ -690,7 +645,7 @@ function fresh() {
     fresh();
     await beginBlur(rid('scope'));
     const keys = [...receipts.keys()];
-    assert.ok(keys.length > 0 && keys.every((k) => k.startsWith('current-offer/') || k.startsWith('lock/')), keys.join());
+    assert.ok(keys.length > 0 && keys.every((k) => k.startsWith('current-offer/') || k.startsWith('lock2/')), keys.join());
     assert.ok(!keys.some((k) => k.startsWith('stage-unresolved/')));
     assert.notEqual(barrierLib.barrierScope('test', config.locationId), barrierLib.barrierScope('production', config.locationId));
     assert.notEqual(barrierLib.barrierScope('test', 'loc-a'), barrierLib.barrierScope('test', 'loc-b'));
@@ -698,9 +653,9 @@ function fresh() {
   await check('status needs a read session; begin and reconcile need the write session and origin', async () => {
     fresh();
     assert.equal((await status(false)).statusCode, 401);
-    const noAuth = await barrierFn({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN }, body: JSON.stringify({ action: 'reconcile', opportunityId: opportunity.id }) });
+    const noAuth = await barrierFn({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN }, body: JSON.stringify({ action: 'reconcile', opportunityId: opportunity.id }) });
     assert.equal(noAuth.statusCode, 401);
-    const badOrigin = await barrierFn({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...writeHeaders(), origin: 'https://evil.example.invalid' }, body: JSON.stringify({ action: 'reconcile', opportunityId: opportunity.id }) });
+    const badOrigin = await barrierFn({ httpMethod: 'POST', headers: { ...writeHeaders(), origin: 'https://evil.example.invalid' }, body: JSON.stringify({ action: 'reconcile', opportunityId: opportunity.id }) });
     assert.equal(badOrigin.statusCode, 403);
     assert.equal((await barrier({ action: 'clear', opportunityId: opportunity.id })).statusCode, 400, 'no other action -- no override');
     assert.equal((await begin('blur', [{ step: 'note', requestId: rid('wrongstep') }])).statusCode, 400);

@@ -13,6 +13,9 @@
  *      applyThenThrow(op, key)  -> the write APPLIES, then the acknowledgement is lost
  *      staleNext(key)           -> no effect on ownership reads: they are strong (a cached-origin read
  *                                  would be recorded as a violation)
+ *      staleNext {match, snapshot} -> the next STRONG read of that key returns the OLD snapshot (value
+ *                                  and its old etag): stricter than before -- it models a strong read
+ *                                  that lies, and compare-and-swap must still refuse the stale view
  *      beforeRead({pred, fn})   -> fn runs once just before that key is read
  *  - `handlerOf(mod)` turns a modern-runtime default export into the old
  *    `(event) => {statusCode, headers, body}` shape, on a published production
@@ -28,7 +31,7 @@ function createCompat(options = {}) {
   const S = env.S;
   const wire = env.wire;
   const arrays = { failNext: [], applyThenThrow: [], staleNext: [], beforeRead: [] };
-  const take = (list, ...args) => { const i = list.findIndex((f) => f(...args)); if (i < 0) return false; list.splice(i, 1); return true; };
+  const take = (list, ...args) => { const i = list.findIndex((f) => typeof f === 'function' && f(...args)); if (i < 0) return false; list.splice(i, 1); return true; };
   // The suites' fault arrays are consulted on every ownership request, in a small wrapper around the wire's fetch.
   const baseFetch = wire.fetch;
   const failStreak = new Map();
@@ -47,6 +50,12 @@ function createCompat(options = {}) {
         const i = arrays.beforeRead.findIndex((h) => h.pred(key));
         if (i >= 0) { const [h] = arrays.beforeRead.splice(i, 1); await h.fn(); }
         if (take(arrays.failNext, 'get', key) || take(arrays.failNext, 'getWithMetadata', key)) { failStreak.set(streakKey, 2); return new Response(null, { status: 503 }); }
+        const si = arrays.staleNext.findIndex((x) => x && typeof x === 'object' && typeof x.match === 'function' && x.match(key));
+        if (si >= 0) {
+          const [st] = arrays.staleNext.splice(si, 1);
+          if (st.snapshot.data === null) return new Response(null, { status: 404 });
+          return new Response(JSON.stringify(st.snapshot.data), { status: 200, headers: { etag: st.snapshot.etag, 'content-type': 'application/json' } });
+        }
         take(arrays.staleNext, key);
       } else {
         if (take(arrays.failNext, op, key)) { failStreak.set(streakKey, 2); return new Response(null, { status: 503 }); }
@@ -94,7 +103,8 @@ function createCompat(options = {}) {
   /** A verified store for direct library calls (its own invocation scope). */
   const { InvocationScope } = require('../../netlify/functions/lib/invocation-scope.ts');
   const store = () => new vs.VerifiedStore(new InvocationScope('ghl-write'), S);
-  return { ...env, arrays, receipts, handlerOf, reset, store };
+  const snapshotOf = (key) => ({ data: wire.json(S, key), etag: wire.etag(S, key) });
+  return { ...env, arrays, receipts, handlerOf, reset, store, snapshotOf };
 }
 const { randomUUID } = require('node:crypto');
 /** A v2-format id (the only ids v2 accepts). */
