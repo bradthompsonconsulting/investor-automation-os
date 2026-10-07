@@ -320,7 +320,7 @@ export default function Conversations() {
               href={ghlContactDetailUrl(selected.contactId)}
               target="_blank"
               rel="noopener noreferrer"
-              title="Reply inside GHL"
+              title="Opens this contact in GHL in a new tab, to reply there. IAOS does not send messages."
               style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#1EC8FF", textDecoration: "none" }}
             >
               <ExternalLink size={12} /> Reply in GHL
@@ -335,10 +335,10 @@ export default function Conversations() {
               href={ghlContactDetailUrl(selected.contactId)}
               target="_blank"
               rel="noopener noreferrer"
-              title="Call inside GHL (opens the contact in GHL)"
+              title="Opens this contact in GHL in a new tab, to call with GHL's phone there. IAOS does not place calls."
               style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#1EC8FF", textDecoration: "none" }}
             >
-              <Phone size={12} /> Call
+              <Phone size={12} /> Call in GHL
             </a>
           </div>
         )}
