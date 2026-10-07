@@ -180,9 +180,15 @@ function validToken() { return authLib.issueAppSession('brad@example.invalid').t
   //    touched.
   // ============================================================
   const ghlWrite = require(ghlWriteBundlePath);
-  checkTrue('the packaged ghl-write bundle exports a handler', typeof ghlWrite.handler === 'function');
+  // Storage correction: ghl-write is a modern-runtime function (default export: (Request, context) => Response).
+  const ghlWriteDefault = ghlWrite.default;
+  checkTrue('the packaged ghl-write bundle exports a modern-runtime default handler', typeof ghlWriteDefault === 'function');
+  const invokeGhlWrite = async ({ headers, body }) => {
+    const res = await ghlWriteDefault(new Request('https://iaos-app-test.netlify.app/.netlify/functions/ghl-write', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body }), { deploy: { id: '6ac5f00d0000000000000001', context: 'production', published: true } });
+    return { statusCode: res.status, body: await res.text() };
+  };
   {
-    const res = await ghlWrite.handler({ httpMethod: 'POST', headers: {}, body: '{}' });
+    const res = await invokeGhlWrite({ headers: {}, body: '{}' });
     check('packaged ghl-write: unauthenticated request returns 401, never 502', res.statusCode, 401);
   }
 
@@ -195,8 +201,7 @@ function validToken() { return authLib.issueAppSession('brad@example.invalid').t
   //    the response being a clean, expected 400 rather than a crash.
   // ============================================================
   {
-    const res = await ghlWrite.handler({
-      httpMethod: 'POST',
+    const res = await invokeGhlWrite({
       headers: { origin: APPROVED_ORIGIN, authorization: `Bearer ${validToken()}` },
       body: JSON.stringify({ operation: 'workflow.execute', targetId: 'x', requestId: 'packaging-proof-1', args: {} }),
     });

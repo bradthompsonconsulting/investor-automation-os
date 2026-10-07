@@ -19,58 +19,23 @@ const Module = require('node:module');
 const ts = require('typescript');
 const crypto = require('node:crypto');
 
-const receipts = new Map();
-const etags = new Map();
-let etagSeq = 0;
-let failNext = [];       // (op, key) -> throw once, nothing written
-let applyThenThrow = []; // (op, key) -> write applies, then the call throws (ambiguous acknowledgement)
-let staleNext = [];      // (key) -> the next read of it returns null once
-let beforeRead = [];     // { pred(key), fn } -> run fn ONCE just before that key is read (another session acting mid-read)
-const realBlobs = require('@netlify/blobs');
-delete process.env.NETLIFY_BLOBS_CONTEXT;
-const lambdaHeaders = { 'x-nf-site-id': 'offline-site', 'x-nf-deploy-id': 'offline-deploy' };
-const lambdaBlobs = Buffer.from(JSON.stringify({ url: 'https://blobs.example.invalid', token: 'offline-blob-fixture' })).toString('base64');
-const take = (list, ...args) => { const i = list.findIndex((f) => f(...args)); if (i < 0) return false; list.splice(i, 1); return true; };
-const originalResolve = Module._resolveFilename;
-const originalLoad = Module._load;
-Module._resolveFilename = function (name, parent, ...rest) {
-  if (name.startsWith('.') && parent) {
-    const candidate = path.resolve(path.dirname(parent.filename), name + '.ts');
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return originalResolve.call(this, name, parent, ...rest);
-};
-Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
-async function runBeforeRead(key) {
-  const i = beforeRead.findIndex((h) => h.pred(key));
-  if (i < 0) return;
-  const [h] = beforeRead.splice(i, 1);
-  await h.fn();
-}
-const memStore = {
-  async get(key) { await runBeforeRead(key); if (take(failNext, 'get', key)) throw new Error('fixture: blob get failed'); if (take(staleNext, key)) return null; return receipts.has(key) ? structuredClone(receipts.get(key)) : null; },
-  async getWithMetadata(key) { await runBeforeRead(key); if (take(failNext, 'getWithMetadata', key)) throw new Error('fixture: blob read failed'); return receipts.has(key) ? { data: structuredClone(receipts.get(key)), etag: etags.get(key) } : null; },
-  async setJSON(key, value, options) {
-    if (take(failNext, 'setJSON', key)) throw new Error('fixture: blob setJSON failed');
-    if (options?.onlyIfNew && receipts.has(key)) return { modified: false };
-    if (options?.onlyIfMatch !== undefined && etags.get(key) !== options.onlyIfMatch) return { modified: false };
-    receipts.set(key, structuredClone(value));
-    const etag = 'etag-' + (++etagSeq); etags.set(key, etag);
-    if (take(applyThenThrow, 'setJSON', key)) throw new Error('fixture: write applied, acknowledgement lost');
-    return { modified: true, etag };
-  },
-  async delete(key) { receipts.delete(key); etags.delete(key); },
-};
-Module._load = function (name, ...rest) {
-  if (name === '@netlify/blobs') return { connectLambda: (event) => realBlobs.connectLambda(event), getStore: () => memStore };
-  return originalLoad.call(this, name, ...rest);
-};
+/* Storage correction (PR #131): the store is the REAL verified adapter over the REAL
+   @netlify/blobs client and the wire harness; the fault arrays keep their meaning
+   (harness/v2-lambda-compat.cjs). Handlers are modern-runtime functions on a
+   published production deploy with an open activation (fixture records). */
+require('./harness/ts-loader.cjs');
+const { createCompat, v2Id } = require('./harness/v2-lambda-compat.cjs');
+const compat = createCompat();
+const { receipts } = compat;
+const failNext = compat.arrays.failNext;           // (op, key) -> that request fails, nothing written (uncertain)
+const applyThenThrow = compat.arrays.applyThenThrow; // (op, key) -> write applies, then the acknowledgement is lost
+const staleNext = compat.arrays.staleNext;         // (key) -> no effect: ownership reads are strong in v2
+const beforeRead = compat.arrays.beforeRead;       // { pred(key), fn } -> run fn ONCE just before that key is read
 process.env.IAOS_ENV = 'test';
 process.env.IAOS_APP_WRITE_GOOGLE_CLIENT_ID = 'offline-client';
 process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN = 'https://proof.example.invalid';
 process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid';
 process.env.IAOS_APP_WRITE_SESSION_SECRET = 'offline-fixture-only-not-a-real-secret';
-process.env.GHL_PRIVATE_API_KEY = 'offline-fixture';
 process.env.GHL_API_TOKEN = 'offline-fixture';
 process.env.IAOS_APP_READ_GOOGLE_CLIENT_ID = 'offline-read-client';
 process.env.IAOS_APP_READ_SESSION_SECRET = 'offline-read-fixture-only-not-a-real-secret';
@@ -132,16 +97,16 @@ global.fetch = async (url, init = {}) => {
   return reply({ contact: { id: c.id, locationId: config.locationId, customFields: c.customFields, tags: [], phone: '+15555550101' } });
 };
 
-const ghlWrite = require('../netlify/functions/ghl-write.ts').handler;
-const callLogFn = require('../netlify/functions/call-log-barrier.ts').handler;
-const writeHeaders = () => ({ ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` });
-const write = (operation, targetId, args, requestId) => ghlWrite({ blobs: lambdaBlobs, httpMethod: 'POST', headers: writeHeaders(), body: JSON.stringify({ operation, targetId, requestId, args }) });
-const post = async (b, headers = writeHeaders()) => { const r = await callLogFn({ blobs: lambdaBlobs, httpMethod: 'POST', headers, body: JSON.stringify(b) }); return { statusCode: r.statusCode, body: JSON.parse(r.body) }; };
+const ghlWrite = compat.handlerOf(require('../netlify/functions/ghl-write.ts'), 'ghl-write');
+const callLogFn = compat.handlerOf(require('../netlify/functions/call-log-barrier.ts'), 'call-log-barrier');
+const writeHeaders = () => ({ origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` });
+const write = (operation, targetId, args, requestId) => ghlWrite({ httpMethod: 'POST', headers: writeHeaders(), body: JSON.stringify({ operation, targetId, requestId, args }) });
+const post = async (b, headers = writeHeaders()) => { const r = await callLogFn({ httpMethod: 'POST', headers, body: JSON.stringify(b) }); return { statusCode: r.statusCode, body: JSON.parse(r.body) }; };
 const readCookie = () => `${readAuth.READ_COOKIE}=${readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig()).token}`;
-const get = async (q, signedIn = true) => { const r = await callLogFn({ blobs: lambdaBlobs, httpMethod: 'GET', headers: { ...lambdaHeaders, ...(signedIn ? { cookie: readCookie() } : {}) }, queryStringParameters: q }); return { statusCode: r.statusCode, body: JSON.parse(r.body) }; };
+const get = async (q, signedIn = true) => { const r = await callLogFn({ httpMethod: 'GET', headers: { ...(signedIn ? { cookie: readCookie() } : {}) }, queryStringParameters: q }); return { statusCode: r.statusCode, body: JSON.parse(r.body) }; };
 const body = (res) => JSON.parse(res.body);
 const rid = (op, slot, n) => `${op}-${slot}-${n}`;
-const newOp = () => crypto.randomUUID();
+const newOp = () => v2Id();
 
 /** One call: its operation id, result and exact note body, and every way to act on it. */
 function call(contactId, result, notes = '') {
@@ -168,7 +133,7 @@ const counts = (c) => ({ results: resultPuts(c).length, notes: callNotes(c).leng
 const oneEach = (c) => JSON.stringify(counts(c)) === JSON.stringify({ results: 1, notes: 1, touches: 1 });
 const keysNow = () => new Set(receipts.keys());
 /** The note refused BEFORE sending, durably proved unsent: the write receipt claim fails inside the owned write. */
-const refuseNextNote = () => failNext.push((op, key) => op === 'setJSON' && /^[0-9a-f]{64}$/.test(key));
+const refuseNextNote = () => failNext.push((op, key) => op === 'setJSON' && /^authz\/receipt\/[0-9a-f]{64}$/.test(key));
 /** Complete an open operation through its server-given next actions (as the page's Check again does). */
 async function finish(t) {
   for (let i = 0; i < 6; i++) {
@@ -191,7 +156,7 @@ async function check(name, fn) {
   catch (e) { failures++; console.error('FAIL ' + name + '\n  ' + (e && e.stack ? e.stack.split('\n').slice(0, 4).join('\n  ') : e)); }
 }
 function fresh() {
-  receipts.clear(); etags.clear(); failNext = []; applyThenThrow = []; staleNext = []; beforeRead = []; holds = []; loseNext = []; ghlWrites = [];
+  compat.reset(); holds = []; loseNext = []; ghlWrites = [];
   ghl = { [A]: { id: A, customFields: [], notes: [] }, [B]: { id: B, customFields: [], notes: [] } };
 }
 
@@ -199,11 +164,11 @@ function fresh() {
   // ── Basics ──────────────────────────────────────────────────────────────────
   await check('L-1 / basics: an unbound call result or call-log note is refused before sending; a plain note and an unbound last touch are unchanged', async () => {
     fresh();
-    assert.equal(body(await write('contact.callLogResult', A, { value: 'No Answer' }, 'unbound-result-0001')).outcome, 'not_sent');
-    assert.equal(body(await write('note.create', A, { body: callLogNote('Voicemail', 'x') }, 'unbound-note-0001')).outcome, 'not_sent');
+    assert.equal(body(await write('contact.callLogResult', A, { value: 'No Answer' }, 'v2-unbound-result-0001')).outcome, 'not_sent');
+    assert.equal(body(await write('note.create', A, { body: callLogNote('Voicemail', 'x') }, 'v2-unbound-note-0001')).outcome, 'not_sent');
     assert.equal(ghlWrites.length, 0);
-    assert.equal((await write('note.create', A, { body: 'Plain operator note' }, 'plain-note-0001')).statusCode, 200);
-    assert.equal((await write('contact.lastCallAttempt', A, { value: '2026-10-06T14:00:00.000Z' }, 'plain-touch-0001')).statusCode, 200);
+    assert.equal((await write('note.create', A, { body: 'Plain operator note' }, 'v2-plain-note-0001')).statusCode, 200);
+    assert.equal((await write('contact.lastCallAttempt', A, { value: '2026-10-06T14:00:00.000Z' }, 'v2-plain-touch-0001')).statusCode, 200);
   });
   await check('happy path: begin publishes attempt 1 of each slot (attempt + binding); result -> note -> touch; final complete BEFORE the head is released; status clear', async () => {
     fresh();
@@ -227,7 +192,7 @@ function fresh() {
     const early = body(await t.note());
     assert.equal(early.outcome, 'not_sent'); assert.equal(early.proves, 'nothing');
     assert.equal(body(await t.touch()).outcome, 'not_sent');
-    assert.deepEqual([...keysNow()].filter((k) => !before.has(k) && !/^[0-9a-f]{64}$/.test(k)), [], 'no call-log record written');
+    assert.deepEqual([...keysNow()].filter((k) => !before.has(k) && !/^[0-9a-f]{64}$/.test(k) && !k.startsWith('lock2/')), [], 'no call-log record written (the never-deleted lock v2 record is not a call-log record)');
     assert.equal(body(await write('contact.callLogResult', A, { value: 'No Answer' }, rid(t.op, 'result', 1))).outcome, 'not_sent');
     assert.equal(body(await write('contact.callLogResult', B, { value: 'Voicemail' }, rid(t.op, 'result', 1))).outcome, 'not_sent');
     assert.equal(body(await write('contact.lastCallAttempt', A, { value: '2026-10-06T15:00:00.000Z' }, rid(t.op, 'result', 1))).outcome, 'not_sent');
@@ -350,17 +315,17 @@ function fresh() {
     fresh();
     const t = call(A, 'No Answer');
     await t.begin();
-    memStore.setJSON(keyOf.decision(rid(t.op, 'result', 1)), { d: 'send', at: 'now' }, { onlyIfNew: true });   // the dispatch claimed first
+    await compat.store().setJSON(keyOf.decision(rid(t.op, 'result', 1)), { d: 'send', at: 'now' }, { onlyIfNew: true });   // the dispatch claimed first
     const v = (await t.resume()).body;
     assert.equal(v.state, 'open'); assert.deepEqual(v.next, { action: 'blocked', slot: 'result', reason: 'in_flight' });
-    memStore.setJSON(keyOf.outcome(rid(t.op, 'result', 1)), { kind: 'confirmed', at: 'now' }, { onlyIfNew: true });
+    await compat.store().setJSON(keyOf.outcome(rid(t.op, 'result', 1)), { kind: 'confirmed', at: 'now' }, { onlyIfNew: true });
     assert.equal((await t.resume()).body.next.slot, 'note');
   });
   await check('R-3 a result refused before sending (proved): Not saved; a NEW call (new operation id) may then begin', async () => {
     fresh();
     const t = call(A, 'No Answer');
     await t.begin();
-    failNext.push((op, key) => op === 'setJSON' && /^[0-9a-f]{64}$/.test(key));   // receipt claim fails inside the owned write
+    failNext.push((op, key) => op === 'setJSON' && /^authz\/receipt\/[0-9a-f]{64}$/.test(key));   // receipt claim fails inside the owned write
     const r = body(await t.result());
     assert.equal(r.proves, 'this_request');
     assert.equal((await t.resume()).body.outcome.kind, 'not_saved');
@@ -445,7 +410,7 @@ function fresh() {
     assert.ok(!receipts.has(keyOf.attempt(t.op, 'touch', 2)));
     await t.note();
     assert.deepEqual((await t.retry('touch', 1)).body.next, { action: 'send', slot: 'touch', requestId: rid(t.op, 'touch', 1) }, 'an undecided touch is reused, not retried');
-    failNext.push((op, key) => op === 'setJSON' && /^[0-9a-f]{64}$/.test(key));
+    failNext.push((op, key) => op === 'setJSON' && /^authz\/receipt\/[0-9a-f]{64}$/.test(key));
     assert.equal(body(await t.touch()).proves, 'this_request');
     assert.deepEqual((await t.resume()).body.next, { action: 'retry', slot: 'touch', after: 1 });
     assert.equal((await t.retry('touch', 1)).body.next.requestId, rid(t.op, 'touch', 2));
@@ -493,7 +458,7 @@ function fresh() {
     for (const res of [await a.result(), await a.note(), await a.touch()]) {
       const x = body(res); assert.equal(x.outcome, 'not_sent'); assert.equal(x.code, 'operation_not_current'); assert.equal(x.recorded.kind, 'complete');
     }
-    assert.deepEqual([...keysNow()].filter((k) => !before.has(k) && !/^[0-9a-f]{64}$/.test(k)), [], 'no call-log record written');
+    assert.deepEqual([...keysNow()].filter((k) => !before.has(k) && !/^[0-9a-f]{64}$/.test(k) && !k.startsWith('lock2/')), [], 'no call-log record written (the never-deleted lock v2 record is not a call-log record)');
     assert.equal(receipts.get(keyOf.head(A)).current, b.op);
     await b.result(); await b.note(); await b.touch();
     assert.equal(stored(A), 'No Answer'); assert.equal(callNotes(A).length, 2); assert.equal(resultPuts(A).length, 2);
@@ -575,13 +540,17 @@ function fresh() {
     assert.ok(!receipts.has(keyOf.attempt(u.op, 'note', 3)));
     await u.note(2); await finish(u); assert.ok(oneEach(A));
   });
-  await check('ST-4 a stale read right after publication: no send permission until verified; the next call returns the same identity', async () => {
+  await check('ST-4 (storage v2) right after publication: verified by a strong read-back -- no stale read is possible; the next call returns the same identity', async () => {
     fresh();
     const t = call(A, 'No Answer');
     await t.begin(); await t.result(); refuseNextNote(); await t.note();
+    /* Storage correction: a stale read can no longer happen -- every ownership read is strong
+       (uncached origin). The published binding verifies on its read-back at once, the call returns
+       the same identity, and no ownership read ever reached the cached origin. */
     staleNext.push((key) => key === keyOf.binding(rid(t.op, 'note', 2)));
     const first = await t.retry('note', 1);
-    assert.equal(first.statusCode, 503, 'the published binding did not read back yet: no permission');
+    assert.equal(first.statusCode, 200, 'verified by a strong read-back');
+    assert.equal(compat.wire.violations.length, 0, 'no ownership read on the cached origin');
     const again = (await t.retry('note', 1)).body;
     assert.equal(again.next.requestId, rid(t.op, 'note', 2));
     assert.ok(!receipts.has(keyOf.attempt(t.op, 'note', 3)));
@@ -657,7 +626,7 @@ function fresh() {
       const t = call(A, 'No Answer');
       await t.begin(); await t.result();
       if (slot === 'touch') await t.note();
-      failNext.push((op, key) => op === 'setJSON' && /^[0-9a-f]{64}$/.test(key));   // refuse (proved) attempt 1
+      failNext.push((op, key) => op === 'setJSON' && /^authz\/receipt\/[0-9a-f]{64}$/.test(key));   // refuse (proved) attempt 1
       assert.equal(body(slot === 'note' ? await t.note() : await t.touch()).proves, 'this_request');
       failNext.push((op, key) => op === 'setJSON' && key === keyOf.binding(rid(t.op, slot, 2)));
       assert.equal((await t.retry(slot, 1)).statusCode, 503);
@@ -716,25 +685,28 @@ function fresh() {
     fresh();
     assert.equal((await post({ action: 'begin', contactId: A, purpose: 'call_log', result: 'No Answer', body: callLogNote('No Answer', ''), steps: [{ step: 'result', requestId: 'old-result-00001' }, { step: 'note', requestId: 'old-note-000001' }, { step: 'touch', requestId: 'old-touch-00001' }] })).statusCode, 400);
     assert.equal((await post({ action: 'reconcile', contactId: A })).statusCode, 400);
-    assert.equal(body(await write('contact.callLogResult', A, { value: 'No Answer' }, 'old-result-00001')).outcome, 'not_sent');
+    // Storage correction: a legacy-format (non-v2-) request id is now refused before any I/O (400 legacy_id_refused).
+    const old = await write('contact.callLogResult', A, { value: 'No Answer' }, 'old-result-00001');
+    assert.equal(old.statusCode, 400); assert.equal(body(old).code, 'legacy_id_refused');
     assert.equal(ghlWrites.length, 0);
   });
-  await check('L-3 an existing 558c666-format unfinished head: blocked (legacy), begin refused, never resumed or resent; released only when its evidence settles', async () => {
+  await check('L-3 (storage v2) an unfinished save from a previous IAOS version: the import turns it into a legacy block -- blocked, begin refused, never resumed, resent or released', async () => {
+    /* Storage correction (plan v6 §9): pre-v2 records never enter the v2 store. The conservative
+       import classifies every legacy "never sent" proof as blocked_unknown (provenance: pre-v2
+       claims came from the faulty SDK acknowledgement), so v2 has no legacy settlement path at
+       all: the subject stays blocked and nothing here can clear it (the 558c666 case (b),
+       "released when its evidence settles", is intentionally gone). */
     fresh();
-    const lscope = legacy.callLogScope('test', config.locationId);
-    const steps = [{ step: 'result', requestId: 'legacy-result-0001' }, { step: 'note', requestId: 'legacy-note-00001' }, { step: 'touch', requestId: 'legacy-touch-0001' }];
-    await legacy.beginCallLog(memStore, lscope, { contactId: A, purpose: 'call_log', result: 'No Answer', body: callLogNote('No Answer', ''), steps }, 'now');
-    // (a) its result landed, the note did not: legacy partial -- stays blocked; Check again does not release or resend.
-    await legacy.runCallLogOwnedWrite(memStore, lscope, { operation: 'contact.callLogResult', targetId: A, requestId: 'legacy-result-0001', args: { value: 'No Answer' } }, async (hooks) => { await hooks.beforeDispatch(); hooks.state.dispatched = true; return { confirmed: true }; });
-    assert.equal((await contactStatus()).body.state, 'legacy');
-    assert.equal((await call(A, 'Voicemail').begin()).statusCode, 409);
+    const cut = require('../netlify/functions/lib/cutover.ts');
+    receipts.set(cut.legacyBlockKey('test', config.locationId, `contact:${A}`), { v: 1, subject: `contact:${A}`, class: 'blocked_unknown', reasons: ['legacy_head'], evidenceDigest: 'e' });
+    const st = (await contactStatus()).body;
+    assert.equal(st.legacyBlocked, true); assert.equal(st.lock, 'held_legacy');
+    const begin = await call(A, 'Voicemail').begin();
+    assert.equal(begin.statusCode, 503); assert.equal(begin.body.code, 'legacy_blocked');
     assert.equal((await post({ action: 'resume', contactId: A, legacy: true })).body.state, 'legacy');
+    assert.equal((await post({ action: 'resume', contactId: A, legacy: true })).body.state, 'legacy', 'never released');
     assert.equal(ghlWrites.length, 0);
-    // (b) a legacy head whose first step never went out: Check again withdraws and releases; then a new call begins.
-    fresh();
-    await legacy.beginCallLog(memStore, lscope, { contactId: A, purpose: 'call_log', result: 'No Answer', body: callLogNote('No Answer', ''), steps }, 'now');
-    assert.equal((await post({ action: 'resume', contactId: A, legacy: true })).body.state, 'clear');
-    assert.equal((await call(A, 'Voicemail').begin()).body.state, 'reserved');
+    void legacy;
   });
 
   // ── Earlier reproductions (808e105 review) and preservation ─────────────────
@@ -762,7 +734,7 @@ function fresh() {
     loseNext.push((req) => req.method === 'POST');
     await t.note();
     assert.equal(body(await t.note()).outcome, 'not_sent');
-    assert.equal(body(await write('note.create', A, { body: t.noteBody }, 'fresh-note-0001')).outcome, 'not_sent');
+    assert.equal(body(await write('note.create', A, { body: t.noteBody }, 'v2-fresh-note-0001')).outcome, 'not_sent');
     assert.equal(callNotes(A).length, 1);
   });
   await check('K contact isolation; the Current Offer barrier and plain writes are independent; auth: status needs a read session, actions need the write session and origin', async () => {
@@ -775,10 +747,10 @@ function fresh() {
     assert.equal((await contactStatus(B)).body.state, 'clear'); assert.equal((await contactStatus(A)).body.state, 'open');
     assert.equal(body(await write('note.create', B, { body: a.noteBody }, rid(a.op, 'note', 1))).outcome, 'not_sent');
     const offerLib = require('../netlify/functions/lib/current-offer-barrier.ts');
-    await offerLib.beginBarrier(memStore, offerLib.barrierScope('test', config.locationId), { opp: 'fixture-opp-a', contactId: A, purpose: 'blur', steps: [{ step: 'offer', requestId: 'offer-request-0001' }] }, 'now');
+    await offerLib.beginBarrier(compat.store(), offerLib.barrierScope('test', config.locationId), { opp: 'fixture-opp-a', contactId: A, purpose: 'blur', steps: [{ step: 'offer', requestId: 'offer-request-0001' }] }, 'now');
     await finish(a); assert.ok(oneEach(A));
     assert.equal((await get({ contactId: A }, false)).statusCode, 401);
-    assert.equal((await post({ action: 'resume', contactId: A, operationId: a.op }, { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN })).statusCode, 401);
+    assert.equal((await post({ action: 'resume', contactId: A, operationId: a.op }, { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN })).statusCode, 401);
     assert.equal((await post({ action: 'resume', contactId: A, operationId: a.op }, { ...writeHeaders(), origin: 'https://evil.example.invalid' })).statusCode, 403);
     assert.equal((await post({ action: 'retry', contactId: A, operationId: a.op, slot: 'result', after: 1 })).statusCode, 400, 'a result is never retried');
   });

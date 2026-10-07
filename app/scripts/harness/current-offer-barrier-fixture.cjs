@@ -20,35 +20,42 @@
  * server. Callers pass the write's `args`.
  *
  * The caller must install the `.ts` transpile hook before requiring this file.
+ *
+ * Storage correction (PR #131): the store is the REAL verified adapter
+ * (lib/verified-store.ts) over the REAL @netlify/blobs client and the wire
+ * harness -- strong reads only, conditional writes classified from the wire.
+ * `failStorageOnce` maps to wire faults (an exhausted 5xx, i.e. an uncertain
+ * outcome); `staleReadOnce` freezes the cached origin for that key, which no
+ * ownership read can reach any more (the wire records a violation if one does).
  */
 const path = require('node:path');
 const lib = require(path.resolve(__dirname, '../../netlify/functions/lib/current-offer-barrier.ts'));
 const callLog = require(path.resolve(__dirname, '../../netlify/functions/lib/call-log-barrier.ts'));
+const vs = require(path.resolve(__dirname, '../../netlify/functions/lib/verified-store.ts'));
+const { InvocationScope } = require(path.resolve(__dirname, '../../netlify/functions/lib/invocation-scope.ts'));
+const { createWire } = require('./blob-wire.cjs');
 
 function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-location', callLogRules = true }) {
-  const records = new Map();
-  const etags = new Map();
-  let etagSeq = 0;
-  let failNext = [];
-  let staleNext = [];   // (key) -> the next get of it reads as missing once (an eventually consistent read)
-  const maybeFail = (op, key) => { const i = failNext.findIndex((f) => f(op, key)); if (i >= 0) { failNext.splice(i, 1); throw new Error('fixture: storage failure'); } };
-  const stale = (key) => { const i = staleNext.findIndex((f) => f(key)); if (i < 0) return false; staleNext.splice(i, 1); return true; };
-  const store = {
-    async get(key) { maybeFail('get', key); if (stale(key)) return null; return records.has(key) ? structuredClone(records.get(key)) : null; },
-    async getWithMetadata(key) { maybeFail('getWithMetadata', key); return records.has(key) ? { data: structuredClone(records.get(key)), etag: etags.get(key) } : null; },
-    async setJSON(key, value, options) {
-      maybeFail('setJSON', key);
-      if (options?.onlyIfNew && records.has(key)) return { modified: false };
-      if (options?.onlyIfMatch !== undefined && etags.get(key) !== options.onlyIfMatch) return { modified: false };
-      records.set(key, structuredClone(value)); const etag = 'etag-' + (++etagSeq); etags.set(key, etag);
-      return { modified: true, etag };
-    },
+  const S = vs.OWNERSHIP_STORE;
+  const wire = createWire({ ownershipStores: ['site:' + S] });
+  const ctx = JSON.parse(Buffer.from(wire.context(), 'base64').toString('utf8'));
+  const prevTransport = vs.transport.fetch;
+  /* The adapter's transport: this fixture's wire for blob hosts; anything else goes to whatever was installed before. */
+  vs.transport.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (u.origin === wire.EDGE || u.origin === wire.UNCACHED) return wire.fetch(url, init);
+    return (prevTransport || globalThis.fetch)(url, init);
   };
+  /** A fresh verified store per simulated invocation (each has its own scope and claim token). */
+  const freshStore = () => new vs.VerifiedStore(new InvocationScope('ghl-write'), S, ctx);
+  let store = freshStore();
+  const records = { keys: () => wire.keys(S)[Symbol.iterator](), has: (k) => wire.keys(S).includes(k), get: (k) => wire.json(S, k) };
   const scope = lib.barrierScope(env, locationId);
   const callLogScope = callLog.callLogScope(env, locationId);
   const locked = new Set();
   /** Answers one /.netlify/functions/call-log-barrier request (approved lifecycle v3), as the real endpoint does. */
   async function handleCallLog(method, url, post) {
+    store = freshStore();
     try {
       if (method === 'GET') {
         const q = new URL(url).searchParams;
@@ -92,6 +99,7 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
 
   /** Answers one /.netlify/functions/current-offer-barrier request. */
   async function handle(method, url, post) {
+    store = freshStore();
     try {
       if (method === 'GET') {
         const opp = new URL(url).searchParams.get('opportunityId');
@@ -127,6 +135,7 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
    * Returns { status, body } exactly as ghl-write would.
    */
   async function write({ operation, targetId, requestId, contactId, args }, apply, { refuse = null, failAfterSend = false, sentNotApplied = false, beforeLockRelease = null, outcome = null } = {}) {
+    store = freshStore();
     // ghl-write's call-log rule (lib/call-log-barrier.ts), checked before the Current Offer rules apply.
     const needsCallLog = operation === 'contact.callLogResult' || (operation === 'note.create' && callLog.isCallLogNoteText(args && args.body))
       || (callLog.CALL_LOG_OPERATIONS.has(operation) && typeof callLog.isOperationRequestId === 'function' && callLog.isOperationRequestId(requestId));
@@ -206,14 +215,17 @@ function createBarrierFixture({ contactOf, env = 'test', locationId = 'fixture-l
     callLogStatus: (contactId) => callLog.statusByContact(store, callLogScope, contactId),
     callLogOperation: (contactId, op) => callLog.statusByOperation(store, callLogScope, contactId, op),
     status: (opp) => lib.statusOf(store, scope, opp),
-    failStorageOnce: (pred) => failNext.push(pred),
-    staleReadOnce: (pred) => staleNext.push(pred),
+    /** pred(kind, key), kind 'setJSON' | 'get' | 'getWithMetadata': that request's storage outcome becomes uncertain (an exhausted 5xx). */
+    failStorageOnce: (pred) => wire.on((req) => pred(req.method === 'PUT' ? 'setJSON' : req.method === 'GET' ? 'getWithMetadata' : req.method, req.key) || (req.method === 'GET' && pred('get', req.key)), wire.status(503), 3),
+    /** v2 reads are strong: a stale cached copy is kept for the key, and any ownership read reaching it is a recorded violation. */
+    staleReadOnce: (pred) => { wire.setEventual(true); for (const k of wire.keys(S)) if (pred(k)) wire.freeze(S, k); },
+    violations: () => wire.violations,
     /** The key of a call-log v3 record, as the module computes it (for targeted storage faults in tests). */
     callLogKey: (kind, ...parts) => {
-      const { digest } = require(path.resolve(__dirname, '../../netlify/functions/lib/ghl-write-boundary.ts'));
+      const { digest } = require(path.resolve(__dirname, '../../netlify/functions/lib/hash.ts'));
       return `call-log/v3/${kind}/${digest([callLogScope, ...parts].join(':'))}`;
     },
-    reset() { records.clear(); etags.clear(); locked.clear(); failNext = []; staleNext = []; },
+    reset() { wire.clear(); locked.clear(); store = freshStore(); },
   };
 }
 
