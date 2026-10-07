@@ -146,3 +146,6 @@ capture-none.json
 # Gate 4C C3b transients: Test Environment capture output.
 capture-test.json
 capture-test-verified.json
+
+# storage v2 L7 legacy-writer fixture (extracted at test time, removed after)
+**/.tmp-legacy/
