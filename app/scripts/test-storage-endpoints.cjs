@@ -405,11 +405,40 @@ const storageIo = () => env.wire.log.length;
     fs.rmSync(path.join(__dirname, '..', '.tmp-legacy'), { recursive: true, force: true });
     assert.ok(env.wire.keys('iaos-write-receipts').some((k) => k.startsWith('lock/')), 'the legacy writer really ran, against its own store only');
   });
+  /* Integration review (Bones, b15-integration 1bd2e68): missing evidence is never a PASS. The commit must
+     be readable first; then git grep's ONLY accepted non-zero outcome is "no match" (exit 1, empty output).
+     Any other failure (no history, unknown commit, not a repository) throws. */
+  const grepAtCommit = (repo, rev, terms, paths) => {
+    execFileSync('git', ['-C', repo, 'cat-file', '-e', `${rev}^{commit}`], { stdio: ['ignore', 'ignore', 'pipe'] });   // throws when unreadable
+    try {
+      return execFileSync('git', ['-C', repo, 'grep', '-l', ...terms.flatMap((t) => ['-e', t]), rev, '--', ...paths], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      if (e && e.status === 1 && !String(e.stdout || '').trim() && !String(e.stderr || '').trim()) return '';
+      throw e;
+    }
+  };
   await check('L7b static: v2 reads no legacy credential name; the 3de480e source names no v2 store or env name', async () => {
     const repo = path.join(__dirname, '..', '..');
-    let hits = '';
-    try { hits = execFileSync('git', ['-C', repo, 'grep', '-l', '-e', 'iaos-ownership-v2', '-e', 'IAOS_GHL_TOKEN_V2', '-e', 'IAOS_ATTEST_SECRET_V2', '3de480e', '--', 'app/netlify', 'app/src', 'app/shared'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch { hits = ''; }
+    const hits = grepAtCommit(repo, '3de480e', ['iaos-ownership-v2', 'IAOS_GHL_TOKEN_V2', 'IAOS_ATTEST_SECRET_V2'], ['app/netlify', 'app/src', 'app/shared']);
     assert.equal(hits.trim(), '');
+  });
+  await check('L7c negative controls: unavailable history, an unknown commit and a non-repository all FAIL the L7b scan; a term present at 3de480e is found', async () => {
+    const repo = path.join(__dirname, '..', '..');
+    const terms = ['iaos-ownership-v2']; const paths = ['app/netlify'];
+    // unavailable history: a repository that does not contain 3de480e (an empty one)
+    const empty = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'iaos-nohist-'));
+    try {
+      execFileSync('git', ['init', '-q', empty], { stdio: 'ignore' });
+      assert.throws(() => grepAtCommit(empty, '3de480e', terms, paths), 'no history must fail, not pass');
+      // not a repository at all
+      const bare = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'iaos-norepo-'));
+      try { assert.throws(() => grepAtCommit(bare, '3de480e', terms, paths), 'no repository must fail'); }
+      finally { fs.rmSync(bare, { recursive: true, force: true }); }
+    } finally { fs.rmSync(empty, { recursive: true, force: true }); }
+    // an unknown commit in the real repository
+    assert.throws(() => grepAtCommit(repo, '0000000000000000000000000000000000000000', terms, paths), 'unknown commit must fail');
+    // positive control: the scan really reads 3de480e (a term that exists there is reported)
+    assert.match(grepAtCommit(repo, '3de480e', ['lockContact'], ['app/netlify']), /write-receipts\.ts/);
   });
 
   // ── Static checks ────────────────────────────────────────────────────────
