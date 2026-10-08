@@ -117,13 +117,20 @@ function dayOfWeek(dateStr: string): number {
   return new Date(Date.UTC(y, m - 1, d, 12)).getUTCDay(); // 0=Sun..6=Sat
 }
 
-// Most recent Friday on/before `now` (Central calendar date), and the
-// Saturday six days before it — the "week ending Friday" window used by
-// both the app page and the digest.
-function computeWeekWindow(now: Date): { weekStartCT: string; weekEndCT: string } {
+// The Saturday–Friday week CONTAINING `now` (Central calendar date): the
+// Friday on/after today, and the Saturday six days before it — the "week
+// ending Friday" window used by both the app page and the digest.
+//
+// B15-12 (INV-110): this was the Friday on/BEFORE today, which is the
+// current week only on a Friday. Any other day it returned the week that had
+// already ended (Oct 7 → Sept 26–Oct 2), and the This Week / Overdue
+// buckets below used that stale window. The Friday digest is unchanged: it
+// runs at 13:00 UTC Friday (netlify.toml), always a Friday in Chicago, where
+// both rules give the same window.
+export function computeWeekWindow(now: Date): { weekStartCT: string; weekEndCT: string } {
   const today = toCentralDateString(now);
-  const diffToFriday = (dayOfWeek(today) - 5 + 7) % 7; // Friday = 5
-  const weekEndCT = shiftDateString(today, -diffToFriday);
+  const daysToFriday = (5 - dayOfWeek(today) + 7) % 7; // Friday = 5
+  const weekEndCT = shiftDateString(today, daysToFriday);
   const weekStartCT = shiftDateString(weekEndCT, -6);
   return { weekStartCT, weekEndCT };
 }
