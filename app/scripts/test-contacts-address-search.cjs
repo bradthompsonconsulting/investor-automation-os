@@ -8,16 +8,23 @@
  * CONTACTS_OPPORTUNITIES_SPEC.md §5.1, amendment 2026-10-08.
  *
  * BEHAVIOUR, rendered. Vite serves scripts/harness/contacts-search -- the REAL
- * Layout and Contacts page with the real GHL client -- in headless Chromium,
- * and every /.netlify/functions request is answered here. Each check types a
- * query into the real search box and reads the rows the grid shows.
+ * Layout and Contacts page with the real GHL client AND the app's real
+ * stylesheet (src/index.css through the same Tailwind Vite plugin the app
+ * builds with) -- in headless Chromium, and every /.netlify/functions request
+ * is answered here. Each search check types a query into the real search box
+ * and polls the rows the grid shows.
  *
  * The search box prompt names the property address ("Search name, phone,
- * email, property address…") and must fit without being cut off.
+ * email, property address…") and must fit, uncut, at a wide desktop
+ * (2560), the usual desktops (1440, 1280) and narrow windows (1024, 768),
+ * with no horizontal page overflow (Bones, review of 354edac). Fonts: the
+ * offline harness cannot fetch Google Fonts, so text is measured in the
+ * browser's fallback for the app's font stack; the box keeps ample slack.
  *
  * NEGATIVE CONTROL: `node scripts/test-contacts-address-search.cjs --before=<rev>`
  * renders <rev>'s Contacts page (via `git show`) and must FAIL (exit 1) for a
- * revision without address search -- e.g. --before=3de480e.
+ * revision without address search -- e.g. --before=3de480e -- and for the
+ * clipped-prompt layout at --before=354edac.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -30,8 +37,12 @@ const BEFORE_FILE = path.join(HARNESS_DIR, 'ContactsBefore.tsx');
 const beforeArg = process.argv.find((a) => a.startsWith('--before='));
 const BEFORE_REV = beforeArg ? beforeArg.slice('--before='.length) : null;
 
-/** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 15;
+/**
+ * Taken from the finished file, never back-filled from a passing run: 9 single
+ * check() call sites + 1 inside the width loop x 5 widths + 10 expectRows()
+ * call sites (one check each) = 24.
+ */
+const FLOOR = 24;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -62,6 +73,7 @@ const MAX = 'max third';
 const ANN = 'ann oakley';
 const ALL = [KAY, LEE, MAX, ANN];
 const PLACEHOLDER = 'Search name, phone, email, property address…';
+const WIDTHS = [2560, 1440, 1280, 1024, 768];
 
 let log = [];
 const foreign = [];
@@ -71,8 +83,9 @@ async function main() {
   const { createServer } = await import('vite');
   const react = (await import('@vitejs/plugin-react')).default;
   const { chromium } = require('playwright');
+  const tailwindcss = (await import('@tailwindcss/vite')).default;
   const server = await createServer({
-    root: APP, configFile: false, plugins: [react()], logLevel: 'error', clearScreen: false,
+    root: APP, configFile: false, plugins: [react(), tailwindcss()], logLevel: 'error', clearScreen: false,
     server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false },
     optimizeDeps: { entries: [HARNESS.slice(1)],
       include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-router-dom', 'lucide-react'] },
@@ -111,48 +124,79 @@ async function main() {
     check('harness renders the expected Contacts source', (await page.evaluate(() => window.__iaosContactsSource)) === (BEFORE_REV ? 'before' : 'current'));
 
     const box = page.locator('main input[type="text"]');
-    const prompt = await box.evaluate((el) => {
-      const cs = getComputedStyle(el);
-      const ctx = document.createElement('canvas').getContext('2d');
-      ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-      const room = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-      return { placeholder: el.placeholder, textWidth: Math.ceil(ctx.measureText(el.placeholder).width), room };
-    });
-    check('the search box says it searches the property address, and the prompt fits unclipped',
-      prompt.placeholder === PLACEHOLDER && prompt.textWidth <= prompt.room, prompt);
-    /** Types `q` into the real search box and returns the names the grid shows, in order. */
-    const search = async (q) => {
-      await box.fill(q);
-      await page.waitForTimeout(100);
-      return page.locator('tbody tr td:first-child a').allInnerTexts().then((t) => t.map((s) => s.trim()));
-    };
-    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const styled = await page.evaluate(() => ({
+      boxSizing: getComputedStyle(document.querySelector('main input[type="text"]')).boxSizing,
+      bodyFont: getComputedStyle(document.body).fontFamily,
+    }));
+    check("the harness renders with the app's real stylesheet", styled.boxSizing === 'border-box' && /^"?Inter"?,/.test(styled.bodyFont), styled);
+    check('the search box shows the exact prompt', (await box.getAttribute('placeholder')) === PLACEHOLDER, await box.getAttribute('placeholder'));
 
-    let r;
-    r = await search('greenWAY');
-    check('a street name found only in the address matches, case-insensitive', same(r, [KAY]), r);
-    r = await search('2623');
-    check('a house number (digits only) matches the address', same(r, [KAY]), r);
-    r = await search('dallas, tx 752');
-    check('a partial run across the displayed address, with punctuation, matches', same(r, [KAY]), r);
-    r = await search('oak');
-    check('an address match and a name/email match both show, in the active Date Added order', same(r, [MAX, ANN]), r);
+    /** Prompt fit and page overflow at one window width, with the real styles. */
+    const layoutAt = async (width) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      return page.evaluate(() => {
+        const el = document.querySelector('main input[type="text"]');
+        const main = document.querySelector('main');
+        const cs = getComputedStyle(el);
+        const ms = getComputedStyle(main);
+        const ctx = document.createElement('canvas').getContext('2d');
+        ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+        const b = el.getBoundingClientRect();
+        const m = main.getBoundingClientRect();
+        return {
+          textWidth: Math.ceil(ctx.measureText(el.placeholder).width),
+          room: el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
+          boxInsideMain: b.left >= m.left + parseFloat(ms.paddingLeft) - 0.5 && b.right <= m.right - parseFloat(ms.paddingRight) + 0.5,
+          pageOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          mainOverflow: main.scrollWidth > main.clientWidth,
+        };
+      });
+    };
+    for (const width of WIDTHS) {
+      const l = await layoutAt(width);
+      check(`at ${width}px the full prompt fits in the box, the box stays inside the page, and nothing overflows sideways`,
+        l.textWidth <= l.room && l.boxInsideMain && !l.pageOverflow && !l.mainOverflow, l);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const rowsNow = () => page.locator('tbody tr td:first-child a').allInnerTexts().then((t) => t.map((s) => s.trim()));
+    /** Types `q` into the real search box; polls (up to 3 s) until the grid shows `expected`, and returns what it shows. */
+    const search = async (q, expected) => {
+      await box.fill(q);
+      const until = Date.now() + 3000;
+      let rows = await rowsNow();
+      while (!same(rows, expected) && Date.now() < until) { await page.waitForTimeout(50); rows = await rowsNow(); }
+      return rows;
+    };
+    const expectRows = async (name, q, expected) => { const r = await search(q, expected); check(name, same(r, expected), r); };
+
+    await expectRows('a street name found only in the address matches, case-insensitive', 'greenWAY', [KAY]);
+    await expectRows('the query is trimmed before matching the address', '  GreenWay  ', [KAY]);
+    await expectRows('a house number (digits only) matches the address', '2623', [KAY]);
+    await expectRows('a partial run across the displayed address, with punctuation, matches', 'dallas, tx 752', [KAY]);
+    await expectRows('a digits-only query returns both an address match and a phone match, in Date Added order', '88', [MAX, ANN]);
+    await expectRows('an address match and a name/email match both show, in the active Date Added order', 'oak', [MAX, ANN]);
     const badge = (await page.locator('main h1 + span').innerText()).trim();
     check('the count badge counts the address matches', badge === '2', badge);
+    const nameHeader = page.locator('thead th', { hasText: /^Name$/ });
+    await nameHeader.click();
+    const asc = await search('oak', [ANN, MAX]);
+    await nameHeader.click();
+    const desc = await search('oak', [MAX, ANN]);
+    check('with an address search active, Name sort orders the matches ascending, then descending', same(asc, [ANN, MAX]) && same(desc, [MAX, ANN]), { asc, desc });
+    await page.locator('thead th', { hasText: /^Date Added$/ }).click();
 
-    r = await search('—');
+    const blank = await search('—', []);
     const empty = (await page.locator('tbody').innerText()).includes('No contacts match "—"');
-    check('a blank address (shown as —) does not match a nonempty search', same(r, []) && empty, { r, empty });
-    r = await search('lee');
-    check('name search unchanged; a blank-address contact is still found by name', same(r, [LEE]), r);
-    r = await search('SAMPLE.org');
-    check('email search unchanged (case-insensitive)', same(r, [LEE]), r);
-    const phoneRuns = { digits: await search('9146151'), formatted: await search('(214) 914-6151'), dotted: await search('214.914.6151') };
+    check('a blank address (shown as —) does not match a nonempty search', same(blank, []) && empty, { blank, empty });
+    await expectRows('name search unchanged; a blank-address contact is still found by name', 'lee', [LEE]);
+    await expectRows('email search unchanged (case-insensitive)', 'SAMPLE.org', [LEE]);
+    const phoneRuns = { digits: await search('9146151', [LEE]), formatted: await search('(214) 914-6151', [LEE]), dotted: await search('214.914.6151', [LEE]) };
     check('phone search unchanged, punctuation-insensitive', Object.values(phoneRuns).every((x) => same(x, [LEE])), phoneRuns);
-    r = await search('zzzz');
-    check('a query matching nothing shows no rows', same(r, []), r);
-    r = await search('');
-    check('clearing the search restores every row in Date Added order', same(r, ALL), r);
+    await expectRows('a query matching nothing shows no rows', 'zzzz', []);
+    await expectRows('clearing the search restores every row in Date Added order', '', ALL);
 
     check('the page made one contacts read and nothing else: no writes, no other request',
       same(log.filter((x) => x !== 'GET app-read-session'), ['GET ghl-contacts']) && foreign.length === 0, { log, foreign });

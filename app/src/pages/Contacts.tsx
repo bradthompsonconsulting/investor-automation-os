@@ -210,8 +210,11 @@ export default function Contacts() {
   // ── Table (loading skeleton or data) ────────────────────────────────────────
   return (
     <div>
-      {/* Page header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
+      {/* Page header. B15-11: wraps, so on a narrow main column the search box
+          drops below the title instead of squeezing; the box is wide enough
+          for its full prompt with the app's real styles, never wider than
+          the column. */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "12px 16px", marginBottom: "20px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
           <h1 style={{ fontSize: "22px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif", margin: 0 }}>
             Contacts
@@ -230,7 +233,7 @@ export default function Contacts() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search name, phone, email, property address…"
-          style={{ width: "280px", padding: "8px 12px", fontSize: "13px",
+          style={{ width: "360px", maxWidth: "100%", padding: "8px 12px", fontSize: "13px",
                    color: "#F1F5F9", background: "#0D1B3E",
                    border: "1px solid rgba(255,255,255,0.10)",
                    borderRadius: "8px", outline: "none" }}

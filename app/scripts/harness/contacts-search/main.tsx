@@ -2,7 +2,8 @@
  * B15-11 (INV-111) — offline harness for test-contacts-address-search.cjs.
  *
  * Renders the REAL Layout (ReadAccess gate) around the REAL Contacts page with
- * the real GHL client. Every /.netlify/functions request is answered by the
+ * the real GHL client and the app's real stylesheet (src/index.css, built by
+ * the same Tailwind Vite plugin as the app). Every /.netlify/functions request is answered by the
  * Playwright test. Never deployed; Vite serves it only to the test.
  *
  * Negative control: run with --before=<rev>, the test writes that revision's
@@ -10,6 +11,7 @@
  * src/) and this harness renders it instead. The test removes the file.
  */
 import { createRoot } from "react-dom/client";
+import "../../../src/index.css";
 import { getConfig, projectRuntimeConfig, setRuntimeConfig } from "../../../shared/ghl-config";
 
 setRuntimeConfig(projectRuntimeConfig(getConfig("test")));
