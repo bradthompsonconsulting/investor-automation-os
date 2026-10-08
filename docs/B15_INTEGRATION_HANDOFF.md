@@ -81,7 +81,12 @@ both success and failure, with real-page out-of-order tests.
 - INV-125: Add Leads is guidance only; no live intake workflow is established.
 - B15-23 / INV-132: remaining scope open; live GHL navigation, sign-in handoff and post-sign-in
   redirects are unverified. SMS and Contact Workspace history stay unlinked.
-- The GHL shortcuts were verified offline only; a shortcut does not restore IAOS calendar API access.
+- GHL shortcuts: Spock verified both destinations live in GHL Test (Calendars `/calendars/view`,
+  Contacts `/contacts/smart_list/All`). The new IAOS shortcuts themselves still need a live application
+  check. Production navigation and post-sign-in redirects remain unverified. A shortcut does not restore
+  IAOS calendar API access.
+- **Kept outside this integration:** Scotty's Batch 3 fix for the Pipeline opportunities-read race. It
+  needs its own review and a new integration.
 
 **Storage holds (unchanged):**
 - **Marketing webhooks** (`phone-lookup`, `motivation-score`): held (503 before any provider or GHL call)
