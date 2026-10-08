@@ -329,6 +329,10 @@ jobs:
       - name: GHL shortcuts (Add Leads, Calendars; INV-125, INV-106)
         run: node app/scripts/test-b15-ghl-shortcuts.cjs
 
+      # Scotty Batch 5 (b15-scotty-batch5).
+      - name: Mailers This Week is the current Saturday-Friday week (INV-110, B15-12)
+        run: node app/scripts/test-mailer-week.cjs
+
       # Scotty Batch 3 (b15-scotty-batch3): only the current opportunities read changes the Pipeline.
       - name: Current-read ownership helper (INV-108)
         run: node app/scripts/test-current-read.cjs
