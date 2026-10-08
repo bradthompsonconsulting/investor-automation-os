@@ -273,6 +273,44 @@ jobs:
       - name: Netlify observer — 86 offline checks
         run: node scripts/netlify-status.test.cjs
 
+      # Storage v2 (approved 51d7238): adapter, ownership, admission/publication, G5 and
+      # legacy import, the five endpoints, budgets (offline simulation only, not live
+      # latency), the publisher at real process boundaries, cutover controls, page binding.
+      - name: Storage v2 verified adapter
+        run: node app/scripts/test-storage-adapter.cjs
+      - name: Storage v2 send ownership, lock v2, stage marker v2
+        run: node app/scripts/test-storage-ownership.cjs
+      - name: Storage v2 admission and publication (T0–T9, classifier)
+        run: node app/scripts/test-storage-admission.cjs
+      - name: Storage v2 G5 gate and legacy import (incl. sparse-attempt regressions)
+        run: node app/scripts/test-storage-g5-import.cjs
+      - name: Storage v2 endpoints (real handlers, G5 widening races)
+        run: node app/scripts/test-storage-endpoints.cjs
+      - name: Storage v2 budgets — offline simulation, not live performance proof
+        run: node app/scripts/test-storage-budgets.cjs
+      - name: Controlled publisher at real process boundaries (cycle, resume, next-attempt)
+        run: node app/scripts/test-iaos-publish.cjs
+      - name: Cutover controls (published-production only, import, G5)
+        run: node app/scripts/test-iaos-cutover.cjs
+      - name: Page activation binding (bound once, never re-read)
+        run: node app/scripts/test-page-activation-binding.cjs
+
+      # Scotty Batch 1 (b15-scotty).
+      - name: Conversations email links (real host, bidi stripped; INV-132)
+        run: node app/scripts/test-message-links.cjs
+      - name: Conversations GHL hand-off buttons (INV-132, F49)
+        run: node app/scripts/test-b15-conversations-ghl-buttons.cjs
+      - name: Deal Calculator spread status (INV-134)
+        run: node app/scripts/test-deal-calculator-bar.cjs
+      - name: Deal Calculator wiring
+        run: node app/scripts/test-deal-calculator-wiring.cjs
+
+      # Scotty Batch 2 (b15-scotty-batch2).
+      - name: Pipeline property address (INV-108)
+        run: node app/scripts/test-pipeline-property.cjs
+      - name: GHL shortcuts (Add Leads, Calendars; INV-125, INV-106)
+        run: node app/scripts/test-b15-ghl-shortcuts.cjs
+
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.
       - name: Typecheck root Netlify functions
