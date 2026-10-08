@@ -346,8 +346,11 @@ export default function Mailers() {
               Excluded from every list above — can't be mailed without an address. Needs skip-tracing.
             </p>
             {digest.noAddress.length === 0 ? (
-              <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", padding: "20px 16px", color: "#334155", fontSize: "13px", textAlign: "center" }}>
-                Everyone in a mail cadence has an address on file.
+              /* B15-12: the digest lists mailer TASKS only -- it carries no
+                 enrolment data -- so an empty list cannot tell "nobody is
+                 enrolled" from "everyone enrolled has an address". Neutral. */
+              <div data-testid="mailers-no-address-empty" style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", padding: "20px 16px", color: "#334155", fontSize: "13px", textAlign: "center" }}>
+                No contacts missing an address were found.
               </div>
             ) : (
               <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>
