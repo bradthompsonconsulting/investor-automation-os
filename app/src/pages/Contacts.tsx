@@ -229,7 +229,7 @@ export default function Contacts() {
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search name, phone, email…"
+          placeholder="Search name, phone, email, property address…"
           style={{ width: "280px", padding: "8px 12px", fontSize: "13px",
                    color: "#F1F5F9", background: "#0D1B3E",
                    border: "1px solid rgba(255,255,255,0.10)",

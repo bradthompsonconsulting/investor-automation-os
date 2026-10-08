@@ -12,6 +12,9 @@
  * and every /.netlify/functions request is answered here. Each check types a
  * query into the real search box and reads the rows the grid shows.
  *
+ * The search box prompt names the property address ("Search name, phone,
+ * email, property address…") and must fit without being cut off.
+ *
  * NEGATIVE CONTROL: `node scripts/test-contacts-address-search.cjs --before=<rev>`
  * renders <rev>'s Contacts page (via `git show`) and must FAIL (exit 1) for a
  * revision without address search -- e.g. --before=3de480e.
@@ -28,7 +31,7 @@ const beforeArg = process.argv.find((a) => a.startsWith('--before='));
 const BEFORE_REV = beforeArg ? beforeArg.slice('--before='.length) : null;
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 14;
+const FLOOR = 15;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -58,6 +61,7 @@ const LEE = 'lee blank';
 const MAX = 'max third';
 const ANN = 'ann oakley';
 const ALL = [KAY, LEE, MAX, ANN];
+const PLACEHOLDER = 'Search name, phone, email, property address…';
 
 let log = [];
 const foreign = [];
@@ -106,7 +110,16 @@ async function main() {
     await page.getByRole('link', { name: KAY }).waitFor({ timeout: 30000 });
     check('harness renders the expected Contacts source', (await page.evaluate(() => window.__iaosContactsSource)) === (BEFORE_REV ? 'before' : 'current'));
 
-    const box = page.locator('main input[placeholder^="Search"]');
+    const box = page.locator('main input[type="text"]');
+    const prompt = await box.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      const ctx = document.createElement('canvas').getContext('2d');
+      ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+      const room = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      return { placeholder: el.placeholder, textWidth: Math.ceil(ctx.measureText(el.placeholder).width), room };
+    });
+    check('the search box says it searches the property address, and the prompt fits unclipped',
+      prompt.placeholder === PLACEHOLDER && prompt.textWidth <= prompt.room, prompt);
     /** Types `q` into the real search box and returns the names the grid shows, in order. */
     const search = async (q) => {
       await box.fill(q);
