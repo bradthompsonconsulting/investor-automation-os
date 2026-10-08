@@ -162,6 +162,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        # Full history: test-storage-endpoints L7/L7b load the legacy library from the
+        # base commit (git show 3de480e:…), which a shallow checkout does not contain.
+        with:
+          fetch-depth: 0
 
       # pnpm must be installed before setup-node, or the pnpm cache cannot
       # resolve its store path.
