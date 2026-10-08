@@ -168,25 +168,31 @@ export default function Contacts() {
   // against the row's phone with non-digits stripped (so 2149146151 matches the
   // stored E.164 +12149146151); Name and Email are excluded from this path.
   // Branch 2: any query containing a non-digit uses case-insensitive substring
-  // matching across Name, Phone, Email. Property Address is excluded (mirrors
-  // GHL's own query behavior). No fuzzy matching, no ranking.
+  // matching across Name, Phone, Email. No fuzzy matching, no ranking.
   // Board 15 Pass 1 F15 (Jess, 2026-10-04): a query typed in the displayed
   // phone format ("757-5598", "(817) 757-5598", "817.757.5598") also takes
   // Branch 1 -- see phoneQueryDigits (lib/operator-display) and
   // CONTACTS_OPPORTUNITIES_SPEC.md §5.1.
+  // Board 15 B15-11 (Jess, 2026-10-08): on BOTH branches a row also matches
+  // when its displayed Property Address contains the typed query,
+  // case-insensitive, so a house number or street name finds the contact. A
+  // blank address never matches. Same value the column shows; no other read.
   const filtered = useMemo(() => {
     const q = search.trim();
     if (!q) return ordered;
+    const lc = q.toLowerCase();
+    const addressMatches = (r: ContactGridRow) =>
+      r.propertyAddress !== "" && r.propertyAddress.toLowerCase().includes(lc);
     const phoneDigits = phoneQueryDigits(q);
     if (phoneDigits !== null) {
-      return ordered.filter((r) => r.phone.replace(/\D/g, "").includes(phoneDigits));
+      return ordered.filter((r) => r.phone.replace(/\D/g, "").includes(phoneDigits) || addressMatches(r));
     }
-    const lc = q.toLowerCase();
     return ordered.filter(
       (r) =>
         r.name.toLowerCase().includes(lc) ||
         r.phone.toLowerCase().includes(lc) ||
-        r.email.toLowerCase().includes(lc),
+        r.email.toLowerCase().includes(lc) ||
+        addressMatches(r),
     );
   }, [ordered, search]);
 
@@ -204,8 +210,11 @@ export default function Contacts() {
   // ── Table (loading skeleton or data) ────────────────────────────────────────
   return (
     <div>
-      {/* Page header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
+      {/* Page header. B15-11: wraps, so on a narrow main column the search box
+          drops below the title instead of squeezing; the box is wide enough
+          for its full prompt with the app's real styles, never wider than
+          the column. */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "12px 16px", marginBottom: "20px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
           <h1 style={{ fontSize: "22px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif", margin: 0 }}>
             Contacts
@@ -223,8 +232,8 @@ export default function Contacts() {
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search name, phone, email…"
-          style={{ width: "280px", padding: "8px 12px", fontSize: "13px",
+          placeholder="Search name, phone, email, property address…"
+          style={{ width: "360px", maxWidth: "100%", padding: "8px 12px", fontSize: "13px",
                    color: "#F1F5F9", background: "#0D1B3E",
                    border: "1px solid rgba(255,255,255,0.10)",
                    borderRadius: "8px", outline: "none" }}

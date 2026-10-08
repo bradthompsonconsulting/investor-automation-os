@@ -388,7 +388,7 @@ async function clickControlByBody(page, mark) {
     `domRows=${domRowCount} payload=${grid ? payload.length : "(none captured)"}`);
 
   // 2 — search narrows (digits-only → phone branch); bradt75's unique phone.
-  await page.fill('input[placeholder="Search name, phone, email…"]', "2149146151");
+  await page.fill('input[placeholder="Search name, phone, email, property address…"]', "2149146151");
   await page.waitForTimeout(300);
   const searchState = await page.evaluate((id) => {
     const rows = [...document.querySelectorAll("tbody tr")].filter((tr) => tr.querySelector('a[href^="/contacts/"]'));
@@ -396,7 +396,7 @@ async function clickControlByBody(page, mark) {
   }, BRADT75);
   check("search-behaves", searchState.count >= 1 && searchState.count < payload.length && searchState.hasTarget,
     `filtered=${searchState.count} total=${payload.length} bradt75Present=${searchState.hasTarget}`);
-  await page.fill('input[placeholder="Search name, phone, email…"]', "");
+  await page.fill('input[placeholder="Search name, phone, email, property address…"]', "");
   await page.waitForTimeout(300);
 
   // 3 — filter ABSENCE: V1 has no filter control (a filter would be a <select> dropdown).
