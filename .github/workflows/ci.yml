@@ -341,7 +341,7 @@ jobs:
       # fresh Vite cache every time and is not retried: a failure is reported as it
       # happened. The Pipeline suite also prints its startup timings and on failure
       # dumps the browser console, page errors, failed requests and the Vite log.
-      - name: Install Chromium for the real-page suites (Pipeline, Mailers, shell labels)
+      - name: Install Chromium for the real-page suites (Pipeline, Mailers, shell labels, Contacts)
         run: pnpm --dir app exec playwright install --with-deps chromium
       - name: Pipeline current read on the real page, out-of-order responses (INV-108)
         run: node app/scripts/test-pipeline-requests.cjs
@@ -349,6 +349,8 @@ jobs:
         run: node app/scripts/test-mailers-empty-state.cjs
       - name: Shell labels on the real page -- no Phase A badge, Conversations heading (INV-126, B15-17)
         run: node app/scripts/test-b15-shell-labels.cjs
+      - name: Contacts search matches the Property Address, real page and stylesheet (INV-111, B15-11)
+        run: node app/scripts/test-contacts-address-search.cjs
 
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.
