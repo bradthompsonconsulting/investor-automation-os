@@ -93,8 +93,11 @@ against the unfixed code and failed there.
   `test-under-contract-stage-result`) were found and fixed in fixtures in `8662a12`; no assertion
   changed. `test-inv95` now passes 40/40.
 - **Typecheck and build:** `tsc -b`, the root-functions `tsc` and `vite build` all pass.
-- **Unverified here:** four PDF suites need `pdftotext`. They passed on Jeff's machine, but Bones's
-  environment lacks the tool, so they remain unverified there.
+- **PDF suites, independently verified:** the four PDF suites need Poppler (`pdftotext`). Bones ran
+  all four at `20d7a62` with local Poppler, all exit 0 (`#issuecomment-6048571416`): the PDF
+  generator, the geometry cache, the population proof (133/133 rows: 98 Ready, 35 Visual-judgment,
+  0 deferred) and the template placement manifest (327 checks, 0 failures). Those files are unchanged
+  at `51d7238`. These are offline generator and fixture checks, not a new live contract proof.
 
 ## Re-review: Bones's findings on `20d7a62` (`#issuecomment-6048531462`)
 
