@@ -105,6 +105,12 @@ export function ghlContactDetailUrl(contactId: string): string {
   return `https://app.gohighlevel.com/v2/location/${LOCATION_ID}/contacts/detail/${contactId}`;
 }
 
+// B15-07 — GHL's Calendars page for this location. Destination path verified
+// by Jess (2026-10-07). Pure string builder, no network call.
+export function ghlCalendarsUrl(): string {
+  return `https://app.gohighlevel.com/v2/location/${LOCATION_ID}/calendars/view`;
+}
+
 // ── Shared types ──────────────────────────────────────────────────────────────
 
 export interface ContactRow {
