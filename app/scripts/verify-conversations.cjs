@@ -136,15 +136,16 @@ async function readSections(page) {
   check("threadlist-count-matches", domCount === N, `dom=${domCount} endpoint=${N}`);
   check("target-thread-present", johnIndex >= 0, `johnIndex=${johnIndex} of ${N}`);
 
-  // §8.1 — inner PAGE label changed to "History"; the OUTER chrome (Sidebar nav
-  // item) stays "Conversations". Positive assertion of the change itself, not
-  // just "the other checks didn't break". One check (both conditions) → floor +1.
+  // §8.1 — the inner PAGE heading reads "Conversations", matching the OUTER chrome
+  // (Sidebar nav item). B15-17 (Batch 7, 197fbbd) reverted the earlier "History"
+  // label. Positive assertion of the label itself, not just "the other checks
+  // didn't break". One check (all conditions) → floor unchanged.
   const labels = await page.evaluate(() => ({
     h1: [...document.querySelectorAll("h1")].map((h) => (h.textContent || "").trim()),
     navConversations: [...document.querySelectorAll("a")].some((a) => (a.textContent || "").trim() === "Conversations"),
   }));
-  check("inner-label-history-outer-conversations",
-    labels.h1.includes("History") && !labels.h1.includes("Conversations") && labels.navConversations,
+  check("inner-label-conversations-matches-nav",
+    labels.h1.includes("Conversations") && !labels.h1.includes("History") && labels.navConversations,
     `h1s=${JSON.stringify(labels.h1)} navConversations=${labels.navConversations}`);
 
   // Header top-bar title — the dark app-bar <h2> reads the page name ("Conversations")
@@ -210,7 +211,8 @@ async function readSections(page) {
   // §8.9 — the LARGE contact name and the §8.5 Reply-in-GHL <a> live in the SAME
   // navy header card (ties who-you're-acting-on to the action button). Not merely
   // "the name renders somewhere": find the Reply <a>, climb to the banner ancestor
-  // (the one containing "History"), and assert that SAME container holds both the
+  // (the one holding the page <h1> "Conversations"; B15-17 renamed it from "History"),
+  // and assert that SAME container holds both the
   // Reply link AND the name — at LARGE size (>=20px, vs the old 14px strip). Name
   // match is case-insensitive (thread-name casing is not guaranteed on the wire).
   const johnName = (johnIndex >= 0 && threads[johnIndex]) ? threads[johnIndex].contactName : "";
@@ -219,8 +221,8 @@ async function readSections(page) {
     const a = [...document.querySelectorAll("a")].find((x) => /app\.gohighlevel\.com\/v2\/location\//.test(x.getAttribute("href") || "") && (x.getAttribute("href") || "").includes(target));
     if (!a) return { ok: false, reason: "no-reply-link" };
     let card = a.parentElement;
-    while (card && !/History/.test(card.textContent || "")) card = card.parentElement;
-    if (!card) return { ok: false, reason: "no-history-banner-ancestor" };
+    while (card && ![...card.querySelectorAll("h1")].some((h) => (h.textContent || "").trim() === "Conversations")) card = card.parentElement;
+    if (!card) return { ok: false, reason: "no-heading-banner-ancestor" };
     const txt = card.textContent || "";
     const hasName  = !!name && txt.toLowerCase().includes(name.toLowerCase());
     const hasReply = /Reply in GHL/.test(txt);
