@@ -31,11 +31,11 @@ try {
   process.exit(10);
 }
 
-const { splitMessageLinks, safeHttpHref, linkLabel, labeledLinkText } = require(path.join(TMP, 'src/lib/message-links.js'));
+const { splitMessageLinks, safeHttpHref, linkLabel, labeledLinkText, stripBidiControls } = require(path.join(TMP, 'src/lib/message-links.js'));
 fs.rmSync(TMP, { recursive: true, force: true });
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 49;
+const FLOOR = 62;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -58,7 +58,7 @@ const links = (segs) => segs.filter((s) => s.kind === 'link').map((s) => ({ href
   check('bracketed URL: body reproduces exactly', rejoin(segs), bracketed);
 
   const md = 'Please [Review and sign](https://docs.example.com/s/123) today.';
-  check('markdown link keeps its own label, always followed by the real host', links(splitMessageLinks(md)), [{ href: 'https://docs.example.com/s/123', label: 'Review and sign (docs.example.com)' }]);
+  check('markdown link keeps its own label, always after the real host', links(splitMessageLinks(md)), [{ href: 'https://docs.example.com/s/123', label: 'docs.example.com — Review and sign' }]);
   check('markdown link: body reproduces exactly', rejoin(splitMessageLinks(md)), md);
 
   const angle = 'Copy: <https://www.example.com/a/b>';
@@ -109,17 +109,44 @@ const links = (segs) => segs.filter((s) => s.kind === 'link').map((s) => ({ href
 // (Spock review blocker 1). The real host is always visible.
 // ============================================================
 {
-  check('a plain label shows the real host after it', links(splitMessageLinks('[Your Chase account](https://evil.example/login)')),
-    [{ href: 'https://evil.example/login', label: 'Your Chase account (evil.example)' }]);
+  check('a plain label shows the real host before it', links(splitMessageLinks('[Your Chase account](https://evil.example/login)')),
+    [{ href: 'https://evil.example/login', label: 'evil.example — Your Chase account' }]);
   check('a URL-looking label naming another site is replaced by the real host', links(splitMessageLinks('[https://chase.com](https://evil.example/x)')),
     [{ href: 'https://evil.example/x', label: 'Open link (evil.example)' }]);
   check('a bare-domain label is replaced too', labeledLinkText('chase.com', 'https://evil.example/x'), 'Open link (evil.example)');
   check('a domain-with-path label is replaced too', labeledLinkText('chase.com/login', 'https://evil.example/x'), 'Open link (evil.example)');
   check('a www. label is replaced too', labeledLinkText('www.chase.com', 'https://evil.example/x'), 'Open link (evil.example)');
   check('userinfo cannot fake the host: the label names the real host', links(splitMessageLinks('<https://bank.com@evil.example/>')).map((l) => l.label), ['Open link (evil.example)']);
-  check('an ordinary sentence label with a period is kept', labeledLinkText('Sign here. Thanks', 'https://docs.example.com/x'), 'Sign here. Thanks (docs.example.com)');
+  check('an ordinary sentence label with a period is kept', labeledLinkText('Sign here. Thanks', 'https://docs.example.com/x'), 'docs.example.com — Sign here. Thanks');
   check('a whitespace-only label falls back to Open link (host)', labeledLinkText('   ', 'https://docs.example.com/x'), 'Open link (docs.example.com)');
   check('spoof probe body reproduces exactly', rejoin(splitMessageLinks('Hi [https://chase.com](https://evil.example/x) bye')), 'Hi [https://chase.com](https://evil.example/x) bye');
+}
+
+// ============================================================
+// Bidi controls and decoy hosts (Spock bidi report; Jess ruling 2026-10-07).
+// Control characters are generated from code points, never pasted.
+// ============================================================
+{
+  const RLO = String.fromCodePoint(0x202E);
+  const BIDI = [0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069].map((c) => String.fromCodePoint(c));
+  const hasBidi = (s) => /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/.test(s);
+
+  const rloBody = `[Click${RLO}](https://evil.example/x)`;
+  const rlo = splitMessageLinks(rloBody).filter((s) => s.kind === 'link');
+  check('RLO label: one link to the real destination', rlo.map((s) => s.href), ['https://evil.example/x']);
+  check('RLO label: the host leads and no bidi control is displayed', rlo.map((s) => ({ label: s.label, host: s.host, senderLabel: s.senderLabel })),
+    [{ label: 'evil.example — Click', host: 'evil.example', senderLabel: 'Click' }]);
+  check('RLO label: the source text keeps the original character', rejoin(splitMessageLinks(rloBody)), rloBody);
+  check('every listed bidi control is stripped from a displayed label', hasBidi(labeledLinkText(`a${BIDI.join('')}b`, 'https://x.example/')), false);
+  check('stripBidiControls leaves ordinary text alone', stripBidiControls('Review and sign — página 2'), 'Review and sign — página 2');
+  check('a label made only of bidi controls falls back to Open link (host)', labeledLinkText(BIDI.join(''), 'https://evil.example/x'), 'Open link (evil.example)');
+  check('a bidi-wrapped URL-looking label still falls back', labeledLinkText(`${RLO}https://chase.com`, 'https://evil.example/x'), 'Open link (evil.example)');
+
+  const decoy = splitMessageLinks('[Login (chase.com)](https://evil.example/x)').filter((s) => s.kind === 'link');
+  check('decoy domain in the label: the real host is shown first', decoy.map((s) => s.label), ['evil.example — Login (chase.com)']);
+  check('decoy domain in the label: the destination is unchanged', decoy.map((s) => s.href), ['https://evil.example/x']);
+  check('a trailing-dot domain label is not shown as the destination', labeledLinkText('chase.com.', 'https://evil.example/x').startsWith('evil.example'), true);
+  check('an unlabeled link carries its host and no sender label', splitMessageLinks('<https://docs.example.com/a>').filter((s) => s.kind === 'link').map((s) => [s.host, s.senderLabel]), [['docs.example.com', null]]);
 }
 
 // ============================================================
@@ -128,7 +155,7 @@ const links = (segs) => segs.filter((s) => s.kind === 'link').map((s) => ({ href
 {
   const md = '[doc](https://a.com/b_(c))';
   const mdSegs = splitMessageLinks(md);
-  check('labeled URL with balanced parentheses is one link', links(mdSegs), [{ href: 'https://a.com/b_(c)', label: 'doc (a.com)' }]);
+  check('labeled URL with balanced parentheses is one link', links(mdSegs), [{ href: 'https://a.com/b_(c)', label: 'a.com — doc' }]);
   check('labeled URL with parentheses leaves no stray text', mdSegs.filter((x) => x.kind === 'text').length, 0);
   check('labeled URL with parentheses reproduces exactly', rejoin(mdSegs), md);
   check('bracketed URL with parentheses', links(splitMessageLinks('[https://a.com/b_(c)]')).map((l) => l.href), ['https://a.com/b_(c)']);
@@ -151,6 +178,9 @@ const links = (segs) => segs.filter((s) => s.kind === 'link').map((s) => ({ href
   check('email bubbles render through EmailBody; SMS bodies stay plain', /\? \(isSms \? m\.body : <EmailBody body=\{m\.body\} \/>\)/.test(conv), true);
   check('links open in a new tab with no opener or referrer', /target="_blank"\s+rel="noopener noreferrer"/.test(emailBody), true);
   check('EmailBody injects no raw HTML', /dangerouslySetInnerHTML|innerHTML/.test(conv), false);
+  check('the host renders first in its own isolated element; the sender label in another',
+    /\{s\.senderLabel === null\s*\? <>Open link \(<bdi data-testid="conv-email-link-host">\{s\.host\}<\/bdi>\)<\/>\s*: <><bdi data-testid="conv-email-link-host">\{s\.host\}<\/bdi> — <bdi>\{s\.senderLabel\}<\/bdi><\/>\}/.test(emailBody), true);
+  check('the anchor no longer renders the combined label string', /\{s\.label\}/.test(emailBody), false);
   check('Expand still measures the unmodified body and clamps to CLAMP_LINES', /\}, \[m\.body, collapsible\]\);/.test(conv) && /WebkitLineClamp: CLAMP_LINES/.test(conv) && /\{expanded \? "Show less" : "Expand"\}/.test(conv), true);
 }
 

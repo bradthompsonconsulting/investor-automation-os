@@ -81,7 +81,10 @@ function EmailBody({ body }: { body: string }) {
           rel="noopener noreferrer"
           style={{ color: "#1EC8FF", textDecoration: "underline", wordBreak: "break-all" }}
         >
-          {s.label}
+          {/* Host first, each part direction-isolated: a sender label cannot reorder the host. */}
+          {s.senderLabel === null
+            ? <>Open link (<bdi data-testid="conv-email-link-host">{s.host}</bdi>)</>
+            : <><bdi data-testid="conv-email-link-host">{s.host}</bdi> — <bdi>{s.senderLabel}</bdi></>}
         </a>
       ))}
     </>
