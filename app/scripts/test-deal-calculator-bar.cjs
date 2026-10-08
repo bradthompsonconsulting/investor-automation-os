@@ -25,11 +25,15 @@ fs.writeFileSync(path.join(TMP, 'package.json'), JSON.stringify({ type: 'commonj
 
 const SOURCES = [
   path.join(UW, 'types.ts'),
+  path.join(UW, 'resolver-types.ts'),
+  path.join(UW, 'starters.ts'),
+  path.join(UW, 'resolver.ts'),
   path.join(UW, 'compute.ts'),
   path.join(UW, 'board8-economics.ts'),
   path.join(LIB, 'arv-reconciliation.ts'),
   path.join(LIB, 'comp-classification.ts'),
   path.join(LIB, 'propstream-comp-csv.ts'),
+  path.join(LIB, 'deal-calculator-inputs.ts'),
   path.join(LIB, 'deal-calculator-bar.ts'),
 ];
 
@@ -59,9 +63,10 @@ for (const p of [computePath, board8Path, barPath]) {
 const { computeUnderwriting } = require(computePath);
 const { computeBoard8Economics, computeExpectedSpread } = require(board8Path);
 const { buildDealCalculatorBarCells, buildSpreadStatus, formatWholeDollars, DEAL_CALC_BAR_LABELS } = require(barPath);
+const { buildDealCalculatorInputs } = require(path.join(TMP, 'deal-calculator-inputs.js'));
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 67;
+const FLOOR = 81;
 let failures = 0;
 let checks = 0;
 
@@ -231,6 +236,50 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
   check('no Test Price -> neutral, naming the missing input', [noTest.kind, noTest.text], ['neutral', 'No spread check yet: enter a Test Price.']);
   check('no economics -> neutral', buildSpreadStatus(UNAVAILABLE_ECONOMICS, null, null).kind, 'neutral');
   check('no active requirement -> neutral', buildSpreadStatus(GOLDEN_ECONOMICS, null, null).kind, 'neutral');
+
+// ============================================================
+// B15-26 partial (Batch 4): the neutral status names the inputs actually
+// missing, through the calculator's own input builder and the shared
+// engine, exactly as the page computes it. Copy only.
+// ============================================================
+{
+  const POLICY_IDS = {
+    sellingCostPct: 'id_sellingCostPct', closingCost: 'id_closingCost', monthlyCarry: 'id_monthlyCarry', holdMonths: 'id_holdMonths',
+    buyerProfitPct: 'id_buyerProfitPct', financingEnabled: 'id_financingEnabled', financingLtv: 'id_financingLtv', financingRate: 'id_financingRate',
+    financingPoints: 'id_financingPoints', standardMinimum: 'id_standardMinimum', profitSharePct: 'id_profitSharePct',
+  };
+  // The page's own path: empty Investor Policy resolves to the IAOS Starter values.
+  const page = (arv, repairs, assignment, testPrice = null) => {
+    const result = computeUnderwriting(buildDealCalculatorInputs({ arv, repairs, assignment, policyValues: [], policyIds: POLICY_IDS }));
+    const board8 = computeBoard8Economics(result);
+    const expected = computeExpectedSpread({ endBuyerMaxPrice: board8.status === 'calculated' ? board8.endBuyerMaxPrice : 0, referenceKind: 'test_price', referencePrice: board8.status === 'calculated' ? testPrice : null });
+    const active = result.status === 'resolved' ? { mode: assignment.mode, requiredSpread: result.figures.assignmentSpread } : null;
+    return buildSpreadStatus(board8, expected, active, assignment.mode);
+  };
+  const MANUAL_EMPTY = { mode: 'manual', amount: null };
+  const n = (s) => [s.kind, s.text];
+
+  check('the reported finding: Manual with no amount, ARV and Repairs present, names only the Manual amount',
+    n(page(315000, 41000, MANUAL_EMPTY)), ['neutral', 'No spread check yet: enter the Manual assignment amount.']);
+  check('...and never asks for ARV or Repairs it already has', /ARV|Repairs/.test(page(315000, 41000, MANUAL_EMPTY).text), false);
+  check('missing ARV only', n(page(null, 41000, { mode: 'standard' })), ['neutral', 'No spread check yet: enter ARV.']);
+  check('missing Repairs only', n(page(315000, null, { mode: 'standard' })), ['neutral', 'No spread check yet: enter Repairs.']);
+  check('missing ARV and Repairs', page(null, null, { mode: 'profit_share' }).text, 'No spread check yet: enter ARV and Repairs.');
+  check('missing ARV and the Manual amount', page(null, 41000, MANUAL_EMPTY).text, 'No spread check yet: enter ARV and the Manual assignment amount.');
+  check('missing Repairs and the Manual amount', page(315000, null, MANUAL_EMPTY).text, 'No spread check yet: enter Repairs and the Manual assignment amount.');
+  check('missing all three', page(null, null, MANUAL_EMPTY).text, 'No spread check yet: enter ARV, Repairs and the Manual assignment amount.');
+  check('a Manual amount of $0 is an amount: not reported missing; the check proceeds to Test Price',
+    n(page(315000, 41000, { mode: 'manual', amount: 0 })), ['neutral', 'No spread check yet: enter a Test Price.']);
+  check('a Manual amount of $0 with a Test Price is checked like any other amount', page(315000, 41000, { mode: 'manual', amount: 0 }, 150000).kind !== 'neutral', true);
+  check('Repairs of $0 is a value: only the Manual amount is missing', page(315000, 0, MANUAL_EMPTY).text, 'No spread check yet: enter the Manual assignment amount.');
+  check('Standard and 25% modes never mention a Manual amount', [page(null, null, { mode: 'standard' }).text, page(null, null, { mode: 'profit_share' }).text].some((t) => /Manual/.test(t)), false);
+  check('an engine gap this page cannot name gets a generic statement, never a wrong name',
+    buildSpreadStatus(computeBoard8Economics({ status: 'unresolved', missing: ['arv', 'sellingCostPct'] }), null, null, 'standard').text,
+    "No spread check yet: Max can't be calculated from the current inputs.");
+  check('an unresolved assignment outside Manual is not called the Manual amount',
+    buildSpreadStatus(computeBoard8Economics({ status: 'unresolved', missing: ['assignmentMode'] }), null, null, 'standard').text,
+    "No spread check yet: Max can't be calculated from the current inputs.");
+}
 
   // Walkthrough 2 figures through the shared engine (ARV 639,863, repairs 20,000).
   const wt2 = (testPrice) => {
