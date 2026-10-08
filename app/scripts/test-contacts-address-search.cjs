@@ -21,6 +21,20 @@
  * offline harness cannot fetch Google Fonts, so text is measured in the
  * browser's fallback for the app's font stack; the box keeps ample slack.
  *
+ * WRITE COVERAGE (the pattern Bones approved for the Mailers suite, e94889a).
+ * The harness starts with a valid offline write session, the activation read is
+ * answered OPEN, and the REAL Layout must have bound the page before anything
+ * is tested -- so a write the page made would reach the network and fail the
+ * request check. (Unbound, the client refuses writes before sending, and the
+ * request check could not see them.) The one activation read storage v2's
+ * Layout makes is set aside, at most once. CANARY: after everything else is
+ * recorded, one REAL contact write client call must reach the intercepted
+ * network carrying the bound activation and the session's bearer. Every
+ * request stays on this machine.
+ *
+ * WRITE NEGATIVE CONTROL: `--inject-write` makes that real contact write call
+ * once the page is bound; the intercepted POST must make the suite FAIL (exit 1).
+ *
  * NEGATIVE CONTROL: `node scripts/test-contacts-address-search.cjs --before=<rev>`
  * renders <rev>'s Contacts page (via `git show`) and must FAIL (exit 1) for a
  * revision without address search -- e.g. --before=3de480e -- and for the
@@ -36,13 +50,14 @@ const HARNESS = '/scripts/harness/contacts-search/index.html';
 const BEFORE_FILE = path.join(HARNESS_DIR, 'ContactsBefore.tsx');
 const beforeArg = process.argv.find((a) => a.startsWith('--before='));
 const BEFORE_REV = beforeArg ? beforeArg.slice('--before='.length) : null;
+const INJECT_WRITE = process.argv.includes('--inject-write');
 
 /**
  * Taken from the finished file, never back-filled from a passing run: 9 single
  * check() call sites + 1 inside the width loop x 5 widths + 10 expectRows()
- * call sites (one check each) = 24.
+ * call sites (one check each) = 24, + 2 write-coverage checks (bind, canary) = 26.
  */
-const FLOOR = 24;
+const FLOOR = 26;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -74,6 +89,11 @@ const ANN = 'ann oakley';
 const ALL = [KAY, LEE, MAX, ANN];
 const PLACEHOLDER = 'Search name, phone, email, property address…';
 const WIDTHS = [2560, 1440, 1280, 1024, 768];
+
+// The deployment's activation, answered OPEN (admissionSummary shape plus runtimeDeployId).
+const ACTIVATION = { initialized: true, state: 'open', epoch: 1, activationId: 'act-fixture-contacts-1', deployId: 'deploy-fixture-1',
+  runtimeDeployId: 'deploy-fixture-1', tickets: { admitted: 0, dispatching: 0, uncertain: 0 }, publication: null };
+const writes = [];
 
 let log = [];
 const foreign = [];
@@ -112,7 +132,14 @@ async function main() {
       const method = route.request().method();
       log.push(`${method} ${fn}`);
       const json = (status, body) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+      if (method !== 'GET') {
+        const h = route.request().headers();
+        writes.push({ request: `${method} ${fn}`, activation: h['x-iaos-activation'] ?? null,
+          bearer: h.authorization === 'Bearer offline-fixture-write-session', body: route.request().postData() });
+        return json(409, { error: 'fixture: writes are not answered', confirmed: false });
+      }
       if (fn === 'app-read-session') return json(200, { signedIn: true, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+      if (fn === 'iaos-activation') return json(200, ACTIVATION);
       if (fn === 'ghl-contacts' && method === 'GET') return json(200, CONTACTS);
       return json(404, { error: `fixture: ${method} ${fn} not answered` });
     });
@@ -122,6 +149,15 @@ async function main() {
     await page.evaluate(() => window.__iaosNavigate('/contacts'));
     await page.getByRole('link', { name: KAY }).waitFor({ timeout: 30000 });
     check('harness renders the expected Contacts source', (await page.evaluate(() => window.__iaosContactsSource)) === (BEFORE_REV ? 'before' : 'current'));
+    await page.waitForFunction(() => window.__iaosPageActivation && !['unbound', 'binding'].includes(window.__iaosPageActivation()), null, { timeout: 15000 }).catch(() => {});
+    const bind = await page.evaluate(() => ({
+      writeSessionValid: !!window.__iaosWriteSession && Date.parse(window.__iaosWriteSession.expiresAt) > Date.now(),
+      activation: window.__iaosPageActivation && window.__iaosPageActivation(),
+    }));
+    bind.activationReads = log.filter((x) => x === 'GET iaos-activation').length;
+    check('before testing, the page has a valid offline write session and the real Layout binds it to the open activation (one activation read)',
+      bind.writeSessionValid && bind.activation === 'bound' && bind.activationReads === 1, bind);
+    if (INJECT_WRITE) await page.evaluate(() => window.__iaosContactWrite('c-inject').catch(() => null));
 
     const box = page.locator('main input[type="text"]');
     const styled = await page.evaluate(() => ({
@@ -198,8 +234,19 @@ async function main() {
     await expectRows('a query matching nothing shows no rows', 'zzzz', []);
     await expectRows('clearing the search restores every row in Date Added order', '', ALL);
 
+    await page.waitForTimeout(300);
+    const pageLog = [...log];
+    // Canary, after everything else is recorded: a write by this page is observable.
+    const before = writes.length;
+    await page.evaluate(() => window.__iaosContactWrite('c-canary').catch(() => null));
+    await page.waitForTimeout(300);
+    const canary = writes.slice(before);
     check('the page made one contacts read and nothing else: no writes, no other request',
-      same(log.filter((x) => x !== 'GET app-read-session'), ['GET ghl-contacts']) && foreign.length === 0, { log, foreign });
+      same(pageLog.filter((x) => x !== 'GET app-read-session' && x !== 'GET iaos-activation'), ['GET ghl-contacts'])
+        && pageLog.filter((x) => x === 'GET iaos-activation').length <= 1 && foreign.length === 0, { log: pageLog, foreign });
+    check('canary: a real contact write client call from this page reaches the intercepted network with the bound activation and session',
+      canary.length === 1 && canary[0].request === 'POST ghl-write' && canary[0].activation === ACTIVATION.activationId && canary[0].bearer
+        && JSON.parse(canary[0].body).operation === 'contact.explicitCallback', canary);
     check('no page errors', pageErrors.length === 0, pageErrors);
   } catch (e) {
     console.error(`FAIL  ${e.message}`);
@@ -207,6 +254,7 @@ async function main() {
   }
 
   console.log('');
+  console.log(`fixture: activation ${ACTIVATION.activationId} (state ${ACTIVATION.state}, deploy ${ACTIVATION.deployId} = runtime ${ACTIVATION.runtimeDeployId}); intercepted writes=${JSON.stringify(writes)}`);
   console.log(`checksRun=${checks} failures=${failures} floor=${FLOOR}${BEFORE_REV ? ` (negative control vs ${BEFORE_REV})` : ''}`);
   if (checks !== FLOOR) { console.error(`FAILED: expected exactly ${FLOOR} checks, ran ${checks}.`); return exit(2); }
   if (failures > 0) { console.error('FAILED'); return exit(1); }
