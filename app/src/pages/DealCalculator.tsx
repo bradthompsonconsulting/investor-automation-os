@@ -17,7 +17,7 @@ import {
   buildDealCalculatorInputs, parseNonNegativeAmountInput, DEFAULT_ASSIGNMENT_MODE,
   type DealCalculatorAssignment,
 } from "../lib/deal-calculator-inputs";
-import { buildDealCalculatorBarCells, type DealCalcBarCell } from "../lib/deal-calculator-bar";
+import { buildDealCalculatorBarCells, buildSpreadStatus, type DealCalcBarCell, type SpreadStatus } from "../lib/deal-calculator-bar";
 import { parseAcquisitionPriceInput } from "../lib/seller-call-negotiation";
 import {
   OPERATOR_ROWS, EMPTY_ANSWER, applyCondition, applyAmount, applyQuantity,
@@ -154,14 +154,22 @@ function policyRow(
   );
 }
 
-function BarCellView({ cell }: { cell: DealCalcBarCell }) {
+/* B15-26: one color per spread status, always paired with the status text. */
+const SPREAD_STATUS_COLOR: Record<SpreadStatus["kind"], string> = {
+  negative: "#EF4444",
+  short: "#F59E0B",
+  meets: "#22C55E",
+  neutral: "#64748B",
+};
+
+function BarCellView({ cell, valueColor }: { cell: DealCalcBarCell; valueColor?: string }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "3px", minWidth: "128px" }}>
       <span style={{ fontSize: "9px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em" }}>
         {cell.label}
       </span>
       {cell.value.kind === "value" ? (
-        <span style={{ fontSize: "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#E2E8F0" }}>
+        <span style={{ fontSize: "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: valueColor ?? "#E2E8F0" }}>
           {cell.value.text}
         </span>
       ) : (
@@ -302,6 +310,18 @@ export default function DealCalculator() {
     () => buildDealCalculatorBarCells({ arv, repairs, testPrice, board8, expectedSpread }),
     [arv, repairs, testPrice, board8, expectedSpread],
   );
+  /* B15-26: the active mode's required spread is the engine's own resolved
+     figures.assignmentSpread -- read, never recomputed. */
+  const spreadStatus = useMemo(
+    () => buildSpreadStatus(
+      board8,
+      expectedSpread,
+      underwritingResult.status === "resolved"
+        ? { mode: assignmentMode, requiredSpread: underwritingResult.figures.assignmentSpread }
+        : null,
+    ),
+    [board8, expectedSpread, underwritingResult, assignmentMode],
+  );
 
   /* Optional linking. Contact-level only -- see module header for why no
      Opportunity resolution happens here at all. */
@@ -388,7 +408,21 @@ export default function DealCalculator() {
           borderRadius: "10px", margin: "14px 0",
         }}
       >
-        {barCells.map((cell) => <BarCellView key={cell.key} cell={cell} />)}
+        {barCells.map((cell) => (
+          <BarCellView
+            key={cell.key}
+            cell={cell}
+            valueColor={cell.key === "spread" && spreadStatus.kind !== "neutral" ? SPREAD_STATUS_COLOR[spreadStatus.kind] : undefined}
+          />
+        ))}
+      </div>
+      <div
+        data-testid="deal-calc-spread-status"
+        data-spread-status={spreadStatus.kind}
+        role="status"
+        style={{ fontSize: "12px", fontWeight: spreadStatus.kind === "neutral" ? 400 : 600, color: SPREAD_STATUS_COLOR[spreadStatus.kind], margin: "-6px 0 10px" }}
+      >
+        {spreadStatus.text}
       </div>
       <div data-testid="deal-calc-practice-figures-note" style={{ fontSize: "11px", color: "#64748B", margin: "-6px 0 14px" }}>
         Practice figures: the repairs, offer and spread here do not change the deal. The deal's repair total and

@@ -16,7 +16,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 66;
+const FLOOR = 72;
 let failures = 0;
 let checks = 0;
 
@@ -189,7 +189,21 @@ const barTs = readSrc('src/lib/deal-calculator-bar.ts');
 {
   check('page renders a Clear action', /data-testid="deal-calc-clear"/.test(calcTsx), true);
   check('Clear resets ARV/Repairs/Test Price/assignment state', /function handleClear\(\) \{[\s\S]{0,400}setArvInput\(""\)[\s\S]{0,400}setTestPriceInput\(""\)/.test(calcTsx), true);
-  check('Clear does not sever an existing link (Clear and Unlink are two distinct bounded actions)', /function handleClear\(\) \{[\s\S]{0,600}\n  \}/.test(calcTsx) && !/function handleClear\(\)[\s\S]{0,600}setLinkedContactId\(null\)/.test(calcTsx), true);
+  // handleClear's whole body, by brace matching from its opening brace --
+  // no fixed character window, so a longer comment cannot hide or break it.
+  const clearBody = (() => {
+    const open = calcTsx.indexOf('function handleClear() {');
+    if (open === -1) return null;
+    const from = calcTsx.indexOf('{', open);
+    let depth = 0;
+    for (let i = from; i < calcTsx.length; i++) {
+      if (calcTsx[i] === '{') depth++;
+      else if (calcTsx[i] === '}' && --depth === 0) return calcTsx.slice(from + 1, i);
+    }
+    return null;
+  })();
+  check('Clear does not sever an existing link (Clear and Unlink are two distinct bounded actions)',
+    clearBody !== null && /setArvInput\(""\)/.test(clearBody) && /setTestPriceInput\(""\)/.test(clearBody) && !/setLinkedContactId\(/.test(clearBody), true);
 }
 
 // ============================================================
@@ -219,6 +233,20 @@ const barTs = readSrc('src/lib/deal-calculator-bar.ts');
   const policyBlock = calcTsx.slice(policyBlockStart, policyBlockEnd);
   check('the extracted Investor Policy block actually renders policy values (non-trivial slice, not a vacuous match)', /parsedPolicy\./.test(policyBlock) && (policyBlock.match(/policyRow\(/g) || []).length, 10);
   check('the Investor Policy display block contains NO editable form control at all (<input>, <select>, or <textarea>)', /<input\b|<select\b|<textarea\b/.test(policyBlock), false);
+}
+
+// ============================================================
+// B15-26 (INV-134) -- spread status is rendered as text, from the pure
+// module, beside the bar; the spread cell is colored only when a status
+// exists, and the status line always shows its text.
+// ============================================================
+{
+  check('page imports buildSpreadStatus from deal-calculator-bar', /buildSpreadStatus[\s\S]*?from "\.\.\/lib\/deal-calculator-bar"/.test(calcTsx), true);
+  check('page computes the status from the same board8 + expectedSpread the bar uses', /buildSpreadStatus\(\s*board8,\s*expectedSpread,/.test(calcTsxNoComments), true);
+  check('page passes the active mode and the engine-resolved figures.assignmentSpread (never recomputed)', /\{ mode: assignmentMode, requiredSpread: underwritingResult\.figures\.assignmentSpread \}/.test(calcTsxNoComments), true);
+  check('page renders the spread status line with its kind exposed', /data-testid="deal-calc-spread-status"\s+data-spread-status=\{spreadStatus\.kind\}/.test(calcTsx), true);
+  check('the spread status line renders the status text (color is never the only signal)', /data-testid="deal-calc-spread-status"[\s\S]{0,400}\{spreadStatus\.text\}/.test(calcTsx), true);
+  check('the spread cell is tinted only for a non-neutral status', /cell\.key === "spread" && spreadStatus\.kind !== "neutral"/.test(calcTsxNoComments), true);
 }
 
 // ============================================================

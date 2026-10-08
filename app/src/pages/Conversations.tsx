@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { ghl, ghlContactDetailUrl, type ThreadRow, type ConvMessageRow } from "../lib/ghl";
 import { NO_MESSAGE_TEXT, isAutomatedDocumentEmail } from "../lib/operator-display";
+import { splitMessageLinks } from "../lib/message-links";
 
 /**
  * Conversations — READ-ONLY inbox (Coverage Roadmap surface #3). Two-pane:
@@ -62,6 +63,34 @@ const NAME_INDENT = THREAD_LIST_WIDTH + PANE_GAP + 15 - 19; // = 372px, tracks T
 // DELIBERATE divergence from ContactWorkspace's bubble render (which does NOT
 // collapse) — Conversations-only, that surface stays verified/as-is. See
 // docs/CONVERSATIONS_SPEC.md §7.
+//
+// B15-23 — email http(s) URLs render as labeled links (lib/message-links). Text
+// stays React text and links are plain anchors, so nothing in a body is ever
+// injected as HTML; links open in a new tab with no opener or referrer.
+function EmailBody({ body }: { body: string }) {
+  const segments = useMemo(() => splitMessageLinks(body), [body]);
+  return (
+    <>
+      {segments.map((s, i) => s.kind === "text" ? s.text : (
+        <a
+          key={i}
+          data-testid="conv-email-link"
+          href={s.href}
+          title={s.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: "#1EC8FF", textDecoration: "underline", wordBreak: "break-all" }}
+        >
+          {/* Host first, each part direction-isolated: a sender label cannot reorder the host. */}
+          {s.senderLabel === null
+            ? <>Open link (<bdi data-testid="conv-email-link-host">{s.host}</bdi>)</>
+            : <><bdi data-testid="conv-email-link-host">{s.host}</bdi> — <bdi>{s.senderLabel}</bdi></>}
+        </a>
+      ))}
+    </>
+  );
+}
+
 function MessageBubble({ m }: { m: ConvMessageRow }) {
   const outbound = m.direction === "outbound";
   const isSms = m.messageType === "TYPE_SMS";
@@ -106,7 +135,9 @@ function MessageBubble({ m }: { m: ConvMessageRow }) {
         <span>· {formatDate(m.dateAdded)}</span>
       </div>
       <div ref={bodyRef} style={bodyStyle}>
-        {m.body || <span style={{ color: "#475569", fontStyle: "italic" }}>({m.channel.toLowerCase()}, no text)</span>}
+        {m.body
+          ? (isSms ? m.body : <EmailBody body={m.body} />)
+          : <span style={{ color: "#475569", fontStyle: "italic" }}>({m.channel.toLowerCase()}, no text)</span>}
       </div>
       {collapsible && overflowing && (
         <button
@@ -292,7 +323,7 @@ export default function Conversations() {
               href={ghlContactDetailUrl(selected.contactId)}
               target="_blank"
               rel="noopener noreferrer"
-              title="Reply inside GHL"
+              title="Opens this contact in GHL in a new tab, to reply there. IAOS does not send messages."
               style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#1EC8FF", textDecoration: "none" }}
             >
               <ExternalLink size={12} /> Reply in GHL
@@ -307,10 +338,10 @@ export default function Conversations() {
               href={ghlContactDetailUrl(selected.contactId)}
               target="_blank"
               rel="noopener noreferrer"
-              title="Call inside GHL (opens the contact in GHL)"
+              title="Opens this contact in GHL in a new tab, to call with GHL's phone there. IAOS does not place calls."
               style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#1EC8FF", textDecoration: "none" }}
             >
-              <Phone size={12} /> Call
+              <Phone size={12} /> Call in GHL
             </a>
           </div>
         )}
