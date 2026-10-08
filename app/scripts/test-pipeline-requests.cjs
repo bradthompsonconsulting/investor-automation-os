@@ -65,21 +65,44 @@ let signedIn = true;
 let held = [];          // pending ghl-opportunities routes, in arrival order
 let foreign = [];
 
-const watchdog = setTimeout(() => { console.error('FAIL  the suite did not finish within 5 minutes -- stopped'); process.exit(1); }, 5 * 60_000);
+/* Startup diagnostics (integration, for CI adoption; Bones/Jess: the earlier 60 s readiness timeout
+   left no evidence). Diagnostics only: no check, floor or scenario changes. Startup timings are always
+   printed; on any failure the browser console, page errors, failed requests and the Vite log are dumped. */
+const T0 = Date.now();
+const timing = {};
+const mark = (k) => { if (!(k in timing)) timing[k] = Date.now() - T0; };
+const diag = { vite: [], console: [], pageerror: [], requestfailed: [] };
+const tail = (a, n = 40) => a.slice(-n);
+function dumpDiagnostics(reason) {
+  console.error(`--- STARTUP DIAGNOSTICS (${reason}) ---`);
+  console.error(`startup timings (ms since start): ${JSON.stringify(timing)}; elapsed ${Date.now() - T0}`);
+  for (const [k, v] of Object.entries(diag)) {
+    console.error(`${k} (${v.length}${v.length > 40 ? ', last 40' : ''}):`);
+    for (const line of tail(v)) console.error(`  ${line}`);
+  }
+  console.error('--- END DIAGNOSTICS ---');
+}
+
+const watchdog = setTimeout(() => { console.error('FAIL  the suite did not finish within 5 minutes -- stopped'); dumpDiagnostics('watchdog'); process.exit(1); }, 5 * 60_000);
 
 async function main() {
   const { createServer } = await import('vite');
   const react = (await import('@vitejs/plugin-react')).default;
   const { chromium } = require('playwright');
+  const record = (level) => (msg) => { diag.vite.push(`${level}: ${String(msg).slice(0, 500)}`); if (level === 'error') console.error(msg); };
+  const customLogger = { info: record('info'), warn: record('warn'), warnOnce: record('warn'), error: record('error'), clearScreen: () => {}, hasErrorLogged: () => false, hasWarned: false };
   const server = await createServer({
-    root: APP, configFile: false, plugins: [react()], logLevel: 'error', clearScreen: false,
+    root: APP, configFile: false, plugins: [react()], logLevel: 'info', customLogger, clearScreen: false,
     server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false },
     optimizeDeps: { entries: [HARNESS.slice(1)],
       include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-router-dom', 'lucide-react'] },
   });
+  mark('vite_created');
   await server.listen();
+  mark('vite_listening');
   const base = server.resolvedUrls.local[0].replace(/\/$/, '');
   const browser = await chromium.launch();
+  mark('browser_launched');
   const exit = async (code) => {
     clearTimeout(watchdog);
     await browser.close().catch(() => {}); await server.close().catch(() => {});
@@ -90,7 +113,9 @@ async function main() {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
     const pageErrors = [];
-    page.on('pageerror', (e) => pageErrors.push(String(e)));
+    page.on('pageerror', (e) => { pageErrors.push(String(e)); diag.pageerror.push(String(e && e.stack || e).slice(0, 800)); });
+    page.on('console', (m) => diag.console.push(`${m.type()}: ${m.text().slice(0, 500)}`));
+    page.on('requestfailed', (r) => diag.requestfailed.push(`${r.method()} ${r.url()} -- ${r.failure() ? r.failure().errorText : 'unknown'}`));
     await context.route('**/*', async (route) => {
       const url = route.request().url();
       if (url.startsWith(base) && !url.includes('/.netlify/functions/')) return route.continue();
@@ -122,7 +147,9 @@ async function main() {
     const freshPipeline = async () => {
       held = []; signedIn = true;
       await page.goto(`${base}${HARNESS}`);
+      mark('first_goto_loaded');
       await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
+      mark('harness_ready');
       await go('/pipeline');
       await waitHeld(1);
     };
@@ -220,10 +247,13 @@ async function main() {
     check('nothing left the machine and nothing but reads was sent', foreign.length === 0, foreign);
   } catch (e) {
     console.error(`FAIL  ${e.message}`);
+    if (e && e.stack) console.error(e.stack);
     failures += 1;
   }
 
   console.log('');
+  console.log(`startup timings (ms since start): ${JSON.stringify(timing)}`);
+  if (failures > 0 || checks !== FLOOR) dumpDiagnostics(checks === 0 ? 'no check ran' : 'failure');
   console.log(`checksRun=${checks} failures=${failures} floor=${FLOOR}${BEFORE_REV ? ` (negative control vs ${BEFORE_REV})` : ''}`);
   if (checks !== FLOOR) {
     console.error(`FAILED: expected exactly ${FLOOR} checks, ran ${checks}.`);
@@ -234,4 +264,8 @@ async function main() {
   return exit(0);
 }
 
-main();
+main().catch((e) => {
+  console.error(`FAIL  startup: ${e && e.stack || e}`);
+  dumpDiagnostics('startup threw');
+  process.exit(2);
+});
