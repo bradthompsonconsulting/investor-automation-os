@@ -9,7 +9,9 @@
  * field is reported as an empty field, never as "no property address"; a
  * failed or lagging contacts read says the address couldn't be loaded;
  * neither the native contact address nor a mailing address is ever used;
- * contact links, sorting and stages are unchanged; the page writes nothing.
+ * contact links, sorting and stages are unchanged; the page writes nothing;
+ * and a superseded contacts read -- late success or late failure -- never
+ * overwrites the current one (Bones finding 3).
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -34,11 +36,11 @@ try {
 }
 
 const lib = require(path.join(TMP, 'src/lib/pipeline-property.js'));
-const { indexPropertyAddresses, countDealsByContact, pipelinePropertyCell } = lib;
+const { indexPropertyAddresses, countDealsByContact, pipelinePropertyCell, loadPropertyAddresses } = lib;
 fs.rmSync(TMP, { recursive: true, force: true });
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 30;
+const FLOOR = 36;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -101,6 +103,60 @@ const NOT_VERIFIED = 'Property not verified for this deal';
 }
 
 // ============================================================
+// Late responses across a read recovery (Bones finding 3). Two reads are
+// started the way the page's effect starts them -- the first is cancelled by
+// the effect cleanup when the second begins -- and settled out of order.
+// ============================================================
+async function lateResponseCases() {
+  const deferred = () => { let resolve, reject; const promise = new Promise((res, rej) => { resolve = res; reject = rej; }); return { promise, resolve, reject }; };
+  const settle = () => new Promise((r) => setImmediate(r));
+  const addressOf = (state) => (state.kind === 'loaded' ? state.byContactId.get('c1') : state.kind);
+
+  async function run(olderOutcome) {
+    let state = null;
+    const apply = (s) => { state = s; };
+    const older = deferred();
+    const newer = deferred();
+    const cancelOlder = loadPropertyAddresses(() => older.promise, apply);
+    cancelOlder(); // recovery re-runs the effect: React calls the old cleanup first
+    loadPropertyAddresses(() => newer.promise, apply);
+    newer.resolve([{ id: 'c1', propertyAddress: '20 New Verified Field Rd' }]);
+    await settle();
+    const afterNewer = addressOf(state);
+    if (olderOutcome === 'success') older.resolve([{ id: 'c1', propertyAddress: '10 Stale Field Ave' }]);
+    else older.reject(new Error('ghl-contacts → 500'));
+    await settle();
+    return [afterNewer, addressOf(state)];
+  }
+
+  check('delayed older SUCCESS after a newer success leaves the newer address', await run('success'), ['20 New Verified Field Rd', '20 New Verified Field Rd']);
+  check('delayed older FAILURE after a newer success leaves the newer address', await run('failure'), ['20 New Verified Field Rd', '20 New Verified Field Rd']);
+
+  {
+    let state = null;
+    const newer = deferred();
+    const older = deferred();
+    const cancelOlder = loadPropertyAddresses(() => older.promise, (s) => { state = s; });
+    cancelOlder();
+    loadPropertyAddresses(() => newer.promise, (s) => { state = s; });
+    older.resolve([{ id: 'c1', propertyAddress: '10 Stale Field Ave' }]);
+    await settle();
+    const whilePending = state.kind;
+    newer.reject(new Error('ghl-contacts → 502'));
+    await settle();
+    check('an older success arriving while the newer read is pending changes nothing; the newer failure then shows', [whilePending, state.kind], ['loading', 'failed']);
+  }
+  {
+    const states = [];
+    const only = deferred();
+    loadPropertyAddresses(() => only.promise, (s) => states.push(s.kind));
+    only.resolve([{ id: 'c1', propertyAddress: '1 A St' }]);
+    await settle();
+    check('an uncancelled read applies loading, then its result', states, ['loading', 'loaded']);
+  }
+}
+
+// ============================================================
 // Pipeline wiring (source text).
 // ============================================================
 {
@@ -109,7 +165,9 @@ const NOT_VERIFIED = 'Property not verified for this deal';
   const WRITES = /\.(set|save|create|update|delete)[A-Z]\w*\(|notes\.create\(|writeCommand\(|method:\s*"(POST|PUT|PATCH|DELETE)"/;
   const libSrc = fs.readFileSync(path.join(APP, 'src/lib/pipeline-property.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
 
-  check('Pipeline imports the cell helpers', /import \{[^}]*\bcountDealsByContact\b[^}]*\bpipelinePropertyCell\b[^}]*\} from "\.\.\/lib\/pipeline-property";/.test(code), true);
+  check('Pipeline imports the cell helpers and the guarded loader', /import \{[^}]*\bcountDealsByContact\b[^}]*\bloadPropertyAddresses\b[^}]*\bpipelinePropertyCell\b[^}]*\} from "\.\.\/lib\/pipeline-property";/.test(code), true);
+  check('the address effect returns the loader\'s cancel as its cleanup', /useEffect\(\(\) => \{\s*return loadPropertyAddresses\(\(\) => ghl\.contacts\.listAll\(\), setAddressSource\);\s*\}, \[readRecovered\]\);/.test(code), true);
+  check('no unguarded contacts read remains on the page', (code.match(/ghl\.contacts\.listAll\(\)/g) || []).length === 1 && !/setAddressSource\(\{/.test(code), true);
   check('deal counts come from the loaded opportunities', /const dealsByContact = useMemo\(\(\) => countDealsByContact\(opportunities\), \[opportunities\]\);/.test(code), true);
   check('each row passes its contact, that contact\'s deal count and the address read', /pipelinePropertyCell\(o\.contactId, dealsByContact\.get\(o\.contactId\) \?\? 0, addressSource\)/.test(code), true);
   check('the row renders the value and, beneath it, the note', /\{property\.text\}/.test(code) && /\{property\.note && \(\s*<div data-testid=\{`pipeline-row-property-note-\$\{o\.id\}`\}/.test(code), true);
@@ -122,8 +180,11 @@ const NOT_VERIFIED = 'Property not verified for this deal';
   check('the column header is unchanged', />\s*Property \/ Opportunity\s*</.test(code), true);
   check('Pipeline stays read-only (no write call)', WRITES.test(code), false);
   check('both reads re-run on read recovery', (code.match(/\}, \[readRecovered\]\);/g) || []).length, 2);
-  check('the join module does no I/O', /fetch\(|import /.test(libSrc), false);
+  check('the join module does no I/O of its own', /fetch\(|import /.test(libSrc), false);
 }
+
+lateResponseCases().then(finish, (e) => { console.error(e); process.exit(1); });
+function finish() {
 
 console.log('');
 console.log('checksRun=' + checks + ' failures=' + failures + ' floor=' + FLOOR);
@@ -136,3 +197,4 @@ if (failures > 0) {
   process.exit(1);
 }
 console.log('OK');
+}

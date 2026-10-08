@@ -4,7 +4,7 @@ import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link } from "react-router-dom";
 import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, GitBranch } from "lucide-react";
 import { ghl, type OpportunityRow, type PipelineStage } from "../lib/ghl";
-import { countDealsByContact, indexPropertyAddresses, pipelinePropertyCell, type PropertyAddressSource } from "../lib/pipeline-property";
+import { countDealsByContact, loadPropertyAddresses, pipelinePropertyCell, type PropertyAddressSource } from "../lib/pipeline-property";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -90,13 +90,11 @@ export default function Pipeline() {
      existing contacts read (the one the Dashboard joins to the pipeline),
      labelled as a contact field not confirmed for the deal -- see
      lib/pipeline-property. Read separately so a failure here never hides
-     the pipeline. */
+     the pipeline. The cleanup cancels a superseded read, so a late success
+     or failure from before a read recovery cannot overwrite the newer one. */
   const [addressSource, setAddressSource] = useState<PropertyAddressSource>({ kind: "loading" });
   useEffect(() => {
-    setAddressSource({ kind: "loading" });
-    ghl.contacts.listAll()
-      .then((contacts) => setAddressSource({ kind: "loaded", byContactId: indexPropertyAddresses(contacts) }))
-      .catch((e: Error) => setAddressSource({ kind: "failed", detail: e.message }));
+    return loadPropertyAddresses(() => ghl.contacts.listAll(), setAddressSource);
   }, [readRecovered]);
 
   const dealsByContact = useMemo(() => countDealsByContact(opportunities), [opportunities]);

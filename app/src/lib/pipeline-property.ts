@@ -3,7 +3,8 @@
  * Opportunity showed a deal name without property address. Add
  * authoritative address."
  *
- * Pure. No I/O, no React, no GHL.
+ * Pure apart from loadPropertyAddresses, which only sequences a read it is
+ * handed. No React, no GHL.
  *
  * WHAT IS SHOWN, AND WHAT IT IS NOT (Bones review of 9542868):
  *
@@ -79,4 +80,22 @@ export function pipelinePropertyCell(contactId: string, dealsForContact: number,
     ? `${PROPERTY_FIELD_NOTE}: this contact has ${dealsForContact} deals in the pipeline`
     : PROPERTY_FIELD_NOTE;
   return { kind: "contact_field", text: address, note };
+}
+
+/**
+ * Runs one contacts read and applies its outcome, unless cancelled first.
+ * Returns the cancel function, for a React effect's cleanup: once a newer
+ * read starts, a late success OR failure of an older one changes nothing.
+ */
+export function loadPropertyAddresses(
+  read: () => Promise<readonly PropertyAddressContact[]>,
+  apply: (source: PropertyAddressSource) => void,
+): () => void {
+  let current = true;
+  apply({ kind: "loading" });
+  read().then(
+    (contacts) => { if (current) apply({ kind: "loaded", byContactId: indexPropertyAddresses(contacts) }); },
+    (e: unknown) => { if (current) apply({ kind: "failed", detail: e instanceof Error ? e.message : String(e) }); },
+  );
+  return () => { current = false; };
 }
