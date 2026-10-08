@@ -216,6 +216,9 @@ jobs:
       # iaos-app-test here. Prove the guard removed them, then restore the sources from
       # git so later offline suites that read them (test-storage-endpoints) see the
       # committed files. The build output above is already final and is not rebuilt.
+      # WARNING: the restored probe sources must never enter deployment packaging
+      # without rerunning production-build-guard.cjs; no step after this one builds,
+      # packages or deploys.
       - name: Build guard removed the Test-only probes; restore their sources for offline checks
         run: |
           test ! -e app/netlify/functions/storage-probe.ts

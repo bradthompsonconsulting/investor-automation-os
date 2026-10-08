@@ -48,6 +48,16 @@ reviewed code: the merged tree equals the dry-run tree `16ba4ba` computed before
    (CI's `SITE_NAME` is not `iaos-app-test`). `test-storage-endpoints` then failed 1 of 50 (its probe
    check reads `storage-probe.ts`). The new step asserts both files are absent after the build (the guard
    worked), then restores them from git. The build output is already final and is not rebuilt.
+   **Warning (kept):** the restored probe sources must never enter deployment packaging without
+   rerunning the production guard. No CI step after the restore builds, packages or deploys.
+3. **`11f8ec9`: full-history checkout.** Exact-head CI 37713579938 on `1bd2e68` failed L7 (1 of 50):
+   it runs `git show 3de480e:…`, and the default shallow checkout has no such object. `fetch-depth: 0`.
+4. **L7b fails closed (test change; Bones's integration finding).** L7b swallowed every `git grep`
+   error, so in the shallow CI checkout it passed with no evidence. It now requires `3de480e` to be
+   readable first and accepts only git grep's "no match" exit (1, empty output). New L7c negative controls:
+   an empty repository (no history), a non-repository and an unknown commit all fail the scan; a term
+   present at `3de480e` (`lockContact`) is found. Demonstrated in a real `--depth 1` clone: the old logic
+   passed vacuously; the new precondition fails (exit 128).
 
 ## Combined results at this branch (offline; Jeff's machine)
 
