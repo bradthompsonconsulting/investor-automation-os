@@ -33,6 +33,8 @@
     "test:b15-ghl-shortcuts": "node scripts/test-b15-ghl-shortcuts.cjs",
     "test:seller-call-outcome": "node scripts/test-seller-call-outcome.cjs",
     "test:contact-isolation": "node scripts/test-contact-isolation.cjs",
+    "test:current-read": "node scripts/test-current-read.cjs",
+    "test:pipeline-requests": "node scripts/test-pipeline-requests.cjs",
     "test:seller-call-resume": "node scripts/test-seller-call-resume.cjs",
     "test:seller-call-negotiation-override-note": "node scripts/test-seller-call-negotiation-override-note.cjs",
     "test:seller-call-conversation-first": "node scripts/test-seller-call-conversation-first.cjs",
