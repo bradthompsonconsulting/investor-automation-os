@@ -20,6 +20,22 @@
  *     no other GHL request, nothing off the machine.
  * Date-window and eligibility behaviour is covered by test-mailer-week.cjs.
  *
+ * WRITE COVERAGE (Bones, review of 8ac1cad). The harness starts with a valid
+ * offline write session, the activation read is answered OPEN, and every mount
+ * must show the REAL Layout bound before anything is tested -- so a write the
+ * page made would reach the network and fail the request check. (Unbound, the
+ * client refuses writes before sending, and the request check could not see
+ * them.) Every request still stays on this machine.
+ *
+ * CANARY: after every mount is recorded, the page makes one REAL completion
+ * call; it must reach the intercepted network carrying the bound activation and
+ * the session's bearer token. That proves, on every run, that a write by this
+ * page could not go unseen.
+ *
+ * WRITE NEGATIVE CONTROL: `--inject-write` calls the REAL completion client
+ * (ghl.mailers.completeTask) on each mount; the intercepted POST must make the
+ * suite FAIL (exit 1).
+ *
  * NEGATIVE CONTROL: `node scripts/test-mailers-empty-state.cjs --before=<rev>`
  * renders <rev>'s Mailers page (via `git show`) and must FAIL (exit 1) for a
  * revision with the old wording -- e.g. --before=20e9f4f.
@@ -34,12 +50,13 @@ const HARNESS = '/scripts/harness/mailers/index.html';
 const BEFORE_FILE = path.join(HARNESS_DIR, 'MailersBefore.tsx');
 const beforeArg = process.argv.find((a) => a.startsWith('--before='));
 const BEFORE_REV = beforeArg ? beforeArg.slice('--before='.length) : null;
+const INJECT_WRITE = process.argv.includes('--inject-write');
 
 const NEUTRAL = 'No contacts missing an address were found.';
 const OLD_CLAIM = /mail cadence|has an address on file/i;
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 9;
+const FLOOR = 11;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -71,6 +88,11 @@ const DIGESTS = {
     // An unrelated extra response field must not matter to the page.
     diagnostics: { fixture: true } },
 };
+
+// The deployment's activation, answered OPEN (admissionSummary shape plus runtimeDeployId).
+const ACTIVATION = { initialized: true, state: 'open', epoch: 1, activationId: 'act-fixture-mailers-1', deployId: 'deploy-fixture-1',
+  runtimeDeployId: 'deploy-fixture-1', tickets: { admitted: 0, dispatching: 0, uncertain: 0 }, publication: null };
+const writes = [];
 
 let digest = EMPTY;
 let log = [];
@@ -109,7 +131,14 @@ async function main() {
       const method = route.request().method();
       log.push(`${method} ${fn}`);
       const json = (status, body) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+      if (method !== 'GET') {
+        const h = route.request().headers();
+        writes.push({ request: `${method} ${fn}`, activation: h['x-iaos-activation'] ?? null,
+          bearer: h.authorization === 'Bearer offline-fixture-write-session', body: route.request().postData() });
+        return json(409, { error: 'fixture: writes are not answered', confirmed: false });
+      }
       if (fn === 'app-read-session') return json(200, { signedIn: true, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+      if (fn === 'iaos-activation') return json(200, ACTIVATION);
       if (fn === 'ghl-mailers' && method === 'GET') return json(200, digest);
       return json(404, { error: `fixture: ${method} ${fn} not answered` });
     });
@@ -121,6 +150,13 @@ async function main() {
       await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
       await page.evaluate(() => window.__iaosNavigate('/mailers'));
       await page.getByRole('heading', { name: 'No Address' }).waitFor({ timeout: 30000 });
+      await page.waitForFunction(() => window.__iaosPageActivation && window.__iaosPageActivation() !== 'unbound'
+        && window.__iaosPageActivation() !== 'binding', null, { timeout: 15000 }).catch(() => {});
+      const activation = await page.evaluate(() => window.__iaosPageActivation && window.__iaosPageActivation());
+      const writeSessionValid = await page.evaluate(() => !!window.__iaosWriteSession && Date.parse(window.__iaosWriteSession.expiresAt) > Date.now());
+      if (INJECT_WRITE) {
+        await page.evaluate(() => window.__iaosCompleteTask('contact-inject', 'task-inject').catch(() => null));
+      }
       await page.waitForTimeout(300);
       const body = await page.innerText('body');
       const markButton = page.getByRole('button', { name: /Mark as Completed/ });
@@ -134,11 +170,22 @@ async function main() {
         // set aside, like the read-session check; anything else still fails below.
         requests: log.filter((r) => r !== 'GET app-read-session' && r !== 'GET iaos-activation'),
         activationReads: log.filter((r) => r === 'GET iaos-activation').length,
+        activation,
+        writeSessionValid,
         source: await page.evaluate(() => window.__iaosMailersSource),
       };
     }
 
+    // Canary, after every mount is recorded: the page's own write path is observable.
+    const before = writes.length;
+    await page.evaluate(() => window.__iaosCompleteTask('contact-canary', 'task-canary').catch(() => null));
+    await page.waitForTimeout(300);
+    const canary = writes.slice(before);
+
     check('harness renders the expected Mailers source', Object.values(states).every((s) => s.source === (BEFORE_REV ? 'before' : 'current')));
+    check('before testing, each mount has a valid offline write session and the real Layout binds it to the open activation (one activation read)',
+      Object.values(states).every((s) => s.writeSessionValid && s.activation === 'bound' && s.activationReads === 1),
+      Object.fromEntries(Object.entries(states).map(([n, s]) => [n, { writeSessionValid: s.writeSessionValid, activation: s.activation, activationReads: s.activationReads }])));
     check('empty digest: the neutral sentence is shown', states.empty.neutralShown);
     check('ready tasks but nothing missing an address: the neutral sentence is shown, and the ready task is listed',
       states.readyNoGaps.neutralShown && states.readyNoGaps.text.includes('Ready Addressed'));
@@ -150,6 +197,9 @@ async function main() {
     check('each mount makes exactly one digest read and no other GHL request',
       Object.values(states).every((s) => JSON.stringify(s.requests) === JSON.stringify(['GET ghl-mailers']) && s.activationReads <= 1),
       Object.fromEntries(Object.entries(states).map(([n, s]) => [n, [...s.requests, `activationReads=${s.activationReads}`]])));
+    check('canary: a real completion call from this page reaches the intercepted network with the bound activation and session',
+      canary.length === 1 && canary[0].request === 'POST ghl-write' && canary[0].activation === ACTIVATION.activationId && canary[0].bearer
+        && JSON.parse(canary[0].body).operation === 'task.complete', canary);
     check('nothing left the machine', foreign.length === 0, foreign);
     check('no page errors', pageErrors.length === 0, pageErrors);
   } catch (e) {
@@ -158,6 +208,7 @@ async function main() {
   }
 
   console.log('');
+  console.log(`fixture: activation ${ACTIVATION.activationId} (state ${ACTIVATION.state}, deploy ${ACTIVATION.deployId} = runtime ${ACTIVATION.runtimeDeployId}); intercepted writes=${JSON.stringify(writes)}`);
   console.log(`checksRun=${checks} failures=${failures} floor=${FLOOR}${BEFORE_REV ? ` (negative control vs ${BEFORE_REV})` : ''}`);
   if (checks !== FLOOR) { console.error(`FAILED: expected exactly ${FLOOR} checks, ran ${checks}.`); return exit(2); }
   if (failures > 0) { console.error('FAILED'); return exit(1); }
