@@ -32,6 +32,7 @@
     "test:pipeline-property": "node scripts/test-pipeline-property.cjs",
     "test:b15-ghl-shortcuts": "node scripts/test-b15-ghl-shortcuts.cjs",
     "test:seller-call-outcome": "node scripts/test-seller-call-outcome.cjs",
+    "test:b15-shell-labels": "node scripts/test-b15-shell-labels.cjs",
     "test:contact-isolation": "node scripts/test-contact-isolation.cjs",
     "test:seller-call-resume": "node scripts/test-seller-call-resume.cjs",
     "test:seller-call-negotiation-override-note": "node scripts/test-seller-call-negotiation-override-note.cjs",
