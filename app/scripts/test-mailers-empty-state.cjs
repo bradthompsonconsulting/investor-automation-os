@@ -129,7 +129,11 @@ async function main() {
         oldClaimShown: OLD_CLAIM.test(body),
         text: body,
         markDisabled: await markButton.isDisabled(),
-        requests: log.filter((r) => r !== 'GET app-read-session'),
+        // Storage v2: Layout binds the page to the deployment's activation once per
+        // page load (GET iaos-activation, read-only, not GHL). Only that exact read is
+        // set aside, like the read-session check; anything else still fails below.
+        requests: log.filter((r) => r !== 'GET app-read-session' && r !== 'GET iaos-activation'),
+        activationReads: log.filter((r) => r === 'GET iaos-activation').length,
         source: await page.evaluate(() => window.__iaosMailersSource),
       };
     }
@@ -144,8 +148,8 @@ async function main() {
       Object.entries(states).filter(([, s]) => s.oldClaimShown).map(([n]) => n));
     check('Mark as Completed is unchanged: disabled with nothing selected', Object.values(states).every((s) => s.markDisabled));
     check('each mount makes exactly one digest read and no other GHL request',
-      Object.values(states).every((s) => JSON.stringify(s.requests) === JSON.stringify(['GET ghl-mailers'])),
-      Object.fromEntries(Object.entries(states).map(([n, s]) => [n, s.requests])));
+      Object.values(states).every((s) => JSON.stringify(s.requests) === JSON.stringify(['GET ghl-mailers']) && s.activationReads <= 1),
+      Object.fromEntries(Object.entries(states).map(([n, s]) => [n, [...s.requests, `activationReads=${s.activationReads}`]])));
     check('nothing left the machine', foreign.length === 0, foreign);
     check('no page errors', pageErrors.length === 0, pageErrors);
   } catch (e) {
