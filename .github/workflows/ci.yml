@@ -329,6 +329,19 @@ jobs:
       - name: GHL shortcuts (Add Leads, Calendars; INV-125, INV-106)
         run: node app/scripts/test-b15-ghl-shortcuts.cjs
 
+      # Scotty Batch 3 (b15-scotty-batch3): only the current opportunities read changes the Pipeline.
+      - name: Current-read ownership helper (INV-108)
+        run: node app/scripts/test-current-read.cjs
+
+      # The real-page browser suite needs Chromium. It runs on a fresh runner with a
+      # fresh Vite cache every time, prints its startup timings, and on failure dumps
+      # the browser console, page errors, failed requests and the Vite log. It is not
+      # retried: a failure is reported as it happened.
+      - name: Install Chromium for the real-page Pipeline suite
+        run: pnpm --dir app exec playwright install --with-deps chromium
+      - name: Pipeline current read on the real page, out-of-order responses (INV-108)
+        run: node app/scripts/test-pipeline-requests.cjs
+
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.
       - name: Typecheck root Netlify functions
