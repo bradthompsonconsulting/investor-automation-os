@@ -207,6 +207,17 @@ jobs:
       - name: Typecheck and build
         run: pnpm --dir app build
 
+      # The build runs production-build-guard.cjs, which deletes the Test-only probe
+      # sources (storage-probe.ts, probe-limit.ts) from this checkout: SITE_NAME is not
+      # iaos-app-test here. Prove the guard removed them, then restore the sources from
+      # git so later offline suites that read them (test-storage-endpoints) see the
+      # committed files. The build output above is already final and is not rebuilt.
+      - name: Build guard removed the Test-only probes; restore their sources for offline checks
+        run: |
+          test ! -e app/netlify/functions/storage-probe.ts
+          test ! -e app/netlify/functions/probe-limit.ts
+          git checkout -- app/netlify/functions/storage-probe.ts app/netlify/functions/probe-limit.ts
+
       - name: Calculation core — 63 checks
         run: node app/scripts/test-underwriting-core.cjs
 
