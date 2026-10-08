@@ -171,7 +171,10 @@ async function lateResponseCases() {
   check('deal counts come from the loaded opportunities', /const dealsByContact = useMemo\(\(\) => countDealsByContact\(opportunities\), \[opportunities\]\);/.test(code), true);
   check('each row passes its contact, that contact\'s deal count and the address read', /pipelinePropertyCell\(o\.contactId, dealsByContact\.get\(o\.contactId\) \?\? 0, addressSource\)/.test(code), true);
   check('the row renders the value and, beneath it, the note', /\{property\.text\}/.test(code) && /\{property\.note && \(\s*<div data-testid=\{`pipeline-row-property-note-\$\{o\.id\}`\}/.test(code), true);
-  check('the pipeline read itself is unchanged', /ghl\.opportunities\.listPipeline\(\)\s*\.then\(\(data\) => \{\s*setStages\(data\.stages\);\s*setOpportunities\(data\.opportunities\);\s*\}\)/.test(code), true);
+  /* Integration (Batch 3, reviewed by Bones on INV-108): the read now runs through startCurrentRead.
+     This keeps the endpoint and response-mapping intent and requires the effect to RETURN the read's
+     cleanup. It is not ownership evidence: test-current-read and test-pipeline-requests prove that. */
+  check('pipeline keeps the endpoint and stages/opportunities response mapping, and returns the read cleanup', /return startCurrentRead\(\(\) => ghl\.opportunities\.listPipeline\(\), \{\s*data: \(data\) => \{\s*setStages\(data\.stages\);\s*setOpportunities\(data\.opportunities\);\s*\},/.test(code), true);
   check('the opportunity name stays', /\{o\.opportunityName && \(\s*<div[^>]*>\{o\.opportunityName\}<\/div>\s*\)\}/.test(code), true);
   check('no native or mailing address field is read on the page or in the join', /address1|postalCode|mailing|\.city\b|\.state\b/i.test(code) || /address1|postalCode|mailing|\.city\b/i.test(libSrc), false);
   check('the row still links to its contact', /<Link\s+data-testid=\{`pipeline-row-contact-\$\{o\.id\}`\}\s+to=\{`\/contacts\/\$\{o\.contactId\}`\}/.test(code), true);
