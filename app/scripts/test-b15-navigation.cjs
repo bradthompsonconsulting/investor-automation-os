@@ -81,8 +81,9 @@ check('F44 Get Comps is still disabled without an address (unchanged)',
 // ── F12 ─────────────────────────────────────────────────────────────────────
 const importPage = read('src/pages/Import.tsx');
 check('F12 Import page says leads are added in GHL', /Leads are added in GHL, not here/.test(importPage), true);
-check('F12 Import page links nowhere and writes nothing',
-  /href=|window\.open|<Link/.test(code(importPage)) || WRITES.test(code(importPage)), false);
+check('F12 Import page writes nothing, and its only link is the verified GHL Contacts list',
+  (code(importPage).match(/href=/g) || []).length === 1 && /href=\{ghlContactsListUrl\(\)\}/.test(code(importPage))
+  && !/window\.open|<Link/.test(code(importPage)) && !WRITES.test(code(importPage)), true);
 
 // -- INV-125 Walkthrough 2: "Add Leads" -- guidance only, route unchanged --
 const sidebarSrc = read('src/components/Sidebar.tsx');
@@ -97,7 +98,7 @@ check('INV-125 says IAOS does not import or create leads', /IAOS doesn't import 
   const steps = (importPage.replace(/\r\n/g, '\n').match(/<ol data-testid="add-leads-steps"[\s\S]*?<\/ol>/) || [''])[0];
   const items = [...steps.matchAll(/<li>([^<]+)<\/li>/g)].map((m) => m[1]);
   check('INV-125 two numbered GHL steps: contact with property address, then its opportunity', items,
-    ["Add the seller as a contact, with the property's full address (street, city and state).",
+    ["In GHL Contacts, click the + button and add the seller as a contact, with the property's full address (street, city and state).",
      'Create an opportunity (deal) for that contact in the Seller Leads Pipeline.']);
 }
 

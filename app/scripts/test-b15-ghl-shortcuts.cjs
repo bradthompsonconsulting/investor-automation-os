@@ -3,6 +3,7 @@
  * 2026-10-07).
  *
  *   B15-07 (INV-106)  "Open Calendars in GHL"  -> /calendars/view
+ *   INV-125           "Open Contacts in GHL"   -> /contacts/smart_list/All
  *
  * Offline, source text, following this repository's convention for UI
  * wiring. Proves each URL is built from the runtime LOCATION_ID next to the
@@ -18,7 +19,7 @@ const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\
 const WRITES = /\.(set|save|create|update|delete)[A-Z]\w*\(|notes\.create\(|writeCommand\(|method:\s*"(POST|PUT|PATCH|DELETE)"/;
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 8;
+const FLOOR = 13;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -45,6 +46,18 @@ check('LOCATION_ID is the runtime config location', /const CONFIG\s+= getRuntime
   check('the shortcut appears only in the unavailable card (not on a loaded or empty calendar)', (cal.match(/calendar-open-in-ghl/g) || []).length === 1 && card.includes('calendar-open-in-ghl'), true);
   check('denied access is still not presented as an empty calendar', /\) : data\.events\.length === 0 \? \(/.test(cal) && !/No upcoming appointments/.test(card), true);
   check('Calendars writes nothing and opens no window by script', WRITES.test(cal) || /window\.open/.test(cal), false);
+}
+
+// -- INV-125 Add Leads -----------------------------------------------------
+{
+  const page = code(read('src/pages/Import.tsx'));
+  check('ghlContactsListUrl builds /contacts/smart_list/All for this location',
+    /export function ghlContactsListUrl\(\): string \{\s*return `https:\/\/app\.gohighlevel\.com\/v2\/location\/\$\{LOCATION_ID\}\/contacts\/smart_list\/All`;\s*\}/.test(ghlTs), true);
+  check('Add Leads imports the helper', /import \{ ghlContactsListUrl \} from "\.\.\/lib\/ghl";/.test(page), true);
+  check('Add Leads links to it, in a new tab with no opener or referrer',
+    /<a\s+data-testid="add-leads-open-ghl-contacts"\s+href=\{ghlContactsListUrl\(\)\}\s+target="_blank"\s+rel="noopener noreferrer"[\s\S]*?Open Contacts in GHL\s*<\/a>/.test(page), true);
+  check('the first step says to use the + button in GHL Contacts', /<li>In GHL Contacts, click the \+ button and add the seller as a contact/.test(page), true);
+  check('still guidance: no import, create or write action', WRITES.test(page) || /<button|onClick|window\.open/.test(page), false);
 }
 
 console.log('');

@@ -111,6 +111,13 @@ export function ghlCalendarsUrl(): string {
   return `https://app.gohighlevel.com/v2/location/${LOCATION_ID}/calendars/view`;
 }
 
+// INV-125 — GHL's Contacts list (the "All" smart list) for this location,
+// where the + button adds a contact. Destination path verified by Jess
+// (2026-10-07). Pure string builder, no network call.
+export function ghlContactsListUrl(): string {
+  return `https://app.gohighlevel.com/v2/location/${LOCATION_ID}/contacts/smart_list/All`;
+}
+
 // ── Shared types ──────────────────────────────────────────────────────────────
 
 export interface ContactRow {

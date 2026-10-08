@@ -1,3 +1,6 @@
+import { ExternalLink } from "lucide-react";
+import { ghlContactsListUrl } from "../lib/ghl";
+
 /**
  * Pass 1 F12 (INV-125) — the Import page was an empty heading.
  *
@@ -12,9 +15,10 @@
  * F12 blocker, which stays open until the GHL/manual path is shown usable.
  *
  * Walkthrough 2 (2026-10-07): renamed "Add Leads" (the route stays /import)
- * and the GHL steps are numbered. Still guidance only, not an importer. No
- * GHL shortcut yet: IAOS has no verified GHL destination for adding a
- * contact (its one verified link opens an EXISTING contact).
+ * and the GHL steps are numbered. Still guidance only, not an importer.
+ * "Open Contacts in GHL" goes to this location's Contacts list (destination
+ * verified by Jess, 2026-10-07), in a new tab with no opener; adding the
+ * contact happens there, with GHL's + button. Nothing here writes.
  */
 export default function Import() {
   return (
@@ -29,13 +33,22 @@ export default function Import() {
           IAOS doesn't import or create leads. Add each seller in GHL, in this order:
         </div>
         <ol data-testid="add-leads-steps" style={{ fontSize: "13px", color: "#CBD5E1", margin: "8px 0 0", paddingLeft: "20px", lineHeight: 1.7 }}>
-          <li>Add the seller as a contact, with the property's full address (street, city and state).</li>
+          <li>In GHL Contacts, click the + button and add the seller as a contact, with the property's full address (street, city and state).</li>
           <li>Create an opportunity (deal) for that contact in the Seller Leads Pipeline.</li>
         </ol>
         <div style={{ fontSize: "13px", color: "#94A3B8", marginTop: "8px", lineHeight: 1.6 }}>
           IAOS shows them on its next read. A contact without an opportunity can be found here, but its
           offer and underwriting screens stay empty until the deal exists in GHL.
         </div>
+        <a
+          data-testid="add-leads-open-ghl-contacts"
+          href={ghlContactsListUrl()}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ display: "inline-flex", alignItems: "center", gap: "5px", marginTop: "12px", fontSize: "13px", fontWeight: 600, color: "#1EC8FF", textDecoration: "none" }}
+        >
+          <ExternalLink size={13} /> Open Contacts in GHL
+        </a>
       </div>
     </div>
   );
