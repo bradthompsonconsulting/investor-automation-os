@@ -4,7 +4,7 @@ import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link } from "react-router-dom";
 import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, GitBranch } from "lucide-react";
 import { ghl, type OpportunityRow, type PipelineStage } from "../lib/ghl";
-import { indexPropertyAddresses, pipelinePropertyCell, type PropertyAddressSource } from "../lib/pipeline-property";
+import { countDealsByContact, indexPropertyAddresses, pipelinePropertyCell, type PropertyAddressSource } from "../lib/pipeline-property";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -86,9 +86,11 @@ export default function Pipeline() {
       .finally(() => setLoading(false));
   }, [readRecovered]);
 
-  /* B15-09: each row's property address is its contact's property_address,
-     from the existing contacts read (the one the Dashboard joins to the
-     pipeline). Read separately so a failure here never hides the pipeline. */
+  /* B15-09: each row shows its contact's Property Address field, from the
+     existing contacts read (the one the Dashboard joins to the pipeline),
+     labelled as a contact field not confirmed for the deal -- see
+     lib/pipeline-property. Read separately so a failure here never hides
+     the pipeline. */
   const [addressSource, setAddressSource] = useState<PropertyAddressSource>({ kind: "loading" });
   useEffect(() => {
     setAddressSource({ kind: "loading" });
@@ -96,6 +98,8 @@ export default function Pipeline() {
       .then((contacts) => setAddressSource({ kind: "loaded", byContactId: indexPropertyAddresses(contacts) }))
       .catch((e: Error) => setAddressSource({ kind: "failed", detail: e.message }));
   }, [readRecovered]);
+
+  const dealsByContact = useMemo(() => countDealsByContact(opportunities), [opportunities]);
 
   const stagePosition = useMemo(() => {
     const map = new Map<string, number>();
@@ -234,15 +238,21 @@ export default function Pipeline() {
                     </td>
                     <td style={{ padding: "11px 16px", color: "#94A3B8", fontSize: "13px" }}>
                       {(() => {
-                        const property = pipelinePropertyCell(o.contactId, addressSource);
+                        const property = pipelinePropertyCell(o.contactId, dealsByContact.get(o.contactId) ?? 0, addressSource);
                         return (
                           <div
                             data-testid={`pipeline-row-property-${o.id}`}
                             data-property-state={property.kind}
                             title={addressSource.kind === "failed" && property.kind === "unavailable" ? addressSource.detail : undefined}
-                            style={property.kind === "address" ? { color: "#E2E8F0" } : { color: "#64748B", fontStyle: "italic" }}
                           >
-                            {property.text}
+                            <div style={property.kind === "contact_field" ? { color: "#E2E8F0" } : { color: "#64748B", fontStyle: "italic" }}>
+                              {property.text}
+                            </div>
+                            {property.note && (
+                              <div data-testid={`pipeline-row-property-note-${o.id}`} style={{ fontSize: "11px", color: "#64748B", marginTop: "1px" }}>
+                                {property.note}
+                              </div>
+                            )}
                           </div>
                         );
                       })()}

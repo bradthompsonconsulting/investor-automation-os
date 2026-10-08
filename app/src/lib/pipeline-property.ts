@@ -3,25 +3,39 @@
  * Opportunity showed a deal name without property address. Add
  * authoritative address."
  *
- * Pure. No I/O, no React, no GHL. The property address is the contact's own
- * contact.property_address custom field, as the existing contacts read
- * already returns it (ContactRow.propertyAddress -- the same read the
- * Dashboard joins to the pipeline). It is NEVER the contact's mailing
- * address: the index below accepts only `id` and `propertyAddress`, so
- * address1 / city / state / postalCode cannot reach a Pipeline row.
+ * Pure. No I/O, no React, no GHL.
  *
- * Honest states. "Property address not recorded." is shown only when the
- * contact was read and its property_address is empty (or the opportunity has
- * no contact at all). A contacts read that failed, or a contact the list did
- * not return (the list endpoint can lag), says the address couldn't be
- * loaded -- it never claims the address is missing.
+ * WHAT IS SHOWN, AND WHAT IT IS NOT (Bones review of 9542868):
+ *
+ * - The value is the contact's own Property Address custom field
+ *   (contact.property_address), from the existing contacts read. It is a
+ *   CONTACT field: no authorized read associates a property with an
+ *   opportunity, and one seller may have several properties or deals
+ *   (PB-D55). So the value is always labelled as the contact's field and not
+ *   confirmed for this deal, and a contact with more than one deal in the
+ *   pipeline says so.
+ *
+ * - An empty field is reported as exactly that -- the contact's Property
+ *   Address field is empty -- never as "no property address". The PropStream
+ *   importer puts the property's address in the contact's native address
+ *   fields and leaves this custom field blank, so an empty field does not
+ *   mean the property is unknown. Those native fields are NOT used here:
+ *   whether they may stand in for the property address is an open ruling,
+ *   and the index below accepts only `id` and `propertyAddress`, so neither
+ *   they nor any mailing address can reach a Pipeline row.
+ *
+ * - A contacts read that failed, or a contact the list did not return (the
+ *   list endpoint can lag), says the address couldn't be loaded.
  */
 
-export const PROPERTY_ADDRESS_NOT_RECORDED = "Property address not recorded.";
 export const PROPERTY_ADDRESS_UNAVAILABLE = "Property address couldn't be loaded.";
 export const PROPERTY_ADDRESS_LOADING = "Loading address…";
+export const PROPERTY_NOT_VERIFIED = "Property not verified for this deal";
+export const PROPERTY_FIELD_NOTE = "From the contact's Property Address field, not confirmed for this deal";
+export const PROPERTY_FIELD_EMPTY = "The contact's Property Address field is empty.";
+export const NO_CONTACT_ON_DEAL = "No contact is linked to this deal.";
 
-/** Only these two contact fields are accepted; a mailing address cannot be passed in. */
+/** Only these two contact fields are accepted; no other address can be passed in. */
 export type PropertyAddressContact = { id: string; propertyAddress: string };
 
 export type PropertyAddressSource =
@@ -30,8 +44,11 @@ export type PropertyAddressSource =
   | { kind: "loaded"; byContactId: ReadonlyMap<string, string> };
 
 export type PipelinePropertyCell = {
-  kind: "address" | "not_recorded" | "unavailable" | "loading";
+  kind: "contact_field" | "field_empty" | "no_contact" | "unavailable" | "loading";
+  /** The main line: the field's value, or what is known instead. */
   text: string;
+  /** Where the value came from and what it does not establish; null when nothing to add. */
+  note: string | null;
 };
 
 export function indexPropertyAddresses(contacts: readonly PropertyAddressContact[]): Map<string, string> {
@@ -42,12 +59,24 @@ export function indexPropertyAddresses(contacts: readonly PropertyAddressContact
   return byContactId;
 }
 
-export function pipelinePropertyCell(contactId: string, source: PropertyAddressSource): PipelinePropertyCell {
-  if (!contactId) return { kind: "not_recorded", text: PROPERTY_ADDRESS_NOT_RECORDED };
-  if (source.kind === "loading") return { kind: "loading", text: PROPERTY_ADDRESS_LOADING };
-  if (source.kind === "failed") return { kind: "unavailable", text: PROPERTY_ADDRESS_UNAVAILABLE };
+/** How many pipeline opportunities each contact has. */
+export function countDealsByContact(opportunities: readonly { contactId: string }[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const o of opportunities) {
+    if (o.contactId) counts.set(o.contactId, (counts.get(o.contactId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+export function pipelinePropertyCell(contactId: string, dealsForContact: number, source: PropertyAddressSource): PipelinePropertyCell {
+  if (!contactId) return { kind: "no_contact", text: PROPERTY_NOT_VERIFIED, note: NO_CONTACT_ON_DEAL };
+  if (source.kind === "loading") return { kind: "loading", text: PROPERTY_ADDRESS_LOADING, note: null };
+  if (source.kind === "failed") return { kind: "unavailable", text: PROPERTY_ADDRESS_UNAVAILABLE, note: null };
   const address = source.byContactId.get(contactId);
-  if (address === undefined) return { kind: "unavailable", text: PROPERTY_ADDRESS_UNAVAILABLE };
-  if (!address) return { kind: "not_recorded", text: PROPERTY_ADDRESS_NOT_RECORDED };
-  return { kind: "address", text: address };
+  if (address === undefined) return { kind: "unavailable", text: PROPERTY_ADDRESS_UNAVAILABLE, note: null };
+  if (!address) return { kind: "field_empty", text: PROPERTY_NOT_VERIFIED, note: PROPERTY_FIELD_EMPTY };
+  const note = dealsForContact > 1
+    ? `${PROPERTY_FIELD_NOTE}: this contact has ${dealsForContact} deals in the pipeline`
+    : PROPERTY_FIELD_NOTE;
+  return { kind: "contact_field", text: address, note };
 }
