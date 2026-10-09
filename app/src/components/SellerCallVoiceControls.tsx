@@ -22,12 +22,13 @@ import "./SellerCallVoiceControls.css";
  * capability is separately and unconditionally disabled.
  *
  * B14-13 — "Call with AirDroid" is the first, primary option; GHL Phone is
- * the backup and Cell stays. The button hands the seller's number to the
- * AirDroid launch interface (a provisional, mocked stand-in until Jeff's
- * revised connection is agreed). It never leaves the page or writes anything,
- * so the script, notes, outcome and saves are untouched whatever the launch
- * does. It shows only an invalid number or a known launch error -- never a
- * claim that a call was placed, connected or ended.
+ * the backup and Cell stays. The button only passes the seller's 10 US digits
+ * to the AirDroid launch interface (a provisional, mocked stand-in until
+ * Jeff's revised connection is agreed); this component itself does not
+ * navigate, open a window, fetch or write. It shows only an invalid-number
+ * reason or an error the interface reports, cleared whenever the seller
+ * changes. It cannot see a call, a helper or a cancelled launch, so it never
+ * claims a call was placed, connected or ended.
  */
 
 function useMobileViewport(): boolean {
@@ -52,7 +53,8 @@ export function SellerCallVoiceControls(props: { contactId: string; sellerName: 
   const [handoff, setHandoff] = useState<GhlHandoffResult | null>(null);
   const airdroidTarget = useMemo(() => airdroidCallTarget(props.sellerPhone), [props.sellerPhone]);
   const [airdroidError, setAirdroidError] = useState<string | null>(null);
-  useEffect(() => setAirdroidError(null), [airdroidTarget]);
+  // A launch error belongs to one seller: clear it when the seller (even one sharing this number) or the number changes.
+  useEffect(() => setAirdroidError(null), [props.contactId, airdroidTarget]);
 
   async function copySellerNumber() {
     if (!destination) return;

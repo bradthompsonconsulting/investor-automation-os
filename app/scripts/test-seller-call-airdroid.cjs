@@ -2,31 +2,32 @@
  * B14-13 — "Call with AirDroid" in Seller Call, rendered, with MOCKED launches.
  *
  * Vite serves two pages from scripts/harness/seller-call-airdroid in headless
- * Chromium, and aliases the component's launch interface
- * (src/lib/airdroid-launch-stand-in.ts) to airdroid-launch-mock.ts, so every
- * launch is mocked -- handed off (which is also how a launch the operator
- * cancels outside the page looks), a known error, or a throw. Nothing opens a
- * link, window or request; no helper, AirDroid, phone or GHL record is
+ * Chromium and aliases the component's launch interface
+ * (src/lib/airdroid-launch-stand-in.ts) to airdroid-launch-mock.ts. The mock
+ * returns { ok: true } ("handed-off"), a launch error, or throws. Nothing opens
+ * a link, window or request; no helper, AirDroid, phone or GHL record is
  * involved. Every /.netlify/functions request is answered from an in-memory
- * fixture and anything else is aborted and counted.
+ * fixture (reads can be delayed per contact) and anything else is aborted and
+ * counted.
  *
- *   COMPONENT (index.html, the real SellerCallVoiceControls): AirDroid is the
- *   first, primary option on its own row with GHL Phone and Cell after it; the
- *   button hands the seller's 10 US digits to the launch interface and shows
- *   nothing on hand-off, the known error on failure and a fixed error on a
- *   throw; an invalid number disables it with the reason; a new number clears
- *   an error; it never claims a call.
- *
- *   WORKSPACE (workspace.html, the real SellerCallWorkspace): with a launch
- *   cancelled, failed or thrown, the selected seller, unsaved Pass reason and
- *   Follow-Up time, the open outcome form and the full script all survive, the
- *   launch writes nothing, and the existing Pass and Follow-Up saves then
- *   record as before; moving to another seller targets that seller.
+ * What is proven is exactly what each check names. In particular:
+ *   - "handed-off" is the mock's ok result; the suite uses it as its stand-in
+ *     for a cancelled launch. How a REAL cancelled or failed launch reaches the
+ *     page is not tested here.
+ *   - The script check opens and closes the full-script drawer; it does not
+ *     test reading position.
+ *   - Seller Call has no free-text notes composer. The independent drafts
+ *     checked are the ones it has: the negotiation Seller Position input and
+ *     the Transaction structure input, plus the Pass reason and Follow-Up time.
+ *   - Saves are compared as complete operations (operation, target and all
+ *     arguments) against the same save with no launch. Only request ids and
+ *     timestamps taken at "now" are normalised; the callback time is asserted
+ *     exactly.
  *
  * NEGATIVE CONTROL: `node scripts/test-seller-call-airdroid.cjs --before=<rev>`
- * renders <rev>'s component and must FAIL (exit 1) for a revision without the
- * AirDroid option -- e.g. --before=45361c1. (The workspace page always uses
- * the current component.)
+ * renders <rev>'s component on the component page and must FAIL (exit 1) for
+ * a revision without the AirDroid option -- e.g. --before=45361c1. (The
+ * workspace page always uses the current component.)
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -60,10 +61,10 @@ const { createBarrierFixture } = require('./harness/current-offer-barrier-fixtur
 const { parseOutcomeNote } = require(path.join(APP, 'src/lib/seller-call-outcome.ts'));
 
 /**
- * Taken from the finished file, never back-filled from a passing run: 20 single probe()/check()
- * call sites + 1 inside the invalid-number loop x 3 numbers = 23.
+ * Taken from the finished file, never back-filled from a passing run: 24 single probe()/check()
+ * call sites + 1 inside the invalid-number loop x 3 numbers = 27.
  */
-const FLOOR = 23;
+const FLOOR = 27;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -89,28 +90,36 @@ const MOCK_ERROR = "The AirDroid helper isn't installed on this PC. Use GHL Phon
 const THROW_ERROR = "AirDroid couldn't be started. Use GHL Phone or Cell.";
 const NO_NUMBER = 'Unavailable: IAOS has no valid 10-digit US number for this seller. Use GHL Phone or Cell.';
 const CLAIMS = /prepared|dial(?:l)?ed|connected|ended|calling|call (?:placed|started)|Check AirDroid and your phone|handed|press Make Call/i;
+const PASS_REASON = 'Seller wants retail, not a cash offer.';
+const FOLLOW_UP_LOCAL = '2026-12-01T10:00';          // America/Chicago
+const FOLLOW_UP_ISO = '2026-12-01T16:00:00.000Z';
+const SELLER_POSITION_DRAFT = '245000';
+const STRUCTURE_DRAFT = 'Subject-to with seller carry';
 
 // ── In-memory GHL fixture for the workspace (from test-contact-isolation.cjs) ─
 const A = 'fixtureContactA';
 const B = 'fixtureContactB';
-const PHONES = { [A]: '+12145550101', [B]: '+14695550123' };
+const C = 'fixtureContactC';                         // shares A's phone number
+const PEOPLE = { [A]: ['Alpha', '+12145550101'], [B]: ['Bravo', '+14695550123'], [C]: ['Charlie', '+12145550101'] };
 let db;
+let slow = {};                                        // contact id -> ms to delay that contact's reads
 function resetDb() {
-  const contact = (id, first) => ({ id, first, dnd: {}, fields: new Map(), notes: [{ id: `${id}-n1`, body: `Seed note for ${first}`, dateAdded: '2026-09-30T12:00:00.000Z' }] });
-  db = { [A]: contact(A, 'Alpha'), [B]: contact(B, 'Bravo') };
+  db = Object.fromEntries(Object.entries(PEOPLE).map(([id, [first]]) => [id,
+    { id, first, dnd: {}, fields: new Map(), notes: [{ id: `${id}-n1`, body: `Seed note for ${first}`, dateAdded: '2026-09-30T12:00:00.000Z' }] }]));
+  slow = {};
 }
 const field = (c, id) => (c.fields.has(id) ? c.fields.get(id) : null);
 const contactRow = (c) => ({
-  id: c.id, firstName: c.first, lastName: 'Fixture', phone: PHONES[c.id], email: '', address1: '', city: '', state: '', postalCode: '',
+  id: c.id, firstName: c.first, lastName: 'Fixture', phone: PEOPLE[c.id][1], email: '', address1: '', city: '', state: '', postalCode: '',
   dateAdded: '2026-09-01T00:00:00.000Z', tags: [], dndSettings: c.dnd, motivationScore: null, dealScore: null, combinedScore: null, completenessScore: null,
   callbackDatetime: field(c, F.callbackDatetimePrecise), callbackDatetimePrecise: field(c, F.callbackDatetimePrecise),
   lastCallAttempt: field(c, F.lastCallAttemptPrecise), lastCallAttemptPrecise: field(c, F.lastCallAttemptPrecise),
   callDisposition: field(c, F.callDisposition), dispositionAt: field(c, F.dispositionAt),
 });
-const detail = (c) => ({ contact: { id: c.id, firstName: c.first, lastName: 'Fixture', phone: PHONES[c.id], dndSettings: c.dnd,
+const detail = (c) => ({ contact: { id: c.id, firstName: c.first, lastName: 'Fixture', phone: PEOPLE[c.id][1], dndSettings: c.dnd,
   customFields: [...c.fields].map(([id, value]) => ({ id, value })) } });
 const pipeline = () => ({ pipelineId: 'fixture-pipeline', stages: [],
-  opportunities: [A, B].map((id) => ({ id: `${id}-opp`, contactId: id, contactName: db[id].first, opportunityName: `${db[id].first} deal`,
+  opportunities: Object.keys(PEOPLE).map((id) => ({ id: `${id}-opp`, contactId: id, contactName: db[id].first, opportunityName: `${db[id].first} deal`,
     phone: '', email: '', stageId: 'fixture-stage', customFields: [] })) });
 function applyWrite(op, target, args) {
   const c = target ? db[target] : null;
@@ -124,7 +133,7 @@ function applyWrite(op, target, args) {
   }
   return { status: 200, body: { confirmed: true } };
 }
-const bf = createBarrierFixture({ contactOf: (o) => (o === `${A}-opp` ? A : o === `${B}-opp` ? B : null) });
+const bf = createBarrierFixture({ contactOf: (o) => (o.endsWith('-opp') && PEOPLE[o.slice(0, -4)] ? o.slice(0, -4) : null) });
 function classify(url, method, post) {
   const u = new URL(url);
   const fn = u.pathname.replace('/.netlify/functions/', '');
@@ -159,7 +168,18 @@ function answer(req) {
 let log = [];
 const foreign = [];
 const pageErrors = [];
-const watchdog = setTimeout(() => { console.error('FAIL  the suite did not finish within 8 minutes -- stopped'); process.exit(1); }, 8 * 60_000);
+const RUN_START = Date.now();
+const watchdog = setTimeout(() => { console.error('FAIL  the suite did not finish within 10 minutes -- stopped'); process.exit(1); }, 10 * 60_000);
+
+/**
+ * A save, as complete operations: operation, target and every argument. Request ids are left out and
+ * only ISO timestamps taken during this run ("now") are normalised; any other time -- the callback --
+ * stays exact.
+ */
+const ISO = /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z/g;
+const isNow = (iso) => { const t = Date.parse(iso); return t >= RUN_START - 60_000 && t <= Date.now() + 60_000; };
+const normalise = (ws) => ws.map((w) => ({ op: w.op, contact: w.contact,
+  args: JSON.parse(JSON.stringify(w.args ?? null).replace(ISO, (iso) => (isNow(iso) ? '<now>' : iso))) }));
 
 /** Card order and rows of the calling options, measured in the page. */
 const LAYOUT = () => {
@@ -214,7 +234,7 @@ async function main() {
       try { post = route.request().postDataJSON(); } catch { post = null; }
       const req = classify(u, route.request().method(), post);
       log.push(req);
-      const reply = (res) => route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
+      const reply = (res) => route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) }).catch(() => {});
       if (req.kind === 'call-log-barrier') return reply(await bf.handleCallLog(route.request().method(), u, post));
       if (req.kind === 'current-offer-barrier') return reply(await bf.handle(route.request().method(), u, post));
       if (req.kind === 'write' && !(req.op && db[req.contact])) return reply({ status: 400, body: { error: 'fixture: malformed or unknown write' } });
@@ -223,6 +243,7 @@ async function main() {
           () => { const a = applyWrite(req.op, req.contact, req.args); return { confirmed: a.status === 200 }; },
           { outcome: req.op === 'note.create' ? parseOutcomeNote(req.args.body) : null, refuse: null }));
       }
+      if (req.contact && slow[req.contact]) await new Promise((r) => setTimeout(r, slow[req.contact]));
       return reply(answer(req));
     });
     await page.goto(`${base}${url}`, { timeout: 60000 });
@@ -240,6 +261,7 @@ async function main() {
     throw new Error(`timed out waiting for ${label}`);
   };
   const writes = () => log.filter((r) => r.kind === 'write');
+
   /** A fresh Seller Call page for `contact`, with a fresh fixture. */
   const workspace = async (contact) => {
     resetDb(); bf.reset(); log = [];
@@ -250,30 +272,27 @@ async function main() {
       await page.getByTestId('call-outcome-pass-toggle').waitFor({ timeout: 60000 });
     } });
   };
-  /** What a save sent, without per-request ids or times: operation, target, and the note body or value kind. */
-  const shape = (ws) => ws.map((w) => `${w.op} ${w.contact} ${w.op === 'note.create' ? w.args.body.replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/g, '<time>') : typeof w.args?.value}`);
-  const savedShapes = {};
-  /** The same outcome save on a fresh page with no launch at all. */
-  const saveWithoutLaunch = async (kind) => {
-    const { context, page } = await workspace(A);
-    const from = writes().length;
-    if (kind === 'pass') {
-      await page.getByTestId('call-outcome-pass-toggle').click();
-      await page.getByTestId('call-outcome-pass-reason').fill('Seller wants retail, not a cash offer.');
-      await until(page, () => page.getByTestId('call-outcome-pass-confirm').isEnabled(), 'Pass confirm enabled');
-      await page.getByTestId('call-outcome-pass-confirm').click();
-      await until(page, async () => db[A].notes.some((n) => n.body.includes('Seller wants retail, not a cash offer.')), 'Pass note saved');
-    } else {
-      await page.getByTestId('call-outcome-follow-up-toggle').click();
-      await page.getByTestId('call-outcome-follow-up-at').fill('2026-12-01T10:00');
-      await page.getByTestId('call-outcome-follow-up-confirm').click();
-      await until(page, async () => field(db[A], F.callbackDatetimePrecise) !== null, 'callback saved');
-    }
+  const go = (page, contact) => page.evaluate((to) => window.__iaosNavigate(to), `/contacts/${contact}/seller-call`);
+  const loadedFor = async (page, first) => (await page.locator('body').innerText()).includes(`${first} deal`);
+  const recordPass = async (page) => {
+    await until(page, () => page.getByTestId('call-outcome-pass-confirm').isEnabled(), 'Pass confirm enabled');
+    await page.getByTestId('call-outcome-pass-confirm').click();
+    await until(page, async () => db[A].notes.some((n) => /Outcome: pass/.test(n.body)), 'Pass outcome note saved');
     await page.waitForTimeout(300);
-    const out = shape(writes().slice(from));
-    await context.close();
-    return out;
   };
+  const recordFollowUp = async (page) => {
+    await page.getByTestId('call-outcome-follow-up-confirm').click();
+    await until(page, async () => db[A].notes.some((n) => /Outcome: follow_up/.test(n.body)), 'Follow-Up outcome note saved');
+    await page.waitForTimeout(300);
+  };
+  /** The independent drafts Seller Call actually has (no free-text notes composer exists). */
+  const structureInput = (page) => page.getByPlaceholder('Transaction structure');
+  const fillDrafts = async (page) => {
+    await page.getByTestId('negotiation-seller-position-input').fill(SELLER_POSITION_DRAFT);
+    await structureInput(page).fill(STRUCTURE_DRAFT);
+  };
+  const drafts = async (page) => ({ sellerPosition: await page.getByTestId('negotiation-seller-position-input').inputValue(), structure: await structureInput(page).inputValue() });
+  const DRAFTS = { sellerPosition: SELLER_POSITION_DRAFT, structure: STRUCTURE_DRAFT };
 
   try {
     // ═══ COMPONENT ══════════════════════════════════════════════════════════
@@ -287,7 +306,7 @@ async function main() {
           && l.airdroid.top < l.ghlCard.top && l.ghlCard.top === l.cell.top && l.button?.tag === 'BUTTON' && l.button.text === 'Call with AirDroid'
           && !l.button.disabled && l.button.bg === 'rgb(0, 92, 230)' && l.ghlBg !== 'rgb(0, 92, 230)' && l.links === 0 && !l.pageOverflow, detail: l };
       });
-      await probe('handed off (or cancelled outside the page): the seller\'s 10 digits go to the launch interface, and the card shows no message and no call claim', async () => {
+      await probe('mock ok result: the seller\'s 10 digits go to the launch interface, and the card shows no message and no call claim', async () => {
         await mockMode(page, 'handed-off');
         const url = page.url();
         await page.getByTestId('call-with-airdroid').click();
@@ -296,13 +315,13 @@ async function main() {
         return { ok: same(await mockCalls(page), ['2145550101']) && (await errorText(page)) === null && text === 'Call with AirDroid\nKay Fixture · 214-555-0101\nCall with AirDroid'
           && !CLAIMS.test(text) && page.url() === url && popups.length === 0, detail: { calls: await mockCalls(page), text, popups } };
       });
-      await probe('a known launch error is shown as an alert with the way on, and claims nothing', async () => {
+      await probe('mock launch error: shown as an alert with the way on, claiming nothing', async () => {
         await mockMode(page, 'error');
         await page.getByTestId('call-with-airdroid').click();
         const role = await page.getByTestId('airdroid-launch-error').getAttribute('role');
         return { ok: (await errorText(page)) === MOCK_ERROR && role === 'alert' && !CLAIMS.test(await card(page)), detail: { error: await errorText(page), role } };
       });
-      await probe('a launch interface that throws shows a fixed error, and the next hand-off clears it', async () => {
+      await probe('mock throw: a fixed error shows, and the next ok result clears it', async () => {
         await mockMode(page, 'throw');
         await page.getByTestId('call-with-airdroid').click();
         const thrown = await errorText(page);
@@ -315,6 +334,18 @@ async function main() {
         await page.getByTestId('call-with-airdroid').focus();
         await page.keyboard.press('Enter');
         return { ok: same(await mockCalls(page), ['2145550101']), detail: await mockCalls(page) };
+      });
+      await probe('a different seller with the SAME number (same mounted component) clears the launch error and still launches that number', async () => {
+        await mockMode(page, 'error');
+        await page.getByTestId('call-with-airdroid').click();
+        const shown = await errorText(page);
+        await page.evaluate(() => window.__iaosSetSeller('contact-fixture-2', 'Lee Fixture'));
+        await page.waitForTimeout(100);
+        const cleared = await errorText(page);
+        await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        return { ok: shown === MOCK_ERROR && cleared === null && (await card(page)).includes('Lee Fixture · 214-555-0101') && same(await mockCalls(page), ['2145550101']),
+          detail: { shown, cleared, card: await card(page), calls: await mockCalls(page) } };
       });
       await probe('a new seller number clears a launch error and targets the new number', async () => {
         await mockMode(page, 'error');
@@ -351,103 +382,172 @@ async function main() {
     }
 
     // ═══ WORKSPACE (the real Seller Call page) ══════════════════════════════
-    const loadedFor = async (page, first) => (await page.locator('body').innerText()).includes(`${first} deal`);
+    // Controls: the same steps -- the same drafts typed, then the same Pass or Follow-Up save -- on a fresh
+    // page with no launch at all. (The outcome note snapshots the Seller Position input, so drafts must match.)
+    const control = {};
+    {
+      const { context, page } = await workspace(A);
+      await fillDrafts(page);
+      await page.getByTestId('call-outcome-pass-toggle').click();
+      await page.getByTestId('call-outcome-pass-reason').fill(PASS_REASON);
+      await recordPass(page);
+      control.pass = normalise(writes());
+      await context.close();
+    }
+    {
+      const { context, page } = await workspace(A);
+      await fillDrafts(page);
+      await page.getByTestId('call-outcome-follow-up-toggle').click();
+      await page.getByTestId('call-outcome-follow-up-at').fill(FOLLOW_UP_LOCAL);
+      await recordFollowUp(page);
+      control.followUp = normalise(writes());
+      await context.close();
+    }
+    await probe('control saves (no launch): Pass sends its outcome note with the reason; Follow-Up sends the callback at exactly 2026-12-01T16:00:00.000Z, its note and its outcome note', async () => {
+      const passNote = control.pass.find((w) => w.op === 'note.create' && /Outcome: pass/.test(w.args.body));
+      const cb = control.followUp.filter((w) => w.op === 'contact.callback');
+      return { ok: !!passNote && passNote.args.body.includes(`Reason: ${PASS_REASON}`) && control.pass.every((w) => w.contact === A)
+        && same(cb, [{ op: 'contact.callback', contact: A, args: { value: FOLLOW_UP_ISO } }])
+        && control.followUp.some((w) => w.op === 'note.create' && w.args.body === 'Callback scheduled for Dec 1, 10:00 AM')
+        && control.followUp.some((w) => w.op === 'note.create' && /Outcome: follow_up/.test(w.args.body) && w.args.body.includes(`Follow-up at: ${FOLLOW_UP_ISO}`))
+        && control.followUp.every((w) => w.contact === A), detail: control };
+    });
 
     {
+      // Failed launch (mock error) while drafts and a Pass are in progress; then save; then switch sellers.
       const { context, page, popups } = await workspace(A);
       await probe('workspace: the real Seller Call page leads its calling options with AirDroid for the selected seller', async () => {
         const l = await page.evaluate(LAYOUT);
         return { ok: l.cards[0] === 'call-with-airdroid-mode' && (await card(page)).includes('Alpha Fixture · 214-555-0101') && await loadedFor(page, 'Alpha'), detail: { l, card: await card(page) } };
       });
-      // A failed launch while a Pass is being written.
+      await fillDrafts(page);
       await page.getByTestId('call-outcome-pass-toggle').click();
-      await page.getByTestId('call-outcome-pass-reason').fill('Seller wants retail, not a cash offer.');
+      await page.getByTestId('call-outcome-pass-reason').fill(PASS_REASON);
       const writesBefore = writes().length;
       await mockMode(page, 'error');
       await page.getByTestId('call-with-airdroid').click().catch(() => {});
-      await probe('failed launch: the error shows, and the seller, route, open Pass form and unsaved reason all stay; the launch wrote nothing', async () => {
+      await page.waitForTimeout(300);
+      await probe('mock launch error: the error shows; seller, route, open Pass form, Pass reason and the independent drafts (Seller Position, Transaction structure) stay; nothing was written', async () => {
         const reason = await page.getByTestId('call-outcome-pass-reason').inputValue();
         return { ok: (await errorText(page)) === MOCK_ERROR && same(await mockCalls(page), ['2145550101'])
           && (await page.evaluate(() => location.pathname)) === `/contacts/${A}/seller-call` && (await card(page)).includes('Alpha Fixture')
-          && reason === 'Seller wants retail, not a cash offer.' && writes().length === writesBefore && popups.length === 0,
-          detail: { reason, error: await errorText(page), writes: writes().slice(writesBefore) } };
+          && reason === PASS_REASON && same(await drafts(page), DRAFTS) && writes().length === writesBefore && popups.length === 0,
+          detail: { reason, drafts: await drafts(page), error: await errorText(page), writes: normalise(writes().slice(writesBefore)) } };
       });
-      await probe('after a failed launch the full script still opens and closes, and the unsaved reason is still there', async () => {
+      await probe('after the mock error the full-script drawer opens and closes, and every draft is unchanged', async () => {
         await page.getByTestId('view-full-script').click();
         await page.getByTestId('full-script-drawer').waitFor();
         const scriptText = (await page.getByTestId('full-script-drawer').innerText()).length;
         await page.getByTestId('full-script-close').click();
         await page.getByTestId('full-script-drawer').waitFor({ state: 'hidden' });
-        return { ok: scriptText > 200 && (await page.getByTestId('call-outcome-pass-reason').inputValue()) === 'Seller wants retail, not a cash offer.', detail: { scriptText } };
+        return { ok: scriptText > 200 && (await page.getByTestId('call-outcome-pass-reason').inputValue()) === PASS_REASON && same(await drafts(page), DRAFTS),
+          detail: { scriptText, drafts: await drafts(page) } };
       });
-      await probe('after a failed launch the existing Pass save records the reason, for this seller only', async () => {
-        await until(page, () => page.getByTestId('call-outcome-pass-confirm').isEnabled(), 'Pass confirm enabled');
-        await page.getByTestId('call-outcome-pass-confirm').click();
-        await until(page, async () => db[A].notes.some((n) => n.body.includes('Seller wants retail, not a cash offer.')), 'Pass note saved');
-        await page.waitForTimeout(300);
-        savedShapes.pass = shape(writes().slice(writesBefore));
-        return { ok: (await page.getByTestId('call-outcome-error').count()) === 0 && writes().length > writesBefore && writes().every((w) => w.contact === A) && db[B].notes.length === 1,
-          detail: { writes: writes().map((w) => `${w.op} ${w.contact}`), error: await page.getByTestId('call-outcome-error').innerText().catch(() => null) } };
+      await probe('after the mock error the Pass save sends exactly the control\'s complete operations (targets and arguments)', async () => {
+        await recordPass(page);
+        const sent = normalise(writes().slice(writesBefore));
+        return { ok: (await page.getByTestId('call-outcome-error').count()) === 0 && same(sent, control.pass), detail: { sent, control: control.pass } };
       });
-      await probe('seller selection: moving to another seller clears the launch error and targets only that seller\'s number', async () => {
-        await mockMode(page, 'handed-off');
-        await page.evaluate((to) => window.__iaosNavigate(to), `/contacts/${B}/seller-call`);
-        await until(page, async () => (await card(page)).includes('Bravo Fixture · 469-555-0123'), 'Bravo card');
-        const cleared = await errorText(page);
+      await probe('seller change to a contact with the SAME number (Charlie, A\'s phone): the launch error is cleared and the card names Charlie', async () => {
+        await mockMode(page, 'error');
         await page.getByTestId('call-with-airdroid').click();
-        return { ok: cleared === null && same(await mockCalls(page), ['4695550123']) && (await errorText(page)) === null, detail: { cleared, calls: await mockCalls(page) } };
+        const shown = await errorText(page);
+        await go(page, C);
+        await until(page, async () => (await card(page).catch(() => '')).includes('Charlie Fixture · 214-555-0101'), 'Charlie card');
+        const cleared = await errorText(page);
+        await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        return { ok: shown === MOCK_ERROR && cleared === null && same(await mockCalls(page), ['2145550101']) && await loadedFor(page, 'Charlie'),
+          detail: { shown, cleared, calls: await mockCalls(page) } };
+      });
+      await probe('seller change to a different number (Bravo): the launch error is cleared and only Bravo\'s number is launched', async () => {
+        await mockMode(page, 'error');
+        await page.getByTestId('call-with-airdroid').click();
+        const shown = await errorText(page);
+        await go(page, B);
+        await until(page, async () => (await card(page).catch(() => '')).includes('Bravo Fixture · 469-555-0123'), 'Bravo card');
+        const cleared = await errorText(page);
+        await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        return { ok: shown === MOCK_ERROR && cleared === null && same(await mockCalls(page), ['4695550123']), detail: { shown, cleared, calls: await mockCalls(page) } };
       });
       await context.close();
     }
     {
-      // A launch handed off and then cancelled outside the page, while a Follow-Up is being chosen.
+      // Rapid seller switching while reads are still loading: A and Charlie are slow, Bravo is fast.
+      const { context, page } = await workspace(B);
+      await mockMode(page, 'error');
+      await page.getByTestId('call-with-airdroid').click();
+      slow = { [A]: 1500, [C]: 1500 };
+      await go(page, A);
+      await page.waitForTimeout(100);
+      await go(page, C);
+      await page.waitForTimeout(100);
+      await go(page, B);
+      await page.waitForTimeout(2500);                  // A's and Charlie's late reads have now arrived
+      await probe('rapid switching during loading (Bravo -> A -> Charlie -> Bravo, A and Charlie slow): after the late reads land, the page and card show Bravo with no stale error, and a launch targets only Bravo', async () => {
+        const shownCard = await card(page);
+        const err = await errorText(page);
+        await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        return { ok: (await page.evaluate(() => location.pathname)) === `/contacts/${B}/seller-call` && shownCard.includes('Bravo Fixture · 469-555-0123')
+          && !/Alpha|Charlie/.test(shownCard) && err === null && same(await mockCalls(page), ['4695550123']) && await loadedFor(page, 'Bravo')
+          && writes().length === 0, detail: { shownCard, err, calls: await mockCalls(page), writes: writes().length } };
+      });
+      await context.close();
+    }
+    {
+      // Mock ok result (the suite's stand-in for a cancelled launch) while a Follow-Up and drafts are in progress.
       const { context, page } = await workspace(A);
+      await fillDrafts(page);
       await page.getByTestId('call-outcome-follow-up-toggle').click();
-      await page.getByTestId('call-outcome-follow-up-at').fill('2026-12-01T10:00');
+      await page.getByTestId('call-outcome-follow-up-at').fill(FOLLOW_UP_LOCAL);
       const writesBefore = writes().length;
       await mockMode(page, 'handed-off');
       await page.getByTestId('call-with-airdroid').click().catch(() => {});
-      await page.waitForTimeout(200);
-      await probe('cancelled launch: no message or claim; the Follow-Up form and its unsaved time stay; the launch wrote nothing', async () => {
+      await page.waitForTimeout(300);
+      await probe('mock ok result: no message or claim; the Follow-Up form, its time and the independent drafts stay; nothing was written', async () => {
         const at = await page.getByTestId('call-outcome-follow-up-at').inputValue();
-        return { ok: (await errorText(page)) === null && !CLAIMS.test(await card(page)) && at === '2026-12-01T10:00' && writes().length === writesBefore
-          && same(await mockCalls(page), ['2145550101']), detail: { at, writes: writes().slice(writesBefore) } };
+        return { ok: (await errorText(page)) === null && !CLAIMS.test(await card(page)) && at === FOLLOW_UP_LOCAL && same(await drafts(page), DRAFTS)
+          && writes().length === writesBefore && same(await mockCalls(page), ['2145550101']), detail: { at, drafts: await drafts(page), writes: normalise(writes().slice(writesBefore)) } };
       });
-      await probe('after a cancelled launch the existing Follow-Up save schedules the callback, for this seller only', async () => {
-        await page.getByTestId('call-outcome-follow-up-confirm').click();
-        await until(page, async () => field(db[A], F.callbackDatetimePrecise) !== null, 'callback saved');
-        await page.waitForTimeout(300);
-        savedShapes.followUp = shape(writes().slice(writesBefore));
-        return { ok: (await page.getByTestId('call-outcome-error').count()) === 0 && writes().every((w) => w.contact === A) && field(db[B], F.callbackDatetimePrecise) === null,
-          detail: { callback: field(db[A], F.callbackDatetimePrecise), writes: writes().map((w) => `${w.op} ${w.contact}`) } };
+      await probe('after the mock ok result the Follow-Up save sends exactly the control\'s complete operations, with the callback at exactly 2026-12-01T16:00:00.000Z', async () => {
+        await recordFollowUp(page);
+        const sent = normalise(writes().slice(writesBefore));
+        return { ok: (await page.getByTestId('call-outcome-error').count()) === 0 && same(sent, control.followUp)
+          && sent.some((w) => w.op === 'contact.callback' && w.args.value === FOLLOW_UP_ISO) && field(db[A], F.callbackDatetimePrecise) === FOLLOW_UP_ISO,
+          detail: { sent, control: control.followUp } };
       });
       await context.close();
     }
     {
-      // A launch interface that throws, after the script was opened and with a Pass reason typed.
+      // Mock throw, after the script was opened, with a Pass reason and drafts typed; then save.
       const { context, page } = await workspace(A);
       await page.getByTestId('view-full-script').click();
       await page.getByTestId('full-script-drawer').waitFor();
       await page.getByTestId('full-script-close').click();
+      await fillDrafts(page);
       await page.getByTestId('call-outcome-pass-toggle').click();
-      await page.getByTestId('call-outcome-pass-reason').fill('Needs to talk to spouse.');
+      await page.getByTestId('call-outcome-pass-reason').fill(PASS_REASON);
       const writesBefore = writes().length;
       await mockMode(page, 'throw');
       await page.getByTestId('call-with-airdroid').click().catch(() => {});
-      await probe('thrown launch: the fixed error shows; the page, seller, Pass form, reason and script all survive; nothing was written', async () => {
+      await page.waitForTimeout(300);
+      await probe('mock throw: the fixed error shows; seller, Pass form, reason and drafts stay; the drawer still opens and closes; nothing was written', async () => {
         await page.getByTestId('view-full-script').click();
         await page.getByTestId('full-script-drawer').waitFor();
         await page.getByTestId('full-script-close').click();
-        return { ok: (await errorText(page)) === THROW_ERROR && (await page.getByTestId('call-outcome-pass-reason').inputValue()) === 'Needs to talk to spouse.'
-          && (await card(page)).includes('Alpha Fixture') && writes().length === writesBefore && await loadedFor(page, 'Alpha'), detail: { error: await errorText(page) } };
+        return { ok: (await errorText(page)) === THROW_ERROR && (await page.getByTestId('call-outcome-pass-reason').inputValue()) === PASS_REASON
+          && same(await drafts(page), DRAFTS) && (await card(page)).includes('Alpha Fixture') && writes().length === writesBefore && await loadedFor(page, 'Alpha'),
+          detail: { error: await errorText(page), drafts: await drafts(page) } };
+      });
+      await probe('after the mock throw the Pass save sends exactly the control\'s complete operations', async () => {
+        await recordPass(page);
+        const sent = normalise(writes().slice(writesBefore));
+        return { ok: (await page.getByTestId('call-outcome-error').count()) === 0 && same(sent, control.pass), detail: { sent, control: control.pass } };
       });
       await context.close();
     }
-
-    await probe('the Pass and Follow-Up saves after a failed or cancelled launch send exactly what the same saves send with no launch', async () => {
-      const control = { pass: await saveWithoutLaunch('pass'), followUp: await saveWithoutLaunch('follow-up') };
-      return { ok: savedShapes.pass?.length > 0 && savedShapes.followUp?.length > 0 && same(savedShapes, control), detail: { afterLaunch: savedShapes, noLaunch: control } };
-    });
 
     check('nothing left the machine: every request was the local page or a fixture-answered function', foreign.length === 0, foreign);
     check('no page errors', pageErrors.length === 0, pageErrors);

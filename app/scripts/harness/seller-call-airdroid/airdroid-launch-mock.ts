@@ -5,10 +5,12 @@
  * to this file, so every launch is MOCKED: nothing opens a link, window or
  * request, and no helper, AirDroid or phone is involved. The test sets
  * `window.__airdroidMock.mode` and reads back the targets it was given:
- *   "handed-off" -- the launch interface accepted it (a launch the operator
- *                   then cancels outside the page looks exactly like this);
- *   "error"      -- a known launch error;
- *   "throw"      -- the launch interface threw.
+ *   "handed-off" -- the interface returned { ok: true }. The suite also uses
+ *                   this as its stand-in for a launch cancelled outside the
+ *                   page; how a REAL cancelled launch reaches the page is
+ *                   unverified;
+ *   "error"      -- the interface returned a launch error;
+ *   "throw"      -- the interface threw.
  * Number validation is the stand-in's own (re-exported, unchanged).
  */
 export { airdroidCallTarget, type AirdroidLaunchResult } from "../../../src/lib/airdroid-launch-stand-in";
