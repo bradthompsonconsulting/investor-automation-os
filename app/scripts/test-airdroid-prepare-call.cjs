@@ -110,10 +110,12 @@ check('dial: never presses Enter or End Call, never sends keystrokes',
   /0x0100|0x0101|SendKeys|keybd_event|SendInput|VK_RETURN|End Call/i.test(dialCode), false);
 check('dial: never reads AirDroid configuration or log files',
   /AppData\\Roaming\\AirDroid|\.ini\b|\.config\b|AirDroid[^\n]*\.log|ProgramData/i.test(dialCode), false);
-check('dial: the number is rechecked exactly in the Dialpad before the click',
-  dialCode.indexOf("GetText($field) -cne $Number") > -1
-  && dialCode.lastIndexOf("GetText($field) -cne $Number") < dialCode.indexOf('0x0201')
-  && dialCode.indexOf('$same') < dialCode.indexOf('0x0201'), true);
+{
+  // The final recheck must sit between the panel recheck and the click, not only in the earlier Dialpad lookup.
+  const recheck = dialCode.slice(dialCode.indexOf('$same = '), dialCode.indexOf('0x0201'));
+  check('dial: the panel and then the exact number are rechecked immediately before the click',
+    dialCode.indexOf('$same = ') > -1 && /if \(-not \$ok\) \{ Stop-With 9/.test(recheck) && /GetText\(\$field\) -cne \$Number\) \{ Stop-With 9/.test(recheck), true);
+}
 check('dial: the dial is recorded for the duplicate guard before the click',
   dialCode.indexOf('Set-Content -LiteralPath $GuardFile') > -1 && dialCode.indexOf('Set-Content -LiteralPath $GuardFile') < dialCode.indexOf('0x0201'), true);
 check('dial: one dial at a time (named mutex, no wait)', /Mutex\(\$false, 'Local\\IAOS-AirDroid-Dial'\)/.test(dialCode) && /WaitOne\(0\)/.test(dialCode), true);
