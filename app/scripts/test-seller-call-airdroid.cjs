@@ -20,9 +20,10 @@
  *     checked are the ones it has: the negotiation Seller Position input and
  *     the Transaction structure input, plus the Pass reason and Follow-Up time.
  *   - Saves are compared as complete operations (operation, target and all
- *     arguments) against the same save with no launch. Only request ids and
- *     timestamps taken at "now" are normalised; the callback time is asserted
- *     exactly.
+ *     arguments) against the same save with no launch. Request ids are left
+ *     out; only contact.lastCallAttempt's value and the ledger's "Outcome
+ *     timestamp:" line are normalised (when taken during the run). The
+ *     callback time is asserted exactly.
  *
  * NEGATIVE CONTROL: `node scripts/test-seller-call-airdroid.cjs --before=<rev>`
  * renders <rev>'s component on the component page and must FAIL (exit 1) for
@@ -61,10 +62,10 @@ const { createBarrierFixture } = require('./harness/current-offer-barrier-fixtur
 const { parseOutcomeNote } = require(path.join(APP, 'src/lib/seller-call-outcome.ts'));
 
 /**
- * Taken from the finished file, never back-filled from a passing run: 24 single probe()/check()
- * call sites + 1 inside the invalid-number loop x 3 numbers = 27.
+ * Taken from the finished file, never back-filled from a passing run: 25 single probe()/check()
+ * call sites + 1 inside the invalid-number loop x 3 numbers = 28.
  */
-const FLOOR = 27;
+const FLOOR = 28;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -172,14 +173,20 @@ const RUN_START = Date.now();
 const watchdog = setTimeout(() => { console.error('FAIL  the suite did not finish within 10 minutes -- stopped'); process.exit(1); }, 10 * 60_000);
 
 /**
- * A save, as complete operations: operation, target and every argument. Request ids are left out and
- * only ISO timestamps taken during this run ("now") are normalised; any other time -- the callback --
- * stays exact.
+ * A save, as complete operations: operation, target and every argument. Request ids are left out. Exactly
+ * two values are normalised, and only when they hold a time taken during this run: the value of
+ * contact.lastCallAttempt, and the "Outcome timestamp:" line of an outcome-ledger note. Every other value
+ * -- the callback, "Follow-up at:", any other timestamp -- is compared exactly.
  */
-const ISO = /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z/g;
-const isNow = (iso) => { const t = Date.parse(iso); return t >= RUN_START - 60_000 && t <= Date.now() + 60_000; };
-const normalise = (ws) => ws.map((w) => ({ op: w.op, contact: w.contact,
-  args: JSON.parse(JSON.stringify(w.args ?? null).replace(ISO, (iso) => (isNow(iso) ? '<now>' : iso))) }));
+const isNow = (iso) => { const t = Date.parse(iso); return /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(iso) && t >= RUN_START - 60_000 && t <= Date.now() + 60_000; };
+const normalise = (ws) => ws.map((w) => {
+  let args = w.args ?? null;
+  if (w.op === 'contact.lastCallAttempt' && typeof args?.value === 'string' && isNow(args.value)) args = { ...args, value: '<now>' };
+  if (w.op === 'note.create' && typeof args?.body === 'string') {
+    args = { ...args, body: args.body.replace(/^Outcome timestamp: (\S+)$/m, (line, iso) => (isNow(iso) ? 'Outcome timestamp: <now>' : line)) };
+  }
+  return { op: w.op, contact: w.contact, args };
+});
 
 /** Card order and rows of the calling options, measured in the page. */
 const LAYOUT = () => {
@@ -295,6 +302,31 @@ async function main() {
   const DRAFTS = { sellerPosition: SELLER_POSITION_DRAFT, structure: STRUCTURE_DRAFT };
 
   try {
+    // ═══ NORMALISATION (no browser) ═════════════════════════════════════════
+    {
+      const now = new Date().toISOString();
+      const LEDGER = (ts, fu) => `IAOS SELLER CALL OUTCOME LEDGER — iaos-seller-call-outcome-v1
+Outcome timestamp: ${ts}
+Outcome: follow_up
+Follow-up at: ${fu}`;
+      const input = [
+        { op: 'contact.lastCallAttempt', contact: A, args: { value: now } },
+        { op: 'note.create', contact: A, args: { body: LEDGER(now, now) } },
+        { op: 'contact.callback', contact: A, args: { value: now } },
+        { op: 'note.create', contact: A, args: { body: `Called at ${now}` } },
+        { op: 'contact.lastCallAttempt', contact: A, args: { value: '2026-01-02T03:04:05.000Z' } },
+      ];
+      const out = normalise(input);
+      check('normalisation touches only the run-time value of contact.lastCallAttempt and the ledger "Outcome timestamp:" line; an unrelated run-time timestamp (callback, "Follow-up at:", another note) and an older lastCallAttempt stay exact',
+        same(out, [
+          { op: 'contact.lastCallAttempt', contact: A, args: { value: '<now>' } },
+          { op: 'note.create', contact: A, args: { body: LEDGER('<now>', now) } },
+          { op: 'contact.callback', contact: A, args: { value: now } },
+          { op: 'note.create', contact: A, args: { body: `Called at ${now}` } },
+          { op: 'contact.lastCallAttempt', contact: A, args: { value: '2026-01-02T03:04:05.000Z' } },
+        ]), out);
+    }
+
     // ═══ COMPONENT ══════════════════════════════════════════════════════════
     const componentReady = (page) => page.getByTestId('seller-call-modes').waitFor({ timeout: 60000 });
     {
