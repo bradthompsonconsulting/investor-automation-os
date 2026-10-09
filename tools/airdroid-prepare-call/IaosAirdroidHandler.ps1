@@ -11,15 +11,17 @@
     2. Passes the 10 digits to PrepareCall.ps1 (same folder) as a named parameter, never by string
        concatenation into a command line.
 
-  INTERIM: the single Make Call activation step is designed (docs/B14-13_AIRDROID_PREPARE_CALL.md) but paused, so
-  this handler currently runs only the reviewed prefill helper, PrepareCall.ps1: it replaces the number in AirDroid's
-  already-open Dialpad and verifies the readback. It never dials, never presses Enter and never touches Make Call or
-  End Call.
+    3. Runs the reviewed prefill helper, PrepareCall.ps1, which places the number in AirDroid's already-open Dialpad
+       and verifies the exact readback.
+    4. Only if that succeeds, runs DialCall.ps1 with the same digits: it rechecks the number, identifies Make Call,
+       clicks it once (no retry) and refuses a duplicate dial. Brad's one IAOS Call click is the authorization; there
+       is no second confirmation. End Call and Enter are never touched.
 
   -ParseOnly prints the parsed number (or the refusal) and touches nothing. It is used by the offline tests.
 
 .NOTES
-  Exit codes: 0 prepared (or parse OK with -ParseOnly); 20 link refused; PrepareCall.ps1's own codes otherwise.
+  Exit codes: 0 click sent once (or parse OK with -ParseOnly); 20 link refused; otherwise PrepareCall.ps1's code if
+  it failed (nothing dialled), else DialCall.ps1's code.
 #>
 param(
   [Parameter(Position = 0)][string]$Uri = '',
@@ -46,8 +48,11 @@ if (-not $number) {
   exit 20
 }
 
-$helper = Join-Path $PSScriptRoot 'PrepareCall.ps1'
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper -Number $number
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'PrepareCall.ps1') -Number $number
 $code = $LASTEXITCODE
+if ($code -eq 0) {
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'DialCall.ps1') -Number $number
+  $code = $LASTEXITCODE
+}
 if ($code -ne 0 -and -not $NoPause) { Read-Host 'Press Enter to close this window' | Out-Null }
 exit $code

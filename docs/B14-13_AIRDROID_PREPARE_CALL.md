@@ -35,13 +35,17 @@ saves are unchanged and independent of the call. GHL softphone work is outside 1
   - the handler accepts only the `call` link;
   - it runs the reviewed prefill helper `PrepareCall.ps1`, which fills the open Dialpad, verifies the exact readback,
     and never dials.
-- **Designed but PAUSED: single Make Call activation.** The design is to identify Make Call structurally (the single
-  full-width panel below the 12-key grid in the live Dialpad, outside the call-status panel), recheck it, then click
-  once, with no retry and a duplicate guard.
-  - This rule matched the button Brad pointed at in the Manual-mode test (restricted Drive section 12).
-  - **Paused because a safeguard stopped the work** (see `SAFEGUARD_STOP_REPORT.md` in the review package). It
-    resumes only once the supported continuation path is established.
-  - **Until then, a Call click would prefill only and not dial,** so the finish line is not met.
+- **Single Make Call activation: implemented at local integration (`b14-13-airdroid-integration`),
+  `DialCall.ps1`.** Brad authorized one-click dialing with no second confirmation (2026-10-09). The earlier
+  auto-mode write was denied by the classifier; the file was then written in Manual mode with Brad's approval of that
+  specific write.
+  - It identifies Make Call structurally (the single full-width panel below the 12-key grid in the live Dialpad,
+    outside the call-status panel). This rule matched the button Brad pointed at in the Manual-mode test (restricted
+    Drive section 12).
+  - It rechecks the exact number and the panel immediately before the click, clicks once with no retry, and refuses
+    a duplicate (one dial at a time; the same number within 30 s).
+  - **Offline-checked only.** Live dialing through IAOS is not proven until registration and a live test with Brad's
+    designated test number.
 
 ## File ownership
 | File | Owner |
@@ -69,8 +73,9 @@ The earlier denied registration script is not recreated. **Security decision sti
 the link once it is registered; the browser's own "Open…?" prompt is the current proposal.
 
 ## Remaining blockers
-1. **Activation:** the continuation path for the paused step.
-2. **Registration:** approval.
+1. **Activation:** implemented and offline-checked at local integration; live proof pending.
+2. **Registration:** approval. Then a live test, including any browser "Open …?" prompt (a browser-level
+   confirmation outside IAOS) and whether Seller Call's script and unsaved answers survive the handoff.
 3. **Push:** approval. The review package is in restricted Drive.
 4. **Connection label:** AirDroid's Local or Remote label is unknown; Brad needs to read it. No Premium purchase is
    authorized.
