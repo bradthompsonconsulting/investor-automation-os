@@ -1,5 +1,5 @@
 /**
- * B14-13 — AirDroid "Prepare Call" launch link.
+ * B14-13 — AirDroid Call launch link (iaos-airdroid:call).
  *
  * Offline. Compiles the pure link builder (app/src/lib/airdroid-prepare-call.ts)
  * and checks which seller numbers produce a link and exactly what the link is.
@@ -39,7 +39,7 @@ function check(name, actual, expected) {
   console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${ok ? '' : ` — expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`}`);
 }
 
-const LINK = 'iaos-airdroid:prepare?number=2025550147';
+const LINK = 'iaos-airdroid:call?number=2025550147';
 const accepted = [
   ['10 digits', '2025550147'],
   ['dashed', '202-555-0147'],
@@ -48,7 +48,7 @@ const accepted = [
   ['+1 E.164', '+12025550147'],
   ['1 prefix', '1 202 555 0147'],
 ];
-for (const [name, raw] of accepted) check(`link: ${name}`, lib.airdroidPrepareLink(raw), LINK);
+for (const [name, raw] of accepted) check(`link: ${name}`, lib.airdroidCallLink(raw), LINK);
 
 const refused = [
   ['empty', ''],
@@ -62,9 +62,9 @@ const refused = [
   ['exchange starts 1', '2021550147'],
   ['exchange starts 0', '2020550147'],
 ];
-for (const [name, raw] of refused) check(`no link: ${name}`, lib.airdroidPrepareLink(raw), null);
+for (const [name, raw] of refused) check(`no link: ${name}`, lib.airdroidCallLink(raw), null);
 check('scheme constant', lib.AIRDROID_LINK_SCHEME, 'iaos-airdroid');
-check('digits helper', lib.airdroidPrepareDigits('+1 (202) 555-0147'), '2025550147');
+check('digits helper', lib.airdroidCallDigits('+1 (202) 555-0147'), '2025550147');
 
 // The source must stay navigation-only: no fetch, no GHL client, no write helpers.
 const src = fs.readFileSync(path.join(APP, 'src/lib/airdroid-prepare-call.ts'), 'utf8');
@@ -80,13 +80,13 @@ if (process.platform === 'win32') {
   check('handler parses the builder link', parse(LINK), { code: 0, out: 'PARSED 2025550147' });
   check('handler accepts trailing slash', parse(`${LINK}/`), { code: 0, out: 'PARSED 2025550147' });
   for (const bad of [
-    'iaos-airdroid:prepare?number=555014',
-    'iaos-airdroid:prepare?number=2025550147&dial=1',
-    'iaos-airdroid:call?number=2025550147',
-    'iaos-airdroid:prepare?number=1025550147',
-    'iaos-airdroid:prepare?number=2025550147%26x',
-    'iaos-airdroid:prepare?number=2025550147;calc',
-    'other:prepare?number=2025550147',
+    'iaos-airdroid:call?number=555014',
+    'iaos-airdroid:call?number=2025550147&dial=1',
+    'iaos-airdroid:prepare?number=2025550147',
+    'iaos-airdroid:call?number=1025550147',
+    'iaos-airdroid:call?number=2025550147%26x',
+    'iaos-airdroid:call?number=2025550147;calc',
+    'other:call?number=2025550147',
     '',
   ]) check(`handler refuses ${JSON.stringify(bad)}`, parse(bad), { code: 20, out: 'REFUSED' });
 } else {

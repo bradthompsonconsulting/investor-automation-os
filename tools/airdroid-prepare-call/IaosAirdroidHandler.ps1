@@ -1,18 +1,20 @@
 <#
 .SYNOPSIS
-  B14-13: handler for IAOS "Prepare in AirDroid" launch links.
+  B14-13: handler for the IAOS AirDroid Call launch link.
 
 .DESCRIPTION
   Windows passes the whole link as one argument when a registered "iaos-airdroid:" link is opened. This handler:
     1. Parses the link strictly. Exactly one form is accepted:
-         iaos-airdroid:prepare?number=NNNNNNNNNN
+         iaos-airdroid:call?number=NNNNNNNNNN
        where NNNNNNNNNN is a 10-digit US number whose area code and exchange start with 2-9.
        Anything else (extra parameters, other actions, letters, extensions, encoded characters) is refused.
     2. Passes the 10 digits to PrepareCall.ps1 (same folder) as a named parameter, never by string
        concatenation into a command line.
 
-  PrepareCall.ps1 replaces the number in AirDroid's already-open Dialpad and verifies the readback. It never dials,
-  never presses Enter and never touches Make Call or End Call. The operator presses Make Call.
+  INTERIM: the single Make Call activation step is designed (docs/B14-13_AIRDROID_PREPARE_CALL.md) but paused, so
+  this handler currently runs only the reviewed prefill helper, PrepareCall.ps1: it replaces the number in AirDroid's
+  already-open Dialpad and verifies the readback. It never dials, never presses Enter and never touches Make Call or
+  End Call.
 
   -ParseOnly prints the parsed number (or the refusal) and touches nothing. It is used by the offline tests.
 
@@ -27,7 +29,7 @@ param(
 
 function Get-IaosAirdroidNumber([string]$link) {
   if ($null -eq $link) { return $null }
-  $m = [regex]::Match($link.Trim(), '^iaos-airdroid:prepare\?number=([2-9]\d{2}[2-9]\d{6})/?$')
+  $m = [regex]::Match($link.Trim(), '^iaos-airdroid:call\?number=([2-9]\d{2}[2-9]\d{6})/?$')
   if (-not $m.Success) { return $null }
   return $m.Groups[1].Value
 }

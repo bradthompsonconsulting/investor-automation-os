@@ -3,16 +3,17 @@
 AirDroid is IAOS's **primary** calling path on Brad's Windows PC, GHL Phone is the **backup**, and the seller script
 stays in IAOS.
 
-**Current code (this commit):** prefill only. The helper prepares the number and never places a call.
+**Finish line:** Brad clicks Call in IAOS and AirDroid dials once; the script and notes stay available. IAOS shows no
+dialling or connection success (`docs/B14-13_AIRDROID_PREPARE_CALL.md`).
 
-**Agreed finish line** (`docs/B14-13_AIRDROID_PREPARE_CALL.md`): Brad clicks Call in IAOS, and the helper prepares the
-number **and activates AirDroid's Make Call once**. The activation step is designed there. It will be written and
-tested only through Manual-mode approvals, and it is not in this folder yet.
+**Current code (this commit):** the handler accepts `iaos-airdroid:call?number=NNNNNNNNNN` and runs the reviewed prefill
+helper only. The single Make Call activation is designed but **paused** after a safeguard stop. Until it resumes, a
+Call click prefills and does not dial.
 
 | File | Purpose |
 |---|---|
 | `PrepareCall.ps1` | The reviewed standalone helper, byte-identical to the prototype delivered on 2026-10-09 (SHA-256 `3a7d68fd…e520`). |
-| `IaosAirdroidHandler.ps1` | Accepts one IAOS launch link, `iaos-airdroid:prepare?number=NNNNNNNNNN`, parses it strictly, and calls `PrepareCall.ps1 -Number NNNNNNNNNN`. `-ParseOnly` touches nothing and is used by the tests. |
+| `IaosAirdroidHandler.ps1` | Accepts one IAOS launch link, `iaos-airdroid:call?number=NNNNNNNNNN`, parses it strictly, and calls `PrepareCall.ps1 -Number NNNNNNNNNN` (interim, prefill only). `-ParseOnly` touches nothing and is used by the tests. |
 
 ## What `PrepareCall.ps1` does
 1. Validates the number, a 10-digit US number, before touching anything.
