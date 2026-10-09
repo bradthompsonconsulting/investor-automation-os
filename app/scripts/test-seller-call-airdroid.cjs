@@ -21,9 +21,10 @@
  *     the Transaction structure input, plus the Pass reason and Follow-Up time.
  *   - Saves are compared as complete operations (operation, target and all
  *     arguments) against the same save with no launch. Request ids are left
- *     out; only contact.lastCallAttempt's value and the ledger's "Outcome
- *     timestamp:" line are normalised (when taken during the run). The
- *     callback time is asserted exactly.
+ *     out; only contact.lastCallAttempt's value and the "Outcome timestamp:"
+ *     field of a note the app's parseOutcomeNote recognises as a ledger are
+ *     normalised (when taken during the run). Every other note is compared
+ *     byte for byte. The callback time is asserted exactly.
  *
  * NEGATIVE CONTROL: `node scripts/test-seller-call-airdroid.cjs --before=<rev>`
  * renders <rev>'s component on the component page and must FAIL (exit 1) for
@@ -62,10 +63,10 @@ const { createBarrierFixture } = require('./harness/current-offer-barrier-fixtur
 const { parseOutcomeNote } = require(path.join(APP, 'src/lib/seller-call-outcome.ts'));
 
 /**
- * Taken from the finished file, never back-filled from a passing run: 25 single probe()/check()
- * call sites + 1 inside the invalid-number loop x 3 numbers = 28.
+ * Taken from the finished file, never back-filled from a passing run: 26 single probe()/check()
+ * call sites + 1 inside the invalid-number loop x 3 numbers = 29.
  */
-const FLOOR = 28;
+const FLOOR = 29;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -175,15 +176,22 @@ const watchdog = setTimeout(() => { console.error('FAIL  the suite did not finis
 /**
  * A save, as complete operations: operation, target and every argument. Request ids are left out. Exactly
  * two values are normalised, and only when they hold a time taken during this run: the value of
- * contact.lastCallAttempt, and the "Outcome timestamp:" line of an outcome-ledger note. Every other value
- * -- the callback, "Follow-up at:", any other timestamp -- is compared exactly.
+ * contact.lastCallAttempt, and the "Outcome timestamp:" field of a RECOGNISED outcome-ledger note -- one the
+ * app's own parseOutcomeNote accepts (exact iaos-seller-call-outcome-v1 header on line 1, required fields
+ * valid), and only the field line that parser reads. Any other note, including one that merely contains an
+ * "Outcome timestamp:" line, is compared byte for byte, as is every other value.
  */
 const isNow = (iso) => { const t = Date.parse(iso); return /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(iso) && t >= RUN_START - 60_000 && t <= Date.now() + 60_000; };
 const normalise = (ws) => ws.map((w) => {
   let args = w.args ?? null;
   if (w.op === 'contact.lastCallAttempt' && typeof args?.value === 'string' && isNow(args.value)) args = { ...args, value: '<now>' };
-  if (w.op === 'note.create' && typeof args?.body === 'string') {
-    args = { ...args, body: args.body.replace(/^Outcome timestamp: (\S+)$/m, (line, iso) => (isNow(iso) ? 'Outcome timestamp: <now>' : line)) };
+  if (w.op === 'note.create' && typeof args?.body === 'string' && parseOutcomeNote(args.body) !== null) {
+    const lines = args.body.split('\n');
+    const i = lines.findIndex((l) => l.startsWith('Outcome timestamp: '));   // the line parseOutcomeNote reads
+    if (i > 0 && isNow(lines[i].slice('Outcome timestamp: '.length))) {
+      lines[i] = 'Outcome timestamp: <now>';
+      args = { ...args, body: lines.join('\n') };
+    }
   }
   return { op: w.op, contact: w.contact, args };
 });
@@ -305,10 +313,12 @@ async function main() {
     // ═══ NORMALISATION (no browser) ═════════════════════════════════════════
     {
       const now = new Date().toISOString();
-      const LEDGER = (ts, fu) => `IAOS SELLER CALL OUTCOME LEDGER — iaos-seller-call-outcome-v1
-Outcome timestamp: ${ts}
-Outcome: follow_up
-Follow-up at: ${fu}`;
+      /** A complete ledger in the exact format Seller Call writes (see the debug capture in the README). */
+      const LEDGER = (ts, fu) => ['IAOS SELLER CALL OUTCOME LEDGER — iaos-seller-call-outcome-v1', `Outcome timestamp: ${ts}`,
+        'Operator: Not recorded (saved through IAOS write sign-in)', `Opportunity: ${A}-opp`, 'Outcome: follow_up', 'Seller Position: UNAVAILABLE',
+        'Current Offer: UNAVAILABLE', 'Target Acquisition Price: UNAVAILABLE', 'Max Supported Offer: UNAVAILABLE', 'Expected Spread: UNAVAILABLE',
+        'ARV: UNAVAILABLE', 'Repairs: UNAVAILABLE', 'Offer Readiness: NOT_READY', 'Reason: UNAVAILABLE', `Follow-up at: ${fu}`].join('\n');
+      const ledgerIsRecognised = parseOutcomeNote(LEDGER(now, now)) !== null;
       const input = [
         { op: 'contact.lastCallAttempt', contact: A, args: { value: now } },
         { op: 'note.create', contact: A, args: { body: LEDGER(now, now) } },
@@ -317,14 +327,26 @@ Follow-up at: ${fu}`;
         { op: 'contact.lastCallAttempt', contact: A, args: { value: '2026-01-02T03:04:05.000Z' } },
       ];
       const out = normalise(input);
-      check('normalisation touches only the run-time value of contact.lastCallAttempt and the ledger "Outcome timestamp:" line; an unrelated run-time timestamp (callback, "Follow-up at:", another note) and an older lastCallAttempt stay exact',
-        same(out, [
+      check('normalisation changes only the run-time value of contact.lastCallAttempt and the "Outcome timestamp:" field of a recognised ledger; the callback, the "Follow-up at:" line of the ledger, another note and an older lastCallAttempt stay exact',
+        ledgerIsRecognised && same(out, [
           { op: 'contact.lastCallAttempt', contact: A, args: { value: '<now>' } },
           { op: 'note.create', contact: A, args: { body: LEDGER('<now>', now) } },
           { op: 'contact.callback', contact: A, args: { value: now } },
           { op: 'note.create', contact: A, args: { body: `Called at ${now}` } },
           { op: 'contact.lastCallAttempt', contact: A, args: { value: '2026-01-02T03:04:05.000Z' } },
-        ]), out);
+        ]), { ledgerIsRecognised, out });
+
+      // Control (Bones, db22c8c): notes that are NOT recognised ledgers keep "Outcome timestamp: <run-time ISO>" byte for byte.
+      const unrelated = [
+        `Outcome timestamp: ${now}`,                                                              // the line alone
+        `Seller asked about timing.\nOutcome timestamp: ${now}\nWill call back.`,                 // inside an ordinary note
+        `IAOS SELLER CALL OUTCOME LEDGER — iaos-seller-call-outcome-v1\nOutcome timestamp: ${now}`, // ledger header, but not a valid ledger
+        LEDGER(now, now).replace('iaos-seller-call-outcome-v1', 'iaos-seller-call-outcome-v2'),    // a different ledger version
+      ];
+      const kept = normalise(unrelated.map((body) => ({ op: 'note.create', contact: A, args: { body } })));
+      check('control: a note that is not a recognised outcome ledger keeps its "Outcome timestamp: <run-time ISO>" line byte for byte (4 cases)',
+        unrelated.every((body) => parseOutcomeNote(body) === null) && kept.every((w, i) => w.args.body === unrelated[i] && Buffer.from(w.args.body).equals(Buffer.from(unrelated[i]))),
+        { parsed: unrelated.map((b) => parseOutcomeNote(b) !== null), kept: kept.map((w) => w.args.body) });
     }
 
     // ═══ COMPONENT ══════════════════════════════════════════════════════════
