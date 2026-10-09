@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Copy, ExternalLink, Phone, PhoneCall, Smartphone } from "lucide-react";
+import { Copy, ExternalLink, MonitorSmartphone, Phone, PhoneCall, Smartphone } from "lucide-react";
 import { normalizeVoicePhone } from "../../shared/voice-call-contract";
+import { airdroidCallTarget, launchAirdroidCall, type AirdroidLaunchResult } from "../lib/airdroid-launch-stand-in";
 import { formatPhone } from "../lib/format";
 import { ghlContactDetailUrl } from "../lib/ghl";
 import { openGhlContactWindow, type GhlHandoffResult } from "../lib/ghl-call-handoff";
@@ -19,6 +20,15 @@ import "./SellerCallVoiceControls.css";
  * The retired Twilio-era "Call with IAOS" softphone entrance and its
  * voice-session fetch are gone from the browser; the server-side voice
  * capability is separately and unconditionally disabled.
+ *
+ * B14-13 — "Call with AirDroid" is the first, primary option; GHL Phone is
+ * the backup and Cell stays. The button only passes the seller's 10 US digits
+ * to the AirDroid launch interface (a provisional, mocked stand-in until
+ * Jeff's revised connection is agreed); this component itself does not
+ * navigate, open a window, fetch or write. It shows only an invalid-number
+ * reason or an error the interface reports, cleared whenever the seller
+ * changes. It cannot see a call, a helper or a cancelled launch, so it never
+ * claims a call was placed, connected or ended.
  */
 
 function useMobileViewport(): boolean {
@@ -41,6 +51,10 @@ export function SellerCallVoiceControls(props: { contactId: string; sellerName: 
   const isMobile = useMobileViewport();
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const [handoff, setHandoff] = useState<GhlHandoffResult | null>(null);
+  const airdroidTarget = useMemo(() => airdroidCallTarget(props.sellerPhone), [props.sellerPhone]);
+  const [airdroidError, setAirdroidError] = useState<string | null>(null);
+  // A launch error belongs to one seller: clear it when the seller (even one sharing this number) or the number changes.
+  useEffect(() => setAirdroidError(null), [props.contactId, airdroidTarget]);
 
   async function copySellerNumber() {
     if (!destination) return;
@@ -52,17 +66,47 @@ export function SellerCallVoiceControls(props: { contactId: string; sellerName: 
     }
   }
 
+  function callWithAirdroid() {
+    if (!airdroidTarget) return;
+    let result: AirdroidLaunchResult;
+    try {
+      result = launchAirdroidCall(airdroidTarget);
+    } catch {
+      result = { ok: false, error: "AirDroid couldn't be started." };
+    }
+    setAirdroidError(result.ok ? null : result.error);
+  }
+
   function openGhl() {
     setHandoff(openGhlContactWindow(ghlUrl, (url, target) => window.open(url, target)));
   }
 
   return (
     <section className="seller-call-modes" aria-label="Seller calling options" data-testid="seller-call-modes">
+      <div className="seller-call-mode seller-call-mode--primary" data-testid="call-with-airdroid-mode">
+        <strong><MonitorSmartphone size={16} aria-hidden="true" /> Call with AirDroid</strong>
+        <span className="seller-call-mode__identity">{props.sellerName} · {displayPhone}</span>
+        <div className="seller-call-mode__actions">
+          <button className="seller-call-button seller-call-button--primary" type="button" onClick={callWithAirdroid} disabled={!airdroidTarget} data-testid="call-with-airdroid">
+            <PhoneCall size={16} aria-hidden="true" /> Call with AirDroid
+          </button>
+        </div>
+        {!airdroidTarget ? (
+          <div className="seller-call-mode__hint" data-testid="airdroid-no-number">
+            Unavailable: IAOS has no valid 10-digit US number for this seller. Use GHL Phone or Cell.
+          </div>
+        ) : airdroidError ? (
+          <div className="seller-call-mode__hint seller-call-mode__error" role="alert" data-testid="airdroid-launch-error">
+            {airdroidError} Use GHL Phone or Cell.
+          </div>
+        ) : null}
+      </div>
+
       <div className="seller-call-mode" data-testid="call-with-ghl-mode">
         <strong><PhoneCall size={16} aria-hidden="true" /> Call with GHL Phone</strong>
         <span className="seller-call-mode__identity">{props.sellerName} · {displayPhone}</span>
         <div className="seller-call-mode__actions">
-          <button className="seller-call-button seller-call-button--primary" type="button" onClick={openGhl} data-testid="open-ghl-contact">
+          <button className="seller-call-button" type="button" onClick={openGhl} data-testid="open-ghl-contact">
             <ExternalLink size={16} aria-hidden="true" /> Open seller in GHL
           </button>
         </div>

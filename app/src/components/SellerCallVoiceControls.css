@@ -14,6 +14,9 @@
   padding: 12px;
 }
 
+/* B14-13: AirDroid is the primary option -- its own full row above GHL Phone (backup) and Cell. */
+.seller-call-mode--primary { grid-column: 1 / -1; border-color: #1d70f7; }
+
 .seller-call-mode__identity {
   display: block;
   margin-top: 5px;
