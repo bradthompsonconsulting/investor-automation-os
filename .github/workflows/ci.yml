@@ -353,7 +353,7 @@ jobs:
         run: node app/scripts/test-pipeline-requests.cjs
       - name: Mailers No Address empty state on the real page (INV-110, B15-12)
         run: node app/scripts/test-mailers-empty-state.cjs
-      - name: Seller Call AirDroid option on the real page -- primary card, launch link intercepted, script and notes kept (B14-13) — 17 checks
+      - name: Seller Call AirDroid UI checks
         run: node app/scripts/test-seller-call-airdroid.cjs
       - name: Shell labels on the real page -- no Phase A badge, Conversations heading (INV-126, B15-17)
         run: node app/scripts/test-b15-shell-labels.cjs
