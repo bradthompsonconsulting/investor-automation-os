@@ -1,7 +1,13 @@
 # IAOS AirDroid "Prepare Call" helper (B14-13)
 
 AirDroid is IAOS's **primary** calling path on Brad's Windows PC, GHL Phone is the **backup**, and the seller script
-stays in IAOS. The helper **prepares** a call; it never places one.
+stays in IAOS.
+
+**Current code (this commit):** prefill only. The helper prepares the number and never places a call.
+
+**Agreed finish line** (`docs/B14-13_AIRDROID_PREPARE_CALL.md`): Brad clicks Call in IAOS, and the helper prepares the
+number **and activates AirDroid's Make Call once**. The activation step is designed there. It will be written and
+tested only through Manual-mode approvals, and it is not in this folder yet.
 
 | File | Purpose |
 |---|---|

@@ -75,6 +75,7 @@
     "test:inv67-template-placement-manifest": "node scripts/test-inv67-template-placement-manifest.cjs",
     "test:voice-foundation": "node scripts/test-voice-foundation.cjs",
     "test:seller-call-voice-controls": "node scripts/test-seller-call-voice-controls.cjs",
+    "test:airdroid-prepare-call": "node scripts/test-airdroid-prepare-call.cjs",
     "test:inv67-pdf-population-proof": "node scripts/test-inv67-pdf-population-proof.cjs"
   },
   "dependencies": {

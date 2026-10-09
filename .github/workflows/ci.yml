@@ -323,6 +323,12 @@ jobs:
       - name: Deal Calculator wiring
         run: node app/scripts/test-deal-calculator-wiring.cjs
 
+      # B14-13 (AirDroid primary calling): the browser-side launch-link builder. Offline.
+      # The Windows helper's own parser checks run only on Windows and are reported as
+      # skipped here; this runner has no AirDroid and touches nothing.
+      - name: AirDroid Prepare Call launch link (B14-13)
+        run: node app/scripts/test-airdroid-prepare-call.cjs
+
       # Scotty Batch 2 (b15-scotty-batch2).
       - name: Pipeline property address (INV-108)
         run: node app/scripts/test-pipeline-property.cjs
