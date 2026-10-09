@@ -7,6 +7,10 @@
  * to live here asserted UI that no longer exists and were retired with it;
  * the server-side voice foundation keeps its own suite
  * (test-voice-foundation.cjs).
+ *
+ * B14-13 adds "Call with AirDroid" as the first, primary option. Its launch
+ * link comes from a temporary stand-in for Jeff's builder (launch contract v1,
+ * proposed); the rendered behaviour is proven in test-seller-call-airdroid.cjs.
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -22,6 +26,7 @@ try {
     path.join(APP, 'node_modules', 'typescript', 'bin', 'tsc'),
     path.join(APP, 'shared/voice-call-contract.ts'),
     path.join(APP, 'src/lib/ghl-call-handoff.ts'),
+    path.join(APP, 'src/lib/airdroid-launch-stand-in.ts'),
     path.join(APP, 'src/components/GhlHandoffNotice.tsx'),
     '--outDir', TMP, '--rootDir', APP, '--module', 'commonjs',
     '--target', 'es2020', '--strict', '--skipLibCheck', '--jsx', 'react-jsx',
@@ -33,6 +38,7 @@ try {
 
 const contract = require(path.join(TMP, 'shared/voice-call-contract.js'));
 const handoff = require(path.join(TMP, 'src/lib/ghl-call-handoff.js'));
+const airdroid = require(path.join(TMP, 'src/lib/airdroid-launch-stand-in.js'));
 const { GhlHandoffNotice } = require(path.join(TMP, 'src/components/GhlHandoffNotice.js'));
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
@@ -166,6 +172,31 @@ check('cell mode uses authoritative normalized number for clipboard', /clipboard
 check('mobile cell mode prefills native dialer without initiating it', /href=\{`tel:\$\{destination\}`\}/.test(componentCode) && /must press Send/i.test(componentCode), true);
 check('cell mode is disabled and explained without a valid number', /disabled=\{!destination\}/.test(componentCode) && /Unavailable: no valid seller number/.test(componentCode), true);
 check('both modes display seller identity', (componentCode.match(/props\.sellerName/g) || []).length >= 2, true);
+
+// B14-13: Call with AirDroid -- launch contract v1 (proposed), through the stand-in for Jeff's builder.
+check('AirDroid link is exactly iaos-airdroid:call?number= and 10 digits, for any US format',
+  ['(214) 555-0101', '+12145550101', '214.555.0101', '1-214-555-0101'].map(airdroid.airdroidCallLink),
+  Array(4).fill('iaos-airdroid:call?number=2145550101'));
+check('AirDroid link is refused (null) for missing, short, non-US, or 0/1-leading area code or exchange',
+  ['', null, undefined, '555', '+442071234567', '(114) 555-0101', '(014) 555-0101', '(214) 155-0101', '(214) 055-0101'].map(airdroid.airdroidCallLink),
+  Array(9).fill(null));
+check('AirDroid is the first calling option; GHL Phone and Cell follow in that order',
+  [componentCode.indexOf('data-testid="call-with-airdroid-mode"'), componentCode.indexOf('data-testid="call-with-ghl-mode"'), componentCode.indexOf('data-testid="call-with-cell-mode"')]
+    .every((i, n, a) => i >= 0 && (n === 0 || i > a[n - 1])), true);
+check('AirDroid is the primary action and GHL Phone is no longer styled primary',
+  /data-testid="call-with-airdroid-mode"/.test(componentCode) && /className="seller-call-button seller-call-button--primary" href=\{airdroidLink\}/.test(componentCode)
+  && !/seller-call-button--primary" type="button" onClick=\{openGhl\}/.test(componentCode), true);
+check('AirDroid opens the launch link by ordinary navigation: an anchor href from the builder, no popup, fetch or redirect',
+  /import \{ airdroidCallLink \} from "\.\.\/lib\/airdroid-launch-stand-in";/.test(componentCode) && /href=\{airdroidLink\}/.test(componentCode)
+  && !/location\.(?:assign|replace|href)|preventDefault/.test(componentCode) && (componentCode.match(/window\.open\(/g) || []).length === 1, true);
+check('without a valid number the AirDroid action is a disabled button with the reason, and GHL and Cell stay offered',
+  /disabled data-testid="call-with-airdroid-unavailable"/.test(componentCode) && /Unavailable: IAOS has no valid 10-digit US number for this seller\. Use GHL Phone or Cell\./.test(componentCode), true);
+{
+  const airdroidText = (componentCode.match(/function airdroidLinkStatus[\s\S]*?\n\}/) || [''])[0] + (componentCode.match(/data-testid="airdroid-status">[\s\S]*?<\/div>/) || [''])[0];
+  check('AirDroid text never claims the number was prepared or a call dialled, connected or ended, and drops the draft wording',
+    airdroidText.length > 100 && !/prepared|dial(?:l)?ed|connected|ended|calling|call (?:placed|started)|Check AirDroid and your phone|press Make Call/i.test(airdroidText), true);
+}
+check('AirDroid card spans its own full row on desktop', /\.seller-call-mode--primary \{ grid-column: 1 \/ -1;/.test(css), true);
 
 // Seller Call page ownership is unchanged.
 check('Seller Call mounts controls with exact contact identity and primary phone', /<SellerCallVoiceControls[\s\S]*contactId=\{contactId\}[\s\S]*sellerName=\{contactName\(contact\)\}[\s\S]*sellerPhone=\{contact\.phone\}/.test(workspace), true);
