@@ -8,9 +8,9 @@
  * the server-side voice foundation keeps its own suite
  * (test-voice-foundation.cjs).
  *
- * B14-13 adds "Call with AirDroid" as the first, primary option. Its launch
- * link comes from a temporary stand-in for Jeff's builder (launch contract v1,
- * proposed); the rendered behaviour is proven in test-seller-call-airdroid.cjs.
+ * B14-13 adds "Call with AirDroid" as the first, primary option. It launches
+ * through a provisional, mocked stand-in for Jeff's connection (number-only,
+ * pending his revision); rendered behaviour: test-seller-call-airdroid.cjs.
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -173,28 +173,36 @@ check('mobile cell mode prefills native dialer without initiating it', /href=\{`
 check('cell mode is disabled and explained without a valid number', /disabled=\{!destination\}/.test(componentCode) && /Unavailable: no valid seller number/.test(componentCode), true);
 check('both modes display seller identity', (componentCode.match(/props\.sellerName/g) || []).length >= 2, true);
 
-// B14-13: Call with AirDroid -- launch contract v1 (proposed), through the stand-in for Jeff's builder.
-check('AirDroid link is exactly iaos-airdroid:call?number= and 10 digits, for any US format',
-  ['(214) 555-0101', '+12145550101', '214.555.0101', '1-214-555-0101'].map(airdroid.airdroidCallLink),
-  Array(4).fill('iaos-airdroid:call?number=2145550101'));
-check('AirDroid link is refused (null) for missing, short, non-US, or 0/1-leading area code or exchange',
-  ['', null, undefined, '555', '+442071234567', '(114) 555-0101', '(014) 555-0101', '(214) 155-0101', '(214) 055-0101'].map(airdroid.airdroidCallLink),
+// B14-13: Call with AirDroid, through the provisional, mocked stand-in for Jeff's connection.
+check('AirDroid call target is the 10 US digits for any US format',
+  ['(214) 555-0101', '+12145550101', '214.555.0101', '1-214-555-0101'].map(airdroid.airdroidCallTarget), Array(4).fill('2145550101'));
+check('AirDroid call target is refused (null) for missing, short, non-US, or 0/1-leading area code or exchange',
+  ['', null, undefined, '555', '+442071234567', '(114) 555-0101', '(014) 555-0101', '(214) 155-0101', '(214) 055-0101'].map(airdroid.airdroidCallTarget),
   Array(9).fill(null));
+{
+  const standIn = fs.readFileSync(path.join(APP, 'src/lib/airdroid-launch-stand-in.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  check('the stand-in launch is mocked: it reports "not connected" and opens no link, window or request',
+    JSON.stringify(airdroid.launchAirdroidCall('2145550101')) === JSON.stringify({ ok: false, error: "AirDroid calling isn't connected yet." })
+    && !/window\.|location|fetch\(|iaos-airdroid:|XMLHttpRequest/.test(standIn), true);
+}
 check('AirDroid is the first calling option; GHL Phone and Cell follow in that order',
   [componentCode.indexOf('data-testid="call-with-airdroid-mode"'), componentCode.indexOf('data-testid="call-with-ghl-mode"'), componentCode.indexOf('data-testid="call-with-cell-mode"')]
     .every((i, n, a) => i >= 0 && (n === 0 || i > a[n - 1])), true);
-check('AirDroid is the primary action and GHL Phone is no longer styled primary',
-  /data-testid="call-with-airdroid-mode"/.test(componentCode) && /className="seller-call-button seller-call-button--primary" href=\{airdroidLink\}/.test(componentCode)
+check('AirDroid is one primary button, disabled without a valid number; GHL Phone is no longer styled primary',
+  /<button className="seller-call-button seller-call-button--primary" type="button" onClick=\{callWithAirdroid\} disabled=\{!airdroidTarget\} data-testid="call-with-airdroid">/.test(componentCode)
   && !/seller-call-button--primary" type="button" onClick=\{openGhl\}/.test(componentCode), true);
-check('AirDroid opens the launch link by ordinary navigation: an anchor href from the builder, no popup, fetch or redirect',
-  /import \{ airdroidCallLink \} from "\.\.\/lib\/airdroid-launch-stand-in";/.test(componentCode) && /href=\{airdroidLink\}/.test(componentCode)
-  && !/location\.(?:assign|replace|href)|preventDefault/.test(componentCode) && (componentCode.match(/window\.open\(/g) || []).length === 1, true);
-check('without a valid number the AirDroid action is a disabled button with the reason, and GHL and Cell stay offered',
-  /disabled data-testid="call-with-airdroid-unavailable"/.test(componentCode) && /Unavailable: IAOS has no valid 10-digit US number for this seller\. Use GHL Phone or Cell\./.test(componentCode), true);
+check('the AirDroid button only calls the launch interface: no link, popup, navigation or fetch of its own',
+  /import \{ airdroidCallTarget, launchAirdroidCall, type AirdroidLaunchResult \} from "\.\.\/lib\/airdroid-launch-stand-in";/.test(componentCode)
+  && /result = launchAirdroidCall\(airdroidTarget\);/.test(componentCode)
+  && !/iaos-airdroid:|href=\{airdroid|location\.(?:assign|replace|href)/.test(componentCode) && (componentCode.match(/window\.open\(/g) || []).length === 1, true);
+check('no valid number shows the reason; a failed or throwing launch shows a known error as an alert, with GHL Phone or Cell as the way on',
+  /data-testid="airdroid-no-number">\s*Unavailable: IAOS has no valid 10-digit US number for this seller\. Use GHL Phone or Cell\./.test(componentCode)
+  && /role="alert" data-testid="airdroid-launch-error">\s*\{airdroidError\} Use GHL Phone or Cell\./.test(componentCode)
+  && /catch \{\s*result = \{ ok: false, error: "AirDroid couldn't be started\." \};/.test(componentCode), true);
 {
-  const airdroidText = (componentCode.match(/function airdroidLinkStatus[\s\S]*?\n\}/) || [''])[0] + (componentCode.match(/data-testid="airdroid-status">[\s\S]*?<\/div>/) || [''])[0];
-  check('AirDroid text never claims the number was prepared or a call dialled, connected or ended, and drops the draft wording',
-    airdroidText.length > 100 && !/prepared|dial(?:l)?ed|connected|ended|calling|call (?:placed|started)|Check AirDroid and your phone|press Make Call/i.test(airdroidText), true);
+  const card = (componentCode.match(/data-testid="call-with-airdroid-mode"[\s\S]*?data-testid="call-with-ghl-mode"/) || [''])[0];
+  check('the AirDroid card has no after-click explanation and never claims a call was prepared, dialled, connected or ended',
+    card.length > 200 && !/prepared|dial(?:l)?ed|connected|ended|calling|call (?:placed|started)|Check AirDroid and your phone|handed|helper|press Make Call|aria-live/i.test(card), true);
 }
 check('AirDroid card spans its own full row on desktop', /\.seller-call-mode--primary \{ grid-column: 1 \/ -1;/.test(css), true);
 
