@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Copy, ExternalLink, MonitorSmartphone, Phone, PhoneCall, Smartphone } from "lucide-react";
 import { normalizeVoicePhone } from "../../shared/voice-call-contract";
-import { airdroidCallTarget, launchAirdroidCall, type AirdroidLaunchResult } from "../lib/airdroid-launch-stand-in";
+import { airdroidCallTarget, launchAirdroidCall, type AirdroidLaunchResult } from "../lib/airdroid-launch";
 import { formatPhone } from "../lib/format";
 import { ghlContactDetailUrl } from "../lib/ghl";
 import { openGhlContactWindow, type GhlHandoffResult } from "../lib/ghl-call-handoff";
@@ -23,9 +23,9 @@ import "./SellerCallVoiceControls.css";
  *
  * B14-13 — "Call with AirDroid" is the first, primary option; GHL Phone is
  * the backup and Cell stays. The button only passes the seller's 10 US digits
- * to the AirDroid launch interface (a provisional, mocked stand-in until
- * Jeff's revised connection is agreed); this component itself does not
- * navigate, open a window, fetch or write. It shows only an invalid-number
+ * to the AirDroid launch interface (../lib/airdroid-launch, which opens the
+ * iaos-airdroid: link once); this component itself does not navigate, open a
+ * window, fetch or write. It shows only an invalid-number
  * reason or an error the interface reports, cleared whenever the seller
  * changes. It cannot see a call, a helper or a cancelled launch, so it never
  * claims a call was placed, connected or ended.

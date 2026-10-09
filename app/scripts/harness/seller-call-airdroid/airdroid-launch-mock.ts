@@ -1,7 +1,7 @@
 /**
- * B14-13 — test-only replacement for src/lib/airdroid-launch-stand-in.ts.
+ * B14-13 — test-only replacement for src/lib/airdroid-launch.ts.
  *
- * test-seller-call-airdroid.cjs aliases the component's import of the stand-in
+ * test-seller-call-airdroid.cjs aliases the component's import of the launch interface
  * to this file, so every launch is MOCKED: nothing opens a link, window or
  * request, and no helper, AirDroid or phone is involved. The test sets
  * `window.__airdroidMock.mode` and reads back the targets it was given:
@@ -11,10 +11,10 @@
  *                   unverified;
  *   "error"      -- the interface returned a launch error;
  *   "throw"      -- the interface threw.
- * Number validation is the stand-in's own (re-exported, unchanged).
+ * Number validation is the real interface's own (re-exported, unchanged).
  */
-export { airdroidCallTarget, type AirdroidLaunchResult } from "../../../src/lib/airdroid-launch-stand-in";
-import type { AirdroidLaunchResult } from "../../../src/lib/airdroid-launch-stand-in";
+export { airdroidCallTarget, type AirdroidLaunchResult } from "../../../src/lib/airdroid-launch";
+import type { AirdroidLaunchResult } from "../../../src/lib/airdroid-launch";
 
 export const MOCK_LAUNCH_ERROR = "The AirDroid helper isn't installed on this PC.";
 

@@ -9,8 +9,8 @@
  * (test-voice-foundation.cjs).
  *
  * B14-13 adds "Call with AirDroid" as the first, primary option. It launches
- * through a provisional, mocked stand-in for Jeff's connection (number-only,
- * pending his revision); rendered behaviour: test-seller-call-airdroid.cjs.
+ * through the AirDroid launch interface (src/lib/airdroid-launch.ts, which
+ * opens the iaos-airdroid: link once); rendered behaviour: test-seller-call-airdroid.cjs.
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -26,7 +26,8 @@ try {
     path.join(APP, 'node_modules', 'typescript', 'bin', 'tsc'),
     path.join(APP, 'shared/voice-call-contract.ts'),
     path.join(APP, 'src/lib/ghl-call-handoff.ts'),
-    path.join(APP, 'src/lib/airdroid-launch-stand-in.ts'),
+    path.join(APP, 'src/lib/airdroid-prepare-call.ts'),
+    path.join(APP, 'src/lib/airdroid-launch.ts'),
     path.join(APP, 'src/components/GhlHandoffNotice.tsx'),
     '--outDir', TMP, '--rootDir', APP, '--module', 'commonjs',
     '--target', 'es2020', '--strict', '--skipLibCheck', '--jsx', 'react-jsx',
@@ -38,7 +39,7 @@ try {
 
 const contract = require(path.join(TMP, 'shared/voice-call-contract.js'));
 const handoff = require(path.join(TMP, 'src/lib/ghl-call-handoff.js'));
-const airdroid = require(path.join(TMP, 'src/lib/airdroid-launch-stand-in.js'));
+const airdroid = require(path.join(TMP, 'src/lib/airdroid-launch.js'));
 const { GhlHandoffNotice } = require(path.join(TMP, 'src/components/GhlHandoffNotice.js'));
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
@@ -173,17 +174,26 @@ check('mobile cell mode prefills native dialer without initiating it', /href=\{`
 check('cell mode is disabled and explained without a valid number', /disabled=\{!destination\}/.test(componentCode) && /Unavailable: no valid seller number/.test(componentCode), true);
 check('both modes display seller identity', (componentCode.match(/props\.sellerName/g) || []).length >= 2, true);
 
-// B14-13: Call with AirDroid, through the provisional, mocked stand-in for Jeff's connection.
+// B14-13: Call with AirDroid, through the real launch interface (the link is opened by an injected opener here).
 check('AirDroid call target is the 10 US digits for any US format',
   ['(214) 555-0101', '+12145550101', '214.555.0101', '1-214-555-0101'].map(airdroid.airdroidCallTarget), Array(4).fill('2145550101'));
 check('AirDroid call target is refused (null) for missing, short, non-US, or 0/1-leading area code or exchange',
   ['', null, undefined, '555', '+442071234567', '(114) 555-0101', '(014) 555-0101', '(214) 155-0101', '(214) 055-0101'].map(airdroid.airdroidCallTarget),
   Array(9).fill(null));
+check('the provisional stand-in is gone at integration', fs.existsSync(path.join(APP, 'src/lib/airdroid-launch-stand-in.ts')), false);
 {
-  const standIn = fs.readFileSync(path.join(APP, 'src/lib/airdroid-launch-stand-in.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-  check('the stand-in launch is mocked: it reports "not connected" and opens no link, window or request',
-    JSON.stringify(airdroid.launchAirdroidCall('2145550101')) === JSON.stringify({ ok: false, error: "AirDroid calling isn't connected yet." })
-    && !/window\.|location|fetch\(|iaos-airdroid:|XMLHttpRequest/.test(standIn), true);
+  const opened = [];
+  const result = airdroid.launchAirdroidCall('2145550101', (link) => opened.push(link));
+  check('one launch opens the iaos-airdroid call link exactly once and reports only "handed off"',
+    [result, opened], [{ ok: true }, ['iaos-airdroid:call?number=2145550101']]);
+  const refused = [];
+  check('a target the link builder refuses opens nothing and reports a known error',
+    [['', '555', '1145550101'].map((t) => airdroid.launchAirdroidCall(t, (link) => refused.push(link))), refused],
+    [Array(3).fill({ ok: false, error: "This number can't be called with AirDroid." }), []]);
+  const launcher = fs.readFileSync(path.join(APP, 'src/lib/airdroid-launch.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  check('the launcher navigates only by location.assign of the built link: no popup, fetch or write',
+    /\(link\) => window\.location\.assign\(link\)/.test(launcher) && /const link = airdroidCallLink\(target\);/.test(launcher)
+    && !/window\.open|fetch\(|XMLHttpRequest|sendBeacon/.test(launcher), true);
 }
 check('AirDroid is the first calling option; GHL Phone and Cell follow in that order',
   [componentCode.indexOf('data-testid="call-with-airdroid-mode"'), componentCode.indexOf('data-testid="call-with-ghl-mode"'), componentCode.indexOf('data-testid="call-with-cell-mode"')]
@@ -192,7 +202,7 @@ check('AirDroid is one primary button, disabled without a valid number; GHL Phon
   /<button className="seller-call-button seller-call-button--primary" type="button" onClick=\{callWithAirdroid\} disabled=\{!airdroidTarget\} data-testid="call-with-airdroid">/.test(componentCode)
   && !/seller-call-button--primary" type="button" onClick=\{openGhl\}/.test(componentCode), true);
 check('the AirDroid button only calls the launch interface: no link, popup, navigation or fetch of its own',
-  /import \{ airdroidCallTarget, launchAirdroidCall, type AirdroidLaunchResult \} from "\.\.\/lib\/airdroid-launch-stand-in";/.test(componentCode)
+  /import \{ airdroidCallTarget, launchAirdroidCall, type AirdroidLaunchResult \} from "\.\.\/lib\/airdroid-launch";/.test(componentCode)
   && /result = launchAirdroidCall\(airdroidTarget\);/.test(componentCode)
   && !/iaos-airdroid:|href=\{airdroid|location\.(?:assign|replace|href)/.test(componentCode) && (componentCode.match(/window\.open\(/g) || []).length === 1, true);
 check('no valid number shows the reason; a failed or throwing launch shows a known error as an alert, with GHL Phone or Cell as the way on',

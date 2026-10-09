@@ -3,7 +3,7 @@
  *
  * Vite serves two pages from scripts/harness/seller-call-airdroid in headless
  * Chromium and aliases the component's launch interface
- * (src/lib/airdroid-launch-stand-in.ts) to airdroid-launch-mock.ts. The mock
+ * (src/lib/airdroid-launch.ts) to airdroid-launch-mock.ts. The mock
  * returns { ok: true } ("handed-off"), a launch error, or throws. Nothing opens
  * a link, window or request; no helper, AirDroid, phone or GHL record is
  * involved. Every /.netlify/functions request is answered from an in-memory
@@ -218,7 +218,7 @@ async function main() {
   const { chromium } = require('playwright');
   const server = await createServer({
     root: APP, configFile: false, plugins: [react(), tailwindcss()], logLevel: 'error', clearScreen: false,
-    resolve: { alias: [{ find: '../lib/airdroid-launch-stand-in', replacement: MOCK }] },
+    resolve: { alias: [{ find: '../lib/airdroid-launch', replacement: MOCK }] },
     server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false },
     optimizeDeps: { entries: [COMPONENT_PAGE.slice(1), WORKSPACE_PAGE.slice(1)],
       include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-router-dom', 'lucide-react'] },
