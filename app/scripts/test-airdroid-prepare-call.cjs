@@ -101,9 +101,11 @@ if (process.platform === 'win32') {
 
 // Make Call step (DialCall.ps1): static shape, all platforms. Nothing here runs against AirDroid.
 const dialPath = path.join(REPO, 'tools', 'airdroid-prepare-call', 'DialCall.ps1');
-const dial = fs.readFileSync(dialPath, 'utf8');
+// Line endings normalised: a Windows checkout (core.autocrlf=true) has CRLF, CI on Ubuntu has LF.
+const lf = (text) => text.replace(/\r\n/g, '\n');
+const dial = lf(fs.readFileSync(dialPath, 'utf8'));
 const dialCode = dial.replace(/<#[\s\S]*?#>/g, '').split('\n').filter((l) => !/^\s*#/.test(l)).map((l) => l.replace(/\s#\s.*$/, '')).join('\n');
-const handlerSrc = fs.readFileSync(handler, 'utf8');
+const handlerSrc = lf(fs.readFileSync(handler, 'utf8'));
 check('dial: exactly one button-down and one button-up message, no retry loop around them',
   [(dialCode.match(/0x0201/g) || []).length, (dialCode.match(/0x0202/g) || []).length, /\b(?:for|while|do|foreach)\b[^\n]*\n?[^\n]*0x0201/.test(dialCode)], [1, 1, false]);
 check('dial: never presses Enter or End Call, never sends keystrokes',
@@ -131,7 +133,7 @@ check('handler: duplicate check, then PrepareCall -Automatic, then DialCall, eac
   const pause = handlerSrc.lastIndexOf("Read-Host 'Press Enter to close this window'");
   check('handler: lock taken before the first step, released in finally, before the closing pause',
     [take > -1, take < firstStep, release > firstStep, release < pause], [true, true, true, true]);
-  const prep = fs.readFileSync(path.join(REPO, 'tools', 'airdroid-prepare-call', 'PrepareCall.ps1'), 'utf8');
+  const prep = lf(fs.readFileSync(path.join(REPO, 'tools', 'airdroid-prepare-call', 'PrepareCall.ps1'), 'utf8'));
   const prepCode = prep.replace(/<#[\s\S]*?#>/g, '');
   check('prefill: "press Make Call yourself" shown only without -Automatic',
     /if \(-not \$Automatic\) \{ Write-Host "Check the number on screen, then press Make Call yourself\." \}/.test(prepCode)

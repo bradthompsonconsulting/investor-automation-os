@@ -54,14 +54,34 @@ let guardN = 0;
 const freshGuard = () => path.join(TMP, `guard-${++guardN}.json`);
 const handlerArgs = (n, guard, pauseMs = 0) => [link(n), '-NoPause', '-TestProcessName', FAKE, '-GuardFile', guard, ...(pauseMs ? ['-TestPauseMs', String(pauseMs)] : [])];
 
-/** FREE (taken and released cleanly), BUSY (held by a live process) or ABANDONED (a process exited holding it). */
-function lockState() {
-  const r = spawnSync('powershell.exe', [...PS, '-Command',
-    "$m = New-Object System.Threading.Mutex($false, 'Local\\IAOS-AirDroid-Dial'); " +
-    "try { if ($m.WaitOne(0)) { 'FREE'; $m.ReleaseMutex() } else { 'BUSY' } } " +
-    "catch [System.Threading.AbandonedMutexException] { 'ABANDONED'; $m.ReleaseMutex() }"], { encoding: 'utf8' });
-  return (r.stdout || '').trim();
+/**
+ * Lock probe: FREE (released cleanly), BUSY (held by a live process) or ABANDONED (a process exited holding it).
+ * The probe is one long-lived process that keeps a handle to the mutex open for the whole run. Without an open
+ * handle Windows deletes a named mutex when its last holder exits, so an abandoned lock would look FREE.
+ */
+let probe;
+function startProbe() {
+  const script = path.join(TMP, 'lock-probe.ps1');
+  fs.writeFileSync(script, [
+    "$m = New-Object System.Threading.Mutex($false, 'Local\\IAOS-AirDroid-Dial')",
+    'while ($null -ne ($line = [Console]::In.ReadLine())) {',
+    "  try { if ($m.WaitOne(0)) { $m.ReleaseMutex(); [Console]::Out.WriteLine('FREE') } else { [Console]::Out.WriteLine('BUSY') } }",
+    "  catch [System.Threading.AbandonedMutexException] { $m.ReleaseMutex(); [Console]::Out.WriteLine('ABANDONED') }",
+    '  [Console]::Out.Flush()',
+    '}',
+  ].join('\n'));
+  probe = { child: spawn('powershell.exe', [...PS, '-File', script]), buffer: '', waiting: [] };
+  probe.child.stdout.on('data', (d) => {
+    probe.buffer += d;
+    let i;
+    while ((i = probe.buffer.indexOf('\n')) > -1) {
+      const answer = probe.buffer.slice(0, i).trim();
+      probe.buffer = probe.buffer.slice(i + 1);
+      if (answer && probe.waiting.length) probe.waiting.shift()(answer);
+    }
+  });
 }
+const lockState = () => new Promise((resolve) => { probe.waiting.push(resolve); probe.child.stdin.write('?\n'); });
 
 /** The fake's log lines since `from`: [{ kind: 'TEXT'|'CLICK'|'READY', text }]. */
 const logLines = () => fs.readFileSync(LOG, 'utf8').split(/\r?\n/).filter(Boolean)
@@ -107,7 +127,7 @@ async function contended(numberA, marker, compete) {
   const a = startLaunch(HANDLER, handlerArgs(numberA, freshGuard(), PAUSE_MS), `TEST PAUSE ${marker}`);
   await a.atMarker;
   const competitor = compete();
-  const lockDuringPause = lockState();
+  const lockDuringPause = await lockState();
   const resultA = await a.done;
   return { resultA, competitor, lockDuringPause, lines: since(from) };
 }
@@ -122,7 +142,8 @@ const clicks = (lines) => lines.filter((l) => l.kind === 'CLICK').map((l) => l.t
       `Add-Type -TypeDefinition (Get-Content -Raw '${path.join(__dirname, 'harness', 'airdroid-fake', 'FakeAirDroid.cs')}') ` +
       `-ReferencedAssemblies System.Windows.Forms,System.Drawing -OutputAssembly '${EXE}' -OutputType WindowsApplication`], { encoding: 'utf8' });
     if (build.status !== 0 || !fs.existsSync(EXE)) { console.error(build.stderr); process.exit(10); }
-    check('lock is free before the tests (no IAOS call in progress)', lockState(), 'FREE');
+    startProbe();
+    check('lock is free before the tests (no IAOS call in progress)', await lockState(), 'FREE');
     fake = spawn(EXE, [LOG], { stdio: 'ignore' });
     for (let i = 0; i < 100 && !(fs.existsSync(LOG) && logLines().some((l) => l.kind === 'READY')); i += 1) await new Promise((r) => setTimeout(r, 100));
     check('fake Dialpad started', logLines().some((l) => l.kind === 'READY'), true);
@@ -136,7 +157,7 @@ const clicks = (lines) => lines.filter((l) => l.kind === 'CLICK').map((l) => l.t
         [r.status, texts(lines), clicks(lines)], [0, ['2025550147'], ['2025550147']]);
       check('automatic launch: no "press Make Call yourself" instruction; reports one click sent',
         [/Make Call yourself/i.test(r.stdout), /CLICK SENT ONCE/.test(r.stdout)], [false, true]);
-      check('automatic launch: lock released cleanly (not abandoned)', lockState(), 'FREE');
+      check('automatic launch: lock released cleanly (not abandoned)', await lockState(), 'FREE');
     }
 
     // ---- Standalone prefill keeps its guidance ----
@@ -146,7 +167,7 @@ const clicks = (lines) => lines.filter((l) => l.kind === 'CLICK').map((l) => l.t
       check('standalone prefill: exit 0, number placed, no click, and it still says "press Make Call yourself"',
         [r.status, texts(since(from)), clicks(since(from)), /Check the number on screen, then press Make Call yourself\./.test(r.stdout)],
         [0, ['2025550148'], [], true]);
-      check('standalone prefill: lock released cleanly', lockState(), 'FREE');
+      check('standalone prefill: lock released cleanly', await lockState(), 'FREE');
     }
 
     // ---- Competing launches during the pause before the final number check ----
@@ -161,7 +182,7 @@ const clicks = (lines) => lines.filter((l) => l.kind === 'CLICK').map((l) => l.t
         [s.competitor.status, /in progress/i.test(s.competitor.stdout)], [10, true]);
       check(`pause before final number check, competing ${label}: Dialpad changed only by the dialling launch's prefill; one click on its number`,
         [s.resultA.code, texts(s.lines), clicks(s.lines)], [0, ['2025550160'], ['2025550160']]);
-      check(`after competing ${label}: lock released cleanly`, lockState(), 'FREE');
+      check(`after competing ${label}: lock released cleanly`, await lockState(), 'FREE');
     }
 
     // ---- Competing launches during the pause between the final number check and dispatch ----
@@ -173,7 +194,7 @@ const clicks = (lines) => lines.filter((l) => l.kind === 'CLICK').map((l) => l.t
       check(`pause before dispatch: competing ${label} stops with exit 10`, s.competitor.status, 10);
       check(`pause before dispatch, competing ${label}: no Dialpad change after the final check; one click on the checked number`,
         [s.resultA.code, texts(s.lines), clicks(s.lines)], [0, ['2025550161'], ['2025550161']]);
-      check(`after competing ${label} (dispatch pause): lock released cleanly`, lockState(), 'FREE');
+      check(`after competing ${label} (dispatch pause): lock released cleanly`, await lockState(), 'FREE');
     }
 
     // ---- The final number check still catches a writer that ignores the lock: nothing clicked ----
@@ -181,7 +202,7 @@ const clicks = (lines) => lines.filter((l) => l.kind === 'CLICK').map((l) => l.t
       const s = await contended('2025550162', 'before final number check', () => rogueSetText('2125550199'));
       check('writer outside IAOS changes the number during the pause: final check stops the dial (exit 9), no click',
         [s.competitor, s.resultA.code, texts(s.lines), clicks(s.lines)], [0, 9, ['2025550162', '2125550199'], []]);
-      check('after the stopped dial (exit 9): lock released cleanly', lockState(), 'FREE');
+      check('after the stopped dial (exit 9): lock released cleanly', await lockState(), 'FREE');
     }
 
     // ---- Duplicate: the same number again within 30 s is refused before the Dialpad is touched ----
@@ -191,7 +212,7 @@ const clicks = (lines) => lines.filter((l) => l.kind === 'CLICK').map((l) => l.t
       const from = logLines().length;
       const r = ps(HANDLER, handlerArgs('2025550163', guard));
       check('duplicate launch within 30 s: exit 10, Dialpad untouched, no click', [r.status, texts(since(from)), clicks(since(from))], [10, [], []]);
-      check('after the duplicate refusal: lock released cleanly', lockState(), 'FREE');
+      check('after the duplicate refusal: lock released cleanly', await lockState(), 'FREE');
     }
 
     // ---- Children refuse to act when told the caller holds the lock but nobody does ----
@@ -201,14 +222,14 @@ const clicks = (lines) => lines.filter((l) => l.kind === 'CLICK').map((l) => l.t
       const d = ps(DIAL, ['-Number', '2025550164', '-CallerHoldsLock', '-TestProcessName', FAKE, '-GuardFile', freshGuard()]);
       check('-CallerHoldsLock without the lock held: prefill and dial both stop (exit 10), nothing changed or clicked',
         [p.status, d.status, texts(since(from)), clicks(since(from))], [10, 10, [], []]);
-      check('after the -CallerHoldsLock refusals: lock free', lockState(), 'FREE');
+      check('after the -CallerHoldsLock refusals: lock free', await lockState(), 'FREE');
     }
 
     // ---- Failure path: no AirDroid window -> stops, lock released cleanly ----
     {
       const r = ps(HANDLER, [link('2025550165'), '-NoPause', '-TestProcessName', 'IaosNoSuchProcess', '-GuardFile', freshGuard()]);
       check('no AirDroid window: handler stops with PrepareCall\'s exit 3', r.status, 3);
-      check('after the exit-3 stop: lock released cleanly', lockState(), 'FREE');
+      check('after the exit-3 stop: lock released cleanly', await lockState(), 'FREE');
     }
 
     // ---- The test pauses are inert without -TestProcessName ----
@@ -222,6 +243,7 @@ const clicks = (lines) => lines.filter((l) => l.kind === 'CLICK').map((l) => l.t
     console.log(`FAIL harness error: ${error && error.stack ? error.stack : error}`);
   } finally {
     if (fake) fake.kill();
+    if (probe) probe.child.stdin.end();
     spawnSync('taskkill', ['/IM', `${FAKE}.exe`, '/F'], { stdio: 'ignore' });
   }
   console.log('\nfake Dialpad log:\n' + (fs.existsSync(LOG) ? fs.readFileSync(LOG, 'utf8') : '(none)'));
