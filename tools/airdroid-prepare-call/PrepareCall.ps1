@@ -22,6 +22,19 @@
 .PARAMETER CheckOnly
   Runs every check, including the guarded lookup, but changes nothing and does not bring AirDroid forward.
 
+.PARAMETER Automatic
+  B14-13: used by IaosAirdroidHandler.ps1, which dials automatically next. Suppresses the standalone instruction to
+  press Make Call yourself. Standalone prefill keeps that instruction.
+
+.PARAMETER CallerHoldsLock
+  B14-13: the caller (IaosAirdroidHandler.ps1) already holds the IAOS call lock for the whole prepare-and-dial
+  sequence. This script then only confirms the lock is held (exit 10 if it is not) instead of taking it, which would
+  deadlock against the caller. Without it, standalone use takes the lock itself, so a prefill can never change the
+  Dialpad during an automatic dial.
+
+.PARAMETER TestProcessName
+  Offline tests only: the process name of the inert fake AirDroid window. Never passed by the registered handler.
+
 .NOTES
   Exit codes:
     0 prepared, or the CheckOnly checks passed
@@ -31,19 +44,25 @@
     5 Dialpad field ambiguous (more than one candidate)
     6 readback mismatch (field cleared)
     7 unexpected error
+    10 another IAOS call is in progress (nothing changed), or -CallerHoldsLock given but the lock is not held
 #>
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)][string]$Number = '',
-  [switch]$CheckOnly
+  [switch]$CheckOnly,
+  [switch]$Automatic,
+  [switch]$CallerHoldsLock,
+  [string]$TestProcessName = ''
 )
 $ErrorActionPreference = 'Stop'
+$processName = if ($TestProcessName) { $TestProcessName } else { 'AirDroid' }
 
 function Stop-With([int]$code, [string]$msg) {
   Write-Host "PREPARE CALL STOPPED: $msg" -ForegroundColor Red
   exit $code
 }
 
+$mutex = $null
 try {
   # ---- 1. Validate before touching anything ----
   if ([string]::IsNullOrWhiteSpace($Number)) { Stop-With 2 "No number given. Usage: PrepareCall.cmd `"202-555-0147`"" }
@@ -54,6 +73,18 @@ try {
   if ($digits.Length -ne 10) { Stop-With 2 "Invalid number: expected 10 digits (US), optionally with a leading 1 or +1. Got $($digits.Length) digits." }
   if ($digits[0] -lt [char]'2' -or $digits[3] -lt [char]'2') { Stop-With 2 "Invalid number: area code and exchange must not start with 0 or 1." }
   Write-Host "Number validated: $digits"
+
+  # ---- 1b. IAOS call lock (B14-13): held for the whole sequence; taken here only in standalone use ----
+  $lock = New-Object System.Threading.Mutex($false, 'Local\IAOS-AirDroid-Dial')
+  $got = $false
+  try { $got = $lock.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+  if ($CallerHoldsLock) {
+    if ($got) { $lock.ReleaseMutex(); $lock.Dispose(); Stop-With 10 "The IAOS call lock is not held by the caller. Nothing was changed." }
+    $lock.Dispose()
+  } else {
+    if (-not $got) { $lock.Dispose(); Stop-With 10 "Another IAOS call is in progress. Nothing was changed." }
+    $mutex = $lock
+  }
 
   Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
   if (-not ('IaosPrepareCall.Native' -as [type])) {
@@ -78,7 +109,7 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
   $Walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
 
   # ---- 2. Exactly one AirDroid main window ----
-  $procs = @(Get-Process -Name AirDroid -ErrorAction SilentlyContinue)
+  $procs = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
   if ($procs.Count -eq 0) { Stop-With 3 "AirDroid is not running. Start AirDroid and open the Dialpad (My devices > your phone > Dialpad)." }
   $mains = @()
   foreach ($p in $procs) {
@@ -140,10 +171,14 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
     Stop-With 6 "Readback did not match (expected $digits, read '$read'). The field was cleared. Do not call."
   }
   Write-Host "PREPARED: $digits is in the AirDroid Dialpad (exact readback). AirDroid in front: $foreground." -ForegroundColor Green
-  Write-Host "Check the number on screen, then press Make Call yourself."
+  # Standalone prefill only: in the automatic handler path DialCall.ps1 presses Make Call next, without confirmation.
+  if (-not $Automatic) { Write-Host "Check the number on screen, then press Make Call yourself." }
   exit 0
 }
 catch {
   Write-Host "PREPARE CALL STOPPED: unexpected error: $($_.Exception.Message)" -ForegroundColor Red
   exit 7
+}
+finally {
+  if ($mutex) { $mutex.ReleaseMutex(); $mutex.Dispose() }
 }

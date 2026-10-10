@@ -6,8 +6,10 @@
   Runs only after PrepareCall.ps1 exits 0. Brad's one IAOS Call click is the authorization; there is no second
   confirmation. It never retries and never touches End Call, Enter or AirDroid's configuration or log files.
 
-    1. Duplicate guard: one dial at a time (named mutex), and the same number is refused if it was dialled in the
-       last -GuardSeconds seconds (a double launch must not call twice).
+    1. Duplicate guard: one call at a time (the IAOS call lock, named mutex Local\IAOS-AirDroid-Dial), and the same
+       number is refused if it was dialled in the last -GuardSeconds seconds (a double launch must not call twice).
+       In the automatic path IaosAirdroidHandler.ps1 holds the lock for the whole prepare-and-dial sequence and passes
+       -CallerHoldsLock; standalone use takes the lock here.
     2. Live Dialpad: exactly one visible frmAirCloud form holding exactly one visible number field, which must read
        exactly the expected digits.
     3. Make Call, identified structurally (the rule validated against Brad's pointing on 2026-10-09):
@@ -26,6 +28,11 @@
 .PARAMETER CheckOnly   Runs steps 1 to 4 read-only; does not click or record a dial.
 .PARAMETER GuardOnly   Runs only the duplicate guard against -GuardFile (offline tests); never looks at AirDroid.
 .PARAMETER GuardFile   Where the last dial is recorded (default: %LOCALAPPDATA%\IAOS\airdroid-last-dial.json).
+.PARAMETER CallerHoldsLock  The caller already holds the IAOS call lock (B14-13 handler). Only confirms it is held
+                       (exit 10 if not) instead of taking it, which would deadlock against the caller.
+.PARAMETER TestProcessName  Offline tests only: process name of the inert fake AirDroid window.
+.PARAMETER TestPauseMs  Offline tests only, and only together with -TestProcessName: pauses before the final number
+                       check and again between that check and the click, so a competing launch can be attempted.
 
 .NOTES
   Exit codes:
@@ -36,7 +43,8 @@
     7  unexpected error
     8  Make Call panel not found, ambiguous, inside the call-status panel, or not enabled
     9  number or panel did not match / changed before the click; nothing clicked
-    10 duplicate refused (same number dialled moments ago, or another dial in progress)
+    10 duplicate refused (same number dialled moments ago, or another IAOS call in progress), or -CallerHoldsLock
+       given but the lock is not held
 #>
 [CmdletBinding()]
 param(
@@ -44,9 +52,17 @@ param(
   [switch]$CheckOnly,
   [switch]$GuardOnly,
   [string]$GuardFile = (Join-Path $env:LOCALAPPDATA 'IAOS\airdroid-last-dial.json'),
-  [int]$GuardSeconds = 30
+  [int]$GuardSeconds = 30,
+  [switch]$CallerHoldsLock,
+  [string]$TestProcessName = '',
+  [int]$TestPauseMs = 0
 )
 $ErrorActionPreference = 'Stop'
+$processName = if ($TestProcessName) { $TestProcessName } else { 'AirDroid' }
+
+function Wait-TestPause([string]$where) {
+  if ($TestProcessName -and $TestPauseMs -gt 0) { Write-Host "TEST PAUSE $where"; Start-Sleep -Milliseconds $TestPauseMs }
+}
 
 function Stop-With([int]$code, [string]$msg) {
   Write-Host "DIAL STOPPED: $msg" -ForegroundColor Red
@@ -58,8 +74,16 @@ try {
   if ($Number -notmatch '^[2-9]\d{2}[2-9]\d{6}$') { Stop-With 2 "Invalid number: expected the 10 prepared US digits." }
 
   # ---- 1. Duplicate guard ----
-  $mutex = New-Object System.Threading.Mutex($false, 'Local\IAOS-AirDroid-Dial')
-  if (-not $mutex.WaitOne(0)) { $mutex.Dispose(); $mutex = $null; Stop-With 10 "Another IAOS dial is in progress. Nothing was clicked." }
+  $lock = New-Object System.Threading.Mutex($false, 'Local\IAOS-AirDroid-Dial')
+  $got = $false
+  try { $got = $lock.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+  if ($CallerHoldsLock) {
+    if ($got) { $lock.ReleaseMutex(); $lock.Dispose(); Stop-With 10 "The IAOS call lock is not held by the caller. Nothing was clicked." }
+    $lock.Dispose()
+  } else {
+    if (-not $got) { $lock.Dispose(); Stop-With 10 "Another IAOS call is in progress. Nothing was clicked." }
+    $mutex = $lock
+  }
   if (Test-Path -LiteralPath $GuardFile) {
     $last = $null
     try { $last = Get-Content -LiteralPath $GuardFile -Raw | ConvertFrom-Json } catch { $last = $null }
@@ -98,7 +122,7 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
   }
 
   # ---- 2. AirDroid and the live Dialpad ----
-  $procs = @(Get-Process -Name AirDroid -ErrorAction SilentlyContinue)
+  $procs = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
   if ($procs.Count -eq 0) { Stop-With 3 "AirDroid is not running." }
   $mains = @()
   foreach ($p in $procs) {
@@ -151,8 +175,11 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
   $same = ($now.L -eq $rect.L -and $now.T -eq $rect.T -and $now.R -eq $rect.R -and $now.B -eq $rect.B)
   $ok = $N::IsWindow($target) -and $N::IsWindowVisible($target) -and $N::IsWindowEnabled($target) -and $N::IsWindowVisible($formH) -and $N::IsChild($formH, $target) -and $same
   if (-not $ok) { Stop-With 9 "Make Call changed before the click. Nothing was clicked." }
+  Wait-TestPause 'before final number check'
   if ($N::GetText($field) -cne $Number) { Stop-With 9 "The Dialpad number changed before the click. Nothing was clicked." }
   if ($CheckOnly) { Write-Host "CHECK ONLY: Make Call identified (panel $target) and $Number is in the Dialpad; nothing was clicked." -ForegroundColor Green; exit 0 }
+
+  Wait-TestPause 'before dispatch'
 
   # ---- 5. Record the dial (so a second launch is refused), then one click ----
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $GuardFile) | Out-Null

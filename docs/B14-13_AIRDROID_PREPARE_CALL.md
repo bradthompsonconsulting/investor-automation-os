@@ -43,7 +43,12 @@ saves are unchanged and independent of the call. GHL softphone work is outside 1
     outside the call-status panel). This rule matched the button Brad pointed at in the Manual-mode test (restricted
     Drive section 12).
   - It rechecks the exact number and the panel immediately before the click, clicks once with no retry, and refuses
-    a duplicate (one dial at a time; the same number within 30 s).
+    a duplicate (one call at a time; the same number within 30 s).
+  - **Bones review fixes (2026-10-10):**
+    - the handler now holds the IAOS call lock for the whole prepare-and-dial sequence, so a competing launch
+      cannot change the Dialpad between prefill and click;
+    - the automatic path no longer shows PrepareCall's "press Make Call yourself" line.
+    Both are tested inertly against a fake Dialpad (`app/scripts/test-airdroid-dial-concurrency.cjs`).
   - **Offline-checked only.** Live dialing through IAOS is not proven until registration and a live test with Brad's
     designated test number.
 

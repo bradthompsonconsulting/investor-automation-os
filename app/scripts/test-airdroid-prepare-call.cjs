@@ -119,8 +119,26 @@ check('dial: never reads AirDroid configuration or log files',
 check('dial: the dial is recorded for the duplicate guard before the click',
   dialCode.indexOf('Set-Content -LiteralPath $GuardFile') > -1 && dialCode.indexOf('Set-Content -LiteralPath $GuardFile') < dialCode.indexOf('0x0201'), true);
 check('dial: one dial at a time (named mutex, no wait)', /Mutex\(\$false, 'Local\\IAOS-AirDroid-Dial'\)/.test(dialCode) && /WaitOne\(0\)/.test(dialCode), true);
-check('handler: DialCall runs only after PrepareCall exits 0, with the same parsed digits',
-  /PrepareCall\.ps1'\) -Number \$number\s*\n\$code = \$LASTEXITCODE\s*\nif \(\$code -eq 0\) \{\s*\n\s*& powershell\.exe [^\n]*'DialCall\.ps1'\) -Number \$number/.test(handlerSrc), true);
+check('handler: duplicate check, then PrepareCall -Automatic, then DialCall, each only after the previous exits 0, with the same parsed digits',
+  /\$code = Invoke-Step 'DialCall\.ps1' \(@\('-GuardOnly'\) \+ \$dialExtra\)\s*\n\s*if \(\$code -eq 0\) \{ \$code = Invoke-Step 'PrepareCall\.ps1' \(@\('-Automatic'\) \+ \$extra\) \}\s*\n\s*if \(\$code -eq 0\) \{ \$code = Invoke-Step 'DialCall\.ps1' \$dialExtra \}/.test(handlerSrc)
+    && /-File \(Join-Path \$PSScriptRoot \$script\) -Number \$number -CallerHoldsLock @arguments/.test(handlerSrc), true);
+{
+  // B14-13 (Bones finding 1): the call lock is taken before any step touches the Dialpad and released on every exit
+  // path, before any "Press Enter" pause. The concurrency behaviour itself is tested in test-airdroid-dial-concurrency.cjs.
+  const take = handlerSrc.indexOf("$held = $mutex.WaitOne(0)");
+  const firstStep = handlerSrc.indexOf("$code = Invoke-Step");
+  const release = handlerSrc.indexOf('finally {\n  if ($held) { $mutex.ReleaseMutex() }');
+  const pause = handlerSrc.lastIndexOf("Read-Host 'Press Enter to close this window'");
+  check('handler: lock taken before the first step, released in finally, before the closing pause',
+    [take > -1, take < firstStep, release > firstStep, release < pause], [true, true, true, true]);
+  const prep = fs.readFileSync(path.join(REPO, 'tools', 'airdroid-prepare-call', 'PrepareCall.ps1'), 'utf8');
+  const prepCode = prep.replace(/<#[\s\S]*?#>/g, '');
+  check('prefill: "press Make Call yourself" shown only without -Automatic',
+    /if \(-not \$Automatic\) \{ Write-Host "Check the number on screen, then press Make Call yourself\." \}/.test(prepCode)
+      && (prepCode.match(/Make Call yourself/g) || []).length === 1, true);
+  check('prefill: takes the lock (or confirms the caller holds it) before the Dialpad is touched',
+    prep.indexOf("WaitOne(0)") > -1 && prep.indexOf("WaitOne(0)") < prep.indexOf('0x000C, [IntPtr]::Zero, $digits'), true);
+}
 
 // Duplicate guard and number validation, Windows only. -GuardOnly never looks at AirDroid; the guard file is temporary.
 if (process.platform === 'win32') {

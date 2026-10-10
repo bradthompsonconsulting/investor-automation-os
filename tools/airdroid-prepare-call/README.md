@@ -13,9 +13,9 @@ dialing through IAOS is not yet proven:** the link is not registered and no live
 
 | File | Purpose |
 |---|---|
-| `PrepareCall.ps1` | The reviewed standalone helper, byte-identical to the prototype delivered on 2026-10-09 (SHA-256 `3a7d68fd…e520`). Prefill only. |
-| `DialCall.ps1` | Runs after a successful prefill. Duplicate guard (one dial at a time; the same number is refused for 30 s), exact recheck of the Dialpad number, structural Make Call identification (the rule validated against Brad's pointing), recheck, then **one click, no retry**. Reports only "click sent once". `-CheckOnly` is read-only; `-GuardOnly` runs only the guard (tests). |
-| `IaosAirdroidHandler.ps1` | Accepts one IAOS launch link, parses it strictly, runs `PrepareCall.ps1 -Number NNNNNNNNNN` and, only if that exits 0, `DialCall.ps1 -Number NNNNNNNNNN`. `-ParseOnly` touches nothing and is used by the tests. |
+| `PrepareCall.ps1` | The reviewed standalone prefill helper. Prefill only. Byte-identical to the 2026-10-09 prototype (SHA-256 `3a7d68fd…e520`) up to `ef37102`; changed after Bones's review: it now takes the IAOS call lock (or, with `-CallerHoldsLock`, confirms the handler holds it) before touching the Dialpad, and `-Automatic` suppresses its "press Make Call yourself" line in the automatic path. Standalone use keeps that line. |
+| `DialCall.ps1` | Runs after a successful prefill. Duplicate guard (one call at a time under the IAOS call lock; the same number is refused for 30 s), exact recheck of the Dialpad number, structural Make Call identification (the rule validated against Brad's pointing), recheck, then **one click, no retry**. Reports only "click sent once". `-CheckOnly` is read-only; `-GuardOnly` runs only the guard (tests). |
+| `IaosAirdroidHandler.ps1` | Accepts one IAOS launch link and parses it strictly. It then takes the **IAOS call lock** (named mutex `LocalIAOS-AirDroid-Dial`, no wait) and holds it for the whole sequence: duplicate check (`DialCall.ps1 -GuardOnly`), `PrepareCall.ps1 -Automatic`, then `DialCall.ps1`, each only if the previous step exits 0, all with `-CallerHoldsLock`. A competing launch finds the lock taken and stops (exit 10) without touching the Dialpad. The lock is released in `finally` on every exit path, before any "Press Enter" pause. `-ParseOnly` touches nothing and is used by the tests. |
 
 ## What `PrepareCall.ps1` does
 1. Validates the number, a 10-digit US number, before touching anything.
@@ -39,6 +39,7 @@ dialing through IAOS is not yet proven:** the link is not registered and no live
 - 5 field ambiguous
 - 6 readback mismatch (field cleared)
 - 7 unexpected error
+- 10 another IAOS call is in progress (nothing changed), or `-CallerHoldsLock` given but the lock is not held
 - 20 (handler only) link refused
 
 **`DialCall.ps1` exit codes:** 0 click sent once; 2 invalid number; 3 AirDroid missing or ambiguous; 4 live Dialpad
@@ -64,7 +65,13 @@ Until the link is registered:
   - It checks the browser-side link builder against the handler's own parser, the Make Call step's shape (one
     click, recheck first, no keystrokes, no AirDroid file reads, handler order) and, on Windows, its number
     validation and duplicate guard against a temporary guard file. Nothing touches AirDroid or places a call.
-  - 42/42 checks pass.
+  - 45/45 checks pass.
+- **Concurrency test:** `app/scripts/test-airdroid-dial-concurrency.cjs` (Windows; inert).
+  - It builds a fake AirDroid Dialpad (`app/scripts/harness/airdroid-fake/FakeAirDroid.cs`) and runs the real
+    handler and scripts against it with `-TestProcessName`.
+  - Controlled pauses (`-TestPauseMs`, honoured only with `-TestProcessName`) hold a launch before its final number
+    check and before dispatch, while competing launches are attempted. The fake logs every number change and click.
+  - The registered command passes none of the test parameters. 34/34 checks pass.
   - Its negative controls catch a weakened builder (4 failures) and a weakened handler (3 failures).
 
 ## Limits
