@@ -23,7 +23,8 @@
   padding: 20px 22px;
 }
 
-/* Too narrow to sit beside: the panel stays at the top of the page, and the workspace scrolls beneath it. */
+/* Too narrow to sit beside: the panel sits above the workspace in normal flow and scrolls away with the page
+   (its own content scrolls inside it). It is never sticky here, so it can never cover a workspace control. */
 @media (max-width: 1200px) {
   .seller-call-shell--with-script {
     flex-direction: column;
@@ -32,9 +33,9 @@
 
   .full-script-panel {
     order: -1;
+    position: static;
     flex: 0 0 auto;
     width: 100%;
     max-height: 40vh;
-    z-index: 5;
   }
 }
