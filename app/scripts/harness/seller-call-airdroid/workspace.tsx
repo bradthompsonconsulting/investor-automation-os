@@ -31,11 +31,31 @@ function ExposeNavigate() {
   return null;
 }
 
+/**
+ * The real app's frame, copied from src/components/Layout.tsx without its sign-in and status pieces: a 240px
+ * sidebar, a 64px header, and the content in <main> (overflow auto, 24px padding), which is the element that
+ * scrolls in the app. The layout checks render Seller Call inside it at /framed/contacts/:id/seller-call.
+ */
+function AppFrame() {
+  return (
+    <div style={{ display: "flex", height: "100vh", overflow: "hidden", background: "#0A0E1A" }}>
+      <aside style={{ width: "240px", flexShrink: 0, overflow: "hidden" }} />
+      <div style={{ display: "flex", flexDirection: "column", flex: "1 1 0%", overflow: "hidden" }}>
+        <header style={{ height: "64px", flexShrink: 0, borderBottom: "1px solid rgba(255,255,255,0.08)" }} />
+        <main data-testid="harness-main" style={{ flex: "1 1 0%", overflow: "auto", padding: "24px", background: "#0A0E1A" }}>
+          <SellerCallWorkspace />
+        </main>
+      </div>
+    </div>
+  );
+}
+
 createRoot(document.getElementById("root")!).render(
   <BrowserRouter>
     <ExposeNavigate />
     <Routes>
       <Route path="/contacts/:id/seller-call" element={<SellerCallWorkspace />} />
+      <Route path="/framed/contacts/:id/seller-call" element={<AppFrame />} />
       <Route path="*" element={<p data-testid="elsewhere">Elsewhere</p>} />
     </Routes>
   </BrowserRouter>,

@@ -323,12 +323,15 @@ const fullScriptTsx = readSrc('src/components/FullScriptDrawer.tsx');
 }
 
 {
-  check('FullScriptDrawer is a real dialog (role="dialog", aria-modal)', /role="dialog"/.test(fullScriptTsx) && /aria-modal="true"/.test(fullScriptTsx), true);
+  // B14-13: the script sits beside the workspace so Call and the answers stay usable; it is no longer a modal dialog.
+  check('FullScriptDrawer is a non-modal side panel (complementary, no dialog role, no aria-modal, no backdrop)',
+    /role="complementary"/.test(fullScriptTsx) && !/role="dialog"|aria-modal|position: "fixed"/.test(fullScriptTsx), true);
   check('FullScriptDrawer has a stable data-testid', /data-testid="full-script-drawer"/.test(fullScriptTsx), true);
   check('FullScriptDrawer renders scriptLinesByStage() (pure data, never a second script list)', /scriptLinesByStage\(\)/.test(fullScriptTsx), true);
   check('FullScriptDrawer labels its content "Suggested — say it your way"', /Suggested — say it your way/.test(fullScriptTsx), true);
   check('FullScriptDrawer states MSK, not script completion, remains the Offer Ready authority', /MSK still decides Offer Ready/.test(fullScriptTsx), true);
-  check('FullScriptDrawer closes on Escape (optional, never trapping the operator)', /"Escape"/.test(fullScriptTsx), true);
+  check('FullScriptDrawer closes on Escape from inside the panel only (optional, never trapping the operator)',
+    /onKeyDown=\{\(e\) => \{\s*if \(e\.key === "Escape"\) onClose\(\);/.test(fullScriptTsx) && !/window\.addEventListener/.test(fullScriptTsx), true);
   check('FullScriptDrawer has an explicit close control', /data-testid="full-script-close"/.test(fullScriptTsx), true);
 }
 
@@ -361,8 +364,8 @@ const fullScriptTsx = readSrc('src/components/FullScriptDrawer.tsx');
     !/fetch\(|ghl\.|XMLHttpRequest|axios/.test(fullScriptTsx), true);
   check('FullScriptDrawer still has no useState anywhere (fully controlled via open/onClose props, no new local state introduced)',
     /useState/.test(fullScriptTsx), false);
-  check('FullScriptDrawer has exactly one useEffect (the pre-existing Escape-key listener; the INV-69 additions are pure render, no new effect)',
-    (fullScriptTsx.match(/useEffect\(/g) || []).length, 1);
+  check('FullScriptDrawer has no useEffect (B14-13 moved the Escape handling onto the panel; the INV-69 additions are pure render, no effect)',
+    (fullScriptTsx.match(/useEffect\(/g) || []).length, 0);
 }
 
 console.log('');

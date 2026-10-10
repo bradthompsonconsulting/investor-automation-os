@@ -66,7 +66,7 @@ const { parseOutcomeNote } = require(path.join(APP, 'src/lib/seller-call-outcome
  * Taken from the finished file, never back-filled from a passing run: 26 single probe()/check()
  * call sites + 1 inside the invalid-number loop x 3 numbers = 29.
  */
-const FLOOR = 29;
+const FLOOR = 34;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -497,6 +497,33 @@ async function main() {
         return { ok: scriptText > 200 && (await page.getByTestId('call-outcome-pass-reason').inputValue()) === PASS_REASON && same(await drafts(page), DRAFTS),
           detail: { scriptText, drafts: await drafts(page) } };
       });
+      await probe('with the Full Script open beside the workspace (not a modal), Call and the answers stay usable and the script stays open', async () => {
+        await page.getByTestId('view-full-script').click();
+        const panel = page.getByTestId('full-script-drawer');
+        await panel.waitFor();
+        const ariaModal = await panel.getAttribute('aria-modal');
+        const box = async (id) => page.getByTestId(id).boundingBox();
+        const overlaps = (a, b) => !!(a && b) && a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+        await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click({ timeout: 3000 });
+        const calls = await mockCalls(page);
+        const reason = page.getByTestId('call-outcome-pass-reason');
+        await reason.click({ timeout: 3000 });
+        await page.keyboard.press('End');
+        await page.keyboard.type(' typed');
+        const typed = await reason.inputValue();
+        await page.keyboard.press('Escape');
+        const openAfterFieldEscape = await panel.isVisible();
+        await reason.fill(PASS_REASON);
+        const geometry = { panel: await box('full-script-drawer'), call: await box('call-with-airdroid'), reason: await box('call-outcome-pass-reason') };
+        const covered = overlaps(geometry.panel, geometry.call) || overlaps(geometry.panel, geometry.reason);
+        await page.getByTestId('full-script-close').focus();
+        await page.keyboard.press('Escape');
+        await panel.waitFor({ state: 'hidden' });
+        return { ok: ariaModal === null && same(calls, ['2145550101']) && typed === `${PASS_REASON} typed` && openAfterFieldEscape && !covered
+          && (await reason.inputValue()) === PASS_REASON && same(await drafts(page), DRAFTS) && writes().length === writesBefore && popups.length === 0,
+          detail: { ariaModal, calls, typed, openAfterFieldEscape, geometry, writes: normalise(writes().slice(writesBefore)) } };
+      });
       await probe('after the mock error the Pass save sends exactly the control\'s complete operations (targets and arguments)', async () => {
         await recordPass(page);
         const sent = normalise(writes().slice(writesBefore));
@@ -599,6 +626,115 @@ async function main() {
         await recordPass(page);
         const sent = normalise(writes().slice(writesBefore));
         return { ok: (await page.getByTestId('call-outcome-error').count()) === 0 && same(sent, control.pass), detail: { sent, control: control.pass } };
+      });
+      await context.close();
+    }
+
+    // ═══ FULL SCRIPT LAYOUT IN THE APP FRAME (Bones, 3226493) ══════════════
+    // Seller Call inside a copy of the app's frame, where <main> is the element that scrolls. With the script open at
+    // each width: sweep the whole scroll range and hit-test the controls; click Call once; edit answers; reach Call by
+    // keyboard; toggle the panel. 1280 is the side-by-side layout; 1200 and below are stacked. Every control must be
+    // clear (hit-tests as itself) somewhere in the range, and the panel must never cover one anywhere.
+    const SWEEP = () => {
+      const main = document.querySelector('[data-testid="harness-main"]');
+      const panel = document.querySelector('[data-testid="full-script-drawer"]');
+      const shellMain = document.querySelector('.seller-call-shell__main');
+      const els = [['call-with-airdroid', document.querySelector('[data-testid="call-with-airdroid"]')],
+        ['negotiation-seller-position-input', document.querySelector('[data-testid="negotiation-seller-position-input"]')],
+        ['transaction-structure', document.querySelector('[placeholder="Transaction structure"]')],
+        ['call-outcome-pass-reason', document.querySelector('[data-testid="call-outcome-pass-reason"]')],
+        ['view-full-script', document.querySelector('[data-testid="view-full-script"]')]];
+      const vis = main.getBoundingClientRect();
+      const conflicts = []; const seen = new Set(); const clear = new Set(); let underOwnStickyBar = 0;
+      for (let y = 0; y <= main.scrollHeight; y += 120) {
+        main.scrollTop = y;
+        const p = panel.getBoundingClientRect();
+        for (const [id, el] of els) {
+          if (!el) { conflicts.push({ id, missing: true }); continue; }
+          const r = el.getBoundingClientRect();
+          const cx = r.left + r.width / 2; const cy = r.top + r.height / 2;
+          if (cy < vis.top || cy > vis.bottom || cx < vis.left || cx > vis.right) continue;
+          seen.add(id);
+          const hit = document.elementFromPoint(cx, cy);
+          const overlap = r.left < p.right && p.left < r.right && r.top < p.bottom && p.top < r.bottom;
+          // A failure is the script panel covering a control. A control passing under Seller Call's own sticky bar
+          // while it scrolls is the page's existing behaviour; it is counted, not failed.
+          if (overlap || (hit && panel.contains(hit))) conflicts.push({ id, y, hit: hit && (hit.getAttribute('data-testid') || hit.tagName), overlap });
+          else if (hit && (hit === el || el.contains(hit))) clear.add(id);
+          else if (hit && hit.closest('[data-testid="seller-call-sticky-bar"]')) underOwnStickyBar += 1;
+          else conflicts.push({ id, y, hit: hit && (hit.getAttribute('data-testid') || hit.tagName), overlap });
+        }
+      }
+      main.scrollTop = 0;
+      const p = panel.getBoundingClientRect(); const m = shellMain.getBoundingClientRect();
+      return { seen: [...seen].sort(), clear: [...clear].sort(), underOwnStickyBar, conflicts: conflicts.slice(0, 8), conflictCount: conflicts.length, position: getComputedStyle(panel).position,
+        sideBySide: p.left >= m.right, stackedAbove: p.bottom <= m.top, scrollHeight: main.scrollHeight, clientHeight: main.clientHeight };
+    };
+    const ALL_CONTROLS = ['call-outcome-pass-reason', 'call-with-airdroid', 'negotiation-seller-position-input', 'transaction-structure', 'view-full-script'];
+    const hitOk = (page, testid) => page.evaluate((id) => {
+      const el = document.querySelector(`[data-testid="${id}"]`); const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return !!hit && (hit === el || el.contains(hit));
+    }, testid);
+    for (const width of [1280, 1200, 1000, 768]) {
+      resetDb(); bf.reset(); log = [];
+      const { context, page, popups } = await open(WORKSPACE_PAGE, { width, ready: async (pg) => {
+        await pg.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
+        await pg.evaluate((to) => window.__iaosNavigate(to), `/framed/contacts/${A}/seller-call`);
+        await pg.getByTestId('call-with-airdroid-mode').waitFor({ timeout: 60000 });
+        await pg.getByTestId('call-outcome-pass-toggle').waitFor({ timeout: 60000 });
+      } });
+      await fillDrafts(page);
+      await page.getByTestId('call-outcome-pass-toggle').click();
+      await page.getByTestId('call-outcome-pass-reason').fill(PASS_REASON);
+      const writesBefore = writes().length;
+      await probe(`app frame at ${width}px with the Full Script open: ${width > 1200 ? 'beside' : 'above, not sticky'}; no control is covered anywhere in the scroll range; Call once, answers, keyboard and panel toggling all work; drafts survive; nothing written`, async () => {
+        await page.getByTestId('view-full-script').click();
+        const panel = page.getByTestId('full-script-drawer');
+        await panel.waitFor();
+        const sweep = await page.evaluate(SWEEP);
+        const layoutOk = width > 1200 ? sweep.sideBySide : (sweep.stackedAbove && sweep.position === 'static');
+        // Click Call once.
+        await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click({ timeout: 3000 });
+        const clickCalls = await mockCalls(page);
+        // Edit answers with the script open.
+        const sp = page.getByTestId('negotiation-seller-position-input');
+        await sp.click({ timeout: 3000 }); await page.keyboard.press('End'); await page.keyboard.type('1');
+        const spTyped = await sp.inputValue();
+        await sp.fill(SELLER_POSITION_DRAFT);
+        const reason = page.getByTestId('call-outcome-pass-reason');
+        await reason.click({ timeout: 3000 }); await page.keyboard.press('End'); await page.keyboard.type(' typed');
+        const reasonTyped = await reason.inputValue();
+        await page.keyboard.press('Escape');
+        const openAfterFieldEscape = await panel.isVisible();
+        await reason.fill(PASS_REASON);
+        // Keyboard: from the Pass reason, Shift+Tab back to Call, then Enter.
+        await mockMode(page, 'handed-off');
+        await reason.focus();
+        let tabs = 0; let onCall = false;
+        while (tabs < 150 && !onCall) {
+          await page.keyboard.press('Shift+Tab'); tabs += 1;
+          onCall = await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'call-with-airdroid');
+        }
+        const keyboardHit = onCall && await hitOk(page, 'call-with-airdroid');
+        if (onCall) await page.keyboard.press('Enter');
+        const keyboardCalls = await mockCalls(page);
+        // Toggle: close, reopen, then close with Escape from inside the panel.
+        await page.getByTestId('full-script-close').click();
+        await panel.waitFor({ state: 'hidden' });
+        await page.getByTestId('view-full-script').click();
+        await panel.waitFor();
+        await page.getByTestId('full-script-close').focus();
+        await page.keyboard.press('Escape');
+        await panel.waitFor({ state: 'hidden' });
+        const after = { drafts: await drafts(page), reason: await reason.inputValue(), error: await errorText(page) };
+        const ok = layoutOk && sweep.conflictCount === 0 && same(sweep.seen, ALL_CONTROLS) && same(sweep.clear, ALL_CONTROLS)
+          && same(clickCalls, ['2145550101']) && spTyped === `${SELLER_POSITION_DRAFT}1` && reasonTyped === `${PASS_REASON} typed` && openAfterFieldEscape
+          && onCall && keyboardHit && same(keyboardCalls, ['2145550101'])
+          && same(after.drafts, DRAFTS) && after.reason === PASS_REASON && after.error === null && writes().length === writesBefore && popups.length === 0;
+        return { ok, detail: { sweep, layoutOk, clickCalls, spTyped, reasonTyped, openAfterFieldEscape, tabs, onCall, keyboardHit, keyboardCalls, after,
+          writes: normalise(writes().slice(writesBefore)) } };
       });
       await context.close();
     }
