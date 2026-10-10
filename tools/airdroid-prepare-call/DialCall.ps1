@@ -107,6 +107,9 @@ try {
 [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
 [DllImport("user32.dll")] public static extern bool IsChild(IntPtr parent, IntPtr child);
 [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int cmd);
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, StringBuilder l);
 public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMessage(h, 0x000D, (IntPtr)256, sb); return sb.ToString(); }
 '@
@@ -191,6 +194,21 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
   Start-Sleep -Milliseconds 80
   [void]$N::PostMessage($target, 0x0202, [IntPtr]::Zero, $lp)   # WM_LBUTTONUP
   Write-Host "CLICK SENT ONCE to Make Call for $Number. No retry." -ForegroundColor Green
+
+  # ---- 6. Minimise the AirDroid window this click went to (Brad, 2026-10-10), once AirDroid has processed it ----
+  # Only $mainH: the one AirDroid main window that holds the Dialpad and the Make Call panel clicked above. Minimise
+  # only, as the window's own minimise button would: nothing is closed, the call is not ended, no other window is
+  # chosen, nothing is retried. If it does not minimise, that is reported and the result stays 0 (the click was sent).
+  try {
+    $mainH = [IntPtr]$mains[0].Current.NativeWindowHandle
+    $mainPid = [uint32]0; [void]$N::GetWindowThreadProcessId($mainH, [ref]$mainPid)
+    try { [void](Get-Process -Id $mainPid -ErrorAction Stop).WaitForInputIdle(3000) } catch { }   # bounded
+    Start-Sleep -Milliseconds 300
+    if ($N::IsWindow($mainH) -and $N::IsChild($mainH, $target)) { [void]$N::ShowWindowAsync($mainH, 6) }   # SW_MINIMIZE
+    for ($i = 0; $i -lt 20 -and -not $N::IsIconic($mainH); $i++) { Start-Sleep -Milliseconds 50 }
+    if ($N::IsIconic($mainH)) { Write-Host 'AIRDROID MINIMISED. IAOS does not know whether the call connected; check your phone.' -ForegroundColor Green }
+    else { Write-Host 'AIRDROID NOT MINIMISED: Windows did not minimise it. Nothing else was changed.' -ForegroundColor Yellow }
+  } catch { Write-Host "AIRDROID NOT MINIMISED: $($_.Exception.Message). Nothing else was changed." -ForegroundColor Yellow }
   exit 0
 }
 catch {

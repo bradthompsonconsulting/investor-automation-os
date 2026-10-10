@@ -4,7 +4,9 @@
 // Shape matches what PrepareCall.ps1 / DialCall.ps1 look for: a main window named "AirDroid"; one visible
 // "frmAirCloud" pane holding exactly one EDIT field; one 12-key grid; one full-width panel below it (Make Call).
 // Every change of the number field and every Make Call click is appended to the log file (args[0]) with the
-// field's text at that moment.
+// field's text at that moment. Each change between minimised and normal is logged too (MINIMIZED / RESTORED).
+// With args[1] == "--taskbar" the main window is a normal unowned taskbar window, like the real AirDroid main window
+// (test-airdroid-minimize.cjs); without it, the concurrency test's original setup is unchanged.
 using System;
 using System.Drawing;
 using System.IO;
@@ -20,7 +22,7 @@ public static class FakeAirDroid {
   public static void Main(string[] args) {
     logPath = args[0];
     var main = new Form { Text = "AirDroid", Width = 360, Height = 520, StartPosition = FormStartPosition.Manual,
-      Location = new Point(40, 40), ShowInTaskbar = false };
+      Location = new Point(40, 40), ShowInTaskbar = args.Length > 1 && args[1] == "--taskbar" };
     var page = new Panel { Text = "frmAirCloud", AccessibleName = "frmAirCloud", Dock = DockStyle.Fill };
     var field = new TextBox { Left = 20, Top = 16, Width = 240 };
     var grid = new Panel { Left = 20, Top = 60, Width = 260, Height = 360 };
@@ -36,6 +38,12 @@ public static class FakeAirDroid {
     field.TextChanged += (s, e) => Log("TEXT " + field.Text);
     makeCall.MouseUp += (s, e) => Log("CLICK " + field.Text);
     main.Shown += (s, e) => Log("READY");
+    var state = FormWindowState.Normal;
+    main.Resize += (s, e) => {
+      if (main.WindowState == state) return;
+      state = main.WindowState;
+      Log(state == FormWindowState.Minimized ? "MINIMIZED" : "RESTORED");
+    };
     Application.Run(main);
   }
 }

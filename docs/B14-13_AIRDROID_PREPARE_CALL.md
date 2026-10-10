@@ -49,6 +49,13 @@ saves are unchanged and independent of the call. GHL softphone work is outside 1
       cannot change the Dialpad between prefill and click;
     - the automatic path no longer shows PrepareCall's "press Make Call yourself" line.
     Both are tested inertly against a fake Dialpad (`app/scripts/test-airdroid-dial-concurrency.cjs`).
+  - **AirDroid minimised after the dial (Brad, 2026-10-10, after the f32a17e live test: AirDroid stayed in front).**
+    After the single click is sent and AirDroid has processed it, `DialCall.ps1` minimises the AirDroid main window
+    that holds the clicked Dialpad, and only that window. Nothing is closed or ended, no other window is chosen, and
+    nothing is retried or confirmed; a refused dial minimises nothing. The number checks, the lock and duplicate
+    protection are unchanged; the handler and `launchAirdroidCall` are unchanged from f32a17e. The earlier
+    browser-origin focus-return approach (5be9e7b, b2809bc, 60b565b) was stopped by Brad and is not part of this
+    change; its history and evidence are kept. Inert test: `app/scripts/test-airdroid-minimize.cjs`.
   - **Offline-checked only.** Live dialing through IAOS is not proven until registration and a live test with Brad's
     designated test number.
 

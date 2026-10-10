@@ -14,7 +14,7 @@ dialing through IAOS is not yet proven:** the link is not registered and no live
 | File | Purpose |
 |---|---|
 | `PrepareCall.ps1` | The reviewed standalone prefill helper. Prefill only. Byte-identical to the 2026-10-09 prototype (SHA-256 `3a7d68fd…e520`) up to `ef37102`; changed after Bones's review: it now takes the IAOS call lock (or, with `-CallerHoldsLock`, confirms the handler holds it) before touching the Dialpad, and `-Automatic` suppresses its "press Make Call yourself" line in the automatic path. Standalone use keeps that line. |
-| `DialCall.ps1` | Runs after a successful prefill. Duplicate guard (one call at a time under the IAOS call lock; the same number is refused for 30 s), exact recheck of the Dialpad number, structural Make Call identification (the rule validated against Brad's pointing), recheck, then **one click, no retry**. Reports only "click sent once". `-CheckOnly` is read-only; `-GuardOnly` runs only the guard (tests). |
+| `DialCall.ps1` | Runs after a successful prefill. Duplicate guard (one call at a time under the IAOS call lock; the same number is refused for 30 s), exact recheck of the Dialpad number, structural Make Call identification (the rule validated against Brad's pointing), recheck, then **one click, no retry**. Reports only "click sent once". Then, once AirDroid has processed the click (bounded wait), it **minimises the AirDroid main window that holds the clicked Dialpad**, and only that window, as its own minimise button would (Brad, 2026-10-10). It closes nothing, ends nothing, chooses no other window and does not retry; a refused dial minimises nothing; if the window does not minimise, that is reported and the result stays 0. The next call's prefill restores AirDroid first. `-CheckOnly` is read-only; `-GuardOnly` runs only the guard (tests). |
 | `IaosAirdroidHandler.ps1` | Accepts one IAOS launch link and parses it strictly. It then takes the **IAOS call lock** (named mutex `LocalIAOS-AirDroid-Dial`, no wait) and holds it for the whole sequence: duplicate check (`DialCall.ps1 -GuardOnly`), `PrepareCall.ps1 -Automatic`, then `DialCall.ps1`, each only if the previous step exits 0, all with `-CallerHoldsLock`. A competing launch finds the lock taken and stops (exit 10) without touching the Dialpad. The lock is released in `finally` on every exit path, before any "Press Enter" pause. `-ParseOnly` touches nothing and is used by the tests. |
 
 ## What `PrepareCall.ps1` does
@@ -73,6 +73,14 @@ Until the link is registered:
     check and before dispatch, while competing launches are attempted. The fake logs every number change and click.
   - The registered command passes none of the test parameters. 34/34 checks pass.
   - Its negative controls catch a weakened builder (4 failures) and a weakened handler (3 failures).
+- **Minimise test:** `app/scripts/test-airdroid-minimize.cjs` (Windows desktop session; inert).
+  - The fake Dialpad runs as an unowned taskbar window (`--taskbar`, like the real AirDroid main window) and logs
+    MINIMIZED / RESTORED; two unrelated windows (`FakeWindow.cs`) stand in for a browser and an editor.
+  - Checks: one click, then that AirDroid window minimises (after the click); it is not closed; the next call restores
+    it, clicks once and minimises it again; a dial refused at the final number check, a duplicate and a launch refused
+    by the lock minimise nothing; the unrelated windows keep their place, size, state and title; the lock is released.
+    Static checks: the minimise comes only after the click, after the bounded wait, only on the window that holds the
+    clicked panel, with nothing closed, ended, typed or chosen, and no title marker or origin lookup anywhere.
 
 ## Limits
 - Tested on one machine: BRAD-LAPTOP, AirDroid 3.8.0.4.
@@ -81,3 +89,7 @@ Until the link is registered:
 - The Dialpad must already be open.
 - Only US numbers are supported.
 - The connection label (Local or Remote) is not recorded, so the AirDroid Premium question is open.
+- Minimising AirDroid after the dial: when the AirDroid window minimises, Windows itself activates the next window
+  in its z-order (as when its minimise button is clicked). The helper does not choose that window, so it is not
+  guaranteed to be the IAOS browser window; in the inert test it was the most recent unrelated window. Against real
+  AirDroid and a real protocol launch from Chrome this is unproven until a live test.
