@@ -66,7 +66,7 @@ const { parseOutcomeNote } = require(path.join(APP, 'src/lib/seller-call-outcome
  * Taken from the finished file, never back-filled from a passing run: 26 single probe()/check()
  * call sites + 1 inside the invalid-number loop x 3 numbers = 29.
  */
-const FLOOR = 29;
+const FLOOR = 30;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -496,6 +496,33 @@ async function main() {
         await page.getByTestId('full-script-drawer').waitFor({ state: 'hidden' });
         return { ok: scriptText > 200 && (await page.getByTestId('call-outcome-pass-reason').inputValue()) === PASS_REASON && same(await drafts(page), DRAFTS),
           detail: { scriptText, drafts: await drafts(page) } };
+      });
+      await probe('with the Full Script open beside the workspace (not a modal), Call and the answers stay usable and the script stays open', async () => {
+        await page.getByTestId('view-full-script').click();
+        const panel = page.getByTestId('full-script-drawer');
+        await panel.waitFor();
+        const ariaModal = await panel.getAttribute('aria-modal');
+        const box = async (id) => page.getByTestId(id).boundingBox();
+        const overlaps = (a, b) => !!(a && b) && a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+        await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click({ timeout: 3000 });
+        const calls = await mockCalls(page);
+        const reason = page.getByTestId('call-outcome-pass-reason');
+        await reason.click({ timeout: 3000 });
+        await page.keyboard.press('End');
+        await page.keyboard.type(' typed');
+        const typed = await reason.inputValue();
+        await page.keyboard.press('Escape');
+        const openAfterFieldEscape = await panel.isVisible();
+        await reason.fill(PASS_REASON);
+        const geometry = { panel: await box('full-script-drawer'), call: await box('call-with-airdroid'), reason: await box('call-outcome-pass-reason') };
+        const covered = overlaps(geometry.panel, geometry.call) || overlaps(geometry.panel, geometry.reason);
+        await page.getByTestId('full-script-close').focus();
+        await page.keyboard.press('Escape');
+        await panel.waitFor({ state: 'hidden' });
+        return { ok: ariaModal === null && same(calls, ['2145550101']) && typed === `${PASS_REASON} typed` && openAfterFieldEscape && !covered
+          && (await reason.inputValue()) === PASS_REASON && same(await drafts(page), DRAFTS) && writes().length === writesBefore && popups.length === 0,
+          detail: { ariaModal, calls, typed, openAfterFieldEscape, geometry, writes: normalise(writes().slice(writesBefore)) } };
       });
       await probe('after the mock error the Pass save sends exactly the control\'s complete operations (targets and arguments)', async () => {
         await recordPass(page);

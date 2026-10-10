@@ -317,16 +317,25 @@ const OUTCOME_LABEL: Record<CallOutcomeKind, string> = {
   pass: "Passed",
 };
 
-function Shell({ contactId, children }: { contactId: string; children: React.ReactNode }) {
+// B14-13: `side` (the open Full Script panel) sits beside the workspace, never over it. The element tree is
+// the same with or without it, so opening or closing the script never remounts the workspace or loses its state.
+function Shell({ contactId, children, side }: { contactId: string; children: React.ReactNode; side?: React.ReactNode }) {
   return (
-    <div style={{ maxWidth: CONTENT_MAX_WIDTH }}>
-      <Link to={`/contacts/${contactId}`} style={{
-        display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px",
-        color: "#64748B", marginBottom: "14px", textDecoration: "none",
-      }}>
-        <ArrowLeft size={13} /> Contact
-      </Link>
-      {children}
+    <div
+      className={side ? "seller-call-shell--with-script" : undefined}
+      data-testid="seller-call-shell"
+      style={{ maxWidth: side ? `calc(${CONTENT_MAX_WIDTH} + 420px)` : CONTENT_MAX_WIDTH }}
+    >
+      <div className="seller-call-shell__main">
+        <Link to={`/contacts/${contactId}`} style={{
+          display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px",
+          color: "#64748B", marginBottom: "14px", textDecoration: "none",
+        }}>
+          <ArrowLeft size={13} /> Contact
+        </Link>
+        {children}
+      </div>
+      {side}
     </div>
   );
 }
@@ -2216,7 +2225,10 @@ export default function SellerCallWorkspace() {
   }
 
   return (
-    <Shell contactId={contactId}>
+    <Shell
+      contactId={contactId}
+      side={fullScriptOpen ? <FullScriptDrawer open={fullScriptOpen} onClose={() => setFullScriptOpen(false)} /> : null}
+    >
       <RefreshReadError message={refreshReadError} />
       <div style={{ marginBottom: "6px" }}>
         <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>
@@ -3415,7 +3427,6 @@ export default function SellerCallWorkspace() {
           </div>
         </>
       ) : null}
-      <FullScriptDrawer open={fullScriptOpen} onClose={() => setFullScriptOpen(false)} />
     </Shell>
   );
 }
