@@ -1214,6 +1214,23 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       });
       continue;
     }
+    // B14-13: while the committed config ENABLES the negotiation class, these two operations pass the scope gate for
+    // ANY target; the barrier then owns them (an unreserved request answers 409 not_sent before any GHL call).
+    if (NEGOTIATION_COMMITTED === G.PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED && scopeLib.PRODUCTION_NEGOTIATION_OPERATIONS.has(op)) {
+      await check(`committed config: ${op} is open to ANY target through the B14-13 negotiation class`, () => {
+        for (const target of [committedTarget(op), committedOther(op)]) assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(PRODUCTION, { operation: op, targetId: target, args: committedArgs(op) }), { ok: true }, target);
+      });
+      await check(`handler committed config: ghl-write ${op} unreserved on another target passes the scope gate, barrier refuses not_sent, zero GHL`, async () => {
+        const before = snapshot();
+        const res = await writeHandler(writeEvent(op, committedOther(op), committedArgs(op)));
+        const body = JSON.parse(res.body);
+        assert.notEqual(body.by, 'iaos-production-write-scope', res.body);
+        assert.equal(res.statusCode, 409, res.body);
+        assert.equal(body.outcome, 'not_sent', res.body);
+        assert.equal(ghlCalls.length, before.ghl, 'no GHL call');
+      });
+      continue;
+    }
     const allowed = ALLOWED_OPERATIONS.includes(op);
     await check(`committed config: ${op} on the REAL pinned fixture -> ${allowed ? 'ok' : 'OPERATION_NOT_PERMITTED'}`, () => {
       assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(PRODUCTION, { operation: op, targetId: committedTarget(op), args: committedArgs(op) }), allowed ? { ok: true } : { ok: false, code: 'OPERATION_NOT_PERMITTED' });
