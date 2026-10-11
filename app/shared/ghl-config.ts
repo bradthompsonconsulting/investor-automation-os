@@ -183,6 +183,29 @@ export interface GhlConfig {
    * Enabling is its own reviewed config-only commit, never a runtime toggle.
    */
   productionSellerCallAutosave: string;
+  /**
+   * B14-13 Seller Call negotiation — Production permission class (Brad,
+   * 2026-10-11: "a working Seller Call setup in Production"). SERVER-SIDE ONLY
+   * (read by production-write-scope.ts; never in RUNTIME_GROUPS) and
+   * INDEPENDENT of the flags above. Only `PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED`
+   * opens it. When open, for ANY Production contact:
+   *   - opportunity.currentOffer (ghl-write.ts still requires a Current Offer
+   *     reservation, the freeze gate, and -- under the contact lock -- a fresh
+   *     read showing the opportunity in Seller Leads);
+   *   - contact.callback (Follow-Up's callback; ghl-write.ts still requires its
+   *     follow_up reservation);
+   *   - note.create ONLY for a note exactly one ledger parser recognizes, that
+   *     parser being: Seller price position; a conversation outcome (Accept,
+   *     Pass, Follow-Up; ghl-write.ts still requires a reservation of the same
+   *     kind); the readiness decision OVERRIDDEN (never "approved") or its
+   *     invalidation; or the above-Max negotiation override.
+   * Nothing else: no contract, send, stage, routing, disposition or
+   * underwriting operation. ghl-write.ts still applies authentication, Origin,
+   * the contact lock, the ledger guard and the write claim, unchanged.
+   * TEST carries a fixed, documentation-only value no code path reads.
+   * Enabling is its own reviewed config-only commit, never a runtime toggle.
+   */
+  productionSellerCallNegotiation: string;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -337,6 +360,11 @@ export const PRODUCTION_CALL_LOG_DISABLED = "PRODUCTION_CALL_LOG_DISABLED" as co
 export const PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED = "PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED" as const;
 /** B14-13 — the value PRODUCTION carries until the enable commit; TEST carries it as documentation only. */
 export const PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED = "PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED" as const;
+
+/** B14-13 — the ONE value that opens the Production Seller Call negotiation permission class. */
+export const PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED = "PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED" as const;
+/** B14-13 — the value PRODUCTION carries until the enable commit; TEST carries it as documentation only. */
+export const PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED = "PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED" as const;
 
 /**
  * INV-67 / B9-12 -- the literal placeholder value for a not-yet-provisioned
@@ -688,6 +716,8 @@ const PRODUCTION: GhlConfig = {
   productionCallLog: PRODUCTION_CALL_LOG_ENABLED,
   // B14-13: ENABLED — Brad's Production rollout of Seller Call autosave (Seller Position + Transaction assumptions v2; Brad + Jess, 2026-10-10). Disable: publish the prior deploy (lock kept), then revert this commit.
   productionSellerCallAutosave: PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED,
+  // B14-13: DISABLED until its own enable commit (Seller price position, Current Offer, outcomes; Brad, 2026-10-11).
+  productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -1056,6 +1086,8 @@ const TEST: GhlConfig = {
   productionCallLog: PRODUCTION_CALL_LOG_DISABLED,
   // B14-13: documentation-only in TEST; Test writes are never scoped.
   productionSellerCallAutosave: PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED,
+  // B14-13: documentation-only in TEST; Test writes are never scoped.
+  productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED,
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },

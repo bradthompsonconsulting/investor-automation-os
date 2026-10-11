@@ -12,7 +12,7 @@ import { callLogScope, isCallLogBound, isCallLogNoteText, isOperationRequestId, 
 import { claimWrite, lockContact, stageTransitionUnresolved, claimStageTransition, clearStageTransition } from "./lib/write-receipts";
 import { latestOutcomeNoteForOpportunity } from "../../src/lib/seller-call-outcome";
 import { currentOfferWriteGate } from "../../src/lib/current-offer-carrier";
-import { evaluateProductionGhlWriteScope, evaluateProductionPairedOwnership, requiresProductionPairedOwnership, PRODUCTION_WRITE_SCOPE_REFUSAL } from "./lib/production-write-scope";
+import { evaluateProductionGhlWriteScope, evaluateProductionPairedOwnership, requiresProductionPairedOwnership, requiresProductionNegotiationPipeline, PRODUCTION_WRITE_SCOPE_REFUSAL } from "./lib/production-write-scope";
 /** Board 15 / PR #126 stacked server PR: the operations a Current Offer barrier can own. */
 const BARRIER_OPERATIONS = new Set(Object.values(STEP_OPERATION));
 const barrierStore = () => getStore("iaos-write-receipts") as unknown as BarrierStore;
@@ -85,9 +85,11 @@ export const handler = async (event: any) => {
   } catch { return json(400, { error: "Invalid named write request" }); }
   // INV-98 Board #9 Production proof write scope -- before connectLambda,
   // any Blob store, the contact lock, the write claim, or any GHL call.
-  // Test deployments are unaffected (always ok).
+  // Test deployments are unaffected (always ok). The refusal is definitive and
+  // precedes any send, so it says so: `outcome: "not_sent"` (B14-13, Brad
+  // 2026-10-11 -- without it the page could not tell it from an unresolved save).
   const scope = evaluateProductionGhlWriteScope(config, { operation: request.operation, targetId: request.targetId, args: request.args });
-  if (!scope.ok) return json(403, { error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: scope.code });
+  if (!scope.ok) return json(403, { outcome: "not_sent", error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: scope.code });
   let release: (() => Promise<void>) | undefined;
   /* Board 15 / PR #126 stacked server PR -- the durable Current Offer barrier
      (lib/current-offer-barrier.ts). A request id registered by `begin` is
@@ -164,7 +166,13 @@ export const handler = async (event: any) => {
       if (pairedProduction) {
         const pinnedOpportunity = isOpportunityTargeted ? target : await boundary.opportunity(config.productionProofScope.opportunityId);
         const ownership = evaluateProductionPairedOwnership(config, pinnedOpportunity);
-        if (!ownership.ok) throw new RefusedBeforeSend(403, { error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: ownership.code });
+        if (!ownership.ok) throw new RefusedBeforeSend(403, { outcome: "not_sent", error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: ownership.code });
+      }
+      // B14-13 negotiation class: a Production Current Offer on any opportunity
+      // but the pinned one is written only while that opportunity, read fresh
+      // under the contact lock, is in Seller Leads. Test is unaffected.
+      if (requiresProductionNegotiationPipeline(config, operation, targetId) && target.pipelineId !== config.pipelines.sellerLeads) {
+        throw new RefusedBeforeSend(403, { outcome: "not_sent", error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: "OPPORTUNITY_NOT_SELLER_LEADS" });
       }
       if (operation === "opportunity.currentOffer") {
         const outcome = latestOutcomeNoteForOpportunity(await boundary.notes(contactId), targetId);

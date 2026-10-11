@@ -72,7 +72,7 @@ import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite"
    `seller-call-negotiation.ts`'s pure functions already work. */
 import { currentOfferWriteGate, acceptedPriceFreezeValue, readCurrentOfferFromOpportunity, checkCurrentOfferIntegrity } from "../lib/current-offer-carrier";
 import { runConfirmAcceptWrites, confirmAcceptOffered, recoverLastCallAttempt } from "../lib/seller-call-accept-writes";
-import { createOfferSaveCoordinator, OfferSaveBlocked, UNRESOLVED_ACCEPT_MESSAGE, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
+import { createOfferSaveCoordinator, classifyOfferWriteError, OfferSaveBlocked, UNRESOLVED_ACCEPT_MESSAGE, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
 import { beginReservation, reconcileReservation, readReservationStatus, newRequestIds, RESERVATION_FAILED_MESSAGE } from "../lib/current-offer-barrier-client";
 import { AppWriteSignInRequired } from "../lib/app-write-session";
 
@@ -529,7 +529,21 @@ async function saveCurrentOfferReserved(oppId: string, amount: number, requestId
     throw new OfferSaveBlocked(RESERVATION_FAILED_MESSAGE);
   }
   if (reserved.state !== "reserved") throw new OfferSaveBlocked(reserved.message);
-  return ghl.opportunities.setCurrentOffer(oppId, amount, { requestId: ids.offer });
+  try {
+    return await ghl.opportunities.setCurrentOffer(oppId, amount, { requestId: ids.offer });
+  } catch (e) {
+    /* B14-13 (Brad, 2026-10-11): a refusal that provably sent nothing (e.g. the
+       Production write scope, which refuses before the barrier is consulted)
+       leaves this save's own step pending. Release it at once with the server's
+       evidence-based reconcile -- it withdraws only never-sent steps and clears
+       only when every step is settled -- so the deal is not left blocked. A
+       failed or blocked reconcile leaves the server barrier in place, and the
+       next save reports it. The refusal itself is reported unchanged. */
+    if (classifyOfferWriteError(e) === "refused") {
+      try { await reconcileReservation(oppId); } catch { /* the barrier stays; nothing was sent */ }
+    }
+    throw e;
+  }
 }
 function offerSaveCoordinator(): OfferSaveCoordinator {
   if (sharedOfferSaves === null) sharedOfferSaves = createOfferSaveCoordinator(saveCurrentOfferReserved);
