@@ -1549,6 +1549,9 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     });
 
     // Handler, real ledger guard: the live module config with the class ENABLED and Board #9 DISABLED.
+    // On main's storage: the contact lock is a blob.setJSON on a lock/ key; the receipt claim is any other blob.setJSON.
+    const lockAcquire = (e) => e.kind === 'blob.setJSON' && isLockKey(e);
+    const isClaim = (e) => e.kind === 'blob.setJSON' && !isLockKey(e);
     const savedAutosave = PRODUCTION.productionSellerCallAutosave;
     const savedLive = { scope: PRODUCTION.productionProofScope, contract: PRODUCTION.contractProductionEnabled, stage: PRODUCTION.stages.underContract };
     applyLive('disabled');

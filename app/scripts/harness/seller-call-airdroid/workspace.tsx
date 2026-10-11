@@ -11,12 +11,11 @@
 import { createRoot } from "react-dom/client";
 import "../../../src/index.css";
 import { getConfig, projectRuntimeConfig, setRuntimeConfig } from "../../../shared/ghl-config";
-import { setAppWriteSession, bindPageActivation } from "../../../src/lib/app-write-session";
+import { setAppWriteSession } from "../../../src/lib/app-write-session";
 
 setRuntimeConfig(projectRuntimeConfig(getConfig("test")));
 // A placeholder bearer token: the test answers ghl-write itself (as contact-isolation's harness does).
 setAppWriteSession({ token: "offline-harness", expiresAt: "2099-01-01T00:00:00.000Z" });
-void bindPageActivation();
 
 const [{ BrowserRouter, Routes, Route, useNavigate }, { default: SellerCallWorkspace }] = await Promise.all([
   import("react-router-dom"),

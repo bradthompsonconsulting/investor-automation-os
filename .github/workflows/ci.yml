@@ -279,6 +279,9 @@ jobs:
       - name: AirDroid Prepare Call launch link (B14-13)
         run: node app/scripts/test-airdroid-prepare-call.cjs
 
+      # The real-page Seller Call suite needs Chromium. Not retried: a failure is reported as it happened.
+      - name: Install Chromium for the real-page Seller Call AirDroid suite
+        run: pnpm --dir app exec playwright install --with-deps chromium
       - name: Seller Call AirDroid UI checks
         run: node app/scripts/test-seller-call-airdroid.cjs
 
