@@ -716,8 +716,8 @@ const PRODUCTION: GhlConfig = {
   productionCallLog: PRODUCTION_CALL_LOG_ENABLED,
   // B14-13: ENABLED — Brad's Production rollout of Seller Call autosave (Seller Position + Transaction assumptions v2; Brad + Jess, 2026-10-10). Disable: publish the prior deploy (lock kept), then revert this commit.
   productionSellerCallAutosave: PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED,
-  // B14-13: DISABLED until its own enable commit (Seller price position, Current Offer, outcomes; Brad, 2026-10-11).
-  productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED,
+  // B14-13: ENABLED — Brad's working Seller Call setup in Production (Seller price position, Current Offer, Accept/Pass/Follow-Up; deliberate readiness override, its invalidation, above-Max acknowledgement; Brad, 2026-10-11). Disable: publish the prior deploy (lock kept), then revert this commit.
+  productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },

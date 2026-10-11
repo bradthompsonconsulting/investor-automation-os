@@ -86,7 +86,7 @@ const TEST = G.getConfig('test');
 const PRODUCTION = G.getConfig('production'); // the live module object the handlers read
 const PRODUCTION_ORIGINAL = JSON.parse(JSON.stringify(PRODUCTION));
 // B14-13 negotiation class: the value committed for Production.
-const NEGOTIATION_COMMITTED = G.PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED;
+const NEGOTIATION_COMMITTED = G.PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED;
 const PIN_CONTACT = 'offline-proof-contact';
 const PIN_OPP = 'offline-proof-opportunity';
 const OTHER_CONTACT = 'offline-real-contact';
