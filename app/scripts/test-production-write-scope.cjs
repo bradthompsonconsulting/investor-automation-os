@@ -85,6 +85,8 @@ const load = (n) => require(path.join(APP, 'src', 'lib', n + '.ts'));
 const TEST = G.getConfig('test');
 const PRODUCTION = G.getConfig('production'); // the live module object the handlers read
 const PRODUCTION_ORIGINAL = JSON.parse(JSON.stringify(PRODUCTION));
+// B14-13 negotiation class: the value committed for Production.
+const NEGOTIATION_COMMITTED = G.PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED;
 const PIN_CONTACT = 'offline-proof-contact';
 const PIN_OPP = 'offline-proof-opportunity';
 const OTHER_CONTACT = 'offline-real-contact';
@@ -120,6 +122,8 @@ function variant(state) {
   if (state !== 'default') c.productionCallLog = G.PRODUCTION_CALL_LOG_DISABLED;   // 'default' = the committed config, unchanged
   // B14-13: likewise the Seller Call autosave class.
   if (state !== 'default') c.productionSellerCallAutosave = G.PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED;
+  // B14-13: likewise the Seller Call negotiation class.
+  if (state !== 'default') c.productionSellerCallNegotiation = G.PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED;
   return c;
 }
 function applyLive(state) {
@@ -128,6 +132,7 @@ function applyLive(state) {
   PRODUCTION.contractProductionEnabled = c.contractProductionEnabled;
   PRODUCTION.stages.underContract = c.stages.underContract;
   PRODUCTION.productionCallLog = c.productionCallLog;
+  PRODUCTION.productionSellerCallNegotiation = c.productionSellerCallNegotiation;
 }
 const EXPECTED_PRE = {
   disabled: 'PRODUCTION_WRITES_DISABLED',
@@ -1209,6 +1214,23 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       });
       continue;
     }
+    // B14-13: while the committed config ENABLES the negotiation class, these two operations pass the scope gate for
+    // ANY target; the barrier then owns them (an unreserved request answers 409 not_sent before any GHL call).
+    if (NEGOTIATION_COMMITTED === G.PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED && scopeLib.PRODUCTION_NEGOTIATION_OPERATIONS.has(op)) {
+      await check(`committed config: ${op} is open to ANY target through the B14-13 negotiation class`, () => {
+        for (const target of [committedTarget(op), committedOther(op)]) assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(PRODUCTION, { operation: op, targetId: target, args: committedArgs(op) }), { ok: true }, target);
+      });
+      await check(`handler committed config: ghl-write ${op} unreserved on another target passes the scope gate, barrier refuses not_sent, zero GHL`, async () => {
+        const before = snapshot();
+        const res = await writeHandler(writeEvent(op, committedOther(op), committedArgs(op)));
+        const body = JSON.parse(res.body);
+        assert.notEqual(body.by, 'iaos-production-write-scope', res.body);
+        assert.equal(res.statusCode, 409, res.body);
+        assert.equal(body.outcome, 'not_sent', res.body);
+        assert.equal(ghlCalls.length, before.ghl, 'no GHL call');
+      });
+      continue;
+    }
     const allowed = ALLOWED_OPERATIONS.includes(op);
     await check(`committed config: ${op} on the REAL pinned fixture -> ${allowed ? 'ok' : 'OPERATION_NOT_PERMITTED'}`, () => {
       assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(PRODUCTION, { operation: op, targetId: committedTarget(op), args: committedArgs(op) }), allowed ? { ok: true } : { ok: false, code: 'OPERATION_NOT_PERMITTED' });
@@ -1610,6 +1632,290 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     } finally {
       PRODUCTION.productionSellerCallAutosave = savedAutosave;
       PRODUCTION.productionProofScope = savedLive.scope; PRODUCTION.contractProductionEnabled = savedLive.contract; PRODUCTION.stages.underContract = savedLive.stage;
+    }
+  }
+  // ===== B14-13 — Production Seller Call negotiation class (Brad, 2026-10-11). Covered for ANY Production contact:
+  // opportunity.currentOffer and contact.callback (both reservation-owned in ghl-write), and note.create of Seller
+  // price position, a conversation outcome, the readiness decision OVERRIDDEN or its invalidation, or the above-Max
+  // negotiation override. Plus the refusal fix: every Production scope refusal answers outcome "not_sent".
+  {
+    const negotiationOn = (state) => ({ ...variant(state), productionSellerCallNegotiation: G.PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED });
+    const decide = (cfg, operation, targetId, args) => scopeLib.evaluateProductionGhlWriteScope(cfg, { operation, targetId, args });
+    const RC = load('seller-call-readiness-carriers');
+    const NO = load('seller-call-negotiation-override-note');
+    const at = '2026-10-11T16:00:00.000Z';
+    const outcomeBody = (opp, kind, extra) => outcome.formatOutcomeNote(Object.assign({ opportunityId: opp, at, operator: null, kind, reason: null, followUpAt: null, snapshot: SNAPSHOT }, extra || {}));
+    const negBodies = (opp) => ({
+      'Seller price position (price)': RC.formatSellerPricePositionNote({ opportunityId: opp, at, operator: null, kind: 'price', price: 500000 }),
+      'Seller price position (refused)': RC.formatSellerPricePositionNote({ opportunityId: opp, at, operator: null, kind: 'refused' }),
+      'outcome accept': outcomeBody(opp, 'accept'),
+      'outcome pass': outcomeBody(opp, 'pass', { reason: 'Seller declined' }),
+      'outcome follow_up': outcomeBody(opp, 'follow_up', { followUpAt: '2026-10-12T17:00:00.000Z' }),
+      'readiness OVERRIDDEN': readinessNote('overridden', opp),
+      'readiness invalidation': RC.formatReadinessDecisionInvalidationNote({ opportunityId: opp, at, operator: null, decisionAt: '2026-09-29T12:00:00.000Z', reasons: ['evidence changed'] }),
+      'above-Max negotiation override': NO.formatNegotiationOverrideNote({ opportunityId: opp, at, operator: null, reason: 'Seller firm; deal still works', currentOfferAtOverride: 210000, maxSupportedOfferAtOverride: 200000, amountAboveMaxAtOverride: 10000 }),
+    });
+    const negOps = [['opportunity.currentOffer', OTHER_OPP, { value: 400000 }], ['contact.callback', OTHER_CONTACT, { value: '2026-10-12T17:00:00.000Z' }], ['contact.callback', OTHER_CONTACT, { value: null }]];
+
+    await check('negotiation class: committed value in Production, documentation-only DISABLED in Test; the two flag values differ', () => {
+      assert.equal(PRODUCTION_ORIGINAL.productionSellerCallNegotiation, NEGOTIATION_COMMITTED);
+      assert.equal(TEST.productionSellerCallNegotiation, G.PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED);
+      assert.notEqual(G.PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED, G.PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED);
+    });
+    await check('negotiation class: every body is a real record that exactly ONE ledger parser recognizes', () => {
+      for (const [label, body] of Object.entries(negBodies(OTHER_OPP))) {
+        const n = scopeLib.PRODUCTION_NOTE_SCOPE.filter((e) => { try { return !!e.parse(body); } catch { return false; } }).length;
+        assert.equal(n, 1, label);
+      }
+    });
+    await check('negotiation class DISABLED: its operations and notes on a real (non-pinned) contact are refused in every Board #9 state', () => {
+      for (const state of ['disabled', 'ready']) {
+        for (const [op, target, args] of negOps) assert.equal(decide(variant(state), op, target, args).ok, false, `${state} ${op}`);
+        for (const [label, body] of Object.entries(negBodies(OTHER_OPP))) assert.equal(decide(variant(state), 'note.create', OTHER_CONTACT, { body }).ok, false, `${state} ${label}`);
+      }
+    });
+    await check('negotiation class ENABLED: Current Offer, the Follow-Up callback (set or clear) and every covered note are permitted for ANY contact, in every Board #9 state', () => {
+      for (const state of ['disabled', 'ready']) {
+        for (const [op, target, args] of negOps) assert.deepEqual(decide(negotiationOn(state), op, target, args), { ok: true }, `${state} ${op}`);
+        for (const [target, opp] of [[OTHER_CONTACT, OTHER_OPP], [PIN_CONTACT, PIN_OPP]]) {
+          for (const [label, body] of Object.entries(negBodies(opp))) assert.deepEqual(decide(negotiationOn(state), 'note.create', target, { body }), { ok: true }, `${state} ${target} ${label}`);
+        }
+      }
+    });
+    await check('negotiation class ENABLED: readiness APPROVED, contract-path, Transaction assumptions v1, plain, malformed and two-record notes stay refused for a real contact', () => {
+      const on = negotiationOn('disabled');
+      const spp = negBodies(OTHER_OPP)['Seller price position (price)'];
+      const refusedBodies = {
+        'readiness APPROVED': readinessNote('approved', OTHER_OPP),
+        'Brad contract authorization': AUTH_BODY, 'manual contract send': MANUAL_SEND_BODY, 'automated contract send': AUTOMATED_SEND_BODY,
+        'Transaction assumptions v1': RC.formatTransactionAssumptionsNote({ opportunityId: OTHER_OPP, at, operator: null, transactionStructure: { kind: 'value', value: 'Cash' }, closingPossession: { kind: 'none' }, titleComplications: { kind: 'none' } }),
+        plain: 'plain note', empty: '', 'malformed Seller price position': spp.replace('500000', '-5'),
+        'Seller price position with an extra line': spp + '\nExtra: 1', 'two records in one body': spp + '\n' + outcomeBody(OTHER_OPP, 'pass', { reason: 'x' }),
+      };
+      for (const [label, body] of Object.entries(refusedBodies)) assert.equal(decide(on, 'note.create', OTHER_CONTACT, { body }).ok, false, label);
+      for (const args of [{}, { body: null }, { body: 7 }, null]) assert.equal(decide(on, 'note.create', OTHER_CONTACT, args).ok, false, JSON.stringify(args));
+    });
+    await check('negotiation class ENABLED: no other operation is opened (stage, contract, routing, disposition, underwriting, other fields, tasks)', () => {
+      const on = negotiationOn('disabled');
+      for (const op of Object.keys(VALID_ARGS)) {
+        if (scopeLib.PRODUCTION_NEGOTIATION_OPERATIONS.has(op) || op === 'note.create') continue;
+        assert.equal(decide(on, op, otherTarget(op), VALID_ARGS[op]).ok, false, op);
+      }
+      assert.deepEqual([...scopeLib.PRODUCTION_NEGOTIATION_OPERATIONS].sort(), ['contact.callback', 'opportunity.currentOffer']);
+    });
+    await check('negotiation class: never applies to Test (Test stays unconditionally ok, as before)', () => {
+      assert.equal(scopeLib.productionSellerCallNegotiationEnabled({ ...TEST, productionSellerCallNegotiation: G.PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED }), false);
+      assert.equal(scopeLib.requiresProductionNegotiationPipeline({ ...TEST, productionSellerCallNegotiation: G.PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED }, 'opportunity.currentOffer', OTHER_OPP), false);
+    });
+    await check('negotiation class: the Seller Leads check is required for exactly a non-pinned Production Current Offer while ENABLED', () => {
+      const on = negotiationOn('ready');
+      assert.equal(scopeLib.requiresProductionNegotiationPipeline(on, 'opportunity.currentOffer', OTHER_OPP), true);
+      assert.equal(scopeLib.requiresProductionNegotiationPipeline(on, 'opportunity.currentOffer', PIN_OPP), false, 'the pinned deal keeps its own rule');
+      assert.equal(scopeLib.requiresProductionNegotiationPipeline(variant('ready'), 'opportunity.currentOffer', OTHER_OPP), false, 'DISABLED');
+      for (const op of Object.keys(VALID_ARGS)) if (op !== 'opportunity.currentOffer') assert.equal(scopeLib.requiresProductionNegotiationPipeline(on, op, otherTarget(op)), false, op);
+    });
+    await check('negotiation class: source evaluates every ledger parser and requires exactly one match; readiness only "overridden"', () => {
+      const src = fs.readFileSync(path.join(APP, 'netlify/functions/lib/production-write-scope.ts'), 'utf8').replace(/\r\n/g, '\n');
+      const fn = src.slice(src.indexOf('function evaluateProductionSellerCallNegotiation'), src.indexOf('export function requiresProductionNegotiationPipeline'));
+      assert.ok(/for \(const entry of PRODUCTION_NOTE_SCOPE\)/.test(fn) && /if \(matches\.length !== 1\) return null;/.test(fn));
+      assert.ok(/parse === parseReadinessHumanActionNote && record\.kind === "overridden"/.test(fn));
+    });
+
+    // Handler: the live module config with the class ENABLED (or DISABLED where stated) and Board #9 DISABLED.
+    const barrierLib = require('../netlify/functions/lib/current-offer-barrier.ts');
+    const barrierStatus = (opp) => barrierLib.statusOf(require('@netlify/blobs').getStore('iaos-write-receipts'), barrierLib.barrierScope('production', PRODUCTION.locationId), opp);
+    const realWorld = (extra) => makeGhlWorld(Object.assign({ opportunityId: OTHER_OPP, owner: OTHER_CONTACT, noteContact: OTHER_CONTACT }, extra || {}));
+    const reserve = async (world, opp, purpose, steps) => {
+      const r = await barrierCall(world, { action: 'begin', opportunityId: opp, purpose, steps });
+      assert.equal(r.statusCode, 200, r.body);
+    };
+    const CO = PRODUCTION.opportunityFacts.currentOffer;
+    const coClient = load('current-offer-save-coordinator');
+    const savedNeg = PRODUCTION.productionSellerCallNegotiation;
+    const savedLive = { scope: PRODUCTION.productionProofScope, contract: PRODUCTION.contractProductionEnabled, stage: PRODUCTION.stages.underContract, callLog: PRODUCTION.productionCallLog };
+    applyLive('disabled');
+    PRODUCTION.productionCallLog = G.PRODUCTION_CALL_LOG_ENABLED;      // as committed: Pass/Follow-Up's last touch and callback note
+    try {
+      // --- The refusal fix (Brad's Production screenshot): class DISABLED, a reserved blur Current Offer on a real deal.
+      PRODUCTION.productionSellerCallNegotiation = G.PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED;
+      await check('refusal fix: a scope-refused reserved Current Offer answers 403 outcome "not_sent" before any Blob/GHL; the page classifies it "refused", and its reconcile releases the deal with no receipt and no GHL write', async () => {
+        const world = realWorld();
+        await reserve(world, OTHER_OPP, 'blur', [{ step: 'offer', requestId: 'fix-offer-1' }]);
+        assert.equal((await barrierStatus(OTHER_OPP)).state, 'blocked', 'held by the pending step, as in Production');
+        const keysBefore = new Set(blobData.keys());
+        const { res, body, ev } = await runWorld(world, fixedEvent('opportunity.currentOffer', OTHER_OPP, { value: 400000 }, 'fix-offer-1'));
+        assert.equal(res.statusCode, 403); assert.equal(body.outcome, 'not_sent'); assert.equal(body.by, 'iaos-production-write-scope');
+        assert.equal(ev.length, 0, 'no Blob and no GHL call at all');
+        assert.equal(coClient.classifyOfferWriteError(new Error(`setCurrentOffer PUT → 403: ${res.body}`)), 'refused');
+        const rec = await barrierCall(world, { action: 'reconcile', opportunityId: OTHER_OPP });
+        assert.equal(JSON.parse(rec.body).state, 'clear', rec.body);
+        assert.equal((await barrierStatus(OTHER_OPP)).state, 'clear');
+        assert.equal(world.opportunity.customFields.length, 0, 'no Current Offer in GHL');
+        const added = [...blobData.keys()].filter((k) => !keysBefore.has(k));
+        assert.ok(added.every((k) => k.includes('current-offer/')), 'only barrier records (the withdrawal); no receipt: ' + added.join(', '));
+        // The withdrawn request can never be sent afterwards, even once permitted.
+        PRODUCTION.productionSellerCallNegotiation = G.PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED;
+        try {
+          const late = await runWorld(world, fixedEvent('opportunity.currentOffer', OTHER_OPP, { value: 400000 }, 'fix-offer-1'));
+          assert.equal(late.res.statusCode, 409, late.res.body); assert.equal(late.body.outcome, 'not_sent'); assert.equal(puts(late.ev).length, 0);
+        } finally { PRODUCTION.productionSellerCallNegotiation = G.PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED; }
+      });
+      await check('refusal fix: the Seller price position refusal (class DISABLED) also answers outcome "not_sent", nothing written', async () => {
+        const world = realWorld();
+        const { res, body, ev } = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: negBodies(OTHER_OPP)['Seller price position (price)'] }, 'fix-spp'));
+        assert.equal(res.statusCode, 403); assert.equal(body.outcome, 'not_sent'); assert.equal(ev.length, 0); assert.equal(world.notes.length, 0);
+      });
+      await check('refusal fix: every Production scope refusal in ghl-write (scope gate, paired ownership, Seller Leads) answers outcome "not_sent"', () => {
+        const src = fs.readFileSync(path.join(APP, 'netlify/functions/ghl-write.ts'), 'utf8');
+        const refusals = src.split('\n').filter((l) => l.includes('"Production write refused by the proof write scope"'));
+        assert.equal(refusals.length, 3, 'scope gate, paired ownership, Seller Leads');
+        for (const l of refusals) assert.ok(l.includes('outcome: "not_sent"'), l.trim());
+      });
+
+      PRODUCTION.productionSellerCallNegotiation = G.PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED;
+      await check('handler opportunity.currentOffer: ENABLED, reserved blur on a real Seller Leads deal -> 200 confirmed, one PUT, receipt claimed, deal released, lock released', async () => {
+        const world = realWorld();
+        await reserve(world, OTHER_OPP, 'blur', [{ step: 'offer', requestId: 'neg-offer-ok' }]);
+        const { res, body, ev } = await runWorld(world, fixedEvent('opportunity.currentOffer', OTHER_OPP, { value: 400000 }, 'neg-offer-ok'));
+        assert.equal(res.statusCode, 200, res.body); assert.equal(body.confirmed, true);
+        assert.equal(puts(ev).length, 1); assert.equal(world.opportunity.customFields.find((f) => f.id === CO).fieldValue, 400000);
+        assert.equal(ev.filter((e) => e.kind === 'blob.setJSON' && /^[0-9a-f]{64}$/.test(String(e.key))).length, 1, 'exactly one write receipt claimed');
+        assert.equal((await barrierStatus(OTHER_OPP)).state, 'clear');
+        assert.ok(lockReleased(ev) && noLockHeld());
+      });
+      await check('handler opportunity.currentOffer: ENABLED, a deal in ANOTHER pipeline -> 403 not_sent OPPORTUNITY_NOT_SELLER_LEADS under the lock, no PUT, deal released', async () => {
+        const world = realWorld({ pipelineId: 'offline-other-pipeline' });
+        await reserve(world, OTHER_OPP, 'blur', [{ step: 'offer', requestId: 'neg-offer-pipe' }]);
+        const { res, body, ev } = await runWorld(world, fixedEvent('opportunity.currentOffer', OTHER_OPP, { value: 400000 }, 'neg-offer-pipe'));
+        assert.equal(res.statusCode, 403, res.body); assert.equal(body.outcome, 'not_sent'); assert.equal(body.code, 'OPPORTUNITY_NOT_SELLER_LEADS');
+        assert.equal(puts(ev).length, 0); assert.equal(world.opportunity.customFields.length, 0);
+        assert.equal((await barrierStatus(OTHER_OPP)).state, 'clear', 'runOwnedWrite settled and released it');
+        assert.ok(noLockHeld());
+      });
+      await check('handler opportunity.currentOffer: ENABLED, no reservation -> 409 not_sent, no PUT', async () => {
+        const world = realWorld();
+        const { res, body, ev } = await runWorld(world, fixedEvent('opportunity.currentOffer', OTHER_OPP, { value: 400000 }, 'neg-offer-unreserved'));
+        assert.equal(res.statusCode, 409); assert.equal(body.outcome, 'not_sent'); assert.equal(puts(ev).length, 0);
+      });
+      await check('handler opportunity.currentOffer: ENABLED, frozen after a recorded Accept -> refused not_sent, no PUT (economic freeze kept)', async () => {
+        const world = realWorld({ oppFields: [{ id: CO, fieldValue: 190000 }], notes: [{ body: outcomeBody(OTHER_OPP, 'accept') }] });
+        await reserve(world, OTHER_OPP, 'blur', [{ step: 'offer', requestId: 'neg-offer-frozen' }]);
+        const { res, body, ev } = await runWorld(world, fixedEvent('opportunity.currentOffer', OTHER_OPP, { value: 400000 }, 'neg-offer-frozen'));
+        assert.equal(res.statusCode, 409, res.body); assert.equal(body.outcome, 'not_sent'); assert.equal(puts(ev).length, 0);
+        assert.equal(world.opportunity.customFields.find((f) => f.id === CO).fieldValue, 190000);
+        assert.equal((await barrierStatus(OTHER_OPP)).state, 'clear');
+      });
+      await check('handler note.create: ENABLED, Seller price position for a real contact that owns the deal -> 200, one note, receipt claimed', async () => {
+        const world = realWorld();
+        const body = negBodies(OTHER_OPP)['Seller price position (price)'];
+        const { res, ev } = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body }, 'neg-spp'));
+        assert.equal(res.statusCode, 200, res.body); assert.equal(world.notes.length, 1); assert.equal(world.notes[0].body, body); assert.equal(claims(ev).length, 1);
+      });
+      await check('handler note.create: ENABLED, Seller price position naming a deal owned by ANOTHER contact -> refused by the ledger guard, nothing written', async () => {
+        const world = realWorld({ owner: PIN_CONTACT });
+        const { res, ev } = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: negBodies(OTHER_OPP)['Seller price position (price)'] }, 'neg-spp-foreign'));
+        assert.notEqual(res.statusCode, 200); assert.equal(world.notes.length, 0); assert.equal(puts(ev).length, 0);
+      });
+      for (const label of ['readiness OVERRIDDEN', 'readiness invalidation', 'above-Max negotiation override']) {
+        await check(`handler note.create: ENABLED, ${label} for a real contact that owns the deal -> 200, one note`, async () => {
+          const world = realWorld();
+          const body = negBodies(OTHER_OPP)[label];
+          const { res } = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body }, 'neg-' + label.replace(/\W+/g, '-')));
+          assert.equal(res.statusCode, 200, res.body); assert.equal(world.notes.length, 1);
+        });
+      }
+      await check('handler note.create: ENABLED, readiness APPROVED for a real contact -> 403 not_sent by the scope, nothing written', async () => {
+        const world = realWorld();
+        const { res, body, ev } = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: readinessNote('approved', OTHER_OPP) }, 'neg-approved'));
+        assert.equal(res.statusCode, 403); assert.equal(body.outcome, 'not_sent'); assert.equal(ev.length, 0);
+      });
+      await check('handler Pass: ENABLED, reserved note + last touch on a real contact -> both 200; reconcile clears; no stage, contract or other write', async () => {
+        const world = realWorld();
+        await reserve(world, OTHER_OPP, 'pass', [{ step: 'note', requestId: 'neg-pass-note' }, { step: 'touch', requestId: 'neg-pass-touch' }]);
+        const body = negBodies(OTHER_OPP)['outcome pass'];
+        const n = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body }, 'neg-pass-note'));
+        assert.equal(n.res.statusCode, 200, n.res.body);
+        const t = await runWorld(world, fixedEvent('contact.lastCallAttempt', OTHER_CONTACT, { value: at }, 'neg-pass-touch'));
+        assert.equal(t.res.statusCode, 200, t.res.body);
+        const writes = puts(n.ev.concat(t.ev)).map((e) => `${e.method} ${e.path}`);
+        assert.deepEqual(writes, [`POST /contacts/${OTHER_CONTACT}/notes`, `PUT /contacts/${OTHER_CONTACT}`]);
+        assert.equal(JSON.parse((await barrierCall(world, { action: 'reconcile', opportunityId: OTHER_OPP })).body).state, 'clear');
+      });
+      await check('handler note.create: ENABLED, an outcome note with NO reservation -> 409 not_sent, nothing written', async () => {
+        const world = realWorld();
+        const { res, body, ev } = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: negBodies(OTHER_OPP)['outcome pass'] }, 'neg-pass-unreserved'));
+        assert.equal(res.statusCode, 409); assert.equal(body.outcome, 'not_sent'); assert.equal(puts(ev).length, 0); assert.equal(world.notes.length, 0);
+      });
+      await check('handler note.create: ENABLED, an outcome note under a reservation of ANOTHER kind -> 409 not_sent, nothing written', async () => {
+        const world = realWorld();
+        await reserve(world, OTHER_OPP, 'follow_up', [{ step: 'callback', requestId: 'neg-mix-cb' }, { step: 'callback_note', requestId: 'neg-mix-cbn' }, { step: 'touch', requestId: 'neg-mix-touch' }, { step: 'note', requestId: 'neg-mix-note' }]);
+        const { res, body, ev } = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: negBodies(OTHER_OPP)['outcome pass'] }, 'neg-mix-note'));
+        assert.equal(res.statusCode, 409); assert.equal(body.outcome, 'not_sent'); assert.equal(puts(ev).length, 0);
+        assert.equal(JSON.parse((await barrierCall(world, { action: 'reconcile', opportunityId: OTHER_OPP })).body).state, 'clear');
+      });
+      await check('handler Follow-Up: ENABLED, reserved callback + callback note + last touch + outcome note on a real contact -> all 200; reconcile clears', async () => {
+        const world = realWorld();
+        await reserve(world, OTHER_OPP, 'follow_up', [{ step: 'callback', requestId: 'neg-fu-cb' }, { step: 'callback_note', requestId: 'neg-fu-cbn' }, { step: 'touch', requestId: 'neg-fu-touch' }, { step: 'note', requestId: 'neg-fu-note' }]);
+        const cbIso = '2026-10-12T17:00:00.000Z';
+        const r1 = await runWorld(world, fixedEvent('contact.callback', OTHER_CONTACT, { value: cbIso }, 'neg-fu-cb'));
+        assert.equal(r1.res.statusCode, 200, r1.res.body);
+        const cbNote = `Callback scheduled for ${load('callbackWrite').formatCallbackTime(cbIso)}`;
+        const r2 = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: cbNote }, 'neg-fu-cbn'));
+        assert.equal(r2.res.statusCode, 200, r2.res.body);
+        const r3 = await runWorld(world, fixedEvent('contact.lastCallAttempt', OTHER_CONTACT, { value: at }, 'neg-fu-touch'));
+        assert.equal(r3.res.statusCode, 200, r3.res.body);
+        const r4 = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: negBodies(OTHER_OPP)['outcome follow_up'] }, 'neg-fu-note'));
+        assert.equal(r4.res.statusCode, 200, r4.res.body);
+        assert.equal(world.notes.length, 2);
+        assert.equal(JSON.parse((await barrierCall(world, { action: 'reconcile', opportunityId: OTHER_OPP })).body).state, 'clear');
+      });
+      await check('handler contact.callback: ENABLED, no reservation -> 409 not_sent, no PUT', async () => {
+        const world = realWorld();
+        const { res, body, ev } = await runWorld(world, fixedEvent('contact.callback', OTHER_CONTACT, { value: '2026-10-12T17:00:00.000Z' }, 'neg-cb-unreserved'));
+        assert.equal(res.statusCode, 409); assert.equal(body.outcome, 'not_sent'); assert.equal(puts(ev).length, 0);
+      });
+      await check('handler Accept: ENABLED, reserved offer + accept note + last touch on a real deal -> all 200, accepted price equals the confirmed Current Offer; reconcile clears; no stage or contract write', async () => {
+        const world = realWorld();
+        await reserve(world, OTHER_OPP, 'accept', [{ step: 'offer', requestId: 'neg-acc-offer' }, { step: 'note', requestId: 'neg-acc-note' }, { step: 'touch', requestId: 'neg-acc-touch' }]);
+        const o = await runWorld(world, fixedEvent('opportunity.currentOffer', OTHER_OPP, { value: SNAPSHOT.currentOffer }, 'neg-acc-offer'));
+        assert.equal(o.res.statusCode, 200, o.res.body);
+        const n = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: negBodies(OTHER_OPP)['outcome accept'] }, 'neg-acc-note'));
+        assert.equal(n.res.statusCode, 200, n.res.body);
+        const t = await runWorld(world, fixedEvent('contact.lastCallAttempt', OTHER_CONTACT, { value: at }, 'neg-acc-touch'));
+        assert.equal(t.res.statusCode, 200, t.res.body);
+        const writes = puts(o.ev.concat(n.ev, t.ev)).map((e) => `${e.method} ${e.path}`);
+        assert.deepEqual(writes, [`PUT /opportunities/${OTHER_OPP}`, `POST /contacts/${OTHER_CONTACT}/notes`, `PUT /contacts/${OTHER_CONTACT}`], 'no stage, contract or other write');
+        assert.equal(world.opportunity.pipelineStageId, undefined, 'stage untouched');
+        assert.equal(JSON.parse((await barrierCall(world, { action: 'reconcile', opportunityId: OTHER_OPP })).body).state, 'clear');
+      });
+      await check('handler Accept: ENABLED, an accept note whose price differs from the confirmed Current Offer -> refused, nothing written', async () => {
+        const world = realWorld({ oppFields: [{ id: CO, fieldValue: 400000 }] });
+        await reserve(world, OTHER_OPP, 'accept', [{ step: 'offer', requestId: 'neg-accx-offer' }, { step: 'note', requestId: 'neg-accx-note' }, { step: 'touch', requestId: 'neg-accx-touch' }]);
+        const n = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: negBodies(OTHER_OPP)['outcome accept'] }, 'neg-accx-note'));
+        assert.notEqual(n.res.statusCode, 200); assert.equal(world.notes.length, 0); assert.equal(puts(n.ev).length, 0);
+        assert.equal(JSON.parse((await barrierCall(world, { action: 'reconcile', opportunityId: OTHER_OPP })).body).state, 'clear');
+      });
+      await check('handler: ENABLED still refuses a stage transition and a contract-send note on a real deal, before any Blob/GHL', async () => {
+        const world = realWorld();
+        const s = await runWorld(world, fixedEvent('opportunity.underContractStage', OTHER_OPP, VALID_ARGS['opportunity.underContractStage'], 'neg-stage'));
+        assert.equal(s.res.statusCode, 403); assert.equal(s.ev.length, 0);
+        const c = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: MANUAL_SEND_BODY }, 'neg-send'));
+        assert.equal(c.res.statusCode, 403); assert.equal(c.ev.length, 0);
+      });
+      await check('handler: ENABLED, no session or wrong Origin -> refused before the scope, nothing written', async () => {
+        const world = realWorld();
+        const e1 = fixedEvent('note.create', OTHER_CONTACT, { body: negBodies(OTHER_OPP)['Seller price position (price)'] }, 'neg-noauth');
+        delete e1.headers.authorization;
+        const r1 = await runWorld(world, e1);
+        assert.ok(r1.res.statusCode === 401 || r1.res.statusCode === 403); assert.equal(puts(r1.ev).length, 0);
+        const e2 = fixedEvent('note.create', OTHER_CONTACT, { body: negBodies(OTHER_OPP)['Seller price position (price)'] }, 'neg-origin');
+        e2.headers.origin = 'https://evil.example';
+        const r2 = await runWorld(world, e2);
+        assert.equal(r2.res.statusCode, 403); assert.equal(puts(r2.ev).length, 0); assert.equal(world.notes.length, 0);
+      });
+    } finally {
+      PRODUCTION.productionSellerCallNegotiation = savedNeg;
+      PRODUCTION.productionProofScope = savedLive.scope; PRODUCTION.contractProductionEnabled = savedLive.contract; PRODUCTION.stages.underContract = savedLive.stage; PRODUCTION.productionCallLog = savedLive.callLog;
     }
   }
   console.log(`production-write-scope checks=${checks} failures=${failures}`);

@@ -246,6 +246,9 @@ jobs:
       - name: Current Offer save coordinator — serialized per deal, unresolved block, protected Accept (PR 126) — 67 offline checks
         run: node app/scripts/test-current-offer-save-coordinator.cjs
 
+      - name: Current Offer refusal release - a definitive refusal releases the page's own reservation (B14-13) - 17 offline checks
+        run: node app/scripts/test-current-offer-refusal-release.cjs
+
       - name: Durable Current Offer barrier — real ghl-write and barrier handlers, reloads, late handlers, storage failures (PR 126 stacked server PR) — 45 offline checks
         run: node app/scripts/test-current-offer-barrier.cjs
 

@@ -48,7 +48,7 @@
  * must still belong to the pinned contact and sit in Seller Leads.
  * The Contract Ready checklist stays refused: no walkthrough step gates on it.
  */
-import { getConfig, PRODUCTION_PROOF_SCOPE_ENABLED, PRODUCTION_PROOF_CONTACT_NOT_PINNED, PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED, PRODUCTION_CALL_LOG_ENABLED, PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED } from "../../../shared/ghl-config";
+import { getConfig, PRODUCTION_PROOF_SCOPE_ENABLED, PRODUCTION_PROOF_CONTACT_NOT_PINNED, PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED, PRODUCTION_CALL_LOG_ENABLED, PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED, PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED } from "../../../shared/ghl-config";
 import { callLogResults } from "./write-contracts";
 import type { GhlConfig } from "../../../shared/ghl-config";
 import { evaluateContractEnvironment } from "./contract-production-readiness";
@@ -77,7 +77,8 @@ export type ProductionWriteScopeCode =
   | "PRODUCTION_CONTRACTS_NOT_READY"
   | "OPERATION_NOT_PERMITTED"
   | "TARGET_NOT_PINNED"
-  | "NOTE_NOT_PERMITTED";
+  | "NOTE_NOT_PERMITTED"
+  | "OPPORTUNITY_NOT_SELLER_LEADS";
 
 export type ProductionWriteScopeResult = { ok: true } | { ok: false; code: ProductionWriteScopeCode };
 
@@ -311,12 +312,74 @@ function evaluateProductionSellerCallAutosave(config: GhlConfig, request: { oper
   return null;
 }
 
+/* ------------------------------------------------------------------ */
+/* B14-13 — Production Seller Call negotiation class (Brad, 2026-10-11)  */
+/* ------------------------------------------------------------------ */
+
+export function productionSellerCallNegotiationEnabled(config: GhlConfig): boolean {
+  return !isTestDeployment(config) && config.productionSellerCallNegotiation === PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED;
+}
+
+/** Operations this class permits for any Production target. Both are reserved operations: ghl-write.ts sends them only under a Current Offer barrier reservation. */
+export const PRODUCTION_NEGOTIATION_OPERATIONS: ReadonlySet<string> = new Set(["opportunity.currentOffer", "contact.callback"]);
+
+/**
+ * The Seller Call negotiation records: `null` = not covered (the rules below
+ * decide, exactly as before). Covered only while ENABLED, for any Production
+ * contact:
+ *   - `opportunity.currentOffer` and `contact.callback` (PRODUCTION_NEGOTIATION_OPERATIONS);
+ *   - `note.create` whose body exactly ONE ledger parser recognizes, that parser
+ *     being Seller price position, a conversation outcome (any kind), the
+ *     readiness decision with kind "overridden" ("approved" stays refused), the
+ *     readiness decision invalidation, or the above-Max negotiation override.
+ * This decides only WHICH records may be written. `ghl-write.ts` still applies,
+ * unchanged: authentication, Origin and request shape before this decision;
+ * the Current Offer barrier (a Current Offer or Follow-Up callback write must
+ * be reservation-owned; an outcome note needs a reservation of the same kind
+ * for the same deal); then, under the contact lock, the Seller Leads check for
+ * a Current Offer (`requiresProductionNegotiationPipeline`), the freeze gate,
+ * `validateLedgerNote` (operator, opportunity owned by this contact, no
+ * outcome after an Accept, an accepted price equal to the confirmed Current
+ * Offer), and the write claim and receipt. No contract, send, stage, routing,
+ * disposition or underwriting operation is covered.
+ */
+function evaluateProductionSellerCallNegotiation(config: GhlConfig, request: { operation: string; targetId: string; args: unknown }): ProductionWriteScopeResult | null {
+  if (!productionSellerCallNegotiationEnabled(config)) return null;
+  if (PRODUCTION_NEGOTIATION_OPERATIONS.has(request.operation)) return { ok: true };
+  if (request.operation !== "note.create") return null;
+  const body = (request.args as { body?: unknown } | null)?.body;
+  if (typeof body !== "string") return null;
+  const matches: Array<{ parse: (body: string) => unknown; record: ParsedRecord }> = [];
+  for (const entry of PRODUCTION_NOTE_SCOPE) {
+    let record: unknown = null;
+    try { record = entry.parse(body); } catch { record = null; }
+    if (record && typeof record === "object") matches.push({ parse: entry.parse, record: record as ParsedRecord });
+  }
+  if (matches.length !== 1) return null;
+  const [{ parse, record }] = matches;
+  if (parse === parseSellerPricePositionNote || parse === parseOutcomeNote || parse === parseReadinessDecisionInvalidationNote || parse === parseNegotiationOverrideNote) return { ok: true };
+  if (parse === parseReadinessHumanActionNote && record.kind === "overridden") return { ok: true };
+  return null;
+}
+
+/**
+ * True when `ghl-write.ts` must prove, under the contact lock and before the
+ * write claim or any PUT, that the opportunity (read fresh) is in Seller Leads:
+ * a Production Current Offer write on any opportunity other than the Board #9
+ * pinned one (which keeps its own rule). Never in Test.
+ */
+export function requiresProductionNegotiationPipeline(config: GhlConfig, operation: string, targetId: string): boolean {
+  return productionSellerCallNegotiationEnabled(config) && operation === "opportunity.currentOffer" && targetId !== config.productionProofScope.opportunityId;
+}
+
 export function evaluateProductionGhlWriteScope(config: GhlConfig, request: { operation: string; targetId: string; args: unknown }): ProductionWriteScopeResult {
   if (isTestDeployment(config)) return { ok: true };
   const callLog = evaluateProductionCallLog(config, request);
   if (callLog) return callLog;
   const autosave = evaluateProductionSellerCallAutosave(config, request);
   if (autosave) return autosave;
+  const negotiation = evaluateProductionSellerCallNegotiation(config, request);
+  if (negotiation) return negotiation;
   const pre = productionPreconditions(config);
   if (!pre.ok) return pre;
   const scope = (PRODUCTION_OPERATION_SCOPE as Record<string, string>)[request.operation];
