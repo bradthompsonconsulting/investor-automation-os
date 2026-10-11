@@ -6,7 +6,7 @@ import { getConfig } from "../../shared/ghl-config";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { exact, identifier, planWrite, dispositions, routings } from "./lib/write-contracts";
 import { configuredBoundary, fieldValue, WriteUncertain, type DispatchHooks } from "./lib/ghl-write-boundary";
-import { barrierScope, isBarrierOwned, runOwnedWrite, checkNoteReservation, NotSent, NotOwned, STEP_OPERATION, RESERVED_OPERATIONS, type BarrierStore } from "./lib/current-offer-barrier";
+import { barrierScope, isBarrierOwned, runOwnedWrite, checkNoteReservation, resetSettleBudget, NotSent, NotOwned, STEP_OPERATION, RESERVED_OPERATIONS, type BarrierStore } from "./lib/current-offer-barrier";
 import { parseOutcomeNote } from "../../src/lib/seller-call-outcome";
 import { callLogScope, isCallLogBound, isCallLogNoteText, isOperationRequestId, runCallLogOwnedWrite, CALL_LOG_OPERATIONS, NotSent as CallLogNotSent, NotOwned as CallLogNotOwned } from "./lib/call-log-barrier";
 import { claimWrite, lockContact, stageTransitionUnresolved, claimStageTransition, clearStageTransition } from "./lib/write-receipts";
@@ -69,6 +69,7 @@ function logWriteFailure(request: any, error: unknown): void {
   }));
 }
 export const handler = async (event: any) => {
+  resetSettleBudget(); // B14-13: one bounded re-read budget per invocation (lib/current-offer-barrier.ts)
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
   let operator: string;
   try { operator = requireAppWriter(event); } catch { return json(401, { error: "Application write sign-in required" }); }
