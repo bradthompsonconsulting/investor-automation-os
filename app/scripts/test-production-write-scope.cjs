@@ -118,6 +118,8 @@ function variant(state) {
   // B14-12: the Board #9 matrix tests Board #9 alone, so the call-log class is
   // OFF in every variant unless a check switches it on itself.
   if (state !== 'default') c.productionCallLog = G.PRODUCTION_CALL_LOG_DISABLED;   // 'default' = the committed config, unchanged
+  // B14-13: likewise the Seller Call autosave class.
+  if (state !== 'default') c.productionSellerCallAutosave = G.PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED;
   return c;
 }
 function applyLive(state) {
@@ -232,6 +234,10 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     const refused = scopeLib.PRODUCTION_NOTE_SCOPE.filter((e) => e.allow === null).map((e) => e.parse.name);
     for (const name of ['parseReadinessDecisionInvalidationNote', 'parseContractReadyChecklistNote', 'parsePropertyIdentityConfirmationNote', 'parseTransactionAssumptionsNote', 'parseSellerPricePositionNote', 'parseNegotiationOverrideNote', 'parseContractLifecycleNote']) assert.ok(refused.includes(name), name);
   });
+  await check('B14-13 autosave: the Seller Position ledger is classified and refused by the Board #9 rules (its own class decides it)', () => {
+    const entry = scopeLib.PRODUCTION_NOTE_SCOPE.find((e) => e.parse.name === 'parseSellerPositionNote');
+    assert.ok(entry, 'parseSellerPositionNote is classified'); assert.equal(entry.allow, null);
+  });
 
   // ===== 2. Pure per-operation matrix.
   for (const op of Object.keys(VALID_ARGS)) {
@@ -272,6 +278,25 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     assert.deepEqual(noteDecision(AUTH_BODY), { ok: true });
     assert.deepEqual(noteDecision(MANUAL_SEND_BODY), { ok: true });
   });
+  // B14-13 autosave (2026-10-10): Seller Position and Transaction assumptions v2 (partial and complete), real bodies
+  // on the pinned pair -- all refused in Production, as Transaction assumptions v1 already was.
+  const SP = load('seller-call-seller-position-note');
+  const TA = load('seller-call-readiness-carriers');
+  const AT = '2026-10-10T15:00:00.000Z';
+  const AUTOSAVE_BODIES = {
+    'Seller Position value': SP.formatSellerPositionNote({ opportunityId: PIN_OPP, at: AT, operator: null, kind: 'value', value: 245000 }),
+    'Seller Position cleared': SP.formatSellerPositionNote({ opportunityId: PIN_OPP, at: AT, operator: null, kind: 'cleared' }),
+    'Transaction assumptions v2 partial': TA.formatTransactionAssumptionsNoteV2({ opportunityId: PIN_OPP, at: AT, operator: null,
+      transactionStructure: { kind: 'value', value: 'Cash' }, closingPossession: { kind: 'unanswered' }, titleComplications: { kind: 'unanswered' } }),
+    'Transaction assumptions v2 complete': TA.formatTransactionAssumptionsNoteV2({ opportunityId: PIN_OPP, at: AT, operator: null,
+      transactionStructure: { kind: 'value', value: 'Cash' }, closingPossession: { kind: 'none' }, titleComplications: { kind: 'none' } }),
+  };
+  for (const [label, body] of Object.entries(AUTOSAVE_BODIES)) {
+    await check(`B14-13 autosave class OFF: real ${label} note on the pinned pair -> NOTE_NOT_PERMITTED`, () => {
+      assert.ok(SP.parseSellerPositionNote(body) || TA.parseTransactionAssumptionsNote(body), 'the body is a real, parseable ledger note');
+      assert.deepEqual(noteDecision(body), { ok: false, code: 'NOTE_NOT_PERMITTED' });
+    });
+  }
   await check('real notes naming another opportunity -> TARGET_NOT_PINNED', () => {
     const other = require('./write-contract-fixture.cjs').contractFixture(load, OTHER_OPP);
     for (const n of other.notes.filter((x) => !factsCarriers.parseRepresentationFactsNote(x.body))) assert.deepEqual(noteDecision(n.body), { ok: false, code: 'TARGET_NOT_PINNED' });
@@ -514,7 +539,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   const F = { arv: PRODUCTION.opportunityFacts.arv, repairs: PRODUCTION.opportunityFacts.repairs, lca: PRODUCTION.fields.lastCallAttempt, lcaPrecise: PRODUCTION.fields.lastCallAttemptPrecise };
   function makeGhlWorld(opts = {}) {
     const world = {
-      opportunity: { id: PIN_OPP, locationId: PRODUCTION.locationId, contactId: opts.owner || PIN_CONTACT, pipelineId: opts.pipelineId || SELLER_LEADS, pipelineStageId: opts.stageId, customFields: (opts.oppFields || []).slice() },
+      opportunity: { id: opts.opportunityId || PIN_OPP, locationId: PRODUCTION.locationId, contactId: opts.owner || PIN_CONTACT, pipelineId: opts.pipelineId || SELLER_LEADS, pipelineStageId: opts.stageId, customFields: (opts.oppFields || []).slice() },
       contacts: {
         [PIN_CONTACT]: Object.assign({ id: PIN_CONTACT, locationId: PRODUCTION.locationId, customFields: [] }, opts.contactExtra || {}),
         [OTHER_CONTACT]: { id: OTHER_CONTACT, locationId: PRODUCTION.locationId, customFields: [] },
@@ -532,7 +557,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     };
     world.route = async (url, init) => {
       const u = new URL(url); const method = init.method || 'GET'; const p = u.pathname;
-      if (p === `/opportunities/${PIN_OPP}`) {
+      if (p === `/opportunities/${world.opportunity.id}`) {
         if (method === 'GET') {
           oppGets++;
           if (opts.failOppGetAt && oppGets >= opts.failOppGetAt) return res(500, { message: 'unavailable' });
@@ -564,7 +589,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
         }
       }
       const n = p.match(/^\/contacts\/([^/]+)\/notes$/);
-      if (n && n[1] === PIN_CONTACT) {
+      if (n && n[1] === (opts.noteContact || PIN_CONTACT)) {
         if (method === 'GET') return res(200, { notes: world.notes });
         if (method === 'POST') { const note = { id: `offline-note-${++noteSeq}`, body: JSON.parse(init.body).body }; world.notes.push(note); return res(200, { note }); }
       }
@@ -786,6 +811,17 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
     const { res, ev } = await runWorld(world, fixedEvent('note.create', PIN_CONTACT, { body: ARV_OVERRIDE_BODY }, 'note-arv-mismatch'));
     assert.equal(res.statusCode, 409, res.body); assert.equal(world.notes.length, 0); assert.equal(puts(ev).length, 0);
   });
+  for (const [label, body] of Object.entries(AUTOSAVE_BODIES)) {
+    await check(`handler note.create: B14-13 autosave class OFF, ${label} note -> 403 NOTE_NOT_PERMITTED before any Blob/GHL, nothing written`, async () => {
+      const saved = PRODUCTION.productionSellerCallAutosave;
+      PRODUCTION.productionSellerCallAutosave = G.PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED;
+      try {
+        const world = makeGhlWorld();
+        const { res, ev } = await runWorld(world, fixedEvent('note.create', PIN_CONTACT, { body }, 'note-autosave-' + label.replace(/\W+/g, '-')));
+        assert.equal(res.statusCode, 403); assert.equal(JSON.parse(res.body).code, 'NOTE_NOT_PERMITTED'); assert.equal(ev.length, 0); assert.equal(world.notes.length, 0);
+      } finally { PRODUCTION.productionSellerCallAutosave = saved; }
+    });
+  }
   await check('handler note.create: APPROVED readiness note -> 403 NOTE_NOT_PERMITTED before any Blob/GHL', async () => {
     const world = makeGhlWorld();
     const { res, ev } = await runWorld(world, fixedEvent('note.create', PIN_CONTACT, { body: readinessNote('approved', PIN_OPP) }, 'note-approved'));
@@ -1444,6 +1480,137 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
         PRODUCTION.productionCallLog = saved;
       }
     });
+  }
+  // ===== B14-13 — Production Seller Call autosave class (Bones's autosave finding #1). Committed DISABLED until its
+  // own config-only enable commit. Covered: note.create of a Seller Position note, or a Transaction assumptions v2
+  // note, for ANY Production contact. Everything else is decided exactly as before.
+  {
+    const autosaveOn = (state) => ({ ...variant(state), productionSellerCallAutosave: G.PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED });
+    const decide = (cfg, operation, targetId, args) => scopeLib.evaluateProductionGhlWriteScope(cfg, { operation, targetId, args });
+    const SPx = load('seller-call-seller-position-note');
+    const TAx = load('seller-call-readiness-carriers');
+    const at = '2026-10-10T16:00:00.000Z';
+    const realBodies = (opp) => ({
+      'Seller Position value': SPx.formatSellerPositionNote({ opportunityId: opp, at, operator: null, kind: 'value', value: 245000 }),
+      'Seller Position cleared': SPx.formatSellerPositionNote({ opportunityId: opp, at, operator: null, kind: 'cleared' }),
+      'Transaction assumptions v2 partial': TAx.formatTransactionAssumptionsNoteV2({ opportunityId: opp, at, operator: null,
+        transactionStructure: { kind: 'value', value: 'Cash' }, closingPossession: { kind: 'unanswered' }, titleComplications: { kind: 'unanswered' } }),
+      'Transaction assumptions v2 complete': TAx.formatTransactionAssumptionsNoteV2({ opportunityId: opp, at, operator: null,
+        transactionStructure: { kind: 'value', value: 'Cash' }, closingPossession: { kind: 'none' }, titleComplications: { kind: 'none' } }),
+    });
+    const taV1 = TAx.formatTransactionAssumptionsNote({ opportunityId: OTHER_OPP, at, operator: null,
+      transactionStructure: { kind: 'value', value: 'Cash' }, closingPossession: { kind: 'none' }, titleComplications: { kind: 'none' } });
+
+    await check('autosave class: committed ENABLED in Production and documentation-only DISABLED in Test; the two values differ', () => {
+      assert.equal(PRODUCTION_ORIGINAL.productionSellerCallAutosave, G.PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED);
+      assert.equal(TEST.productionSellerCallAutosave, G.PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED);
+      assert.notEqual(G.PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED, G.PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED);
+    });
+    await check('autosave class DISABLED: its notes on a real (non-pinned) contact are refused in every Board #9 state', () => {
+      for (const state of ['disabled', 'ready']) {
+        for (const [label, body] of Object.entries(realBodies(OTHER_OPP))) assert.equal(decide(variant(state), 'note.create', OTHER_CONTACT, { body }).ok, false, `${state} ${label}`);
+      }
+    });
+    await check('autosave class ENABLED: Seller Position (value, cleared) and Transaction assumptions v2 (partial, complete) are permitted for ANY contact, in every Board #9 state', () => {
+      for (const state of ['disabled', 'ready']) {
+        for (const [target, opp] of [[OTHER_CONTACT, OTHER_OPP], [PIN_CONTACT, PIN_OPP]]) {
+          for (const [label, body] of Object.entries(realBodies(opp))) assert.deepEqual(decide(autosaveOn(state), 'note.create', target, { body }), { ok: true }, `${state} ${target} ${label}`);
+        }
+      }
+    });
+    await check('autosave class ENABLED: Transaction assumptions v1, Seller price position, readiness, outcome, plain and malformed notes stay refused for a real contact', () => {
+      const on = autosaveOn('disabled');
+      const spBroken = realBodies(OTHER_OPP)['Seller Position value'].replace('245000', '245000.5x');
+      const refusedBodies = { 'Transaction assumptions v1': taV1, 'readiness OVERRIDDEN': OVERRIDE_BODY, 'outcome pass': PASS_OUTCOME_BODY, plain: 'plain note',
+        'malformed Seller Position': spBroken, 'Seller Position with an extra line': realBodies(OTHER_OPP)['Seller Position value'] + '\nExtra: 1', empty: '' };
+      refusedBodies['Seller price position'] = TAx.formatSellerPricePositionNote({ opportunityId: OTHER_OPP, at, operator: null, kind: 'price', price: 250000 });
+      assert.ok(TAx.parseSellerPricePositionNote(refusedBodies['Seller price position']), 'the Seller price position body is a real record');
+      assert.ok(TAx.parseTransactionAssumptionsNote(taV1) && TAx.parseTransactionAssumptionsNote(taV1).version === 1, 'the v1 body is a real v1 record');
+      for (const [label, body] of Object.entries(refusedBodies)) assert.equal(decide(on, 'note.create', OTHER_CONTACT, { body }).ok, false, label);
+      for (const args of [{}, { body: null }, { body: 7 }, null]) assert.equal(decide(on, 'note.create', OTHER_CONTACT, args).ok, false, JSON.stringify(args));
+    });
+    await check('autosave class ENABLED: no other operation is opened (a Seller Position body on another operation, Current Offer, contact fields)', () => {
+      const on = autosaveOn('disabled');
+      const body = realBodies(OTHER_OPP)['Seller Position value'];
+      for (const [op, target, args] of [['opportunity.currentOffer', OTHER_OPP, { value: 245000, body }], ['contact.propertyNotes', OTHER_CONTACT, { value: body }],
+        ['contact.routing', OTHER_CONTACT, VALID_ARGS['contact.routing']], ['task.complete', OTHER_CONTACT, VALID_ARGS['task.complete']], ['note.delete', OTHER_CONTACT, { body }]]) {
+        assert.equal(decide(on, op, target, args).ok, false, op);
+      }
+    });
+    await check('autosave class: never applies to Test (Test stays unconditionally ok, as before)', () => {
+      assert.equal(scopeLib.productionSellerCallAutosaveEnabled({ ...TEST, productionSellerCallAutosave: G.PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED }), false);
+      assert.deepEqual(decide(TEST, 'note.create', OTHER_CONTACT, { body: 'plain note' }), { ok: true });
+    });
+    await check('autosave class: source evaluates every ledger parser and requires exactly one match (never first-match)', () => {
+      const src = fs.readFileSync(path.join(APP, 'netlify/functions/lib/production-write-scope.ts'), 'utf8').replace(/\r\n/g, '\n');
+      const fn = src.slice(src.indexOf('function evaluateProductionSellerCallAutosave'), src.indexOf('export function evaluateProductionGhlWriteScope'));
+      assert.ok(/for \(const entry of PRODUCTION_NOTE_SCOPE\)/.test(fn) && /if \(matches\.length !== 1\) return null;/.test(fn));
+      assert.ok(/parse === parseTransactionAssumptionsNote && record\.version === 2/.test(fn) && /parse === parseSellerPositionNote\) return \{ ok: true \}/.test(fn));
+    });
+
+    // Handler, real ledger guard: the live module config with the class ENABLED and Board #9 DISABLED.
+    // On main's storage: the contact lock is a blob.setJSON on a lock/ key; the receipt claim is any other blob.setJSON.
+    const lockAcquire = (e) => e.kind === 'blob.setJSON' && isLockKey(e);
+    const isClaim = (e) => e.kind === 'blob.setJSON' && !isLockKey(e);
+    const savedAutosave = PRODUCTION.productionSellerCallAutosave;
+    const savedLive = { scope: PRODUCTION.productionProofScope, contract: PRODUCTION.contractProductionEnabled, stage: PRODUCTION.stages.underContract };
+    applyLive('disabled');
+    PRODUCTION.productionSellerCallAutosave = G.PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED;
+    try {
+      for (const [label, body] of Object.entries(realBodies(OTHER_OPP))) {
+        await check(`handler note.create: autosave ENABLED, ${label} for a real contact that owns the opportunity -> 200, one note, receipt claimed, lock released`, async () => {
+          const world = makeGhlWorld({ opportunityId: OTHER_OPP, owner: OTHER_CONTACT, noteContact: OTHER_CONTACT });
+          const { res, ev } = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body }, 'autosave-ok-' + label.replace(/\W+/g, '-')));
+          assert.equal(res.statusCode, 200, res.body);
+          assert.equal(world.notes.length, 1); assert.equal(world.notes[0].body, body);
+          assert.equal(claims(ev).length, 1, 'the write receipt was claimed');
+          assert.ok(ev.findIndex(lockAcquire) > -1 && ev.findIndex(lockAcquire) < ev.findIndex(isClaim), 'lock acquired before the claim');
+          assert.ok(lockReleased(ev) && noLockHeld());
+        });
+      }
+      await check('handler note.create: autosave ENABLED, Seller Position naming an opportunity owned by ANOTHER contact -> refused by the ledger guard under the lock, nothing written', async () => {
+        const world = makeGhlWorld({ opportunityId: OTHER_OPP, owner: PIN_CONTACT, noteContact: OTHER_CONTACT });
+        const { res, ev } = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: realBodies(OTHER_OPP)['Seller Position value'] }, 'autosave-foreign-opp'));
+        assert.notEqual(res.statusCode, 200, res.body); assert.notEqual(JSON.parse(res.body).by, 'iaos-production-write-scope', 'passed the scope; refused by the guard');
+        assert.equal(world.notes.length, 0); assert.equal(puts(ev).length, 0); assert.equal(claims(ev).length, 0); assert.ok(noLockHeld());
+      });
+      await check('handler note.create: autosave ENABLED, Transaction assumptions v1 for a real contact -> 403 by the write scope before any Blob/GHL', async () => {
+        const world = makeGhlWorld({ opportunityId: OTHER_OPP, owner: OTHER_CONTACT, noteContact: OTHER_CONTACT });
+        const { res, ev } = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: taV1 }, 'autosave-v1'));
+        assert.equal(res.statusCode, 403); assert.equal(JSON.parse(res.body).by, 'iaos-production-write-scope'); assert.equal(ev.length, 0); assert.equal(world.notes.length, 0);
+      });
+      await check('handler note.create: autosave ENABLED, a plain note for a real contact -> 403 by the write scope before any Blob/GHL', async () => {
+        const world = makeGhlWorld({ opportunityId: OTHER_OPP, owner: OTHER_CONTACT, noteContact: OTHER_CONTACT });
+        const { res, ev } = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: 'plain note' }, 'autosave-plain'));
+        assert.equal(res.statusCode, 403); assert.equal(JSON.parse(res.body).by, 'iaos-production-write-scope'); assert.equal(ev.length, 0);
+      });
+      await check('handler note.create: autosave ENABLED, no session -> refused before the scope, nothing written', async () => {
+        const world = makeGhlWorld({ opportunityId: OTHER_OPP, owner: OTHER_CONTACT, noteContact: OTHER_CONTACT });
+        const event = fixedEvent('note.create', OTHER_CONTACT, { body: realBodies(OTHER_OPP)['Seller Position value'] }, 'autosave-noauth');
+        delete event.headers.authorization;
+        const { res, ev } = await runWorld(world, event);
+        assert.ok(res.statusCode === 401 || res.statusCode === 403, res.body); assert.equal(world.notes.length, 0); assert.equal(puts(ev).length, 0);
+      });
+      await check('handler note.create: autosave ENABLED, wrong Origin -> refused before the scope, nothing written', async () => {
+        const world = makeGhlWorld({ opportunityId: OTHER_OPP, owner: OTHER_CONTACT, noteContact: OTHER_CONTACT });
+        const event = fixedEvent('note.create', OTHER_CONTACT, { body: realBodies(OTHER_OPP)['Seller Position value'] }, 'autosave-origin');
+        event.headers.origin = 'https://evil.example';
+        const { res, ev } = await runWorld(world, event);
+        assert.equal(res.statusCode, 403, res.body); assert.equal(world.notes.length, 0); assert.equal(puts(ev).length, 0);
+      });
+      await check('handler note.create: the COMMITTED Production config (autosave ENABLED) passes the scope gate for a real contact and writes once', async () => {
+        const saved = PRODUCTION.productionSellerCallAutosave;
+        PRODUCTION.productionSellerCallAutosave = PRODUCTION_ORIGINAL.productionSellerCallAutosave;
+        try {
+          const world = makeGhlWorld({ opportunityId: OTHER_OPP, owner: OTHER_CONTACT, noteContact: OTHER_CONTACT });
+          const { res } = await runWorld(world, fixedEvent('note.create', OTHER_CONTACT, { body: realBodies(OTHER_OPP)['Seller Position cleared'] }, 'autosave-committed'));
+          assert.equal(res.statusCode, 200, res.body); assert.equal(world.notes.length, 1);
+        } finally { PRODUCTION.productionSellerCallAutosave = saved; }
+      });
+    } finally {
+      PRODUCTION.productionSellerCallAutosave = savedAutosave;
+      PRODUCTION.productionProofScope = savedLive.scope; PRODUCTION.contractProductionEnabled = savedLive.contract; PRODUCTION.stages.underContract = savedLive.stage;
+    }
   }
   console.log(`production-write-scope checks=${checks} failures=${failures}`);
   process.exitCode = failures ? 1 : 0;

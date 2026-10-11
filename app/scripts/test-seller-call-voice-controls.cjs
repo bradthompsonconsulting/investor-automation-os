@@ -7,6 +7,10 @@
  * to live here asserted UI that no longer exists and were retired with it;
  * the server-side voice foundation keeps its own suite
  * (test-voice-foundation.cjs).
+ *
+ * B14-13 adds "Call with AirDroid" as the first, primary option. It launches
+ * through the AirDroid launch interface (src/lib/airdroid-launch.ts, which
+ * opens the iaos-airdroid: link once); rendered behaviour: test-seller-call-airdroid.cjs.
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -22,6 +26,8 @@ try {
     path.join(APP, 'node_modules', 'typescript', 'bin', 'tsc'),
     path.join(APP, 'shared/voice-call-contract.ts'),
     path.join(APP, 'src/lib/ghl-call-handoff.ts'),
+    path.join(APP, 'src/lib/airdroid-prepare-call.ts'),
+    path.join(APP, 'src/lib/airdroid-launch.ts'),
     path.join(APP, 'src/components/GhlHandoffNotice.tsx'),
     '--outDir', TMP, '--rootDir', APP, '--module', 'commonjs',
     '--target', 'es2020', '--strict', '--skipLibCheck', '--jsx', 'react-jsx',
@@ -33,6 +39,7 @@ try {
 
 const contract = require(path.join(TMP, 'shared/voice-call-contract.js'));
 const handoff = require(path.join(TMP, 'src/lib/ghl-call-handoff.js'));
+const airdroid = require(path.join(TMP, 'src/lib/airdroid-launch.js'));
 const { GhlHandoffNotice } = require(path.join(TMP, 'src/components/GhlHandoffNotice.js'));
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
@@ -166,6 +173,59 @@ check('cell mode uses authoritative normalized number for clipboard', /clipboard
 check('mobile cell mode prefills native dialer without initiating it', /href=\{`tel:\$\{destination\}`\}/.test(componentCode) && /must press Send/i.test(componentCode), true);
 check('cell mode is disabled and explained without a valid number', /disabled=\{!destination\}/.test(componentCode) && /Unavailable: no valid seller number/.test(componentCode), true);
 check('both modes display seller identity', (componentCode.match(/props\.sellerName/g) || []).length >= 2, true);
+
+// B14-13: Call with AirDroid, through the real launch interface (the link is opened by an injected opener here).
+check('AirDroid call target is the 10 US digits for any US format',
+  ['(214) 555-0101', '+12145550101', '214.555.0101', '1-214-555-0101'].map(airdroid.airdroidCallTarget), Array(4).fill('2145550101'));
+check('AirDroid call target is refused (null) for missing, short, non-US, or 0/1-leading area code or exchange',
+  ['', null, undefined, '555', '+442071234567', '(114) 555-0101', '(014) 555-0101', '(214) 155-0101', '(214) 055-0101'].map(airdroid.airdroidCallTarget),
+  Array(9).fill(null));
+check('the provisional stand-in is gone at integration', fs.existsSync(path.join(APP, 'src/lib/airdroid-launch-stand-in.ts')), false);
+{
+  const opened = [];
+  const result = airdroid.launchAirdroidCall('2145550101', (link) => opened.push(link));
+  check('one launch opens the iaos-airdroid call link exactly once and reports only "handed off"',
+    [result, opened], [{ ok: true }, ['iaos-airdroid:call?number=2145550101']]);
+  const refused = [];
+  check('a target the link builder refuses opens nothing and reports a known error',
+    [['', '555', '1145550101'].map((t) => airdroid.launchAirdroidCall(t, (link) => refused.push(link))), refused],
+    [Array(3).fill({ ok: false, error: "This number can't be called with AirDroid." }), []]);
+  const launcher = fs.readFileSync(path.join(APP, 'src/lib/airdroid-launch.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  check('the launcher navigates only by location.assign of the built link: no popup, fetch or write',
+    /\(link\) => window\.location\.assign\(link\)/.test(launcher) && /const link = airdroidCallLink\(target\);/.test(launcher)
+    && !/window\.open|fetch\(|XMLHttpRequest|sendBeacon/.test(launcher), true);
+}
+check('AirDroid is the first calling option; GHL Phone and Cell follow in that order',
+  [componentCode.indexOf('data-testid="call-with-airdroid-mode"'), componentCode.indexOf('data-testid="call-with-ghl-mode"'), componentCode.indexOf('data-testid="call-with-cell-mode"')]
+    .every((i, n, a) => i >= 0 && (n === 0 || i > a[n - 1])), true);
+check('AirDroid is one primary button, disabled without a valid number; GHL Phone is no longer styled primary',
+  /<button className="seller-call-button seller-call-button--primary" type="button" onClick=\{callWithAirdroid\} disabled=\{!airdroidTarget\} data-testid="call-with-airdroid">/.test(componentCode)
+  && !/seller-call-button--primary" type="button" onClick=\{openGhl\}/.test(componentCode), true);
+check('the AirDroid button only calls the launch interface: no link, popup, navigation or fetch of its own',
+  /import \{ airdroidCallTarget, launchAirdroidCall, type AirdroidLaunchResult \} from "\.\.\/lib\/airdroid-launch";/.test(componentCode)
+  && /result = launchAirdroidCall\(airdroidTarget\);/.test(componentCode)
+  && !/iaos-airdroid:|href=\{airdroid|location\.(?:assign|replace|href)/.test(componentCode) && (componentCode.match(/window\.open\(/g) || []).length === 1, true);
+check('no valid number shows the reason; a failed or throwing launch shows a known error as an alert, with GHL Phone or Cell as the way on',
+  /data-testid="airdroid-no-number">\s*Unavailable: IAOS has no valid 10-digit US number for this seller\. Use GHL Phone or Cell\./.test(componentCode)
+  && /role="alert" data-testid="airdroid-launch-error">\s*\{airdroidError\} Use GHL Phone or Cell\./.test(componentCode)
+  && /catch \{\s*result = \{ ok: false, error: "AirDroid couldn't be started\." \};/.test(componentCode), true);
+{
+  const card = (componentCode.match(/data-testid="call-with-airdroid-mode"[\s\S]*?data-testid="call-with-ghl-mode"/) || [''])[0];
+  check('the AirDroid card has no after-click explanation and never claims a call was prepared, dialled, connected or ended',
+    card.length > 200 && !/prepared|dial(?:l)?ed|connected|ended|calling|call (?:placed|started)|Check AirDroid and your phone|handed|helper|press Make Call|aria-live/i.test(card), true);
+}
+check('the compact Call (B14-13 live test) runs the same callWithAirdroid through a portal into the page slot; launchAirdroidCall stays called in one place',
+  (componentCode.match(/launchAirdroidCall\(/g) || []).length === 1
+  && /createPortal\([\s\S]*onClick=\{callWithAirdroid\}[\s\S]*data-testid="call-with-airdroid-compact"[\s\S]*props\.compactCallSlot,/.test(componentCode)
+  && /props\.compactCallSlot && airdroidTarget \? createPortal\(/.test(componentCode), true);
+check('the compact Call is shown only while the full Call row is not wholly in view, and its space is always kept',
+  /new IntersectionObserver\(\(\[entry\]\) => setCallButtonInView\(entry\.intersectionRatio >= 0\.99\)/.test(componentCode)
+  && /data-shown=\{callButtonInView \? "false" : "true"\}/.test(componentCode)
+  && /\.seller-call-compact\[data-shown="false"\] \{ visibility: hidden; \}/.test(css), true);
+check('Seller Call gives the compact Call its slot inside the sticky deal bar',
+  /<SellerCallVoiceControls[\s\S]*compactCallSlot=\{compactCallSlot\}/.test(workspace)
+  && /data-testid="seller-call-sticky-bar"[\s\S]*ref=\{setCompactCallSlot\} data-testid="seller-call-compact-call-slot"/.test(workspace), true);
+check('AirDroid card spans its own full row on desktop', /\.seller-call-mode--primary \{ grid-column: 1 \/ -1;/.test(css), true);
 
 // Seller Call page ownership is unchanged.
 check('Seller Call mounts controls with exact contact identity and primary phone', /<SellerCallVoiceControls[\s\S]*contactId=\{contactId\}[\s\S]*sellerName=\{contactName\(contact\)\}[\s\S]*sellerPhone=\{contact\.phone\}/.test(workspace), true);

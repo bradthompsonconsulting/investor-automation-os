@@ -126,7 +126,8 @@ check('before any sign-in, the single sign-in landing is unchanged (no page rend
     /const forThis = \(cid: string\) => current\.current === cid;/.test(cl) && (cl.match(/forThis\(cid\)/g) || []).length >= 10
     && /if \(outcome\.kind === "confirmed"\) \{\s*\/\/[^\n]*\n\s*if \(forThis\(cid\)\) \{ if \(slot === "note"\) onNoteWritten\(\); else onAttempt\(at\); \}/.test(read('src/components/CallLogControl.tsx').replace(/\r\n/g, '\n')));
 
-  const blurSites = { 'src/pages/SellerCallWorkspace.tsx': 1, 'src/pages/ContactWorkspace.tsx': 3, 'src/pages/Dashboard.tsx': 1 };
+  // Board 14-13 autosave: Seller Call adds five save-on-leave fields (Seller Position, three transaction assumptions, the price).
+  const blurSites = { 'src/pages/SellerCallWorkspace.tsx': 6, 'src/pages/ContactWorkspace.tsx': 3, 'src/pages/Dashboard.tsx': 1 };
   for (const [f, n] of Object.entries(blurSites)) {
     const c = code(f);
     check(`P1 lifecycle blur: ${path.basename(f)} -- every blur-to-save handler ignores the blur from hiding the page (${n})`,

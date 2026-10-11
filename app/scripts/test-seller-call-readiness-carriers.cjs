@@ -131,7 +131,7 @@ function check(name, actual, expected) {
 }
 
 // ============================================================
-// 2. Transaction / deal-structure assumptions (unchanged)
+// 2. Transaction / deal-structure assumptions (v1; v2 is covered in test-seller-call-autosave-core.cjs)
 // ============================================================
 {
   const none = { kind: 'none' };
@@ -141,7 +141,8 @@ function check(name, actual, expected) {
     transactionStructure: value('Standard assignment'), closingPossession: value('Close in 21 days, vacant at close'), titleComplications: none,
   };
   const note = formatTransactionAssumptionsNote(args);
-  check('transaction assumptions: round-trips exactly', parseTransactionAssumptionsNote(note), args);
+  // Board 14-13 (v2, Jess 2026-10-10): the reader now also reports the version and whether the record is complete.
+  check('transaction assumptions: round-trips exactly (v1, complete)', parseTransactionAssumptionsNote(note), Object.assign({ version: 1 }, args, { complete: true }));
   check('transaction assumptions: a genuinely blank field is refused', parseTransactionAssumptionsNote(note.replace('Transaction structure: Standard assignment', 'Transaction structure: ')), null);
   const otherOpp = formatTransactionAssumptionsNote(Object.assign({}, args, { opportunityId: 'opp-2' }));
   check('transaction assumptions: scoped to opportunity', latestTransactionAssumptionsForOpportunity([{ body: otherOpp }], 'opp-1'), null);

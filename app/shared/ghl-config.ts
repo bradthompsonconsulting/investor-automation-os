@@ -168,6 +168,21 @@ export interface GhlConfig {
    * Enabling is its own reviewed config-only commit, never a runtime toggle.
    */
   productionCallLog: string;
+  /**
+   * B14-13 Seller Call autosave — Production permission class (Brad + Jess,
+   * 2026-10-10; Bones's autosave finding #1). SERVER-SIDE ONLY (read by
+   * production-write-scope.ts; never in RUNTIME_GROUPS) and INDEPENDENT of the
+   * Board #9 flags above. Only `PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED` opens
+   * it. When open, for ANY Production contact: note.create ONLY for a note
+   * that exactly one ledger parser recognizes, and that parser is the Seller
+   * Position ledger or Transaction assumptions in its v2 form. Nothing else.
+   * ghl-write.ts still applies authentication, Origin, the contact lock, the
+   * ledger guard (operator, identifier, opportunity owned by this contact)
+   * and the write claim, unchanged.
+   * TEST carries a fixed, documentation-only value no code path reads.
+   * Enabling is its own reviewed config-only commit, never a runtime toggle.
+   */
+  productionSellerCallAutosave: string;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -317,6 +332,11 @@ export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVIS
 export const PRODUCTION_CALL_LOG_ENABLED = "PRODUCTION_CALL_LOG_ENABLED" as const;
 /** B14-12 — the value PRODUCTION carries until the enable commit; TEST carries it as documentation only. */
 export const PRODUCTION_CALL_LOG_DISABLED = "PRODUCTION_CALL_LOG_DISABLED" as const;
+
+/** B14-13 — the ONE value that opens the Production Seller Call autosave permission class. */
+export const PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED = "PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED" as const;
+/** B14-13 — the value PRODUCTION carries until the enable commit; TEST carries it as documentation only. */
+export const PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED = "PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED" as const;
 
 /**
  * INV-67 / B9-12 -- the literal placeholder value for a not-yet-provisioned
@@ -666,6 +686,8 @@ const PRODUCTION: GhlConfig = {
   contractProductionEnabled: CONTRACT_PRODUCTION_ENABLED,
   // B14-12: ENABLED — Brad's direct Production rollout of the recording-only call log (Jess, 2026-10-03). Disable: publish the prior deploy (lock kept), then revert this commit.
   productionCallLog: PRODUCTION_CALL_LOG_ENABLED,
+  // B14-13: ENABLED — Brad's Production rollout of Seller Call autosave (Seller Position + Transaction assumptions v2; Brad + Jess, 2026-10-10). Disable: publish the prior deploy (lock kept), then revert this commit.
+  productionSellerCallAutosave: PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -1032,6 +1054,8 @@ const TEST: GhlConfig = {
   contractProductionEnabled: CONTRACT_TEST_ALWAYS_ENABLED,
   // B14-12: documentation-only in TEST; Test writes are never scoped.
   productionCallLog: PRODUCTION_CALL_LOG_DISABLED,
+  // B14-13: documentation-only in TEST; Test writes are never scoped.
+  productionSellerCallAutosave: PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED,
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },

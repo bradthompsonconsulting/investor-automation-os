@@ -200,7 +200,20 @@ export function currentPropertyIdentityConfirmationForOpportunity(
 /* ==================================================================== */
 
 export const TRANSACTION_ASSUMPTIONS_LEDGER_VERSION = "iaos-transaction-assumptions-v1" as const;
+/**
+ * v2 (Jess, 2026-10-10, Board 14-13 Seller Call autosave): the same three
+ * sub-facts, but each may also be explicitly "not yet answered", so a
+ * partly answered section can be saved as it stands. Blank never becomes
+ * None: an item is a typed value, the explicit None marker, or the explicit
+ * not-yet-answered marker, and a genuinely blank line is still refused. A
+ * partial record is never complete for Offer Readiness. New saves are v2;
+ * v1 records are still read. Latest by embedded timestamp wins across both
+ * versions, so a newer partial record is never shadowed by an older complete
+ * one.
+ */
+export const TRANSACTION_ASSUMPTIONS_LEDGER_VERSION_V2 = "iaos-transaction-assumptions-v2" as const;
 const TRANSACTION_ASSUMPTIONS_HEADER = `IAOS TRANSACTION ASSUMPTIONS — ${TRANSACTION_ASSUMPTIONS_LEDGER_VERSION}`;
+const TRANSACTION_ASSUMPTIONS_HEADER_V2 = `IAOS TRANSACTION ASSUMPTIONS — ${TRANSACTION_ASSUMPTIONS_LEDGER_VERSION_V2}`;
 const TRANSACTION_ASSUMPTIONS_LABELS = [
   "Recorded at", "Operator", "Opportunity",
   "Transaction structure", "Closing/possession expectations", "Title complications",
@@ -208,28 +221,48 @@ const TRANSACTION_ASSUMPTIONS_LABELS = [
 
 /** One sub-fact: either a real recorded value, or explicitly marked none -- never simply blank. */
 export type TransactionAssumptionField = { kind: "value"; value: string } | { kind: "none" };
+/** v2 only: a sub-fact may also be explicitly not yet answered (still never simply blank). */
+export type TransactionAssumptionDraftField = TransactionAssumptionField | { kind: "unanswered" };
 
 export type ParsedTransactionAssumptions = {
+  version: 1 | 2;
   opportunityId: string;
   at: string;
   operator: string | null;
-  transactionStructure: TransactionAssumptionField;
-  closingPossession: TransactionAssumptionField;
-  titleComplications: TransactionAssumptionField;
+  transactionStructure: TransactionAssumptionDraftField;
+  closingPossession: TransactionAssumptionDraftField;
+  titleComplications: TransactionAssumptionDraftField;
+  /** True only when every item is a value or None. A v1 record is always complete. */
+  complete: boolean;
 };
 
 const NONE_MARKER = "(none — explicitly marked)";
+const UNANSWERED_MARKER = "(not yet answered)";
 
-function formatField(f: TransactionAssumptionField): string {
-  return f.kind === "none" ? NONE_MARKER : f.value;
+/** A typed value that would read back as a marker cannot be saved as typed. */
+export function isReservedTransactionAssumptionText(text: string): boolean {
+  return text.trim() === NONE_MARKER || text.trim() === UNANSWERED_MARKER;
 }
 
-function parseField(raw: string): TransactionAssumptionField | null {
+function formatField(f: TransactionAssumptionDraftField): string {
+  if (f.kind === "none") return NONE_MARKER;
+  if (f.kind === "unanswered") return UNANSWERED_MARKER;
+  if (f.value.trim() === "" || isReservedTransactionAssumptionText(f.value) || /[\r\n]/.test(f.value)) {
+    throw new Error("A transaction assumption value must be real, single-line text.");
+  }
+  return f.value;
+}
+
+function parseField(raw: string, version: 1 | 2): TransactionAssumptionDraftField | null {
   if (raw === NONE_MARKER) return { kind: "none" };
-  if (raw.trim() === "") return null; // blank is never valid -- must be a real value or the explicit none marker
+  if (raw === UNANSWERED_MARKER) return version === 2 ? { kind: "unanswered" } : null; // the marker means one thing in every version
+  if (raw.trim() === "") return null; // blank is never valid -- must be a real value or an explicit marker
   return { kind: "value", value: raw };
 }
 
+const isAnswered = (f: TransactionAssumptionDraftField) => f.kind !== "unanswered";
+
+/** v1: every item must be a value or None. Kept for reading and its existing callers; new saves use v2. */
 export function formatTransactionAssumptionsNote(args: {
   opportunityId: string;
   at: string;
@@ -238,6 +271,8 @@ export function formatTransactionAssumptionsNote(args: {
   closingPossession: TransactionAssumptionField;
   titleComplications: TransactionAssumptionField;
 }): string {
+  const items: TransactionAssumptionDraftField[] = [args.transactionStructure, args.closingPossession, args.titleComplications];
+  if (items.some((f) => f.kind === "unanswered")) throw new Error("A v1 record cannot carry an unanswered item; use v2.");
   return [
     TRANSACTION_ASSUMPTIONS_HEADER,
     `${TRANSACTION_ASSUMPTIONS_LABELS[0]}: ${args.at}`,
@@ -249,20 +284,46 @@ export function formatTransactionAssumptionsNote(args: {
   ].join("\n");
 }
 
-export function parseTransactionAssumptionsNote(body: string): ParsedTransactionAssumptions | null {
-  const values = matchPositionalSchema(body, TRANSACTION_ASSUMPTIONS_HEADER, TRANSACTION_ASSUMPTIONS_LABELS);
-  if (!values) return null;
-  const [at, operatorRaw, opportunityId, structureRaw, closingRaw, titleRaw] = values;
-  if (opportunityId === "") return null;
-  if (!isCanonicalIsoTimestamp(at)) return null;
-  const transactionStructure = parseField(structureRaw);
-  const closingPossession = parseField(closingRaw);
-  const titleComplications = parseField(titleRaw);
-  if (!transactionStructure || !closingPossession || !titleComplications) return null;
-  const operator = operatorRaw === "UNAVAILABLE" ? null : operatorRaw;
-  return { opportunityId, at, operator, transactionStructure, closingPossession, titleComplications };
+/** v2: an item may be explicitly not yet answered, so a partly answered section is saved as it stands. */
+export function formatTransactionAssumptionsNoteV2(args: {
+  opportunityId: string;
+  at: string;
+  operator: string | null;
+  transactionStructure: TransactionAssumptionDraftField;
+  closingPossession: TransactionAssumptionDraftField;
+  titleComplications: TransactionAssumptionDraftField;
+}): string {
+  return [
+    TRANSACTION_ASSUMPTIONS_HEADER_V2,
+    `${TRANSACTION_ASSUMPTIONS_LABELS[0]}: ${args.at}`,
+    `${TRANSACTION_ASSUMPTIONS_LABELS[1]}: ${ledgerValue(args.operator)}`,
+    `${TRANSACTION_ASSUMPTIONS_LABELS[2]}: ${args.opportunityId}`,
+    `${TRANSACTION_ASSUMPTIONS_LABELS[3]}: ${formatField(args.transactionStructure)}`,
+    `${TRANSACTION_ASSUMPTIONS_LABELS[4]}: ${formatField(args.closingPossession)}`,
+    `${TRANSACTION_ASSUMPTIONS_LABELS[5]}: ${formatField(args.titleComplications)}`,
+  ].join("\n");
 }
 
+/** Reads v1 and v2. */
+export function parseTransactionAssumptionsNote(body: string): ParsedTransactionAssumptions | null {
+  for (const [version, header] of [[1, TRANSACTION_ASSUMPTIONS_HEADER], [2, TRANSACTION_ASSUMPTIONS_HEADER_V2]] as const) {
+    const values = matchPositionalSchema(body, header, TRANSACTION_ASSUMPTIONS_LABELS);
+    if (!values) continue;
+    const [at, operatorRaw, opportunityId, structureRaw, closingRaw, titleRaw] = values;
+    if (opportunityId === "") return null;
+    if (!isCanonicalIsoTimestamp(at)) return null;
+    const transactionStructure = parseField(structureRaw, version);
+    const closingPossession = parseField(closingRaw, version);
+    const titleComplications = parseField(titleRaw, version);
+    if (!transactionStructure || !closingPossession || !titleComplications) return null;
+    const operator = operatorRaw === "UNAVAILABLE" ? null : operatorRaw;
+    const complete = isAnswered(transactionStructure) && isAnswered(closingPossession) && isAnswered(titleComplications);
+    return { version, opportunityId, at, operator, transactionStructure, closingPossession, titleComplications, complete };
+  }
+  return null;
+}
+
+/** The latest record of either version for this opportunity -- complete or partial. */
 export function latestTransactionAssumptionsForOpportunity(
   notes: { body: string }[],
   opportunityId: string,
@@ -274,6 +335,22 @@ export function latestTransactionAssumptionsForOpportunity(
     if (!latest || new Date(parsed.at).getTime() > new Date(latest.at).getTime()) latest = parsed;
   }
   return latest;
+}
+
+/**
+ * What Offer Readiness may use: the LATEST record's three items, only when that
+ * record is complete. A newer partial record yields null -- it never falls back
+ * to an older complete one.
+ */
+export function completeTransactionAssumptions(
+  latest: ParsedTransactionAssumptions | null,
+): { structure: TransactionAssumptionField; closing: TransactionAssumptionField; title: TransactionAssumptionField } | null {
+  if (!latest || !latest.complete) return null;
+  const narrow = (f: TransactionAssumptionDraftField) => (f.kind === "unanswered" ? null : f);
+  const structure = narrow(latest.transactionStructure);
+  const closing = narrow(latest.closingPossession);
+  const title = narrow(latest.titleComplications);
+  return structure && closing && title ? { structure, closing, title } : null;
 }
 
 /* ==================================================================== */

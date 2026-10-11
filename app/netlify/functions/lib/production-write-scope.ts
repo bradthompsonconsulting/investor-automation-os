@@ -48,7 +48,7 @@
  * must still belong to the pinned contact and sit in Seller Leads.
  * The Contract Ready checklist stays refused: no walkthrough step gates on it.
  */
-import { getConfig, PRODUCTION_PROOF_SCOPE_ENABLED, PRODUCTION_PROOF_CONTACT_NOT_PINNED, PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED, PRODUCTION_CALL_LOG_ENABLED } from "../../../shared/ghl-config";
+import { getConfig, PRODUCTION_PROOF_SCOPE_ENABLED, PRODUCTION_PROOF_CONTACT_NOT_PINNED, PRODUCTION_PROOF_OPPORTUNITY_NOT_PINNED, PRODUCTION_CALL_LOG_ENABLED, PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED } from "../../../shared/ghl-config";
 import { callLogResults } from "./write-contracts";
 import type { GhlConfig } from "../../../shared/ghl-config";
 import { evaluateContractEnvironment } from "./contract-production-readiness";
@@ -56,6 +56,7 @@ import { parseArvApprovalNote } from "../../../src/lib/arv-approval-note";
 import { parseOutcomeNote } from "../../../src/lib/seller-call-outcome";
 import { parsePropertyIdentityConfirmationNote, parseTransactionAssumptionsNote, parseSellerPricePositionNote, parseReadinessHumanActionNote, parseReadinessDecisionInvalidationNote, parseContractReadyChecklistNote } from "../../../src/lib/seller-call-readiness-carriers";
 import { parseNegotiationOverrideNote } from "../../../src/lib/seller-call-negotiation-override-note";
+import { parseSellerPositionNote } from "../../../src/lib/seller-call-seller-position-note";
 import { parseBuyerEntityOverrideNote, parsePartySignerFactsNote, parsePropertyLegalDescriptionFactsNote, parseLeaseDisclosureFactsNote, parseEarnestMoneyOptionFactsNote, parseTitleSurveyFactsNote, parsePropertyConditionFactsNote, parseClosingPossessionFactsNote, parseSettlementExpenseFactsNote, parseRepresentationFactsNote, parseAddendaApplicabilityFactsNote, parseSellerEquitableInterestDisclosureNote, parseAttorneyManualFieldDispositionNote, parseSellerNoticeConfirmationFactsNote, parseBuyerBusinessConfigFactsNote, parseSellerSigningModelNote } from "../../../src/lib/seller-contract-facts-carriers";
 import { parseBradContractAuthorizationNote } from "../../../src/lib/contract-authorization-carriers";
 import { parseDispositionHandoffNote } from "../../../src/lib/contract-disposition-handoff-carriers";
@@ -163,6 +164,8 @@ export const PRODUCTION_NOTE_SCOPE: ReadonlyArray<{ parse: (body: string) => unk
   { parse: parsePropertyIdentityConfirmationNote, allow: null },
   { parse: parseTransactionAssumptionsNote, allow: null },
   { parse: parseSellerPricePositionNote, allow: null },
+  // B14-13 autosave: Seller Position (value or cleared) is a Board #8-style evidence note -- refused in Production.
+  { parse: parseSellerPositionNote, allow: null },
   { parse: parseReadinessDecisionInvalidationNote, allow: null },
   { parse: parseContractReadyChecklistNote, allow: null },
   { parse: parseNegotiationOverrideNote, allow: null },
@@ -269,10 +272,51 @@ function evaluateProductionCallLog(config: GhlConfig, request: { operation: stri
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* B14-13 — Production Seller Call autosave class (Brad + Jess, 2026-10-10) */
+/* ------------------------------------------------------------------ */
+
+export function productionSellerCallAutosaveEnabled(config: GhlConfig): boolean {
+  return !isTestDeployment(config) && config.productionSellerCallAutosave === PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED;
+}
+
+/**
+ * The Seller Call autosave records (Bones's autosave finding #1): `null` = not
+ * covered (the rules below decide, exactly as before). Covered only while
+ * ENABLED, for any Production contact, and only for `note.create` whose body
+ * exactly ONE ledger parser recognizes (every parser in PRODUCTION_NOTE_SCOPE
+ * is evaluated, never first-match), that parser being the Seller Position
+ * ledger, or Transaction assumptions with `version === 2` (the only form the
+ * page writes; v1 stays refused). This decides only WHICH records may be
+ * written. `ghl-write.ts` still applies, unchanged and for every environment:
+ * authentication, Origin and request shape before this decision; then, under
+ * the contact lock, `validateLedgerNote` (operator, opportunity identifier,
+ * the opportunity read fresh and owned by this contact) and the write claim
+ * and receipt.
+ */
+function evaluateProductionSellerCallAutosave(config: GhlConfig, request: { operation: string; targetId: string; args: unknown }): ProductionWriteScopeResult | null {
+  if (!productionSellerCallAutosaveEnabled(config) || request.operation !== "note.create") return null;
+  const body = (request.args as { body?: unknown } | null)?.body;
+  if (typeof body !== "string") return null;
+  const matches: Array<{ parse: (body: string) => unknown; record: ParsedRecord }> = [];
+  for (const entry of PRODUCTION_NOTE_SCOPE) {
+    let record: unknown = null;
+    try { record = entry.parse(body); } catch { record = null; }
+    if (record && typeof record === "object") matches.push({ parse: entry.parse, record: record as ParsedRecord });
+  }
+  if (matches.length !== 1) return null;
+  const [{ parse, record }] = matches;
+  if (parse === parseSellerPositionNote) return { ok: true };
+  if (parse === parseTransactionAssumptionsNote && record.version === 2) return { ok: true };
+  return null;
+}
+
 export function evaluateProductionGhlWriteScope(config: GhlConfig, request: { operation: string; targetId: string; args: unknown }): ProductionWriteScopeResult {
   if (isTestDeployment(config)) return { ok: true };
   const callLog = evaluateProductionCallLog(config, request);
   if (callLog) return callLog;
+  const autosave = evaluateProductionSellerCallAutosave(config, request);
+  if (autosave) return autosave;
   const pre = productionPreconditions(config);
   if (!pre.ok) return pre;
   const scope = (PRODUCTION_OPERATION_SCOPE as Record<string, string>)[request.operation];

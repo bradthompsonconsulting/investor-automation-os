@@ -50,10 +50,13 @@ import {
   formatNegotiationOverrideNote, latestNegotiationOverrideNoteForOpportunity,
 } from "../lib/seller-call-negotiation-override-note";
 import { resolveResumeHydration, type DealHydrationRef } from "../lib/seller-call-resume";
+import { formatSellerPositionNote, latestSellerPositionForOpportunity } from "../lib/seller-call-seller-position-note";
+import { AutosaveCoordinator, type AutosaveStatus, type AutosaveTarget } from "../lib/seller-call-autosave";
 import {
   formatPropertyIdentityConfirmationNote, currentPropertyIdentityConfirmationForOpportunity,
   latestPropertyIdentityNoteForOpportunity,
-  formatTransactionAssumptionsNote, latestTransactionAssumptionsForOpportunity, type TransactionAssumptionField,
+  formatTransactionAssumptionsNoteV2, latestTransactionAssumptionsForOpportunity, completeTransactionAssumptions,
+  isReservedTransactionAssumptionText, type TransactionAssumptionDraftField,
   formatSellerPricePositionNote, latestSellerPricePositionForOpportunity,
   formatReadinessHumanActionNote, latestReadinessHumanActionForOpportunity, isReadinessDecisionCurrent,
   type ReadinessEvidenceSnapshot, type DealEconomicsInputsSnapshot, type ResolvedInputSnapshot,
@@ -317,18 +320,48 @@ const OUTCOME_LABEL: Record<CallOutcomeKind, string> = {
   pass: "Passed",
 };
 
-function Shell({ contactId, children }: { contactId: string; children: React.ReactNode }) {
+// B14-13: `side` (the open Full Script panel) sits beside the workspace, never over it. The element tree is
+// the same with or without it, so opening or closing the script never remounts the workspace or loses its state.
+function Shell({ contactId, children, side }: { contactId: string; children: React.ReactNode; side?: React.ReactNode }) {
   return (
-    <div style={{ maxWidth: CONTENT_MAX_WIDTH }}>
-      <Link to={`/contacts/${contactId}`} style={{
-        display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px",
-        color: "#64748B", marginBottom: "14px", textDecoration: "none",
-      }}>
-        <ArrowLeft size={13} /> Contact
-      </Link>
-      {children}
+    <div
+      className={side ? "seller-call-shell--with-script" : undefined}
+      data-testid="seller-call-shell"
+      style={{ maxWidth: side ? `calc(${CONTENT_MAX_WIDTH} + 420px)` : CONTENT_MAX_WIDTH }}
+    >
+      <div className="seller-call-shell__main">
+        <Link to={`/contacts/${contactId}`} style={{
+          display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px",
+          color: "#64748B", marginBottom: "14px", textDecoration: "none",
+        }}>
+          <ArrowLeft size={13} /> Contact
+        </Link>
+        {children}
+      </div>
+      {side}
     </div>
   );
+}
+
+/**
+ * Board 14-13 autosave: one truthful line per editable section. "Saved" only
+ * after a confirmed save this visit; a failure keeps the text and says how to
+ * retry; a value that cannot be saved as typed says why.
+ */
+function SaveStatusLine({ testid, status, dirty, problem, kept = "Your text is kept." }: { testid: string; status: AutosaveStatus; dirty: boolean; problem: string | null; kept?: string }) {
+  const base: React.CSSProperties = { fontSize: "10px", lineHeight: 1.35 };
+  if (status.kind === "saving") return <span data-testid={testid} data-state="saving" style={{ ...base, color: "#94A3B8" }}>Saving…</span>;
+  if (problem) return <span data-testid={testid} data-state="invalid" style={{ ...base, color: "#F59E0B" }}>Not saved: {problem}</span>;
+  if (status.kind === "error") {
+    return (
+      <span data-testid={testid} data-state="error" role="alert" style={{ ...base, color: "#EF4444" }}>
+        Couldn&apos;t save: {status.message}{dirty ? ` ${kept} Use Save changes to try again.` : ""}
+      </span>
+    );
+  }
+  if (dirty) return <span data-testid={testid} data-state="unsaved" style={{ ...base, color: "#F59E0B" }}>Not saved yet.</span>;
+  if (status.kind === "saved") return <span data-testid={testid} data-state="saved" style={{ ...base, color: "#22C55E" }}>Saved</span>;
+  return <span data-testid={testid} data-state="idle" style={{ ...base, display: "none" }} />;
 }
 
 function Notice({ tone, title, body }: { tone: "error" | "warn" | "info"; title: string; body?: string }) {
@@ -642,12 +675,10 @@ export default function SellerCallWorkspace() {
   const [closingPossessionNone, setClosingPossessionNone] = useState(false);
   const [titleComplicationsInput, setTitleComplicationsInput] = useState("");
   const [titleComplicationsNone, setTitleComplicationsNone] = useState(false);
-  const [transactionAssumptionsBusy, setTransactionAssumptionsBusy] = useState(false);
-  const [transactionAssumptionsError, setTransactionAssumptionsError] = useState<string | null>(null);
 
   const [sellerPricePositionInput, setSellerPricePositionInput] = useState("");
-  const [sellerPricePositionBusy, setSellerPricePositionBusy] = useState(false);
-  const [sellerPricePositionError, setSellerPricePositionError] = useState<string | null>(null);
+  /* Board 14-13 (Bones): a refusal Brad asked to record, kept until it is on record or he types a price, so a failed refusal can be retried. */
+  const [sellerPriceRefusalPending, setSellerPriceRefusalPending] = useState(false);
 
   const [readinessDecisionReasonInput, setReadinessDecisionReasonInput] = useState("");
   const [readinessDecisionBusy, setReadinessDecisionBusy] = useState(false);
@@ -661,8 +692,15 @@ export default function SellerCallWorkspace() {
      simply another append-only entry, per the carriers' own "latest wins"
      reader. */
   const [propertyIdentityWithdrawBusy, setPropertyIdentityWithdrawBusy] = useState(false);
-  const [transactionAssumptionsEditing, setTransactionAssumptionsEditing] = useState(false);
-  const [sellerPricePositionEditing, setSellerPricePositionEditing] = useState(false);
+  /* Board 14-13 autosave (Brad, 2026-10-10): Transaction assumptions and
+     Seller price position are always-editable fields that save when left
+     (or on Enter), so the Edit/Save/Cancel/Record controls above are gone.
+     A correction is still simply another append-only entry. */
+  const [, setAutosaveTick] = useState(0);
+  const autosave = useMemo(() => new AutosaveCoordinator(() => setAutosaveTick((n) => n + 1)), []);
+  /** The contact this page is showing now; a confirmed save for another contact never touches this page's notes. */
+  const contactIdRef = useRef(contactId);
+  contactIdRef.current = contactId;
 
   /* Contract Ready checklist, B8-10 / INV-53, made durable by the Jess Gate
      correction, 2026-09-08. Address and Agreed Price are not checkboxes
@@ -732,6 +770,9 @@ export default function SellerCallWorkspace() {
   }, [contactId, readRecovered]);
 
   const loading = fetchError === null && (contact === null || opps === null || policyValues === null || notes === null);
+
+  // B14-13 (live test, f32a17e): the sticky deal bar's slot for the compact Call button (SellerCallVoiceControls renders into it).
+  const [compactCallSlot, setCompactCallSlot] = useState<HTMLDivElement | null>(null);
 
   /* B14-12 (Bones, PR #115): THIS contact's callback status, the one value
      the Pass warning, the Confirm Pass button and handleRecordOutcome all
@@ -1045,111 +1086,134 @@ export default function SellerCallWorkspace() {
     }
   }
 
-  /* B8-13 / INV-68 -- Transaction assumptions. Each of the three sub-facts
-     must be either a real typed value or explicitly marked None -- a
-     genuinely blank field refuses the save outright, per the locked
-     addendum's "never left simply blank" rule. */
-  function transactionFieldFromInput(text: string, markedNone: boolean): TransactionAssumptionField | null {
+  /* Board 14-13 autosave. Every save below binds its contact and
+     opportunity when it starts (`writeTarget`), so it can only reach that
+     record; `writeTarget` is null while the selected seller's own data is
+     not loaded, and nothing is written then. */
+  function appendSavedNote(forContact: string, body: string, at: string) {
+    if (contactIdRef.current !== forContact) return;
+    setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body, dateAdded: at }]);
+  }
+
+  /* B8-13 / INV-68 -- Transaction assumptions, v2 (Jess, 2026-10-10). Each
+     item is a typed value, explicitly None, or explicitly not yet answered;
+     blank is "not yet answered", never None. A partial section saves as it
+     stands and stays incomplete for Offer Readiness. */
+  type TransactionDraftInputs = { structure: string; structureNone: boolean; closing: string; closingNone: boolean; title: string; titleNone: boolean };
+  function transactionDraftInputs(over: Partial<TransactionDraftInputs> = {}): TransactionDraftInputs {
+    return {
+      structure: transactionStructureInput, structureNone: transactionStructureNone,
+      closing: closingPossessionInput, closingNone: closingPossessionNone,
+      title: titleComplicationsInput, titleNone: titleComplicationsNone, ...over,
+    };
+  }
+  function transactionFieldFromInput(text: string, markedNone: boolean): TransactionAssumptionDraftField {
     if (markedNone) return { kind: "none" };
-    if (text.trim() === "") return null;
+    if (text.trim() === "") return { kind: "unanswered" };
     return { kind: "value", value: text.trim() };
   }
+  function transactionDraft(over: Partial<TransactionDraftInputs> = {}) {
+    const d = transactionDraftInputs(over);
+    const fields = {
+      transactionStructure: transactionFieldFromInput(d.structure, d.structureNone),
+      closingPossession: transactionFieldFromInput(d.closing, d.closingNone),
+      titleComplications: transactionFieldFromInput(d.title, d.titleNone),
+    };
+    const reserved = [fields.transactionStructure, fields.closingPossession, fields.titleComplications]
+      .some((f) => f.kind === "value" && isReservedTransactionAssumptionText(f.value));
+    return { fields, signature: JSON.stringify(fields), problem: reserved ? "that text is reserved; please reword it." : null };
+  }
 
-  async function handleSaveTransactionAssumptions() {
-    if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
-    const transactionStructure = transactionFieldFromInput(transactionStructureInput, transactionStructureNone);
-    const closingPossession = transactionFieldFromInput(closingPossessionInput, closingPossessionNone);
-    const titleComplications = transactionFieldFromInput(titleComplicationsInput, titleComplicationsNone);
-    if (!transactionStructure || !closingPossession || !titleComplications) {
-      setTransactionAssumptionsError("Each item needs a value, or must be explicitly marked None -- it cannot be left blank.");
-      return;
-    }
-    setTransactionAssumptionsError(null);
-    setTransactionAssumptionsBusy(true);
-    const at = new Date().toISOString();
-    const note = formatTransactionAssumptionsNote({
-      opportunityId: screen.opportunity.id, at, operator: null,
-      transactionStructure, closingPossession, titleComplications,
+  function saveTransactionAssumptions(over: Partial<TransactionDraftInputs> = {}) {
+    const t = writeTarget;
+    if (!t) return;
+    const draft = transactionDraft(over);
+    if (draft.problem) return;
+    void autosave.request({ ...t, section: "transaction-assumptions" }, draft.signature, async () => {
+      const at = new Date().toISOString();
+      const note = formatTransactionAssumptionsNoteV2({ opportunityId: t.opportunityId, at, operator: null, ...draft.fields });
+      await ghl.notes.create(t.contactId, note);
+      appendSavedNote(t.contactId, note, at);
     });
-    try {
-      await ghl.notes.create(contactId, note);
-      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
-      // Save appends a new record (Jess Gate, 2026-09-08) -- history is
-      // preserved automatically (nothing here is ever overwritten); only
-      // the editing UI itself closes.
-      setTransactionAssumptionsEditing(false);
-    } catch (e: any) {
-      setTransactionAssumptionsError(e?.message ?? "Couldn't record this -- it is not yet in effect. Try again.");
-    } finally {
-      setTransactionAssumptionsBusy(false);
+  }
+
+  /* B8-13 / INV-68 -- Seller price position: a price saves when the field is
+     left (or on Enter); a documented refusal is still its own one-click
+     recording. A blank field writes nothing -- the record stays as it is. */
+  function sellerPriceDraft() {
+    if (sellerPricePositionInput.trim() === "") {
+      // A blank field writes nothing, unless it is blank because Brad recorded a refusal that is not yet on record.
+      return { signature: sellerPriceRefusalPending ? "refused" : null as string | null, problem: null as string | null, price: null as number | null };
     }
+    const parsed = parseAcquisitionPriceInput(sellerPricePositionInput);
+    if (parsed.kind !== "value") return { signature: null, problem: "enter a valid price, or record a documented refusal instead.", price: null };
+    return { signature: `price:${parsed.value}`, problem: null, price: parsed.value };
   }
 
-  /** Jess Gate correction, 2026-09-08 -- opens the form prefilled from the current record. Writes nothing. */
-  function handleEditTransactionAssumptions() {
-    if (!transactionAssumptionsRecord) return;
-    const toInput = (f: TransactionAssumptionField) => (f.kind === "value" ? f.value : "");
-    const toNone = (f: TransactionAssumptionField) => f.kind === "none";
-    setTransactionStructureInput(toInput(transactionAssumptionsRecord.transactionStructure));
-    setTransactionStructureNone(toNone(transactionAssumptionsRecord.transactionStructure));
-    setClosingPossessionInput(toInput(transactionAssumptionsRecord.closingPossession));
-    setClosingPossessionNone(toNone(transactionAssumptionsRecord.closingPossession));
-    setTitleComplicationsInput(toInput(transactionAssumptionsRecord.titleComplications));
-    setTitleComplicationsNone(toNone(transactionAssumptionsRecord.titleComplications));
-    setTransactionAssumptionsError(null);
-    setTransactionAssumptionsEditing(true);
+  function saveSellerPricePosition() {
+    const t = writeTarget;
+    if (!t) return;
+    const draft = sellerPriceDraft();
+    if (draft.signature === "refused") { requestSellerPriceRefused(t); return; }
+    if (draft.signature === null || draft.price === null) return;
+    const price = draft.price;
+    void autosave.request({ ...t, section: "seller-price-position" }, draft.signature, async () => {
+      const at = new Date().toISOString();
+      const note = formatSellerPricePositionNote({ opportunityId: t.opportunityId, at, operator: null, kind: "price", price });
+      await ghl.notes.create(t.contactId, note);
+      appendSavedNote(t.contactId, note, at);
+    });
   }
 
-  /** Jess Gate correction, 2026-09-08 -- discards the draft. Writes nothing, per the requirement. */
-  function handleCancelEditTransactionAssumptions() {
-    setTransactionAssumptionsError(null);
-    setTransactionAssumptionsEditing(false);
+  function recordSellerPriceRefused() {
+    const t = writeTarget;
+    if (!t) return;
+    setSellerPricePositionInput("");
+    setSellerPriceRefusalPending(true);
+    requestSellerPriceRefused(t);
   }
 
-  /* B8-13 / INV-68 -- Seller price position. Reuses `parseAcquisitionPriceInput`
-     (imported, never reimplemented) for the price path -- the SAME
-     strictly-positive-finite-number classification the negotiation inputs
-     already use, not a second parser. The refusal path carries no number
-     at all, per `seller-call-readiness-carriers.ts`'s own schema. */
-  async function handleRecordSellerPricePosition(kind: "price" | "refused") {
-    if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
-    const at = new Date().toISOString();
-    let note: string;
-    if (kind === "price") {
-      const parsed = parseAcquisitionPriceInput(sellerPricePositionInput);
-      if (parsed.kind !== "value") {
-        setSellerPricePositionError("Enter a valid price, or record a documented refusal instead.");
-        return;
-      }
-      note = formatSellerPricePositionNote({ opportunityId: screen.opportunity.id, at, operator: null, kind: "price", price: parsed.value });
-    } else {
-      note = formatSellerPricePositionNote({ opportunityId: screen.opportunity.id, at, operator: null, kind: "refused" });
-    }
-    setSellerPricePositionError(null);
-    setSellerPricePositionBusy(true);
-    try {
-      await ghl.notes.create(contactId, note);
-      setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
-      setSellerPricePositionEditing(false);
-    } catch (e: any) {
-      setSellerPricePositionError(e?.message ?? "Couldn't record this -- it is not yet in effect. Try again.");
-    } finally {
-      setSellerPricePositionBusy(false);
-    }
+  function requestSellerPriceRefused(t: { contactId: string; opportunityId: string }) {
+    void autosave.request({ ...t, section: "seller-price-position" }, "refused", async () => {
+      const at = new Date().toISOString();
+      const note = formatSellerPricePositionNote({ opportunityId: t.opportunityId, at, operator: null, kind: "refused" });
+      await ghl.notes.create(t.contactId, note);
+      appendSavedNote(t.contactId, note, at);
+    });
   }
 
-  /** Jess Gate correction, 2026-09-08 -- opens the form prefilled from the current record. Writes nothing. */
-  function handleEditSellerPricePosition() {
-    if (!sellerPricePositionRecord) return;
-    setSellerPricePositionInput(sellerPricePositionRecord.kind === "price" ? String(sellerPricePositionRecord.price) : "");
-    setSellerPricePositionError(null);
-    setSellerPricePositionEditing(true);
+  /* Seller Position (Brad, 2026-10-10): persists on its own, independent of
+     the conversation outcome, in its own note ledger. Clearing the field is
+     saved too, so a reload never brings back a removed number. An invalid
+     entry is never saved. */
+  function sellerPositionSignature(): string | null {
+    if (sellerPositionParsed.kind === "value") return String(sellerPositionParsed.value);
+    if (sellerPositionParsed.kind === "empty") return "cleared";
+    return null;
   }
 
-  /** Jess Gate correction, 2026-09-08 -- discards the draft. Writes nothing. */
-  function handleCancelEditSellerPricePosition() {
-    setSellerPricePositionError(null);
-    setSellerPricePositionEditing(false);
+  function saveSellerPosition() {
+    const t = writeTarget;
+    if (!t) return;
+    const signature = sellerPositionSignature();
+    if (signature === null) return;
+    void autosave.request({ ...t, section: "seller-position" }, signature, async () => {
+      const at = new Date().toISOString();
+      const note = signature === "cleared"
+        ? formatSellerPositionNote({ opportunityId: t.opportunityId, at, operator: null, kind: "cleared" })
+        : formatSellerPositionNote({ opportunityId: t.opportunityId, at, operator: null, kind: "value", value: Number(signature) });
+      await ghl.notes.create(t.contactId, note);
+      appendSavedNote(t.contactId, note, at);
+    });
+  }
+
+  /** Enter in a single-line field saves it; it never submits or clears anything. */
+  function saveOnEnter(save: () => void) {
+    return (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+      e.preventDefault();
+      save();
+    };
   }
 
   /* B8-13 / INV-68 -- Offer Ready's OWN human approval/override, DISTINCT
@@ -1276,10 +1340,16 @@ export default function SellerCallWorkspace() {
     return currentPropertyIdentityConfirmationForOpportunity(notes, screen.opportunity.id, formatAddress(contact));
   }, [notes, screen, contact]);
 
-  const transactionAssumptionsRecord = useMemo(() => {
+  /* The latest Transaction assumptions record of either version, complete or
+     partial -- what the section shows. Offer Readiness reads only
+     `transactionAssumptionsRecord`: that latest record's items when it is
+     complete, else null (a newer partial record never falls back to an older
+     complete one). */
+  const transactionAssumptionsLatest = useMemo(() => {
     if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
     return latestTransactionAssumptionsForOpportunity(notes, screen.opportunity.id);
   }, [notes, screen]);
+  const transactionAssumptionsRecord = useMemo(() => completeTransactionAssumptions(transactionAssumptionsLatest), [transactionAssumptionsLatest]);
 
   const sellerPricePositionRecord = useMemo(() => {
     if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
@@ -1338,9 +1408,9 @@ export default function SellerCallWorkspace() {
         : { status: "unavailable", maxSupportedOffer: null, targetStatus: null, targetValue: null, inputs: buildDealEconomicsInputsSnapshot(pipeline.inputs) },
       transactionAssumptions: transactionAssumptionsRecord
         ? {
-            structure: transactionAssumptionsRecord.transactionStructure,
-            closing: transactionAssumptionsRecord.closingPossession,
-            title: transactionAssumptionsRecord.titleComplications,
+            structure: transactionAssumptionsRecord.structure,
+            closing: transactionAssumptionsRecord.closing,
+            title: transactionAssumptionsRecord.title,
           }
         : null,
       sellerPricePosition: sellerPricePositionRecord
@@ -1372,12 +1442,12 @@ export default function SellerCallWorkspace() {
     return isReadinessDecisionCurrent(readinessHumanActionRecord, {
       snapshot: liveReadinessEvidenceSnapshot,
       newestPropertyIdentityNoteAt: newestPropertyIdentityNote?.at ?? null,
-      newestTransactionAssumptionsNoteAt: transactionAssumptionsRecord?.at ?? null,
+      newestTransactionAssumptionsNoteAt: transactionAssumptionsLatest?.at ?? null,
       newestSellerPricePositionNoteAt: sellerPricePositionRecord?.at ?? null,
       newestArvApprovalNoteAt: latestArvLedgerEntry?.approvedAt ?? null,
       durablyInvalidated: readinessDecisionInvalidatedDurably,
     });
-  }, [readinessHumanActionRecord, liveReadinessEvidenceSnapshot, newestPropertyIdentityNote, transactionAssumptionsRecord, sellerPricePositionRecord, latestArvLedgerEntry, readinessDecisionInvalidatedDurably]);
+  }, [readinessHumanActionRecord, liveReadinessEvidenceSnapshot, newestPropertyIdentityNote, transactionAssumptionsLatest, sellerPricePositionRecord, latestArvLedgerEntry, readinessDecisionInvalidatedDurably]);
 
   /* Jess Gate correction, 2026-09-08 -- the latest LEGACY v1 decision (no
      evidence snapshot at all), for DISPLAY ONLY. Never feeds
@@ -1689,6 +1759,51 @@ export default function SellerCallWorkspace() {
     return latestOutcomeNoteForOpportunity(notes, screen.opportunity.id);
   }, [notes, screen]);
 
+  /* Board 14-13 autosave: the record a save may reach right now. Only when the
+     page shows THIS route's contact, with its own data loaded, and the
+     selected opportunity belongs to it -- never while a newly selected
+     seller's data is still loading (the previous seller's data is still on
+     screen then). */
+  const writeTarget: { contactId: string; opportunityId: string } | null = useMemo(() => {
+    if (!(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    if (!contact || contact.id !== contactId || loadedFor.current !== contactId) return null;
+    const opportunityId = screen.opportunity.id;
+    if (!opps || !opps.some((o) => o.id === opportunityId && o.contactId === contactId)) return null;
+    return { contactId, opportunityId };
+  }, [screen, contact, contactId, opps]);
+  const sectionTarget = (section: string): AutosaveTarget | null => (writeTarget ? { ...writeTarget, section } : null);
+  /* Board 14-13: while a newly selected seller (or deal) loads, the previous
+     seller's data is still on screen and there is no record an edit could
+     safely reach. The autosaved fields and Current Offer are locked then,
+     with a notice, so nothing can be typed against the wrong record or lost;
+     they unlock as soon as the selected seller's own data is shown. Current
+     Offer keeps its own deliberate save (Jess, 2026-10-10). */
+  const sellerLoading = (screen.state === "resolved" || screen.state === "unresolved") && writeTarget === null;
+
+  /* Seller Position's durable value: the newer of its own ledger entry and the
+     latest outcome record's snapshot (outcomes recorded before the ledger
+     existed). `null` means none, or cleared. */
+  const sellerPositionLedger = useMemo(() => {
+    if (!notes || !(screen.state === "resolved" || screen.state === "unresolved")) return null;
+    return latestSellerPositionForOpportunity(notes, screen.opportunity.id);
+  }, [notes, screen]);
+  const durableSellerPosition: number | null = useMemo(() => {
+    const fromLedger = sellerPositionLedger;
+    const fromOutcome = latestOutcome && latestOutcome.snapshot.sellerPosition !== null ? latestOutcome : null;
+    if (fromLedger && (!latestOutcome || new Date(fromLedger.at).getTime() >= new Date(latestOutcome.at).getTime())) {
+      return fromLedger.kind === "value" ? fromLedger.value : null;
+    }
+    return fromOutcome ? fromOutcome.snapshot.sellerPosition : null;
+  }, [sellerPositionLedger, latestOutcome]);
+  /* What the resume decision restores Seller Position from: its durable value above. (Current Offer is restored from
+     the Opportunity field, never from here.) */
+  const resumeSnapshot = useMemo(
+    () => (latestOutcome || sellerPositionLedger
+      ? { sellerPosition: durableSellerPosition, currentOffer: latestOutcome ? latestOutcome.snapshot.currentOffer : null }
+      : null),
+    [latestOutcome, sellerPositionLedger, durableSellerPosition],
+  );
+
   /* Jess Gate clarification, INV-70 / B9-07A Phase 2 correction round 3
      follow-up. Hydration reads ONLY `opportunity.current_offer`, never
      `latestOutcome` (approved, unchanged by this memo). But an Accept
@@ -1771,9 +1886,7 @@ export default function SellerCallWorkspace() {
       prevRef: dealHydrationRef.current,
       currentDealId,
       loading,
-      latestOutcome: latestOutcome
-        ? { sellerPosition: latestOutcome.snapshot.sellerPosition, currentOffer: latestOutcome.snapshot.currentOffer }
-        : null,
+      latestOutcome: resumeSnapshot,
       latestOverrideNote: latestNegotiationOverrideNote,
       sellerPositionInput,
       currentOfferInput,
@@ -1837,7 +1950,82 @@ export default function SellerCallWorkspace() {
     if (decision.restoreOverride !== null) {
       setNegotiationOverride({ acknowledgedAboveMax: true, ...decision.restoreOverride });
     }
-  }, [loading, currentDealId, latestOutcome, latestNegotiationOverrideNote, currentOfferFromOpportunity]);
+  }, [loading, currentDealId, resumeSnapshot, latestNegotiationOverrideNote, currentOfferFromOpportunity]);
+
+  /* Board 14-13 autosave: when the page starts showing a deal (first load or
+     a seller switch), fill Transaction assumptions and Seller price position
+     from that deal's latest record, and tell the coordinator what is already
+     on record so leaving an unchanged field writes nothing. Text typed for a
+     deal but not saved (for example after a failure) is kept per deal and
+     comes back if Brad returns to it. */
+  type DealDrafts = { ta: TransactionDraftInputs | null; price: string | null; priceRefused: boolean; sellerPosition: string | null };
+  const dealDrafts = useRef(new Map<string, DealDrafts>());
+  const shownDeal = useRef<{ key: string; target: { contactId: string; opportunityId: string } } | null>(null);
+  useEffect(() => {
+    const dealKey = writeTarget ? JSON.stringify([writeTarget.contactId, writeTarget.opportunityId]) : null;
+    if (dealKey === (shownDeal.current?.key ?? null)) return;
+    if (shownDeal.current !== null) {
+      // Keep only what was not on record for the deal being left (unsaved, or a failed save).
+      const prev = shownDeal.current.target;
+      const spSig = sellerPositionSignature();
+      const priceSig = sellerPriceDraft().signature;
+      dealDrafts.current.set(shownDeal.current.key, {
+        ta: autosave.isDirty({ ...prev, section: "transaction-assumptions" }, transactionDraft().signature) ? transactionDraftInputs() : null,
+        price: priceSig !== null && autosave.isDirty({ ...prev, section: "seller-price-position" }, priceSig) ? sellerPricePositionInput : null,
+        priceRefused: priceSig === "refused" && autosave.isDirty({ ...prev, section: "seller-price-position" }, priceSig),
+        sellerPosition: spSig !== null && autosave.isDirty({ ...prev, section: "seller-position" }, spSig) ? sellerPositionInput : null,
+      });
+    }
+    shownDeal.current = writeTarget && dealKey !== null ? { key: dealKey, target: writeTarget } : null;
+    if (!writeTarget || dealKey === null) return;
+    const latestTa = transactionAssumptionsLatest;
+    const fromRecord = (f: TransactionAssumptionDraftField | undefined) => ({ text: f && f.kind === "value" ? f.value : "", none: !!f && f.kind === "none" });
+    const s0 = fromRecord(latestTa?.transactionStructure), c0 = fromRecord(latestTa?.closingPossession), t0 = fromRecord(latestTa?.titleComplications);
+    const recordTa: TransactionDraftInputs = { structure: s0.text, structureNone: s0.none, closing: c0.text, closingNone: c0.none, title: t0.text, titleNone: t0.none };
+    const recordPrice = sellerPricePositionRecord && sellerPricePositionRecord.kind === "price" ? String(sellerPricePositionRecord.price) : "";
+    const recordTaSignature = JSON.stringify({
+      transactionStructure: transactionFieldFromInput(recordTa.structure, recordTa.structureNone),
+      closingPossession: transactionFieldFromInput(recordTa.closing, recordTa.closingNone),
+      titleComplications: transactionFieldFromInput(recordTa.title, recordTa.titleNone),
+    });
+    autosave.seed({ ...writeTarget, section: "transaction-assumptions" }, recordTaSignature);
+    autosave.seed({ ...writeTarget, section: "seller-price-position" },
+      sellerPricePositionRecord ? (sellerPricePositionRecord.kind === "price" ? `price:${sellerPricePositionRecord.price}` : "refused") : "none");
+    autosave.seed({ ...writeTarget, section: "seller-position" }, durableSellerPosition === null ? "cleared" : String(durableSellerPosition));
+    const kept = dealDrafts.current.get(dealKey);
+    const ta = kept?.ta ?? recordTa;
+    setTransactionStructureInput(ta.structure); setTransactionStructureNone(ta.structureNone);
+    setClosingPossessionInput(ta.closing); setClosingPossessionNone(ta.closingNone);
+    setTitleComplicationsInput(ta.title); setTitleComplicationsNone(ta.titleNone);
+    setSellerPricePositionInput(kept?.price ?? recordPrice);
+    // An empty string is a kept draft too (a cleared value awaiting retry), so presence is checked explicitly.
+    if (kept && kept.sellerPosition !== null) setSellerPositionInput(kept.sellerPosition);
+    setSellerPriceRefusalPending(kept ? kept.priceRefused : false);
+    dealDrafts.current.delete(dealKey);
+  }, [writeTarget, transactionAssumptionsLatest, sellerPricePositionRecord, durableSellerPosition]);
+
+  /* What each editable section shows now, and the one page-wide fallback. */
+  const taTarget = sectionTarget("transaction-assumptions");
+  const priceTarget = sectionTarget("seller-price-position");
+  const spTarget = sectionTarget("seller-position");
+  const taDraftNow = transactionDraft();
+  const priceDraftNow = sellerPriceDraft();
+  const spSignatureNow = sellerPositionSignature();
+  const idleStatus: AutosaveStatus = { kind: "idle" };
+  const taStatus = taTarget ? autosave.status(taTarget) : idleStatus;
+  const priceStatus = priceTarget ? autosave.status(priceTarget) : idleStatus;
+  const spStatus = spTarget ? autosave.status(spTarget) : idleStatus;
+  const taDirty = !!taTarget && autosave.isDirty(taTarget, taDraftNow.signature);
+  const priceDirty = !!priceTarget && priceDraftNow.signature !== null && autosave.isDirty(priceTarget, priceDraftNow.signature);
+  const spDirty = !!spTarget && spSignatureNow !== null && autosave.isDirty(spTarget, spSignatureNow);
+  const pageHasUnsaved = taDirty || priceDirty || spDirty;
+  const pageSaving = taStatus.kind === "saving" || priceStatus.kind === "saving" || spStatus.kind === "saving";
+  function saveAllChanges() {
+    if (taDirty) saveTransactionAssumptions();
+    if (priceDirty) saveSellerPricePosition();
+    if (spDirty) saveSellerPosition();
+  }
+
 
   /* The facts a recorded outcome captures, taken verbatim from what this
      page has already computed -- no recomputation, no second source. */
@@ -2216,7 +2404,10 @@ export default function SellerCallWorkspace() {
   }
 
   return (
-    <Shell contactId={contactId}>
+    <Shell
+      contactId={contactId}
+      side={fullScriptOpen ? <FullScriptDrawer open={fullScriptOpen} onClose={() => setFullScriptOpen(false)} /> : null}
+    >
       <RefreshReadError message={refreshReadError} />
       <div style={{ marginBottom: "6px" }}>
         <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>
@@ -2238,6 +2429,7 @@ export default function SellerCallWorkspace() {
           contactId={contactId}
           sellerName={contactName(contact)}
           sellerPhone={contact.phone}
+          compactCallSlot={compactCallSlot}
         />
       ) : null}
 
@@ -2361,8 +2553,32 @@ export default function SellerCallWorkspace() {
               borderBottom: "1px solid rgba(255,255,255,0.06)",
             }}
           >
-            <DealBar cells={dealBarCells} />
-            {readiness ? <ReadinessBadge readiness={readiness} /> : null}
+            {/* B14-13: the compact Call button sits at the bar's right edge, so it stays reachable while Brad scrolls
+                without covering anything the bar does not already cover. */}
+            <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
+              <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+                <DealBar cells={dealBarCells} />
+                {sellerLoading ? (
+                  <div role="status" data-testid="seller-call-loading-seller"
+                    style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#F59E0B", margin: "-8px 0 10px" }}>
+                    <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+                    Loading the selected seller. Answers are locked until their details arrive.
+                  </div>
+                ) : null}
+                {readiness ? <ReadinessBadge readiness={readiness} /> : null}
+              </div>
+              <div style={{ flex: "0 0 auto", paddingTop: "10px", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" }}>
+                <div ref={setCompactCallSlot} data-testid="seller-call-compact-call-slot" />
+                {/* Board 14-13 autosave: the one manual fallback for the whole page. Shown only while something is unsaved
+                    or a save failed; it saves (or retries) every such section of the deal on screen. */}
+                {pageHasUnsaved || pageSaving ? (
+                  <button type="button" data-testid="seller-call-save-changes" onClick={saveAllChanges} disabled={pageSaving}
+                    style={{ ...COMPACT_BUTTON_STYLE, opacity: pageSaving ? 0.6 : 1, cursor: pageSaving ? "not-allowed" : "pointer" }}>
+                    {pageSaving ? "Saving…" : "Save changes"}
+                  </button>
+                ) : null}
+              </div>
+            </div>
           </div>
 
           {/* B8-13 / INV-68 — Offer Ready's OWN human approval/override,
@@ -2600,7 +2816,10 @@ export default function SellerCallWorkspace() {
                 <input
                   data-testid="negotiation-seller-position-input"
                   value={sellerPositionInput}
+                  disabled={sellerLoading}
                   onChange={(e) => handleSellerPositionChange(e.target.value)}
+                  onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; saveSellerPosition(); }}
+                  onKeyDown={saveOnEnter(saveSellerPosition)}
                   placeholder="Not yet entered"
                   style={{
                     background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px",
@@ -2619,6 +2838,8 @@ export default function SellerCallWorkspace() {
                     {sellerPositionParsed.reason}
                   </span>
                 ) : null}
+                {/* Board 14-13 autosave: Seller Position saves on its own when the field is left or on Enter. */}
+                <SaveStatusLine testid="negotiation-seller-position-save-status" status={spStatus} dirty={spDirty} problem={null} />
               </label>
               <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "11px", color: "#64748B" }}>
                 Current Offer
@@ -2628,6 +2849,7 @@ export default function SellerCallWorkspace() {
                   onChange={(e) => handleCurrentOfferChange(e.target.value)}
                   onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; void commitCurrentOffer(); }}
                   readOnly={offerSaves.isLocked(dealBarOppId)}
+                  disabled={sellerLoading}
                   placeholder="Not yet entered — IAOS never sets this"
                   style={{
                     background: "#0D1B3E", border: "1px solid #1E293B", borderRadius: "6px",
@@ -3172,91 +3394,78 @@ export default function SellerCallWorkspace() {
                 blank. */}
             <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="transaction-assumptions-panel">
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Transaction assumptions</div>
-              {transactionAssumptionsRecord && !transactionAssumptionsEditing ? (
-                <div style={{ fontSize: "12px", color: "#94A3B8" }} data-testid="transaction-assumptions-status">
-                  <div style={{ color: "#22C55E", marginBottom: "6px" }}>✓ Recorded {new Date(transactionAssumptionsRecord.at).toLocaleDateString()}</div>
-                  <div>Structure: {transactionAssumptionsRecord.transactionStructure.kind === "none" ? "None" : transactionAssumptionsRecord.transactionStructure.value}</div>
-                  <div>Closing/possession: {transactionAssumptionsRecord.closingPossession.kind === "none" ? "None" : transactionAssumptionsRecord.closingPossession.value}</div>
-                  <div>Title complications: {transactionAssumptionsRecord.titleComplications.kind === "none" ? "None" : transactionAssumptionsRecord.titleComplications.value}</div>
-                  {/* Jess Gate correction, 2026-09-08: correction entry point -- opens the SAME form below, prefilled. */}
-                  <button
-                    onClick={handleEditTransactionAssumptions}
-                    data-testid="edit-transaction-assumptions"
-                    style={{ ...COMPACT_LINK_STYLE, marginTop: "8px" }}
-                  >
-                    Edit
-                  </button>
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  {/* Pass 1 F35: a visible label, not only placeholder text. */}
+              {/* Board 14-13 autosave + v2 (Jess, 2026-10-10): always editable, saved when a field is left, on Enter, or
+                  when None known is ticked. A partly answered section is saved as it stands and stays incomplete. */}
+              <div style={{ fontSize: "12px", marginBottom: "8px" }} data-testid="transaction-assumptions-status">
+                {transactionAssumptionsLatest === null ? (
+                  <span style={{ color: "#64748B" }}>Not yet recorded.</span>
+                ) : transactionAssumptionsLatest.complete ? (
+                  <span style={{ color: "#22C55E" }}>✓ Complete. Recorded {new Date(transactionAssumptionsLatest.at).toLocaleDateString()}.</span>
+                ) : (
+                  <span style={{ color: "#F59E0B" }}>
+                    Partly answered (saved {new Date(transactionAssumptionsLatest.at).toLocaleDateString()}). Not complete for Offer Readiness until each item
+                    has an answer or None known. Still needed: {[
+                      transactionAssumptionsLatest.transactionStructure.kind === "unanswered" ? "structure" : null,
+                      transactionAssumptionsLatest.closingPossession.kind === "unanswered" ? "closing/possession" : null,
+                      transactionAssumptionsLatest.titleComplications.kind === "unanswered" ? "title" : null,
+                    ].filter(Boolean).join(", ")}.
+                  </span>
+                )}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                   <div style={{ fontSize: "11px", color: "#94A3B8", marginBottom: "-4px" }}>How the deal is structured (e.g. standard assignment)</div>
                   <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                     <input
+                      data-testid="transaction-structure-input"
                       value={transactionStructureInput}
                       onChange={(e) => setTransactionStructureInput(e.target.value)}
-                      disabled={transactionStructureNone || transactionAssumptionsBusy}
+                      onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; saveTransactionAssumptions(); }}
+                      onKeyDown={saveOnEnter(() => saveTransactionAssumptions())}
+                      disabled={sellerLoading || transactionStructureNone}
                       placeholder="Transaction structure"
                       style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
                     />
                     <label style={{ fontSize: "11px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <input type="checkbox" checked={transactionStructureNone} onChange={(e) => setTransactionStructureNone(e.target.checked)} /> None known
+                      <input type="checkbox" data-testid="transaction-structure-none" checked={transactionStructureNone} disabled={sellerLoading}
+                        onChange={(e) => { setTransactionStructureNone(e.target.checked); saveTransactionAssumptions({ structureNone: e.target.checked }); }} /> None known
                     </label>
                   </div>
-                  {/* Pass 1 F35: a visible label, not only placeholder text. */}
                   <div style={{ fontSize: "11px", color: "#94A3B8", marginBottom: "-4px" }}>Closing and move-out (possession) expectations</div>
                   <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                     <input
+                      data-testid="transaction-closing-input"
                       value={closingPossessionInput}
                       onChange={(e) => setClosingPossessionInput(e.target.value)}
-                      disabled={closingPossessionNone || transactionAssumptionsBusy}
+                      onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; saveTransactionAssumptions(); }}
+                      onKeyDown={saveOnEnter(() => saveTransactionAssumptions())}
+                      disabled={sellerLoading || closingPossessionNone}
                       placeholder="Closing/possession expectations"
                       style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
                     />
                     <label style={{ fontSize: "11px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <input type="checkbox" checked={closingPossessionNone} onChange={(e) => setClosingPossessionNone(e.target.checked)} /> None known
+                      <input type="checkbox" data-testid="transaction-closing-none" checked={closingPossessionNone} disabled={sellerLoading}
+                        onChange={(e) => { setClosingPossessionNone(e.target.checked); saveTransactionAssumptions({ closingNone: e.target.checked }); }} /> None known
                     </label>
                   </div>
-                  {/* Pass 1 F35: a visible label, not only placeholder text. */}
                   <div style={{ fontSize: "11px", color: "#94A3B8", marginBottom: "-4px" }}>Known title problems (liens, heirs, probate)</div>
                   <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                     <input
+                      data-testid="transaction-title-input"
                       value={titleComplicationsInput}
                       onChange={(e) => setTitleComplicationsInput(e.target.value)}
-                      disabled={titleComplicationsNone || transactionAssumptionsBusy}
+                      onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; saveTransactionAssumptions(); }}
+                      onKeyDown={saveOnEnter(() => saveTransactionAssumptions())}
+                      disabled={sellerLoading || titleComplicationsNone}
                       placeholder="Known title complications"
                       style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
                     />
                     <label style={{ fontSize: "11px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <input type="checkbox" checked={titleComplicationsNone} onChange={(e) => setTitleComplicationsNone(e.target.checked)} /> None known
+                      <input type="checkbox" data-testid="transaction-title-none" checked={titleComplicationsNone} disabled={sellerLoading}
+                        onChange={(e) => { setTitleComplicationsNone(e.target.checked); saveTransactionAssumptions({ titleNone: e.target.checked }); }} /> None known
                     </label>
                   </div>
-                  <div style={{ display: "flex", gap: "8px" }}>
-                    <button
-                      onClick={handleSaveTransactionAssumptions}
-                      disabled={transactionAssumptionsBusy}
-                      data-testid="save-transaction-assumptions"
-                      style={{ ...COMPACT_BUTTON_STYLE, opacity: transactionAssumptionsBusy ? 0.6 : 1, cursor: transactionAssumptionsBusy ? "not-allowed" : "pointer" }}
-                    >
-                      {transactionAssumptionsBusy ? <Loader2 size={12} className="animate-spin" /> : null} Save
-                    </button>
-                    {/* Jess Gate correction, 2026-09-08: Cancel discards the draft and writes nothing -- only shown when there's an existing record to fall back to. */}
-                    {transactionAssumptionsRecord ? (
-                      <button
-                        onClick={handleCancelEditTransactionAssumptions}
-                        disabled={transactionAssumptionsBusy}
-                        data-testid="cancel-transaction-assumptions"
-                        style={{ ...COMPACT_LINK_STYLE, opacity: transactionAssumptionsBusy ? 0.6 : 1, cursor: transactionAssumptionsBusy ? "not-allowed" : "pointer" }}
-                      >
-                        Cancel
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              )}
-              {transactionAssumptionsError ? (
-                <div data-testid="transaction-assumptions-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{transactionAssumptionsError}</div>
-              ) : null}
+                <SaveStatusLine testid="transaction-assumptions-save-status" status={taStatus} dirty={taDirty} problem={taDraftNow.problem} />
+              </div>
             </div>
 
             {/* B8-13 / INV-68 — Seller price position. Determination
@@ -3265,65 +3474,43 @@ export default function SellerCallWorkspace() {
                 refusal is valid evidence and must not remain UNKNOWN. */}
             <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }} data-testid="seller-price-position-panel">
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Seller price position</div>
-              {sellerPricePositionRecord && !sellerPricePositionEditing ? (
-                <div style={{ fontSize: "12px", color: "#22C55E" }} data-testid="seller-price-position-status">
-                  ✓ {sellerPricePositionRecord.kind === "price"
-                    ? `${money(sellerPricePositionRecord.price)} recorded ${new Date(sellerPricePositionRecord.at).toLocaleDateString()}`
-                    : `Documented refusal recorded ${new Date(sellerPricePositionRecord.at).toLocaleDateString()}`}
-                  {/* Jess Gate correction, 2026-09-08: correction entry point. */}
+              {/* Board 14-13 autosave: the price saves when the field is left or on Enter; a refusal is its own one click.
+                  A blank field writes nothing. */}
+              <div style={{ fontSize: "12px", marginBottom: "8px" }} data-testid="seller-price-position-status">
+                {sellerPricePositionRecord === null ? (
+                  <span style={{ color: "#64748B" }}>Not yet recorded.</span>
+                ) : (
+                  <span style={{ color: "#22C55E" }}>
+                    ✓ {sellerPricePositionRecord.kind === "price"
+                      ? `${money(sellerPricePositionRecord.price)} recorded ${new Date(sellerPricePositionRecord.at).toLocaleDateString()}`
+                      : `Documented refusal recorded ${new Date(sellerPricePositionRecord.at).toLocaleDateString()}`}
+                  </span>
+                )}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <input
+                  data-testid="seller-price-position-input"
+                  value={sellerPricePositionInput}
+                  disabled={sellerLoading}
+                  onChange={(e) => { setSellerPricePositionInput(e.target.value); setSellerPriceRefusalPending(false); }}
+                  onBlur={(e) => { if (isLifecycleBlur(e.currentTarget)) return; saveSellerPricePosition(); }}
+                  onKeyDown={saveOnEnter(saveSellerPricePosition)}
+                  placeholder="Seller's price"
+                  style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", cursor: "text" }}
+                />
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                   <button
-                    onClick={handleEditSellerPricePosition}
-                    data-testid="edit-seller-price-position"
-                    style={{ ...COMPACT_LINK_STYLE, marginLeft: "10px" }}
+                    onClick={recordSellerPriceRefused}
+                    disabled={sellerLoading || priceStatus.kind === "saving"}
+                    data-testid="record-seller-price-refused"
+                    style={{ ...COMPACT_LINK_STYLE, opacity: sellerLoading || priceStatus.kind === "saving" ? 0.6 : 1, cursor: sellerLoading || priceStatus.kind === "saving" ? "not-allowed" : "pointer" }}
                   >
-                    Edit
+                    Seller declined to give a price
                   </button>
                 </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  <div style={{ display: "flex", gap: "6px" }}>
-                    <input
-                      value={sellerPricePositionInput}
-                      onChange={(e) => setSellerPricePositionInput(e.target.value)}
-                      disabled={sellerPricePositionBusy}
-                      placeholder="Seller's price"
-                      style={{ ...COMPACT_LINK_STYLE, background: "rgba(255,255,255,0.04)", flex: 1, cursor: "text" }}
-                    />
-                    <button
-                      onClick={() => handleRecordSellerPricePosition("price")}
-                      disabled={sellerPricePositionBusy || sellerPricePositionInput.trim() === ""}
-                      data-testid="record-seller-price"
-                      style={{ ...COMPACT_BUTTON_STYLE, opacity: sellerPricePositionBusy || sellerPricePositionInput.trim() === "" ? 0.45 : 1, cursor: sellerPricePositionBusy ? "not-allowed" : "pointer" }}
-                    >
-                      Record
-                    </button>
-                  </div>
-                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                    <button
-                      onClick={() => handleRecordSellerPricePosition("refused")}
-                      disabled={sellerPricePositionBusy}
-                      data-testid="record-seller-price-refused"
-                      style={{ ...COMPACT_LINK_STYLE, opacity: sellerPricePositionBusy ? 0.6 : 1, cursor: sellerPricePositionBusy ? "not-allowed" : "pointer" }}
-                    >
-                      {sellerPricePositionBusy ? <Loader2 size={12} className="animate-spin" /> : null} Seller declined to give a price
-                    </button>
-                    {/* Jess Gate correction, 2026-09-08: Cancel discards the draft and writes nothing -- only shown when there's an existing record to fall back to. */}
-                    {sellerPricePositionRecord ? (
-                      <button
-                        onClick={handleCancelEditSellerPricePosition}
-                        disabled={sellerPricePositionBusy}
-                        data-testid="cancel-seller-price-position"
-                        style={{ ...COMPACT_LINK_STYLE, opacity: sellerPricePositionBusy ? 0.6 : 1, cursor: sellerPricePositionBusy ? "not-allowed" : "pointer" }}
-                      >
-                        Cancel
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              )}
-              {sellerPricePositionError ? (
-                <div data-testid="seller-price-position-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{sellerPricePositionError}</div>
-              ) : null}
+                <SaveStatusLine testid="seller-price-position-save-status" status={priceStatus} dirty={priceDirty} problem={priceDraftNow.problem}
+                  kept={priceDraftNow.signature === "refused" ? "The refusal is kept." : undefined} />
+              </div>
             </div>
 
             {/* B8-07 / INV-50 — compact Estimate Repairs entry/resume.
@@ -3415,7 +3602,6 @@ export default function SellerCallWorkspace() {
           </div>
         </>
       ) : null}
-      <FullScriptDrawer open={fullScriptOpen} onClose={() => setFullScriptOpen(false)} />
     </Shell>
   );
 }
