@@ -7,6 +7,9 @@
 // field's text at that moment. Each change between minimised and normal is logged too (MINIMIZED / RESTORED).
 // With args[1] == "--taskbar" the main window is a normal unowned taskbar window, like the real AirDroid main window
 // (test-airdroid-minimize.cjs); without it, the concurrency test's original setup is unchanged.
+// Start-up simulation (test-airdroid-start.cjs), any order after args[0]: "--window-after=MS" shows the main window
+// only after MS ms; "--dialpad-after=MS" shows the device page (frmAirCloud with the field) only MS ms after the
+// window; "--no-dialpad" never shows it. Without these flags the window and Dialpad appear at once, as before.
 using System;
 using System.Drawing;
 using System.IO;
@@ -21,9 +24,22 @@ public static class FakeAirDroid {
   [STAThread]
   public static void Main(string[] args) {
     logPath = args[0];
+    int windowAfter = 0, dialpadAfter = 0; bool noDialpad = false;
+    for (int a = 1; a < args.Length; a++) {
+      if (args[a].StartsWith("--window-after=")) windowAfter = int.Parse(args[a].Substring(15));
+      else if (args[a].StartsWith("--dialpad-after=")) dialpadAfter = int.Parse(args[a].Substring(16));
+      else if (args[a] == "--no-dialpad") noDialpad = true;
+    }
+    if (windowAfter > 0) { Log("STARTED"); System.Threading.Thread.Sleep(windowAfter); }
     var main = new Form { Text = "AirDroid", Width = 360, Height = 520, StartPosition = FormStartPosition.Manual,
       Location = new Point(40, 40), ShowInTaskbar = args.Length > 1 && args[1] == "--taskbar" };
-    var page = new Panel { Text = "frmAirCloud", AccessibleName = "frmAirCloud", Dock = DockStyle.Fill };
+    var page = new Panel { Text = "frmAirCloud", AccessibleName = "frmAirCloud", Dock = DockStyle.Fill,
+      Visible = !noDialpad && dialpadAfter == 0 };
+    if (!noDialpad && dialpadAfter > 0) {
+      var reveal = new Timer { Interval = dialpadAfter };
+      reveal.Tick += (s, e) => { reveal.Stop(); page.Visible = true; Log("DIALPAD"); };
+      main.Shown += (s, e) => reveal.Start();
+    }
     var field = new TextBox { Left = 20, Top = 16, Width = 240 };
     var grid = new Panel { Left = 20, Top = 60, Width = 260, Height = 360 };
     for (int i = 0; i < 12; i++) {

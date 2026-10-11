@@ -121,9 +121,10 @@ check('dial: never reads AirDroid configuration or log files',
 check('dial: the dial is recorded for the duplicate guard before the click',
   dialCode.indexOf('Set-Content -LiteralPath $GuardFile') > -1 && dialCode.indexOf('Set-Content -LiteralPath $GuardFile') < dialCode.indexOf('0x0201'), true);
 check('dial: one dial at a time (named mutex, no wait)', /Mutex\(\$false, 'Local\\IAOS-AirDroid-Dial'\)/.test(dialCode) && /WaitOne\(0\)/.test(dialCode), true);
-check('handler: duplicate check, then PrepareCall -Automatic, then DialCall, each only after the previous exits 0, with the same parsed digits',
-  /\$code = Invoke-Step 'DialCall\.ps1' \(@\('-GuardOnly'\) \+ \$dialExtra\)\s*\n\s*if \(\$code -eq 0\) \{ \$code = Invoke-Step 'PrepareCall\.ps1' \(@\('-Automatic'\) \+ \$extra\) \}\s*\n\s*if \(\$code -eq 0\) \{ \$code = Invoke-Step 'DialCall\.ps1' \$dialExtra \}/.test(handlerSrc)
-    && /-File \(Join-Path \$PSScriptRoot \$script\) -Number \$number -CallerHoldsLock @arguments/.test(handlerSrc), true);
+check('handler: duplicate check, then PrepareCall -Automatic -StartIfNotRunning, then DialCall, each only after the previous exits 0, with the same parsed digits',
+  /\$code = Invoke-Step 'DialCall\.ps1' \(@\('-GuardOnly'\) \+ \$dialExtra\)\s*\n\s*if \(\$code -eq 0\) \{ \$code = Invoke-Step 'PrepareCall\.ps1' \$prepareExtra \}\s*\n\s*if \(\$code -eq 0\) \{ \$code = Invoke-Step 'DialCall\.ps1' \$dialExtra \}/.test(handlerSrc)
+    && /-File \(Join-Path \$PSScriptRoot \$script\) -Number \$number -CallerHoldsLock @arguments/.test(handlerSrc)
+    && /\$prepareExtra = @\('-Automatic', '-StartIfNotRunning'\) \+ \$extra/.test(handlerSrc), true);
 {
   // B14-13 (Bones finding 1): the call lock is taken before any step touches the Dialpad and released on every exit
   // path, before any "Press Enter" pause. The concurrency behaviour itself is tested in test-airdroid-dial-concurrency.cjs.

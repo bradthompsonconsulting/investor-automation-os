@@ -4,6 +4,10 @@
 
 .DESCRIPTION
   1. Validates and normalises the phone number. The field is never touched if the number is invalid.
+  1c. With -StartIfNotRunning (the IAOS handler passes it): if AirDroid is not running, starts it and waits a bounded
+     time (-ReadyTimeoutSec, default 60) until exactly one AirDroid main window shows exactly one Dialpad number field
+     (the same guarded lookup as step 3). The wait only looks; it changes nothing. If that does not happen in time it
+     stops (exit 8) with a clear message, and no number is entered and no call is placed.
   2. Finds exactly one running AirDroid main window and brings it forward.
   3. Finds the already-open Dialpad number field with the guarded lookup: exactly one visible standard
      Windows text field (class *.EDIT.*) inside AirDroid's visible device page form "frmAirCloud".
@@ -32,8 +36,17 @@
   deadlock against the caller. Without it, standalone use takes the lock itself, so a prefill can never change the
   Dialpad during an automatic dial.
 
+.PARAMETER StartIfNotRunning
+  B14-13: start AirDroid when it is not running, then wait for its Dialpad (step 1c). Ignored with -CheckOnly.
+
+.PARAMETER ReadyTimeoutSec
+  B14-13: how long step 1c waits, 5 to 180 seconds (default 60).
+
 .PARAMETER TestProcessName
   Offline tests only: the process name of the inert fake AirDroid window. Never passed by the registered handler.
+
+.PARAMETER TestLaunchPath / TestLaunchArgs
+  Offline tests only (require -TestProcessName): the fake AirDroid program step 1c starts instead of AirDroid.
 
 .NOTES
   Exit codes:
@@ -44,6 +57,7 @@
     5 Dialpad field ambiguous (more than one candidate)
     6 readback mismatch (field cleared)
     7 unexpected error
+    8 AirDroid was started (or could not be started) but its Dialpad was not ready in time; nothing was entered
     10 another IAOS call is in progress (nothing changed), or -CallerHoldsLock given but the lock is not held
 #>
 [CmdletBinding()]
@@ -52,7 +66,11 @@ param(
   [switch]$CheckOnly,
   [switch]$Automatic,
   [switch]$CallerHoldsLock,
-  [string]$TestProcessName = ''
+  [switch]$StartIfNotRunning,
+  [ValidateRange(5, 180)][int]$ReadyTimeoutSec = 60,
+  [string]$TestProcessName = '',
+  [string]$TestLaunchPath = '',
+  [string]$TestLaunchArgs = ''
 )
 $ErrorActionPreference = 'Stop'
 $processName = if ($TestProcessName) { $TestProcessName } else { 'AirDroid' }
@@ -108,17 +126,66 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
   $AE = [System.Windows.Automation.AutomationElement]
   $Walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
 
+  function Find-Mains {
+    $found = @()
+    foreach ($p in @(Get-Process -Name $processName -ErrorAction SilentlyContinue)) {
+      $cond = New-Object System.Windows.Automation.AndCondition(
+        (New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $p.Id)),
+        (New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, 'AirDroid')),
+        (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)))
+      $found += @($AE::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond))
+    }
+    return $found
+  }
+  # Step 3's guarded lookup: exactly one visible EDIT inside the visible device page form "frmAirCloud".
+  $script:hits = @()
+  function Walk($el, [int]$depth, [bool]$inForm) {
+    if ($depth -gt 30) { return }
+    $c = $el.Current
+    $h = [IntPtr]$c.NativeWindowHandle
+    $f = $inForm -or ($c.Name -eq 'frmAirCloud' -and $h -ne [IntPtr]::Zero -and $N::IsWindowVisible($h))
+    if ($f -and $c.ClassName -match '\.EDIT\.' -and $h -ne [IntPtr]::Zero -and $N::IsWindowVisible($h)) { $script:hits += $el }
+    $ch = $Walker.GetFirstChild($el)
+    while ($ch -ne $null) { Walk $ch ($depth + 1) $f; $ch = $Walker.GetNextSibling($ch) }
+  }
+
+  # ---- 1c. Start AirDroid if it is not running, then wait (bounded, look-only) for its Dialpad ----
+  # A test run (-TestProcessName) starts only its own -TestLaunchPath, never the real AirDroid.
+  if ($StartIfNotRunning -and -not $CheckOnly -and (-not $TestProcessName -or $TestLaunchPath) -and @(Get-Process -Name $processName -ErrorAction SilentlyContinue).Count -eq 0) {
+    $notReady = "No number was entered and no call was placed. Open AirDroid > My devices > your phone > Dialpad, then click Call again."
+    if ($TestLaunchPath) {
+      if (-not $TestProcessName) { Stop-With 8 "A test launch path needs a test process name." }
+      $exe = $TestLaunchPath
+    } else {
+      $exe = Join-Path ${env:ProgramFiles(x86)} 'AirDroid\AirDroid.exe'
+      if (-not (Test-Path -LiteralPath $exe)) { $exe = Join-Path $env:ProgramFiles 'AirDroid\AirDroid.exe' }
+    }
+    if (-not (Test-Path -LiteralPath $exe)) { Stop-With 8 "AirDroid is not running and AirDroid.exe was not found to start it. $notReady" }
+    Write-Host "AirDroid is not running: starting it and waiting up to $ReadyTimeoutSec seconds for your phone's Dialpad..."
+    try {
+      if ($TestLaunchArgs) { [void](Start-Process -FilePath $exe -ArgumentList $TestLaunchArgs -PassThru) }
+      else { [void](Start-Process -FilePath $exe -PassThru) }
+    } catch { Stop-With 8 "AirDroid could not be started ($($_.Exception.Message)). $notReady" }
+    $deadline = (Get-Date).AddSeconds($ReadyTimeoutSec)
+    $state = 'AirDroid has not opened its window yet'
+    while ($true) {
+      $m = @(Find-Mains)
+      if ($m.Count -eq 1) {
+        $script:hits = @(); Walk $m[0] 0 $false
+        if ($script:hits.Count -eq 1) { break }
+        $state = if ($script:hits.Count -eq 0) { 'AirDroid is open, but its Dialpad is not (or your phone is not connected yet)' } else { "AirDroid shows $($script:hits.Count) candidate Dialpad fields" }
+      } elseif ($m.Count -gt 1) { $state = "AirDroid shows $($m.Count) main windows" }
+      if ((Get-Date) -ge $deadline) { Stop-With 8 "AirDroid was started but was not ready within $ReadyTimeoutSec seconds: $state. $notReady" }
+      Start-Sleep -Milliseconds 1000
+    }
+    $script:hits = @()
+    Write-Host "AirDroid is ready: one Dialpad found."
+  }
+
   # ---- 2. Exactly one AirDroid main window ----
   $procs = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
   if ($procs.Count -eq 0) { Stop-With 3 "AirDroid is not running. Start AirDroid and open the Dialpad (My devices > your phone > Dialpad)." }
-  $mains = @()
-  foreach ($p in $procs) {
-    $cond = New-Object System.Windows.Automation.AndCondition(
-      (New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $p.Id)),
-      (New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, 'AirDroid')),
-      (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)))
-    $mains += @($AE::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond))
-  }
+  $mains = @(Find-Mains)
   if ($mains.Count -ne 1) { Stop-With 3 "Expected exactly one AirDroid main window, found $($mains.Count)." }
   $main = $mains[0]
   $mainH = [IntPtr]$main.Current.NativeWindowHandle
@@ -139,15 +206,6 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
 
   # ---- 3. Guarded lookup: exactly one visible EDIT inside visible frmAirCloud ----
   $script:hits = @()
-  function Walk($el, [int]$depth, [bool]$inForm) {
-    if ($depth -gt 30) { return }
-    $c = $el.Current
-    $h = [IntPtr]$c.NativeWindowHandle
-    $f = $inForm -or ($c.Name -eq 'frmAirCloud' -and $h -ne [IntPtr]::Zero -and $N::IsWindowVisible($h))
-    if ($f -and $c.ClassName -match '\.EDIT\.' -and $h -ne [IntPtr]::Zero -and $N::IsWindowVisible($h)) { $script:hits += $el }
-    $ch = $Walker.GetFirstChild($el)
-    while ($ch -ne $null) { Walk $ch ($depth + 1) $f; $ch = $Walker.GetNextSibling($ch) }
-  }
   Walk $main 0 $false
   if ($script:hits.Count -eq 0) { Stop-With 4 "Dialpad number field not found. Open AirDroid > My devices > your phone > Dialpad, then try again." }
   if ($script:hits.Count -gt 1) { Stop-With 5 "Dialpad field is ambiguous: $($script:hits.Count) candidate fields found. Nothing was changed." }
