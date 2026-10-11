@@ -21,7 +21,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 238;
+const FLOOR = 244;
 let failures = 0;
 let checks = 0;
 
@@ -229,7 +229,10 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   // no-derived-expression check that follows are what still distinguish
   // "restore what a human already entered for THIS deal" from "IAOS
   // computed a value, or carried another deal's value forward."
-  check('setSellerPositionInput is called from exactly three sites: its own input onChange, resume-clear, and resume-restore', (sellerCallTsx.match(/setSellerPositionInput\(/g) || []).length, 3);
+  // Board 14-13 autosave: a fourth site restores the text Brad typed for THIS deal but had not saved, when he returns to it.
+  check('setSellerPositionInput is called from exactly four sites: its own input onChange, resume-clear, resume-restore, and the per-deal kept draft', (sellerCallTsx.match(/setSellerPositionInput\(/g) || []).length, 4);
+  // Board 14-13 (Bones): presence is checked explicitly, so a kept empty draft (a cleared value awaiting retry) is restored too.
+  check('the kept-draft site restores only unsaved text typed for the same deal (never a derived value), including an empty draft', /if \(kept && kept\.sellerPosition !== null\) setSellerPositionInput\(kept\.sellerPosition\);/.test(sellerCallTsx) && !/if \(kept\?\.sellerPosition\)/.test(sellerCallTsx) && /sellerPosition: spSig !== null && autosave\.isDirty\(\{ \.\.\.prev, section: "seller-position" \}, spSig\) \? sellerPositionInput : null,/.test(sellerCallTsx), true);
   check('setCurrentOfferInput is called from exactly four sites: its own input onChange, Cancel, resume-clear, and resume-restore (never a derived/computed economics value)', (sellerCallTsx.match(/setCurrentOfferInput\(/g) || []).length, 4);
   check('every setCurrentOfferInput call site sets it from the raw input event, "" (Cancel/resume-clear), or the resume decision\'s own restored value -- never a number literal or board8/expectedSpread-derived expression', !/setCurrentOfferInput\([^)"]*\.(target|value)[^)]*\+|setCurrentOfferInput\(\s*\d|setCurrentOfferInput\([^)]*board8|setCurrentOfferInput\([^)]*expectedSpread/.test(sellerCallTsx), true);
   check('Seller Position input carries the negotiation-panel testid', /data-testid="negotiation-seller-position-input"/.test(sellerCallTsx), true);
@@ -377,9 +380,10 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('page renders the Offer Readiness human-action panel', /data-testid="readiness-human-action-panel"/.test(sellerCallTsx), true);
 
   check('handleConfirmPropertyIdentity writes through ghl.notes.create using formatPropertyIdentityConfirmationNote', /formatPropertyIdentityConfirmationNote\(\{[\s\S]{0,200}await ghl\.notes\.create/.test(sellerCallTsxNoComments), true);
-  check('handleSaveTransactionAssumptions refuses a genuinely blank field rather than silently allowing it', /Each item needs a value, or must be explicitly marked None/.test(sellerCallTsx), true);
+  // Board 14-13 v2 (Jess, 2026-10-10): a blank item is saved as explicitly "not yet answered" -- never None; None comes only from its own box.
+  check('transaction assumptions: blank becomes "not yet answered", never None; None only when its box is ticked', /if \(markedNone\) return \{ kind: "none" \};\s*if \(text\.trim\(\) === ""\) return \{ kind: "unanswered" \};/.test(sellerCallTsxNoComments), true);
   check('handleRecordSellerPricePosition reuses parseAcquisitionPriceInput for the price path, never a second parser', /parseAcquisitionPriceInput\(sellerPricePositionInput\)/.test(sellerCallTsxNoComments), true);
-  check('a documented refusal is a first-class recording path, not merely an empty price', /handleRecordSellerPricePosition\("refused"\)/.test(sellerCallTsx), true);
+  check('a documented refusal is a first-class recording path, not merely an empty price', /onClick=\{recordSellerPriceRefused\}/.test(sellerCallTsx) && /kind: "refused" \}\);/.test(sellerCallTsxNoComments), true);
 
   check('handleReadinessDecision refuses an empty override reason before any write is attempted', /kind === "overridden" && reason === ""/.test(sellerCallTsxNoComments), true);
   check('Approve is only ever attempted when readiness.status is already OFFER_READY (never elevates)', /kind === "approved" && readiness\.status !== "OFFER_READY"/.test(sellerCallTsxNoComments), true);
@@ -465,8 +469,10 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
     // is a real, deliberate addition, still exactly ghl.notes.create.
     // INV-98 (Bones REVISE item 2): an eleventh -- the Confirm Accept adapter
     // handed to lib/seller-call-accept-writes.ts, still exactly ghl.notes.create.
-    'ghl.notes.create now has exactly twelve call sites in the actual code (PR #126 stacked server PR added the reserved Follow-Up callback-note adapter), never a thirteenth',
-    (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 12,
+    // Board 14-13 autosave: Transaction assumptions and the price each keep one save; the refusal and Seller Position
+    // add one each (twelve - 2 + 4), all still exactly ghl.notes.create.
+    'ghl.notes.create now has exactly fourteen call sites in the actual code (Board 14-13 autosave: refusal and Seller Position saves added), never a fifteenth',
+    (sellerCallTsxNoComments.match(/ghl\.notes\.create\(/g) || []).length, 14,
   );
   const forbiddenAlwaysForOverride = [
     'setApprovedArv', 'setEstimatedRepairs', 'saveUnderwritingFields', 'setAskingPrice',
@@ -492,7 +498,8 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   // joined the dependency list: the effect must re-fire once the newly
   // selected deal's live Opportunity-field value actually arrives (it
   // loads asynchronously, same as latestOutcome/latestNegotiationOverrideNote).
-  check('the resume effect depends on latestNegotiationOverrideNote AND currentOfferFromOpportunity (in addition to loading/currentDealId/latestOutcome)', /\}, \[loading, currentDealId, latestOutcome, latestNegotiationOverrideNote, currentOfferFromOpportunity\]\);/.test(sellerCallTsx), true);
+  // Board 14-13: latestOutcome reaches the decision through resumeSnapshot (Seller Position's durable value: its own ledger, or an older outcome).
+  check('the resume effect depends on latestNegotiationOverrideNote AND currentOfferFromOpportunity (in addition to loading/currentDealId/resumeSnapshot)', /\}, \[loading, currentDealId, resumeSnapshot, latestNegotiationOverrideNote, currentOfferFromOpportunity\]\);/.test(sellerCallTsx), true);
   check('a restored override is applied via setNegotiationOverride, reconstructing the acknowledgedAboveMax: true literal NegotiationOverride requires -- never persisted redundantly, never a second shape', /setNegotiationOverride\(\{ acknowledgedAboveMax: true, \.\.\.decision\.restoreOverride \}\)/.test(sellerCallTsx), true);
   check('restoring the override is gated on decision.restoreOverride !== null, the SAME non-null convention restoreSellerPosition/restoreCurrentOffer already use', /if \(decision\.restoreOverride !== null\) \{\s*setNegotiationOverride/.test(sellerCallTsxNoComments), true);
   check('the clear-on-identity-change block still resets negotiationOverride to null (unchanged from the Jess Re-Gate correction) -- B8-11 restores it AFTER that clear, in the same order clear-then-restore already established', sellerCallTsxNoComments.indexOf('if (decision.clear)') < sellerCallTsxNoComments.indexOf('if (decision.restoreOverride'), true);
@@ -506,7 +513,8 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 // ============================================================
 {
   const negotiationInputBlock = sellerCallTsx.slice(sellerCallTsx.indexOf('data-testid="negotiation-current-offer-input"'), sellerCallTsx.indexOf('data-testid="negotiation-current-offer-input"') + 400);
-  check('the Current Offer input itself is never disabled (no hard block on typing an above-Max value)', /disabled/.test(negotiationInputBlock), false);
+  // Board 14-13 (Jess, 2026-10-10): the input is disabled only while the selected seller loads; never for an above-Max value.
+  check('the Current Offer input itself is never disabled for an above-Max value (its only disabled condition is the seller-loading lock)', (negotiationInputBlock.match(/disabled(?:=\{[^}]*\})?/g) || []).join('|'), 'disabled={sellerLoading}');
   check('a dismissed above-Max warning still names the exact amount above Max (never fully silent)', /Still \{money\(negotiationPosition\.amountAboveMax\)\} above Max/.test(sellerCallTsx), true);
   check('an acknowledged override still names the amount that was above Max (never silently hidden once granted)', /Overridden — proceeding \{money\(negotiationOverride!\.amountAboveMaxAtOverride\)\} above Max/.test(sellerCallTsx), true);
 }
@@ -651,20 +659,49 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('Withdraw calls handleWithdrawPropertyIdentity, a real write, not a local toggle', /onClick=\{handleWithdrawPropertyIdentity\}/.test(sellerCallTsxNoComments), true);
   check('handleWithdrawPropertyIdentity writes Status: withdrawn at the CURRENT confirmed address, never a different one', /status: "withdrawn", address: propertyIdentityConfirmation\.address/.test(sellerCallTsxNoComments), true);
 
-  check('transaction assumptions has an Edit control, shown only when a record exists', /data-testid="edit-transaction-assumptions"/.test(sellerCallTsx), true);
-  check('transaction assumptions has a Cancel control in the form', /data-testid="cancel-transaction-assumptions"/.test(sellerCallTsx), true);
-  check('handleEditTransactionAssumptions prefills every field from the current record', /setTransactionStructureInput\(toInput\(transactionAssumptionsRecord\.transactionStructure\)\)/.test(sellerCallTsxNoComments), true);
-  check('Cancel writes nothing (no ghl.notes.create in handleCancelEditTransactionAssumptions)', (() => {
-    const m = /function handleCancelEditTransactionAssumptions\(\)[\s\S]*?\r?\n  \}\r?\n/.exec(sellerCallTsxNoComments);
-    return m ? /ghl\.notes\.create/.test(m[0]) : 'FUNCTION_NOT_FOUND';
-  })(), false);
-
-  check('seller price position has an Edit control, shown only when a record exists', /data-testid="edit-seller-price-position"/.test(sellerCallTsx), true);
-  check('seller price position has a Cancel control in the form', /data-testid="cancel-seller-price-position"/.test(sellerCallTsx), true);
-  check('Cancel writes nothing (no ghl.notes.create in handleCancelEditSellerPricePosition)', (() => {
-    const m = /function handleCancelEditSellerPricePosition\(\)[\s\S]*?\r?\n  \}\r?\n/.exec(sellerCallTsxNoComments);
-    return m ? /ghl\.notes\.create/.test(m[0]) : 'FUNCTION_NOT_FOUND';
-  })(), false);
+  // Board 14-13 autosave (Brad, 2026-10-10): no per-section Save / Edit / Cancel / Record buttons. Both sections are
+  // always editable and save when a field is left or on Enter; a correction is still a new append-only entry.
+  check('no per-section Save / Edit / Cancel / Record controls remain for transaction assumptions or seller price position',
+    ['save-transaction-assumptions', 'edit-transaction-assumptions', 'cancel-transaction-assumptions', 'record-seller-price"', 'edit-seller-price-position', 'cancel-seller-price-position']
+      .filter((id) => sellerCallTsx.includes('data-testid="' + id)), []);
+  check('every transaction-assumptions text field and None box saves the section (leave, Enter, or tick)',
+    (sellerCallTsxNoComments.match(/onBlur=\{\(e\) => \{ if \(isLifecycleBlur\(e\.currentTarget\)\) return; saveTransactionAssumptions\(\); \}\}/g) || []).length === 3
+    && (sellerCallTsxNoComments.match(/onKeyDown=\{saveOnEnter\(\(\) => saveTransactionAssumptions\(\)\)\}/g) || []).length === 3
+    && /saveTransactionAssumptions\(\{ structureNone: e\.target\.checked \}\)/.test(sellerCallTsxNoComments)
+    && /saveTransactionAssumptions\(\{ closingNone: e\.target\.checked \}\)/.test(sellerCallTsxNoComments)
+    && /saveTransactionAssumptions\(\{ titleNone: e\.target\.checked \}\)/.test(sellerCallTsxNoComments), true);
+  check('transaction assumptions saves the v2 record through the existing sanctioned write',
+    /formatTransactionAssumptionsNoteV2\(\{ opportunityId: t\.opportunityId, at, operator: null, \.\.\.draft\.fields \}\);\s*await ghl\.notes\.create\(t\.contactId, note\);/.test(sellerCallTsxNoComments), true);
+  check('the price saves on leave and on Enter; a blank price writes nothing unless it is a pending refusal, which typing cancels',
+    /onBlur=\{\(e\) => \{ if \(isLifecycleBlur\(e\.currentTarget\)\) return; saveSellerPricePosition\(\); \}\}/.test(sellerCallTsxNoComments)
+    && /onKeyDown=\{saveOnEnter\(saveSellerPricePosition\)\}/.test(sellerCallTsxNoComments)
+    && /if \(sellerPricePositionInput\.trim\(\) === ""\) \{\s*(?:\/\/[^\n]*\n\s*)?return \{ signature: sellerPriceRefusalPending \? "refused" : null/.test(sellerCallTsx)
+    && /onChange=\{\(e\) => \{ setSellerPricePositionInput\(e\.target\.value\); setSellerPriceRefusalPending\(false\); \}\}/.test(sellerCallTsxNoComments), true);
+  check('Seller Position saves on leave and on Enter into its own ledger, independent of any outcome',
+    /onBlur=\{\(e\) => \{ if \(isLifecycleBlur\(e\.currentTarget\)\) return; saveSellerPosition\(\); \}\}/.test(sellerCallTsxNoComments)
+    && /onKeyDown=\{saveOnEnter\(saveSellerPosition\)\}/.test(sellerCallTsxNoComments)
+    && /formatSellerPositionNote\(\{ opportunityId: t\.opportunityId, at, operator: null, kind: "value", value: Number\(signature\) \}\)/.test(sellerCallTsxNoComments), true);
+  check('every autosave binds its contact and opportunity when it starts, and writes nothing without a write target',
+    (sellerCallTsxNoComments.match(/const t = writeTarget;\s*if \(!t\) return;/g) || []).length === 4
+    && (sellerCallTsxNoComments.match(/await ghl\.notes\.create\(t\.contactId, note\);\s*appendSavedNote\(t\.contactId, note, at\);/g) || []).length === 4, true);
+  check('the write target requires this route\'s contact loaded and an opportunity that belongs to it',
+    /if \(!contact \|\| contact\.id !== contactId \|\| loadedFor\.current !== contactId\) return null;/.test(sellerCallTsxNoComments)
+    && /opps\.some\(\(o\) => o\.id === opportunityId && o\.contactId === contactId\)/.test(sellerCallTsxNoComments), true);
+  check('a confirmed save for another contact never touches this page\'s notes', /if \(contactIdRef\.current !== forContact\) return;/.test(sellerCallTsxNoComments), true);
+  check('Enter saves single-line fields and never fires while composing; outcomes, offers and the override keep their deliberate buttons',
+    /if \(e\.key !== "Enter" \|\| e\.nativeEvent\.isComposing\) return;/.test(sellerCallTsxNoComments)
+    && !/data-testid="negotiation-current-offer-input"[^>]*saveOnEnter/.test(sellerCallTsxNoComments)
+    && !/<textarea[^>]*saveOnEnter/.test(sellerCallTsxNoComments), true);
+  check('while the selected seller loads, every autosaved field and the refusal are locked, with a loading notice',
+    /const sellerLoading = \(screen\.state === "resolved" \|\| screen\.state === "unresolved"\) && writeTarget === null;/.test(sellerCallTsxNoComments)
+    && (sellerCallTsxNoComments.match(/disabled=\{sellerLoading\}/g) || []).length === 6
+    && (sellerCallTsxNoComments.match(/disabled=\{sellerLoading \|\| (?:transactionStructureNone|closingPossessionNone|titleComplicationsNone)\}/g) || []).length === 3
+    && /disabled=\{sellerLoading \|\| priceStatus\.kind === "saving"\}/.test(sellerCallTsxNoComments)
+    && /\{sellerLoading \? \(\s*<div role="status" data-testid="seller-call-loading-seller"/.test(sellerCallTsxNoComments), true);
+  check('Current Offer is also locked while the selected seller loads, and keeps its own deliberate save on leave (no autosave, no Enter save)',
+    /data-testid="negotiation-current-offer-input"\s*value=\{currentOfferInput\}\s*onChange=\{\(e\) => handleCurrentOfferChange\(e\.target\.value\)\}\s*onBlur=\{\(e\) => \{ if \(isLifecycleBlur\(e\.currentTarget\)\) return; void commitCurrentOffer\(\); \}\}\s*readOnly=\{offerSaves\.isLocked\(dealBarOppId\)\}\s*disabled=\{sellerLoading\}\s*placeholder=/.test(sellerCallTsxNoComments), true);
+  check('one page-wide Save changes fallback, shown only while something is unsaved or saving',
+    (sellerCallTsx.match(/data-testid="seller-call-save-changes"/g) || []).length === 1 && /\{pageHasUnsaved \|\| pageSaving \? \(/.test(sellerCallTsxNoComments), true);
 
   check('a stale Offer Readiness decision is marked in the UI, never silently hidden', /data-testid="readiness-human-action-stale"/.test(sellerCallTsx), true);
   check('the stale marker states it no longer authorizes readiness', /no longer authorizes readiness/.test(sellerCallTsx), true);

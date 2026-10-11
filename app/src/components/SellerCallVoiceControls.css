@@ -14,6 +14,9 @@
   padding: 12px;
 }
 
+/* B14-13: AirDroid is the primary option -- its own full row above GHL Phone (backup) and Cell. */
+.seller-call-mode--primary { grid-column: 1 / -1; border-color: #1d70f7; }
+
 .seller-call-mode__identity {
   display: block;
   margin-top: 5px;
@@ -54,6 +57,13 @@
 .seller-call-mode__hint { margin-top: 8px; color: #94a3b8; font-size: 12px; }
 .seller-call-mode__error { color: #fca5a5; }
 .seller-call-mode__error a { color: #7dd3fc; }
+
+/* B14-13: the compact Call button in Seller Call's sticky deal bar. Its space is always kept, so showing or hiding it
+   never moves anything; hidden (visibility) it is also out of the tab order and the accessibility tree. */
+.seller-call-compact { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 84px; }
+.seller-call-compact[data-shown="false"] { visibility: hidden; }
+.seller-call-button--compact { min-height: 34px; padding: 6px 12px; }
+.seller-call-compact__error { max-width: 160px; color: #fca5a5; font-size: 11px; text-align: right; }
 
 @media (max-width: 767px) {
   .seller-call-modes { grid-template-columns: 1fr; }

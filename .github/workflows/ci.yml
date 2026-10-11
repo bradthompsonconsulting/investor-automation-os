@@ -273,6 +273,15 @@ jobs:
       - name: Netlify observer — 86 offline checks
         run: node scripts/netlify-status.test.cjs
 
+      # B14-13 (AirDroid primary calling): the browser-side launch-link builder. Offline.
+      # The Windows helper's own parser checks run only on Windows and are reported as
+      # skipped here; this runner has no AirDroid and touches nothing.
+      - name: AirDroid Prepare Call launch link (B14-13)
+        run: node app/scripts/test-airdroid-prepare-call.cjs
+
+      - name: Seller Call AirDroid UI checks
+        run: node app/scripts/test-seller-call-airdroid.cjs
+
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.
       - name: Typecheck root Netlify functions
