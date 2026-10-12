@@ -319,6 +319,7 @@ export default function DealCalculator() {
       underwritingResult.status === "resolved"
         ? { mode: assignmentMode, requiredSpread: underwritingResult.figures.assignmentSpread }
         : null,
+      assignmentMode,
     ),
     [board8, expectedSpread, underwritingResult, assignmentMode],
   );

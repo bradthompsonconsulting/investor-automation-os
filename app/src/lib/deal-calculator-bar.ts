@@ -139,7 +139,8 @@ export function buildDealCalculatorBarCells(input: DealCalcBarInput): DealCalcBa
  *   short     0 <= spread, a requirement missed amber, each shortfall named
  *   meets     both requirements met            green, says it is not a
  *                                               net-profit check
- *   neutral   any input not calculated         no implied success
+ *   neutral   any input not calculated         no implied success; names
+ *                                               the input(s) actually missing
  */
 export type SpreadRequirement = "standard_minimum" | "assignment_mode";
 
@@ -169,6 +170,40 @@ const MODE_SPREAD_LABEL: Record<AssignmentModeName, string> = {
   manual: "Manual",
 };
 
+/**
+ * Operator names for the inputs the shared engine reports missing
+ * (`UnderwritingResult.missing`) that the operator types on this page.
+ * "assignmentMode" is reported when the selected mode cannot resolve, which
+ * on this page happens only for Manual with no usable amount -- so it is
+ * named that way only when Manual is the selected mode. $0 is an amount
+ * (the engine resolves it), so it is never reported here.
+ */
+function missingInputLabel(name: string, selectedMode: AssignmentModeName | null): string | null {
+  if (name === "arv") return "ARV";
+  if (name === "repairs") return "Repairs";
+  if (name === "assignmentMode" && selectedMode === "manual") return "the Manual assignment amount";
+  return null;
+}
+
+/** "A", "A and B", "A, B and C". */
+function listText(items: string[]): string {
+  return items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/**
+ * The neutral text when Max cannot be calculated: the missing inputs by
+ * name, or -- if the engine reports anything this page cannot name -- a
+ * statement that does not guess which.
+ */
+function missingInputsText(board8: Board8Economics | null, selectedMode: AssignmentModeName | null): string {
+  const missing = board8 && board8.status === "unavailable" && "missing" in board8 ? board8.missing : [];
+  const labels = missing.map((m) => missingInputLabel(m, selectedMode));
+  if (labels.length === 0 || labels.some((l) => l === null)) {
+    return "No spread check yet: Max can't be calculated from the current inputs.";
+  }
+  return `No spread check yet: enter ${listText(labels as string[])}.`;
+}
+
 /** A positive difference as displayed: whole dollars, or "less than $1" when it is under $1. */
 function differenceText(n: number): string {
   return n < 1 ? "less than $1" : money(n);
@@ -178,9 +213,11 @@ export function buildSpreadStatus(
   board8: Board8Economics | null,
   expectedSpread: ExpectedSpread | null,
   active: ActiveSpreadRequirement | null,
+  /** The page's selected assignment mode, known even when the engine has not resolved. */
+  selectedMode: AssignmentModeName | null = null,
 ): SpreadStatus {
   if (!board8 || board8.status !== "calculated" || !active) {
-    return { kind: "neutral", text: "No spread check yet: enter ARV and Repairs to calculate Max." };
+    return { kind: "neutral", text: missingInputsText(board8, selectedMode) };
   }
   if (!expectedSpread || expectedSpread.status !== "calculated") {
     return { kind: "neutral", text: "No spread check yet: enter a Test Price." };
