@@ -3,6 +3,7 @@ import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link } from "react-router-dom";
 import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, GitBranch } from "lucide-react";
+import { startCurrentRead } from "../lib/current-read";
 import { ghl, type OpportunityRow, type PipelineStage } from "../lib/ghl";
 import { countDealsByContact, loadPropertyAddresses, pipelinePropertyCell, type PropertyAddressSource } from "../lib/pipeline-property";
 
@@ -73,17 +74,21 @@ export default function Pipeline() {
   const [sortKey, setSortKey]           = useState<SortKey>("stage");
   const [sortDir, setSortDir]           = useState<SortDir>("asc");
 
-  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
+  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse.
+     B15-09: only the current read may change rows, error or loading -- the
+     cleanup cancels a superseded read (recovery) and a read still pending
+     when the page is left (lib/current-read). */
   const readRecovered = useReadRecovered();
   useEffect(() => {
     setError(null);
-    ghl.opportunities.listPipeline()
-      .then((data) => {
+    return startCurrentRead(() => ghl.opportunities.listPipeline(), {
+      data: (data) => {
         setStages(data.stages);
         setOpportunities(data.opportunities);
-      })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
+      },
+      error: (e) => setError(e.message),
+      settled: () => setLoading(false),
+    });
   }, [readRecovered]);
 
   /* B15-09: each row shows its contact's Property Address field, from the
