@@ -4,14 +4,10 @@
 
 .DESCRIPTION
   1. Validates and normalises the phone number. The field is never touched if the number is invalid.
-  1c. With -StartIfNotRunning (the IAOS handler passes it): if AirDroid is not running, starts it and waits a bounded
-     time (-ReadyTimeoutSec, default 60) until exactly one AirDroid main window shows exactly one Dialpad number field
-     (the same guarded lookup as step 3). The wait only looks; it changes nothing. If that does not happen in time it
-     stops (exit 8) with a clear message, and no number is entered and no call is placed.
-  2. Finds exactly one running AirDroid main window and brings it forward. If AirDroid's main window is hidden or
-     minimised (DialCall.ps1 minimises it after each call, and AirDroid may then hide it to the tray), it is restored
-     first -- only when it is the one unowned top-level window titled exactly "AirDroid" in AirDroid's process.
-     Step 1c's wait does the same, once, if a freshly started AirDroid opens hidden in the tray.
+  2. B14-13 visible Dialpad (Brad, 2026-10-12): AirDroid is opened once with its Dialpad and kept VISIBLE beside IAOS
+     (it may be a small window in a corner). Among AirDroid's visible, not-minimised "AirDroid" windows, exactly one
+     must hold the Dialpad (step 3's guarded lookup). It is used as it is: nothing is started, restored, brought
+     forward, moved, resized or minimised. None, or more than one: stop with a plain instruction, never a guess.
   3. Finds the already-open Dialpad number field with the guarded lookup: exactly one visible standard
      Windows text field (class *.EDIT.*) inside AirDroid's visible device page form "frmAirCloud".
      It stops if there is none, or more than one.
@@ -27,7 +23,7 @@
   US/NANP number in common forms: 2025550147, 202-555-0147, (202) 555-0147, +1 202 555 0147.
 
 .PARAMETER CheckOnly
-  Runs every check, including the guarded lookup, but changes nothing and does not bring AirDroid forward.
+  Runs every check, including the guarded lookup, but changes nothing.
 
 .PARAMETER Automatic
   B14-13: used by IaosAirdroidHandler.ps1, which dials automatically next. Suppresses the standalone instruction to
@@ -39,28 +35,18 @@
   deadlock against the caller. Without it, standalone use takes the lock itself, so a prefill can never change the
   Dialpad during an automatic dial.
 
-.PARAMETER StartIfNotRunning
-  B14-13: start AirDroid when it is not running, then wait for its Dialpad (step 1c). Ignored with -CheckOnly.
-
-.PARAMETER ReadyTimeoutSec
-  B14-13: how long step 1c waits, 5 to 180 seconds (default 60).
-
 .PARAMETER TestProcessName
   Offline tests only: the process name of the inert fake AirDroid window. Never passed by the registered handler.
-
-.PARAMETER TestLaunchPath / TestLaunchArgs
-  Offline tests only (require -TestProcessName): the fake AirDroid program step 1c starts instead of AirDroid.
 
 .NOTES
   Exit codes:
     0 prepared, or the CheckOnly checks passed
     2 invalid number
-    3 AirDroid is not running, or its main window was not found / is ambiguous
-    4 Dialpad field not found (Dialpad not open)
+    3 AirDroid is not running, or more than one visible AirDroid window shows a Dialpad
+    4 no visible AirDroid window shows the Dialpad (not open, hidden or minimised)
     5 Dialpad field ambiguous (more than one candidate)
     6 readback mismatch (field cleared)
     7 unexpected error
-    8 AirDroid was started (or could not be started) but its Dialpad was not ready in time; nothing was entered
     10 another IAOS call is in progress (nothing changed), or -CallerHoldsLock given but the lock is not held
 #>
 [CmdletBinding()]
@@ -69,11 +55,7 @@ param(
   [switch]$CheckOnly,
   [switch]$Automatic,
   [switch]$CallerHoldsLock,
-  [switch]$StartIfNotRunning,
-  [ValidateRange(5, 180)][int]$ReadyTimeoutSec = 60,
-  [string]$TestProcessName = '',
-  [string]$TestLaunchPath = '',
-  [string]$TestLaunchArgs = ''
+  [string]$TestProcessName = ''
 )
 $ErrorActionPreference = 'Stop'
 $processName = if ($TestProcessName) { $TestProcessName } else { 'AirDroid' }
@@ -115,30 +97,6 @@ try {
 [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
 [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
 [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
-[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
-[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
-[DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
-[DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
-[DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
-public delegate bool EnumProc(IntPtr h, IntPtr l);
-[DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
-[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-[DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
-[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-public static System.Collections.Generic.List<IntPtr> TopLevel(uint[] pids, string title) {
-  var found = new System.Collections.Generic.List<IntPtr>();
-  EnumWindows((h, l) => {
-    uint pid; GetWindowThreadProcessId(h, out pid);
-    if (System.Array.IndexOf(pids, pid) >= 0 && GetWindow(h, 4) == IntPtr.Zero) {   // GW_OWNER: unowned only
-      var sb = new StringBuilder(256); GetWindowText(h, sb, 256);
-      if (sb.ToString() == title) found.Add(h);
-    }
-    return true;
-  }, IntPtr.Zero);
-  return found;
-}
 public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMessage(h, 0x000D, (IntPtr)256, sb); return sb.ToString(); }
 '@
   }
@@ -146,46 +104,18 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
   $AE = [System.Windows.Automation.AutomationElement]
   $Walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
 
-  function Find-Mains {
-    $found = @()
-    foreach ($p in @(Get-Process -Name $processName -ErrorAction SilentlyContinue)) {
-      $cond = New-Object System.Windows.Automation.AndCondition(
-        (New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $p.Id)),
-        (New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, 'AirDroid')),
-        (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)))
-      $found += @($AE::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond))
-    }
-    return $found
+  # ---- 2/3. Exactly one VISIBLE AirDroid window showing the Dialpad, and in it exactly one visible number field ----
+  $procs = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
+  if ($procs.Count -eq 0) { Stop-With 3 "AirDroid is not running. Open AirDroid > My devices > your phone > Dialpad, and keep that AirDroid window visible beside IAOS (it may be small, in a corner). Then click Call again." }
+  $mains = @()
+  foreach ($p in $procs) {
+    $cond = New-Object System.Windows.Automation.AndCondition(
+      (New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $p.Id)),
+      (New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, 'AirDroid')),
+      (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)))
+    $mains += @($AE::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond))
   }
-  # ---- Hidden or minimised main window (Brad, VivoBook, 2026-10-12) ----
-  # DialCall.ps1 minimises AirDroid after each call; AirDroid can then hide that window (to the tray), and a hidden
-  # window is not in the UI Automation tree, so the next call found 0. Used only when UI Automation finds no main
-  # window: the candidate must be AirDroid's ONE unowned top-level window titled exactly "AirDroid", hidden or
-  # minimised. Restoring it is one SW_RESTORE (as the tray's own Open would), then it must be found again as that
-  # same window. Counts only are reported -- no titles, numbers or AirDroid files.
-  function Get-HiddenMain {
-    $pids = [uint32[]]@(Get-Process -Name $processName -ErrorAction SilentlyContinue | ForEach-Object { [uint32]$_.Id })
-    $cands = @(if ($pids.Count) { $N::TopLevel($pids, 'AirDroid') })
-    $hidden = @($cands | Where-Object { -not $N::IsWindowVisible($_) }).Count
-    $minimised = @($cands | Where-Object { $N::IsIconic($_) }).Count
-    [pscustomobject]@{
-      Handle = if ($cands.Count -eq 1 -and ($hidden -or $minimised)) { [IntPtr]$cands[0] } else { [IntPtr]::Zero }
-      Text = "unowned top-level AirDroid windows: $($cands.Count), hidden: $hidden, minimised: $minimised"
-    }
-  }
-  function Restore-HiddenMain([IntPtr]$hw) {
-    [void]$N::ShowWindow($hw, 9)   # SW_RESTORE: shows a hidden window and un-minimises it
-    for ($i = 0; $i -lt 30 -and -not ($N::IsWindowVisible($hw) -and -not $N::IsIconic($hw)); $i++) { Start-Sleep -Milliseconds 100 }
-    for ($i = 0; $i -lt 20; $i++) {
-      $again = @(Find-Mains)
-      if ($again.Count -gt 0) { return ($again.Count -eq 1 -and [IntPtr]$again[0].Current.NativeWindowHandle -eq $hw) }
-      Start-Sleep -Milliseconds 100
-    }
-    return $false
-  }
-
-  # Step 3's guarded lookup: exactly one visible EDIT inside the visible device page form "frmAirCloud".
-  $script:hits = @()
+  # Guarded lookup: visible EDIT fields inside a visible device page form "frmAirCloud".
   function Walk($el, [int]$depth, [bool]$inForm) {
     if ($depth -gt 30) { return }
     $c = $el.Current
@@ -195,85 +125,21 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
     $ch = $Walker.GetFirstChild($el)
     while ($ch -ne $null) { Walk $ch ($depth + 1) $f; $ch = $Walker.GetNextSibling($ch) }
   }
-
-  # ---- 1c. Start AirDroid if it is not running, then wait (bounded, look-only) for its Dialpad ----
-  # A test run (-TestProcessName) starts only its own -TestLaunchPath, never the real AirDroid.
-  if ($StartIfNotRunning -and -not $CheckOnly -and (-not $TestProcessName -or $TestLaunchPath) -and @(Get-Process -Name $processName -ErrorAction SilentlyContinue).Count -eq 0) {
-    $notReady = "No number was entered and no call was placed. Open AirDroid > My devices > your phone > Dialpad, then click Call again."
-    if ($TestLaunchPath) {
-      if (-not $TestProcessName) { Stop-With 8 "A test launch path needs a test process name." }
-      $exe = $TestLaunchPath
-    } else {
-      $exe = Join-Path ${env:ProgramFiles(x86)} 'AirDroid\AirDroid.exe'
-      if (-not (Test-Path -LiteralPath $exe)) { $exe = Join-Path $env:ProgramFiles 'AirDroid\AirDroid.exe' }
-    }
-    if (-not (Test-Path -LiteralPath $exe)) { Stop-With 8 "AirDroid is not running and AirDroid.exe was not found to start it. $notReady" }
-    Write-Host "AirDroid is not running: starting it and waiting up to $ReadyTimeoutSec seconds for your phone's Dialpad..."
-    try {
-      if ($TestLaunchArgs) { [void](Start-Process -FilePath $exe -ArgumentList $TestLaunchArgs -PassThru) }
-      else { [void](Start-Process -FilePath $exe -PassThru) }
-    } catch { Stop-With 8 "AirDroid could not be started ($($_.Exception.Message)). $notReady" }
-    $deadline = (Get-Date).AddSeconds($ReadyTimeoutSec)
-    $state = 'AirDroid has not opened its window yet'
-    $restoreTried = $false
-    while ($true) {
-      $m = @(Find-Mains)
-      if ($m.Count -eq 0 -and -not $restoreTried) {
-        # A freshly started AirDroid may open hidden in the tray: restore that one window once (see Get-HiddenMain).
-        $hm = Get-HiddenMain
-        if ($hm.Handle -ne [IntPtr]::Zero) {
-          $restoreTried = $true
-          if (Restore-HiddenMain $hm.Handle) { Write-Host 'AirDroid main window restored (it started hidden or minimised).' }
-          $m = @(Find-Mains)
-        }
-      }
-      if ($m.Count -eq 1) {
-        $script:hits = @(); Walk $m[0] 0 $false
-        if ($script:hits.Count -eq 1) { break }
-        $state = if ($script:hits.Count -eq 0) { 'AirDroid is open, but its Dialpad is not (or your phone is not connected yet)' } else { "AirDroid shows $($script:hits.Count) candidate Dialpad fields" }
-      } elseif ($m.Count -gt 1) { $state = "AirDroid shows $($m.Count) main windows" }
-      if ((Get-Date) -ge $deadline) { Stop-With 8 "AirDroid was started but was not ready within $ReadyTimeoutSec seconds: $state. $notReady" }
-      Start-Sleep -Milliseconds 1000
-    }
-    $script:hits = @()
-    Write-Host "AirDroid is ready: one Dialpad found."
+  $withDialpad = @(); $minimised = 0
+  foreach ($w in $mains) {
+    $wh = [IntPtr]$w.Current.NativeWindowHandle
+    if (-not $N::IsWindowVisible($wh)) { continue }
+    if ($N::IsIconic($wh)) { $minimised++; continue }
+    $script:hits = @(); Walk $w 0 $false
+    if ($script:hits.Count -gt 0) { $withDialpad += [pscustomobject]@{ Window = $w; Fields = $script:hits } }
   }
-
-  # ---- 2. Exactly one AirDroid main window ----
-  $procs = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
-  if ($procs.Count -eq 0) { Stop-With 3 "AirDroid is not running. Start AirDroid and open the Dialpad (My devices > your phone > Dialpad)." }
-  $mains = @(Find-Mains)
-  # ---- 2a. Restore a hidden or minimised main window (see Get-HiddenMain). CheckOnly restores nothing. ----
-  if ($mains.Count -eq 0) {
-    $hm = Get-HiddenMain
-    if ($hm.Handle -eq [IntPtr]::Zero) { Stop-With 3 "Expected exactly one AirDroid main window, found 0 ($($hm.Text)). Open AirDroid from its tray icon and try again." }
-    if ($CheckOnly) { Stop-With 3 "AirDroid's main window is hidden or minimised ($($hm.Text)); CheckOnly restores nothing." }
-    if (-not (Restore-HiddenMain $hm.Handle)) { Stop-With 3 "AirDroid's main window did not come back after restoring it. Open AirDroid from its tray icon and try again." }
-    Write-Host 'AirDroid main window restored (it was hidden or minimised).'
-    $mains = @(Find-Mains)
+  if ($withDialpad.Count -eq 0) {
+    if ($minimised) { Stop-With 4 "AirDroid is minimised. Restore it yourself (do not close it), with your phone's Dialpad open. Open AirDroid > My devices > your phone > Dialpad, and keep that AirDroid window visible beside IAOS (it may be small, in a corner). Then click Call again." }
+    Stop-With 4 "No visible AirDroid window shows the Dialpad. Nothing was changed. Open AirDroid > My devices > your phone > Dialpad, and keep that AirDroid window visible beside IAOS (it may be small, in a corner). Then click Call again."
   }
-  if ($mains.Count -ne 1) { Stop-With 3 "Expected exactly one AirDroid main window, found $($mains.Count)." }
-  $main = $mains[0]
-  $mainH = [IntPtr]$main.Current.NativeWindowHandle
-
-  # ---- 2b. Bring forward (skipped in CheckOnly) ----
-  $foreground = 'not attempted (CheckOnly)'
-  if (-not $CheckOnly) {
-    if ($N::IsIconic($mainH)) { [void]$N::ShowWindow($mainH, 9) }  # SW_RESTORE
-    $fgThread = $N::GetWindowThreadProcessId($N::GetForegroundWindow(), [IntPtr]::Zero)
-    $me = $N::GetCurrentThreadId()
-    $attached = $false
-    if ($fgThread -ne 0 -and $fgThread -ne $me) { $attached = $N::AttachThreadInput($me, $fgThread, $true) }
-    [void]$N::BringWindowToTop($mainH); [void]$N::SetForegroundWindow($mainH)
-    if ($attached) { [void]$N::AttachThreadInput($me, $fgThread, $false) }
-    Start-Sleep -Milliseconds 400
-    $foreground = if ($N::GetForegroundWindow() -eq $mainH) { 'yes' } else { 'NO (Windows refused focus; AirDroid may stay behind)' }
-  }
-
-  # ---- 3. Guarded lookup: exactly one visible EDIT inside visible frmAirCloud ----
-  $script:hits = @()
-  Walk $main 0 $false
-  if ($script:hits.Count -eq 0) { Stop-With 4 "Dialpad number field not found. Open AirDroid > My devices > your phone > Dialpad, then try again." }
+  if ($withDialpad.Count -gt 1) { Stop-With 3 "$($withDialpad.Count) visible AirDroid windows show a Dialpad; IAOS will not choose between them. Keep only one AirDroid Dialpad open. Nothing was changed." }
+  $main = $withDialpad[0].Window
+  $script:hits = @($withDialpad[0].Fields)
   if ($script:hits.Count -gt 1) { Stop-With 5 "Dialpad field is ambiguous: $($script:hits.Count) candidate fields found. Nothing was changed." }
   $field = [IntPtr]$script:hits[0].Current.NativeWindowHandle
   $existingLen = [int]$N::SendMessage($field, 0x000E, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_GETTEXTLENGTH, content not read
@@ -294,7 +160,7 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
     [void]$N::SendMessage($field, 0x000C, [IntPtr]::Zero, '')
     Stop-With 6 "Readback did not match (expected $digits, read '$read'). The field was cleared. Do not call."
   }
-  Write-Host "PREPARED: $digits is in the AirDroid Dialpad (exact readback). AirDroid in front: $foreground." -ForegroundColor Green
+  Write-Host "PREPARED: $digits is in the AirDroid Dialpad (exact readback)." -ForegroundColor Green
   # Standalone prefill only: in the automatic handler path DialCall.ps1 presses Make Call next, without confirmation.
   if (-not $Automatic) { Write-Host "Check the number on screen, then press Make Call yourself." }
   exit 0

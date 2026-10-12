@@ -14,9 +14,8 @@
        before any "Press Enter" pause, so a stopped window never blocks the next call.
     3. Duplicate check: DialCall.ps1 -GuardOnly refuses the same number dialled in the last 30 seconds before the
        Dialpad is touched.
-    4. Runs the reviewed prefill helper, PrepareCall.ps1 -Automatic -StartIfNotRunning. If AirDroid is not running it
-       starts it and waits a bounded time for the Dialpad (exit 8 with a clear message if it is not ready; nothing
-       entered, no call). It then places the number in AirDroid's open Dialpad and verifies the exact readback. -Automatic suppresses its "press Make Call yourself" instruction,
+    4. Runs the reviewed prefill helper, PrepareCall.ps1 -Automatic, which places the number in AirDroid's already-open
+       Dialpad and verifies the exact readback. -Automatic suppresses its "press Make Call yourself" instruction,
        which is meant only for standalone prefill.
     5. Only if that succeeds, runs DialCall.ps1 with the same digits: it rechecks the number, identifies Make Call,
        clicks it once (no retry) and records the dial for the duplicate check. Brad's one IAOS Call click is the
@@ -27,8 +26,8 @@
   The digits are passed as a named parameter, never by string concatenation into a command line.
 
   -ParseOnly prints the parsed number (or the refusal) and touches nothing. It is used by the offline tests.
-  -TestProcessName, -TestPauseMs, -GuardFile, -TestLaunchPath, -TestLaunchArgs and -TestReadyTimeoutSec exist only
-  for the inert offline tests (a fake AirDroid window); the registered command passes none of them.
+  -TestProcessName, -TestPauseMs and -GuardFile exist only for the inert offline concurrency tests (a fake AirDroid
+  window); the registered command passes none of them.
 
 .NOTES
   Exit codes: 0 click sent once (or parse OK with -ParseOnly); 20 link refused; 10 another IAOS call is in progress
@@ -40,10 +39,7 @@ param(
   [switch]$NoPause,
   [string]$TestProcessName = '',
   [int]$TestPauseMs = 0,
-  [string]$GuardFile = '',
-  [string]$TestLaunchPath = '',
-  [string]$TestLaunchArgs = '',
-  [int]$TestReadyTimeoutSec = 0
+  [string]$GuardFile = ''
 )
 
 function Get-IaosAirdroidNumber([string]$link) {
@@ -70,10 +66,6 @@ if ($TestProcessName) { $extra += @('-TestProcessName', $TestProcessName) }
 $dialExtra = @() + $extra
 if ($GuardFile) { $dialExtra += @('-GuardFile', $GuardFile) }
 if ($TestPauseMs -gt 0) { $dialExtra += @('-TestPauseMs', $TestPauseMs) }
-$prepareExtra = @('-Automatic', '-StartIfNotRunning') + $extra
-if ($TestLaunchPath) { $prepareExtra += @('-TestLaunchPath', $TestLaunchPath) }
-if ($TestLaunchArgs) { $prepareExtra += @('-TestLaunchArgs', $TestLaunchArgs) }
-if ($TestReadyTimeoutSec -gt 0) { $prepareExtra += @('-ReadyTimeoutSec', $TestReadyTimeoutSec) }
 function Invoke-Step([string]$script, [string[]]$arguments) {
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot $script) -Number $number -CallerHoldsLock @arguments | Out-Host
   return $LASTEXITCODE
@@ -90,7 +82,7 @@ try {
     $code = 10
   } else {
     $code = Invoke-Step 'DialCall.ps1' (@('-GuardOnly') + $dialExtra)
-    if ($code -eq 0) { $code = Invoke-Step 'PrepareCall.ps1' $prepareExtra }
+    if ($code -eq 0) { $code = Invoke-Step 'PrepareCall.ps1' (@('-Automatic') + $extra) }
     if ($code -eq 0) { $code = Invoke-Step 'DialCall.ps1' $dialExtra }
   }
 }

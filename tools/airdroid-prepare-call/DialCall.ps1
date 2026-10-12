@@ -25,7 +25,9 @@
   "click sent once", never that a call was placed.
 
 .PARAMETER Number      The 10 digits PrepareCall.ps1 prepared.
-.PARAMETER CheckOnly   Runs steps 1 to 4 read-only; does not click or record a dial.
+.PARAMETER CheckOnly   Runs steps 1 to 4 read-only; does not click or record a dial. Without -Number it is the
+                       "check the Dialpad" mode (CHECK-DIALPAD.cmd): it finds the one visible Dialpad window, its number
+                       field and Make Call, reports the window's size, and types and clicks nothing.
 .PARAMETER GuardOnly   Runs only the duplicate guard against -GuardFile (offline tests); never looks at AirDroid.
 .PARAMETER GuardFile   Where the last dial is recorded (default: %LOCALAPPDATA%\IAOS\airdroid-last-dial.json).
 .PARAMETER CallerHoldsLock  The caller already holds the IAOS call lock (B14-13 handler). Only confirms it is held
@@ -38,8 +40,8 @@
   Exit codes:
     0  click sent once (or CheckOnly / GuardOnly passed)
     2  invalid number
-    3  AirDroid missing or its main window ambiguous
-    4  live Dialpad not found or ambiguous
+    3  AirDroid not running, or more than one visible AirDroid window shows a Dialpad
+    4  no visible AirDroid window shows the live Dialpad (not open, hidden or minimised), or it is ambiguous
     7  unexpected error
     8  Make Call panel not found, ambiguous, inside the call-status panel, or not enabled
     9  number or panel did not match / changed before the click; nothing clicked
@@ -71,7 +73,8 @@ function Stop-With([int]$code, [string]$msg) {
 
 $mutex = $null
 try {
-  if ($Number -notmatch '^[2-9]\d{2}[2-9]\d{6}$') { Stop-With 2 "Invalid number: expected the 10 prepared US digits." }
+  $structureOnly = $CheckOnly -and -not $Number   # "check the Dialpad": no number, nothing typed or clicked
+  if (-not $structureOnly -and $Number -notmatch '^[2-9]\d{2}[2-9]\d{6}$') { Stop-With 2 "Invalid number: expected the 10 prepared US digits." }
 
   # ---- 1. Duplicate guard ----
   $lock = New-Object System.Threading.Mutex($false, 'Local\IAOS-AirDroid-Dial')
@@ -84,7 +87,7 @@ try {
     if (-not $got) { $lock.Dispose(); Stop-With 10 "Another IAOS call is in progress. Nothing was clicked." }
     $mutex = $lock
   }
-  if (Test-Path -LiteralPath $GuardFile) {
+  if (-not $structureOnly -and (Test-Path -LiteralPath $GuardFile)) {
     $last = $null
     try { $last = Get-Content -LiteralPath $GuardFile -Raw | ConvertFrom-Json } catch { $last = $null }
     if ($last -and $last.number -eq $Number) {
@@ -108,8 +111,6 @@ try {
 [DllImport("user32.dll")] public static extern bool IsChild(IntPtr parent, IntPtr child);
 [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
 [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
-[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int cmd);
-[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, StringBuilder l);
 public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMessage(h, 0x000D, (IntPtr)256, sb); return sb.ToString(); }
 '@
@@ -124,9 +125,9 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
       Where-Object { $_.Current.ClassName -match '\.EDIT\.' -and $N::IsWindowVisible([IntPtr]$_.Current.NativeWindowHandle) })
   }
 
-  # ---- 2. AirDroid and the live Dialpad ----
+  # ---- 2. The ONE visible AirDroid window that shows the live Dialpad (Brad, 2026-10-12: kept visible beside IAOS) ----
   $procs = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
-  if ($procs.Count -eq 0) { Stop-With 3 "AirDroid is not running." }
+  if ($procs.Count -eq 0) { Stop-With 3 "AirDroid is not running. Open AirDroid > My devices > your phone > Dialpad, and keep that AirDroid window visible beside IAOS (it may be small, in a corner). Then click Call again." }
   $mains = @()
   foreach ($p in $procs) {
     $cond = New-Object System.Windows.Automation.AndCondition(
@@ -135,18 +136,30 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
       (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)))
     $mains += @($A::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond))
   }
-  if ($mains.Count -ne 1) { Stop-With 3 "Expected exactly one AirDroid main window, found $($mains.Count)." }
-
-  $script:forms = @{}
   function Find-Forms($el, [int]$d) { if ($d -gt 30) { return }; $c = $el.Current; $h = [IntPtr]$c.NativeWindowHandle
     if ($c.Name -eq 'frmAirCloud' -and $h -ne [IntPtr]::Zero -and $N::IsWindowVisible($h)) { $script:forms[[int64]$h] = $el }
     $ch = $W.GetFirstChild($el); while ($ch -ne $null) { Find-Forms $ch ($d + 1); $ch = $W.GetNextSibling($ch) } }
-  Find-Forms $mains[0] 0
-  $live = @($script:forms.Keys | Where-Object { (Get-Edits ([IntPtr]$_)).Count -eq 1 })
+  $withDialpad = @(); $minimised = 0
+  foreach ($m in $mains) {
+    $mh = [IntPtr]$m.Current.NativeWindowHandle
+    if (-not $N::IsWindowVisible($mh)) { continue }
+    if ($N::IsIconic($mh)) { $minimised++; continue }
+    $script:forms = @{}
+    Find-Forms $m 0
+    $lv = @($script:forms.Keys | Where-Object { (Get-Edits ([IntPtr]$_)).Count -eq 1 })
+    if ($lv.Count -gt 0) { $withDialpad += [pscustomobject]@{ Window = $m; Live = $lv } }
+  }
+  if ($withDialpad.Count -eq 0) {
+    if ($minimised) { Stop-With 4 "AirDroid is minimised. Restore it yourself (do not close it), with your phone's Dialpad open. Nothing was clicked. Open AirDroid > My devices > your phone > Dialpad, and keep that AirDroid window visible beside IAOS (it may be small, in a corner). Then click Call again." }
+    Stop-With 4 "No visible AirDroid window shows the Dialpad. Nothing was clicked. Open AirDroid > My devices > your phone > Dialpad, and keep that AirDroid window visible beside IAOS (it may be small, in a corner). Then click Call again."
+  }
+  if ($withDialpad.Count -gt 1) { Stop-With 3 "$($withDialpad.Count) visible AirDroid windows show a Dialpad; IAOS will not choose between them. Keep only one AirDroid Dialpad open. Nothing was clicked." }
+  $mainEl = $withDialpad[0].Window
+  $live = @($withDialpad[0].Live)
   if ($live.Count -ne 1) { Stop-With 4 "Live Dialpad not unique: $($live.Count) forms hold one number field. Nothing was clicked." }
   $formH = [IntPtr]$live[0]
   $field = [IntPtr](Get-Edits $formH)[0].Current.NativeWindowHandle
-  if ($N::GetText($field) -cne $Number) { Stop-With 9 "The Dialpad does not hold exactly $Number. Nothing was clicked." }
+  if (-not $structureOnly -and $N::GetText($field) -cne $Number) { Stop-With 9 "The Dialpad does not hold exactly $Number. Nothing was clicked." }
 
   # ---- 3. Make Call: the one full-width panel below the one 12-key grid ----
   $script:grids = @()
@@ -179,6 +192,11 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
   $ok = $N::IsWindow($target) -and $N::IsWindowVisible($target) -and $N::IsWindowEnabled($target) -and $N::IsWindowVisible($formH) -and $N::IsChild($formH, $target) -and $same
   if (-not $ok) { Stop-With 9 "Make Call changed before the click. Nothing was clicked." }
   Wait-TestPause 'before final number check'
+  if ($structureOnly) {
+    $wr = Get-Rc ([IntPtr]$mainEl.Current.NativeWindowHandle); $fr = Get-Rc $field
+    Write-Host ("DIALPAD CHECK PASSED: one visible AirDroid Dialpad window ({0}x{1} at {2},{3}); number field visible ({4}x{5}); Make Call identified, visible and enabled ({6}x{7}). Nothing was typed or clicked; no call." -f ($wr.R - $wr.L), ($wr.B - $wr.T), $wr.L, $wr.T, ($fr.R - $fr.L), ($fr.B - $fr.T), ($now.R - $now.L), ($now.B - $now.T)) -ForegroundColor Green
+    exit 0
+  }
   if ($N::GetText($field) -cne $Number) { Stop-With 9 "The Dialpad number changed before the click. Nothing was clicked." }
   if ($CheckOnly) { Write-Host "CHECK ONLY: Make Call identified (panel $target) and $Number is in the Dialpad; nothing was clicked." -ForegroundColor Green; exit 0 }
 
@@ -195,20 +213,9 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
   [void]$N::PostMessage($target, 0x0202, [IntPtr]::Zero, $lp)   # WM_LBUTTONUP
   Write-Host "CLICK SENT ONCE to Make Call for $Number. No retry." -ForegroundColor Green
 
-  # ---- 6. Minimise the AirDroid window this click went to (Brad, 2026-10-10), once AirDroid has processed it ----
-  # Only $mainH: the one AirDroid main window that holds the Dialpad and the Make Call panel clicked above. Minimise
-  # only, as the window's own minimise button would: nothing is closed, the call is not ended, no other window is
-  # chosen, nothing is retried. If it does not minimise, that is reported and the result stays 0 (the click was sent).
-  try {
-    $mainH = [IntPtr]$mains[0].Current.NativeWindowHandle
-    $mainPid = [uint32]0; [void]$N::GetWindowThreadProcessId($mainH, [ref]$mainPid)
-    try { [void](Get-Process -Id $mainPid -ErrorAction Stop).WaitForInputIdle(3000) } catch { }   # bounded
-    Start-Sleep -Milliseconds 300
-    if ($N::IsWindow($mainH) -and $N::IsChild($mainH, $target)) { [void]$N::ShowWindowAsync($mainH, 6) }   # SW_MINIMIZE
-    for ($i = 0; $i -lt 20 -and -not $N::IsIconic($mainH); $i++) { Start-Sleep -Milliseconds 50 }
-    if ($N::IsIconic($mainH)) { Write-Host 'AIRDROID MINIMISED. IAOS does not know whether the call connected; check your phone.' -ForegroundColor Green }
-    else { Write-Host 'AIRDROID NOT MINIMISED: Windows did not minimise it. Nothing else was changed.' -ForegroundColor Yellow }
-  } catch { Write-Host "AIRDROID NOT MINIMISED: $($_.Exception.Message). Nothing else was changed." -ForegroundColor Yellow }
+  # B14-13 visible Dialpad (Brad, 2026-10-12): AirDroid is left exactly as it is -- visible beside IAOS. Nothing is
+  # minimised, moved or brought forward. IAOS does not know whether the call connected; check your phone.
+  Write-Host 'AirDroid left as it was (visible). IAOS does not know whether the call connected; check your phone.'
   exit 0
 }
 catch {

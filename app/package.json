@@ -77,8 +77,7 @@
     "test:seller-call-voice-controls": "node scripts/test-seller-call-voice-controls.cjs",
     "test:airdroid-prepare-call": "node scripts/test-airdroid-prepare-call.cjs",
     "test:airdroid-dial-concurrency": "node scripts/test-airdroid-dial-concurrency.cjs",
-    "test:airdroid-minimize": "node scripts/test-airdroid-minimize.cjs",
-    "test:airdroid-start": "node scripts/test-airdroid-start.cjs",
+    "test:airdroid-visible": "node scripts/test-airdroid-visible.cjs",
     "test:seller-call-airdroid": "node scripts/test-seller-call-airdroid.cjs",
     "test:inv67-pdf-population-proof": "node scripts/test-inv67-pdf-population-proof.cjs"
   },

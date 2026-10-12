@@ -1,0 +1,239 @@
+/**
+ * B14-13 visible Dialpad (Brad, 2026-10-12): AirDroid is opened once with its Dialpad and kept VISIBLE beside IAOS
+ * (it may be a small corner window). IAOS Call enters the number, verifies it, clicks Make Call once, and leaves
+ * AirDroid exactly as it was. Nothing is started, restored, brought forward, moved, resized or minimised. If exactly
+ * one visible Dialpad cannot be identified it stops with a plain instruction and never guesses between windows.
+ *
+ * The fake reproduces the VivoBook diagnostic's layout (one AirDroid process; the main window holds two "frmAirCloud"
+ * pages, one hidden, and the Dialpad; a second unowned "AirDroid" form with five text fields and no Dialpad).
+ *
+ * Inert and offline: fake windows only (harness/airdroid-fake/FakeAirDroid.cs), found only through -TestProcessName.
+ * Never touches the real AirDroid, a phone or a call. Windows desktop session only; it shares the machine-wide
+ * Local\IAOS-AirDroid-Dial lock with the other helper suites, so never run two helper suites at once.
+ */
+const { spawn, spawnSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+const APP = path.resolve(__dirname, '..');
+const REPO = path.resolve(APP, '..');
+const TOOLS = path.join(REPO, 'tools', 'airdroid-prepare-call');
+const HANDLER = path.join(TOOLS, 'IaosAirdroidHandler.ps1');
+const PREPARE = path.join(TOOLS, 'PrepareCall.ps1');
+const DIAL = path.join(TOOLS, 'DialCall.ps1');
+const FAKE = 'IaosFakeAirDroid';
+
+if (process.platform !== 'win32') {
+  console.log('SKIP all visible-Dialpad checks (not Windows; the helper is Windows-only)');
+  process.exit(0);
+}
+
+const TMP = path.join(APP, '.tmp-airdroid-visible-test');
+fs.rmSync(TMP, { recursive: true, force: true });
+fs.mkdirSync(TMP, { recursive: true });
+const EXE = path.join(TMP, `${FAKE}.exe`);
+
+let checks = 0;
+let failures = 0;
+function check(name, actual, expected) {
+  checks += 1;
+  const ok = JSON.stringify(actual) === JSON.stringify(expected);
+  if (!ok) failures += 1;
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${ok ? '' : ` — expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`}`);
+}
+
+const PS = ['-NoProfile', '-ExecutionPolicy', 'Bypass'];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let n = 0;
+const fresh = (stem) => path.join(TMP, `${stem}-${++n}`);
+const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean) : [])
+  .map((l) => { const m = l.match(/^(\S+) (\S+) ?(.*)$/); return { at: Date.parse(m[1]), kind: m[2], text: m[3] }; });
+const kinds = (log, from = 0) => read(log).slice(from).map((l) => l.kind);
+const fakeCount = () => (spawnSync('tasklist', ['/FI', `IMAGENAME eq ${FAKE}.exe`, '/NH'], { encoding: 'utf8' }).stdout || '')
+  .split(/\r?\n/).filter((l) => l.startsWith(FAKE)).length;
+const killFakes = async () => { spawnSync('taskkill', ['/IM', `${FAKE}.exe`, '/F'], { stdio: 'ignore' }); for (let i = 0; i < 50 && fakeCount(); i += 1) await sleep(100); };
+const launch = (number, guard = fresh('guard') + '.json') => {
+  const r = spawnSync('powershell.exe', [...PS, '-File', HANDLER, `iaos-airdroid:call?number=${number}`, '-NoPause', '-TestProcessName', FAKE, '-GuardFile', guard], { encoding: 'utf8', timeout: 120000 });
+  return { code: r.status, out: (r.stdout || '') + (r.stderr || ''), guard };
+};
+const checkDialpad = () => { const r = spawnSync('powershell.exe', [...PS, '-File', DIAL, '-CheckOnly', '-TestProcessName', FAKE], { encoding: 'utf8' }); return { code: r.status, out: r.stdout || '' }; };
+async function startFake(flags) {
+  await killFakes();
+  const log = fresh('air') + '.log';
+  const child = spawn(EXE, [log, '--taskbar', ...flags], { stdio: 'ignore' });
+  for (let i = 0; i < 100 && !(read(log).some((l) => l.kind === 'READY') && (!flags.some((f) => f.startsWith('--second')) || read(log).some((l) => l.kind === 'SECOND-READY'))); i += 1) await sleep(100);
+  await sleep(300);
+  return { child, log };
+}
+/** Window state of the fake's main "AirDroid" window, read-only: "visible|minimised|w x h". */
+const STATE = path.join(TMP, 'state.ps1');
+fs.writeFileSync(STATE, [
+  "Add-Type -Namespace S -Name W -MemberDefinition @'",
+  '[StructLayout(LayoutKind.Sequential)] public struct RC { public int L, T, R, B; }',
+  'public delegate bool P(IntPtr h, IntPtr l);',
+  '[DllImport("user32.dll")] public static extern bool EnumWindows(P f, IntPtr l);',
+  '[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);',
+  '[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);',
+  '[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);',
+  '[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RC r);',
+  '[DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint c);',
+  '[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);',
+  "'@",
+  `$ids = @(Get-Process -Name ${FAKE} -ErrorAction SilentlyContinue | ForEach-Object { [uint32]$_.Id })`,
+  '$out = New-Object System.Collections.ArrayList',
+  '[S.W]::EnumWindows({ param($h, $l) $p = [uint32]0; [void][S.W]::GetWindowThreadProcessId($h, [ref]$p); $sb = New-Object System.Text.StringBuilder 64; [void][S.W]::GetWindowText($h, $sb, 64)',
+  '  if ($ids -contains $p -and $sb.ToString() -eq "AirDroid" -and [S.W]::GetWindow($h, 4) -eq [IntPtr]::Zero -and [S.W]::IsWindowVisible($h)) { $r = New-Object S.W+RC; [void][S.W]::GetWindowRect($h, [ref]$r); [void]$out.Add(("{0}|{1}|{2}x{3}" -f [S.W]::IsWindowVisible($h), [S.W]::IsIconic($h), ($r.R - $r.L), ($r.B - $r.T))) }; $true }, [IntPtr]::Zero) | Out-Null',
+  '$out -join ";"',
+].join('\n'));
+const visibleWindows = () => (spawnSync('powershell.exe', [...PS, '-File', STATE], { encoding: 'utf8' }).stdout || '').trim();
+
+let probe;
+function startProbe() {
+  const script = path.join(TMP, 'lock-probe.ps1');
+  fs.writeFileSync(script, [
+    "$m = New-Object System.Threading.Mutex($false, 'Local\\IAOS-AirDroid-Dial')",
+    'while ($null -ne ($line = [Console]::In.ReadLine())) {',
+    "  try { if ($m.WaitOne(0)) { $m.ReleaseMutex(); [Console]::Out.WriteLine('FREE') } else { [Console]::Out.WriteLine('BUSY') } }",
+    "  catch [System.Threading.AbandonedMutexException] { $m.ReleaseMutex(); [Console]::Out.WriteLine('ABANDONED') }",
+    '  [Console]::Out.Flush()',
+    '}',
+  ].join('\n'));
+  probe = { child: spawn('powershell.exe', [...PS, '-File', script]), buffer: '', waiting: [] };
+  probe.child.stdout.on('data', (d) => {
+    probe.buffer += d;
+    let i;
+    while ((i = probe.buffer.indexOf('\n')) > -1) {
+      const answer = probe.buffer.slice(0, i).trim();
+      probe.buffer = probe.buffer.slice(i + 1);
+      if (answer && probe.waiting.length) probe.waiting.shift()(answer);
+    }
+  });
+}
+const lockState = () => new Promise((resolve) => { probe.waiting.push(resolve); probe.child.stdin.write('?\n'); });
+const OPEN = /Open AirDroid > My devices > your phone > Dialpad, and keep that AirDroid window visible beside IAOS/;
+const CHANGES = ['TEXT', 'CLICK', 'MINIMIZED', 'RESTORED', 'HIDDEN', 'OTHER-SHOWN'];
+
+(async () => {
+  try {
+    // ---- Static: the active calling path starts, restores, moves and minimises nothing ----
+    {
+      const lf = (t) => t.replace(/\r\n/g, '\n');
+      const strip = (src) => lf(src).replace(/<#[\s\S]*?#>/g, '').split('\n').filter((l) => !/^\s*#/.test(l)).map((l) => l.replace(/\s#\s.*$/, '')).join('\n');
+      const all = ['IaosAirdroidHandler.ps1', 'PrepareCall.ps1', 'DialCall.ps1'].map((f) => strip(fs.readFileSync(path.join(TOOLS, f), 'utf8'))).join('\n');
+      check('static: no auto-start, restore, foreground, move, resize or minimise anywhere in the calling path',
+        /StartIfNotRunning|Start-Process|ShowWindow|SetForegroundWindow|BringWindowToTop|AttachThreadInput|SetWindowPos|MoveWindow|SW_MINIMIZE|SW_RESTORE/.test(all), false);
+      const handler = strip(fs.readFileSync(HANDLER, 'utf8'));
+      check('static: the handler runs the duplicate check, then PrepareCall -Automatic, then DialCall, under the lock',
+        [/Invoke-Step 'PrepareCall\.ps1' \(@\('-Automatic'\) \+ \$extra\)/.test(handler), handler.indexOf("(@('-GuardOnly')") < handler.indexOf("Invoke-Step 'PrepareCall.ps1'")], [true, true]);
+      for (const f of ['PrepareCall.ps1', 'DialCall.ps1']) {
+        const src = strip(fs.readFileSync(path.join(TOOLS, f), 'utf8'));
+        check(`static (${f}): exactly one visible, not-minimised AirDroid window showing the Dialpad; none or several stop; never the first`,
+          [/if \(-not \$N::IsWindowVisible\((\$wh|\$mh)\)\) \{ continue \}/.test(src), /if \(\$N::IsIconic\((\$wh|\$mh)\)\) \{ \$minimised\+\+; continue \}/.test(src),
+            /if \(\$withDialpad\.Count -gt 1\) \{ Stop-With 3/.test(src), /\$mains\[0\]/.test(src)], [true, true, true, false]);
+      }
+    }
+
+    // ---- Build the fake ----
+    const build = spawnSync('powershell.exe', [...PS, '-Command',
+      `Add-Type -TypeDefinition (Get-Content -Raw '${path.join(__dirname, 'harness', 'airdroid-fake', 'FakeAirDroid.cs')}') ` +
+      `-ReferencedAssemblies System.Windows.Forms,System.Drawing -OutputAssembly '${EXE}' -OutputType WindowsApplication`], { encoding: 'utf8' });
+    if (build.status !== 0 || !fs.existsSync(EXE)) { console.error(build.stderr); process.exit(10); }
+    startProbe();
+    check('setup: lock free, no fake AirDroid running', [await lockState(), fakeCount()], ['FREE', 0]);
+
+    // ---- 1. The VivoBook layout, Dialpad visible: three consecutive calls; AirDroid left visible every time ----
+    {
+      const { log } = await startFake(['--hidden-page', '--second-form']);
+      const before = visibleWindows();
+      check('VivoBook layout: exactly one visible AirDroid window (the Dialpad window), not minimised', before.split(';').length === 1 && before.startsWith('True|False'), true);
+      const c = checkDialpad();
+      check('check the Dialpad (no number): exit 0; one visible Dialpad window, field and Make Call identified; nothing typed or clicked',
+        [c.code, /DIALPAD CHECK PASSED: one visible AirDroid Dialpad window/.test(c.out), /Make Call identified, visible and enabled/.test(c.out), kinds(log).filter((k) => CHANGES.includes(k))], [0, true, true, []]);
+      for (const num of ['2025550401', '2025550402', '2025550403']) {
+        const from = read(log).length;
+        const r = launch(num);
+        await sleep(400);
+        const ev = read(log).slice(from);
+        check(`call ${num}: exit 0; the number entered once, verified, ONE click on it; nothing minimised, restored, hidden or shown`,
+          [r.code, ev.filter((l) => l.kind === 'TEXT').map((l) => l.text), ev.filter((l) => l.kind === 'CLICK').map((l) => l.text), ev.filter((l) => ['MINIMIZED', 'RESTORED', 'HIDDEN', 'OTHER-SHOWN'].includes(l.kind)).length],
+          [0, [num], [num], 0]);
+        check(`call ${num}: AirDroid is still visible, same size, not minimised; the output makes no connected-call claim`,
+          [visibleWindows(), /CLICK SENT ONCE/.test(r.out), /AirDroid left as it was \(visible\)/.test(r.out), /call (?:is |was )?(?:connected|placed|answered)/i.test(r.out.replace(/whether the call connected/g, ''))],
+          [before, true, true, false]);
+      }
+      check('after three calls: lock released', await lockState(), 'FREE');
+
+      // Duplicate within 30 s, and another call holding the lock: refused before the Dialpad is touched.
+      const guard = fresh('guard') + '.json';
+      launch('2025550404', guard);
+      const from = read(log).length;
+      const dup = launch('2025550404', guard);
+      check('duplicate within 30 s: exit 10; nothing typed or clicked', [dup.code, kinds(log, from).filter((k) => CHANGES.includes(k))], [10, []]);
+      const holder = spawn('powershell.exe', [...PS, '-Command',
+        "$m = New-Object System.Threading.Mutex($false, 'Local\\IAOS-AirDroid-Dial'); [void]$m.WaitOne(0); [Console]::Out.WriteLine('HELD'); [Console]::Out.Flush(); [void][Console]::In.ReadLine(); $m.ReleaseMutex(); [Console]::Out.WriteLine('RELEASED'); [Console]::Out.Flush()"]);
+      let hOut = '';
+      holder.stdout.on('data', (d) => { hOut += d; });
+      const said = async (t) => { for (let i = 0; i < 200 && !hOut.includes(t); i += 1) await sleep(50); return hOut.includes(t); };
+      await said('HELD');
+      const from2 = read(log).length;
+      const busy = launch('2025550405');
+      check('another IAOS call holds the lock: exit 10; nothing typed or clicked', [busy.code, kinds(log, from2).filter((k) => CHANGES.includes(k))], [10, []]);
+      holder.stdin.write('\n');
+      check('lock holder released the lock itself', await said('RELEASED'), true);
+    }
+
+    // ---- 2. The second AirDroid form is also VISIBLE (no Dialpad): the Dialpad window is still the only choice ----
+    {
+      const { log } = await startFake(['--hidden-page', '--second-form', '--second-visible']);
+      check('second form visible: two visible "AirDroid" windows', visibleWindows().split(';').length, 2);
+      const r = launch('2025550411');
+      await sleep(400);
+      check('second form visible: exit 0; ONE click on the number in the Dialpad window', [r.code, read(log).filter((l) => l.kind === 'CLICK').map((l) => l.text)], [0, ['2025550411']]);
+    }
+
+    // ---- 3. Small corner window ----
+    {
+      const { log } = await startFake(['--hidden-page', '--second-form', '--size=300x470']);
+      const c = checkDialpad();
+      console.log(`INFO small-window Dialpad check reports: ${(c.out.match(/Dialpad window \([^)]*\)/) || ['?'])[0]} (physical pixels; the helper is DPI-aware)`);
+      check('small window (300x470): the Dialpad check passes and reports the window size', [c.code, /Dialpad window \(\d+x\d+ at -?\d+,-?\d+\)/.test(c.out)], [0, true]);
+      const r = launch('2025550421');
+      await sleep(400);
+      check('small window: exit 0, ONE click; the window keeps its size', [r.code, read(log).filter((l) => l.kind === 'CLICK').map((l) => l.text), visibleWindows()], [0, ['2025550421'], 'True|False|300x470']);
+    }
+
+    // ---- 4. Stops with a plain instruction; nothing restored, started, typed or clicked ----
+    for (const [label, flags, re, code] of [
+      ['minimised (on the taskbar)', ['--hidden-page', '--second-form', '--start-minimized'], /AirDroid is minimised\. Restore it yourself/, 4],
+      ['hidden in the tray', ['--hidden-page', '--second-form', '--start-hidden', '--tray'], /No visible AirDroid window shows the Dialpad/, 4],
+      ['open but the Dialpad not shown', ['--no-dialpad', '--second-form'], /No visible AirDroid window shows the Dialpad/, 4],
+      ['two visible Dialpad windows', ['--second-dialpad', '--second-visible'], /2 visible AirDroid windows show a Dialpad; IAOS will not choose between them/, 3],
+    ]) {
+      const { log } = await startFake(flags);
+      const before = visibleWindows();
+      const r = launch('2025550431');
+      await sleep(400);
+      check(`${label}: exit ${code} with the plain instruction; nothing typed, clicked, restored or shown; windows unchanged`,
+        [r.code, re.test(r.out), code === 4 ? OPEN.test(r.out) : true, kinds(log).filter((k) => ['TEXT', 'CLICK', 'RESTORED', 'OTHER-SHOWN'].includes(k)), visibleWindows()],
+        [code, true, true, [], before]);
+      const c = checkDialpad();
+      check(`${label}: the Dialpad check also stops (exit ${code})`, c.code, code);
+    }
+    await killFakes();
+    {
+      const r = launch('2025550441');
+      check('AirDroid not running: exit 3 with the plain instruction; nothing is started', [r.code, /AirDroid is not running\. Open AirDroid/.test(r.out), fakeCount()], [3, true, 0]);
+      check('after the refusals: lock released', await lockState(), 'FREE');
+    }
+  } catch (error) {
+    failures += 1;
+    console.log(`FAIL harness error: ${error && error.stack ? error.stack : error}`);
+  } finally {
+    if (probe) probe.child.stdin.end();
+    spawnSync('taskkill', ['/IM', `${FAKE}.exe`, '/F'], { stdio: 'ignore' });
+  }
+  await sleep(300);
+  fs.rmSync(TMP, { recursive: true, force: true });
+  console.log(`\n${checks - failures}/${checks} checks passed`);
+  process.exit(failures ? 1 : 0);
+})();
