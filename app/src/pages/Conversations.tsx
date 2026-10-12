@@ -299,7 +299,7 @@ export default function Conversations() {
         <div style={{ display: "flex", alignItems: "center", gap: "0px", minWidth: 0, flex: 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", width: `${NAME_INDENT}px`, flexShrink: 0, overflow: "hidden" }}>
             <MessageSquare size={20} style={{ color: "#1EC8FF", flexShrink: 0 }} />
-            <h1 style={{ fontSize: "20px", fontWeight: 700, color: "#F1F5F9", margin: 0, fontFamily: "Space Grotesk, sans-serif" }}>History</h1>
+            <h1 style={{ fontSize: "20px", fontWeight: 700, color: "#F1F5F9", margin: 0, fontFamily: "Space Grotesk, sans-serif" }}>Conversations</h1>
             <span style={{ flexShrink: 0, fontSize: "11px", color: "#475569", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "999px", padding: "2px 8px" }}>Read-only</span>
           </div>
           {selected && (
