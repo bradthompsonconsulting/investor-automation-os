@@ -19,6 +19,10 @@
          - that panel is visible and enabled, and is not inside the call-status panel.
     4. Recheck immediately before the click: the number field still reads exactly the expected digits, and the panel
        still exists, is visible, enabled, inside the same form, with the same rectangle.
+    4b. Brings that one identified, already-visible Dialpad window in front, once (Brad / Bones, 2026-10-12: on the
+       VivoBook a click posted while AirDroid was behind IAOS was sent but no call followed). Nothing is restored,
+       moved, resized or minimised. If Windows does not put it in front, it stops: nothing is clicked or recorded.
+       The number is read once more after it is in front.
     5. Records the dial for the duplicate guard, then sends one click message pair at the panel's centre. No retry.
 
   The click is a posted window message. Whether AirDroid acted on it is not visible to this script; it reports only
@@ -33,6 +37,8 @@
 .PARAMETER CallerHoldsLock  The caller already holds the IAOS call lock (B14-13 handler). Only confirms it is held
                        (exit 10 if not) instead of taking it, which would deadlock against the caller.
 .PARAMETER TestProcessName  Offline tests only: process name of the inert fake AirDroid window.
+.PARAMETER TestRefuseForeground  Offline tests only, and only together with -TestProcessName: behave as if Windows
+                       refused to bring the Dialpad window in front (step 4b), to test that nothing is then clicked.
 .PARAMETER TestPauseMs  Offline tests only, and only together with -TestProcessName: pauses before the final number
                        check and again between that check and the click, so a competing launch can be attempted.
 
@@ -47,6 +53,7 @@
     9  number or panel did not match / changed before the click; nothing clicked
     10 duplicate refused (same number dialled moments ago, or another IAOS call in progress), or -CallerHoldsLock
        given but the lock is not held
+    11 Windows did not bring the AirDroid Dialpad window in front; nothing was clicked or recorded
 #>
 [CmdletBinding()]
 param(
@@ -57,7 +64,8 @@ param(
   [int]$GuardSeconds = 30,
   [switch]$CallerHoldsLock,
   [string]$TestProcessName = '',
-  [int]$TestPauseMs = 0
+  [int]$TestPauseMs = 0,
+  [switch]$TestRefuseForeground
 )
 $ErrorActionPreference = 'Stop'
 $processName = if ($TestProcessName) { $TestProcessName } else { 'AirDroid' }
@@ -111,6 +119,12 @@ try {
 [DllImport("user32.dll")] public static extern bool IsChild(IntPtr parent, IntPtr child);
 [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
 [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+[DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+[DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+[DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, StringBuilder l);
 public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMessage(h, 0x000D, (IntPtr)256, sb); return sb.ToString(); }
 '@
@@ -200,6 +214,24 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
   if ($N::GetText($field) -cne $Number) { Stop-With 9 "The Dialpad number changed before the click. Nothing was clicked." }
   if ($CheckOnly) { Write-Host "CHECK ONLY: Make Call identified (panel $target) and $Number is in the Dialpad; nothing was clicked." -ForegroundColor Green; exit 0 }
 
+  # ---- 4b. Bring the identified, already-visible Dialpad window in front, once; then read the number again ----
+  # The same bring-forward the earlier PrepareCall used (in every version that dialled on the VivoBook), without its
+  # restore: the window was selected visible and not minimised. Nothing is restored, moved, resized or minimised.
+  $mainH = [IntPtr]$mainEl.Current.NativeWindowHandle
+  if ($N::IsIconic($mainH) -or -not $N::IsWindowVisible($mainH)) { Stop-With 4 "The AirDroid Dialpad window was minimised or hidden before the click. Nothing was clicked." }
+  $fgThread = $N::GetWindowThreadProcessId($N::GetForegroundWindow(), [IntPtr]::Zero)
+  $me = $N::GetCurrentThreadId()
+  $attached = $false
+  if ($fgThread -ne 0 -and $fgThread -ne $me) { $attached = $N::AttachThreadInput($me, $fgThread, $true) }
+  [void]$N::BringWindowToTop($mainH); [void]$N::SetForegroundWindow($mainH)
+  if ($attached) { [void]$N::AttachThreadInput($me, $fgThread, $false) }
+  $inFront = $false
+  for ($i = 0; $i -lt 10 -and -not $inFront; $i++) { Start-Sleep -Milliseconds 50; $inFront = $N::GetForegroundWindow() -eq $mainH }
+  if ($TestProcessName -and $TestRefuseForeground) { $inFront = $false }
+  if (-not $inFront) { Stop-With 11 "Windows did not bring the AirDroid Dialpad in front, so the click was not sent. Nothing was clicked. Click once on the AirDroid window's title bar, then click Call again." }
+  if ($N::GetText($field) -cne $Number) { Stop-With 9 "The Dialpad number changed before the click. Nothing was clicked." }
+  Write-Host 'AirDroid Dialpad brought in front.'
+
   Wait-TestPause 'before dispatch'
 
   # ---- 5. Record the dial (so a second launch is refused), then one click ----
@@ -213,9 +245,9 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
   [void]$N::PostMessage($target, 0x0202, [IntPtr]::Zero, $lp)   # WM_LBUTTONUP
   Write-Host "CLICK SENT ONCE to Make Call for $Number. No retry." -ForegroundColor Green
 
-  # B14-13 visible Dialpad (Brad, 2026-10-12): AirDroid is left exactly as it is -- visible beside IAOS. Nothing is
-  # minimised, moved or brought forward. IAOS does not know whether the call connected; check your phone.
-  Write-Host 'AirDroid left as it was (visible). IAOS does not know whether the call connected; check your phone.'
+  # B14-13 visible Dialpad (Brad, 2026-10-12): AirDroid stays where it is (in front, same place and size). Nothing is
+  # minimised, moved or resized. "Click sent" is not "call connected": IAOS cannot see whether AirDroid dialled.
+  Write-Host 'AirDroid left visible where it is. CLICK SENT is not a connected call: IAOS does not know whether AirDroid dialled or the call connected; check your phone.'
   exit 0
 }
 catch {

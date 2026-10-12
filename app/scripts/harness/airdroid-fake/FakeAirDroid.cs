@@ -21,12 +21,15 @@
 // page with its own number field inside the main window (the real main window has 2 pages and 2 fields);
 // "--second-visible" leaves the second form VISIBLE; "--size=WxH" sets the main window size (a small corner window);
 // "--start-minimized" opens the main window minimised (still on the taskbar, not hidden).
+// "--require-active" (VivoBook, 2026-10-12): Make Call acts only while the main window is the foreground window, like
+// the real AirDroid apparently did; a click while it is in the background is logged CLICK-IGNORED, not CLICK.
 using System;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
 
 public static class FakeAirDroid {
+  [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
   static string logPath;
   static void Log(string line) {
     File.AppendAllText(logPath, DateTime.UtcNow.ToString("o") + " " + line + Environment.NewLine);
@@ -72,7 +75,8 @@ public static class FakeAirDroid {
     page.Controls.Add(grid);
     main.Controls.Add(page);
     field.TextChanged += (s, e) => Log("TEXT " + field.Text);
-    makeCall.MouseUp += (s, e) => Log("CLICK " + field.Text);
+    bool requireActive = Array.IndexOf(args, "--require-active") > 0;
+    makeCall.MouseUp += (s, e) => Log((requireActive && GetForegroundWindow() != main.Handle ? "CLICK-IGNORED " : "CLICK ") + field.Text);
     main.Shown += (s, e) => Log("READY");
     var state = FormWindowState.Normal;
     main.Resize += (s, e) => {

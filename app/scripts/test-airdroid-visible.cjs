@@ -1,7 +1,9 @@
 /**
  * B14-13 visible Dialpad (Brad, 2026-10-12): AirDroid is opened once with its Dialpad and kept VISIBLE beside IAOS
- * (it may be a small corner window). IAOS Call enters the number, verifies it, clicks Make Call once, and leaves
- * AirDroid exactly as it was. Nothing is started, restored, brought forward, moved, resized or minimised. If exactly
+ * (it may be a small corner window). IAOS Call enters the number, verifies it, brings that one identified Dialpad
+ * window in front once (2026-10-12: on the VivoBook a click sent while AirDroid was behind IAOS placed no call),
+ * clicks Make Call once, and leaves AirDroid where it is. Nothing is started, restored, moved, resized or
+ * minimised. If exactly
  * one visible Dialpad cannot be identified it stops with a plain instruction and never guesses between windows.
  *
  * The fake reproduces the VivoBook diagnostic's layout (one AirDroid process; the main window holds two "frmAirCloud"
@@ -111,7 +113,8 @@ function startProbe() {
 }
 const lockState = () => new Promise((resolve) => { probe.waiting.push(resolve); probe.child.stdin.write('?\n'); });
 const OPEN = /Open AirDroid > My devices > your phone > Dialpad, and keep that AirDroid window visible beside IAOS/;
-const CHANGES = ['TEXT', 'CLICK', 'MINIMIZED', 'RESTORED', 'HIDDEN', 'OTHER-SHOWN'];
+const CHANGES = ['TEXT', 'CLICK', 'CLICK-IGNORED', 'MINIMIZED', 'RESTORED', 'HIDDEN', 'OTHER-SHOWN'];
+const CONNECTED = (out) => /call (?:is |was )?(?:connected|placed|answered)/i.test(out.replace(/whether the call connected|is not a connected call|whether AirDroid dialled or the call connected/g, ''));
 
 (async () => {
   try {
@@ -120,8 +123,17 @@ const CHANGES = ['TEXT', 'CLICK', 'MINIMIZED', 'RESTORED', 'HIDDEN', 'OTHER-SHOW
       const lf = (t) => t.replace(/\r\n/g, '\n');
       const strip = (src) => lf(src).replace(/<#[\s\S]*?#>/g, '').split('\n').filter((l) => !/^\s*#/.test(l)).map((l) => l.replace(/\s#\s.*$/, '')).join('\n');
       const all = ['IaosAirdroidHandler.ps1', 'PrepareCall.ps1', 'DialCall.ps1'].map((f) => strip(fs.readFileSync(path.join(TOOLS, f), 'utf8'))).join('\n');
-      check('static: no auto-start, restore, foreground, move, resize or minimise anywhere in the calling path',
-        /StartIfNotRunning|Start-Process|ShowWindow|SetForegroundWindow|BringWindowToTop|AttachThreadInput|SetWindowPos|MoveWindow|SW_MINIMIZE|SW_RESTORE/.test(all), false);
+      check('static: no auto-start, restore, move, resize or minimise anywhere in the calling path',
+        /StartIfNotRunning|Start-Process|ShowWindow|SetWindowPos|MoveWindow|SW_MINIMIZE|SW_RESTORE/.test(all), false);
+      const prepHandler = ['IaosAirdroidHandler.ps1', 'PrepareCall.ps1'].map((f) => strip(fs.readFileSync(path.join(TOOLS, f), 'utf8'))).join('\n');
+      const dialSrc = strip(fs.readFileSync(DIAL, 'utf8'));
+      const front = dialSrc.slice(dialSrc.indexOf('$mainH = [IntPtr]$mainEl.Current.NativeWindowHandle'), dialSrc.indexOf("Wait-TestPause 'before dispatch'"));
+      check('static: the bring-forward is in DialCall only: one BringWindowToTop and one SetForegroundWindow, on the identified Dialpad window, before the dial is recorded and clicked',
+        [/SetForegroundWindow|BringWindowToTop|AttachThreadInput/.test(prepHandler), (dialSrc.match(/\$N::SetForegroundWindow\(/g) || []).length, (dialSrc.match(/\$N::BringWindowToTop\(/g) || []).length,
+          /\[void\]\$N::BringWindowToTop\(\$mainH\); \[void\]\$N::SetForegroundWindow\(\$mainH\)/.test(front), dialSrc.indexOf('SetForegroundWindow($mainH)') < dialSrc.indexOf('Set-Content -LiteralPath $GuardFile')],
+        [false, 1, 1, true, true]);
+      check('static: not in front -> exit 11 before anything is recorded or clicked; the number is read again after it is in front',
+        [/if \(-not \$inFront\) \{ Stop-With 11/.test(front), /if \(\$N::GetText\(\$field\) -cne \$Number\) \{ Stop-With 9/.test(front.slice(front.indexOf('if (-not $inFront)')))], [true, true]);
       const handler = strip(fs.readFileSync(HANDLER, 'utf8'));
       check('static: the handler runs the duplicate check, then PrepareCall -Automatic, then DialCall, under the lock',
         [/Invoke-Step 'PrepareCall\.ps1' \(@\('-Automatic'\) \+ \$extra\)/.test(handler), handler.indexOf("(@('-GuardOnly')") < handler.indexOf("Invoke-Step 'PrepareCall.ps1'")], [true, true]);
@@ -158,7 +170,7 @@ const CHANGES = ['TEXT', 'CLICK', 'MINIMIZED', 'RESTORED', 'HIDDEN', 'OTHER-SHOW
           [r.code, ev.filter((l) => l.kind === 'TEXT').map((l) => l.text), ev.filter((l) => l.kind === 'CLICK').map((l) => l.text), ev.filter((l) => ['MINIMIZED', 'RESTORED', 'HIDDEN', 'OTHER-SHOWN'].includes(l.kind)).length],
           [0, [num], [num], 0]);
         check(`call ${num}: AirDroid is still visible, same size, not minimised; the output makes no connected-call claim`,
-          [visibleWindows(), /CLICK SENT ONCE/.test(r.out), /AirDroid left as it was \(visible\)/.test(r.out), /call (?:is |was )?(?:connected|placed|answered)/i.test(r.out.replace(/whether the call connected/g, ''))],
+          [visibleWindows(), /CLICK SENT ONCE/.test(r.out), /AirDroid left visible where it is\. CLICK SENT is not a connected call/.test(r.out), CONNECTED(r.out)],
           [before, true, true, false]);
       }
       check('after three calls: lock released', await lockState(), 'FREE');
@@ -200,6 +212,90 @@ const CHANGES = ['TEXT', 'CLICK', 'MINIMIZED', 'RESTORED', 'HIDDEN', 'OTHER-SHOW
       const r = launch('2025550421');
       await sleep(400);
       check('small window: exit 0, ONE click; the window keeps its size', [r.code, read(log).filter((l) => l.kind === 'CLICK').map((l) => l.text), visibleWindows()], [0, ['2025550421'], 'True|False|300x470']);
+    }
+
+    // ---- 5. VivoBook (2026-10-12): AirDroid BEHIND IAOS, and a Make Call that ignores clicks while in the background ----
+    //         "CLICK SENT" (the helper posted the click) is not "CLICK" (the fake accepted it), and neither is a call.
+    {
+      const WIN_EXE = path.join(TMP, 'IaosFakeWindow.exe');
+      const wb = spawnSync('powershell.exe', [...PS, '-Command',
+        `Add-Type -TypeDefinition (Get-Content -Raw '${path.join(__dirname, 'harness', 'airdroid-fake', 'FakeWindow.cs')}') ` +
+        `-ReferencedAssemblies System.Windows.Forms,System.Drawing -OutputAssembly '${WIN_EXE}' -OutputType WindowsApplication`], { encoding: 'utf8' });
+      if (wb.status !== 0) throw new Error(wb.stderr);
+      const FRONT = path.join(TMP, 'front.ps1');
+      fs.writeFileSync(FRONT, [
+        'param([string]$Title)',
+        "Add-Type -Namespace F -Name W -MemberDefinition @'",
+        '[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string t);',
+        '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);',
+        '[DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);',
+        '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();',
+        '[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr p);',
+        '[DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();',
+        '[DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool x);',
+        '[DllImport("user32.dll")] public static extern void keybd_event(byte v, byte s, uint f, UIntPtr e);',
+        "'@",
+        '$h = [F.W]::FindWindow([NullString]::Value, $Title); $t = [F.W]::GetWindowThreadProcessId([F.W]::GetForegroundWindow(), [IntPtr]::Zero); $me = [F.W]::GetCurrentThreadId()',
+        "if ($h -eq [IntPtr]::Zero) { 'NO-WINDOW'; exit }",
+        '# Test-only: a synthetic Alt press releases the foreground lock so this test tool can arrange the windows.',
+        '[F.W]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [F.W]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)',
+        '$a = $false; if ($t -ne 0 -and $t -ne $me) { $a = [F.W]::AttachThreadInput($me, $t, $true) }; [void][F.W]::BringWindowToTop($h); [void][F.W]::SetForegroundWindow($h); if ($a) { [void][F.W]::AttachThreadInput($me, $t, $false) }',
+        'Start-Sleep -Milliseconds 300; if ([F.W]::GetForegroundWindow() -eq $h) { "FRONT" } else { "NOT-FRONT" }',
+      ].join('\n'));
+      const iaosTitle = 'Seller Call - IAOS stand-in (visible-Dialpad test)';
+      const toFront = () => (spawnSync('powershell.exe', [...PS, '-File', FRONT, iaosTitle], { encoding: 'utf8' }).stdout || '').trim();
+      const { log } = await startFake(['--hidden-page', '--second-form', '--require-active']);
+      const LDIR = path.join(TMP, 'launcher'); fs.mkdirSync(LDIR, { recursive: true });
+      const stand = spawn(WIN_EXE, [path.join(TMP, 'stand.log'), iaosTitle, '--grant-foreground', '--launcher', LDIR], { stdio: 'ignore' });
+      /** Click Call in the browser stand-in: it launches the real handler in its own console, as Chrome does. */
+      const launchFromStandIn = async (number, guard = fresh('guard') + '.json') => {
+        const out = path.join(LDIR, `out-${number}.txt`);
+        try { fs.rmSync(path.join(LDIR, 'exit.txt')); } catch { /* none yet */ }
+        const cmd = `Start-Transcript -Path '${out}' | Out-Null; & '${HANDLER}' 'iaos-airdroid:call?number=${number}' -NoPause -TestProcessName ${FAKE} -GuardFile '${guard}'; $c = $LASTEXITCODE; Stop-Transcript | Out-Null; exit $c`;
+        fs.writeFileSync(path.join(LDIR, 'launch.txt'), ['powershell.exe', `-NoProfile -ExecutionPolicy Bypass -Command "${cmd}"`].join('\r\n'));
+        for (let i = 0; i < 600 && !fs.existsSync(path.join(LDIR, 'exit.txt')); i += 1) await sleep(100);
+        return { code: fs.existsSync(path.join(LDIR, 'exit.txt')) ? Number(fs.readFileSync(path.join(LDIR, 'exit.txt'), 'utf8')) : null, out: fs.existsSync(out) ? fs.readFileSync(out, 'utf8') : '', guard };
+      };
+      for (let i = 0; i < 50 && !read(path.join(TMP, 'stand.log')).some((l) => l.kind === 'READY'); i += 1) await sleep(100);
+      await sleep(300);
+      check('behind IAOS: the IAOS stand-in (granting foreground, as the browser does for the link it launches) is in front of AirDroid before the call',
+        [toFront(), read(path.join(TMP, 'stand.log')).some((l) => l.kind === 'GRANTED')], ['FRONT', true]);
+      const before = visibleWindows();
+      const r = await launchFromStandIn('2025550451');
+      await sleep(500);
+      const ev = read(log);
+      check('behind IAOS: exit 0; AirDroid brought in front once; the click ACCEPTED (CLICK, not CLICK-IGNORED) on the number',
+        [r.code, /AirDroid Dialpad brought in front\./.test(r.out), ev.filter((l) => l.kind === 'CLICK').map((l) => l.text), ev.filter((l) => l.kind === 'CLICK-IGNORED').length], [0, true, ['2025550451'], 0]);
+      check('behind IAOS: the output says click sent, not a connected call; AirDroid same size, not minimised, nothing restored or shown',
+        [/CLICK SENT ONCE/.test(r.out), /CLICK SENT is not a connected call/.test(r.out), CONNECTED(r.out), visibleWindows(), ev.filter((l) => ['MINIMIZED', 'RESTORED', 'HIDDEN', 'OTHER-SHOWN'].includes(l.kind)).length],
+        [true, true, false, before, 0]);
+
+      // Windows refuses the bring-forward: nothing is clicked and the dial is not recorded (so a retry is not blocked).
+      check('refused foreground: the IAOS stand-in is in front again', toFront(), 'FRONT');
+      const guard = fresh('guard') + '.json';
+      const prep = spawnSync('powershell.exe', [...PS, '-File', PREPARE, '-Number', '2025550452', '-TestProcessName', FAKE], { encoding: 'utf8' });
+      const from = read(log).length;
+      const d = spawnSync('powershell.exe', [...PS, '-File', DIAL, '-Number', '2025550452', '-TestProcessName', FAKE, '-GuardFile', guard, '-TestRefuseForeground'], { encoding: 'utf8' });
+      check('refused foreground: exit 11 with the plain instruction; no click of any kind; the dial is not recorded',
+        [prep.status, d.status, /Windows did not bring the AirDroid Dialpad in front, so the click was not sent/.test(d.stdout), read(log).slice(from).filter((l) => /^CLICK/.test(l.kind)).length, fs.existsSync(guard)],
+        [0, 11, true, 0, false]);
+      // A real refusal: an IAOS stand-in in front that does NOT grant foreground. Windows refuses; nothing is clicked.
+      stand.kill();
+      await sleep(300);
+      const title2 = 'Seller Call - IAOS stand-in without grant (visible-Dialpad test)';
+      const stand2 = spawn(WIN_EXE, [path.join(TMP, 'stand2.log'), title2], { stdio: 'ignore' });
+      for (let i = 0; i < 50 && !read(path.join(TMP, 'stand2.log')).some((l) => l.kind === 'READY'); i += 1) await sleep(100);
+      await sleep(300);
+      const front2 = (spawnSync('powershell.exe', [...PS, '-File', FRONT, title2], { encoding: 'utf8' }).stdout || '').trim();
+      const from3 = read(log).length;
+      const guard3 = fresh('guard') + '.json';
+      const r3 = launch('2025550453', guard3);   // launched by the background test runner, not by the window in front
+      await sleep(400);
+      check('Windows refuses the bring-forward (no grant): exit 11 with the plain instruction; no click of any kind; the dial not recorded',
+        [front2, r3.code, /Windows did not bring the AirDroid Dialpad in front, so the click was not sent/.test(r3.out), read(log).slice(from3).filter((l) => /^CLICK/.test(l.kind)).length, fs.existsSync(guard3) && /2025550453/.test(fs.readFileSync(guard3, 'utf8'))],
+        ['FRONT', 11, true, 0, false]);
+      stand2.kill();
+      check('-TestRefuseForeground is inert without -TestProcessName (static)', /if \(\$TestProcessName -and \$TestRefuseForeground\) \{ \$inFront = \$false \}/.test(fs.readFileSync(DIAL, 'utf8')), true);
     }
 
     // ---- 4. Stops with a plain instruction; nothing restored, started, typed or clicked ----
