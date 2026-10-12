@@ -151,7 +151,7 @@ check('F42/F46 legend sits outside the repair-estimator region', estimatorStart 
 
 // ── F15 Contacts search ─────────────────────────────────────────────────
 check('F15 Contacts search uses phoneQueryDigits for the phone branch',
-  /const phoneDigits = phoneQueryDigits\(q\);\n\s+if \(phoneDigits !== null\) \{\n\s+return ordered\.filter\(\(r\) => r\.phone\.replace\(\/\\D\/g, ""\)\.includes\(phoneDigits\)\);/.test(contacts), true);
+  /const phoneDigits = phoneQueryDigits\(q\);\n\s+if \(phoneDigits !== null\) \{\n\s+return ordered\.filter\(\(r\) => r\.phone\.replace\(\/\\D\/g, ""\)\.includes\(phoneDigits\) \|\| addressMatches\(r\)\);/.test(contacts), true);
 check('F15 name/email substring branch unchanged',
   /r\.name\.toLowerCase\(\)\.includes\(lc\) \|\|\n\s+r\.phone\.toLowerCase\(\)\.includes\(lc\) \|\|\n\s+r\.email\.toLowerCase\(\)\.includes\(lc\)/.test(contacts), true);
 check('F15 spec amendment dated and original text preserved',

@@ -288,11 +288,13 @@ jobs:
       - name: AirDroid Prepare Call launch link (B14-13)
         run: node app/scripts/test-airdroid-prepare-call.cjs
 
-      # The real-page Seller Call suite needs Chromium. Not retried: a failure is reported as it happened.
-      - name: Install Chromium for the real-page Seller Call AirDroid suite
+      # The real-page suites (Seller Call, Contacts) need Chromium. Not retried: a failure is reported as it happened.
+      - name: Install Chromium for the real-page suites (Seller Call AirDroid, Contacts)
         run: pnpm --dir app exec playwright install --with-deps chromium
       - name: Seller Call AirDroid UI checks
         run: node app/scripts/test-seller-call-airdroid.cjs
+      - name: Contacts search matches the Property Address, real page and stylesheet (INV-111, B15-11)
+        run: node app/scripts/test-contacts-address-search.cjs
 
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.
