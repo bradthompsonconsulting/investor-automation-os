@@ -659,14 +659,30 @@ function fresh() {
       }
     }
   });
-  await check('a request id already reserved for ANOTHER deal\'s reservation cannot be reused (rejected, nothing registered)', async () => {
+  /* B14-13 Production (Brad / Bones, 2026-10-12): begin no longer reads the new
+     request keys before writing them (a read of a missing key can leave a cached
+     "missing" that the save is then served). A conflict is found by the atomic
+     onlyIfNew write instead, so an EARLIER step of the conflicting reservation
+     may already be registered. It is rejected, the deal is not claimed, every
+     step of the conflicting reservation is withdrawn, and none can be sent. */
+  await check('a request id already reserved for ANOTHER deal\'s reservation cannot be reused (rejected, deal not claimed, its own steps withdrawn and unsendable, the original untouched)', async () => {
     fresh();
     const r1 = rid('shared');
     await beginBlur(r1);
     const keys = requestKeys();
-    const second = await begin('pass', [{ step: 'note', requestId: rid('p-note') }, { step: 'touch', requestId: r1 }]);
+    const pNote = rid('p-note');
+    const second = await begin('pass', [{ step: 'note', requestId: pNote }, { step: 'touch', requestId: r1 }]);
     assert.equal(second.statusCode, 409);
-    assert.deepEqual(requestKeys(), keys);
+    assert.equal(body(second).code, 'reservation_mismatch');
+    assert.ok(keys.every((k) => requestKeys().includes(k)), 'the original registrations are untouched');
+    const crypto = require('node:crypto');
+    const dg = (x) => crypto.createHash('sha256').update(x).digest('hex');
+    assert.equal(receipts.get('current-offer/request/' + dg(`${scopeT}:${r1}`)).barrierId, dg(r1), 'the shared id still belongs to its original reservation');
+    const decisions = [...receipts.keys()].filter((k) => k.startsWith('current-offer/decision/')).map((k) => receipts.get(k).d);
+    assert.deepEqual(decisions, ['withdrawn'], 'only the step registered to the conflicting reservation is withdrawn; the shared id is untouched');
+    const noteRes = await write('note.create', contact.id, { body: require('../src/lib/seller-call-outcome.ts').formatOutcomeNote({ opportunityId: opportunity.id, kind: 'pass', at: '2026-10-12T12:00:00.000Z', operator: null, reason: null, followUpAt: null, snapshot: { sellerPosition: null, currentOffer: 400000, targetAcquisitionPrice: null, maxSupportedOffer: null, expectedSpread: null, arv: null, repairs: null, readinessStatus: 'OFFER_READY' } }) }, pNote);
+    assert.equal(body(noteRes).outcome, 'not_sent'); assert.equal(notes.length, 0);
+    assert.equal((await offer(430000, r1)).statusCode, 200, 'the original reservation still saves');
   });
   await check('DISPATCH verifies the barrier\'s original step list: a stray request record naming the current barrier is NOT enough -- not_sent, no GHL write', async () => {
     fresh();

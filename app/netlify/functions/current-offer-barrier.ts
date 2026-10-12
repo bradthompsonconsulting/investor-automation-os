@@ -31,7 +31,7 @@ import { configuredBoundary, WriteUncertain } from "./lib/ghl-write-boundary";
 import { exact, identifier } from "./lib/write-contracts";
 import { lockContact } from "./lib/write-receipts";
 import {
-  barrierScope, beginBarrier, reconcileBarrier, statusOf, validateSteps, describeBlocked, resetSettleBudget, BarrierHeld, ReservationMismatch,
+  barrierScope, beginBarrier, reconcileBarrier, statusOf, validateSteps, describeBlocked, resetSettleBudget, readTrace, reservationFingerprint, BarrierHeld, BarrierContended, ReservationMismatch,
   type BarrierState, type BarrierStore,
 } from "./lib/current-offer-barrier";
 
@@ -91,8 +91,19 @@ export const handler = async (event: any) => {
         await beginBarrier(store(), scope, { opp: request.opportunityId, contactId: opportunity.contactId, purpose: begin.purpose, steps: begin.steps }, new Date().toISOString());
         return json(200, { state: "reserved" });
       } catch (e) {
+        /* B14-13 Production (Brad / Bones, 2026-10-12): a refused begin logs the
+           reservation fingerprint (the barrier id, a digest), read mode, read
+           count and elapsed time. No request id, token, contact or value. */
+        if (e instanceof BarrierHeld || e instanceof ReservationMismatch || e instanceof BarrierContended) {
+          console.warn("[current-offer-barrier] begin refused", JSON.stringify({
+            path: e instanceof BarrierHeld ? "held" : e instanceof ReservationMismatch ? "mismatch" : "contended",
+            reservation: reservationFingerprint(begin.steps[0].requestId),
+            ...readTrace(),
+          }));
+        }
         if (e instanceof BarrierHeld) return json(409, withMessage(e.status));
-        // An altered repeat of a reservation, or a request id reserved elsewhere: nothing was registered.
+        // An altered repeat of a reservation (nothing registered), or a request id reserved elsewhere
+        // (the deal was not claimed; any step registered to this reservation is withdrawn and can never be sent).
         if (e instanceof ReservationMismatch) return json(409, { state: "rejected", code: "reservation_mismatch", message: e.message });
         throw e;
       }

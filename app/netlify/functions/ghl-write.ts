@@ -6,7 +6,7 @@ import { getConfig } from "../../shared/ghl-config";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { exact, identifier, planWrite, dispositions, routings } from "./lib/write-contracts";
 import { configuredBoundary, fieldValue, WriteUncertain, type DispatchHooks } from "./lib/ghl-write-boundary";
-import { barrierScope, isBarrierOwned, runOwnedWrite, checkNoteReservation, resetSettleBudget, NotSent, NotOwned, STEP_OPERATION, RESERVED_OPERATIONS, type BarrierStore } from "./lib/current-offer-barrier";
+import { barrierScope, isBarrierOwned, runOwnedWrite, checkNoteReservation, resetSettleBudget, readTrace, reservationFingerprint, NotSent, NotOwned, STEP_OPERATION, RESERVED_OPERATIONS, type BarrierStore } from "./lib/current-offer-barrier";
 import { parseOutcomeNote } from "../../src/lib/seller-call-outcome";
 import { callLogScope, isCallLogBound, isCallLogNoteText, isOperationRequestId, runCallLogOwnedWrite, CALL_LOG_OPERATIONS, NotSent as CallLogNotSent, NotOwned as CallLogNotOwned } from "./lib/call-log-barrier";
 import { claimWrite, lockContact, stageTransitionUnresolved, claimStageTransition, clearStageTransition } from "./lib/write-receipts";
@@ -68,6 +68,18 @@ function logWriteFailure(request: any, error: unknown): void {
     isWriteUncertain: described.isWriteUncertain,
   }));
 }
+/* B14-13 Production (Brad / Bones, 2026-10-12): a reserved write refused
+   before sending logs the reservation fingerprint (a digest), the read mode,
+   the number of store reads and the elapsed time of this invocation. Nothing
+   else: no request id, token, header, contact, deal or value. */
+function logReservationRefusal(path: string, request: any): void {
+  console.warn("[ghl-write] reservation refusal", JSON.stringify({
+    path,
+    operation: typeof request?.operation === "string" ? request.operation : null,
+    reservation: typeof request?.requestId === "string" ? reservationFingerprint(request.requestId) : null,
+    ...readTrace(),
+  }));
+}
 export const handler = async (event: any) => {
   resetSettleBudget(); // B14-13: one bounded re-read budget per invocation (lib/current-offer-barrier.ts)
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
@@ -122,6 +134,7 @@ export const handler = async (event: any) => {
         throw e;
       }
       if (RESERVED_OPERATIONS.has(request.operation) && !owned) {
+        logReservationRefusal("ownership_missing", request);
         return json(409, { outcome: "not_sent", error: request.operation === "opportunity.currentOffer" ? "No Current Offer reservation for this save; nothing was sent" : "No reservation for this Follow-Up callback; nothing was sent" });
       }
       /* PR #126 stacked server PR (Bones, 2026-10-05): a negotiation outcome
@@ -226,6 +239,7 @@ export const handler = async (event: any) => {
       } catch (error) {
         logWriteFailure(request, error);
         if (error instanceof NotSent || error instanceof NotOwned) {
+          logReservationRefusal(error instanceof NotOwned ? "ownership_missing" : "owned_write_refused", request);
           const refusal = error instanceof NotSent && error.refusal instanceof RefusedBeforeSend ? error.refusal : null;
           return json(refusal?.statusCode ?? 409, { ...(refusal?.body ?? {}), outcome: "not_sent", error: refusal ? String(refusal.body.error) : "Nothing was sent; the save was refused before reaching GHL" });
         }

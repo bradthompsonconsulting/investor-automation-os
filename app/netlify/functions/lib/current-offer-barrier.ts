@@ -152,21 +152,24 @@ async function verifiedOwnership(store: BarrierStore, scope: string, requestId: 
 const CAS_ATTEMPTS = 4;
 
 async function readJson(store: BarrierStore, key: string): Promise<any> {
-  try { return await store.get(key, { type: "json", consistency: "strong" }); }
+  try { const v = await store.get(key, { type: "json", consistency: "strong" }); countRead(false); return v; }
   catch (e: any) {
     // Lambda-compatibility functions cannot make strong reads (see write-receipts.ts).
     if (e?.name !== "BlobsConsistencyError") throw e;
     eventualReadsOnly = true;
-    return store.get(key, { type: "json" });
+    const v = await store.get(key, { type: "json" });
+    countRead(true);
+    return v;
   }
 }
 async function readHead(store: BarrierStore, scope: string, opp: string): Promise<{ head: HeadRecord | null; etag: string | null }> {
   let got: { data: any; etag?: string } | null;
-  try { got = await store.getWithMetadata(headKey(scope, opp), { type: "json", consistency: "strong" }); }
+  try { got = await store.getWithMetadata(headKey(scope, opp), { type: "json", consistency: "strong" }); countRead(false); }
   catch (e: any) {
     if (e?.name !== "BlobsConsistencyError") throw e;
     eventualReadsOnly = true;
     got = await store.getWithMetadata(headKey(scope, opp), { type: "json" });
+    countRead(true);
   }
   if (!got) return { head: null, etag: null };
   if (!got.etag) throw new Error("Head read without an etag; cannot change it safely");
@@ -192,7 +195,19 @@ export function setSettlePauseForTests(pause: (ms: number) => Promise<void>): vo
    instance reuses this module, so each handler resets it on entry). Without a
    reset the budget is zero: no pauses, exactly the earlier behaviour. */
 let settleBudgetMs = 0;
-export function resetSettleBudget(ms = 5000): void { settleBudgetMs = ms; }
+export function resetSettleBudget(ms = 5000): void { settleBudgetMs = ms; trace = { startedAt: Date.now(), reads: 0, eventual: false }; }
+/* B14-13 Production (Brad / Bones, 2026-10-12): refusal diagnostics. Every
+   store read in this invocation is counted, with whether the SDK refused a
+   strong read (so reads were eventual), from the handler's reset. A refusal
+   logs this with the reservation fingerprint (a digest, never a request id,
+   token, contact or deal value). */
+let trace = { startedAt: Date.now(), reads: 0, eventual: false };
+export function readTrace(): { readMode: "strong" | "eventual"; reads: number; elapsedMs: number } {
+  return { readMode: trace.eventual ? "eventual" : "strong", reads: trace.reads, elapsedMs: Date.now() - trace.startedAt };
+}
+/** The reservation fingerprint for diagnostics: the request id's digest (the barrier id for a first step). */
+export function reservationFingerprint(requestId: string): string { return digest(requestId); }
+const countRead = (eventual: boolean) => { trace.reads++; if (eventual) trace.eventual = true; };
 async function spendSettle(ms: number): Promise<boolean> {
   if (ms > settleBudgetMs) return false;
   settleBudgetMs -= ms;
@@ -200,13 +215,15 @@ async function spendSettle(ms: number): Promise<boolean> {
   return true;
 }
 async function readSettled<T>(read: (strong: boolean) => Promise<T>, ok: (value: T) => boolean): Promise<T> {
-  try { return await read(true); }
+  try { const v = await read(true); countRead(false); return v; }
   catch (e: any) { if (e?.name !== "BlobsConsistencyError") throw e; eventualReadsOnly = true; }
   let value = await read(false);
+  countRead(true);
   for (const ms of SETTLE_PAUSES_MS) {
     if (ok(value)) return value;
     if (!(await spendSettle(ms))) return value;
     value = await read(false);
+    countRead(true);
   }
   return value;
 }
@@ -281,27 +298,43 @@ export async function beginBarrier(store: BarrierStore, scope: string, input: { 
   /* Bones / Jess, fourth review: a repeated begin is accepted ONLY when it is
      the complete immutable original -- same scope (in every key), deal,
      contact, purpose and every step and request id, in order. Anything else
-     is an altered reservation and is rejected BEFORE anything is registered:
-     no request record is ever written for a step the barrier does not list. */
-  const existing = await readJson(store, barrierKey(scope, input.opp, barrierId)) as BarrierRecord | null;
-  if (existing && !sameReservation(existing, record)) throw new ReservationMismatch("This reservation does not match the original one; nothing was registered");
-  for (const s of input.steps) {
-    const reg = await readJson(store, requestKey(scope, s.requestId)) as RequestRecord | null;
-    if (reg && !sameRegistration(reg, { opp: input.opp, contactId: input.contactId, step: s.step, barrierId })) throw new ReservationMismatch("A request id is already reserved elsewhere; nothing was registered");
-  }
-  // Write-once records next (the head is set last, so it never names a missing barrier).
+     is an altered reservation and is rejected before the deal is claimed:
+     no request record is ever written for a step the barrier does not list.
+
+     B14-13 Production (Brad / Bones, 2026-10-12): the new keys are NOT read
+     before they are written. Every read here is eventual (edge cache), and a
+     read of a key that does not exist yet can leave a cached "missing" that
+     the save's ownership read is then served -- observed in Production for
+     longer than any re-read window. The atomic `onlyIfNew` write decides
+     instead: it fails only when the key already exists, and only then is the
+     existing record read and compared. The barrier record is written first,
+     so an altered repeat is refused before any request record is written. */
   const b = await store.setJSON(barrierKey(scope, input.opp, barrierId), record, { onlyIfNew: true });
   if (!b.modified) {
     const now2 = await readJson(store, barrierKey(scope, input.opp, barrierId)) as BarrierRecord | null;
-    if (!now2 || !sameReservation(now2, record)) throw new ReservationMismatch("This reservation does not match the original one; nothing was registered");
+    if (!now2) throw new BarrierContended("The existing reservation could not be read; nothing was registered");
+    if (!sameReservation(now2, record)) throw new ReservationMismatch("This reservation does not match the original one; nothing was registered");
   }
+  const registered: string[] = [];
   for (const s of input.steps) {
     const reg: RequestRecord = { v: 2, opp: input.opp, contactId: input.contactId, step: s.step, barrierId };
     const w = await store.setJSON(requestKey(scope, s.requestId), reg, { onlyIfNew: true });
     if (!w.modified) {
       const prior = await readJson(store, requestKey(scope, s.requestId)) as RequestRecord | null;
-      if (!prior || !sameRegistration(prior, reg)) throw new ReservationMismatch("A request id is already reserved elsewhere");
+      if (!prior) throw new BarrierContended("An existing request registration could not be read; the deal was not claimed");
+      if (!sameRegistration(prior, reg)) {
+        /* A request id already reserved elsewhere. This barrier is never made
+           current (every repeat of it meets the same conflict), and each step
+           registered to THIS barrier is withdrawn so none can ever be sent. The
+           conflicting id belongs to the other reservation and is untouched.
+           The deal is not claimed. */
+        for (const d of registered) {
+          try { await store.setJSON(decisionKey(scope, input.opp, d), { d: "withdrawn", at: new Date().toISOString() }, { onlyIfNew: true }); } catch { /* never current regardless */ }
+        }
+        throw new ReservationMismatch("A request id is already reserved elsewhere; the deal was not claimed");
+      }
     }
+    registered.push(digest(s.requestId));
   }
   let settleIndex = 0;
   for (let i = 0; i < CAS_ATTEMPTS; i++) {
@@ -401,6 +434,12 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
   if (!owned) throw new NotOwned();
   const { reg, barrier } = owned;
   const requestDigest = digest(request.requestId);
+  /* B14-13 Production (Brad / Bones, 2026-10-12): only the barrier's LAST step
+     tries to release it. An earlier step's release would read the later steps'
+     decision records before they exist, and a cached "missing" for a key can
+     outlast its write -- the later step's own release then cannot see it.
+     Releasing less never weakens a protection: a barrier left in place is
+     cleared by the last step or by Check again (reconcile). */
   const isLastStep = barrier.steps[barrier.steps.length - 1]?.requestDigest === requestDigest;
   if (STEP_OPERATION[reg.step] !== request.operation) throw new NotSent("Request is reserved for a different step");
   const target = reg.step === "offer" ? reg.opp : reg.contactId;
@@ -428,7 +467,7 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
       try {
         if (state.claimed) await store.setJSON(outcomeKey(scope, reg.opp, requestDigest), { kind: "not_dispatched", at: new Date().toISOString() }, { onlyIfNew: true });
         else await store.setJSON(decisionKey(scope, reg.opp, requestDigest), { d: "withdrawn", at: new Date().toISOString() }, { onlyIfNew: true });
-        await releaseIfSettled(store, scope, reg.opp, reg.barrierId, isLastStep);
+        if (isLastStep) await releaseIfSettled(store, scope, reg.opp, reg.barrierId, true);
       } catch { /* the barrier stays; still nothing was sent */ }
       throw new NotSent(error instanceof Error ? error.message : "Not sent", error instanceof NotSent && error.refusal !== undefined ? error.refusal : error);
     }
@@ -437,7 +476,7 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
   }
   try {
     await store.setJSON(outcomeKey(scope, reg.opp, requestDigest), { kind: result.confirmed ? "confirmed" : "uncertain", at: new Date().toISOString() }, { onlyIfNew: true });
-    if (result.confirmed) await releaseIfSettled(store, scope, reg.opp, reg.barrierId, isLastStep);
+    if (result.confirmed && isLastStep) await releaseIfSettled(store, scope, reg.opp, reg.barrierId, true);
   } catch { /* the barrier stays: a later reconcile reads the evidence */ }
   return result;
 }
