@@ -31,7 +31,7 @@ import { configuredBoundary, WriteUncertain } from "./lib/ghl-write-boundary";
 import { exact, identifier } from "./lib/write-contracts";
 import { lockContact } from "./lib/write-receipts";
 import {
-  barrierScope, beginBarrier, reconcileBarrier, statusOf, validateSteps, describeBlocked, BarrierHeld, ReservationMismatch,
+  barrierScope, beginBarrier, reconcileBarrier, statusOf, validateSteps, describeBlocked, resetSettleBudget, BarrierHeld, ReservationMismatch,
   type BarrierState, type BarrierStore,
 } from "./lib/current-offer-barrier";
 
@@ -40,6 +40,7 @@ const store = () => getStore("iaos-write-receipts") as unknown as BarrierStore;
 const withMessage = (s: BarrierState) => (s.state === "clear" ? s : { ...s, message: describeBlocked(s) });
 
 export const handler = async (event: any) => {
+  resetSettleBudget(); // B14-13: one bounded re-read budget per invocation (lib/current-offer-barrier.ts)
   const config = getConfig(process.env.IAOS_ENV);
   const scope = barrierScope(String(process.env.IAOS_ENV), config.locationId);
 

@@ -249,6 +249,9 @@ jobs:
       - name: Current Offer refusal release - a definitive refusal releases the page's own reservation (B14-13) - 17 offline checks
         run: node app/scripts/test-current-offer-refusal-release.cjs
 
+      - name: Current Offer handoff under eventual reads - the deployed edge (no strong reads, stale cache); reserve then save after Check again and Enable saving (B14-13) - 14 offline checks
+        run: node app/scripts/test-current-offer-eventual-reads.cjs
+
       - name: Durable Current Offer barrier — real ghl-write and barrier handlers, reloads, late handlers, storage failures (PR 126 stacked server PR) — 45 offline checks
         run: node app/scripts/test-current-offer-barrier.cjs
 

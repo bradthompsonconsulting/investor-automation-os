@@ -137,9 +137,9 @@ function sameRegistration(a: RequestRecord, b: { opp: string; contactId: string;
  * the same deal and contact. Returns the verified records, or null.
  */
 async function verifiedOwnership(store: BarrierStore, scope: string, requestId: string): Promise<{ reg: RequestRecord; barrier: BarrierRecord } | null> {
-  const reg = await readJson(store, requestKey(scope, requestId)) as RequestRecord | null;
+  const reg = await readSettled((strong) => readJsonWith(store, requestKey(scope, requestId), strong), (v) => v !== null) as RequestRecord | null;
   if (!reg) return null;
-  const barrier = await readJson(store, barrierKey(scope, reg.opp, reg.barrierId)) as BarrierRecord | null;
+  const barrier = await readSettled((strong) => readJsonWith(store, barrierKey(scope, reg.opp, reg.barrierId), strong), (v) => v !== null) as BarrierRecord | null;
   if (!barrier) throw new NotSent("The reservation for this request is unreadable");
   const requestDigest = digest(requestId);
   const listed = barrier.steps.some((s) => s.requestDigest === requestDigest && s.step === reg.step);
@@ -156,6 +156,7 @@ async function readJson(store: BarrierStore, key: string): Promise<any> {
   catch (e: any) {
     // Lambda-compatibility functions cannot make strong reads (see write-receipts.ts).
     if (e?.name !== "BlobsConsistencyError") throw e;
+    eventualReadsOnly = true;
     return store.get(key, { type: "json" });
   }
 }
@@ -164,12 +165,58 @@ async function readHead(store: BarrierStore, scope: string, opp: string): Promis
   try { got = await store.getWithMetadata(headKey(scope, opp), { type: "json", consistency: "strong" }); }
   catch (e: any) {
     if (e?.name !== "BlobsConsistencyError") throw e;
+    eventualReadsOnly = true;
     got = await store.getWithMetadata(headKey(scope, opp), { type: "json" });
   }
   if (!got) return { head: null, etag: null };
   if (!got.etag) throw new Error("Head read without an etag; cannot change it safely");
   return { head: got.data as HeadRecord, etag: got.etag };
 }
+/* B14-13 Production (2026-10-11): a Lambda-compatibility function is never
+   given an uncached edge URL, so every read here is eventual, and the edge
+   serves it from cache (stale-while-revalidate). A record written moments ago
+   -- or one `beginBarrier` read as missing just before writing it -- can read
+   as missing or old, so a freshly reserved save was refused as "No Current
+   Offer reservation". On the dispatch-ownership path ONLY, a read whose result
+   would refuse is re-read after a short pause while only eventual reads are
+   possible. Nothing is ever accepted that a read did not show: the accept
+   conditions are unchanged and the atomic send claim stays the guard. A result
+   that still refuses after the last re-read refuses exactly as before. */
+const SETTLE_PAUSES_MS = [150, 250, 400, 600, 800, 1000, 1200];
+/** Set once the SDK has refused a strong read in this function instance (Lambda compatibility). */
+let eventualReadsOnly = false;
+let settlePause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** Offline tests only: replace the pause between eventual re-reads. */
+export function setSettlePauseForTests(pause: (ms: number) => Promise<void>): void { settlePause = pause; }
+/* One bounded budget for every re-read pause in a handler invocation (a warm
+   instance reuses this module, so each handler resets it on entry). Without a
+   reset the budget is zero: no pauses, exactly the earlier behaviour. */
+let settleBudgetMs = 0;
+export function resetSettleBudget(ms = 5000): void { settleBudgetMs = ms; }
+async function spendSettle(ms: number): Promise<boolean> {
+  if (ms > settleBudgetMs) return false;
+  settleBudgetMs -= ms;
+  await settlePause(ms);
+  return true;
+}
+async function readSettled<T>(read: (strong: boolean) => Promise<T>, ok: (value: T) => boolean): Promise<T> {
+  try { return await read(true); }
+  catch (e: any) { if (e?.name !== "BlobsConsistencyError") throw e; eventualReadsOnly = true; }
+  let value = await read(false);
+  for (const ms of SETTLE_PAUSES_MS) {
+    if (ok(value)) return value;
+    if (!(await spendSettle(ms))) return value;
+    value = await read(false);
+  }
+  return value;
+}
+const readJsonWith = (store: BarrierStore, key: string, strong: boolean): Promise<any> =>
+  store.get(key, strong ? { type: "json", consistency: "strong" } : { type: "json" });
+async function readHeadWith(store: BarrierStore, scope: string, opp: string, strong: boolean): Promise<HeadRecord | null> {
+  const got = await store.getWithMetadata(headKey(scope, opp), strong ? { type: "json", consistency: "strong" } : { type: "json" });
+  return got ? got.data as HeadRecord : null;
+}
+
 /** The ONLY way the head changes: a conditional write against the etag that was read. */
 async function casHead(store: BarrierStore, scope: string, opp: string, etag: string | null, next: HeadRecord): Promise<boolean> {
   const r = await store.setJSON(headKey(scope, opp), next, etag === null ? { onlyIfNew: true } : { onlyIfMatch: etag });
@@ -194,7 +241,7 @@ async function stepEvidence(store: BarrierStore, scope: string, opp: string, req
   let decision = await readJson(store, decisionKey(scope, opp, requestDigest)) as { d: "send" | "withdrawn" } | null;
   if (!decision && withdrawPending) {
     const w = await store.setJSON(decisionKey(scope, opp, requestDigest), { d: "withdrawn", at: new Date().toISOString() }, { onlyIfNew: true });
-    decision = w.modified ? { d: "withdrawn" } : await readJson(store, decisionKey(scope, opp, requestDigest));
+    decision = w.modified ? { d: "withdrawn" } : await readSettled((strong) => readJsonWith(store, decisionKey(scope, opp, requestDigest), strong), (v) => v !== null);
     // A lost claim proves a decision exists; a read that cannot see it yet is stale.
     if (!decision) throw new Error("Decision unreadable after a lost claim");
   }
@@ -209,9 +256,9 @@ async function stepEvidence(store: BarrierStore, scope: string, opp: string, req
 const SETTLED: StepEvidence[] = ["withdrawn", "confirmed", "not_dispatched"];
 
 async function evaluateBarrier(store: BarrierStore, scope: string, opp: string, barrierId: string, withdrawPending: boolean): Promise<BarrierState & { state: "blocked" }> {
-  const barrier = await readJson(store, barrierKey(scope, opp, barrierId)) as BarrierRecord | null;
+  const barrier = await readSettled((strong) => readJsonWith(store, barrierKey(scope, opp, barrierId), strong), (v) => v !== null) as BarrierRecord | null;
   // The head names it, and barrier records are written before the head: a
-  // missing record is a stale read. Fail closed.
+  // missing record is a stale read (re-read while only eventual reads are possible). Fail closed.
   if (!barrier) throw new Error("Barrier record unreadable");
   const steps: { step: BarrierStep; evidence: StepEvidence }[] = [];
   for (const s of barrier.steps) steps.push({ step: s.step, evidence: await stepEvidence(store, scope, opp, s.requestDigest, withdrawPending) });
@@ -256,10 +303,21 @@ export async function beginBarrier(store: BarrierStore, scope: string, input: { 
       if (!prior || !sameRegistration(prior, reg)) throw new ReservationMismatch("A request id is already reserved elsewhere");
     }
   }
+  let settleIndex = 0;
   for (let i = 0; i < CAS_ATTEMPTS; i++) {
     const { head, etag } = await readHead(store, scope, input.opp);
     if (head && head.current === barrierId) return;                       // a retried begin
-    if (head && head.current !== null) throw new BarrierHeld(await evaluateBarrier(store, scope, input.opp, head.current, false));
+    if (head && head.current !== null) {
+      const held = await evaluateBarrier(store, scope, input.opp, head.current, false);
+      /* B14-13 Production: right after Check again released a barrier, an
+         eventual read can still name it -- and still miss the withdrawal it
+         recorded. While only eventual reads are possible, a held head is
+         re-read (within the invocation's budget) before refusing; a barrier that is still
+         held after that is refused exactly as before. Nothing is registered
+         or released differently. */
+      if (eventualReadsOnly && settleIndex < SETTLE_PAUSES_MS.length && await spendSettle(SETTLE_PAUSES_MS[settleIndex])) { settleIndex++; i--; continue; }
+      throw new BarrierHeld(held);
+    }
     if (await casHead(store, scope, input.opp, etag, { v: 2, current: barrierId, at: now })) return;
     // Lost the swap: the head changed (or our read was stale). Re-read.
   }
@@ -279,12 +337,22 @@ export async function statusOf(store: BarrierStore, scope: string, opp: string):
  * conditional write, so a stale view can never release a newer barrier.
  * Never withdraws.
  */
-export async function releaseIfSettled(store: BarrierStore, scope: string, opp: string, barrierId: string): Promise<void> {
-  const { head, etag } = await readHead(store, scope, opp);
-  if (!head || head.current !== barrierId || etag === null) return;
-  const s = await evaluateBarrier(store, scope, opp, barrierId, false);
-  if (settled(s)) await casHead(store, scope, opp, etag, { v: 2, current: null, at: new Date().toISOString() });
-  // A lost swap means the head moved; nothing else is touched. Reconcile reads it again.
+export async function releaseIfSettled(store: BarrierStore, scope: string, opp: string, barrierId: string, lastStep = false): Promise<void> {
+  /* B14-13 Production: when the step just settled is the barrier's LAST step,
+     every step should now have evidence, so a view that says otherwise while
+     only eventual reads are possible is re-read after a short pause (bounded).
+     The release itself is unchanged: only with evidence for every step, and
+     only by a conditional write against the head that was read. */
+  const pauses = lastStep ? [0, ...SETTLE_PAUSES_MS] : [0];
+  for (const ms of pauses) {
+    if (ms && (!eventualReadsOnly || !(await spendSettle(ms)))) return;
+    const { head, etag } = await readHead(store, scope, opp);
+    if (!head || head.current !== barrierId || etag === null) continue;
+    const s = await evaluateBarrier(store, scope, opp, barrierId, false);
+    if (!settled(s)) continue;
+    if (await casHead(store, scope, opp, etag, { v: 2, current: null, at: new Date().toISOString() })) return;
+    // A lost swap means the head moved (or the read was stale); nothing else is touched. Reconcile reads it again.
+  }
 }
 
 /**
@@ -331,13 +399,14 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
 ): Promise<T> {
   const owned = await verifiedOwnership(store, scope, request.requestId);
   if (!owned) throw new NotOwned();
-  const { reg } = owned;
+  const { reg, barrier } = owned;
   const requestDigest = digest(request.requestId);
+  const isLastStep = barrier.steps[barrier.steps.length - 1]?.requestDigest === requestDigest;
   if (STEP_OPERATION[reg.step] !== request.operation) throw new NotSent("Request is reserved for a different step");
   const target = reg.step === "offer" ? reg.opp : reg.contactId;
   if (request.targetId !== target || request.contactId !== reg.contactId) throw new NotSent("Request is reserved for a different target");
   // Advisory only (the read may lag): the atomic send claim below is the guard.
-  const { head } = await readHead(store, scope, reg.opp);
+  const head = await readSettled((strong) => readHeadWith(store, scope, reg.opp, strong), (h) => h?.current === reg.barrierId);
   if (!head || head.current !== reg.barrierId) throw new NotSent("The reservation for this save is not current");
   const state = { dispatched: false, claimed: false };
   const hooks = {
@@ -359,7 +428,7 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
       try {
         if (state.claimed) await store.setJSON(outcomeKey(scope, reg.opp, requestDigest), { kind: "not_dispatched", at: new Date().toISOString() }, { onlyIfNew: true });
         else await store.setJSON(decisionKey(scope, reg.opp, requestDigest), { d: "withdrawn", at: new Date().toISOString() }, { onlyIfNew: true });
-        await releaseIfSettled(store, scope, reg.opp, reg.barrierId);
+        await releaseIfSettled(store, scope, reg.opp, reg.barrierId, isLastStep);
       } catch { /* the barrier stays; still nothing was sent */ }
       throw new NotSent(error instanceof Error ? error.message : "Not sent", error instanceof NotSent && error.refusal !== undefined ? error.refusal : error);
     }
@@ -368,7 +437,7 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
   }
   try {
     await store.setJSON(outcomeKey(scope, reg.opp, requestDigest), { kind: result.confirmed ? "confirmed" : "uncertain", at: new Date().toISOString() }, { onlyIfNew: true });
-    if (result.confirmed) await releaseIfSettled(store, scope, reg.opp, reg.barrierId);
+    if (result.confirmed) await releaseIfSettled(store, scope, reg.opp, reg.barrierId, isLastStep);
   } catch { /* the barrier stays: a later reconcile reads the evidence */ }
   return result;
 }
@@ -398,7 +467,7 @@ export async function checkNoteReservation(
 
 /** Whether a request id is barrier-owned (no side effects). */
 export async function isBarrierOwned(store: BarrierStore, scope: string, requestId: string): Promise<boolean> {
-  return (await readJson(store, requestKey(scope, requestId))) !== null;
+  return (await readSettled((strong) => readJsonWith(store, requestKey(scope, requestId), strong), (v) => v !== null)) !== null;
 }
 
 /** The operator-facing explanation of a blocked state. Never instructs a reload. */
