@@ -17,6 +17,7 @@
     "test:repair-persist": "node scripts/test-repair-persist.cjs",
     "test:repair-operator": "node scripts/test-repair-operator.cjs",
     "test:board8-economics": "node scripts/test-board8-economics.cjs",
+    "test:mailer-week": "node scripts/test-mailer-week.cjs",
     "test:offer-readiness": "node scripts/test-offer-readiness.cjs",
     "test:seller-call-deal-bar": "node scripts/test-seller-call-deal-bar.cjs",
     "test:seller-call-workspace-wiring": "node scripts/test-seller-call-workspace-wiring.cjs",
