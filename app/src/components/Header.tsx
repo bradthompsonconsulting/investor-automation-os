@@ -9,7 +9,7 @@ const TITLES: Record<string, string> = {
   "/mailers":       "Mailers",
   "/segmentation":  "Segmentation",
   "/map":           "Map",
-  "/import":        "Import",
+  "/import":        "Add Leads",
   "/settings":      "Settings",
 };
 
@@ -25,11 +25,6 @@ export default function Header() {
       >
         {title}
       </h2>
-      <div className="flex items-center gap-3">
-        <span className="text-xs px-2 py-1 rounded" style={{ background: "#1B2433", color: "#1EC8FF" }}>
-          Phase A
-        </span>
-      </div>
     </div>
   );
 }

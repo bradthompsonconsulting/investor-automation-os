@@ -22,7 +22,7 @@ const NAV = [
   { label: "Pipeline",      to: "/pipeline",       icon: GitBranch       },
   { label: "Mailers",       to: "/mailers",        icon: Mail            },
   { label: "Segmentation",  to: "/segmentation",   icon: Filter          },
-  { label: "Import",        to: "/import",         icon: Upload          },
+  { label: "Add Leads",     to: "/import",         icon: Upload          },
 ];
 
 /** navEnabled: false until a read session exists (Board 15 B5) -- no links are shown, since every page would be a sign-in box. */

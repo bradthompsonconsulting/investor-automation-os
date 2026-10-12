@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useReadRecovered } from "../components/access-status";
 import { Link } from "react-router-dom";
 import { CalendarDays, Loader2, ExternalLink, Clock } from "lucide-react";
-import { ghl, type CalendarEventRow, type CalendarEventsResult } from "../lib/ghl";
+import { ghl, ghlCalendarsUrl, type CalendarEventRow, type CalendarEventsResult } from "../lib/ghl";
 
 /**
  * Calendars — READ-ONLY agenda (CALENDARS_SPEC §3). Surfaces the appointments
@@ -74,6 +74,16 @@ export default function Calendars() {
               ? "Your appointments are still in GHL — open Calendars in GHL to see them. Nothing was changed."
               : "Try again in a moment. Your appointments are still in GHL. Nothing was changed."}
           </div>
+          {/* B15-07: navigation only, to this location's GHL Calendars, in a new tab with no opener. */}
+          <a
+            data-testid="calendar-open-in-ghl"
+            href={ghlCalendarsUrl()}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ display: "inline-flex", alignItems: "center", gap: "5px", marginTop: "10px", fontSize: "12px", fontWeight: 600, color: "#1EC8FF", textDecoration: "none" }}
+          >
+            <ExternalLink size={12} /> Open Calendars in GHL
+          </a>
           <details style={{ marginTop: "8px" }}>
             <summary style={{ fontSize: "11px", color: "#475569", cursor: "pointer" }}>Technical detail</summary>
             <div style={{ fontSize: "11px", color: "#475569", marginTop: "4px", wordBreak: "break-word" }}>{error.detail}</div>
