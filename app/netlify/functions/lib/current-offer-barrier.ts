@@ -105,6 +105,13 @@ const barrierKey = (scope: string, opp: string, barrierId: string) => `${PREFIX}
 const requestKey = (scope: string, requestId: string) => `${PREFIX}request/${digest(`${scope}:${requestId}`)}`;
 const decisionKey = (scope: string, opp: string, requestDigest: string) => `${PREFIX}decision/${digest(`${scope}:${opp}:${requestDigest}`)}`;
 const outcomeKey = (scope: string, opp: string, requestDigest: string) => `${PREFIX}outcome/${digest(`${scope}:${opp}:${requestDigest}`)}`;
+/* B14-13 Production (Brad / Bones, 2026-10-12): write-once proof that a step is
+   settled, written ONLY by the handler that won its decision (the send owner
+   after recording confirmed / not_dispatched, or the withdrawer). Status never
+   reads it, so a status poll during a save can never leave a cached "missing"
+   for it; it is read only after the step returned (a later step's release) or
+   after a lost withdraw claim proved a decision exists (Check again). */
+const settledKey = (scope: string, opp: string, requestDigest: string) => `${PREFIX}settled/${digest(`${scope}:${opp}:${requestDigest}`)}`;
 
 type HeadRecord = { v: 2; current: string | null; at: string };
 type BarrierRecord = { v: 2; oppDigest: string; contactDigest: string; purpose: BarrierPurpose; barrierId: string; steps: { step: BarrierStep; requestDigest: string }[]; createdAt: string };
@@ -162,7 +169,23 @@ async function readJson(store: BarrierStore, key: string): Promise<any> {
     return v;
   }
 }
+/* B14-13 Production (Brad / Bones, 2026-10-12): a deal's head is never READ
+   before it exists. A brand-new deal's first read (the page's status check on
+   load) used to cache a "missing" head at the edge, and every later reader --
+   the save's ownership check, the next begin, Check again -- was served that
+   miss. Every head read is now preceded by writing the empty head ONLY IF NEW:
+   if that write lands, the head was absent and is now { current: null } with
+   the etag the write returned (no read needed); if it loses, the head already
+   existed, and since every reader does this first, no reader saw it missing.
+   An empty head claims and clears nothing: it is exactly what absent meant. */
+async function ensureHead(store: BarrierStore, scope: string, opp: string): Promise<{ head: HeadRecord; etag: string } | null> {
+  const empty: HeadRecord = { v: 2, current: null, at: new Date().toISOString() };
+  const w = await store.setJSON(headKey(scope, opp), empty, { onlyIfNew: true });
+  return w.modified && w.etag ? { head: empty, etag: w.etag } : null;
+}
 async function readHead(store: BarrierStore, scope: string, opp: string): Promise<{ head: HeadRecord | null; etag: string | null }> {
+  const created = await ensureHead(store, scope, opp);
+  if (created) return created;
   let got: { data: any; etag?: string } | null;
   try { got = await store.getWithMetadata(headKey(scope, opp), { type: "json", consistency: "strong" }); countRead(false); }
   catch (e: any) {
@@ -254,11 +277,34 @@ export function validateSteps(purpose: unknown, steps: unknown): { purpose: Barr
   return { purpose: purpose as BarrierPurpose, steps: out };
 }
 
-async function stepEvidence(store: BarrierStore, scope: string, opp: string, requestDigest: string, withdrawPending: boolean): Promise<StepEvidence> {
+type SettledRecord = { kind: "withdrawn" | "confirmed" | "not_dispatched"; at: string };
+/** Records write-once proof that a step is settled. Best effort: without it, readers fall back to decision and outcome. */
+async function markSettled(store: BarrierStore, scope: string, opp: string, requestDigest: string, kind: SettledRecord["kind"]): Promise<void> {
+  try { await store.setJSON(settledKey(scope, opp, requestDigest), { kind, at: new Date().toISOString() }, { onlyIfNew: true }); } catch { /* fallback evidence remains */ }
+}
+/** Withdraws a never-decided step (write-once); true only when this call won the claim. */
+async function withdrawStep(store: BarrierStore, scope: string, opp: string, requestDigest: string): Promise<boolean> {
+  const w = await store.setJSON(decisionKey(scope, opp, requestDigest), { d: "withdrawn", at: new Date().toISOString() }, { onlyIfNew: true });
+  if (w.modified) await markSettled(store, scope, opp, requestDigest, "withdrawn");
+  return w.modified;
+}
+
+/* `mode`:
+     "status"   read-only (decision, then outcome). May lag; only ever adds a block.
+     "release"  a later step's release, for a step whose request already
+                returned: the settled proof first, then decision / outcome.
+     "withdraw" Check again: withdraw FIRST (write-only-if-new, no pre-read).
+                A lost claim proves a decision exists; only then is the settled
+                proof read, then the decision / outcome. */
+async function stepEvidence(store: BarrierStore, scope: string, opp: string, requestDigest: string, mode: "status" | "release" | "withdraw"): Promise<StepEvidence> {
+  if (mode === "withdraw" && await withdrawStep(store, scope, opp, requestDigest)) return "withdrawn";
+  if (mode !== "status") {
+    const proof = await readJson(store, settledKey(scope, opp, requestDigest)) as SettledRecord | null;
+    if (proof && SETTLED.includes(proof.kind)) return proof.kind;
+  }
   let decision = await readJson(store, decisionKey(scope, opp, requestDigest)) as { d: "send" | "withdrawn" } | null;
-  if (!decision && withdrawPending) {
-    const w = await store.setJSON(decisionKey(scope, opp, requestDigest), { d: "withdrawn", at: new Date().toISOString() }, { onlyIfNew: true });
-    decision = w.modified ? { d: "withdrawn" } : await readSettled((strong) => readJsonWith(store, decisionKey(scope, opp, requestDigest), strong), (v) => v !== null);
+  if (!decision && mode === "withdraw") {
+    decision = await readSettled((strong) => readJsonWith(store, decisionKey(scope, opp, requestDigest), strong), (v) => v !== null);
     // A lost claim proves a decision exists; a read that cannot see it yet is stale.
     if (!decision) throw new Error("Decision unreadable after a lost claim");
   }
@@ -272,13 +318,19 @@ async function stepEvidence(store: BarrierStore, scope: string, opp: string, req
 
 const SETTLED: StepEvidence[] = ["withdrawn", "confirmed", "not_dispatched"];
 
-async function evaluateBarrier(store: BarrierStore, scope: string, opp: string, barrierId: string, withdrawPending: boolean): Promise<BarrierState & { state: "blocked" }> {
+async function evaluateBarrier(store: BarrierStore, scope: string, opp: string, barrierId: string, mode: "status" | "release" | "withdraw", known?: { requestDigest: string; evidence: StepEvidence }): Promise<BarrierState & { state: "blocked" }> {
   const barrier = await readSettled((strong) => readJsonWith(store, barrierKey(scope, opp, barrierId), strong), (v) => v !== null) as BarrierRecord | null;
   // The head names it, and barrier records are written before the head: a
   // missing record is a stale read (re-read while only eventual reads are possible). Fail closed.
   if (!barrier) throw new Error("Barrier record unreadable");
   const steps: { step: BarrierStep; evidence: StepEvidence }[] = [];
-  for (const s of barrier.steps) steps.push({ step: s.step, evidence: await stepEvidence(store, scope, opp, s.requestDigest, withdrawPending) });
+  /* `known`: the releasing handler's OWN step, whose evidence it wrote moments
+     ago (it won the decision): it is not read back, so a cached "missing" for
+     that step's records cannot keep a confirmed save blocked. */
+  for (const s of barrier.steps) {
+    const evidence = known && known.requestDigest === s.requestDigest ? known.evidence : await stepEvidence(store, scope, opp, s.requestDigest, mode);
+    steps.push({ step: s.step, evidence });
+  }
   return { state: "blocked", purpose: barrier.purpose, createdAt: barrier.createdAt, steps };
 }
 const settled = (s: { steps: { evidence: StepEvidence }[] }) => s.steps.every((x) => SETTLED.includes(x.evidence));
@@ -323,13 +375,16 @@ export async function beginBarrier(store: BarrierStore, scope: string, input: { 
       const prior = await readJson(store, requestKey(scope, s.requestId)) as RequestRecord | null;
       if (!prior) throw new BarrierContended("An existing request registration could not be read; the deal was not claimed");
       if (!sameRegistration(prior, reg)) {
-        /* A request id already reserved elsewhere. This barrier is never made
-           current (every repeat of it meets the same conflict), and each step
-           registered to THIS barrier is withdrawn so none can ever be sent. The
-           conflicting id belongs to the other reservation and is untouched.
-           The deal is not claimed. */
+        /* A request id already reserved elsewhere. The deal is not claimed, and
+           this barrier is NEVER made current: the head is only ever set after
+           every step registers, and every repeat of it meets the same conflict.
+           That is the guarantee -- a write naming one of its steps is refused
+           as not current. As a best-effort extra, each step already registered
+           to THIS barrier is withdrawn; that cleanup can fail (it is not
+           retried), and safety does not depend on it. The conflicting id
+           belongs to the other reservation and is untouched. */
         for (const d of registered) {
-          try { await store.setJSON(decisionKey(scope, input.opp, d), { d: "withdrawn", at: new Date().toISOString() }, { onlyIfNew: true }); } catch { /* never current regardless */ }
+          try { await withdrawStep(store, scope, input.opp, d); } catch { /* never current regardless */ }
         }
         throw new ReservationMismatch("A request id is already reserved elsewhere; the deal was not claimed");
       }
@@ -341,7 +396,7 @@ export async function beginBarrier(store: BarrierStore, scope: string, input: { 
     const { head, etag } = await readHead(store, scope, input.opp);
     if (head && head.current === barrierId) return;                       // a retried begin
     if (head && head.current !== null) {
-      const held = await evaluateBarrier(store, scope, input.opp, head.current, false);
+      const held = await evaluateBarrier(store, scope, input.opp, head.current, "status");
       /* B14-13 Production: right after Check again released a barrier, an
          eventual read can still name it -- and still miss the withdrawal it
          recorded. While only eventual reads are possible, a held head is
@@ -361,7 +416,7 @@ export async function beginBarrier(store: BarrierStore, scope: string, input: { 
 export async function statusOf(store: BarrierStore, scope: string, opp: string): Promise<BarrierState> {
   const { head } = await readHead(store, scope, opp);
   if (!head || head.current === null) return { state: "clear" };
-  return evaluateBarrier(store, scope, opp, head.current, false);
+  return evaluateBarrier(store, scope, opp, head.current, "status");
 }
 
 /**
@@ -370,7 +425,7 @@ export async function statusOf(store: BarrierStore, scope: string, opp: string):
  * conditional write, so a stale view can never release a newer barrier.
  * Never withdraws.
  */
-export async function releaseIfSettled(store: BarrierStore, scope: string, opp: string, barrierId: string, lastStep = false): Promise<void> {
+export async function releaseIfSettled(store: BarrierStore, scope: string, opp: string, barrierId: string, lastStep = false, known?: { requestDigest: string; evidence: StepEvidence }): Promise<boolean> {
   /* B14-13 Production: when the step just settled is the barrier's LAST step,
      every step should now have evidence, so a view that says otherwise while
      only eventual reads are possible is re-read after a short pause (bounded).
@@ -378,14 +433,15 @@ export async function releaseIfSettled(store: BarrierStore, scope: string, opp: 
      only by a conditional write against the head that was read. */
   const pauses = lastStep ? [0, ...SETTLE_PAUSES_MS] : [0];
   for (const ms of pauses) {
-    if (ms && (!eventualReadsOnly || !(await spendSettle(ms)))) return;
+    if (ms && (!eventualReadsOnly || !(await spendSettle(ms)))) return false;
     const { head, etag } = await readHead(store, scope, opp);
     if (!head || head.current !== barrierId || etag === null) continue;
-    const s = await evaluateBarrier(store, scope, opp, barrierId, false);
+    const s = await evaluateBarrier(store, scope, opp, barrierId, "release", known);
     if (!settled(s)) continue;
-    if (await casHead(store, scope, opp, etag, { v: 2, current: null, at: new Date().toISOString() })) return;
+    if (await casHead(store, scope, opp, etag, { v: 2, current: null, at: new Date().toISOString() })) return true;
     // A lost swap means the head moved (or the read was stale); nothing else is touched. Reconcile reads it again.
   }
+  return false;
 }
 
 /**
@@ -406,7 +462,7 @@ export async function reconcileBarrier(store: BarrierStore, scope: string, opp: 
       if (await casHead(store, scope, opp, etag, { v: 2, current: null, at: now })) return { state: "clear" };
       continue;
     }
-    const s = await evaluateBarrier(store, scope, opp, head.current, true);
+    const s = await evaluateBarrier(store, scope, opp, head.current, "withdraw");
     if (!settled(s)) return s;
     if (await casHead(store, scope, opp, etag, { v: 2, current: null, at: now })) return { state: "clear" };
     // The head moved since we read it (or the read was stale): evaluate again.
@@ -429,7 +485,7 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
   store: BarrierStore, scope: string,
   request: { operation: string; targetId: string; requestId: string; contactId: string },
   body: (hooks: { beforeDispatch: () => Promise<void>; state: { dispatched: boolean } }) => Promise<T>,
-): Promise<T> {
+): Promise<T & { reservation: "released" | "release_pending" | "next_step" }> {
   const owned = await verifiedOwnership(store, scope, request.requestId);
   if (!owned) throw new NotOwned();
   const { reg, barrier } = owned;
@@ -445,6 +501,9 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
   const target = reg.step === "offer" ? reg.opp : reg.contactId;
   if (request.targetId !== target || request.contactId !== reg.contactId) throw new NotSent("Request is reserved for a different target");
   // Advisory only (the read may lag): the atomic send claim below is the guard.
+  // Like every head read, it first writes the empty head only if new: a head
+  // created here was absent, so this reservation was never made current.
+  if (await ensureHead(store, scope, reg.opp)) throw new NotSent("The reservation for this save is not current");
   const head = await readSettled((strong) => readHeadWith(store, scope, reg.opp, strong), (h) => h?.current === reg.barrierId);
   if (!head || head.current !== reg.barrierId) throw new NotSent("The reservation for this save is not current");
   const state = { dispatched: false, claimed: false };
@@ -465,20 +524,35 @@ export async function runOwnedWrite<T extends { confirmed: boolean }>(
       // release if everything is settled. Only the owner of "send" may record
       // not_dispatched; a non-owner only tries to withdraw.
       try {
-        if (state.claimed) await store.setJSON(outcomeKey(scope, reg.opp, requestDigest), { kind: "not_dispatched", at: new Date().toISOString() }, { onlyIfNew: true });
-        else await store.setJSON(decisionKey(scope, reg.opp, requestDigest), { d: "withdrawn", at: new Date().toISOString() }, { onlyIfNew: true });
-        if (isLastStep) await releaseIfSettled(store, scope, reg.opp, reg.barrierId, true);
+        let own: StepEvidence | undefined;
+        if (state.claimed) {
+          if ((await store.setJSON(outcomeKey(scope, reg.opp, requestDigest), { kind: "not_dispatched", at: new Date().toISOString() }, { onlyIfNew: true })).modified) {
+            own = "not_dispatched";
+            await markSettled(store, scope, reg.opp, requestDigest, "not_dispatched");
+          }
+        } else if (await withdrawStep(store, scope, reg.opp, requestDigest)) own = "withdrawn";
+        if (isLastStep) await releaseIfSettled(store, scope, reg.opp, reg.barrierId, true, own && { requestDigest, evidence: own });
       } catch { /* the barrier stays; still nothing was sent */ }
       throw new NotSent(error instanceof Error ? error.message : "Not sent", error instanceof NotSent && error.refusal !== undefined ? error.refusal : error);
     }
     try { await store.setJSON(outcomeKey(scope, reg.opp, requestDigest), { kind: "uncertain", at: new Date().toISOString() }, { onlyIfNew: true }); } catch { /* absent outcome = unresolved */ }
     throw error;
   }
+  /* B14-13 Production (Brad / Bones, 2026-10-12): a confirmed save reports
+     whether its reservation was released ("released"), is still held after the
+     last step ("release_pending" -- saved, nothing more to send, Check again
+     releases it), or awaits the reservation's later steps ("next_step"). The
+     send owner records its outcome and the settled proof, then releases with
+     its own evidence instead of reading it back. */
+  let reservation: "released" | "release_pending" | "next_step" = isLastStep ? "release_pending" : "next_step";
   try {
-    await store.setJSON(outcomeKey(scope, reg.opp, requestDigest), { kind: result.confirmed ? "confirmed" : "uncertain", at: new Date().toISOString() }, { onlyIfNew: true });
-    if (result.confirmed && isLastStep) await releaseIfSettled(store, scope, reg.opp, reg.barrierId, true);
+    const recorded = await store.setJSON(outcomeKey(scope, reg.opp, requestDigest), { kind: result.confirmed ? "confirmed" : "uncertain", at: new Date().toISOString() }, { onlyIfNew: true });
+    if (result.confirmed && recorded.modified) {
+      await markSettled(store, scope, reg.opp, requestDigest, "confirmed");
+      if (isLastStep && await releaseIfSettled(store, scope, reg.opp, reg.barrierId, true, { requestDigest, evidence: "confirmed" })) reservation = "released";
+    }
   } catch { /* the barrier stays: a later reconcile reads the evidence */ }
-  return result;
+  return { ...result, reservation };
 }
 
 /**
@@ -514,6 +588,14 @@ export function describeBlocked(s: BarrierState): string {
   if (s.state === "clear") return "";
   const open = s.steps.filter((x) => !SETTLED.includes(x.evidence));
   const sent = open.filter((x) => x.evidence === "unresolved").map((x) => stepLabel(s.purpose, x.step));
+  if (!open.length) {
+    /* Every step has evidence (confirmed, not sent, or withdrawn) but the deal
+       is still held: nothing more will be sent, and Check again releases it. */
+    const saved = s.steps.some((x) => x.evidence === "confirmed");
+    return saved
+      ? "Saved — the change reached GHL and was confirmed. Releasing this deal is pending; use Check again."
+      : "Nothing was sent. Releasing this deal is pending; use Check again.";
+  }
   if (sent.length) {
     return `Unresolved — the ${sent.join(" and ")} may still reach GHL. Nothing more will be sent for this deal's offer or outcome. It stays blocked until the recovery procedure establishes what happened.`;
   }

@@ -103,7 +103,8 @@ export const handler = async (event: any) => {
         }
         if (e instanceof BarrierHeld) return json(409, withMessage(e.status));
         // An altered repeat of a reservation (nothing registered), or a request id reserved elsewhere
-        // (the deal was not claimed; any step registered to this reservation is withdrawn and can never be sent).
+        // (the deal was not claimed and this reservation is never made current, so none of its steps
+        // can be sent; withdrawing its registered steps is best-effort cleanup and can fail).
         if (e instanceof ReservationMismatch) return json(409, { state: "rejected", code: "reservation_mismatch", message: e.message });
         throw e;
       }

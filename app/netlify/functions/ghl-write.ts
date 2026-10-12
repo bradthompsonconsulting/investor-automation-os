@@ -72,8 +72,8 @@ function logWriteFailure(request: any, error: unknown): void {
    before sending logs the reservation fingerprint (a digest), the read mode,
    the number of store reads and the elapsed time of this invocation. Nothing
    else: no request id, token, header, contact, deal or value. */
-function logReservationRefusal(path: string, request: any): void {
-  console.warn("[ghl-write] reservation refusal", JSON.stringify({
+function logReservationRefusal(path: string, request: any, line = "reservation refusal"): void {
+  console.warn(`[ghl-write] ${line}`, JSON.stringify({
     path,
     operation: typeof request?.operation === "string" ? request.operation : null,
     reservation: typeof request?.requestId === "string" ? reservationFingerprint(request.requestId) : null,
@@ -235,7 +235,11 @@ export const handler = async (event: any) => {
     if (owned) {
       try {
         const done = await runOwnedWrite(barrierStore(), offerScope, { operation, targetId, requestId, contactId }, perform);
-        return json(done.statusCode, done.body);
+        /* B14-13 Production (Brad / Bones, 2026-10-12): a confirmed save says
+           whether its reservation was released, so "saved, release pending" is
+           never mistaken for "nothing sent". Logged like a refusal (no secrets). */
+        if (done.confirmed && done.reservation === "release_pending") logReservationRefusal("saved_release_pending", request, "saved, release pending");
+        return json(done.statusCode, done.confirmed && done.body && typeof done.body === "object" ? { ...done.body, reservation: done.reservation } : done.body);
       } catch (error) {
         logWriteFailure(request, error);
         if (error instanceof NotSent || error instanceof NotOwned) {

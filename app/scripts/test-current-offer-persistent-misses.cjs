@@ -18,6 +18,13 @@
  * sending and are logged (fingerprint, read mode, read count, elapsed time;
  * no secrets), and that every protection holds. Drives the REAL ghl-write and
  * current-offer-barrier handlers. Offline.
+ *
+ * Brad (2026-10-12), the two known stale-read failures, now FIXED and checked
+ * here under misses that never converge: a brand-new deal's first reservation
+ * (its head was read as missing on page load), and a status check during a
+ * save (the step's decision was read as missing before the save claimed it).
+ * A confirmed save whose release could not complete is reported as "saved,
+ * release pending" -- never as "nothing sent".
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -31,11 +38,13 @@ let etagSeq = 0;
 const edge = new Map();           // key -> { snap: { data, etag }, served }
 let STALE_READS = 2;
 let frozen = () => false;
+let loseSwap = () => false;
+let failWrite = () => false;
 const readKeys = new Set();
 const warnings = [];
 const refusalLogsEver = [];
 const realWarn = console.warn;
-console.warn = (...a) => { const line = a.join(' '); warnings.push(line); if (/reservation refusal|begin refused/.test(line)) refusalLogsEver.push(line); realWarn(...a); };
+console.warn = (...a) => { const line = a.join(' '); warnings.push(line); if (/reservation refusal|begin refused|release pending/.test(line)) refusalLogsEver.push(line); realWarn(...a); };
 let strongAttempts = 0;
 let eventualReads = 0;
 const clone = (v) => (v === null || v === undefined ? null : structuredClone(v));
@@ -80,8 +89,9 @@ Module._load = function (name, ...rest) {
       async get(key, options) { const s = edgeRead(key, options); return s.data; },
       async getWithMetadata(key, options) { const s = edgeRead(key, options); return s.data === null ? null : { data: s.data, etag: s.etag }; },
       async setJSON(key, value, options) {
+        if (failWrite(key, value)) throw new Error('injected storage failure');
         if (options?.onlyIfNew && origin.has(key)) return { modified: false };
-        if (options?.onlyIfMatch !== undefined && etags.get(key) !== options.onlyIfMatch) return { modified: false };
+        if (options?.onlyIfMatch !== undefined && (etags.get(key) !== options.onlyIfMatch || loseSwap(key, value))) return { modified: false };
         origin.set(key, clone(value));
         const etag = 'etag-' + (++etagSeq); etags.set(key, etag);
         return { modified: true, etag };
@@ -114,9 +124,11 @@ let seedHead = true;
 let pauses = [];
 barrierLib.setSettlePauseForTests(async (ms) => { pauses.push(ms); });
 
-// ── Fake GHL: one contact, one opportunity ───────────────────────────────────
+// ── Fake GHL: deal A (the main fixture) and a distinct deal B ─────────────────
 const contact = { id: 'fixture-contact', locationId: config.locationId, customFields: [], tags: [], phone: '+15555550101' };
 const opportunity = { id: 'fixture-opportunity', contactId: contact.id, locationId: config.locationId, customFields: [] };
+const contactB = { id: 'fixture-contact-b', locationId: config.locationId, customFields: [], tags: [], phone: '+15555550102' };
+const opportunityB = { id: 'fixture-opportunity-b', contactId: contactB.id, locationId: config.locationId, customFields: [] };
 let notes = [];
 let ghlWrites = [];
 const reply = (data) => ({ ok: true, status: 200, json: async () => structuredClone(data), text: async () => JSON.stringify(data) });
@@ -124,20 +136,24 @@ global.fetch = async (url, init = {}) => {
   const parsed = new URL(url); const pathname = parsed.pathname; const method = init.method || 'GET';
   assert.equal(parsed.origin, 'https://services.leadconnectorhq.com', 'no external network');
   const req = { method, pathname, body: init.body ? JSON.parse(init.body) : null };
+  if (pathname === `/contacts/${contactB.id}/notes`) {
+    if (method === 'POST') { ghlWrites.push(req); throw new Error('no note is ever sent to deal B in these checks'); }
+    return reply({ notes: [] });
+  }
   if (pathname === `/contacts/${contact.id}/notes`) {
     if (method === 'POST') { ghlWrites.push(req); const note = { id: `note-${notes.length}`, body: req.body.body }; notes.push(note); return reply({ note }); }
     return reply({ notes });
   }
-  const object = pathname === `/contacts/${contact.id}` ? contact : pathname === `/opportunities/${opportunity.id}` ? opportunity : null;
+  const object = { [`/contacts/${contact.id}`]: contact, [`/opportunities/${opportunity.id}`]: opportunity, [`/contacts/${contactB.id}`]: contactB, [`/opportunities/${opportunityB.id}`]: opportunityB }[pathname] ?? null;
   if (!object) throw new Error('Unexpected mocked request: ' + pathname);
   if (method === 'PUT') {
     ghlWrites.push(req);
     for (const field of req.body.customFields) {
       object.customFields = object.customFields.filter((f) => f.id !== field.id);
-      if (field.field_value !== '' && field.field_value !== null) object.customFields.push({ id: field.id, [object === contact ? 'value' : 'fieldValue']: field.field_value });
+      if (field.field_value !== '' && field.field_value !== null) object.customFields.push({ id: field.id, [object.contactId ? 'fieldValue' : 'value']: field.field_value });
     }
   }
-  return reply(object === contact ? { contact } : { opportunity });
+  return reply(object.contactId ? { opportunity: object } : { contact: object });
 };
 
 const ghlWrite = require('../netlify/functions/ghl-write.ts').handler;
@@ -154,13 +170,15 @@ const barrier = (b) => barrierFn({ blobs: lambdaBlobs, httpMethod: 'POST', heade
 const begin = (purpose, steps) => barrier({ action: 'begin', opportunityId: opportunity.id, purpose, steps });
 const beginBlur = (r) => begin('blur', [{ step: 'offer', requestId: r }]);
 const checkAgain = () => barrier({ action: 'reconcile', opportunityId: opportunity.id });
+const beginOn = (opportunityId, purpose, steps) => barrier({ action: 'begin', opportunityId, purpose, steps });
+const statusOn = async (opportunityId) => JSON.parse((await barrierFn({ blobs: lambdaBlobs, httpMethod: 'GET', headers: { ...lambdaHeaders, cookie: readCookie() }, queryStringParameters: { opportunityId } })).body);
 const readCookie = () => `${readAuth.READ_COOKIE}=${readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig()).token}`;
 const status = async () => JSON.parse((await barrierFn({ blobs: lambdaBlobs, httpMethod: 'GET', headers: { ...lambdaHeaders, cookie: readCookie() }, queryStringParameters: { opportunityId: opportunity.id } })).body);
 const body = (res) => JSON.parse(res.body);
 const offerPuts = () => ghlWrites.filter((w) => w.method === 'PUT' && w.pathname === `/opportunities/${opportunity.id}`);
 const currentOfferInGhl = () => (opportunity.customFields.find((f) => f.id === OFFER_FIELD) || {}).fieldValue ?? null;
 const receiptKeys = () => [...origin.keys()].filter((k) => /^[0-9a-f]{64}$/.test(k));
-const outcomeNote = (kind) => require('../src/lib/seller-call-outcome.ts').formatOutcomeNote({ opportunityId: opportunity.id, kind, at: '2026-10-11T22:10:00.000Z', operator: null, reason: kind === 'pass' ? 'not selling' : null, followUpAt: null, snapshot: { sellerPosition: 500000, currentOffer: 400000, targetAcquisitionPrice: null, maxSupportedOffer: null, expectedSpread: null, arv: null, repairs: null, readinessStatus: 'OFFER_READY' } });
+const outcomeNote = (kind, opportunityId = opportunity.id) => require('../src/lib/seller-call-outcome.ts').formatOutcomeNote({ opportunityId, kind, at: '2026-10-11T22:10:00.000Z', operator: null, reason: kind === 'pass' ? 'not selling' : null, followUpAt: kind === 'follow_up' ? '2026-10-14T15:00:00.000Z' : null, snapshot: { sellerPosition: 500000, currentOffer: 400000, targetAcquisitionPrice: null, maxSupportedOffer: null, expectedSpread: null, arv: null, repairs: null, readinessStatus: 'OFFER_READY' } });
 
 let count = 0;
 let failures = 0;
@@ -170,7 +188,7 @@ async function check(name, fn) {
 }
 function fresh() {
   origin.clear(); etags.clear(); edge.clear(); ghlWrites = []; notes = []; pauses = [];
-  opportunity.customFields = []; contact.customFields = []; STALE_READS = 2; frozen = () => false; readKeys.clear(); warnings.length = 0; enableSaving();
+  opportunity.customFields = []; contact.customFields = []; opportunityB.customFields = []; contactB.customFields = []; STALE_READS = 2; frozen = () => false; loseSwap = () => false; failWrite = () => false; readKeys.clear(); warnings.length = 0; enableSaving();
   // As in Production for this deal: its head record already exists (released, current null).
   if (seedHead) { origin.set(HEAD_KEY, { v: 2, current: null, at: '2026-10-11T00:00:00.000Z' }); etags.set(HEAD_KEY, 'etag-' + (++etagSeq)); }
 }
@@ -178,6 +196,9 @@ function fresh() {
 async function settledStatus() { let s; for (let i = 0; i < 4; i++) { s = await status(); if (s.state === 'clear') break; } return s; }
 const sha = (x) => require('node:crypto').createHash('sha256').update(x).digest('hex');
 const refusalLogs = () => warnings.filter((w) => /reservation refusal|begin refused/.test(w));
+const headOf = (opportunityId) => origin.get('current-offer/head/' + sha(`test:${config.locationId}:${opportunityId}`)) ?? null;
+const pendingLogs = () => warnings.filter((w) => /saved, release pending/.test(w));
+const cachedMiss = (prefix) => [...edge.entries()].some(([k, v]) => k.startsWith(prefix) && v.snap.data === null);
 const parseLog = (line) => JSON.parse(line.slice(line.indexOf('{')));
 
 (async () => {
@@ -210,7 +231,7 @@ const parseLog = (line) => JSON.parse(line.slice(line.indexOf('{')));
     const reserved = await beginBlur(tab);
     assert.equal(reserved.statusCode, 200, 'reserved: ' + reserved.body);
     const res = await offer(400000, tab);
-    assert.equal(res.statusCode, 200, res.body); assert.equal(body(res).confirmed, true);
+    assert.equal(res.statusCode, 200, res.body); assert.equal(body(res).confirmed, true); assert.equal(body(res).reservation, 'released');
     assert.equal(offerPuts().length, 1); assert.equal(currentOfferInGhl(), 400000);
     assert.equal(receiptKeys().length, 1, 'exactly one write receipt');
     assert.equal((await settledStatus()).state, 'clear', 'the barrier released itself');
@@ -287,34 +308,181 @@ const parseLog = (line) => JSON.parse(line.slice(line.indexOf('{')));
     const sent = await offer(400000, id);
     assert.equal(sent.statusCode, 409, sent.body); assert.equal(offerPuts().length, 0);
   });
-  await check('REMAINING: a step decision read as missing while the save was held (status polled) leaves the deal blocked after one confirmed write; nothing is sent twice', async () => {
+  // ── The two known stale-read failures (Brad, 2026-10-12): fixed ─────────────
+  await check('FIXED: status polled during a save (its decision read as missing, cached for good) -> the save confirms once and releases the deal itself; the next Tab saves', async () => {
     fresh();
     const tab = rid('blur'); assert.equal((await beginBlur(tab)).statusCode, 200);
-    for (let i = 0; i < 3; i++) await status();                     // the page polls while the save is reserved
+    let polls = 0; for (let i = 0; i < 6 && polls < 3; i++) if ((await status()).state === 'blocked') polls++;   // the page polls while the save is reserved
+    assert.equal(polls, 3, 'status shows the save as reserved');
+    assert.ok(cachedMiss('current-offer/decision/'), 'the hostile case: the decision is cached as missing');
+    // ...and a poll landing while GHL is being written would read the outcome before it exists:
+    const outcomeKey = 'current-offer/outcome/' + sha(`test:${config.locationId}:${opportunity.id}:${sha(tab)}`);
+    assert.equal(await require('@netlify/blobs').getStore().get(outcomeKey, { type: 'json' }), null);
+    assert.ok(cachedMiss('current-offer/outcome/'), 'the outcome is cached as missing too');
     const res = await offer(400000, tab);
-    assert.equal(res.statusCode, 200, res.body); assert.equal(offerPuts().length, 1); assert.equal(receiptKeys().length, 1);
-    const st = await status();
-    assert.equal(st.state, 'blocked', 'the release cannot see its own decision; the deal stays blocked (fails closed)');
-    const next = rid('blur');
-    assert.equal((await beginBlur(next)).statusCode, 409, 'a later Tab is refused as held');
-    const rec = await checkAgain();
-    assert.notEqual(body(rec).state, 'clear', 'Check again cannot clear a step it cannot read');
-    assert.equal((await offer(410000, tab)).statusCode !== 200, true);
-    assert.equal(offerPuts().length, 1, 'never sent twice');
+    assert.equal(res.statusCode, 200, res.body); assert.equal(body(res).confirmed, true);
+    assert.equal(body(res).reservation, 'released', 'released with its own evidence, not a read-back');
+    assert.equal(offerPuts().length, 1); assert.equal(receiptKeys().length, 1);
+    assert.equal((await settledStatus()).state, 'clear');
+    assert.equal(pendingLogs().length + refusalLogs().length, 0, JSON.stringify(warnings));
+    const next = rid('blur'); assert.equal((await beginBlur(next)).statusCode, 200);
+    assert.equal((await offer(410000, next)).statusCode, 200); assert.equal(currentOfferInGhl(), 410000);
+    assert.equal((await offer(410000, tab)).statusCode !== 200, true, 'the first request is never sent again');
+    assert.equal(offerPuts().length, 2);
   });
-
-  await check('REMAINING: a deal whose head record has never existed (its first reservation ever), read as missing on page load, refuses the save (not current), sends nothing, and logs it', async () => {
+  await check('FIXED: status polled between the steps of a Pass (each step read as missing first) -> both steps record and the last step releases the deal', async () => {
+    fresh();
+    const ids = { note: rid('pass-note'), touch: rid('pass-touch') };
+    assert.equal((await begin('pass', [{ step: 'note', requestId: ids.note }, { step: 'touch', requestId: ids.touch }])).statusCode, 200);
+    await status(); await status();
+    const n = await write('note.create', contact.id, { body: outcomeNote('pass') }, ids.note);
+    assert.equal(n.statusCode, 200, n.body); assert.equal(body(n).reservation, 'next_step');
+    assert.equal((await status()).state, 'blocked'); await status();
+    const t = await write('contact.lastCallAttempt', contact.id, { value: '2026-10-12T01:10:00.000Z' }, ids.touch);
+    assert.equal(t.statusCode, 200, t.body); assert.equal(body(t).reservation, 'released');
+    assert.equal((await settledStatus()).state, 'clear'); assert.equal(notes.length, 1);
+  });
+  await check('FIXED: a brand-new deal (its head never existed): the page-load status creates the empty head instead of caching a miss; the first and second saves confirm and release', async () => {
     seedHead = false; fresh(); seedHead = true;
-    await status();                                                  // page load: the head key is read as missing
+    assert.equal((await status()).state, 'clear', 'page load');
+    assert.ok(!cachedMiss('current-offer/head/'), 'the head was never read while missing');
+    assert.deepEqual(origin.get(HEAD_KEY)?.current, null, 'an empty head: nothing claimed');
     const id = rid('blur');
-    assert.equal((await beginBlur(id)).statusCode, 200, 'the head is created by a conditional write');
+    assert.equal((await beginBlur(id)).statusCode, 200);
     const res = await offer(400000, id);
-    assert.equal(res.statusCode, 409); assert.equal(body(res).outcome, 'not_sent');
-    assert.equal(offerPuts().length, 0); assert.equal(receiptKeys().length, 0);
-    const log = parseLog(refusalLogs()[0]);
-    assert.equal(log.path, 'owned_write_refused'); assert.equal(log.reservation, sha(id)); assert.equal(log.readMode, 'eventual');
-    assert.notEqual((await checkAgain()).statusCode, 200, 'Check again cannot confirm the head either: the deal stays blocked (fails closed)');
-    assert.equal(offerPuts().length, 0);
+    assert.equal(res.statusCode, 200, res.body); assert.equal(body(res).reservation, 'released');
+    assert.equal(offerPuts().length, 1); assert.equal(receiptKeys().length, 1);
+    assert.equal((await settledStatus()).state, 'clear');
+    const next = rid('blur');
+    let r; for (let i = 0; i < 3; i++) { r = await beginBlur(next); if (r.statusCode === 200) break; }
+    assert.equal(r.statusCode, 200, r.body);
+    assert.equal((await offer(410000, next)).statusCode, 200); assert.equal(offerPuts().length, 2);
+    assert.equal(refusalLogs().length, 0, JSON.stringify(warnings));
+  });
+  await check('FIXED: a brand-new deal reserved with no page-load status (Check again first, or begin straight away) saves and releases', async () => {
+    seedHead = false; fresh(); seedHead = true;
+    assert.equal(body(await checkAgain()).state, 'clear');
+    const id = rid('blur'); assert.equal((await beginBlur(id)).statusCode, 200);
+    assert.equal(body(await offer(400000, id)).reservation, 'released');
+    seedHead = false; fresh(); seedHead = true;
+    const id2 = rid('blur'); assert.equal((await beginBlur(id2)).statusCode, 200);
+    for (let i = 0; i < 2; i++) await status();
+    assert.equal(body(await offer(400000, id2)).reservation, 'released');
+    assert.equal((await settledStatus()).state, 'clear');
+  });
+  await check('"SAVED, release pending" is distinct from "nothing sent": a confirmed save whose release lost the head swap answers 200 confirmed + release_pending, logs it, status says Saved, Check again releases, nothing is sent twice', async () => {
+    fresh();
+    const tab = rid('blur'); assert.equal((await beginBlur(tab)).statusCode, 200);
+    await status();
+    loseSwap = (key, value) => key === HEAD_KEY && value?.current === null;              // a concurrent head change during the release
+    const res = await offer(400000, tab);
+    loseSwap = () => false;
+    assert.equal(res.statusCode, 200, res.body); assert.equal(body(res).confirmed, true);
+    assert.equal(body(res).reservation, 'release_pending'); assert.equal(body(res).outcome, undefined, 'not a not_sent refusal');
+    assert.equal(offerPuts().length, 1); assert.equal(currentOfferInGhl(), 400000);
+    const logs = pendingLogs(); assert.equal(logs.length, 1, JSON.stringify(warnings));
+    const log = parseLog(logs[0]); assert.equal(log.path, 'saved_release_pending'); assert.equal(log.reservation, sha(tab));
+    assert.equal(refusalLogs().length, 0, 'not logged as a refusal');
+    let st; for (let i = 0; i < 4; i++) { st = await status(); if (/^Saved/.test(st.message ?? '')) break; }
+    assert.equal(st.state, 'blocked'); assert.match(st.message, /^Saved — the change reached GHL and was confirmed\. Releasing this deal is pending; use Check again\.$/);
+    assert.doesNotMatch(st.message, /nothing was sent|may still reach GHL/i);
+    const refused = await offer(410000, rid('rogue'));
+    assert.match(body(refused).error, /nothing was sent/, 'a refusal still says nothing was sent');
+    let rec; for (let i = 0; i < 3 && rec?.state !== 'clear'; i++) rec = body(await checkAgain());
+    assert.equal(rec.state, 'clear', 'Check again reads the settled proof and releases');
+    assert.equal((await offer(400000, tab)).statusCode !== 200, true); assert.equal(offerPuts().length, 1, 'never sent twice');
+    const next = rid('blur'); assert.equal((await beginBlur(next)).statusCode, 200);
+    assert.equal((await offer(410000, next)).statusCode, 200);
+  });
+  await check('Check again during a status-polled save that is then confirmed: the release still uses the save\'s own evidence; Check again afterwards clears via the settled proof, never by a read of the cached miss', async () => {
+    fresh();
+    const tab = rid('blur'); assert.equal((await beginBlur(tab)).statusCode, 200);
+    for (let i = 0; i < 3; i++) await status();
+    loseSwap = (key, value) => key === HEAD_KEY && value?.current === null;
+    assert.equal(body(await offer(400000, tab)).reservation, 'release_pending');
+    loseSwap = () => false;
+    assert.ok(cachedMiss('current-offer/decision/'), 'the decision is still served as missing');
+    let rec; for (let i = 0; i < 3 && rec?.state !== 'clear'; i++) rec = body(await checkAgain());
+    assert.equal(rec.state, 'clear');
+    assert.equal(offerPuts().length, 1);
+  });
+  await check('FIXED, complete multi-step release: Accept (offer, note, last-touch) and Follow-Up (callback, callback note, last-touch, note), with status polled before every step -- every earlier step answers next_step, the last answers released, the deal is clear and the next Tab saves', async () => {
+    fresh();
+    const a = { offer: rid('acc-offer'), note: rid('acc-note'), touch: rid('acc-touch') };
+    assert.equal((await begin('accept', Object.entries(a).map(([step, requestId]) => ({ step, requestId })))).statusCode, 200);
+    const seq = [
+      [a.offer, () => offer(400000, a.offer), 'next_step'],
+      [a.note, () => write('note.create', contact.id, { body: outcomeNote('accept') }, a.note), 'next_step'],
+      [a.touch, () => write('contact.lastCallAttempt', contact.id, { value: '2026-10-12T01:20:00.000Z' }, a.touch), 'released'],
+    ];
+    for (const [, send, expected] of seq) {
+      await status(); await status();
+      const r = await send();
+      assert.equal(r.statusCode, 200, r.body); assert.equal(body(r).reservation, expected, r.body);
+    }
+    assert.equal((await settledStatus()).state, 'clear', 'Accept released');
+    fresh();                                                          // an accepted deal takes no Follow-Up: a fresh deal
+    const f = { callback: rid('fu-cb'), callback_note: rid('fu-cbnote'), touch: rid('fu-touch'), note: rid('fu-note') };
+    let r0; for (let i = 0; i < 3; i++) { r0 = await begin('follow_up', Object.entries(f).map(([step, requestId]) => ({ step, requestId }))); if (r0.statusCode === 200) break; }
+    assert.equal(r0.statusCode, 200, r0.body);
+    const fseq = [
+      () => write('contact.callback', contact.id, { value: '2026-10-14T15:00:00.000Z' }, f.callback),
+      () => write('note.create', contact.id, { body: 'Callback booked for Tuesday 10:00.' }, f.callback_note),
+      () => write('contact.lastCallAttempt', contact.id, { value: '2026-10-12T01:30:00.000Z' }, f.touch),
+      () => write('note.create', contact.id, { body: outcomeNote('follow_up') }, f.note),
+    ];
+    for (let i = 0; i < fseq.length; i++) {
+      await status(); await status();
+      const r = await fseq[i]();
+      assert.equal(r.statusCode, 200, r.body); assert.equal(body(r).reservation, i === fseq.length - 1 ? 'released' : 'next_step', r.body);
+    }
+    assert.equal((await settledStatus()).state, 'clear', 'Follow-Up released');
+    assert.equal(refusalLogs().length + pendingLogs().length, 0, JSON.stringify(warnings));
+    const next = rid('blur'); let rb; for (let i = 0; i < 3; i++) { rb = await beginBlur(next); if (rb.statusCode === 200) break; }
+    assert.equal(rb.statusCode, 200, rb.body); assert.equal(body(await offer(420000, next)).reservation, 'released');
+  });
+  await check('CONFLICT across two DISTINCT deals: a request id reserved on deal A, reused by a Pass on deal B, is rejected; deal B is never claimed and cannot send; deal A still saves; deal B then reserves and saves normally', async () => {
+    fresh();
+    const shared = rid('shared'); assert.equal((await beginBlur(shared)).statusCode, 200);
+    const pNote = rid('b-note');
+    const res = await beginOn(opportunityB.id, 'pass', [{ step: 'note', requestId: pNote }, { step: 'touch', requestId: shared }]);
+    assert.equal(res.statusCode, 409, res.body); assert.equal(body(res).code, 'reservation_mismatch');
+    assert.ok(headOf(opportunityB.id) === null || headOf(opportunityB.id).current === null, 'deal B never names the rejected reservation');
+    assert.equal((await statusOn(opportunityB.id)).state, 'clear');
+    assert.equal(body(await write('note.create', contactB.id, { body: outcomeNote('pass', opportunityB.id) }, pNote)).outcome, 'not_sent');
+    assert.equal(body(await write('contact.lastCallAttempt', contactB.id, { value: '2026-10-12T01:40:00.000Z' }, shared)).outcome, 'not_sent', "deal A's id cannot write to deal B");
+    assert.equal(ghlWrites.length, 0, 'nothing sent to either deal');
+    assert.equal(body(await offer(400000, shared)).reservation, 'released', 'deal A still saves');
+    const b = rid('b-blur'); assert.equal((await beginOn(opportunityB.id, 'blur', [{ step: 'offer', requestId: b }])).statusCode, 200);
+    const sb = await write('opportunity.currentOffer', opportunityB.id, { value: 300000 }, b);
+    assert.equal(sb.statusCode, 200, sb.body); assert.equal(body(sb).reservation, 'released');
+    assert.equal(currentOfferInGhl(), 400000, 'deal A unchanged by deal B');
+  });
+  await check('CONFLICT cleanup can FAIL: when withdrawing the rejected reservation\'s own step fails, it is still rejected, never made current, and its step still cannot send', async () => {
+    fresh();
+    const shared = rid('shared'); assert.equal((await beginBlur(shared)).statusCode, 200);
+    const pNote = rid('b-note');
+    failWrite = (key) => key.startsWith('current-offer/decision/') || key.startsWith('current-offer/settled/');
+    const res = await beginOn(opportunityB.id, 'pass', [{ step: 'note', requestId: pNote }, { step: 'touch', requestId: shared }]);
+    failWrite = () => false;
+    assert.equal(res.statusCode, 409, res.body); assert.equal(body(res).code, 'reservation_mismatch');
+    const decisionB = 'current-offer/decision/' + sha(`test:${config.locationId}:${opportunityB.id}:${sha(pNote)}`);
+    assert.equal(origin.has(decisionB), false, 'the cleanup did not happen');
+    assert.ok(headOf(opportunityB.id) === null || headOf(opportunityB.id).current === null, 'never current');
+    const sent = await write('note.create', contactB.id, { body: outcomeNote('pass', opportunityB.id) }, pNote);
+    assert.equal(body(sent).outcome, 'not_sent', sent.body); assert.equal(notes.length, 0); assert.equal(ghlWrites.length, 0);
+    assert.equal((await statusOn(opportunityB.id)).state, 'clear');
+  });
+  await check('TRANSITIONAL (not fixed): a head cached as MISSING before this change (a deal with no head, viewed under the old build) refuses the next reservation as contended -- 503, nothing reserved, nothing sent -- until the edge drops that miss', async () => {
+    seedHead = false; fresh(); seedHead = true;
+    const store = require('@netlify/blobs').getStore();
+    assert.equal(await store.get(HEAD_KEY, { type: 'json' }), null);           // the old build's page-load read
+    await store.setJSON(HEAD_KEY, { v: 2, current: null, at: '2026-10-12T00:00:00.000Z' }, { onlyIfNew: true });  // any later head write
+    const id = rid('blur');
+    const res = await beginBlur(id);
+    assert.equal(res.statusCode, 503, res.body);
+    assert.equal(body(await offer(400000, id)).outcome, 'not_sent'); assert.equal(offerPuts().length, 0);
+    assert.equal(parseLog(refusalLogs()[0]).path, 'contended');
   });
 
   // ── Protections unchanged ──────────────────────────────────────────────────
@@ -377,13 +545,14 @@ const parseLog = (line) => JSON.parse(line.slice(line.indexOf('{')));
     const before = eventualReads;
     assert.equal((await offer(400000, r)).statusCode, 401); assert.equal(eventualReads, before);
   });
-  await check('refusal logs carry no request id, session token, contact id, deal id or value', async () => {
+  await check('refusal and release-pending logs carry no request id, session token, contact id, deal id or value', async () => {
     const all = refusalLogsEver.join('\n');
     assert.ok(refusalLogsEver.length >= 4, String(refusalLogsEver.length));
     assert.ok(!/-fixture/.test(all), 'no raw request id');
     assert.ok(!all.includes(contact.id) && !all.includes(opportunity.id), 'no contact or deal id');
     assert.ok(!/Bearer|authorization|400000|390000/.test(all), 'no token or value');
     for (const line of refusalLogsEver) assert.deepEqual(Object.keys(parseLog(line)).sort(), line.includes('begin refused') ? ['elapsedMs', 'path', 'readMode', 'reads', 'reservation'] : ['elapsedMs', 'operation', 'path', 'readMode', 'reads', 'reservation']);
+    assert.ok(refusalLogsEver.some((l) => l.includes('saved, release pending')), 'the release-pending line is covered');
   });
 
   console.log(`\nCurrent Offer handoff under persistent cached misses: checks=${count + failures} failures=${failures}`);

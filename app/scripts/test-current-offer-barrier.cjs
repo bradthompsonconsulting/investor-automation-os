@@ -528,6 +528,9 @@ function fresh() {
   });
   await check('storage failure reading status: 503 (the browser treats it as blocked)', async () => {
     fresh();
+    // B14-13 (2026-10-12): a deal's first status creates its empty head (only if new) and
+    // answers clear without reading it, so the read failure is injected once the head exists.
+    assert.equal((await status()).body.state, 'clear');
     failNext.push((op, key) => op === 'getWithMetadata' && key.startsWith('current-offer/head/'));
     assert.equal((await status()).statusCode, 503);
   });
@@ -663,9 +666,12 @@ function fresh() {
      request keys before writing them (a read of a missing key can leave a cached
      "missing" that the save is then served). A conflict is found by the atomic
      onlyIfNew write instead, so an EARLIER step of the conflicting reservation
-     may already be registered. It is rejected, the deal is not claimed, every
-     step of the conflicting reservation is withdrawn, and none can be sent. */
-  await check('a request id already reserved for ANOTHER deal\'s reservation cannot be reused (rejected, deal not claimed, its own steps withdrawn and unsendable, the original untouched)', async () => {
+     may already be registered. It is rejected, the deal is not claimed, and the
+     conflicting reservation is never made current, so none of its steps can be
+     sent; withdrawing its registered steps is best-effort cleanup (here it
+     succeeds). Both reservations here are on the SAME deal; two distinct deals
+     and a failed cleanup are covered in test-current-offer-persistent-misses.cjs. */
+  await check('a request id already reserved by ANOTHER reservation on the same deal cannot be reused (rejected, deal not claimed, its own step unsendable, the original untouched)', async () => {
     fresh();
     const r1 = rid('shared');
     await beginBlur(r1);
