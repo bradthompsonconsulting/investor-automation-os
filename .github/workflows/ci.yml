@@ -252,6 +252,9 @@ jobs:
       - name: Current Offer handoff under eventual reads - the deployed edge (no strong reads, stale cache); reserve then save after Check again and Enable saving (B14-13) - 14 offline checks
         run: node app/scripts/test-current-offer-eventual-reads.cjs
 
+      - name: Current Offer handoff when cached misses persist - begin reads no new reservation key before writing it; remaining stale reads refuse without sending and are logged (B14-13) - 17 offline checks
+        run: node app/scripts/test-current-offer-persistent-misses.cjs
+
       - name: Durable Current Offer barrier — real ghl-write and barrier handlers, reloads, late handlers, storage failures (PR 126 stacked server PR) — 45 offline checks
         run: node app/scripts/test-current-offer-barrier.cjs
 

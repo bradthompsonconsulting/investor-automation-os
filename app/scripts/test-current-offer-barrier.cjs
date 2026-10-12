@@ -528,6 +528,9 @@ function fresh() {
   });
   await check('storage failure reading status: 503 (the browser treats it as blocked)', async () => {
     fresh();
+    // B14-13 (2026-10-12): a deal's first status creates its empty head (only if new) and
+    // answers clear without reading it, so the read failure is injected once the head exists.
+    assert.equal((await status()).body.state, 'clear');
     failNext.push((op, key) => op === 'getWithMetadata' && key.startsWith('current-offer/head/'));
     assert.equal((await status()).statusCode, 503);
   });
@@ -659,14 +662,33 @@ function fresh() {
       }
     }
   });
-  await check('a request id already reserved for ANOTHER deal\'s reservation cannot be reused (rejected, nothing registered)', async () => {
+  /* B14-13 Production (Brad / Bones, 2026-10-12): begin no longer reads the new
+     request keys before writing them (a read of a missing key can leave a cached
+     "missing" that the save is then served). A conflict is found by the atomic
+     onlyIfNew write instead, so an EARLIER step of the conflicting reservation
+     may already be registered. It is rejected, the deal is not claimed, and the
+     conflicting reservation is never made current, so none of its steps can be
+     sent; withdrawing its registered steps is best-effort cleanup (here it
+     succeeds). Both reservations here are on the SAME deal; two distinct deals
+     and a failed cleanup are covered in test-current-offer-persistent-misses.cjs. */
+  await check('a request id already reserved by ANOTHER reservation on the same deal cannot be reused (rejected, deal not claimed, its own step unsendable, the original untouched)', async () => {
     fresh();
     const r1 = rid('shared');
     await beginBlur(r1);
     const keys = requestKeys();
-    const second = await begin('pass', [{ step: 'note', requestId: rid('p-note') }, { step: 'touch', requestId: r1 }]);
+    const pNote = rid('p-note');
+    const second = await begin('pass', [{ step: 'note', requestId: pNote }, { step: 'touch', requestId: r1 }]);
     assert.equal(second.statusCode, 409);
-    assert.deepEqual(requestKeys(), keys);
+    assert.equal(body(second).code, 'reservation_mismatch');
+    assert.ok(keys.every((k) => requestKeys().includes(k)), 'the original registrations are untouched');
+    const crypto = require('node:crypto');
+    const dg = (x) => crypto.createHash('sha256').update(x).digest('hex');
+    assert.equal(receipts.get('current-offer/request/' + dg(`${scopeT}:${r1}`)).barrierId, dg(r1), 'the shared id still belongs to its original reservation');
+    const decisions = [...receipts.keys()].filter((k) => k.startsWith('current-offer/decision/')).map((k) => receipts.get(k).d);
+    assert.deepEqual(decisions, ['withdrawn'], 'only the step registered to the conflicting reservation is withdrawn; the shared id is untouched');
+    const noteRes = await write('note.create', contact.id, { body: require('../src/lib/seller-call-outcome.ts').formatOutcomeNote({ opportunityId: opportunity.id, kind: 'pass', at: '2026-10-12T12:00:00.000Z', operator: null, reason: null, followUpAt: null, snapshot: { sellerPosition: null, currentOffer: 400000, targetAcquisitionPrice: null, maxSupportedOffer: null, expectedSpread: null, arv: null, repairs: null, readinessStatus: 'OFFER_READY' } }) }, pNote);
+    assert.equal(body(noteRes).outcome, 'not_sent'); assert.equal(notes.length, 0);
+    assert.equal((await offer(430000, r1)).statusCode, 200, 'the original reservation still saves');
   });
   await check('DISPATCH verifies the barrier\'s original step list: a stray request record naming the current barrier is NOT enough -- not_sent, no GHL write', async () => {
     fresh();
