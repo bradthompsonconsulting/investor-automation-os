@@ -23,6 +23,11 @@
 // "--start-minimized" opens the main window minimised (still on the taskbar, not hidden).
 // "--require-active" (VivoBook, 2026-10-12): Make Call acts only while the main window is the foreground window, like
 // the real AirDroid apparently did; a click while it is in the background is logged CLICK-IGNORED, not CLICK.
+// "--shift-on-activate=<mode>" (layout shift at activation, 2026-10-12): the first time the main window is activated
+// while the number field holds text (the helper's bring-forward, after its prefill), it changes the layout once and
+// logs SHIFTED <mode>. Modes: "move" (Make Call 12 px lower), "resize" (Make Call 30 px narrower), "window" (the whole
+// window 40 px right), "reparent" (Make Call moved out of the device page onto the window), "replace" (Make Call
+// destroyed and a new one put in its place), "hide" (Make Call hidden), "field" (the number field hidden).
 using System;
 using System.Drawing;
 using System.IO;
@@ -76,6 +81,26 @@ public static class FakeAirDroid {
     main.Controls.Add(page);
     field.TextChanged += (s, e) => Log("TEXT " + field.Text);
     bool requireActive = Array.IndexOf(args, "--require-active") > 0;
+    string shift = null;
+    foreach (var a in args) if (a.StartsWith("--shift-on-activate=")) shift = a.Substring(20);
+    bool shifted = false;
+    main.Activated += (s, e) => {
+      if (shift == null || shifted || field.Text.Length == 0) return;
+      shifted = true;
+      if (shift == "move") makeCall.Top += 12;
+      else if (shift == "resize") makeCall.Width -= 30;
+      else if (shift == "window") main.Left += 40;
+      else if (shift == "reparent") { grid.Controls.Remove(makeCall); main.Controls.Add(makeCall); makeCall.BringToFront(); }
+      else if (shift == "replace") {
+        grid.Controls.Remove(makeCall); makeCall.Dispose();
+        var again = new Panel { Left = 0, Top = 210, Width = 220, Height = 44, BackColor = Color.LightGreen };
+        again.MouseUp += (s2, e2) => Log("CLICK " + field.Text);
+        grid.Controls.Add(again);
+      }
+      else if (shift == "hide") makeCall.Visible = false;
+      else if (shift == "field") field.Visible = false;
+      Log("SHIFTED " + shift);
+    };
     makeCall.MouseUp += (s, e) => Log((requireActive && GetForegroundWindow() != main.Handle ? "CLICK-IGNORED " : "CLICK ") + field.Text);
     main.Shown += (s, e) => Log("READY");
     var state = FormWindowState.Normal;

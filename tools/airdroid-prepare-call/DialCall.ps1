@@ -23,6 +23,10 @@
        VivoBook a click posted while AirDroid was behind IAOS was sent but no call followed). Nothing is restored,
        moved, resized or minimised. If Windows does not put it in front, it stops: nothing is clicked or recorded.
        The number is read once more after it is in front.
+    4c. Recheck after activation (Brad / Bones, 2026-10-12): Make Call must still be the same live, visible, enabled
+       window, still inside the same visible device page, which is still inside the same Dialpad window, with exactly
+       the rectangle identified before activation; the number field must still be visible inside that page. Any
+       change (moved, resized, replaced, re-parented, hidden or disabled): stop, nothing clicked or recorded.
     5. Records the dial for the duplicate guard, then sends one click message pair at the panel's centre. No retry.
 
   The click is a posted window message. Whether AirDroid acted on it is not visible to this script; it reports only
@@ -231,6 +235,23 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
   if (-not $inFront) { Stop-With 11 "Windows did not bring the AirDroid Dialpad in front, so the click was not sent. Nothing was clicked. Click once on the AirDroid window's title bar, then click Call again." }
   if ($N::GetText($field) -cne $Number) { Stop-With 9 "The Dialpad number changed before the click. Nothing was clicked." }
   Write-Host 'AirDroid Dialpad brought in front.'
+
+  # ---- 4c. Recheck target validity, ancestry and geometry AFTER activation, before anything is recorded or clicked ----
+  # AirDroid lays itself out on its own thread when activated: let it settle (fixed, short) before rechecking.
+  Start-Sleep -Milliseconds 200
+  $after = Get-Rc $target
+  $sameAfter = ($after.L -eq $rect.L -and $after.T -eq $rect.T -and $after.R -eq $rect.R -and $after.B -eq $rect.B)
+  $validAfter = $N::IsWindow($target) -and $N::IsWindowVisible($target) -and $N::IsWindowEnabled($target)
+  $ancestryAfter = $N::IsWindowVisible($formH) -and $N::IsChild($formH, $target) -and $N::IsChild($mainH, $formH) -and
+    $N::IsWindow($field) -and $N::IsWindowVisible($field) -and $N::IsChild($formH, $field)
+  if (-not ($validAfter -and $ancestryAfter -and $sameAfter)) {
+    $why = @()
+    if (-not $validAfter) { $why += 'no longer the same visible, enabled control' }
+    if (-not $ancestryAfter) { $why += 'no longer inside the same Dialpad' }
+    if (-not $sameAfter) { $why += 'moved or resized' }
+    Stop-With 9 ("Make Call changed when AirDroid came in front ({0}). Nothing was clicked. Click Call again." -f ($why -join '; '))
+  }
+  if ($N::GetText($field) -cne $Number) { Stop-With 9 "The Dialpad number changed when AirDroid came in front. Nothing was clicked." }
 
   Wait-TestPause 'before dispatch'
 

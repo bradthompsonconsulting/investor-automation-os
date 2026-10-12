@@ -279,6 +279,38 @@ const CONNECTED = (out) => /call (?:is |was )?(?:connected|placed|answered)/i.te
       check('refused foreground: exit 11 with the plain instruction; no click of any kind; the dial is not recorded',
         [prep.status, d.status, /Windows did not bring the AirDroid Dialpad in front, so the click was not sent/.test(d.stdout), read(log).slice(from).filter((l) => /^CLICK/.test(l.kind)).length, fs.existsSync(guard)],
         [0, 11, true, 0, false]);
+      // ---- 6. Layout shift at activation (2026-10-12): after the bring-forward, the target is rechecked for validity,
+      //         ancestry and geometry; any change stops before the dial is recorded or anything is clicked. ----
+      for (const [mode, reason] of [
+        ['move', /moved\s+or\s+resized/], ['resize', /moved\s+or\s+resized/], ['window', /moved\s+or\s+resized/],
+        ['reparent', /no\s+longer\s+inside\s+the\s+same\s+Dialpad/], ['replace', /no\s+longer\s+the\s+same\s+visible,\s+enabled\s+control/],
+        ['hide', /no\s+longer\s+the\s+same\s+visible,\s+enabled\s+control/], ['field', /no\s+longer\s+inside\s+the\s+same\s+Dialpad/],
+      ]) {
+        const fk = await startFake(['--hidden-page', '--second-form', '--require-active', `--shift-on-activate=${mode}`]);
+        toFront();
+        const g = fresh('guard') + '.json';
+        const num = `20255505${String(10 + mode.length).padStart(2, '0')}`;
+        const rr = await launchFromStandIn(num, g);
+        await sleep(400);
+        const evs = read(fk.log);
+        console.log(`INFO shift ${mode}: ${JSON.stringify(rr.out.slice(Math.max(0, rr.out.indexOf('DIAL STOPPED')), rr.out.indexOf('DIAL STOPPED') + 400))}`);
+        check(`layout shift at activation (${mode}): exit 9 "changed when AirDroid came in front" (${reason.source}); no click of any kind; the dial not recorded`,
+          [evs.some((l) => l.kind === 'SHIFTED'), rr.code, /Make\s+Call\s+changed\s+when\s+AirDroid\s+came\s+in\s+front/.test(rr.out), reason.test(rr.out), evs.filter((l) => /^CLICK/.test(l.kind)).length,
+            fs.existsSync(g) && fs.readFileSync(g, 'utf8').includes(num)],
+          [true, 9, true, true, 0, false]);
+      }
+      {
+        // Control inside the suite: the same activation with no layout change still clicks once.
+        const fk = await startFake(['--hidden-page', '--second-form', '--require-active']);
+        toFront();
+        const rr = await launchFromStandIn('2025550599');
+        await sleep(400);
+        check('no layout change at activation: exit 0, ONE accepted click', [rr.code, read(fk.log).filter((l) => l.kind === 'CLICK').map((l) => l.text)], [0, ['2025550599']]);
+      }
+      check('static: the post-activation recheck (validity, ancestry, geometry) comes after the bring-forward and before the dial is recorded',
+        (() => { const d = fs.readFileSync(DIAL, 'utf8'); const a = d.indexOf('SetForegroundWindow($mainH)'), b = d.indexOf('# ---- 4c.'), c2 = d.indexOf('Set-Content -LiteralPath $GuardFile'); return a > -1 && a < b && b < c2
+          && /\$N::IsChild\(\$formH, \$target\) -and \$N::IsChild\(\$mainH, \$formH\)/.test(d) && /\$sameAfter = \(\$after\.L -eq \$rect\.L/.test(d); })(), true);
+
       // A real refusal: an IAOS stand-in in front that does NOT grant foreground. Windows refuses; nothing is clicked.
       stand.kill();
       await sleep(300);
