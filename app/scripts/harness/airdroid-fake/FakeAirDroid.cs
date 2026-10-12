@@ -10,6 +10,9 @@
 // Start-up simulation (test-airdroid-start.cjs), any order after args[0]: "--window-after=MS" shows the main window
 // only after MS ms; "--dialpad-after=MS" shows the device page (frmAirCloud with the field) only MS ms after the
 // window; "--no-dialpad" never shows it. Without these flags the window and Dialpad appear at once, as before.
+// Tray simulation (Brad, VivoBook, 2026-10-12): "--tray" HIDES the main window whenever it is minimised (logged HIDDEN),
+// as a tray application does; "--start-hidden" opens it hidden (logged HIDDEN). A hidden window is not in the UI
+// Automation tree. "--taskbar" may now appear anywhere after args[0].
 using System;
 using System.Drawing;
 using System.IO;
@@ -32,7 +35,9 @@ public static class FakeAirDroid {
     }
     if (windowAfter > 0) { Log("STARTED"); System.Threading.Thread.Sleep(windowAfter); }
     var main = new Form { Text = "AirDroid", Width = 360, Height = 520, StartPosition = FormStartPosition.Manual,
-      Location = new Point(40, 40), ShowInTaskbar = args.Length > 1 && args[1] == "--taskbar" };
+      Location = new Point(40, 40), ShowInTaskbar = Array.IndexOf(args, "--taskbar") > 0 };
+    bool tray = Array.IndexOf(args, "--tray") > 0;
+    bool startHidden = Array.IndexOf(args, "--start-hidden") > 0;
     var page = new Panel { Text = "frmAirCloud", AccessibleName = "frmAirCloud", Dock = DockStyle.Fill,
       Visible = !noDialpad && dialpadAfter == 0 };
     if (!noDialpad && dialpadAfter > 0) {
@@ -59,7 +64,13 @@ public static class FakeAirDroid {
       if (main.WindowState == state) return;
       state = main.WindowState;
       Log(state == FormWindowState.Minimized ? "MINIMIZED" : "RESTORED");
+      if (tray && state == FormWindowState.Minimized) { main.Hide(); Log("HIDDEN"); }
     };
+    if (startHidden) {
+      // Shown, then hidden at once: a started tray application with no visible window.
+      main.WindowState = FormWindowState.Minimized; state = FormWindowState.Minimized;
+      main.Shown += (s, e) => { main.Hide(); Log("HIDDEN"); };
+    }
     Application.Run(main);
   }
 }

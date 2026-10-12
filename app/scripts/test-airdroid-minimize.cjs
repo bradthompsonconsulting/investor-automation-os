@@ -173,6 +173,20 @@ let air = null;
         [false, 1]);
       check('static: a minimise problem is only reported; the result stays 0 (the click was sent)',
         [/\} catch \{ Write-Host "AIRDROID NOT MINIMISED: [^\n]*\}\s*\n\s*exit 0/.test(step), /AIRDROID NOT MINIMISED: Windows did not minimise it/.test(step)], [true, true]);
+      const prep = strip(fs.readFileSync(path.join(TOOLS, 'PrepareCall.ps1'), 'utf8'));
+      const getHidden = prep.slice(prep.indexOf('function Get-HiddenMain'), prep.indexOf('function Restore-HiddenMain'));
+      const restoreFn = prep.slice(prep.indexOf('function Restore-HiddenMain'), prep.indexOf('function Walk'));
+      const step2a = prep.slice(prep.indexOf('if ($mains.Count -eq 0) {'), prep.indexOf('if ($mains.Count -ne 1) { Stop-With 3 "Expected exactly one AirDroid main window, found $($mains.Count)." }'));
+      check('static (restore): a candidate only when it is the ONE unowned "AirDroid" window of the AirDroid process, and it is hidden or minimised',
+        [/\$N::TopLevel\(\$pids, 'AirDroid'\)/.test(getHidden), /\$cands\.Count -eq 1 -and \(\$hidden -or \$minimised\)/.test(getHidden), /GetWindow\(h, 4\) == IntPtr\.Zero/.test(fs.readFileSync(path.join(TOOLS, 'PrepareCall.ps1'), 'utf8'))],
+        [true, true, true]);
+      check('static (restore): one SW_RESTORE, then it must be found again as that same window',
+        [(restoreFn.match(/ShowWindow\(/g) || []).length, /ShowWindow\(\$hw, 9\)/.test(restoreFn), /\$again\.Count -eq 1 -and \[IntPtr\]\$again\[0\]\.Current\.NativeWindowHandle -eq \$hw/.test(restoreFn)],
+        [1, true, true]);
+      check('static (restore): only when no main window is found; CheckOnly stops before any restore',
+        [step2a.length > 0, step2a.indexOf('if ($CheckOnly)') > -1 && step2a.indexOf('if ($CheckOnly)') < step2a.indexOf('Restore-HiddenMain')], [true, true]);
+      check('static (restore): no keystrokes, clicks, closing, process start or AirDroid file reads',
+        [/SendKeys|keybd_event|SendInput|PostMessage|0x0010|WM_CLOSE|Stop-Process|Start-Process|Get-Content|AppData|\.ini|\.log/i.test(getHidden + restoreFn + step2a)], [false]);
       const handler = lf(fs.readFileSync(HANDLER, 'utf8'));
       const launcher = lf(fs.readFileSync(path.join(APP, 'src', 'lib', 'airdroid-launch.ts'), 'utf8'));
       check('static: no title marker, origin lookup or browser selection anywhere (the focus-return approach is not here)',
@@ -200,6 +214,14 @@ let air = null;
     check('setup: the fake Dialpad and two unrelated windows are open and not minimised',
       [iconic(before.air), iconic(before.u1), iconic(before.u2)], ['False', 'False', 'False']);
     const since = (from, kind) => read(AIR_LOG).slice(from).filter((l) => l.kind === kind);
+
+    // ---- 0. CheckOnly on a visible AirDroid: unchanged (passes, types nothing, restores or minimises nothing) ----
+    {
+      const from = read(AIR_LOG).length;
+      const c0 = spawnSync('powershell.exe', [...PS, '-File', path.join(TOOLS, 'PrepareCall.ps1'), '-Number', '2025550200', '-CheckOnly', '-TestProcessName', FAKE], { encoding: 'utf8' });
+      check('CheckOnly, visible AirDroid: exit 0; nothing typed, restored or minimised',
+        [c0.status, read(AIR_LOG).slice(from).filter((l) => ['TEXT', 'CLICK', 'RESTORED', 'MINIMIZED'].includes(l.kind)).length, /restored/i.test(c0.stdout)], [0, 0, false]);
+    }
 
     // ---- 1. A dial: one click, then exactly that AirDroid window minimises ----
     {
@@ -285,6 +307,48 @@ let air = null;
     }
 
     check('across all launches: the fake Dialpad saw exactly one click per completed dial (2)', read(AIR_LOG).filter((l) => l.kind === 'CLICK').length, 2);
+
+    // ---- 4. Tray (Brad, VivoBook, 2026-10-12): AirDroid HIDES its window when minimised ----
+    // "PREPARE CALL STOPPED: Expected exactly one AirDroid main window, found 0." A hidden window is not in the UI
+    // Automation tree, so the call after a minimised one found nothing. PrepareCall now restores that one window first.
+    {
+      air.kill();
+      spawnSync('taskkill', ['/IM', `${FAKE}.exe`, '/F'], { stdio: 'ignore' });
+      await sleep(500);
+      const TRAY_LOG = path.join(TMP, 'fake-airdroid-tray.log');
+      air = await startWindow(path.join(TMP, `${FAKE}.exe`), TRAY_LOG, ['--taskbar', '--tray']);
+      procs.push(air);
+      const tray = (from, kinds) => read(TRAY_LOG).slice(from).filter((l) => kinds.includes(l.kind));
+      check('tray setup: the fake AirDroid (hides when minimised) is open and visible', iconic(airState()), 'False');
+
+      const r1 = launch('2025550211');
+      await sleep(500);
+      check('tray, first call: exit 0, one click, then minimised and HIDDEN (no visible AirDroid window left)',
+        [r1.code, tray(0, ['CLICK']).map((c) => c.text), tray(0, ['MINIMIZED', 'HIDDEN']).map((l) => l.kind), airState()],
+        [0, ['2025550211'], ['MINIMIZED', 'HIDDEN'], 'none']);
+
+      const at = read(TRAY_LOG).length;
+      const c = spawnSync('powershell.exe', [...PS, '-File', path.join(TOOLS, 'PrepareCall.ps1'), '-Number', '2025550212', '-CheckOnly', '-TestProcessName', FAKE], { encoding: 'utf8' });
+      check('tray, CheckOnly: stops (exit 3), says the window is hidden or minimised, restores and types nothing',
+        [c.status, /hidden or minimised/.test(c.stdout), tray(at, ['RESTORED', 'TEXT', 'CLICK']).length, airState()], [3, true, 0, 'none']);
+
+      const from = read(TRAY_LOG).length;
+      const r2 = launch('2025550213');
+      await sleep(500);
+      const order = tray(from, ['RESTORED', 'TEXT', 'CLICK', 'MINIMIZED', 'HIDDEN']).map((l) => l.kind);
+      check('tray, next call: the hidden window is restored, the number placed, one click, then minimised and hidden again',
+        [r2.code, order[0], tray(from, ['CLICK']).map((l) => l.text), order.slice(-2), /AirDroid main window restored/.test(r2.out), /Expected exactly one AirDroid main window/.test(r2.out)],
+        [0, 'RESTORED', ['2025550213'], ['MINIMIZED', 'HIDDEN'], true, false]);
+      const from3 = read(TRAY_LOG).length;
+      const r3 = launch('2025550214');
+      await sleep(500);
+      const order3 = tray(from3, ['RESTORED', 'TEXT', 'CLICK', 'MINIMIZED', 'HIDDEN']).map((l) => l.kind);
+      check('tray, third consecutive call: restored, one click on its number, minimised and hidden again',
+        [r3.code, order3[0], tray(from3, ['CLICK']).map((l) => l.text), order3.slice(-2)], [0, 'RESTORED', ['2025550214'], ['MINIMIZED', 'HIDDEN']]);
+      check('tray: the unrelated windows are still untouched', [win('title', u1Title), win('title', u2Title)], [before.u1, before.u2]);
+      check('tray: lock released cleanly', await lockState(), 'FREE');
+      check('tray: exactly one click per completed dial (3)', tray(0, ['CLICK']).length, 3);
+    }
   } catch (error) {
     failures += 1;
     console.log(`FAIL harness error: ${error && error.stack ? error.stack : error}`);

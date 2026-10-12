@@ -8,7 +8,10 @@
      time (-ReadyTimeoutSec, default 60) until exactly one AirDroid main window shows exactly one Dialpad number field
      (the same guarded lookup as step 3). The wait only looks; it changes nothing. If that does not happen in time it
      stops (exit 8) with a clear message, and no number is entered and no call is placed.
-  2. Finds exactly one running AirDroid main window and brings it forward.
+  2. Finds exactly one running AirDroid main window and brings it forward. If AirDroid's main window is hidden or
+     minimised (DialCall.ps1 minimises it after each call, and AirDroid may then hide it to the tray), it is restored
+     first -- only when it is the one unowned top-level window titled exactly "AirDroid" in AirDroid's process.
+     Step 1c's wait does the same, once, if a freshly started AirDroid opens hidden in the tray.
   3. Finds the already-open Dialpad number field with the guarded lookup: exactly one visible standard
      Windows text field (class *.EDIT.*) inside AirDroid's visible device page form "frmAirCloud".
      It stops if there is none, or more than one.
@@ -119,6 +122,23 @@ try {
 [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
 [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+public delegate bool EnumProc(IntPtr h, IntPtr l);
+[DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+[DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+public static System.Collections.Generic.List<IntPtr> TopLevel(uint[] pids, string title) {
+  var found = new System.Collections.Generic.List<IntPtr>();
+  EnumWindows((h, l) => {
+    uint pid; GetWindowThreadProcessId(h, out pid);
+    if (System.Array.IndexOf(pids, pid) >= 0 && GetWindow(h, 4) == IntPtr.Zero) {   // GW_OWNER: unowned only
+      var sb = new StringBuilder(256); GetWindowText(h, sb, 256);
+      if (sb.ToString() == title) found.Add(h);
+    }
+    return true;
+  }, IntPtr.Zero);
+  return found;
+}
 public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMessage(h, 0x000D, (IntPtr)256, sb); return sb.ToString(); }
 '@
   }
@@ -137,6 +157,33 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
     }
     return $found
   }
+  # ---- Hidden or minimised main window (Brad, VivoBook, 2026-10-12) ----
+  # DialCall.ps1 minimises AirDroid after each call; AirDroid can then hide that window (to the tray), and a hidden
+  # window is not in the UI Automation tree, so the next call found 0. Used only when UI Automation finds no main
+  # window: the candidate must be AirDroid's ONE unowned top-level window titled exactly "AirDroid", hidden or
+  # minimised. Restoring it is one SW_RESTORE (as the tray's own Open would), then it must be found again as that
+  # same window. Counts only are reported -- no titles, numbers or AirDroid files.
+  function Get-HiddenMain {
+    $pids = [uint32[]]@(Get-Process -Name $processName -ErrorAction SilentlyContinue | ForEach-Object { [uint32]$_.Id })
+    $cands = @(if ($pids.Count) { $N::TopLevel($pids, 'AirDroid') })
+    $hidden = @($cands | Where-Object { -not $N::IsWindowVisible($_) }).Count
+    $minimised = @($cands | Where-Object { $N::IsIconic($_) }).Count
+    [pscustomobject]@{
+      Handle = if ($cands.Count -eq 1 -and ($hidden -or $minimised)) { [IntPtr]$cands[0] } else { [IntPtr]::Zero }
+      Text = "unowned top-level AirDroid windows: $($cands.Count), hidden: $hidden, minimised: $minimised"
+    }
+  }
+  function Restore-HiddenMain([IntPtr]$hw) {
+    [void]$N::ShowWindow($hw, 9)   # SW_RESTORE: shows a hidden window and un-minimises it
+    for ($i = 0; $i -lt 30 -and -not ($N::IsWindowVisible($hw) -and -not $N::IsIconic($hw)); $i++) { Start-Sleep -Milliseconds 100 }
+    for ($i = 0; $i -lt 20; $i++) {
+      $again = @(Find-Mains)
+      if ($again.Count -gt 0) { return ($again.Count -eq 1 -and [IntPtr]$again[0].Current.NativeWindowHandle -eq $hw) }
+      Start-Sleep -Milliseconds 100
+    }
+    return $false
+  }
+
   # Step 3's guarded lookup: exactly one visible EDIT inside the visible device page form "frmAirCloud".
   $script:hits = @()
   function Walk($el, [int]$depth, [bool]$inForm) {
@@ -168,8 +215,18 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
     } catch { Stop-With 8 "AirDroid could not be started ($($_.Exception.Message)). $notReady" }
     $deadline = (Get-Date).AddSeconds($ReadyTimeoutSec)
     $state = 'AirDroid has not opened its window yet'
+    $restoreTried = $false
     while ($true) {
       $m = @(Find-Mains)
+      if ($m.Count -eq 0 -and -not $restoreTried) {
+        # A freshly started AirDroid may open hidden in the tray: restore that one window once (see Get-HiddenMain).
+        $hm = Get-HiddenMain
+        if ($hm.Handle -ne [IntPtr]::Zero) {
+          $restoreTried = $true
+          if (Restore-HiddenMain $hm.Handle) { Write-Host 'AirDroid main window restored (it started hidden or minimised).' }
+          $m = @(Find-Mains)
+        }
+      }
       if ($m.Count -eq 1) {
         $script:hits = @(); Walk $m[0] 0 $false
         if ($script:hits.Count -eq 1) { break }
@@ -186,6 +243,15 @@ public static string GetText(IntPtr h) { var sb = new StringBuilder(256); SendMe
   $procs = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
   if ($procs.Count -eq 0) { Stop-With 3 "AirDroid is not running. Start AirDroid and open the Dialpad (My devices > your phone > Dialpad)." }
   $mains = @(Find-Mains)
+  # ---- 2a. Restore a hidden or minimised main window (see Get-HiddenMain). CheckOnly restores nothing. ----
+  if ($mains.Count -eq 0) {
+    $hm = Get-HiddenMain
+    if ($hm.Handle -eq [IntPtr]::Zero) { Stop-With 3 "Expected exactly one AirDroid main window, found 0 ($($hm.Text)). Open AirDroid from its tray icon and try again." }
+    if ($CheckOnly) { Stop-With 3 "AirDroid's main window is hidden or minimised ($($hm.Text)); CheckOnly restores nothing." }
+    if (-not (Restore-HiddenMain $hm.Handle)) { Stop-With 3 "AirDroid's main window did not come back after restoring it. Open AirDroid from its tray icon and try again." }
+    Write-Host 'AirDroid main window restored (it was hidden or minimised).'
+    $mains = @(Find-Mains)
+  }
   if ($mains.Count -ne 1) { Stop-With 3 "Expected exactly one AirDroid main window, found $($mains.Count)." }
   $main = $mains[0]
   $mainH = [IntPtr]$main.Current.NativeWindowHandle

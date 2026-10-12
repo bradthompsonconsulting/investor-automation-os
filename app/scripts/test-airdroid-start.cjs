@@ -106,9 +106,10 @@ const lockState = () => new Promise((resolve) => { probe.waiting.push(resolve); 
         [true, true, true]);
       check('static: the start-up step runs only with -StartIfNotRunning, never with -CheckOnly, only when AirDroid is not running, and a test run never starts the real AirDroid',
         /if \(\$StartIfNotRunning -and -not \$CheckOnly -and \(-not \$TestProcessName -or \$TestLaunchPath\) -and @\(Get-Process -Name \$processName -ErrorAction SilentlyContinue\)\.Count -eq 0\)/.test(prep), true);
-      check('static: the wait is bounded (5-180 s, default 60) and only looks: no text set, no click, no keys while waiting',
-        [/\[ValidateRange\(5, 180\)\]\[int\]\$ReadyTimeoutSec = 60/.test(prep), /0x000C|0x0201|0x0202|SendKeys|SetForegroundWindow|BringWindowToTop|ShowWindow/.test(start)],
-        [true, false]);
+      check('static: the wait is bounded (5-180 s, default 60): no text set, no click, no keys while waiting; its only window change is at most ONE restore of a hidden AirDroid main window',
+        [/\[ValidateRange\(5, 180\)\]\[int\]\$ReadyTimeoutSec = 60/.test(prep), /0x000C|0x0201|0x0202|SendKeys|SetForegroundWindow|BringWindowToTop|ShowWindow/.test(start),
+          (start.match(/Restore-HiddenMain/g) || []).length, /\$m\.Count -eq 0 -and -not \$restoreTried/.test(start), /\$restoreTried = \$true/.test(start)],
+        [true, false, 1, true, true]);
       check('static: not ready in time is exit 8 and says no call was placed',
         [/Stop-With 8 "AirDroid was started but was not ready within \$ReadyTimeoutSec seconds/.test(prep), /no call was placed/.test(start)], [true, true]);
       check('static: the real start target is the installed AirDroid.exe; a test launch path needs a test process name',
@@ -181,6 +182,28 @@ const lockState = () => new Promise((resolve) => { probe.waiting.push(resolve); 
           /No number was entered and no call was placed/.test(r.out), /CLICK SENT ONCE/.test(r.out)], [true, true, false]);
       check('not ready in time: nothing typed, no click, nothing minimised; AirDroid left running; lock released',
         [kinds(log).filter((x) => ['TEXT', 'CLICK', 'MINIMIZED'].includes(x)), fakeCount(), await lockState()], [[], 1, 'FREE']);
+    }
+    await killFakes();
+
+    // ---- 4b. Closed AirDroid that starts hidden in the tray (Brad, VivoBook, 2026-10-12), then a consecutive call ----
+    {
+      const log = fresh('air') + '.log';
+      const r = launch('2025550306', { log, flags: ['--tray', '--start-hidden'] });
+      await sleep(500);
+      const order = kinds(log).filter((x) => ['READY', 'HIDDEN', 'RESTORED', 'TEXT', 'CLICK', 'MINIMIZED'].includes(x));
+      check('closed, starts hidden in the tray: exit 0; started, hidden, restored once, number, ONE click, minimised and hidden again',
+        [r.code, order, read(log).filter((l) => l.kind === 'CLICK').map((l) => l.text)],
+        [0, ['READY', 'HIDDEN', 'RESTORED', 'TEXT', 'CLICK', 'MINIMIZED', 'HIDDEN'], ['2025550306']]);
+      check('closed, starts hidden: says it started AirDroid, restored its window, and is ready',
+        [/starting it/.test(r.out), /AirDroid main window restored \(it started hidden or minimised\)/.test(r.out), /AirDroid is ready: one Dialpad found/.test(r.out)], [true, true, true]);
+      const before = read(log).length;
+      const r2 = launch('2025550307', { log: fresh('unused') + '.log' });
+      await sleep(500);
+      const order2 = read(log).slice(before).map((l) => l.kind).filter((x) => ['RESTORED', 'TEXT', 'CLICK', 'MINIMIZED', 'HIDDEN'].includes(x));
+      check('consecutive call (AirDroid hidden in the tray by the previous call): exit 0, nothing new started, restored, ONE click, minimised and hidden',
+        [r2.code, fakeCount(), /starting it/.test(r2.out), order2, read(log).slice(before).filter((l) => l.kind === 'CLICK').map((l) => l.text)],
+        [0, 1, false, ['RESTORED', 'TEXT', 'CLICK', 'MINIMIZED', 'HIDDEN'], ['2025550307']]);
+      check('after the tray calls: lock released', await lockState(), 'FREE');
     }
     await killFakes();
 
