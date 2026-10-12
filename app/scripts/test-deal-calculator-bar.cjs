@@ -58,10 +58,10 @@ for (const p of [computePath, board8Path, barPath]) {
 
 const { computeUnderwriting } = require(computePath);
 const { computeBoard8Economics, computeExpectedSpread } = require(board8Path);
-const { buildDealCalculatorBarCells, DEAL_CALC_BAR_LABELS } = require(barPath);
+const { buildDealCalculatorBarCells, buildSpreadStatus, formatWholeDollars, DEAL_CALC_BAR_LABELS } = require(barPath);
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 29;
+const FLOOR = 67;
 let failures = 0;
 let checks = 0;
 
@@ -170,6 +170,99 @@ const UNAVAILABLE_ECONOMICS = computeBoard8Economics(computeUnderwriting(underwr
 
   const noSpreadComputedYet = buildDealCalculatorBarCells({ arv: 315000, repairs: 41000, testPrice: null, board8: GOLDEN_ECONOMICS, expectedSpread: null });
   check('Spread waits before any ExpectedSpread has been computed at all', noSpreadComputedYet.find((c) => c.key === 'spread').value.kind, 'waiting');
+}
+
+// ============================================================
+// B15-26 (INV-134) -- spread status, warnings only. Two checks (Jess
+// ruling 2026-10-07, option a): the Standard Minimum AND the active
+// assignment mode's own required spread (figures.assignmentSpread), green
+// only when both are met. Golden economics: endBuyerMaxPrice
+// 181,363.203..., Standard Minimum $5,000, 25% of Buyer Profit spread
+// $11,812.50. Every status carries text; color is never the only signal.
+// ============================================================
+{
+  const NOTE = ' This is not a net-profit check.';
+  const run = (assignment, testPrice) => {
+    const result = computeUnderwriting(underwritingInputs({ assignment }));
+    const b8 = computeBoard8Economics(result);
+    const spread = computeExpectedSpread({ endBuyerMaxPrice: b8.endBuyerMaxPrice, referenceKind: 'test_price', referencePrice: testPrice });
+    return buildSpreadStatus(b8, spread, { mode: assignment.kind, requiredSpread: result.figures.assignmentSpread });
+  };
+  const EBM = GOLDEN_ECONOMICS.endBuyerMaxPrice;
+  const STD = { kind: 'standard' };
+  const PS = { kind: 'profit_share' };
+
+  // Standard Minimum mode: the two requirements are one number.
+  check('standard: exactly at Max (spread $5,000) is green', run(STD, EBM - 5000).kind, 'meets');
+  check('standard: green text names the standard minimum and says it is not a net-profit check', run(STD, EBM - 5000).text, 'Meets the $5,000 standard minimum.' + NOTE);
+  check('standard: $3,363.20 spread is amber with the exact shortfall', run(STD, 178000).text, '$1,637 short of the $5,000 standard minimum.');
+  check('standard: shortfall carried is exact and unrounded', Math.abs(run(STD, 178000).shortfalls[0].shortfall - (5000 - (EBM - 178000))) < 1e-9, true);
+
+  // 25% of Buyer Profit mode (the calculator default) -- the review's blocker.
+  const psAtMax = run(PS, EBM - 5000);
+  check('profit_share: meeting $5,000 but missing the mode spread is NOT green', psAtMax.kind, 'short');
+  check('profit_share: names the met minimum and the missed mode requirement with its shortfall', psAtMax.text,
+    'Meets the $5,000 standard minimum, but $6,813 short of the 25% of Buyer Profit spread ($11,813).');
+  check('profit_share: the one shortfall is the mode requirement, exact', psAtMax.shortfalls.map((f) => [f.requirement, f.required, Math.round(f.shortfall * 1e6) / 1e6]), [['assignment_mode', 11812.5, 6812.5]]);
+  check('profit_share: spread exactly at the mode requirement is green, naming both', run(PS, EBM - 11812.5).text,
+    'Meets the $5,000 standard minimum and the 25% of Buyer Profit spread ($11,813).' + NOTE);
+  check('profit_share: margin is measured over the higher requirement', run(PS, 150000).text,
+    'Meets the $5,000 standard minimum and the 25% of Buyer Profit spread ($11,813), $19,551 above.' + NOTE);
+  check('profit_share: both missed are both named', run(PS, 178000).text,
+    '$1,637 short of the $5,000 standard minimum; $8,449 short of the 25% of Buyer Profit spread ($11,813).');
+
+  // Manual mode, above and below the standard minimum.
+  const m15 = run({ kind: 'manual', amount: 15000 }, EBM - 5000);
+  check('manual $15,000: meeting $5,000 but not $15,000 is amber', m15.kind, 'short');
+  check('manual $15,000: names the missed Manual spread', m15.text, 'Meets the $5,000 standard minimum, but $10,000 short of the Manual spread ($15,000).');
+  check('manual $15,000: meeting both is green', run({ kind: 'manual', amount: 15000 }, EBM - 15000).kind, 'meets');
+  const m3 = run({ kind: 'manual', amount: 3000 }, EBM - 3000);
+  check('manual $3,000: meeting the Manual spread but not $5,000 is amber, never green', m3.kind, 'short');
+  check('manual $3,000: names the met Manual spread and the missed standard minimum', m3.text, 'Meets the Manual spread ($3,000), but $2,000 short of the $5,000 standard minimum.');
+  check('manual $3,000: meeting $5,000 meets both', run({ kind: 'manual', amount: 3000 }, EBM - 5000).kind, 'meets');
+
+  // Negative.
+  check('negative spread is red and names both requirements', run(PS, 190000).text,
+    "Negative spread: this Test Price is $8,637 above the end buyer's maximum price, so there is no assignment spread. Required: the $5,000 standard minimum and the 25% of Buyer Profit spread ($11,813).");
+  check('negative in standard mode is red', run(STD, 190000).kind, 'negative');
+
+  // Neutral: no implied success.
+  const noTest = buildSpreadStatus(GOLDEN_ECONOMICS, computeExpectedSpread({ endBuyerMaxPrice: EBM, referenceKind: 'test_price', referencePrice: null }), { mode: 'standard', requiredSpread: 5000 });
+  check('no Test Price -> neutral, naming the missing input', [noTest.kind, noTest.text], ['neutral', 'No spread check yet: enter a Test Price.']);
+  check('no economics -> neutral', buildSpreadStatus(UNAVAILABLE_ECONOMICS, null, null).kind, 'neutral');
+  check('no active requirement -> neutral', buildSpreadStatus(GOLDEN_ECONOMICS, null, null).kind, 'neutral');
+
+  // Walkthrough 2 figures through the shared engine (ARV 639,863, repairs 20,000).
+  const wt2 = (testPrice) => {
+    const result = computeUnderwriting(underwritingInputs({ arv: D(639863), repairs: D(20000) }));
+    const b8 = computeBoard8Economics(result);
+    return buildSpreadStatus(b8, computeExpectedSpread({ endBuyerMaxPrice: b8.endBuyerMaxPrice, referenceKind: 'test_price', referencePrice: testPrice }), { mode: 'standard', requiredSpread: result.figures.assignmentSpread });
+  };
+  check('Walkthrough 2 at 430,000 is amber', wt2(430000).kind, 'short');
+  check('Walkthrough 2 at 440,000 is red', wt2(440000).kind, 'negative');
+
+  // Exact classification, shared display rounding. Synthetic B8-03-shaped
+  // objects pin the exact spread so each sub-dollar edge is tested directly.
+  const b8With = (minimum) => ({ status: 'calculated', endBuyerMaxPrice: 0, requiredBuyerProfit: 0, maxSupportedOffer: 0, standardMinimumAssignmentSpread: minimum, standardMinimumLevel: 'iaos_starter', target: { status: 'unavailable', reason: 'n/a' } });
+  const spreadOf = (spread) => ({ status: 'calculated', referenceKind: 'test_price', referencePrice: 0, endBuyerMaxPrice: 0, expectedSpread: spread });
+  const exact = (spread, minimum = 5000) => buildSpreadStatus(b8With(minimum), spreadOf(spread), { mode: 'standard', requiredSpread: minimum });
+  const cell = (spread) => buildDealCalculatorBarCells({ arv: null, repairs: null, testPrice: null, board8: null, expectedSpread: spreadOf(spread) }).find((c) => c.key === 'spread').value.text;
+
+  check('-0.5: red, never amber', exact(-0.5).kind, 'negative');
+  check('-0.5: cell shows -$1 (halves away from zero)', cell(-0.5), '-$1');
+  check('-0.4: a negative fraction stays red', exact(-0.4).kind, 'negative');
+  check('-0.4: cell shows $0, never -$0', cell(-0.4), '$0');
+  check('-0.4: text says less than $1 above', exact(-0.4).text, "Negative spread: this Test Price is less than $1 above the end buyer's maximum price, so there is no assignment spread. Required: the $5,000 standard minimum.");
+  check('-6,352.50: cell and text agree on $6,353', [cell(-6352.5), exact(-6352.5).text.indexOf('$6,353 above') >= 0], ['-$6,353', true]);
+  check('4,999.50 displays $5,000 but is amber', [cell(4999.5), exact(4999.5).kind], ['$5,000', 'short']);
+  check('4,999.50: sub-dollar shortfall reads "Less than $1 below"', exact(4999.5).text, 'Less than $1 below the $5,000 standard minimum.');
+  check('4,999.99: one cent short is amber', exact(4999.99).kind, 'short');
+  check('4,999.00: exactly $1 short shows the amount', exact(4999).text, '$1 short of the $5,000 standard minimum.');
+  check('5,000.00 exactly is green', exact(5000).kind, 'meets');
+  check('5,000.50: green with no sub-dollar margin amount', exact(5000.5).text, 'Meets the $5,000 standard minimum.' + NOTE);
+  check('fractional minimum compared exactly', exact(5000.25, 5000.5).kind, 'short');
+  check('0 exactly is amber, not red', exact(0).kind, 'short');
+  check('formatWholeDollars never shows -$0', [formatWholeDollars(-0), formatWholeDollars(-0.49), formatWholeDollars(0.5), formatWholeDollars(169550.5)], ['$0', '$0', '$1', '$169,551']);
 }
 
 // ============================================================
