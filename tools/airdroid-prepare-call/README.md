@@ -13,9 +13,11 @@ dialing through IAOS is not yet proven:** the link is not registered and no live
 
 **Visible Dialpad (Brad, 2026-10-12; current):** Brad opens AirDroid and his phone's Dialpad once, at the start of
 work, and keeps that AirDroid window **visible** beside IAOS. It may be a small window in a corner; he sizes and places
-it by hand (the helper never moves or resizes it). Each IAOS Call enters the number, verifies it and clicks Make Call
-once, then leaves AirDroid exactly as it was. The helper never starts AirDroid, never restores a hidden or minimised
-window, never brings it forward and never minimises it. If exactly one visible AirDroid window with the Dialpad cannot
+it by hand (the helper never moves or resizes it). Each IAOS Call enters the number, verifies it, brings that one
+identified Dialpad window in front once, and clicks Make Call once; AirDroid then stays where it is, in front of IAOS
+until Brad clicks back. (VivoBook, 2026-10-12: a click sent while AirDroid was behind IAOS placed no call.) If Windows
+will not bring it in front, nothing is clicked (exit 11). The helper never starts AirDroid, never restores a hidden or
+minimised window, never moves or resizes it and never minimises it. "Click sent" is not a connected call. If exactly one visible AirDroid window with the Dialpad cannot
 be identified, it stops with a plain instruction to open it, and never guesses between windows.
 
 **Check the Dialpad (no call):** after sizing AirDroid, run `DialCall.ps1 -CheckOnly` with no number (the installer
@@ -25,7 +27,7 @@ clicks nothing. If AirDroid will not shrink far enough for both to stay visible,
 | File | Purpose |
 |---|---|
 | `PrepareCall.ps1` | The reviewed standalone prefill helper. Prefill only. Byte-identical to the 2026-10-09 prototype (SHA-256 `3a7d68fd…e520`) up to `ef37102`; changed after Bones's review: it now takes the IAOS call lock (or, with `-CallerHoldsLock`, confirms the handler holds it) before touching the Dialpad, and `-Automatic` suppresses its "press Make Call yourself" line in the automatic path. Standalone use keeps that line. |
-| `DialCall.ps1` | Runs after a successful prefill. Duplicate guard (one call at a time under the IAOS call lock; the same number is refused for 30 s), exact recheck of the Dialpad number, structural Make Call identification (the rule validated against Brad's pointing), recheck, then **one click, no retry**. Reports only "click sent once", and leaves AirDroid as it was (visible). `-CheckOnly` is read-only; without a number it is the "check the Dialpad" mode. `-GuardOnly` runs only the guard (tests). |
+| `DialCall.ps1` | Runs after a successful prefill. Duplicate guard (one call at a time under the IAOS call lock; the same number is refused for 30 s), exact recheck of the Dialpad number, structural Make Call identification (the rule validated against Brad's pointing), recheck, then **one click, no retry**. Brings the identified Dialpad window in front once just before the click (exit 11, nothing clicked, if Windows refuses). Reports only "click sent once", never a connected call, and leaves AirDroid where it is. `-CheckOnly` is read-only; without a number it is the "check the Dialpad" mode. `-GuardOnly` runs only the guard (tests). |
 | `IaosAirdroidHandler.ps1` | Accepts one IAOS launch link and parses it strictly. It then takes the **IAOS call lock** (named mutex `LocalIAOS-AirDroid-Dial`, no wait) and holds it for the whole sequence: duplicate check (`DialCall.ps1 -GuardOnly`), `PrepareCall.ps1 -Automatic`, then `DialCall.ps1`, each only if the previous step exits 0, all with `-CallerHoldsLock`. A competing launch finds the lock taken and stops (exit 10) without touching the Dialpad. The lock is released in `finally` on every exit path, before any "Press Enter" pause. `-ParseOnly` touches nothing and is used by the tests. |
 
 ## What `PrepareCall.ps1` does
@@ -55,7 +57,7 @@ clicks nothing. If AirDroid will not shrink far enough for both to stay visible,
 
 **`DialCall.ps1` exit codes:** 0 click sent once (or the check passed); 2 invalid number; 3 AirDroid not running, or more
 than one visible AirDroid window shows a Dialpad; 4 no visible live Dialpad, or it is not unique; 8 Make Call not found, ambiguous, in the call-status panel or disabled; 9 number or panel did not match or
-changed before the click (nothing clicked); 10 duplicate refused; 7 unexpected error. The duplicate guard records the
+changed before the click (nothing clicked); 10 duplicate refused; 11 AirDroid could not be brought in front (nothing clicked or recorded); 7 unexpected error. The duplicate guard records the
 last dial in `%LOCALAPPDATA%\IAOS\airdroid-last-dial.json` (number and time only).
 
 ## Launch-link registration: NOT included
