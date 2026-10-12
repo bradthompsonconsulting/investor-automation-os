@@ -288,13 +288,40 @@ jobs:
       - name: AirDroid Prepare Call launch link (B14-13)
         run: node app/scripts/test-airdroid-prepare-call.cjs
 
-      # The real-page suites (Seller Call, Contacts) need Chromium. Not retried: a failure is reported as it happened.
-      - name: Install Chromium for the real-page suites (Seller Call AirDroid, Contacts)
+      # B15 Batches 1-7 (Bones-approved heads 17a1252, 4e4e7f9, eccffae, 3134839, 20e9f4f,
+      # 0ba74f2, 197fbbd), offline suites. Storage v2's suites are not part of this release.
+      - name: Conversations email links (real host, bidi stripped; INV-132, B15-23)
+        run: node app/scripts/test-message-links.cjs
+      - name: Conversations GHL hand-off buttons (INV-132, B15-23)
+        run: node app/scripts/test-b15-conversations-ghl-buttons.cjs
+      - name: Deal Calculator spread status (INV-134, B15-26)
+        run: node app/scripts/test-deal-calculator-bar.cjs
+      - name: Deal Calculator wiring
+        run: node app/scripts/test-deal-calculator-wiring.cjs
+      - name: Pipeline property address (INV-108, B15-09)
+        run: node app/scripts/test-pipeline-property.cjs
+      - name: GHL shortcuts (Add Leads, Calendars; INV-125, B15-07)
+        run: node app/scripts/test-b15-ghl-shortcuts.cjs
+      - name: Current-read ownership helper (INV-108, B15-09)
+        run: node app/scripts/test-current-read.cjs
+      - name: Mailers This Week is the current Saturday-Friday week (INV-110, B15-12)
+        run: node app/scripts/test-mailer-week.cjs
+
+      # The real-page suites (Seller Call, Contacts, Pipeline, Mailers, shell labels) need Chromium.
+      # Not retried: a failure is reported as it happened. The Pipeline suite prints its startup
+      # timings and on failure dumps the browser console, page errors, failed requests and the Vite log.
+      - name: Install Chromium for the real-page suites (Seller Call AirDroid, Contacts, Pipeline, Mailers, shell labels)
         run: pnpm --dir app exec playwright install --with-deps chromium
       - name: Seller Call AirDroid UI checks
         run: node app/scripts/test-seller-call-airdroid.cjs
       - name: Contacts search matches the Property Address, real page and stylesheet (INV-111, B15-11)
         run: node app/scripts/test-contacts-address-search.cjs
+      - name: Pipeline current read on the real page, out-of-order responses (INV-108, B15-09)
+        run: node app/scripts/test-pipeline-requests.cjs
+      - name: Mailers No Address empty state on the real page (INV-110, B15-12)
+        run: node app/scripts/test-mailers-empty-state.cjs
+      - name: Shell labels on the real page -- no Phase A badge, Conversations heading (INV-126, B15-17)
+        run: node app/scripts/test-b15-shell-labels.cjs
 
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.
