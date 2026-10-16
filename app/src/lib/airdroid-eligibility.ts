@@ -37,6 +37,21 @@ export const ELIGIBILITY_COPY = {
   review: "Review contact",
 } as const;
 
+/**
+ * An ISO-8601 instant: full date and time with seconds, optional fraction, and a timezone (`Z` or `±hh:mm`), naming a
+ * real calendar date and time (Bones F2: no timezone, or 2026-02-30, is not an instant). Shape only; no age check.
+ */
+export function isIsoInstant(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if (!m) return false;
+  const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number);
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
+  if (m[8] !== undefined && (Number(m[8]) > 23 || Number(m[9]) > 59)) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
 /** The response, if and only if it has exactly the expected shape; otherwise null (treated as unknown). */
 export function parseEligibilityResponse(status: number, body: unknown): EligibilityResponse | null {
   if (status !== 200 || !body || typeof body !== "object" || Array.isArray(body)) return null;
@@ -45,8 +60,8 @@ export function parseEligibilityResponse(status: number, body: unknown): Eligibi
   if (keys.join(",") !== "contactId,decision,phoneDigits,readAt") return null;
   if (typeof b.decision !== "string" || !DECISIONS.includes(b.decision as EligibilityDecision)) return null;
   if (typeof b.contactId !== "string") return null;
-  // readAt: shape only (an ISO instant). No age policy is applied.
-  if (typeof b.readAt !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(b.readAt) || !Number.isFinite(Date.parse(b.readAt))) return null;
+  // readAt: shape only (an ISO-8601 instant). No age policy is applied.
+  if (!isIsoInstant(b.readAt)) return null;
   if (b.phoneDigits !== null && (typeof b.phoneDigits !== "string" || !/^\d{10}$/.test(b.phoneDigits))) return null;
   if (b.decision === "eligible" && b.phoneDigits === null) return null;
   return { decision: b.decision as EligibilityDecision, contactId: b.contactId, phoneDigits: b.phoneDigits as string | null, readAt: b.readAt };

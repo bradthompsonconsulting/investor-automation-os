@@ -177,6 +177,8 @@ const assertNoCors = (res) => { for (const k of Object.keys(res.headers || {})) 
     'no contact object': () => ok({ something: 'else' }),
     'fetch throws': () => { throw new Error('network down'); },
   };
+  // Bones F1 (2026-10-16): a non-200 SUCCESS status carrying a valid bound contact must not be eligible.
+  for (const status of [201, 202, 203]) failures[`GHL ${status} with a valid bound contact body`] = () => ok(goodContact(), status);
   for (const [label, fixture] of Object.entries(failures)) {
     await check(label + ' -> 200 with decision unknown', async () => {
       outbound = []; route = fixture;

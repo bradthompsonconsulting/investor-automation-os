@@ -59,7 +59,8 @@ export const handler = async (event: any) => {
       headers: { Authorization: `Bearer ${token}`, Version: "2021-07-28" },
       signal: abort.signal,
     });
-    if (!res.ok) return unknown();
+    // Exactly 200 (Bones F1): another success status (201, 202, 204, ...) is not the documented read and is unknown.
+    if (res.status !== 200) return unknown();
     body = await res.json();
   } catch {
     return unknown();

@@ -64,6 +64,11 @@ const good = { decision: 'eligible', contactId: A, phoneDigits: '2025550147', re
 
   // ---- response shape: anything unexpected is unknown, never eligible ----------
   await check('shape: the exact response parses', () => eq(lib.parseEligibilityResponse(200, good), good));
+  await check('shape: valid ISO instants parse (leap day, offset, no fraction, 9-digit fraction)', () => {
+    for (const readAt of ['2028-02-29T00:00:00Z', '2026-10-16T19:00:00+05:30', '2026-10-16T19:00:00-06:00', '2026-10-16T19:00:00Z', '2026-10-16T19:00:00.123456789Z']) {
+      eq(lib.parseEligibilityResponse(200, { ...good, readAt })?.readAt, readAt);
+    }
+  });
   const badShapes = {
     'non-200 status': [503, good],
     'array body': [200, [good]],
@@ -80,6 +85,13 @@ const good = { decision: 'eligible', contactId: A, phoneDigits: '2025550147', re
     'readAt not an ISO instant': [200, { ...good, readAt: 'yesterday' }],
     'readAt a number': [200, { ...good, readAt: 1792200000000 }],
     'readAt an impossible date': [200, { ...good, readAt: '2026-13-45T99:99:00Z' }],
+    // Bones F2 (2026-10-16): Date.parse accepted these; neither is an ISO instant.
+    'readAt without a timezone (2026-10-16T19:00)': [200, { ...good, readAt: '2026-10-16T19:00' }],
+    'readAt on an invalid calendar date (2026-02-30T19:00:00.000Z)': [200, { ...good, readAt: '2026-02-30T19:00:00.000Z' }],
+    'readAt with seconds but no timezone': [200, { ...good, readAt: '2026-10-16T19:00:00' }],
+    'readAt at hour 24': [200, { ...good, readAt: '2026-10-16T24:00:00Z' }],
+    'readAt on 2027-02-29 (not a leap year)': [200, { ...good, readAt: '2027-02-29T12:00:00Z' }],
+    'readAt with a malformed offset': [200, { ...good, readAt: '2026-10-16T19:00:00+5:30' }],
     // T3: a non-success status carrying an otherwise eligible body.
     'HTTP 409 with an eligible body': [409, good],
     'HTTP 204': [204, good],
