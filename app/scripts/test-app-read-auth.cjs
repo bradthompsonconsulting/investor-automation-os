@@ -537,7 +537,9 @@ function assertNoCors(res) {
   await check('no unreviewed function holds the GHL credential', () => {
     // ghl-documents-capability (INV-98): read-session-gated, GET-only, status-only;
     // reviewed in test-ghl-documents-capability.cjs.
-    const reviewed = ['ghl-contract-send-readback', 'ghl-disposition', 'ghl-documents-capability', 'mailer-digest'];
+    // call-eligibility (AirDroid call eligibility, 2026-10-16): read-session-gated, GET-only, one
+    // GHL contact read, decision only; reviewed in test-call-eligibility-endpoint.cjs.
+    const reviewed = ['call-eligibility', 'ghl-contract-send-readback', 'ghl-disposition', 'ghl-documents-capability', 'mailer-digest'];
     const holders = fs.readdirSync(FUNCTIONS).filter(f => f.endsWith('.ts'))
       .filter(f => /leadconnectorhq|GHL_PRIVATE_API_KEY/.test(fs.readFileSync(path.join(FUNCTIONS, f), 'utf8')))
       .map(f => f.slice(0, -3)).filter(n => !NINE.includes(n)).sort();

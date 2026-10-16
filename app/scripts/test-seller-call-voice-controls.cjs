@@ -198,12 +198,17 @@ check('the provisional stand-in is gone at integration', fs.existsSync(path.join
 check('AirDroid is the first calling option; GHL Phone and Cell follow in that order',
   [componentCode.indexOf('data-testid="call-with-airdroid-mode"'), componentCode.indexOf('data-testid="call-with-ghl-mode"'), componentCode.indexOf('data-testid="call-with-cell-mode"')]
     .every((i, n, a) => i >= 0 && (n === 0 || i > a[n - 1])), true);
-check('AirDroid is one primary button, disabled without a valid number; GHL Phone is no longer styled primary',
-  /<button className="seller-call-button seller-call-button--primary" type="button" onClick=\{callWithAirdroid\} disabled=\{!airdroidTarget\} data-testid="call-with-airdroid">/.test(componentCode)
+// Call eligibility (2026-10-16): the button is also disabled while its click-time eligibility check is in flight.
+check('AirDroid is one primary button, disabled without a valid number or while its eligibility check is in flight; GHL Phone is no longer styled primary',
+  /<button className="seller-call-button seller-call-button--primary" type="button" onClick=\{callWithAirdroid\} disabled=\{!airdroidTarget \|\| checking\}\s+aria-busy=\{checking\} data-testid="call-with-airdroid">/.test(componentCode)
   && !/seller-call-button--primary" type="button" onClick=\{openGhl\}/.test(componentCode), true);
-check('the AirDroid button only calls the launch interface: no link, popup, navigation or fetch of its own',
+// Call eligibility (2026-10-16): the launch is of the click's bound target only, after the eligibility read, which
+// lives in lib/airdroid-eligibility.ts; the component still has no link, popup, navigation or fetch( of its own.
+check('the AirDroid button only calls the launch interface (with the click\'s bound number, after the lib eligibility read): no link, popup, navigation or fetch of its own',
   /import \{ airdroidCallTarget, launchAirdroidCall, type AirdroidLaunchResult \} from "\.\.\/lib\/airdroid-launch";/.test(componentCode)
-  && /result = launchAirdroidCall\(airdroidTarget\);/.test(componentCode)
+  && /import \{ EligibilityGate, ELIGIBILITY_COPY, handoffVerdict, readCallEligibility, type BlockReason \} from "\.\.\/lib\/airdroid-eligibility";/.test(componentCode)
+  && /result = launchAirdroidCall\(bound\.target\);/.test(componentCode)
+  && !/\bfetch\(/.test(componentCode)
   && !/iaos-airdroid:|href=\{airdroid|location\.(?:assign|replace|href)/.test(componentCode) && (componentCode.match(/window\.open\(/g) || []).length === 1, true);
 check('no valid number shows the reason; a failed or throwing launch shows a known error as an alert, with GHL Phone or Cell as the way on',
   /data-testid="airdroid-no-number">\s*Unavailable: IAOS has no valid 10-digit US number for this seller\. Use GHL Phone or Cell\./.test(componentCode)
