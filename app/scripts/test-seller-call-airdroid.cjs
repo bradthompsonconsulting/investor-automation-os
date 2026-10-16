@@ -30,6 +30,15 @@
  * renders <rev>'s component on the component page and must FAIL (exit 1) for
  * a revision without the AirDroid option -- e.g. --before=45361c1. (The
  * workspace page always uses the current component.)
+ *
+ * CALL ELIGIBILITY (2026-10-16, scope IAOS_AIRDROID_CALL_ELIGIBILITY_AMENDED_SCOPE_2026-10-16.md):
+ * every launch now follows a click-time read of the call-eligibility function, answered here from an
+ * in-memory fixture (`elig`: per contact decision, fresh-number digits, delay, HTTP 500 or an
+ * unexpected shape; default eligible with the seller's own number). Reads of the mock's calls, the
+ * card and the launch error wait until no eligibility check is in flight. The checks under
+ * "CALL ELIGIBILITY" are new. Against 7d8e5ea (`--before=7d8e5ea`) the component launches without a
+ * check, so the zero-launch eligibility checks must fail. What a REAL eligibility read returns is
+ * test-call-eligibility-endpoint.cjs's subject, not this suite's.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -66,8 +75,11 @@ const { parseOutcomeNote } = require(path.join(APP, 'src/lib/seller-call-outcome
  * Taken from the finished file, never back-filled from a passing run: 28 single probe()/check()
  * call sites + 1 inside the invalid-number loop x 3 numbers + 1 inside the Full Script layout loop
  * x 4 widths + 1 inside the compact Call loop x 3 widths = 38.
+ * Call eligibility (2026-10-16) adds 12 single probe() call sites + 1 inside the blocked-decision loop
+ * x 7 decisions = 19, so 38 + 19 = 57. Bones's plan review (T3-T6) adds 4 decisions to that loop, 8 single
+ * probe() call sites and 1 inside the two-order T4 loop x 2 = 14, so 57 + 14 = 71.
  */
-const FLOOR = 38;
+const FLOOR = 71;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -84,7 +96,10 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 if (fs.existsSync(BEFORE_FILE)) fs.rmSync(BEFORE_FILE);
 if (BEFORE_REV) {
   const src = execFileSync('git', ['show', `${BEFORE_REV}:app/src/components/SellerCallVoiceControls.tsx`], { cwd: APP, encoding: 'utf8' });
-  fs.writeFileSync(BEFORE_FILE, src.replace(/from "\.\.\/\.\.\//g, 'from "../../../').replace(/from "\.\.\/(?!\.\.\/)/g, 'from "../../../src/')
+  // The launch import stays "../lib/airdroid-launch" so the Vite alias still swaps in the mock (2026-10-16:
+  // without this, a --before component loaded the REAL launch module and every component check failed on the
+  // missing mock rather than on behaviour).
+  fs.writeFileSync(BEFORE_FILE, src.replace(/from "\.\.\/\.\.\//g, 'from "../../../').replace(/from "\.\.\/(?!\.\.\/|lib\/airdroid-launch")/g, 'from "../../../src/')
     .replace(/from "\.\//g, 'from "../../../src/components/').replace(/import "\.\//g, 'import "../../../src/components/'));
   console.log(`NEGATIVE CONTROL: rendering SellerCallVoiceControls from ${BEFORE_REV}; this run must fail.`);
 }
@@ -106,6 +121,32 @@ const C = 'fixtureContactC';                         // shares A's phone number
 const PEOPLE = { [A]: ['Alpha', '+12145550101'], [B]: ['Bravo', '+14695550123'], [C]: ['Charlie', '+12145550101'] };
 let db;
 let slow = {};                                        // contact id -> ms to delay that contact's reads
+/**
+ * The call-eligibility fixture, per contact id: decision or a malformed-answer mode, the fresh number's digits and a
+ * delay. `queue[id]` holds per-request overrides ({ mode, phone, delay }), consumed one per request in arrival order.
+ * Malformed modes: 'status500', 'extraKey', 'wrongContact', 'badReadAt', 'http409' (an eligible body on a 409),
+ * 'digitsNumber' (phoneDigits as a number).
+ */
+let elig;
+function resetElig() { elig = { mode: {}, phone: {}, delay: {}, queue: {} }; }
+resetElig();
+function eligibilityPlan(id) {
+  const next = (elig.queue[id] && elig.queue[id].length) ? elig.queue[id].shift() : {};
+  return { mode: next.mode ?? elig.mode[id] ?? 'eligible', phone: next.phone ?? elig.phone[id], delay: next.delay ?? elig.delay[id] ?? 0 };
+}
+function eligibilityAnswer(id, plan) {
+  const { mode } = plan;
+  if (mode === 'status500') return { status: 500, body: { error: 'fixture: eligibility read failed' } };
+  const digits = plan.phone ?? (PEOPLE[id] ? PEOPLE[id][1].slice(2) : '2145550101');
+  const malformedEligible = ['extraKey', 'wrongContact', 'badReadAt', 'http409', 'digitsNumber'].includes(mode);
+  const decision = malformedEligible ? 'eligible' : mode;
+  const body = { decision, contactId: id, phoneDigits: decision === 'eligible' ? digits : null, readAt: new Date().toISOString() };
+  if (mode === 'extraKey') body.cleared = true;
+  if (mode === 'wrongContact') body.contactId = 'someoneElseEntirely';
+  if (mode === 'badReadAt') body.readAt = 'yesterday';
+  if (mode === 'digitsNumber') body.phoneDigits = Number(digits);
+  return { status: mode === 'http409' ? 409 : 200, body };
+}
 function resetDb() {
   db = Object.fromEntries(Object.entries(PEOPLE).map(([id, [first]]) => [id,
     { id, first, dnd: {}, fields: new Map(), notes: [{ id: `${id}-n1`, body: `Seed note for ${first}`, dateAdded: '2026-09-30T12:00:00.000Z' }] }]));
@@ -151,6 +192,7 @@ function classify(url, method, post) {
     return { kind: 'proxy-other', path: p };
   }
   if (fn === 'ghl-contact') return { kind: 'row', contact: u.searchParams.get('id') };
+  if (fn === 'call-eligibility' && method === 'GET') return { kind: 'eligibility', contact: u.searchParams.get('contactId') };
   return { kind: fn };
 }
 function answer(req) {
@@ -158,6 +200,7 @@ function answer(req) {
     case 'notes': return { status: 200, body: { notes: db[req.contact].notes.slice() } };
     case 'detail': return { status: 200, body: detail(db[req.contact]) };
     case 'row': return { status: 200, body: contactRow(db[req.contact]) };
+    case 'eligibility': return eligibilityAnswer(req.contact, req.plan);
     case 'defs': return { status: 200, body: { customFields: [] } };
     case 'folder': return { status: 200, body: { customField: { id: 'folder', name: 'Folder', position: 0 } } };
     case 'ghl-opportunities': return { status: 200, body: pipeline() };
@@ -236,6 +279,7 @@ async function main() {
 
   /** A fresh page; every function call is answered from the fixture, anything else is aborted and counted. */
   const open = async (url, { width = 1280, ready }) => {
+    resetElig();
     const mobile = width < 768;
     const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: mobile, hasTouch: mobile, timezoneId: 'America/Chicago' });
     const page = await context.newPage();
@@ -260,6 +304,10 @@ async function main() {
           { outcome: req.op === 'note.create' ? parseOutcomeNote(req.args.body) : null, refuse: null }));
       }
       if (req.contact && slow[req.contact]) await new Promise((r) => setTimeout(r, slow[req.contact]));
+      if (req.kind === 'eligibility') {
+        req.plan = eligibilityPlan(req.contact);                       // fixed at arrival, so later fixture edits don't change it
+        if (req.plan.delay) await new Promise((r) => setTimeout(r, req.plan.delay));
+      }
       return reply(answer(req));
     });
     await page.goto(`${base}${url}`, { timeout: 60000 });
@@ -267,15 +315,33 @@ async function main() {
     page.setDefaultTimeout(8000);
     return { context, page, popups };
   };
-  const mockMode = (page, mode) => page.evaluate((m) => { window.__airdroidMock.mode = m; window.__airdroidMock.calls = []; }, mode);
-  const mockCalls = (page) => page.evaluate(() => window.__airdroidMock.calls);
-  const card = (page) => page.getByTestId('call-with-airdroid-mode').innerText();
-  const errorText = async (page) => ((await page.getByTestId('airdroid-launch-error').count()) ? (await page.getByTestId('airdroid-launch-error').innerText()).trim() : null);
   const until = async (page, fn, label, ms = 15000) => {
     const t0 = Date.now();
     while (Date.now() - t0 < ms) { if (await fn()) return; await page.waitForTimeout(50); }
     throw new Error(`timed out waiting for ${label}`);
   };
+  /** Wait until no click-time eligibility check is in flight on the page (a launch, if any, has then happened). */
+  const settle = async (page) => {
+    await until(page, async () => (await page.locator('[data-state="checking"]').count()) === 0, 'eligibility check settled', 12000);
+    await page.waitForTimeout(30);
+  };
+  const mockMode = (page, mode) => page.evaluate((m) => { window.__airdroidMock.mode = m; window.__airdroidMock.calls = []; }, mode);
+  const mockCalls = async (page) => { await settle(page); return page.evaluate(() => window.__airdroidMock.calls); };
+  const card = async (page) => { await settle(page); return page.getByTestId('call-with-airdroid-mode').innerText(); };
+  const errorText = async (page) => { await settle(page); return ((await page.getByTestId('airdroid-launch-error').count()) ? (await page.getByTestId('airdroid-launch-error').innerText()).trim() : null); };
+  const eligibilityRequests = () => log.filter((r) => r.kind === 'eligibility');
+  /**
+   * T4 (Bones): run the buttons' REAL React click handlers back to back in one task, before React can re-render (so
+   * before either button is disabled). This exercises the shared in-flight guard itself, not the disabled attribute.
+   */
+  const reactActivate = (page, ids) => page.evaluate((list) => {
+    for (const id of list) {
+      const el = document.querySelector(`[data-testid="${id}"]`);
+      const key = el && Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+      if (!key || typeof el[key].onClick !== 'function') throw new Error(`no React click handler on ${id}`);
+      el[key].onClick({ preventDefault() {}, stopPropagation() {} });
+    }
+  }, ids);
   const writes = () => log.filter((r) => r.kind === 'write');
 
   /** A fresh Seller Call page for `contact`, with a fresh fixture. */
@@ -414,6 +480,7 @@ async function main() {
         await page.getByTestId('call-with-airdroid').click();
         const shown = await errorText(page);
         await page.evaluate(() => window.__iaosSetPhone('+1 (469) 555-0123'));
+        elig.phone['contact-fixture-2'] = '4695550123';   // GHL's fresh number is the new number too (the previous check selected contact-fixture-2)
         await page.waitForTimeout(100);
         const cleared = await errorText(page);
         await mockMode(page, 'handed-off');
@@ -829,6 +896,7 @@ async function main() {
         const keyCalls = await mockCalls(page);
         await mockMode(page, 'error');
         await compact.click({ timeout: 3000 });
+        await settle(page);
         const compactError = (await page.getByTestId('airdroid-compact-error').count()) ? (await page.getByTestId('airdroid-compact-error').innerText()).trim() : null;
         const mainError = await errorText(page);
         // Sweep the whole scroll range: no control's centre may land on the compact button, and the compact
@@ -861,6 +929,257 @@ async function main() {
           && sweep.count === 0 && sweep.controls >= 3
           && same(after.drafts, DRAFTS) && after.reason === PASS_REASON && after.scriptOpen && writes().length === writesBefore && popups.length === 0;
         return { ok, detail: { hiddenAtTop, mainOut, shownAway, compactClear, label, clickCalls, keyCalls, compactError, mainError, sweep, after } };
+      });
+      await context.close();
+    }
+
+    // ═══ CALL ELIGIBILITY (2026-10-16) ═══════════════════════════════════════
+    // Scope IAOS_AIRDROID_CALL_ELIGIBILITY_AMENDED_SCOPE_2026-10-16.md §4–§6 D. Exact operator copy (Brad, 2026-10-16):
+    const COPY = {
+      suppressed: 'Calls are suppressed in GHL. Review the contact before calling.',
+      incorrect_number: 'This number is marked Incorrect Number.',
+      unknown: 'Could not verify call status. Refresh and try again.',
+      changed: 'The contact or number changed. Review it before calling.',
+    };
+    const statusOf = async (page) => {
+      await settle(page);
+      const el = page.getByTestId('airdroid-eligibility');
+      if (!(await el.count())) return null;
+      return { state: await el.getAttribute('data-state'), role: await el.getAttribute('role'), text: (await page.getByTestId('airdroid-eligibility-text').innerText()).trim(),
+        refresh: (await page.getByTestId('airdroid-refresh-status').innerText()).trim(), review: (await page.getByTestId('airdroid-review-contact').innerText()).trim() };
+    };
+    const BLOCKED = (reason) => ({ state: reason, role: 'alert', text: COPY[reason], refresh: 'Refresh status', review: 'Review contact' });
+    {
+      const { context, page } = await open(`${COMPONENT_PAGE}?phone=${encodeURIComponent('(214) 555-0101')}`, { width: 1280, ready: componentReady });
+      const K = 'contact-fixture-1';
+      await probe('eligibility: an eligible click-time read launches exactly once, after exactly one read for this seller, and leaves no clearance message', async () => {
+        log = []; await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        const calls = await mockCalls(page);
+        const reads = eligibilityRequests().map((r) => r.contact);
+        return { ok: same(calls, ['2145550101']) && same(reads, [K]) && (await statusOf(page)) === null && !/verified|cleared|safe/i.test(await card(page)), detail: { calls, reads, card: await card(page) } };
+      });
+      for (const [mode, reason] of [['suppressed', 'suppressed'], ['incorrect_number', 'incorrect_number'], ['unknown', 'unknown'], ['mismatch', 'unknown'],
+        ['status500', 'unknown'], ['extraKey', 'unknown'], ['invalid_phone', 'changed'],
+        // T3 (Bones): shape and identity binding -- none may launch.
+        ['wrongContact', 'unknown'], ['badReadAt', 'unknown'], ['http409', 'unknown'], ['digitsNumber', 'unknown']]) {
+        await probe(`eligibility: ${mode} -> nothing launched; "${COPY[reason]}" with Refresh status and Review contact`, async () => {
+          elig.mode[K] = mode; await mockMode(page, 'handed-off');
+          await page.getByTestId('call-with-airdroid').click();
+          const calls = await mockCalls(page); const status = await statusOf(page);
+          return { ok: same(calls, []) && same(status, BLOCKED(reason)) && (await page.getByTestId('call-with-airdroid').isEnabled()), detail: { calls, status } };
+        });
+      }
+      await probe('eligibility: GHL\'s fresh number differs from the page\'s number -> nothing launched; "changed"', async () => {
+        elig.mode[K] = 'eligible'; elig.phone[K] = '4695550123'; await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        const calls = await mockCalls(page); const status = await statusOf(page);
+        delete elig.phone[K];
+        return { ok: same(calls, []) && same(status, BLOCKED('changed')), detail: { calls, status } };
+      });
+      await probe('eligibility: Refresh status re-reads and, even when the result is eligible, never launches; the blocked message then clears', async () => {
+        elig.mode[K] = 'suppressed'; await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        const blocked = await statusOf(page);
+        elig.mode[K] = 'eligible'; log = [];
+        await page.getByTestId('airdroid-refresh-status').click();
+        const calls = await mockCalls(page); const after = await statusOf(page);
+        return { ok: same(blocked, BLOCKED('suppressed')) && same(calls, []) && after === null && eligibilityRequests().length === 1, detail: { blocked, calls, after, reads: eligibilityRequests().length } };
+      });
+      await probe('eligibility: a read slower than the 8 s client limit is unknown; nothing launches then or when the late answer arrives', async () => {
+        elig.mode[K] = 'eligible'; elig.delay[K] = 9000; await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        const checking = (await page.getByTestId('airdroid-eligibility').getAttribute('data-state')) === 'checking'
+          && (await page.getByTestId('airdroid-eligibility-text').innerText()).trim() === 'Checking call status…' && (await page.getByTestId('call-with-airdroid').isDisabled());
+        const status = await statusOf(page);
+        await page.waitForTimeout(1500);                                  // the fixture's late answer lands now
+        const calls = await mockCalls(page);
+        elig.delay[K] = 0;
+        return { ok: checking && same(status, BLOCKED('unknown')) && same(calls, []), detail: { checking, status, calls } };
+      });
+      await probe('eligibility: two activations in one tick make one read and one launch', async () => {
+        elig.delay[K] = 600; log = []; await mockMode(page, 'handed-off');
+        await page.evaluate(() => { const b = document.querySelector('[data-testid="call-with-airdroid"]'); b.click(); b.click(); });
+        const calls = await mockCalls(page);
+        elig.delay[K] = 0;
+        return { ok: same(calls, ['2145550101']) && eligibilityRequests().length === 1, detail: { calls, reads: eligibilityRequests().length } };
+      });
+      await probe('eligibility: the number changes while the check is in flight -> the late answer is discarded, nothing launches, no message', async () => {
+        elig.delay[K] = 800; elig.phone[K] = '4695550123'; await mockMode(page, 'handed-off');   // the late answer would match the NEW number
+        await page.getByTestId('call-with-airdroid').click();
+        await page.evaluate(() => window.__iaosSetPhone('+1 (469) 555-0123'));
+        await page.waitForTimeout(1300);
+        const calls = await mockCalls(page); const status = await statusOf(page);
+        await page.evaluate(() => window.__iaosSetPhone('(214) 555-0101'));
+        elig.delay[K] = 0; delete elig.phone[K];
+        return { ok: same(calls, []) && status === null, detail: { calls, status } };
+      });
+      await probe('eligibility: the seller changes while the check is in flight -> the late answer is discarded, nothing launches', async () => {
+        elig.delay[K] = 800; await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        await page.evaluate(() => window.__iaosSetSeller('contact-fixture-3', 'Max Fixture'));
+        await page.waitForTimeout(1300);
+        const calls = await mockCalls(page); const status = await statusOf(page);
+        await page.evaluate(() => window.__iaosSetSeller('contact-fixture-1', 'Kay Fixture'));
+        elig.delay[K] = 0;
+        return { ok: same(calls, []) && status === null, detail: { calls, status } };
+      });
+      await probe('eligibility: after an eligible launch, a second deliberate click is a new request with its own fresh read', async () => {
+        log = []; await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        await settle(page);
+        await page.getByTestId('call-with-airdroid').click();
+        const calls = await mockCalls(page);
+        return { ok: same(calls, ['2145550101', '2145550101']) && eligibilityRequests().length === 2, detail: { calls, reads: eligibilityRequests().length } };
+      });
+      await probe('T4: the handoff is consumed before navigation: re-renders after an eligible launch launch nothing more', async () => {
+        log = []; await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        await settle(page);
+        await page.evaluate(() => { window.__iaosSetPhone('(214) 555-0101'); window.__iaosSetSeller('contact-fixture-1', 'Kay Fixture'); });
+        await page.waitForTimeout(400);
+        const calls = await mockCalls(page);
+        return { ok: same(calls, ['2145550101']) && eligibilityRequests().length === 1, detail: { calls, reads: eligibilityRequests().length } };
+      });
+      await probe('T4: the same button\'s click handler run twice in one turn, before any re-render: one read, one launch', async () => {
+        elig.delay[K] = 400; log = []; await mockMode(page, 'handed-off');
+        await reactActivate(page, ['call-with-airdroid', 'call-with-airdroid']);
+        const calls = await mockCalls(page);
+        elig.delay[K] = 0;
+        return { ok: same(calls, ['2145550101']) && eligibilityRequests().length === 1, detail: { calls, reads: eligibilityRequests().length } };
+      });
+      await probe('T5: seller A -> B -> A while A\'s check is in flight: the old request stays stale; nothing launches, no message', async () => {
+        elig.delay[K] = 800; await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        await page.evaluate(() => window.__iaosSetSeller('contact-fixture-3', 'Max Fixture'));
+        await page.waitForTimeout(50);
+        await page.evaluate(() => window.__iaosSetSeller('contact-fixture-1', 'Kay Fixture'));
+        await page.waitForTimeout(1200);
+        const calls = await mockCalls(page); const status = await statusOf(page);
+        elig.delay[K] = 0;
+        return { ok: same(calls, []) && status === null, detail: { calls, status } };
+      });
+      await probe('T5: number A -> B -> A while the check is in flight: the old request stays stale; nothing launches, no message', async () => {
+        elig.delay[K] = 800; await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        await page.evaluate(() => window.__iaosSetPhone('+1 (469) 555-0123'));
+        await page.waitForTimeout(50);
+        await page.evaluate(() => window.__iaosSetPhone('(214) 555-0101'));
+        await page.waitForTimeout(1200);
+        const calls = await mockCalls(page); const status = await statusOf(page);
+        elig.delay[K] = 0;
+        return { ok: same(calls, []) && status === null, detail: { calls, status } };
+      });
+      await probe('T6: Refresh status is offered while a click\'s check is pending; Refresh answers FIRST, the click\'s eligible answer LATER -> nothing launches', async () => {
+        log = []; await mockMode(page, 'handed-off');
+        elig.queue[K] = [{ delay: 1500 }, { delay: 200 }];               // the click's read, then Refresh's read
+        await page.getByTestId('call-with-airdroid').click();
+        const refreshOffered = await page.getByTestId('airdroid-refresh-status').isVisible();
+        await page.getByTestId('airdroid-refresh-status').click();
+        await page.waitForTimeout(1800);                                  // both answers have now arrived
+        const calls = await mockCalls(page); const status = await statusOf(page);
+        return { ok: refreshOffered && same(calls, []) && status === null && eligibilityRequests().length === 2, detail: { refreshOffered, calls, status, reads: eligibilityRequests().length } };
+      });
+      await probe('T6: the click\'s eligible answer arrives FIRST (after Refresh superseded it), Refresh\'s LATER -> nothing launches', async () => {
+        log = []; await mockMode(page, 'handed-off');
+        elig.queue[K] = [{ delay: 500 }, { delay: 1400 }];
+        await page.getByTestId('call-with-airdroid').click();
+        await page.getByTestId('airdroid-refresh-status').click();
+        await page.waitForTimeout(800);                                   // the click's answer has arrived; Refresh's has not
+        const midCalls = await page.evaluate(() => window.__airdroidMock.calls.slice());
+        const calls = await mockCalls(page); const status = await statusOf(page);
+        return { ok: same(midCalls, []) && same(calls, []) && status === null && eligibilityRequests().length === 2, detail: { midCalls, calls, status } };
+      });
+      await probe('T6: repeated Refresh while checks are pending, every answer eligible: nothing launches; a later Call makes its own fresh read and launches once', async () => {
+        log = []; await mockMode(page, 'handed-off');
+        elig.queue[K] = [{ delay: 1200 }, { delay: 900 }, { delay: 300 }];
+        await page.getByTestId('call-with-airdroid').click();
+        await page.getByTestId('airdroid-refresh-status').click();
+        await page.getByTestId('airdroid-refresh-status').click();
+        await page.waitForTimeout(1500);
+        const afterRefreshes = await mockCalls(page);
+        const readsBeforeCall = eligibilityRequests().length;
+        await page.getByTestId('call-with-airdroid').click();
+        const calls = await mockCalls(page);
+        return { ok: same(afterRefreshes, []) && readsBeforeCall === 3 && same(calls, ['2145550101']) && eligibilityRequests().length === 4,
+          detail: { afterRefreshes, readsBeforeCall, calls, reads: eligibilityRequests().length } };
+      });
+      await context.close();
+    }
+    {
+      const { context, page } = await workspace(A);
+      await probe('eligibility (workspace): navigating to another seller while A\'s check is in flight -> nothing launches; Bravo\'s card has no message', async () => {
+        elig.delay[A] = 1000; await mockMode(page, 'handed-off');
+        await page.getByTestId('call-with-airdroid').click();
+        await go(page, B);
+        await page.waitForTimeout(1600);
+        const calls = await mockCalls(page); const shown = await card(page);
+        return { ok: same(calls, []) && shown.includes('Bravo Fixture · 469-555-0123') && (await statusOf(page)) === null && writes().length === 0, detail: { calls, shown } };
+      });
+      await probe('eligibility (workspace): leaving Seller Call while the check is in flight -> nothing launches, no page error', async () => {
+        await go(page, A);
+        await until(page, async () => (await card(page).catch(() => '')).includes('Alpha Fixture'), 'Alpha card');
+        elig.delay[A] = 1000; await mockMode(page, 'handed-off');
+        const errorsBefore = pageErrors.length;
+        await page.getByTestId('call-with-airdroid').click();
+        await page.evaluate(() => window.__iaosNavigate('/elsewhere'));
+        await page.waitForTimeout(1600);
+        const calls = await page.evaluate(() => window.__airdroidMock.calls);
+        return { ok: same(calls, []) && (await page.getByTestId('elsewhere').count()) === 1 && pageErrors.length === errorsBefore, detail: { calls } };
+      });
+      await context.close();
+    }
+    {
+      resetDb(); bf.reset(); log = [];
+      const { context, page } = await open(WORKSPACE_PAGE, { width: 1000, ready: async (pg) => {
+        await pg.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
+        await pg.evaluate((to) => window.__iaosNavigate(to), `/framed/contacts/${A}/seller-call`);
+        await pg.getByTestId('call-with-airdroid-mode').waitFor({ timeout: 60000 });
+        await pg.getByTestId('call-outcome-pass-toggle').waitFor({ timeout: 60000 });
+      } });
+      await page.getByTestId('call-outcome-pass-toggle').click();
+      await page.getByTestId('call-outcome-pass-reason').scrollIntoViewIfNeeded();
+      await page.waitForTimeout(250);
+      const compact = page.getByTestId('call-with-airdroid-compact');
+      await probe('eligibility (compact Call, 1000px): suppressed -> nothing launches; the compact line and the full card show the same message, with Refresh status and Review contact', async () => {
+        elig.mode[A] = 'suppressed'; await mockMode(page, 'handed-off');
+        await compact.click({ timeout: 3000 });
+        const calls = await mockCalls(page);
+        const line = page.getByTestId('airdroid-compact-eligibility');
+        const compactText = (await line.innerText()).trim();
+        const full = await statusOf(page);
+        return { ok: same(calls, []) && compactText.startsWith(COPY.suppressed) && (await line.getAttribute('data-state')) === 'suppressed'
+          && (await page.getByTestId('airdroid-compact-refresh-status').innerText()).trim() === 'Refresh status'
+          && (await page.getByTestId('airdroid-compact-review-contact').innerText()).trim() === 'Review contact'
+          && same(full, BLOCKED('suppressed')) && writes().length === 0, detail: { calls, compactText, full } };
+      });
+      await probe('eligibility (1000px): the full and the compact Call activated in one tick share one check: one read, one launch', async () => {
+        elig.mode[A] = 'eligible'; elig.delay[A] = 600; log = []; await mockMode(page, 'handed-off');
+        await page.evaluate(() => {
+          document.querySelector('[data-testid="call-with-airdroid"]').click();
+          document.querySelector('[data-testid="call-with-airdroid-compact"]').click();
+        });
+        const calls = await mockCalls(page);
+        return { ok: same(calls, ['2145550101']) && eligibilityRequests().length === 1 && writes().length === 0, detail: { calls, reads: eligibilityRequests().length } };
+      });
+      for (const order of [['call-with-airdroid', 'call-with-airdroid-compact'], ['call-with-airdroid-compact', 'call-with-airdroid']]) {
+        await probe(`T4 (1000px): ${order[0]} then ${order[1]}, their click handlers run in one turn before any re-render: one read, one launch`, async () => {
+          elig.mode[A] = 'eligible'; elig.delay[A] = 600; log = []; await mockMode(page, 'handed-off');
+          await reactActivate(page, order);
+          const calls = await mockCalls(page);
+          return { ok: same(calls, ['2145550101']) && eligibilityRequests().length === 1, detail: { calls, reads: eligibilityRequests().length } };
+        });
+      }
+      await probe('T6 (1000px): the compact line offers Refresh status while the compact Call\'s check is pending; using it means nothing launches', async () => {
+        elig.mode[A] = 'eligible'; elig.delay[A] = 0; log = []; await mockMode(page, 'handed-off');
+        elig.queue[A] = [{ delay: 1500 }, { delay: 200 }];
+        await compact.click({ timeout: 3000 });
+        const refresh = page.getByTestId('airdroid-compact-refresh-status');
+        const offered = (await refresh.count()) === 1 && (await refresh.innerText()).trim() === 'Refresh status';
+        await refresh.click({ timeout: 3000 });
+        await page.waitForTimeout(1800);
+        const calls = await mockCalls(page);
+        return { ok: offered && same(calls, []) && eligibilityRequests().length === 2 && writes().length === 0, detail: { offered, calls, reads: eligibilityRequests().length } };
       });
       await context.close();
     }

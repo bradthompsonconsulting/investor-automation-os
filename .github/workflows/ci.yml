@@ -288,6 +288,16 @@ jobs:
       - name: AirDroid Prepare Call launch link (B14-13)
         run: node app/scripts/test-airdroid-prepare-call.cjs
 
+      # AirDroid call eligibility (Bones-accepted head 1798366): the decision rule, the read-only
+      # call-eligibility function with a mocked fetch, and the browser-side response/gate logic.
+      # Offline: every provider request is a fixture; no GHL, network or launch is involved.
+      - name: AirDroid call eligibility rule — 87 offline checks
+        run: node app/scripts/test-call-eligibility-rule.cjs
+      - name: AirDroid call eligibility function — 28 offline checks
+        run: node app/scripts/test-call-eligibility-endpoint.cjs
+      - name: AirDroid call eligibility client state — 53 offline checks
+        run: node app/scripts/test-airdroid-eligibility-state.cjs
+
       # B15 Batches 1-7 (Bones-approved heads 17a1252, 4e4e7f9, eccffae, 3134839, 20e9f4f,
       # 0ba74f2, 197fbbd), offline suites. Storage v2's suites are not part of this release.
       - name: Conversations email links (real host, bidi stripped; INV-132, B15-23)

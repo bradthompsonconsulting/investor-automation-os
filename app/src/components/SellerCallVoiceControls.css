@@ -64,6 +64,9 @@
 .seller-call-compact[data-shown="false"] { visibility: hidden; }
 .seller-call-button--compact { min-height: 34px; padding: 6px 12px; }
 .seller-call-compact__error { max-width: 160px; color: #fca5a5; font-size: 11px; text-align: right; }
+/* Call eligibility: the compact status line and its Refresh status / Review contact actions. */
+.seller-call-compact__status { max-width: 160px; color: #94a3b8; font-size: 11px; text-align: right; }
+.seller-call-compact__action { border: 0; background: none; padding: 0; color: #7dd3fc; font: inherit; text-decoration: underline; cursor: pointer; }
 
 @media (max-width: 767px) {
   .seller-call-modes { grid-template-columns: 1fr; }
