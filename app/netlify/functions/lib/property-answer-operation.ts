@@ -211,9 +211,12 @@ export async function discover(input: {
   const { boundary, store, scope, config, contactId, targetId } = input;
   const d = new Discovery(store, scope, contactId);
   const registered = await d.register(input.now());
-  const search = await boundary.sellerDeals(contactId, config.pipelines.sellerLeads).catch(() => null);
+  // Bones b729e33 re-review F4: a failed search (transport or HTTP) ends this discovery's GHL work.
+  // No candidate is read; the token still commits (Blob only) and the verdict is search_incomplete.
+  let searchFailed = false;
+  const search = await boundary.sellerDeals(contactId, config.pipelines.sellerLeads).catch(() => { searchFailed = true; return null; });
   const searchIds: string[] = Array.isArray(search?.opportunities) ? search.opportunities.filter((x: any) => x && typeof x.id === "string").map((x: any) => x.id) : [];
-  const candidates = [...new Set([...searchIds, ...Object.keys(registered.ids), targetId])];
+  const candidates = searchFailed ? [] : [...new Set([...searchIds, ...Object.keys(registered.ids), targetId])];
   if (candidates.length > input.maxCandidates) throw new UnexpectedWork(`The deal check found ${candidates.length} candidate deals; this evaluation reads at most ${input.maxCandidates}. Nothing more was read.`);
   const fresh = new Map<string, any>();
   for (const id of candidates) {

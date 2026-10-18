@@ -6,7 +6,7 @@
  * ONE record per configured budget id, changed only by compare-and-swap:
  *   pa/eval-budget/<digest(scope:budgetId)> =
  *     { v, budgetId, ceiling, reserved, calls, stopped: null | { at, reason },
- *       grants:   [{ g, action, planned, at }],
+ *       grants:   [{ g, action, planned, at, settled: null | { at, result } }],
  *       attempts: [{ n, g, method, path, at }] }
  *
  * - Every action first reserves its PLANNED request count (`grant`). The grant
@@ -18,6 +18,12 @@
  *   stopped budget or an unconfirmed receipt refuses the request unsent.
  * - `stop` closes the budget for good: only a reviewed config commit with a
  *   new budget id opens another. Nothing here reopens or enlarges a budget.
+ * - FAIL-CLOSED (Bones's b729e33 re-review): every grant is born UNSETTLED and
+ *   a new grant is refused while any earlier grant is unsettled. An action
+ *   ends by settling its own grant "clean" (only after an expected result) or
+ *   by `stop`. A crash, an unconfirmed stop or an unconfirmed settle therefore
+ *   leaves the budget closed for every later invocation; no in-memory flag is
+ *   relied on across invocations.
  *
  * Transport (every evaluation GHL request): only https://services.leadconnectorhq.com,
  * redirect "error" plus a refusal of any 3xx or redirected response, one
@@ -33,9 +39,9 @@ export const BODY_LIMIT_BYTES = 1024 * 1024;
 const CAS_ATTEMPTS = 4;
 
 export type BudgetRecord = {
-  v: 1; budgetId: string; ceiling: number; reserved: number; calls: number;
+  v: 2; budgetId: string; ceiling: number; reserved: number; calls: number;
   stopped: null | { at: string; reason: string };
-  grants: { g: number; action: string; planned: number; at: string }[];
+  grants: { g: number; action: string; planned: number; at: string; settled: null | { at: string; result: "clean" | "stopped" } }[];
   attempts: { n: number; g: number; method: string; path: string; at: string }[];
 };
 
@@ -54,13 +60,15 @@ async function read(store: BarrierStore, key: string): Promise<{ rec: BudgetReco
     try { got = await store.getWithMetadata(key, { type: "json" }); } catch { throw new BudgetRefused("The request budget could not be read", "unsettled"); }
   }
   if (!got) return { rec: null, etag: null };
-  if (!got.etag || !got.data || got.data.v !== 1) throw new BudgetRefused("The request budget record is unreadable", "unsettled");
+  if (!got.etag || !got.data || got.data.v !== 2) throw new BudgetRefused("The request budget record is unreadable", "unsettled");
   return { rec: got.data as BudgetRecord, etag: got.etag };
 }
 async function cas(store: BarrierStore, key: string, etag: string | null, next: BudgetRecord): Promise<boolean> {
   try { return (await store.setJSON(key, next, etag === null ? { onlyIfNew: true } : { onlyIfMatch: etag })).modified; }
   catch { throw new BudgetRefused("A request-budget write could not be confirmed", "unsettled"); }
 }
+
+const fresh = (budgetId: string, ceiling: number): BudgetRecord => ({ v: 2, budgetId, ceiling, reserved: 0, calls: 0, stopped: null, grants: [], attempts: [] });
 
 export class EvaluationBudget {
   readonly key: string;
@@ -74,24 +82,42 @@ export class EvaluationBudget {
   async grant(action: string, planned: number, now: string): Promise<Grant> {
     for (let i = 0; i < CAS_ATTEMPTS; i++) {
       const { rec, etag } = await read(this.store, this.key);
-      const cur: BudgetRecord = rec ?? { v: 1, budgetId: this.budgetId, ceiling: this.ceiling, reserved: 0, calls: 0, stopped: null, grants: [], attempts: [] };
+      const cur: BudgetRecord = rec ?? fresh(this.budgetId, this.ceiling);
       if (cur.ceiling !== this.ceiling || cur.budgetId !== this.budgetId) throw new BudgetRefused("The request budget record does not match the reviewed configuration", "unsettled");
       if (cur.stopped) throw new BudgetRefused(`The evaluation is stopped (${cur.stopped.reason}). Nothing was sent.`, "stopped");
+      if (cur.grants.some((x) => x.settled === null)) throw new BudgetRefused("An earlier evaluation action did not settle; the evaluation stays closed. Nothing was sent.", "unsettled");
       if (cur.reserved + planned > cur.ceiling) throw new BudgetRefused("The evaluation request budget is used up. Nothing was sent.", "exhausted");
       const g = cur.grants.length + 1;
-      const next: BudgetRecord = { ...cur, reserved: cur.reserved + planned, grants: [...cur.grants, { g, action, planned, at: now }] };
+      const next: BudgetRecord = { ...cur, reserved: cur.reserved + planned, grants: [...cur.grants, { g, action, planned, at: now, settled: null }] };
       if (await cas(this.store, this.key, etag, next)) return new Grant(this, g, planned);
     }
     throw new BudgetRefused("The request budget could not be reserved", "unsettled");
   }
 
-  /** Closes the budget (first reason wins). Best effort: an unconfirmed stop is reported by the caller. */
-  async stop(reason: string, now: string): Promise<boolean> {
+  /**
+   * Closes the budget (first reason wins) and marks grant g as stopped. If this
+   * write fails or is ambiguous, grant g stays unsettled, which keeps the
+   * budget closed anyway (fail-closed).
+   */
+  async stop(reason: string, now: string, g?: number): Promise<boolean> {
     for (let i = 0; i < CAS_ATTEMPTS; i++) {
       const { rec, etag } = await read(this.store, this.key);
-      const cur: BudgetRecord = rec ?? { v: 1, budgetId: this.budgetId, ceiling: this.ceiling, reserved: 0, calls: 0, stopped: null, grants: [], attempts: [] };
-      if (cur.stopped) return true;
-      if (await cas(this.store, this.key, etag, { ...cur, stopped: { at: now, reason } })) return true;
+      const cur: BudgetRecord = rec ?? fresh(this.budgetId, this.ceiling);
+      const grants = cur.grants.map((x) => (x.g === g && x.settled === null ? { ...x, settled: { at: now, result: "stopped" as const } } : x));
+      if (cur.stopped && grants.every((x, k) => x === cur.grants[k])) return true;
+      if (await cas(this.store, this.key, etag, { ...cur, stopped: cur.stopped ?? { at: now, reason }, grants })) return true;
+    }
+    return false;
+  }
+
+  /** Settles grant g as clean after an expected result. A failed or ambiguous settle leaves it unsettled: closed. */
+  async settle(g: number, now: string): Promise<boolean> {
+    for (let i = 0; i < CAS_ATTEMPTS; i++) {
+      const { rec, etag } = await read(this.store, this.key);
+      const mine = rec?.grants.find((x) => x.g === g);
+      if (!rec || !mine || mine.settled !== null) return false;
+      const grants = rec.grants.map((x) => (x.g === g ? { ...x, settled: { at: now, result: "clean" as const } } : x));
+      if (await cas(this.store, this.key, etag, { ...rec, grants })) return true;
     }
     return false;
   }
@@ -102,6 +128,8 @@ export class EvaluationBudget {
       const { rec, etag } = await read(this.store, this.key);
       if (!rec) throw new BudgetRefused("The request budget is missing", "unsettled");
       if (rec.stopped) throw new BudgetRefused(`The evaluation is stopped (${rec.stopped.reason}). Nothing was sent.`, "stopped");
+      const mine = rec.grants.find((x) => x.g === g);
+      if (!mine || mine.settled !== null) throw new BudgetRefused("This action's grant is missing or already settled. Nothing was sent.", "stopped");
       const used = rec.attempts.filter((a) => a.g === g).length;
       if (used >= planned) throw new BudgetRefused("This action has used all of its planned requests. Nothing more was sent.", "grant_exceeded");
       const n = rec.calls + 1;
@@ -112,7 +140,10 @@ export class EvaluationBudget {
 }
 
 export class Grant {
-  /** Set by the first budget or transport refusal: every later request of this action is refused unsent. */
+  /**
+   * Set by the first refusal OR failure of any request (budget, transport, or a
+   * generic network error): every later request of this action is refused unsent.
+   */
   refused: Error | null = null;
   constructor(readonly budget: EvaluationBudget, readonly g: number, readonly planned: number) {}
   /** A fetch for GhlBoundary: receipt first, then one bounded request. */
@@ -125,7 +156,7 @@ export class Grant {
         await this.budget.draw(this.g, this.planned, String(init.method ?? "GET"), url.pathname, now());
         return await boundedRequest(baseFetch, url.toString(), init);
       } catch (e) {
-        if (e instanceof BudgetRefused || e instanceof TransportRefused) this.refused = e;
+        this.refused = e instanceof Error ? e : new TransportRefused("request failed");
         throw e;
       }
     }) as typeof fetch;

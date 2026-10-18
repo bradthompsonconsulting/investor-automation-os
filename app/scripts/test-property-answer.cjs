@@ -33,11 +33,11 @@ const memStore = {
   async getWithMetadata(key) { blobOps++; if (take(failNext, 'getWithMetadata', key)) throw new Error('fixture: blob read failed'); return receipts.has(key) ? { data: structuredClone(receipts.get(key)), etag: etags.get(key) } : null; },
   async setJSON(key, value, options) {
     blobOps++;
-    if (take(failNext, 'setJSON', key)) throw new Error('fixture: blob setJSON failed');
+    if (take(failNext, 'setJSON', key, value)) throw new Error('fixture: blob setJSON failed');
     if (options?.onlyIfNew && receipts.has(key)) return { modified: false };
     if (options?.onlyIfMatch !== undefined && etags.get(key) !== options.onlyIfMatch) return { modified: false };
     receipts.set(key, structuredClone(value)); const etag = 'etag-' + (++etagSeq); etags.set(key, etag);
-    if (take(applyThenThrow, 'setJSON', key)) throw new Error('fixture: write applied, acknowledgement lost');
+    if (take(applyThenThrow, 'setJSON', key, value)) throw new Error('fixture: write applied, acknowledgement lost');
     return { modified: true, etag };
   },
   async delete(key) { blobOps++; receipts.delete(key); etags.delete(key); },
@@ -691,6 +691,7 @@ async function t(name, fn) {
       assert.equal(rec.calls, calls.length); assert.equal(rec.reserved, calls.length);
       assert.deepEqual(rec.attempts.map((a) => `${a.method} ${a.path}`), calls.map((c) => `${c.method} ${c.path}`), 'one receipt per request, same order');
       assert.equal(rec.calls, 40); assert.equal(rec.stopped, null);
+      assert.ok(rec.grants.length === 8 && rec.grants.every((g) => g.settled && g.settled.result === 'clean'), 'every granted action settled its grant clean');
       const before = calls.length;
       const extra = await context(); assert.equal(extra.status, 409); assert.equal(extra.body.code, 'budget_exhausted');
       assert.equal(calls.length, before, 'refused unsent'); assert.ok(budgetRec().stopped);
@@ -745,8 +746,109 @@ async function t(name, fn) {
     await f('https://services.leadconnectorhq.com/contacts/' + X1); const before = calls.length;
     await assert.rejects(f('https://services.leadconnectorhq.com/contacts/' + X1), (e) => e.code === 'grant_exceeded'); assert.equal(calls.length, before);
     await assert.rejects(f('https://services.leadconnectorhq.com/contacts/' + X1), (e) => e.code === 'stopped', 'a refused grant refuses everything after'); assert.equal(calls.length, before);
-    const g2 = await b.grant('context', 1, new Date().toISOString());
+    await assert.rejects(b.grant('context', 1, new Date().toISOString()), (e) => e.code === 'unsettled', 'the unsettled grant keeps the budget closed');
+    const g2 = await new budgetLib.EvaluationBudget(memStore, SCOPE, 'direct-test-2', 10).grant('context', 1, new Date().toISOString());
     await assert.rejects(g2.fetcher(() => new Date().toISOString())('https://example.invalid/x'), budgetLib.TransportRefused, 'only GHL');
+  });
+
+  // Bones's b729e33 re-review, F4 remaining blocker 1: a generic transport failure stops the action.
+  const searchFails = (nth = 1) => { let n = 0; onCall((r) => r.path === '/opportunities/search' && ++n === nth, () => { throw new TypeError('fetch failed'); }); };
+  await t('F4r1 a generic transport failure on the context search: zero further GHL requests in the action; search_incomplete; the budget stops; later actions send nothing', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); searchFails();
+      const r = await context(); assert.equal(r.body.verdict.allowed, false); assert.equal(r.body.verdict.reason, 'search_incomplete');
+      assert.deepEqual(calls.map((c) => c.path), ['/opportunities/search'], 'no candidate was read after the failed search');
+      assert.equal(budgetRec().attempts.length, 1); assert.ok(budgetRec().stopped);
+      const s = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: r.body.verdict.digest });
+      assert.equal(s.body.code, 'budget_stopped'); assert.equal(calls.length, 1);
+    });
+  });
+  await t('F4r1 a generic transport failure on the save evaluation search: not sent, zero further GHL requests, 0 PUT, the budget stops', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); const ctx = (await context()).body; const before = calls.length; searchFails();
+      const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+      assert.equal(r.body.outcome, 'not_sent', JSON.stringify(r.body));
+      assert.deepEqual(calls.slice(before).map((c) => c.path), ['/opportunities/search']); assert.equal(puts(), 0); assert.ok(budgetRec().stopped);
+    });
+  });
+  await t('F4r1 a generic transport failure on the post-write bracket search: confirmed_conditions_changed, the search was the last request of the action, no permit, 0 POST, the budget stops', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); const ctx = (await context()).body; const before = calls.length; searchFails(2); // the save's second (bracket) search
+      const op = crypto.randomUUID();
+      const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: op, value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+      assert.equal(r.body.view.s1, 'confirmed_conditions_changed', JSON.stringify(r.body));
+      const mine = calls.slice(before);
+      assert.equal(mine.length, 9, 'evaluation 3 + pre-read 2 + PUT + readback 2 + the failed bracket search'); assert.equal(mine[8].path, '/opportunities/search');
+      assert.ok(![...receipts.keys()].some((k) => k.startsWith('pa/s2-permit/'))); assert.ok(budgetRec().stopped);
+      const h = await history(op); assert.equal(h.body.code, 'budget_stopped'); assert.equal(posts(), 0); assert.equal(calls.length, before + 9);
+    });
+  });
+  await t('F4r1 Grant: a generic error from the network poisons the grant -- the next request is refused without reaching the network', async () => {
+    fresh(); const b = new budgetLib.EvaluationBudget(memStore, SCOPE, 'direct-generic', 10);
+    const g = await b.grant('context', 3, new Date().toISOString()); let sent = 0;
+    const f = g.fetcher(() => new Date().toISOString(), async () => { sent++; throw new TypeError('fetch failed'); });
+    await assert.rejects(f('https://services.leadconnectorhq.com/opportunities/search'), TypeError);
+    await assert.rejects(f('https://services.leadconnectorhq.com/opportunities/' + DA), (e) => e.code === 'stopped');
+    assert.equal(sent, 1); assert.equal((await b.snapshot()).attempts.length, 1, 'no receipt for the refused request');
+  });
+
+  // F4 remaining blocker 2: the stop is durable and fail-closed; nothing in memory is relied on across invocations.
+  const isStop = (o, k, v) => o === 'setJSON' && k.startsWith('pa/eval-budget/') && v && v.stopped;
+  const isClean = (o, k, v) => o === 'setJSON' && k.startsWith('pa/eval-budget/') && v && v.grants.some((g) => g.settled && g.settled.result === 'clean');
+  // A new invocation in a new module instance: the endpoint and budget modules are loaded again.
+  const coldHandler = () => {
+    for (const m of ['../netlify/functions/property-answer.ts', '../netlify/functions/lib/evaluation-budget.ts']) delete require.cache[require.resolve(m)];
+    return require('../netlify/functions/property-answer.ts').handler;
+  };
+  async function coldPost(b) { const r = await coldHandler()({ blobs: lambdaBlobs, httpMethod: 'POST', headers: headers(), body: JSON.stringify(b) }); return { status: r.statusCode, body: JSON.parse(r.body) }; }
+  async function assertClosed(code) {
+    const before = calls.length;
+    for (const b of [{ action: 'context', contactId: X1, opportunityId: DA },
+      { action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: 'a'.repeat(64) },
+      { action: 'history', contactId: X1, opportunityId: DA, operationId: crypto.randomUUID() }]) {
+      const r = await post(b); assert.equal(r.status, 409); assert.equal(r.body.code, code, JSON.stringify(r.body));
+      const c = await coldPost(b); assert.equal(c.status, 409); assert.equal(c.body.code, code, 'a cold invocation stays closed');
+    }
+    await assert.rejects(new budgetLib.EvaluationBudget(memStore, SCOPE, COMMITTED_BUDGET.budgetId, COMMITTED_BUDGET.ceiling).grant('context', 3, new Date().toISOString()), (e) => e.code === code.replace('budget_', ''));
+    const k = await check(); assert.equal(k.status, 200, 'Check again still settles stored evidence');
+    assert.equal(calls.length, before, 'zero GHL requests while closed');
+  }
+  await t('F4r2 the permanent-stop write FAILS: the grant stays unsettled, so every later invocation (warm or cold) is refused budget_unsettled with 0 GHL', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); ghl.opps[DA].status = 'lost'; failNext.push(isStop);
+      assert.equal((await context()).body.verdict.allowed, false);
+      assert.equal(budgetRec().stopped, null, 'the stop was not recorded'); assert.equal(budgetRec().grants[0].settled, null, 'its grant is unsettled');
+      ghl.opps[DA].status = 'open';
+      await assertClosed('budget_unsettled');
+    });
+  });
+  await t('F4r2 the permanent-stop write is AMBIGUOUS (applied, acknowledgement lost): later invocations are refused budget_stopped with 0 GHL', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); ghl.opps[DA].status = 'lost'; applyThenThrow.push(isStop);
+      assert.equal((await context()).body.verdict.allowed, false); assert.ok(budgetRec().stopped);
+      ghl.opps[DA].status = 'open';
+      await assertClosed('budget_stopped');
+    });
+  });
+  await t('F4r2 the stop write fails after a generic search transport failure: closed for every later invocation, 0 GHL', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); searchFails(); failNext.push(isStop);
+      assert.equal((await context()).body.verdict.allowed, false); assert.equal(calls.length, 1); assert.equal(budgetRec().stopped, null);
+      await assertClosed('budget_unsettled'); assert.equal(calls.length, 1);
+    });
+  });
+  await t('F4r2 a clean action whose settle write fails stays unsettled: fail-closed, later invocations refused with 0 GHL', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); failNext.push(isClean);
+      assert.equal((await context()).body.verdict.allowed, true); assert.equal(budgetRec().grants[0].settled, null);
+      await assertClosed('budget_unsettled');
+    });
+  });
+  await t('F4r2 an invocation that dies after its grant (never settles, never stops): later invocations refused budget_unsettled with 0 GHL', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); await new budgetLib.EvaluationBudget(memStore, SCOPE, COMMITTED_BUDGET.budgetId, COMMITTED_BUDGET.ceiling).grant('context', 3, new Date().toISOString());
+      await assertClosed('budget_unsettled');
+    });
   });
   await t('F4 transport bounds: redirect "error" and an abort signal on every request; a 3xx or redirected response is refused; a body over 1 MiB is refused; the deadline covers a stalled response', async () => {
     let seen = null; const base = async (url, init) => { seen = init; return { status: 200, redirected: false, text: async () => '{}' }; };

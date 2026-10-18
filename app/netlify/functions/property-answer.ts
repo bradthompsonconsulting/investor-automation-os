@@ -92,7 +92,19 @@ export const handler = async (event: any) => {
   // sent and bounded. Planned counts per action (one discovery = 1 search + 2 reads per candidate).
   const PLANNED: Record<string, number> = { context: 1 + 2 * m, save: 2 * (1 + 2 * m) + 5, history: 3, check: 3, draft: 0 };
   const budget = new EvaluationBudget(s, scopeKey, ev.requestBudget.budgetId, ev.requestBudget.ceiling);
-  const stopEvaluation = async (reason: string) => { await budget.stop(`${req.action}: ${reason}`, now()).catch(() => false); };
+  let grant: Grant | null = null;
+  // Bones b729e33 re-review F4: a granted action ends by settling its grant clean (expected result,
+  // no refused or failed request) or by a stop. Neither write is trusted to succeed: an unsettled
+  // grant keeps the budget closed for every later invocation (evaluation-budget.ts).
+  const stopEvaluation = async (reason: string) => {
+    if (grant && !grant.refused) grant.refused = new BudgetRefused("The evaluation is stopped", "stopped");
+    await budget.stop(`${req.action}: ${reason}`, now(), grant?.g).catch(() => false);
+  };
+  const settleClean = async () => {
+    if (!grant) return;
+    if (grant.refused) return stopEvaluation("request_refused");
+    await budget.settle(grant.g, now()).catch(() => false);
+  };
 
   if (req.action === "draft") {
     try { await saveDraft(s, scopeKey, req.contactId, req.opportunityId, req.field, req.value, now()); return json(200, { outcome: "draft_saved" }); }
@@ -100,7 +112,6 @@ export const handler = async (event: any) => {
   }
 
   // Check again settles stored evidence even when the budget is closed: it then makes no GHL request.
-  let grant: Grant | null = null;
   try { grant = await budget.grant(req.action, PLANNED[req.action], now()); }
   catch (e) {
     if (req.action !== "check") {
@@ -119,6 +130,7 @@ export const handler = async (event: any) => {
       const cur = await currentOperation(s, scopeKey, req.contactId).catch(() => null);
       const allowed = d.verdict.allowed && !d.otherOpen;
       if (!allowed) await stopEvaluation(d.otherOpen ? "discovery_open" : d.verdict.reason);
+      else await settleClean();
       return json(200, {
         verdict: { allowed, reason: d.otherOpen ? "discovery_open" : d.verdict.reason, message: d.otherOpen ? "Another deal check is in progress." : DEAL_SET_MESSAGE[d.verdict.reason], digest: d.verdict.digest, deals: d.verdict.deals.map((x) => ({ id: x.id, cls: x.cls, stageId: x.stageId, status: x.status })) },
         address,
@@ -140,17 +152,20 @@ export const handler = async (event: any) => {
     if (req.action === "save") {
       const r = await saveAnswer({ ...base, contactId: req.contactId, opportunityId: req.opportunityId, field: req.field, operationId: req.operationId, fields: plan!.fields, valueText, valueLines, expectedAddressDigest: req.expectedAddressDigest, expectedDealSetDigest: req.expectedDealSetDigest, maxCandidates: m });
       if (r.view.state !== "saved_history_pending" || r.message !== SAVED_RECORDING) await stopEvaluation(r.view.state);
+      else await settleClean();
       return json(200, { outcome: r.view.state, view: r.view, message: r.message });
     }
     if (req.action === "history") {
       const r = await recordHistory({ ...base, contactId: req.contactId, operationId: req.operationId });
       if (r.view.state !== "committed") await stopEvaluation(r.view.state);
+      else await settleClean();
       return json(200, { outcome: r.view.state, view: r.view, message: r.message });
     }
     const cur = await currentOperation(s, scopeKey, req.contactId);
-    if (!cur) return json(200, { outcome: "clear", view: null });
+    if (!cur) { await settleClean(); return json(200, { outcome: "clear", view: null }); }
     const v = await settleUnderLock(base, cur.op);
     if (!["committed", "not_saved"].includes(v.state)) await stopEvaluation(v.state);
+    else await settleClean();
     return json(200, { outcome: v.state, view: v });
   } catch (error) {
     await stopEvaluation(error instanceof NotSent ? error.code : error instanceof AnswerHeld ? "held" : "indeterminate");
