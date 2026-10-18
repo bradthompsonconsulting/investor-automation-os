@@ -49,7 +49,7 @@ Module._load = function (name, ...rest) {
 process.env.IAOS_ENV = 'test';
 process.env.IAOS_APP_WRITE_GOOGLE_CLIENT_ID = 'offline-client';
 process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN = 'https://proof.example.invalid';
-process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid';
+process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid,second@example.invalid'; // a second ALLOWED writer (F4c)
 process.env.IAOS_APP_WRITE_SESSION_SECRET = 'offline-fixture-only-not-a-real-secret';
 process.env.GHL_PRIVATE_API_KEY = 'offline-fixture';
 
@@ -131,7 +131,7 @@ global.fetch = async (url, init = {}) => {
 };
 const deal = (id, contactId, over = {}) => ({ id, locationId: config.locationId, contactId, pipelineId: PIPE, pipelineStageId: S.newLeadSeller, status: 'open', name: 'IAOS PROBE ' + id, customFields: [], createdAt: '2026-10-17T12:00:00.000Z', ...over });
 function fresh() {
-  receipts.clear(); etags.clear(); failNext = []; applyThenThrow = []; staleNext = []; calls = []; hooks = []; jar = null; loseNext = []; searchHide = new Set(); searchStale = new Map(); searchMeta = null; blobOps = 0;
+  receipts.clear(); etags.clear(); failNext = []; applyThenThrow = []; staleNext = []; calls = []; hooks = []; jar = null; sessionToken = null; loseNext = []; searchHide = new Set(); searchStale = new Map(); searchMeta = null; blobOps = 0;
   ghl = { contacts: { [X1]: { id: X1, notes: [] }, [X2]: { id: X2, notes: [] }, [X3]: { id: X3, notes: [] }, [OTHER]: { id: OTHER, notes: [] } }, opps: { [DA]: deal(DA, X1) } };
 }
 const puts = () => calls.filter((c) => c.method === 'PUT').length;
@@ -140,7 +140,11 @@ const ghlCount = () => calls.length;
 
 const handler = require('../netlify/functions/property-answer.ts').handler;
 const ghlWrite = require('../netlify/functions/ghl-write.ts').handler;
-const headers = () => ({ ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` });
+// One write session per scenario, like one signed-in page (continuation is bound to writer + session).
+let sessionToken = null;
+const session = () => (sessionToken ??= auth.issueAppSession('brad@example.invalid').token);
+const identity = () => 'brad@example.invalid\n' + dg(session()); // what the endpoint derives from the validated session
+const headers = () => ({ ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${session()}` });
 let jar = null; // the browser's continuation cookie (name=value), as Set-Cookie left it
 const withJar = (h) => (jar ? { ...h, cookie: jar } : h);
 const keepCookie = (r) => { const c = r.headers && r.headers['Set-Cookie']; if (c) jar = c.split(';')[0]; return c || null; };
@@ -745,12 +749,12 @@ async function t(name, fn) {
   });
   await t('F4 a grant cannot be overdrawn: the request past its planned count is refused unsent', async () => {
     fresh(); const b = new budgetLib.EvaluationBudget(memStore, SCOPE, 'direct-test', 10);
-    const g = await b.grant('context', 1, new Date().toISOString()); const f = g.fetcher(() => new Date().toISOString());
+    const g = await b.grant('context', 1, new Date().toISOString(), null, 'unit\nsession-a'); const f = g.fetcher(() => new Date().toISOString());
     await f('https://services.leadconnectorhq.com/contacts/' + X1); const before = calls.length;
     await assert.rejects(f('https://services.leadconnectorhq.com/contacts/' + X1), (e) => e.code === 'grant_exceeded'); assert.equal(calls.length, before);
     await assert.rejects(f('https://services.leadconnectorhq.com/contacts/' + X1), (e) => e.code === 'stopped', 'a refused grant refuses everything after'); assert.equal(calls.length, before);
-    await assert.rejects(b.grant('context', 1, new Date().toISOString()), (e) => e.code === 'unsettled', 'the unsettled grant keeps the budget closed');
-    const g2 = await new budgetLib.EvaluationBudget(memStore, SCOPE, 'direct-test-2', 10).grant('context', 1, new Date().toISOString());
+    await assert.rejects(b.grant('context', 1, new Date().toISOString(), null, 'unit\nsession-a'), (e) => e.code === 'unsettled', 'the unsettled grant keeps the budget closed');
+    const g2 = await new budgetLib.EvaluationBudget(memStore, SCOPE, 'direct-test-2', 10).grant('context', 1, new Date().toISOString(), null, 'unit\nsession-a');
     await assert.rejects(g2.fetcher(() => new Date().toISOString())('https://example.invalid/x'), budgetLib.TransportRefused, 'only GHL');
   });
 
@@ -788,7 +792,7 @@ async function t(name, fn) {
   });
   await t('F4r1 Grant: a generic error from the network poisons the grant -- the next request is refused without reaching the network', async () => {
     fresh(); const b = new budgetLib.EvaluationBudget(memStore, SCOPE, 'direct-generic', 10);
-    const g = await b.grant('context', 3, new Date().toISOString()); let sent = 0;
+    const g = await b.grant('context', 3, new Date().toISOString(), null, 'unit\nsession-a'); let sent = 0;
     const f = g.fetcher(() => new Date().toISOString(), async () => { sent++; throw new TypeError('fetch failed'); });
     await assert.rejects(f('https://services.leadconnectorhq.com/opportunities/search'), TypeError);
     await assert.rejects(f('https://services.leadconnectorhq.com/opportunities/' + DA), (e) => e.code === 'stopped');
@@ -812,7 +816,7 @@ async function t(name, fn) {
       const r = await post(b); assert.equal(r.status, 409); assert.equal(r.body.code, code, JSON.stringify(r.body));
       const c = await coldPost(b); assert.equal(c.status, 409); assert.equal(c.body.code, code, 'a cold invocation stays closed');
     }
-    await assert.rejects(new budgetLib.EvaluationBudget(memStore, SCOPE, COMMITTED_BUDGET.budgetId, COMMITTED_BUDGET.ceiling).grant('context', 3, new Date().toISOString()), (e) => e.code === code.replace('budget_', ''));
+    await assert.rejects(new budgetLib.EvaluationBudget(memStore, SCOPE, COMMITTED_BUDGET.budgetId, COMMITTED_BUDGET.ceiling).grant('context', 3, new Date().toISOString(), null, identity()), (e) => e.code === code.replace('budget_', ''));
     const k = await check(); assert.equal(k.status, 200, 'Check again still settles stored evidence');
     assert.equal(calls.length, before, 'zero GHL requests while closed');
   }
@@ -870,6 +874,54 @@ async function t(name, fn) {
       jar = null; await assertClosed('budget_unacknowledged');
     });
   });
+  // Bones's review of 7369842 (F4c): continuation is bound to the validated writer AND write session,
+  // and exactly one cookie occurrence is accepted.
+  async function postAs(token, b, extraHeaders = {}, h = handler) {
+    const r = await h({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${token}`, ...(jar ? { cookie: jar } : {}), ...extraHeaders }, body: JSON.stringify(b) });
+    return { status: r.statusCode, body: JSON.parse(r.body), setCookie: (r.headers && r.headers['Set-Cookie']) || null };
+  }
+  const threeActions = () => [{ action: 'context', contactId: X1, opportunityId: DA },
+    { action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: 'a'.repeat(64) },
+    { action: 'history', contactId: X1, opportunityId: DA, operationId: crypto.randomUUID() }];
+  await t('F4c another write session of the SAME writer, presenting the holder\'s valid continuation cookie, is refused budget_session_mismatch before any GHL request (warm and cold); the holder then continues', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); assert.equal((await context()).status, 200); const before = calls.length;
+      const other = auth.issueAppSession('brad@example.invalid', process.env, Date.now() + 2000).token; assert.notEqual(other, session());
+      for (const b of threeActions()) {
+        for (const h of [handler, coldHandler()]) {
+          const r = await postAs(other, b, {}, h); assert.equal(r.status, 409); assert.equal(r.body.code, 'budget_session_mismatch', JSON.stringify(r.body)); assert.equal(r.setCookie, null);
+        }
+      }
+      assert.equal(calls.length, before, 'nothing sent'); assert.equal(budgetRec().stopped, null, 'a refused session does not stop the holder');
+      assert.equal((await context()).status, 200, 'the holder session continues'); assert.equal(calls.length, before + 3);
+    });
+  });
+  await t('F4c another ALLOWED writer, presenting the holder\'s valid continuation cookie, is refused budget_session_mismatch before any GHL request; a forged or unsigned session is 401 before any Blob or GHL access', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); assert.equal((await context()).status, 200); const before = calls.length;
+      const second = auth.issueAppSession('second@example.invalid').token;
+      for (const b of threeActions()) { const r = await postAs(second, b); assert.equal(r.status, 409); assert.equal(r.body.code, 'budget_session_mismatch'); }
+      const parts = session().split('.'); const forged = [parts[0], Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(parts[1], 'base64url')), sub: 'second@example.invalid' })).toString('base64url'), parts[2]].join('.');
+      const ops = blobOps; assert.equal((await postAs(forged, threeActions()[0])).status, 401); assert.equal(blobOps, ops, 'no Blob access');
+      assert.equal(calls.length, before, 'nothing sent'); assert.equal(budgetRec().stopped, null);
+    });
+  });
+  await t('F4c exactly ONE continuation-cookie occurrence: identical duplicates (one header or two) and conflicting duplicates are refused budget_unacknowledged with 0 GHL; the single cookie then continues', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); assert.equal((await context()).status, 200); const one = jar; const g1 = one;
+      assert.equal((await context()).status, 200); const g2 = jar; const before = calls.length;
+      const cases = [{ cookie: `${g2}; ${g2}` }, { cookie: `${g2};${g2}` }, { cookie: `${g2}; ${g1}` }];
+      jar = null;
+      for (const extra of cases) { const r = await postAs(session(), threeActions()[0], extra); assert.equal(r.status, 409); assert.equal(r.body.code, 'budget_unacknowledged', JSON.stringify(extra)); }
+      const two = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...headers() }, multiValueHeaders: { cookie: [g2, g2] }, body: JSON.stringify(threeActions()[0]) });
+      assert.equal(two.statusCode, 409); assert.equal(JSON.parse(two.body).code, 'budget_unacknowledged', 'two identical Cookie headers');
+      const mixed = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...headers(), cookie: g2 }, multiValueHeaders: { cookie: [g2] }, body: JSON.stringify(threeActions()[0]) });
+      assert.equal(mixed.statusCode, 409); assert.equal(JSON.parse(mixed.body).code, 'budget_unacknowledged', 'the same cookie in headers and multiValueHeaders');
+      assert.equal(calls.length, before, 'nothing sent'); assert.equal(budgetRec().stopped, null);
+      jar = g2; assert.equal((await context()).status, 200, 'exactly one occurrence continues'); assert.equal(calls.length, before + 3);
+      void one;
+    });
+  });
   await t('F4b continuation: only the acknowledged secret of the LATEST grant continues; missing, stale, forged or duplicated cookies are refused unsent (and do not stop the holder); the holder then continues (positive control)', async () => {
     await withCommittedBudget(async () => {
       fresh();
@@ -888,7 +940,7 @@ async function t(name, fn) {
   });
   await t('F4r2 an invocation that dies after its grant (never settles, never stops): later invocations refused budget_unsettled with 0 GHL', async () => {
     await withCommittedBudget(async () => {
-      fresh(); await new budgetLib.EvaluationBudget(memStore, SCOPE, COMMITTED_BUDGET.budgetId, COMMITTED_BUDGET.ceiling).grant('context', 3, new Date().toISOString());
+      fresh(); await new budgetLib.EvaluationBudget(memStore, SCOPE, COMMITTED_BUDGET.budgetId, COMMITTED_BUDGET.ceiling).grant('context', 3, new Date().toISOString(), null, identity());
       await assertClosed('budget_unsettled');
     });
   });

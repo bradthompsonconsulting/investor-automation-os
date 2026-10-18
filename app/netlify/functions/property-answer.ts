@@ -23,7 +23,7 @@ import { getConfig, PROPERTY_ANSWER_EVALUATION_ENABLED } from "../../shared/ghl-
 import { requireAppWriter } from "./lib/app-write-auth";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { exact, identifier, planWrite } from "./lib/write-contracts";
-import { configuredBoundary } from "./lib/ghl-write-boundary";
+import { configuredBoundary, digest } from "./lib/ghl-write-boundary";
 import { BudgetRefused, EvaluationBudget, TransportRefused, type Grant } from "./lib/evaluation-budget";
 import { lockContact } from "./lib/write-receipts";
 import { evaluateProductionGhlWriteScope } from "./lib/production-write-scope";
@@ -39,7 +39,8 @@ const json = (statusCode: number, data: unknown, extra: Record<string, string> =
 /**
  * Bones F4b: the evaluation's continuation secret (evaluation-budget.ts, CONTINUATION). Set only
  * after this action's clean settlement was ACKNOWLEDGED; the next granted action must present it.
- * Exactly one copy is accepted; two or more are ambiguous and count as none.
+ * Exactly ONE occurrence is accepted (Bones, review of 7369842): two or more occurrences --
+ * identical or conflicting -- are ambiguous and count as none.
  */
 export const CONTINUATION_COOKIE = "__Host-iaos_pa_continuation";
 const continuationCookie = (value: string) => `${CONTINUATION_COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Strict`;
@@ -47,12 +48,12 @@ function presentedContinuation(event: any): string | null {
   const raw: string[] = [];
   for (const [name, value] of Object.entries(event?.headers ?? {})) if (name.toLowerCase() === "cookie" && typeof value === "string") raw.push(value);
   for (const [name, values] of Object.entries(event?.multiValueHeaders ?? {})) if (name.toLowerCase() === "cookie" && Array.isArray(values)) raw.push(...values.filter((v): v is string => typeof v === "string"));
-  const found = new Set<string>();
+  const found: string[] = [];
   for (const header of raw) for (const part of header.split(";")) {
     const eq = part.indexOf("=");
-    if (eq > 0 && part.slice(0, eq).trim() === CONTINUATION_COOKIE) found.add(part.slice(eq + 1).trim());
+    if (eq > 0 && part.slice(0, eq).trim() === CONTINUATION_COOKIE) found.push(part.slice(eq + 1).trim());
   }
-  return found.size === 1 ? [...found][0] : null;
+  return found.length === 1 ? found[0] : null;
 }
 const store = () => getStore("iaos-write-receipts") as unknown as BarrierStore;
 const FIELDS: readonly AnswerField[] = ["seller_reason", "property_address"];
@@ -68,7 +69,14 @@ const now = () => new Date().toISOString();
 
 export const handler = async (event: any) => {
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
-  try { requireAppWriter(event); } catch { return json(401, { error: "Application write sign-in required" }); }
+  // The writer and the exact write session, both server-validated: the evaluation's continuation
+  // is bound to them (Bones, review of 7369842). Nothing client-supplied names the holder.
+  let identity: string;
+  try {
+    const writer = requireAppWriter(event);
+    const session = String(event.headers?.authorization ?? event.headers?.Authorization).slice("Bearer ".length);
+    identity = `${writer}\n${digest(session)}`;
+  } catch { return json(401, { error: "Application write sign-in required" }); }
   try { requireAppWriteOrigin(event); } catch { return json(403, { error: "Application write origin refused" }); }
   let req: any;
   try {
@@ -144,7 +152,7 @@ export const handler = async (event: any) => {
   }
 
   // Check again settles stored evidence even when the budget is closed: it then makes no GHL request.
-  try { grant = await budget.grant(req.action, PLANNED[req.action], now(), presentedContinuation(event)); }
+  try { grant = await budget.grant(req.action, PLANNED[req.action], now(), presentedContinuation(event), identity); }
   catch (e) {
     if (req.action !== "check") {
       if (e instanceof BudgetRefused && e.code === "exhausted") await stopEvaluation("budget exhausted");
