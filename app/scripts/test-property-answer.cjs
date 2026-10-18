@@ -64,6 +64,10 @@ const P = config.propertyAnswerFields;
 assert.deepEqual({ ...P }, { sellerReason: 'zqGxQc7nAspWmYglR2Qk', propertyStreet: 'vMejpjFmgI9ZWvfloaPW', propertyUnit: 'Ok4EFrJqtDqIn90FFiT9', propertyCity: 'lrHSGsOIBtH4f1s9YbVj', propertyState: 'WOaJHfbMz20YTPhD2lI5', propertyZip: 'qztxh0XDmiZrDBMauoJq' }, 'committed Test field ids');
 const X1 = 'fxContactX1', X2 = 'fxContactX2', X3 = 'fxContactX3', OTHER = 'fxContactOther';
 const DA = 'fxDealA00001', DB = 'fxDealB00001', DC = 'fxDealC00001', DD = 'fxDealD00001', DN = 'fxDealNew0001', NONFIX = 'fxDealNotPinned';
+// The committed Test pins are exactly the two synthetic fixtures; this suite then pins its own offline fixtures.
+assert.deepEqual([...config.propertyAnswerEvaluation.fixtureContactIds], ['pYE98meKVyRrbzEt6MMR', 'LR98QNOE0oksHIPF4JIf']);
+assert.deepEqual([...config.propertyAnswerEvaluation.fixtureOpportunityIds], ['a75hWpPILA7Y7Ginp4n8', 'HCTa65siD41bA9XGpQWM']);
+assert.equal(config.propertyAnswerEvaluation.enabled, cfgMod.PROPERTY_ANSWER_EVALUATION_ENABLED);
 config.propertyAnswerEvaluation.fixtureContactIds.push(X1, X2, X3);
 config.propertyAnswerEvaluation.fixtureOpportunityIds.push(DA, DB, DC, DD, DN);
 const SCOPE = `test:${config.locationId}`;

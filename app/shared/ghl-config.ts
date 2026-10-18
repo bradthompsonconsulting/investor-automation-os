@@ -1200,12 +1200,16 @@ const TEST: GhlConfig = {
     propertyState:  "WOaJHfbMz20YTPhD2lI5",
     propertyZip:    "qztxh0XDmiZrDBMauoJq",
   },
-  // B15-04: the synthetic evaluation fixtures are pinned in a later,
-  // separately reviewed commit once they exist. Empty lists refuse every save.
+  // B15-04: the synthetic evaluation fixtures, created in Test 2026-10-18T02:07Z
+  // by scripts/b15-04-create-evaluation-fixtures.cjs (journal
+  // b15-04-fixtures-apply.jsonl). Y1 "IAOS PROBE Answers Y1" + Deal E;
+  // Y2 "IAOS PROBE Answers Y2" + Deal F. Deal G (a second Y2 deal) was
+  // refused by GHL: "Can not create duplicate opportunity for the contact."
+  // Every other contact or deal is refused before any Blob or GHL access.
   propertyAnswerEvaluation: {
     enabled: PROPERTY_ANSWER_EVALUATION_ENABLED,
-    fixtureContactIds: [],
-    fixtureOpportunityIds: [],
+    fixtureContactIds: ["pYE98meKVyRrbzEt6MMR", "LR98QNOE0oksHIPF4JIf"],
+    fixtureOpportunityIds: ["a75hWpPILA7Y7Ginp4n8", "HCTa65siD41bA9XGpQWM"],
   },
 };
 
