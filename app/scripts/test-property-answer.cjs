@@ -131,7 +131,7 @@ global.fetch = async (url, init = {}) => {
 };
 const deal = (id, contactId, over = {}) => ({ id, locationId: config.locationId, contactId, pipelineId: PIPE, pipelineStageId: S.newLeadSeller, status: 'open', name: 'IAOS PROBE ' + id, customFields: [], createdAt: '2026-10-17T12:00:00.000Z', ...over });
 function fresh() {
-  receipts.clear(); etags.clear(); failNext = []; applyThenThrow = []; staleNext = []; calls = []; hooks = []; loseNext = []; searchHide = new Set(); searchStale = new Map(); searchMeta = null; blobOps = 0;
+  receipts.clear(); etags.clear(); failNext = []; applyThenThrow = []; staleNext = []; calls = []; hooks = []; jar = null; loseNext = []; searchHide = new Set(); searchStale = new Map(); searchMeta = null; blobOps = 0;
   ghl = { contacts: { [X1]: { id: X1, notes: [] }, [X2]: { id: X2, notes: [] }, [X3]: { id: X3, notes: [] }, [OTHER]: { id: OTHER, notes: [] } }, opps: { [DA]: deal(DA, X1) } };
 }
 const puts = () => calls.filter((c) => c.method === 'PUT').length;
@@ -141,7 +141,10 @@ const ghlCount = () => calls.length;
 const handler = require('../netlify/functions/property-answer.ts').handler;
 const ghlWrite = require('../netlify/functions/ghl-write.ts').handler;
 const headers = () => ({ ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` });
-async function post(b, h = headers()) { if (!keepBudget) for (const k of budgetKeys()) { receipts.delete(k); etags.delete(k); } const r = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: h, body: JSON.stringify(b) }); return { status: r.statusCode, body: JSON.parse(r.body) }; }
+let jar = null; // the browser's continuation cookie (name=value), as Set-Cookie left it
+const withJar = (h) => (jar ? { ...h, cookie: jar } : h);
+const keepCookie = (r) => { const c = r.headers && r.headers['Set-Cookie']; if (c) jar = c.split(';')[0]; return c || null; };
+async function post(b, h = headers()) { if (!keepBudget) { jar = null; for (const k of budgetKeys()) { receipts.delete(k); etags.delete(k); } } const r = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: withJar(h), body: JSON.stringify(b) }); const setCookie = keepCookie(r); return { status: r.statusCode, body: JSON.parse(r.body), setCookie }; }
 const context = (c = X1, o = DA) => post({ action: 'context', contactId: c, opportunityId: o });
 const ADDR = { street: '100 Probe Way', unit: '', city: 'McKinney', state: 'TX', zip: '75069' };
 async function save(field, value, c = X1, o = DA, over = {}) {
@@ -794,13 +797,13 @@ async function t(name, fn) {
 
   // F4 remaining blocker 2: the stop is durable and fail-closed; nothing in memory is relied on across invocations.
   const isStop = (o, k, v) => o === 'setJSON' && k.startsWith('pa/eval-budget/') && v && v.stopped;
-  const isClean = (o, k, v) => o === 'setJSON' && k.startsWith('pa/eval-budget/') && v && v.grants.some((g) => g.settled && g.settled.result === 'clean');
+  const isClean = (o, k, v) => o === 'setJSON' && k.startsWith('pa/eval-budget/') && v && v.grants.length && (v.grants[v.grants.length - 1].settled || {}).result === 'clean'; // the latest grant's own settlement
   // A new invocation in a new module instance: the endpoint and budget modules are loaded again.
   const coldHandler = () => {
     for (const m of ['../netlify/functions/property-answer.ts', '../netlify/functions/lib/evaluation-budget.ts']) delete require.cache[require.resolve(m)];
     return require('../netlify/functions/property-answer.ts').handler;
   };
-  async function coldPost(b) { const r = await coldHandler()({ blobs: lambdaBlobs, httpMethod: 'POST', headers: headers(), body: JSON.stringify(b) }); return { status: r.statusCode, body: JSON.parse(r.body) }; }
+  async function coldPost(b) { const r = await coldHandler()({ blobs: lambdaBlobs, httpMethod: 'POST', headers: withJar(headers()), body: JSON.stringify(b) }); keepCookie(r); return { status: r.statusCode, body: JSON.parse(r.body) }; }
   async function assertClosed(code) {
     const before = calls.length;
     for (const b of [{ action: 'context', contactId: X1, opportunityId: DA },
@@ -837,11 +840,50 @@ async function t(name, fn) {
       await assertClosed('budget_unsettled'); assert.equal(calls.length, 1);
     });
   });
-  await t('F4r2 a clean action whose settle write fails stays unsettled: fail-closed, later invocations refused with 0 GHL', async () => {
+  await t('F4r2/F4b a clean settlement refused BEFORE it applies: not ordinary success (409 budget_settlement_unacknowledged), no continuation, the stop is recorded; later invocations refused with 0 GHL', async () => {
     await withCommittedBudget(async () => {
       fresh(); failNext.push(isClean);
-      assert.equal((await context()).body.verdict.allowed, true); assert.equal(budgetRec().grants[0].settled, null);
-      await assertClosed('budget_unsettled');
+      const r = await context(); assert.equal(r.status, 409); assert.equal(r.body.code, 'budget_settlement_unacknowledged'); assert.equal(r.setCookie, null, 'no continuation');
+      assert.equal(budgetRec().grants[0].settled.result, 'stopped'); assert.ok(budgetRec().stopped);
+      await assertClosed('budget_stopped');
+    });
+  });
+
+  // Bones's focused review of 3ad29ba, F4b: a PERSISTED clean settlement is not an ACKNOWLEDGED one.
+  await t('F4b (Bones repro) the clean settlement APPLIES and its acknowledgement is lost: 409, no continuation, stopped; warm and cold invocations refused with 0 GHL', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); applyThenThrow.push(isClean);
+      const r = await context(); assert.equal(r.status, 409); assert.equal(r.body.code, 'budget_settlement_unacknowledged'); assert.equal(r.setCookie, null);
+      assert.equal(calls.length, 3); assert.ok(budgetRec().stopped, 'the closing stop applied');
+      await assertClosed('budget_stopped');
+    });
+  });
+  await t('F4b the clean settlement APPLIES with its acknowledgement lost AND the closing stop fails: the persisted clean record alone grants nothing -- the earlier acknowledged continuation, no cookie, warm and cold are all refused budget_unacknowledged with 0 GHL', async () => {
+    await withCommittedBudget(async () => {
+      fresh();
+      assert.equal((await context()).status, 200); const earlier = jar; assert.ok(earlier, 'g1 acknowledged: continuation issued');
+      applyThenThrow.push(isClean); failNext.push(isStop);
+      const r = await context(); assert.equal(r.status, 409); assert.equal(r.body.code, 'budget_settlement_unacknowledged'); assert.equal(r.setCookie, null);
+      const rec = budgetRec(); assert.equal(rec.stopped, null, 'the stop did not apply'); assert.equal(rec.grants[1].settled.result, 'clean', 'clean IS persisted');
+      assert.equal(jar, earlier, 'the browser still holds only the g1 continuation');
+      await assertClosed('budget_unacknowledged');
+      jar = null; await assertClosed('budget_unacknowledged');
+    });
+  });
+  await t('F4b continuation: only the acknowledged secret of the LATEST grant continues; missing, stale, forged or duplicated cookies are refused unsent (and do not stop the holder); the holder then continues (positive control)', async () => {
+    await withCommittedBudget(async () => {
+      fresh();
+      const a = await context(); assert.equal(a.status, 200); assert.match(a.setCookie, /^__Host-iaos_pa_continuation=1\.[A-Za-z0-9_-]{43}; Path=\/; HttpOnly; Secure; SameSite=Strict$/);
+      const g1 = jar; assert.equal((await context()).status, 200); const g2 = jar; assert.notEqual(g1, g2);
+      assert.ok(!JSON.stringify(budgetRec()).includes(g2.split('.')[1]), 'the store holds only a digest of the secret');
+      const before = calls.length;
+      const tries = [null, g1, g2.slice(0, -1) + (g2.endsWith('A') ? 'B' : 'A'), g2.replace(/=2\./, '=3.'), `${g2}; ${g1}`];
+      for (const c of tries) {
+        jar = c; const r = await post({ action: 'context', contactId: X1, opportunityId: DA });
+        assert.equal(r.status, 409); assert.equal(r.body.code, 'budget_unacknowledged', String(c));
+      }
+      assert.equal(calls.length, before, 'nothing sent'); assert.equal(budgetRec().stopped, null, 'a refused presenter does not stop the holder');
+      jar = g2; assert.equal((await context()).status, 200); assert.equal(calls.length, before + 3, 'the holder continues');
     });
   });
   await t('F4r2 an invocation that dies after its grant (never settles, never stops): later invocations refused budget_unsettled with 0 GHL', async () => {

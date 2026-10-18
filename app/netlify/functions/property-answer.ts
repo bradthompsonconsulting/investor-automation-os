@@ -17,6 +17,7 @@
  * A save is also refused by the Production write scope, and its value must
  * pass the named operation contract (write-contracts.ts).
  */
+import { randomBytes } from "node:crypto";
 import { connectLambda, getStore } from "@netlify/blobs";
 import { getConfig, PROPERTY_ANSWER_EVALUATION_ENABLED } from "../../shared/ghl-config";
 import { requireAppWriter } from "./lib/app-write-auth";
@@ -34,7 +35,25 @@ import {
   settleUnderLock, targetAddress,
 } from "./lib/property-answer-operation";
 
-const json = (statusCode: number, data: unknown) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(data) });
+const json = (statusCode: number, data: unknown, extra: Record<string, string> = {}) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extra }, body: JSON.stringify(data) });
+/**
+ * Bones F4b: the evaluation's continuation secret (evaluation-budget.ts, CONTINUATION). Set only
+ * after this action's clean settlement was ACKNOWLEDGED; the next granted action must present it.
+ * Exactly one copy is accepted; two or more are ambiguous and count as none.
+ */
+export const CONTINUATION_COOKIE = "__Host-iaos_pa_continuation";
+const continuationCookie = (value: string) => `${CONTINUATION_COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Strict`;
+function presentedContinuation(event: any): string | null {
+  const raw: string[] = [];
+  for (const [name, value] of Object.entries(event?.headers ?? {})) if (name.toLowerCase() === "cookie" && typeof value === "string") raw.push(value);
+  for (const [name, values] of Object.entries(event?.multiValueHeaders ?? {})) if (name.toLowerCase() === "cookie" && Array.isArray(values)) raw.push(...values.filter((v): v is string => typeof v === "string"));
+  const found = new Set<string>();
+  for (const header of raw) for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq).trim() === CONTINUATION_COOKIE) found.add(part.slice(eq + 1).trim());
+  }
+  return found.size === 1 ? [...found][0] : null;
+}
 const store = () => getStore("iaos-write-receipts") as unknown as BarrierStore;
 const FIELDS: readonly AnswerField[] = ["seller_reason", "property_address"];
 const KEYS: Record<string, string[]> = {
@@ -100,10 +119,23 @@ export const handler = async (event: any) => {
     if (grant && !grant.refused) grant.refused = new BudgetRefused("The evaluation is stopped", "stopped");
     await budget.stop(`${req.action}: ${reason}`, now(), grant?.g).catch(() => false);
   };
-  const settleClean = async () => {
-    if (!grant) return;
-    if (grant.refused) return stopEvaluation("request_refused");
-    await budget.settle(grant.g, now()).catch(() => false);
+  // Bones F4b: an expected result is answered as ordinary success ONLY after its clean settlement
+  // was acknowledged, and only then does the client receive the continuation for the next action.
+  // An unacknowledged settlement (false, a throw, or applied with its acknowledgement lost) is not
+  // success: the evaluation stops (best effort) and no continuation is issued, so even a persisted
+  // clean record grants nothing later.
+  const finishClean = async (body: Record<string, unknown>) => {
+    if (!grant) return json(200, body);
+    const unacknowledged = async (code: string, reason: string) => {
+      await stopEvaluation(reason);
+      return json(409, { outcome: "not_settled", code, ...("view" in body ? { view: body.view } : {}), error: "The result was not settled for the evaluation; the evaluation is stopped. Use Check again to read the stored state." });
+    };
+    if (grant.refused) return unacknowledged("budget_request_refused", "request_refused");
+    const secret = randomBytes(32).toString("base64url");
+    let acknowledged = false;
+    try { acknowledged = await budget.settle(grant.g, secret, now()); } catch { acknowledged = false; }
+    if (!acknowledged) return unacknowledged("budget_settlement_unacknowledged", "settlement_unacknowledged");
+    return json(200, body, { "Set-Cookie": continuationCookie(`${grant.g}.${secret}`) });
   };
 
   if (req.action === "draft") {
@@ -112,7 +144,7 @@ export const handler = async (event: any) => {
   }
 
   // Check again settles stored evidence even when the budget is closed: it then makes no GHL request.
-  try { grant = await budget.grant(req.action, PLANNED[req.action], now()); }
+  try { grant = await budget.grant(req.action, PLANNED[req.action], now(), presentedContinuation(event)); }
   catch (e) {
     if (req.action !== "check") {
       if (e instanceof BudgetRefused && e.code === "exhausted") await stopEvaluation("budget exhausted");
@@ -129,15 +161,15 @@ export const handler = async (event: any) => {
       const address = d.target ? targetAddress(config, d.target) : null;
       const cur = await currentOperation(s, scopeKey, req.contactId).catch(() => null);
       const allowed = d.verdict.allowed && !d.otherOpen;
-      if (!allowed) await stopEvaluation(d.otherOpen ? "discovery_open" : d.verdict.reason);
-      else await settleClean();
-      return json(200, {
+      const body = {
         verdict: { allowed, reason: d.otherOpen ? "discovery_open" : d.verdict.reason, message: d.otherOpen ? "Another deal check is in progress." : DEAL_SET_MESSAGE[d.verdict.reason], digest: d.verdict.digest, deals: d.verdict.deals.map((x) => ({ id: x.id, cls: x.cls, stageId: x.stageId, status: x.status })) },
         address,
         values: { seller_reason: d.target ? currentValueText(config, "seller_reason", d.target) : null },
         operation: cur ? cur.view : null,
         drafts: { seller_reason: await readDraft(s, scopeKey, req.contactId, req.opportunityId, "seller_reason"), property_address: await readDraft(s, scopeKey, req.contactId, req.opportunityId, "property_address") },
-      });
+      };
+      if (!allowed) { await stopEvaluation(d.otherOpen ? "discovery_open" : d.verdict.reason); return json(200, body); }
+      return await finishClean(body);
     } catch (e) {
       const code = e instanceof UnexpectedWork ? "unexpected_candidates" : e instanceof BudgetRefused ? `budget_${e.code}` : e instanceof TransportRefused ? "transport_refused" : "deal_set_unconfirmed";
       await stopEvaluation(code);
@@ -151,22 +183,19 @@ export const handler = async (event: any) => {
     catch { await stopEvaluation("locked"); return json(409, { outcome: "not_sent", code: "locked", error: "Another write for this contact is in progress or unresolved. Nothing was sent." }); }
     if (req.action === "save") {
       const r = await saveAnswer({ ...base, contactId: req.contactId, opportunityId: req.opportunityId, field: req.field, operationId: req.operationId, fields: plan!.fields, valueText, valueLines, expectedAddressDigest: req.expectedAddressDigest, expectedDealSetDigest: req.expectedDealSetDigest, maxCandidates: m });
-      if (r.view.state !== "saved_history_pending" || r.message !== SAVED_RECORDING) await stopEvaluation(r.view.state);
-      else await settleClean();
-      return json(200, { outcome: r.view.state, view: r.view, message: r.message });
+      if (r.view.state !== "saved_history_pending" || r.message !== SAVED_RECORDING) { await stopEvaluation(r.view.state); return json(200, { outcome: r.view.state, view: r.view, message: r.message }); }
+      return await finishClean({ outcome: r.view.state, view: r.view, message: r.message });
     }
     if (req.action === "history") {
       const r = await recordHistory({ ...base, contactId: req.contactId, operationId: req.operationId });
-      if (r.view.state !== "committed") await stopEvaluation(r.view.state);
-      else await settleClean();
-      return json(200, { outcome: r.view.state, view: r.view, message: r.message });
+      if (r.view.state !== "committed") { await stopEvaluation(r.view.state); return json(200, { outcome: r.view.state, view: r.view, message: r.message }); }
+      return await finishClean({ outcome: r.view.state, view: r.view, message: r.message });
     }
     const cur = await currentOperation(s, scopeKey, req.contactId);
-    if (!cur) { await settleClean(); return json(200, { outcome: "clear", view: null }); }
+    if (!cur) return await finishClean({ outcome: "clear", view: null });
     const v = await settleUnderLock(base, cur.op);
-    if (!["committed", "not_saved"].includes(v.state)) await stopEvaluation(v.state);
-    else await settleClean();
-    return json(200, { outcome: v.state, view: v });
+    if (!["committed", "not_saved"].includes(v.state)) { await stopEvaluation(v.state); return json(200, { outcome: v.state, view: v }); }
+    return await finishClean({ outcome: v.state, view: v });
   } catch (error) {
     await stopEvaluation(error instanceof NotSent ? error.code : error instanceof AnswerHeld ? "held" : "indeterminate");
     if (error instanceof NotSent) return json(409, { outcome: "not_sent", code: error.code, error: error.message, ...(error.view && typeof error.view === "object" && "reason" in (error.view as any) ? { verdict: { reason: (error.view as any).reason, message: DEAL_SET_MESSAGE[(error.view as any).reason as keyof typeof DEAL_SET_MESSAGE] } } : {}) });

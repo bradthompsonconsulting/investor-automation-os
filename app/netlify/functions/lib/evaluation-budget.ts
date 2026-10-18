@@ -6,7 +6,7 @@
  * ONE record per configured budget id, changed only by compare-and-swap:
  *   pa/eval-budget/<digest(scope:budgetId)> =
  *     { v, budgetId, ceiling, reserved, calls, stopped: null | { at, reason },
- *       grants:   [{ g, action, planned, at, settled: null | { at, result } }],
+ *       grants:   [{ g, action, planned, at, settled: null | { at, result, proof? } }],
  *       attempts: [{ n, g, method, path, at }] }
  *
  * - Every action first reserves its PLANNED request count (`grant`). The grant
@@ -24,6 +24,15 @@
  *   by `stop`. A crash, an unconfirmed stop or an unconfirmed settle therefore
  *   leaves the budget closed for every later invocation; no in-memory flag is
  *   relied on across invocations.
+ * - CONTINUATION (Bones's focused review of 3ad29ba, F4b). A PERSISTED clean
+ *   settlement is not an ACKNOWLEDGED one: the store can apply a write and
+ *   still fail to acknowledge it, and no further write can prove the
+ *   acknowledgement, because that write can be lost the same way. So a clean
+ *   record alone grants nothing. `settle` stores only a digest of a fresh
+ *   random secret; the endpoint hands the secret to the client (an HttpOnly
+ *   cookie) ONLY after `settle` returned acknowledged. A later grant must
+ *   present the secret for the LATEST grant. An unacknowledged settlement
+ *   issues no secret, so no invocation, warm or fresh, can continue it.
  *
  * Transport (every evaluation GHL request): only https://services.leadconnectorhq.com,
  * redirect "error" plus a refusal of any 3xx or redirected response, one
@@ -39,14 +48,14 @@ export const BODY_LIMIT_BYTES = 1024 * 1024;
 const CAS_ATTEMPTS = 4;
 
 export type BudgetRecord = {
-  v: 2; budgetId: string; ceiling: number; reserved: number; calls: number;
+  v: 3; budgetId: string; ceiling: number; reserved: number; calls: number;
   stopped: null | { at: string; reason: string };
-  grants: { g: number; action: string; planned: number; at: string; settled: null | { at: string; result: "clean" | "stopped" } }[];
+  grants: { g: number; action: string; planned: number; at: string; settled: null | { at: string; result: "clean" | "stopped"; proof?: string } }[];
   attempts: { n: number; g: number; method: string; path: string; at: string }[];
 };
 
 /** Nothing was sent: the budget refused the reservation or the request. */
-export class BudgetRefused extends Error { constructor(message: string, readonly code: "stopped" | "exhausted" | "grant_exceeded" | "unsettled") { super(message); } }
+export class BudgetRefused extends Error { constructor(message: string, readonly code: "stopped" | "exhausted" | "grant_exceeded" | "unsettled" | "unacknowledged") { super(message); } }
 /** The transport refused a response (redirect, oversize, timeout) or the target origin. */
 export class TransportRefused extends Error {}
 
@@ -60,7 +69,7 @@ async function read(store: BarrierStore, key: string): Promise<{ rec: BudgetReco
     try { got = await store.getWithMetadata(key, { type: "json" }); } catch { throw new BudgetRefused("The request budget could not be read", "unsettled"); }
   }
   if (!got) return { rec: null, etag: null };
-  if (!got.etag || !got.data || got.data.v !== 2) throw new BudgetRefused("The request budget record is unreadable", "unsettled");
+  if (!got.etag || !got.data || got.data.v !== 3) throw new BudgetRefused("The request budget record is unreadable", "unsettled");
   return { rec: got.data as BudgetRecord, etag: got.etag };
 }
 async function cas(store: BarrierStore, key: string, etag: string | null, next: BudgetRecord): Promise<boolean> {
@@ -68,7 +77,7 @@ async function cas(store: BarrierStore, key: string, etag: string | null, next: 
   catch { throw new BudgetRefused("A request-budget write could not be confirmed", "unsettled"); }
 }
 
-const fresh = (budgetId: string, ceiling: number): BudgetRecord => ({ v: 2, budgetId, ceiling, reserved: 0, calls: 0, stopped: null, grants: [], attempts: [] });
+const fresh = (budgetId: string, ceiling: number): BudgetRecord => ({ v: 3, budgetId, ceiling, reserved: 0, calls: 0, stopped: null, grants: [], attempts: [] });
 
 export class EvaluationBudget {
   readonly key: string;
@@ -77,15 +86,22 @@ export class EvaluationBudget {
     this.key = budgetKey(scope, budgetId);
   }
   async snapshot(): Promise<BudgetRecord | null> { return (await read(this.store, this.key)).rec; }
+  private proof(g: number, secret: string) { return digest(`${this.key}:continuation:${g}:${secret}`); }
 
-  /** Reserves `planned` requests for one action. Refused (nothing sent) if stopped or over the ceiling. */
-  async grant(action: string, planned: number, now: string): Promise<Grant> {
+  /**
+   * Reserves `planned` requests for one action. Refused (nothing sent) if
+   * stopped, unsettled, over the ceiling, or -- once any grant exists -- if
+   * `continuation` is not the acknowledged secret of the LATEST grant.
+   */
+  async grant(action: string, planned: number, now: string, continuation: string | null = null): Promise<Grant> {
     for (let i = 0; i < CAS_ATTEMPTS; i++) {
       const { rec, etag } = await read(this.store, this.key);
       const cur: BudgetRecord = rec ?? fresh(this.budgetId, this.ceiling);
       if (cur.ceiling !== this.ceiling || cur.budgetId !== this.budgetId) throw new BudgetRefused("The request budget record does not match the reviewed configuration", "unsettled");
       if (cur.stopped) throw new BudgetRefused(`The evaluation is stopped (${cur.stopped.reason}). Nothing was sent.`, "stopped");
       if (cur.grants.some((x) => x.settled === null)) throw new BudgetRefused("An earlier evaluation action did not settle; the evaluation stays closed. Nothing was sent.", "unsettled");
+      const last = cur.grants[cur.grants.length - 1];
+      if (last && !this.continues(last, continuation)) throw new BudgetRefused("The last evaluation action's settlement was not acknowledged to this browser; the evaluation stays closed. Nothing was sent.", "unacknowledged");
       if (cur.reserved + planned > cur.ceiling) throw new BudgetRefused("The evaluation request budget is used up. Nothing was sent.", "exhausted");
       const g = cur.grants.length + 1;
       const next: BudgetRecord = { ...cur, reserved: cur.reserved + planned, grants: [...cur.grants, { g, action, planned, at: now, settled: null }] };
@@ -110,13 +126,23 @@ export class EvaluationBudget {
     return false;
   }
 
-  /** Settles grant g as clean after an expected result. A failed or ambiguous settle leaves it unsettled: closed. */
-  async settle(g: number, now: string): Promise<boolean> {
+  private continues(last: BudgetRecord["grants"][number], continuation: string | null): boolean {
+    const m = typeof continuation === "string" ? /^([1-9][0-9]{0,5})\.([A-Za-z0-9_-]{43})$/.exec(continuation) : null;
+    return !!m && Number(m[1]) === last.g && last.settled?.result === "clean" && typeof last.settled.proof === "string" && last.settled.proof === this.proof(last.g, m[2]);
+  }
+
+  /**
+   * Settles grant g as clean, storing only the digest of `secret`. Returns true
+   * ONLY when this write was acknowledged; false or a throw means unacknowledged
+   * (it may still have been applied), and the caller must not hand out `secret`.
+   */
+  async settle(g: number, secret: string, now: string): Promise<boolean> {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(secret)) throw new Error("Invalid continuation secret");
     for (let i = 0; i < CAS_ATTEMPTS; i++) {
       const { rec, etag } = await read(this.store, this.key);
       const mine = rec?.grants.find((x) => x.g === g);
       if (!rec || !mine || mine.settled !== null) return false;
-      const grants = rec.grants.map((x) => (x.g === g ? { ...x, settled: { at: now, result: "clean" as const } } : x));
+      const grants = rec.grants.map((x) => (x.g === g ? { ...x, settled: { at: now, result: "clean" as const, proof: this.proof(g, secret) } } : x));
       if (await cas(this.store, this.key, etag, { ...rec, grants })) return true;
     }
     return false;
