@@ -1,0 +1,166 @@
+/**
+ * B15-04 controlled Test evaluation -- the ENFORCED request budget and the
+ * bounded GHL transport for netlify/functions/property-answer.ts (Bones's
+ * review of 525d7c2, F4).
+ *
+ * ONE record per configured budget id, changed only by compare-and-swap:
+ *   pa/eval-budget/<digest(scope:budgetId)> =
+ *     { v, budgetId, ceiling, reserved, calls, stopped: null | { at, reason },
+ *       grants:   [{ g, action, planned, at }],
+ *       attempts: [{ n, g, method, path, at }] }
+ *
+ * - Every action first reserves its PLANNED request count (`grant`). The grant
+ *   is refused, and nothing is sent, if the budget is stopped or the
+ *   reservation would pass the ceiling. A save therefore never starts unless
+ *   all of its requests are available: running out cannot strand a sent PUT.
+ * - Every GHL request then draws one unit from its grant, and its attempt
+ *   receipt is recorded durably BEFORE it is sent. Exceeding the grant, a
+ *   stopped budget or an unconfirmed receipt refuses the request unsent.
+ * - `stop` closes the budget for good: only a reviewed config commit with a
+ *   new budget id opens another. Nothing here reopens or enlarges a budget.
+ *
+ * Transport (every evaluation GHL request): only https://services.leadconnectorhq.com,
+ * redirect "error" plus a refusal of any 3xx or redirected response, one
+ * 15-second deadline over headers AND body, and a 1 MiB body cap. A refused or
+ * failed request is never retried here.
+ */
+import { digest } from "./ghl-write-boundary";
+import type { BarrierStore } from "./current-offer-barrier";
+
+export const GHL_ORIGIN = "https://services.leadconnectorhq.com";
+export const REQUEST_DEADLINE_MS = 15_000;
+export const BODY_LIMIT_BYTES = 1024 * 1024;
+const CAS_ATTEMPTS = 4;
+
+export type BudgetRecord = {
+  v: 1; budgetId: string; ceiling: number; reserved: number; calls: number;
+  stopped: null | { at: string; reason: string };
+  grants: { g: number; action: string; planned: number; at: string }[];
+  attempts: { n: number; g: number; method: string; path: string; at: string }[];
+};
+
+/** Nothing was sent: the budget refused the reservation or the request. */
+export class BudgetRefused extends Error { constructor(message: string, readonly code: "stopped" | "exhausted" | "grant_exceeded" | "unsettled") { super(message); } }
+/** The transport refused a response (redirect, oversize, timeout) or the target origin. */
+export class TransportRefused extends Error {}
+
+export const budgetKey = (scope: string, budgetId: string) => `pa/eval-budget/${digest(`${scope}:${budgetId}`)}`;
+
+async function read(store: BarrierStore, key: string): Promise<{ rec: BudgetRecord | null; etag: string | null }> {
+  let got: { data: any; etag?: string } | null;
+  try { got = await store.getWithMetadata(key, { type: "json", consistency: "strong" }); }
+  catch (e: any) {
+    if (e?.name !== "BlobsConsistencyError") throw new BudgetRefused("The request budget could not be read", "unsettled");
+    try { got = await store.getWithMetadata(key, { type: "json" }); } catch { throw new BudgetRefused("The request budget could not be read", "unsettled"); }
+  }
+  if (!got) return { rec: null, etag: null };
+  if (!got.etag || !got.data || got.data.v !== 1) throw new BudgetRefused("The request budget record is unreadable", "unsettled");
+  return { rec: got.data as BudgetRecord, etag: got.etag };
+}
+async function cas(store: BarrierStore, key: string, etag: string | null, next: BudgetRecord): Promise<boolean> {
+  try { return (await store.setJSON(key, next, etag === null ? { onlyIfNew: true } : { onlyIfMatch: etag })).modified; }
+  catch { throw new BudgetRefused("A request-budget write could not be confirmed", "unsettled"); }
+}
+
+export class EvaluationBudget {
+  readonly key: string;
+  constructor(readonly store: BarrierStore, scope: string, readonly budgetId: string, readonly ceiling: number) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(budgetId) || !Number.isInteger(ceiling) || ceiling < 0) throw new Error("Invalid evaluation budget");
+    this.key = budgetKey(scope, budgetId);
+  }
+  async snapshot(): Promise<BudgetRecord | null> { return (await read(this.store, this.key)).rec; }
+
+  /** Reserves `planned` requests for one action. Refused (nothing sent) if stopped or over the ceiling. */
+  async grant(action: string, planned: number, now: string): Promise<Grant> {
+    for (let i = 0; i < CAS_ATTEMPTS; i++) {
+      const { rec, etag } = await read(this.store, this.key);
+      const cur: BudgetRecord = rec ?? { v: 1, budgetId: this.budgetId, ceiling: this.ceiling, reserved: 0, calls: 0, stopped: null, grants: [], attempts: [] };
+      if (cur.ceiling !== this.ceiling || cur.budgetId !== this.budgetId) throw new BudgetRefused("The request budget record does not match the reviewed configuration", "unsettled");
+      if (cur.stopped) throw new BudgetRefused(`The evaluation is stopped (${cur.stopped.reason}). Nothing was sent.`, "stopped");
+      if (cur.reserved + planned > cur.ceiling) throw new BudgetRefused("The evaluation request budget is used up. Nothing was sent.", "exhausted");
+      const g = cur.grants.length + 1;
+      const next: BudgetRecord = { ...cur, reserved: cur.reserved + planned, grants: [...cur.grants, { g, action, planned, at: now }] };
+      if (await cas(this.store, this.key, etag, next)) return new Grant(this, g, planned);
+    }
+    throw new BudgetRefused("The request budget could not be reserved", "unsettled");
+  }
+
+  /** Closes the budget (first reason wins). Best effort: an unconfirmed stop is reported by the caller. */
+  async stop(reason: string, now: string): Promise<boolean> {
+    for (let i = 0; i < CAS_ATTEMPTS; i++) {
+      const { rec, etag } = await read(this.store, this.key);
+      const cur: BudgetRecord = rec ?? { v: 1, budgetId: this.budgetId, ceiling: this.ceiling, reserved: 0, calls: 0, stopped: null, grants: [], attempts: [] };
+      if (cur.stopped) return true;
+      if (await cas(this.store, this.key, etag, { ...cur, stopped: { at: now, reason } })) return true;
+    }
+    return false;
+  }
+
+  /** Records one attempt receipt for grant g BEFORE its request is sent. */
+  async draw(g: number, planned: number, method: string, path: string, now: string): Promise<number> {
+    for (let i = 0; i < CAS_ATTEMPTS; i++) {
+      const { rec, etag } = await read(this.store, this.key);
+      if (!rec) throw new BudgetRefused("The request budget is missing", "unsettled");
+      if (rec.stopped) throw new BudgetRefused(`The evaluation is stopped (${rec.stopped.reason}). Nothing was sent.`, "stopped");
+      const used = rec.attempts.filter((a) => a.g === g).length;
+      if (used >= planned) throw new BudgetRefused("This action has used all of its planned requests. Nothing more was sent.", "grant_exceeded");
+      const n = rec.calls + 1;
+      if (await cas(this.store, this.key, etag, { ...rec, calls: n, attempts: [...rec.attempts, { n, g, method, path, at: now }] })) return n;
+    }
+    throw new BudgetRefused("The request receipt could not be recorded. Nothing was sent.", "unsettled");
+  }
+}
+
+export class Grant {
+  /** Set by the first budget or transport refusal: every later request of this action is refused unsent. */
+  refused: Error | null = null;
+  constructor(readonly budget: EvaluationBudget, readonly g: number, readonly planned: number) {}
+  /** A fetch for GhlBoundary: receipt first, then one bounded request. */
+  fetcher(now: () => string, baseFetch: typeof fetch = fetch): typeof fetch {
+    return (async (input: any, init: any = {}) => {
+      if (this.refused) throw new BudgetRefused("An earlier request of this action was refused; nothing more is sent.", "stopped");
+      try {
+        const url = new URL(String(input));
+        if (url.origin !== GHL_ORIGIN) throw new TransportRefused("Only GHL may be called");
+        await this.budget.draw(this.g, this.planned, String(init.method ?? "GET"), url.pathname, now());
+        return await boundedRequest(baseFetch, url.toString(), init);
+      } catch (e) {
+        if (e instanceof BudgetRefused || e instanceof TransportRefused) this.refused = e;
+        throw e;
+      }
+    }) as typeof fetch;
+  }
+}
+
+/** One request: redirect refused, one deadline over headers and body, body capped. Returns a plain Response. */
+export async function boundedRequest(baseFetch: typeof fetch, url: string, init: any, deadlineMs = REQUEST_DEADLINE_MS): Promise<Response> {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { timedOut = true; reject(new TransportRefused("timeout")); controller.abort(); }, deadlineMs); });
+  try {
+    return await Promise.race([deadline, (async () => {
+      const res: any = await baseFetch(url, { ...init, redirect: "error", signal: controller.signal });
+      if ((res.status >= 300 && res.status < 400) || res.redirected) throw new TransportRefused("redirect refused");
+      let text: string;
+      if (res.body && typeof res.body.getReader === "function") {
+        const reader = res.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > BODY_LIMIT_BYTES) { try { await reader.cancel(); } catch { /* ignore */ } throw new TransportRefused("response too large"); }
+          chunks.push(value);
+        }
+        text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+      } else {
+        text = await res.text();
+        if (Buffer.byteLength(text, "utf8") > BODY_LIMIT_BYTES) throw new TransportRefused("response too large");
+      }
+      return new Response([101, 204, 205, 304].includes(res.status) ? null : text, { status: res.status, headers: { "Content-Type": "application/json" } });
+    })()]);
+  } catch (e) {
+    if (timedOut || e instanceof TransportRefused) throw e instanceof TransportRefused ? e : new TransportRefused("timeout");
+    throw e;
+  } finally { if (timer) clearTimeout(timer); }
+}

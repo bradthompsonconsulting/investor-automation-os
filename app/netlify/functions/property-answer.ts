@@ -23,13 +23,14 @@ import { requireAppWriter } from "./lib/app-write-auth";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { exact, identifier, planWrite } from "./lib/write-contracts";
 import { configuredBoundary } from "./lib/ghl-write-boundary";
+import { BudgetRefused, EvaluationBudget, TransportRefused, type Grant } from "./lib/evaluation-budget";
 import { lockContact } from "./lib/write-receipts";
 import { evaluateProductionGhlWriteScope } from "./lib/production-write-scope";
 import type { BarrierStore } from "./lib/current-offer-barrier";
 import { ANSWER_OPERATION, answerValueText, historyValueLines, normalizeAddress, normalizeSellerReason, type AnswerField } from "./lib/property-answer-model";
 import { DEAL_SET_MESSAGE } from "./lib/seller-deal-set";
 import {
-  AnswerHeld, NotSent, currentOperation, currentValueText, discover, readDraft, recordHistory, saveAnswer, saveDraft,
+  AnswerHeld, NotSent, UnexpectedWork, SAVED_RECORDING, currentOperation, currentValueText, discover, readDraft, recordHistory, saveAnswer, saveDraft,
   settleUnderLock, targetAddress,
 } from "./lib/property-answer-operation";
 
@@ -86,46 +87,73 @@ export const handler = async (event: any) => {
   connectLambda(event);
   const s = store();
   const scopeKey = `${env}:${config.locationId}`;
-  const boundary = configuredBoundary();
-  const base = { boundary, store: s, scope: scopeKey, config, environment: env, now };
+  const m = ev.maxCandidates;
+  // Bones F4: every GHL request this endpoint makes is reserved per action, receipted before it is
+  // sent and bounded. Planned counts per action (one discovery = 1 search + 2 reads per candidate).
+  const PLANNED: Record<string, number> = { context: 1 + 2 * m, save: 2 * (1 + 2 * m) + 5, history: 3, check: 3, draft: 0 };
+  const budget = new EvaluationBudget(s, scopeKey, ev.requestBudget.budgetId, ev.requestBudget.ceiling);
+  const stopEvaluation = async (reason: string) => { await budget.stop(`${req.action}: ${reason}`, now()).catch(() => false); };
 
   if (req.action === "draft") {
     try { await saveDraft(s, scopeKey, req.contactId, req.opportunityId, req.field, req.value, now()); return json(200, { outcome: "draft_saved" }); }
     catch { return json(400, { outcome: "not_sent", code: "invalid_draft", error: "Draft not saved" }); }
   }
 
+  // Check again settles stored evidence even when the budget is closed: it then makes no GHL request.
+  let grant: Grant | null = null;
+  try { grant = await budget.grant(req.action, PLANNED[req.action], now()); }
+  catch (e) {
+    if (req.action !== "check") {
+      if (e instanceof BudgetRefused && e.code === "exhausted") await stopEvaluation("budget exhausted");
+      return json(409, { outcome: "not_sent", code: e instanceof BudgetRefused ? `budget_${e.code}` : "budget_unsettled", error: e instanceof Error ? e.message : "Nothing was sent." });
+    }
+  }
+  const refuseAll = (async () => { throw new BudgetRefused("No GHL request is available to this action", "stopped"); }) as unknown as typeof fetch;
+  const boundary = configuredBoundary(undefined, grant ? grant.fetcher(now) : refuseAll);
+  const base = { boundary, store: s, scope: scopeKey, config, environment: env, now };
+
   if (req.action === "context") {
     try {
-      const d = await discover({ ...base, contactId: req.contactId, targetId: req.opportunityId, lockHeld: false });
+      const d = await discover({ ...base, contactId: req.contactId, targetId: req.opportunityId, lockHeld: false, maxCandidates: m });
       const address = d.target ? targetAddress(config, d.target) : null;
       const cur = await currentOperation(s, scopeKey, req.contactId).catch(() => null);
+      const allowed = d.verdict.allowed && !d.otherOpen;
+      if (!allowed) await stopEvaluation(d.otherOpen ? "discovery_open" : d.verdict.reason);
       return json(200, {
-        verdict: { allowed: d.verdict.allowed && !d.otherOpen, reason: d.otherOpen ? "discovery_open" : d.verdict.reason, message: d.otherOpen ? "Another deal check is in progress. Try again shortly." : DEAL_SET_MESSAGE[d.verdict.reason], digest: d.verdict.digest, deals: d.verdict.deals.map((x) => ({ id: x.id, cls: x.cls, stageId: x.stageId, status: x.status })) },
+        verdict: { allowed, reason: d.otherOpen ? "discovery_open" : d.verdict.reason, message: d.otherOpen ? "Another deal check is in progress." : DEAL_SET_MESSAGE[d.verdict.reason], digest: d.verdict.digest, deals: d.verdict.deals.map((x) => ({ id: x.id, cls: x.cls, stageId: x.stageId, status: x.status })) },
         address,
         values: { seller_reason: d.target ? currentValueText(config, "seller_reason", d.target) : null },
         operation: cur ? cur.view : null,
         drafts: { seller_reason: await readDraft(s, scopeKey, req.contactId, req.opportunityId, "seller_reason"), property_address: await readDraft(s, scopeKey, req.contactId, req.opportunityId, "property_address") },
       });
-    } catch { return json(409, { outcome: "not_sent", code: "deal_set_unconfirmed", error: DEAL_SET_MESSAGE.search_incomplete }); }
+    } catch (e) {
+      const code = e instanceof UnexpectedWork ? "unexpected_candidates" : e instanceof BudgetRefused ? `budget_${e.code}` : e instanceof TransportRefused ? "transport_refused" : "deal_set_unconfirmed";
+      await stopEvaluation(code);
+      return json(409, { outcome: "not_sent", code, error: e instanceof UnexpectedWork || e instanceof BudgetRefused ? e.message : DEAL_SET_MESSAGE.search_incomplete });
+    }
   }
 
   let release: (() => Promise<void>) | undefined;
   try {
     try { release = await lockContact(req.contactId); }
-    catch { return json(409, { outcome: "not_sent", code: "locked", error: "Another write for this contact is in progress or unresolved. Nothing was sent." }); }
+    catch { await stopEvaluation("locked"); return json(409, { outcome: "not_sent", code: "locked", error: "Another write for this contact is in progress or unresolved. Nothing was sent." }); }
     if (req.action === "save") {
-      const r = await saveAnswer({ ...base, contactId: req.contactId, opportunityId: req.opportunityId, field: req.field, operationId: req.operationId, fields: plan!.fields, valueText, valueLines, expectedAddressDigest: req.expectedAddressDigest, expectedDealSetDigest: req.expectedDealSetDigest });
+      const r = await saveAnswer({ ...base, contactId: req.contactId, opportunityId: req.opportunityId, field: req.field, operationId: req.operationId, fields: plan!.fields, valueText, valueLines, expectedAddressDigest: req.expectedAddressDigest, expectedDealSetDigest: req.expectedDealSetDigest, maxCandidates: m });
+      if (r.view.state !== "saved_history_pending" || r.message !== SAVED_RECORDING) await stopEvaluation(r.view.state);
       return json(200, { outcome: r.view.state, view: r.view, message: r.message });
     }
     if (req.action === "history") {
       const r = await recordHistory({ ...base, contactId: req.contactId, operationId: req.operationId });
+      if (r.view.state !== "committed") await stopEvaluation(r.view.state);
       return json(200, { outcome: r.view.state, view: r.view, message: r.message });
     }
     const cur = await currentOperation(s, scopeKey, req.contactId);
     if (!cur) return json(200, { outcome: "clear", view: null });
     const v = await settleUnderLock(base, cur.op);
+    if (!["committed", "not_saved"].includes(v.state)) await stopEvaluation(v.state);
     return json(200, { outcome: v.state, view: v });
   } catch (error) {
+    await stopEvaluation(error instanceof NotSent ? error.code : error instanceof AnswerHeld ? "held" : "indeterminate");
     if (error instanceof NotSent) return json(409, { outcome: "not_sent", code: error.code, error: error.message, ...(error.view && typeof error.view === "object" && "reason" in (error.view as any) ? { verdict: { reason: (error.view as any).reason, message: DEAL_SET_MESSAGE[(error.view as any).reason as keyof typeof DEAL_SET_MESSAGE] } } : {}) });
     if (error instanceof AnswerHeld) return json(409, { outcome: "held", view: error.view, error: error.message });
     console.error("[property-answer]", JSON.stringify({ action: req.action, name: error instanceof Error ? error.name : "NonError" }));

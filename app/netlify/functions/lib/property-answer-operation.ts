@@ -44,7 +44,7 @@ import type { GhlConfig } from "../../../shared/ghl-config";
 import { digest, fieldValue, GhlBoundary } from "./ghl-write-boundary";
 import type { BarrierStore } from "./current-offer-barrier";
 import type { FieldWrite } from "./write-contracts";
-import { Discovery, Fenced, LedgerUnsettled, staleTokens, openTokens, recordRecovery, type Observation } from "./known-deal-ledger";
+import { Discovery, Fenced, LedgerUnsettled, readLedger, staleTokens, openTokens, recordRecovery, type Observation } from "./known-deal-ledger";
 import { classifyDeal, evaluateDealSet, type DealSetVerdict } from "./seller-deal-set";
 import {
   ADDRESS_KEYS, EMPTY_ADDRESS_DIGEST, readAddress, historyNoteBody, historyValueLines, reconcileHistory, sha256,
@@ -80,6 +80,8 @@ export type OpView = { op: string; field: AnswerField; opportunityId: string; st
 
 /** Nothing was sent to GHL. `proves`: whether THIS request is durably proved unsent. */
 export class NotSent extends Error { constructor(message: string, readonly code: string, readonly view: unknown = null) { super(message); } }
+/** More work than the controlled evaluation planned (e.g. extra candidate deals): stop, read nothing more. */
+export class UnexpectedWork extends Error {}
 /** The contact has an open answer operation that is not finished: no new save. */
 export class AnswerHeld extends Error { constructor(readonly view: OpView) { super("This contact has an unfinished answer save."); } }
 export class StorageUnsettled extends Error {}
@@ -203,6 +205,8 @@ export type DiscoveryResult = {
 export async function discover(input: {
   boundary: GhlBoundary; store: BarrierStore; scope: string; config: GhlConfig;
   contactId: string; targetId: string; lockHeld: boolean; now: () => string;
+  /** Candidate deals this discovery may read (the controlled evaluation pins 1). More is unexpected work: nothing more is read. */
+  maxCandidates: number;
 }): Promise<DiscoveryResult> {
   const { boundary, store, scope, config, contactId, targetId } = input;
   const d = new Discovery(store, scope, contactId);
@@ -210,6 +214,7 @@ export async function discover(input: {
   const search = await boundary.sellerDeals(contactId, config.pipelines.sellerLeads).catch(() => null);
   const searchIds: string[] = Array.isArray(search?.opportunities) ? search.opportunities.filter((x: any) => x && typeof x.id === "string").map((x: any) => x.id) : [];
   const candidates = [...new Set([...searchIds, ...Object.keys(registered.ids), targetId])];
+  if (candidates.length > input.maxCandidates) throw new UnexpectedWork(`The deal check found ${candidates.length} candidate deals; this evaluation reads at most ${input.maxCandidates}. Nothing more was read.`);
   const fresh = new Map<string, any>();
   for (const id of candidates) {
     try { fresh.set(id, await boundary.opportunity(id)); } catch { fresh.set(id, "unreadable"); }
@@ -269,9 +274,11 @@ export type SaveInput = {
   boundary: GhlBoundary; store: BarrierStore; scope: string; config: GhlConfig; environment: string;
   contactId: string; opportunityId: string; field: AnswerField; operationId: string;
   fields: FieldWrite[]; valueText: string; valueLines: string[];
-  expectedAddressDigest: string; expectedDealSetDigest: string; now: () => string;
+  expectedAddressDigest: string; expectedDealSetDigest: string; now: () => string; maxCandidates: number;
 };
 export type SaveResult = { view: OpView; message: string };
+/** The only save message after which the initial save flow may send its own S2 (the permit was written). */
+export const SAVED_RECORDING = "Saved. Recording history.";
 
 /** The caller holds lockContact(contactId) for the whole call. */
 export async function saveAnswer(input: SaveInput): Promise<SaveResult> {
@@ -291,8 +298,11 @@ export async function saveAnswer(input: SaveInput): Promise<SaveResult> {
   }
   // L1-L3: the deal set, evaluated under the lock.
   let ev: DiscoveryResult;
-  try { ev = await discover({ boundary, store, scope, config, contactId, targetId: opportunityId, lockHeld: true, now: input.now }); }
-  catch (e) { throw new NotSent(e instanceof Fenced ? "The deal check was superseded. Nothing was saved." : "The deal list could not be confirmed. Nothing was saved.", "deal_set_unconfirmed"); }
+  try { ev = await discover({ boundary, store, scope, config, contactId, targetId: opportunityId, lockHeld: true, now: input.now, maxCandidates: input.maxCandidates }); }
+  catch (e) {
+    if (e instanceof UnexpectedWork) throw new NotSent(e.message, "unexpected_candidates");
+    throw new NotSent(e instanceof Fenced ? "The deal check was superseded. Nothing was saved." : "The deal list could not be confirmed. Nothing was saved.", "deal_set_unconfirmed");
+  }
   if (!ev.verdict.allowed) throw new NotSent("Deal check refused", ev.verdict.reason, ev.verdict);
   if (ev.otherOpen) throw new NotSent("Another deal check is in progress", "discovery_open");
   if (ev.verdict.digest !== input.expectedDealSetDigest) throw new NotSent("The deal list changed since you looked", "deal_set_changed");
@@ -371,10 +381,17 @@ export async function saveAnswer(input: SaveInput): Promise<SaveResult> {
   const afterTarget = targetRefusalAfter(config, result.readback, contactId, field, input);
   if (afterTarget) discrepancy[afterTarget] = true;
   try {
-    const again = await discover({ boundary, store, scope, config, contactId, targetId: opportunityId, lockHeld: true, now: input.now });
+    // The second of the two fixed discovery phases (evaluation, then this bracket). It is never a
+    // replacement: a failed or fenced bracket is recorded as a discrepancy, not retried.
+    const again = await discover({ boundary, store, scope, config, contactId, targetId: opportunityId, lockHeld: true, now: input.now, maxCandidates: input.maxCandidates });
     if (!again.verdict.allowed) discrepancy["deal_set_" + again.verdict.reason] = true;
     if (again.verdict.digest !== ev.verdict.digest) discrepancy.deal_set_changed = true;
-  } catch { discrepancy.deal_set_unconfirmed = true; }
+    // Bones F2: a positive verdict is not a settled bracket. Another discovery open at the bracket's
+    // commit, or any ledger change since it, means the bracket is not authoritative.
+    if (again.otherOpen) discrepancy.discovery_open = true;
+    try { await again.discovery.confirmUnchanged(again.committedGen, input.now()); }
+    catch { discrepancy.deal_set_unconfirmed = true; }
+  } catch (e) { discrepancy[e instanceof UnexpectedWork ? "unexpected_candidates" : "deal_set_unconfirmed"] = true; }
   const kind: S1Kind = Object.keys(discrepancy).length ? "confirmed_conditions_changed" : "confirmed_clean";
   const created = await createOutcome(store, scope, outcome(o, "S1", 1, kind, readbackDigest(input.fields, result.readback), previousDigest, kind === "confirmed_clean" ? null : discrepancy, input.now()));
   await store.setJSON(draftKey(scope, contactId, opportunityId, field), { v: 1, cleared: true, at: input.now() }).catch(() => null);
@@ -383,7 +400,7 @@ export async function saveAnswer(input: SaveInput): Promise<SaveResult> {
     try { await store.setJSON(permitKey(scope, op), { v: 1, op, requestId, at: input.now() }, { onlyIfNew: true }); }
     catch { return { view: await viewOf(store, scope, o), message: "Saved in GHL; history permission could not be confirmed. Held for reconciliation." }; }
   }
-  return { view: await viewOf(store, scope, o), message: kind === "confirmed_clean" ? "Saved. Recording history." : "Saved; conditions changed during save; held for reconciliation." };
+  return { view: await viewOf(store, scope, o), message: kind === "confirmed_clean" ? SAVED_RECORDING : "Saved; conditions changed during save; held for reconciliation." };
 }
 
 function outcome(o: OpRecord, slot: Slot, n: number, kind: S1Kind | S2Kind, readback: string | null, previousDigest: string | null, discrepancy: Record<string, boolean> | null, at: string): OutcomeRecord {
@@ -410,6 +427,19 @@ async function withdrawIfUndecided(store: BarrierStore, scope: string, o: OpReco
 
 // ── S2: the answer-history note ──────────────────────────────────────────────
 
+const HEX64 = /^[0-9a-f]{64}$/;
+/** The authoritative S1 outcome for THIS operation's only S1 attempt, with its full evidence schema (Bones: identity and schema). */
+export function validCleanS1(r: OutcomeRecord | null, o: OpRecord): r is OutcomeRecord {
+  return !!r && r.v === 1 && r.kind === "confirmed_clean" && r.op === o.op && r.slot === "S1" && r.n === 1 && r.requestId === requestIdFor(o.op, "S1", 1)
+    && r.valueDigest === o.valueDigest && typeof r.readbackDigest === "string" && HEX64.test(r.readbackDigest)
+    && (r.previousDigest === "none" || (typeof r.previousDigest === "string" && HEX64.test(r.previousDigest))) && r.discrepancy === null && typeof r.at === "string";
+}
+/** Any open discovery token on the contact's ledger. An unreadable ledger counts as open. */
+async function discoveryOpen(store: BarrierStore, scope: string, contactId: string): Promise<boolean> {
+  try { const { rec } = await readLedger(store, scope, contactId); return openTokens(rec).length > 0; }
+  catch { return true; }
+}
+
 export type HistoryInput = { boundary: GhlBoundary; store: BarrierStore; scope: string; config: GhlConfig; environment: string; contactId: string; operationId: string; now: () => string };
 
 export function historyEntryFor(o: OpRecord, s1: OutcomeRecord, environment: string, locationId: string): HistoryEntry {
@@ -431,9 +461,10 @@ export async function recordHistory(input: HistoryInput): Promise<SaveResult> {
   const h = await readHead(store, scope, contactId);
   if (h.current !== op) throw new NotSent("This save is not the contact's current one", "not_current");
   const s1 = await readJson(store, outcomeKey(scope, requestIdFor(op, "S1", 1))) as OutcomeRecord | null;
-  if (!s1 || s1.kind !== "confirmed_clean" || s1.op !== op || s1.n !== 1 || s1.valueDigest !== o.valueDigest) throw new NotSent("The value save is not confirmed clean; history is held", "s1_not_clean");
+  if (!validCleanS1(s1, o)) throw new NotSent("The value save is not confirmed clean; history is held", "s1_not_clean");
   const permit = await readJson(store, permitKey(scope, op));
-  if (!permit || permit.op !== op || permit.requestId !== requestIdFor(op, "S1", 1)) throw new NotSent("The value save was not acknowledged as clean; history is held for reconciliation", "s1_not_acknowledged");
+  if (!permit || permit.v !== 1 || permit.op !== op || permit.requestId !== requestIdFor(op, "S1", 1)) throw new NotSent("The value save was not acknowledged as clean; history is held for reconciliation", "s1_not_acknowledged");
+  if (await discoveryOpen(store, scope, contactId)) throw new NotSent("A deal check is open for this contact; history is held", "discovery_open");
   let n = await currentS2Attempt(store, scope, op);
   let ev: Evidence = n ? await evidenceOf(store, scope, requestIdFor(op, "S2", n)) : "pending";
   if (ev === "confirmed") { await finalize(store, scope, o, "committed", input.now()); return { view: await viewOf(store, scope, o), message: "Saved." }; }
@@ -450,7 +481,8 @@ export async function recordHistory(input: HistoryInput): Promise<SaveResult> {
     state,
     beforeDispatch: async () => {
       const again = await readJson(store, outcomeKey(scope, requestIdFor(op, "S1", 1))) as OutcomeRecord | null;
-      if (!again || again.kind !== "confirmed_clean" || again.op !== op || again.n !== 1 || again.valueDigest !== o.valueDigest || again.readbackDigest !== s1.readbackDigest) throw new NotSent("S1 outcome changed", "s1_not_clean");
+      if (!validCleanS1(again, o) || again!.readbackDigest !== s1!.readbackDigest) throw new NotSent("S1 outcome changed", "s1_not_clean");
+      if (await discoveryOpen(store, scope, contactId)) throw new NotSent("A deal check is open for this contact; history is held", "discovery_open");
       const hh = await readHead(store, scope, contactId);
       if (hh.current !== op || !hh.etag || !(await casHead(store, scope, contactId, hh.etag, op, input.now()))) throw new NotSent("This save no longer owns the contact", "not_owner");
       let claim: { modified: boolean };

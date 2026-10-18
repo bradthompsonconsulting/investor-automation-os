@@ -140,4 +140,5 @@ export function matchesField(fields: any[], expected: FieldWrite, kind: "contact
   if (expected.date) return typeof actual.value === "string" && actual.value.slice(0, 10) === String(expected.field_value).slice(0, 10);
   return JSON.stringify(actual.value) === JSON.stringify(expected.field_value);
 }
-export function configuredBoundary(token = process.env.GHL_PRIVATE_API_KEY) { return new GhlBoundary(token ?? "", getConfig(process.env.IAOS_ENV).locationId); }
+/** B15-04: an optional fetcher (property-answer.ts passes its budgeted, bounded transport); omitted, unchanged. */
+export function configuredBoundary(token = process.env.GHL_PRIVATE_API_KEY, fetcher?: typeof fetch) { return new GhlBoundary(token ?? "", getConfig(process.env.IAOS_ENV).locationId, fetcher); }

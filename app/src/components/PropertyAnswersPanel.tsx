@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  propertyAnswer, AppWriteSignInRequired, EMPTY_ADDRESS, GATE_CODES, HOLDING, STATE_TEXT,
+  propertyAnswer, followUpAfter, AppWriteSignInRequired, EMPTY_ADDRESS, GATE_CODES, HOLDING, STATE_TEXT,
   type Address, type AnswerContext, type AnswerField, type Reply,
 } from "../lib/property-answer-client";
 
@@ -46,6 +46,7 @@ function DealAnswers({ contactId, opportunityId, canChange, onChange }: { contac
   const [message, setMessage] = useState<string | null>(null);
   const [address, setAddress] = useState<Address>(EMPTY_ADDRESS);
   const [reason, setReason] = useState("");
+  const [draftNote, setDraftNote] = useState<string | null>(null);
   const target = useRef(`${contactId}:${opportunityId}`);
   target.current = `${contactId}:${opportunityId}`;
 
@@ -69,8 +70,9 @@ function DealAnswers({ contactId, opportunityId, canChange, onChange }: { contac
     setBusy(true); setMessage(null);
     try {
       const r = await propertyAnswer(body);
-      if (r.status === 200 && r.body?.outcome === "saved_history_pending" && r.body.view?.op) {
-        const h = await propertyAnswer({ action: "history", contactId, opportunityId, operationId: r.body.view.op });
+      const next = followUpAfter(body, r);   // only this page's own acknowledged save; never Check again
+      if (next) {
+        const h = await propertyAnswer({ ...next, contactId, opportunityId });
         setMessage(h.body?.message ?? h.body?.error ?? STATE_TEXT.history_unresolved);
       } else {
         setMessage(r.body?.message ?? r.body?.verdict?.message ?? r.body?.error ?? (r.body?.view ? STATE_TEXT[r.body.view.state as keyof typeof STATE_TEXT] : null) ?? "Not saved.");
@@ -79,7 +81,11 @@ function DealAnswers({ contactId, opportunityId, canChange, onChange }: { contac
       setMessage(e instanceof AppWriteSignInRequired ? e.message : "The save may not have reached the server. Use Check again; do not save again.");
     } finally { setBusy(false); await refresh(); }
   };
-  const draft = (field: AnswerField, value: unknown) => { void propertyAnswer({ action: "draft", contactId, opportunityId, field, value }).catch(() => null); };
+  const draft = (field: AnswerField, value: unknown) => {
+    void propertyAnswer({ action: "draft", contactId, opportunityId, field, value })
+      .then((r) => setDraftNote(r.status === 200 ? "Draft saved on the server." : "Draft NOT saved."))
+      .catch(() => setDraftNote("Draft NOT saved."));
+  };
 
   if (load.kind === "hidden") return null;
   if (load.kind === "loading") return <div data-testid="pa-loading" style={{ ...box, ...muted }}>Loading property answers…</div>;
@@ -108,6 +114,7 @@ function DealAnswers({ contactId, opportunityId, canChange, onChange }: { contac
         </div>
       ) : null}
       {message ? <div data-testid="pa-message" style={{ fontSize: "12px", color: "#E2E8F0", margin: "6px 0" }}>{message}</div> : null}
+      {draftNote ? <div data-testid="pa-draft-note" style={muted}>{draftNote}</div> : null}
 
       <div style={{ marginTop: "10px", fontSize: "12px", color: "#CBD5E1", fontWeight: 600 }}>Property address</div>
       {addr?.kind === "confirmed" ? (

@@ -58,6 +58,7 @@ const cfgMod = require('../shared/ghl-config.ts');
 const model = require('../netlify/functions/lib/property-answer-model.ts');
 const ledger = require('../netlify/functions/lib/known-deal-ledger.ts');
 const opLib = require('../netlify/functions/lib/property-answer-operation.ts');
+const budgetLib = require('../netlify/functions/lib/evaluation-budget.ts');
 const config = cfgMod.getConfig('test');
 // The committed Test config carries the six real Test field ids; this suite only pins its own synthetic fixtures.
 const P = config.propertyAnswerFields;
@@ -68,6 +69,15 @@ const DA = 'fxDealA00001', DB = 'fxDealB00001', DC = 'fxDealC00001', DD = 'fxDea
 assert.deepEqual([...config.propertyAnswerEvaluation.fixtureContactIds], ['pYE98meKVyRrbzEt6MMR', 'LR98QNOE0oksHIPF4JIf']);
 assert.deepEqual([...config.propertyAnswerEvaluation.fixtureOpportunityIds], ['a75hWpPILA7Y7Ginp4n8', 'HCTa65siD41bA9XGpQWM']);
 assert.equal(config.propertyAnswerEvaluation.enabled, cfgMod.PROPERTY_ANSWER_EVALUATION_ENABLED);
+assert.deepEqual({ ...config.propertyAnswerEvaluation.requestBudget }, { budgetId: 'b15-04-eval-1', ceiling: 40 }, 'committed evaluation budget');
+assert.equal(config.propertyAnswerEvaluation.maxCandidates, 1, 'committed candidate cap');
+// General cases are not about the budget: a large budget, reset before every call (keepBudget=false).
+// The F4 cases restore the committed 40 / 1 and keep the budget across calls.
+const COMMITTED_BUDGET = { ...config.propertyAnswerEvaluation.requestBudget };
+config.propertyAnswerEvaluation.requestBudget = { budgetId: 'offline-suite', ceiling: 1000000 };
+config.propertyAnswerEvaluation.maxCandidates = 10;
+let keepBudget = false;
+const budgetKeys = () => [...receipts.keys()].filter((k) => k.startsWith('pa/eval-budget/'));
 config.propertyAnswerEvaluation.fixtureContactIds.push(X1, X2, X3);
 config.propertyAnswerEvaluation.fixtureOpportunityIds.push(DA, DB, DC, DD, DN);
 const SCOPE = `test:${config.locationId}`;
@@ -131,7 +141,7 @@ const ghlCount = () => calls.length;
 const handler = require('../netlify/functions/property-answer.ts').handler;
 const ghlWrite = require('../netlify/functions/ghl-write.ts').handler;
 const headers = () => ({ ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` });
-async function post(b, h = headers()) { const r = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: h, body: JSON.stringify(b) }); return { status: r.statusCode, body: JSON.parse(r.body) }; }
+async function post(b, h = headers()) { if (!keepBudget) for (const k of budgetKeys()) { receipts.delete(k); etags.delete(k); } const r = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: h, body: JSON.stringify(b) }); return { status: r.statusCode, body: JSON.parse(r.body) }; }
 const context = (c = X1, o = DA) => post({ action: 'context', contactId: c, opportunityId: o });
 const ADDR = { street: '100 Probe Way', unit: '', city: 'McKinney', state: 'TX', zip: '75069' };
 async function save(field, value, c = X1, o = DA, over = {}) {
@@ -558,6 +568,201 @@ async function t(name, fn) {
     const lockKey = 'lock/' + dg(config.locationId + X1); receipts.set(lockKey, { claimedAt: 'x' }); etags.set(lockKey, 'e');
     const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
     assert.equal(r.body.code, 'locked'); assert.equal(ghlCount(), 0);
+  });
+
+  // ── Bones's review of 525d7c2: F1-F4 regressions ──────────────────────────
+  await t('F1 (Bones probe) missing, partial, malformed or contradictory pagination metadata never passes the page: context blocked search_incomplete, 0 PUT', async () => {
+    const metas = [
+      ['meta {total:1} only (Bones)', (l) => ({ total: l.length })],
+      ['nextPage missing', (l) => ({ total: l.length, nextPageUrl: null })],
+      ['nextPageUrl missing', (l) => ({ total: l.length, nextPage: null })],
+      ['meta missing', null],
+      ['nextPage 0', (l) => ({ total: l.length, nextPage: 0, nextPageUrl: null })],
+      ['nextPage ""', (l) => ({ total: l.length, nextPage: '', nextPageUrl: null })],
+      ['nextPage "null"', (l) => ({ total: l.length, nextPage: 'null', nextPageUrl: null })],
+      ['contradictory', (l) => ({ total: l.length, nextPage: null, nextPageUrl: 'https://x.invalid/p2' })],
+      ['total 1.5', (l) => ({ total: 1.5, nextPage: null, nextPageUrl: null })],
+      ['total "1"', (l) => ({ total: String(l.length), nextPage: null, nextPageUrl: null })],
+      ['meta array', () => []],
+    ];
+    for (const [label, meta] of metas) {
+      fresh();
+      searchMeta = meta === null ? () => undefined : meta;
+      const r = await context();
+      assert.equal(r.body.verdict?.allowed, false, label); assert.equal(r.body.verdict?.reason, 'search_incomplete', label);
+    }
+    fresh(); searchMeta = (l) => ({ total: l.length, nextPage: null, nextPageUrl: null });
+    assert.equal((await context()).body.verdict.allowed, true, 'explicit terminal evidence passes the bounded page check');
+    assert.equal(puts(), 0);
+  });
+  await t('F2 (Bones probe) a discovery opened during the post-write bracket: confirmed_conditions_changed (discovery_open), no S2 permit, history refused with 0 POST, head held', async () => {
+    fresh(); const ctx = (await context()).body; const op = 'op-f2a-00000001';
+    onCall((req, all) => req.path === '/opportunities/search' && all.filter((c) => c.path === '/opportunities/search').length === 3 /* context, evaluation, bracket */,
+      async () => { await new ledger.Discovery(memStore, SCOPE, X1).register(new Date().toISOString()); });
+    const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: op, value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+    assert.equal(r.body.outcome, 'saved_conditions_changed', JSON.stringify(r.body));
+    const out = receipts.get(key.outcome(rid(op, 'S1', 1)));
+    assert.equal(out.kind, 'confirmed_conditions_changed'); assert.equal(out.discrepancy.discovery_open, true); assert.equal(out.discrepancy.deal_set_unconfirmed, true);
+    assert.ok(!receipts.has(key.permit(op)));
+    assert.equal((await history(op)).body.code, 's1_not_clean'); assert.equal(posts(), 0);
+    assert.equal(receipts.get(key.head(X1)).current, op);
+  });
+  await t('F2 the bracket\'s own confirmation or commit fails: deal_set_unconfirmed, no permit, 0 POST', async () => {
+    for (const [label, nth] of [['bracket commit', 5], ['bracket confirmation', 6]]) {
+      fresh(); const ctx = (await context()).body; const op = `op-f2b-${nth}-0000001`;
+      let n = 0; failNext.push((o, k) => o === 'setJSON' && k === key.ledger(X1) && ++n === nth); // register, commit, gate, bracket register, bracket commit, bracket confirm
+      const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: op, value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+      assert.equal(r.body.outcome, 'saved_conditions_changed', label + ' ' + JSON.stringify(r.body));
+      assert.equal(receipts.get(key.outcome(rid(op, 'S1', 1))).discrepancy.deal_set_unconfirmed, true, label);
+      assert.ok(!receipts.has(key.permit(op)), label); assert.equal(puts(), 1, label);
+      assert.equal((await history(op)).body.code, 's1_not_clean', label); assert.equal(posts(), 0, label);
+    }
+  });
+  await t('F2 a discovery opened after a clean save and before history: history refused (discovery_open), 0 POST; once that discovery commits, the explicit history call proceeds', async () => {
+    fresh(); const s = await save('property_address', ADDR); assert.equal(s.body.outcome, 'saved_history_pending'); const op = s.body.view.op;
+    const d = new ledger.Discovery(memStore, SCOPE, X1); await d.register(new Date().toISOString());
+    assert.equal((await history(op)).body.code, 'discovery_open'); assert.equal(posts(), 0);
+    await d.commit([], new Date().toISOString());
+    assert.equal((await history(op)).body.outcome, 'committed'); assert.equal(posts(), 1);
+  });
+  await t('S2 gate: a malformed or mis-identified clean S1 record (slot, request id, digest schema, discrepancy) or a malformed permit refuses history with 0 POST', async () => {
+    const tamper = [
+      ['slot', (r) => ({ ...r, slot: 'S2' })], ['requestId', (r) => ({ ...r, requestId: 'other-S1-1' })], ['n', (r) => ({ ...r, n: 2 })],
+      ['readbackDigest', (r) => ({ ...r, readbackDigest: 'not-a-digest' })], ['previousDigest', (r) => ({ ...r, previousDigest: 5 })],
+      ['discrepancy', (r) => ({ ...r, discrepancy: {} })], ['v', (r) => ({ ...r, v: 2 })],
+    ];
+    for (const [label, fn] of tamper) {
+      fresh(); const s = await save('property_address', ADDR); const op = s.body.view.op;
+      receipts.set(key.outcome(rid(op, 'S1', 1)), fn(receipts.get(key.outcome(rid(op, 'S1', 1)))));
+      assert.equal((await history(op)).body.code, 's1_not_clean', label); assert.equal(posts(), 0, label);
+    }
+    fresh(); const s = await save('property_address', ADDR); const op = s.body.view.op;
+    receipts.set(key.permit(op), { ...receipts.get(key.permit(op)), requestId: 'x' });
+    assert.equal((await history(op)).body.code, 's1_not_acknowledged'); assert.equal(posts(), 0);
+  });
+  const client = require('../src/lib/property-answer-client.ts');
+  await t('F3 (Bones probe) the client sends history automatically ONLY after its own acknowledged save of the same operation -- never after Check again, a refresh or any other reply', async () => {
+    const pending = (op, message = opLib.SAVED_RECORDING) => ({ status: 200, body: { outcome: 'saved_history_pending', view: { op, state: 'saved_history_pending' }, message } });
+    assert.equal(client.SAVED_RECORDING, opLib.SAVED_RECORDING, 'client and server agree on the save message');
+    assert.deepEqual(client.followUpAfter({ action: 'save', operationId: 'op-1' }, pending('op-1')), { action: 'history', operationId: 'op-1' });
+    assert.equal(client.followUpAfter({ action: 'check', contactId: X1, opportunityId: DA }, pending('op-1')), null, 'Check again');
+    assert.equal(client.followUpAfter({ action: 'context', contactId: X1, opportunityId: DA }, pending('op-1')), null, 'refresh');
+    assert.equal(client.followUpAfter({ action: 'history', operationId: 'op-1' }, pending('op-1')), null, 'history itself');
+    assert.equal(client.followUpAfter({ action: 'save', operationId: 'op-2' }, pending('op-1')), null, 'another operation');
+    assert.equal(client.followUpAfter({ action: 'save', operationId: 'op-1' }, { ...pending('op-1'), status: 409 }), null, 'not 200');
+    assert.equal(client.followUpAfter({ action: 'save', operationId: 'op-1' }, pending('op-1', 'Already recorded.')), null, 'a repeated save');
+    assert.equal(client.followUpAfter({ action: 'save', operationId: 'op-1' }, pending('op-1', 'Saved in GHL; history permission could not be confirmed. Held for reconciliation.')), null, 'no permit');
+    const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'PropertyAnswersPanel.tsx'), 'utf8');
+    assert.equal((panel.match(/action: "history"/g) || []).length, 1, 'the only literal history action is the explicit Record history button');
+    assert.ok(panel.includes('followUpAfter(body, r)'), 'run() uses the pure rule');
+  });
+  await t('F3 a lost save response, then Check again: the server reports saved_history_pending and the client rule sends nothing -- 0 POST', async () => {
+    fresh(); const s = await save('property_address', ADDR); assert.equal(s.body.outcome, 'saved_history_pending'); // the page never saw this reply
+    const body = { action: 'check', contactId: X1, opportunityId: DA };
+    const c = await post(body); assert.equal(c.body.outcome, 'saved_history_pending');
+    assert.equal(client.followUpAfter(body, c), null); assert.equal(posts(), 0);
+  });
+
+  // F4: the enforced budget, run with the COMMITTED values (40, one candidate) and kept across calls.
+  async function withCommittedBudget(fn) {
+    const saved = { b: config.propertyAnswerEvaluation.requestBudget, m: config.propertyAnswerEvaluation.maxCandidates };
+    config.propertyAnswerEvaluation.requestBudget = { ...COMMITTED_BUDGET }; config.propertyAnswerEvaluation.maxCandidates = 1; keepBudget = true;
+    try { await fn(); } finally { config.propertyAnswerEvaluation.requestBudget = saved.b; config.propertyAnswerEvaluation.maxCandidates = saved.m; keepBudget = false; }
+  }
+  const budgetRec = () => receipts.get(budgetKeys()[0]);
+  await t('F4 the planned sequence E1-E4 uses exactly the 40 committed requests; every request has a receipt recorded before it was sent, in order; the 41st is refused unsent and the budget stops', async () => {
+    await withCommittedBudget(async () => {
+      fresh();
+      const sent = [];
+      const e1 = await context(); assert.equal(e1.body.verdict.allowed, true);
+      await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'seller_reason', value: 'Draft reason' });
+      const e2 = await context(); assert.equal(e2.body.drafts.seller_reason, 'Draft reason');
+      let ctx = e2.body; // the panel saves with the view it holds, then refreshes once after each run
+      for (const [field, value] of [['property_address', ADDR], ['seller_reason', 'Line 1\nLine 2\nLine 3']]) {
+        const op = crypto.randomUUID();
+        const sv = await post({ action: 'save', contactId: X1, opportunityId: DA, field, operationId: op, value, expectedAddressDigest: ctx.address.digest, expectedDealSetDigest: ctx.verdict.digest });
+        assert.equal(sv.body.outcome, 'saved_history_pending', JSON.stringify(sv.body));
+        assert.equal((await history(op)).body.outcome, 'committed');
+        ctx = (await context()).body; // the panel's refresh after the run
+        sent.push(op);
+      }
+      const rec = budgetRec();
+      assert.equal(calls.length, 3 + 3 + (11 + 3 + 3) + (11 + 3 + 3), 'E1 open, E2 reload, E3 save+history+refresh, E4 save+history+refresh');
+      assert.equal(rec.calls, calls.length); assert.equal(rec.reserved, calls.length);
+      assert.deepEqual(rec.attempts.map((a) => `${a.method} ${a.path}`), calls.map((c) => `${c.method} ${c.path}`), 'one receipt per request, same order');
+      assert.equal(rec.calls, 40); assert.equal(rec.stopped, null);
+      const before = calls.length;
+      const extra = await context(); assert.equal(extra.status, 409); assert.equal(extra.body.code, 'budget_exhausted');
+      assert.equal(calls.length, before, 'refused unsent'); assert.ok(budgetRec().stopped);
+      assert.equal(reasonOf(), 'Line 1\nLine 2\nLine 3'); assert.equal(ghl.contacts[X1].notes.length, 2);
+    });
+  });
+  await t('F4 a save never starts without all of its planned requests: refused unsent, the budget stops, and nothing after it sends', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); config.propertyAnswerEvaluation.requestBudget = { budgetId: 'b15-04-eval-1', ceiling: 13 };
+      const ctx = (await context()).body; const before = calls.length;
+      const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+      assert.equal(r.body.code, 'budget_exhausted'); assert.equal(calls.length, before); assert.ok(budgetRec().stopped);
+    });
+  });
+  await t('F4 an extra candidate deal is unexpected work: stop after the search, read no candidate, refuse everything after (budget_stopped, 0 GHL)', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); ghl.opps[DB] = deal(DB, X1, { status: 'lost' }); // a second known deal
+      const r = await context(); assert.equal(r.body.code, 'unexpected_candidates', JSON.stringify(r.body));
+      assert.deepEqual(calls.map((c) => c.path), ['/opportunities/search'], 'no candidate was read'); assert.ok(budgetRec().stopped);
+      const before = calls.length;
+      const s = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: 'a'.repeat(64) });
+      assert.equal(s.body.code, 'budget_stopped'); assert.equal(calls.length, before);
+    });
+  });
+  await t('F4 any unexpected result stops the evaluation for good; Check again still settles stored evidence with 0 GHL requests', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); ghl.opps[DA].status = 'lost';
+      assert.equal((await context()).body.verdict.allowed, false); assert.ok(budgetRec().stopped);
+      ghl.opps[DA].status = 'open'; const before = calls.length;
+      assert.equal((await context()).body.code, 'budget_stopped'); assert.equal(calls.length, before);
+      const c = await check(); assert.equal(c.status, 200); assert.equal(calls.length, before, 'check made no GHL request');
+    });
+  });
+  await t('F4 a PUT whose response is lost stays uncertain: held, the budget stops, no resend; Check again sends nothing', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); const ctx = (await context()).body;
+      loseNext.push((req) => req.method === 'PUT');
+      const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: 'op-f4-put-000001', value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+      assert.equal(r.body.outcome, 'not_confirmed'); assert.equal(puts(), 1); assert.ok(budgetRec().stopped);
+      assert.equal((await check()).body.outcome, 'not_confirmed'); assert.equal(puts(), 1); assert.equal(posts(), 0);
+    });
+  });
+  await t('F4 a receipt that cannot be recorded means the request is not sent', async () => {
+    await withCommittedBudget(async () => {
+      fresh(); let n = 0; failNext.push((o, k) => o === 'setJSON' && k.startsWith('pa/eval-budget/') && ++n === 2); // grant ok, first receipt fails
+      const r = await context(); assert.equal(calls.length, 0, 'nothing sent'); assert.equal(r.body.verdict?.allowed ?? false, false); assert.ok(budgetRec().stopped);
+    });
+  });
+  await t('F4 a grant cannot be overdrawn: the request past its planned count is refused unsent', async () => {
+    fresh(); const b = new budgetLib.EvaluationBudget(memStore, SCOPE, 'direct-test', 10);
+    const g = await b.grant('context', 1, new Date().toISOString()); const f = g.fetcher(() => new Date().toISOString());
+    await f('https://services.leadconnectorhq.com/contacts/' + X1); const before = calls.length;
+    await assert.rejects(f('https://services.leadconnectorhq.com/contacts/' + X1), (e) => e.code === 'grant_exceeded'); assert.equal(calls.length, before);
+    await assert.rejects(f('https://services.leadconnectorhq.com/contacts/' + X1), (e) => e.code === 'stopped', 'a refused grant refuses everything after'); assert.equal(calls.length, before);
+    const g2 = await b.grant('context', 1, new Date().toISOString());
+    await assert.rejects(g2.fetcher(() => new Date().toISOString())('https://example.invalid/x'), budgetLib.TransportRefused, 'only GHL');
+  });
+  await t('F4 transport bounds: redirect "error" and an abort signal on every request; a 3xx or redirected response is refused; a body over 1 MiB is refused; the deadline covers a stalled response', async () => {
+    let seen = null; const base = async (url, init) => { seen = init; return { status: 200, redirected: false, text: async () => '{}' }; };
+    await budgetLib.boundedRequest(base, 'https://services.leadconnectorhq.com/x', { method: 'GET' });
+    assert.equal(seen.redirect, 'error'); assert.ok(seen.signal instanceof AbortSignal);
+    await assert.rejects(budgetLib.boundedRequest(async () => ({ status: 302, text: async () => '' }), 'https://services.leadconnectorhq.com/x', {}), budgetLib.TransportRefused);
+    await assert.rejects(budgetLib.boundedRequest(async () => ({ status: 200, redirected: true, text: async () => '{}' }), 'https://services.leadconnectorhq.com/x', {}), budgetLib.TransportRefused);
+    await assert.rejects(budgetLib.boundedRequest(async () => ({ status: 200, text: async () => 'x'.repeat(budgetLib.BODY_LIMIT_BYTES + 1) }), 'https://services.leadconnectorhq.com/x', {}), /too large/);
+    let aborted = false;
+    await assert.rejects(budgetLib.boundedRequest(async (u, init) => { init.signal.addEventListener('abort', () => { aborted = true; }); return { status: 200, text: () => new Promise(() => {}) }; }, 'https://services.leadconnectorhq.com/x', {}, 50), /timeout/);
+    assert.ok(aborted, 'the stalled request was aborted');
+    await assert.rejects(budgetLib.boundedRequest(async () => new Promise(() => {}), 'https://services.leadconnectorhq.com/x', {}, 50), /timeout/);
+  });
+  await t('LEASE_MS prerequisite: app/netlify.toml sets no function timeout, so the platform\'s synchronous limit (well under 120 s) applies -- a timeout setting must re-open this review', async () => {
+    const toml = fs.readFileSync(path.join(__dirname, '..', 'netlify.toml'), 'utf8');
+    assert.ok(!/^\s*timeout\s*=/m.test(toml), 'no timeout key'); assert.equal(ledger.LEASE_MS, 120000);
   });
 
   finished = true;

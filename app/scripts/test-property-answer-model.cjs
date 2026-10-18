@@ -87,7 +87,7 @@ t('classifyDeal: every configured non-terminal stage and LTN are ELIGIBLE; won/l
   for (const over of [{ status: undefined }, { status: 'all' }, { pipelineStageId: 'unknown-stage' }, { pipelineId: 'other' }, { contactId: 'other' }]) assert.equal(ds.classifyDeal(opp('a', over), 'c', config), 'UNKNOWN', JSON.stringify(over));
   assert.equal(ds.classifyDeal(null, 'c', config), 'UNKNOWN');
 });
-const page = (list, meta) => ({ opportunities: list, meta: meta ?? { total: list.length, nextPage: null } });
+const page = (list, meta) => ({ opportunities: list, meta: meta ?? { total: list.length, nextPage: null, nextPageUrl: null } });
 t('checkSearchPage: duplicate ids, a foreign contact or pipeline, a missing target, total != count, >= 100 items or a next page all fail', () => {
   const a = opp('a');
   assert.equal(ds.checkSearchPage(page([a]), 'c', PIPE, 'a').complete, true);
@@ -95,7 +95,7 @@ t('checkSearchPage: duplicate ids, a foreign contact or pipeline, a missing targ
   assert.equal(ds.checkSearchPage(page([a, opp('b', { contactId: 'x' })]), 'c', PIPE, 'a').complete, false);
   assert.equal(ds.checkSearchPage(page([a, opp('b', { pipelineId: 'x' })]), 'c', PIPE, 'a').complete, false);
   assert.equal(ds.checkSearchPage(page([opp('b')]), 'c', PIPE, 'a').complete, false);
-  assert.equal(ds.checkSearchPage(page([a], { total: 2 }), 'c', PIPE, 'a').complete, false);
+  assert.equal(ds.checkSearchPage(page([a], { total: 2, nextPage: null, nextPageUrl: null }), 'c', PIPE, 'a').complete, false);
   assert.equal(ds.checkSearchPage(page([a], { total: 1, nextPage: 2 }), 'c', PIPE, 'a').complete, false);
   assert.equal(ds.checkSearchPage(page([a], { total: 1, nextPageUrl: 'x' }), 'c', PIPE, 'a').complete, false);
   const hundred = Array.from({ length: 100 }, (_, i) => opp(i === 0 ? 'a' : 'x' + i, { status: 'lost' }));
@@ -116,6 +116,15 @@ t('evaluateDealSet: ledger ids are candidates; a candidate without a fresh read 
   assert.equal(ds.evaluateDealSet({ search: page([a, opp('b2', { pipelineStageId: S.sellerOfferSent })]), fresh: new Map([['a', a], ['b2', opp('b2', { pipelineStageId: S.sellerOfferSent })]]), ledgerIds: [], targetId: 'a', contactId: 'c', config }).reason, 'several_eligible');
   assert.equal(ds.evaluateDealSet({ search: page([a, opp('b3')]), fresh: new Map([['a', { ...a, status: 'lost' }], ['b3', opp('b3')]]), ledgerIds: [], targetId: 'a', contactId: 'c', config }).reason, 'list_updating');
   assert.equal(ds.evaluateDealSet({ search: page([{ ...a, status: 'lost' }, opp('b3')]), fresh: new Map([['a', { ...a, status: 'lost' }], ['b3', opp('b3')]]), ledgerIds: [], targetId: 'a', contactId: 'c', config }).reason, 'target_not_eligible');
+});
+t('F1 terminalPage: only an object with integer total == count and BOTH nextPage and nextPageUrl present and null passes', () => {
+  assert.equal(ds.terminalPage({ total: 1, nextPage: null, nextPageUrl: null }, 1), true);
+  for (const [label, meta] of [['total only (Bones)', { total: 1 }], ['no nextPage', { total: 1, nextPageUrl: null }], ['no nextPageUrl', { total: 1, nextPage: null }],
+    ['undefined values', { total: 1, nextPage: undefined, nextPageUrl: undefined }], ['nextPage 0', { total: 1, nextPage: 0, nextPageUrl: null }], ['nextPage 2', { total: 1, nextPage: 2, nextPageUrl: null }],
+    ['url string', { total: 1, nextPage: null, nextPageUrl: 'x' }], ['empty url', { total: 1, nextPage: null, nextPageUrl: '' }], ['total mismatch', { total: 2, nextPage: null, nextPageUrl: null }],
+    ['total string', { total: '1', nextPage: null, nextPageUrl: null }], ['total float', { total: 1.5, nextPage: null, nextPageUrl: null }], ['no total', { nextPage: null, nextPageUrl: null }],
+    ['null', null], ['array', []], ['string', 'meta']])
+    assert.equal(ds.terminalPage(meta, 1), false, label);
 });
 console.log(`property-answer-model: ${n} passed, ${f} failed`);
 process.exitCode = f ? 1 : 0;

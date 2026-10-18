@@ -57,10 +57,24 @@ export function checkSearchPage(body: any, contactId: string, pipelineId: string
     items.set(o.id, o);
   }
   const ids = [...items.keys()];
-  const meta = body.meta ?? {};
-  const noNextPage = (meta.nextPage === null || meta.nextPage === undefined) && (meta.nextPageUrl === null || meta.nextPageUrl === undefined);
-  const complete = items.has(targetId) && typeof meta.total === "number" && meta.total === ids.length && ids.length < 100 && noNextPage;
+  const complete = items.has(targetId) && ids.length < 100 && terminalPage(body.meta, ids.length);
   return { complete, ids, items };
+}
+
+/**
+ * Bones F1 (review of 525d7c2): only EXPLICIT terminal-page evidence passes.
+ * `meta` must be an object carrying an integer `total` equal to the count and
+ * BOTH documented pagination keys, `nextPage` and `nextPageUrl`, each present
+ * and exactly null. A missing key, any other value, or a contradiction (one
+ * null, one not) fails the page. Passing establishes only this bounded page
+ * check under the accepted Option B residual -- never that the set is complete.
+ */
+export function terminalPage(meta: any, count: number): boolean {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return false;
+  const has = (k: string) => Object.prototype.hasOwnProperty.call(meta, k);
+  if (!has("total") || !Number.isInteger(meta.total) || meta.total !== count) return false;
+  if (!has("nextPage") || !has("nextPageUrl")) return false;
+  return meta.nextPage === null && meta.nextPageUrl === null;
 }
 
 /** L2: the search's own pipeline, stage and status must equal the fresh read, or the index is visibly behind. */

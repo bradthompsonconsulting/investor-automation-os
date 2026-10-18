@@ -19,6 +19,8 @@ export type AnswerContext = {
 };
 export type Reply = { status: number; body: any };
 
+/** Must equal property-answer-operation.ts SAVED_RECORDING (asserted by test-property-answer). */
+export const SAVED_RECORDING = "Saved. Recording history.";
 export const EMPTY_ADDRESS: Address = { street: "", unit: "", city: "", state: "", zip: "" };
 
 /** The server's gate refusals: this panel does not apply to this contact or deployment. */
@@ -41,3 +43,18 @@ export const STATE_TEXT: Record<OpState, string> = {
 };
 /** States in which this contact accepts no new answer save until resolved. */
 export const HOLDING = new Set<OpState>(["saved_history_pending", "history_unresolved", "saved_conditions_changed", "not_confirmed", "pending"]);
+
+/**
+ * Bones F3 (review of 525d7c2): the ONLY automatic follow-up. History is sent
+ * automatically only right after THIS page's own save of operation `sent.operationId`
+ * was answered 200 with saved_history_pending for that same operation. Check again,
+ * a refresh, a recovery or any other reply never sends history; a later history
+ * continuation is a separate, explicit operator action ("Record history").
+ */
+export function followUpAfter(sent: Record<string, unknown>, reply: Reply): { action: "history"; operationId: string } | null {
+  if (sent.action !== "save" || typeof sent.operationId !== "string") return null;
+  if (reply.status !== 200 || reply.body?.outcome !== "saved_history_pending") return null;
+  if (reply.body?.view?.op !== sent.operationId || reply.body?.view?.state !== "saved_history_pending") return null;
+  if (reply.body?.message !== SAVED_RECORDING) return null;   // the server wrote this save's S2 permit
+  return { action: "history", operationId: sent.operationId };
+}

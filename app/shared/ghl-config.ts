@@ -355,6 +355,15 @@ export interface GhlConfig {
     enabled: string;
     fixtureContactIds: readonly string[];
     fixtureOpportunityIds: readonly string[];
+    /**
+     * The ENFORCED request budget (lib/evaluation-budget.ts): every GHL request
+     * the endpoint makes is reserved and receipted against `budgetId` up to
+     * `ceiling`; any unexpected result stops it for good. A new budget needs a
+     * reviewed config commit with a new id.
+     */
+    requestBudget: { budgetId: string; ceiling: number };
+    /** Candidate deals one discovery may read; more is unexpected work and stops the evaluation. */
+    maxCandidates: number;
   };
 }
 
@@ -807,6 +816,8 @@ const PRODUCTION: GhlConfig = {
     enabled: PROPERTY_ANSWER_EVALUATION_DISABLED,
     fixtureContactIds: [],
     fixtureOpportunityIds: [],
+    requestBudget: { budgetId: "not-applicable-in-production", ceiling: 0 },
+    maxCandidates: 0,
   },
 };
 
@@ -1210,6 +1221,9 @@ const TEST: GhlConfig = {
     enabled: PROPERTY_ANSWER_EVALUATION_ENABLED,
     fixtureContactIds: ["pYE98meKVyRrbzEt6MMR", "LR98QNOE0oksHIPF4JIf"],
     fixtureOpportunityIds: ["a75hWpPILA7Y7Ginp4n8", "HCTa65siD41bA9XGpQWM"],
+    // The controlled plan E1-E4 on Deal E with one candidate: 3 + 3 + (11+3+3) + (11+3+3) = 40.
+    requestBudget: { budgetId: "b15-04-eval-1", ceiling: 40 },
+    maxCandidates: 1,
   },
 };
 
