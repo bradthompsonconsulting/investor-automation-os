@@ -106,6 +106,9 @@ export const handler = async (event: any) => {
       phone:           o.contact?.phone ?? "",
       email:           o.contact?.email ?? "",
       stageId:         o.pipelineStageId ?? "",
+      // B15-04 (design r3 §2 required read change): display only; eligibility is decided server-side from a fresh single read.
+      status:          typeof o.status === "string" ? o.status : "",
+      pipelineId:      typeof o.pipelineId === "string" ? o.pipelineId : "",
       customFields:    o.customFields ?? [],
     }));
 

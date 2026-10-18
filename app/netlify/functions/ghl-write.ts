@@ -12,6 +12,7 @@ import { callLogScope, isCallLogBound, isCallLogNoteText, isOperationRequestId, 
 import { claimWrite, lockContact, stageTransitionUnresolved, claimStageTransition, clearStageTransition } from "./lib/write-receipts";
 import { latestOutcomeNoteForOpportunity } from "../../src/lib/seller-call-outcome";
 import { currentOfferWriteGate } from "../../src/lib/current-offer-carrier";
+import { isHistoryNoteText } from "./lib/property-answer-model";
 import { evaluateProductionGhlWriteScope, evaluateProductionPairedOwnership, requiresProductionPairedOwnership, requiresProductionNegotiationPipeline, PRODUCTION_WRITE_SCOPE_REFUSAL } from "./lib/production-write-scope";
 /** Board 15 / PR #126 stacked server PR: the operations a Current Offer barrier can own. */
 const BARRIER_OPERATIONS = new Set(Object.values(STEP_OPERATION));
@@ -103,6 +104,11 @@ export const handler = async (event: any) => {
   // 2026-10-11 -- without it the page could not tell it from an unresolved save).
   const scope = evaluateProductionGhlWriteScope(config, { operation: request.operation, targetId: request.targetId, args: request.args });
   if (!scope.ok) return json(403, { outcome: "not_sent", error: "Production write refused by the proof write scope", by: PRODUCTION_WRITE_SCOPE_REFUSAL, code: scope.code });
+  // B15-04: property answers and their history notes are sent only by property-answer.ts (its durable
+  // two-slot operation). Here they are refused before any Blob or GHL access, in every environment.
+  if (request.operation === "opportunity.sellerReason" || request.operation === "opportunity.propertyAddress" || (request.operation === "note.create" && isHistoryNoteText(request.args?.body))) {
+    return json(409, { outcome: "not_sent", error: "Property answers are saved only through the property-answer operation" });
+  }
   let release: (() => Promise<void>) | undefined;
   /* Board 15 / PR #126 stacked server PR -- the durable Current Offer barrier
      (lib/current-offer-barrier.ts). A request id registered by `begin` is

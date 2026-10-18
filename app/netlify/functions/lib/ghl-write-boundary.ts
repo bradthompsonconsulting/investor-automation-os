@@ -11,7 +11,7 @@ export class WriteUncertain extends Error {}
  * call that throws part-way is always treated as possibly sent. Callers that
  * pass no hooks behave exactly as before.
  */
-export type DispatchHooks = { beforeDispatch: () => Promise<void>; state: { dispatched: boolean } };
+export type DispatchHooks = { beforeDispatch: () => Promise<void>; state: { dispatched: boolean }; verify?: (preRead: any) => Promise<void> | void };
 async function dispatching(hooks?: DispatchHooks) {
   if (!hooks) return;
   await hooks.beforeDispatch();
@@ -40,13 +40,23 @@ export class GhlBoundary {
     await this.contact(opportunity.contactId);
     return opportunity;
   }
+  /**
+   * B15-04: one page of the contact's Seller Leads deals from GHL search. Returned raw; the caller
+   * (seller-deal-set.ts) applies the completeness rule. Search is used only to DISCOVER ids.
+   */
+  async sellerDeals(contactId: string, pipelineId: string) {
+    const q = new URLSearchParams({ location_id: this.locationId, contact_id: contactId, pipeline_id: pipelineId, limit: "100" });
+    return this.call(`/opportunities/search?${q}`);
+  }
   async notes(id: string) {
     const data = await this.call(`/contacts/${id}/notes`);
     if (!Array.isArray(data.notes) || data.notes.some((n: any) => typeof n.body !== "string")) throw new Error("Notes readback is ambiguous");
     return data.notes as { id: string; body: string; dateAdded?: string }[];
   }
   async fields(kind: "contact" | "opportunity", id: string, fields: FieldWrite[], hooks?: DispatchHooks) {
-    await (kind === "contact" ? this.contact(id) : this.opportunity(id));
+    const preRead = await (kind === "contact" ? this.contact(id) : this.opportunity(id));
+    // B15-04: an optional caller check on THIS pre-read (the last read before the PUT); a throw sends nothing.
+    await hooks?.verify?.(preRead);
     await dispatching(hooks);
     let response: any;
     try { response = await this.call(`/${kind === "contact" ? "contacts" : "opportunities"}/${id}`, "PUT", { customFields: fields.map(({ id, field_value }) => ({ id, field_value })) }); }

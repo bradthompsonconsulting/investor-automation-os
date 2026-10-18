@@ -1,0 +1,562 @@
+/**
+ * B15-04 Rev 6 property answers -- focused offline suite for the property-answer
+ * endpoint and its durable operation (design r3; proposal r4; Bones's r3 fencing
+ * review race cases F1-F7 / G1-G5; r3 crash cases C1-C8 / D1-D8).
+ *
+ * Offline. @netlify/blobs is an in-memory store with onlyIfNew / onlyIfMatch
+ * semantics and injectable faults (a write that throws, a write that APPLIES and
+ * then throws, a stale read). Every GHL call goes to a fake that can change state
+ * mid-flow. Global fetch rejects any other origin. No credential, no network.
+ */
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const Module = require('node:module');
+const ts = require('typescript');
+const crypto = require('node:crypto');
+
+const receipts = new Map(); const etags = new Map(); let etagSeq = 0;
+let failNext = []; let applyThenThrow = []; let staleNext = []; let blobOps = 0;
+const realBlobs = require('@netlify/blobs');
+delete process.env.NETLIFY_BLOBS_CONTEXT;
+const lambdaHeaders = { 'x-nf-site-id': 'offline-site', 'x-nf-deploy-id': 'offline-deploy' };
+const lambdaBlobs = Buffer.from(JSON.stringify({ url: 'https://blobs.example.invalid', token: 'offline-blob-fixture' })).toString('base64');
+const take = (list, ...args) => { const i = list.findIndex((f) => f(...args)); if (i < 0) return false; list.splice(i, 1); return true; };
+const originalResolve = Module._resolveFilename; const originalLoad = Module._load;
+Module._resolveFilename = function (name, parent, ...rest) {
+  if (name.startsWith('.') && parent) { const c = path.resolve(path.dirname(parent.filename), name + '.ts'); if (fs.existsSync(c)) return c; }
+  return originalResolve.call(this, name, parent, ...rest);
+};
+Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
+const memStore = {
+  async get(key) { blobOps++; if (take(failNext, 'get', key)) throw new Error('fixture: blob get failed'); if (take(staleNext, key)) return null; return receipts.has(key) ? structuredClone(receipts.get(key)) : null; },
+  async getWithMetadata(key) { blobOps++; if (take(failNext, 'getWithMetadata', key)) throw new Error('fixture: blob read failed'); return receipts.has(key) ? { data: structuredClone(receipts.get(key)), etag: etags.get(key) } : null; },
+  async setJSON(key, value, options) {
+    blobOps++;
+    if (take(failNext, 'setJSON', key)) throw new Error('fixture: blob setJSON failed');
+    if (options?.onlyIfNew && receipts.has(key)) return { modified: false };
+    if (options?.onlyIfMatch !== undefined && etags.get(key) !== options.onlyIfMatch) return { modified: false };
+    receipts.set(key, structuredClone(value)); const etag = 'etag-' + (++etagSeq); etags.set(key, etag);
+    if (take(applyThenThrow, 'setJSON', key)) throw new Error('fixture: write applied, acknowledgement lost');
+    return { modified: true, etag };
+  },
+  async delete(key) { blobOps++; receipts.delete(key); etags.delete(key); },
+};
+Module._load = function (name, ...rest) {
+  if (name === '@netlify/blobs') return { connectLambda: (event) => realBlobs.connectLambda(event), getStore: () => memStore };
+  return originalLoad.call(this, name, ...rest);
+};
+process.env.IAOS_ENV = 'test';
+process.env.IAOS_APP_WRITE_GOOGLE_CLIENT_ID = 'offline-client';
+process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN = 'https://proof.example.invalid';
+process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'brad@example.invalid';
+process.env.IAOS_APP_WRITE_SESSION_SECRET = 'offline-fixture-only-not-a-real-secret';
+process.env.GHL_PRIVATE_API_KEY = 'offline-fixture';
+
+const auth = require('../netlify/functions/lib/app-write-auth.ts');
+const cfgMod = require('../shared/ghl-config.ts');
+const model = require('../netlify/functions/lib/property-answer-model.ts');
+const ledger = require('../netlify/functions/lib/known-deal-ledger.ts');
+const opLib = require('../netlify/functions/lib/property-answer-operation.ts');
+const config = cfgMod.getConfig('test');
+// The committed Test config carries the six real Test field ids; this suite only pins its own synthetic fixtures.
+const P = config.propertyAnswerFields;
+assert.deepEqual({ ...P }, { sellerReason: 'zqGxQc7nAspWmYglR2Qk', propertyStreet: 'vMejpjFmgI9ZWvfloaPW', propertyUnit: 'Ok4EFrJqtDqIn90FFiT9', propertyCity: 'lrHSGsOIBtH4f1s9YbVj', propertyState: 'WOaJHfbMz20YTPhD2lI5', propertyZip: 'qztxh0XDmiZrDBMauoJq' }, 'committed Test field ids');
+const X1 = 'fxContactX1', X2 = 'fxContactX2', X3 = 'fxContactX3', OTHER = 'fxContactOther';
+const DA = 'fxDealA00001', DB = 'fxDealB00001', DC = 'fxDealC00001', DD = 'fxDealD00001', DN = 'fxDealNew0001', NONFIX = 'fxDealNotPinned';
+config.propertyAnswerEvaluation.fixtureContactIds.push(X1, X2, X3);
+config.propertyAnswerEvaluation.fixtureOpportunityIds.push(DA, DB, DC, DD, DN);
+const SCOPE = `test:${config.locationId}`;
+const S = config.stages; const PIPE = config.pipelines.sellerLeads;
+const dg = (s) => crypto.createHash('sha256').update(s).digest('hex');
+const key = { head: (c) => `pa/head/${dg(`${SCOPE}:${c}`)}`, op: (op) => `pa/op/${dg(`${SCOPE}:${op}`)}`, attempt: (op, sl, n) => `pa/attempt/${dg(`${SCOPE}:${op}:${sl}:${n}`)}`,
+  decision: (r) => `pa/decision/${dg(`${SCOPE}:${r}`)}`, outcome: (r) => `pa/outcome/${dg(`${SCOPE}:${r}`)}`, final: (op) => `pa/final/${dg(`${SCOPE}:${op}`)}`, permit: (op) => `pa/s2-permit/${dg(`${SCOPE}:${op}`)}`,
+  ledger: (c) => ledger.ledgerKey(SCOPE, c), draft: (c, o, f) => `pa/draft/${dg(`${SCOPE}:${c}:${o}:${f}`)}` };
+const rid = (op, sl, n) => `${op}-${sl}-${n}`;
+
+// ── Fake GHL ────────────────────────────────────────────────────────────────
+let ghl; let calls = []; let hooks = []; let searchHide = new Set(); let searchStale = new Map(); let searchMeta = null; let loseNext = [];
+const ok = (data) => ({ ok: true, status: 200, json: async () => structuredClone(data), text: async () => JSON.stringify(data) });
+const notFound = () => ({ ok: false, status: 404, json: async () => ({}), text: async () => '{}' });
+/** hooks: { when(req, n), fn(req) } runs fn once, before the request is answered, on the matching call. */
+function onCall(when, fn) { hooks.push({ when, fn }); }
+global.fetch = async (url, init = {}) => {
+  const u = new URL(url); const method = init.method || 'GET';
+  assert.equal(u.origin, 'https://services.leadconnectorhq.com', 'no external network');
+  const req = { method, path: u.pathname, query: Object.fromEntries(u.searchParams), body: init.body ? JSON.parse(init.body) : null };
+  calls.push(req);
+  const hi = hooks.findIndex((h) => h.when(req, calls)); if (hi >= 0) { const [h] = hooks.splice(hi, 1); await h.fn(req); }
+  let m;
+  if (u.pathname === '/opportunities/search') {
+    const list = Object.values(ghl.opps).filter((o) => o.contactId === req.query.contact_id && o.pipelineId === req.query.pipeline_id && !searchHide.has(o.id))
+      .map((o) => ({ ...structuredClone(o), ...(searchStale.get(o.id) ?? {}) }));
+    return ok({ opportunities: list, meta: searchMeta ? searchMeta(list) : { total: list.length, nextPage: null, nextPageUrl: null } });
+  }
+  if ((m = u.pathname.match(/^\/opportunities\/([^/]+)$/))) {
+    const o = ghl.opps[m[1]]; if (!o) return notFound();
+    if (method === 'PUT') {
+      for (const f of req.body.customFields) { o.customFields = o.customFields.filter((x) => x.id !== f.id); if (f.field_value !== '' && f.field_value !== null) o.customFields.push({ id: f.id, fieldValue: f.field_value }); }
+      const li = loseNext.findIndex((f) => f(req)); if (li >= 0) { loseNext.splice(li, 1); throw new Error('fixture: response lost'); }
+      return ok({ succeded: true });
+    }
+    return ok({ opportunity: structuredClone(o) });
+  }
+  if ((m = u.pathname.match(/^\/contacts\/([^/]+)(\/notes)?$/))) {
+    const c = ghl.contacts[m[1]]; if (!c) return notFound();
+    if (m[2]) {
+      if (method === 'POST') {
+        const note = { id: `${c.id}-note-${c.notes.length}`, body: req.body.body }; c.notes.push(note);
+        const li = loseNext.findIndex((f) => f(req)); if (li >= 0) { loseNext.splice(li, 1); throw new Error('fixture: response lost'); }
+        return ok({ note });
+      }
+      return ok({ notes: structuredClone(c.notes) });
+    }
+    return ok({ contact: { id: c.id, locationId: config.locationId, customFields: [] } });
+  }
+  throw new Error('Unexpected mocked request: ' + method + ' ' + u.pathname);
+};
+const deal = (id, contactId, over = {}) => ({ id, locationId: config.locationId, contactId, pipelineId: PIPE, pipelineStageId: S.newLeadSeller, status: 'open', name: 'IAOS PROBE ' + id, customFields: [], createdAt: '2026-10-17T12:00:00.000Z', ...over });
+function fresh() {
+  receipts.clear(); etags.clear(); failNext = []; applyThenThrow = []; staleNext = []; calls = []; hooks = []; loseNext = []; searchHide = new Set(); searchStale = new Map(); searchMeta = null; blobOps = 0;
+  ghl = { contacts: { [X1]: { id: X1, notes: [] }, [X2]: { id: X2, notes: [] }, [X3]: { id: X3, notes: [] }, [OTHER]: { id: OTHER, notes: [] } }, opps: { [DA]: deal(DA, X1) } };
+}
+const puts = () => calls.filter((c) => c.method === 'PUT').length;
+const posts = () => calls.filter((c) => c.method === 'POST').length;
+const ghlCount = () => calls.length;
+
+const handler = require('../netlify/functions/property-answer.ts').handler;
+const ghlWrite = require('../netlify/functions/ghl-write.ts').handler;
+const headers = () => ({ ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` });
+async function post(b, h = headers()) { const r = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: h, body: JSON.stringify(b) }); return { status: r.statusCode, body: JSON.parse(r.body) }; }
+const context = (c = X1, o = DA) => post({ action: 'context', contactId: c, opportunityId: o });
+const ADDR = { street: '100 Probe Way', unit: '', city: 'McKinney', state: 'TX', zip: '75069' };
+async function save(field, value, c = X1, o = DA, over = {}) {
+  const ctx = (await context(c, o)).body;
+  const addressDigest = field === 'property_address' ? model.EMPTY_ADDRESS_DIGEST : ctx.address?.digest;
+  return post({ action: 'save', contactId: c, opportunityId: o, field, operationId: over.operationId ?? crypto.randomUUID(), value, expectedAddressDigest: over.expectedAddressDigest ?? addressDigest ?? model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: over.expectedDealSetDigest ?? ctx.verdict.digest });
+}
+const history = (op, c = X1, o = DA) => post({ action: 'history', contactId: c, opportunityId: o, operationId: op });
+const check = (c = X1, o = DA) => post({ action: 'check', contactId: c, opportunityId: o });
+async function commitAnswer(field, value, c = X1, o = DA) {
+  const s = await save(field, value, c, o); assert.equal(s.status, 200, JSON.stringify(s.body)); assert.equal(s.body.outcome, 'saved_history_pending', JSON.stringify(s.body));
+  const h = await history(s.body.view.op, c, o); assert.equal(h.status, 200, JSON.stringify(h.body)); assert.equal(h.body.outcome, 'committed', JSON.stringify(h.body));
+  return s.body.view.op;
+}
+const addrValue = (o = DA) => Object.fromEntries(['propertyStreet', 'propertyCity', 'propertyState', 'propertyZip'].map((k) => [k, (ghl.opps[o].customFields.find((f) => f.id === P[k]) || {}).fieldValue ?? null]));
+const reasonOf = (o = DA) => (ghl.opps[o].customFields.find((f) => f.id === P.sellerReason) || {}).fieldValue ?? null;
+const ago = (ms) => new Date(Date.now() - ms).toISOString();
+
+let finished = false;
+process.on('exit', (code) => { if (!finished && code === 0) { console.error('FAIL the suite ended before it finished'); process.exitCode = 1; } });
+let count = 0, failures = 0;
+async function t(name, fn) {
+  try { await fn(); count++; console.log('PASS ' + name); }
+  catch (e) { failures++; console.error('FAIL ' + name + '\n  ' + (e && e.stack ? e.stack.split('\n').slice(0, 5).join('\n  ') : e)); }
+}
+
+(async () => {
+  // ── Gates: nothing is read or written before them ─────────────────────────
+  await t('gate: evaluation disabled (Production value) refuses every action with zero Blob and zero GHL', async () => {
+    fresh(); const saved = config.propertyAnswerEvaluation.enabled; config.propertyAnswerEvaluation.enabled = cfgMod.PROPERTY_ANSWER_EVALUATION_DISABLED;
+    try {
+      for (const action of ['context', 'check']) { const r = await post({ action, contactId: X1, opportunityId: DA }); assert.equal(r.status, 403); assert.equal(r.body.code, 'evaluation_disabled'); }
+      const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'seller_reason', operationId: crypto.randomUUID(), value: 'x', expectedAddressDigest: 'a'.repeat(64), expectedDealSetDigest: 'b'.repeat(64) });
+      assert.equal(r.body.code, 'evaluation_disabled');
+      assert.equal(blobOps, 0); assert.equal(ghlCount(), 0);
+    } finally { config.propertyAnswerEvaluation.enabled = saved; }
+  });
+  await t('gate: the committed Production config is disabled with no fixtures and no provisioned fields; a Production deployment refuses with zero Blob/GHL', async () => {
+    fresh(); const prod = cfgMod.getConfig('production');
+    assert.equal(prod.propertyAnswerEvaluation.enabled, cfgMod.PROPERTY_ANSWER_EVALUATION_DISABLED);
+    assert.deepEqual([...prod.propertyAnswerEvaluation.fixtureContactIds, ...prod.propertyAnswerEvaluation.fixtureOpportunityIds], []);
+    for (const v of Object.values(prod.propertyAnswerFields)) assert.equal(v, cfgMod.PROPERTY_ANSWER_FIELD_NOT_PROVISIONED);
+    process.env.IAOS_ENV = 'production';
+    try { const r = await context(); assert.equal(r.status, 403); assert.equal(r.body.code, 'evaluation_disabled'); }
+    finally { process.env.IAOS_ENV = 'test'; }
+    assert.equal(blobOps, 0); assert.equal(ghlCount(), 0);
+  });
+  await t('gate: a contact or deal that is not a pinned fixture is refused with zero Blob/GHL', async () => {
+    fresh();
+    assert.equal((await context(OTHER, DA)).body.code, 'not_a_fixture');
+    assert.equal((await context(X1, NONFIX)).body.code, 'not_a_fixture');
+    assert.equal(blobOps, 0); assert.equal(ghlCount(), 0);
+  });
+  await t('gate: sign-in and origin are required; undeclared keys, bad digests and invalid values are refused before Blob/GHL', async () => {
+    fresh();
+    assert.equal((await post({ action: 'context', contactId: X1, opportunityId: DA }, { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN })).status, 401);
+    assert.equal((await post({ action: 'context', contactId: X1, opportunityId: DA }, { ...headers(), origin: 'https://evil.example.invalid' })).status, 403);
+    assert.equal((await post({ action: 'context', contactId: X1, opportunityId: DA, extra: 1 })).status, 400);
+    assert.equal((await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'seller_reason', operationId: crypto.randomUUID(), value: 'x', expectedAddressDigest: 'nope', expectedDealSetDigest: 'b'.repeat(64) })).status, 400);
+    for (const value of [{ ...ADDR, state: 'Texas' }, { ...ADDR, zip: '7506' }, { ...ADDR, street: ' ' }, { street: 'x' }]) {
+      const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: 'b'.repeat(64) });
+      assert.equal(r.status, 400, JSON.stringify(r.body));
+    }
+    assert.equal((await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'seller_reason', operationId: crypto.randomUUID(), value: '   ', expectedAddressDigest: 'a'.repeat(64), expectedDealSetDigest: 'b'.repeat(64) })).status, 400);
+    assert.equal(blobOps, 0); assert.equal(ghlCount(), 0);
+  });
+  await t('gate: ghl-write refuses opportunity.sellerReason, opportunity.propertyAddress and a plain note carrying the history marker, with zero Blob/GHL (D8)', async () => {
+    fresh();
+    const w = (operation, targetId, args) => ghlWrite({ blobs: lambdaBlobs, httpMethod: 'POST', headers: headers(), body: JSON.stringify({ operation, targetId, requestId: crypto.randomUUID(), args }) });
+    for (const [op, target, args] of [['opportunity.sellerReason', DA, { value: 'x' }], ['opportunity.propertyAddress', DA, ADDR], ['note.create', X1, { body: model.HISTORY_NOTE_MARK + '\noperation: x' }]]) {
+      const r = await w(op, target, args); assert.equal(r.statusCode, 409, r.body); assert.equal(JSON.parse(r.body).outcome, 'not_sent');
+    }
+    assert.equal(blobOps, 0); assert.equal(ghlCount(), 0);
+  });
+
+  // ── Happy path and request budget ─────────────────────────────────────────
+  await t('context: one eligible deal, address empty, digest returned; budget = 1 search + 1 deal GET + 1 contact GET', async () => {
+    fresh();
+    const r = await context(); assert.equal(r.status, 200);
+    assert.equal(r.body.verdict.allowed, true); assert.equal(r.body.verdict.reason, 'allowed'); assert.match(r.body.verdict.digest, /^[0-9a-f]{64}$/);
+    assert.equal(r.body.address.kind, 'empty'); assert.equal(r.body.values.seller_reason, null); assert.equal(r.body.operation, null);
+    assert.deepEqual(calls.map((c) => `${c.method} ${c.path}`), ['GET /opportunities/search', `GET /opportunities/${DA}`, `GET /contacts/${X1}`]);
+  });
+  await t('address then Seller Reason: each S1 clean -> S2 history -> committed; exact history bodies; head released; draft cleared; previous-revision chains', async () => {
+    fresh();
+    await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'seller_reason', value: 'draft text' });
+    assert.equal((await context()).body.drafts.seller_reason, 'draft text');
+    const before = ghlCount();
+    const opA = await commitAnswer('property_address', { ...ADDR, street: '100   Probe Way', state: 'tx' });
+    assert.deepEqual(addrValue(), { propertyStreet: '100 Probe Way', propertyCity: 'McKinney', propertyState: 'TX', propertyZip: '75069' });
+    const ctx = (await context()).body; assert.equal(ctx.address.kind, 'confirmed');
+    const opR = await commitAnswer('seller_reason', 'Line one\r\nLine two');
+    assert.equal(reasonOf(), 'Line one\nLine two');
+    const notes = ghl.contacts[X1].notes; assert.equal(notes.length, 2);
+    const e1 = model.parseHistoryNote(notes[0].body), e2 = model.parseHistoryNote(notes[1].body);
+    assert.equal(e1.operationId, opA); assert.equal(e1.field, 'property_address'); assert.equal(e1.previousDigest, 'none');
+    assert.equal(e2.operationId, opR); assert.equal(e2.field, 'seller_reason'); assert.equal(e2.valueDigest, dg('Line one\nLine two')); assert.equal(e2.previousDigest, 'none');
+    assert.deepEqual(e2.valueLines, ['Line one', 'Line two']); assert.equal(e2.environment, 'test'); assert.equal(e2.locationId, config.locationId);
+    const opR2 = await commitAnswer('seller_reason', 'Changed reason');
+    assert.equal(model.parseHistoryNote(ghl.contacts[X1].notes[2].body).previousDigest, dg('Line one\nLine two'), 'the chain link is the prior value digest');
+    assert.equal(receipts.get(key.head(X1)).current, null);
+    for (const op of [opA, opR, opR2]) assert.equal(receipts.get(key.final(op)).kind, 'committed');
+    assert.equal((await context()).body.drafts.seller_reason, null, 'the draft is cleared once S1 lands');
+    assert.equal(puts(), 3); assert.equal(posts(), 3); assert.ok(ghlCount() > before);
+  });
+  await t('request budget: a save is exactly 11 GHL requests (3 discovery + 2 pre-read + 1 PUT + 2 readback + 3 bracket) and history exactly 3 (contact, POST, notes); no retries', async () => {
+    fresh();
+    const ctx = (await context()).body; calls = [];
+    const s = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+    assert.equal(s.body.outcome, 'saved_history_pending');
+    assert.deepEqual(calls.map((c) => `${c.method} ${c.path}`), ['GET /opportunities/search', `GET /opportunities/${DA}`, `GET /contacts/${X1}`, `GET /opportunities/${DA}`, `GET /contacts/${X1}`, `PUT /opportunities/${DA}`, `GET /opportunities/${DA}`, `GET /contacts/${X1}`, 'GET /opportunities/search', `GET /opportunities/${DA}`, `GET /contacts/${X1}`]);
+    calls = []; const h = await history(s.body.view.op); assert.equal(h.body.outcome, 'committed');
+    assert.deepEqual(calls.map((c) => `${c.method} ${c.path}`), [`GET /contacts/${X1}`, `POST /contacts/${X1}/notes`, `GET /contacts/${X1}/notes`]);
+  });
+  await t('a repeated save with the same operation id reports the recorded state and sends nothing again', async () => {
+    fresh();
+    const ctx = (await context()).body; const op = crypto.randomUUID();
+    const body = { action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: op, value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest };
+    assert.equal((await post(body)).body.outcome, 'saved_history_pending');
+    const again = await post(body); assert.equal(again.body.outcome, 'saved_history_pending'); assert.equal(puts(), 1);
+  });
+
+  // ── Identity, address and deal-set refusals (0 PUT) ───────────────────────
+  await t('r3 §4: Seller Reason without a confirmed address is refused (kept as a draft); an address initial set on a deal with an address is refused; a stale address digest is refused', async () => {
+    fresh();
+    assert.equal((await save('seller_reason', 'Why')).body.code, 'address_not_confirmed');
+    await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'seller_reason', value: 'Why' });
+    await commitAnswer('property_address', ADDR);
+    assert.equal((await save('property_address', { ...ADDR, street: '200 Other St' })).body.code, 'address_already_set');
+    assert.equal((await save('seller_reason', 'Why', X1, DA, { expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST })).body.code, 'stale_address');
+    ghl.opps[DA].customFields.find((f) => f.id === P.propertyZip).fieldValue = '7506'; // edited in GHL into an invalid address
+    assert.equal((await save('seller_reason', 'Why')).body.code, 'address_not_confirmed');
+    assert.equal((await context()).body.drafts.seller_reason, 'Why');
+    assert.equal(puts(), 1, 'only the address initial set was ever sent');
+  });
+  await t('L3: a stale deal-set digest returns not_sent deal_set_changed, 0 PUT', async () => {
+    fresh();
+    const ctx = (await context()).body;
+    ghl.opps[DB] = deal(DB, X1, { status: 'lost' }); // a settled deal appears: the digest changes, still allowed
+    const r = await save('property_address', ADDR, X1, DA, { expectedDealSetDigest: ctx.verdict.digest });
+    assert.equal(r.body.code, 'deal_set_changed'); assert.equal(puts(), 0);
+    assert.equal((await save('property_address', ADDR)).body.outcome, 'saved_history_pending', 'a fresh view with a won/lost deal set aside is allowed');
+  });
+  await t('r3 §2/§2A classification: two ELIGIBLE, ELIGIBLE + CONFLICT, ELIGIBLE + UNKNOWN status are blocked; LTN alone is eligible; won/lost/abandoned are set aside', async () => {
+    fresh();
+    ghl.opps[DB] = deal(DB, X2); ghl.opps[DC] = deal(DC, X2, { pipelineStageId: S.sellerFollowUp });
+    assert.equal((await context(X2, DB)).body.verdict.reason, 'several_eligible');
+    ghl.opps[DC].pipelineStageId = S.lostNotInterested; // open + Lost stage = CONFLICT
+    assert.equal((await context(X2, DB)).body.verdict.reason, 'unresolved_deal');
+    ghl.opps[DC].status = 'mystery';
+    assert.equal((await context(X2, DB)).body.verdict.reason, 'unresolved_deal');
+    for (const st of ['won', 'lost', 'abandoned']) { ghl.opps[DC].status = st; assert.equal((await context(X2, DB)).body.verdict.allowed, true, st); }
+    ghl.opps[DB].pipelineStageId = S.longTermNurture; assert.equal((await context(X2, DB)).body.verdict.allowed, true, 'LTN is eligible');
+    ghl.opps[DB].status = 'won'; assert.equal((await context(X2, DB)).body.verdict.reason, 'no_eligible');
+    ghl.opps[DB].status = 'open'; ghl.opps[DB].pipelineStageId = S.sellerClosedWon; assert.equal((await context(X2, DB)).body.verdict.reason, 'unresolved_deal');
+    assert.equal(puts(), 0);
+  });
+  await t('completeness rule: total != count, a next page, or the target missing from search -> search_incomplete, 0 PUT', async () => {
+    fresh();
+    searchMeta = (list) => ({ total: list.length + 1, nextPage: null }); assert.equal((await context()).body.verdict.reason, 'search_incomplete');
+    searchMeta = (list) => ({ total: list.length, nextPage: 2 }); assert.equal((await context()).body.verdict.reason, 'search_incomplete');
+    searchMeta = null; searchHide.add(DA); assert.equal((await context()).body.verdict.reason, 'search_incomplete');
+    searchHide.clear(); const ctx = (await context()).body; searchHide.add(DA);
+    assert.equal((await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest })).body.code, 'search_incomplete');
+    assert.equal(puts(), 0);
+  });
+  await t('L2 coherence: a search stage or status that differs from the fresh read -> list_updating, 0 PUT', async () => {
+    fresh();
+    searchStale.set(DA, { pipelineStageId: S.contactInitiated }); assert.equal((await context()).body.verdict.reason, 'list_updating');
+    searchStale.set(DA, { status: 'lost' }); assert.equal((await context()).body.verdict.reason, 'list_updating');
+  });
+  await t('L1 ledger: a known deal hidden from search is still read and counted (2 eligible -> blocked); a known deal that is deleted, reassigned or moved pipeline is UNKNOWN (blocked); entries remain', async () => {
+    fresh();
+    ghl.opps[DB] = deal(DB, X1, { status: 'lost' });
+    await context(); // the ledger now knows DA and DB
+    assert.deepEqual(Object.keys(receipts.get(key.ledger(X1)).ids).sort(), [DA, DB].sort());
+    ghl.opps[DB].status = 'open'; searchHide.add(DB);
+    assert.equal((await context()).body.verdict.reason, 'several_eligible', 'the hidden known deal is still evaluated');
+    delete ghl.opps[DB]; assert.equal((await context()).body.verdict.reason, 'unresolved_deal', 'deleted');
+    ghl.opps[DB] = deal(DB, OTHER); assert.equal((await context()).body.verdict.reason, 'unresolved_deal', 'reassigned');
+    ghl.opps[DB] = deal(DB, X1, { pipelineId: 'otherPipeline00000001', status: 'lost' }); assert.equal((await context()).body.verdict.reason, 'unresolved_deal', 'moved pipeline');
+    assert.ok(receipts.get(key.ledger(X1)).ids[DB], 'the entry remains (no silent removal)');
+    assert.equal(puts(), 0);
+  });
+  await t('L4: the target moves to Lost between the evaluation and the boundary pre-read -> refused before the PUT; the attempt is proved unsent (Not saved); a new save is allowed after', async () => {
+    fresh();
+    const ctx = (await context()).body;
+    onCall((req, all) => req.method === 'GET' && req.path === `/opportunities/${DA}` && all.filter((c) => c.path === `/opportunities/${DA}`).length === 3 /* context, discovery, boundary pre-read */, async () => { ghl.opps[DA].pipelineStageId = S.lostNotInterested; });
+    const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: 'op-l4-000000001', value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+    assert.equal(r.body.outcome, 'not_sent'); assert.equal(r.body.code, 'target_not_eligible'); assert.equal(puts(), 0);
+    assert.equal(receipts.get(key.decision(rid('op-l4-000000001', 'S1', 1))).d, 'withdrawn');
+    assert.equal(receipts.get(key.final('op-l4-000000001')).kind, 'not_saved'); assert.equal(receipts.get(key.head(X1)).current, null);
+    ghl.opps[DA].pipelineStageId = S.newLeadSeller;
+    assert.equal((await save('property_address', ADDR)).body.outcome, 'saved_history_pending');
+  });
+  await t('L5 / D7 / J3: a second eligible deal becomes visible right after the PUT -> confirmed_conditions_changed with discrepancy fields; S2 held; the head holds every new answer save', async () => {
+    fresh();
+    const ctx = (await context()).body;
+    onCall((req) => req.method === 'PUT', async () => { ghl.opps[DN] = deal(DN, X1); });
+    const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: 'op-l5-000000001', value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+    assert.equal(r.body.outcome, 'saved_conditions_changed', JSON.stringify(r.body)); assert.equal(puts(), 1);
+    const out = receipts.get(key.outcome(rid('op-l5-000000001', 'S1', 1)));
+    assert.equal(out.kind, 'confirmed_conditions_changed'); assert.equal(out.discrepancy.deal_set_several_eligible, true); assert.equal(out.discrepancy.deal_set_changed, true);
+    assert.ok(!receipts.has(key.permit('op-l5-000000001')));
+    assert.equal((await history('op-l5-000000001')).body.code, 's1_not_clean'); assert.equal(posts(), 0);
+    delete ghl.opps[DN];
+    const held = await save('seller_reason', 'x'); assert.equal(held.body.outcome, 'held'); assert.equal(held.body.view.state, 'saved_conditions_changed');
+    assert.equal(receipts.get(key.head(X1)).current, 'op-l5-000000001'); assert.equal(puts(), 1);
+  });
+
+  // ── Ledger fencing (proposal r4 §1; Bones F1-F7; r3 C1-C8) ────────────────
+  await t('C1 a discovery that died after registering blocks every save (discovery_open) until the lease; then the next save recovers it: recovery record first, the token revoked, the save proceeds', async () => {
+    fresh();
+    const dead = new ledger.Discovery(memStore, SCOPE, X1); await dead.register(ago(10_000));
+    assert.equal((await context()).body.verdict.reason, 'discovery_open');
+    const ctx1 = (await context()).body; const r1 = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx1.verdict.digest });
+    assert.equal(r1.body.code, 'discovery_open'); assert.equal(puts(), 0);
+    const rec = receipts.get(key.ledger(X1)); rec.discoveries[dead.token].startedAt = ago(ledger.LEASE_MS + 5_000); receipts.set(key.ledger(X1), rec);
+    const r2 = await save('property_address', ADDR); // context (no lock) cannot recover; save (lock) does
+    assert.equal(r2.body.outcome, 'saved_history_pending', JSON.stringify(r2.body));
+    const after = receipts.get(key.ledger(X1)).discoveries[dead.token];
+    assert.equal(after.state, 'revoked'); assert.ok(after.revokedBy);
+    assert.ok(receipts.has(ledger.recoveryKey(SCOPE, X1, dead.token)), 'recovery evidence recorded');
+  });
+  await t('C2 a deal seen only by a discovery that died before committing, and no longer visible at recovery, is NOT recovered (the disclosed residual) -- the recovery record shows the window', async () => {
+    fresh();
+    const dead = new ledger.Discovery(memStore, SCOPE, X1); await dead.register(ago(ledger.LEASE_MS + 5_000));
+    // it "saw" DN, then died; DN is not visible to anyone afterwards
+    await save('property_address', ADDR);
+    const rec = receipts.get(key.ledger(X1));
+    assert.equal(rec.ids[DN], undefined, 'not recovered: never committed and not visible at recovery');
+    assert.equal(rec.discoveries[dead.token].state, 'revoked'); assert.ok(receipts.has(ledger.recoveryKey(SCOPE, X1, dead.token)));
+  });
+  await t('C3 the commit lands and then throws: the record is consistent (committed, ids present); that invocation treats the list as unconfirmed (0 PUT); the next save evaluates normally', async () => {
+    fresh();
+    await context();
+    let n = 0; applyThenThrow.push((op, k) => op === 'setJSON' && k === key.ledger(X1) && ++n === 2); // register ok, commit applies then throws
+    const ctx = { verdict: { digest: 'c'.repeat(64) } };
+    const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+    assert.equal(r.body.code, 'deal_set_unconfirmed'); assert.equal(puts(), 0);
+    const rec = receipts.get(key.ledger(X1)); assert.equal(ledger.openTokens(rec).length, 0, 'no open intent left behind');
+    assert.equal((await save('property_address', ADDR)).body.outcome, 'saved_history_pending');
+  });
+  await t('F1/F2/C4 a paused discovery revoked by recovery cannot commit -- not with its old etag, not after re-reading the post-recovery etag, not through its retry loop', async () => {
+    fresh();
+    const r = new ledger.Discovery(memStore, SCOPE, X1); await r.register(ago(ledger.LEASE_MS + 5_000));
+    const rec = new ledger.Discovery(memStore, SCOPE, X1); await rec.register(new Date().toISOString());
+    await rec.commit([{ id: DA, source: 'search' }], new Date().toISOString(), [r.token]);
+    assert.equal(receipts.get(key.ledger(X1)).discoveries[r.token].state, 'revoked');
+    await assert.rejects(r.commit([{ id: DN, source: 'search' }], new Date().toISOString()), ledger.Fenced);
+    const { etag } = await ledger.readLedger(memStore, SCOPE, X1); assert.ok(etag); // R now holds the newest etag
+    await assert.rejects(r.commit([{ id: DN, source: 'search' }], new Date().toISOString()), ledger.Fenced, 'etag freshness does not restore authority');
+    assert.equal(receipts.get(key.ledger(X1)).ids[DN], undefined, 'its cached observation was never merged');
+  });
+  await t('F3 the stale invocation cannot re-register or mint a replacement token; a committed token cannot commit twice', async () => {
+    fresh();
+    const r = new ledger.Discovery(memStore, SCOPE, X1); await r.register(new Date().toISOString());
+    await assert.rejects(r.register(new Date().toISOString()), ledger.Fenced);
+    await r.commit([], new Date().toISOString());
+    await assert.rejects(r.commit([], new Date().toISOString()), ledger.Fenced);
+  });
+  await t('F4 recovery naming a token that already completed normally cannot revoke it; recovery never revokes a token that is not older than the lease', async () => {
+    fresh();
+    const done = new ledger.Discovery(memStore, SCOPE, X1); await done.register(ago(ledger.LEASE_MS + 5_000)); await done.commit([], new Date().toISOString());
+    const young = new ledger.Discovery(memStore, SCOPE, X1); await young.register(new Date().toISOString());
+    const rec = new ledger.Discovery(memStore, SCOPE, X1); await rec.register(new Date().toISOString());
+    await rec.commit([], new Date().toISOString(), [done.token, young.token]);
+    const d = receipts.get(key.ledger(X1)).discoveries;
+    assert.equal(d[done.token].state, 'committed'); assert.equal(d[young.token].state, 'open');
+  });
+  await t('F5 / C6 recovery or any new discovery racing the save gate: a discovery registered after the save\'s commit refuses the dispatch (0 PUT); a send already claimed stays possible S1 (withdrawal fails)', async () => {
+    fresh();
+    const ctx = (await context()).body;
+    onCall((req, all) => req.method === 'GET' && req.path === `/opportunities/${DA}` && all.filter((c) => c.path === `/opportunities/${DA}`).length === 3 /* context, discovery, boundary pre-read */, async () => { await new ledger.Discovery(memStore, SCOPE, X1).register(new Date().toISOString()); });
+    const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: 'op-f5-000000001', value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+    assert.equal(r.body.outcome, 'not_sent'); assert.equal(r.body.code, 'fenced'); assert.equal(puts(), 0);
+    assert.equal(receipts.get(key.final('op-f5-000000001')).kind, 'not_saved');
+    // reverse order: the send is claimed first; a later withdrawal cannot turn it into "proved unsent"
+    fresh(); const ctx2 = (await context()).body;
+    onCall((req) => req.method === 'PUT', async () => { const w = await memStore.setJSON(key.decision(rid('op-f5-000000002', 'S1', 1)), { d: 'withdrawn' }, { onlyIfNew: true }); assert.equal(w.modified, false); });
+    const r2 = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: 'op-f5-000000002', value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx2.verdict.digest });
+    assert.equal(r2.body.outcome, 'saved_history_pending'); assert.equal(receipts.get(key.decision(rid('op-f5-000000002', 'S1', 1))).d, 'send');
+  });
+  await t('F6 / C7 the store is unavailable at register, commit or the gate: zero dispatch', async () => {
+    for (const [label, nth] of [['register', 1], ['commit', 2], ['gate', 3]]) {
+      fresh(); const ctx = (await context()).body;
+      let n = 0; failNext.push((op, k) => op === 'setJSON' && k === key.ledger(X1) && ++n === nth);
+      const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+      assert.equal(r.body.outcome, 'not_sent', label + ' ' + JSON.stringify(r.body)); assert.equal(puts(), 0, label);
+    }
+  });
+  await t('F7 / C8 ids are add-only: no code path deletes from the ledger ids, and recovery keeps every prior id', async () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'netlify', 'functions', 'lib', 'known-deal-ledger.ts'), 'utf8');
+    assert.ok(!/delete\s+[^;]*\.ids\b/.test(src) && !/\.ids\s*=\s*\{\s*\}/.test(src.replace('ids: {}', '')), 'no deletion from ids');
+    fresh(); ghl.opps[DB] = deal(DB, X1, { status: 'lost' }); await context();
+    const dead = new ledger.Discovery(memStore, SCOPE, X1); await dead.register(ago(ledger.LEASE_MS + 5_000));
+    delete ghl.opps[DB]; await save('property_address', ADDR).catch(() => null);
+    assert.ok(receipts.get(key.ledger(X1)).ids[DB], 'the prior id survives recovery');
+  });
+
+  // ── S1 crash and arbitration (r3 D1-D8; Bones G1-G5) ──────────────────────
+  async function crashedS1(op, { decision = null, putApplied = false } = {}) {
+    // The durable state a crashed save leaves behind: op, S1 attempt, head; optionally the send claim and GHL's applied PUT.
+    const v = ADDR; const valueText = model.answerValueText('property_address', v);
+    receipts.set(key.op(op), { v: 1, op, contactId: X1, opportunityId: DA, field: 'property_address', valueText, valueDigest: dg(valueText), valueLines: model.historyValueLines('property_address', v), expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, dealSetDigest: 'd'.repeat(64), createdAt: new Date().toISOString() }); etags.set(key.op(op), 'e-op');
+    receipts.set(key.attempt(op, 'S1', 1), { v: 1, op, slot: 'S1', n: 1, requestId: rid(op, 'S1', 1) }); etags.set(key.attempt(op, 'S1', 1), 'e-at');
+    receipts.set(key.head(X1), { v: 1, current: op }); etags.set(key.head(X1), 'e-head');
+    if (decision) { receipts.set(key.decision(rid(op, 'S1', 1)), { d: decision }); etags.set(key.decision(rid(op, 'S1', 1)), 'e-d'); }
+    if (putApplied) ghl.opps[DA].customFields.push(...['street', 'unit', 'city', 'state', 'zip'].filter((k) => v[k]).map((k) => ({ id: P['property' + k[0].toUpperCase() + k.slice(1)], fieldValue: v[k] })));
+  }
+  await t('D1 a crash before the send claim: Check again withdraws it (proved unsent) -> Not saved, head released; a new save is allowed', async () => {
+    fresh(); await crashedS1('op-d1-000000001');
+    const c = await check(); assert.equal(c.body.outcome, 'not_saved');
+    assert.equal(receipts.get(key.decision(rid('op-d1-000000001', 'S1', 1))).d, 'withdrawn'); assert.equal(receipts.get(key.head(X1)).current, null);
+    assert.equal((await save('property_address', ADDR)).body.outcome, 'saved_history_pending'); assert.equal(puts(), 1);
+  });
+  await t('D2 a crash after the send claim, before the PUT: uncertain (never proved unsent); every new answer save and S2 are refused; 0 resends', async () => {
+    fresh(); await crashedS1('op-d2-000000001', { decision: 'send' });
+    assert.equal((await check()).body.outcome, 'not_confirmed');
+    assert.equal(receipts.get(key.outcome(rid('op-d2-000000001', 'S1', 1))).kind, 'uncertain');
+    assert.equal((await save('seller_reason', 'x')).body.outcome, 'held');
+    assert.equal((await history('op-d2-000000001')).body.code, 's1_not_clean');
+    assert.equal(puts(), 0); assert.equal(posts(), 0);
+  });
+  await t('D3 / D6 a crash after GHL applied the PUT, before the outcome: uncertain; a read-only check observes the value equal and records it, but the state stays uncertain -- no S2, no resend', async () => {
+    fresh(); await crashedS1('op-d3-000000001', { decision: 'send', putApplied: true });
+    assert.equal((await check()).body.outcome, 'not_confirmed');
+    assert.equal((await check()).body.outcome, 'not_confirmed', 'checking again changes nothing');
+    const obs = [...receipts.entries()].filter(([k]) => k.startsWith('pa/observation/')).map(([, v]) => v);
+    assert.ok(obs.length >= 1 && obs.every((o) => o.equalsIntended === true), JSON.stringify(obs));
+    assert.equal((await history('op-d3-000000001')).body.code, 's1_not_clean');
+    assert.equal(puts(), 0); assert.equal(posts(), 0);
+  });
+  await t('D4 the send-claim write applies and then throws: the original does not dispatch; withdrawal fails; the attempt is uncertain after Check again (0 PUT)', async () => {
+    fresh(); const ctx = (await context()).body;
+    applyThenThrow.push((op, k) => op === 'setJSON' && k === key.decision(rid('op-d4-000000001', 'S1', 1)));
+    const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: 'op-d4-000000001', value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+    assert.equal(r.body.outcome, 'not_sent'); assert.equal(r.body.code, 'claim_ambiguous'); assert.equal(puts(), 0);
+    assert.equal(receipts.get(key.decision(rid('op-d4-000000001', 'S1', 1))).d, 'send', 'the landed claim stands');
+    assert.equal((await check()).body.outcome, 'not_confirmed'); assert.equal(puts(), 0);
+  });
+  await t('D5 recovery withdraws first (during the boundary pre-read): the original\'s send claim loses and nothing is dispatched; Not saved', async () => {
+    fresh(); const ctx = (await context()).body;
+    onCall((req, all) => req.method === 'GET' && req.path === `/opportunities/${DA}` && all.filter((c) => c.path === `/opportunities/${DA}`).length === 3 /* context, discovery, boundary pre-read */, async () => { await memStore.setJSON(key.decision(rid('op-d5-000000001', 'S1', 1)), { d: 'withdrawn' }, { onlyIfNew: true }); });
+    const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: 'op-d5-000000001', value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+    assert.equal(r.body.code, 'claim_lost'); assert.equal(puts(), 0); assert.equal(receipts.get(key.final('op-d5-000000001')).kind, 'not_saved');
+  });
+  await t('G1 recovery records uncertain while the original is paused after GHL success; the original\'s confirmed_clean create conflicts: zero S2, no resend, head held, the uncertain outcome unchanged', async () => {
+    fresh(); const ctx = (await context()).body; const op = 'op-g1-000000001';
+    onCall((req, all) => req.method === 'GET' && req.path === `/opportunities/${DA}` && all.filter((c) => c.path === `/opportunities/${DA}`).length === 5 /* context, discovery, pre-read, PUT, then the boundary readback */, async () => {
+      await memStore.setJSON(key.outcome(rid(op, 'S1', 1)), { v: 1, op, slot: 'S1', n: 1, requestId: rid(op, 'S1', 1), kind: 'uncertain', valueDigest: 'x', readbackDigest: null, previousDigest: null, discrepancy: null, at: 'recovery' }, { onlyIfNew: true });
+    });
+    const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: op, value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+    assert.equal(r.body.outcome, 'not_confirmed', JSON.stringify(r.body)); assert.equal(puts(), 1);
+    assert.equal(receipts.get(key.outcome(rid(op, 'S1', 1))).at, 'recovery', 'unchanged');
+    assert.ok(!receipts.has(key.permit(op)));
+    assert.equal((await history(op)).body.code, 's1_not_clean'); assert.equal(posts(), 0);
+    assert.equal((await save('seller_reason', 'x')).body.outcome, 'held'); assert.equal(puts(), 1);
+  });
+  await t('G2 the original\'s confirmed_clean is acknowledged first; a later uncertain create conflicts and cannot overwrite it; S2 still runs only through the current-attempt gate', async () => {
+    fresh(); const s = await save('property_address', ADDR); const op = s.body.view.op;
+    const w = await memStore.setJSON(key.outcome(rid(op, 'S1', 1)), { kind: 'uncertain' }, { onlyIfNew: true });
+    assert.equal(w.modified, false); assert.equal(receipts.get(key.outcome(rid(op, 'S1', 1))).kind, 'confirmed_clean');
+    const other = await save('seller_reason', 'x'); assert.equal(other.body.outcome, 'held', 'S2 pending still holds the contact');
+    assert.equal((await history(op)).body.outcome, 'committed'); assert.equal(posts(), 1);
+  });
+  await t('G3 the confirmed_clean create lands and its acknowledgement is lost: no S2 permit, history refused (held for reconciliation), no S1 retry', async () => {
+    fresh(); const ctx = (await context()).body; const op = 'op-g3-000000001';
+    applyThenThrow.push((o, k) => o === 'setJSON' && k === key.outcome(rid(op, 'S1', 1)));
+    const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: op, value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+    assert.match(r.body.message, /Held for reconciliation/); assert.equal(receipts.get(key.outcome(rid(op, 'S1', 1))).kind, 'confirmed_clean');
+    assert.ok(!receipts.has(key.permit(op)));
+    assert.equal((await history(op)).body.code, 's1_not_acknowledged'); assert.equal(posts(), 0); assert.equal(puts(), 1);
+  });
+  await t('G4 a stale (missing) outcome read, another operation\'s clean outcome, a changed head, or changed evidence digests: zero S2', async () => {
+    fresh(); const s = await save('property_address', ADDR); const op = s.body.view.op;
+    { const sk = key.outcome(rid(op, 'S1', 1)); staleNext.push((k) => k === sk); }
+    assert.equal((await history(op)).body.code, 's1_not_clean', 'missing read = not established');
+    const real = receipts.get(key.outcome(rid(op, 'S1', 1)));
+    receipts.set(key.outcome(rid(op, 'S1', 1)), { ...real, valueDigest: 'f'.repeat(64) });
+    assert.equal((await history(op)).body.code, 's1_not_clean', 'conflicting evidence digest');
+    receipts.set(key.outcome(rid(op, 'S1', 1)), { ...real, op: 'another-op-0000001' });
+    assert.equal((await history(op)).body.code, 's1_not_clean', "another operation's record");
+    receipts.set(key.outcome(rid(op, 'S1', 1)), real);
+    const head = receipts.get(key.head(X1)); receipts.set(key.head(X1), { ...head, current: 'someone-else-0001' });
+    assert.equal((await history(op)).body.code, 'not_current');
+    receipts.set(key.head(X1), head);
+    // the S1 outcome changes between the S2 gate's first read and the dispatch claim
+    onCall((req) => req.method === 'GET' && req.path === `/contacts/${X1}`, async () => { receipts.set(key.outcome(rid(op, 'S1', 1)), { ...real, readbackDigest: 'e'.repeat(64) }); });
+    assert.equal((await history(op)).body.code, 's1_not_clean');
+    assert.equal(posts(), 0);
+  });
+  await t('S2 states: refused before sending -> proved unsent -> the explicit retry uses attempt 2; a lost note response -> history unresolved; Check again commits only on the exact complete entry', async () => {
+    fresh(); const s = await save('property_address', ADDR); const op = s.body.view.op;
+    failNext.push((o, k) => o === 'setJSON' && k === key.decision(rid(op, 'S2', 1)));
+    const r1 = await history(op); assert.equal(r1.body.outcome, 'not_sent'); assert.equal(posts(), 0);
+    assert.equal(receipts.get(key.decision(rid(op, 'S2', 1))).d, 'withdrawn');
+    loseNext.push((req) => req.method === 'POST');
+    const r2 = await history(op); assert.equal(r2.body.outcome, 'history_unresolved'); assert.equal(posts(), 1);
+    assert.ok(receipts.has(key.attempt(op, 'S2', 2)));
+    assert.equal((await history(op)).body.code, 'history_unresolved', 'never resent');
+    ghl.contacts[X1].notes.push({ id: 'dup', body: ghl.contacts[X1].notes[0].body.replace('call-segment: none', 'call-segment: other') });
+    assert.equal((await check()).body.outcome, 'history_unresolved', 'a partial match is a discrepancy');
+    ghl.contacts[X1].notes.pop();
+    assert.equal((await check()).body.outcome, 'committed', 'exactly one complete entry and the current value matches');
+    assert.equal(posts(), 1); assert.equal(receipts.get(key.head(X1)).current, null);
+  });
+  await t('S2 reconciliation: the field changed outside IAOS after the note -> stays unresolved', async () => {
+    fresh(); const s = await save('property_address', ADDR); const op = s.body.view.op;
+    loseNext.push((req) => req.method === 'POST'); await history(op);
+    ghl.opps[DA].customFields.find((f) => f.id === P.propertyStreet).fieldValue = '999 Changed St';
+    assert.equal((await check()).body.outcome, 'history_unresolved');
+  });
+  await t('drafts: server-side, keyed by contact/deal/field; an address draft may be partial; invalid shapes are refused; drafts survive a refused save', async () => {
+    fresh();
+    assert.equal((await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'property_address', value: { street: '1 Partial', unit: '', city: '', state: '', zip: '' } })).body.outcome, 'draft_saved');
+    assert.equal((await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'property_address', value: { street: 1 } })).status, 400);
+    assert.equal((await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'seller_reason', value: 'x'.repeat(4001) })).status, 400);
+    assert.equal((await context()).body.drafts.property_address.street, '1 Partial');
+    assert.equal(ghlCount() - 3, 0, 'drafts never call GHL (the 3 calls are the context read)');
+  });
+  await t('lock: a save while another write holds the contact lock is refused before any GHL call', async () => {
+    fresh(); const ctx = (await context()).body; calls = [];
+    const lockKey = 'lock/' + dg(config.locationId + X1); receipts.set(lockKey, { claimedAt: 'x' }); etags.set(lockKey, 'e');
+    const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'property_address', operationId: crypto.randomUUID(), value: ADDR, expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+    assert.equal(r.body.code, 'locked'); assert.equal(ghlCount(), 0);
+  });
+
+  finished = true;
+  console.log(`property-answer: ${count} passed, ${failures} failed`);
+  process.exitCode = failures ? 1 : 0;
+})();

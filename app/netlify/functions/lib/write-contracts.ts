@@ -1,5 +1,6 @@
 /** INV-95 exact operation contracts. No caller-supplied GHL path, method or field ID. */
-import { getConfig, CURRENT_OFFER_NOT_PROVISIONED, CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED } from "../../../shared/ghl-config";
+import { getConfig, CURRENT_OFFER_NOT_PROVISIONED, CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED, PROPERTY_ANSWER_FIELD_NOT_PROVISIONED } from "../../../shared/ghl-config";
+import { normalizeAddress, normalizeSellerReason } from "./property-answer-model";
 import { ASSIGNMENT_MODE_OPTIONS } from "../../../src/lib/underwriting/resolver-types";
 import { type ContractVersionIdentity } from "../../../src/lib/board9-contract-model";
 export const dispositions = ["No Answer", "Voicemail", "Follow Up", "Requested Appointment", "Not Interested", "Incorrect Number"];
@@ -25,7 +26,7 @@ export function planWrite(operation: string, args: any, config: ReturnType<typeo
   let kind: WritePlan["kind"] = "contact";
   const add = (id: string, value: FieldWrite["field_value"], date = false) => {
     identifier(id);
-    if (id === CURRENT_OFFER_NOT_PROVISIONED || id === CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED) throw new Error("Field not provisioned");
+    if (id === CURRENT_OFFER_NOT_PROVISIONED || id === CONTRACT_PROJECTION_FIELD_NOT_PROVISIONED || id === PROPERTY_ANSWER_FIELD_NOT_PROVISIONED) throw new Error("Field not provisioned");
     fields.push({ id, field_value: value, date });
   };
   const single = () => { exact(args, ["value"]); return args.value; };
@@ -48,6 +49,13 @@ export function planWrite(operation: string, args: any, config: ReturnType<typeo
       kind = "opportunity"; const v = single(); number(v);
       if (operation === "opportunity.repairs" ? v < 0 : v <= 0) throw new Error("Invalid monetary value");
       add(operation === "opportunity.arv" ? f.arv : operation === "opportunity.repairs" ? f.repairs : f.currentOffer, v); break;
+    }
+    // B15-04 property answers (design r3, proposal r4). Planned here so the field set is fixed and named, but
+    // SENT only by netlify/functions/property-answer.ts: ghl-write refuses both before any Blob or GHL access.
+    case "opportunity.sellerReason": { kind = "opportunity"; const v = normalizeSellerReason(single()); add(config.propertyAnswerFields.sellerReason, v); break; }
+    case "opportunity.propertyAddress": {
+      kind = "opportunity"; const a = normalizeAddress(args); const p = config.propertyAnswerFields;
+      add(p.propertyStreet, a.street); add(p.propertyUnit, a.unit); add(p.propertyCity, a.city); add(p.propertyState, a.state); add(p.propertyZip, a.zip); break;
     }
     case "opportunity.assignmentMode": { kind = "opportunity"; const v = single(); if (!ASSIGNMENT_MODE_OPTIONS.some(([label]) => label === v)) throw new Error("Invalid assignment mode"); add(u.assignmentMode, v); break; }
     case "opportunity.underContractStage": {

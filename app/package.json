@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test:inv95": "node scripts/test-inv95.cjs",
+    "test:property-answer": "node scripts/test-property-answer-model.cjs && node scripts/test-property-answer.cjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",

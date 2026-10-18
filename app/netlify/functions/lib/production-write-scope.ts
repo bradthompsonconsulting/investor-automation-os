@@ -108,6 +108,9 @@ export const PRODUCTION_OPERATION_SCOPE = {
   "opportunity.assignmentMode": "refused",
   "opportunity.underContractStage": "pinned_opportunity",
   "opportunity.underwriting": "refused",
+  // B15-04 property answers: Test-only controlled evaluation; never permitted in Production by this work.
+  "opportunity.sellerReason": "refused",
+  "opportunity.propertyAddress": "refused",
 } as const satisfies Record<string, "refused" | "pinned_opportunity" | "pinned_opportunity_value" | "pinned_contact" | "pinned_contact_note">;
 
 /**

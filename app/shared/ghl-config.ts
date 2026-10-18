@@ -325,6 +325,37 @@ export interface GhlConfig {
     contactId: string;
     opportunityId: string;
   };
+  /**
+   * B15-04 Rev 6 property answers (design r3, proposal r4; Brad's Test
+   * authorization 2026-10-17). The six deal-scoped Opportunity fields of the
+   * first slice: Seller Reason (LARGE_TEXT, created for P1) and the five
+   * property-address TEXT fields. Written ONLY by
+   * netlify/functions/property-answer.ts, never by ghl-write directly.
+   * Production carries `PROPERTY_ANSWER_FIELD_NOT_PROVISIONED` for every
+   * key, and `PRODUCTION_OPERATION_SCOPE` refuses both operations.
+   * Server-only: not projected to the browser.
+   */
+  propertyAnswerFields: {
+    sellerReason: string;
+    propertyStreet: string;
+    propertyUnit: string;
+    propertyCity: string;
+    propertyState: string;
+    propertyZip: string;
+  };
+  /**
+   * B15-04 controlled Test evaluation (Option B for Test only, proposal r2
+   * section 3 / r4). Property-answer saves run only when `enabled` is
+   * exactly `PROPERTY_ANSWER_EVALUATION_ENABLED` AND the contact and the
+   * deal are both listed here. Production carries
+   * `PROPERTY_ANSWER_EVALUATION_DISABLED` and empty lists. Changing either
+   * is a separate, reviewed config-only commit -- never toggled at runtime.
+   */
+  propertyAnswerEvaluation: {
+    enabled: string;
+    fixtureContactIds: readonly string[];
+    fixtureOpportunityIds: readonly string[];
+  };
 }
 
 /** GATE 2 / B9-08 -- the literal placeholder value for an unconfigured `senderUserId`. Exported so ghl-proxy.ts can refuse a send while it is in effect, without hardcoding the sentinel a second time. */
@@ -350,6 +381,13 @@ export const POPULATION_NOT_VERIFIED = "POPULATION_NOT_VERIFIED" as const;
  * exactly one place -- never toggled, always a reviewed commit.
  */
 export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVISIONED" as const;
+
+/** B15-04 -- placeholder for a property-answer field not provisioned in an environment (see `propertyAnswerFields`). Fail-closed, like `CURRENT_OFFER_NOT_PROVISIONED`. */
+export const PROPERTY_ANSWER_FIELD_NOT_PROVISIONED = "PROPERTY_ANSWER_FIELD_NOT_YET_PROVISIONED" as const;
+/** B15-04 -- the ONE value that opens the controlled Test property-answer evaluation (see `propertyAnswerEvaluation`). */
+export const PROPERTY_ANSWER_EVALUATION_ENABLED = "PROPERTY_ANSWER_EVALUATION_ENABLED" as const;
+/** B15-04 -- the value PRODUCTION carries: the evaluation never applies there. */
+export const PROPERTY_ANSWER_EVALUATION_DISABLED = "PROPERTY_ANSWER_EVALUATION_DISABLED" as const;
 
 /** B14-12 — the ONE value that opens the Production call-log permission class. */
 export const PRODUCTION_CALL_LOG_ENABLED = "PRODUCTION_CALL_LOG_ENABLED" as const;
@@ -756,6 +794,20 @@ const PRODUCTION: GhlConfig = {
     contactId: "T3t5AZ3Z5lak0BmZawvP",
     opportunityId: "44hLQ4PD4a4HBVLPr4nl",
   },
+  // B15-04: never provisioned or enabled in Production by this work.
+  propertyAnswerFields: {
+    sellerReason:   PROPERTY_ANSWER_FIELD_NOT_PROVISIONED,
+    propertyStreet: PROPERTY_ANSWER_FIELD_NOT_PROVISIONED,
+    propertyUnit:   PROPERTY_ANSWER_FIELD_NOT_PROVISIONED,
+    propertyCity:   PROPERTY_ANSWER_FIELD_NOT_PROVISIONED,
+    propertyState:  PROPERTY_ANSWER_FIELD_NOT_PROVISIONED,
+    propertyZip:    PROPERTY_ANSWER_FIELD_NOT_PROVISIONED,
+  },
+  propertyAnswerEvaluation: {
+    enabled: PROPERTY_ANSWER_EVALUATION_DISABLED,
+    fixtureContactIds: [],
+    fixtureOpportunityIds: [],
+  },
 };
 
 // TEST identifiers are captured from the GHL Test Environment, never hand-typed.
@@ -1134,6 +1186,27 @@ const TEST: GhlConfig = {
     contactId: PRODUCTION_PROOF_SCOPE_NOT_APPLICABLE_IN_TEST,
     opportunityId: PRODUCTION_PROOF_SCOPE_NOT_APPLICABLE_IN_TEST,
   },
+  // B15-04: Seller Reason was created for P1 (request 0 receipt, 2026-10-17;
+  // LARGE_TEXT, Opportunity Details sGP3pbDQFN7fXS62MAgA). The five address
+  // fields were created live in Test 2026-10-18T02:03Z by
+  // scripts/b15-04-create-property-address-fields.cjs --apply (12 requests,
+  // each read back: name, fieldKey opportunity.property_*, TEXT, model
+  // opportunity, parentId sGP3pbDQFN7fXS62MAgA; independent list join).
+  propertyAnswerFields: {
+    sellerReason:   "zqGxQc7nAspWmYglR2Qk",
+    propertyStreet: "vMejpjFmgI9ZWvfloaPW",
+    propertyUnit:   "Ok4EFrJqtDqIn90FFiT9",
+    propertyCity:   "lrHSGsOIBtH4f1s9YbVj",
+    propertyState:  "WOaJHfbMz20YTPhD2lI5",
+    propertyZip:    "qztxh0XDmiZrDBMauoJq",
+  },
+  // B15-04: the synthetic evaluation fixtures are pinned in a later,
+  // separately reviewed commit once they exist. Empty lists refuse every save.
+  propertyAnswerEvaluation: {
+    enabled: PROPERTY_ANSWER_EVALUATION_ENABLED,
+    fixtureContactIds: [],
+    fixtureOpportunityIds: [],
+  },
 };
 
 export function getConfig(selector: string | undefined): GhlConfig {
@@ -1191,6 +1264,10 @@ export function getConfig(selector: string | undefined): GhlConfig {
     ...Object.entries(config.productionProofScope).map(
       ([k, v]): [string, string] => [`productionProofScope.${k}`, v],
     ),
+    ...Object.entries(config.propertyAnswerFields).map(
+      ([k, v]): [string, string] => [`propertyAnswerFields.${k}`, v],
+    ),
+    ["propertyAnswerEvaluation.enabled", config.propertyAnswerEvaluation.enabled],
   ];
 
   const missing = firstIncompleteKey(entries);
