@@ -906,7 +906,7 @@ async function t(name, fn) {
       assert.equal(calls.length, before, 'nothing sent'); assert.equal(budgetRec().stopped, null);
     });
   });
-  await t('F4c exactly ONE continuation-cookie occurrence: identical duplicates (one header or two) and conflicting duplicates are refused budget_unacknowledged with 0 GHL; the single cookie then continues', async () => {
+  await t('F4c exactly ONE continuation-cookie occurrence: identical duplicates (one header or two) and conflicting duplicates are refused budget_unacknowledged with 0 GHL; one physical header mirrored in headers and multiValueHeaders counts once; the single cookie then continues', async () => {
     await withCommittedBudget(async () => {
       fresh(); assert.equal((await context()).status, 200); const one = jar; const g1 = one;
       assert.equal((await context()).status, 200); const g2 = jar; const before = calls.length;
@@ -915,10 +915,16 @@ async function t(name, fn) {
       for (const extra of cases) { const r = await postAs(session(), threeActions()[0], extra); assert.equal(r.status, 409); assert.equal(r.body.code, 'budget_unacknowledged', JSON.stringify(extra)); }
       const two = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...headers() }, multiValueHeaders: { cookie: [g2, g2] }, body: JSON.stringify(threeActions()[0]) });
       assert.equal(two.statusCode, 409); assert.equal(JSON.parse(two.body).code, 'budget_unacknowledged', 'two identical Cookie headers');
-      const mixed = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...headers(), cookie: g2 }, multiValueHeaders: { cookie: [g2] }, body: JSON.stringify(threeActions()[0]) });
-      assert.equal(mixed.statusCode, 409); assert.equal(JSON.parse(mixed.body).code, 'budget_unacknowledged', 'the same cookie in headers and multiValueHeaders');
+      const twoInMulti = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...headers(), cookie: g2 }, multiValueHeaders: { cookie: [g2, g2] }, body: JSON.stringify(threeActions()[0]) });
+      assert.equal(twoInMulti.statusCode, 409, 'two physical Cookie fields, also mirrored in headers'); assert.equal(JSON.parse(twoInMulti.body).code, 'budget_unacknowledged');
+      const splitDup = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...headers() }, multiValueHeaders: { cookie: ['other=1; ' + g2, g2 + '; x=2'] }, body: JSON.stringify(threeActions()[0]) });
+      assert.equal(splitDup.statusCode, 409, 'the same cookie in two split Cookie fields'); assert.equal(JSON.parse(splitDup.body).code, 'budget_unacknowledged');
       assert.equal(calls.length, before, 'nothing sent'); assert.equal(budgetRec().stopped, null);
-      jar = g2; assert.equal((await context()).status, 200, 'exactly one occurrence continues'); assert.equal(calls.length, before + 3);
+      // ONE physical Cookie header represented in BOTH headers and multiValueHeaders counts once and continues.
+      const mirrored = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: { ...headers(), cookie: 'other=1; ' + g2 }, multiValueHeaders: { cookie: ['other=1; ' + g2] }, body: JSON.stringify(threeActions()[0]) });
+      assert.equal(mirrored.statusCode, 200, 'one header mirrored in both representations is one occurrence'); assert.equal(calls.length, before + 3);
+      keepCookie(mirrored); assert.notEqual(jar, g2, 'rotated');
+      assert.equal((await context()).status, 200, 'exactly one occurrence continues'); assert.equal(calls.length, before + 6);
       void one;
     });
   });

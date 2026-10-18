@@ -45,9 +45,12 @@ const json = (statusCode: number, data: unknown, extra: Record<string, string> =
 export const CONTINUATION_COOKIE = "__Host-iaos_pa_continuation";
 const continuationCookie = (value: string) => `${CONTINUATION_COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Strict`;
 function presentedContinuation(event: any): string | null {
-  const raw: string[] = [];
-  for (const [name, value] of Object.entries(event?.headers ?? {})) if (name.toLowerCase() === "cookie" && typeof value === "string") raw.push(value);
-  for (const [name, values] of Object.entries(event?.multiValueHeaders ?? {})) if (name.toLowerCase() === "cookie" && Array.isArray(values)) raw.push(...values.filter((v): v is string => typeof v === "string"));
+  // ONE canonical representation of the received Cookie fields: the Lambda-style event can carry the
+  // same physical header in both `headers` and `multiValueHeaders`. multiValueHeaders (every field)
+  // is used when it has a cookie entry; otherwise `headers`. Never both, so one header counts once.
+  const pick = (source: any, ok: (v: any) => string[]) => Object.entries(source ?? {}).filter(([name]) => name.toLowerCase() === "cookie").flatMap(([, v]) => ok(v));
+  const multi = pick(event?.multiValueHeaders, (v) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []));
+  const raw = multi.length ? multi : pick(event?.headers, (v) => (typeof v === "string" ? [v] : []));
   const found: string[] = [];
   for (const header of raw) for (const part of header.split(";")) {
     const eq = part.indexOf("=");
