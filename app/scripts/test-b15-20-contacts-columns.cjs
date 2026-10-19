@@ -148,8 +148,10 @@ const ghl = read('src/lib/ghl.ts');
 check('grid rows carry the existing attempt fields, both forms',
   ghl.includes('lastCallAttemptPrecise: c.lastCallAttemptPrecise,') && ghl.includes('lastCallAttempt:        c.lastCallAttempt,'), true);
 const WRITES = /appWriteFetch\(|ghl\.notes\.create\(|ghl\.contacts\.set[A-Za-z]*\(|ghl\.opportunities\.(update|set)[A-Za-z]*\(/g;
-const base = execFileSync('git', ['show', 'origin/main:app/src/pages/Contacts.tsx'], { cwd: APP, encoding: 'utf8' });
-check('no write call added to Contacts', (page.match(WRITES) || []).length, (base.match(WRITES) || []).length);
+/* F3: pinned from the B15-20 base, origin/main b9a84f2ad1a3a350ebe1ba233220222ebeca0796
+   (Contacts had no write call); a constant, never a moving origin/main. */
+const CONTACTS_WRITES_PINNED_B9A84F2 = 0;
+check('no write call added to Contacts (pinned b9a84f2: 0)', (page.match(WRITES) || []).length, CONTACTS_WRITES_PINNED_B9A84F2);
 check('cell module has no I/O', !/fetch\(|\bghl\.|import /.test(read('src/lib/contacts-columns.ts').replace(/\/\*[\s\S]*?\*\//g, '')), true);
 
 console.log(`B15-20 contacts columns: ${checks - failures}/${checks} checks passed`);

@@ -156,11 +156,18 @@ const D6 = [deal('c1', 'st-new'), deal('c1', 'st-sent'), deal('c2', 'st-new'), d
   check('8 Contacts definition line', cts.includes('data-testid="contacts-count-definition"'), true);
   const lib = read('src/lib/count-accounting.ts');
   check('8 accounting module has no I/O', !/fetch\(|\bghl\.|localStorage|import (?!type)/.test(lib.replace(/\/\*[\s\S]*?\*\//g, '')), true);
-  /* No write added: the number of write call sites matches origin/main. */
+  /* No write added (F3): the write call sites on these three read-only count
+     screens equal the counts PINNED from the B15-19 base, origin/main
+     b9a84f2ad1a3a350ebe1ba233220222ebeca0796 (Dashboard 7 -- its existing
+     note / last-attempt / callback writes; Pipeline 0; Contacts 0). Pinned
+     constants, not a moving origin/main: works in a shallow CI checkout and
+     after integration, where comparing main with itself would prove nothing.
+     A later deliberate write change on these screens must update this pin
+     in the same commit. */
   const WRITES = /appWriteFetch\(|ghl\.notes\.create\(|ghl\.contacts\.set[A-Za-z]*\(|ghl\.opportunities\.(update|set)[A-Za-z]*\(|scheduleCallbackGated\(/g;
-  for (const f of ['src/pages/Dashboard.tsx', 'src/pages/Pipeline.tsx', 'src/pages/Contacts.tsx']) {
-    const base = execFileSync('git', ['show', `origin/main:app/${f}`], { cwd: APP, encoding: 'utf8' });
-    check(`8 no new write call in ${f}`, (read(f).match(WRITES) || []).length, (base.match(WRITES) || []).length);
+  const PINNED_B9A84F2 = { 'src/pages/Dashboard.tsx': 7, 'src/pages/Pipeline.tsx': 0, 'src/pages/Contacts.tsx': 0 };
+  for (const [f, n] of Object.entries(PINNED_B9A84F2)) {
+    check(`8 no new write call in ${f} (pinned b9a84f2: ${n})`, (read(f).match(WRITES) || []).length, n);
   }
 
   console.log(`B15-19 count accounting: ${checks - failures}/${checks} checks passed`);
