@@ -76,6 +76,14 @@ check('F2 date-only precise, no fallback: its date, no time, no day shift', K.la
 check('F2 date-only precise with a DATE fallback: the DATE fallback', K.lastCallAttemptText('2026-10-01', '2026-10-02T00:00:00.000Z'), 'Oct 2, 2026');
 check('F2 midnight-UTC precise with a time still shows its (local) time', K.lastCallAttemptText('2026-10-01T00:00:00.000Z', null), 'Sep 30, 2026, 7:00 PM');
 check('F2 precise with a time and an offset', K.lastCallAttemptText('2026-10-01T09:05:00-05:00', null), 'Oct 1, 2026, 9:05 AM');
+// F2 follow-up (Bones): an offset's HH:MM is not a clock time.
+check('F2b date + GMT offset, no fallback: its stated date, no time, no shift', K.lastCallAttemptText('2026-10-01 GMT+05:00', null), 'Oct 1, 2026');
+check('F2b date + GMT offset with a valid DATE fallback: the fallback', K.lastCallAttemptText('2026-10-01 GMT+05:00', '2026-10-01'), 'Oct 1, 2026');
+check('F2b date + bare negative offset, no fallback', K.lastCallAttemptText('2026-10-01 -05:00', null), 'Oct 1, 2026');
+check('F2b date + offset with a different DATE fallback uses the fallback', K.lastCallAttemptText('2026-10-01 GMT+05:00', '2026-10-02T00:00:00.000Z'), 'Oct 2, 2026');
+check('F2b a genuine clock with an offset still shows its time', K.lastCallAttemptText('2026-10-01 14:30 GMT-05:00', null), 'Oct 1, 2026, 2:30 PM');
+check('F2b ISO instant with offset still shows its time', K.lastCallAttemptText('2026-10-01T00:00:00+05:00', null), 'Sep 30, 2026, 2:00 PM');
+check('F2b impossible calendar date without a clock is unreadable', K.lastCallAttemptText('2026-02-30 GMT+05:00', null), 'Unreadable date');
 
 // ── Wiring ───────────────────────────────────────────────────────────────────
 const page = read('src/pages/Contacts.tsx');

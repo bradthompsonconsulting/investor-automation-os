@@ -72,20 +72,29 @@ export function stageCell(contactId: string, source: DealStageSource): StageCell
 /* B15-20 F2 (Bones, 2026-10-19): a value only shows a time when it carries
    one. A plain date in the precise TEXT carrier would parse as midnight UTC
    and display the previous evening in US time, inventing a time. */
-const HAS_TIME = /\d{1,2}:\d{2}/;
+/* A clock time is HH:MM after a "T" or whitespace -- never the HH:MM of a
+   timezone offset ("GMT+05:00", "-05:00"), which is not a supplied time
+   (Bones F2 follow-up). */
+const HAS_CLOCK = /(?:^|[T\s])\d{1,2}:\d{2}/;
+const LEADING_DATE = /^\s*(\d{4})-(\d{2})-(\d{2})(?!\d)/;
 const utcDate = (d: Date) => d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
 
 export function lastCallAttemptText(precise: string | null, dateOnly: string | null): string {
   const preciseDate = precise ? new Date(precise) : null;
   const preciseValid = !!preciseDate && !isNaN(preciseDate.getTime());
-  if (preciseValid && HAS_TIME.test(precise!)) {
+  if (preciseValid && HAS_CLOCK.test(precise!)) {
     return preciseDate!.toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
   if (dateOnly) {
     const d = new Date(dateOnly);
     if (!isNaN(d.getTime())) return utcDate(d);
   }
-  /* A precise value with no time and no valid DATE fallback: its date only, read in UTC. */
-  if (preciseValid) return utcDate(preciseDate!);
+  /* A precise value with no clock and no valid DATE fallback: its own stated
+     calendar date, read literally -- never via an offset-shifted instant. */
+  const ymd = precise ? LEADING_DATE.exec(precise) : null;
+  if (ymd) {
+    const d = new Date(Date.UTC(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])));
+    if (!isNaN(d.getTime()) && d.getUTCDate() === Number(ymd[3])) return utcDate(d);
+  }
   return precise || dateOnly ? ATTEMPT_UNREADABLE : NO_ATTEMPT_RECORDED;
 }
