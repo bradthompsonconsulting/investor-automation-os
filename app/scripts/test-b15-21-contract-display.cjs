@@ -15,10 +15,13 @@
  * the page source; wiring and "no gate changed" by exact source invariants
  * that need no git and hold on any tree containing B15-21 (F3b).
  *
- * SLICE PROVENANCE: --provenance additionally checks the pinned slice diff
- * b9a84f2 -> 529b145 (exactly five display lines replaced, no gate token
- * added, only the page and this test changed); it fails loudly if either
- * commit is missing, never skips.
+ * SLICE PROVENANCE runs in every mode from checked-in material
+ * (scripts/fixtures/b15-21-slice-provenance.json, pinned by sha256): the slice
+ * b9a84f2 -> 529b145 replaced exactly five display lines, added no gate
+ * token, changed only the page and this test, and every line it added is
+ * present in this tree. Missing or altered material fails loudly; no git or
+ * network is needed, so it runs in shallow CI. --provenance-git additionally
+ * re-derives the record from the pinned commits (fails loudly if absent).
  *
  * NEGATIVE CONTROL: --before=<rev> reads that revision's page and must FAIL.
  */
@@ -92,29 +95,65 @@ check('authorization eligibility is still evaluated from the preview and documen
 check('"saved" still derives only from currency (display state unchanged)',
   /const authorizationDisplayState: "saved" \| "unsaved_changes" \| "not_saved" =\r?\n\s+bradAuthorizationStatus\?\.authorized\r?\n\s+\? "saved"\r?\n\s+: bradAuthorizationStatus && bradAuthorizationStatus\.record\r?\n\s+\? "unsaved_changes"\r?\n\s+: "not_saved";/.test(page));
 
-// ── 5. Slice provenance — pinned commits, explicit mode, never skipped ───────
-// `--provenance` checks the B15-21 slice itself: b9a84f2 -> 529b145. It needs
-// both commits; if either is missing it FAILS LOUDLY (fetch them) -- it never
-// skips. The default (CI) run does not include it; reviewers run it on demand.
-if (process.argv.includes('--provenance')) {
-  const BASE = 'b9a84f2ad1a3a350ebe1ba233220222ebeca0796';
-  const SLICE = '529b145cbedabd45847b49110e16ececdc1180a2';
+// ── 5. No new GHL call or write on the page (pinned, no git) ─────────────────
+// Static count of GHL-client call sites (`ghl.<area>.<op>(`) and appWriteFetch(
+// in ContractWorkspace.tsx: 24 at b9a84f2 (blob fd5c3e01051418cf3caf60c1278e181cd10e1fad)
+// and at 529b145. A new read or write call fails this; a deliberate change
+// must update the pin in the same commit. Scope: these call patterns only.
+const CLIENT_CALLS = /appWriteFetch\(|\bghl\.[A-Za-z]+\.[A-Za-z]+\(/g;
+check('no new GHL client or write call on the page (pinned 24)', (page.match(CLIENT_CALLS) || []).length === 24, (page.match(CLIENT_CALLS) || []).length);
+
+// ── 6. Slice provenance from CHECKED-IN material (runs in every mode) ────────
+// scripts/fixtures/b15-21-slice-provenance.json records the pinned slice
+// b9a84f2 -> 529b145 (blobs, changed files, the exact removed/added lines).
+// It is verified by a pinned sha256 (LF-normalised), so missing or altered
+// material FAILS LOUDLY; nothing is skipped and no git or network is needed.
+// This proves what the B15-21 slice itself changed and that its display
+// additions are present in this tree; it is NOT a claim that the final
+// combined gates are unchanged -- sections 4-5 check those directly.
+const FIXTURE = path.join(APP, 'scripts', 'fixtures', 'b15-21-slice-provenance.json');
+const FIXTURE_SHA256 = '027bd01195597a1d3f24e40e7817e650eee68dea1d1569e7e7c6528697215139';
+let fx = null;
+if (!fs.existsSync(FIXTURE)) {
+  check('provenance material present (scripts/fixtures/b15-21-slice-provenance.json)', false, 'missing -- provenance cannot be proven');
+} else {
+  const raw = fs.readFileSync(FIXTURE, 'utf8').replace(/\r\n/g, '\n');
+  const sha = require('crypto').createHash('sha256').update(raw).digest('hex');
+  check('provenance material is the pinned, unaltered record', sha === FIXTURE_SHA256, sha);
+  if (sha === FIXTURE_SHA256) fx = JSON.parse(raw);
+}
+if (fx) {
+  check('provenance: slice is b9a84f2 -> 529b145 on the page', fx.base === 'b9a84f2ad1a3a350ebe1ba233220222ebeca0796' && fx.slice === '529b145cbedabd45847b49110e16ececdc1180a2' && fx.file === 'app/src/pages/ContractWorkspace.tsx');
+  check('provenance: the slice replaced exactly five display lines', fx.removed.length === 5, fx.removed.length);
+  check('provenance: the replaced lines are the heading, two unresolved texts, the title input and the artifact-none sentence',
+    fx.removed.length > 0 && fx.removed.every((l) => /Contract Ready<\/h1>|text: "Unresolved", color|\{l\.text \?\? "Unresolved"\}\s*$|testId="contract-fact-input-title-company"|Not yet generated for this revision -- generate before authorizing\./.test(l)), fx.removed);
+  check('provenance: no added line touches a gate, write, handler or validation',
+    fx.added.length > 0 && !fx.added.some((l) => /disabled=|eligib|persist|ghl\.|await |onClick=|setGroupError|handle[A-Z]|evaluate[A-Z]|authorized\s*[=:]/.test(l)));
+  check('provenance: the slice changed only the page and this test',
+    JSON.stringify(fx.changedFiles) === JSON.stringify(['app/scripts/test-b15-21-contract-display.cjs', 'app/src/pages/ContractWorkspace.tsx']), fx.changedFiles);
+  const missingAdds = fx.added.filter((l) => l.trim() !== '' && !page.includes(l.trim()));
+  check('provenance: every line the slice added is present in this tree', missingAdds.length === 0, missingAdds);
+}
+
+// ── 7. Optional reviewer cross-check against git (explicit, never silent) ────
+// `--provenance-git` re-derives the record from the pinned commits and requires
+// an exact match. Missing commits FAIL LOUDLY. Not needed in CI: section 6
+// already runs on the checked-in material.
+if (process.argv.includes('--provenance-git')) {
   const have = (rev) => { try { execFileSync('git', ['cat-file', '-e', `${rev}^{commit}`], { cwd: APP, stdio: 'ignore' }); return true; } catch { return false; } };
-  const missing = [BASE, SLICE].filter((r) => !have(r));
-  check(`provenance: pinned commits present (${BASE.slice(0, 7)}, ${SLICE.slice(0, 7)})`, missing.length === 0,
-    missing.length ? `missing ${missing.join(', ')} -- fetch them; provenance cannot be proven without them` : undefined);
-  if (missing.length === 0) {
-    const diff = execFileSync('git', ['diff', '-U0', BASE, SLICE, '--', ':/app/src/pages/ContractWorkspace.tsx'], { cwd: APP, encoding: 'utf8' });
-    const removed = diff.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---'));
-    const added = diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++'));
-    check('provenance: the slice replaced exactly five display lines', removed.length === 5, removed.length);
-    check('provenance: the replaced lines are the heading, two unresolved texts, the title input and the artifact-none sentence',
-      removed.length > 0 && removed.every((l) => /Contract Ready<\/h1>|text: "Unresolved", color|\{l\.text \?\? "Unresolved"\}\s*$|testId="contract-fact-input-title-company"|Not yet generated for this revision -- generate before authorizing\./.test(l)), removed);
-    check('provenance: no added line touches a gate, write, handler or validation',
-      added.length > 0 && !added.some((l) => /disabled=|eligib|persist|ghl\.|await |onClick=|setGroupError|handle[A-Z]|evaluate[A-Z]|authorized\s*[=:]/.test(l)));
-    const sliceFiles = execFileSync('git', ['diff', '--name-only', BASE, SLICE], { cwd: APP, encoding: 'utf8' }).trim().split('\n').sort();
-    check('provenance: the slice changed only the page and this test',
-      JSON.stringify(sliceFiles) === JSON.stringify(['app/scripts/test-b15-21-contract-display.cjs', 'app/src/pages/ContractWorkspace.tsx']), sliceFiles);
+  const B = 'b9a84f2ad1a3a350ebe1ba233220222ebeca0796', S = '529b145cbedabd45847b49110e16ececdc1180a2', F = 'app/src/pages/ContractWorkspace.tsx';
+  const missing = [B, S].filter((r) => !have(r));
+  check('provenance-git: pinned commits present', missing.length === 0, missing.length ? `missing ${missing.join(', ')} -- fetch them` : undefined);
+  if (missing.length === 0 && fx) {
+    const g = (a) => execFileSync('git', a, { cwd: APP, encoding: 'utf8' });
+    const d = g(['diff', '-U0', B, S, '--', `:/${F}`]).replace(/\r\n/g, '\n').split('\n');
+    const actual = {
+      baseBlob: g(['rev-parse', `${B}:${F}`]).trim(), sliceBlob: g(['rev-parse', `${S}:${F}`]).trim(),
+      changedFiles: g(['diff', '--name-only', B, S]).trim().split('\n').sort(),
+      removed: d.filter((l) => l.startsWith('-') && !l.startsWith('---')).map((l) => l.slice(1)),
+      added: d.filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1)),
+    };
+    for (const k of Object.keys(actual)) check(`provenance-git: ${k} matches the checked-in record`, JSON.stringify(actual[k]) === JSON.stringify(fx[k]));
   }
 }
 

@@ -1,0 +1,49 @@
+{
+  "purpose": "B15-21 slice provenance (checked-in baseline material for test-b15-21-contract-display.cjs). Generated from git diff -U0 BASE SLICE -- FILE.",
+  "base": "b9a84f2ad1a3a350ebe1ba233220222ebeca0796",
+  "slice": "529b145cbedabd45847b49110e16ececdc1180a2",
+  "file": "app/src/pages/ContractWorkspace.tsx",
+  "baseBlob": "fd5c3e01051418cf3caf60c1278e181cd10e1fad",
+  "sliceBlob": "eacac23b8f18abd971c8cf9a50f9b11e82277e94",
+  "changedFiles": [
+    "app/scripts/test-b15-21-contract-display.cjs",
+    "app/src/pages/ContractWorkspace.tsx"
+  ],
+  "removed": [
+    "  if (d.kind === \"unresolved\") return { text: \"Unresolved\", color: \"#F59E0B\" };",
+    "        <h1 style={{ fontSize: \"22px\", fontWeight: 700, color: \"#E2E8F0\", margin: 0 }}>Contract Ready</h1>",
+    "                            <Field label=\"Title company\"><TextField testId=\"contract-fact-input-title-company\" value={drafts.titleSurvey.titleCompanyName} onChange={(v) => updateDraft(\"titleSurvey\", { titleCompanyName: v })} /></Field>",
+    "                            {l.text ?? \"Unresolved\"}",
+    "                    Not yet generated for this revision -- generate before authorizing."
+  ],
+  "added": [
+    "/* B15-21 (Walkthrough 2): an unresolved title company reads \"Not selected",
+    "   yet\" -- display only. It stays unresolved (amber, still blocking every",
+    "   existing gate); nothing is recorded, fabricated or treated as None. */",
+    "const TITLE_COMPANY_NOT_SELECTED = \"Not selected yet\";",
+    "function unresolvedText(group: string, field: string): string {",
+    "  return group === \"titleSurvey\" && field === \"titleCompanyName\" ? TITLE_COMPANY_NOT_SELECTED : \"Unresolved\";",
+    "}",
+    "",
+    "  if (d.kind === \"unresolved\") return { text: unresolvedText(group, field), color: \"#F59E0B\" };",
+    "        {/* B15-21 (Walkthrough 2): the page title no longer claims \"Contract",
+    "            Ready\" whatever the state; readiness, authorization, sending and",
+    "            execution keep their own status sections below. */}",
+    "        <h1 data-testid=\"contract-workspace-heading\" style={{ fontSize: \"22px\", fontWeight: 700, color: \"#E2E8F0\", margin: 0 }}>Contract Workspace</h1>",
+    "                            <Field label=\"Title company\"><TextField testId=\"contract-fact-input-title-company\" value={drafts.titleSurvey.titleCompanyName} placeholder={TITLE_COMPANY_NOT_SELECTED} onChange={(v) => updateDraft(\"titleSurvey\", { titleCompanyName: v })} /></Field>",
+    "                  {/* B15-21: what \"saved\" covers. Currency is re-checked against",
+    "                      the current facts every time; the PDF bytes only when a PDF",
+    "                      has been generated in this session. Nothing here verifies. */}",
+    "                  {authorizationDisplayState === \"saved\" && bradAuthorizationRecord ? (",
+    "                    <div data-testid=\"contract-authorization-saved-artifact\" style={{ fontSize: \"10px\", color: \"#64748B\", marginTop: \"4px\" }}>",
+    "                      {generatedArtifact",
+    "                        ? `It covers PDF SHA-256 ${bradAuthorizationRecord.artifactSha256.slice(0, 12)}…, which the PDF generated in this session matches.`",
+    "                        : `It covers PDF SHA-256 ${bradAuthorizationRecord.artifactSha256.slice(0, 12)}…, generated when it was saved. No PDF has been generated in this session, so those bytes have not been re-checked here.`}",
+    "                    </div>",
+    "                  ) : null}",
+    "                            {l.text ?? unresolvedText(l.group, l.field)}",
+    "                    {authorizationDisplayState === \"saved\" && bradAuthorizationRecord",
+    "                      ? `No PDF generated in this session. The saved authorization covers SHA-256 ${bradAuthorizationRecord.artifactSha256.slice(0, 12)}…; generate again to re-check the current bytes.`",
+    "                      : \"Not yet generated for this revision -- generate before authorizing.\"}"
+  ]
+}
