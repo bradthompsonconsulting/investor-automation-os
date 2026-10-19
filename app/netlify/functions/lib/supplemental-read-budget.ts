@@ -18,7 +18,7 @@
  *     context, a non-GHL origin or a non-GET method refuses the request unsent. An unconfirmed write may have
  *     counted a unit that was never used; it is never given back. A spent unit stays spent whatever the request's
  *     outcome (abort, timeout, rejection, 4xx/5xx, lost response);
- *   - a record missing AFTER the budget was opened refuses for good (genesis marker; see INIT_WINDOW_MS);
+ *   - a record missing AFTER the budget was opened refuses for good (the single-winner genesis claim, below);
  *   - the scheduled mailer digest SENDS EMAIL after its reads, so while the budget is enabled it does nothing at
  *     all: no read and no send (`supplementalReadBudgetActive`, Bones SEQ 17 condition 5).
  * Otherwise (Production always; Test unless enabled) `ghlReadFetch` is the platform fetch, unchanged: no Blob
@@ -57,14 +57,14 @@ function valid(rec: any, budgetId: string, ceiling: number): rec is ReadBudgetRe
 }
 
 /**
- * A missing record after use must never become a fresh allowance (Bones SEQ 17, condition 2). So initialization is
- * two-step and ordered: first the budget's GENESIS marker (`<key>/genesis`, written once with onlyIfNew), then the
- * record. A record may be CREATED only while the genesis marker is younger than INIT_WINDOW_MS (the window in which a
- * concurrent first request may still be creating it). A missing record with an older genesis marker -- deleted,
- * lost or never completed -- is refused ("unavailable") for good; only a reviewed config commit with a new budget
- * id starts another budget. A genesis write that fails leaves the budget unopened (refused), never open.
+ * A missing record after use must never become a fresh allowance (Bones SEQ 17 condition 2; Brad/Jess 2026-10-19:
+ * elapsed time does not prove a budget was never used). So the record is created EXACTLY ONCE per budget id, by the
+ * single invocation that wins the GENESIS claim: `<key>/genesis` written with onlyIfNew and acknowledged
+ * modified === true. Nothing else ever creates the record -- not a loser of the race, not a later invocation, and
+ * not after a deletion -- so a missing record can only be waited for (bounded) and then refused. If the winner fails
+ * after claiming, the budget simply stays closed; only a reviewed config commit with a new budget id opens another.
+ * No clock or time window is involved.
  */
-export const INIT_WINDOW_MS = 60_000;
 type Genesis = { v: 1; budgetId: string; ceiling: number; at: string };
 
 export class SupplementalReadBudget {
@@ -116,21 +116,26 @@ export class SupplementalReadBudget {
 
   /** Reserves ONE request and records its receipt. Returns its number; throws (nothing to be sent) otherwise. */
   async reserve(fn: string, path: string, now: string): Promise<number> {
+    let openedWithoutRecord = false;
     for (let i = 0; i < CAS_ATTEMPTS; i++) {
       const { rec, etag } = await this.read();
       if (!rec) {
-        const g = await this.genesis();
-        if (!g) { await this.write(this.genesisKey, { v: 1, budgetId: this.budgetId, ceiling: this.ceiling, at: now } satisfies Genesis, { onlyIfNew: true }); continue; }
-        const age = Date.parse(now) - Date.parse(g.at);
-        if (!(age >= 0 && age < INIT_WINDOW_MS)) throw new SupplementalReadRefused("The supplemental read budget record is missing after it was opened; it is not reopened. Nothing was sent.", "unavailable");
+        if (await this.genesis()) { openedWithoutRecord = true; await this.pause(); continue; }   // never (re)create
+        if (this.ceiling < 1) throw new SupplementalReadRefused("The evaluation's supplemental read budget is used up. Nothing was sent.", "exhausted");
+        if (!(await this.write(this.genesisKey, { v: 1, budgetId: this.budgetId, ceiling: this.ceiling, at: now } satisfies Genesis, { onlyIfNew: true }))) continue;   // another invocation claimed it
+        // This invocation alone won the claim: it creates the record once, holding the first unit.
+        const first: ReadBudgetRecord = { v: 1, budgetId: this.budgetId, ceiling: this.ceiling, reserved: 1, receipts: [{ n: 1, fn, path, at: now }] };
+        if (await this.write(this.key, first, { onlyIfNew: true })) return 1;
+        throw new SupplementalReadRefused("The supplemental read budget could not be opened; it stays closed. Nothing was sent.", "unavailable");
       }
-      const cur: ReadBudgetRecord = rec ?? { v: 1, budgetId: this.budgetId, ceiling: this.ceiling, reserved: 0, receipts: [] };
-      if (cur.reserved >= cur.ceiling) throw new SupplementalReadRefused("The evaluation's supplemental read budget is used up. Nothing was sent.", "exhausted");
-      const n = cur.reserved + 1;
-      const next: ReadBudgetRecord = { ...cur, reserved: n, receipts: [...cur.receipts, { n, fn, path, at: now }] };
-      if (await this.write(this.key, next, etag === null ? { onlyIfNew: true } : { onlyIfMatch: etag })) return n;
+      openedWithoutRecord = false;
+      if (rec.reserved >= rec.ceiling) throw new SupplementalReadRefused("The evaluation's supplemental read budget is used up. Nothing was sent.", "exhausted");
+      const n = rec.reserved + 1;
+      const next: ReadBudgetRecord = { ...rec, reserved: n, receipts: [...rec.receipts, { n, fn, path, at: now }] };
+      if (await this.write(this.key, next, { onlyIfMatch: etag as string })) return n;
       await this.pause();
     }
+    if (openedWithoutRecord) throw new SupplementalReadRefused("The supplemental read budget record is missing after it was opened; it is never reopened. Nothing was sent.", "unavailable");
     throw new SupplementalReadRefused("The supplemental read budget could not be reserved (contention). Nothing was sent.", "unavailable");
   }
 }

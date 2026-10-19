@@ -280,13 +280,39 @@ test('mailer-digest: while ENABLED it is suspended -- zero GHL reads and ZERO em
 
 // ---------------- Bones SEQ 17 probe matrix
 const T0 = '2026-10-19T12:00:00.000Z'; const at = (ms) => new Date(Date.parse(T0) + ms).toISOString();
-test('genesis: a record missing AFTER the budget was opened is refused for good -- never a fresh allowance', async () => {
+test('REPRODUCER (Brad 2026-10-19): record deleted while genesis is < 60 s old, then a FRESH invocation, same id -- refused, never reopened', async () => {
   const b = new lib.SupplementalReadBudget(memStore, SCOPE, 'g1', 5);
-  assert.equal(await b.reserve('fn', '/a', T0), 1); assert.equal(await b.reserve('fn', '/b', at(1000)), 2);
-  data.delete(b.key); etags.delete(b.key);   // the record disappears (deleted / lost)
-  await assert.rejects(b.reserve('fn', '/c', at(lib.INIT_WINDOW_MS + 1)), (e) => e.code === 'unavailable' && /missing after it was opened/.test(e.message));
-  await assert.rejects(new lib.SupplementalReadBudget(memStore, SCOPE, 'g1', 5).reserve('fn', '/d', at(3_600_000)), (e) => e.code === 'unavailable');
-  assert.equal(data.get(b.key), undefined, 'not recreated');
+  assert.equal(await b.reserve('fn', '/a', T0), 1); assert.equal(await b.reserve('fn', '/b', at(1000)), 2);   // capacity consumed
+  data.delete(b.key); etags.delete(b.key);                                                                   // the record disappears ...
+  assert.ok(data.has(b.genesisKey), '... while its genesis marker is seconds old');
+  const fresh = new lib.SupplementalReadBudget(memStore, SCOPE, 'g1', 5, async () => {});                     // a fresh invocation
+  await assert.rejects(fresh.reserve('fn', '/c', at(2000)), (e) => e.code === 'unavailable' && /missing after it was opened/.test(e.message));
+  await assert.rejects(fresh.reserve('fn', '/d', at(3_600_000)), (e) => e.code === 'unavailable');
+  assert.equal(data.get(b.key), undefined, 'the record is NOT recreated (spent capacity is not restored)');
+});
+test('REPRODUCER at the handler: open, consume, delete the record within seconds, fresh handler -- 503, nothing dispatched', async () => {
+  reset(); enable(5);
+  assert.equal((await run('ghl-contact', { id: 'fxContact0001' })).statusCode, 200);
+  assert.equal((await run('ghl-contacts', {})).statusCode, 200);
+  const key = lib.readBudgetKey(SCOPE, 'offline-reads'); data.delete(key); etags.delete(key);
+  const r = await run('ghl-contact', { id: 'fxContact0001' });
+  assert.equal(r.statusCode, 503); assert.equal(body(r).code, 'supplemental_read_unavailable');
+  assert.equal(outbound.length, 2, 'no third dispatch'); assert.equal(data.get(key), undefined);
+});
+test('claim taken but no record (the winner failed after claiming): concurrent callers all refuse and NONE creates the record', async () => {
+  const mk = () => new lib.SupplementalReadBudget(memStore, SCOPE, 'g5', 10, async () => {});
+  const k = mk(); data.set(k.genesisKey, { v: 1, budgetId: 'g5', ceiling: 10, at: T0 }); etags.set(k.genesisKey, 'x');
+  const res = await Promise.allSettled(Array.from({ length: 12 }, (_, i) => mk().reserve('fn', '/x' + i, T0)));
+  assert.ok(res.every((x) => x.status === 'rejected' && x.reason.code === 'unavailable'));
+  assert.equal(data.get(k.key), undefined);
+});
+test('a genesis claim that APPLIED but lost its acknowledgement leaves the budget closed for good (no record is ever created)', async () => {
+  const b = new lib.SupplementalReadBudget(memStore, SCOPE, 'g6', 5, async () => {});
+  faults.applyThenThrow = 1;
+  await assert.rejects(b.reserve('fn', '/a', T0), (e) => e.code === 'unavailable');
+  assert.ok(data.has(b.genesisKey)); assert.equal(data.get(b.key), undefined);
+  await assert.rejects(new lib.SupplementalReadBudget(memStore, SCOPE, 'g6', 5, async () => {}).reserve('fn', '/b', T0), (e) => e.code === 'unavailable');
+  assert.equal(data.get(b.key), undefined);
 });
 test('genesis: concurrent FIRST reservations on a new budget id (initialization race) give exactly the ceiling, no false refusal', async () => {
   const res = await Promise.allSettled(Array.from({ length: 30 }, (_, i) => new lib.SupplementalReadBudget(memStore, SCOPE, 'g2', 10, () => new Promise((r) => setTimeout(r, Math.random() * 3))).reserve('fn', '/i' + i, T0)));
