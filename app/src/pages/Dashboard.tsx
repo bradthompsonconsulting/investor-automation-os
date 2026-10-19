@@ -807,8 +807,9 @@ export default function Dashboard() {
   }, [contacts]);
 
   /* B15-19 (F6/F26): the stage pills, plus the deals no configured stage
-     holds (Pipeline lists them as "Unknown"), so the pills add up to the
-     Pipeline count instead of silently dropping deals. */
+     holds (Pipeline lists them as "Unknown"), so the pills account for
+     every deal this Dashboard read loaded instead of silently dropping
+     some. Pipeline's own read is a separate snapshot and may differ. */
   const stageAcct = useMemo(
     () => (pipeline ? stageAccounting(pipeline.stages, pipeline.opportunities) : null),
     [pipeline],
@@ -935,7 +936,7 @@ export default function Dashboard() {
         {!loading && coverage && (
           <p data-testid="dashboard-count-notes" style={{ fontSize: "11px", color: "#475569", margin: "6px 0 0" }}>
             Temperature counts every contact{untaggedLow > 0 ? `; Low includes ${untaggedLow.toLocaleString()} with no temperature tag` : ""}.
-            {" "}Stages count Seller Leads deals: {dealCoverageText(coverage)}
+            {" "}Stages count the loaded Seller Leads deals: {dealCoverageText(coverage)}
           </p>
         )}
       </div>

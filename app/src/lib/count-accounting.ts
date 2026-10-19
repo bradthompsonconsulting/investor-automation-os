@@ -40,7 +40,11 @@ export type StageAccounting<S extends PipelineStage = PipelineStage> = {
   total: number;
 };
 
-/** Deals per configured stage, plus the deals no stage pill would show, so the pills add up to the Pipeline count. */
+/**
+ * Deals per configured stage, plus the deals no configured stage holds, so the
+ * pills account for every deal in the set this screen LOADED. Another screen's
+ * read is a separate snapshot and may differ; no equality with it is claimed.
+ */
 export function stageAccounting<S extends PipelineStage>(stages: readonly S[], opportunities: readonly OpportunityRow[]): StageAccounting<S> {
   const known = new Set(stages.map((s) => s.id));
   return {
@@ -56,7 +60,7 @@ export type DealCoverage = {
   deals: number;
   /** Distinct contacts that have at least one deal and appear in the contacts read. */
   contactsWithDeal: number;
-  /** Contacts in the contacts read with no deal in the Seller Leads pipeline read. */
+  /** Loaded contacts with no Seller Leads deal in the loaded deals (not proof the contact has no deal). */
   contactsWithoutDeal: number;
   /** Deals whose contact is missing from the contacts read, or that name no contact. */
   dealsWithoutListedContact: number;
@@ -104,14 +108,14 @@ export function coldCallAccounting(contacts: readonly ContactRow[], excludedIds:
 const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
 export function coldCallAccountingText(a: ColdCallAccounting): string {
-  return `${plural(a.inQueue, "contact", "contacts")} of ${a.total.toLocaleString()} to cold-call; `
+  return `${a.inQueue.toLocaleString()} of ${plural(a.total, "loaded contact", "loaded contacts")} to cold-call; `
     + `${a.excluded.toLocaleString()} handled elsewhere or left out, ${a.noPhone.toLocaleString()} with no phone.`;
 }
 
 export function dealCoverageText(c: DealCoverage): string {
-  const base = `${plural(c.deals, "deal", "deals")} for ${plural(c.contactsWithDeal, "contact", "contacts")}; `
-    + `${plural(c.contactsWithoutDeal, "contact has", "contacts have")} no Seller Leads deal.`;
+  const base = `${plural(c.deals, "loaded deal", "loaded deals")} for ${plural(c.contactsWithDeal, "loaded contact", "loaded contacts")}; `
+    + `${plural(c.contactsWithoutDeal, "loaded contact has", "loaded contacts have")} no Seller Leads deal in the loaded results.`;
   return c.dealsWithoutListedContact > 0
-    ? `${base} ${plural(c.dealsWithoutListedContact, "deal's contact is", "deals' contacts are")} not in the contacts list.`
+    ? `${base} ${plural(c.dealsWithoutListedContact, "loaded deal's contact is", "loaded deals' contacts are")} not among the loaded contacts.`
     : base;
 }

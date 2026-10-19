@@ -250,7 +250,8 @@ export default function Contacts() {
 
       {/* B15-19 (F26): what this count is, beside Pipeline's deal count. */}
       <p data-testid="contacts-count-definition" style={{ fontSize: "11px", color: "#334155", margin: "-10px 0 14px" }}>
-        Every contact, with or without a deal. Pipeline counts deals instead; a contact can have none or several.
+        Every loaded contact, with or without a Seller Leads deal. Pipeline counts loaded deals instead; a contact can
+        have none or several.
       </p>
 
       {/* Table card */}

@@ -59,7 +59,7 @@ const deal = (contactId, stageId) => ({ contactId, stageId });
   check('1 empty: cold-call accounting', A.coldCallAccounting([], new Set()), { inQueue: 0, noPhone: 0, excluded: 0, total: 0 });
   check('1 empty: untagged', A.untaggedTemperatureCount([], TIERS), 0);
   check('1 empty: texts read naturally', [A.coldCallAccountingText(A.coldCallAccounting([], new Set())), A.dealCoverageText(A.dealCoverage([], []))],
-    ['0 contacts of 0 to cold-call; 0 handled elsewhere or left out, 0 with no phone.', '0 deals for 0 contacts; 0 contacts have no Seller Leads deal.']);
+    ['0 of 0 loaded contacts to cold-call; 0 handled elsewhere or left out, 0 with no phone.', '0 loaded deals for 0 loaded contacts; 0 loaded contacts have no Seller Leads deal in the loaded results.']);
 }
 
 // ── 2. F26 reproduction: 15 contacts, 6 deals, multiple deals per contact ────
@@ -69,7 +69,7 @@ const D6 = [deal('c1', 'st-new'), deal('c1', 'st-sent'), deal('c2', 'st-new'), d
   const cov = A.dealCoverage(C15, D6);
   check('2 F26: 6 deals belong to 5 contacts (one has two)', [cov.deals, cov.contactsWithDeal], [6, 5]);
   check('2 F26: 10 contacts have no deal (Contacts 15 vs Pipeline 6 is intended)', cov.contactsWithoutDeal, 10);
-  check('2 F26: the text says so', A.dealCoverageText(cov), '6 deals for 5 contacts; 10 contacts have no Seller Leads deal.');
+  check('2 F26: the text says so', A.dealCoverageText(cov), '6 loaded deals for 5 loaded contacts; 10 loaded contacts have no Seller Leads deal in the loaded results.');
   check('2 Pipeline header contacts = distinct deal contacts', A.distinctDealContacts(D6), 5);
   // With six deals for six distinct contacts the Pass 1 numbers (15 / 6 / 9) reproduce exactly.
   const D6distinct = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6'].map((c) => deal(c, 'st-new'));
@@ -81,7 +81,7 @@ const D6 = [deal('c1', 'st-new'), deal('c1', 'st-sent'), deal('c2', 'st-new'), d
   const s = A.stageAccounting(STAGES, D6);
   const byName = Object.fromEntries(s.stages.map((x) => [x.stage.name, x.count]));
   check('3 closed-won and lost deals are counted in their stages', [byName['Seller Closed-Won'], byName['Lost / Not Interested']], [1, 1]);
-  check('3 pills add up to the Pipeline count when every stage is known', s.stages.reduce((n, x) => n + x.count, 0) + s.otherStage, s.total);
+  check('3 pills account for every loaded deal when every stage is known', s.stages.reduce((n, x) => n + x.count, 0) + s.otherStage, s.total);
   check('3 stages are in position order', s.stages.map((x) => x.stage.position), [0, 6, 8, 10]);
 }
 
@@ -89,9 +89,9 @@ const D6 = [deal('c1', 'st-new'), deal('c1', 'st-sent'), deal('c2', 'st-new'), d
 {
   const D = [deal('c1', 'st-new'), deal('c2', 'st-sent'), deal('c3', 'gone-1'), deal('c4', 'gone-2'), deal('c5', ''), deal('c6', 'gone-1')];
   const s = A.stageAccounting(STAGES, D);
-  check('4 before: configured pills alone show 2 of 6 deals', s.stages.reduce((n, x) => n + x.count, 0), 2);
+  check('4 reproduced defect (a possible F26 explanation, not its verified cause): configured pills alone show 2 of 6 deals', s.stages.reduce((n, x) => n + x.count, 0), 2);
   check('4 after: the other-stage pill carries the 4 missing deals', s.otherStage, 4);
-  check('4 after: pills + other = Pipeline count', s.stages.reduce((n, x) => n + x.count, 0) + s.otherStage, D.length);
+  check('4 after: pills + other = every deal in the loaded set', s.stages.reduce((n, x) => n + x.count, 0) + s.otherStage, D.length);
 }
 
 // ── 5. Partial / lagging contacts read ───────────────────────────────────────
@@ -99,7 +99,7 @@ const D6 = [deal('c1', 'st-new'), deal('c1', 'st-sent'), deal('c2', 'st-new'), d
   const lagging = C15.filter((c) => c.id !== 'c5'); // list read missed c5
   const cov = A.dealCoverage(lagging, D6);
   check('5 a deal whose contact the list read lacks is counted, not dropped', [cov.deals, cov.dealsWithoutListedContact], [6, 1]);
-  check('5 ...and said so', A.dealCoverageText(cov).endsWith("1 deal's contact is not in the contacts list."), true);
+  check('5 ...and said so', A.dealCoverageText(cov).endsWith("1 loaded deal's contact is not among the loaded contacts."), true);
   check('5 a deal with no contact id is counted the same way', A.dealCoverage(C15, [deal('', 'st-new')]).dealsWithoutListedContact, 1);
 }
 
@@ -116,7 +116,7 @@ const D6 = [deal('c1', 'st-new'), deal('c1', 'st-sent'), deal('c2', 'st-new'), d
   const acct = A.coldCallAccounting(withNoPhone, excluded);
   check('6 F7: Lead Queue 1; the other 14 are accounted for', acct, { inQueue: 1, noPhone: 3, excluded: 11, total: 15 });
   check('6 accounting always adds up', acct.inQueue + acct.noPhone + acct.excluded, acct.total);
-  check('6 text', A.coldCallAccountingText(acct), '1 contact of 15 to cold-call; 11 handled elsewhere or left out, 3 with no phone.');
+  check('6 text', A.coldCallAccountingText(acct), '1 of 15 loaded contacts to cold-call; 11 handled elsewhere or left out, 3 with no phone.');
   check('6 no phone wins over exclusion (Lead Queue checks phone first)', A.coldCallAccounting([contact('x', [], '')], new Set(['x'])), { inQueue: 0, noPhone: 1, excluded: 0, total: 1 });
 }
 
