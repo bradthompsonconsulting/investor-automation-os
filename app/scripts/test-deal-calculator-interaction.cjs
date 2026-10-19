@@ -13,6 +13,7 @@
  *      superseding the 2026-10-04 "$66,000" expectation this suite first
  *      asserted), Windows visibly unresolved, and the quick entry is the
  *      blank default.
+ *   1b. A typed numeric 0 answers a row; "$" alone does not (stays unresolved).
  *   2. Miscellaneous entered in itemized mode is counted once.
  *   2b. Repair-only Clear ("Clear repairs") returns repairs to $0 incomplete,
  *      resets row answers and the Misc amount, and KEEPS ARV, Test Price and
@@ -20,6 +21,10 @@
  *   3. The full calculator Clear resets everything -- ARV, Test Price and
  *      Miscellaneous included: enter -> Clear -> reopen itemized mode shows an
  *      empty description and amount and the $0 incomplete total again.
+ *   3b. Quick -> itemized moves the quick total into Miscellaneous once; a
+ *      round trip does not duplicate it.
+ *   Values are asserted BEFORE and after both Clear controls, so neither
+ *   preservation nor reset can pass on an empty setup.
  *   4. The page sent no write of any kind.
  */
 const path = require('node:path');
@@ -76,6 +81,18 @@ async function main() {
     check('1 itemized on open: Known $0 / total $0 / "Known repairs: $0 — estimate incomplete"', k === '$0' && p === '$0' && st === INCOMPLETE_0, { k, st, p });
     check('1 itemized on open: Windows is visibly unresolved', await T('repair-unresolved-windows').isVisible());
 
+    // 1b — valid numeric $0 answers a row; punctuation alone does not (Oct 19 policy).
+    await T('deal-calc-repair-roof-amount').fill('$');
+    await page.waitForTimeout(200);
+    check('1b "$" on a row is not an answer: Roof listed unresolved, total still $0 incomplete',
+      (await T('repair-unresolved-roof').isVisible().catch(() => false)) && (await textOf('repair-preliminary-total')) === '$0'
+        && (await textOf('repair-estimate-status')) === INCOMPLETE_0,
+      { p: await textOf('repair-preliminary-total') });
+    await T('deal-calc-repair-roof-amount').fill('0');
+    await page.waitForTimeout(200);
+    check('1b typed 0 answers the row: Roof no longer unknown or unresolved, total $0, still incomplete (other rows)',
+      !(await T('repair-unresolved-roof').isVisible().catch(() => false)) && !(await T('deal-calc-repair-roof-unknown').isVisible().catch(() => false))
+        && (await textOf('repair-preliminary-total')) === '$0' && (await textOf('repair-estimate-status')) === INCOMPLETE_0);
     // 2 — Miscellaneous is counted once.
     await T('deal-calc-repair-misc-description').fill('Gutters and fence');
     await T('deal-calc-repair-misc-amount').fill('1,800');
@@ -88,6 +105,9 @@ async function main() {
     await T('deal-calc-test-price-input').fill('150000');
     await T('deal-calc-repair-roof-good').click();
     await page.waitForTimeout(200);
+    check('2b before repair-only Clear: ARV, Test Price, Misc description and amount are all set',
+      (await T('deal-calc-arv-input').inputValue()) === '300000' && (await T('deal-calc-test-price-input').inputValue()) === '150000'
+        && (await T('deal-calc-repair-misc-description').inputValue()) === 'Gutters and fence' && (await T('deal-calc-repair-misc-amount').inputValue()) === '1,800');
     check('2b before repair-only Clear: Roof answered, Misc still counted once', (await textOf('repair-preliminary-total')) === '$1,800'
       && !(await T('deal-calc-repair-roof-unknown').isVisible().catch(() => false)), { p: await textOf('repair-preliminary-total') });
     await T('deal-calc-repairs-clear').click();
@@ -107,6 +127,10 @@ async function main() {
     await page.waitForTimeout(200);
 
     // 3 — enter -> Clear -> reopen itemized mode.
+    check('3 before the full Clear: ARV, Test Price, Misc description and amount are all set',
+      (await T('deal-calc-arv-input').inputValue()) === '300000' && (await T('deal-calc-test-price-input').inputValue()) === '150000'
+        && (await T('deal-calc-repair-misc-description').inputValue()) === 'Gutters and fence' && (await T('deal-calc-repair-misc-amount').inputValue()) === '1,800'
+        && (await textOf('repair-preliminary-total')) === '$1,800');
     await T('deal-calc-clear').click();
     await page.waitForTimeout(200);
     check('3 Clear returns to the quick entry', (await T('deal-calc-repairs-mode-toggle').innerText()).includes('Itemize repairs'));
@@ -122,6 +146,22 @@ async function main() {
         && (await textOf('repair-estimate-status')) === INCOMPLETE_0,
       { k: await textOf('repair-known-subtotal'), p: await textOf('repair-preliminary-total') });
 
+    // 3b — Quick -> itemized moves the quick total into Misc ONCE, never duplicated.
+    await T('deal-calc-clear').click();
+    await page.waitForTimeout(200);
+    await T('deal-calc-repairs-quick-input').fill('5000');
+    await T('deal-calc-repairs-mode-toggle').click();
+    await T('repair-preliminary-total').waitFor();
+    check('3b Quick $5,000 -> itemized: Misc amount 5000, total $5,000 (counted once)',
+      (await T('deal-calc-repair-misc-amount').inputValue()) === '5000' && (await textOf('repair-preliminary-total')) === '$5,000',
+      { a: await T('deal-calc-repair-misc-amount').inputValue(), p: await textOf('repair-preliminary-total') });
+    await T('deal-calc-repairs-mode-toggle').click();
+    await page.waitForTimeout(200);
+    await T('deal-calc-repairs-mode-toggle').click();
+    await T('repair-preliminary-total').waitFor();
+    check('3b round trip itemized -> quick -> itemized: still $5,000, Misc not duplicated',
+      (await T('deal-calc-repair-misc-amount').inputValue()) === '5000' && (await textOf('repair-preliminary-total')) === '$5,000',
+      { a: await T('deal-calc-repair-misc-amount').inputValue(), p: await textOf('repair-preliminary-total') });
     // 4 — nothing written, nothing off-machine, no page errors.
     check('4 the page sent no write', !log.some((r) => r.method !== 'GET' || /write/.test(r.fn)), log);
     check('4 no request left the machine', foreign.length === 0, foreign);
