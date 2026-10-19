@@ -99,6 +99,26 @@ check('F2c malformed time with a valid fallback uses the fallback', K.lastCallAt
 check('F2c an invalid fallback is ignored for a valid date-only precise value', [K.lastCallAttemptText('2026-10-01', '2026-13-01'), K.lastCallAttemptText('2026-10-01 GMT+05:00', '2026-02-30T00:00:00.000Z')], ['Oct 1, 2026', 'Oct 1, 2026']);
 check('F2c invalid values on both sides are Unreadable, not missing', K.lastCallAttemptText('2026-13-01', '2026-02-30'), U);
 check('F2c a non-ISO value is not trusted to the lenient parser', [K.lastCallAttemptText('Feb 30 2026 10:00', null), K.lastCallAttemptText('Oct 1 2026 5:00 PM', '2026-10-01')], [U, 'Oct 1, 2026']);
+// F2d (Bones, 7e96ab0): the WHOLE value must be a supported shape; each slot is checked on its own.
+const BONES_F2D = ['2026-10-01Tbad', '2026-10-01T9:xx', '2026-10-01T10', '2026-10-01 nonsense'];
+const REJECT = [...BONES_F2D,
+  '2026-10-01T9:05', '2026-10-01t10:00', '2026-10-01T10:00:00ZZ', '2026-10-01T10:00+15:00', '2026-10-01T10:00+05:60',
+  '2026-10-01T10:00:00.', '2026-10-01 GMT+0500', '2026-10-01 GMT', 'x2026-10-01', '2026-10-01T10:00 extra', '20261001', '2026-1-01'];
+check('F2d malformed values read Unreadable in the precise slot', REJECT.map((r) => K.lastCallAttemptText(r, null)), REJECT.map(() => U));
+check('F2d malformed values read Unreadable in the fallback slot', REJECT.map((r) => K.lastCallAttemptText(null, r)), REJECT.map(() => U));
+check('F2d a malformed fallback never overrides a valid plain precise date', REJECT.map((r) => K.lastCallAttemptText('2026-10-02', r)), REJECT.map(() => 'Oct 2, 2026'));
+check('F2d a malformed precise value never overrides a valid fallback', REJECT.map((r) => K.lastCallAttemptText(r, '2026-10-02')), REJECT.map(() => 'Oct 2, 2026'));
+const ACCEPT = [
+  [' 2026-10-01 ', 'Oct 1, 2026'],
+  ['2026-10-01 UTC+00:00', 'Oct 1, 2026'],
+  ['2026-10-01T10:00', 'Oct 1, 2026, 10:00 AM'],
+  ['2026-10-01 10:00:30', 'Oct 1, 2026, 10:00 AM'],
+  ['2026-10-01T10:00:30.123456Z', 'Oct 1, 2026, 5:00 AM'],
+  ['2026-10-01T10:00+0530', 'Sep 30, 2026, 11:30 PM'],
+  ['2026-10-01 10:00 UTC+14:00', 'Sep 30, 2026, 3:00 PM'],
+  ['2026-10-01T10:00-14:00', 'Oct 1, 2026, 7:00 PM'],
+];
+check('F2d every supported shape at its boundary reads as stated', ACCEPT.map(([r]) => K.lastCallAttemptText(r, null)), ACCEPT.map(([, v]) => v));
 
 // ── Wiring ───────────────────────────────────────────────────────────────────
 const page = read('src/pages/Contacts.tsx');

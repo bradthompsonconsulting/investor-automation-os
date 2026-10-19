@@ -69,57 +69,75 @@ export function stageCell(contactId: string, source: DealStageSource): StageCell
   return { kind: "multiple", text: `${list.length} deals: ${parts.join(", ")}` };
 }
 
-/* B15-20 F2 (Bones, 2026-10-19): a value shows a time only when it carries a
-   real clock time, and a date only when it is a real calendar date. The
-   built-in parser silently rolls impossible values into other dates
-   ("2026-02-30 10:00" -> Mar 2, "2026-10-01 24:00" -> Oct 2, month 13 ->
-   next January), so every value is validated BEFORE it is formatted: a
-   malformed value is never shown as a different date and never overrides a
-   valid fallback. A clock time is HH:MM after a "T" or whitespace -- never
-   the HH:MM of a timezone offset ("GMT+05:00", "-05:00"). */
-const CLOCK = /(?:^|[T\s])(\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?/;
-const LEADING_DATE = /^\s*(\d{4})-(\d{2})-(\d{2})(?!\d)/;
+/* B15-20 F2 (Bones, 2026-10-19): a value is shown only when the WHOLE value
+   is one of the supported shapes below and is a real date (and time). Every
+   other value -- a malformed clock or suffix ("2026-10-01Tbad",
+   "2026-10-01T9:xx", "2026-10-01T10", "2026-10-01 nonsense"), an impossible
+   date or time, or any other text -- is unreadable. The built-in Date
+   parser is never trusted: it silently rolls impossible values into other
+   dates. Each field (precise TEXT, DATE fallback) is checked on its own, so
+   a malformed value never overrides a valid one.
+
+   Supported shapes (whole value, surrounding whitespace ignored):
+     YYYY-MM-DD                                  date only
+     YYYY-MM-DD [GMT|UTC]±HH:MM                  date with a zone, no clock
+     YYYY-MM-DD(T| )HH:MM[:SS[.fraction]][zone]  date and clock, where zone
+       is Z, ±HH:MM, ±HHMM or " GMT±HH:MM"/" UTC±HH:MM" (offsets up to ±14:00)
+   A clock with no zone is local time. These are the forms the current
+   writers produce and the forms reviewed so far; other historical TEXT
+   formats are not proven and read as unreadable. */
+const SUPPORTED =
+  /^\s*(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|\s?(?:GMT|UTC)?\s?([+-])(\d{2}):?(\d{2}))?|\s(?:GMT|UTC)?([+-])(\d{2}):(\d{2}))?\s*$/;
+// groups: 1-3 date; 4-7 clock h/m/s/fraction; 8 zone (9 sign, 10-11 offset); 12-14 date-only zone sign/offset
 const utcDate = (d: Date) => d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
 
 function daysInMonth(year: number, month: number): number {
   return [31, (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0 ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
 }
+const validOffset = (h: number, m: number) => m <= 59 && (h < 14 || (h === 14 && m === 0));
 
 type Checked =
   | { kind: "invalid" }
-  | { kind: "ok"; instant: Date; date: { y: number; m: number; d: number }; hasClock: boolean };
+  | { kind: "date"; y: number; m: number; d: number }
+  | { kind: "instant"; y: number; m: number; d: number; instant: Date };
 
-/**
- * Validates a stored value: it must start with a real YYYY-MM-DD calendar
- * date (both carriers are written in ISO form; anything else would go to the
- * lenient parser and could roll into another date), and any clock it carries
- * must be a real time.
- */
+/** Checks one stored value against the supported shapes; builds the instant itself, never via the lenient parser. */
 function checkValue(raw: string): Checked {
-  const lead = LEADING_DATE.exec(raw);
-  if (!lead) return { kind: "invalid" };
-  const y = Number(lead[1]), m = Number(lead[2]), d = Number(lead[3]);
+  const x = SUPPORTED.exec(raw);
+  if (!x) return { kind: "invalid" };
+  const y = Number(x[1]), m = Number(x[2]), d = Number(x[3]);
   if (m < 1 || m > 12 || d < 1 || d > daysInMonth(y, m)) return { kind: "invalid" };
-  const date = { y, m, d };
-  const clock = CLOCK.exec(raw);
-  if (clock) {
-    const h = Number(clock[1]), min = Number(clock[2]), sec = clock[3] === undefined ? 0 : Number(clock[3]);
-    if (h > 23 || min > 59 || sec > 59) return { kind: "invalid" };
+  if (x[12] !== undefined) {
+    /* Date with a zone and no clock: the zone is checked, the date is the stated date. */
+    return validOffset(Number(x[13]), Number(x[14])) ? { kind: "date", y, m, d } : { kind: "invalid" };
   }
-  const instant = new Date(raw);
-  if (isNaN(instant.getTime())) return !clock ? { kind: "ok", instant, date, hasClock: false } : { kind: "invalid" };
-  return { kind: "ok", instant, date, hasClock: !!clock };
+  if (x[4] === undefined) return { kind: "date", y, m, d };
+  const h = Number(x[4]), min = Number(x[5]), sec = x[6] === undefined ? 0 : Number(x[6]);
+  if (h > 23 || min > 59 || sec > 59) return { kind: "invalid" };
+  const ms = x[7] === undefined ? 0 : Math.floor(Number(`0.${x[7]}`) * 1000);
+  let instant: Date;
+  if (x[8] === undefined) {
+    instant = new Date(y, m - 1, d, h, min, sec, ms); // no zone: local time
+  } else if (x[8] === "Z") {
+    instant = new Date(Date.UTC(y, m - 1, d, h, min, sec, ms));
+  } else {
+    const oh = Number(x[10]), om = Number(x[11]);
+    if (!validOffset(oh, om)) return { kind: "invalid" };
+    const sign = x[9] === "-" ? -1 : 1;
+    instant = new Date(Date.UTC(y, m - 1, d, h, min, sec, ms) - sign * (oh * 60 + om) * 60_000);
+  }
+  return { kind: "instant", y, m, d, instant };
 }
 
 export function lastCallAttemptText(precise: string | null, dateOnly: string | null): string {
   const p = precise ? checkValue(precise) : null;
-  if (p && p.kind === "ok" && p.hasClock && !isNaN(p.instant.getTime())) {
+  if (p && p.kind === "instant") {
     return p.instant.toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
+  /* The DATE fallback, valid on its own: its stated calendar date. */
   const f = dateOnly ? checkValue(dateOnly) : null;
-  if (f && f.kind === "ok") return utcDate(new Date(Date.UTC(f.date.y, f.date.m - 1, f.date.d)));
-  /* A precise value with no clock and no valid DATE fallback: its own stated
-     calendar date, read literally -- never via an offset-shifted instant. */
-  if (p && p.kind === "ok" && !p.hasClock) return utcDate(new Date(Date.UTC(p.date.y, p.date.m - 1, p.date.d)));
+  if (f && f.kind !== "invalid") return utcDate(new Date(Date.UTC(f.y, f.m - 1, f.d)));
+  /* A precise value with no clock and no valid fallback: its own stated date. */
+  if (p && p.kind === "date") return utcDate(new Date(Date.UTC(p.y, p.m - 1, p.d)));
   return precise || dateOnly ? ATTEMPT_UNREADABLE : NO_ATTEMPT_RECORDED;
 }
