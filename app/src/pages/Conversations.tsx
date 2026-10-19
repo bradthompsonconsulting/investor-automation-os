@@ -7,6 +7,7 @@ import {
 import { ghl, ghlContactDetailUrl, type ThreadRow, type ConvMessageRow } from "../lib/ghl";
 import { NO_MESSAGE_TEXT, isAutomatedDocumentEmail } from "../lib/operator-display";
 import { splitMessageLinks } from "../lib/message-links";
+import { NoteBody } from "../components/NoteBody";
 
 /**
  * Conversations — READ-ONLY inbox (Coverage Roadmap surface #3). Two-pane:
@@ -177,7 +178,7 @@ function NoteEntry({ n }: { n: NoteRow }) {
     <div style={{ background: "#0A1633", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", padding: "8px 10px" }}>
       <div style={{ fontSize: "10px", color: "#475569", marginBottom: "4px" }}>{formatDate(n.dateAdded)}</div>
       <div style={{ fontSize: "13px", color: "#E2E8F0", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-        {n.body || <span style={{ color: "#475569", fontStyle: "italic" }}>(empty note)</span>}
+        {n.body ? <NoteBody body={n.body} /> : <span style={{ color: "#475569", fontStyle: "italic" }}>(empty note)</span>}
       </div>
     </div>
   );
