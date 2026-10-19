@@ -179,7 +179,8 @@ async function main() {
     await expectRows('a digits-only query returns both an address match and a phone match, in Date Added order', '88', [MAX, ANN]);
     await expectRows('an address match and a name/email match both show, in the active Date Added order', 'oak', [MAX, ANN]);
     const badge = (await page.locator('main h1 + span').innerText()).trim();
-    check('the count badge counts the address matches', badge === '2', badge);
+    /* B15-19: the badge names what it counts and, while searching, the total. */
+    check('the count badge counts the address matches', badge === '2 of 4 contacts', badge);
     const nameHeader = page.locator('thead th', { hasText: /^Name$/ });
     await nameHeader.click();
     const asc = await search('oak', [ANN, MAX]);
@@ -198,8 +199,10 @@ async function main() {
     await expectRows('a query matching nothing shows no rows', 'zzzz', []);
     await expectRows('clearing the search restores every row in Date Added order', '', ALL);
 
-    check('the page made one contacts read and nothing else: no writes, no other request',
-      same(log.filter((x) => x !== 'GET app-read-session'), ['GET ghl-contacts']) && foreign.length === 0, { log, foreign });
+    /* B15-20: plus exactly one Seller Leads pipeline read for the Stage column
+       (unanswered here, so the column shows its unavailable state). */
+    check('the page made one contacts read and one pipeline read, nothing else: no writes, no other request',
+      same(log.filter((x) => x !== 'GET app-read-session').sort(), ['GET ghl-contacts', 'GET ghl-opportunities']) && foreign.length === 0, { log, foreign });
     check('no page errors', pageErrors.length === 0, pageErrors);
   } catch (e) {
     console.error(`FAIL  ${e.message}`);
