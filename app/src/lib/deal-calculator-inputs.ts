@@ -156,6 +156,7 @@ export function parseNonNegativeAmountInput(raw: string): NonNegativeAmountInput
   if (trimmed === "") return { kind: "empty" };
 
   const cleaned = trimmed.replace(/[$,]/g, "");
+  if (cleaned.trim() === "") return { kind: "invalid", raw, reason: "That is not a number." };
   const n = Number(cleaned);
 
   if (Number.isNaN(n)) return { kind: "invalid", raw, reason: "That is not a number." };

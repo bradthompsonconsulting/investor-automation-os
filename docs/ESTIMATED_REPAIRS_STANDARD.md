@@ -719,3 +719,35 @@ The policy is approved and recorded here. The implementation is the Board 15
 repair-allowances change and remains behind Bones's review and Spock's Test
 verification; this document records the policy and does not itself accept the
 implementation. Rates for new categories (F40 / INV-102) remain open.
+
+## Provisional starting estimate amendment — 2026-10-07
+
+Brad approved this policy on 2026-10-07. It is recorded on INV-100 ("Current policy — Brad, October 7, 2026") and was completed by his Option A ruling on 2026-10-19 (relayed in the Scotty B15-01 assignment). Under the PB-D43 supersession convention it governs wherever it conflicts with the 2026-10-04 amendment above. That text is preserved, not rewritten.
+
+**What it supersedes, exactly:** rules 1, 2 and 4 of the 2026-10-04 amendment and its "$66,000" arithmetic consequence. No unanswered row carries an automatic allowance any more.
+
+### The approved rules (Brad, 2026-10-07; Option A, 2026-10-19)
+
+1. **Untouched starting estimate: $20,000, visibly provisional.** It is `untouchedStartingEstimate` in the approved table, presented as IAOS policy and never as a known repair.
+2. **The first explicit repair answer removes the provisional $20,000.** An explicit answer is any condition other than Not asked, including **Good**, or any readable amount, including **$0**, on a row or on Miscellaneous. A positive amount is not required (Option A). A Miscellaneous description alone, a quantity on an unanswered row, or an unreadable amount is not an answer.
+3. **After that, only known amounts are totalled.** Not asked remains unknown, contributes nothing, and is never marked Good. While any row is unknown or unresolved, the estimator shows **"Known repairs: $X — estimate incomplete"**, including when X is $0.
+4. **A positive amount on an unanswered row selects Repair**; an already explicit condition is preserved.
+5. **Quick → itemized transfers the quick total to Miscellaneous**, preserving the total. To avoid double counting it moves only into an itemized estimate with no explicit answer; otherwise nothing moves and the operator is told so.
+6. **Repair-only Clear** (Deal Calculator) resets conditions, amounts and quantities to the provisional starting state, preserving ARV and Test Price. The Miscellaneous description is preserved and can be edited or erased; its amount is reset, and the description alone adds $0.
+7. **Field order:** Item → Condition → Quantity → Amount → Explanation, including the Windows quantity and the Miscellaneous amount. The Miscellaneous description is multi-line.
+
+Unchanged: the approved row amounts, the approval and save gates, and the offer gates. No category rows or rates are added (INV-102 rates remain open). No implicit GHL approval or save.
+
+### Status
+
+The policy is approved and recorded here. Its implementation (B15-01 / B15-02 UI slice) remains behind independent review and Test verification. This document does not accept the implementation.
+
+## Known-only zero-start amendment — 2026-10-19
+
+Brad's explicit October 19 policy amendment supersedes the $20,000 starting-state and first-answer replacement rules above. Historical rulings remain preserved.
+
+Untouched repairs start at $0. Sum valid entered amounts only. Unanswered required repair items contribute nothing and remain visibly unknown. While any are unanswered/unresolved, show “Known repairs: $X — estimate incomplete”, including at $0. Genuine numeric zero and Good remain valid explicit answers; blank, invalid and punctuation-only inputs do not.
+
+Repair-only Clear returns to known repairs $0/incomplete, preserving ARV, Test Price and Misc description, clearing repair amounts/quantities/conditions and Quick amount. Preserve Quick-to-itemized transfer with no double counting. Description or quantity alone is not an answered amount. Existing approved condition amounts and rates are unchanged; no new categories or rates. The existing explicit approval/revision/total save gate remains required; no implicit save is authorized.
+
+Implementation acceptance, target-lockfile integration checks and Test visual verification remain separate. Production HELD.

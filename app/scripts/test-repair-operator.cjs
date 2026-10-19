@@ -72,8 +72,12 @@ const TABLE = JSON.parse(fs.readFileSync(TABLE_PATH, 'utf8'));
  * + 38  section 18's check() call sites (18a 2, 18b 4, 18c 4, 18d 5,
  *         18e 8, 18f 4, 18g 7, 18h 4) -- none inside a loop
  * = 276
+ * + 2   2026-10-07 policy (B15-01): s1 +1 (provisional source + no per-row
+ *         allowance, was one check), 18h +1 (the 2026-10-07 amendment);
+ *         every other superseded expectation was restated at the same count
+ * = 278
  */
-const FLOOR = 276;
+const FLOOR = 278;
 let failures = 0;
 let checks = 0;
 
@@ -150,11 +154,11 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   /* The data file is what the module loaded — not a second transcription. */
   check('the module rows come from the approved table file',
     JSON.stringify(M.OPERATOR_ROWS), JSON.stringify(TABLE.rows));
-  /* 2026-10-04: the fallback value is retired; each unanswered row's
-     allowance is its own severeDefault from this same file. */
-  check('each unanswered allowance comes from the approved table file',
-    M.OPERATOR_ROWS.map((r) => M.unansweredAllowanceFor(r)),
-    TABLE.rows.map((r) => (r.system === 'windows' ? null : r.severeDefault)));
+  /* 2026-10-07: the provisional starting estimate comes from this same
+     file; the 2026-10-04 per-row allowances are superseded. */
+  check('the zero starting amount comes from the approved table file',
+    [M.REPAIR_STARTING_ESTIMATE, TABLE.untouchedStartingEstimate], [0, 0]);
+  check('no per-row unanswered allowance survives (2026-10-07)', M.unansweredAllowanceFor, undefined);
   check('the approved table names its authority',
     TABLE._meta.authority.indexOf('ESTIMATED_REPAIRS_STANDARD.md') !== -1, true);
   check('the approved table declares policy provenance',
@@ -175,11 +179,10 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   check('a loaded default prices the row', lineFor(e, 'roof').outcome.amount, 15000);
   check('a loaded default is IAOS policy', lineFor(e, 'roof').outcome.provenance, 'IAOS_POLICY');
   check('a loaded default is never BOOK', e.estimate.byProvenance.BOOK, 0);
-  /* 2026-10-04: the answered row is Known Repairs; the five unanswered
-     lump-sum rows carry their policy allowances (8,000 + 12,500 + 3,000 +
-     12,500 + 15,000 = 51,000), which are policy too. */
+  /* 2026-10-07: the answered row is Known Repairs; unanswered rows add
+     nothing, so the only policy amount is the loaded default. */
   check('the answered row is the known subtotal', e.knownSubtotal, 15000);
-  check('policy total', e.estimate.byProvenance.IAOS_POLICY, 15000 + 51000);
+  check('policy total', e.estimate.byProvenance.IAOS_POLICY, 15000);
 }
 
 // ---- 3. Good -> $0, and still editable.
@@ -201,8 +204,8 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   const e = est(answers([['roof', 'repair', '6000']]));
   check('the typed amount is used, not the default', lineFor(e, 'roof').outcome.amount, 6000);
   check('a typed amount is MANUAL', lineFor(e, 'roof').outcome.provenance, 'MANUAL');
-  /* Only the five unanswered allowances are policy; the typed figure is not. */
-  check('a typed amount is not policy', e.estimate.byProvenance.IAOS_POLICY, 51000);
+  /* 2026-10-07: no allowance exists, and the typed figure is not policy. */
+  check('a typed amount is not policy', e.estimate.byProvenance.IAOS_POLICY, 0);
   check('the typed amount is the manual subtotal', e.estimate.byProvenance.MANUAL, 6000);
   check('a typed amount is not BOOK', e.estimate.byProvenance.BOOK, 0);
   check('currency punctuation is accepted', lineFor(est(answers([['roof', 'repair', '$6,000']])), 'roof').outcome.amount, 6000);
@@ -229,22 +232,23 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   check('re-entering $6,000 is a deliberate act that works', lineFor(est({ roof: a }), 'roof').outcome.amount, 6000);
 }
 
-// ---- 6. Not Asked (2026-10-04): a blank lump-sum row carries its approved
-//         severe allowance as "condition not confirmed"; the counted Windows
-//         row is unresolved (count needed); a known amount is used.
+// ---- 6. Not Asked (2026-10-07): after the first answer a blank row is
+//         unknown -- "condition not confirmed", not in the total, never
+//         Good; a known amount is used.
 {
   const touched = answers([['roof', 'good']]);
   const e = est(touched);
   const hvac = lineFor(e, 'hvac');
-  check('an unanswered row carries its approved severe allowance', hvac.outcome.amount, 8000);
-  check('the allowance is a reserve, not an indicated repair', hvac.origin, 'unknown_condition');
-  check('the allowance is policy', hvac.outcome.provenance, 'IAOS_POLICY');
+  check('an unanswered row carries no allowance', hvac.outcome.kind, 'unpriced_risk');
+  check('the unanswered row is unknown, never Good', hvac.outcome.kind === 'no_repair', false);
+  check('the unanswered row says it is not in the total', hvac.outcome.reason, 'condition not confirmed — not in the total');
   const windows = lineFor(e, 'windows');
   check('an unanswered counted row is unresolved, not priced', windows.outcome.kind, 'unpriced_risk');
-  check('the unresolved reason names the condition and the missing count',
-    windows.outcome.reason.indexOf('condition not confirmed') === 0 && windows.outcome.reason.indexOf('window count') !== -1, true);
+  check('the unresolved reason names the condition',
+    windows.outcome.reason.indexOf('condition not confirmed') === 0, true);
   check('an unpriced row is never zero-valued', windows.outcome.amount, undefined);
-  check('only the counted row is unresolved', e.estimate.unpricedRisks.map((r) => r.id), ['windows']);
+  check('every unanswered row is unknown', e.estimate.unpricedRisks.map((r) => r.id),
+    ['hvac', 'electrical_whole_house', 'electrical_panel', 'plumbing_sewer', 'foundation', 'windows']);
 
   const withAmount = Object.assign({}, touched, {
     windows: M.applyAmount(M.EMPTY_ANSWER, '4200'),
@@ -271,45 +275,43 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
     (pageCode.match(/key:\s*"(not_asked|good|repair|severe)"/g) || []).length, 4);
 }
 
-// ---- 8. UNTOUCHED (2026-10-04): no blanket fallback. Every row is
-//         unanswered, so the six lump-sum rows carry their approved severe
-//         allowances and Windows is unresolved:
-//         15,000 + 8,000 + 12,500 + 3,000 + 12,500 + 15,000 = 66,000.
+// ---- 8. UNTOUCHED (2026-10-07): the provisional $20,000 starting
+//         estimate, held as one policy reserve -- never a known repair.
 {
   const e = est({});
   check('an untouched estimator is the row calculation', e.mode, 'rows');
   check('untouched: known repairs are zero', e.knownSubtotal, 0);
-  check('untouched: unanswered allowances are the six severe amounts', e.unansweredSubtotal, 66000);
-  check('untouched: the preliminary total is their sum', e.total, 66000);
-  check('untouched: the allowances are policy, not BOOK', [e.estimate.byProvenance.IAOS_POLICY, e.estimate.byProvenance.BOOK], [66000, 0]);
-  check('untouched: Windows is the one unresolved row', e.estimate.unpricedRisks.map((r) => r.id), ['windows']);
+  check('untouched: the reserve is zero', e.unansweredSubtotal, 0);
+  check('untouched: the total is zero', e.total, 0);
+  check('untouched: no reserve is policy or BOOK', [e.estimate.byProvenance.IAOS_POLICY, e.estimate.byProvenance.BOOK], [0, 0]);
+  check('untouched: every unanswered row is listed unknown', e.estimate.unpricedRisks.map((r) => r.id), M.OPERATOR_ROWS.map((r) => r.system));
   check('explicitly empty answers are the same as untouched', est({
     roof: { condition: 'not_asked', amount: '', quantity: '', dirty: false },
-  }).total, 66000);
+  }).total, 0);
   check('isUntouched agrees', M.isUntouched({}), true);
   check('the $20,000 fallback constant is retired from the module', M.UNTOUCHED_FALLBACK_AMOUNT, undefined);
   check('the $20,000 fallback is retired from the approved table', TABLE.untouchedFallbackAmount, undefined);
 }
 
-// ---- 9. Answering a row replaces ONLY that row's allowance (rule 3).
+// ---- 9. The first explicit answer ends the provisional figure (2026-10-07, Option A).
 {
   const byCondition = est(answers([['roof', 'good']]));
-  check('Good replaces the roof allowance with $0', [byCondition.knownSubtotal, byCondition.unansweredSubtotal], [0, 51000]);
-  check('a Good-only estimate keeps every other allowance', byCondition.total, 51000);
+  check('Good ends the provisional figure: known $0, no reserve', [byCondition.knownSubtotal, byCondition.unansweredSubtotal], [0, 0]);
+  check('a Good-only estimate totals $0', byCondition.total, 0);
 
   const byAmount = est({ windows: M.applyAmount(M.EMPTY_ANSWER, '900') });
   check('a typed amount on the counted row is a known repair', byAmount.knownSubtotal, 900);
-  check('the row amount governs, beside the six allowances', byAmount.total, 900 + 66000);
+  check('the row amount alone is the total', byAmount.total, 900);
   check('isUntouched disagrees once touched', M.isUntouched(answers([['roof', 'good']])), false);
 }
 
 // ---- 10. Never both: no blanket figure exists to add (rule 4).
 {
   const e = est(answers([['roof', 'severe'], ['hvac', 'repair']]));
-  /* Known 15,000 + 2,500; allowances 12,500 + 3,000 + 12,500 + 15,000. */
+  /* Known 15,000 + 2,500; unanswered rows add nothing (2026-10-07). */
   check('known repairs are the answered rows only', e.knownSubtotal, 17500);
-  check('answered rows carry no allowance', e.unansweredSubtotal, 43000);
-  check('the preliminary total is known plus unanswered', e.total, 60500);
+  check('no reserve remains once answered', e.unansweredSubtotal, 0);
+  check('the total is the known amounts', e.total, 17500);
   check('the total is not a fallback plus the rows', e.total === 20000 + 17500, false);
   /* Structural: no fallback exists in the module to add to anything. */
   const codeOnly = fs.readFileSync(path.join(SRC, 'operator-model.ts'), 'utf8')
@@ -332,7 +334,7 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
 // ---- 12. Unpriced risk stays visible, and never blocks approval.
 {
   const e = est(answers([['roof', 'severe']]));
-  check('the unresolved counted row remains visible', e.estimate.unpricedRisks.length, 1);
+  check('the unanswered rows remain visible', e.estimate.unpricedRisks.length, 6);
   check('the priced row still totals', e.knownSubtotal, 15000);
   check('an incomplete estimate is still reported incomplete', e.estimate.isCompleteAllowance, false);
   check('completeness is not a gate on any control here',
@@ -348,7 +350,7 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   check('the label is still preserved exactly',
     e.estimate.components.fmtmAllowance.label, 'FMTM 10% allowance — historical purpose unverified');
   check('the known subtotal is the answered rows', e.knownSubtotal, 23000);
-  check('the total is known plus unanswered, with no FMTM', e.total, 23000 + 43000);
+  check('the total is the known amounts, with no FMTM', e.total, 23000);
 }
 
 // ---- 14. Invalid entry stays visibly unpriced.
@@ -356,7 +358,7 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   const e = est({ roof: M.applyAmount(M.applyCondition(rowOf('roof'), 'repair'), 'abc') });
   check('an unreadable amount is unpriced', lineFor(e, 'roof').outcome.kind, 'unpriced_risk');
   check('an unreadable amount does not fall back to the default', e.knownSubtotal, 0);
-  check('an unreadable amount does not take the allowance either', e.unansweredSubtotal, 51000);
+  check('an unreadable amount takes no reserve either', e.unansweredSubtotal, 0);
   const cleared = est({ roof: M.applyAmount(M.applyCondition(rowOf('roof'), 'repair'), '') });
   check('a cleared amount is unpriced, not zero', lineFor(cleared, 'roof').outcome.kind, 'unpriced_risk');
   check('a cleared amount says so', lineFor(cleared, 'roof').outcome.reason.indexOf('cleared') !== -1, true);
@@ -497,7 +499,7 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
     const e = est({ windows: a });
     check('the override is the amount used', lineFor(e, 'windows').outcome.amount, 5200);
     check('the override is MANUAL', lineFor(e, 'windows').outcome.provenance, 'MANUAL');
-    check('the override is not policy (only the six allowances are)', e.estimate.byProvenance.IAOS_POLICY, 66000);
+    check('the override is not policy', e.estimate.byProvenance.IAOS_POLICY, 0);
   }
 
   // --- 17e. A count changed AFTER a manual override recalculates over it.
@@ -566,7 +568,7 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
     const e = est({ windows: a });
     check('a Windows count is a known repair', e.knownSubtotal, 4500);
     check('no $20,000 fallback exists to be the total', M.UNTOUCHED_FALLBACK_AMOUNT, undefined);
-    check('the count calculation sits beside the six allowances, nothing more', e.total, 4500 + 66000);
+    check('the count calculation is the total, nothing more', e.total, 4500);
     check('isUntouched disagrees once a count exists', M.isUntouched({ windows: a }), false);
     /* A count alone, with no condition ever selected, is still an interaction.
        It prices nothing -- there is no approved rate under Not asked -- but it
@@ -617,7 +619,7 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
     /* The whole-estimate shape is unchanged for the other six rows. */
     const e = est(answers([['roof', 'severe'], ['hvac', 'repair']]));
     check('the other rows total exactly as before', e.knownSubtotal, 17500);
-    check('and leave only Windows unresolved (2026-10-04)', e.estimate.unpricedRisks.length, 1);
+    check('and leave the five unanswered rows unknown (2026-10-07)', e.estimate.unpricedRisks.length, 5);
   }
 
   // --- 17l. The surface actually wires it.
@@ -661,21 +663,20 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   }
 }
 
-// ---- 18. Itemized unanswered allowances — Brad, 2026-10-04 (Pass 1 F39/F40).
-//          The six cases the ruling asked to be verified, by the numbers.
-//          Approved severe amounts (table): roof 15,000, hvac 8,000,
-//          electrical whole house 12,500, panel 3,000, plumbing 12,500,
-//          foundation 15,000; windows is per window and has no allowance.
+// ---- 18. The 2026-10-04 cases, restated under the 2026-10-07 policy
+//          (provisional $20,000 until the first explicit answer; then known
+//          amounts only, unanswered rows unknown). Approved amounts (table):
+//          roof 2,500/15,000, hvac 2,500/8,000, panel 1,500/3,000, plumbing
+//          3,500/12,500; windows is per window.
 {
   const estM = (a, misc) => M.operatorEstimate(a, compute, misc);
 
   // 18a. Untouched: every row unanswered.
   {
     const e = estM({});
-    check('18a untouched: known / unanswered / preliminary', [e.knownSubtotal, e.unansweredSubtotal, e.total], [0, 66000, 66000]);
-    check('18a untouched: every lump-sum row is "condition not confirmed"',
-      e.estimate.lines.filter((l) => l.origin === 'unknown_condition').map((l) => l.id),
-      ['roof', 'hvac', 'electrical_whole_house', 'electrical_panel', 'plumbing_sewer', 'foundation']);
+    check('18a untouched: known / provisional / total', [e.knownSubtotal, e.unansweredSubtotal, e.total], [0, 0, 0]);
+    check('18a untouched: there are no reserve lines',
+      e.estimate.lines.filter((l) => l.origin === 'unknown_condition').map((l) => l.id), []);
   }
 
   // 18b. Partially answered: Roof Repair, HVAC Good; the rest unanswered.
@@ -685,8 +686,8 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
     check('18b partial: Good replaces only the hvac allowance with $0', lineFor(e, 'hvac').outcome.kind, 'no_repair');
     check('18b partial: answered rows are indicated, not reserves',
       [lineFor(e, 'roof').origin, lineFor(e, 'hvac').origin], ['indicated', 'indicated']);
-    check('18b partial: known / unanswered / preliminary',
-      [e.knownSubtotal, e.unansweredSubtotal, e.total], [2500, 12500 + 3000 + 12500 + 15000, 2500 + 43000]);
+    check('18b partial: known / reserve / total',
+      [e.knownSubtotal, e.unansweredSubtotal, e.total], [2500, 0, 2500]);
   }
 
   // 18c. Fully answered: every lump-sum row answered, windows counted.
@@ -709,9 +710,8 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
     check('18d manual: and is MANUAL, indicated',
       [lineFor(e, 'foundation').outcome.provenance, lineFor(e, 'foundation').origin], ['MANUAL', 'indicated']);
     check('18d manual: an override on an answered row is kept', lineFor(e, 'roof').outcome.amount, 9000);
-    check('18d manual: allowances remain only for the four untouched lump-sum rows',
-      e.unansweredSubtotal, 8000 + 12500 + 3000 + 12500);
-    check('18d manual: preliminary = 7,250 + 9,000 + 36,000', e.total, 52250);
+    check('18d manual: no reserve remains for the untouched rows', e.unansweredSubtotal, 0);
+    check('18d manual: total = 7,250 + 9,000', e.total, 16250);
   }
 
   // 18e. Miscellaneous / Other repairs.
@@ -736,13 +736,13 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   // 18f. Quantity-dependent row: no allowance without a count.
   {
     const win = rowOf('windows');
-    check('18f quantity: the counted row has no unanswered allowance', M.unansweredAllowanceFor(win), null);
-    const e = estM({});
-    check('18f quantity: unanswered Windows is unresolved, flagged for its count',
-      lineFor(e, 'windows').outcome.reason.indexOf('window count') !== -1, true);
+    check('18f quantity: a bare count is not an answer', M.hasExplicitAnswer({ windows: M.applyQuantity(win, M.EMPTY_ANSWER, '3') }), false);
+    const e = estM(answers([['roof', 'good']]));
+    check('18f quantity: unanswered Windows is unknown after an answer',
+      lineFor(e, 'windows').outcome.kind, 'unpriced_risk');
     const counted = estM({ windows: M.applyQuantity(win, M.applyCondition(win, 'repair'), '3') });
     check('18f quantity: a stated count prices it at the approved rate', lineFor(counted, 'windows').outcome.amount, 3 * win.repairDefault);
-    check('18f quantity: and it leaves the unresolved list', counted.estimate.unpricedRisks.length, 0);
+    check('18f quantity: and it leaves the unknown list (2026-10-07)', counted.estimate.unpricedRisks.some((r) => r.id === 'windows'), false);
   }
 
   // 18g. The page shows the three figures, the labels and the misc row.
@@ -752,14 +752,14 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
        shared RepairEstimateSummary component (rendered by Underwriting and the
        Deal Calculator alike; rendered checks in test-repair-estimate-rendered.cjs). */
     const summaryCode = fs.readFileSync(path.join(APP, 'src', 'components', 'RepairEstimateSummary.tsx'), 'utf8');
-    check('18g page: Known repairs / Unanswered allowances / Preliminary total',
+    check('18g page: Known repairs / provisional / total (2026-10-07)',
       /<RepairEstimateSummary result=\{result\} \/>/.test(pageCode)
         && /<span>Known repairs<\/span><span data-testid="repair-known-subtotal">\{money\(result\.knownSubtotal\)\}<\/span>/.test(summaryCode)
-        && /\{money\(result\.unansweredSubtotal\)\}/.test(summaryCode)
-        && /Preliminary total/.test(summaryCode), true);
+        && /data-testid="repair-estimate-status"/.test(summaryCode)
+        && /Known repairs — estimate incomplete/.test(summaryCode), true);
     check('18g page: the preliminary-policy notice, in the ruling wording',
       summaryCode.indexOf('"Preliminary policy allowances — not verified market averages and not confirmed repair needs."') !== -1, true);
-    check('18g page: each unanswered row shows its allowance or why it has none',
+    check('18g page: each unanswered row says it is unknown',
       /data-testid=\{`repair-unanswered-\$\{row\.system\}`\}/.test(pageCode), true);
     check('18g page: the Miscellaneous row has a description and an amount',
       /<MiscRepairRow misc=\{misc\} onChange=\{commitMisc\} \/>/.test(pageCode)
@@ -776,6 +776,9 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
     const docFlat = fs.readFileSync(path.resolve(APP, '..', 'docs', 'ESTIMATED_REPAIRS_STANDARD.md'), 'utf8').replace(/\s+/g, ' ');
     check('18h doc: the dated amendment exists',
       docFlat.indexOf('## Itemized unanswered allowances amendment — 2026-10-04') !== -1, true);
+    check('18h doc: the 2026-10-07 amendment supersedes it',
+      docFlat.indexOf('## Provisional starting estimate amendment — 2026-10-07') !== -1
+        && docFlat.indexOf('Untouched starting estimate: $20,000, visibly provisional.') !== -1, true);
     check('18h doc: it retires the $20,000 fallback',
       docFlat.indexOf('The blanket $20,000 untouched fallback is retired') !== -1, true);
     check('18h doc: it forbids invented amounts and quantity assumptions',
