@@ -1,6 +1,6 @@
 import { AlertCircle } from "lucide-react";
 import {
-  electricalOverlapPossible, MISC_ROW_LABEL, parseKnownAmount, PROVISIONAL_STARTING_ESTIMATE,
+  electricalOverlapPossible, MISC_ROW_LABEL, parseKnownAmount,
   type MiscAnswer, type OperatorEstimate,
 } from "../lib/repair-estimation/operator-model";
 
@@ -18,11 +18,7 @@ import {
 export const PRELIMINARY_ALLOWANCE_NOTICE =
   "Preliminary policy allowances — not verified market averages and not confirmed repair needs.";
 
-/** 2026-10-07 policy: the untouched figure, and what ends it. */
-export const PROVISIONAL_NOTICE =
-  "Provisional starting estimate — no repair answered yet. Your first answer (including Good or $0) replaces it; after that only the amounts you know are totalled.";
-
-/** 2026-10-07 policy, Brad's wording: shown whenever a row is still unknown, $0 included. */
+/** October 19 known-only policy, Brad's wording: shown whenever a row is still unknown, $0 included. */
 export function incompleteStatus(known: number): string {
   return `Known repairs: ${money(known)} — estimate incomplete`;
 }
@@ -40,9 +36,7 @@ export function RepairEstimateSummary({ result }: { result: OperatorEstimate }) 
   const unresolved = result.estimate.unpricedRisks;
   return (
     <div data-testid="repair-estimate-summary">
-      {/* 2026-10-07 policy: the provisional $20,000 until the first explicit
-          answer; after it, Known repairs only, flagged incomplete while any
-          row is unknown. The provisional figure is never shown as known. */}
+      {/* October 19: only known amounts; unanswered rows remain visible even at zero. */}
       <div data-testid="repair-summary" style={{
         marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #1E293B",
         fontFamily: "Space Grotesk, monospace", fontSize: "13px",
@@ -50,12 +44,6 @@ export function RepairEstimateSummary({ result }: { result: OperatorEstimate }) 
         <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#94A3B8" }}>
           <span>Known repairs</span><span data-testid="repair-known-subtotal">{money(result.knownSubtotal)}</span>
         </div>
-        {result.provisional ? (
-          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#F59E0B" }}>
-            <span>Provisional starting estimate</span>
-            <span data-testid="repair-provisional-estimate">{money(PROVISIONAL_STARTING_ESTIMATE)}</span>
-          </div>
-        ) : null}
         {fmtm.outcome.amount > 0 ? (
           <>
             <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#94A3B8" }}>
@@ -71,8 +59,8 @@ export function RepairEstimateSummary({ result }: { result: OperatorEstimate }) 
           borderTop: "1px solid #1E293B", color: "#E2E8F0", fontWeight: 700,
         }}>
           <span data-testid="repair-total-label">
-            {result.provisional ? "Provisional total" : result.incomplete ? "Known repairs — estimate incomplete" : "Repair total"}
-            {!result.provisional && unresolved.length > 0 ? ` (excludes ${unresolved.length} unknown or unresolved)` : ""}
+            {result.incomplete ? "Known repairs — estimate incomplete" : "Repair total"}
+            {unresolved.length > 0 ? ` (excludes ${unresolved.length} unknown or unresolved)` : ""}
           </span>
           <span data-testid="repair-preliminary-total">{money(result.total)}</span>
         </div>
@@ -83,7 +71,7 @@ export function RepairEstimateSummary({ result }: { result: OperatorEstimate }) 
           </div>
         ) : null}
         <div data-testid="repair-estimate-status" role="status" style={{ fontSize: "12px", fontWeight: 600, color: "#F59E0B", marginTop: "6px", fontFamily: "Inter, sans-serif" }}>
-          {result.provisional ? PROVISIONAL_NOTICE : result.incomplete ? incompleteStatus(result.total) : null}
+          {result.incomplete ? incompleteStatus(result.total) : null}
         </div>
         <div data-testid="repair-preliminary-notice" style={{ fontSize: "11px", color: "#475569", marginTop: "6px", fontFamily: "Inter, sans-serif" }}>
           {PRELIMINARY_ALLOWANCE_NOTICE} An unanswered row adds nothing and stays unknown until you answer it.

@@ -7,7 +7,7 @@
  * engine, renders the summary with react-dom/server, and checks page wiring
  * by source text (this repository's convention; no browser harness).
  *
- * Covers: untouched (provisional $20,000), Good / $0 / Misc $0 ending it,
+ * Covers: untouched (zero-start known-only total), Good / $0 / Misc $0 ending it,
  * what does NOT end it, positive amounts and the Repair auto-select,
  * partially answered and fully answered states, "Known repairs: $X —
  * estimate incomplete" ($0 included), quick -> itemized transfer without
@@ -31,6 +31,7 @@ try {
     path.join(APP, 'src/lib/repair-estimation/operator-model.ts'),
     path.join(APP, 'src/components/RepairEstimateSummary.tsx'),
     path.join(APP, 'src/lib/underwriting/compute.ts'),
+    path.join(APP, 'src/lib/deal-calculator-inputs.ts'),
     '--outDir', TMP, '--rootDir', APP, '--module', 'commonjs', '--target', 'es2020',
     '--strict', '--skipLibCheck', '--jsx', 'react-jsx', '--resolveJsonModule', '--esModuleInterop',
   ], { cwd: APP, stdio: 'inherit' });
@@ -44,6 +45,7 @@ const M = require(path.join(TMP, 'src/lib/repair-estimation/operator-model.js'))
 const { computeRepairEstimate } = require(path.join(TMP, 'src/lib/repair-estimation/compute.js'));
 const C = require(path.join(TMP, 'src/components/RepairEstimateSummary.js'));
 const { computeUnderwriting } = require(path.join(TMP, 'src/lib/underwriting/compute.js'));
+const { parseNonNegativeAmountInput } = require(path.join(TMP, 'src/lib/deal-calculator-inputs.js'));
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 fs.rmSync(TMP, { recursive: true, force: true });
@@ -71,11 +73,11 @@ const OTHER_ROWS = M.OPERATOR_ROWS.length - 1;
 // ── 1. Untouched ─────────────────────────────────────────────────────────────
 {
   const e = est({});
-  check('1 untouched: provisional $20,000, not incomplete, known $0', shape(e), [true, false, 0, 20000]);
-  check('1 untouched: the figure comes from the approved table', M.PROVISIONAL_STARTING_ESTIMATE, 20000);
+  check('1 untouched: zero-start known-only total, not incomplete, known $0', shape(e), [false, true, 0, 0]);
+  check('1 untouched: the figure comes from the approved table', M.REPAIR_STARTING_ESTIMATE, 0);
   const html = render(e);
-  check('1 untouched: labelled provisional', testIdText(html, 'repair-total-label'), 'Provisional total');
-  check('1 untouched: says it is provisional', testIdText(html, 'repair-estimate-status'), C.PROVISIONAL_NOTICE);
+  check('1 untouched: labelled incomplete', testIdText(html, 'repair-total-label'), 'Known repairs — estimate incomplete (excludes 7 unknown or unresolved)');
+  check('1 untouched: says it is incomplete', testIdText(html, 'repair-estimate-status'), 'Known repairs: $0 — estimate incomplete');
   check('1 untouched: never shown as known', testIdText(html, 'repair-known-subtotal'), '$0');
 }
 
@@ -86,24 +88,24 @@ const OTHER_ROWS = M.OPERATOR_ROWS.length - 1;
   check('2 Good alone: "Known repairs: $0 — estimate incomplete"', testIdText(render(good), 'repair-estimate-status'), 'Known repairs: $0 — estimate incomplete');
   const zeroTyped = typed('0');
   check('2 $0 typed on an unanswered row keeps Not asked', zeroTyped.condition, 'not_asked');
-  check('2 $0 typed: ends the provisional figure, total $0', shape(est({ hvac: zeroTyped })), [false, true, 0, 0]);
+  check('2 $0 typed: is a valid zero answer, total $0', shape(est({ hvac: zeroTyped })), [false, true, 0, 0]);
   check('2 Misc $0 alone ends it too', shape(est({}, { description: '', amount: '0' })), [false, true, 0, 0]);
   check('2 a positive amount is not required', M.hasExplicitAnswer({ roof: cond('roof', 'good') }), true);
 }
 
 // ── 3. What does NOT end it ──────────────────────────────────────────────────
 {
-  check('3 Misc description alone stays provisional', shape(est({}, { description: 'Gutters\nFence', amount: '' })), [true, false, 0, 20000]);
-  check('3 a bare count stays provisional', est({ windows: M.applyQuantity(rowOf('windows'), M.EMPTY_ANSWER, '4') }).total, 20000);
+  check('3 Misc description alone stays zero and incomplete', shape(est({}, { description: 'Gutters\nFence', amount: '' })), [false, true, 0, 0]);
+  check('3 a bare count stays zero and incomplete', est({ windows: M.applyQuantity(rowOf('windows'), M.EMPTY_ANSWER, '4') }).total, 0);
   const bad = est({ roof: typed('abc') });
-  check('3 an unreadable amount stays provisional', [bad.provisional, bad.total], [true, 20000]);
-  check('3 ...and is still shown unresolved', bad.estimate.unpricedRisks.map((r) => r.id), ['roof']);
+  check('3 an unreadable amount stays zero and incomplete', [bad.provisional, bad.total], [false, 0]);
+  check('3 ...and is still shown unresolved', bad.estimate.unpricedRisks.map((r) => r.id), M.OPERATOR_ROWS.map((r) => r.system));
   /* Typing $500 selected Repair (an explicit answer); erasing the amount
      leaves Repair with a cleared amount: answered, unresolved, $0 counted. */
   const erased = est({ roof: typed('', typed('500')) });
   check('3 typed-then-erased: Repair stays, amount shown cleared, not provisional',
     [erased.provisional, erased.total, (erased.estimate.unpricedRisks.find((r) => r.id === 'roof')?.reason ?? '').includes('cleared')], [false, 0, true]);
-  check('3 explicit empty answers are untouched', est({ roof: { condition: 'not_asked', amount: '', quantity: '', dirty: false } }).total, 20000);
+  check('3 explicit empty answers are untouched', est({ roof: { condition: 'not_asked', amount: '', quantity: '', dirty: false } }).total, 0);
 }
 
 // ── 3b. Punctuation alone is not an amount (same class as B15-26 F1) ─────────
@@ -111,12 +113,12 @@ const OTHER_ROWS = M.OPERATOR_ROWS.length - 1;
   for (const raw of ['$', ',', '$ ,', ' $$ ']) check(`3b parse ${JSON.stringify(raw)} is invalid, not $0`, M.parseKnownAmount(raw), { kind: 'invalid' });
   check('3b "$0" and "$1,500" still parse', [M.parseKnownAmount('$0'), M.parseKnownAmount('$1,500')], [{ kind: 'value', value: 0 }, { kind: 'value', value: 1500 }]);
   const row = est({ roof: typed('$') });
-  check('3b "$" on a row keeps the provisional figure and shows the row unresolved',
-    [row.provisional, row.total, row.estimate.unpricedRisks.map((r) => r.id)], [true, 20000, ['roof']]);
+  check('3b "$" on a row keeps zero known repairs and shows the row unresolved',
+    [row.provisional, row.total, row.estimate.unpricedRisks.map((r) => r.id)], [false, 0, M.OPERATOR_ROWS.map((r) => r.system)]);
   check('3b "$" does not select Repair', typed('$').condition, 'not_asked');
   const misc = est({}, { description: '', amount: '$' });
-  check('3b "$" in Misc keeps the provisional figure and shows Misc unresolved',
-    [misc.provisional, misc.total, misc.estimate.unpricedRisks.map((r) => r.id)], [true, 20000, ['misc']]);
+  check('3b "$" in Misc keeps zero known repairs and shows Misc unresolved',
+    [misc.provisional, misc.total, misc.estimate.unpricedRisks.map((r) => r.id)], [false, 0, [...M.OPERATOR_ROWS.map((r) => r.system), 'misc']]);
 }
 
 // ── 4. Positive amounts ──────────────────────────────────────────────────────
@@ -169,10 +171,10 @@ const OTHER_ROWS = M.OPERATOR_ROWS.length - 1;
   check('7 Clear: answers reset', after.answers, {});
   check('7 Clear: Misc description kept, amount reset', after.misc, { description: 'Gutters\nand fence', amount: '' });
   const e = est(after.answers, after.misc);
-  check('7 Clear: back to the provisional $20,000', shape(e), [true, false, 0, 20000]);
+  check('7 Clear: back to zero and incomplete', shape(e), [false, true, 0, 0]);
   check('7 Clear: retained text restores no amount', [M.hasExplicitAnswer(after.answers, after.misc), e.estimate.lines.some((l) => l.id === 'misc')], [false, false]);
   const edited = est({}, { description: '', amount: '' });
-  check('7 the retained description can be erased', edited.total, 20000);
+  check('7 the retained description can be erased', edited.total, 0);
 }
 
 // ── 8. Multi-line Misc description, field order ──────────────────────────────
@@ -209,10 +211,10 @@ const OTHER_ROWS = M.OPERATOR_ROWS.length - 1;
   const untouched = mao(est({}).total);
   const good = mao(est({ roof: cond('roof', 'good') }).total);
   const partial = mao(est({ roof: cond('roof', 'severe') }).total);
-  check('9 downstream: untouched deducts the provisional $20,000', untouched.line, -20000);
+  check('9 downstream: untouched deducts the zero-start known-only total', untouched.line, -0);
   check('9 downstream: Good alone deducts $0', good.line, -0);
   check('9 downstream: partial deducts known only', partial.line, -15000);
-  check('9 downstream: MAO moves exactly by the repair total', [good.mao - untouched.mao, good.mao - partial.mao], [20000, 15000]);
+  check('9 downstream: MAO moves exactly by the repair total', [good.mao - untouched.mao, good.mao - partial.mao], [0, 15000]);
 
   const dc = fs.readFileSync(path.join(APP, 'src/pages/DealCalculator.tsx'), 'utf8');
   check('9 DC: itemized repairs are the estimate total', /: detailedEstimate\.total;/.test(dc), true);
@@ -229,6 +231,21 @@ const OTHER_ROWS = M.OPERATOR_ROWS.length - 1;
   check('9 no new category rows', M.OPERATOR_ROWS.map((r) => r.system), ['roof', 'hvac', 'electrical_whole_house', 'electrical_panel', 'plumbing_sewer', 'foundation', 'windows']);
   check('9 other rows count', OTHER_ROWS, 6);
 }
+
+
+// October 19: Quick must not turn normalization-empty text into a transferred zero.
+for (const raw of [' ${checks - failures}/${checks} checks passed`);
+process.exit(failures ? 1 : 0);
+, ',', '$, ', ' $ ']) {
+  const parsed = parseNonNegativeAmountInput(raw);
+  check('Quick punctuation is invalid: ' + JSON.stringify(raw), parsed.kind, 'invalid');
+  check('Quick punctuation never transfers: ' + JSON.stringify(raw), M.transferQuickTotal(parsed.kind === 'value' ? parsed.value : null, {}, M.EMPTY_MISC), null);
+}
+for (const raw of ['0', '$0']) {
+  const parsed = parseNonNegativeAmountInput(raw);
+  check('Quick explicit zero preserved: ' + raw, parsed.kind === 'value' ? M.transferQuickTotal(parsed.value, {}, M.EMPTY_MISC) : null, { description: '', amount: '0' });
+}
+check('current dated zero-start amendment retained', fs.readFileSync(path.resolve(APP, '..', 'docs/ESTIMATED_REPAIRS_STANDARD.md'), 'utf8').includes('## Known-only zero-start amendment — 2026-10-19'), true);
 
 console.log(`B15-01 repair policy: ${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);

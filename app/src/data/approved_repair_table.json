@@ -1,14 +1,14 @@
 {
   "_meta": {
     "name": "IAOS approved repair table",
-    "authority": "docs/ESTIMATED_REPAIRS_STANDARD.md — Governing operator-defaults amendment, 2026-09-04, as amended by the Itemized unanswered allowances amendment, 2026-10-04, and the Provisional starting estimate amendment, 2026-10-07",
+    "authority": "docs/ESTIMATED_REPAIRS_STANDARD.md — Governing operator-defaults amendment, 2026-09-04, as amended by the Itemized unanswered allowances amendment, 2026-10-04, and the Provisional starting estimate amendment, 2026-10-07; Known-only zero-start amendment, 2026-10-19",
     "process": "docs/REPAIR_TABLE_MAINTENANCE_V1.md",
     "provenance": "IAOS DFW POLICY. Brad-approved underwriting policy amounts, not cost-book values. Applied unconditionally; no location is read to select them.",
     "note": "THIS FILE IS THE SOURCE OF TRUTH FOR THE REPAIR CALCULATOR'S DEFAULTS. Changing a value here changes what the estimator loads. Every change is a Brad decision, recorded as a dated amendment to the authority above. Nothing edits this file automatically.",
-    "lastApproved": "2026-10-07",
-    "retired": "untouchedFallbackAmount ($20,000) retired 2026-10-04 (Brad); the 2026-10-04 per-row unanswered allowances are in turn superseded 2026-10-07 (Brad): untouchedStartingEstimate below is the provisional figure until the first explicit answer, after which only known amounts are totalled."
+    "lastApproved": "2026-10-19",
+    "retired": "untouchedFallbackAmount ($20,000) retired 2026-10-04 (Brad); the 2026-10-04 per-row unanswered allowances are in turn superseded 2026-10-07 (Brad): untouchedStartingEstimate below is the provisional figure until the first explicit answer, after which only known amounts are totalled. October 19: provisional starting/replacement rules superseded; only valid known amounts count, initially $0."
   },
-  "untouchedStartingEstimate": 20000,
+  "untouchedStartingEstimate": 0,
   "rows": [
     {
       "system": "roof",

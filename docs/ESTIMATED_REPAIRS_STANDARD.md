@@ -741,3 +741,13 @@ Unchanged: the approved row amounts, the approval and save gates, and the offer 
 ### Status
 
 The policy is approved and recorded here. Its implementation (B15-01 / B15-02 UI slice) remains behind independent review and Test verification. This document does not accept the implementation.
+
+## Known-only zero-start amendment — 2026-10-19
+
+Brad's explicit October 19 policy amendment supersedes the $20,000 starting-state and first-answer replacement rules above. Historical rulings remain preserved.
+
+Untouched repairs start at $0. Sum valid entered amounts only. Unanswered required repair items contribute nothing and remain visibly unknown. While any are unanswered/unresolved, show “Known repairs: $X — estimate incomplete”, including at $0. Genuine numeric zero and Good remain valid explicit answers; blank, invalid and punctuation-only inputs do not.
+
+Repair-only Clear returns to known repairs $0/incomplete, preserving ARV, Test Price and Misc description, clearing repair amounts/quantities/conditions and Quick amount. Preserve Quick-to-itemized transfer with no double counting. Description or quantity alone is not an answered amount. Existing approved condition amounts and rates are unchanged; no new categories or rates. The existing explicit approval/revision/total save gate remains required; no implicit save is authorized.
+
+Implementation acceptance, target-lockfile integration checks and Test visual verification remain separate. Production HELD.

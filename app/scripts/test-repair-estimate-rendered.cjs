@@ -71,12 +71,12 @@ const answer = (system, condition) => M.applyCondition(rowOf(system), condition)
 {
   const html = render(est({}));
   check('1 untouched: Known repairs renders $0', testIdText(html, 'repair-known-subtotal'), '$0');
-  check('1 untouched: the provisional starting estimate renders $20,000', testIdText(html, 'repair-provisional-estimate'), '$20,000');
-  check('1 untouched: the total renders $20,000', testIdText(html, 'repair-preliminary-total'), '$20,000');
-  check('1 untouched: the total is labelled provisional', testIdText(html, 'repair-total-label'), 'Provisional total');
-  check('1 untouched: it says what ends the provisional figure', testIdText(html, 'repair-estimate-status'), C.PROVISIONAL_NOTICE);
+  check('1 untouched: no provisional reserve is rendered', testIdText(html, 'repair-provisional-estimate'), null);
+  check('1 untouched: the total renders $0', testIdText(html, 'repair-preliminary-total'), '$0');
+  check('1 untouched: the total is labelled incomplete', testIdText(html, 'repair-total-label'), 'Known repairs — estimate incomplete (excludes 7 unknown or unresolved)');
+  check('1 untouched: it says estimate incomplete', testIdText(html, 'repair-estimate-status'), 'Known repairs: $0 — estimate incomplete');
   check('1 untouched: the preliminary-policy notice renders', html.includes(C.PRELIMINARY_ALLOWANCE_NOTICE), true);
-  check('1 untouched: no row is listed as unresolved yet', /data-testid="repair-unresolved"/.test(html), false);
+  check('1 untouched: unanswered rows are visibly unknown', /data-testid="repair-unresolved"/.test(html), true);
 }
 
 // ── 2. Miscellaneous, same operator model, counted once ─────────────────────

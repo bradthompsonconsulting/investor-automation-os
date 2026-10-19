@@ -156,8 +156,8 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
     JSON.stringify(M.OPERATOR_ROWS), JSON.stringify(TABLE.rows));
   /* 2026-10-07: the provisional starting estimate comes from this same
      file; the 2026-10-04 per-row allowances are superseded. */
-  check('the provisional starting estimate comes from the approved table file',
-    [M.PROVISIONAL_STARTING_ESTIMATE, TABLE.untouchedStartingEstimate], [20000, 20000]);
+  check('the zero starting amount comes from the approved table file',
+    [M.REPAIR_STARTING_ESTIMATE, TABLE.untouchedStartingEstimate], [0, 0]);
   check('no per-row unanswered allowance survives (2026-10-07)', M.unansweredAllowanceFor, undefined);
   check('the approved table names its authority',
     TABLE._meta.authority.indexOf('ESTIMATED_REPAIRS_STANDARD.md') !== -1, true);
@@ -281,13 +281,13 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   const e = est({});
   check('an untouched estimator is the row calculation', e.mode, 'rows');
   check('untouched: known repairs are zero', e.knownSubtotal, 0);
-  check('untouched: the provisional reserve is $20,000', e.unansweredSubtotal, 20000);
-  check('untouched: the total is the provisional $20,000', e.total, 20000);
-  check('untouched: the provisional figure is policy, not BOOK', [e.estimate.byProvenance.IAOS_POLICY, e.estimate.byProvenance.BOOK], [20000, 0]);
-  check('untouched: no row is listed separately', e.estimate.unpricedRisks.map((r) => r.id), []);
+  check('untouched: the reserve is zero', e.unansweredSubtotal, 0);
+  check('untouched: the total is zero', e.total, 0);
+  check('untouched: no reserve is policy or BOOK', [e.estimate.byProvenance.IAOS_POLICY, e.estimate.byProvenance.BOOK], [0, 0]);
+  check('untouched: every unanswered row is listed unknown', e.estimate.unpricedRisks.map((r) => r.id), M.OPERATOR_ROWS.map((r) => r.system));
   check('explicitly empty answers are the same as untouched', est({
     roof: { condition: 'not_asked', amount: '', quantity: '', dirty: false },
-  }).total, 20000);
+  }).total, 0);
   check('isUntouched agrees', M.isUntouched({}), true);
   check('the $20,000 fallback constant is retired from the module', M.UNTOUCHED_FALLBACK_AMOUNT, undefined);
   check('the $20,000 fallback is retired from the approved table', TABLE.untouchedFallbackAmount, undefined);
@@ -674,9 +674,9 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
   // 18a. Untouched: every row unanswered.
   {
     const e = estM({});
-    check('18a untouched: known / provisional / total', [e.knownSubtotal, e.unansweredSubtotal, e.total], [0, 20000, 20000]);
-    check('18a untouched: the only reserve is the provisional line',
-      e.estimate.lines.filter((l) => l.origin === 'unknown_condition').map((l) => l.id), ['provisional_start']);
+    check('18a untouched: known / provisional / total', [e.knownSubtotal, e.unansweredSubtotal, e.total], [0, 0, 0]);
+    check('18a untouched: there are no reserve lines',
+      e.estimate.lines.filter((l) => l.origin === 'unknown_condition').map((l) => l.id), []);
   }
 
   // 18b. Partially answered: Roof Repair, HVAC Good; the rest unanswered.
@@ -755,8 +755,8 @@ const lineFor = (e, id) => e.estimate.lines.find((l) => l.id === id);
     check('18g page: Known repairs / provisional / total (2026-10-07)',
       /<RepairEstimateSummary result=\{result\} \/>/.test(pageCode)
         && /<span>Known repairs<\/span><span data-testid="repair-known-subtotal">\{money\(result\.knownSubtotal\)\}<\/span>/.test(summaryCode)
-        && /data-testid="repair-provisional-estimate"/.test(summaryCode)
-        && /Provisional total/.test(summaryCode), true);
+        && /data-testid="repair-estimate-status"/.test(summaryCode)
+        && /Known repairs — estimate incomplete/.test(summaryCode), true);
     check('18g page: the preliminary-policy notice, in the ruling wording',
       summaryCode.indexOf('"Preliminary policy allowances — not verified market averages and not confirmed repair needs."') !== -1, true);
     check('18g page: each unanswered row says it is unknown',

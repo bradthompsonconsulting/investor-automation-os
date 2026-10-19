@@ -222,12 +222,7 @@ export default function DealCalculator() {
     [repairAnswers, repairMisc],
   );
 
-  /* Quick entry stays the default and stays blank until typed. Selecting the
-     itemized mode uses Brad's 2026-10-07 policy AT ONCE: with nothing
-     answered it is the provisional $20,000 starting estimate; after the
-     first explicit answer (Good and $0 included) only known amounts are
-     totalled -- the same figure Underwriting shows (PR #124 review, Jess
-     ruling item 1, carried forward). */
+  /* October 19: itemized sums only known amounts, initially zero/incomplete. */
   const repairs =
     repairsMode === "quick"
       ? (repairsQuickParsed.kind === "value" ? repairsQuickParsed.value : null)
@@ -262,7 +257,7 @@ export default function DealCalculator() {
     setRepairsMode("detailed");
   }
 
-  /* B15-01 repair-only Clear (2026-10-07): back to the provisional $20,000.
+  /* B15-01 repair-only Clear (2026-10-07): back to the known-only $0.
      ARV and Test Price are untouched; the Miscellaneous description is kept
      and its amount reset, so retained text cannot restore an old amount.
      The quick figure is a repair amount too, so it is cleared as well. */
@@ -578,7 +573,7 @@ export default function DealCalculator() {
                 <RotateCcw size={11} /> Clear repairs
               </button>
               <div style={{ fontSize: "10px", color: "#475569" }}>
-                Clear repairs returns to the provisional $20,000 and keeps ARV, Test Price and the Miscellaneous description.
+                Clear repairs returns to the known-only $0 and keeps ARV, Test Price and the Miscellaneous description.
               </div>
             </div>
           )}

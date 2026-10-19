@@ -696,10 +696,10 @@ function RepairEstimator({ opportunityId, onPersisted }: {
 
       <div style={{ padding: "18px 20px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
         <div style={{ fontSize: "11px", color: "#475569", marginBottom: "6px" }}>
-          Until you answer a row, the estimate is a provisional $20,000 starting figure. Your first answer —
-          any condition, including Good, or any amount, including $0 — replaces it, and from then on only
-          the amounts you know are totalled; unanswered rows stay unknown. Selecting a condition loads that
-          condition's approved amount. Where a row is counted, the count loads its approved rate times that
+          Repairs start at $0. Only valid known amounts are totalled; unanswered rows remain unknown
+          and the estimate stays incomplete. A numeric $0 or Good is an explicit answer; blank or invalid
+          input is not. Selecting a condition loads that condition's approved amount. Where a row is
+          counted, the count loads its approved rate times that
           count. The number in the field is the number used — type over it whenever you know better.
         </div>
 
