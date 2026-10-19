@@ -69,32 +69,57 @@ export function stageCell(contactId: string, source: DealStageSource): StageCell
   return { kind: "multiple", text: `${list.length} deals: ${parts.join(", ")}` };
 }
 
-/* B15-20 F2 (Bones, 2026-10-19): a value only shows a time when it carries
-   one. A plain date in the precise TEXT carrier would parse as midnight UTC
-   and display the previous evening in US time, inventing a time. */
-/* A clock time is HH:MM after a "T" or whitespace -- never the HH:MM of a
-   timezone offset ("GMT+05:00", "-05:00"), which is not a supplied time
-   (Bones F2 follow-up). */
-const HAS_CLOCK = /(?:^|[T\s])\d{1,2}:\d{2}/;
+/* B15-20 F2 (Bones, 2026-10-19): a value shows a time only when it carries a
+   real clock time, and a date only when it is a real calendar date. The
+   built-in parser silently rolls impossible values into other dates
+   ("2026-02-30 10:00" -> Mar 2, "2026-10-01 24:00" -> Oct 2, month 13 ->
+   next January), so every value is validated BEFORE it is formatted: a
+   malformed value is never shown as a different date and never overrides a
+   valid fallback. A clock time is HH:MM after a "T" or whitespace -- never
+   the HH:MM of a timezone offset ("GMT+05:00", "-05:00"). */
+const CLOCK = /(?:^|[T\s])(\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?/;
 const LEADING_DATE = /^\s*(\d{4})-(\d{2})-(\d{2})(?!\d)/;
 const utcDate = (d: Date) => d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
 
+function daysInMonth(year: number, month: number): number {
+  return [31, (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0 ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+
+type Checked =
+  | { kind: "invalid" }
+  | { kind: "ok"; instant: Date; date: { y: number; m: number; d: number }; hasClock: boolean };
+
+/**
+ * Validates a stored value: it must start with a real YYYY-MM-DD calendar
+ * date (both carriers are written in ISO form; anything else would go to the
+ * lenient parser and could roll into another date), and any clock it carries
+ * must be a real time.
+ */
+function checkValue(raw: string): Checked {
+  const lead = LEADING_DATE.exec(raw);
+  if (!lead) return { kind: "invalid" };
+  const y = Number(lead[1]), m = Number(lead[2]), d = Number(lead[3]);
+  if (m < 1 || m > 12 || d < 1 || d > daysInMonth(y, m)) return { kind: "invalid" };
+  const date = { y, m, d };
+  const clock = CLOCK.exec(raw);
+  if (clock) {
+    const h = Number(clock[1]), min = Number(clock[2]), sec = clock[3] === undefined ? 0 : Number(clock[3]);
+    if (h > 23 || min > 59 || sec > 59) return { kind: "invalid" };
+  }
+  const instant = new Date(raw);
+  if (isNaN(instant.getTime())) return !clock ? { kind: "ok", instant, date, hasClock: false } : { kind: "invalid" };
+  return { kind: "ok", instant, date, hasClock: !!clock };
+}
+
 export function lastCallAttemptText(precise: string | null, dateOnly: string | null): string {
-  const preciseDate = precise ? new Date(precise) : null;
-  const preciseValid = !!preciseDate && !isNaN(preciseDate.getTime());
-  if (preciseValid && HAS_CLOCK.test(precise!)) {
-    return preciseDate!.toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const p = precise ? checkValue(precise) : null;
+  if (p && p.kind === "ok" && p.hasClock && !isNaN(p.instant.getTime())) {
+    return p.instant.toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
-  if (dateOnly) {
-    const d = new Date(dateOnly);
-    if (!isNaN(d.getTime())) return utcDate(d);
-  }
+  const f = dateOnly ? checkValue(dateOnly) : null;
+  if (f && f.kind === "ok") return utcDate(new Date(Date.UTC(f.date.y, f.date.m - 1, f.date.d)));
   /* A precise value with no clock and no valid DATE fallback: its own stated
      calendar date, read literally -- never via an offset-shifted instant. */
-  const ymd = precise ? LEADING_DATE.exec(precise) : null;
-  if (ymd) {
-    const d = new Date(Date.UTC(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])));
-    if (!isNaN(d.getTime()) && d.getUTCDate() === Number(ymd[3])) return utcDate(d);
-  }
+  if (p && p.kind === "ok" && !p.hasClock) return utcDate(new Date(Date.UTC(p.date.y, p.date.m - 1, p.date.d)));
   return precise || dateOnly ? ATTEMPT_UNREADABLE : NO_ATTEMPT_RECORDED;
 }

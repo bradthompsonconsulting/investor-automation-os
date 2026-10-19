@@ -84,6 +84,21 @@ check('F2b date + offset with a different DATE fallback uses the fallback', K.la
 check('F2b a genuine clock with an offset still shows its time', K.lastCallAttemptText('2026-10-01 14:30 GMT-05:00', null), 'Oct 1, 2026, 2:30 PM');
 check('F2b ISO instant with offset still shows its time', K.lastCallAttemptText('2026-10-01T00:00:00+05:00', null), 'Sep 30, 2026, 2:00 PM');
 check('F2b impossible calendar date without a clock is unreadable', K.lastCallAttemptText('2026-02-30 GMT+05:00', null), 'Unreadable date');
+// F2c (Bones, 635c54e): validate the whole calendar date and clock before formatting.
+const U = 'Unreadable date';
+check('F2c month 13 is not next January', [K.lastCallAttemptText('2026-13-01 GMT+05:00', null), K.lastCallAttemptText('2026-13-01', null)], [U, U]);
+check('F2c month 00 is not last December', [K.lastCallAttemptText('2026-00-01 GMT+05:00', null), K.lastCallAttemptText('2026-00-01', null)], [U, U]);
+check('F2c invalid month never overrides a valid fallback', [K.lastCallAttemptText('2026-13-01 GMT+05:00', '2026-10-01'), K.lastCallAttemptText('2026-00-01T10:00:00Z', '2026-10-01T00:00:00.000Z')], ['Oct 1, 2026', 'Oct 1, 2026']);
+check('F2c impossible days: Apr 31, Feb 30 with a clock, day 00', [K.lastCallAttemptText('2026-04-31 GMT+05:00', null), K.lastCallAttemptText('2026-02-30 10:00', null), K.lastCallAttemptText('2026-02-30T10:00:00Z', null), K.lastCallAttemptText('2026-10-00', null)], [U, U, U, U]);
+check('F2c impossible day with a clock falls back, never rolls forward', K.lastCallAttemptText('2026-02-30T10:00:00Z', '2026-02-28T00:00:00.000Z'), 'Feb 28, 2026');
+check('F2c leap years: 2028-02-29 and 2000-02-29 valid', [K.lastCallAttemptText('2028-02-29', null), K.lastCallAttemptText('2000-02-29 GMT+05:00', null), K.lastCallAttemptText(null, '2028-02-29T00:00:00.000Z')], ['Feb 29, 2028', 'Feb 29, 2000', 'Feb 29, 2028']);
+check('F2c non-leap Feb 29: 2026 and 2100 invalid', [K.lastCallAttemptText('2026-02-29', null), K.lastCallAttemptText('2100-02-29', null), K.lastCallAttemptText(null, '2026-02-29')], [U, U, U]);
+check('F2c leap day with a genuine clock shows its time', K.lastCallAttemptText('2028-02-29T16:00:00Z', null), 'Feb 29, 2028, 10:00 AM');
+check('F2c malformed times never roll into another day', [K.lastCallAttemptText('2026-10-01 24:00', null), K.lastCallAttemptText('2026-10-01 25:00', null), K.lastCallAttemptText('2026-10-01T10:60:00Z', null), K.lastCallAttemptText('2026-10-01T10:00:61Z', null)], [U, U, U, U]);
+check('F2c malformed time with a valid fallback uses the fallback', K.lastCallAttemptText('2026-10-01 24:00', '2026-09-30T00:00:00.000Z'), 'Sep 30, 2026');
+check('F2c an invalid fallback is ignored for a valid date-only precise value', [K.lastCallAttemptText('2026-10-01', '2026-13-01'), K.lastCallAttemptText('2026-10-01 GMT+05:00', '2026-02-30T00:00:00.000Z')], ['Oct 1, 2026', 'Oct 1, 2026']);
+check('F2c invalid values on both sides are Unreadable, not missing', K.lastCallAttemptText('2026-13-01', '2026-02-30'), U);
+check('F2c a non-ISO value is not trusted to the lenient parser', [K.lastCallAttemptText('Feb 30 2026 10:00', null), K.lastCallAttemptText('Oct 1 2026 5:00 PM', '2026-10-01')], [U, 'Oct 1, 2026']);
 
 // ── Wiring ───────────────────────────────────────────────────────────────────
 const page = read('src/pages/Contacts.tsx');
