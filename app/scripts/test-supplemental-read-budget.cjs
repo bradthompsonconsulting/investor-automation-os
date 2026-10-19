@@ -64,10 +64,11 @@ const GHL = 'https://services.leadconnectorhq.com';
 let outbound = []; let onSend = null; let ghlAnswer = null; let nonGhl = [];
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const GENERIC = { contacts: [], meta: {}, opportunities: [], conversations: [], calendars: [], customValues: [], tasks: [], documents: [], contact: { id: 'fxContact0001', customFields: [] }, messages: { messages: [] }, customFields: [], total: 0 };
+const nativeFetch = global.fetch;   // kept for the loopback redirect tests only
 global.fetch = async (url, init = {}) => {
   const u = String(url);
   if (!u.startsWith(GHL + '/')) { nonGhl.push({ url: u, method: init.method || 'GET' }); throw new Error('fixture: non-GHL request refused offline: ' + u); }
-  outbound.push({ url: u, method: init.method || 'GET' });
+  outbound.push({ url: u, method: init.method || 'GET', redirect: init.redirect });
   if (onSend) onSend(u);
   return ghlAnswer ? ghlAnswer(u, init) : json(GENERIC);
 };
@@ -201,6 +202,81 @@ test('fetch: ENABLED refuses unsent -- non-GHL origin, non-GET, no Blob context,
 });
 
 // ---------------- every metered handler
+// ---------------- redirects (Bones SEQ 21): one reservation must be one upstream dispatch
+// A loopback HTTP server on 127.0.0.1 answers; native fetch reaches it through a dispatcher that carries each request
+// (whatever its URL's host) over a real loopback socket. The server counts what actually arrives. No provider request.
+const http = require('node:http');
+async function loopback(answer) {
+  const hits = [];
+  const server = http.createServer((req, res) => { hits.push(req.url); answer(req, res); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  const dispatcher = { dispatch(opts, h) {
+    const req = http.request({ host: '127.0.0.1', port, path: opts.path, method: opts.method, agent: false }, (res) => {
+      const raw = []; for (let i = 0; i < res.rawHeaders.length; i++) raw.push(Buffer.from(res.rawHeaders[i]));
+      h.onHeaders(res.statusCode, raw, () => res.resume(), res.statusMessage);
+      res.on('data', (c) => h.onData(c)); res.on('end', () => h.onComplete([]));
+    });
+    req.on('error', (e) => h.onError(e));
+    h.onConnect((e) => req.destroy(e), null); req.end(); return true;
+  } };
+  return { hits, dispatcher, close: () => new Promise((r) => server.close(r)) };
+}
+const redirectTo = (loc) => (req, res) => {
+  if (req.url === '/contacts/') { res.writeHead(302, { Location: loc, 'Content-Length': '0' }); res.end(); }
+  else { res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '2' }); res.end('{}'); }
+};
+async function withNativeFetch(fn) { const rec = global.fetch; global.fetch = nativeFetch; try { return await fn(); } finally { global.fetch = rec; } }
+test('redirect: ENABLED -- a 302 consumes exactly ONE reservation, the target receives ZERO requests, nothing is refunded', async () => {
+  const srv = await loopback(redirectTo('/redirected'));
+  try { await withNativeFetch(async () => {
+    enable(1, 'redir-1');
+    const f = lib.ghlReadFetch(ev(), 'ghl-contacts');
+    await assert.rejects(f(GHL + '/contacts/', { dispatcher: srv.dispatcher }), (e) => !(e instanceof lib.SupplementalReadRefused), 'the 3xx fails the request');
+    assert.deepEqual(srv.hits, ['/contacts/'], 'the initial request reached the server once; /redirected received nothing');
+    assert.equal(record('redir-1').reserved, 1); assert.deepEqual(record('redir-1').receipts.map((x) => x.path), ['/contacts/']);
+    await assert.rejects(lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/contacts/', { dispatcher: srv.dispatcher }), (e) => e.code === 'exhausted');
+    assert.deepEqual(srv.hits, ['/contacts/'], 'the failed request was not refunded: the next one is refused unsent');
+  }); } finally { await srv.close(); }
+});
+test('redirect: caller options cannot override the refusal -- redirect "follow" / "manual", a cross-origin Location, a Request object', async () => {
+  for (const [id, init, loc] of [['redir-follow', { redirect: 'follow' }, '/redirected'], ['redir-manual', { redirect: 'manual' }, '/redirected'],
+    ['redir-cross', { redirect: 'follow' }, 'https://elsewhere.example.invalid/x']]) {
+    const srv = await loopback(redirectTo(loc));
+    try { await withNativeFetch(async () => {
+      enable(1, id);
+      await assert.rejects(lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/contacts/', { ...init, dispatcher: srv.dispatcher }), id);
+      assert.deepEqual(srv.hits, ['/contacts/'], id + ': only the initial request was dispatched');
+      assert.equal(record(id).reserved, 1, id);
+    }); } finally { await srv.close(); }
+  }
+  const srv = await loopback(redirectTo('/redirected'));
+  try { await withNativeFetch(async () => {
+    enable(1, 'redir-request');
+    await assert.rejects(lib.ghlReadFetch(ev(), 'ghl-contacts')(new Request(GHL + '/contacts/', { redirect: 'follow' }), { dispatcher: srv.dispatcher }), (e) => e.code === 'invalid');
+    assert.deepEqual(srv.hits, [], 'a Request object is refused unsent (not a meterable target)'); assert.equal(record('redir-request'), null);
+  }); } finally { await srv.close(); }
+});
+test('redirect: positive controls -- ENABLED 200 passes through (one dispatch, one unit); DISABLED still follows, as before, with zero Blob access', async () => {
+  const srv = await loopback(redirectTo('/redirected'));
+  try { await withNativeFetch(async () => {
+    enable(2, 'redir-ok');
+    const r = await lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/redirected', { dispatcher: srv.dispatcher });
+    assert.equal(r.status, 200); assert.equal(await r.text(), '{}'); assert.deepEqual(srv.hits, ['/redirected']); assert.equal(record('redir-ok').reserved, 1);
+    srv.hits.length = 0; disable(); blobOps = 0;
+    const d = await lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/contacts/', { dispatcher: srv.dispatcher });
+    assert.equal(d.status, 200); assert.deepEqual(srv.hits, ['/contacts/', '/redirected'], 'disabled behaviour is unchanged'); assert.equal(blobOps, 0);
+  }); } finally { await srv.close(); }
+});
+test('redirect: every metered handler sends with redirect "error" when ENABLED, and passes its own options unchanged when DISABLED', async () => {
+  for (const [n, q] of HANDLERS.filter(([n]) => n !== 'mailer-digest')) {
+    reset(); enable(1000); await run(n, q);
+    assert.ok(outbound.length >= 1 && outbound.every((o) => o.redirect === 'error'), n + ' enabled');
+    reset(); await run(n, q);
+    assert.ok(outbound.length >= 1 && outbound.every((o) => o.redirect === undefined), n + ' disabled');
+  }
+});
+
 test('handlers: DISABLED -- every metered function behaves as before with ZERO Blob access', async () => {
   for (const [n, q] of HANDLERS) { reset(); const r = await run(n, q); assert.notEqual(r.statusCode, 503, n); assert.ok(outbound.length >= 1, n + ' sent its read'); assert.equal(blobOps, 0, n); }
 });

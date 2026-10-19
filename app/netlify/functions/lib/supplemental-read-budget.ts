@@ -19,6 +19,9 @@
  *     counted a unit that was never used; it is never given back. A spent unit stays spent whatever the request's
  *     outcome (abort, timeout, rejection, 4xx/5xx, lost response);
  *   - a record missing AFTER the budget was opened refuses for good (the single-winner genesis claim, below);
+ *   - ONE reservation is ONE upstream dispatch: automatic redirects are refused (`redirect: "error"`, applied after
+ *     the caller's options, so no caller can turn following back on). A 3xx answer fails the request; its unit
+ *     stays spent, and no redirect target is ever contacted (Bones SEQ 21);
  *   - the scheduled mailer digest SENDS EMAIL after its reads, so while the budget is enabled it does nothing at
  *     all: no read and no send (`supplementalReadBudgetActive`, Bones SEQ 17 condition 5).
  * Otherwise (Production always; Test unless enabled) `ghlReadFetch` is the platform fetch, unchanged: no Blob
@@ -168,7 +171,8 @@ export function ghlReadFetch(event: any, fn: string): typeof fetch {
       catch (e) { throw e instanceof SupplementalReadRefused ? e : new SupplementalReadRefused("The supplemental read budget is unavailable. Nothing was sent.", "unavailable"); }
     }
     await budget.reserve(fn, url.pathname, new Date().toISOString());
-    return fetch(input, init);
+    // Last, so it overrides any caller-supplied `redirect`: a followed redirect would be a second, unreserved dispatch.
+    return fetch(input, { ...init, redirect: "error" });
   }) as typeof fetch;
 }
 
