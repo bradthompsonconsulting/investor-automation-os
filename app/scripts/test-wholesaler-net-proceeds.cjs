@@ -153,7 +153,13 @@ check('earnest money is not a cost line', !COST_LINES.assignment.concat(COST_LIN
   const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const conv = (raw, notApplicable = false) => net.costEntryFromInput({ notApplicable, raw }, parseNonNegativeAmountInput);
   const p$ = parseNonNegativeAmountInput('$');
-  check('F1 the shared parser still reads "$" as 0 (unchanged; why the guard exists)', eq(p$, { kind: 'value', value: 0 }), JSON.stringify(p$));
+  /* The shared parser reads "$" as 0 on origin/main, and as invalid once
+     Bones's B15-01 zero-start head (97b3a56) adds its own guard. The panel
+     must keep "$" Unknown under EITHER parser, so both are accepted here. */
+  check('F1 shared parser reads "$" as 0 (main) or invalid (with 97b3a56); never a nonzero amount',
+    eq(p$, { kind: 'value', value: 0 }) || p$.kind === 'invalid', JSON.stringify(p$));
+  const strictParse = (raw) => { const r = parseNonNegativeAmountInput(raw); return /\d/.test(raw) ? r : { kind: 'invalid', raw, reason: 'x' }; };
+  check('F1 conversion is Unknown for "$" with a strict parser too', eq(net.costEntryFromInput({ notApplicable: false, raw: '$' }, strictParse), UNKNOWN));
   for (const raw of ['$', ',', '$, ', ' $ ', '$$,,']) {
     const got = conv(raw);
     check(`F1 punctuation only stays Unknown: ${JSON.stringify(raw)}`, eq(got, UNKNOWN), JSON.stringify(got));
