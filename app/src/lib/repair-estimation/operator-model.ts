@@ -211,7 +211,12 @@ export type ParsedAmount =
 export function parseKnownAmount(raw: string): ParsedAmount {
   const t = raw.trim();
   if (t === "") return { kind: "blank" };
-  const n = Number(t.replace(/[$,\s]/g, ""));
+  const cleaned = t.replace(/[$,\s]/g, "");
+  /* B15-01 (same class as Bones's B15-26 F1): "$", "," or "$ ," strip to ""
+     and Number("") is 0, which would count as an explicit $0 answer and end
+     the provisional figure. Punctuation alone is not a dollar figure. */
+  if (cleaned === "") return { kind: "invalid" };
+  const n = Number(cleaned);
   if (!Number.isFinite(n) || n < 0) return { kind: "invalid" };
   return { kind: "value", value: n };
 }

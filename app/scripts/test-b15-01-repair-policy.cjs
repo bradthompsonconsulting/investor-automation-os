@@ -106,6 +106,19 @@ const OTHER_ROWS = M.OPERATOR_ROWS.length - 1;
   check('3 explicit empty answers are untouched', est({ roof: { condition: 'not_asked', amount: '', quantity: '', dirty: false } }).total, 20000);
 }
 
+// ── 3b. Punctuation alone is not an amount (same class as B15-26 F1) ─────────
+{
+  for (const raw of ['$', ',', '$ ,', ' $$ ']) check(`3b parse ${JSON.stringify(raw)} is invalid, not $0`, M.parseKnownAmount(raw), { kind: 'invalid' });
+  check('3b "$0" and "$1,500" still parse', [M.parseKnownAmount('$0'), M.parseKnownAmount('$1,500')], [{ kind: 'value', value: 0 }, { kind: 'value', value: 1500 }]);
+  const row = est({ roof: typed('$') });
+  check('3b "$" on a row keeps the provisional figure and shows the row unresolved',
+    [row.provisional, row.total, row.estimate.unpricedRisks.map((r) => r.id)], [true, 20000, ['roof']]);
+  check('3b "$" does not select Repair', typed('$').condition, 'not_asked');
+  const misc = est({}, { description: '', amount: '$' });
+  check('3b "$" in Misc keeps the provisional figure and shows Misc unresolved',
+    [misc.provisional, misc.total, misc.estimate.unpricedRisks.map((r) => r.id)], [true, 20000, ['misc']]);
+}
+
 // ── 4. Positive amounts ──────────────────────────────────────────────────────
 {
   const a = typed('7,250');
