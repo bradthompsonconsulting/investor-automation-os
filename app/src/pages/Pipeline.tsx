@@ -171,7 +171,7 @@ export default function Pipeline() {
       </div>
 
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 18px" }}>
-        Read-only view of the Seller Leads Pipeline. Stage changes are made in GHL. Every deal in the pipeline is
+        Read-only view of the Seller Leads Pipeline. Stage changes are made in GHL. Every loaded deal in the pipeline is
         listed, in any stage; a contact can have more than one, and contacts with no Seller Leads deal in the loaded
         results appear only on Contacts.
       </p>

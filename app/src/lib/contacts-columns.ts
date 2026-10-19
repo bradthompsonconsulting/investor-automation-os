@@ -16,7 +16,8 @@
  *
  * LAST CALL ATTEMPT is the contact's existing last_call_attempt carrier, the
  * value the Dashboard's "Last Contact" column already shows: the precise TEXT
- * companion when present (date and time), otherwise the DATE field (date only,
+ * companion with its time when it carries one (F2: a time is never invented),
+ * otherwise the DATE field (date only,
  * read in UTC so it is not shifted a day). It records IAOS / Board 4 call
  * attempts only, so it is labelled as that and never as "last contact" of any
  * other kind; no value reads "No attempt recorded", never "not contacted".
@@ -68,16 +69,23 @@ export function stageCell(contactId: string, source: DealStageSource): StageCell
   return { kind: "multiple", text: `${list.length} deals: ${parts.join(", ")}` };
 }
 
+/* B15-20 F2 (Bones, 2026-10-19): a value only shows a time when it carries
+   one. A plain date in the precise TEXT carrier would parse as midnight UTC
+   and display the previous evening in US time, inventing a time. */
+const HAS_TIME = /\d{1,2}:\d{2}/;
+const utcDate = (d: Date) => d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+
 export function lastCallAttemptText(precise: string | null, dateOnly: string | null): string {
-  if (precise) {
-    const d = new Date(precise);
-    if (!isNaN(d.getTime())) {
-      return d.toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-    }
+  const preciseDate = precise ? new Date(precise) : null;
+  const preciseValid = !!preciseDate && !isNaN(preciseDate.getTime());
+  if (preciseValid && HAS_TIME.test(precise!)) {
+    return preciseDate!.toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
   if (dateOnly) {
     const d = new Date(dateOnly);
-    if (!isNaN(d.getTime())) return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+    if (!isNaN(d.getTime())) return utcDate(d);
   }
+  /* A precise value with no time and no valid DATE fallback: its date only, read in UTC. */
+  if (preciseValid) return utcDate(preciseDate!);
   return precise || dateOnly ? ATTEMPT_UNREADABLE : NO_ATTEMPT_RECORDED;
 }

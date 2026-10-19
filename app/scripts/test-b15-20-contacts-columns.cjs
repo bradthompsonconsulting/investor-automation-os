@@ -71,6 +71,11 @@ check('attempt: date-only value is not shifted a day in US time', K.lastCallAtte
 check('attempt: an unreadable precise value falls back to the date field', K.lastCallAttemptText('garbage', '2026-10-01T00:00:00.000Z'), 'Oct 1, 2026');
 check('attempt: none recorded is said as such, not "not contacted"', K.lastCallAttemptText(null, null), 'No attempt recorded');
 check('attempt: an unreadable value is not passed off as missing', K.lastCallAttemptText('garbage', null), 'Unreadable date');
+// F2 (Bones): a plain date in the precise carrier never shows an invented time.
+check('F2 date-only precise, no fallback: its date, no time, no day shift', K.lastCallAttemptText('2026-10-01', null), 'Oct 1, 2026');
+check('F2 date-only precise with a DATE fallback: the DATE fallback', K.lastCallAttemptText('2026-10-01', '2026-10-02T00:00:00.000Z'), 'Oct 2, 2026');
+check('F2 midnight-UTC precise with a time still shows its (local) time', K.lastCallAttemptText('2026-10-01T00:00:00.000Z', null), 'Sep 30, 2026, 7:00 PM');
+check('F2 precise with a time and an offset', K.lastCallAttemptText('2026-10-01T09:05:00-05:00', null), 'Oct 1, 2026, 9:05 AM');
 
 // ── Wiring ───────────────────────────────────────────────────────────────────
 const page = read('src/pages/Contacts.tsx');

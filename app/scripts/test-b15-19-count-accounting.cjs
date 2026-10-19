@@ -147,6 +147,8 @@ const D6 = [deal('c1', 'st-new'), deal('c1', 'st-sent'), deal('c2', 'st-new'), d
   check('8 Follow Up precedence and Waiting on Me untouched', dash.includes('!terminalContactIds.has(c.id) && !followUpContactIds.has(c.id) && !doNotCallIds.has(c.id))'), true);
   const pipe = read('src/pages/Pipeline.tsx');
   check('8 Pipeline header says deals and contacts', pipe.includes('{opportunities.length.toLocaleString()} {opportunities.length === 1 ? "deal" : "deals"} · {dealContacts.toLocaleString()}'), true);
+  check('8 F1 (Bones): Pipeline and Dashboard claim only loaded records', pipe.includes('Every loaded deal in the pipeline is') && !pipe.includes('Every deal in the pipeline is')
+    && dash.includes('Temperature counts every loaded contact') && !dash.includes('Temperature counts every contact'), true);
   check('8 Pipeline still lists unknown stages as Unknown', pipe.includes('<StageBadge name={stageName.get(o.stageId) ?? "Unknown"} />'), true);
   const cts = read('src/pages/Contacts.tsx');
   check('8 Contacts reads through startCurrentRead', /return startCurrentRead\(\(\) => ghl\.contacts\.gridRows\(\), \{/.test(cts), true);
