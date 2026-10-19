@@ -12,8 +12,13 @@
  *      it stays unresolved and blocking. Saving without a title company is
  *      NOT changed (it needs a recorded decision; see handoff).
  * Behaviour of the page's own helper is checked by transpiling it out of
- * the page source; wiring and "no gate changed" by source text and by the
- * exact diff against origin/main.
+ * the page source; wiring and "no gate changed" by exact source invariants
+ * that need no git and hold on any tree containing B15-21 (F3b).
+ *
+ * SLICE PROVENANCE: --provenance additionally checks the pinned slice diff
+ * b9a84f2 -> 529b145 (exactly five display lines replaced, no gate token
+ * added, only the page and this test changed); it fails loudly if either
+ * commit is missing, never skips.
  *
  * NEGATIVE CONTROL: --before=<rev> reads that revision's page and must FAIL.
  */
@@ -72,18 +77,45 @@ check('artifact panel: when authorized, explains instead of "generate before aut
   page.includes('No PDF generated in this session. The saved authorization covers SHA-256') && page.includes('"Not yet generated for this revision -- generate before authorizing."'));
 check('no "verified" claim added', !/re-checked and verified|verification (is )?complete/i.test(page));
 
-// ── 4. Gates unchanged: the exact diff against origin/main is display-only ───
-if (!REV) {
-  const diff = execFileSync('git', ['diff', '-U0', 'origin/main', '--', 'src/pages/ContractWorkspace.tsx'], { cwd: APP, encoding: 'utf8' });
-  const removed = diff.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---'));
-  const added = diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++'));
-  check('exactly five lines replaced (heading, two unresolved texts, title placeholder, artifact-none text)', removed.length === 5, removed.length);
-  check('removed lines are the heading, the two unresolved texts, the title input and the artifact-none sentence',
-    removed.every((l) => /Contract Ready<\/h1>|text: "Unresolved", color|\{l\.text \?\? "Unresolved"\}\s*$|testId="contract-fact-input-title-company"|Not yet generated for this revision -- generate before authorizing\./.test(l)), removed);
-  check('no added line touches a gate, write, handler or validation',
-    !added.some((l) => /disabled=|eligib|persist|ghl\.|await |onClick=|setGroupError|handle[A-Z]|evaluate[A-Z]|authorized\s*[=:]/.test(l)), added.filter((l) => /disabled=|eligib|persist|ghl\.|await |onClick=|setGroupError|handle[A-Z]|evaluate[A-Z]/.test(l)));
-  const libDiff = execFileSync('git', ['diff', '--stat', 'origin/main', '--', 'src/lib', 'netlify', 'shared'], { cwd: APP, encoding: 'utf8' });
-  check('no model, carrier, generation, server or config file changed', libDiff.trim() === '', libDiff);
+// ── 4. Gates unchanged — combined invariants, no git (F3b) ───────────────────
+// These hold on ANY tree that contains B15-21: the slice branch, a shallow CI
+// checkout, the integrated main. They replace the old moving `origin/main`
+// diff, which needs history CI lacks and becomes empty after merge.
+check('generation is still gated on authorization eligibility',
+  page.includes('<Btn testId="contract-generate-button" onClick={handleGenerateArtifact} busy={generateBusy} disabled={!authorizationEligibility.eligible}>'));
+check('Save authorization is still gated on eligibility AND a PDF generated in this session',
+  /testId="contract-authorization-authorize-button"\s+onClick=\{handleAuthorize\}\s+busy=\{authorizeBusy\}\s+disabled=\{!authorizationEligibility\.eligible \|\| !generatedArtifact\}/.test(page));
+check('authorization currency is still evaluated against the current preview and artifact facts',
+  page.includes('return evaluateBradAuthorizationCurrency(bradAuthorizationRecord, contractDocumentPreview, currentArtifactFactsForDisplay);'));
+check('authorization eligibility is still evaluated from the preview and document version',
+  page.includes('return evaluateAuthorizationEligibility(contractDocumentPreview, documentVersion);'));
+check('"saved" still derives only from currency (display state unchanged)',
+  /const authorizationDisplayState: "saved" \| "unsaved_changes" \| "not_saved" =\r?\n\s+bradAuthorizationStatus\?\.authorized\r?\n\s+\? "saved"\r?\n\s+: bradAuthorizationStatus && bradAuthorizationStatus\.record\r?\n\s+\? "unsaved_changes"\r?\n\s+: "not_saved";/.test(page));
+
+// ── 5. Slice provenance — pinned commits, explicit mode, never skipped ───────
+// `--provenance` checks the B15-21 slice itself: b9a84f2 -> 529b145. It needs
+// both commits; if either is missing it FAILS LOUDLY (fetch them) -- it never
+// skips. The default (CI) run does not include it; reviewers run it on demand.
+if (process.argv.includes('--provenance')) {
+  const BASE = 'b9a84f2ad1a3a350ebe1ba233220222ebeca0796';
+  const SLICE = '529b145cbedabd45847b49110e16ececdc1180a2';
+  const have = (rev) => { try { execFileSync('git', ['cat-file', '-e', `${rev}^{commit}`], { cwd: APP, stdio: 'ignore' }); return true; } catch { return false; } };
+  const missing = [BASE, SLICE].filter((r) => !have(r));
+  check(`provenance: pinned commits present (${BASE.slice(0, 7)}, ${SLICE.slice(0, 7)})`, missing.length === 0,
+    missing.length ? `missing ${missing.join(', ')} -- fetch them; provenance cannot be proven without them` : undefined);
+  if (missing.length === 0) {
+    const diff = execFileSync('git', ['diff', '-U0', BASE, SLICE, '--', ':/app/src/pages/ContractWorkspace.tsx'], { cwd: APP, encoding: 'utf8' });
+    const removed = diff.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---'));
+    const added = diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++'));
+    check('provenance: the slice replaced exactly five display lines', removed.length === 5, removed.length);
+    check('provenance: the replaced lines are the heading, two unresolved texts, the title input and the artifact-none sentence',
+      removed.length > 0 && removed.every((l) => /Contract Ready<\/h1>|text: "Unresolved", color|\{l\.text \?\? "Unresolved"\}\s*$|testId="contract-fact-input-title-company"|Not yet generated for this revision -- generate before authorizing\./.test(l)), removed);
+    check('provenance: no added line touches a gate, write, handler or validation',
+      added.length > 0 && !added.some((l) => /disabled=|eligib|persist|ghl\.|await |onClick=|setGroupError|handle[A-Z]|evaluate[A-Z]|authorized\s*[=:]/.test(l)));
+    const sliceFiles = execFileSync('git', ['diff', '--name-only', BASE, SLICE], { cwd: APP, encoding: 'utf8' }).trim().split('\n').sort();
+    check('provenance: the slice changed only the page and this test',
+      JSON.stringify(sliceFiles) === JSON.stringify(['app/scripts/test-b15-21-contract-display.cjs', 'app/src/pages/ContractWorkspace.tsx']), sliceFiles);
+  }
 }
 
 console.log(`\nB15-21 contract display: ${checks - failures}/${checks} checks passed`);
