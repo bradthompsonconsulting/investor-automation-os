@@ -234,9 +234,7 @@ const OTHER_ROWS = M.OPERATOR_ROWS.length - 1;
 
 
 // October 19: Quick must not turn normalization-empty text into a transferred zero.
-for (const raw of [' ${checks - failures}/${checks} checks passed`);
-process.exit(failures ? 1 : 0);
-, ',', '$, ', ' $ ']) {
+for (const raw of ['$', ',', '$, ', ' $$ ']) {
   const parsed = parseNonNegativeAmountInput(raw);
   check('Quick punctuation is invalid: ' + JSON.stringify(raw), parsed.kind, 'invalid');
   check('Quick punctuation never transfers: ' + JSON.stringify(raw), M.transferQuickTotal(parsed.kind === 'value' ? parsed.value : null, {}, M.EMPTY_MISC), null);
@@ -245,7 +243,6 @@ for (const raw of ['0', '$0']) {
   const parsed = parseNonNegativeAmountInput(raw);
   check('Quick explicit zero preserved: ' + raw, parsed.kind === 'value' ? M.transferQuickTotal(parsed.value, {}, M.EMPTY_MISC) : null, { description: '', amount: '0' });
 }
-check('current dated zero-start amendment retained', fs.readFileSync(path.resolve(APP, '..', 'docs/ESTIMATED_REPAIRS_STANDARD.md'), 'utf8').includes('## Known-only zero-start amendment — 2026-10-19'), true);
-
+check('current dated zero-start amendment retained', fs.readFileSync(path.resolve(APP, '..', 'docs', 'ESTIMATED_REPAIRS_STANDARD.md'), 'utf8').includes('## Known-only zero-start amendment — 2026-10-19'), true);
 console.log(`B15-01 repair policy: ${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);
