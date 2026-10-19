@@ -163,7 +163,12 @@ const D6 = [deal('c1', 'st-new'), deal('c1', 'st-sent'), deal('c2', 'st-new'), d
      constants, not a moving origin/main: works in a shallow CI checkout and
      after integration, where comparing main with itself would prove nothing.
      A later deliberate write change on these screens must update this pin
-     in the same commit. */
+     in the same commit. Derived (with the WRITES pattern below) from these
+     b9a84f2 blobs: app/src/pages/Dashboard.tsx 3bd41ce48c6e036680be260650f543cd210d680a,
+     Pipeline.tsx f3c1b62a995de4e62bb70be64659a770f53d0428,
+     Contacts.tsx c04387a189062cd1b2f7dcef78de98d9e12ca63c. SCOPE: a static count
+     of these call patterns in these three files -- not proof of every
+     possible write path. */
   const WRITES = /appWriteFetch\(|ghl\.notes\.create\(|ghl\.contacts\.set[A-Za-z]*\(|ghl\.opportunities\.(update|set)[A-Za-z]*\(|scheduleCallbackGated\(/g;
   const PINNED_B9A84F2 = { 'src/pages/Dashboard.tsx': 7, 'src/pages/Pipeline.tsx': 0, 'src/pages/Contacts.tsx': 0 };
   for (const [f, n] of Object.entries(PINNED_B9A84F2)) {

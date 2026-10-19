@@ -149,7 +149,11 @@ check('grid rows carry the existing attempt fields, both forms',
   ghl.includes('lastCallAttemptPrecise: c.lastCallAttemptPrecise,') && ghl.includes('lastCallAttempt:        c.lastCallAttempt,'), true);
 const WRITES = /appWriteFetch\(|ghl\.notes\.create\(|ghl\.contacts\.set[A-Za-z]*\(|ghl\.opportunities\.(update|set)[A-Za-z]*\(/g;
 /* F3: pinned from the B15-20 base, origin/main b9a84f2ad1a3a350ebe1ba233220222ebeca0796
-   (Contacts had no write call); a constant, never a moving origin/main. */
+   (Contacts had no write call); a constant, never a moving origin/main.
+   Derived with the WRITES pattern above from b9a84f2 blob
+   app/src/pages/Contacts.tsx c04387a189062cd1b2f7dcef78de98d9e12ca63c.
+   SCOPE: a static count of these call patterns in this file -- not proof of
+   every possible write path. */
 const CONTACTS_WRITES_PINNED_B9A84F2 = 0;
 check('no write call added to Contacts (pinned b9a84f2: 0)', (page.match(WRITES) || []).length, CONTACTS_WRITES_PINNED_B9A84F2);
 check('cell module has no I/O', !/fetch\(|\bghl\.|import /.test(read('src/lib/contacts-columns.ts').replace(/\/\*[\s\S]*?\*\//g, '')), true);
