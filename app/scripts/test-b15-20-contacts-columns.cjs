@@ -119,6 +119,17 @@ const ACCEPT = [
   ['2026-10-01T10:00-14:00', 'Oct 1, 2026, 7:00 PM'],
 ];
 check('F2d every supported shape at its boundary reads as stated', ACCEPT.map(([r]) => K.lastCallAttemptText(r, null)), ACCEPT.map(([, v]) => v));
+// F2e (Bones, dbac926): construction never moves a time or a year.
+check('F2e spring-forward gap: 02:30 local on 2026-03-08 does not exist', [K.lastCallAttemptText('2026-03-08 02:30', null), K.lastCallAttemptText('2026-03-08T02:30', null), K.lastCallAttemptText('2026-03-08T02:00:00', null)], [U, U, U]);
+check('F2e gap time with a valid DATE fallback uses the fallback', K.lastCallAttemptText('2026-03-08 02:30', '2026-03-08'), 'Mar 8, 2026');
+check('F2e neighbours of the gap are real local times', [K.lastCallAttemptText('2026-03-08 01:59', null), K.lastCallAttemptText('2026-03-08 03:30', null), K.lastCallAttemptText('2026-03-08T03:00:00', null)], ['Mar 8, 2026, 1:59 AM', 'Mar 8, 2026, 3:30 AM', 'Mar 8, 2026, 3:00 AM']);
+check('F2e explicit-offset and Z instants inside the local gap stay real instants', [K.lastCallAttemptText('2026-03-08T02:30:00Z', null), K.lastCallAttemptText('2026-03-08T02:30-06:00', null)], ['Mar 7, 2026, 8:30 PM', 'Mar 8, 2026, 3:30 AM']);
+check('F2e fall-back repeated hour is a real (ambiguous) local time', K.lastCallAttemptText('2026-11-01 01:30', null), 'Nov 1, 2026, 1:30 AM');
+check('F2e year 0099 is kept exactly: date, fallback, local clock', [K.lastCallAttemptText('0099-01-01', null), K.lastCallAttemptText(null, '0099-01-01'), K.lastCallAttemptText('0099-06-15 10:00', null)], ['Jan 1, 0099', 'Jan 1, 0099', 'Jun 15, 0099, 10:00 AM']);
+check('F2e year 0099 with Z keeps the year (never 1999)', /, 0099, /.test(K.lastCallAttemptText('0099-06-15T12:00:00Z', null)) && !/1999/.test(K.lastCallAttemptText('0099-06-15T12:00:00Z', null)), true);
+check('F2e nearby valid years', [K.lastCallAttemptText('1999-01-01', null), K.lastCallAttemptText('0000-01-01', null), K.lastCallAttemptText('0100-01-01', null)], ['Jan 1, 1999', 'Jan 1, 0000', 'Jan 1, 0100']);
+check('F2e leap rules for early years', [K.lastCallAttemptText('0099-02-29', null), K.lastCallAttemptText('0096-02-29', null), K.lastCallAttemptText('0000-02-29', null)], [U, 'Feb 29, 0096', 'Feb 29, 0000']);
+check('F2e midnight and noon format', [K.lastCallAttemptText('2026-10-01 00:05', null), K.lastCallAttemptText('2026-10-01 12:00', null)], ['Oct 1, 2026, 12:05 AM', 'Oct 1, 2026, 12:00 PM']);
 
 // ── Wiring ───────────────────────────────────────────────────────────────────
 const page = read('src/pages/Contacts.tsx');

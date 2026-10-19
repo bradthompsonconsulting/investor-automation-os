@@ -89,7 +89,17 @@ export function stageCell(contactId: string, source: DealStageSource): StageCell
 const SUPPORTED =
   /^\s*(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|\s?(?:GMT|UTC)?\s?([+-])(\d{2}):?(\d{2}))?|\s(?:GMT|UTC)?([+-])(\d{2}):(\d{2}))?\s*$/;
 // groups: 1-3 date; 4-7 clock h/m/s/fraction; 8 zone (9 sign, 10-11 offset); 12-14 date-only zone sign/offset
-const utcDate = (d: Date) => d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+/* Display text is built from validated components, not Intl/Date
+   formatting: years 0-99 stay exactly as supplied ("0099", never "99" or
+   1999), and the output is deterministic ("Oct 1, 2026" /
+   "Oct 1, 2026, 7:00 PM"). */
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const formatYmd = (y: number, m: number, d: number) => `${MONTHS[m - 1]} ${d}, ${String(y).padStart(4, "0")}`;
+function formatLocalDateTime(t: Date): string {
+  const h = t.getHours();
+  const clock = `${h % 12 === 0 ? 12 : h % 12}:${String(t.getMinutes()).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+  return `${formatYmd(t.getFullYear(), t.getMonth() + 1, t.getDate())}, ${clock}`;
+}
 
 function daysInMonth(year: number, month: number): number {
   return [31, (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0 ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
@@ -115,16 +125,32 @@ function checkValue(raw: string): Checked {
   const h = Number(x[4]), min = Number(x[5]), sec = x[6] === undefined ? 0 : Number(x[6]);
   if (h > 23 || min > 59 || sec > 59) return { kind: "invalid" };
   const ms = x[7] === undefined ? 0 : Math.floor(Number(`0.${x[7]}`) * 1000);
+  /* Built with set(UTC)FullYear, so years 0-99 are kept as supplied (the
+     Date constructor and Date.UTC would read 99 as 1999), and round-tripped
+     against the parsed components: a local wall time that does not exist
+     (a spring-forward gap, e.g. 02:30 on 2026-03-08 in America/Chicago) is
+     refused instead of being moved to 03:30. */
   let instant: Date;
   if (x[8] === undefined) {
-    instant = new Date(y, m - 1, d, h, min, sec, ms); // no zone: local time
-  } else if (x[8] === "Z") {
-    instant = new Date(Date.UTC(y, m - 1, d, h, min, sec, ms));
+    instant = new Date(0); // no zone: local time
+    instant.setFullYear(y, m - 1, d);
+    instant.setHours(h, min, sec, ms);
+    if (instant.getFullYear() !== y || instant.getMonth() !== m - 1 || instant.getDate() !== d
+      || instant.getHours() !== h || instant.getMinutes() !== min || instant.getSeconds() !== sec) return { kind: "invalid" };
   } else {
-    const oh = Number(x[10]), om = Number(x[11]);
-    if (!validOffset(oh, om)) return { kind: "invalid" };
-    const sign = x[9] === "-" ? -1 : 1;
-    instant = new Date(Date.UTC(y, m - 1, d, h, min, sec, ms) - sign * (oh * 60 + om) * 60_000);
+    const utc = new Date(0);
+    utc.setUTCFullYear(y, m - 1, d);
+    utc.setUTCHours(h, min, sec, ms);
+    if (utc.getUTCFullYear() !== y || utc.getUTCMonth() !== m - 1 || utc.getUTCDate() !== d
+      || utc.getUTCHours() !== h || utc.getUTCMinutes() !== min || utc.getUTCSeconds() !== sec) return { kind: "invalid" };
+    if (x[8] === "Z") {
+      instant = utc;
+    } else {
+      const oh = Number(x[10]), om = Number(x[11]);
+      if (!validOffset(oh, om)) return { kind: "invalid" };
+      const sign = x[9] === "-" ? -1 : 1;
+      instant = new Date(utc.getTime() - sign * (oh * 60 + om) * 60_000);
+    }
   }
   return { kind: "instant", y, m, d, instant };
 }
@@ -132,12 +158,12 @@ function checkValue(raw: string): Checked {
 export function lastCallAttemptText(precise: string | null, dateOnly: string | null): string {
   const p = precise ? checkValue(precise) : null;
   if (p && p.kind === "instant") {
-    return p.instant.toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    return formatLocalDateTime(p.instant);
   }
   /* The DATE fallback, valid on its own: its stated calendar date. */
   const f = dateOnly ? checkValue(dateOnly) : null;
-  if (f && f.kind !== "invalid") return utcDate(new Date(Date.UTC(f.y, f.m - 1, f.d)));
+  if (f && f.kind !== "invalid") return formatYmd(f.y, f.m, f.d);
   /* A precise value with no clock and no valid fallback: its own stated date. */
-  if (p && p.kind === "date") return utcDate(new Date(Date.UTC(p.y, p.m - 1, p.d)));
+  if (p && p.kind === "date") return formatYmd(p.y, p.m, p.d);
   return precise || dateOnly ? ATTEMPT_UNREADABLE : NO_ATTEMPT_RECORDED;
 }
