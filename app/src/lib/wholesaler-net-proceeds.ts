@@ -53,6 +53,30 @@ export type CostEntry =
 
 export type CostLine = { key: WholesalerCostKey; label: string };
 
+/** One cost line's raw panel input. */
+export type CostLineInput = { notApplicable: boolean; raw: string };
+
+type AmountParse = { kind: "empty" } | { kind: "invalid" } | { kind: "value"; value: number };
+
+/**
+ * B15-26 F1 (Bones, 2026-10-19): an entered amount must contain a digit.
+ * The shared Deal Calculator parser strips "$" and "," before Number(), so
+ * "$", "," or "$, " would read as $0 and quietly complete the net. Here they
+ * stay Unknown. The shared parser itself is unchanged (it has other callers).
+ */
+export function hasAmountDigit(raw: string): boolean {
+  return /\d/.test(raw);
+}
+
+/** The panel's conversion of a line's input into a cost entry; the parser is the page's own, passed in. */
+export function costEntryFromInput(input: CostLineInput | undefined, parse: (raw: string) => AmountParse): CostEntry {
+  if (!input) return { kind: "unknown" };
+  if (input.notApplicable) return { kind: "not_applicable" };
+  if (!hasAmountDigit(input.raw)) return { kind: "unknown" };
+  const parsed = parse(input.raw);
+  return parsed.kind === "value" ? { kind: "amount", amount: parsed.value } : { kind: "unknown" };
+}
+
 const LEGAL: CostLine = { key: "legal", label: "Legal / attorney review" };
 const JV: CostLine = { key: "jv_share", label: "JV / partner share ($)" };
 const MARKETING: CostLine = { key: "marketing", label: "Marketing allocation ($)" };

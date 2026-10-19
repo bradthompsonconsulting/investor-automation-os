@@ -4,8 +4,8 @@ import { formatWholeDollars } from "../lib/deal-calculator-bar";
 import { parseNonNegativeAmountInput } from "../lib/deal-calculator-inputs";
 import {
   COST_LINES, EARNEST_MONEY_NOTE, NET_RESULT_LABEL, TRANSACTION_TYPE_LABEL,
-  computeNetProceeds, netProceedsText,
-  type CostEntry, type TransactionType, type WholesalerCostKey,
+  computeNetProceeds, costEntryFromInput, hasAmountDigit, netProceedsText,
+  type CostEntry, type CostLineInput, type TransactionType, type WholesalerCostKey,
 } from "../lib/wholesaler-net-proceeds";
 
 /* B15-26 (INV-134) first slice -- the Deal Calculator's wholesaler net
@@ -16,14 +16,12 @@ import {
    lib/wholesaler-net-proceeds.ts. Clear remounts this panel (key), which
    resets it. */
 
-type LineInput = { notApplicable: boolean; raw: string };
+type LineInput = CostLineInput;
 const EMPTY_LINE: LineInput = { notApplicable: false, raw: "" };
 
+/* B15-26 F1: the conversion lives in the pure module so it is tested as used. */
 function toEntry(input: LineInput | undefined): CostEntry {
-  if (!input) return { kind: "unknown" };
-  if (input.notApplicable) return { kind: "not_applicable" };
-  const parsed = parseNonNegativeAmountInput(input.raw);
-  return parsed.kind === "value" ? { kind: "amount", amount: parsed.value } : { kind: "unknown" };
+  return costEntryFromInput(input, parseNonNegativeAmountInput);
 }
 
 const PANEL: React.CSSProperties = { background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px", padding: "14px 16px", marginTop: "16px" };
@@ -42,7 +40,8 @@ export function NetProceedsPanel({ grossSpread }: { grossSpread: ExpectedSpread 
     return out;
   }, [lines]);
   const result = useMemo(() => computeNetProceeds({ type, entries, grossSpread }), [type, entries, grossSpread]);
-  const earnest = parseNonNegativeAmountInput(earnestRaw);
+  /* F1: punctuation alone is not an earnest amount either. */
+  const earnest = hasAmountDigit(earnestRaw) ? parseNonNegativeAmountInput(earnestRaw) : parseNonNegativeAmountInput("");
 
   function update(key: WholesalerCostKey, next: Partial<LineInput>) {
     setLines((prev) => ({ ...prev, [key]: { ...(prev[key] ?? EMPTY_LINE), ...next } }));
@@ -100,6 +99,8 @@ export function NetProceedsPanel({ grossSpread }: { grossSpread: ExpectedSpread 
                 </span>
                 {parsed.kind === "invalid" && !input.notApplicable ? (
                   <span style={{ color: "#EF4444", fontSize: "10px" }}>{parsed.reason}</span>
+                ) : input.raw.trim() && !hasAmountDigit(input.raw) && !input.notApplicable ? (
+                  <span style={{ color: "#EF4444", fontSize: "10px" }}>Enter a dollar amount.</span>
                 ) : null}
               </div>
             );

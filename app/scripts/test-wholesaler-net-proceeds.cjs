@@ -28,6 +28,7 @@ try {
     path.join(APP, 'src/lib/wholesaler-net-proceeds.ts'),
     path.join(APP, 'src/lib/underwriting/compute.ts'),
     path.join(APP, 'src/lib/underwriting/board8-economics.ts'),
+    path.join(APP, 'src/lib/deal-calculator-inputs.ts'),
     '--outDir', TMP, '--rootDir', APP, '--module', 'commonjs',
     '--target', 'es2020', '--strict', '--skipLibCheck',
   ], { cwd: APP, stdio: 'inherit' });
@@ -40,6 +41,7 @@ try {
 const net = require(path.join(TMP, 'src/lib/wholesaler-net-proceeds.js'));
 const { computeUnderwriting } = require(path.join(TMP, 'src/lib/underwriting/compute.js'));
 const { computeBoard8Economics, computeExpectedSpread } = require(path.join(TMP, 'src/lib/underwriting/board8-economics.js'));
+const { parseNonNegativeAmountInput } = require(path.join(TMP, 'src/lib/deal-calculator-inputs.js'));
 fs.rmSync(TMP, { recursive: true, force: true });
 const { computeNetProceeds, netProceedsText, COST_LINES, NET_RESULT_LABEL, EARNEST_MONEY_NOTE } = net;
 
@@ -145,6 +147,34 @@ check('wholesaler costs never change Target / Max / buyer price', JSON.stringify
 check('earnest note: credited, can be lost', /credited at closing/.test(EARNEST_MONEY_NOTE) && /can be lost/.test(EARNEST_MONEY_NOTE) && /Not counted as a cost/.test(EARNEST_MONEY_NOTE));
 check('earnest money is not a cost line', !COST_LINES.assignment.concat(COST_LINES.double_close).some((l) => /earnest/i.test(l.label + l.key)));
 
+// ── 6b. F1 (Bones, 2026-10-19): the panel's input conversion, real parser ────
+// This file's check() takes a boolean; eq() makes each comparison explicit.
+{
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const conv = (raw, notApplicable = false) => net.costEntryFromInput({ notApplicable, raw }, parseNonNegativeAmountInput);
+  const p$ = parseNonNegativeAmountInput('$');
+  check('F1 the shared parser still reads "$" as 0 (unchanged; why the guard exists)', eq(p$, { kind: 'value', value: 0 }), JSON.stringify(p$));
+  for (const raw of ['$', ',', '$, ', ' $ ', '$$,,']) {
+    const got = conv(raw);
+    check(`F1 punctuation only stays Unknown: ${JSON.stringify(raw)}`, eq(got, UNKNOWN), JSON.stringify(got));
+  }
+  check('F1 typed 0 is an amount', eq(conv('0'), amt(0)), JSON.stringify(conv('0')));
+  check('F1 formatted $0 is an amount', eq(conv('$0'), amt(0)), JSON.stringify(conv('$0')));
+  check('F1 nonzero formatted amount', eq(conv('$1,500'), amt(1500)), JSON.stringify(conv('$1,500')));
+  check('F1 blank stays Unknown', eq(conv(''), UNKNOWN), JSON.stringify(conv('')));
+  check('F1 invalid stays Unknown', eq([conv('abc'), conv('-5'), conv('$-5')], [UNKNOWN, UNKNOWN, UNKNOWN]));
+  check('F1 explicit Not applicable wins over any text', eq([conv('$', true), conv('', true), conv('900', true)], [NA, NA, NA]));
+  check('F1 no input yet is Unknown', eq(net.costEntryFromInput(undefined, parseNonNegativeAmountInput), UNKNOWN));
+  // Bones's scenario: Assignment, every other line N/A, Legal "$" -> no net.
+  for (const raw of ['$', ',', '$, ']) {
+    const entries = { ...allNa('assignment'), legal: conv(raw) };
+    const r = computeNetProceeds({ type: 'assignment', entries, grossSpread: gross(20000) });
+    check(`F1 scenario ${JSON.stringify(raw)}: no net estimate, Legal named Unknown`, eq([r.kind, r.unknown], ['unknown', ['Legal / attorney review']]), JSON.stringify(r));
+  }
+  const ok = computeNetProceeds({ type: 'assignment', entries: { ...allNa('assignment'), legal: conv('$0') }, grossSpread: gross(20000) });
+  check('F1 positive control: "$0" still completes the net', eq([ok.kind, ok.net], ['estimated', 20000]), JSON.stringify(ok));
+}
+
 // ── 7. Wiring ────────────────────────────────────────────────────────────────
 const lib = read('src/lib/wholesaler-net-proceeds.ts');
 check('module imports only the ExpectedSpread type', (lib.match(/^import .*$/gm) || []).join('\n') === 'import type { ExpectedSpread } from "./underwriting/board8-economics";');
@@ -152,7 +182,9 @@ const panel = read('src/components/NetProceedsPanel.tsx');
 check('panel: no GHL, fetch or write', !/\bghl\b|fetch\(|appWriteFetch|notes\.create|localStorage|sessionStorage/.test(panel));
 check('panel: no transaction type preselected', panel.includes('useState<TransactionType | null>(null)'));
 check('panel: Not applicable control per line', panel.includes('deal-calc-net-${line.key}-na') && panel.includes('Not applicable'));
-check('panel: empty/invalid input is Unknown, never zero', /parsed\.kind === "value" \? \{ kind: "amount", amount: parsed\.value \} : \{ kind: "unknown" \}/.test(panel));
+check('panel: conversion goes through costEntryFromInput with the page parser', panel.includes('return costEntryFromInput(input, parseNonNegativeAmountInput);'));
+check('panel: punctuation-only earnest is not an amount', panel.includes('hasAmountDigit(earnestRaw) ? parseNonNegativeAmountInput(earnestRaw)'));
+check('module: empty/invalid input is Unknown, never zero', /parsed\.kind === "value" \? \{ kind: "amount", amount: parsed\.value \} : \{ kind: "unknown" \}/.test(lib) && lib.includes('if (!hasAmountDigit(input.raw)) return { kind: "unknown" };'));
 check('panel: result rendered as text status', panel.includes('netProceedsText(result, formatWholeDollars)') && panel.includes('role="status"'));
 check('panel: earnest money outside the net', panel.includes('EARNEST_MONEY_NOTE') && !/earnest[\s\S]{0,80}computeNetProceeds/.test(panel));
 const page = read('src/pages/DealCalculator.tsx');
