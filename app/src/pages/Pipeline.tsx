@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, GitBranch } from "lucide-react";
 import { startCurrentRead } from "../lib/current-read";
 import { ghl, type OpportunityRow, type PipelineStage } from "../lib/ghl";
+import { distinctDealContacts } from "../lib/count-accounting";
 import { countDealsByContact, loadPropertyAddresses, pipelinePropertyCell, type PropertyAddressSource } from "../lib/pipeline-property";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -103,6 +104,8 @@ export default function Pipeline() {
   }, [readRecovered]);
 
   const dealsByContact = useMemo(() => countDealsByContact(opportunities), [opportunities]);
+  /* B15-19 (F26): the header counts deals, and a contact can have several. */
+  const dealContacts = useMemo(() => distinctDealContacts(opportunities), [opportunities]);
 
   const stagePosition = useMemo(() => {
     const map = new Map<string, number>();
@@ -157,18 +160,19 @@ export default function Pipeline() {
             Pipeline
           </h1>
           {!loading && (
-            <span style={{
+            <span data-testid="pipeline-count" style={{
               fontSize: "12px", fontWeight: 500, padding: "2px 8px", borderRadius: "999px",
               background: "#1B2433", color: "#64748B",
             }}>
-              {opportunities.length.toLocaleString()}
+              {opportunities.length.toLocaleString()} {opportunities.length === 1 ? "deal" : "deals"} · {dealContacts.toLocaleString()} {dealContacts === 1 ? "contact" : "contacts"}
             </span>
           )}
         </div>
       </div>
 
       <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 18px" }}>
-        Read-only view of the Seller Leads Pipeline. Stage changes are made in GHL.
+        Read-only view of the Seller Leads Pipeline. Stage changes are made in GHL. Every deal in the pipeline is
+        listed, in any stage; a contact can have more than one, and contacts with no deal are only on Contacts.
       </p>
 
       {/* Table card */}

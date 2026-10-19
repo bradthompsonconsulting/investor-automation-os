@@ -179,7 +179,8 @@ async function main() {
     await expectRows('a digits-only query returns both an address match and a phone match, in Date Added order', '88', [MAX, ANN]);
     await expectRows('an address match and a name/email match both show, in the active Date Added order', 'oak', [MAX, ANN]);
     const badge = (await page.locator('main h1 + span').innerText()).trim();
-    check('the count badge counts the address matches', badge === '2', badge);
+    /* B15-19: the badge names what it counts and, while searching, the total. */
+    check('the count badge counts the address matches', badge === '2 of 4 contacts', badge);
     const nameHeader = page.locator('thead th', { hasText: /^Name$/ });
     await nameHeader.click();
     const asc = await search('oak', [ANN, MAX]);

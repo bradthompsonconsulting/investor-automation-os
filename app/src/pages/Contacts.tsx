@@ -3,6 +3,7 @@ import { useReadRecovered } from "../components/access-status";
 import { Link } from "react-router-dom";
 import { AlertCircle, Users, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
 import { ghl, type ContactGridRow } from "../lib/ghl";
+import { startCurrentRead } from "../lib/current-read";
 import { formatPhone } from "../lib/format";
 import { phoneQueryDigits } from "../lib/operator-display";
 
@@ -123,10 +124,13 @@ export default function Contacts() {
   const readRecovered = useReadRecovered();
   useEffect(() => {
     setError(null);
-    ghl.contacts.gridRows()
-      .then(setRows)
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
+    /* B15-19: only the current read may set the rows and their count, as on
+       Pipeline (B15-09); a superseded read that settles late is ignored. */
+    return startCurrentRead(() => ghl.contacts.gridRows(), {
+      data: setRows,
+      error: (e) => setError(e.message),
+      settled: () => setLoading(false),
+    });
   }, [readRecovered]);
 
   // §5.1 Sort: `ordered` is the sort-driven spine that `filtered` consumes below,
@@ -224,7 +228,9 @@ export default function Contacts() {
               fontSize: "12px", fontWeight: 500, padding: "2px 8px", borderRadius: "999px",
               background: "#1B2433", color: "#64748B",
             }}>
-              {(search.trim() ? filtered.length : rows.length).toLocaleString()}
+              {search.trim()
+                ? `${filtered.length.toLocaleString()} of ${rows.length.toLocaleString()} contacts`
+                : `${rows.length.toLocaleString()} ${rows.length === 1 ? "contact" : "contacts"}`}
             </span>
           )}
         </div>
@@ -241,6 +247,11 @@ export default function Contacts() {
           onBlur={(e)  => (e.currentTarget.style.borderColor = "rgba(255,255,255,0.10)")}
         />
       </div>
+
+      {/* B15-19 (F26): what this count is, beside Pipeline's deal count. */}
+      <p data-testid="contacts-count-definition" style={{ fontSize: "11px", color: "#334155", margin: "-10px 0 14px" }}>
+        Every contact, with or without a deal. Pipeline counts deals instead; a contact can have none or several.
+      </p>
 
       {/* Table card */}
       <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>

@@ -20,6 +20,10 @@ import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite"
 import { formatPhone } from "../lib/format";
 import { displayContactName, NO_MESSAGE_TEXT, UNNAMED_CONTACT } from "../lib/operator-display";
 import { readCurrentOfferFromOpportunity } from "../lib/current-offer-carrier";
+import { startCurrentRead } from "../lib/current-read";
+import {
+  coldCallAccounting, coldCallAccountingText, dealCoverage, dealCoverageText, stageAccounting, untaggedTemperatureCount,
+} from "../lib/count-accounting";
 
 /**
  * Dashboard — Build 2A + 2B + Phase 3 per docs/DASHBOARD_SPEC_v2.txt.
@@ -417,13 +421,16 @@ export default function Dashboard() {
   const visitRecorded = useRef(false);
   useEffect(() => {
     setError(null);
-    Promise.all([
+    /* B15-19: only the current read may set the counts, as on Pipeline
+       (B15-09) -- a superseded read that settles late cannot overwrite a
+       newer one. */
+    return startCurrentRead(() => Promise.all([
       ghl.contacts.listAll(),
       ghl.mailers.list(),
       ghl.opportunities.listPipeline(),
       ghl.conversations.unansweredInbound(),
-    ])
-      .then(([c, d, p, u]) => {
+    ]), {
+      data: ([c, d, p, u]) => {
         setContacts(c);
         setDigest(d);
         setPipeline(p);
@@ -434,8 +441,10 @@ export default function Dashboard() {
         const prevVisit = localStorage.getItem(LAST_VISIT_KEY);
         setNewSince(prevVisit ? c.filter((row) => row.dateAdded && row.dateAdded > prevVisit).length : 0);
         localStorage.setItem(LAST_VISIT_KEY, new Date().toISOString());
-      })
-      .catch((e: Error) => setError(e.message));
+      },
+      error: (e) => setError(e.message),
+      settled: () => {},
+    });
   }, [readRecovered]);
 
   const loading = !contacts || !digest || !pipeline || !unanswered;
@@ -797,12 +806,26 @@ export default function Dashboard() {
     return counts;
   }, [contacts]);
 
-  const stageCounts = useMemo(() => {
-    if (!pipeline) return [];
-    return [...pipeline.stages]
-      .sort((a, b) => a.position - b.position)
-      .map((s) => ({ stage: s, count: pipeline.opportunities.filter((o) => o.stageId === s.id).length }));
-  }, [pipeline]);
+  /* B15-19 (F6/F26): the stage pills, plus the deals no configured stage
+     holds (Pipeline lists them as "Unknown"), so the pills add up to the
+     Pipeline count instead of silently dropping deals. */
+  const stageAcct = useMemo(
+    () => (pipeline ? stageAccounting(pipeline.stages, pipeline.opportunities) : null),
+    [pipeline],
+  );
+  const stageCounts = stageAcct?.stages ?? [];
+
+  /* B15-19 (F7/F26): what the tier pills and the Lead Queue leave out, from
+     the same data and the same Lead Queue conditions. Display only. */
+  const untaggedLow = useMemo(() => untaggedTemperatureCount(contacts ?? [], TIER_ORDER), [contacts]);
+  const coverage = useMemo(
+    () => (contacts && pipeline ? dealCoverage(contacts, pipeline.opportunities) : null),
+    [contacts, pipeline],
+  );
+  const coldCall = useMemo(
+    () => coldCallAccounting(contacts ?? [], coldOutreachExcludedIds),
+    [contacts, coldOutreachExcludedIds],
+  );
 
   // The note IS the attempt (spec §5). Empty/whitespace-only notes are not an
   // attempt and do nothing on blur. Note-save and attempt-marker are two
@@ -886,6 +909,7 @@ export default function Dashboard() {
             </span>
           ))}
           <span style={{ width: "1px", height: "16px", background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
+          <span style={{ fontSize: "11px", color: "#64748B" }}>Deals by stage</span>
           {stageCounts.map(({ stage, count }) => (
             <span key={stage.id} style={{
               display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 500,
@@ -897,7 +921,23 @@ export default function Dashboard() {
               {stage.name} {count}
             </span>
           ))}
+          {stageAcct && stageAcct.otherStage > 0 && (
+            <span data-testid="dashboard-other-stage" style={{
+              display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 500,
+              padding: "4px 10px", borderRadius: "999px",
+              background: "#47556914", border: "1px solid #47556933", color: "#94A3B8",
+            }}>
+              Other stage {stageAcct.otherStage}
+            </span>
+          )}
         </div>
+        {/* B15-19: what the two halves of the strip count, and how they relate. */}
+        {!loading && coverage && (
+          <p data-testid="dashboard-count-notes" style={{ fontSize: "11px", color: "#475569", margin: "6px 0 0" }}>
+            Temperature counts every contact{untaggedLow > 0 ? `; Low includes ${untaggedLow.toLocaleString()} with no temperature tag` : ""}.
+            {" "}Stages count Seller Leads deals: {dealCoverageText(coverage)}
+          </p>
+        )}
       </div>
 
       {/* 1. To Do Items (left) + Congrats (right) */}
@@ -951,6 +991,10 @@ export default function Dashboard() {
 
       {expanded === "offers" && (
         <Card style={{ marginBottom: "20px" }}>
+          {/* B15-19 (F8): counted per contact, not per deal. */}
+          <p data-testid="dashboard-offers-to-review-definition" style={{ fontSize: "11px", color: "#475569", margin: "0 0 8px" }}>
+            Contacts with an offer amount saved on a deal and not yet tagged offer-made. Sent offers are under Offers Awaiting Response.
+          </p>
           {offersToReview.length === 0 ? (
             <p style={{ fontSize: "12px", color: "#334155", margin: 0 }}>No saved offers awaiting send.</p>
           ) : (
@@ -1187,6 +1231,10 @@ export default function Dashboard() {
 
         {/* 3.3 Offers awaiting seller response — read signal, implemented */}
         <SectionHeading count={offersAwaiting.length}>Offers Awaiting Response</SectionHeading>
+        {/* B15-19 (F8): this and "Offers to review" count different things. */}
+        <p data-testid="dashboard-offers-awaiting-definition" style={{ fontSize: "11px", color: "#475569", margin: "-4px 0 8px" }}>
+          Deals in Seller Offer Sent whose contact is tagged offer-made. A saved offer not yet sent is under Offers to review.
+        </p>
         {offersAwaiting.length === 0 ? (
           <Card tone="muted">
             <p style={{ fontSize: "12px", color: "#334155", margin: 0 }}>No offers currently sitting in Seller Offer Sent.</p>
@@ -1215,6 +1263,11 @@ export default function Dashboard() {
         Sellers to cold-call next, top of the list first. Save a note after each call to mark the attempt. Showing{" "}
         {Math.min(RESURFACE_VISIBLE_ROWS, leadQueue.length)} of {leadQueue.length} — scroll for the rest.
       </p>
+      {!loading && (
+        <p data-testid="dashboard-lead-queue-accounting" style={{ fontSize: "11px", color: "#475569", margin: "0 0 6px", maxWidth: CONTENT_MAX_WIDTH }}>
+          {coldCallAccountingText(coldCall)}
+        </p>
+      )}
       <p style={{ fontSize: "11px", color: "#475569", margin: "0 0 6px", maxWidth: CONTENT_MAX_WIDTH }}>
         Not every contact is here. Contacts with an unanswered reply, a callback, an offer out or a Follow-Up stage
         are in the lists above; a contact with a recent call result is placed by that result; contacts with no
