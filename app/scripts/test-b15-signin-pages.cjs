@@ -96,13 +96,13 @@ check('read sign-out still calls the existing signOut (DELETE + re-check)',
   && /async function signOut\(\) \{[\s\S]*?method: "DELETE"[\s\S]*?await check\("Signed out of reads\."\);/.test(readAccess), true);
 check('old stacked banners are gone', /Read access\. Sign in to save changes\.|Sign in for writes<\/button>/.test(writeAccess), false);
 
-// -- F57/F58: Map and Settings hidden, routes kept --------------------------
+// -- F57/F58: Map and Settings hidden; B15-18 remaining scope: direct visits go to the Dashboard --
 const navLabels = [...sidebar.matchAll(/\{ label: "([^"]+)"/g)].map((m) => m[1]);
 check('sidebar nav list (Map and Settings removed, nothing else)', navLabels,
   ['Dashboard', 'Deal Calculator', 'Contacts', 'Conversations', 'Calendars', 'Pipeline', 'Mailers', 'Segmentation', 'Add Leads']);
 check('sidebar has no /map or /settings link', /to: "\/(map|settings)"/.test(sidebar), false);
-check('/map and /settings routes still exist',
-  /<Route path="map"\s+element=\{<MapPage \/>\} \/>/.test(app) && /<Route path="settings"\s+element=\{<Settings \/>\} \/>/.test(app), true);
+check('/map and /settings routes redirect to the Dashboard (replace)',
+  /<Route path="map"\s+element=\{<Navigate to="\/dashboard" replace \/>\} \/>/.test(app) && /<Route path="settings"\s+element=\{<Navigate to="\/dashboard" replace \/>\} \/>/.test(app), true);
 
 console.log(`\n${failures ? 'FAIL' : 'PASS'}  Board 15 B5 sign-in presentation and hidden pages: ${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);
