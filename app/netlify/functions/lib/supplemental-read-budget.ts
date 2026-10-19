@@ -13,9 +13,14 @@
  *     pages, retries and remounts are separate requests, so each reserves its own unit;
  *   - at the ceiling every further request is refused UNSENT. Nothing here resets, reopens or enlarges a budget:
  *     only a reviewed config commit with a new budget id starts another;
- *   - FAIL-CLOSED: an unreadable, malformed or mismatched record, an unconfirmed (thrown) reservation write, a
- *     contention run-out, a missing Blob context, a non-GHL origin or a non-GET method refuses the request
- *     unsent. An unconfirmed write may have counted a unit that was never used; it is never given back.
+ *   - FAIL-CLOSED: an unreadable, malformed or mismatched record, an unconfirmed (thrown) reservation write, an
+ *     ambiguous acknowledgement (anything but modified === true / false), a contention run-out, a missing Blob
+ *     context, a non-GHL origin or a non-GET method refuses the request unsent. An unconfirmed write may have
+ *     counted a unit that was never used; it is never given back. A spent unit stays spent whatever the request's
+ *     outcome (abort, timeout, rejection, 4xx/5xx, lost response);
+ *   - a record missing AFTER the budget was opened refuses for good (genesis marker; see INIT_WINDOW_MS);
+ *   - the scheduled mailer digest SENDS EMAIL after its reads, so while the budget is enabled it does nothing at
+ *     all: no read and no send (`supplementalReadBudgetActive`, Bones SEQ 17 condition 5).
  * Otherwise (Production always; Test unless enabled) `ghlReadFetch` is the platform fetch, unchanged: no Blob
  * access and no behaviour change. property-answer's separate budget (evaluation-budget.ts) is not touched, and
  * write endpoints keep their own governance; neither goes through this module.
@@ -51,24 +56,60 @@ function valid(rec: any, budgetId: string, ceiling: number): rec is ReadBudgetRe
     && rec.reserved <= ceiling && Array.isArray(rec.receipts) && rec.receipts.length === rec.reserved;
 }
 
+/**
+ * A missing record after use must never become a fresh allowance (Bones SEQ 17, condition 2). So initialization is
+ * two-step and ordered: first the budget's GENESIS marker (`<key>/genesis`, written once with onlyIfNew), then the
+ * record. A record may be CREATED only while the genesis marker is younger than INIT_WINDOW_MS (the window in which a
+ * concurrent first request may still be creating it). A missing record with an older genesis marker -- deleted,
+ * lost or never completed -- is refused ("unavailable") for good; only a reviewed config commit with a new budget
+ * id starts another budget. A genesis write that fails leaves the budget unopened (refused), never open.
+ */
+export const INIT_WINDOW_MS = 60_000;
+type Genesis = { v: 1; budgetId: string; ceiling: number; at: string };
+
 export class SupplementalReadBudget {
   readonly key: string;
+  readonly genesisKey: string;
   constructor(readonly store: ReadBudgetStore, scope: string, readonly budgetId: string, readonly ceiling: number, private readonly pause: () => Promise<void> = jitter) {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(budgetId) || !Number.isInteger(ceiling) || ceiling < 0) throw new SupplementalReadRefused("Invalid supplemental read budget. Nothing was sent.", "invalid");
     this.key = readBudgetKey(scope, budgetId);
+    this.genesisKey = `${this.key}/genesis`;
   }
 
-  private async read(): Promise<{ rec: ReadBudgetRecord | null; etag: string | null }> {
-    let got: { data: any; etag?: string } | null;
-    try { got = await this.store.getWithMetadata(this.key, { type: "json", consistency: "strong" }); }
+  private async get(key: string): Promise<{ data: any; etag?: string } | null> {
+    try { return await this.store.getWithMetadata(key, { type: "json", consistency: "strong" }); }
     catch (e: any) {
       if (e?.name !== "BlobsConsistencyError") throw new SupplementalReadRefused("The supplemental read budget could not be read. Nothing was sent.", "unavailable");
       // Without strong consistency the read may be stale; the compare-and-swap below then simply fails and retries.
-      try { got = await this.store.getWithMetadata(this.key, { type: "json" }); } catch { throw new SupplementalReadRefused("The supplemental read budget could not be read. Nothing was sent.", "unavailable"); }
+      try { return await this.store.getWithMetadata(key, { type: "json" }); } catch { throw new SupplementalReadRefused("The supplemental read budget could not be read. Nothing was sent.", "unavailable"); }
     }
+  }
+
+  private async read(): Promise<{ rec: ReadBudgetRecord | null; etag: string | null }> {
+    const got = await this.get(this.key);
     if (!got) return { rec: null, etag: null };
     if (!got.etag || !valid(got.data, this.budgetId, this.ceiling)) throw new SupplementalReadRefused("The supplemental read budget record is unreadable or does not match the reviewed configuration. Nothing was sent.", "unavailable");
     return { rec: got.data, etag: got.etag };
+  }
+
+  private async genesis(): Promise<Genesis | null> {
+    const got = await this.get(this.genesisKey);
+    if (!got) return null;
+    const g = got.data;
+    if (!g || g.v !== 1 || g.budgetId !== this.budgetId || g.ceiling !== this.ceiling || !Number.isFinite(Date.parse(g.at))) {
+      throw new SupplementalReadRefused("The supplemental read budget marker is unreadable or does not match the reviewed configuration. Nothing was sent.", "unavailable");
+    }
+    return g as Genesis;
+  }
+
+  /** One conditional write. true: applied and acknowledged. false: not applied (retry). Anything else: ambiguous -> refuse. */
+  private async write(key: string, value: unknown, opts: { onlyIfNew?: boolean; onlyIfMatch?: string }): Promise<boolean> {
+    let res: any;
+    try { res = await this.store.setJSON(key, value, opts); }
+    catch { throw new SupplementalReadRefused("A supplemental read reservation could not be confirmed. Nothing was sent.", "unavailable"); }
+    if (res?.modified === true) return true;
+    if (res?.modified === false) return false;
+    throw new SupplementalReadRefused("A supplemental read reservation returned an ambiguous acknowledgement. Nothing was sent.", "unavailable");
   }
 
   async snapshot(): Promise<ReadBudgetRecord | null> { return (await this.read()).rec; }
@@ -77,14 +118,17 @@ export class SupplementalReadBudget {
   async reserve(fn: string, path: string, now: string): Promise<number> {
     for (let i = 0; i < CAS_ATTEMPTS; i++) {
       const { rec, etag } = await this.read();
+      if (!rec) {
+        const g = await this.genesis();
+        if (!g) { await this.write(this.genesisKey, { v: 1, budgetId: this.budgetId, ceiling: this.ceiling, at: now } satisfies Genesis, { onlyIfNew: true }); continue; }
+        const age = Date.parse(now) - Date.parse(g.at);
+        if (!(age >= 0 && age < INIT_WINDOW_MS)) throw new SupplementalReadRefused("The supplemental read budget record is missing after it was opened; it is not reopened. Nothing was sent.", "unavailable");
+      }
       const cur: ReadBudgetRecord = rec ?? { v: 1, budgetId: this.budgetId, ceiling: this.ceiling, reserved: 0, receipts: [] };
       if (cur.reserved >= cur.ceiling) throw new SupplementalReadRefused("The evaluation's supplemental read budget is used up. Nothing was sent.", "exhausted");
       const n = cur.reserved + 1;
       const next: ReadBudgetRecord = { ...cur, reserved: n, receipts: [...cur.receipts, { n, fn, path, at: now }] };
-      let modified: boolean;
-      try { modified = (await this.store.setJSON(this.key, next, etag === null ? { onlyIfNew: true } : { onlyIfMatch: etag })).modified; }
-      catch { throw new SupplementalReadRefused("A supplemental read reservation could not be confirmed. Nothing was sent.", "unavailable"); }
-      if (modified) return n;
+      if (await this.write(this.key, next, etag === null ? { onlyIfNew: true } : { onlyIfMatch: etag })) return n;
       await this.pause();
     }
     throw new SupplementalReadRefused("The supplemental read budget could not be reserved (contention). Nothing was sent.", "unavailable");
@@ -92,6 +136,11 @@ export class SupplementalReadBudget {
 }
 
 const store = () => getStore("iaos-write-receipts") as unknown as ReadBudgetStore;
+
+/** True when this deployment's committed config enables the supplemental read budget (decided per invocation). */
+export function supplementalReadBudgetActive(): boolean {
+  return getConfig(process.env.IAOS_ENV).supplementalReadBudget.enabled === SUPPLEMENTAL_READ_BUDGET_ENABLED;
+}
 
 /**
  * The fetch for every GHL request a non-write function makes. `fn` names the function in each receipt. Read

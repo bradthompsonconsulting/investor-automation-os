@@ -10,7 +10,7 @@
 
 import { buildMailerDigest, type MailerDigest, type MailerGroup } from "./lib/mailer-shared";
 import { getConfig } from "../../shared/ghl-config";
-import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
+import { ghlReadFetch, supplementalReadBudgetActive, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 // PB-D51 — location id and custom-value pointers resolve once at module scope
 // from the shared config.
@@ -98,6 +98,12 @@ function renderEmailHtml(digest: MailerDigest): string {
 }
 
 export const handler = async (event?: any) => {
+  // B15-04 (Bones SEQ 17, condition 5): while the evaluation's supplemental read budget is enabled, the digest is
+  // SUSPENDED -- no GHL read and no email -- for a scheduled or a manual invocation alike. Counting its reads
+  // would not stop the send that follows them.
+  if (supplementalReadBudgetActive()) {
+    return { statusCode: 503, body: JSON.stringify({ outcome: "not_sent", code: "supplemental_read_mailer_suspended", error: "The mailer digest is suspended while the evaluation's supplemental read budget is enabled. Nothing was read or sent." }) };
+  }
   const token = process.env.GHL_PRIVATE_API_KEY;
   const resendKey = process.env.RESEND_API_KEY;
 
