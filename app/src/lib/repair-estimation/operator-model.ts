@@ -3,9 +3,10 @@
  *
  * Brad completed the V1 operator review and approved the defaults and
  * behaviour below on 2026-09-04. This module holds ONLY that: the approved
- * DFW policy defaults, the unanswered-row allowance rule (2026-10-04; the
- * untouched-estimator fallback it replaced is retired), and the pure rules
- * that turn an operator's answers into calculation-core input.
+ * DFW policy defaults, the provisional starting estimate and known-amounts
+ * rule (Brad, 2026-10-07, which supersedes the 2026-10-04 per-row unanswered
+ * allowances), and the pure rules that turn an operator's answers into
+ * calculation-core input.
  *
  * ⚠ THIS IS NOT THE CANONICAL REFERENCE TABLE, AND IT DELIBERATELY DOES NOT
  * EDIT IT. `reference.ts` still carries the table transcribed from the
@@ -116,29 +117,35 @@ export function quantitySpecFor(row: OperatorRow): QuantitySpec | undefined {
 }
 
 /**
- * Itemized unanswered allowances — Brad, 2026-10-04
- * (`docs/ESTIMATED_REPAIRS_STANDARD.md`, "Itemized unanswered allowances
- * amendment"). It RETIRES the $20,000 untouched-estimator fallback that used to
- * live here: there is no blanket figure any more, so nothing can be added on
- * top of the rows.
+ * Provisional starting estimate and known amounts — Brad, 2026-10-07
+ * (INV-100 "Current policy"; Option A ruling 2026-10-19;
+ * `docs/ESTIMATED_REPAIRS_STANDARD.md`, "Provisional starting estimate
+ * amendment"). It SUPERSEDES the 2026-10-04 per-row unanswered allowances
+ * (the untouched $66,000): no row carries an automatic allowance any more.
  *
- * An unanswered row (`Not asked`, blank Known Amount) carries its OWN approved
- * severe-state amount — `severeDefault` from the approved table, no new
- * number — as a "condition not confirmed" allowance. It reaches the calculation
- * core as an `unknown_condition` reserve, which the core already totals apart
- * from indicated repairs: that is the Unanswered Allowances subtotal.
+ *   Untouched      the estimate is the approved $20,000 starting figure,
+ *                  visibly provisional. It reaches the core as one
+ *                  `unknown_condition` reserve line, so it is never presented
+ *                  as a known repair.
+ *   First answer   the first EXPLICIT answer -- any condition, including
+ *                  Good, or any readable amount, including $0, on a row or on
+ *                  Miscellaneous -- removes the $20,000 (Option A: a positive
+ *                  amount is not required).
+ *   After that     only known amounts are totalled. An unanswered row adds
+ *                  nothing and stays visibly unknown ("condition not
+ *                  confirmed"), never Good.
  *
- * A COUNTED row has no allowance while its count is unknown. Its approved
- * amount is per unit, and pricing an unanswered count would mean assuming one
- * (rule 6: no quantity assumptions; flag an unresolved unit basis). It stays
- * visibly unresolved and out of the total.
+ * A Miscellaneous description alone, a quantity on an unanswered row, or an
+ * unreadable amount is not an answer: none of them ends the provisional
+ * figure, and an unreadable amount is still shown as unresolved.
  */
 export const UNANSWERED_ALLOWANCE_LABEL = "condition not confirmed";
 
-/** The allowance an unanswered row carries, or null where its unit basis is unresolved. */
-export function unansweredAllowanceFor(row: OperatorRow): number | null {
-  return quantitySpecFor(row) === undefined ? row.severeDefault : null;
-}
+/** The approved untouched starting estimate, from the approved table. */
+export const PROVISIONAL_STARTING_ESTIMATE: number = approvedTable.untouchedStartingEstimate;
+
+export const PROVISIONAL_LINE_ID = "provisional_start";
+export const PROVISIONAL_LINE_LABEL = "Provisional starting estimate";
 
 /**
  * "Miscellaneous / Other repairs" (rule 5): a description and a non-negative
@@ -339,7 +346,48 @@ export function applyQuantity(row: OperatorRow, answer: RowAnswer, raw: string):
  * count produced, not retracted the count.
  */
 export function applyAmount(answer: RowAnswer, raw: string): RowAnswer {
-  return { condition: answer.condition, amount: raw, quantity: answer.quantity, dirty: true };
+  /* 2026-10-07: a positive amount on an unanswered row selects Repair; an
+     already explicit condition is preserved. $0 or blank leaves it as is. */
+  const parsed = parseKnownAmount(raw);
+  const condition = answer.condition === "not_asked" && parsed.kind === "value" && parsed.value > 0
+    ? "repair"
+    : answer.condition;
+  return { condition, amount: raw, quantity: answer.quantity, dirty: true };
+}
+
+/**
+ * True once the operator has given an explicit repair answer (2026-10-07,
+ * Option A): any row condition other than Not asked, or a readable amount --
+ * $0 included -- on any row or on Miscellaneous. Nothing else counts; see
+ * the provisional rule above.
+ */
+export function hasExplicitAnswer(answers: Answers, misc: MiscAnswer = EMPTY_MISC): boolean {
+  for (const row of OPERATOR_ROWS) {
+    const a = answers[row.system];
+    if (a === undefined) continue;
+    if (a.condition !== "not_asked" || parseKnownAmount(a.amount).kind === "value") return true;
+  }
+  return parseKnownAmount(misc.amount).kind === "value";
+}
+
+/**
+ * Repair-only Clear (2026-10-07): conditions, amounts and quantities reset to
+ * the provisional starting state; the Miscellaneous description is kept and
+ * its amount reset, so retained text can never bring an old amount back.
+ */
+export function clearRepairAnswers(misc: MiscAnswer): { answers: Answers; misc: MiscAnswer } {
+  return { answers: {}, misc: { description: misc.description, amount: "" } };
+}
+
+/**
+ * Quick → itemized (2026-10-07): the quick total moves into Miscellaneous so
+ * the total is preserved. It moves only into an itemized estimate with no
+ * explicit answer -- otherwise it would be counted beside amounts already
+ * there -- and the description is kept. Returns null when nothing moves.
+ */
+export function transferQuickTotal(quick: number | null, answers: Answers, misc: MiscAnswer): MiscAnswer | null {
+  if (quick === null || hasExplicitAnswer(answers, misc)) return null;
+  return { description: misc.description, amount: String(quick) };
 }
 
 /** True while the operator has not touched the estimator in any way. */
@@ -359,16 +407,25 @@ export function isUntouched(answers: Answers): boolean {
  * USED. A known amount is honoured whatever the condition says, including on
  * a row that was never asked.
  *
- * 2026-10-04 amendment: a row that is `Not asked` with nothing entered carries
- * its approved severe-state allowance as an `unknown_condition` reserve
- * ("condition not confirmed"), except a counted row, whose unit basis is
- * unresolved. A row is an unpriced risk only when it has no usable amount and
- * no allowance applies — nothing is ever invented to fill one in.
+ * 2026-10-07 policy: before any explicit answer the estimate is the
+ * provisional $20,000 starting line (an `unknown_condition` reserve, IAOS
+ * policy) and unanswered rows add no line of their own. After the first
+ * explicit answer a row that is `Not asked` with nothing entered is an
+ * unpriced risk ("condition not confirmed"): visibly unknown, not in the
+ * total, never Good. Nothing is ever invented to fill one in.
  *
  * `misc` is the Miscellaneous / Other repairs row; omitted, it is blank.
  */
 export function buildLines(answers: Answers, misc: MiscAnswer = EMPTY_MISC): RepairLineInput[] {
   const lines: RepairLineInput[] = [];
+  const provisional = !hasExplicitAnswer(answers, misc);
+  if (provisional) {
+    lines.push({
+      id: PROVISIONAL_LINE_ID, label: PROVISIONAL_LINE_LABEL, component: "major_system",
+      origin: "unknown_condition",
+      pricing: { kind: "amount", amount: PROVISIONAL_STARTING_ESTIMATE, provenance: "IAOS_POLICY" },
+    });
+  }
   for (const row of OPERATOR_ROWS) {
     const a = answers[row.system] ?? EMPTY_ANSWER;
     const parsed = parseKnownAmount(a.amount);
@@ -381,24 +438,12 @@ export function buildLines(answers: Answers, misc: MiscAnswer = EMPTY_MISC): Rep
 
     if (parsed.kind === "blank") {
       if (a.condition === "not_asked") {
-        const allowance = unansweredAllowanceFor(row);
-        if (allowance !== null) {
-          /* Rule 1: the row's own approved severe-state amount, held as a
-             reserve against a condition nobody has confirmed. Policy, never
-             cost book; answering the row replaces it (rule 3). */
-          lines.push({
-            ...base, origin: "unknown_condition",
-            pricing: { kind: "amount", amount: allowance, provenance: "IAOS_POLICY" },
-          });
-          continue;
-        }
-        const unit = quantitySpecFor(row)?.unit ?? "unit";
+        /* Covered by the provisional line until the first answer; after it,
+           unknown and out of the total. */
+        if (provisional) continue;
         lines.push({
           ...base,
-          pricing: {
-            kind: "unpriced_risk",
-            reason: `${UNANSWERED_ALLOWANCE_LABEL}; its allowance is per ${unit}, so it needs a ${unit} count — not included in the total`,
-          },
+          pricing: { kind: "unpriced_risk", reason: `${UNANSWERED_ALLOWANCE_LABEL} — not in the total` },
         });
         continue;
       }
@@ -427,7 +472,8 @@ export function buildLines(answers: Answers, misc: MiscAnswer = EMPTY_MISC): Rep
      nothing and is not a risk — it is the default. Entered, it is Brad's own
      figure (MANUAL), counted once. */
   const miscAmount = parseKnownAmount(misc.amount);
-  const description = misc.description.trim();
+  /* Multi-line description (B15-02): one line in the estimate's label. */
+  const description = misc.description.replace(/\s+/g, " ").trim();
   const miscBase = {
     id: MISC_LINE_ID,
     label: description ? `${MISC_ROW_LABEL} — ${description}` : MISC_ROW_LABEL,
@@ -444,18 +490,25 @@ export function buildLines(answers: Answers, misc: MiscAnswer = EMPTY_MISC): Rep
 }
 
 /**
- * What the operator surface shows (2026-10-04 amendment, rule 2).
+ * What the operator surface shows (2026-10-07 policy).
  *
- * There is no fallback mode any more: every estimate is the row calculation.
+ *   provisional         — no explicit answer yet: the total is the $20,000
+ *                         provisional starting estimate.
  *   knownSubtotal       — Known Repairs: answered rows, manual figures, misc.
- *   unansweredSubtotal  — Unanswered Allowances: "condition not confirmed".
- *   total               — Preliminary Total: both, plus the (BOOK-only, so
- *                         here $0) FMTM allowance. This is what approval
- *                         carries and what persists.
+ *   unansweredSubtotal  — the provisional reserve ($20,000 while
+ *                         provisional, otherwise $0; no row carries one).
+ *   incomplete          — after an answer, some row is still unknown or
+ *                         unresolved: "Known repairs: $X — estimate
+ *                         incomplete", $0 included.
+ *   total               — the provisional figure, or the known amounts plus
+ *                         the (BOOK-only, so here $0) FMTM allowance. This is
+ *                         what approval carries and what persists.
  */
 export interface OperatorEstimate {
   mode: "rows";
   estimate: RepairEstimate;
+  provisional: boolean;
+  incomplete: boolean;
   knownSubtotal: number;
   unansweredSubtotal: number;
   total: number;
@@ -473,8 +526,8 @@ export function rowsTotal(estimate: RepairEstimate): number {
  * Jess ruling on the PR #124 review, item 3 (2026-10-04). The whole-house
  * electrical and electrical panel rows are separately approved, so both carry
  * their amounts; whether they cover some of the same work is unconfirmed.
- * True when BOTH currently contribute a positive amount (an answer, a manual
- * figure or an unanswered allowance) -- the operator is then told the overlap
+ * True when BOTH currently contribute a positive amount (an answer or a
+ * manual figure; since 2026-10-07 no row carries an allowance) -- the operator is then told the overlap
  * is possible. It decides nothing and deducts nothing.
  */
 export function electricalOverlapPossible(result: OperatorEstimate): boolean {
@@ -486,8 +539,9 @@ export function electricalOverlapPossible(result: OperatorEstimate): boolean {
 }
 
 /**
- * Resolve the operator's answers into Known Repairs, Unanswered Allowances and
- * the Preliminary Total. An untouched estimator is simply every row unanswered.
+ * Resolve the operator's answers into the provisional starting estimate (no
+ * answer yet) or the Known Repairs total, flagged incomplete while any row is
+ * still unknown or unresolved (2026-10-07).
  *
  * `compute` is injected rather than imported so this stays testable without
  * the core, and so the core keeps exactly one caller shape.
@@ -498,9 +552,12 @@ export function operatorEstimate(
   misc: MiscAnswer = EMPTY_MISC,
 ): OperatorEstimate {
   const estimate = compute(buildLines(answers, misc));
+  const provisional = !hasExplicitAnswer(answers, misc);
   return {
     mode: "rows",
     estimate,
+    provisional,
+    incomplete: !provisional && estimate.unpricedRisks.length > 0,
     knownSubtotal: estimate.indicatedSubtotal,
     unansweredSubtotal: estimate.components.unknownRiskReserves,
     total: rowsTotal(estimate),
