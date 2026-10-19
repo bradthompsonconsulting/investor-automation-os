@@ -365,6 +365,14 @@ export interface GhlConfig {
     /** Candidate deals one discovery may read; more is unexpected work and stops the evaluation. */
     maxCandidates: number;
   };
+  /**
+   * B15-04 SUPPLEMENTAL GHL READ budget (Brad 2026-10-19; netlify/functions/lib/supplemental-read-budget.ts).
+   * When `enabled` is exactly `SUPPLEMENTAL_READ_BUDGET_ENABLED` (Test only), every GHL request made by a
+   * non-write function reserves one unit of `ceiling` under `budgetId` before it is sent, and is refused unsent
+   * at the ceiling or whenever the accounting cannot be confirmed. Production carries
+   * `SUPPLEMENTAL_READ_BUDGET_DISABLED`. Enabling, the ceiling and a new id are reviewed config-only commits.
+   */
+  supplementalReadBudget: { enabled: string; budgetId: string; ceiling: number };
 }
 
 /** GATE 2 / B9-08 -- the literal placeholder value for an unconfigured `senderUserId`. Exported so ghl-proxy.ts can refuse a send while it is in effect, without hardcoding the sentinel a second time. */
@@ -397,6 +405,10 @@ export const PROPERTY_ANSWER_FIELD_NOT_PROVISIONED = "PROPERTY_ANSWER_FIELD_NOT_
 export const PROPERTY_ANSWER_EVALUATION_ENABLED = "PROPERTY_ANSWER_EVALUATION_ENABLED" as const;
 /** B15-04 -- the value PRODUCTION carries: the evaluation never applies there. */
 export const PROPERTY_ANSWER_EVALUATION_DISABLED = "PROPERTY_ANSWER_EVALUATION_DISABLED" as const;
+/** B15-04 -- the ONE value that meters non-write GHL reads against the supplemental read budget (see `supplementalReadBudget`). */
+export const SUPPLEMENTAL_READ_BUDGET_ENABLED = "SUPPLEMENTAL_READ_BUDGET_ENABLED" as const;
+/** B15-04 -- the value PRODUCTION carries (and TEST until a reviewed config commit): reads are not metered. */
+export const SUPPLEMENTAL_READ_BUDGET_DISABLED = "SUPPLEMENTAL_READ_BUDGET_DISABLED" as const;
 
 /** B14-12 — the ONE value that opens the Production call-log permission class. */
 export const PRODUCTION_CALL_LOG_ENABLED = "PRODUCTION_CALL_LOG_ENABLED" as const;
@@ -819,6 +831,7 @@ const PRODUCTION: GhlConfig = {
     requestBudget: { budgetId: "not-applicable-in-production", ceiling: 0 },
     maxCandidates: 0,
   },
+  supplementalReadBudget: { enabled: SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: "not-applicable-in-production", ceiling: 0 },
 };
 
 // TEST identifiers are captured from the GHL Test Environment, never hand-typed.
@@ -1225,6 +1238,9 @@ const TEST: GhlConfig = {
     requestBudget: { budgetId: "b15-04-eval-1", ceiling: 40 },
     maxCandidates: 1,
   },
+  // B15-04: the supplemental read budget is implemented but NOT enabled here. Enabling it, with its ceiling and
+  // budget id, is a separate reviewed config-only commit (the numeric allowance awaits Brad's decision).
+  supplementalReadBudget: { enabled: SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: "b15-04-eval-reads-not-enabled", ceiling: 0 },
 };
 
 export function getConfig(selector: string | undefined): GhlConfig {
@@ -1286,6 +1302,7 @@ export function getConfig(selector: string | undefined): GhlConfig {
       ([k, v]): [string, string] => [`propertyAnswerFields.${k}`, v],
     ),
     ["propertyAnswerEvaluation.enabled", config.propertyAnswerEvaluation.enabled],
+    ["supplementalReadBudget.enabled", config.supplementalReadBudget.enabled],
   ];
 
   const missing = firstIncompleteKey(entries);

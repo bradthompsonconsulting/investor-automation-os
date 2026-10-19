@@ -10,6 +10,7 @@
 
 import { buildMailerDigest, type MailerDigest, type MailerGroup } from "./lib/mailer-shared";
 import { getConfig } from "../../shared/ghl-config";
+import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 // PB-D51 — location id and custom-value pointers resolve once at module scope
 // from the shared config.
@@ -24,8 +25,8 @@ const MAILER_DIGEST_RECIPIENT_ID = CONFIG.customValues.mailerDigestRecipient;
 
 const RESEND_FROM = "IAOS Mailers <digest@mailers.investorautomationos.com>";
 
-async function getDigestRecipient(token: string): Promise<string> {
-  const res = await fetch(
+async function getDigestRecipient(token: string, ghlFetch: typeof fetch): Promise<string> {
+  const res = await ghlFetch(
     `https://services.leadconnectorhq.com/locations/${LOCATION_ID}/customValues/${MAILER_DIGEST_RECIPIENT_ID}`,
     { headers: { Authorization: `Bearer ${token}`, Version: "2021-07-28" } },
   );
@@ -96,7 +97,7 @@ function renderEmailHtml(digest: MailerDigest): string {
   </div>`;
 }
 
-export const handler = async () => {
+export const handler = async (event?: any) => {
   const token = process.env.GHL_PRIVATE_API_KEY;
   const resendKey = process.env.RESEND_API_KEY;
 
@@ -104,9 +105,10 @@ export const handler = async () => {
   if (!resendKey) return { statusCode: 500, body: JSON.stringify({ error: "RESEND_API_KEY not configured" }) };
 
   try {
+    const ghlFetch = ghlReadFetch(event, "mailer-digest");
     const [digest, recipient] = await Promise.all([
-      buildMailerDigest(token),
-      getDigestRecipient(token),
+      buildMailerDigest(token, new Date(), ghlFetch),
+      getDigestRecipient(token, ghlFetch),
     ]);
 
     const res = await fetch("https://api.resend.com/emails", {
@@ -128,6 +130,8 @@ export const handler = async () => {
       body: JSON.stringify({ sentTo: recipient, totals: digest.totals, resendId: resendBody.id ?? null }),
     };
   } catch (err: any) {
+    const refusedRead = supplementalReadRefusal(err, {});
+    if (refusedRead) return refusedRead;
     console.error("[mailer-digest]", err);
     return { statusCode: 500, body: JSON.stringify({ error: err.message ?? "Internal error" }) };
   }

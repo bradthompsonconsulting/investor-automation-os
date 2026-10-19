@@ -11,6 +11,7 @@
 
 import { parseContact } from "./lib/contact-parse";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 
@@ -42,7 +43,7 @@ export const handler = async (event: any) => {
   }
 
   try {
-    const res  = await fetch(`${GHL_BASE}/contacts/${id}`, { headers: headers(token) });
+    const res  = await ghlReadFetch(event, "ghl-contact")(`${GHL_BASE}/contacts/${id}`, { headers: headers(token) });
     const body = await res.json();
 
     if (res.status === 404) {
@@ -57,6 +58,8 @@ export const handler = async (event: any) => {
       body: JSON.stringify(parseContact(raw)),
     };
   } catch (err: any) {
+    const refusedRead = supplementalReadRefusal(err, RESPONSE_HEADERS);
+    if (refusedRead) return refusedRead;
     console.error("[ghl-contact]", err);
     return {
       statusCode: 500,

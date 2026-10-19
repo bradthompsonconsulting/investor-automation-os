@@ -23,6 +23,7 @@
  */
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 const CONFIG = getConfig(process.env.IAOS_ENV);
@@ -40,7 +41,7 @@ export const handler = async (event: any) => {
   let documentsArrayPresent = false;
   try {
     const url = `${GHL_BASE}/proposals/document?` + new URLSearchParams({ locationId: CONFIG.locationId, limit: "1" });
-    const response = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${token}`, Version: "v3" } });
+    const response = await ghlReadFetch(event, "ghl-documents-capability")(url, { method: "GET", headers: { Authorization: `Bearer ${token}`, Version: "v3" } });
     httpStatus = response.status;
     if (response.ok) {
       try {
@@ -50,7 +51,9 @@ export const handler = async (event: any) => {
         documentsArrayPresent = false;
       }
     }
-  } catch {
+  } catch (err) {
+    const refusedRead = supplementalReadRefusal(err, RESPONSE_HEADERS);
+    if (refusedRead) return refusedRead;
     return { statusCode: 502, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "Documents & Contracts request failed" }) };
   }
   return { statusCode: 200, headers: RESPONSE_HEADERS, body: JSON.stringify({ httpStatus, documentsArrayPresent }) };

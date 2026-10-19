@@ -18,6 +18,7 @@
 
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
@@ -74,9 +75,10 @@ export const handler = async (event: any) => {
   const endTime   = Number(event.queryStringParameters?.endTime)   || now + DEFAULT_WINDOW_MS;
 
   try {
+    const ghlFetch = ghlReadFetch(event, "ghl-calendar-events");
     // 1) The location's calendars = the fan-out targets. GHL-FIRST: use whatever
     //    GHL has, don't hardcode ids that can change.
-    const cRes  = await fetch(`${GHL_BASE}/calendars/?locationId=${LOCATION_ID}`, { headers: headers(token) });
+    const cRes  = await ghlFetch(`${GHL_BASE}/calendars/?locationId=${LOCATION_ID}`, { headers: headers(token) });
     const cBody = await cRes.json();
     if (!cRes.ok) throw ghlReadError(`GET /calendars/ → ${cRes.status}: ${JSON.stringify(cBody)}`, cRes.status);
     const calendars: any[] = (cBody.calendars ?? []).filter((c: any) => c?.id && c.isActive !== false);
@@ -88,7 +90,7 @@ export const handler = async (event: any) => {
         locationId: LOCATION_ID, calendarId: cal.id,
         startTime: String(startTime), endTime: String(endTime),
       });
-      const eRes  = await fetch(`${GHL_BASE}/calendars/events?${params}`, { headers: headers(token) });
+      const eRes  = await ghlFetch(`${GHL_BASE}/calendars/events?${params}`, { headers: headers(token) });
       const eBody = await eRes.json();
       if (!eRes.ok) throw ghlReadError(`GET /calendars/events?calendarId=${cal.id} → ${eRes.status}: ${JSON.stringify(eBody)}`, eRes.status);
       for (const e of (eBody.events ?? [])) {
@@ -118,6 +120,8 @@ export const handler = async (event: any) => {
     };
     return { statusCode: 200, headers: { ...RESPONSE_HEADERS, "Content-Type": "application/json" }, body: JSON.stringify(result) };
   } catch (err: any) {
+    const refusedRead = supplementalReadRefusal(err, RESPONSE_HEADERS);
+    if (refusedRead) return refusedRead;
     console.error("[ghl-calendar-events]", err);
     // B15-07 / Pass 1 F47: GHL refusing the calendar read (401/403, e.g. a
     // token without calendar read scope) is a permission state, not a crash.
