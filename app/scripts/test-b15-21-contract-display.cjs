@@ -29,9 +29,9 @@ const APP = path.resolve(__dirname, '..');
 const ts = require(path.join(APP, 'node_modules', 'typescript'));
 const beforeArg = process.argv.find((a) => a.startsWith('--before='));
 const REV = beforeArg ? beforeArg.slice('--before='.length) : null;
-const page = REV
+const page = (REV
   ? execFileSync('git', ['show', `${REV}:app/src/pages/ContractWorkspace.tsx`], { cwd: APP, encoding: 'utf8' })
-  : fs.readFileSync(path.join(APP, 'src/pages/ContractWorkspace.tsx'), 'utf8');
+  : fs.readFileSync(path.join(APP, 'src/pages/ContractWorkspace.tsx'), 'utf8')).replace(/\r\n/g, '\n'); // line endings vary by checkout (CRLF on Windows)
 if (REV) console.log(`NEGATIVE CONTROL: reading ContractWorkspace.tsx at ${REV}; this run must fail.`);
 
 let checks = 0;
