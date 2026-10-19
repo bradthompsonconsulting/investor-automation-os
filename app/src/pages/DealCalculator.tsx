@@ -25,6 +25,7 @@ import {
   type Answers, type MiscAnswer, type OperatorCondition,
 } from "../lib/repair-estimation/operator-model";
 import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstimateSummary";
+import { NetProceedsPanel } from "../components/NetProceedsPanel";
 import { computeRepairEstimate } from "../lib/repair-estimation/compute";
 import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
 
@@ -365,6 +366,8 @@ export default function DealCalculator() {
     setLinkError(null);
   }
 
+  const [netPanelRevision, setNetPanelRevision] = useState(0);
+
   function handleClear() {
     setArvInput("");
     setRepairsQuickInput("");
@@ -378,6 +381,8 @@ export default function DealCalculator() {
     setRepairRevision(0);
     setAssignmentMode(DEFAULT_ASSIGNMENT_MODE);
     setManualAmountInput("");
+    /* B15-26: remounting the net proceeds panel resets its scratch inputs. */
+    setNetPanelRevision((n) => n + 1);
     // Clear does not unlink -- clearing the scratchpad and severing the
     // link are two different bounded actions, matching this issue's own
     // "Clear/Reset" bullet, distinct from "optional linking."
@@ -543,6 +548,10 @@ export default function DealCalculator() {
           </div>
         </div>
       </div>
+
+      {/* B15-26 (INV-134): wholesaler costs and estimated net. Reads only the
+          existing Expected Spread above; gates nothing; saves nothing. */}
+      <NetProceedsPanel key={netPanelRevision} grossSpread={expectedSpread} />
 
       {/* Optional linking. INV-70 / B9-07A Phase 2 correction round 3 --
           no save-back of any kind happens from this panel anymore (Repairs'
