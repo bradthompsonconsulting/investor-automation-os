@@ -235,14 +235,18 @@ const folderCache = new Map<string, CustomFieldFolder>();
 export interface ContactGridRow {
   // NON-VISIBLE — carried only for the row → /contacts/:id link (§5.1 / §3 /
   // Workspace §8 step 2b) and React row keys. NOT a sixth column: do not render
-  // it. The five displayed columns are unchanged, so the §5.3 grid assertions
-  // and floor 122 are unaffected.
+  // it. (B15-20 adds Stage and Last call attempt columns; this id is still
+  // not one of them.)
   id:              string;
   name:            string;      // firstName + lastName, joined; "" if both empty
   phone:           string;
   email:           string;
   propertyAddress: string;      // contact.property_address; "" when absent
   dateAdded:       string | null;
+  /* B15-20 (F17): the existing last_call_attempt carrier, both forms, for the
+     Last call attempt column (precise TEXT first, DATE fallback). */
+  lastCallAttemptPrecise: string | null;
+  lastCallAttempt:        string | null;
 }
 
 // ── Bucket tag helpers ────────────────────────────────────────────────────────
@@ -688,6 +692,8 @@ export const ghl = {
         email:           c.email,
         propertyAddress: c.propertyAddress,
         dateAdded:       c.dateAdded,
+        lastCallAttemptPrecise: c.lastCallAttemptPrecise,
+        lastCallAttempt:        c.lastCallAttempt,
       });
       try {
         return (await ghl.contacts.listAll()).map(toRow);

@@ -199,8 +199,10 @@ async function main() {
     await expectRows('a query matching nothing shows no rows', 'zzzz', []);
     await expectRows('clearing the search restores every row in Date Added order', '', ALL);
 
-    check('the page made one contacts read and nothing else: no writes, no other request',
-      same(log.filter((x) => x !== 'GET app-read-session'), ['GET ghl-contacts']) && foreign.length === 0, { log, foreign });
+    /* B15-20: plus exactly one Seller Leads pipeline read for the Stage column
+       (unanswered here, so the column shows its unavailable state). */
+    check('the page made one contacts read and one pipeline read, nothing else: no writes, no other request',
+      same(log.filter((x) => x !== 'GET app-read-session').sort(), ['GET ghl-contacts', 'GET ghl-opportunities']) && foreign.length === 0, { log, foreign });
     check('no page errors', pageErrors.length === 0, pageErrors);
   } catch (e) {
     console.error(`FAIL  ${e.message}`);
