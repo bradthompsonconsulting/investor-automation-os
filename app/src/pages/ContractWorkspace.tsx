@@ -287,8 +287,16 @@ function renderValueOrNone(v: ValueOrNone): string {
  * raw JSON blob. Falls back to a plain "Key: value" join (still no braces
  * or quotes) for anything not explicitly handled below.
  */
+/* B15-21 (Walkthrough 2): an unresolved title company reads "Not selected
+   yet" -- display only. It stays unresolved (amber, still blocking every
+   existing gate); nothing is recorded, fabricated or treated as None. */
+const TITLE_COMPANY_NOT_SELECTED = "Not selected yet";
+function unresolvedText(group: string, field: string): string {
+  return group === "titleSurvey" && field === "titleCompanyName" ? TITLE_COMPANY_NOT_SELECTED : "Unresolved";
+}
+
 function renderFieldValue(group: string, field: string, d: FieldDisposition<unknown>): { text: string; color: string } {
-  if (d.kind === "unresolved") return { text: "Unresolved", color: "#F59E0B" };
+  if (d.kind === "unresolved") return { text: unresolvedText(group, field), color: "#F59E0B" };
   if (d.kind === "not_applicable") return { text: "Not applicable" + (d.note ? ` — ${d.note}` : ""), color: "#64748B" };
   const v: any = d.value;
   const key = `${group}.${field}`;
@@ -2745,7 +2753,10 @@ export default function ContractWorkspace() {
     <Shell contactId={contactId}>
       <RefreshReadError message={refreshReadError} />
       <div style={{ marginBottom: "18px" }}>
-        <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>Contract Ready</h1>
+        {/* B15-21 (Walkthrough 2): the page title no longer claims "Contract
+            Ready" whatever the state; readiness, authorization, sending and
+            execution keep their own status sections below. */}
+        <h1 data-testid="contract-workspace-heading" style={{ fontSize: "22px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>Contract Workspace</h1>
         <div style={{ fontSize: "13px", color: "#64748B", marginTop: "4px" }}>
           {contactName(contact)}
           {screen.state === "ready" && screen.opportunity.name !== contactName(contact)
@@ -3181,7 +3192,7 @@ export default function ContractWorkspace() {
                         <div style={formBoxStyle}>
                           <div style={rowStyle}>
                             <Field label="Title policy expense paid by"><SelectField testId="contract-fact-input-title-expense-party" value={drafts.titleSurvey.titlePolicyExpenseParty} onChange={(v) => updateDraft("titleSurvey", { titlePolicyExpenseParty: v })} options={[{ value: "seller", label: "Seller" }, { value: "buyer", label: "Buyer" }]} /></Field>
-                            <Field label="Title company"><TextField testId="contract-fact-input-title-company" value={drafts.titleSurvey.titleCompanyName} onChange={(v) => updateDraft("titleSurvey", { titleCompanyName: v })} /></Field>
+                            <Field label="Title company"><TextField testId="contract-fact-input-title-company" value={drafts.titleSurvey.titleCompanyName} placeholder={TITLE_COMPANY_NOT_SELECTED} onChange={(v) => updateDraft("titleSurvey", { titleCompanyName: v })} /></Field>
                           </div>
                           <div style={rowStyle}>
                             <Field label="Shortage amendment"><SelectField testId="contract-fact-input-shortage-kind" value={drafts.titleSurvey.shortageKind} onChange={(v) => updateDraft("titleSurvey", { shortageKind: v })} options={[{ value: "not_amended", label: "Not amended" }, { value: "amended", label: "Amended" }]} /></Field>
@@ -3497,6 +3508,16 @@ export default function ContractWorkspace() {
                       ? "The contract changed. Generate the updated PDF and save authorization again."
                       : "Generate the PDF, review it, then save authorization."}
                   </div>
+                  {/* B15-21: what "saved" covers. Currency is re-checked against
+                      the current facts every time; the PDF bytes only when a PDF
+                      has been generated in this session. Nothing here verifies. */}
+                  {authorizationDisplayState === "saved" && bradAuthorizationRecord ? (
+                    <div data-testid="contract-authorization-saved-artifact" style={{ fontSize: "10px", color: "#64748B", marginTop: "4px" }}>
+                      {generatedArtifact
+                        ? `It covers PDF SHA-256 ${bradAuthorizationRecord.artifactSha256.slice(0, 12)}…, which the PDF generated in this session matches.`
+                        : `It covers PDF SHA-256 ${bradAuthorizationRecord.artifactSha256.slice(0, 12)}…, generated when it was saved. No PDF has been generated in this session, so those bytes have not been re-checked here.`}
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
@@ -3548,7 +3569,7 @@ export default function ContractWorkspace() {
                         <div key={`${l.group}.${l.field}`}>
                           <span style={{ color: "#475569" }}>¶{l.paragraph || "—"} {l.label}:</span>{" "}
                           <span style={{ color: l.status === "populated" ? "#E2E8F0" : l.status === "not_applicable" ? "#64748B" : "#F59E0B" }}>
-                            {l.text ?? "Unresolved"}
+                            {l.text ?? unresolvedText(l.group, l.field)}
                           </span>
                         </div>
                       ))}
@@ -3582,7 +3603,9 @@ export default function ContractWorkspace() {
                   </div>
                 ) : (
                   <div data-testid="contract-generated-artifact-none" style={{ fontSize: "11px", color: "#94A3B8" }}>
-                    Not yet generated for this revision -- generate before authorizing.
+                    {authorizationDisplayState === "saved" && bradAuthorizationRecord
+                      ? `No PDF generated in this session. The saved authorization covers SHA-256 ${bradAuthorizationRecord.artifactSha256.slice(0, 12)}…; generate again to re-check the current bytes.`
+                      : "Not yet generated for this revision -- generate before authorizing."}
                   </div>
                 )}
                 <div style={{ marginTop: "8px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
