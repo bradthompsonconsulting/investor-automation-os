@@ -31,6 +31,26 @@ export async function propertyAnswer(body: Record<string, unknown>): Promise<Rep
   return { status: r.status, body: await r.json().catch(() => ({})) };
 }
 export { AppWriteSignInRequired };
+/**
+ * B15-04 close (design r3 B3): ONE deliberate close attempt for the fixed evaluation. `closed` only for the
+ * server's 200 `closed`; a 401 or a 403 is a refusal that wrote nothing; everything else -- a 503, a lost or
+ * malformed reply, any other status -- is UNKNOWN (the stop may or may not be stored). Never retried here.
+ */
+export type CloseOutcome = { kind: "closed"; message: string } | { kind: "unknown"; message: string } | { kind: "refused"; code: string; message: string } | { kind: "sign_in"; message: string };
+export async function closeEvaluation(pair: { contactId: string; opportunityId: string }): Promise<CloseOutcome> {
+  let r: Response;
+  try {
+    r = await appWriteFetch("/.netlify/functions/property-answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "close", contactId: pair.contactId, opportunityId: pair.opportunityId }) });
+  } catch (e) {
+    if (e instanceof AppWriteSignInRequired) return { kind: "sign_in", message: "Sign in for saving (application writes) first. Nothing was sent." };
+    return { kind: "unknown", message: "No reply was received. The close may or may not be stored; the evaluation stays on hold." };
+  }
+  const body = await r.json().catch(() => null);
+  if (r.status === 200 && body?.outcome === "closed" && typeof body.message === "string") return { kind: "closed", message: body.message };
+  if (r.status === 401) return { kind: "sign_in", message: "Your saving sign-in was not accepted. Nothing was closed." };
+  if (r.status === 403 && typeof body?.code === "string") return { kind: "refused", code: body.code, message: typeof body.error === "string" ? body.error : "Refused." };
+  return { kind: "unknown", message: typeof body?.error === "string" && r.status === 503 ? body.error : "The reply could not be confirmed. The close may or may not be stored; the evaluation stays on hold." };
+}
 /** C1–C4 r4 A3: the server echoes sha256(writer) as `operatorDigest` on authenticated replies. UI filtering only, never authority. */
 export async function operatorDigestOf(operator: string): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(operator));

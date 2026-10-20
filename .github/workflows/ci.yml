@@ -362,6 +362,11 @@ jobs:
       - name: Property answers recovery and authority, server (B15-04 C1-C4) - 21 cases
         run: node app/scripts/test-property-answer-recovery.cjs
 
+      # B15-04 close (design r3, Jess D0-D4, Bones clearance 2026-10-20): the server close action, exact recovery pairs
+      # and their runtime projection (real handler, offline).
+      - name: Property answers close, server (B15-04 close) - 17 cases
+        run: node app/scripts/test-property-answer-close.cjs
+
       # B15-04 C1-C4 r4: the real panel against the real handler -- authority, identity/target generations, late replies; floor 30.
       - name: Property answers authority and late replies, real page (B15-04 C1-C4) - 30 checks
         run: node app/scripts/test-property-answers-authority.cjs
@@ -370,6 +375,10 @@ jobs:
       # The unchanged original reproducer is kept outside CI (its legacy-v1-key probes are retired by design).
       - name: Property answers preservation, maintained v2 runner, real page (B15-04 C1-C4) - 37 checks
         run: node app/scripts/test-property-answers-preservation-v2.cjs
+
+      # B15-04 close: the PRODUCTION build (real boot, Layout, /evaluation-close), every request intercepted; floor 44.
+      - name: Evaluation close route traffic and recovery, production build (B15-04 close) - 44 checks
+        run: node app/scripts/test-evaluation-close-route.cjs
 
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.

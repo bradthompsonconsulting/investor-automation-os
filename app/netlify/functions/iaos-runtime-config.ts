@@ -33,7 +33,8 @@
 import { getConfig, projectRuntimeConfig } from "../../shared/ghl-config";
 
 // Module scope, deliberately — see the header.
-const PAYLOAD = projectRuntimeConfig(getConfig(process.env.IAOS_ENV));
+// The same selector also decides the close/recovery projection (B15-04): only "test" can project it enabled.
+const PAYLOAD = projectRuntimeConfig(getConfig(process.env.IAOS_ENV), process.env.IAOS_ENV);
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",

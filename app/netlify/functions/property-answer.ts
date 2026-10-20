@@ -11,6 +11,8 @@
  *   { action: "check",   contactId, opportunityId }
  *   { action: "draft",   contactId, opportunityId, field, value }
  *   { action: "drafts",  contactId, opportunityId }   (C1–C4 r4: recover THIS operator's bound v2 drafts; zero GHL, no budget)
+ *   { action: "close",   contactId, opportunityId }   (B15-04 close, design r3: durably stop the FIXED configured
+ *       evaluation budget; Test only; one exact recovery pair; zero GHL, no grant, no lock, no cookie)
  *
  * Refused BEFORE any Blob or GHL access unless: this deployment's config has
  * `propertyAnswerEvaluation.enabled` = PROPERTY_ANSWER_EVALUATION_ENABLED
@@ -44,6 +46,9 @@ const READ_INCOMPLETE = "Verification is incomplete; earlier GHL reads in this r
 const WRITE_UNCERTAIN = "The save may have reached GHL; the earlier write remains unresolved. Do not save again.";
 /** Context verdicts a failed or incomplete GHL READ can produce: worded as incomplete verification, never as a save result. */
 const READ_FAILURE_REASONS = new Set<string>(["search_incomplete", "list_updating"]);
+/** B15-04 close replies (design r3 B3): never a cancellation claim. */
+export const CLOSED_TEXT = "The evaluation's request budget is durably stopped. New property-answer GHL actions are refused. Work already admitted may still finish; this is not a cancellation. Drafts stay recoverable.";
+export const CLOSE_UNKNOWN_TEXT = "The close was not confirmed; it may or may not be stored. The evaluation stays on hold. You may try Close again deliberately.";
 const RECOVERY_NOTICE = "Saved draft for a previously observed contact/deal association. Current ownership and eligibility have not been checked. Saving is off.";
 /**
  * Bones F4b: the evaluation's continuation secret (evaluation-budget.ts, CONTINUATION). Set only
@@ -76,6 +81,7 @@ const KEYS: Record<string, string[]> = {
   check: ["action", "contactId", "opportunityId"],
   draft: ["action", "contactId", "opportunityId", "field", "value"],
   drafts: ["action", "contactId", "opportunityId"],
+  close: ["action", "contactId", "opportunityId"],
 };
 const DIGEST = /^[0-9a-f]{64}$/;
 const now = () => new Date().toISOString();
@@ -111,11 +117,16 @@ export const handler = async (event: any) => {
   } catch { return json(400, { outcome: "not_sent", error: "Invalid property-answer request" }); }
 
   const env = String(process.env.IAOS_ENV);
+  // B15-04 close (D1/B1): the explicit Test-only check comes FIRST, before the evaluation gate and before any Blob
+  // access, so a Production deployment refuses close even if its evaluation config were ever enabled.
+  if (req.action === "close" && env !== "test") return json(403, { outcome: "not_closed", code: "close_test_only", error: "Closing the evaluation is available only in Test." });
   const config = getConfig(process.env.IAOS_ENV);
   // The controlled evaluation gate and the fixture pins: before any Blob or GHL access.
   const ev = config.propertyAnswerEvaluation;
   if (ev.enabled !== PROPERTY_ANSWER_EVALUATION_ENABLED) return json(403, { outcome: "not_sent", code: "evaluation_disabled", error: "Property answers are not enabled in this environment" });
   if (!ev.fixtureContactIds.includes(req.contactId) || !ev.fixtureOpportunityIds.includes(req.opportunityId)) return json(403, { outcome: "not_sent", code: "not_a_fixture", error: "Property answers are limited to the evaluation fixtures" });
+  if (req.action === "close" && !ev.recoveryPairs.some((p) => p.contactId === req.contactId && p.opportunityId === req.opportunityId))
+    return json(403, { outcome: "not_closed", code: "not_a_recovery_pair", error: "Closing needs one of the reviewed evaluation contact/deal pairs." });
 
   let plan: ReturnType<typeof planWrite> | null = null;
   let valueText = "", valueLines: string[] = [];
@@ -139,6 +150,16 @@ export const handler = async (event: any) => {
   // sent and bounded. Planned counts per action (one discovery = 1 search + 2 reads per candidate).
   const PLANNED: Record<string, number> = { context: 1 + 2 * m, save: 2 * (1 + 2 * m) + 5, history: 3, check: 3, draft: 0 };
   const budget = new EvaluationBudget(s, scopeKey, ev.requestBudget.budgetId, ev.requestBudget.ceiling);
+  // ── B15-04 close (design r3, D0–D4; Bones clearance 2026-10-20). Any authenticated allowed Test writer, holder or not.
+  // The existing durable stop on THIS configured budget, without `g`: no grant, no boundary or GHL, no lock, no
+  // continuation read, no cookie. `closed` only when the stop is acknowledged or the record is verifiably already
+  // stopped; anything else is UNKNOWN. Admission fencing, not cancellation: work already admitted may still finish.
+  if (req.action === "close") {
+    let closed = false;
+    try { closed = (await budget.stop("operator_close", now())) === true; } catch { closed = false; }
+    if (closed) return json(200, { outcome: "closed", message: CLOSED_TEXT });
+    return json(503, { outcome: "close_unknown", code: "close_unknown", error: CLOSE_UNKNOWN_TEXT });
+  }
   let grant: Grant | null = null;
   // Bones b729e33 re-review F4: a granted action ends by settling its grant clean (expected result,
   // no refused or failed request) or by a stop. Neither write is trusted to succeed: an unsettled

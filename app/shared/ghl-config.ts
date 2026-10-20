@@ -364,6 +364,14 @@ export interface GhlConfig {
     requestBudget: { budgetId: string; ceiling: number };
     /** Candidate deals one discovery may read; more is unexpected work and stops the evaluation. */
     maxCandidates: number;
+    /**
+     * B15-04 close (design r3 C3; Bones clearance 2026-10-20): the EXACT reviewed contact/deal pairs
+     * of the evaluation plan (Y1/E, Y2/F). `close` accepts only one of these tuples, and the
+     * dedicated close page offers recovery only for them. Each member is also in the fixture lists
+     * above. These are plan identities, not proof of current GHL ownership: recovery still needs its
+     * server-side association and operator binding. Production carries none.
+     */
+    recoveryPairs: readonly { readonly contactId: string; readonly opportunityId: string }[];
   };
   /**
    * B15-04 SUPPLEMENTAL GHL READ budget (Brad 2026-10-19; netlify/functions/lib/supplemental-read-budget.ts).
@@ -830,6 +838,7 @@ const PRODUCTION: GhlConfig = {
     fixtureOpportunityIds: [],
     requestBudget: { budgetId: "not-applicable-in-production", ceiling: 0 },
     maxCandidates: 0,
+    recoveryPairs: [],
   },
   supplementalReadBudget: { enabled: SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: "not-applicable-in-production", ceiling: 0 },
 };
@@ -1237,6 +1246,12 @@ const TEST: GhlConfig = {
     // The controlled plan E1-E4 on Deal E with one candidate: 3 + 3 + (11+3+3) + (11+3+3) = 40.
     requestBudget: { budgetId: "b15-04-eval-1", ceiling: 40 },
     maxCandidates: 1,
+    // Close/recovery pairs (Bones clearance 2026-10-20, confirmed against the reviewed evaluation sequence):
+    // Y1 + Deal E, Y2 + Deal F. Exact tuples; a cross pair is refused.
+    recoveryPairs: [
+      { contactId: "pYE98meKVyRrbzEt6MMR", opportunityId: "a75hWpPILA7Y7Ginp4n8" },
+      { contactId: "LR98QNOE0oksHIPF4JIf", opportunityId: "HCTa65siD41bA9XGpQWM" },
+    ],
   },
   // B15-04 evaluation config (Brad 2026-10-19; Bones r3 recommendation): 100 supplemental covered GHL dispatches,
   // option R -- the three automatic Contacts retries are budgeted inside the 100, not added to it. ONE limited
@@ -1476,14 +1491,61 @@ export interface RuntimeConfig {
   >;
   pipelines: Pick<GhlConfig["pipelines"], "sellerLeads">;
   documentsContracts: Pick<GhlConfig["documentsContracts"], "populationVerification" | "templateId" | "expectedTemplateName">;
+  /**
+   * B15-04 close (design r3 C3): ONLY whether the dedicated close page applies here and the exact
+   * reviewed recovery pairs. Nothing else from `propertyAnswerEvaluation` (no budget id, ceiling or
+   * candidate cap) reaches the browser. `enabled` is true only on a Test deployment whose evaluation
+   * sentinel is exactly ENABLED; otherwise it is false with no pairs. The server decides every close
+   * and recovery on its own config; this projection only tells the page what to offer.
+   */
+  propertyAnswerRecovery: RecoveryProjection;
 }
 
-/** Server side: project a full config down to what the browser consumes. */
-export function projectRuntimeConfig(config: GhlConfig): RuntimeConfig {
+export type RecoveryPair = { contactId: string; opportunityId: string };
+export type RecoveryProjection = { enabled: boolean; pairs: RecoveryPair[] };
+const RECOVERY_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The close/recovery projection for one deployment. `environment` is the server's IAOS_ENV; anything but "test" projects disabled. */
+export function projectRecovery(config: GhlConfig, environment: string | undefined): RecoveryProjection {
+  const ev = config.propertyAnswerEvaluation;
+  if (environment !== "test" || ev.enabled !== PROPERTY_ANSWER_EVALUATION_ENABLED) return { enabled: false, pairs: [] };
+  return { enabled: true, pairs: ev.recoveryPairs.map((p) => ({ contactId: p.contactId, opportunityId: p.opportunityId })) };
+}
+
+/**
+ * The deliberate positive-allowlist check for the one non-string runtime group: an exact
+ * { enabled, pairs } shape, a real boolean (never a truthy sentinel), each pair exactly
+ * { contactId, opportunityId } of valid identifiers, no duplicate contact, deal or pair, at most
+ * two pairs, and pairs only when enabled. Anything else is refused, so App never boots on it.
+ */
+function invalidRecovery(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "propertyAnswerRecovery";
+  const v = value as Record<string, unknown>;
+  if (Object.keys(v).sort().join(",") !== "enabled,pairs") return "propertyAnswerRecovery";
+  if (typeof v.enabled !== "boolean") return "propertyAnswerRecovery.enabled";
+  if (!Array.isArray(v.pairs) || v.pairs.length > 2 || (!v.enabled && v.pairs.length !== 0) || (v.enabled && v.pairs.length === 0)) return "propertyAnswerRecovery.pairs";
+  const contacts = new Set<string>(), deals = new Set<string>();
+  for (const p of v.pairs as unknown[]) {
+    if (!p || typeof p !== "object" || Array.isArray(p)) return "propertyAnswerRecovery.pairs";
+    const q = p as Record<string, unknown>;
+    if (Object.keys(q).sort().join(",") !== "contactId,opportunityId") return "propertyAnswerRecovery.pairs";
+    if (typeof q.contactId !== "string" || !RECOVERY_ID.test(q.contactId) || typeof q.opportunityId !== "string" || !RECOVERY_ID.test(q.opportunityId)) return "propertyAnswerRecovery.pairs";
+    if (contacts.has(q.contactId) || deals.has(q.opportunityId)) return "propertyAnswerRecovery.pairs";
+    contacts.add(q.contactId); deals.add(q.opportunityId);
+  }
+  return null;
+}
+
+/**
+ * Server side: project a full config down to what the browser consumes.
+ * `environment` (the server's IAOS_ENV) is used ONLY for `propertyAnswerRecovery`; omitted, it projects disabled.
+ */
+export function projectRuntimeConfig(config: GhlConfig, environment?: string): RuntimeConfig {
   const out: Record<string, unknown> = {
     locationId: config.locationId,
     contractDraftRequest: config.contractDraftRequest,
     contractSellerCountField: config.contractSellerCountField,
+    propertyAnswerRecovery: projectRecovery(config, environment),
   };
   for (const [group, keys] of Object.entries(RUNTIME_GROUPS)) {
     const source = config[group as keyof GhlConfig] as Record<string, string>;
@@ -1521,7 +1583,7 @@ let RUNTIME: RuntimeConfig | null = null;
  * incomplete, which is what keeps main.tsx from importing App.
  */
 export function setRuntimeConfig(payload: unknown): RuntimeConfig {
-  const missing = firstIncompleteKey(runtimeEntries(payload));
+  const missing = firstIncompleteKey(runtimeEntries(payload)) ?? invalidRecovery((payload as Record<string, unknown> | null)?.propertyAnswerRecovery);
   if (missing !== null) {
     throw new Error(
       `[ghl-config] runtime configuration is incomplete: ${missing} is ` +
