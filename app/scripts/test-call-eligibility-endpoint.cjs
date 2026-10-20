@@ -58,6 +58,9 @@ const ok = (body, status = 200) => new Response(JSON.stringify(body), { status, 
 const readAuth = require(path.join(FUNCTIONS, 'lib', 'app-read-auth.ts'));
 const writeAuth = require(path.join(FUNCTIONS, 'lib', 'app-write-auth.ts'));
 const { getConfig } = require(path.join(APP, 'shared', 'ghl-config.ts'));
+// B15-04: committed Test now carries the evaluation read budget (ENABLED, 100). This suite's subject is not the
+// budget (test-supplemental-read-budget.cjs covers it), so its Test config pins the counter OFF explicitly.
+{ const cfg = require(path.join(APP, 'shared', 'ghl-config.ts')); cfg.getConfig('test').supplementalReadBudget = { enabled: cfg.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'offline-disabled', ceiling: 0 }; }
 function loadHandler() {
   for (const key of Object.keys(require.cache)) if (key.startsWith(FUNCTIONS)) delete require.cache[key];
   return require(SOURCE);
