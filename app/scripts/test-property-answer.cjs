@@ -134,6 +134,14 @@ function fresh() {
   receipts.clear(); etags.clear(); failNext = []; applyThenThrow = []; staleNext = []; calls = []; hooks = []; jar = null; sessionToken = null; loseNext = []; searchHide = new Set(); searchStale = new Map(); searchMeta = null; blobOps = 0;
   ghl = { contacts: { [X1]: { id: X1, notes: [] }, [X2]: { id: X2, notes: [] }, [X3]: { id: X3, notes: [] }, [OTHER]: { id: OTHER, notes: [] } }, opps: { [DA]: deal(DA, X1) } };
 }
+/** Bones F3: every OTHER pinned fixture contact needs clean ledger evidence (a valid, empty known-deal ledger) before a draft is trusted. */
+function seedOtherLedgers(own) {
+  for (const c of config.propertyAnswerEvaluation.fixtureContactIds) {
+    if (c === own) continue;
+    const lk = ledger.ledgerKey(SCOPE, c);
+    if (!receipts.has(lk)) { receipts.set(lk, { v: 1, gen: 1, ids: {}, discoveries: {} }); etags.set(lk, 'seed-' + c); }
+  }
+}
 const puts = () => calls.filter((c) => c.method === 'PUT').length;
 const posts = () => calls.filter((c) => c.method === 'POST').length;
 const ghlCount = () => calls.length;
@@ -247,6 +255,7 @@ async function t(name, fn) {
   await t('address then Seller Reason: each S1 clean -> S2 history -> committed; exact history bodies; head released; draft cleared; previous-revision chains', async () => {
     fresh();
     await context();   // C1–C4 r4: a draft needs a prior observed contact/deal association
+    seedOtherLedgers(X1);
     await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'seller_reason', value: 'draft text' });
     assert.equal((await context()).body.drafts.seller_reason, 'draft text');
     const before = ghlCount();
@@ -288,6 +297,7 @@ async function t(name, fn) {
   await t('r3 §4: Seller Reason without a confirmed address is refused (kept as a draft); an address initial set on a deal with an address is refused; a stale address digest is refused', async () => {
     fresh();
     assert.equal((await save('seller_reason', 'Why')).body.code, 'address_not_confirmed');
+    seedOtherLedgers(X1);
     await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'seller_reason', value: 'Why' });
     await commitAnswer('property_address', ADDR);
     assert.equal((await save('property_address', { ...ADDR, street: '200 Other St' })).body.code, 'address_already_set');
@@ -578,7 +588,7 @@ async function t(name, fn) {
   });
   await t('drafts: server-side, keyed by contact/deal/field; an address draft may be partial; invalid shapes are refused; drafts survive a refused save', async () => {
     fresh();
-    await context(); const before = ghlCount();   // C1–C4 r4: a draft needs a prior observed contact/deal association
+    await context(); seedOtherLedgers(X1); const before = ghlCount();   // C1–C4 r4: a draft needs a prior observed contact/deal association
     assert.equal((await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'property_address', value: { street: '1 Partial', unit: '', city: '', state: '', zip: '' } })).body.outcome, 'draft_saved');
     assert.equal((await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'property_address', value: { street: 1 } })).status, 400);
     assert.equal((await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'seller_reason', value: 'x'.repeat(4001) })).status, 400);
@@ -697,6 +707,7 @@ async function t(name, fn) {
       fresh();
       const sent = [];
       const e1 = await context(); assert.equal(e1.body.verdict.allowed, true);
+      seedOtherLedgers(X1);   // Bones F3: drafts need clean ledger evidence for every other pinned contact (setup; zero GHL)
       await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'seller_reason', value: 'Draft reason' });
       const e2 = await context(); assert.equal(e2.body.drafts.seller_reason, 'Draft reason');
       let ctx = e2.body; // the panel saves with the view it holds, then refreshes once after each run

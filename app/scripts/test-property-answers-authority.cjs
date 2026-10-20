@@ -56,6 +56,7 @@ process.env.IAOS_APP_WRITE_SESSION_SECRET = 'offline-fixture-only-not-a-real-sec
 process.env.GHL_PRIVATE_API_KEY = 'offline-fixture';
 
 const auth = require(path.join(APP, 'netlify/functions/lib/app-write-auth.ts'));
+const ledger = require(path.join(APP, 'netlify/functions/lib/known-deal-ledger.ts'));
 const cfgMod = require(path.join(APP, 'shared/ghl-config.ts'));
 const config = cfgMod.getConfig('test');
 const P = config.propertyAnswerFields;
@@ -131,6 +132,11 @@ async function main() {
     receipts.clear(); etags.clear(); calls = []; reqs = []; rules = []; jar = null; putFails = 0;
     const deal = (id, contactId) => ({ id, locationId: config.locationId, contactId, pipelineId: config.pipelines.sellerLeads, pipelineStageId: config.stages.newLeadSeller, status: 'open', name: 'IAOS PROBE ' + id, createdAt: '2026-10-17T12:00:00.000Z', customFields: ADDRESS_FIELDS.map(([id2, fieldValue]) => ({ id: id2, fieldValue })) });
     ghl = { contacts: { [X1]: { id: X1, notes: [] }, [X2]: { id: X2, notes: [] } }, opps: { [DA]: deal(DA, X1), [DB]: deal(DB, X2) } };
+    // Bones F3: drafts need clean ledger evidence for every OTHER pinned contact -- explicit valid (empty) ledgers.
+    for (const c of config.propertyAnswerEvaluation.fixtureContactIds) {
+      if (c === X1) continue;
+      const lk = ledger.ledgerKey(`test:${config.locationId}`, c); receipts.set(lk, { v: 1, gen: 1, ids: {}, discoveries: {} }); etags.set(lk, 'seed-' + c);
+    }
   };
   const rule = (action, mode, extra = {}) => { const r = { action, mode, ...extra }; if (mode === 'hold') { r.hit = new Promise((res) => { r.onHit = res; }); r.gate = new Promise((res) => { r.release = res; }); } rules.push(r); return r; };
   const sent = (action) => reqs.filter((r) => r.action === action);
@@ -336,12 +342,39 @@ async function main() {
       await closePage();
     }
 
+    // ── F1 (Bones, review of df623e6): the operator-echo digest is asynchronous. Hold it, switch to a genuinely new
+    //    same-operator session (refused session_mismatch), then release: the stale 200 must never reopen saving.
+    {
+      freshState(); const t1 = token(), t2 = token(); assert.notEqual(t1.token, t2.token);
+      await openPage(); await setSession(t1);
+      await page.evaluate(() => {
+        const real = crypto.subtle.digest.bind(crypto.subtle); let first = true;
+        crypto.subtle.digest = async (...args) => {
+          if (first) { first = false; window.__digestHit = true; await new Promise((r) => { window.__releaseDigest = r; }); }
+          return real(...args);
+        };
+      });
+      await start();
+      await page.waitForFunction(() => window.__digestHit === true);
+      check('F1 CONTROL the old context was a genuine server 200 before the identity changed', sent('context')[0] && sent('context')[0].status === 200);
+      await setSession(t2);
+      await until(async () => sent('context').length >= 2 && sent('context')[1].status === 409, 'F1 new session refused');
+      await settle(); await settle();
+      check('F1 CONTROL the new session\'s context was refused session_mismatch; no write dispatched', sent('context')[1] && sent('context')[1].reply && sent('context')[1].reply.code === 'budget_session_mismatch' && puts() === 0);
+      await page.evaluate(() => window.__releaseDigest());
+      await settle(); await settle();
+      if ((await view()) === 'ready') await T('pa-seller-reason').fill('Current session unsaved text');
+      const enabled = (await view()) === 'ready' && !(await T('pa-save-reason').isDisabled());
+      check('F1 the stale old 200 released after its digest cannot reopen saving for the newer, refused session', !enabled, { view: await view(), enabled, banner: await textOf('pa-banner'), puts: puts() });
+      await closePage();
+    }
+
     check('no request left the machine (no foreign or unmodelled request)', foreign.length === 0, foreign);
     check('no page error', pageErrors.length === 0, pageErrors);
   } catch (e) {
     failures += 1; console.error('ABORTED  ' + (e && e.stack ? e.stack.split('\n').slice(0, 6).join('\n') : e));
   }
-  const FLOOR = 27;
+  const FLOOR = 30;
   if (checks < FLOOR) { failures += 1; console.error(`FLOOR  only ${checks} checks ran (floor ${FLOOR})`); }
   console.log(`\nProperty answers authority: ${results.filter((r) => r.ok).length}/${checks} checks passed (failures=${failures})`);
   await exit(failures ? 1 : 0);

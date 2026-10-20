@@ -108,9 +108,18 @@ global.fetch = async (url, init = {}) => {
 };
 const ADDRESS_FIELDS = [[P.propertyStreet, '100 Probe Way'], [P.propertyCity, 'McKinney'], [P.propertyState, 'TX'], [P.propertyZip, '75069']];
 const deal = (id, contactId) => ({ id, locationId: config.locationId, contactId, pipelineId: config.pipelines.sellerLeads, pipelineStageId: config.stages.newLeadSeller, status: 'open', name: 'IAOS PROBE ' + id, customFields: ADDRESS_FIELDS.map(([id2, fieldValue]) => ({ id: id2, fieldValue })), createdAt: '2026-10-17T12:00:00.000Z' });
+/** Bones F3: every OTHER pinned fixture contact needs clean ledger evidence (a valid, empty known-deal ledger) before a draft is trusted. */
+function seedLedgers(own) {
+  for (const c of config.propertyAnswerEvaluation.fixtureContactIds) {
+    if (c === own) continue;
+    const lk = ledger.ledgerKey(SCOPE, c);
+    if (!receipts.has(lk)) { receipts.set(lk, { v: 1, gen: 1, ids: {}, discoveries: {} }); etags.set(lk, 'seed-' + c); }
+  }
+}
 function fresh() {
   receipts.clear(); etags.clear(); failNext = []; calls = []; putFails = 0; loseNoteReply = 0;
   ghl = { contacts: { [X1]: { id: X1, notes: [] }, [X2]: { id: X2, notes: [] } }, opps: { [DA]: deal(DA, X1), [DB]: deal(DB, X2) } };
+  seedLedgers(X1);
 }
 
 // ── Browser-like sessions: one write session + its own continuation jar ──────
@@ -277,6 +286,35 @@ async function quiet(label, fn, { store = false } = {}) {
     process.env.IAOS_ENV = 'production';
     try { assert.equal((await drafts(a)).body.code, 'evaluation_disabled'); } finally { process.env.IAOS_ENV = 'test'; }
     assert.equal(storeSnap(), s0);
+  });
+
+  await t('R12 (Bones F3) a MISSING, null-ids or malformed OTHER pinned-contact ledger is not proof of non-ambiguity: save and read refuse association_unconfirmed; valid evidence recovers', async () => {
+    fresh(); const a = session(A); await context(a); await draft(a, 'stored text');
+    const lk = ledger.ledgerKey(SCOPE, X2); const good = structuredClone(receipts.get(lk)); const ge = etags.get(lk);
+    for (const [label, rec] of [['absent', undefined], ['ids null', { v: 1, gen: 1, ids: null, discoveries: {} }], ['ids array', { v: 1, gen: 1, ids: [], discoveries: {} }], ['wrong version', { v: 2, gen: 1, ids: {}, discoveries: {} }]]) {
+      if (rec === undefined) { receipts.delete(lk); etags.delete(lk); } else { receipts.set(lk, rec); etags.set(lk, 'e-bad'); }
+      const r = await quiet('R12 ' + label, () => drafts(a), { store: true });
+      assert.equal(r.body.drafts.seller_reason.state, 'association_unconfirmed', label); assert.ok(!JSON.stringify(r.body).includes('stored text'), label);
+      const s0 = storeSnap(); const w = await draft(a, 'new text');
+      assert.equal(w.status, 409, label); assert.equal(w.body.code, 'association_unconfirmed', label); assert.equal(storeSnap(), s0, label + ': nothing written');
+    }
+    receipts.set(lk, good); etags.set(lk, ge);
+    assert.equal((await drafts(a)).body.drafts.seller_reason.value, 'stored text', 'positive control: clean other-ledger evidence recovers');
+  });
+  await t('R13 (Bones F4) a MALFORMED operation head after an applied S1 with a lost reply is unavailable evidence: Check never reports clear, nothing written; a genuinely absent head still reads clear', async () => {
+    fresh(); const s1 = session(); const ctx = await context(s1); const jar0 = s1.jar;
+    const sv = await post(s1, { action: 'save', contactId: X1, opportunityId: DA, field: 'seller_reason', operationId: crypto.randomUUID(), value: 'actually applied', expectedAddressDigest: ctx.body.address.digest, expectedDealSetDigest: ctx.body.verdict.digest });
+    assert.equal(sv.body.outcome, 'saved_history_pending'); assert.equal(puts(), 1); s1.jar = jar0;   // the lost reply
+    const hk = `pa/head/${dg(`${SCOPE}:${X1}`)}`; assert.ok(receipts.get(hk).current);
+    for (const [label, bad] of [['{v:1}', { v: 1 }], ['current 42', { v: 1, current: 42 }], ['current empty', { v: 1, current: '' }], ['wrong version', { v: 2, current: receipts.get(hk).current }], ['null', null]]) {
+      receipts.set(hk, bad);
+      const r = await quiet('R13 ' + label, () => check(s1), { store: true });
+      assert.notEqual(r.body.outcome, 'clear', label); assert.equal(r.status, 403, label); assert.equal(r.body.code, 'unavailable', label);
+      const c = await context(s1); assert.notEqual(c.body.access, 'no_operation', label + ': context never reports no operation');
+    }
+    assert.equal(puts(), 1); assert.equal(posts(), 0, 'no history');
+    fresh(); const s2 = session(); await context(s2);
+    const clear = await check(s2); assert.equal(clear.status, 200); assert.equal(clear.body.outcome, 'clear', 'positive control: no head record at all is a genuine no-operation');
   });
 
   // ── A1 stored operation authority ───────────────────────────────────────────
