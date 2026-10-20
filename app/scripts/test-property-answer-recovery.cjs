@@ -115,8 +115,8 @@ function fresh() {
 
 // ── Browser-like sessions: one write session + its own continuation jar ──────
 // Distinct sign-ins: each session gets its own issue second (tokens minted in the same second would be identical).
-let sessionSeq = 0;
-function session(writer = A, now = Date.now() - 1000 * (++sessionSeq % 25)) { return { token: auth.issueAppSession(writer, process.env, now).token, jar: null, writer }; }
+let lastIssue = Date.now();   // strictly earlier, distinct issue seconds
+function session(writer = A, now = (lastIssue = Math.min(Date.now(), lastIssue - 1000))) { return { token: auth.issueAppSession(writer, process.env, now).token, jar: null, writer }; }
 async function post(sess, body, extra = {}) {
   const headers = { ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, ...(sess ? { authorization: `Bearer ${sess.token}` } : {}), ...(sess && sess.jar ? { cookie: sess.jar } : {}), ...extra };
   const r = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers, body: JSON.stringify(body) });
