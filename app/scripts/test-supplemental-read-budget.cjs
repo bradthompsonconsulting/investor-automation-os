@@ -83,7 +83,8 @@ const B64 = Buffer.from(JSON.stringify({ url: 'https://blobs.example.invalid', t
 const ev = (q = {}, extra = {}) => ({ httpMethod: 'GET', headers: { cookie: `${readAuth.READ_COOKIE}=${token}`, 'x-nf-site-id': 'offline-site', 'x-nf-deploy-id': 'offline-deploy' }, queryStringParameters: q, blobs: B64, ...extra });
 const SCOPE = `test:${testCfg.locationId}`;
 const enable = (ceiling, budgetId = 'offline-reads') => { testCfg.supplementalReadBudget = { enabled: cfgMod.SUPPLEMENTAL_READ_BUDGET_ENABLED, budgetId, ceiling }; };
-const disable = () => { testCfg.supplementalReadBudget = { ...COMMITTED_TEST }; };
+// The counter OFF in Test (committed Test now carries the evaluation config; the off path is still tested).
+const disable = () => { testCfg.supplementalReadBudget = { enabled: cfgMod.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'offline-disabled', ceiling: 0 }; };
 const record = (budgetId = 'offline-reads') => data.get(lib.readBudgetKey(SCOPE, budgetId)) ?? null;
 const reset = () => { data.clear(); etags.clear(); outbound = []; nonGhl = []; onSend = null; ghlAnswer = null; blobOps = 0; blobContextRequired = true; faults = { readThrow: 0, writeThrow: 0, applyThenThrow: 0, neverModified: false, consistencyError: 0, oddAck: [] }; disable(); process.env.IAOS_ENV = 'test'; prodCfg.supplementalReadBudget = { ...COMMITTED_PROD }; };
 const body = (r) => { try { return JSON.parse(r.body); } catch { return null; } };
@@ -101,10 +102,18 @@ const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 
 // ---------------- committed configuration
-test('config: committed Production and Test both carry SUPPLEMENTAL_READ_BUDGET_DISABLED (this commit enables nothing)', () => {
+test('config: committed Production stays DISABLED; committed Test carries the reviewed evaluation config (b15-04-eval-reads-1 / 100)', () => {
   assert.deepEqual(COMMITTED_PROD, { enabled: cfgMod.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'not-applicable-in-production', ceiling: 0 });
-  assert.equal(COMMITTED_TEST.enabled, cfgMod.SUPPLEMENTAL_READ_BUDGET_DISABLED);
+  assert.deepEqual(COMMITTED_TEST, { enabled: cfgMod.SUPPLEMENTAL_READ_BUDGET_ENABLED, budgetId: 'b15-04-eval-reads-1', ceiling: 100 });
   assert.notEqual(cfgMod.SUPPLEMENTAL_READ_BUDGET_ENABLED, cfgMod.SUPPLEMENTAL_READ_BUDGET_DISABLED);
+});
+test('config: the committed Test config meters 100 dispatches under b15-04-eval-reads-1, then STOPs unsent with no reset', async () => {
+  reset(); testCfg.supplementalReadBudget = { ...COMMITTED_TEST };
+  for (let i = 0; i < 100; i++) await lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/contacts/', {});
+  assert.equal(outbound.length, 100); assert.equal(record('b15-04-eval-reads-1').reserved, 100); assert.equal(record('b15-04-eval-reads-1').ceiling, 100);
+  await assert.rejects(lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/contacts/', {}), (e) => e.code === 'exhausted');
+  await assert.rejects(lib.ghlReadFetch(ev(), 'ghl-opportunities')(GHL + '/opportunities/search', {}), (e) => e.code === 'exhausted');
+  assert.equal(outbound.length, 100, 'the 101st and later requests were never sent'); assert.equal(record('b15-04-eval-reads-1').reserved, 100);
 });
 test('config: property-answer\'s separate budget is unchanged (b15-04-eval-1 / 40)', () => {
   assert.deepEqual({ ...testCfg.propertyAnswerEvaluation.requestBudget }, { budgetId: 'b15-04-eval-1', ceiling: 40 });
@@ -178,7 +187,7 @@ test('budget: an invalid id or ceiling is refused at construction', () => {
 });
 
 // ---------------- ghlReadFetch
-test('fetch: DISABLED (committed Test, committed Production) is the platform fetch -- zero Blob access', async () => {
+test('fetch: DISABLED (Test with the counter off, committed Production) is the platform fetch -- zero Blob access', async () => {
   for (const env of ['test', 'production']) {
     reset(); process.env.IAOS_ENV = env;
     const r = await lib.ghlReadFetch({}, 'fn')(GHL + '/contacts/x', {});

@@ -1238,9 +1238,13 @@ const TEST: GhlConfig = {
     requestBudget: { budgetId: "b15-04-eval-1", ceiling: 40 },
     maxCandidates: 1,
   },
-  // B15-04: the supplemental read budget is implemented but NOT enabled here. Enabling it, with its ceiling and
-  // budget id, is a separate reviewed config-only commit (the numeric allowance awaits Brad's decision).
-  supplementalReadBudget: { enabled: SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: "b15-04-eval-reads-not-enabled", ceiling: 0 },
+  // B15-04 evaluation config (Brad 2026-10-19; Bones r3 recommendation): 100 supplemental covered GHL dispatches,
+  // option R -- the three automatic Contacts retries are budgeted inside the 100, not added to it. ONE limited
+  // E1-E5 attempt by a single operator; Spock's walkthrough and all other Test use stay outside the window.
+  // Exhaustion is a STOP: nothing resets, refills or enlarges it, and continuing needs a new reviewed commit, never
+  // a reset or a new id. Deactivation is its own reviewed config commit. property-answer's separate 40 is unchanged.
+  // Committing this activates nothing: it applies only once a reviewed build is deployed to Test.
+  supplementalReadBudget: { enabled: SUPPLEMENTAL_READ_BUDGET_ENABLED, budgetId: "b15-04-eval-reads-1", ceiling: 100 },
 };
 
 export function getConfig(selector: string | undefined): GhlConfig {
