@@ -121,9 +121,16 @@ async function readHead(store: BarrierStore, scope: string, contact: string): Pr
     if (e?.name !== "BlobsConsistencyError") throw e;
     got = await store.getWithMetadata(headKey(scope, contact), { type: "json" });
   }
-  if (!got) return { current: null, etag: null };
+  if (!got) return { current: null, etag: null };   // no head record: genuinely no operation yet
   if (!got.etag) throw new StorageUnsettled("Head read without an etag");
-  return { current: got.data?.current ?? null, etag: got.etag };
+  // Bones F4 (review of df623e6): a present but malformed head ({v:1}, a wrong type, a missing `current`) is
+  // UNCONFIRMED evidence. It must never read as "no current operation" -- that would let Check report clear
+  // for an unfinished, possibly applied save.
+  const d = got.data;
+  if (!d || typeof d !== "object" || d.v !== 1 || !("current" in d) || !(d.current === null || (typeof d.current === "string" && d.current.length > 0))) {
+    throw new StorageUnsettled("The answer head record is malformed");
+  }
+  return { current: d.current, etag: got.etag };
 }
 async function casHead(store: BarrierStore, scope: string, contact: string, etag: string | null, current: string | null, now: string): Promise<boolean> {
   const r = await store.setJSON(headKey(scope, contact), { v: 1, current, at: now }, etag === null ? { onlyIfNew: true } : { onlyIfMatch: etag });
@@ -629,7 +636,9 @@ export async function readDraftV2(store: BarrierStore, scope: string, b: DraftBi
 
 /**
  * A PRIOR OBSERVED contact/deal association: the contact's known-deal ledger (add-only ids committed by a
- * discovery) lists the deal, and no other pinned fixture contact's ledger does. It is NOT current GHL
+ * discovery) lists the deal, and EVERY other pinned fixture contact's ledger reads cleanly and does not.
+ * Consequence (Test): drafts and recovery stay refused until each pinned fixture contact's deal list has been
+ * loaded (a committed discovery) at least once. It is NOT current GHL
  * ownership or eligibility and grants no permission to save. Unreadable or malformed evidence fails closed.
  */
 export async function priorAssociation(store: BarrierStore, scope: string, contactId: string, opportunityId: string, fixtureContacts: readonly string[]):
@@ -637,6 +646,7 @@ export async function priorAssociation(store: BarrierStore, scope: string, conta
   const has = (rec: any) => !!rec && !!rec.ids && typeof rec.ids === "object" && Object.prototype.hasOwnProperty.call(rec.ids, opportunityId);
   let own: any;
   try { own = (await readLedger(store, scope, contactId)).rec; } catch { return { ok: false, reason: "association_unconfirmed" }; }
+  if (own && (!own.ids || typeof own.ids !== "object" || Array.isArray(own.ids))) return { ok: false, reason: "association_unconfirmed" };
   if (!has(own)) return { ok: false, reason: "association_absent" };
   const e = own.ids[opportunityId];
   if (!e || typeof e !== "object" || typeof e.firstSeen !== "string" || !Number.isFinite(Date.parse(e.firstSeen)) || !["search", "single_read"].includes(e.source)) {
@@ -646,6 +656,8 @@ export async function priorAssociation(store: BarrierStore, scope: string, conta
     if (other === contactId) continue;
     let rec: any;
     try { rec = (await readLedger(store, scope, other)).rec; } catch { return { ok: false, reason: "association_unconfirmed" }; }
+    // Bones F3 (review of df623e6): an absent, null or malformed other ledger is NOT proof the deal is unlisted there.
+    if (!rec || !rec.ids || typeof rec.ids !== "object" || Array.isArray(rec.ids)) return { ok: false, reason: "association_unconfirmed" };
     if (has(rec)) return { ok: false, reason: "association_ambiguous" };
   }
   return { ok: true };

@@ -100,17 +100,22 @@ function DealAnswers({ contactId, opportunityId, canChange, onChange }: { contac
   /** Sends one action; the reply is applied only for the SAME session generation, operator and mount (target). */
   const send = useCallback(async (body: Record<string, unknown>): Promise<Sent> => {
     const at = appWriteIdentity();
+    // Re-validated after EVERY await (Bones F1, review of df623e6): this mount (= contact/deal/operator key) and the
+    // session generation and operator the request was sent under must all still be current.
+    const stillCurrent = () => { const now = appWriteIdentity(); return mounted.current && now.generation === at.generation && now.operator === at.operator; };
     let r: Reply;
     try { r = await propertyAnswer({ ...body, contactId, opportunityId }); }
     catch (error) {
       if (error instanceof AppWriteSignInRequired) return mounted.current ? { ok: false, error } : null;
-      const now = appWriteIdentity();
-      return mounted.current && now.generation === at.generation && now.operator === at.operator ? { ok: false, error } : null;
+      return stillCurrent() ? { ok: false, error } : null;
     }
-    const now = appWriteIdentity();
-    if (!mounted.current || now.generation !== at.generation || now.operator !== at.operator) return null;
-    if (r.body?.operatorDigest !== undefined && (!at.operator || r.body.operatorDigest !== await operatorDigestOf(at.operator))) return null;
-    return mounted.current ? { ok: true, r } : null;
+    if (!stillCurrent()) return null;
+    if (r.body?.operatorDigest !== undefined) {
+      if (!at.operator) return null;
+      const expected = await operatorDigestOf(at.operator);
+      if (!stillCurrent() || r.body.operatorDigest !== expected) return null;
+    }
+    return stillCurrent() ? { ok: true, r } : null;
   }, [contactId, opportunityId]);
 
   /** C1 seed rule: a server value replaces a field only while it still holds the seed, or already equals it. */
