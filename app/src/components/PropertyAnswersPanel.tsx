@@ -60,7 +60,9 @@ export function PropertyAnswersPanel({ contactId, deals }: { contactId: string; 
   // A different operator (A -> expired -> B) remounts with nothing of A's; A -> expired -> A keeps A's form.
   const [operator, setOperator] = useState<string | null>(() => appWriteIdentity().lastOperator);
   useEffect(() => subscribeAppWriteSession(() => setOperator(appWriteIdentity().lastOperator)), []);
-  if (!selected) {
+  // C1–C4 r4 A3: a selection counts only for THIS contact's deals -- never one render with the previous contact's deal.
+  const current = selected && deals.some((d) => d.id === selected) ? selected : deals.length === 1 ? deals[0].id : null;
+  if (!current) {
     if (deals.length < 2) return null;
     return (
       <div data-testid="pa-select" style={box}>
@@ -70,7 +72,7 @@ export function PropertyAnswersPanel({ contactId, deals }: { contactId: string; 
       </div>
     );
   }
-  return <DealAnswers key={`${contactId}:${selected}:${operator ?? ""}`} contactId={contactId} opportunityId={selected} canChange={deals.length > 1} onChange={() => setSelected(null)} />;
+  return <DealAnswers key={`${contactId}:${current}:${operator ?? ""}`} contactId={contactId} opportunityId={current} canChange={deals.length > 1} onChange={() => setSelected(null)} />;
 }
 
 function DealAnswers({ contactId, opportunityId, canChange, onChange }: { contactId: string; opportunityId: string; canChange: boolean; onChange: () => void }) {
