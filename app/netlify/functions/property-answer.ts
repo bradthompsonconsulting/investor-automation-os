@@ -42,6 +42,8 @@ const jsonBase = (statusCode: number, data: unknown, extra: Record<string, strin
 const SENT_NOTHING = "This request sent nothing to GHL. Any earlier save keeps its own recorded outcome.";
 const READ_INCOMPLETE = "Verification is incomplete; earlier GHL reads in this request may have completed. This request did not submit an answer save.";
 const WRITE_UNCERTAIN = "The save may have reached GHL; the earlier write remains unresolved. Do not save again.";
+/** Context verdicts a failed or incomplete GHL READ can produce: worded as incomplete verification, never as a save result. */
+const READ_FAILURE_REASONS = new Set<string>(["search_incomplete", "list_updating"]);
 const RECOVERY_NOTICE = "Saved draft for a previously observed contact/deal association. Current ownership and eligibility have not been checked. Saving is off.";
 /**
  * Bones F4b: the evaluation's continuation secret (evaluation-budget.ts, CONTINUATION). Set only
@@ -214,7 +216,7 @@ export const handler = async (event: any) => {
       const cur = await currentOperation(s, scopeKey, req.contactId).catch(() => null);
       const allowed = d.verdict.allowed && !d.otherOpen;
       const body = {
-        verdict: { allowed, reason: d.otherOpen ? "discovery_open" : d.verdict.reason, message: d.otherOpen ? "Another deal check is in progress." : DEAL_SET_MESSAGE[d.verdict.reason], digest: d.verdict.digest, deals: d.verdict.deals.map((x) => ({ id: x.id, cls: x.cls, stageId: x.stageId, status: x.status })) },
+        verdict: { allowed, reason: d.otherOpen ? "discovery_open" : d.verdict.reason, message: d.otherOpen ? "Another deal check is in progress." : READ_FAILURE_REASONS.has(d.verdict.reason) ? `${DEAL_SET_MESSAGE[d.verdict.reason].replace(" Nothing was saved.", "")} ${READ_INCOMPLETE}` : DEAL_SET_MESSAGE[d.verdict.reason], digest: d.verdict.digest, deals: d.verdict.deals.map((x) => ({ id: x.id, cls: x.cls, stageId: x.stageId, status: x.status })) },
         address,
         values: { seller_reason: d.target ? currentValueText(config, "seller_reason", d.target) : null },
         operation: cur ? cur.view : null,
