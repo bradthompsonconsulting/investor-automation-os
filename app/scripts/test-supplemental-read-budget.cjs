@@ -102,18 +102,15 @@ const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 
 // ---------------- committed configuration
-test('config: committed Production stays DISABLED; committed Test carries the reviewed evaluation config (b15-04-eval-reads-1 / 100)', () => {
+test('config: committed Production stays DISABLED; committed Test is DEACTIVATED after the evaluation (b15-04-eval-reads-closed / 0)', () => {
   assert.deepEqual(COMMITTED_PROD, { enabled: cfgMod.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'not-applicable-in-production', ceiling: 0 });
-  assert.deepEqual(COMMITTED_TEST, { enabled: cfgMod.SUPPLEMENTAL_READ_BUDGET_ENABLED, budgetId: 'b15-04-eval-reads-1', ceiling: 100 });
+  assert.deepEqual(COMMITTED_TEST, { enabled: cfgMod.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'b15-04-eval-reads-closed', ceiling: 0 });
   assert.notEqual(cfgMod.SUPPLEMENTAL_READ_BUDGET_ENABLED, cfgMod.SUPPLEMENTAL_READ_BUDGET_DISABLED);
 });
-test('config: the committed Test config meters 100 dispatches under b15-04-eval-reads-1, then STOPs unsent with no reset', async () => {
+test('config: the committed (deactivated) Test config is the platform fetch -- zero Blob access, nothing reserved', async () => {
   reset(); testCfg.supplementalReadBudget = { ...COMMITTED_TEST };
-  for (let i = 0; i < 100; i++) await lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/contacts/', {});
-  assert.equal(outbound.length, 100); assert.equal(record('b15-04-eval-reads-1').reserved, 100); assert.equal(record('b15-04-eval-reads-1').ceiling, 100);
-  await assert.rejects(lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/contacts/', {}), (e) => e.code === 'exhausted');
-  await assert.rejects(lib.ghlReadFetch(ev(), 'ghl-opportunities')(GHL + '/opportunities/search', {}), (e) => e.code === 'exhausted');
-  assert.equal(outbound.length, 100, 'the 101st and later requests were never sent'); assert.equal(record('b15-04-eval-reads-1').reserved, 100);
+  const r = await lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/contacts/', {});
+  assert.equal(r.status, 200); assert.equal(outbound.length, 1); assert.equal(blobOps, 0); assert.equal(record('b15-04-eval-reads-1'), null);
 });
 test('config: property-answer\'s separate budget is unchanged (b15-04-eval-1 / 40)', () => {
   assert.deepEqual({ ...testCfg.propertyAnswerEvaluation.requestBudget }, { budgetId: 'b15-04-eval-1', ceiling: 40 });

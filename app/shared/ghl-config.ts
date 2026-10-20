@@ -1268,7 +1268,10 @@ const TEST: GhlConfig = {
   // Exhaustion is a STOP: nothing resets, refills or enlarges it, and continuing needs a new reviewed commit, never
   // a reset or a new id. Deactivation is its own reviewed config commit. property-answer's separate 40 is unchanged.
   // Committing this activates nothing: it applies only once a reviewed build is deployed to Test.
-  supplementalReadBudget: { enabled: SUPPLEMENTAL_READ_BUDGET_ENABLED, budgetId: "b15-04-eval-reads-1", ceiling: 100 },
+  // DEACTIVATED (separate reviewed commit): reads are no longer metered. The b15-04-eval-reads-1 record is left
+  // as it is, never reset or reused; the placeholder id below is not an evaluation budget. Deactivation does not
+  // prove quiescence: work already in flight may still finish.
+  supplementalReadBudget: { enabled: SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: "b15-04-eval-reads-closed", ceiling: 0 },
 };
 
 export function getConfig(selector: string | undefined): GhlConfig {
