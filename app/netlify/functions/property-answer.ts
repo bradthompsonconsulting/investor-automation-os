@@ -10,6 +10,7 @@
  *   { action: "history", contactId, opportunityId, operationId }
  *   { action: "check",   contactId, opportunityId }
  *   { action: "draft",   contactId, opportunityId, field, value }
+ *   { action: "drafts",  contactId, opportunityId }   (C1–C4 r4: recover THIS operator's bound v2 drafts; zero GHL, no budget)
  *
  * Refused BEFORE any Blob or GHL access unless: this deployment's config has
  * `propertyAnswerEvaluation.enabled` = PROPERTY_ANSWER_EVALUATION_ENABLED
@@ -31,11 +32,17 @@ import type { BarrierStore } from "./lib/current-offer-barrier";
 import { ANSWER_OPERATION, answerValueText, historyValueLines, normalizeAddress, normalizeSellerReason, type AnswerField } from "./lib/property-answer-model";
 import { DEAL_SET_MESSAGE } from "./lib/seller-deal-set";
 import {
-  AnswerHeld, NotSent, UnexpectedWork, SAVED_RECORDING, currentOperation, currentValueText, discover, readDraft, recordHistory, saveAnswer, saveDraft,
-  settleUnderLock, targetAddress,
+  AnswerHeld, NotSent, UnexpectedWork, SAVED_RECORDING, currentOperation, currentValueText, discover, recordHistory, saveAnswer,
+  settleUnderLock, targetAddress, operationAccess, priorAssociation, readDraftV2, saveDraftV2, validDraftValue,
+  type AccessResult, type DraftBinding, type DraftState,
 } from "./lib/property-answer-operation";
 
-const json = (statusCode: number, data: unknown, extra: Record<string, string> = {}) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extra }, body: JSON.stringify(data) });
+const jsonBase = (statusCode: number, data: unknown, extra: Record<string, string> = {}) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extra }, body: JSON.stringify(data) });
+/** C1–C4 r4 A2: request-scoped wording. "Sent nothing" only where THIS request provably dispatched nothing. */
+const SENT_NOTHING = "This request sent nothing to GHL. Any earlier save keeps its own recorded outcome.";
+const READ_INCOMPLETE = "Verification is incomplete; earlier GHL reads in this request may have completed. This request did not submit an answer save.";
+const WRITE_UNCERTAIN = "The save may have reached GHL; the earlier write remains unresolved. Do not save again.";
+const RECOVERY_NOTICE = "Saved draft for a previously observed contact/deal association. Current ownership and eligibility have not been checked. Saving is off.";
 /**
  * Bones F4b: the evaluation's continuation secret (evaluation-budget.ts, CONTINUATION). Set only
  * after this action's clean settlement was ACKNOWLEDGED; the next granted action must present it.
@@ -66,20 +73,28 @@ const KEYS: Record<string, string[]> = {
   history: ["action", "contactId", "opportunityId", "operationId"],
   check: ["action", "contactId", "opportunityId"],
   draft: ["action", "contactId", "opportunityId", "field", "value"],
+  drafts: ["action", "contactId", "opportunityId"],
 };
 const DIGEST = /^[0-9a-f]{64}$/;
 const now = () => new Date().toISOString();
 
 export const handler = async (event: any) => {
+  // C1–C4 r4 A3: every reply after authentication echoes digest(writer); the browser drops replies that are not
+  // for its current operator. UI filtering only -- authority stays with the checks below.
+  let echo: string | null = null;
+  const json = (statusCode: number, data: unknown, extra: Record<string, string> = {}) =>
+    jsonBase(statusCode, echo && data && typeof data === "object" ? { ...(data as object), operatorDigest: echo } : data, extra);
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
   // The writer and the exact write session, both server-validated: the evaluation's continuation
   // is bound to them (Bones, review of 7369842). Nothing client-supplied names the holder.
   let identity: string;
+  let writer: string;
   try {
-    const writer = requireAppWriter(event);
+    writer = requireAppWriter(event);
     const session = String(event.headers?.authorization ?? event.headers?.Authorization).slice("Bearer ".length);
     identity = `${writer}\n${digest(session)}`;
   } catch { return json(401, { error: "Application write sign-in required" }); }
+  echo = digest(writer);
   try { requireAppWriteOrigin(event); } catch { return json(403, { error: "Application write origin refused" }); }
   let req: any;
   try {
@@ -139,7 +154,7 @@ export const handler = async (event: any) => {
     if (!grant) return json(200, body);
     const unacknowledged = async (code: string, reason: string) => {
       await stopEvaluation(reason);
-      return json(409, { outcome: "not_settled", code, ...("view" in body ? { view: body.view } : {}), error: "The result was not settled for the evaluation; the evaluation is stopped. Use Check again to read the stored state." });
+      return json(409, { outcome: "not_settled", code, ...("view" in body ? { view: body.view } : {}), error: "The result was not settled for the evaluation; the evaluation is stopped." });
     };
     if (grant.refused) return unacknowledged("budget_request_refused", "request_refused");
     const secret = randomBytes(32).toString("base64url");
@@ -149,17 +164,43 @@ export const handler = async (event: any) => {
     return json(200, body, { "Set-Cookie": continuationCookie(`${grant.g}.${secret}`) });
   };
 
+  // ── C1–C4 r4 C3: operator-bound drafts. Blob reads/writes only: zero GHL, no grant, no stop, no cookie. ──
+  const draftBinding = (field: AnswerField): DraftBinding => ({ operator: writer, env, locationId: config.locationId, contactId: req.contactId, opportunityId: req.opportunityId, field });
+  const association = () => priorAssociation(s, scopeKey, req.contactId, req.opportunityId, ev.fixtureContactIds);
+  const recover = async (): Promise<Record<AnswerField, DraftState>> => {
+    const a = await association();
+    if (!a.ok) return { seller_reason: { state: a.reason }, property_address: { state: a.reason } };
+    return { seller_reason: await readDraftV2(s, scopeKey, draftBinding("seller_reason")), property_address: await readDraftV2(s, scopeKey, draftBinding("property_address")) };
+  };
+  const present = (d: DraftState) => (d.state === "present" ? d.value : null);
   if (req.action === "draft") {
-    try { await saveDraft(s, scopeKey, req.contactId, req.opportunityId, req.field, req.value, now()); return json(200, { outcome: "draft_saved" }); }
-    catch { return json(400, { outcome: "not_sent", code: "invalid_draft", error: "Draft not saved" }); }
+    try { validDraftValue(req.field, req.value); } catch { return json(400, { outcome: "not_saved", code: "invalid_draft", error: "Draft not saved." }); }
+    const a = await association();
+    if (!a.ok) return json(a.reason === "association_absent" ? 403 : 409, { outcome: "not_saved", code: a.reason, error: "Draft not saved: no confirmed prior association of this contact and deal." });
+    try { await saveDraftV2(s, draftBinding(req.field), req.value, now()); return json(200, { outcome: "draft_saved" }); }
+    catch { return json(503, { outcome: "draft_unconfirmed", code: "draft_unconfirmed", error: "Draft save not confirmed (it may or may not be stored)." }); }
+  }
+  if (req.action === "drafts") return json(200, { outcome: "drafts", drafts: await recover(), notice: RECOVERY_NOTICE });
+
+  // ── C1–C4 r4 A1: stored operation access. Never inferred from a refusal code or a lost reply. ──
+  const accessOf = (): Promise<AccessResult> => operationAccess(s, scopeKey, { contactId: req.contactId, opportunityId: req.opportunityId, writer, holder: budget.holderDigest(identity), latestHolder: () => budget.latestHolder() });
+  const accessLevel = async () => { const a = await accessOf().catch(() => ({ kind: "none" as const })); return a.kind === "settle" || a.kind === "read" || a.kind === "no_operation" ? a.kind : "none"; };
+  if (req.action === "check") {
+    // Holder validation precedes ANY grant attempt, so a `stopped` refusal is never taken as holder proof.
+    const a = await accessOf();
+    if (a.kind === "none") return json(403, { outcome: "status_unavailable", code: a.reason, access: "none", error: "The recorded status can't be read in this session." });
+    if (a.kind === "read") return json(200, { outcome: a.cur.view.state, view: a.cur.view, access: "read", readOnly: true });
+    // settle (this exact holder) or no current operation: the existing path below.
   }
 
-  // Check again settles stored evidence even when the budget is closed: it then makes no GHL request.
+  // Check again (holder-validated above) settles stored evidence even when the budget is closed: it then makes no GHL request.
   try { grant = await budget.grant(req.action, PLANNED[req.action], now(), presentedContinuation(event), identity); }
   catch (e) {
     if (req.action !== "check") {
       if (e instanceof BudgetRefused && e.code === "exhausted") await stopEvaluation("budget exhausted");
-      return json(409, { outcome: "not_sent", code: e instanceof BudgetRefused ? `budget_${e.code}` : "budget_unsettled", error: e instanceof Error ? e.message : "Nothing was sent." });
+      // A grant refusal precedes every dispatch of THIS request: "sent nothing" is proved for it alone.
+      return json(409, { outcome: "not_sent", code: e instanceof BudgetRefused ? `budget_${e.code}` : "budget_unsettled", error: `${e instanceof Error ? e.message : "The request budget refused this action."} ${SENT_NOTHING}`,
+        ...(req.action === "context" ? { access: await accessLevel() } : {}) });
     }
   }
   const refuseAll = (async () => { throw new BudgetRefused("No GHL request is available to this action", "stopped"); }) as unknown as typeof fetch;
@@ -177,23 +218,26 @@ export const handler = async (event: any) => {
         address,
         values: { seller_reason: d.target ? currentValueText(config, "seller_reason", d.target) : null },
         operation: cur ? cur.view : null,
-        drafts: { seller_reason: await readDraft(s, scopeKey, req.contactId, req.opportunityId, "seller_reason"), property_address: await readDraft(s, scopeKey, req.contactId, req.opportunityId, "property_address") },
+        ...(await (async () => { const d = await recover(); return { drafts: { seller_reason: present(d.seller_reason) as string | null, property_address: present(d.property_address) }, draftStates: d }; })()),
       };
       if (!allowed) { await stopEvaluation(d.otherOpen ? "discovery_open" : d.verdict.reason); return json(200, body); }
       return await finishClean(body);
     } catch (e) {
       const code = e instanceof UnexpectedWork ? "unexpected_candidates" : e instanceof BudgetRefused ? `budget_${e.code}` : e instanceof TransportRefused ? "transport_refused" : "deal_set_unconfirmed";
       await stopEvaluation(code);
-      return json(409, { outcome: "not_sent", code, error: e instanceof UnexpectedWork || e instanceof BudgetRefused ? e.message : DEAL_SET_MESSAGE.search_incomplete });
+      // Reads of this request may have completed; it never submits an answer save.
+      return json(409, { outcome: "verification_incomplete", code, access: await accessLevel(),
+        error: `${e instanceof UnexpectedWork || e instanceof BudgetRefused ? e.message : DEAL_SET_MESSAGE.search_incomplete} ${READ_INCOMPLETE}` });
     }
   }
 
   let release: (() => Promise<void>) | undefined;
   try {
     try { release = await lockContact(req.contactId); }
-    catch { await stopEvaluation("locked"); return json(409, { outcome: "not_sent", code: "locked", error: "Another write for this contact is in progress or unresolved. Nothing was sent." }); }
+    catch { await stopEvaluation("locked"); return json(409, { outcome: "not_sent", code: "locked", error: "Another write for this contact is in progress or unresolved. This request sent nothing to GHL. Do not save again." }); }
     if (req.action === "save") {
-      const r = await saveAnswer({ ...base, contactId: req.contactId, opportunityId: req.opportunityId, field: req.field, operationId: req.operationId, fields: plan!.fields, valueText, valueLines, expectedAddressDigest: req.expectedAddressDigest, expectedDealSetDigest: req.expectedDealSetDigest, maxCandidates: m });
+      const r = await saveAnswer({ ...base, contactId: req.contactId, opportunityId: req.opportunityId, field: req.field, operationId: req.operationId, fields: plan!.fields, valueText, valueLines, expectedAddressDigest: req.expectedAddressDigest, expectedDealSetDigest: req.expectedDealSetDigest, maxCandidates: m,
+        access: { v: 1, writer, holder: budget.holderDigest(identity) }, draft: draftBinding(req.field) });
       if (r.view.state !== "saved_history_pending" || r.message !== SAVED_RECORDING) { await stopEvaluation(r.view.state); return json(200, { outcome: r.view.state, view: r.view, message: r.message }); }
       return await finishClean({ outcome: r.view.state, view: r.view, message: r.message });
     }
@@ -212,6 +256,6 @@ export const handler = async (event: any) => {
     if (error instanceof NotSent) return json(409, { outcome: "not_sent", code: error.code, error: error.message, ...(error.view && typeof error.view === "object" && "reason" in (error.view as any) ? { verdict: { reason: (error.view as any).reason, message: DEAL_SET_MESSAGE[(error.view as any).reason as keyof typeof DEAL_SET_MESSAGE] } } : {}) });
     if (error instanceof AnswerHeld) return json(409, { outcome: "held", view: error.view, error: error.message });
     console.error("[property-answer]", JSON.stringify({ action: req.action, name: error instanceof Error ? error.name : "NonError" }));
-    return json(409, { outcome: "indeterminate", error: "The save may have reached GHL; it is unresolved. Use Check again." });
+    return json(409, { outcome: "indeterminate", error: req.action === "check" ? READ_INCOMPLETE : WRITE_UNCERTAIN });
   } finally { if (release) await release(); }
 };

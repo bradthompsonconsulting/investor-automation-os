@@ -139,6 +139,7 @@ const posts = () => calls.filter((c) => c.method === 'POST').length;
 const ghlCount = () => calls.length;
 
 const handler = require('../netlify/functions/property-answer.ts').handler;
+const { CONTINUATION_COOKIE } = require('../netlify/functions/property-answer.ts');
 const ghlWrite = require('../netlify/functions/ghl-write.ts').handler;
 // One write session per scenario, like one signed-in page (continuation is bound to writer + session).
 let sessionToken = null;
@@ -148,7 +149,18 @@ const headers = () => ({ ...lambdaHeaders, origin: process.env.IAOS_APP_WRITE_AL
 let jar = null; // the browser's continuation cookie (name=value), as Set-Cookie left it
 const withJar = (h) => (jar ? { ...h, cookie: jar } : h);
 const keepCookie = (r) => { const c = r.headers && r.headers['Set-Cookie']; if (c) jar = c.split(';')[0]; return c || null; };
-async function post(b, h = headers()) { if (!keepBudget) { jar = null; for (const k of budgetKeys()) { receipts.delete(k); etags.delete(k); } } const r = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: withJar(h), body: JSON.stringify(b) }); const setCookie = keepCookie(r); return { status: r.statusCode, body: JSON.parse(r.body), setCookie }; }
+async function holdEvaluation() {
+  // Setup only: skipped where the evaluation gate refuses anyway; its own Blob operations are not counted as the endpoint's.
+  if (config.propertyAnswerEvaluation.enabled !== cfgMod.PROPERTY_ANSWER_EVALUATION_ENABLED || process.env.IAOS_ENV !== 'test') return;
+  const ops = blobOps;
+  const ev = config.propertyAnswerEvaluation; const now = new Date().toISOString();
+  const b = new budgetLib.EvaluationBudget(memStore, SCOPE, ev.requestBudget.budgetId, ev.requestBudget.ceiling);
+  const g = await b.grant('context', 0, now, null, identity()); const secret = crypto.randomBytes(32).toString('base64url');
+  assert.equal(await b.settle(g.g, secret, now), true, 'setup: the checking session holds the evaluation');
+  jar = `${CONTINUATION_COOKIE}=${g.g}.${secret}`;
+  blobOps = ops;
+}
+async function post(b, h = headers()) { if (!keepBudget) { jar = null; for (const k of budgetKeys()) { receipts.delete(k); etags.delete(k); } if (b.action === 'check' && h.authorization === headers().authorization) await holdEvaluation(); } const r = await handler({ blobs: lambdaBlobs, httpMethod: 'POST', headers: withJar(h), body: JSON.stringify(b) }); const setCookie = keepCookie(r); return { status: r.statusCode, body: JSON.parse(r.body), setCookie }; }
 const context = (c = X1, o = DA) => post({ action: 'context', contactId: c, opportunityId: o });
 const ADDR = { street: '100 Probe Way', unit: '', city: 'McKinney', state: 'TX', zip: '75069' };
 async function save(field, value, c = X1, o = DA, over = {}) {
@@ -234,6 +246,7 @@ async function t(name, fn) {
   });
   await t('address then Seller Reason: each S1 clean -> S2 history -> committed; exact history bodies; head released; draft cleared; previous-revision chains', async () => {
     fresh();
+    await context();   // C1–C4 r4: a draft needs a prior observed contact/deal association
     await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'seller_reason', value: 'draft text' });
     assert.equal((await context()).body.drafts.seller_reason, 'draft text');
     const before = ghlCount();
@@ -453,7 +466,8 @@ async function t(name, fn) {
   async function crashedS1(op, { decision = null, putApplied = false } = {}) {
     // The durable state a crashed save leaves behind: op, S1 attempt, head; optionally the send claim and GHL's applied PUT.
     const v = ADDR; const valueText = model.answerValueText('property_address', v);
-    receipts.set(key.op(op), { v: 1, op, contactId: X1, opportunityId: DA, field: 'property_address', valueText, valueDigest: dg(valueText), valueLines: model.historyValueLines('property_address', v), expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, dealSetDigest: 'd'.repeat(64), createdAt: new Date().toISOString() }); etags.set(key.op(op), 'e-op');
+    const holder = new budgetLib.EvaluationBudget(memStore, SCOPE, config.propertyAnswerEvaluation.requestBudget.budgetId, config.propertyAnswerEvaluation.requestBudget.ceiling).holderDigest(identity());
+    receipts.set(key.op(op), { v: 1, access: { v: 1, writer: 'brad@example.invalid', holder }, op, contactId: X1, opportunityId: DA, field: 'property_address', valueText, valueDigest: dg(valueText), valueLines: model.historyValueLines('property_address', v), expectedAddressDigest: model.EMPTY_ADDRESS_DIGEST, dealSetDigest: 'd'.repeat(64), createdAt: new Date().toISOString() }); etags.set(key.op(op), 'e-op');
     receipts.set(key.attempt(op, 'S1', 1), { v: 1, op, slot: 'S1', n: 1, requestId: rid(op, 'S1', 1) }); etags.set(key.attempt(op, 'S1', 1), 'e-at');
     receipts.set(key.head(X1), { v: 1, current: op }); etags.set(key.head(X1), 'e-head');
     if (decision) { receipts.set(key.decision(rid(op, 'S1', 1)), { d: decision }); etags.set(key.decision(rid(op, 'S1', 1)), 'e-d'); }
@@ -564,11 +578,12 @@ async function t(name, fn) {
   });
   await t('drafts: server-side, keyed by contact/deal/field; an address draft may be partial; invalid shapes are refused; drafts survive a refused save', async () => {
     fresh();
+    await context(); const before = ghlCount();   // C1–C4 r4: a draft needs a prior observed contact/deal association
     assert.equal((await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'property_address', value: { street: '1 Partial', unit: '', city: '', state: '', zip: '' } })).body.outcome, 'draft_saved');
     assert.equal((await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'property_address', value: { street: 1 } })).status, 400);
     assert.equal((await post({ action: 'draft', contactId: X1, opportunityId: DA, field: 'seller_reason', value: 'x'.repeat(4001) })).status, 400);
     assert.equal((await context()).body.drafts.property_address.street, '1 Partial');
-    assert.equal(ghlCount() - 3, 0, 'drafts never call GHL (the 3 calls are the context read)');
+    assert.equal(ghlCount() - before - 3, 0, 'drafts never call GHL (the 3 calls are the context read)');
   });
   await t('lock: a save while another write holds the contact lock is refused before any GHL call', async () => {
     fresh(); const ctx = (await context()).body; calls = [];

@@ -59,7 +59,7 @@ export type BudgetRecord = {
   attempts: { n: number; g: number; method: string; path: string; at: string }[];
 };
 
-/** Nothing was sent: the budget refused the reservation or the request. */
+/** The budget refused a reservation (grant: before the action dispatched anything) or one request (draw: earlier requests of the same action may have been sent). */
 export class BudgetRefused extends Error { constructor(message: string, readonly code: "stopped" | "exhausted" | "grant_exceeded" | "unsettled" | "unacknowledged" | "session_mismatch") { super(message); } }
 /** The transport refused a response (redirect, oversize, timeout) or the target origin. */
 export class TransportRefused extends Error {}
@@ -93,8 +93,16 @@ export class EvaluationBudget {
   async snapshot(): Promise<BudgetRecord | null> { return (await read(this.store, this.key)).rec; }
   private proof(g: number, secret: string) { return digest(`${this.key}:continuation:${g}:${secret}`); }
   /** `identity` is server-validated (writer + write session); only its digest is stored. */
+  /** C1–C4 r4: the holder digest this identity would carry, for stored-access comparison. Reads nothing. */
+  holderDigest(identity: string) { return this.holder(identity); }
+  /** C1–C4 r4: the latest grant's holder, read-only (null when there is no record or no grant). Throws when unreadable. */
+  async latestHolder(): Promise<string | null> {
+    const { rec } = await read(this.store, this.key);
+    const last = rec?.grants[rec.grants.length - 1];
+    return last ? last.holder : null;
+  }
   private holder(identity: string) {
-    if (typeof identity !== "string" || !identity) throw new BudgetRefused("No validated write session for the evaluation. Nothing was sent.", "session_mismatch");
+    if (typeof identity !== "string" || !identity) throw new BudgetRefused("No validated write session for the evaluation.", "session_mismatch");
     return digest(`${this.key}:holder:${identity}`);
   }
 
@@ -111,12 +119,12 @@ export class EvaluationBudget {
       const { rec, etag } = await read(this.store, this.key);
       const cur: BudgetRecord = rec ?? fresh(this.budgetId, this.ceiling);
       if (cur.ceiling !== this.ceiling || cur.budgetId !== this.budgetId) throw new BudgetRefused("The request budget record does not match the reviewed configuration", "unsettled");
-      if (cur.stopped) throw new BudgetRefused(`The evaluation is stopped (${cur.stopped.reason}). Nothing was sent.`, "stopped");
-      if (cur.grants.some((x) => x.settled === null)) throw new BudgetRefused("An earlier evaluation action did not settle; the evaluation stays closed. Nothing was sent.", "unsettled");
+      if (cur.stopped) throw new BudgetRefused(`The evaluation is stopped (${cur.stopped.reason}).`, "stopped");
+      if (cur.grants.some((x) => x.settled === null)) throw new BudgetRefused("An earlier evaluation action did not settle; the evaluation stays closed.", "unsettled");
       const last = cur.grants[cur.grants.length - 1];
-      if (last && last.holder !== holder) throw new BudgetRefused("This evaluation belongs to another write session. Nothing was sent.", "session_mismatch");
-      if (last && !this.continues(last, continuation)) throw new BudgetRefused("The last evaluation action's settlement was not acknowledged to this browser; the evaluation stays closed. Nothing was sent.", "unacknowledged");
-      if (cur.reserved + planned > cur.ceiling) throw new BudgetRefused("The evaluation request budget is used up. Nothing was sent.", "exhausted");
+      if (last && last.holder !== holder) throw new BudgetRefused("This evaluation belongs to another write session.", "session_mismatch");
+      if (last && !this.continues(last, continuation)) throw new BudgetRefused("The last evaluation action's settlement was not acknowledged to this browser; the evaluation stays closed.", "unacknowledged");
+      if (cur.reserved + planned > cur.ceiling) throw new BudgetRefused("The evaluation request budget is used up.", "exhausted");
       const g = cur.grants.length + 1;
       const next: BudgetRecord = { ...cur, reserved: cur.reserved + planned, grants: [...cur.grants, { g, action, planned, at: now, holder, settled: null }] };
       if (await cas(this.store, this.key, etag, next)) return new Grant(this, g, planned);
@@ -167,15 +175,15 @@ export class EvaluationBudget {
     for (let i = 0; i < CAS_ATTEMPTS; i++) {
       const { rec, etag } = await read(this.store, this.key);
       if (!rec) throw new BudgetRefused("The request budget is missing", "unsettled");
-      if (rec.stopped) throw new BudgetRefused(`The evaluation is stopped (${rec.stopped.reason}). Nothing was sent.`, "stopped");
+      if (rec.stopped) throw new BudgetRefused(`The evaluation is stopped (${rec.stopped.reason}). A GHL request was refused before sending.`, "stopped");
       const mine = rec.grants.find((x) => x.g === g);
-      if (!mine || mine.settled !== null) throw new BudgetRefused("This action's grant is missing or already settled. Nothing was sent.", "stopped");
+      if (!mine || mine.settled !== null) throw new BudgetRefused("This action's grant is missing or already settled. A GHL request was refused before sending.", "stopped");
       const used = rec.attempts.filter((a) => a.g === g).length;
-      if (used >= planned) throw new BudgetRefused("This action has used all of its planned requests. Nothing more was sent.", "grant_exceeded");
+      if (used >= planned) throw new BudgetRefused("This action has used all of its planned requests. A GHL request was refused before sending.", "grant_exceeded");
       const n = rec.calls + 1;
       if (await cas(this.store, this.key, etag, { ...rec, calls: n, attempts: [...rec.attempts, { n, g, method, path, at: now }] })) return n;
     }
-    throw new BudgetRefused("The request receipt could not be recorded. Nothing was sent.", "unsettled");
+    throw new BudgetRefused("The request receipt could not be recorded. A GHL request was refused before sending.", "unsettled");
   }
 }
 

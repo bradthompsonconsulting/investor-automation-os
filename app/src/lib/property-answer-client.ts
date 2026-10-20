@@ -31,6 +31,16 @@ export async function propertyAnswer(body: Record<string, unknown>): Promise<Rep
   return { status: r.status, body: await r.json().catch(() => ({})) };
 }
 export { AppWriteSignInRequired };
+/** C1–C4 r4 A3: the server echoes sha256(writer) as `operatorDigest` on authenticated replies. UI filtering only, never authority. */
+export async function operatorDigestOf(operator: string): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(operator));
+  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+/** C1–C4 r4 A2: the status action the server says THIS session may take for the stored operation. */
+export type StatusAccess = "settle" | "read" | "none" | "no_operation";
+export const isStatusAccess = (x: unknown): x is StatusAccess => x === "settle" || x === "read" || x === "none" || x === "no_operation";
+/** C1–C4 r4 C3: one field of a drafts recovery; only `present` carries text. */
+export type DraftState = { state: "present"; value: string | Address; savedAt: string } | { state: Exclude<string, "present"> };
 
 export const STATE_TEXT: Record<OpState, string> = {
   committed: "Saved.",

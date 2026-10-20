@@ -27,7 +27,10 @@
  *   pa/s2-permit/<op>             written by the original save ONLY after its confirmed_clean outcome
  *                                 create was acknowledged; S2 is never sent without it.
  *   pa/final/<op>                 committed | not_saved, written before the head is released.
- *   pa/draft/<contact,deal,field> the unsaved operator text (mutable; cleared once S1 lands).
+ *   pa/draft/<contact,deal,field> LEGACY v1 unsaved text with no operator provenance. Kept as
+ *                                 evidence; never returned as text, migrated or cleared (C1–C4 r4).
+ *   pa/draft2/<env,location,operator,contact,deal,field> v2 unsaved text bound to the authenticated
+ *                                 operator and exact target (mutable; cleared once S1 lands).
  *
  * Rules (each one is a refusal, never a retry):
  *   - S2 is sent only after S1's confirmed_clean outcome for THIS attempt was created and
@@ -60,7 +63,10 @@ export type OpRecord = {
   v: 1; op: string; contactId: string; opportunityId: string; field: AnswerField;
   valueText: string; valueDigest: string; valueLines: string[];
   expectedAddressDigest: string; dealSetDigest: string; createdAt: string;
+  /** C1–C4 r4 A1: who may read (writer) and settle (writer + evaluation holder) this operation. Absent = unattributed. */
+  access?: OpAccess;
 };
+export type OpAccess = { v: 1; writer: string; holder: string };
 type OutcomeRecord = {
   v: 1; op: string; slot: Slot; n: number; requestId: string; kind: S1Kind | S2Kind;
   valueDigest: string; readbackDigest: string | null; previousDigest: string | null;
@@ -278,6 +284,8 @@ export type SaveInput = {
   contactId: string; opportunityId: string; field: AnswerField; operationId: string;
   fields: FieldWrite[]; valueText: string; valueLines: string[];
   expectedAddressDigest: string; expectedDealSetDigest: string; now: () => string; maxCandidates: number;
+  /** C1–C4 r4: the stored access stamp for the new operation, and the saving operator's v2 draft binding (cleared once S1 lands). */
+  access: OpAccess; draft: DraftBinding;
 };
 export type SaveResult = { view: OpView; message: string };
 /** The only save message after which the initial save flow may send its own S2 (the permit was written). */
@@ -315,7 +323,7 @@ export async function saveAnswer(input: SaveInput): Promise<SaveResult> {
   // Publish the operation, its S1 attempt and the head (each verified).
   const now = input.now();
   const valueDigest = sha256(input.valueText);
-  const o: OpRecord = { v: 1, op, contactId, opportunityId, field, valueText: input.valueText, valueDigest, valueLines: input.valueLines, expectedAddressDigest: input.expectedAddressDigest, dealSetDigest: ev.verdict.digest, createdAt: now };
+  const o: OpRecord = { v: 1, op, contactId, opportunityId, field, valueText: input.valueText, valueDigest, valueLines: input.valueLines, expectedAddressDigest: input.expectedAddressDigest, dealSetDigest: ev.verdict.digest, createdAt: now, access: { v: 1, writer: input.access.writer, holder: input.access.holder } };
   const same = (g: OpRecord) => g.op === o.op && g.contactId === o.contactId && g.opportunityId === o.opportunityId && g.field === o.field && g.valueDigest === o.valueDigest;
   try {
     await writeOnceVerified(store, opKey(scope, op), o, same);
@@ -397,7 +405,7 @@ export async function saveAnswer(input: SaveInput): Promise<SaveResult> {
   } catch (e) { discrepancy[e instanceof UnexpectedWork ? "unexpected_candidates" : "deal_set_unconfirmed"] = true; }
   const kind: S1Kind = Object.keys(discrepancy).length ? "confirmed_conditions_changed" : "confirmed_clean";
   const created = await createOutcome(store, scope, outcome(o, "S1", 1, kind, readbackDigest(input.fields, result.readback), previousDigest, kind === "confirmed_clean" ? null : discrepancy, input.now()));
-  await store.setJSON(draftKey(scope, contactId, opportunityId, field), { v: 1, cleared: true, at: input.now() }).catch(() => null);
+  await clearDraftV2(store, input.draft, input.now()).catch(() => null);   // the saving operator's own v2 draft; legacy v1 is left as evidence
   if (created !== "created") return { view: await viewOf(store, scope, o), message: "Saved in GHL, but the save record could not be confirmed. Held for reconciliation." };
   if (kind === "confirmed_clean") {
     try { await store.setJSON(permitKey(scope, op), { v: 1, op, requestId, at: input.now() }, { onlyIfNew: true }); }
@@ -568,23 +576,103 @@ export async function settleUnderLock(input: { boundary: GhlBoundary; store: Bar
 // ── Drafts (server-side, Brad 2026-10-17) ────────────────────────────────────
 
 export const DRAFT_MAX_CHARS = 4000;
-export type Draft = { v: 1; value: string | Address; savedAt: string } | { v: 1; cleared: true; at: string };
-export async function saveDraft(store: BarrierStore, scope: string, contact: string, opp: string, field: AnswerField, value: unknown, now: string): Promise<void> {
-  let v: string | Address;
+/** LEGACY v1 shape, kept only to recognise old evidence: { v: 1; value; savedAt } | { v: 1; cleared: true; at }. */
+// C1–C4 r4: the unbound v1 saveDraft/readDraft are removed; drafts are written and read only through the v2 functions below.
+export { LedgerUnsettled, Fenced };
+
+// ── C1–C4 r4: operator-bound v2 drafts, prior association, stored operation access ─────────
+
+/** Exact identity a v2 draft is bound to. `operator` is the server-verified writer, never request data. */
+export type DraftBinding = { operator: string; env: string; locationId: string; contactId: string; opportunityId: string; field: AnswerField };
+export const draftKeyV2 = (b: DraftBinding) => `pa/draft2/${digest(JSON.stringify([b.env, b.locationId, b.operator, b.contactId, b.opportunityId, b.field]))}`;
+/** Per-field recovery state. Only `present` carries text. */
+export type DraftState =
+  | { state: "present"; value: string | Address; savedAt: string }
+  | { state: "cleared" | "absent" | "unavailable" | "invalid" | "legacy_unverified" | "association_absent" | "association_ambiguous" | "association_unconfirmed" };
+
+/** The draft value contract (unchanged from v1); throws on anything else. */
+export function validDraftValue(field: AnswerField, value: unknown): string | Address {
   if (field === "seller_reason") {
     if (typeof value !== "string" || value.length > DRAFT_MAX_CHARS) throw new Error("Invalid draft");
-    v = value;
-  } else {
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid draft");
-    const keys = Object.keys(value);
-    if (keys.length !== ADDRESS_KEYS.length || ADDRESS_KEYS.some((x) => typeof (value as any)[x] !== "string" || (value as any)[x].length > 200)) throw new Error("Invalid draft");
-    v = Object.fromEntries(ADDRESS_KEYS.map((x) => [x, (value as any)[x]])) as Address;
+    return value;
   }
-  await store.setJSON(draftKey(scope, contact, opp, field), { v: 1, value: v, savedAt: now });
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid draft");
+  const keys = Object.keys(value);
+  if (keys.length !== ADDRESS_KEYS.length || ADDRESS_KEYS.some((x) => typeof (value as any)[x] !== "string" || (value as any)[x].length > 200)) throw new Error("Invalid draft");
+  return Object.fromEntries(ADDRESS_KEYS.map((x) => [x, (value as any)[x]])) as Address;
 }
-export async function readDraft(store: BarrierStore, scope: string, contact: string, opp: string, field: AnswerField): Promise<string | Address | null> {
-  const d = await readJson(store, draftKey(scope, contact, opp, field)).catch(() => null) as Draft | null;
-  return d && "value" in d ? d.value : null;
+const sameBinding = (r: any, b: DraftBinding) => r.operator === b.operator && r.env === b.env && r.locationId === b.locationId
+  && r.contactId === b.contactId && r.opportunityId === b.opportunityId && r.field === b.field;
+export async function saveDraftV2(store: BarrierStore, b: DraftBinding, value: unknown, now: string): Promise<void> {
+  await store.setJSON(draftKeyV2(b), { v: 2, ...b, value: validDraftValue(b.field, value), savedAt: now });
+}
+export async function clearDraftV2(store: BarrierStore, b: DraftBinding, now: string): Promise<void> {
+  await store.setJSON(draftKeyV2(b), { v: 2, ...b, cleared: true, at: now });
+}
+/**
+ * The ONE draft reader (context and recovery). A read failure is `unavailable`, never "no draft".
+ * A legacy v1 record (no operator provenance) is reported, never returned as text.
+ */
+export async function readDraftV2(store: BarrierStore, scope: string, b: DraftBinding): Promise<DraftState> {
+  let r: any;
+  try { r = await readJson(store, draftKeyV2(b)); } catch { return { state: "unavailable" }; }
+  if (r === null || r === undefined) {
+    let legacy: any;
+    try { legacy = await readJson(store, draftKey(scope, b.contactId, b.opportunityId, b.field)); } catch { return { state: "unavailable" }; }
+    return legacy && typeof legacy === "object" && "value" in legacy ? { state: "legacy_unverified" } : { state: "absent" };
+  }
+  if (typeof r !== "object" || r.v !== 2 || !sameBinding(r, b)) return { state: "invalid" };
+  if (r.cleared === true) return typeof r.at === "string" && !("value" in r) ? { state: "cleared" } : { state: "invalid" };
+  if (typeof r.savedAt !== "string" || !Number.isFinite(Date.parse(r.savedAt))) return { state: "invalid" };
+  try { return { state: "present", value: validDraftValue(b.field, r.value), savedAt: r.savedAt }; } catch { return { state: "invalid" }; }
 }
 
-export { LedgerUnsettled, Fenced };
+/**
+ * A PRIOR OBSERVED contact/deal association: the contact's known-deal ledger (add-only ids committed by a
+ * discovery) lists the deal, and no other pinned fixture contact's ledger does. It is NOT current GHL
+ * ownership or eligibility and grants no permission to save. Unreadable or malformed evidence fails closed.
+ */
+export async function priorAssociation(store: BarrierStore, scope: string, contactId: string, opportunityId: string, fixtureContacts: readonly string[]):
+  Promise<{ ok: true } | { ok: false; reason: "association_absent" | "association_ambiguous" | "association_unconfirmed" }> {
+  const has = (rec: any) => !!rec && !!rec.ids && typeof rec.ids === "object" && Object.prototype.hasOwnProperty.call(rec.ids, opportunityId);
+  let own: any;
+  try { own = (await readLedger(store, scope, contactId)).rec; } catch { return { ok: false, reason: "association_unconfirmed" }; }
+  if (!has(own)) return { ok: false, reason: "association_absent" };
+  const e = own.ids[opportunityId];
+  if (!e || typeof e !== "object" || typeof e.firstSeen !== "string" || !Number.isFinite(Date.parse(e.firstSeen)) || !["search", "single_read"].includes(e.source)) {
+    return { ok: false, reason: "association_unconfirmed" };
+  }
+  for (const other of new Set(fixtureContacts)) {
+    if (other === contactId) continue;
+    let rec: any;
+    try { rec = (await readLedger(store, scope, other)).rec; } catch { return { ok: false, reason: "association_unconfirmed" }; }
+    if (has(rec)) return { ok: false, reason: "association_ambiguous" };
+  }
+  return { ok: true };
+}
+
+/**
+ * C1–C4 r4 A1: access to the contact's CURRENT answer operation from stored evidence only (Blob reads; no
+ * GHL, lock, grant or write). `read`: the operation is attributed to this authenticated writer for this
+ * exact target. `settle`: additionally its stored holder is this exact session AND the budget's latest
+ * grant holder is that same session. A lost reply, refusal code, continuation, ledger membership or draft
+ * possession is never an input.
+ */
+export type AccessResult =
+  | { kind: "no_operation" }
+  | { kind: "none"; reason: "unavailable" | "other_target" | "unattributed" | "other_operator" }
+  | { kind: "read" | "settle"; cur: { op: OpRecord; view: OpView } };
+export async function operationAccess(store: BarrierStore, scope: string, q: { contactId: string; opportunityId: string; writer: string; holder: string; latestHolder: () => Promise<string | null> }): Promise<AccessResult> {
+  let cur: { op: OpRecord; view: OpView } | null;
+  try { cur = await currentOperation(store, scope, q.contactId); } catch { return { kind: "none", reason: "unavailable" }; }
+  if (!cur) return { kind: "no_operation" };
+  const o = cur.op;
+  if (o.contactId !== q.contactId || o.opportunityId !== q.opportunityId) return { kind: "none", reason: "other_target" };
+  const a: any = o.access;
+  if (!a || typeof a !== "object" || a.v !== 1 || typeof a.writer !== "string" || !a.writer || typeof a.holder !== "string" || !a.holder) return { kind: "none", reason: "unattributed" };
+  if (a.writer !== q.writer) return { kind: "none", reason: "other_operator" };
+  if (a.holder !== q.holder) return { kind: "read", cur };
+  let latest: string | null;
+  try { latest = await q.latestHolder(); } catch { return { kind: "read", cur }; }
+  return latest === q.holder ? { kind: "settle", cur } : { kind: "read", cur };
+}
