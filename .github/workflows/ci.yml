@@ -358,6 +358,14 @@ jobs:
       - name: Contact isolation and Production write scope, real pages (B14-12, B14-13) — 101 checks
         run: node app/scripts/test-contact-isolation.cjs
 
+      # B15-04 C1-C4 r4: draft recovery, stored operation authority, wording and fresh-load non-bypass (real handler, offline).
+      - name: Property answers recovery and authority, server (B15-04 C1-C4) - 19 cases
+        run: node app/scripts/test-property-answer-recovery.cjs
+
+      # B15-04 C1-C4 r4: the real panel against the real handler -- authority, identity/target generations, late replies; floor 27.
+      - name: Property answers authority and late replies, real page (B15-04 C1-C4) - 27 checks
+        run: node app/scripts/test-property-answers-authority.cjs
+
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.
       - name: Typecheck root Netlify functions
