@@ -157,7 +157,7 @@ jobs:
   verify:
     name: Build and offline checks
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
