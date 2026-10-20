@@ -359,12 +359,17 @@ jobs:
         run: node app/scripts/test-contact-isolation.cjs
 
       # B15-04 C1-C4 r4: draft recovery, stored operation authority, wording and fresh-load non-bypass (real handler, offline).
-      - name: Property answers recovery and authority, server (B15-04 C1-C4) - 19 cases
+      - name: Property answers recovery and authority, server (B15-04 C1-C4) - 21 cases
         run: node app/scripts/test-property-answer-recovery.cjs
 
-      # B15-04 C1-C4 r4: the real panel against the real handler -- authority, identity/target generations, late replies; floor 27.
-      - name: Property answers authority and late replies, real page (B15-04 C1-C4) - 27 checks
+      # B15-04 C1-C4 r4: the real panel against the real handler -- authority, identity/target generations, late replies; floor 30.
+      - name: Property answers authority and late replies, real page (B15-04 C1-C4) - 30 checks
         run: node app/scripts/test-property-answers-authority.cjs
+
+      # B15-04 C1-C4 (Bones F2): all 37 original preservation behaviours, real page; v2 storage adapter only.
+      # The unchanged original reproducer is kept outside CI (its legacy-v1-key probes are retired by design).
+      - name: Property answers preservation, maintained v2 runner, real page (B15-04 C1-C4) - 37 checks
+        run: node app/scripts/test-property-answers-preservation-v2.cjs
 
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.
