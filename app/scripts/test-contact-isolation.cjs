@@ -31,7 +31,9 @@
  *        reservations, while a callback or outcome note with no reservation, a
  *        replayed reservation or ANOTHER contact's reservation is refused
  *        not_sent, and an operation outside every class is refused by scope;
- *        nothing refused lands.
+ *        nothing refused lands. ANOTHER contact's reservation is checked both
+ *        spent and LIVE: a live reservation for A is refused on B with nothing
+ *        dispatched, then still writes A, then its replay is refused.
  *   Until 2026-10-19 the suite asserted block A against the committed config,
  *   timed out at Follow-Up and never ran the 27 checks after it.
  */
@@ -713,6 +715,28 @@ async function main() {
       r = await post({ operation: 'contact.callback', targetId: B, requestId: fuA.find((w) => w.op === 'contact.callback').requestId, args: { value: '2026-11-03T15:00:00.000Z' } });
       check("Production scope B: A's reservation cannot write B's callback (refused not_sent; B unchanged)",
         r.status === 409 && r.body && r.body.outcome === 'not_sent' && stateOf(B) === s0, r);
+      // NB6–NB8 — NB5's token is already spent, so it cannot separate contact binding from replay.
+      // A LIVE (unspent) reservation for A's deal: refused on B with zero dispatch, then the SAME
+      // token is still valid for A (rightful-owner positive), then its replay is refused.
+      const live = ['callback', 'callback_note', 'touch', 'note'].map((step, i) => ({ step, requestId: `00000000-0000-4000-8000-0000000000c${i}` }));
+      const begun = await page.evaluate(async (x) => {
+        const res = await fetch('/.netlify/functions/current-offer-barrier', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(x) });
+        return { status: res.status, body: await res.json().catch(() => null) };
+      }, { action: 'begin', opportunityId: `${A}-opp`, purpose: 'follow_up', steps: live });
+      check("Production scope B: a fresh reservation for A's deal is granted (unspent)", begun.status === 200, begun);
+      const dispatched0 = prodWrites().filter((w) => w.status === 200).length;
+      s0 = stateOf(B); let a0 = stateOf(A);
+      r = await post({ operation: 'contact.callback', targetId: B, requestId: live[0].requestId, args: { value: '2026-11-04T15:00:00.000Z' } });
+      check("Production scope B: A's UNSPENT reservation cannot write B's callback (refused not_sent; nothing dispatched; A and B unchanged)",
+        r.status === 409 && r.body && r.body.outcome === 'not_sent' && stateOf(B) === s0 && stateOf(A) === a0
+        && prodWrites().filter((w) => w.status === 200).length === dispatched0, r);
+      r = await post({ operation: 'contact.callback', targetId: A, requestId: live[0].requestId, args: { value: '2026-11-04T15:00:00.000Z' } });
+      check("Production scope B: the SAME reservation still writes its rightful contact A (200; A's callback landed; B unchanged)",
+        r.status === 200 && db[A].fields.get(F.callbackDatetimePrecise) === '2026-11-04T15:00:00.000Z' && stateOf(B) === s0, r);
+      a0 = stateOf(A);
+      r = await post({ operation: 'contact.callback', targetId: A, requestId: live[0].requestId, args: { value: '2026-11-05T15:00:00.000Z' } });
+      check('Production scope B: replaying that now-spent reservation on A is refused not_sent and lands nothing',
+        r.status === 409 && r.body && r.body.outcome === 'not_sent' && stateOf(A) === a0, r);
     } finally {
       prodScope = false;
       prodScopeConfig = PROD_CALL_LOG_ONLY;
@@ -884,7 +908,7 @@ async function main() {
   }
   // Floor: every check must run. 90 ran before d6be2cc; this correction adds the committed-config check and
   // block B's 10. Fewer means a section was skipped or aborted, which is a failure in its own right.
-  const FLOOR = 101;
+  const FLOOR = 105;
   if (checks < FLOOR) { failures += 1; console.error(`FLOOR  only ${checks} checks ran (floor ${FLOOR})`); }
   console.log(`\nB14-12 contact isolation: ${checks - failures}/${checks} checks passed${failures ? ` (failures=${failures})` : ''}`);
   await exit(failures ? 1 : 0);
