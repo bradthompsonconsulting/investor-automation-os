@@ -21,6 +21,21 @@
  *   warning; while B's record is loading the warning names no callback, and
  *   Confirm Pass sends no write (button or handler) until B's status is
  *   known, which a late read for A cannot supply.
+ *   Production scope (Board #9 / B14-13) — two blocks, both with the REAL
+ *   production-write-scope and the REAL Current Offer / call-log barrier rules:
+ *     A. the B14-12 call-log class ONLY (negotiation DISABLED, pinned here
+ *        explicitly): the contact-page writes pass; Seller Call Follow-Up and
+ *        Pass are refused at their first write and land nothing;
+ *     B. Production AS COMMITTED (the Seller Call negotiation class ENABLED by
+ *        d6be2cc, 2026-10-11): Follow-Up and Pass pass under their own
+ *        reservations, while a callback or outcome note with no reservation, a
+ *        replayed reservation or ANOTHER contact's reservation is refused
+ *        not_sent, and an operation outside every class is refused by scope;
+ *        nothing refused lands. ANOTHER contact's reservation is checked both
+ *        spent and LIVE: a live reservation for A is refused on B with nothing
+ *        dispatched, then still writes A, then its replay is refused.
+ *   Until 2026-10-19 the suite asserted block A against the committed config,
+ *   timed out at Follow-Up and never ran the 27 checks after it.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -41,10 +56,12 @@ Module._resolveFilename = ((original) => function (name, parent, ...rest) {
 const G = require(path.join(APP, 'shared/ghl-config.ts'));
 const { getConfig } = G;
 const scopeLib = require(path.join(APP, 'netlify/functions/lib/production-write-scope.ts'));
-// Production, as committed, with ONLY the B14-12 call-log class switched on.
-const PROD_CALL_LOG_ON = { ...JSON.parse(JSON.stringify(getConfig('production'))), productionCallLog: G.PRODUCTION_CALL_LOG_ENABLED };
+// Production as committed, plus the B14-12 call-log class switched on (block B).
+const PROD_COMMITTED = { ...JSON.parse(JSON.stringify(getConfig('production'))), productionCallLog: G.PRODUCTION_CALL_LOG_ENABLED };
+// The same with the Seller Call negotiation class pinned DISABLED: the B14-12 call-log class only (block A).
+const PROD_CALL_LOG_ONLY = { ...PROD_COMMITTED, productionSellerCallNegotiation: G.PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED };
 let prodScope = false;
-let prodScopeConfig = PROD_CALL_LOG_ON;
+let prodScopeConfig = PROD_CALL_LOG_ONLY;
 let saveThenFail = [];   // predicates: apply the write, then answer 500 (an uncertain save)
 let refuseWrite = [];    // predicates: the SERVER refuses the write before sending (outcome not_sent)
 const handoffs = [];
@@ -191,7 +208,7 @@ async function main() {
       if (prodScope && req.kind === 'write') {
         const decision = scopeLib.evaluateProductionGhlWriteScope(prodScopeConfig, { operation: req.op, targetId: req.contact, args: req.args });
         if (!decision.ok) {
-          req.refused = decision.code;
+          req.refused = decision.code; req.status = 403;
           return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Production write refused by the proof write scope', by: 'iaos-production-write-scope', code: decision.code }) });
         }
       }
@@ -211,6 +228,7 @@ async function main() {
       if (sf >= 0) { saveThenFail.splice(sf, 1); if (req.kind === 'write') await serverWrite(); else answer(req); return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'fixture: saved, then the response failed' }) }); }
       const fi = failNext.findIndex((p) => p(req));
       const res = fi >= 0 ? (failNext.splice(fi, 1), { status: 500, body: { error: 'fixture: injected failure' } }) : req.kind === 'write' ? await serverWrite() : answer(req);
+      req.status = res.status;   // the answer each request got (block B asserts it)
       return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) });
     });
 
@@ -557,11 +575,15 @@ async function main() {
     check('B\'s own read resolved: Confirm Pass is enabled', !(await passConfirmDisabled()));
 
     // ═══ Production scope, call-log class ENABLED: the real callers (Bones, PR #118) ═══
-    // Every write the real pages send is decided by the REAL production-write-scope
-    // with a Production config whose call-log class is ENABLED (Board #9 flags as
-    // committed); a refusal is answered exactly as ghl-write answers it and
-    // nothing lands.
+    // Every write the real pages send is decided by the REAL production-write-scope;
+    // a refusal is answered exactly as ghl-write answers it and nothing lands.
+    // Block A pins the call-log class ONLY (negotiation DISABLED); block B below
+    // uses Production as committed (negotiation ENABLED).
     const prodWrites = () => log.filter((r) => r.kind === 'write');
+    check('Production as committed carries the Seller Call negotiation class ENABLED (block B tests that state)',
+      PROD_COMMITTED.productionSellerCallNegotiation === G.PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED
+      && PROD_CALL_LOG_ONLY.productionSellerCallNegotiation === G.PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED, PROD_COMMITTED.productionSellerCallNegotiation);
+    prodScopeConfig = PROD_CALL_LOG_ONLY;
     prodScope = true;
     try {
       // PS1 — Contact page Save call: result, note and last touch all pass.
@@ -602,9 +624,9 @@ async function main() {
       await until(async () => (await page.getByTestId('call-outcome-error').count()) === 1, 'follow-up refused');
       await settle();
       const fu = prodWrites().slice(p0);
-      check('Production scope: Seller Call Follow-Up is refused at its first write (generic contact.callback) and attempts nothing more',
+      check('Production scope A (negotiation DISABLED): Seller Call Follow-Up is refused at its first write (generic contact.callback) and attempts nothing more',
         JSON.stringify(fu.map((r) => [r.op, !!r.refused])) === JSON.stringify([['contact.callback', true]]), fu.map((r) => [r.op, r.refused]));
-      check('Production scope: Seller Call Follow-Up landed nothing (no callback, no note, no touch, no ledger)',
+      check('Production scope A (negotiation DISABLED): Seller Call Follow-Up landed nothing (no callback, no note, no touch, no ledger)',
         !db[B].fields.has(F.callbackDatetimePrecise) && db[B].notes.length === notesBefore && !db[B].fields.has(F.lastCallAttemptPrecise));
 
       // PS5 — Seller Call Pass: its outcome ledger note is refused first; nothing lands.
@@ -614,11 +636,110 @@ async function main() {
       await page.getByTestId('call-outcome-pass-confirm').click();
       await settle(); await settle();
       const ps = prodWrites().slice(p0);
-      check('Production scope: Seller Call Pass is refused at its ledger note and lands nothing',
+      check('Production scope A (negotiation DISABLED): Seller Call Pass is refused at its ledger note and lands nothing',
         JSON.stringify(ps.map((r) => [r.op, !!r.refused])) === JSON.stringify([['note.create', true]]) && db[B].notes.length === notesBefore && !db[B].fields.has(F.lastCallAttemptPrecise),
         ps.map((r) => [r.op, r.refused]));
+
+      // ── Block B: Production AS COMMITTED (negotiation ENABLED, d6be2cc). The
+      // scope permits the negotiation records; the REAL barrier rules decide
+      // ownership. Nothing refused may land.
+      prodScopeConfig = PROD_COMMITTED;
+      const post = (b) => page.evaluate(async (x) => {
+        const r = await fetch('/.netlify/functions/ghl-write', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(x) });
+        return { status: r.status, body: await r.json().catch(() => null) };
+      }, b);
+      const stateOf = (c) => JSON.stringify({ cb: db[c].fields.get(F.callbackDatetimePrecise) || null, notes: db[c].notes.length, touch: db[c].fields.get(F.lastCallAttemptPrecise) || null });
+      const okSeq = (ws) => JSON.stringify(ws.map((r) => [r.op, !!r.refused, r.status]));
+
+      // PS4B — Follow-Up passes under its own reservation: callback, outcome note, touch, callback note, in order.
+      await fresh({}, `/contacts/${B}/seller-call`);
+      await scLoaded('Bravo');
+      const bNotes0 = db[B].notes.length;
+      p0 = prodWrites().length;
+      const begins0 = log.filter((r) => r.kind === 'current-offer-barrier').length;
+      await recordFollowUp('2026-10-06T10:00');
+      await until(async () => writesFor(B, 'note.create') === 2, 'block B follow-up');
+      await settle();
+      const fuB = prodWrites().slice(p0);
+      check('Production scope B (as committed): Follow-Up sends callback, callback note, touch, outcome ledger note, each permitted and confirmed',
+        okSeq(fuB) === JSON.stringify([['contact.callback', false, 200], ['note.create', false, 200], ['contact.lastCallAttempt', false, 200], ['note.create', false, 200]]), okSeq(fuB));
+      check('Production scope B: the Follow-Up took a Current Offer barrier reservation first, and its callback, notes and touch landed on B',
+        log.filter((r) => r.kind === 'current-offer-barrier').length > begins0
+        && db[B].fields.get(F.callbackDatetimePrecise) === '2026-10-06T15:00:00.000Z' && db[B].notes.length === bNotes0 + 2 && db[B].fields.has(F.lastCallAttemptPrecise)
+        && (await page.getByTestId('call-outcome-error').count()) === 0, stateOf(B));
+      const bCallback = fuB.find((r) => r.op === 'contact.callback');
+      const bOutcomeNote = db[B].notes.slice(bNotes0).find((n) => /^IAOS SELLER CALL OUTCOME LEDGER/.test(String(n.body)));
+      check('Production scope B: the Follow-Up recorded its outcome ledger note on B', !!bOutcomeNote, db[B].notes.slice(bNotes0).map((n) => String(n.body).slice(0, 40)));
+
+      // PS5B — Pass passes under its own reservation: outcome note, then touch.
+      p0 = prodWrites().length;
+      await passText();
+      await page.getByTestId('call-outcome-pass-reason').fill('production scope check');
+      await page.getByTestId('call-outcome-pass-confirm').click();
+      await until(async () => writesFor(B, 'note.create') === 3, 'block B pass');
+      await settle();
+      const passB = prodWrites().slice(p0);
+      check('Production scope B: Pass sends its outcome note and touch, each permitted and confirmed, and the note landed',
+        okSeq(passB) === JSON.stringify([['note.create', false, 200], ['contact.lastCallAttempt', false, 200]]) && db[B].notes.length === bNotes0 + 3, okSeq(passB));
+
+      // NB1–NB5 — the same records WITHOUT valid ownership: refused not_sent, nothing lands.
+      let s0 = stateOf(B);
+      let r = await post({ operation: 'contact.callback', targetId: B, requestId: '00000000-0000-4000-8000-0000000000b1', args: { value: '2026-11-01T15:00:00.000Z' } });
+      check('Production scope B: a callback with NO reservation is refused not_sent and lands nothing',
+        r.status === 409 && r.body && r.body.outcome === 'not_sent' && stateOf(B) === s0, r);
+      s0 = stateOf(B);
+      r = await post({ operation: 'contact.callback', targetId: B, requestId: bCallback.requestId, args: { value: '2026-11-02T15:00:00.000Z' } });
+      check("Production scope B: replaying the Follow-Up's own (spent) reservation is refused not_sent and lands nothing",
+        r.status === 409 && r.body && r.body.outcome === 'not_sent' && stateOf(B) === s0, r);
+      s0 = stateOf(B);
+      r = await post({ operation: 'note.create', targetId: B, requestId: '00000000-0000-4000-8000-0000000000b2', args: { body: bOutcomeNote.body } });
+      check('Production scope B: a negotiation outcome note with NO reservation is refused not_sent and lands nothing',
+        r.status === 409 && r.body && r.body.outcome === 'not_sent' && /outcome needs a reservation/.test(r.body.error || '') && stateOf(B) === s0, r);
+      s0 = stateOf(B);
+      r = await post({ operation: 'contact.disposition', targetId: B, requestId: '00000000-0000-4000-8000-0000000000b3', args: { value: 'Not Interested' } });
+      check('Production scope B: an operation outside every Production class is still refused by scope (403) and lands nothing',
+        r.status === 403 && r.body && r.body.by === 'iaos-production-write-scope' && r.body.code === 'OPERATION_NOT_PERMITTED' && stateOf(B) === s0, r);
+      // NB5 — ANOTHER contact's reservation: A's own Follow-Up passes on A, but its reservation cannot write B.
+      await go(`/contacts/${A}/seller-call`);
+      await scLoaded('Alpha');
+      p0 = prodWrites().length;
+      const aNotes0 = db[A].notes.length;
+      await recordFollowUp('2026-10-07T10:00');
+      await until(async () => writesFor(A, 'note.create') >= 2, 'block B A follow-up');
+      await settle();
+      const fuA = prodWrites().slice(p0);
+      check('Production scope B: on A, Follow-Up passes under A\'s own reservation and lands on A only',
+        okSeq(fuA) === JSON.stringify([['contact.callback', false, 200], ['note.create', false, 200], ['contact.lastCallAttempt', false, 200], ['note.create', false, 200]])
+        && fuA.every((w) => w.contact === A) && db[A].notes.length === aNotes0 + 2, okSeq(fuA));
+      s0 = stateOf(B);
+      r = await post({ operation: 'contact.callback', targetId: B, requestId: fuA.find((w) => w.op === 'contact.callback').requestId, args: { value: '2026-11-03T15:00:00.000Z' } });
+      check("Production scope B: A's reservation cannot write B's callback (refused not_sent; B unchanged)",
+        r.status === 409 && r.body && r.body.outcome === 'not_sent' && stateOf(B) === s0, r);
+      // NB6–NB8 — NB5's token is already spent, so it cannot separate contact binding from replay.
+      // A LIVE (unspent) reservation for A's deal: refused on B with zero dispatch, then the SAME
+      // token is still valid for A (rightful-owner positive), then its replay is refused.
+      const live = ['callback', 'callback_note', 'touch', 'note'].map((step, i) => ({ step, requestId: `00000000-0000-4000-8000-0000000000c${i}` }));
+      const begun = await page.evaluate(async (x) => {
+        const res = await fetch('/.netlify/functions/current-offer-barrier', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(x) });
+        return { status: res.status, body: await res.json().catch(() => null) };
+      }, { action: 'begin', opportunityId: `${A}-opp`, purpose: 'follow_up', steps: live });
+      check("Production scope B: a fresh reservation for A's deal is granted (unspent)", begun.status === 200, begun);
+      const dispatched0 = prodWrites().filter((w) => w.status === 200).length;
+      s0 = stateOf(B); let a0 = stateOf(A);
+      r = await post({ operation: 'contact.callback', targetId: B, requestId: live[0].requestId, args: { value: '2026-11-04T15:00:00.000Z' } });
+      check("Production scope B: A's UNSPENT reservation cannot write B's callback (refused not_sent; nothing dispatched; A and B unchanged)",
+        r.status === 409 && r.body && r.body.outcome === 'not_sent' && stateOf(B) === s0 && stateOf(A) === a0
+        && prodWrites().filter((w) => w.status === 200).length === dispatched0, r);
+      r = await post({ operation: 'contact.callback', targetId: A, requestId: live[0].requestId, args: { value: '2026-11-04T15:00:00.000Z' } });
+      check("Production scope B: the SAME reservation still writes its rightful contact A (200; A's callback landed; B unchanged)",
+        r.status === 200 && db[A].fields.get(F.callbackDatetimePrecise) === '2026-11-04T15:00:00.000Z' && stateOf(B) === s0, r);
+      a0 = stateOf(A);
+      r = await post({ operation: 'contact.callback', targetId: A, requestId: live[0].requestId, args: { value: '2026-11-05T15:00:00.000Z' } });
+      check('Production scope B: replaying that now-spent reservation on A is refused not_sent and lands nothing',
+        r.status === 409 && r.body && r.body.outcome === 'not_sent' && stateOf(A) === a0, r);
     } finally {
       prodScope = false;
+      prodScopeConfig = PROD_CALL_LOG_ONLY;
     }
 
     // ═══ Contact page: Do Not Call, simplified (Brad 2026-10-04): a button that opens THIS contact
@@ -785,6 +906,10 @@ async function main() {
     failures += 1;
     console.error(`ABORT  ${e && e.stack || e}`);
   }
+  // Floor: every check must run. 90 ran before d6be2cc; this correction adds the committed-config check and
+  // block B's 10. Fewer means a section was skipped or aborted, which is a failure in its own right.
+  const FLOOR = 105;
+  if (checks < FLOOR) { failures += 1; console.error(`FLOOR  only ${checks} checks ran (floor ${FLOOR})`); }
   console.log(`\nB14-12 contact isolation: ${checks - failures}/${checks} checks passed${failures ? ` (failures=${failures})` : ''}`);
   await exit(failures ? 1 : 0);
 }

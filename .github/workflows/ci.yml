@@ -157,7 +157,7 @@ jobs:
   verify:
     name: Build and offline checks
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -317,6 +317,21 @@ jobs:
       - name: Mailers This Week is the current Saturday-Friday week (INV-110, B15-12)
         run: node app/scripts/test-mailer-week.cjs
 
+      # B15 bundle excluding B15-04 (accepted heads 5280263, 88e5f70, f0f4269, c0f33bc, 6e3bbde, 744be99,
+      # contact-isolation 3259aca + 23770f6). Offline. No B15-04 / supplemental-read-budget step: that code is not here.
+      - name: System note summaries (INV-126, B15-17)
+        run: node app/scripts/test-system-note-summary.cjs
+      - name: Repair policy, known-only zero start (INV-100, B15-01/02)
+        run: node app/scripts/test-b15-01-repair-policy.cjs
+      - name: Wholesaler net proceeds (INV-134, B15-26)
+        run: node app/scripts/test-wholesaler-net-proceeds.cjs
+      - name: Count labels and accounting (INV-128, B15-19)
+        run: node app/scripts/test-b15-19-count-accounting.cjs
+      - name: Contacts stage and last call attempt columns (INV-129, B15-20)
+        run: node app/scripts/test-b15-20-contacts-columns.cjs
+      - name: Contract Workspace display, combined invariants and checked-in slice provenance (B15-21)
+        run: node app/scripts/test-b15-21-contract-display.cjs
+
       # The real-page suites (Seller Call, Contacts, Pipeline, Mailers, shell labels) need Chromium.
       # Not retried: a failure is reported as it happened. The Pipeline suite prints its startup
       # timings and on failure dumps the browser console, page errors, failed requests and the Vite log.
@@ -332,6 +347,14 @@ jobs:
         run: node app/scripts/test-mailers-empty-state.cjs
       - name: Shell labels on the real page -- no Phase A badge, Conversations heading (INV-126, B15-17)
         run: node app/scripts/test-b15-shell-labels.cjs
+      - name: /map and /settings redirect to the Dashboard inside the read gate, real App (B15-18)
+        run: node app/scripts/test-b15-18-map-settings-redirect.cjs
+      - name: Deal Calculator itemized repairs, both Clears and transfer-once, real page (INV-100, B15-01)
+        run: node app/scripts/test-deal-calculator-interaction.cjs
+      # Both Production negotiation settings against the real write scope and barrier rules; floor 105
+      # (NB6-NB8: a live, unspent reservation for A's deal is refused on B, then writes A once; 23770f6).
+      - name: Contact isolation and Production write scope, real pages (B14-12, B14-13) — 105 checks
+        run: node app/scripts/test-contact-isolation.cjs
 
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.

@@ -3,6 +3,8 @@ import { useReadRecovered } from "../components/access-status";
 import { Link } from "react-router-dom";
 import { AlertCircle, Users, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
 import { ghl, type ContactGridRow } from "../lib/ghl";
+import { startCurrentRead } from "../lib/current-read";
+import { indexDealStages, lastCallAttemptText, stageCell, type DealStageSource } from "../lib/contacts-columns";
 import { formatPhone } from "../lib/format";
 import { phoneQueryDigits } from "../lib/operator-display";
 
@@ -17,7 +19,7 @@ function fmtDate(iso: string | null): string {
     : d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
-// ── Column definitions (§5.1 Grid V1 — five columns; Name + Date Added sortable) ─
+// ── Column definitions (§5.1 Grid V1 five columns, plus B15-20 Stage and Last call attempt; Name + Date Added sortable) ─
 
 // §5.1 Sort: only Name and Date Added carry a sortKey → only they are clickable.
 type SortKey = "name" | "dateAdded";
@@ -25,7 +27,13 @@ type SortKey = "name" | "dateAdded";
 interface ColumnDef {
   label: string;
   sortKey?: SortKey; // present ⇒ header is clickable-to-sort; absent ⇒ inert header
-  render: (r: ContactGridRow) => React.ReactNode;
+  render: (r: ContactGridRow, ctx: ColumnContext) => React.ReactNode;
+}
+
+/* B15-20: the deal read the Stage column joins to, loaded separately so a
+   failure never hides the contacts. */
+interface ColumnContext {
+  stages: DealStageSource;
 }
 
 const COLUMNS: ColumnDef[] = [
@@ -73,6 +81,30 @@ const COLUMNS: ColumnDef[] = [
     ),
   },
   {
+    /* B15-20 (F17): every loaded Seller Leads deal's stage; see lib/contacts-columns. */
+    label: "Stage",
+    render: (r, ctx) => {
+      const cell = stageCell(r.id, ctx.stages);
+      return (
+        <span data-testid={`contacts-stage-${r.id}`} data-stage-state={cell.kind}
+          style={cell.kind === "single" || cell.kind === "multiple"
+            ? { color: "#94A3B8", fontSize: "13px" }
+            : { color: "#475569", fontSize: "12px", fontStyle: "italic" }}>
+          {cell.text}
+        </span>
+      );
+    },
+  },
+  {
+    /* B15-20 (F17): the existing last_call_attempt carrier -- call attempts only. */
+    label: "Last call attempt",
+    render: (r) => (
+      <span data-testid={`contacts-last-attempt-${r.id}`} style={{ color: "#94A3B8", fontSize: "13px", whiteSpace: "nowrap" }}>
+        {lastCallAttemptText(r.lastCallAttemptPrecise, r.lastCallAttempt)}
+      </span>
+    ),
+  },
+  {
     label: "Date Added",
     sortKey: "dateAdded",
     render: (r) => (
@@ -88,7 +120,7 @@ const COLUMNS: ColumnDef[] = [
 function SkeletonRow() {
   return (
     <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-      {[160, 120, 180, 200, 90].map((w, i) => (
+      {[160, 120, 180, 200, 140, 120, 90].map((w, i) => (
         <td key={i} style={{ padding: "12px 16px" }}>
           <div
             style={{
@@ -121,12 +153,29 @@ export default function Contacts() {
 
   /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
   const readRecovered = useReadRecovered();
+
+  /* B15-20 (F17): the existing Seller Leads pipeline read, for the Stage
+     column only. Separate from the contacts read so its failure shows as
+     "Stage couldn't be loaded" and never hides the list; only the current
+     read applies. Read-only. */
+  const [stageSource, setStageSource] = useState<DealStageSource>({ kind: "loading" });
+  useEffect(() => {
+    setStageSource({ kind: "loading" });
+    return startCurrentRead(() => ghl.opportunities.listPipeline(), {
+      data: (p) => setStageSource({ kind: "loaded", stageNamesByContact: indexDealStages(p.stages, p.opportunities) }),
+      error: (e) => setStageSource({ kind: "failed", detail: e.message }),
+      settled: () => {},
+    });
+  }, [readRecovered]);
   useEffect(() => {
     setError(null);
-    ghl.contacts.gridRows()
-      .then(setRows)
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
+    /* B15-19: only the current read may set the rows and their count, as on
+       Pipeline (B15-09); a superseded read that settles late is ignored. */
+    return startCurrentRead(() => ghl.contacts.gridRows(), {
+      data: setRows,
+      error: (e) => setError(e.message),
+      settled: () => setLoading(false),
+    });
   }, [readRecovered]);
 
   // §5.1 Sort: `ordered` is the sort-driven spine that `filtered` consumes below,
@@ -224,7 +273,9 @@ export default function Contacts() {
               fontSize: "12px", fontWeight: 500, padding: "2px 8px", borderRadius: "999px",
               background: "#1B2433", color: "#64748B",
             }}>
-              {(search.trim() ? filtered.length : rows.length).toLocaleString()}
+              {search.trim()
+                ? `${filtered.length.toLocaleString()} of ${rows.length.toLocaleString()} contacts`
+                : `${rows.length.toLocaleString()} ${rows.length === 1 ? "contact" : "contacts"}`}
             </span>
           )}
         </div>
@@ -241,6 +292,12 @@ export default function Contacts() {
           onBlur={(e)  => (e.currentTarget.style.borderColor = "rgba(255,255,255,0.10)")}
         />
       </div>
+
+      {/* B15-19 (F26): what this count is, beside Pipeline's deal count. */}
+      <p data-testid="contacts-count-definition" style={{ fontSize: "11px", color: "#334155", margin: "-10px 0 14px" }}>
+        Every loaded contact, with or without a Seller Leads deal. Pipeline counts loaded deals instead; a contact can
+        have none or several.
+      </p>
 
       {/* Table card */}
       <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>
@@ -313,7 +370,7 @@ export default function Contacts() {
                         key={col.label}
                         style={{ padding: "11px 16px", textAlign: "left" }}
                       >
-                        {col.render(row)}
+                        {col.render(row, { stages: stageSource })}
                       </td>
                     ))}
                   </tr>

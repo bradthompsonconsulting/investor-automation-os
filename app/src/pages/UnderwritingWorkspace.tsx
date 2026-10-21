@@ -30,14 +30,14 @@ import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriti
    what the core returns. It decides no pricing of its own. */
 import { computeRepairEstimate, RepairInputError } from "../lib/repair-estimation/compute";
 /* INV-14 — the approved question set, defaults and provenance names; since
-   2026-10-04 the itemized unanswered allowances and the Miscellaneous row
-   (the untouched fallback is retired). The canonical reference table and the
+   2026-10-07 the provisional starting estimate and known-amounts rule, and
+   the Miscellaneous row (the 2026-10-04 per-row allowances are superseded). The canonical reference table and the
    calculation core are untouched; this surface no longer reads the table
    directly. */
 import {
   applyAmount, applyCondition, applyQuantity, EMPTY_ANSWER, EMPTY_MISC,
   operatorEstimate, OPERATOR_PROVENANCE_LABEL, OPERATOR_ROWS, parseKnownAmount, parseQuantity,
-  quantitySpecFor, UNANSWERED_ALLOWANCE_LABEL, unansweredAllowanceFor,
+  quantitySpecFor, UNANSWERED_ALLOWANCE_LABEL,
 } from "../lib/repair-estimation/operator-model";
 import type {
   Answers, MiscAnswer, OperatorCondition, OperatorRow, RowAnswer,
@@ -558,13 +558,10 @@ function EstimatorRow({ row, answer, onCondition, onAmount, onQuantity }: {
       {answer.dirty && parsed.kind === "value" ? (
         <span style={{ fontSize: "10px", color: PROVENANCE_COLOR.MANUAL }}>manual</span>
       ) : null}
-      {/* 2026-10-04 amendment, rule 1: an unanswered row shows the allowance
-          it carries, or why it carries none. */}
+      {/* 2026-10-07 policy: an unanswered row adds nothing and says so. */}
       {answer.condition === "not_asked" && parsed.kind === "blank" ? (
         <span data-testid={`repair-unanswered-${row.system}`} style={{ fontSize: "10px", color: "#F59E0B" }}>
-          {unansweredAllowanceFor(row) !== null
-            ? `${UNANSWERED_ALLOWANCE_LABEL} · allowance ${money(unansweredAllowanceFor(row)!)}`
-            : `${UNANSWERED_ALLOWANCE_LABEL} · ${quantity?.unit ?? "unit"} count needed — not in the total`}
+          {`${UNANSWERED_ALLOWANCE_LABEL} · unknown — not in the total`}
         </span>
       ) : null}
       {row.note ? (
@@ -699,10 +696,11 @@ function RepairEstimator({ opportunityId, onPersisted }: {
 
       <div style={{ padding: "18px 20px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
         <div style={{ fontSize: "11px", color: "#475569", marginBottom: "6px" }}>
-          Every row starts unanswered and carries its approved replacement amount as a preliminary
-          allowance. Selecting a condition loads that condition's approved amount instead. Where a row is
-          counted, the count loads its approved rate times that count. The number in the field is the
-          number used — type over it whenever you know better.
+          Repairs start at $0. Only valid known amounts are totalled; unanswered rows remain unknown
+          and the estimate stays incomplete. A numeric $0 or Good is an explicit answer; blank or invalid
+          input is not. Selecting a condition loads that condition's approved amount. Where a row is
+          counted, the count loads its approved rate times that
+          count. The number in the field is the number used — type over it whenever you know better.
         </div>
 
         {OPERATOR_ROWS.map((row) => (
