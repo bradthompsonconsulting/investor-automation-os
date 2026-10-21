@@ -321,6 +321,8 @@ jobs:
       # contact-isolation 3259aca + 23770f6). Offline. No B15-04 / supplemental-read-budget step: that code is not here.
       - name: System note summaries (INV-126, B15-17)
         run: node app/scripts/test-system-note-summary.cjs
+      - name: B15 display follow-ups, Disposition words + Notes header loading (Spock Addendum 2)
+        run: node app/scripts/test-b15-display-followups.cjs
       - name: Repair policy, known-only zero start (INV-100, B15-01/02)
         run: node app/scripts/test-b15-01-repair-policy.cjs
       - name: Wholesaler net proceeds (INV-134, B15-26)

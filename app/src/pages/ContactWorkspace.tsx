@@ -3,6 +3,7 @@ import { isLifecycleBlur } from "../lib/lifecycle-blur";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { NoteBody } from "../components/NoteBody";
+import { notesAttemptLabel } from "../lib/notes-attempt-label";
 import { Link, useParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
 import {
@@ -2400,7 +2401,7 @@ export default function ContactWorkspace() {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
             <h2 style={{ fontSize: "15px", fontWeight: 600, color: "#F1F5F9", margin: 0, fontFamily: "Space Grotesk, sans-serif" }}>Notes</h2>
             <span style={{ fontSize: "11px", color: lastAttempt ? "#F59E0B" : "#334155" }}>
-              {lastAttempt ? `Last attempted ${relativeTime(lastAttempt)}` : "Not yet contacted"}
+              {notesAttemptLabel(lastAttempt, contact !== null, relativeTime).text}
             </span>
           </div>
 
