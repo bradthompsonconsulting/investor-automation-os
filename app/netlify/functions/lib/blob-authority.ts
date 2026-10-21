@@ -48,7 +48,7 @@ export type AuthorityOp = {
   operator: string;
   target: { opportunityId: string; contactId: string };
   preconditionDigest: string;
-  expectedResultDigest: string;
+  expectedResultHash: string;
   admittedAt: string;
 };
 type Base = { schema: 1; v: number; epoch: number };
@@ -79,12 +79,12 @@ const counter = (v: unknown): v is number => typeof v === "number" && Number.isS
 const optString = (v: unknown) => v === null || nonEmpty(v);
 
 function parseOp(v: unknown): AuthorityOp | null {
-  if (!isPlainObject(v) || !exactKeys(v, ["opId", "nonce", "operator", "target", "preconditionDigest", "expectedResultDigest", "admittedAt"])) return null;
+  if (!isPlainObject(v) || !exactKeys(v, ["opId", "nonce", "operator", "target", "preconditionDigest", "expectedResultHash", "admittedAt"])) return null;
   const t = v.target;
   if (!isPlainObject(t) || !exactKeys(t, ["opportunityId", "contactId"]) || !nonEmpty(t.opportunityId) || !nonEmpty(t.contactId)) return null;
   if (!nonEmpty(v.opId) || !nonEmpty(v.nonce) || !nonEmpty(v.operator) || !nonEmpty(v.admittedAt)) return null;
   if (typeof v.preconditionDigest !== "string" || !HEX64.test(v.preconditionDigest)) return null;
-  if (typeof v.expectedResultDigest !== "string" || !HEX64.test(v.expectedResultDigest)) return null;
+  if (typeof v.expectedResultHash !== "string" || !HEX64.test(v.expectedResultHash)) return null;
   return v as unknown as AuthorityOp;
 }
 
@@ -275,7 +275,7 @@ export async function readAuthority(client: AuthorityClient, scope: string): Pro
   return { kind: "present", state: r.value.state, v: r.value.v, epoch: r.value.epoch, etag: r.etag, opId };
 }
 
-export type AdmissionIntent = { operator: string; opportunityId: string; contactId: string; preconditionDigest: string; expectedResultDigest: string };
+export type AdmissionIntent = { operator: string; opportunityId: string; contactId: string; preconditionDigest: string; expectedResultHash: string };
 export type OpenResult =
   | { kind: "committed"; opId: string; etag: string }
   | { kind: "refused"; reason: string }
@@ -287,9 +287,9 @@ export type OpenResult =
 export async function openAdmission(client: AuthorityClient, scope: string, intent: AdmissionIntent): Promise<OpenResult> {
   const cfg = clientConfigs.get(client as object);
   if (!cfg || !nonEmpty(scope)) return { kind: "refused", reason: "refused_input" };
-  if (!isPlainObject(intent) || !exactKeys(intent, ["operator", "opportunityId", "contactId", "preconditionDigest", "expectedResultDigest"])) return { kind: "refused", reason: "refused_input" };
+  if (!isPlainObject(intent) || !exactKeys(intent, ["operator", "opportunityId", "contactId", "preconditionDigest", "expectedResultHash"])) return { kind: "refused", reason: "refused_input" };
   if (!nonEmpty(intent.operator) || !nonEmpty(intent.opportunityId) || !nonEmpty(intent.contactId)) return { kind: "refused", reason: "refused_input" };
-  if (!HEX64.test(String(intent.preconditionDigest)) || !HEX64.test(String(intent.expectedResultDigest))) return { kind: "refused", reason: "refused_input" };
+  if (!HEX64.test(String(intent.preconditionDigest)) || !HEX64.test(String(intent.expectedResultHash))) return { kind: "refused", reason: "refused_input" };
   const key = authorityKey(scope);
   const r = await strongRead(cfg, key);
   if (r.kind === "unreadable") return { kind: "unreadable" };
@@ -301,7 +301,7 @@ export async function openAdmission(client: AuthorityClient, scope: string, inte
     operator: intent.operator,
     target: { opportunityId: intent.opportunityId, contactId: intent.contactId },
     preconditionDigest: intent.preconditionDigest,
-    expectedResultDigest: intent.expectedResultDigest,
+    expectedResultHash: intent.expectedResultHash,
     admittedAt: new Date().toISOString(),
   };
   const next: AdmittedValue = { schema: 1, state: "ADMITTED", v: (prev?.v ?? 0) + 1, epoch: (prev?.epoch ?? 0) + 1, op };

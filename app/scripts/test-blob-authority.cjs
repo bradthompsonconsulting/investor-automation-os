@@ -143,7 +143,7 @@ function startEdgeDecoy() {
 }
 
 const HEX = (c) => c.repeat(64);
-const INTENT = { operator: 'op@example.test', opportunityId: 'opp-synthetic-1', contactId: 'contact-synthetic-1', preconditionDigest: HEX('a'), expectedResultDigest: HEX('b') };
+const INTENT = { operator: 'op@example.test', opportunityId: 'opp-synthetic-1', contactId: 'contact-synthetic-1', preconditionDigest: HEX('a'), expectedResultHash: HEX('b') };
 const SITE_A = 'site-A-synthetic';
 const TOKEN_A = 'tok-A-synthetic-not-a-credential';
 
@@ -157,7 +157,7 @@ async function main() {
   const stored = (scope) => fake.store.get(keyOf(scope)) || null;
   const stateOf = (scope) => { const s = stored(scope); return s ? JSON.parse(s.text).state : 'absent'; };
   const seed = (scope, value) => { const etag = `"seed-${crypto.randomUUID()}"`; fake.store.set(keyOf(scope), { text: M.canonicalJson(value), etag }); return etag; };
-  const opFix = (opId = crypto.randomUUID()) => ({ opId, nonce: HEX('c').slice(0, 32), operator: 'op@example.test', target: { opportunityId: 'opp-synthetic-1', contactId: 'contact-synthetic-1' }, preconditionDigest: HEX('a'), expectedResultDigest: HEX('b'), admittedAt: '2026-10-21T00:00:00.000Z' });
+  const opFix = (opId = crypto.randomUUID()) => ({ opId, nonce: HEX('c').slice(0, 32), operator: 'op@example.test', target: { opportunityId: 'opp-synthetic-1', contactId: 'contact-synthetic-1' }, preconditionDigest: HEX('a'), expectedResultHash: HEX('b'), admittedAt: '2026-10-21T00:00:00.000Z' });
   const IDLE = () => ({ schema: 1, state: 'IDLE', v: 3, epoch: 3, last: { opId: 'prev-op', outcome: 'completed' }, fencedOp: null, fencedAt: null });
   const COMPLETED = () => ({ schema: 1, state: 'COMPLETED', v: 4, epoch: 4, op: opFix('completed-op'), completion: { noteId: 'note-1', observedId: 'completed-op', observedTotal: 18500, completedAt: '2026-10-21T00:00:01.000Z' }, fencedOp: null, fencedAt: null });
   const ADMITTED = (opId) => ({ schema: 1, state: 'ADMITTED', v: 5, epoch: 5, op: opFix(opId) });
@@ -277,7 +277,7 @@ async function main() {
     for (const [label, call] of [
       ['extra intent key', () => M.openAdmission(client, scope(), { ...INTENT, completion: { x: 1 } })],
       ['missing intent key', () => { const { contactId, ...rest } = INTENT; return M.openAdmission(client, scope(), rest); }],
-      ['non-hex digest', () => M.openAdmission(client, scope(), { ...INTENT, expectedResultDigest: 'zz' })],
+      ['non-hex digest', () => M.openAdmission(client, scope(), { ...INTENT, expectedResultHash: 'zz' })],
       ['empty scope', () => M.openAdmission(client, '', INTENT)],
       ['forged client', () => M.openAdmission({ __authorityClient: true }, scope(), INTENT)],
       ['label without opId', () => M.labelHeldRecovery(client, scope(), '')],
