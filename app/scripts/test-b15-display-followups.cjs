@@ -5,7 +5,10 @@
  *   1. B15-17: a Disposition stored as JSON was quoted raw in a note's
  *      collapsed summary ({"kind":"not applicable"}). The three reported
  *      shapes now read "Not applicable", "Not yet made" and "Made on <date>";
- *      the full record behind "Show full record" is unchanged.
+ *      the full record behind "Show full record" is unchanged. Follow-up
+ *      (Brad, 2026-10-21): the writers' two other kinds have the same defect
+ *      and read "Attorney will draft" and "Provided verbatim"; the supplied
+ *      verbatim text stays in the full record only, never in the summary.
  *   2. Contact Notes header: "Not yet contacted" showed while the contact was
  *      still loading. It now shows only once the record has resolved without
  *      an attempt; before that the label is a neutral "Loading…". A known
@@ -45,7 +48,7 @@ const carriers = require(path.join(TMP, 'src/lib/seller-contract-facts-carriers.
 fs.rmSync(TMP, { recursive: true, force: true });
 
 /** Literal count of check() calls below; never back-filled from a run. */
-const FLOOR = 36;
+const FLOOR = 42; // 36 at cb2e446; the follow-up replaces 2 checks with 8
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -92,11 +95,26 @@ check('NoteBody still renders the complete original body behind "Show full recor
   nb.includes('<summary style={{ cursor: "pointer" }}>Show full record</summary>') && nb.includes('color: "#94A3B8" }}>{body}</div>'));
 check('NoteBody still shows "label: value" from the summarizer', nb.includes('{summary.status.label}: {summary.status.value}'));
 
-// Scope: only the three reported shapes change; everything else is quoted as before.
+// The writers' two other kinds (follow-up): same defect, same fix.
 const willDraft = summarizeSystemNote(carriers.formatAttorneyManualFieldDispositionNote({ opportunityId: OPP, at: '2026-09-19T16:20:31.074Z', operator: 'Brad', slot: 'special_provisions', disposition: { kind: 'attorney_will_draft' } }));
-check('unreported kind attorney_will_draft is quoted as before (out of scope)', willDraft && willDraft.status.value === '{"kind":"attorney will draft"}', willDraft && willDraft.status);
-const verbatim = summarizeSystemNote(carriers.formatAttorneyManualFieldDispositionNote({ opportunityId: OPP, at: '2026-09-19T16:20:31.074Z', operator: 'Brad', slot: 'other_addenda_text', disposition: { kind: 'provided_verbatim', text: 'Seller keeps the shed' } }));
-check('unreported kind provided_verbatim is quoted as before (out of scope)', verbatim && verbatim.status.value.startsWith('{"kind":"provided verbatim"'), verbatim && verbatim.status);
+check('attorney_will_draft reads "Attorney will draft"', willDraft && willDraft.title === 'Attorney/manual field disposition' && willDraft.status.value === 'Attorney will draft', willDraft && willDraft.status);
+const VERBATIM = 'Seller keeps the shed; buyer to remove "old" fence {by closing}';
+const verbatimBody = carriers.formatAttorneyManualFieldDispositionNote({ opportunityId: OPP, at: '2026-09-19T16:20:31.074Z', operator: 'Brad', slot: 'other_addenda_text', disposition: { kind: 'provided_verbatim', text: VERBATIM } });
+const verbatim = summarizeSystemNote(verbatimBody);
+check('provided_verbatim reads "Provided verbatim"', verbatim && verbatim.status.value === 'Provided verbatim', verbatim && verbatim.status);
+check('the supplied verbatim text is not in the summary (title or status)', verbatim && !JSON.stringify(verbatim).includes('shed') && !JSON.stringify(verbatim).includes('fence'), verbatim);
+check('the full record keeps the complete verbatim text', verbatimBody.includes(JSON.stringify({ kind: 'provided_verbatim', text: VERBATIM })));
+const parsedV = carriers.parseAttorneyManualFieldDispositionNote(verbatimBody);
+check('the real parser still reads the verbatim text exactly', parsedV && parsedV.disposition.kind === 'provided_verbatim' && parsedV.disposition.text === VERBATIM, parsedV);
+const AH = 'IAOS ATTORNEY/MANUAL FIELD DISPOSITION — iaos-attorney-manual-field-disposition-v1';
+const willExtra = summarizeSystemNote(`${AH}\nDisposition: {"kind":"attorney_will_draft","x":1}`);
+check('attorney_will_draft with an extra key is not reworded', willExtra && willExtra.status.value === '{"kind":"attorney will draft","x":1}', willExtra && willExtra.status);
+const verbExtra = summarizeSystemNote(`${AH}\nDisposition: {"kind":"provided_verbatim","text":"a","x":1}`);
+check('provided_verbatim with an extra key is not reworded', verbExtra && verbExtra.status.value.startsWith('{"kind":"provided verbatim"'), verbExtra && verbExtra.status);
+const verbNum = summarizeSystemNote(`${AH}\nDisposition: {"kind":"provided_verbatim","text":5}`);
+check('provided_verbatim with non-string text is not reworded', verbNum && verbNum.status.value === '{"kind":"provided verbatim","text":5}', verbNum && verbNum.status);
+
+// Scope: only the writers' exact shapes change; everything else is quoted as before.
 const H = 'IAOS SELLER EQUITABLE INTEREST DISCLOSURE — iaos-seller-equitable-interest-disclosure-v1';
 const extra = summarizeSystemNote(`${H}\nDisposition: {"kind":"not_applicable","x":1}`);
 check('a reported kind with an extra key is not reworded (exact shapes only)', extra && extra.status.value === '{"kind":"not applicable","x":1}', extra && extra.status);

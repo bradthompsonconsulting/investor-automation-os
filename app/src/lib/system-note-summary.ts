@@ -71,8 +71,11 @@ const exactKeys = (v: Record<string, unknown>, keys: string[]) =>
  * attorney/manual-field writers store Disposition as JSON. The three shapes
  * seen on Test read as words: {"kind":"not_applicable"} "Not applicable",
  * {"kind":"not_yet_made"} "Not yet made", {"kind":"made","at":ISO} "Made on
- * <date>" (just "Made" when the date does not parse). Anything else,
- * including other kinds, returns null and is quoted as before.
+ * <date>" (just "Made" when the date does not parse). The writers' two
+ * other kinds read the same way: {"kind":"attorney_will_draft"} "Attorney
+ * will draft", {"kind":"provided_verbatim","text":...} "Provided verbatim"
+ * -- the supplied text is NOT put in the summary; it stays in the full
+ * record. Anything else returns null and is quoted as before.
  */
 function dispositionWords(raw: string): string | null {
   if (!raw.startsWith("{")) return null;
@@ -82,6 +85,8 @@ function dispositionWords(raw: string): string | null {
   const o = v as Record<string, unknown>;
   if (o.kind === "not_applicable" && exactKeys(o, ["kind"])) return "Not applicable";
   if (o.kind === "not_yet_made" && exactKeys(o, ["kind"])) return "Not yet made";
+  if (o.kind === "attorney_will_draft" && exactKeys(o, ["kind"])) return "Attorney will draft";
+  if (o.kind === "provided_verbatim" && exactKeys(o, ["kind", "text"]) && typeof o.text === "string") return "Provided verbatim";
   if (o.kind === "made" && exactKeys(o, ["kind", "at"]) && typeof o.at === "string") {
     const when = formatDispositionDate(o.at);
     return when ? `Made on ${when}` : "Made";
