@@ -331,6 +331,9 @@ jobs:
         run: node app/scripts/test-b15-20-contacts-columns.cjs
       - name: Contract Workspace display, combined invariants and checked-in slice provenance (B15-21)
         run: node app/scripts/test-b15-21-contract-display.cjs
+      # B1 Blob authority (B15-26 B1 r7 boundary r2/r3): isolated module, loopback fake service only, no real credential.
+      - name: B1 Blob authority -- single-attempt conditional writes, process-local handles, forbidden transitions (INV-134) — 80 checks
+        run: node app/scripts/test-blob-authority.cjs
 
       # The real-page suites (Seller Call, Contacts, Pipeline, Mailers, shell labels) need Chromium.
       # Not retried: a failure is reported as it happened. The Pipeline suite prints its startup
